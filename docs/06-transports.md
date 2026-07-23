@@ -873,23 +873,37 @@ checks before trusting the request body.
 
 The per-route rate limiter keys on the caller's IP. By default, `webTransport` ignores `X-Forwarded-For` / `X-Real-IP` headers and uses the connection's remote address. This is the default-secure behavior: an untrusted client could otherwise spoof those headers and skip rate limiting.
 
-When deploying behind a proxy (Railway, Fly, Cloudflare, an in-house load balancer), set `trustedProxies` to the proxy's IP(s):
+When deploying behind a proxy (Railway, Fly, Cloudflare, an in-house load
+balancer), set `trustedProxies` to the immediate proxy's exact IPs or bounded
+IPv4/IPv6 CIDRs:
 
 ```ts
 webTransport({
   port: 8080,
   auth: { type: "bearer", token: "..." },
-  trustedProxies: ["10.0.0.5"],  // your proxy's IP
+  trustedProxies: ["10.20.0.0/16", "2001:db8:1234::/48"],
+  consoleSecurity: {
+    allowedOrigins: ["https://agent.example.com"],
+  },
 });
 ```
 
 Behavior:
 
 - Connection IP is on `trustedProxies` → `X-Forwarded-For` is parsed right-to-left, trusted proxy hops are dropped, and the first untrusted client IP is honored. `X-Real-IP` is used only when `X-Forwarded-For` is absent.
-- Connection IP is NOT on `trustedProxies` (or list is empty) → headers ignored, connection IP used directly.
+- Connection IP is NOT on `trustedProxies` (or list is empty) → forwarding
+  headers are ignored for ordinary route rate limiting. Console requests
+  carrying them fail closed.
 - The first time an XFF arrives without `trustedProxies` configured, a single `console.warn` per startup nudges operators with a config hint. Latched per-instance — no warning spam.
+- Railway or other deployment environment markers do not grant implicit proxy
+  trust.
+- Malformed, ambiguous, oversized, or mixed forwarding chains fail closed at
+  the console boundary. Universal CIDRs such as `0.0.0.0/0` and `::/0` are
+  rejected.
 
-CIDR ranges are not yet supported (v1 keeps it simple); list the exact IPs.
+For YAML configuration, place both properties under the web transport
+augment's `config` block. `AUGGY_PUBLIC_URL` contributes an exact console
+origin, but it does not configure or infer a trusted proxy network.
 
 ### Status codes
 

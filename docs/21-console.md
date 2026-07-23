@@ -76,18 +76,40 @@ These stay out of the v1 first-run console:
 The CLI remains the control plane for create, configure, doctor, run, deploy,
 logs, and augment installation.
 
-## Auth
+## Auth and browser boundary
 
-On non-loopback hosts, `/console` uses HTTP Basic auth with a blank username and
-the agent bearer as the password (`AUGGY_WEB_TOKEN` in the agent's `.env`). The
-same bearer is accepted by `/agent/run` for creator-authorized chat, but the
-transport may also allow anonymous, visitor-token, or external-auth traffic
-depending on configuration. Loopback console requests skip the bearer check
-because shell access to the host already grants access to the local `.env`.
+`/console` always requires authentication, including on loopback. The first-party
+login page accepts the agent bearer (`AUGGY_WEB_TOKEN` in the agent's `.env`) and
+sets an HTTP-only session cookie. HTTP Basic with a blank username and the same
+bearer as the password remains available for operator automation. The bearer is
+also accepted by `/agent/run` for creator-authorized chat, but that route may
+separately allow anonymous, visitor-token, or external-auth traffic.
+
+The console validates the exact Host and Origin before authentication. Local
+origins for `localhost`, `127.0.0.1`, and `::1` on the configured port are
+allowed automatically. Public deployments must configure exact
+`consoleSecurity.allowedOrigins`; a valid `AUGGY_PUBLIC_URL` contributes its
+origin automatically. Forwarding headers are accepted only from an immediate
+peer in `trustedProxies`; deployment-platform environment variables never grant
+proxy trust.
 
 State-mutating endpoints additionally require a CSRF token bound to the
 specific action. Chat uses a dedicated `console-chat` CSRF token because the
 server attaches the bearer when proxying to `/agent/run`.
+
+All console responses deny framing with CSP `frame-ancestors 'none'` and
+`X-Frame-Options: DENY`. Logout is POST-only and requires authentication,
+same-origin validation, and a dedicated CSRF token.
+
+The console refuses to follow symlinks below the agent directory when managing
+`agent.yaml`, identity, `.env`, or installed skills. Replace intentionally
+symlinked managed files with regular in-workspace files, or manage them outside
+the console. The runtime's separate file-loading behavior is unchanged.
+Node/Bun does not expose descriptor-relative `openat2` confinement, so an
+untrusted process able to replace workspace directories concurrently under the
+same operating-system account remains outside this boundary. Run the agent as a
+dedicated, least-privileged user and do not grant hostile processes write access
+to its agent directory.
 
 Chat Markdown rendering does not enable raw HTML, does not render remote images,
 and blocks unsafe link protocols such as `javascript:`, `data:`, `vbscript:`,

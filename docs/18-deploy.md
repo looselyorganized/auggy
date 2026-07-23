@@ -262,6 +262,14 @@ serve caller-selected thread history. Before rollback, stop keyed and public
 traffic and drain outstanding retries; rollback otherwise deliberately reopens
 H-01/H-02.
 
+The operator console also requires explicit proxy trust. Railway environment
+markers do not make forwarding headers authoritative. Configure the actual
+ingress IPs or CIDRs as `webTransport.config.trustedProxies` and the public
+console origin as `webTransport.config.consoleSecurity.allowedOrigins`. If the
+deployment cannot provide a stable, reviewable ingress range, leave the console
+disabled (`adminRoute: false`) and use a local or SSH-tunneled console instead
+of trusting a broad private network.
+
 ---
 
 ## visitorAuth on Railway
