@@ -210,11 +210,14 @@ Use trust policy to limit which peers can see and call the discovered tools:
 tool name. Trust policy compiles into Auggy's structural
 `perTrustLevel.neverExpose` constraints, so withheld MCP tools are hidden before
 the model sees the tool list and are denied if a model fabricates the tool name.
+The generated tool checks the same policy again immediately before dispatch,
+before it reveals connection state or calls the remote server.
 
-MCP annotations are enforced, not just described. If a discovered tool has
-`destructiveHint: true` or `openWorldHint: true`, Auggy treats it as
-creator-only by default. To expose a risky annotated tool to `agent` or
-`public`, the operator must name that exact tool under `toolPolicies`.
+Every discovered tool is creator-only when no local trust policy is present.
+Remote MCP annotations such as `readOnlyHint`, `destructiveHint`, and
+`openWorldHint` are untrusted display metadata; they never grant, narrow, or
+widen authority. To delegate a tool to `agent` or `public`, the operator must
+do so explicitly in `.mcp.json` at the server or exact remote-tool name.
 
 You can also tune runtime caps per server:
 
@@ -252,8 +255,10 @@ Defaults are conservative: 30s timeout, four concurrent calls per server,
   cloud runtimes.
 - Remote tool descriptions and input-schema text are normalized/truncated
   before becoming model-facing metadata.
-- Tools annotated as destructive or open-world default to creator-only exposure
-  unless explicitly overridden with a per-tool trust policy.
+- Every remotely supplied tool defaults to creator-only. Remote annotations are
+  sanitized descriptive hints, never authorization evidence.
+- Server and exact per-tool trust policy is enforced at catalog construction,
+  fabricated-call checking, and immediately before remote execution.
 - Duplicate exposed tool names fail the server closed instead of leaking
   partial tools.
 - MCP connection failures do not crash the agent; failed servers show in console

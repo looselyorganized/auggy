@@ -9,7 +9,7 @@ import {
   type McpServerConfig,
 } from "../../cli/mcp-config";
 import { parseEnvFile } from "../../cli/env-parse";
-import type { AugmentConstraints, Tool, TrustLevel } from "../../types";
+import type { AugmentConstraints, Tool, ToolExecuteContext, TrustLevel } from "../../types";
 import { formatMcpToolResult } from "./result";
 import { SdkMcpClientAdapter } from "./sdk-adapter";
 import type {
@@ -53,6 +53,7 @@ interface ServerRuntime {
 
 interface ToolTrustRestriction {
   toolName: string;
+  allowedTrustLevels: TrustLevel[];
   blockedTrustLevels: TrustLevel[];
 }
 
@@ -65,7 +66,7 @@ const DEFAULT_MAX_TOOL_PAGES = 20;
 const MAX_TOOL_DESCRIPTION_CHARS = 700;
 const MAX_SCHEMA_TEXT_CHARS = 300;
 const ALL_TRUST_LEVELS: TrustLevel[] = ["creator", "agent", "public"];
-const RISKY_ANNOTATION_DEFAULT_TRUST_LEVELS: TrustLevel[] = ["creator"];
+const DEFAULT_MCP_TRUST_LEVELS: TrustLevel[] = ["creator"];
 
 const toolInputSchema = z.record(z.string(), z.unknown());
 
@@ -302,7 +303,7 @@ function buildAuggyTools(
   for (const remoteTool of remoteTools) {
     const toolName = mcpToolName(server.name, remoteTool.name);
     const trust = trustRestrictionForTool(server, remoteTool, toolName);
-    const tool = toAuggyTool(server, remoteTool, runtime, toolName);
+    const tool = toAuggyTool(server, remoteTool, runtime, toolName, trust.allowedTrustLevels);
     if (names.has(tool.name)) {
       throw new Error(`duplicate exposed MCP tool name "${tool.name}"`);
     }
@@ -318,6 +319,7 @@ function toAuggyTool(
   remoteTool: McpRemoteTool,
   runtime: ServerRuntime,
   toolName: string,
+  allowedTrustLevels: readonly TrustLevel[],
 ): Tool {
   const schema = sanitizeInputSchema(remoteTool.inputSchema, server.policy.maxSchemaBytes!);
   return {
@@ -326,7 +328,20 @@ function toAuggyTool(
     category: "mcp",
     input: toolInputSchema,
     inputJsonSchema: schema,
-    execute: async (input) => {
+    execute: async (input, context?: ToolExecuteContext) => {
+      if (!context) {
+        return {
+          content: `MCP tool "${remoteTool.name}" requires an authenticated execution context.`,
+          isError: true,
+        };
+      }
+      const trustLevel = context?.peer?.trustLevel ?? "creator";
+      if (!allowedTrustLevels.includes(trustLevel)) {
+        return {
+          content: `MCP tool "${remoteTool.name}" is not available at trust level "${trustLevel}".`,
+          isError: true,
+        };
+      }
       if (!runtime.connection || runtime.status.state !== "connected") {
         return { content: `MCP server "${server.name}" is not connected.` };
       }
@@ -364,22 +379,18 @@ function trustRestrictionForTool(
   toolName: string,
 ): ToolTrustRestriction {
   const explicitToolTrust = server.policy.toolPolicies?.[remoteTool.name]?.allowedTrustLevels;
-  let allowed = uniqueTrustLevels(explicitToolTrust ?? server.policy.allowedTrustLevels);
-  if (allowed.length === 0) allowed = [...ALL_TRUST_LEVELS];
-
-  if (!explicitToolTrust && hasRiskyAnnotation(remoteTool)) {
-    allowed = intersectTrustLevels(allowed, RISKY_ANNOTATION_DEFAULT_TRUST_LEVELS);
-  }
+  const configuredTrust = explicitToolTrust ?? server.policy.allowedTrustLevels;
+  const allowed =
+    configuredTrust === undefined
+      ? [...DEFAULT_MCP_TRUST_LEVELS]
+      : uniqueTrustLevels(configuredTrust);
 
   const allowedSet = new Set(allowed);
   return {
     toolName,
+    allowedTrustLevels: allowed,
     blockedTrustLevels: ALL_TRUST_LEVELS.filter((level) => !allowedSet.has(level)),
   };
-}
-
-function hasRiskyAnnotation(tool: McpRemoteTool): boolean {
-  return Boolean(tool.annotations?.destructiveHint || tool.annotations?.openWorldHint);
 }
 
 function uniqueTrustLevels(levels: TrustLevel[] | undefined): TrustLevel[] {
@@ -390,11 +401,6 @@ function uniqueTrustLevels(levels: TrustLevel[] | undefined): TrustLevel[] {
     if (!out.includes(level)) out.push(level);
   }
   return out;
-}
-
-function intersectTrustLevels(left: TrustLevel[], right: TrustLevel[]): TrustLevel[] {
-  const rightSet = new Set(right);
-  return left.filter((level) => rightSet.has(level));
 }
 
 function emptyTrustBlocks(): Record<TrustLevel, Set<string>> {

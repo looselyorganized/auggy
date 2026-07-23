@@ -9,10 +9,15 @@ import type {
   McpRuntimeServer,
   McpToolCallResult,
 } from "../../src/augments/mcp/types";
-import type { TurnTrigger } from "../../src/types";
+import type { ToolExecuteContext, TurnTrigger } from "../../src/types";
 import { createMockModel } from "../fixtures/mock-model";
 
 const TMP = join(import.meta.dir, ".tmp-mcp-test");
+const INTERNAL_TOOL_CONTEXT: ToolExecuteContext = {
+  turnId: "internal-turn",
+  threadId: "internal-thread",
+  peer: null,
+};
 
 beforeEach(() => {
   mkdirSync(TMP, { recursive: true });
@@ -99,7 +104,7 @@ describe("mcp augment runtime", () => {
       tools: 1,
     });
 
-    const result = await manager.tools[0]!.execute({ q: "auggy" });
+    const result = await manager.tools[0]!.execute({ q: "auggy" }, INTERNAL_TOOL_CONTEXT);
     expect(result).toEqual({ content: "ok" });
     expect(adapter.connections[0]!.calls[0]).toMatchObject({
       name: "search",
@@ -133,7 +138,7 @@ describe("mcp augment runtime", () => {
     expect(manager.tools.map((tool) => tool.name)).toEqual(["mcp_ops_read_status"]);
   });
 
-  test("builds trust constraints from server policy and risky annotations", async () => {
+  test("remote annotations never narrow or widen explicit operator trust policy", async () => {
     writeMcpConfig({
       mcpServers: {
         ops: { type: "streamable-http", url: "https://mcp.example.com" },
@@ -162,13 +167,34 @@ describe("mcp augment runtime", () => {
     const manager = createMcpManager({ agentDir: TMP, client: adapter });
     await manager.boot();
 
+    expect(manager.constraints.perTrustLevel).toBeUndefined();
+    expect(manager.statuses()[0]?.restrictedTools).toBe(0);
+  });
+
+  test("defaults every remotely supplied tool to creator-only", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+    });
+    const adapter = new FakeMcpAdapter([
+      { name: "read_status", inputSchema: { type: "object" } },
+      {
+        name: "delete_all",
+        inputSchema: { type: "object" },
+        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+      },
+    ]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter });
+    await manager.boot();
+
     expect(manager.constraints.perTrustLevel?.agent?.neverExpose).toEqual([
+      "mcp_ops_read_status",
       "mcp_ops_delete_all",
-      "mcp_ops_search_web",
     ]);
     expect(manager.constraints.perTrustLevel?.public?.neverExpose).toEqual([
+      "mcp_ops_read_status",
       "mcp_ops_delete_all",
-      "mcp_ops_search_web",
     ]);
     expect(manager.constraints.perTrustLevel?.creator).toBeUndefined();
     expect(manager.statuses()[0]?.restrictedTools).toBe(2);
@@ -195,7 +221,7 @@ describe("mcp augment runtime", () => {
     expect(manager.constraints.perTrustLevel?.agent).toBeUndefined();
   });
 
-  test("allows explicit per-tool trust override for risky tools", async () => {
+  test("allows explicit per-tool trust delegation regardless of remote annotations", async () => {
     writeMcpConfig({
       mcpServers: {
         ops: { type: "streamable-http", url: "https://mcp.example.com" },
@@ -222,6 +248,88 @@ describe("mcp augment runtime", () => {
 
     expect(manager.constraints.perTrustLevel?.public?.neverExpose).toEqual(["mcp_ops_delete_all"]);
     expect(manager.constraints.perTrustLevel?.agent).toBeUndefined();
+  });
+
+  test("re-enforces trust immediately before execution", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+    });
+    const adapter = new FakeMcpAdapter([{ name: "read_status", inputSchema: { type: "object" } }]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter });
+    await manager.boot();
+
+    const result = await manager.tools[0]!.execute(
+      {},
+      {
+        turnId: "turn-public",
+        threadId: "thread-public",
+        peer: {
+          id: "visitor",
+          kind: "human",
+          trustLevel: "public",
+          publicSubstate: "recognized",
+          sourceAugment: "test",
+        },
+      },
+    );
+
+    expect(result).toEqual({
+      content: 'MCP tool "read_status" is not available at trust level "public".',
+      isError: true,
+    });
+    expect(adapter.connections[0]!.calls).toHaveLength(0);
+  });
+
+  test("denies execution when the required context is missing", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+    });
+    const adapter = new FakeMcpAdapter([{ name: "read_status", inputSchema: { type: "object" } }]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter });
+    await manager.boot();
+
+    const result = await manager.tools[0]!.execute({});
+    expect(result).toEqual({
+      content: 'MCP tool "read_status" requires an authenticated execution context.',
+      isError: true,
+    });
+    expect(adapter.connections[0]!.calls).toHaveLength(0);
+  });
+
+  test("execution-time trust check honors explicit delegation", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: {
+          type: "streamable-http",
+          url: "https://mcp.example.com",
+          auggy: { allowedTrustLevels: ["creator", "agent"] },
+        },
+      },
+    });
+    const adapter = new FakeMcpAdapter([{ name: "read_status", inputSchema: { type: "object" } }]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter });
+    await manager.boot();
+
+    const result = await manager.tools[0]!.execute(
+      {},
+      {
+        turnId: "turn-agent",
+        threadId: "thread-agent",
+        peer: {
+          id: "agent-peer",
+          kind: "agent",
+          trustLevel: "agent",
+          sourceAugment: "test",
+        },
+      },
+    );
+
+    expect(result).toEqual({ content: "ok" });
+    expect(adapter.connections[0]!.calls).toHaveLength(1);
   });
 
   test("failed external servers do not crash boot or expose tools", async () => {
@@ -295,8 +403,8 @@ describe("mcp augment runtime", () => {
       maxConcurrentCalls: 1,
     });
     await manager.boot();
-    const first = manager.tools[0]!.execute({});
-    const second = await manager.tools[0]!.execute({});
+    const first = manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT);
+    const second = await manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT);
     expect(JSON.stringify(second)).toContain("is busy");
     release?.();
     await first;
@@ -442,7 +550,7 @@ describe("mcp augment runtime", () => {
     });
     const manager = createMcpManager({ agentDir: TMP, client: adapter, maxResultBytes: 64 });
     await manager.boot();
-    const result = await manager.tools[0]!.execute({});
+    const result = await manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT);
     expect(JSON.stringify(result)).toContain("truncated to 64 bytes");
   });
 

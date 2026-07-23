@@ -42,12 +42,15 @@ describe("MCP stdio e2e", () => {
           transport: "stdio",
           state: "connected",
           tools: 1,
-          restrictedTools: 0,
+          restrictedTools: 1,
         },
       ]);
       expect(manager.tools.map((tool) => tool.name)).toEqual(["mcp_smoke_pickleball_score"]);
 
-      const result = await manager.tools[0]!.execute({ player: "Mike" });
+      const result = await manager.tools[0]!.execute(
+        { player: "Mike" },
+        { turnId: "smoke-turn", threadId: "smoke-thread", peer: null },
+      );
       expect(result).toEqual({ content: "Mike wins 11-7" });
     } finally {
       await manager.shutdown();
