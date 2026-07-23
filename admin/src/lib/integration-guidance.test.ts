@@ -94,6 +94,16 @@ describe("browser integration guidance", () => {
     );
     expect(guidance.typescript).toContain('"x-visitor-token": visitorToken');
     expect(guidance.typescript).toContain('response.headers.get("x-visitor-token")');
+    expect(guidance.typescript).toContain(
+      'response.headers.get("x-auggy-anonymous-session")',
+    );
+    expect(guidance.typescript).toContain(
+      'response.headers.get("x-auggy-anonymous-session-status") === "invalid"',
+    );
+    expect(guidance.typescript).toContain(
+      'localStorage.removeItem("auggy:anonymous-session")',
+    );
+    expect(guidance.typescript).toContain("response.status === 428");
     assertBrowserSafe(guidance.typescript);
   });
 
@@ -145,7 +155,7 @@ describe("browser integration guidance", () => {
       expect(example).toContain("JSON.parse(data)");
       expect(example).toContain('payload.type === "RUN_ERROR"');
       expect(example).toContain('payload.type === "RUN_FINISHED"');
-      expect(example).toContain('headers["idempotency-key"] = turnId');
+      expect(example).toContain('headers["idempotency-key"] = idempotencyKey');
       expect(example).toContain("signal,");
       expect(example).toContain("reader.cancel()");
       expect(example).not.toContain("console.log(chunk)");
@@ -175,7 +185,7 @@ describe("server integration guidance", () => {
     });
     expect(guidance.typescript).toContain("process.env.AUGGY_WEB_TOKEN");
     expect(guidance.typescript).toContain("Bearer ${token}");
-    expect(guidance.typescript).toContain('"idempotency-key": turnId');
+    expect(guidance.typescript).toContain('"idempotency-key": idempotencyKey');
     expect(guidance.typescript).toContain("signal,");
     expect(guidance.typescript).not.toContain("<token>");
     expect(guidance.typescript).not.toContain(SECRET_SENTINEL);

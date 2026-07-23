@@ -53,6 +53,32 @@ function createStartupAdmissionBarrier(): StartupAdmissionBarrier {
   };
 }
 
+function threadOwnerTransition(
+  owner: PeerIdentity | null,
+  incoming: PeerIdentity | null,
+): "same" | "promote" | "deny" {
+  if (owner === null || incoming === null) return owner === incoming ? "same" : "deny";
+  if (
+    owner.id === incoming.id &&
+    owner.trustLevel === incoming.trustLevel &&
+    owner.sourceAugment === incoming.sourceAugment &&
+    owner.publicSubstate === incoming.publicSubstate
+  ) {
+    return "same";
+  }
+  if (
+    owner.trustLevel === "public" &&
+    owner.publicSubstate === "anonymous" &&
+    incoming.trustLevel === "public" &&
+    incoming.publicSubstate === "recognized" &&
+    owner.sourceAugment === incoming.sourceAugment &&
+    incoming.authenticatedPriorPeerId === owner.id
+  ) {
+    return "promote";
+  }
+  return "deny";
+}
+
 export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandle {
   const tokenizer = createTokenizer();
 
@@ -82,12 +108,16 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     string,
     { persistence: ThreadHistoryPersistence; peer: PeerIdentity }
   >();
+  const unmanagedThreadOwners = new Map<string, PeerIdentity | null>();
   const turnLoop = createTurnLoop({
     augments: effectiveAugments,
     model,
     tokenizer,
     config: effectiveConfig,
-    onHistoryEvicted: (threadId) => restoredThreads.delete(threadId),
+    onHistoryEvicted: (threadId) => {
+      restoredThreads.delete(threadId);
+      unmanagedThreadOwners.delete(threadId);
+    },
   });
 
   const outboundHandlers = new Map<
@@ -173,6 +203,20 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         throw new Error(
           `Thread history access denied for "${threadId}": persistence authorization is required`,
         );
+      }
+      if (unmanagedThreadOwners.has(threadId)) {
+        const owner = unmanagedThreadOwners.get(threadId) ?? null;
+        const transition = threadOwnerTransition(owner, peer);
+        if (transition === "deny") {
+          throw new Error(
+            `Thread history access denied for "${threadId}": thread belongs to another peer`,
+          );
+        }
+        if (transition === "promote" && peer) {
+          unmanagedThreadOwners.set(threadId, { ...peer });
+        }
+      } else {
+        unmanagedThreadOwners.set(threadId, peer ? { ...peer } : null);
       }
       return null;
     }
@@ -418,6 +462,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       outboundHandlers.clear();
       turnLoop.clearHistoryManagers();
       restoredThreads.clear();
+      unmanagedThreadOwners.clear();
       threadTails.clear();
       started = false;
     },

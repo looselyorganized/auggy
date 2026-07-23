@@ -615,6 +615,12 @@ describe("createTypeScriptClient", () => {
     expect(source).toContain("* - GET /me auth=visitor.required");
   });
 
+  test("reserves anonymous-session protocol headers from external auth", () => {
+    const source = createTypeScriptClient(report(), { target: "browser" });
+    expect(source).toContain('"x-auggy-anonymous-session"');
+    expect(source).toContain('"x-auggy-anonymous-session-status"');
+  });
+
   test("emits empty input maps for agents with no routes", () => {
     const source = createTypeScriptClient({
       agent: { name: "empty", configPath: "/tmp/empty/agent.yaml" },

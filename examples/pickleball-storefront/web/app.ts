@@ -136,20 +136,57 @@ async function sendChat(event: SubmitEvent): Promise<void> {
   submit.disabled = true;
   const responseNode = appendMessage("", "agent-message");
   try {
-    const response = await fetch("http://localhost:8088/agent/run", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "idempotency-key": crypto.randomUUID(),
-        "x-visitor-token": localStorage.getItem("auggyVisitorToken") ?? "bootstrap",
-      },
-      body: JSON.stringify({
-        threadId: persistentThreadId(),
-        messages: [{ role: "user", content: message }],
-      }),
+    const headers: Record<string, string> = {
+      "content-type": "application/json",
+      "idempotency-key": crypto.randomUUID(),
+      "x-visitor-token": localStorage.getItem("auggyVisitorToken") ?? "bootstrap",
+    };
+    const anonymousSession = localStorage.getItem("auggyAnonymousSession");
+    if (anonymousSession) headers["x-auggy-anonymous-session"] = anonymousSession;
+    const body = JSON.stringify({
+      threadId: persistentThreadId(),
+      messages: [{ role: "user", content: message }],
     });
-    const rotatedToken = response.headers.get("x-visitor-token");
-    if (rotatedToken) localStorage.setItem("auggyVisitorToken", rotatedToken);
+    let response = await fetch("http://localhost:8088/agent/run", {
+      method: "POST",
+      headers,
+      body,
+    });
+    const retainCredentials = (source: Response) => {
+      const rotatedToken = source.headers.get("x-visitor-token");
+      if (rotatedToken) {
+        localStorage.setItem("auggyVisitorToken", rotatedToken);
+        headers["x-visitor-token"] = rotatedToken;
+      }
+      const issuedSession = source.headers.get("x-auggy-anonymous-session");
+      if (issuedSession) {
+        localStorage.setItem("auggyAnonymousSession", issuedSession);
+        headers["x-auggy-anonymous-session"] = issuedSession;
+      }
+    };
+    retainCredentials(response);
+    if (
+      response.status === 401 &&
+      response.headers.get("x-auggy-anonymous-session-status") === "invalid" &&
+      headers["x-auggy-anonymous-session"]
+    ) {
+      localStorage.removeItem("auggyAnonymousSession");
+      delete headers["x-auggy-anonymous-session"];
+      response = await fetch("http://localhost:8088/agent/run", {
+        method: "POST",
+        headers,
+        body,
+      });
+      retainCredentials(response);
+    }
+    if (response.status === 428 && headers["x-auggy-anonymous-session"]) {
+      response = await fetch("http://localhost:8088/agent/run", {
+        method: "POST",
+        headers,
+        body,
+      });
+      retainCredentials(response);
+    }
     if (!response.ok || !response.body) {
       responseNode.textContent = `The agent is unavailable (${response.status}).`;
       return;

@@ -194,14 +194,24 @@ export interface PeerIdentity {
    * identity resolution. Differentiates first-contact anonymous visitors
    * from those holding a valid agent-issued visitor token.
    *
-   * - "anonymous": no token, ephemeral peer.id (anon-<threadId>).
-   *   Memory writes attach to ephemeral identity.
+   * - "anonymous": no verified visitor token. The web transport uses a
+   *   server-minted anonymous-session subject; it is never derived from the
+   *   caller-controlled thread ID.
    * - "recognized": HMAC-verified visitor token, durable peer.id (vis_*).
    *   Memory writes attach to durable identity.
    *
    * Present iff trustLevel === "public". Other trust levels MUST omit it.
    */
   publicSubstate?: "anonymous" | "recognized";
+  /**
+   * Authenticated one-way identity transition asserted by the transport.
+   * A public/recognized peer may use it to prove ownership of the prior
+   * anonymous subject during thread and memory promotion.
+   *
+   * This is authorization evidence, not caller metadata. Transports MUST omit
+   * it unless they cryptographically verified the prior subject.
+   */
+  authenticatedPriorPeerId?: string;
   sourceAugment: string;
   displayName?: string;
   orgId?: string;

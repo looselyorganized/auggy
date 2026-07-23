@@ -89,6 +89,107 @@ async function runtime(model: ModelClient, concurrency = 2, extraAugments: Augme
 }
 
 describe("kernel thread-history persistence", () => {
+  it("binds unmanaged resident history to the peer that created it", async () => {
+    const model = createMockModel({ response: "private response" });
+    const { agent, kernel } = await runtime(model);
+
+    try {
+      await kernel.handleInbound(trigger("unmanaged-owner", "private prompt"));
+
+      const otherPeer = { ...PEER, id: "visitor-2" };
+      await expect(
+        kernel.handleInbound(trigger("unmanaged-owner", "read private history", otherPeer)),
+      ).rejects.toThrow("thread belongs to another peer");
+
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("allows the same peer to continue unmanaged resident history", async () => {
+    const model = createMockModel({ response: "ok" });
+    const { agent, kernel } = await runtime(model);
+
+    try {
+      await kernel.handleInbound(trigger("unmanaged-same-owner", "first"));
+      await kernel.handleInbound(trigger("unmanaged-same-owner", "second"));
+
+      expect(model.calls).toHaveLength(2);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("allows only a transport-proven anonymous-to-recognized promotion", async () => {
+    const model = createMockModel({ response: "ok" });
+    const { agent, kernel } = await runtime(model);
+    const anonymous: PeerIdentity = {
+      id: "anon_session_00000000-0000-4000-8000-000000000001",
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "anonymous",
+      sourceAugment: "test-transport",
+    };
+    const recognized: PeerIdentity = {
+      id: "vis_00000000-0000-4000-8000-000000000002",
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "recognized",
+      authenticatedPriorPeerId: anonymous.id,
+      sourceAugment: "test-transport",
+    };
+
+    try {
+      await kernel.handleInbound(trigger("unmanaged-promotion", "anonymous", anonymous));
+      await kernel.handleInbound(trigger("unmanaged-promotion", "recognized", recognized));
+      await expect(
+        kernel.handleInbound(trigger("unmanaged-promotion", "downgrade", anonymous)),
+      ).rejects.toThrow("thread belongs to another peer");
+      await expect(
+        kernel.handleInbound(
+          trigger("unmanaged-promotion", "unproven visitor", {
+            ...recognized,
+            id: "vis_other",
+            authenticatedPriorPeerId: undefined,
+          }),
+        ),
+      ).rejects.toThrow("thread belongs to another peer");
+      expect(model.calls).toHaveLength(2);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("rejects the same subject when its issuer or trust level changes", async () => {
+    const model = createMockModel({ response: "private response" });
+    const { agent, kernel } = await runtime(model);
+
+    try {
+      await kernel.handleInbound(trigger("unmanaged-security-principal", "private prompt"));
+      await expect(
+        kernel.handleInbound(
+          trigger("unmanaged-security-principal", "changed issuer", {
+            ...PEER,
+            sourceAugment: "other-transport",
+          }),
+        ),
+      ).rejects.toThrow("thread belongs to another peer");
+      await expect(
+        kernel.handleInbound(
+          trigger("unmanaged-security-principal", "changed trust", {
+            ...PEER,
+            trustLevel: "agent",
+            publicSubstate: undefined,
+          }),
+        ),
+      ).rejects.toThrow("thread belongs to another peer");
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("requires injected continuations to prove the persisted thread owner", async () => {
     const model = createMockModel({ response: "private response" });
     const historyPersistence = persistence({

@@ -382,7 +382,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
   const autoSaveEnabled = opts.autoSave?.enabled ?? true;
   const buffer: ExtractionBuffer = createBuffer();
   const turnIndexes = new Map<string, number>();
-  const threadPeerHistory = new Map<string, string>();
+  const threadPeerHistory = new Map<string, import("../../types").PeerIdentity>();
   const promptTemplate = autoSaveEnabled ? loadPromptTemplate(opts.autoSave?.promptTemplate) : null;
   if (autoSaveEnabled && promptTemplate === null) {
     console.warn(
@@ -467,10 +467,10 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
    * identity — preventing the anonymous peer's (possibly exhausted) caps
    * from blocking the flush.
    *
-   * The detection rule is unchanged:
-   *   - the previously-observed peerId for this threadId is `anon-<threadId>`,
-   *   - the current peerId is different, AND
-   *   - there are buffered transcripts under the prior anonymous peerId.
+   * Detection is fail-closed: the prior turn must be public/anonymous, the
+   * current turn must be public/recognized, and the transport must provide a
+   * cryptographically authenticated prior-peer link matching that anonymous
+   * subject. Caller-controlled ID shape is never promotion evidence.
    *
    * Best-effort. ctx.inject failures are caught and logged; the buffered
    * transcripts are dropped on failure.
@@ -481,11 +481,18 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     ctx: SchedulerContext,
   ): Promise<void> {
     const currentPeerId = currentPeer.id;
-    const priorPeerId = threadPeerHistory.get(threadId);
-    if (!priorPeerId) return; // first turn on this thread
-    if (priorPeerId === currentPeerId) return; // same peer, no promotion
-    if (priorPeerId !== `anon-${threadId}`) return; // not an anonymous→other transition
-    const buffered = buffer.flush(priorPeerId);
+    const priorPeer = threadPeerHistory.get(threadId);
+    if (!priorPeer) return; // first turn on this thread
+    if (
+      priorPeer.trustLevel !== "public" ||
+      priorPeer.publicSubstate !== "anonymous" ||
+      currentPeer.trustLevel !== "public" ||
+      currentPeer.publicSubstate !== "recognized" ||
+      currentPeer.authenticatedPriorPeerId !== priorPeer.id
+    ) {
+      return;
+    }
+    const buffered = buffer.flush(priorPeer.id);
     if (buffered.length === 0) return; // nothing to flush
     if (!extractionEngine || !promptTemplate) return; // can't extract
 
@@ -519,7 +526,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       prefix,
       // Use the NEW recognized peer-id, not the old anonymous one. By the time
       // this flush fires, visitorAuth's verify-route has already migrated
-      // existing memory rows from anon-<threadId> to vis_<uuid> via
+      // existing memory rows from anon_session_<uuid> to vis_<uuid> via
       // migratePeerIdOnVerify. If we wrote new facts under priorPeerId, we'd
       // recreate the orphaned-history regression that migration was designed
       // to prevent. Pragmatic deviation from "Decision 5" of the memorist
@@ -530,7 +537,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     };
     const trigger: TurnTrigger = {
       type: "internal",
-      turnId: `auto-save-flush-${priorPeerId}-${flushSourceTurnId}`,
+      turnId: `auto-save-flush-${priorPeer.id}-${flushSourceTurnId}`,
       threadId,
       timestamp: Date.now(),
       source: AUTO_SAVE_TRIGGER_SOURCE,
@@ -544,7 +551,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       await ctx.inject(trigger);
     } catch (err) {
       console.warn(
-        `[layered-memory.autoSave] promotion-flush ctx.inject failed for prior peer=${priorPeerId}: ${(err as Error).message}`,
+        `[layered-memory.autoSave] promotion-flush ctx.inject failed for prior peer=${priorPeer.id}: ${(err as Error).message}`,
       );
     }
   }
@@ -565,7 +572,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
    * Promotion flush (post-PR-1 behavior): before applying the standard
    * frequency dispatch, check whether the just-completed turn's peerId
    * differs from the prior peerId for the same threadId AND the prior
-   * peerId was the anonymous form (`anon-<threadId>`). If so, inject a
+   * peerId was a verified anonymous-session subject. If so, inject a
    * one-off extraction-flush trigger targeting the NEW recognized peer
    * (see `maybeFlushOnPromotion` JSDoc for why this deviates from the
    * original "Decision 5" of the memorist design).
@@ -593,7 +600,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
 
     // Update thread→peer history AFTER promotion detection so the
     // detector compares against the prior turn's identity.
-    threadPeerHistory.set(threadId, peerId);
+    threadPeerHistory.set(threadId, { ...transcript.peer });
 
     const turnIndex = turnIndexes.get(peerId) ?? 0;
     turnIndexes.set(peerId, turnIndex + 1);

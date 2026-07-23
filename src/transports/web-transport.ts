@@ -29,6 +29,14 @@ import {
   verifyVisitorToken,
   type VisitorTokenPayload,
 } from "./visitor-token";
+import { createAnonymousSessionManager } from "./anonymous-session";
+import {
+  createWebIdempotencyStore,
+  hashIdempotencyBinding,
+  hashIdempotencyKey,
+  type IdempotencyClaim,
+  type WebIdempotencyStore,
+} from "./idempotency-store";
 import {
   createInMemoryExternalAuthReplayStore,
   externalAuthClaimsToRouteContext,
@@ -65,11 +73,14 @@ import {
   type ConsoleChatStore,
   type ConsoleChatToolCall,
 } from "./admin/console-chat-store";
+import { createHash, createHmac } from "node:crypto";
 import { join } from "node:path";
 
 const PUBLIC_PAGE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 const DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER = "x-auggy-auth-assertion";
 const CONSOLE_INTERNAL_RUN_HEADER = "x-auggy-console-internal";
+const ANONYMOUS_SESSION_HEADER = "x-auggy-anonymous-session";
+const ANONYMOUS_SESSION_STATUS_HEADER = "x-auggy-anonymous-session-status";
 const HTTP_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
   "authorization",
@@ -77,6 +88,8 @@ const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
   "idempotency-key",
   "x-agent-id",
   "x-agent-secret",
+  ANONYMOUS_SESSION_HEADER,
+  ANONYMOUS_SESSION_STATUS_HEADER,
   CONSOLE_INTERNAL_RUN_HEADER,
   "x-org-id",
   "x-peer-id",
@@ -108,8 +121,9 @@ export interface WebTransportExternalAuthOptions extends ExternalAuthPrincipalOp
     store?: ExternalAuthReplayStore;
   };
   /**
-   * Expected assertion audience. Defaults to visitorTokens.agentBinding when
-   * configured, otherwise the agent-card provider name at runtime.
+   * Expected assertion audience. Defaults to the transport security namespace
+   * (securityNamespace, visitorTokens.agentBinding, then registered agent
+   * name).
    */
   audience?: string;
   /**
@@ -125,6 +139,13 @@ export interface WebTransportOptions {
   port: number;
   auth: { type: "bearer"; token: string };
   cors?: { origins: [string] };
+  /**
+   * Stable deployment identity used to scope anonymous capabilities and the
+   * idempotency ledger. Replicas of one logical agent must share it; unrelated
+   * agents sharing storage or credentials must use different values. Defaults
+   * to visitorTokens.agentBinding, then the registered agent name.
+   */
+  securityNamespace?: string;
   maxMessageLength?: number;
   /**
    * Admitted agent list. Each entry has an `id` (sent as `x-agent-id` header)
@@ -162,12 +183,13 @@ export interface WebTransportOptions {
     threadPromotionCheck?: (visitorId: string, threadId: string) => boolean;
     /**
      * Stable identifier for this agent used to scope visitor tokens (fix C2).
-     * MUST match visitorAuth's `agentBinding` option. Default: `"auggy"`.
+     * MUST match visitorAuth's `agentBinding` option. Defaults to
+     * securityNamespace, then the registered agent name.
      * Tokens minted for a different agentBinding are rejected, preventing
      * cross-agent replay when two agents share the same signing key.
      *
-     * Only enforce when explicitly configured — leaving this unset means the
-     * default `"auggy"` is used, which matches the visitorAuth default.
+     * The binding is always enforced. Direct visitorAuth integrations should
+     * configure both sides explicitly so renaming cannot strand issued tokens.
      */
     agentBinding?: string;
   };
@@ -264,6 +286,30 @@ export interface WebTransportOptions {
    */
   consoleChat?: {
     dbPath?: string | null;
+  };
+  /**
+   * Durable execution ledger for caller-supplied Idempotency-Key values.
+   * CLI-managed agents default to data/web-idempotency.db. Programmatic
+   * callers must configure a durable path before keyed requests are accepted;
+   * tests and disposable development processes may explicitly opt into
+   * `dbPath: ":memory:"`.
+   */
+  idempotency?: {
+    dbPath?: string | null;
+    maxRecords?: number;
+    maxReplayBytes?: number;
+    maxStoredBytes?: number;
+    maxRecordsPerPartition?: number;
+    maxPublicRecords?: number;
+    maxAgentRecords?: number;
+    maxCreatorRecords?: number;
+    waitTimeoutMs?: number;
+    staleAfterMs?: number;
+    retentionMs?: number;
+    maxWaiters?: number;
+    maxWaitersPerKey?: number;
+    /** Optional metrics hook; receives counts only, never keys or request data. */
+    onWaiterCountChange?: (counts: { active: number; forKey: number }) => void;
   };
   /**
    * G36 — agent project directory. Used by
@@ -564,6 +610,38 @@ function validateIdempotencyKey(value: string): boolean {
   return IDEMPOTENCY_KEY_RE.test(value);
 }
 
+function idempotencyAuthorizationBinding(value: RouteVisitorAuthContext | undefined): unknown {
+  if (value?.state !== "recognized") return value;
+
+  // A retry may carry freshly minted visitor and external-auth envelopes.
+  // Remove only the known proof-envelope fields at their exact schema paths.
+  // Arbitrary grant constraints are authorization data, even when an
+  // application names one "expiresAt", "jti", or "keyId".
+  const {
+    issuedAt: _issuedAt,
+    expiresAt: _expiresAt,
+    principal,
+    externalAuth,
+    ...topLevel
+  } = value;
+  const { externalAuth: principalExternalAuth, ...stablePrincipal } = principal;
+  const stableExternalAuth = externalAuth
+    ? (({ keyId: _keyId, jti: _jti, ...claims }) => claims)(externalAuth)
+    : undefined;
+  const stablePrincipalExternalAuth = principalExternalAuth
+    ? (({ keyId: _keyId, jti: _jti, ...claims }) => claims)(principalExternalAuth)
+    : undefined;
+
+  return {
+    ...topLevel,
+    ...(stableExternalAuth ? { externalAuth: stableExternalAuth } : {}),
+    principal: {
+      ...stablePrincipal,
+      ...(stablePrincipalExternalAuth ? { externalAuth: stablePrincipalExternalAuth } : {}),
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // Timing-safe string comparison (constant-time)
 // ---------------------------------------------------------------------------
@@ -599,6 +677,23 @@ function resolveConsoleChatDbPath(opts: WebTransportOptions): string | null {
     return configured;
   }
   return opts.agentDir ? join(opts.agentDir, "data", "console-chat.db") : ":memory:";
+}
+
+function resolveIdempotencyDbPath(opts: WebTransportOptions): string | null {
+  const configured = opts.idempotency?.dbPath;
+  if (configured === null) return null;
+  if (configured !== undefined) {
+    if (configured.trim() === "") {
+      throw new Error("[web-transport] idempotency.dbPath must be non-empty or null.");
+    }
+    return configured;
+  }
+  if (opts.agentDir) return join(opts.agentDir, "data", "web-idempotency.db");
+  // Programmatic runtimes have no reliable way to infer whether they are
+  // disposable development processes. Keyed execution must fail closed
+  // unless the caller explicitly opts into either a durable file or the
+  // development-only in-memory ledger.
+  return null;
 }
 
 function appendTextSegmentBoundary(content: string): string {
@@ -730,6 +825,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
   let startServer: (() => void) | null = null;
   let kernel: TransportKernel | null = null;
   let consoleChatStore: ConsoleChatStore | null = null;
+  let idempotencyStore: WebIdempotencyStore | null = null;
   let consoleHistoryPersistence: ReturnType<
     typeof createDeferredConsoleThreadHistoryPersistence
   > | null = null;
@@ -852,7 +948,82 @@ export function webTransport(opts: WebTransportOptions): Augment {
   const externalAuthReplayStore = externalAuthReplayProtectionEnabled
     ? (opts.externalAuth?.replayProtection?.store ?? createInMemoryExternalAuthReplayStore())
     : null;
+  let securityAudience: string | null = null;
+  const idempotencyMaxReplayBytes = opts.idempotency?.maxReplayBytes ?? 2 * 1024 * 1024;
+  const idempotencyMaxStoredBytes = opts.idempotency?.maxStoredBytes ?? 256 * 1024 * 1024;
+  const idempotencyWaitTimeoutMs = opts.idempotency?.waitTimeoutMs ?? 30_000;
+  const idempotencyStaleAfterMs = opts.idempotency?.staleAfterMs ?? 30_000;
+  const idempotencyRetentionMs = opts.idempotency?.retentionMs ?? 24 * 60 * 60 * 1000;
+  const idempotencyMaxWaiters = opts.idempotency?.maxWaiters ?? 64;
+  const idempotencyMaxWaitersPerKey = opts.idempotency?.maxWaitersPerKey ?? 8;
+  if (!Number.isSafeInteger(idempotencyWaitTimeoutMs) || idempotencyWaitTimeoutMs < 1) {
+    throw new Error("[web-transport] idempotency.waitTimeoutMs must be a positive integer.");
+  }
+  if (!Number.isSafeInteger(idempotencyStaleAfterMs) || idempotencyStaleAfterMs < 3) {
+    throw new Error("[web-transport] idempotency.staleAfterMs must be an integer of at least 3.");
+  }
+  for (const [label, value] of [
+    ["maxStoredBytes", idempotencyMaxStoredBytes],
+    ["retentionMs", idempotencyRetentionMs],
+    ["maxWaiters", idempotencyMaxWaiters],
+    ["maxWaitersPerKey", idempotencyMaxWaitersPerKey],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`[web-transport] idempotency.${label} must be a positive integer.`);
+    }
+  }
+  if (idempotencyMaxWaitersPerKey > idempotencyMaxWaiters) {
+    throw new Error("[web-transport] idempotency.maxWaitersPerKey cannot exceed maxWaiters.");
+  }
+  let anonymousSessionManager: ReturnType<typeof createAnonymousSessionManager> | null = null;
   let signingKey: CryptoKey | null = null;
+  let activeIdempotencyWaiters = 0;
+  const idempotencyWaitersByKey = new Map<string, number>();
+  const localIdempotencyExecutions = new Map<
+    string,
+    { promise: Promise<void>; resolve: () => void }
+  >();
+
+  function requireSecurityAudience(): string {
+    if (!securityAudience) {
+      throw new Error("[web-transport] security namespace is unavailable before registration");
+    }
+    return securityAudience;
+  }
+
+  function canonicalPublicThreadId(
+    requested: string | undefined,
+    idempotencyKey: string | null,
+    authenticatedThreadScopeId: string,
+  ): string {
+    const canonicalPattern = /^web_thread_[0-9a-f]{32}_[0-9a-f]{32}$/;
+    const peerScope = createHmac("sha256", opts.auth.token)
+      .update("auggy-public-thread-peer-v1\0")
+      .update(requireSecurityAudience())
+      .update("\0")
+      .update(authenticatedThreadScopeId)
+      .digest("hex")
+      .slice(0, 32);
+    if (requested?.startsWith(`web_thread_${peerScope}_`) && canonicalPattern.test(requested)) {
+      return requested;
+    }
+
+    const logicalThreadId =
+      requested ??
+      (idempotencyKey === null
+        ? crypto.randomUUID()
+        : hashIdempotencyKey(requireSecurityAudience(), idempotencyKey));
+    const logicalHash = createHmac("sha256", opts.auth.token)
+      .update("auggy-public-thread-logical-v1\0")
+      .update(requireSecurityAudience())
+      .update("\0")
+      .update(authenticatedThreadScopeId)
+      .update("\0")
+      .update(logicalThreadId)
+      .digest("hex")
+      .slice(0, 32);
+    return `web_thread_${peerScope}_${logicalHash}`;
+  }
 
   // Anonymous-public posture (G3 — concierge-readiness gate). Resolved once
   // at factory time across yaml > env > default precedence. The resolution
@@ -1113,7 +1284,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
     const req = raw as {
       headers: Record<string, string>;
       __visitorPayload?: VisitorTokenPayload;
-      __threadId?: string;
+      __anonymousSessionId?: string;
+      __authenticatedPriorPeerId?: string;
       // True iff the HTTP handler already validated a bearer token for this
       // request. Path 1 (creator) requires this — without it the request
       // arrived via the allowAnonymous path and MUST NOT be promoted to
@@ -1185,17 +1357,22 @@ export function webTransport(opts: WebTransportOptions): Augment {
         kind,
         trustLevel: "public",
         publicSubstate: "recognized",
+        ...(req.__authenticatedPriorPeerId
+          ? { authenticatedPriorPeerId: req.__authenticatedPriorPeerId }
+          : {}),
         sourceAugment: "web",
         displayName: headers["x-peer-name"],
         orgId: headers["x-org-id"],
       };
     }
 
-    // PATH 4: Public anonymous — no agent headers, no verified visitor token.
-    // Use the threadId from the request body (injected as __threadId) for the peer ID.
-    const threadId = req.__threadId ?? crypto.randomUUID();
+    // PATH 4: Public anonymous — no agent headers or verified visitor token.
+    // The peer ID comes from a separately authenticated, server-minted
+    // anonymous session capability. It must never be derived from the
+    // caller-controlled thread ID that the capability protects.
+    if (!req.__anonymousSessionId) return null;
     return {
-      id: `anon-${threadId}`,
+      id: req.__anonymousSessionId,
       kind,
       trustLevel: "public",
       publicSubstate: "anonymous",
@@ -1208,6 +1385,36 @@ export function webTransport(opts: WebTransportOptions): Augment {
   const transport: TransportSpec = {
     async register(k: TransportKernel, _augmentName: string) {
       kernel = k;
+      const registeredAgentName = k.getAgentCard().provider.name;
+      if (
+        opts.securityNamespace !== undefined &&
+        opts.visitorTokens?.agentBinding !== undefined &&
+        opts.securityNamespace !== opts.visitorTokens.agentBinding
+      ) {
+        throw new Error(
+          "[web-transport] securityNamespace must match visitorTokens.agentBinding when both are configured.",
+        );
+      }
+      securityAudience =
+        opts.securityNamespace ?? opts.visitorTokens?.agentBinding ?? registeredAgentName;
+      if (
+        securityAudience.length === 0 ||
+        securityAudience.length > 256 ||
+        securityAudience.trim() !== securityAudience
+      ) {
+        throw new Error(
+          "[web-transport] securityNamespace must be a non-empty, trimmed string of at most 256 characters.",
+        );
+      }
+      anonymousSessionManager = createAnonymousSessionManager({
+        audience: securityAudience,
+        secret: createHash("sha256")
+          .update("auggy-anonymous-session-v1\0")
+          .update(securityAudience)
+          .update("\0")
+          .update(opts.auth.token)
+          .digest(),
+      });
       augmentRoutes = k.getAugmentRoutes();
       augmentRouteMap = new Map();
       const patternRoutes: import("../types").AugmentHttpRoute[] = [];
@@ -1389,15 +1596,13 @@ export function webTransport(opts: WebTransportOptions): Augment {
   }
 
   function resolveExternalAuthAudience(): string {
-    return (
-      opts.externalAuth?.audience ??
-      opts.visitorTokens?.agentBinding ??
-      kernel?.getAgentCard()?.provider?.name ??
-      "auggy"
-    );
+    return opts.externalAuth?.audience ?? requireSecurityAudience();
   }
 
-  async function resolveExternalVisitorAuth(req: Request): Promise<RouteVisitorAuthContext | null> {
+  async function resolveExternalVisitorAuth(
+    req: Request,
+    replayMode: "consume" | "defer" = "consume",
+  ): Promise<RouteVisitorAuthContext | null> {
     const config = opts.externalAuth;
     if (!config) return null;
 
@@ -1415,19 +1620,21 @@ export function webTransport(opts: WebTransportOptions): Augment {
     if (!verified.ok) return null;
     if (externalAuthReplayStore) {
       if (!verified.claims.jti) return null;
-      const now = Date.now();
-      let accepted = false;
-      try {
-        accepted = await externalAuthReplayStore.consume(
-          verified.claims.jti,
-          verified.claims.expiresAt,
-          now,
-        );
-      } catch {
-        console.warn("[web-transport] external auth replay store failed.");
-        return null;
+      if (replayMode === "consume") {
+        const now = Date.now();
+        let accepted = false;
+        try {
+          accepted = await externalAuthReplayStore.consume(
+            verified.claims.jti,
+            verified.claims.expiresAt,
+            now,
+          );
+        } catch {
+          console.warn("[web-transport] external auth replay store failed.");
+          return null;
+        }
+        if (!accepted) return null;
       }
-      if (!accepted) return null;
     }
 
     return externalAuthClaimsToRouteContext(verified.claims, {
@@ -1460,8 +1667,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return anonymous;
     }
 
-    const expectedBinding = opts.visitorTokens?.agentBinding;
-    if (expectedBinding !== undefined && payload.agentId !== expectedBinding) {
+    const expectedBinding = requireSecurityAudience();
+    if (payload.agentId !== expectedBinding) {
       return anonymous;
     }
 
@@ -1524,7 +1731,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     ) {
       return null;
     }
-    const expectedBinding = opts.visitorTokens.agentBinding ?? "auggy";
+    const expectedBinding = requireSecurityAudience();
     if (payload.agentId !== expectedBinding) return null;
     if (opts.visitorTokens.revocationCheck?.(payload.visitorId)) return null;
 
@@ -1606,6 +1813,94 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return null;
   }
 
+  async function waitForIdempotencyResult(
+    store: WebIdempotencyStore,
+    keyHash: string,
+    bindingHash: string,
+    signal: AbortSignal,
+  ): Promise<IdempotencyClaim | null> {
+    const deadline = Date.now() + idempotencyWaitTimeoutMs;
+    let backoffMs = 25;
+    while (Date.now() < deadline) {
+      if (signal.aborted) return null;
+      const localExecution = localIdempotencyExecutions.get(keyHash);
+      await Promise.race([
+        ...(localExecution ? [localExecution.promise] : []),
+        new Promise<void>((resolveWait) => setTimeout(resolveWait, backoffMs)),
+      ]);
+      const current = store.read(keyHash, bindingHash);
+      if (current.status !== "running") return current;
+      backoffMs = Math.min(backoffMs * 2, 500);
+    }
+    return store.read(keyHash, bindingHash);
+  }
+
+  function admitIdempotencyWaiter(keyHash: string): (() => void) | null {
+    const perKey = idempotencyWaitersByKey.get(keyHash) ?? 0;
+    if (
+      activeIdempotencyWaiters >= idempotencyMaxWaiters ||
+      perKey >= idempotencyMaxWaitersPerKey
+    ) {
+      return null;
+    }
+    activeIdempotencyWaiters++;
+    idempotencyWaitersByKey.set(keyHash, perKey + 1);
+    try {
+      opts.idempotency?.onWaiterCountChange?.({
+        active: activeIdempotencyWaiters,
+        forKey: perKey + 1,
+      });
+    } catch {
+      // Metrics hooks are observational and cannot affect admission.
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      activeIdempotencyWaiters--;
+      const remaining = (idempotencyWaitersByKey.get(keyHash) ?? 1) - 1;
+      if (remaining === 0) idempotencyWaitersByKey.delete(keyHash);
+      else idempotencyWaitersByKey.set(keyHash, remaining);
+      try {
+        opts.idempotency?.onWaiterCountChange?.({
+          active: activeIdempotencyWaiters,
+          forKey: remaining,
+        });
+      } catch {
+        // Metrics hooks are observational and cannot affect admission.
+      }
+    };
+  }
+
+  function beginLocalIdempotencyExecution(keyHash: string): void {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    localIdempotencyExecutions.set(keyHash, { promise, resolve });
+  }
+
+  function finishLocalIdempotencyExecution(keyHash: string): void {
+    const execution = localIdempotencyExecutions.get(keyHash);
+    if (!execution) return;
+    localIdempotencyExecutions.delete(keyHash);
+    execution.resolve();
+  }
+
+  function replaySse(body: string): Response {
+    const headers: Record<string, string> = {
+      "content-type": "text/event-stream",
+      "cache-control": "private, no-store",
+      connection: "keep-alive",
+    };
+    if (opts.cors) {
+      headers["access-control-allow-origin"] = opts.cors.origins.join(",");
+      headers["access-control-expose-headers"] =
+        `${ANONYMOUS_SESSION_HEADER}, ${ANONYMOUS_SESSION_STATUS_HEADER}, x-visitor-token, idempotency-key`;
+    }
+    return new Response(body, { status: 200, headers });
+  }
+
   async function handleAgentRun(req: Request): Promise<Response> {
     const suppliedConsoleMarker = req.headers.get(CONSOLE_INTERNAL_RUN_HEADER);
     const isConsoleRun =
@@ -1617,11 +1912,27 @@ export function webTransport(opts: WebTransportOptions): Augment {
     if (suppliedConsoleMarker !== null && !isConsoleRun) {
       return json({ error: "forbidden" }, 403);
     }
+    const idempotencyKey = req.headers.get("idempotency-key");
+    if (idempotencyKey !== null && !validateIdempotencyKey(idempotencyKey)) {
+      return json(
+        {
+          error: "invalid_idempotency_key",
+          reason: "Idempotency-Key must be 1–128 characters matching [A-Za-z0-9_-]",
+        },
+        400,
+      );
+    }
     const authHeader = req.headers.get("authorization") ?? "";
     let externalVisitorAuth: RouteVisitorAuthContext | null | undefined;
     async function readExternalVisitorAuth(): Promise<RouteVisitorAuthContext | null> {
       if (externalVisitorAuth !== undefined) return externalVisitorAuth;
-      externalVisitorAuth = await resolveExternalVisitorAuth(req);
+      // Verify first, then consume the replay ID only after this request wins
+      // the durable execution claim. Exact keyed followers and replays can
+      // therefore join the one authorized execution.
+      externalVisitorAuth = await resolveExternalVisitorAuth(
+        req,
+        idempotencyKey !== null && !isConsoleRun ? "defer" : "consume",
+      );
       return externalVisitorAuth;
     }
 
@@ -1645,26 +1956,11 @@ export function webTransport(opts: WebTransportOptions): Augment {
     }
 
     // --- Idempotency-Key ---
-    let turnId: string;
-    const idempotencyKey = req.headers.get("idempotency-key");
-    if (idempotencyKey !== null) {
-      if (!validateIdempotencyKey(idempotencyKey)) {
-        return json(
-          {
-            error: "invalid_idempotency_key",
-            reason: "Idempotency-Key must be 1–128 characters matching [A-Za-z0-9_-]",
-          },
-          400,
-        );
-      }
-      turnId = idempotencyKey;
-    } else {
-      turnId = crypto.randomUUID();
-    }
-
+    let publicRunId: string = crypto.randomUUID();
     // --- Visitor token handling ---
     let visitorPayload: VisitorTokenPayload | null = null;
     let newToken: string | null = null;
+    let shouldIssueAnonymousVisitorToken = false;
     async function applyExternalVisitorAuth(): Promise<void> {
       const externalAuth = await readExternalVisitorAuth();
       if (externalAuth?.state === "recognized") {
@@ -1689,12 +1985,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
             visitorPayload = null;
           }
         }
-        // Fix C2: reject tokens minted for a different agentBinding.
-        // Only enforced when agentBinding is explicitly configured; leaving it
-        // unset skips the check for backward compatibility.
+        // Fix C2: reject tokens minted for a different security audience even
+        // when agentBinding is omitted. Shared signing keys must never make a
+        // visitor credential portable across logical agents.
         if (visitorPayload) {
-          const expectedBinding = opts.visitorTokens?.agentBinding;
-          if (expectedBinding !== undefined && visitorPayload.agentId !== expectedBinding) {
+          const expectedBinding = requireSecurityAudience();
+          if (visitorPayload.agentId !== expectedBinding) {
             visitorPayload = null;
           }
         }
@@ -1724,13 +2020,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
           // a creator-to-visitor demotion through the mint-then-re-present loop.
           // This guard closes that footgun.
           //
-          // Fix C2: use agentBinding when configured, else agent-card name.
-          // This ensures the anon-token and the visitorAuth-minted token agree on
-          // the agentId embedded in the payload, enabling the agentBinding check below.
-          const agentName =
-            opts.visitorTokens?.agentBinding ?? kernel?.getAgentCard()?.provider?.name ?? "auggy";
-          const issued = await createVisitorToken(signingKey, agentName, visitorTokenTtl);
-          newToken = issued.token;
+          // Bind the credential to the same stable security namespace used for
+          // anonymous capabilities, public thread IDs, and idempotency.
+          shouldIssueAnonymousVisitorToken = !isConsoleRun;
           // visitorPayload intentionally left null — this request is anonymous.
         }
         // hasAgentHeaders or hasBearerAttempt case: no visitor token issued.
@@ -1774,7 +2066,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
     ) {
       return json({ error: "invalid thread id" }, 400);
     }
-    const threadId = body.threadId ?? body.contextId ?? crypto.randomUUID();
+    const requestedThreadId = body.threadId ?? body.contextId;
+    let threadId: string = requestedThreadId ?? crypto.randomUUID();
     if (isConsoleRun && !isConsoleChatIdentifier(threadId)) {
       return json({ error: "invalid console thread id" }, 400);
     }
@@ -1797,22 +2090,22 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return json({ error: "invalid console run metadata" }, 400);
     }
     if (consoleMetadata?.runId) {
-      if (idempotencyKey !== null && turnId !== consoleMetadata.runId) {
+      if (idempotencyKey !== null && idempotencyKey !== consoleMetadata.runId) {
         return json({ error: "conflicting console run id" }, 400);
       }
-      turnId = consoleMetadata.runId;
+      publicRunId = consoleMetadata.runId;
     }
 
-    // Build identify argument. Inject __threadId so the anonymous path can use
-    // it. Inject __bearerValidated so Path 1 (creator) can refuse to mint
-    // creator trust for the allowAnonymous bypass — only requests that arrived
-    // with a bearer that passed `isValidAuth` are eligible for creator.
+    // Build the trusted identify argument. The HTTP handler adds a verified
+    // anonymous-session ID below when this request takes the anonymous path.
+    // Path 1 (creator) still requires an already-validated bearer.
     const identifyArg: {
       headers: Record<string, string>;
       __visitorPayload?: VisitorTokenPayload;
-      __threadId: string;
+      __anonymousSessionId?: string;
+      __authenticatedPriorPeerId?: string;
       __bearerValidated: boolean;
-    } = { headers, __threadId: threadId, __bearerValidated: hasBearerAttempt };
+    } = { headers, __bearerValidated: hasBearerAttempt };
     if (visitorPayload) {
       identifyArg.__visitorPayload = visitorPayload;
     }
@@ -1822,6 +2115,58 @@ export function webTransport(opts: WebTransportOptions): Augment {
     const agentIdHeader = req.headers.get("x-agent-id");
     const agentSecretHeader = req.headers.get("x-agent-secret");
     const isAgentAttempt = agentIdHeader !== null && agentSecretHeader !== null;
+    let anonymousSessionToken: string | null = null;
+    let anonymousSessionId: string | undefined;
+    const suppliedSession = req.headers.get(ANONYMOUS_SESSION_HEADER);
+    let authenticatedAnonymousSession: ReturnType<
+      NonNullable<typeof anonymousSessionManager>["verify"]
+    > | null = null;
+    if (!hasBearerAttempt && !isAgentAttempt && suppliedSession) {
+      authenticatedAnonymousSession = anonymousSessionManager?.verify(suppliedSession) ?? null;
+      if (!authenticatedAnonymousSession) {
+        return json({ error: "invalid anonymous session" }, 401, {
+          [ANONYMOUS_SESSION_STATUS_HEADER]: "invalid",
+          "access-control-expose-headers": `${ANONYMOUS_SESSION_HEADER}, ${ANONYMOUS_SESSION_STATUS_HEADER}, x-visitor-token, idempotency-key`,
+        });
+      }
+    }
+    let authenticatedPriorPeerId = visitorPayload?.priorPeerId;
+    let authenticatedThreadScopeId =
+      visitorPayload?.priorThreadScopeId ?? visitorPayload?.visitorId;
+    if (authenticatedAnonymousSession) {
+      if (
+        authenticatedPriorPeerId !== undefined &&
+        authenticatedPriorPeerId !== authenticatedAnonymousSession.peerId
+      ) {
+        return json({ error: "visitor promotion proof mismatch" }, 403);
+      }
+      authenticatedPriorPeerId ??= authenticatedAnonymousSession.peerId;
+      authenticatedThreadScopeId ??= authenticatedAnonymousSession.threadScopeId;
+    }
+    if (!hasBearerAttempt && !visitorPayload && !isAgentAttempt) {
+      if (isConsoleRun && consoleMetadata?.previewMode === "anonymous") {
+        // The console route is already authenticated and creates this
+        // server-managed thread before proxying its internal request. Preserve
+        // the store's bound anonymous owner without accepting a caller-derived
+        // ID or exposing an anonymous session capability to the browser.
+        anonymousSessionId = `anon-${threadId}`;
+      } else {
+        if (authenticatedAnonymousSession) {
+          anonymousSessionId = authenticatedAnonymousSession.peerId;
+        } else {
+          const issuedSession = anonymousSessionManager?.issue();
+          if (!issuedSession) {
+            return json({ error: "anonymous session unavailable" }, 503);
+          }
+          anonymousSessionId = issuedSession.payload.peerId;
+          authenticatedThreadScopeId = issuedSession.payload.threadScopeId;
+          anonymousSessionToken = issuedSession.token;
+        }
+      }
+      identifyArg.__anonymousSessionId = anonymousSessionId;
+    } else if (visitorPayload && authenticatedPriorPeerId) {
+      identifyArg.__authenticatedPriorPeerId = authenticatedPriorPeerId;
+    }
 
     const peer = identify(identifyArg);
     if (!peer) {
@@ -1831,6 +2176,42 @@ export function webTransport(opts: WebTransportOptions): Augment {
       }
       // Fallback (should not happen with the four-path design, but guard).
       return json({ error: "missing peer identity" }, 400);
+    }
+    if (
+      shouldIssueAnonymousVisitorToken &&
+      signingKey &&
+      anonymousSessionId &&
+      authenticatedThreadScopeId
+    ) {
+      const issued = await createVisitorToken(
+        signingKey,
+        requireSecurityAudience(),
+        visitorTokenTtl,
+        `vis_${crypto.randomUUID()}`,
+        anonymousSessionId,
+        authenticatedThreadScopeId,
+      );
+      newToken = issued.token;
+    }
+    if (!isConsoleRun && peer.trustLevel === "public") {
+      threadId = canonicalPublicThreadId(
+        requestedThreadId,
+        idempotencyKey,
+        authenticatedThreadScopeId ?? peer.id,
+      );
+    } else if (!isConsoleRun && requestedThreadId === undefined && idempotencyKey !== null) {
+      threadId = `web_idem_thread_${createHash("sha256")
+        .update("auggy-keyed-thread-v1\0")
+        .update(requireSecurityAudience())
+        .update("\0")
+        .update(peer.sourceAugment)
+        .update("\0")
+        .update(peer.trustLevel)
+        .update("\0")
+        .update(peer.id)
+        .update("\0")
+        .update(hashIdempotencyKey(requireSecurityAudience(), idempotencyKey))
+        .digest("hex")}`;
     }
 
     if (
@@ -1860,6 +2241,137 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return json({ error: "console thread identity does not match" }, 403);
     }
 
+    const turnAuth = resolveAgentRunTurnAuth(visitorPayload, await readExternalVisitorAuth());
+    if (idempotencyKey !== null && !isConsoleRun && anonymousSessionToken !== null) {
+      return json({ error: "anonymous_session_required" }, 428, {
+        [ANONYMOUS_SESSION_HEADER]: anonymousSessionToken,
+        ...(newToken ? { "x-visitor-token": newToken } : {}),
+        "cache-control": "private, no-store",
+        "access-control-expose-headers": `${ANONYMOUS_SESSION_HEADER}, ${ANONYMOUS_SESSION_STATUS_HEADER}, x-visitor-token, idempotency-key`,
+      });
+    }
+
+    let internalTurnId = idempotencyKey === null ? publicRunId : crypto.randomUUID();
+    let durableIdempotency: {
+      store: WebIdempotencyStore;
+      keyHash: string;
+      ownerToken: string;
+    } | null = null;
+    if (idempotencyKey !== null && !isConsoleRun) {
+      const store = idempotencyStore;
+      if (!store) {
+        return json({ error: "idempotency_unavailable" }, 503);
+      }
+      const audience = requireSecurityAudience();
+      const keyHash = hashIdempotencyKey(audience, idempotencyKey);
+      const capacityClass =
+        peer.trustLevel === "creator"
+          ? "creator"
+          : peer.trustLevel === "agent"
+            ? "agent"
+            : "public";
+      const partitionHash = hashIdempotencyBinding({
+        audience,
+        capacityClass,
+        subject:
+          capacityClass === "public" && peer.publicSubstate === "anonymous"
+            ? "all-anonymous"
+            : peer.id,
+      });
+      const bindingHash = hashIdempotencyBinding({
+        audience,
+        peer: {
+          id: peer.id,
+          kind: peer.kind,
+          trustLevel: peer.trustLevel,
+          publicSubstate: peer.publicSubstate,
+          sourceAugment: peer.sourceAugment,
+          displayName: peer.displayName,
+          orgId: peer.orgId,
+        },
+        threadId,
+        contextId: body.contextId,
+        taskId: body.taskId,
+        messages: body.messages,
+        auth: idempotencyAuthorizationBinding(turnAuth),
+      });
+      let claim: IdempotencyClaim;
+      try {
+        claim = store.claim(keyHash, bindingHash, {
+          class: capacityClass,
+          partitionHash,
+        });
+        if (claim.status === "running") {
+          const releaseWaiter = admitIdempotencyWaiter(keyHash);
+          if (!releaseWaiter) {
+            return json({ error: "idempotency_waiter_capacity_reached" }, 429, {
+              "retry-after": "1",
+            });
+          }
+          try {
+            claim = (await waitForIdempotencyResult(store, keyHash, bindingHash, req.signal)) ?? {
+              status: "running",
+              turnId: claim.turnId,
+            };
+          } finally {
+            releaseWaiter();
+          }
+        }
+      } catch {
+        return json({ error: "idempotency_unavailable" }, 503);
+      }
+
+      if (claim.status === "replay") return replaySse(claim.responseBody);
+      if (claim.status === "conflict") {
+        return json({ error: "idempotency_key_conflict" }, 409);
+      }
+      if (claim.status === "unknown") {
+        return json({ error: "idempotency_outcome_unknown" }, 409);
+      }
+      if (claim.status === "capacity") {
+        return json({ error: "idempotency_capacity_reached" }, 503);
+      }
+      if (claim.status === "running") {
+        return json({ error: "idempotency_in_progress" }, 409, { "retry-after": "1" });
+      }
+
+      internalTurnId = claim.turnId;
+      publicRunId = claim.turnId;
+      if (externalAuthReplayStore && turnAuth?.state === "recognized") {
+        const replayId = turnAuth.externalAuth?.jti;
+        let accepted = false;
+        if (replayId) {
+          try {
+            accepted = await externalAuthReplayStore.consume(
+              replayId,
+              turnAuth.expiresAt,
+              Date.now(),
+            );
+          } catch {
+            console.warn("[web-transport] external auth replay store failed.");
+          }
+        }
+        if (!accepted) {
+          // The assertion was replayed under a different execution claim, or
+          // the replay store failed. Preserve this claim as outcome-unknown so
+          // the caller cannot cycle the same key until an unsafe execution is
+          // eventually admitted.
+          try {
+            store.markUnknown(keyHash, claim.ownerToken);
+          } catch {
+            return json({ error: "idempotency_unavailable" }, 503);
+          }
+          return json({ error: "unauthorized" }, 401);
+        }
+      }
+      beginLocalIdempotencyExecution(keyHash);
+      durableIdempotency = {
+        store,
+        keyHash,
+        ownerToken: claim.ownerToken,
+      };
+    }
+
     const runStartedAt = Date.now();
     if (consoleMetadata && consoleChatStore) {
       try {
@@ -1875,7 +2387,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
             runStatus: "streaming",
           },
           peer,
-          runId: turnId,
+          runId: publicRunId,
           userMessage: {
             id: consoleMetadata.userMessageId,
             role: "user",
@@ -1897,7 +2409,6 @@ export function webTransport(opts: WebTransportOptions): Augment {
       }
     }
 
-    const turnAuth = resolveAgentRunTurnAuth(visitorPayload, await readExternalVisitorAuth());
     const parts: Part[] = [{ kind: "text", text }];
     const inbound: InboundMessage = {
       parts,
@@ -1909,7 +2420,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     };
     const trigger: TurnTrigger = {
       type: "message",
-      turnId,
+      turnId: internalTurnId,
       threadId,
       contextId: body.contextId,
       taskId: body.taskId,
@@ -1925,6 +2436,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     // The kernel keys restored thread authorization by persistence object
     // identity, so every run must receive this stable transport-level adapter.
     const runHistoryPersistence = consoleMetadata ? consoleHistoryPersistence : null;
+    const executionSignal = durableIdempotency ? new AbortController().signal : req.signal;
 
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
@@ -1937,20 +2449,50 @@ export function webTransport(opts: WebTransportOptions): Augment {
         const toolCalls = new Map<string, ConsoleChatToolCall>();
         let persistenceFailure: unknown = null;
         let progressFlushTimer: ReturnType<typeof setTimeout> | null = null;
+        const idempotencyHeartbeatTimer = durableIdempotency
+          ? setInterval(
+              () => {
+                try {
+                  durableIdempotency.store.heartbeat(
+                    durableIdempotency.keyHash,
+                    durableIdempotency.ownerToken,
+                  );
+                } catch {
+                  // A failed heartbeat cannot authorize takeover. Once stale,
+                  // followers create an outcome-unknown tombstone.
+                }
+              },
+              Math.max(1, Math.floor(idempotencyStaleAfterMs / 3)),
+            )
+          : null;
+        const replayChunks: string[] = [];
+        let replayBytes = 0;
+        let replayOverflow = false;
 
-        const patchThreadId = (e: AGUIEvent): AGUIEvent => {
-          if (e.type === "RUN_FINISHED" && !e.threadId) {
-            // Spread to preserve `result` (and any future fields) the
-            // translator attaches; only the threadId needs patching.
-            return { ...e, threadId };
+        const patchRunIdentity = (e: AGUIEvent): AGUIEvent => {
+          if (e.type === "RUN_STARTED" || e.type === "RUN_FINISHED") {
+            // Internal turn IDs are server-generated and remain available to
+            // budgets/traces. The caller sees its stable public run ID.
+            return { ...e, threadId, runId: publicRunId };
           }
           return e;
         };
 
         const writeEvent = (e: AGUIEvent) => {
-          if (streamClosed) return; // guard against enqueue after close
+          const serialized = serializeSSE(patchRunIdentity(e));
+          if (durableIdempotency && !replayOverflow) {
+            const eventBytes = Buffer.byteLength(serialized, "utf8");
+            if (replayBytes + eventBytes > idempotencyMaxReplayBytes) {
+              replayOverflow = true;
+              replayChunks.length = 0;
+            } else {
+              replayBytes += eventBytes;
+              replayChunks.push(serialized);
+            }
+          }
+          if (streamClosed) return;
           try {
-            controller.enqueue(encoder.encode(serializeSSE(patchThreadId(e))));
+            controller.enqueue(encoder.encode(serialized));
           } catch {
             // Stream already closed (client disconnect) — swallow
             streamClosed = true;
@@ -1965,7 +2507,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
           try {
             const updated = consoleChatStore.updateRun(
               threadId,
-              turnId,
+              publicRunId,
               consoleMetadata.assistantMessageId,
               {
                 content: assistantContent,
@@ -2059,7 +2601,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         };
 
         const emitTranslatedEvent = (event: AGUIEvent): void => {
-          const patched = patchThreadId(event);
+          const patched = patchRunIdentity(event);
           if (patched.type === "RUN_FINISHED") {
             bufferedRunFinished = patched;
             return;
@@ -2088,7 +2630,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
               const finished = pendingHistory
                 ? consoleChatStore.finishRunWithKernelHistory(
                     threadId,
-                    turnId,
+                    publicRunId,
                     consoleMetadata.assistantMessageId,
                     peer,
                     pendingHistory,
@@ -2096,7 +2638,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                   )
                 : consoleChatStore.finishRun(
                     threadId,
-                    turnId,
+                    publicRunId,
                     consoleMetadata.assistantMessageId,
                     finishInput,
                   );
@@ -2116,12 +2658,17 @@ export function webTransport(opts: WebTransportOptions): Augment {
               // oversized model response). Clear the run lease without
               // replacing the last valid partial transcript.
               try {
-                consoleChatStore.abandonRun(threadId, turnId, consoleMetadata.assistantMessageId, {
-                  status: status === "interrupted" ? "interrupted" : "error",
-                  error: "Console response could not be fully persisted.",
-                  unread: consoleMetadata.unreadOnFinish,
-                  updatedAt: Date.now(),
-                });
+                consoleChatStore.abandonRun(
+                  threadId,
+                  publicRunId,
+                  consoleMetadata.assistantMessageId,
+                  {
+                    status: status === "interrupted" ? "interrupted" : "error",
+                    error: "Console response could not be fully persisted.",
+                    unread: consoleMetadata.unreadOnFinish,
+                    updatedAt: Date.now(),
+                  },
+                );
               } catch {
                 // The outer handler still emits a failed terminal event. A
                 // process restart recovers any genuinely unreachable lease.
@@ -2145,7 +2692,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
           try {
             const result = await k.handleInbound(trigger, {
               onEvent,
-              signal: req.signal,
+              signal: executionSignal,
               ...(runHistoryPersistence ? { historyPersistence: runHistoryPersistence } : {}),
             });
             if (result.status === "rejected") {
@@ -2168,7 +2715,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
               writeEvent(errorEvent);
               bufferedRunFinished = runFinished({
                 threadId,
-                runId: trigger.turnId,
+                runId: publicRunId,
                 status: result.status,
               });
             }
@@ -2181,14 +2728,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
             finishPersistedRun(
               persistedStatus,
               bufferedRunFinished ??
-                runFinished({ threadId, runId: trigger.turnId, status: result.status }),
+                runFinished({ threadId, runId: publicRunId, status: result.status }),
             );
           } catch (err) {
-            const interrupted = req.signal.aborted;
+            const interrupted = executionSignal.aborted;
             const normalizedError = runError({ message: String(err), code: "INTERNAL" });
             const errorEvent = interrupted
               ? runError({ message: "Request interrupted.", code: "ABORTED" })
-              : !consoleMetadata || normalizedError.code?.startsWith("PROVIDER_")
+              : normalizedError.code?.startsWith("PROVIDER_")
                 ? normalizedError
                 : runError({ message: "Internal error.", code: "INTERNAL" });
             observeEvent(errorEvent);
@@ -2198,7 +2745,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 interrupted ? "interrupted" : "error",
                 runFinished({
                   threadId,
-                  runId: trigger.turnId,
+                  runId: publicRunId,
                   status: interrupted ? "canceled" : "failed",
                 }),
                 true,
@@ -2210,13 +2757,35 @@ export function webTransport(opts: WebTransportOptions): Augment {
               writeEvent(
                 runFinished({
                   threadId,
-                  runId: trigger.turnId,
+                  runId: publicRunId,
                   status: interrupted ? "canceled" : "failed",
                 }),
               );
             }
           } finally {
             if (progressFlushTimer !== null) clearTimeout(progressFlushTimer);
+            if (idempotencyHeartbeatTimer !== null) clearInterval(idempotencyHeartbeatTimer);
+            if (durableIdempotency) {
+              try {
+                if (replayOverflow) {
+                  durableIdempotency.store.markUnknown(
+                    durableIdempotency.keyHash,
+                    durableIdempotency.ownerToken,
+                  );
+                } else {
+                  durableIdempotency.store.complete(
+                    durableIdempotency.keyHash,
+                    durableIdempotency.ownerToken,
+                    replayChunks.join(""),
+                  );
+                }
+              } catch {
+                // Leave the durable running claim in place. Future attempts
+                // fail closed rather than risking duplicate execution.
+              } finally {
+                finishLocalIdempotencyExecution(durableIdempotency.keyHash);
+              }
+            }
             streamClosed = true;
             try {
               controller.close();
@@ -2230,15 +2799,19 @@ export function webTransport(opts: WebTransportOptions): Augment {
 
     const sseHeaders: Record<string, string> = {
       "content-type": "text/event-stream",
-      "cache-control": "no-cache",
+      "cache-control": "private, no-store",
       connection: "keep-alive",
     };
     if (newToken) {
       sseHeaders["x-visitor-token"] = newToken;
     }
+    if (anonymousSessionToken) {
+      sseHeaders[ANONYMOUS_SESSION_HEADER] = anonymousSessionToken;
+    }
     if (opts.cors) {
       sseHeaders["access-control-allow-origin"] = opts.cors.origins.join(",");
-      sseHeaders["access-control-expose-headers"] = "x-visitor-token, idempotency-key";
+      sseHeaders["access-control-expose-headers"] =
+        `${ANONYMOUS_SESSION_HEADER}, ${ANONYMOUS_SESSION_STATUS_HEADER}, x-visitor-token, idempotency-key`;
     }
     return new Response(stream, { status: 200, headers: sseHeaders });
   }
@@ -2251,6 +2824,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       "x-peer-kind",
       "x-peer-name",
       "x-org-id",
+      ANONYMOUS_SESSION_HEADER,
       "x-visitor-token",
       DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER,
       "x-agent-id",
@@ -2263,7 +2837,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     const headers: Record<string, string> = {
       "access-control-allow-methods": "GET, POST, OPTIONS",
       "access-control-allow-headers": allowedHeaders.join(", "),
-      "access-control-expose-headers": "x-visitor-token, idempotency-key",
+      "access-control-expose-headers": `${ANONYMOUS_SESSION_HEADER}, ${ANONYMOUS_SESSION_STATUS_HEADER}, x-visitor-token, idempotency-key`,
       "access-control-max-age": "86400",
     };
     if (opts.cors) {
@@ -2304,7 +2878,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
       headers.set("access-control-allow-origin", opts.cors.origins.join(","));
     }
     if (!headers.has("access-control-expose-headers")) {
-      headers.set("access-control-expose-headers", "x-visitor-token, idempotency-key");
+      headers.set(
+        "access-control-expose-headers",
+        `${ANONYMOUS_SESSION_HEADER}, ${ANONYMOUS_SESSION_STATUS_HEADER}, x-visitor-token, idempotency-key`,
+      );
     }
     return new Response(response.body, {
       status: response.status,
@@ -2385,6 +2962,21 @@ export function webTransport(opts: WebTransportOptions): Augment {
           );
         }
         signingKey = await deriveSigningKey(keySource);
+      }
+      const idempotencyDbPath = resolveIdempotencyDbPath(opts);
+      if (idempotencyDbPath !== null) {
+        idempotencyStore = createWebIdempotencyStore({
+          dbPath: idempotencyDbPath,
+          maxRecords: opts.idempotency?.maxRecords,
+          maxReplayBytes: idempotencyMaxReplayBytes,
+          maxStoredBytes: idempotencyMaxStoredBytes,
+          maxRecordsPerPartition: opts.idempotency?.maxRecordsPerPartition,
+          maxPublicRecords: opts.idempotency?.maxPublicRecords,
+          maxAgentRecords: opts.idempotency?.maxAgentRecords,
+          maxCreatorRecords: opts.idempotency?.maxCreatorRecords,
+          staleAfterMs: idempotencyStaleAfterMs,
+          retentionMs: idempotencyRetentionMs,
+        });
       }
       const consoleDbPath = resolveConsoleChatDbPath(opts);
       if (consoleDbPath !== null) {
@@ -2678,6 +3270,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
       consoleHistoryPersistence = null;
       consoleChatStore?.close();
       consoleChatStore = null;
+      idempotencyStore?.close();
+      idempotencyStore = null;
+      for (const execution of localIdempotencyExecutions.values()) execution.resolve();
+      localIdempotencyExecutions.clear();
+      idempotencyWaitersByKey.clear();
+      activeIdempotencyWaiters = 0;
       startServer = null;
       kernel = null;
       augmentRoutes = [];

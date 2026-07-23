@@ -114,6 +114,7 @@ describe("layeredMemory — promotion-flush trigger.peer fix (fix F2 Codex H3)",
       kind: "human",
       trustLevel: "public",
       publicSubstate: "recognized",
+      authenticatedPriorPeerId: ANON_PEER_ID,
       sourceAugment: "web",
     };
 
@@ -326,6 +327,7 @@ describe("layeredMemory — promotion-flush peerId regression (fix F1)", () => {
         kind: "human",
         trustLevel: "public",
         publicSubstate: "recognized",
+        authenticatedPriorPeerId: ANON_PEER_ID,
         sourceAugment: "web",
       };
       await agent.inject(

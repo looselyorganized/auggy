@@ -107,6 +107,7 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
         enabled: true,
         signingKey: SIGNING_KEY,
         ttlSeconds: 7_776_000, // 90 days
+        agentBinding: "zip-auth-test",
       },
     });
 
@@ -115,6 +116,7 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
       dbPath,
       agentMail: { apiKey: "am_x", inboxId: "ibx_test" },
       signingKey: SIGNING_KEY,
+      agentBinding: "zip-auth-test",
       layeredMemoryDbPath: null, // no layeredMemory in this test
       _agentMailClient: stubAgentMail,
     });
@@ -333,6 +335,7 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
           enabled: true,
           signingKey: SIGNING_KEY,
           ttlSeconds: 7_776_000,
+          agentBinding: "zip-console-test",
         },
       });
 
@@ -343,6 +346,7 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
         // console adapter; printed lines land in the `console.log` spy above.
         agentMail: { transport: "console" },
         signingKey: SIGNING_KEY,
+        agentBinding: "zip-console-test",
         layeredMemoryDbPath: null,
         // No _agentMailClient — we want the real console adapter to run.
       });

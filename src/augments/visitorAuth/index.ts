@@ -937,6 +937,8 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
             agentBinding,
             ttlSec,
             reuseVisitorId,
+            consume.peerId ?? undefined,
+            consume.peerId ?? undefined,
           );
 
           // Record / touch the verified-visitor row:
@@ -983,6 +985,8 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
                   agentBinding,
                   ttlSec,
                   winner.visitorId,
+                  consume.peerId ?? undefined,
+                  consume.peerId ?? undefined,
                 );
               } else {
                 // Defensive: winner row vanished or is revoked between INSERT failure
