@@ -1,7 +1,7 @@
 import { lookup as dnsLookup } from "node:dns/promises";
 import { request as nodeHttpRequest } from "node:http";
 import { request as nodeHttpsRequest } from "node:https";
-import { isIP } from "node:net";
+import { isIP, type LookupFunction } from "node:net";
 import { Readable } from "node:stream";
 
 /**
@@ -492,6 +492,13 @@ async function fetchWithPinnedAddress(
   const parsed = new URL(url);
   const request = parsed.protocol === "https:" ? nodeHttpsRequest : nodeHttpRequest;
   const headers = Object.fromEntries(init.headers.entries());
+  const pinnedLookup: LookupFunction = (_hostname, options, callback) => {
+    if (options.all) {
+      callback(null, [{ address: destination.address, family: destination.family }]);
+      return;
+    }
+    callback(null, destination.address, destination.family);
+  };
 
   return await new Promise<HttpHopResponse>((resolve, reject) => {
     const req = request(
@@ -501,9 +508,7 @@ async function fetchWithPinnedAddress(
         headers,
         signal: init.signal,
         agent: false,
-        lookup: (_hostname, _options, callback) => {
-          callback(null, destination.address, destination.family);
-        },
+        lookup: pinnedLookup,
       },
       (res) => {
         const responseHeaders = new Headers();
