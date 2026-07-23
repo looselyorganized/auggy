@@ -5,7 +5,7 @@ Anthropic engine adapter for [auggy](https://www.npmjs.com/package/auggy) — im
 ## Install
 
 ```bash
-bun add @auggy/anthropic
+bun add auggy @auggy/anthropic
 ```
 
 You don't normally install this directly — `auggy create` does it for you when you pick `anthropic` as the engine provider during scaffold.

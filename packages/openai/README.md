@@ -5,7 +5,7 @@ OpenAI engine adapter for [auggy](https://www.npmjs.com/package/auggy) — imple
 ## Install
 
 ```bash
-bun add @auggy/openai
+bun add auggy @auggy/openai
 ```
 
 You don't normally install this directly — `auggy create` does it for you when you pick `openai` as the engine provider during scaffold.

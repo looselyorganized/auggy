@@ -95,10 +95,75 @@ ROOT_VERSION="$(node -p "require('$ROOT/package.json').version")"
 info "pack every publishable package"
 TARBALL="$(pack_release_package "." "auggy" "$ROOT_VERSION")"
 ANTHROPIC_TARBALL="$(pack_release_package "packages/anthropic" "@auggy/anthropic" "$ROOT_VERSION")"
-pack_release_package "packages/openai" "@auggy/openai" "$ROOT_VERSION" >/dev/null
-pack_release_package "packages/openrouter" "@auggy/openrouter" "$ROOT_VERSION" >/dev/null
-pack_release_package "packages/ollama" "@auggy/ollama" "$ROOT_VERSION" >/dev/null
+OPENAI_TARBALL="$(pack_release_package "packages/openai" "@auggy/openai" "$ROOT_VERSION")"
+OPENROUTER_TARBALL="$(pack_release_package "packages/openrouter" "@auggy/openrouter" "$ROOT_VERSION")"
+OLLAMA_TARBALL="$(pack_release_package "packages/ollama" "@auggy/ollama" "$ROOT_VERSION")"
 pack_release_package "packages/evals" "@auggy/evals" "$ROOT_VERSION" >/dev/null
+
+verify_adapter_manifest() {
+  local tarball="$1"
+  local expected_name="$2"
+  tar -xOf "$tarball" package/package.json \
+    | node -e '
+        const manifest = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+        const [expectedName, expectedVersion] = process.argv.slice(1);
+        if (manifest.name !== expectedName) {
+          throw new Error(`expected ${expectedName}, packed ${manifest.name}`);
+        }
+        if (manifest.peerDependencies?.auggy !== `^${expectedVersion}`) {
+          throw new Error(`${expectedName} does not declare auggy ^${expectedVersion}`);
+        }
+        if (manifest.peerDependenciesMeta?.auggy?.optional !== true) {
+          throw new Error(`${expectedName} must require an explicit auggy install`);
+        }
+      ' "$expected_name" "$ROOT_VERSION" \
+    || fail "packed peer contract mismatch for $expected_name"
+}
+
+verify_adapter_consumer() {
+  local slug="$1"
+  local package_name="$2"
+  local factory_name="$3"
+  local adapter_tarball="$4"
+  local consumer_dir="$SMOKE_DIR/provider-consumers/$slug"
+  shift 4
+
+  mkdir -p "$consumer_dir"
+  node - "$consumer_dir/package.json" <<'NODE'
+const { writeFileSync } = require("node:fs");
+writeFileSync(
+  process.argv[2],
+  `${JSON.stringify({ name: "packed-provider-consumer", private: true, type: "module" }, null, 2)}\n`,
+);
+NODE
+  (
+    cd "$consumer_dir"
+    bun add --no-summary "$TARBALL" "$adapter_tarball" "$@"
+    bun -e '
+      const [packageName, factoryName] = process.argv.slice(1);
+      const provider = await import(packageName);
+      if (typeof provider[factoryName] !== "function") {
+        throw new Error(`${packageName} does not export ${factoryName}`);
+      }
+    ' "$package_name" "$factory_name"
+  ) >"$LOG_DIR/provider-$slug.log" 2>&1 \
+    || fail "packed provider consumer failed for $package_name"
+}
+
+info "verify packed provider contracts and isolated imports"
+verify_adapter_manifest "$ANTHROPIC_TARBALL" "@auggy/anthropic"
+verify_adapter_manifest "$OPENAI_TARBALL" "@auggy/openai"
+verify_adapter_manifest "$OPENROUTER_TARBALL" "@auggy/openrouter"
+verify_adapter_manifest "$OLLAMA_TARBALL" "@auggy/ollama"
+verify_adapter_consumer \
+  "anthropic" "@auggy/anthropic" "createAnthropicEngine" "$ANTHROPIC_TARBALL"
+verify_adapter_consumer \
+  "openai" "@auggy/openai" "createOpenAIEngine" "$OPENAI_TARBALL"
+verify_adapter_consumer \
+  "openrouter" "@auggy/openrouter" "createOpenRouterEngine" \
+  "$OPENROUTER_TARBALL" "$OPENAI_TARBALL"
+verify_adapter_consumer \
+  "ollama" "@auggy/ollama" "createOllamaEngine" "$OLLAMA_TARBALL"
 
 info "verify package contents"
 PACK_LIST="$LOG_DIR/tarball-files.txt"

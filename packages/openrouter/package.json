@@ -29,6 +29,14 @@
     "bun": ">=1.2.0"
   },
   "private": false,
+  "peerDependencies": {
+    "auggy": "^0.5.0"
+  },
+  "peerDependenciesMeta": {
+    "auggy": {
+      "optional": true
+    }
+  },
   "dependencies": {
     "@auggy/openai": "^0.5.0",
     "openai": "^6.34.0"

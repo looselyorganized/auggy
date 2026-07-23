@@ -38,6 +38,15 @@ export const PROVIDER_TO_PACKAGE: Record<Provider, string> = {
   ollama: "@auggy/ollama",
 };
 
+/**
+ * Root-level resolution required until the MCP SDK accepts the fixed
+ * @hono/node-server v2 range. Package-manager overrides inside dependencies
+ * are not inherited, so generated agents must own this policy explicitly.
+ */
+export const SCAFFOLD_SECURITY_OVERRIDES = {
+  "@hono/node-server": "2.0.11",
+} as const;
+
 export interface BuildAgentPackageJsonInput {
   /** Agent name — used as the scaffolded package's name. */
   agentName: string;
@@ -90,6 +99,7 @@ export function buildAgentPackageJson(input: BuildAgentPackageJsonInput): string
     name: `auggy-agent-${input.agentName}`,
     private: true,
     type: "module" as const,
+    overrides: SCAFFOLD_SECURITY_OVERRIDES,
     dependencies: sortedRecord(dependencies),
   };
 

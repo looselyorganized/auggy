@@ -2,6 +2,12 @@
 
 Ollama engine adapter for [auggy](https://www.npmjs.com/package/auggy) — drive your agent against a local LLM with no API key required.
 
+## Install
+
+```bash
+bun add auggy @auggy/ollama
+```
+
 ## Setup
 
 1. Install Ollama from [ollama.com](https://ollama.com)

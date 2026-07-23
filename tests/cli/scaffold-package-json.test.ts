@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   PROVIDER_TO_PACKAGE,
+  SCAFFOLD_SECURITY_OVERRIDES,
   buildAgentPackageJson,
   getAuggyPackageSpecifierOverride,
   getAuggyVersion,
@@ -69,6 +70,7 @@ describe("buildAgentPackageJson", () => {
     expect(parsed.name).toBe("auggy-agent-demo");
     expect(parsed.private).toBe(true);
     expect(parsed.type).toBe("module");
+    expect(parsed.overrides).toEqual(SCAFFOLD_SECURITY_OVERRIDES);
     expect(parsed.dependencies).toEqual({
       auggy: "^0.3.1",
       "@auggy/anthropic": "^0.3.1",
