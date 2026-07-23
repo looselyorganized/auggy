@@ -295,12 +295,14 @@ describe("budgets + trust integration", () => {
       expect(r1.success).toBe(true);
       expect(r1.status).toBe("completed");
 
-      // Second request with SAME idempotency key → deduped.
-      // The store sees the existing turn_id row and returns the same allow decision.
-      // This does NOT consume a new slot.
+      // Direct kernel injection has no response-replay coordinator. Reusing a
+      // turn ID therefore fails closed instead of executing again against the
+      // original allowance.
       const r2 = await agent.inject(makeTrigger({ turnId: "my-key-123", peer, threadId }));
-      expect(r2.success).toBe(true);
-      expect(r2.status).toBe("completed");
+      expect(r2.success).toBe(false);
+      expect(r2.status).toBe("rejected");
+      expect(r2.errorClass).toBe("cap-denied");
+      expect(model.calls).toHaveLength(1);
 
       // Third request with a DIFFERENT key → success (consumes slot 2)
       const r3 = await agent.inject(makeTrigger({ turnId: "my-key-456", peer, threadId }));

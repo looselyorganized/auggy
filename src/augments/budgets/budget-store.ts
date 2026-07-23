@@ -444,34 +444,29 @@ export function createBudgetStore(config: BudgetStoreConfig): BudgetStore {
     }
 
     try {
-      // ── Retry path: if this turnId already has a reservation row,
-      // respect the existing decision rather than failing on PK conflict.
+      // Execution replay belongs to the transport-level idempotency ledger.
+      // A direct duplicate turn ID must fail closed here: treating an existing
+      // allowance as a new allowance would execute tools/model work again
+      // without consuming another reservation.
       const existingRow = db
-        .prepare<{ decision: string; reason: string | null }, [string]>(
-          `SELECT decision, reason FROM turn_reservations WHERE turn_id = ?`,
+        .prepare<
+          {
+            peer_id: string;
+            thread_id: string;
+            trust_level: string;
+            public_substate: string | null;
+          },
+          [string]
+        >(
+          `SELECT peer_id, thread_id, trust_level, public_substate
+             FROM turn_reservations WHERE turn_id = ?`,
         )
         .get(input.turnId);
 
       if (existingRow !== null) {
-        // Row already committed on a prior prepare. Roll back (nothing new to commit).
         rollbackIfActive();
-        const allowed =
-          existingRow.decision === "allow" ||
-          existingRow.decision === "allow:incomplete" ||
-          existingRow.decision === "allow:orphaned";
-        if (allowed) {
-          return {
-            decision: { allow: true },
-            confirm: async () => {
-              /* already committed */
-            },
-            rollback: async () => {
-              /* already committed */
-            },
-          };
-        }
         return {
-          decision: { allow: false, reason: existingRow.reason ?? "denied" },
+          decision: { allow: false, reason: "turn id already reserved" },
           confirm: async () => {
             /* no-op */
           },

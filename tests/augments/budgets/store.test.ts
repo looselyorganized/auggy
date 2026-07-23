@@ -311,14 +311,15 @@ describe("BudgetStore", () => {
 
   // ── Retry / PK conflict ──────────────────────────────────
 
-  it("retry of same turnId: second prepare sees existing row and returns allow", async () => {
+  it("retry of same turnId is denied so a caller cannot reuse a reservation", async () => {
     const t1 = await store.prepare(baseInput({ turnId: "same-turn" }));
     await t1.confirm();
 
-    // Second prepare with the same turnId should not blow up.
+    // Durable idempotency joins/replays before the kernel. A duplicate that
+    // reaches the budget boundary must never gain a second execution.
     const t2 = await store.prepare(baseInput({ turnId: "same-turn" }));
-    expect(t2.decision.allow).toBe(true);
-    await t2.confirm(); // no-op on already-committed row
+    expect(t2.decision).toEqual({ allow: false, reason: "turn id already reserved" });
+    await t2.rollback();
   });
 
   // ── commit ───────────────────────────────────────────────
