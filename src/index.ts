@@ -190,11 +190,19 @@ export { notify } from "./augments/notify";
 export type { NotifyAugmentInternalOptions } from "./augments/notify";
 
 // === HTTP client (for augment authors who need HTTP) ===
-export { createHttpClient } from "./http";
+export {
+  createHttpClient,
+  rejectNonGlobalAddress,
+  rejectUnsafeRedirect,
+  rejectUnsafeUrl,
+  resolvePublicHttpUrl,
+} from "./http";
 export type {
   HttpClient,
   HttpClientOptions,
+  HttpHostnameResolver,
   HttpRequestInit,
+  HttpResolvedAddress,
   HttpResponse,
 } from "./http";
 

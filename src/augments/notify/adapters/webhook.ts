@@ -14,7 +14,12 @@ export interface CreateWebhookAdapterOptions {
 
 export function createWebhookAdapter(opts: CreateWebhookAdapterOptions = {}): NotifyAdapter {
   const http =
-    opts.client ?? createHttpClient({ timeoutMs: 10_000, userAgent: "auggy-notify-webhook/0.1" });
+    opts.client ??
+    createHttpClient({
+      timeoutMs: 10_000,
+      userAgent: "auggy-notify-webhook/0.1",
+      urlPolicy: "operator-configured",
+    });
 
   return {
     async deliver(

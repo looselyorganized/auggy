@@ -1,5 +1,11 @@
 import { describe, test, expect, afterAll } from "bun:test";
-import { createHttpClient, rejectUnsafeUrl } from "../src/http";
+import {
+  createHttpClient,
+  rejectNonGlobalAddress,
+  rejectUnsafeRedirect,
+  rejectUnsafeUrl,
+  resolvePublicHttpUrl,
+} from "../src/http";
 
 // ---------------------------------------------------------------------------
 // Test HTTP server — serves controlled responses for redirect, body size,
@@ -71,6 +77,13 @@ function startTestServer() {
 
     if (path === "/redirect-no-location") {
       return new Response("no location header", { status: 302 });
+    }
+
+    if (path === "/not-modified-with-location") {
+      return new Response(null, {
+        status: 304,
+        headers: { location: "/final" },
+      });
     }
 
     // --- Redirect chain exceeding limit ---
@@ -313,6 +326,13 @@ describe("http client — redirect behavior", () => {
     expect(res.body).toBe("no location header");
   });
 
+  test("does not follow non-redirect 3xx statuses", async () => {
+    const client = createHttpClient();
+    const res = await client.get(`http://${TEST_HOST}:${serverPort}/not-modified-with-location`);
+    expect(res.status).toBe(304);
+    expect(res.finalUrl).toContain("/not-modified-with-location");
+  });
+
   test("throws on redirect limit exceeded", async () => {
     const client = createHttpClient({ maxRedirects: 3 });
     expect(client.get(`http://${TEST_HOST}:${serverPort}/redirect-loop`)).rejects.toThrow(
@@ -424,11 +444,142 @@ describe("rejectUnsafeUrl helper", () => {
     expect(rejectUnsafeUrl("http://localhost./")).toMatch(/loopback/i);
   });
 
-  test("accepts public IPv6 addresses (does not over-block)", () => {
-    // 2001:db8::/32 is RFC 3849 documentation prefix — not private. The
-    // filter should not match it. (This test exists to ensure we don't
-    // regress into blocking the full 2xxx range.)
-    expect(rejectUnsafeUrl("http://[2001:db8::1]/")).toBeNull();
+  test("rejects IPv6 documentation space and accepts genuine global unicast", () => {
+    expect(rejectUnsafeUrl("http://[2001:db8::1]/")).toMatch(/documentation/i);
+    expect(rejectUnsafeUrl("http://[2606:4700:4700::1111]/")).toBeNull();
+  });
+});
+
+describe("public address classification", () => {
+  const nonGlobalAddresses = [
+    "0.0.0.0",
+    "100.64.0.1",
+    "198.18.0.1",
+    "192.0.2.1",
+    "198.51.100.1",
+    "203.0.113.1",
+    "224.0.0.1",
+    "240.0.0.1",
+    "255.255.255.255",
+    "2001:db8::1",
+    "2001::1",
+    "2001:2::1",
+    "3fff::1",
+    "64:ff9b::7f00:1",
+    "::ffff:127.0.0.1",
+  ];
+
+  for (const address of nonGlobalAddresses) {
+    test(`rejects non-global address ${address}`, () => {
+      expect(rejectNonGlobalAddress(address)).not.toBeNull();
+    });
+  }
+
+  test("accepts global IPv4, IPv6, and NAT64 addresses", () => {
+    expect(rejectNonGlobalAddress("1.1.1.1")).toBeNull();
+    expect(rejectNonGlobalAddress("2606:4700:4700::1111")).toBeNull();
+    expect(rejectNonGlobalAddress("64:ff9b::101:101")).toBeNull();
+  });
+
+  test("canonicalizes alternative IPv4 URL forms before classification", () => {
+    expect(rejectUnsafeUrl("http://2130706433/")).toMatch(/loopback/i);
+    expect(rejectUnsafeUrl("http://0177.0.0.1/")).toMatch(/loopback/i);
+    expect(rejectUnsafeUrl("http://0x7f000001/")).toMatch(/loopback/i);
+    expect(rejectUnsafeUrl("http://127.1/")).toMatch(/loopback/i);
+    expect(rejectUnsafeUrl("http://192.168.1/")).toMatch(/RFC 1918/i);
+  });
+});
+
+describe("public DNS resolution", () => {
+  test("rejects a private DNS answer before connection", async () => {
+    await expect(
+      resolvePublicHttpUrl("https://public-looking.test/", async () => [
+        { address: "10.0.0.1", family: 4 },
+      ]),
+    ).rejects.toThrow(/non-global.*RFC 1918/i);
+  });
+
+  test("rejects a mixed public and private answer set", async () => {
+    await expect(
+      resolvePublicHttpUrl("https://mixed.test/", async () => [
+        { address: "1.1.1.1", family: 4 },
+        { address: "fd00::1", family: 6 },
+      ]),
+    ).rejects.toThrow(/non-global.*unique-local/i);
+  });
+
+  test("rejects empty, malformed, and family-mismatched answers", async () => {
+    await expect(resolvePublicHttpUrl("https://empty.test/", async () => [])).rejects.toThrow(
+      /no addresses/i,
+    );
+    await expect(
+      resolvePublicHttpUrl("https://malformed.test/", async () => [
+        { address: "not-an-address", family: 4 },
+      ]),
+    ).rejects.toThrow(/invalid DNS address/i);
+    await expect(
+      resolvePublicHttpUrl("https://mismatch.test/", async () => [
+        { address: "1.1.1.1", family: 6 },
+      ]),
+    ).rejects.toThrow(/invalid DNS address/i);
+  });
+
+  test("accepts an all-global dual-stack answer snapshot", async () => {
+    await expect(
+      resolvePublicHttpUrl("https://dual-stack.test/", async () => [
+        { address: "1.1.1.1", family: 4 },
+        { address: "2606:4700:4700::1111", family: 6 },
+      ]),
+    ).resolves.toEqual([
+      { address: "1.1.1.1", family: 4 },
+      { address: "2606:4700:4700::1111", family: 6 },
+    ]);
+  });
+
+  test("fails closed on resolver errors, excessive answers, and cancellation", async () => {
+    await expect(
+      resolvePublicHttpUrl("https://failure.test/", async () => {
+        throw new Error("resolver unavailable");
+      }),
+    ).rejects.toThrow(/resolver unavailable/i);
+
+    await expect(
+      resolvePublicHttpUrl("https://many.test/", async () =>
+        Array.from({ length: 33 }, (_, index) => ({
+          address: `1.1.1.${index + 1}`,
+          family: 4 as const,
+        })),
+      ),
+    ).rejects.toThrow(/too many/i);
+
+    const controller = new AbortController();
+    const pending = resolvePublicHttpUrl(
+      "https://cancelled.test/",
+      () => new Promise(() => {}),
+      controller.signal,
+    );
+    controller.abort(new Error("cancelled"));
+    await expect(pending).rejects.toThrow(/cancelled/i);
+  });
+});
+
+describe("redirect destination policy", () => {
+  test("rejects HTTPS downgrade and redirect URL credentials", () => {
+    expect(rejectUnsafeRedirect("https://example.com/start", "http://example.com/next")).toMatch(
+      /downgrade/i,
+    );
+    expect(
+      rejectUnsafeRedirect("https://example.com/start", "https://user:secret@example.net/next"),
+    ).toMatch(/credentials/i);
+  });
+
+  test("allows secure and explicitly configured initial plaintext flows", () => {
+    expect(
+      rejectUnsafeRedirect("https://example.com/start", "https://example.net/next"),
+    ).toBeNull();
+    expect(
+      rejectUnsafeRedirect("http://127.0.0.1:3000/start", "http://127.0.0.1:3000/next"),
+    ).toBeNull();
   });
 });
 

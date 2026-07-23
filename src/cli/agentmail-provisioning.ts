@@ -73,6 +73,7 @@ export function createAgentMailProvisioningClient(
     createHttpClient({
       timeoutMs: opts.timeoutMs ?? 20_000,
       userAgent: "auggy-agentmail-setup/0.1",
+      urlPolicy: "operator-configured",
     });
 
   async function postJson<T>(

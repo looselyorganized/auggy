@@ -523,11 +523,13 @@ export function knowledge(opts: ManifestOptions): Augment {
         createHttpClient({
           timeoutMs: 10_000,
           userAgent: "auggy-knowledge/0.2",
+          urlPolicy: "operator-configured",
           defaultHeaders: opts.token ? { authorization: `Bearer ${opts.token}` } : {},
         }))
       : createHttpClient({
           timeoutMs: 10_000,
           userAgent: "auggy-knowledge/0.2",
+          urlPolicy: "operator-configured",
           defaultHeaders: opts.token ? { authorization: `Bearer ${opts.token}` } : {},
         });
   const cacheTtl = opts.cacheTtlMs ?? DEFAULT_CACHE_TTL;

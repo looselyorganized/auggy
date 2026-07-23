@@ -1,5 +1,6 @@
 import { describe, test, expect, afterAll } from "bun:test";
 import { webFetch, normalizeFetchUrl } from "../../src/augments/webFetch";
+import { createHttpClient } from "../../src/http";
 import { asStringTool } from "../fixtures/tool-helpers";
 
 // ---------------------------------------------------------------------------
@@ -88,8 +89,10 @@ afterAll(() => server.stop(true));
 // describe block below.
 function getWebFetchTool() {
   const augment = webFetch({
-    timeoutMs: 5000,
-    rejectUnsafeUrls: false,
+    client: createHttpClient({
+      timeoutMs: 5000,
+      urlPolicy: "operator-configured",
+    }),
   });
   const tool = augment.tools?.find((t) => t.name === "web_fetch");
   if (!tool) throw new Error("web_fetch tool not found");
@@ -311,4 +314,23 @@ describe("SSRF filter", () => {
       expect(result.code).toBeUndefined();
     });
   }
+
+  test("does not allow the public-network policy to be disabled through legacy options", async () => {
+    const augment = webFetch({
+      timeoutMs: 5000,
+      // Runtime callers may still pass excess JavaScript properties even
+      // though WebFetchOptions excludes this legacy HTTP-client switch.
+      rejectUnsafeUrls: false,
+    } as Parameters<typeof webFetch>[0] & { rejectUnsafeUrls: boolean });
+    const tool = augment.tools?.find((candidate) => candidate.name === "web_fetch");
+    if (!tool) throw new Error("web_fetch tool not found");
+
+    const result = JSON.parse(
+      await asStringTool(tool).execute({
+        url: `http://127.0.0.1:${server.port}/plain-text`,
+        prompt: "read this",
+      }),
+    );
+    expect(result.error).toMatch(/loopback/i);
+  });
 });

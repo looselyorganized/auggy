@@ -111,6 +111,7 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
     createHttpClient({
       timeoutMs: opts.timeoutMs ?? 15_000,
       userAgent: "auggy-agentmail-client/0.1",
+      urlPolicy: "operator-configured",
     });
   async function postSend(
     url: string,

@@ -1100,25 +1100,26 @@ const fetcher = webFetch({
 
 A single-tool augment exposing `web_fetch(url, prompt)`. Fetches the URL, strips HTML (or passes JSON through), produces a prompt-aware summary. Built around `createHttpClient` from `src/http.ts`.
 
-### Security model — structural SSRF defense
+### Security model — resolved and pinned SSRF defense
 
-The augment instantiates its http client with `rejectUnsafeUrls: true`. Both the initial URL and every redirect hop are filtered at the http layer, *before* any network I/O, against:
+The augment forces its HTTP client to use `urlPolicy: "public"`; callers cannot turn this off through `WebFetchOptions`. Before the initial request and every redirect, the client resolves all A/AAAA answers, rejects the entire answer set if any address is not globally routable, and connects through a lookup pinned to the validated snapshot. The original hostname remains authoritative for the HTTP `Host` header, TLS SNI, and certificate verification.
 
 - Loopback (`localhost`, `127.0.0.0/8`, `::1`)
 - RFC 1918 private ranges (`10/8`, `172.16/12`, `192.168/16`)
+- Carrier-grade NAT/shared space (`100.64.0.0/10`)
 - Link-local (`169.254.0.0/16` — covers AWS EC2 metadata `169.254.169.254` and similar)
 - IPv6 link-local (`fe80::/10`) and unique-local (`fc00::/7`)
-- `0.0.0.0/8`
+- Unspecified, documentation, benchmarking, protocol-assignment, multicast, and reserved ranges
+- Unsafe IPv4-compatible, IPv4-mapped, and NAT64-embedded destinations
 - Cloud metadata FQDNs (`metadata`, `metadata.google.internal`)
 - Non-http(s) schemes (`file://`, `ftp://`, `gopher://`, …)
+- HTTPS-to-HTTP redirect downgrades
 
-Rejected URLs throw from the http client and are caught by the `web_fetch` tool, surfaced as a structured error JSON with the reason (`"blocked: loopback"`, `"blocked: RFC 1918 (10/8)"`, etc.). This is **structural** defense — the filter runs regardless of what the model or the peer says, and it covers the redirect path, not just the first hop.
+Rejected URLs throw from the HTTP client and are caught by the `web_fetch` tool, surfaced as structured error JSON. Redirects are manual and bounded. On a cross-origin redirect, all custom headers are removed unless the client operator explicitly allowlists a header for that exact destination origin; stripped headers are never reconstructed later in the chain.
 
-**Not covered by this layer:**
-- DNS rebinding — a public-looking hostname that resolves to a private IP at fetch time. The filter runs against hostnames/IP literals, not the resolved address.
-- Allow/deny lists — operators who need a private endpoint reachable (e.g. internal APIs) should build a separate augment with an explicit allowlist, not disable this filter.
+Operator-configured clients can select `urlPolicy: "operator-configured"` when an integration intentionally targets a private or loopback service. That policy is for fixed, trusted configuration—not model-, peer-, or request-supplied URLs. Passing a custom client to `webFetch` explicitly transfers enforcement of this network boundary to the operator.
 
-The SSRF filter lives in `src/http.ts` as the exported helper `rejectUnsafeUrl(url)` so other augments can adopt it with `createHttpClient({ rejectUnsafeUrls: true })`.
+The URL and address helpers live in `src/http.ts`; augment authors handling untrusted URLs should use `createHttpClient({ urlPolicy: "public" })`.
 
 ### Bundled skill
 

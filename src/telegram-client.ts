@@ -86,7 +86,12 @@ export function createTelegramBotClient(opts: CreateTelegramBotClientOptions): T
   const baseUrl = opts.baseUrl ?? "https://api.telegram.org";
   const url = (method: string) => `${baseUrl}/bot${opts.botToken}/${method}`;
   const http =
-    opts.client ?? createHttpClient({ timeoutMs: 60_000, userAgent: "auggy-telegram/0.1" });
+    opts.client ??
+    createHttpClient({
+      timeoutMs: 60_000,
+      userAgent: "auggy-telegram/0.1",
+      urlPolicy: "operator-configured",
+    });
 
   async function call<T>(
     method: string,

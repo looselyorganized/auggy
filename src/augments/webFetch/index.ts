@@ -21,13 +21,12 @@ import type { HttpClient, HttpClientOptions, HttpResponse } from "../../http";
  *  - Output carries the POST-redirect final URL, raw byte count, and
  *    round-trip duration so the model can reason about cost.
  *
- * Structural SSRF defense:
- *  - Pre-fetch URL filter rejects loopback, RFC 1918, link-local,
- *    cloud metadata endpoints, and non-http(s) schemes.
- *  - Redirect targets are filtered at each hop (via HttpClient's
- *    `rejectUnsafeUrls: true`), so a 3xx → internal-IP attack fails.
- *  - Note: DNS-rebinding is NOT defended at this layer — a public-looking
- *    hostname that resolves to a private IP at fetch time is out of scope.
+ * SSRF defense:
+ *  - Every initial hostname and redirect target is resolved before dispatch.
+ *  - Every A/AAAA answer must be globally routable; mixed answer sets fail.
+ *  - The socket is pinned to a validated answer while retaining the original
+ *    hostname for Host, SNI, and certificate verification.
+ *  - HTTPS-to-HTTP redirects and non-http(s) schemes are rejected.
  *
  * Not carried over:
  *  - No caching. Every call hits the network.
@@ -236,7 +235,8 @@ function summarizeWebFetch(args: {
 // Augment
 // =========================================================================
 
-export interface WebFetchOptions extends HttpClientOptions {
+export interface WebFetchOptions
+  extends Omit<HttpClientOptions, "urlPolicy" | "rejectUnsafeUrls" | "resolveHostname"> {
   /**
    * Optional pre-built HTTP client. Supply this if you want to share a
    * client across augments or inject a mock in tests. If omitted, a
@@ -265,9 +265,23 @@ export interface WebFetchResult {
  * reason about directly. Matches the Rust WebFetchOutput shape.
  */
 export function webFetch(opts: WebFetchOptions = {}): Augment {
-  // SSRF guard is on by default — web_fetch ingests model-supplied URLs.
-  // Operators can still override by passing an explicit client.
-  const client = opts.client ?? createHttpClient({ rejectUnsafeUrls: true, ...opts });
+  const {
+    client: customClient,
+    urlPolicy: _ignoredUrlPolicy,
+    rejectUnsafeUrls: _ignoredLegacyPolicy,
+    resolveHostname: _ignoredResolver,
+    ...httpOptions
+  } = opts as WebFetchOptions &
+    Partial<Pick<HttpClientOptions, "urlPolicy" | "rejectUnsafeUrls" | "resolveHostname">>;
+  // web_fetch ingests model-supplied URLs, so its public-network policy is not
+  // configurable. A custom client is an explicit transfer of this boundary to
+  // the operator.
+  const client =
+    customClient ??
+    createHttpClient({
+      ...httpOptions,
+      urlPolicy: "public",
+    });
 
   const webFetchTool = defineTool({
     name: "web_fetch",
@@ -332,7 +346,7 @@ export function webFetch(opts: WebFetchOptions = {}): Augment {
         rows: [
           {
             label: "SSRF guard",
-            value: opts.client ? "delegated (custom client)" : "on (rejectUnsafeUrls)",
+            value: opts.client ? "delegated (custom client)" : "on (public-network + DNS pinning)",
           },
           { label: "Timeout (ms)", value: String(opts.timeoutMs ?? 30000) },
           { label: "User agent", value: opts.userAgent ?? "(default)" },

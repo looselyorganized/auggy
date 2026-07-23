@@ -58,11 +58,12 @@ The tool refuses URLs that point at:
 
 - Loopback addresses (`localhost`, `127.0.0.1`, `::1`)
 - Private network ranges (`10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`)
+- Shared, documentation, benchmarking, multicast, and reserved address ranges
 - Link-local addresses (`169.254.0.0/16`, `fe80::/10`)
 - Cloud metadata endpoints
 - Non-`http(s)` schemes (`file:`, `data:`, `ftp:`, etc.)
 
-Redirects are checked at each hop, so a `3xx` redirect to a private address fails the same way a direct request would. If you get an SSRF rejection, don't rewrite the URL to try to bypass it — the rejection is structural.
+Every DNS answer and redirect hop is checked, mixed public/private answers fail closed, and the connection is pinned to the validated destination. HTTPS-to-HTTP redirects are rejected. If you get an SSRF rejection, don't rewrite the URL to try to bypass it.
 
 ## Common mistakes
 
