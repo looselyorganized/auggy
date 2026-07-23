@@ -271,7 +271,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     label: "MCP",
     tagline: "call external MCP servers",
     description:
-      "Lets the agent use tools exposed by MCP servers. Server definitions live in .mcp.json so they stay portable across Claude Code/Cursor-style MCP configs. Local stdio servers work locally; cloud deploys require remote HTTP MCP or explicitly disabled local servers.",
+      "Lets the agent use creator-only-by-default tools exposed by MCP servers. Server definitions and explicit trust delegation live in .mcp.json. Local stdio servers work locally; cloud deploys require remote HTTP MCP or explicitly disabled local servers.",
     type: "mcp",
     defaultName: "mcp",
     defaultOptions: {},
@@ -356,7 +356,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     label: "Link",
     tagline: "peer-to-peer A2A (auggy ↔ auggy / A2A peers)",
     description:
-      "Preview peer-to-peer A2A transport. Opens a separate inbound port and dials configured peers outbound. Configured peer bearers currently admit peers as agent trust.",
+      "Preview peer-to-peer A2A transport. Opens a separate inbound port and dials configured peers outbound. Public delegation is off by default; authenticated origin is capped at the forwarding peer's trust.",
     type: "link",
     defaultName: "link",
     defaultOptions: {
