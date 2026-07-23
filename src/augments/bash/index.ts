@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import type { Augment, TrustLevel } from "../../types";
 import { defineTool } from "../../helpers";
 import { readStreamWithCap } from "../../http";
+import { isOutcomeUnknownError, OutcomeUnknownError } from "../../outcome-unknown";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -202,7 +203,9 @@ async function executeCommand(opts: {
   env: Record<string, string>;
   timeout: number;
   maxOutputBytes: number;
+  signal?: AbortSignal;
 }): Promise<ExecResult> {
+  opts.signal?.throwIfAborted();
   const started = performance.now();
 
   const cmd =
@@ -227,8 +230,10 @@ async function executeCommand(opts: {
   // Timeout with SIGTERM → SIGKILL escalation, sent to the whole process group
   // (negative PID) so children spawned by the shell die with their parent.
   let killed = false;
+  let timedOut = false;
   let killTimer: ReturnType<typeof setTimeout> | undefined;
-  const timer = setTimeout(() => {
+  const terminate = () => {
+    if (killed) return;
     killed = true;
     try {
       process.kill(-proc.pid, "SIGTERM");
@@ -242,20 +247,37 @@ async function executeCommand(opts: {
         // Already dead after SIGTERM, or never started.
       }
     }, SIGKILL_GRACE_MS);
+  };
+  const timer = setTimeout(() => {
+    timedOut = true;
+    terminate();
   }, opts.timeout);
+  opts.signal?.addEventListener("abort", terminate, { once: true });
 
-  // Read streams with byte-count truncation
-  const [stdout, stderr] = await Promise.all([
-    readStreamWithCap(proc.stdout, opts.maxOutputBytes),
-    readStreamWithCap(proc.stderr, opts.maxOutputBytes),
-  ]);
-
-  const exitCode = await proc.exited;
-  clearTimeout(timer);
-  if (killTimer) clearTimeout(killTimer);
+  let stdout: { text: string; truncated: boolean };
+  let stderr: { text: string; truncated: boolean };
+  let exitCode: number;
+  try {
+    // Read streams with byte-count truncation
+    [stdout, stderr] = await Promise.all([
+      readStreamWithCap(proc.stdout, opts.maxOutputBytes),
+      readStreamWithCap(proc.stderr, opts.maxOutputBytes),
+    ]);
+    exitCode = await proc.exited;
+  } finally {
+    clearTimeout(timer);
+    if (killTimer) clearTimeout(killTimer);
+    opts.signal?.removeEventListener("abort", terminate);
+  }
 
   const truncated = stdout.truncated || stderr.truncated;
   const durationMs = Math.round(performance.now() - started);
+  if (timedOut) {
+    throw new OutcomeUnknownError(
+      `Command timed out after ${opts.timeout}ms; process output is incomplete and side-effect outcome is unknown`,
+    );
+  }
+  opts.signal?.throwIfAborted();
 
   return {
     stdout: stdout.text,
@@ -349,7 +371,7 @@ export function bash(opts: BashAugmentOptions = {}): Augment {
           .optional()
           .describe("Arguments (used in restricted/exec mode; ignored in shell mode)"),
       }),
-      execute: async ({ command, args }) => {
+      execute: async ({ command, args }, context) => {
         // Security checks
         const fullCommand =
           config.mode === "exec" && args?.length ? `${command} ${args.join(" ")}` : command;
@@ -378,9 +400,11 @@ export function bash(opts: BashAugmentOptions = {}): Augment {
             env: env as Record<string, string>,
             timeout: config.timeout,
             maxOutputBytes: config.maxOutputBytes,
+            signal: context?.signal,
           });
           return JSON.stringify({ ...result, command: fullCommand });
         } catch (err) {
+          if (context?.signal?.aborted || isOutcomeUnknownError(err)) throw err;
           return JSON.stringify({
             error: (err as Error).message,
             command: fullCommand,
@@ -405,7 +429,7 @@ export function bash(opts: BashAugmentOptions = {}): Augment {
       input: z.object({
         name: z.string().describe("Script name"),
       }),
-      execute: async ({ name }) => {
+      execute: async ({ name }, context) => {
         const script = scriptMap.get(name);
         if (!script) {
           return JSON.stringify({
@@ -425,9 +449,11 @@ export function bash(opts: BashAugmentOptions = {}): Augment {
             env: env as Record<string, string>,
             timeout: script.timeout ?? config.timeout,
             maxOutputBytes: config.maxOutputBytes,
+            signal: context?.signal,
           });
           return JSON.stringify({ ...result, script: name });
         } catch (err) {
+          if (context?.signal?.aborted || isOutcomeUnknownError(err)) throw err;
           return JSON.stringify({
             error: (err as Error).message,
             script: name,

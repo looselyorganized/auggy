@@ -291,7 +291,7 @@ export function webFetch(opts: WebFetchOptions = {}): Augment {
       url: z.string().url(),
       prompt: z.string(),
     }),
-    execute: async ({ url, prompt }) => {
+    execute: async ({ url, prompt }, context) => {
       const startedAt = performance.now();
       let requestUrl: string;
       try {
@@ -307,7 +307,7 @@ export function webFetch(opts: WebFetchOptions = {}): Augment {
 
       let response: HttpResponse;
       try {
-        response = await client.get(requestUrl);
+        response = await client.get(requestUrl, { signal: context?.signal });
       } catch (error) {
         return JSON.stringify({
           url: requestUrl,

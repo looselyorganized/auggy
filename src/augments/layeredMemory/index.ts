@@ -280,12 +280,15 @@ async function runExtractionInsideTurn(args: {
   peerId: string;
   confidenceThreshold: number;
   sourceTurnId: string;
+  signal?: AbortSignal;
 }): Promise<TurnResult> {
+  args.signal?.throwIfAborted();
   const inferenceStart = Date.now();
   const result = await handleExtractionTurn({
     transcript: args.transcript,
     engine: args.engine,
     promptTemplate: args.promptTemplate,
+    signal: args.signal,
   });
   const inferenceDurationMs = Date.now() - inferenceStart;
   const cost: CostResult =
@@ -308,6 +311,15 @@ async function runExtractionInsideTurn(args: {
 
   let written = 0;
   for (const [idx, fact] of result.facts.entries()) {
+    if (args.signal?.aborted) {
+      return buildExtractionTurnResult({
+        trigger: args.trigger,
+        status: "failed",
+        cost,
+        inferenceDurationMs,
+        errorMessage: "extraction canceled after inference completed",
+      });
+    }
     if (fact.confidence < args.confidenceThreshold) {
       // Below threshold: skip rather than write a low-signal entry.
       // Spec Decision 7 leaves a knob for "write but flag" — at v1.0
@@ -316,6 +328,15 @@ async function runExtractionInsideTurn(args: {
       continue;
     }
     try {
+      if (args.signal?.aborted) {
+        return buildExtractionTurnResult({
+          trigger: args.trigger,
+          status: "failed",
+          cost,
+          inferenceDurationMs,
+          errorMessage: "extraction canceled after inference completed",
+        });
+      }
       await args.store.writeAutoSavedEntry({
         peerId: args.peerId,
         label: buildAutoSaveLabel(args.prefix, args.peerId, args.sourceTurnId, idx),
@@ -329,14 +350,41 @@ async function runExtractionInsideTurn(args: {
         sourceTurnId: args.sourceTurnId,
         model: EXTRACTION_MODEL_LABEL,
       });
+      if (args.signal?.aborted) {
+        return buildExtractionTurnResult({
+          trigger: args.trigger,
+          status: "failed",
+          cost,
+          inferenceDurationMs,
+          errorMessage: "extraction canceled while persisting inferred memory",
+        });
+      }
       written++;
     } catch (err) {
+      if (args.signal?.aborted) {
+        return buildExtractionTurnResult({
+          trigger: args.trigger,
+          status: "failed",
+          cost,
+          inferenceDurationMs,
+          errorMessage: "extraction canceled while persisting inferred memory",
+        });
+      }
       console.warn(
         `[layered-memory.autoSave] writeAutoSavedEntry failed for fact ${idx}: ${(err as Error).message}`,
       );
     }
   }
 
+  if (args.signal?.aborted) {
+    return buildExtractionTurnResult({
+      trigger: args.trigger,
+      status: "failed",
+      cost,
+      inferenceDurationMs,
+      errorMessage: "extraction canceled after inference completed",
+    });
+  }
   return buildExtractionTurnResult({
     trigger: args.trigger,
     status: "completed",
@@ -578,6 +626,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
    * original "Decision 5" of the memorist design).
    */
   async function scheduleAfterTurn(result: TurnResult, ctx: SchedulerContext): Promise<void> {
+    ctx.signal?.throwIfAborted();
     if (!autoSaveEnabled) return;
     if (!promptTemplate) return;
     // Recursion guard: skip extraction-initiated turns. Without this,
@@ -586,6 +635,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     if (isAutoSaveTurn(result)) return;
 
     const transcript = await ctx.getCompletedTranscript();
+    ctx.signal?.throwIfAborted();
     if (!transcript) return; // turn was compacted before the hook ran
     if (!transcript.peer) return; // no peer, no scoped namespace to write under
 
@@ -597,6 +647,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     // Pass the full peer object so trigger.peer targets the recognized
     // identity (budget caps and turn gates key off trigger.peer).
     await maybeFlushOnPromotion(threadId, transcript.peer, ctx);
+    ctx.signal?.throwIfAborted();
 
     // Update thread→peer history AFTER promotion detection so the
     // detector compares against the prior turn's identity.
@@ -681,8 +732,9 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
    */
   async function handleInternalTurn(
     trigger: TurnTrigger,
-    _ctx: InternalTurnContext,
+    ctx: InternalTurnContext,
   ): Promise<TurnResult | null> {
+    ctx.signal?.throwIfAborted();
     if (trigger.source !== AUTO_SAVE_TRIGGER_SOURCE) return null;
     if (!isAutoSaveTriggerPayload(trigger.payload)) {
       // Defensive — a stray internal trigger named auto-save without
@@ -718,6 +770,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       peerId: trigger.payload.peerId,
       confidenceThreshold: trigger.payload.confidenceThreshold,
       sourceTurnId: trigger.payload.sourceTurnId,
+      signal: ctx.signal,
     });
   }
 

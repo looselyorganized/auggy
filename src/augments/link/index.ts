@@ -746,6 +746,7 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
       text: z.string().describe("Message text to send. v0.1 link traffic is text-only."),
     }),
     execute: async ({ to, text }, ctx?: ToolExecuteContext) => {
+      ctx?.signal?.throwIfAborted();
       const authority = canUseOutbound(ctx);
       if (!authority.allowed) {
         return JSON.stringify({
@@ -786,6 +787,7 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
         bearer: configuredPeer.bearer,
         idempotencyKey,
       });
+      ctx?.signal?.throwIfAborted();
       const result = await peerClient.send({
         to,
         parts,
@@ -793,11 +795,23 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
       });
 
       if (!result.ok) {
-        return JSON.stringify({
+        const content = JSON.stringify({
           ok: false,
           error: result.error.code,
           message: result.error.message,
         });
+        // The link SDK retries transient failures with the same idempotency
+        // key, but its API has no caller AbortSignal. A final network or
+        // malformed-response failure cannot prove whether the peer executed
+        // the request, so terminate the turn instead of letting the model
+        // issue a fresh key.
+        if (
+          result.error.code === "peer_network_error" ||
+          result.error.code === "peer_protocol_error"
+        ) {
+          return { content, isError: true, outcomeUnknown: true };
+        }
+        return content;
       }
 
       const { outcome } = result.value;

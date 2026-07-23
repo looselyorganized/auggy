@@ -2,6 +2,8 @@ import { describe, test, expect, afterAll } from "bun:test";
 import {
   createHttpClient,
   createRedirectRejectingFetch,
+  HttpOutcomeUnknownError,
+  HttpTimeoutError,
   rejectNonGlobalAddress,
   rejectUnsafeRedirect,
   rejectUnsafeUrl,
@@ -360,10 +362,21 @@ describe("http client — timeout", () => {
 
     try {
       const client = createHttpClient({ timeoutMs: 200 });
-      expect(client.get(`http://${TEST_HOST}:${slowServer.port}/`)).rejects.toThrow();
+      const pending = client.get(`http://${TEST_HOST}:${slowServer.port}/`);
+      expect(pending).rejects.toBeInstanceOf(HttpTimeoutError);
+      expect(pending).rejects.toMatchObject({ outcomeUnknown: true, ms: 200 });
     } finally {
       slowServer.stop(true);
     }
+  });
+
+  test("classifies a dispatched mutation without a response as outcome unknown", async () => {
+    const closedServer = serveOnEphemeralPort(() => new Response("unused"));
+    const url = `http://${TEST_HOST}:${closedServer.port}/`;
+    closedServer.stop(true);
+    const client = createHttpClient({ timeoutMs: 1_000 });
+
+    await expect(client.post(url, { body: "{}" })).rejects.toBeInstanceOf(HttpOutcomeUnknownError);
   });
 });
 

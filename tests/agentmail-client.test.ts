@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { createAgentMailClient } from "../src/agentmail-client";
 import type { HttpResponse, HttpRequestInit } from "../src/http";
+import { OutcomeUnknownError } from "../src/outcome-unknown";
 
 function mockHttp(
   handler: (
@@ -42,6 +43,39 @@ function mockHttp(
 }
 
 describe("createAgentMailClient", () => {
+  test("passes the send cancellation signal to the HTTP client", async () => {
+    const controller = new AbortController();
+    let capturedSignal: AbortSignal | undefined;
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: {
+        post: async (url, opts) => {
+          capturedSignal = opts?.signal;
+          return {
+            finalUrl: url,
+            status: 200,
+            statusText: "OK",
+            contentType: "application/json",
+            headers: new Headers(),
+            body: JSON.stringify({ message_id: "msg_1", thread_id: "thd_1" }),
+          };
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+    });
+
+    await client.send({
+      inboxId: "inb_x",
+      to: ["a@b.com"],
+      subject: "s",
+      text: "t",
+      signal: controller.signal,
+    });
+    expect(capturedSignal).toBe(controller.signal);
+  });
+
   test("posts to /inboxes/{id}/messages/send with bearer auth", async () => {
     let captured: { url: string; body: Record<string, unknown> } | null = null;
     let capturedAuth = "";
@@ -89,7 +123,7 @@ describe("createAgentMailClient", () => {
     }
   });
 
-  test("returns failed on network throw", async () => {
+  test("classifies a network throw after send dispatch as outcome unknown", async () => {
     const client = createAgentMailClient({
       apiKey: "am_test",
       http: {
@@ -101,12 +135,49 @@ describe("createAgentMailClient", () => {
         },
       },
     });
-    const r = await client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" });
-    expect(r.status).toBe("failed");
-    if (r.status === "failed") {
-      expect(r.detail).toContain("ECONNREFUSED");
-      expect(r.httpStatus).toBeUndefined();
-    }
+    await expect(
+      client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" }),
+    ).rejects.toMatchObject({ outcomeUnknown: true });
+  });
+
+  test("classifies an unreadable successful send response as outcome unknown", async () => {
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: mockHttp(() => ({ status: 200, body: "not-json" })),
+    });
+
+    await expect(
+      client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" }),
+    ).rejects.toMatchObject({ outcomeUnknown: true });
+  });
+
+  test("preserves an outcome-unknown HTTP failure", async () => {
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: {
+        post: async () => {
+          throw new OutcomeUnknownError("request deadline elapsed after dispatch");
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+    });
+
+    await expect(
+      client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" }),
+    ).rejects.toMatchObject({ outcomeUnknown: true });
+  });
+
+  test("classifies a provider 5xx after send dispatch as outcome unknown", async () => {
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: mockHttp(() => ({ status: 503, body: "unavailable" })),
+    });
+
+    await expect(
+      client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" }),
+    ).rejects.toMatchObject({ outcomeUnknown: true });
   });
 
   test("rejects send requests with no recipients before hitting AgentMail", async () => {

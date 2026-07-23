@@ -30,7 +30,12 @@ afterEach(() => {
 
 class FakeMcpConnection implements McpConnection {
   closed = false;
-  calls: { name: string; args: Record<string, unknown>; timeoutMs: number }[] = [];
+  calls: {
+    name: string;
+    args: Record<string, unknown>;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  }[] = [];
 
   constructor(
     private tools: McpRemoteTool[],
@@ -42,8 +47,13 @@ class FakeMcpConnection implements McpConnection {
     return { tools: this.tools, nextCursor: this.nextCursor };
   }
 
-  async callTool(name: string, args: Record<string, unknown>, timeoutMs: number) {
-    this.calls.push({ name, args, timeoutMs });
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ) {
+    this.calls.push({ name, args, timeoutMs, signal });
     return this.result;
   }
 
@@ -332,6 +342,149 @@ describe("mcp augment runtime", () => {
     expect(adapter.connections[0]!.calls).toHaveLength(1);
   });
 
+  test("passes tool cancellation to the MCP connection", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+    });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    class CancelableConnection extends FakeMcpConnection {
+      override async callTool(
+        name: string,
+        args: Record<string, unknown>,
+        timeoutMs: number,
+        signal?: AbortSignal,
+      ) {
+        this.calls.push({ name, args, timeoutMs, signal });
+        markStarted();
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => reject(signal.reason ?? new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        });
+        return { content: [{ type: "text", text: "must not complete" }] };
+      }
+    }
+    class CancelableAdapter implements McpClientAdapter {
+      connection = new CancelableConnection([
+        { name: "read_status", inputSchema: { type: "object" } },
+      ]);
+      async connect() {
+        return this.connection;
+      }
+    }
+    const adapter = new CancelableAdapter();
+    const manager = createMcpManager({ agentDir: TMP, client: adapter });
+    await manager.boot();
+    const controller = new AbortController();
+
+    const pending = manager.tools[0]!.execute(
+      {},
+      {
+        ...INTERNAL_TOOL_CONTEXT,
+        signal: controller.signal,
+      },
+    );
+
+    await started;
+    const forwarded = adapter.connection.calls[0]?.signal;
+    expect(forwarded).toBeDefined();
+    expect(forwarded).not.toBe(controller.signal);
+    controller.abort(new DOMException("caller left", "AbortError"));
+    await expect(pending).rejects.toThrow("caller left");
+    expect(forwarded?.aborted).toBe(true);
+  });
+
+  test("classifies an MCP policy timeout as outcome unknown", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+    });
+    let releaseFirst: (() => void) | undefined;
+    class NonCooperativeConnection extends FakeMcpConnection {
+      override async callTool(
+        name: string,
+        args: Record<string, unknown>,
+        timeoutMs: number,
+        signal?: AbortSignal,
+      ) {
+        this.calls.push({ name, args, timeoutMs, signal });
+        if (this.calls.length === 1) {
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+        }
+        return { content: [{ type: "text", text: "done" }] };
+      }
+    }
+    class NonCooperativeAdapter implements McpClientAdapter {
+      connection = new NonCooperativeConnection([
+        { name: "mutate", inputSchema: { type: "object" } },
+      ]);
+      async connect() {
+        return this.connection;
+      }
+    }
+    const manager = createMcpManager({
+      agentDir: TMP,
+      client: new NonCooperativeAdapter(),
+      timeoutMs: 5,
+      maxConcurrentCalls: 1,
+    });
+    await manager.boot();
+
+    await expect(manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT)).rejects.toMatchObject({
+      outcomeUnknown: true,
+    });
+    const whileUnderlyingCallIsRunning = await manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT);
+    expect(JSON.stringify(whileUnderlyingCallIsRunning)).toContain("is busy");
+
+    releaseFirst?.();
+    // Drain the deterministic promise chain: remote call resolution, the
+    // async adapter continuation, and the manager's reservation finalizer.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(await manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT)).toMatchObject({
+      content: "done",
+    });
+  });
+
+  test("classifies a thrown MCP call failure after dispatch as outcome unknown", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+    });
+    class FailingCallConnection extends FakeMcpConnection {
+      override async callTool(): Promise<McpToolCallResult> {
+        throw new Error("connection reset after remote mutation");
+      }
+    }
+    class FailingCallAdapter implements McpClientAdapter {
+      connection = new FailingCallConnection([{ name: "mutate", inputSchema: { type: "object" } }]);
+      async connect() {
+        return this.connection;
+      }
+    }
+    const manager = createMcpManager({
+      agentDir: TMP,
+      client: new FailingCallAdapter(),
+    });
+    await manager.boot();
+
+    await expect(manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT)).rejects.toMatchObject({
+      outcomeUnknown: true,
+    });
+  });
+
   test("failed external servers do not crash boot or expose tools", async () => {
     writeMcpConfig({
       mcpServers: {
@@ -591,6 +744,51 @@ describe("mcp augment runtime", () => {
       expect(result.success).toBe(true);
       expect(result.toolCalls[0]?.name).toBe("mcp_github_search");
       expect(adapter.connections[0]!.calls[0]?.name).toBe("search");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  test("remote MCP error after dispatch is terminal and is not sent back for model retry", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "stdio", command: "node" },
+      },
+    });
+    const adapter = new FakeMcpAdapter([{ name: "mutate", inputSchema: { type: "object" } }], {
+      content: [{ type: "text", text: "remote mutation returned an error" }],
+      isError: true,
+    });
+    const augment = mcp({ agentDir: TMP, client: adapter });
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      finishReason: "tool_use",
+      toolCalls: [{ name: "mcp_ops_mutate", arguments: {} }],
+    });
+    model.pushResponse({ content: "retrying", finishReason: "end_turn" });
+    const agent = defineAgent({ name: "mcp-test", model: "mock", augments: [augment] }, model);
+
+    await agent.start();
+    try {
+      const trigger: TurnTrigger = {
+        type: "message",
+        turnId: "turn-mcp-error",
+        threadId: "thread-mcp-error",
+        timestamp: Date.now(),
+        source: "test",
+        peer: null,
+        payload: {
+          parts: [{ kind: "text", text: "mutate" }],
+          sourceAugment: "test",
+          peer: null,
+          timestamp: Date.now(),
+        },
+      };
+      const result = await agent.inject(trigger);
+      expect(result.status).toBe("failed");
+      expect(model.calls).toHaveLength(1);
+      expect(adapter.connections[0]!.calls).toHaveLength(1);
     } finally {
       await agent.stop();
     }

@@ -54,6 +54,7 @@ export interface McpConnection {
     name: string,
     args: Record<string, unknown>,
     timeoutMs: number,
+    signal?: AbortSignal,
   ): Promise<McpToolCallResult>;
   close(): Promise<void>;
 }

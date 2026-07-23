@@ -221,7 +221,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
       // Wire the outbound callback once. The kernel invokes this for every
       // outbound text message during a turn — we look up the chat_id by
       // threadId (set when the inbound arrived) and call sendMessage.
-      kernel.onOutbound(async (_peer: PeerIdentity, message: OutboundMessage) => {
+      kernel.onOutbound(async (_peer: PeerIdentity, message: OutboundMessage, context) => {
         // Telegram replies are text-only in v0. Concatenate all text parts
         // to mirror the AG-UI text_message kernel events.
         const textParts = message.parts
@@ -239,7 +239,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
         if (chatId === undefined) return;
 
         try {
-          await client.sendMessage(chatId, text);
+          await client.sendMessage(chatId, text, { signal: context?.signal });
         } catch (err) {
           console.warn(
             `[telegram-transport] sendMessage failed for chatId=${chatId}: ${(err as Error).message}`,

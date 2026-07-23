@@ -420,6 +420,22 @@ describe("filesystem augment", () => {
   // === fs_write ===
 
   describe("fs_write", () => {
+    it("does not begin a mutation when the turn is already canceled", async () => {
+      const aug = createTestFs();
+      const controller = new AbortController();
+      controller.abort(new DOMException("caller left", "AbortError"));
+
+      await expect(
+        execTool(
+          aug,
+          "fs_write",
+          { path: "work/canceled.txt", content: "must not be written" },
+          { ...creatorCtx, signal: controller.signal },
+        ),
+      ).rejects.toThrow("caller left");
+      await expect(access(join(tmp.path, "writable", "canceled.txt"))).rejects.toThrow();
+    });
+
     it("writes a file to a writable mount", async () => {
       const aug = createTestFs();
       const result = await execTool(aug, "fs_write", {

@@ -454,11 +454,11 @@ describe("link_send tool", () => {
       _peerClient: fakePeerClient as unknown as import("@auggy/link").PeerClient,
     });
     const sendTool = aug.tools!.find((t) => t.name === "link_send")!;
-    const result = await asStringTool(sendTool).execute(
-      { to: "researcher", text: "hello" },
-      makeToolCtx(),
-    );
-    const parsed = JSON.parse(result);
+    const result = await sendTool.execute({ to: "researcher", text: "hello" }, makeToolCtx());
+    expect(typeof result).toBe("object");
+    if (typeof result === "string") throw new Error("expected structured outcome-unknown result");
+    expect(result).toMatchObject({ isError: true, outcomeUnknown: true });
+    const parsed = JSON.parse(result.content);
     expect(parsed.ok).toBe(false);
     expect(parsed.error).toBe("peer_network_error");
     expect(parsed.message).toBe("ECONNREFUSED");

@@ -27,14 +27,19 @@ export class SdkMcpClientAdapter implements McpClientAdapter {
           nextCursor: result.nextCursor,
         };
       },
-      async callTool(name: string, args: Record<string, unknown>, timeoutMs: number) {
+      async callTool(
+        name: string,
+        args: Record<string, unknown>,
+        timeoutMs: number,
+        signal?: AbortSignal,
+      ) {
         return (await client.callTool(
           {
             name,
             arguments: args,
           },
           undefined,
-          { timeout: timeoutMs },
+          { timeout: timeoutMs, signal },
         )) as McpToolCallResult;
       },
       async close() {

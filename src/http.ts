@@ -3,6 +3,26 @@ import { request as nodeHttpRequest } from "node:http";
 import { request as nodeHttpsRequest } from "node:https";
 import { isIP, type LookupFunction } from "node:net";
 import { Readable } from "node:stream";
+import { OutcomeUnknownError } from "./outcome-unknown";
+
+export class HttpOutcomeUnknownError extends OutcomeUnknownError {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "HttpOutcomeUnknownError";
+  }
+}
+
+export class HttpTimeoutError extends HttpOutcomeUnknownError {
+  readonly ms: number;
+
+  constructor(ms: number) {
+    super(
+      `HTTP request timed out after ${ms}ms; delivery outcome is unknown and must not be retried automatically`,
+    );
+    this.name = "HttpTimeoutError";
+    this.ms = ms;
+  }
+}
 
 /**
  * HTTP client primitive.
@@ -643,14 +663,18 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
     } else {
       init.signal?.addEventListener("abort", abortFromCaller, { once: true });
     }
-    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let timeoutError: HttpTimeoutError | undefined;
+    const timer = setTimeout(() => {
+      timeoutError = new HttpTimeoutError(timeoutMs);
+      controller.abort(timeoutError);
+    }, timeoutMs);
 
+    let requestDispatched = false;
     try {
       let currentUrl = url;
       let currentMethod = method;
       let currentBody: string | Uint8Array | undefined = init.body;
       let hops = 0;
-
       while (true) {
         const resolved =
           urlPolicy === "public"
@@ -663,6 +687,7 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
         if (parsedCurrentUrl.username || parsedCurrentUrl.password) {
           throw new Error("http client: URL credentials are not allowed");
         }
+        requestDispatched = true;
         const response = await fetchHop(
           currentUrl,
           {
@@ -725,6 +750,18 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
         const body = await readBody(response, maxBodyBytes);
         return buildResponse(currentUrl, response, body);
       }
+    } catch (error) {
+      if (timeoutError) throw timeoutError;
+      if (init.signal?.aborted) {
+        throw init.signal.reason ?? new DOMException("Operation aborted", "AbortError");
+      }
+      if (requestDispatched && method !== "GET" && method !== "HEAD") {
+        throw new HttpOutcomeUnknownError(
+          "HTTP mutation ended without a trustworthy response after dispatch; outcome is unknown and must not be retried automatically",
+          { cause: error },
+        );
+      }
+      throw error;
     } finally {
       clearTimeout(timer);
       init.signal?.removeEventListener("abort", abortFromCaller);

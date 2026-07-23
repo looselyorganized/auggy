@@ -10,6 +10,8 @@ import {
 } from "../../cli/mcp-config";
 import { parseEnvFile } from "../../cli/env-parse";
 import type { AugmentConstraints, Tool, ToolExecuteContext, TrustLevel } from "../../types";
+import { isOutcomeUnknownError, OutcomeUnknownError } from "../../outcome-unknown";
+import { withTimeout as withDeadline } from "../../kernel/timeout";
 import { formatMcpToolResult } from "./result";
 import { SdkMcpClientAdapter } from "./sdk-adapter";
 import type {
@@ -19,6 +21,7 @@ import type {
   McpRuntimePolicy,
   McpRuntimeServer,
   McpServerStatus,
+  McpToolCallResult,
   McpTransportKind,
 } from "./types";
 
@@ -349,21 +352,58 @@ function toAuggyTool(
         return { content: `MCP server "${server.name}" is busy. Try again later.` };
       }
       runtime.activeCalls++;
-      try {
-        const result = await runtime.connection.callTool(
-          remoteTool.name,
-          input,
-          server.policy.timeoutMs!,
-        );
-        return {
-          content: formatMcpToolResult(result, server.policy.maxResultBytes!),
-        };
-      } catch (err) {
-        return {
-          content: `MCP tool "${remoteTool.name}" on server "${server.name}" failed: ${cleanError(err)}`,
-        };
-      } finally {
+      let dispatchStarted = false;
+      let reservationReleased = false;
+      const releaseReservation = () => {
+        if (reservationReleased) return;
+        reservationReleased = true;
         runtime.activeCalls--;
+      };
+      try {
+        const result = await withDeadline(
+          (deadlineSignal) => {
+            dispatchStarted = true;
+            let operation: Promise<McpToolCallResult>;
+            try {
+              operation = Promise.resolve(
+                runtime.connection!.callTool(
+                  remoteTool.name,
+                  input,
+                  server.policy.timeoutMs!,
+                  deadlineSignal,
+                ),
+              );
+            } catch (err) {
+              releaseReservation();
+              throw err;
+            }
+            void operation.then(releaseReservation, releaseReservation);
+            return operation;
+          },
+          server.policy.timeoutMs!,
+          context.signal,
+        );
+        const content = formatMcpToolResult(result, server.policy.maxResultBytes!);
+        if (result.isError) {
+          return {
+            content,
+            isError: true,
+            outcomeUnknown: true,
+          };
+        }
+        return { content };
+      } catch (err) {
+        if (context.signal?.aborted || isOutcomeUnknownError(err)) throw err;
+        throw new OutcomeUnknownError(
+          `MCP tool "${remoteTool.name}" ended without a trustworthy result after dispatch`,
+          { cause: err },
+        );
+      } finally {
+        // A non-cooperative remote operation may keep running after the
+        // caller's deadline. Keep its concurrency slot reserved until the
+        // underlying operation actually settles. Only pre-dispatch
+        // cancellation can safely release the slot here.
+        if (!dispatchStarted) releaseReservation();
       }
     },
   };

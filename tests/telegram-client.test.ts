@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import type { HttpClient, HttpResponse } from "../src/http";
+import { OutcomeUnknownError } from "../src/outcome-unknown";
 import { createTelegramBotClient } from "../src/telegram-client";
 
 type HttpPostInit = Parameters<HttpClient["post"]>[1];
@@ -80,6 +81,48 @@ describe("createTelegramBotClient", () => {
     await client.getUpdates({ timeoutSec: 30, signal: controller.signal });
     expect(capturedSignal).toBe(controller.signal);
   });
+
+  it("sendMessage passes abort signal to HTTP client", async () => {
+    const controller = new AbortController();
+    let capturedSignal: AbortSignal | undefined;
+    const client = createTelegramBotClient({
+      botToken: "T",
+      client: mockHttp((_m, _u, _b, opts) => {
+        capturedSignal = opts?.signal;
+        return {
+          status: 200,
+          body: JSON.stringify({ ok: true, result: { message_id: 1, chat: { id: 42 } } }),
+        };
+      }),
+    });
+    await client.sendMessage(42, "hello", { signal: controller.signal });
+    expect(capturedSignal).toBe(controller.signal);
+  });
+
+  it("classifies an unreadable successful sendMessage response as outcome unknown", async () => {
+    const client = createTelegramBotClient({
+      botToken: "T",
+      client: mockHttp(() => ({ status: 200, body: "not-json" })),
+    });
+
+    await expect(client.sendMessage(42, "hello")).rejects.toBeInstanceOf(OutcomeUnknownError);
+  });
+
+  for (const [name, body] of [
+    ["null envelope", "null"],
+    ["missing ok flag", "{}"],
+    ["null result", JSON.stringify({ ok: true, result: null })],
+    ["incomplete result", JSON.stringify({ ok: true, result: {} })],
+  ] as const) {
+    it(`classifies ${name} after sendMessage dispatch as outcome unknown`, async () => {
+      const client = createTelegramBotClient({
+        botToken: "T",
+        client: mockHttp(() => ({ status: 200, body })),
+      });
+
+      await expect(client.sendMessage(42, "hello")).rejects.toBeInstanceOf(OutcomeUnknownError);
+    });
+  }
 
   it("setWebhook posts url and secret_token", async () => {
     let captured: { url?: string; body?: unknown } = {};

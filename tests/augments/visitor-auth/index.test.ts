@@ -7,6 +7,7 @@ import { visitorAuth } from "../../../src/augments/visitorAuth";
 import { createSqliteVisitorAuthStore } from "../../../src/augments/visitorAuth/storage/sqlite-store";
 import { createVisitorAuthRateLimiter } from "../../../src/augments/visitorAuth/rate-limiter";
 import type { AgentMailClient } from "../../../src/agentmail-client";
+import { OutcomeUnknownError } from "../../../src/outcome-unknown";
 import type { ToolExecuteContext, ContextBlock } from "../../../src/types";
 
 let tmp: string;
@@ -664,6 +665,72 @@ describe("request_auth tool", () => {
     await aug.onShutdown?.();
   });
 
+  test("forwards request_auth cancellation to AgentMail delivery", async () => {
+    let observedSignal: AbortSignal | undefined;
+    const { aug } = buildAug({
+      sendImpl: async (input) => {
+        observedSignal = input.signal;
+        return { status: "sent", messageId: "m1", threadId: "t1" };
+      },
+    });
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    const controller = new AbortController();
+
+    const raw = await aug.tools![0]!.execute(
+      { method: "email", email: "alice@example.com" },
+      {
+        turnId: "t1",
+        threadId: "thread1",
+        peer: {
+          id: "anon-thread1",
+          kind: "anonymous",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+          sourceAugment: "web",
+        },
+        signal: controller.signal,
+      },
+    );
+
+    expect(JSON.parse(raw as string).status).toBe("sent");
+    expect(observedSignal).toBe(controller.signal);
+    await aug.onShutdown?.();
+  });
+
+  test("reserves verification quota when AgentMail delivery outcome is unknown", async () => {
+    const { aug } = buildAug({
+      sendImpl: async () => {
+        throw new OutcomeUnknownError("response lost after dispatch");
+      },
+    });
+    await aug.onBoot?.();
+    await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
+    const context: ToolExecuteContext = {
+      turnId: "t1",
+      threadId: "thread1",
+      peer: {
+        id: "anon-thread1",
+        kind: "anonymous",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+        sourceAugment: "web",
+      },
+    };
+
+    await expect(
+      aug.tools![0]!.execute({ method: "email", email: "alice@example.com" }, context),
+    ).rejects.toMatchObject({ outcomeUnknown: true });
+    const retry = JSON.parse(
+      (await aug.tools![0]!.execute(
+        { method: "email", email: "alice@example.com" },
+        context,
+      )) as string,
+    );
+    expect(retry).toMatchObject({ status: "rejected", code: "rate_limited" });
+    await aug.onShutdown?.();
+  });
+
   test("rejects request_auth outside the anonymous public visitor boundary", async () => {
     const { aug, sendCalls } = buildAug();
     await aug.onBoot?.();
@@ -1189,7 +1256,7 @@ describe("request_auth tool", () => {
 
   test("AgentMail send failure returns status 'failed' with detail (fix #7)", async () => {
     const { aug } = buildAug({
-      sendImpl: async () => ({ status: "failed", detail: "smtp blew up", httpStatus: 500 }),
+      sendImpl: async () => ({ status: "failed", detail: "smtp rejected", httpStatus: 400 }),
     });
     await aug.onBoot?.();
     await aug.onTurnStart?.(turnWithVisitor("alice@example.com"));
@@ -1209,7 +1276,7 @@ describe("request_auth tool", () => {
     );
     const result = JSON.parse(raw as string);
     expect(result.status).toBe("failed");
-    expect(result.message).toMatch(/smtp blew up/);
+    expect(result.message).toMatch(/smtp rejected/);
     await aug.onShutdown?.();
   });
 
@@ -1268,7 +1335,9 @@ describe("request_auth tool", () => {
   // tokenB survives and is consumable by the visitor's verify click.
   test("failure-path cleanup is token-scoped — does not invalidate sibling concurrent token (F3)", async () => {
     let sendCallCount = 0;
-    const sendResolvers: Array<(r: { status: "sent" | "failed"; detail?: string }) => void> = [];
+    const sendResolvers: Array<
+      (r: { status: "sent" | "failed"; detail?: string; httpStatus?: number }) => void
+    > = [];
     const { aug, sendCalls } = buildAug({
       rateLimit: { perHour: 5, perDay: 10 },
       sendImpl: () =>
@@ -1280,7 +1349,11 @@ describe("request_auth tool", () => {
         }>((resolve) => {
           sendCallCount++;
           sendResolvers.push(
-            resolve as (r: { status: "sent" | "failed"; detail?: string }) => void,
+            resolve as (r: {
+              status: "sent" | "failed";
+              detail?: string;
+              httpStatus?: number;
+            }) => void,
           );
         }) as unknown as ReturnType<AgentMailClient["send"]>,
     });
@@ -1313,7 +1386,7 @@ describe("request_auth tool", () => {
 
     // Resolve A (loser) first as "failed". This is when A's cleanup runs.
     // Then resolve B (winner) as "sent".
-    sendResolvers[0]!({ status: "failed", detail: "smtp blew up" });
+    sendResolvers[0]!({ status: "failed", detail: "smtp rejected the message", httpStatus: 400 });
     sendResolvers[1]!({
       status: "sent",
       messageId: "m",
@@ -1403,6 +1476,20 @@ describe("visitorAuth app request route", () => {
     expect(sendCalls).toHaveLength(1);
     expect(sendCalls[0]?.to).toEqual(["alice@example.com"]);
     expect(sendCalls[0]?.text).toMatch(/https:\/\/zip\.test\/visitor-auth\/verify\?token=/);
+    await aug.onShutdown?.();
+  });
+
+  test("forwards the route cancellation signal to verification delivery", async () => {
+    const { aug, sendCalls } = buildAug();
+    await aug.onBoot?.();
+    const controller = new AbortController();
+
+    const res = await aug.httpRoutes![2]!.handler(requestBody({ email: "alice@example.com" }), {
+      signal: controller.signal,
+    });
+
+    expect(res.status).toBe(200);
+    expect(sendCalls[0]?.signal).toBe(controller.signal);
     await aug.onShutdown?.();
   });
 
@@ -2091,7 +2178,13 @@ describe("context() block", () => {
 });
 
 function makeAugWithFirstVerify(dbPath: string) {
-  const sends: { to: string[]; subject: string; text: string; inboxId: string }[] = [];
+  const sends: {
+    to: string[];
+    subject: string;
+    text: string;
+    inboxId: string;
+    signal?: AbortSignal;
+  }[] = [];
   const aug = visitorAuth({
     publicUrl: "https://zip.test",
     dbPath,
@@ -2104,8 +2197,20 @@ function makeAugWithFirstVerify(dbPath: string) {
     rateLimit: { perHour: 5, perDay: 10 },
     notifyOnFirstVerify: { to: "ops@x.com", subjectPrefix: "[New verified] " },
     _agentMailClient: {
-      send: async (i: { to: string[]; subject: string; text: string; inboxId: string }) => {
-        sends.push({ to: i.to, subject: i.subject, text: i.text, inboxId: i.inboxId });
+      send: async (i: {
+        to: string[];
+        subject: string;
+        text: string;
+        inboxId: string;
+        signal?: AbortSignal;
+      }) => {
+        sends.push({
+          to: i.to,
+          subject: i.subject,
+          text: i.text,
+          inboxId: i.inboxId,
+          signal: i.signal,
+        });
         return { status: "sent" as const, messageId: "m", threadId: "t" };
       },
       getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
@@ -2119,6 +2224,7 @@ async function flowThroughVerify(
   email: string,
   threadId: string,
   sends: { text: string }[],
+  signal = new AbortController().signal,
 ) {
   const peer = {
     id: `anon-${threadId}`,
@@ -2156,7 +2262,7 @@ async function flowThroughVerify(
       headers: { "content-type": "application/x-www-form-urlencoded" },
       body: `token=${encodeURIComponent(tokenParam)}`,
     }),
-    { signal: new AbortController().signal },
+    { signal },
   );
 }
 
@@ -2164,7 +2270,14 @@ describe("notifyOnFirstVerify", () => {
   test("fires AgentMail to operator on first verify per email", async () => {
     const { aug, sends } = makeAugWithFirstVerify(dbPath);
     await aug.onBoot?.();
-    const res = await flowThroughVerify(aug, "alice@example.com", "th-fv", sends);
+    const controller = new AbortController();
+    const res = await flowThroughVerify(
+      aug,
+      "alice@example.com",
+      "th-fv",
+      sends,
+      controller.signal,
+    );
     expect(res.status).toBe(200);
     // Two sends: visitor's magic link FIRST, then operator notification SECOND.
     expect(sends).toHaveLength(2);
@@ -2172,6 +2285,7 @@ describe("notifyOnFirstVerify", () => {
     expect(sends[1]?.to).toEqual(["ops@x.com"]);
     expect(sends[1]?.subject).toContain("[New verified]");
     expect(sends[1]?.text).toContain("alice@example.com");
+    expect(sends[1]?.signal).toBe(controller.signal);
     await aug.onShutdown?.();
   });
 
@@ -2208,7 +2322,7 @@ describe("notifyOnFirstVerify", () => {
             return { status: "sent" as const, messageId: "m", threadId: "t" };
           }
           // operator notification send fails
-          return { status: "failed" as const, detail: "503 unavailable" };
+          return { status: "failed" as const, detail: "400 rejected", httpStatus: 400 };
         },
         getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
       } as never,
@@ -2229,6 +2343,60 @@ describe("notifyOnFirstVerify", () => {
     expect(marked).toBe(false); // NOT marked — will retry on next verify
 
     await aug.onShutdown?.();
+  });
+
+  test("persists an ambiguous first-verify notification tombstone across restart", async () => {
+    let operatorAttempts = 0;
+    const sends: Array<{
+      to: string[];
+      subject: string;
+      text: string;
+      inboxId: string;
+      signal?: AbortSignal;
+    }> = [];
+    const build = () =>
+      visitorAuth({
+        publicUrl: "https://zip.test",
+        dbPath,
+        agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+        signingKey: "sig",
+        rateLimit: { perHour: 5, perDay: 10 },
+        notifyOnFirstVerify: { to: "ops@x.com" },
+        _agentMailClient: {
+          send: async (input: {
+            to: string[];
+            subject: string;
+            text: string;
+            inboxId: string;
+            signal?: AbortSignal;
+          }) => {
+            sends.push(input);
+            if (input.to.includes("ops@x.com")) {
+              operatorAttempts++;
+              throw new OutcomeUnknownError("provider response lost after dispatch");
+            }
+            return { status: "sent" as const, messageId: "m", threadId: "t" };
+          },
+          getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
+        } as never,
+      });
+
+    const first = build();
+    await first.onBoot?.();
+    expect(
+      (await flowThroughVerify(first, "ambiguous-note@example.com", "th-note-1", sends)).status,
+    ).toBe(200);
+    await first.onShutdown?.();
+    expect(operatorAttempts).toBe(1);
+
+    sends.length = 0;
+    const restarted = build();
+    await restarted.onBoot?.();
+    expect(
+      (await flowThroughVerify(restarted, "ambiguous-note@example.com", "th-note-2", sends)).status,
+    ).toBe(200);
+    expect(operatorAttempts).toBe(1);
+    await restarted.onShutdown?.();
   });
 
   test("marks the ledger when AgentMail returns sent (F5)", async () => {

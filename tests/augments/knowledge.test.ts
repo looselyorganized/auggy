@@ -269,6 +269,46 @@ describe("manifest file:// scheme", () => {
     expect(fetched.content).toContain("Mission body");
   });
 
+  it("forwards tool cancellation to manifest and endpoint HTTP requests", async () => {
+    const response = (body: string): HttpResponse => ({
+      finalUrl: "https://example.com/x",
+      status: 200,
+      statusText: "OK",
+      contentType: "application/json",
+      headers: new Headers(),
+      body,
+    });
+    const observedSignals: Array<AbortSignal | undefined> = [];
+    const fakeClient: HttpClient = {
+      request: async () => response(""),
+      get: async (url, init) => {
+        observedSignals.push(init?.signal);
+        return url.endsWith("/manifest")
+          ? response(JSON.stringify(defaultManifest()))
+          : response(JSON.stringify({ files: [{ name: "mission.md", content: "Mission body" }] }));
+      },
+      post: async () => response(""),
+      put: async () => response(""),
+      delete: async () => response(""),
+      head: async () => response(""),
+    };
+    const aug = knowledge({ baseUrl: "https://example.com", client: fakeClient });
+    const controller = new AbortController();
+    const tool = aug.tools!.find((candidate) => candidate.name === "knowledge_fetch")!;
+
+    await tool.execute(
+      { endpoint: "/mission" },
+      {
+        turnId: "turn-signal",
+        threadId: "thread-signal",
+        peer: null,
+        signal: controller.signal,
+      },
+    );
+
+    expect(observedSignals).toEqual([controller.signal, controller.signal]);
+  });
+
   // ---------------------------------------------------------------------------
   // Path-traversal attacks (5-14) — all must REJECT
   // ---------------------------------------------------------------------------

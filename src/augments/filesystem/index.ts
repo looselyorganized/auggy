@@ -468,6 +468,10 @@ export function filesystem(opts: FilesystemOptions): Augment {
 
   // --- Tools ---
 
+  function throwIfCanceled(context?: ToolExecuteContext): void {
+    context?.signal?.throwIfAborted();
+  }
+
   const fsRead = defineTool({
     name: "fs_read",
     description:
@@ -477,6 +481,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
       path: z.string().describe("Logical path: mount-name/path/to/file"),
     }),
     execute: async ({ path: logicalPath }, context) => {
+      throwIfCanceled(context);
       const { physicalPath, mount } = await resolveAndValidate(logicalPath);
       const restricted = await restrictedSkillPathError(physicalPath, mount, context);
       if (restricted) return restricted;
@@ -491,8 +496,10 @@ export function filesystem(opts: FilesystemOptions): Augment {
         }
       }
 
+      throwIfCanceled(context);
       const handle = await open(physicalPath, constants.O_RDONLY | constants.O_NOFOLLOW);
       try {
+        throwIfCanceled(context);
         const stats = await handle.stat();
         if (!stats.isFile()) {
           if (stats.isDirectory()) {
@@ -511,6 +518,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
         // the operation after the boundary check.
         const maxRead = mount.maxReadSize ?? DEFAULT_MAX_READ;
         const buffer = Buffer.allocUnsafe(Math.min(stats.size, maxRead));
+        throwIfCanceled(context);
         const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
         const content = buffer.subarray(0, bytesRead).toString("utf8");
 
@@ -533,7 +541,8 @@ export function filesystem(opts: FilesystemOptions): Augment {
       path: z.string().describe("Logical path: mount-name/path/to/file"),
       content: z.string().describe("File content to write"),
     }),
-    execute: async ({ path: logicalPath, content }) => {
+    execute: async ({ path: logicalPath, content }, context) => {
+      throwIfCanceled(context);
       const { mountName } = parseLogicalPath(logicalPath);
       const configuredMount = mountMap.get(mountName);
       if (!configuredMount) {
@@ -555,6 +564,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
         true,
       );
 
+      throwIfCanceled(context);
       const handle = await open(
         physicalPath,
         constants.O_WRONLY |
@@ -563,6 +573,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
         0o600,
       );
       try {
+        throwIfCanceled(context);
         const openedStats = await handle.stat();
         if (!openedStats.isFile()) {
           throw new Error(`Path "${logicalPath}" is not a regular file`);
@@ -576,7 +587,9 @@ export function filesystem(opts: FilesystemOptions): Augment {
         if (openedStats.nlink > 1) {
           throw new Error(`Path "${logicalPath}" has multiple filesystem links`);
         }
+        throwIfCanceled(context);
         await handle.truncate(0);
+        throwIfCanceled(context);
         await handle.writeFile(content, "utf8");
       } finally {
         await handle.close();
@@ -594,10 +607,12 @@ export function filesystem(opts: FilesystemOptions): Augment {
       path: z.string().describe("Logical path: mount-name or mount-name/path/to/dir"),
     }),
     execute: async ({ path: logicalPath }, context) => {
+      throwIfCanceled(context);
       const { physicalPath, mount } = await resolveAndValidate(logicalPath);
       const restricted = await restrictedSkillPathError(physicalPath, mount, context);
       if (restricted) return restricted;
 
+      throwIfCanceled(context);
       const stats = await stat(physicalPath);
       if (!stats.isDirectory()) {
         // Single file stat
@@ -612,10 +627,12 @@ export function filesystem(opts: FilesystemOptions): Augment {
 
       const listingRootFolder = await skillFolderFromPhysicalPath(mount, physicalPath);
       const entries = await readdir(physicalPath, { withFileTypes: true });
+      throwIfCanceled(context);
       const results = await Promise.all(
         entries
           .filter((e) => !e.name.startsWith(".") || e.name === ".gitignore")
           .map(async (entry) => {
+            throwIfCanceled(context);
             if (mount.name === "skills" && listingRootFolder === null) {
               const entryPath = await canonicalCandidatePath(mount, join(physicalPath, entry.name));
               const restrictedEntry = await restrictedSkillPathError(entryPath, mount, context);
@@ -671,13 +688,18 @@ export function filesystem(opts: FilesystemOptions): Augment {
     input: z.object({
       path: z.string().describe("Logical path for the new directory"),
     }),
-    execute: async ({ path: logicalPath }) => {
+    execute: async ({ path: logicalPath }, context) => {
+      throwIfCanceled(context);
       const { physicalPath, mount, targetStats } = await resolveMutationTarget(
         logicalPath,
         (m) => (m.writable ? null : `Mount "${m.name}" is read-only`),
         true,
       );
-      if (!targetStats) await mkdir(physicalPath);
+      if (!targetStats) {
+        throwIfCanceled(context);
+        await mkdir(physicalPath);
+      }
+      throwIfCanceled(context);
       const createdStats = await lstat(physicalPath);
       if (createdStats.isSymbolicLink() || !createdStats.isDirectory()) {
         throw new Error(`Path "${logicalPath}" is not a safe directory`);
@@ -698,7 +720,8 @@ export function filesystem(opts: FilesystemOptions): Augment {
     input: z.object({
       path: z.string().describe("Logical path to the file or empty directory to remove"),
     }),
-    execute: async ({ path: logicalPath }) => {
+    execute: async ({ path: logicalPath }, context) => {
+      throwIfCanceled(context);
       const { physicalPath, mount } = await resolveMutationTarget(
         logicalPath,
         (m) => {
@@ -723,10 +746,12 @@ export function filesystem(opts: FilesystemOptions): Augment {
         if (entries.length > 0) {
           return `Error: Directory "${logicalPath}" is not empty (${entries.length} entries). Remove contents first.`;
         }
+        throwIfCanceled(context);
         await rm(physicalPath, { recursive: false });
         return `Removed empty directory "${logicalPath}"`;
       }
 
+      throwIfCanceled(context);
       await rm(physicalPath);
       return `Removed file "${logicalPath}"`;
     },
@@ -743,6 +768,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
       maxResults: z.number().optional().describe("Max results to return (default 100)"),
     }),
     execute: async ({ path: logicalPath, pattern, maxResults }, context) => {
+      throwIfCanceled(context);
       const { physicalPath, mount } = await resolveAndValidate(logicalPath);
       const restricted = await restrictedSkillPathError(physicalPath, mount, context);
       if (restricted) return restricted;
@@ -762,6 +788,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
         absolute: false,
         dot: false,
       })) {
+        throwIfCanceled(context);
         const candidatePath = await canonicalCandidatePath(mount, join(physicalPath, entry));
         if (mount.name === "skills") {
           const restrictedEntry = await restrictedSkillPathError(candidatePath, mount, context);

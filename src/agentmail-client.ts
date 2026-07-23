@@ -8,6 +8,11 @@
 
 import { createHttpClient } from "./http";
 import type { HttpClient } from "./http";
+import {
+  isAmbiguousMutationStatus,
+  isOutcomeUnknownError,
+  OutcomeUnknownError,
+} from "./outcome-unknown";
 
 const DEFAULT_BASE_URL = "https://api.agentmail.to/v0";
 const MAX_RECIPIENTS = 50;
@@ -42,6 +47,7 @@ export interface SendMessageInput {
   text: string;
   html?: string;
   labels?: string[];
+  signal?: AbortSignal;
 }
 
 export interface ReplyMessageInput {
@@ -55,6 +61,7 @@ export interface ReplyMessageInput {
   to?: string[];
   /** Reply to all recipients of the original (default false). */
   replyAll?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface ForwardMessageInput {
@@ -67,6 +74,7 @@ export interface ForwardMessageInput {
   /** Subject override; AgentMail prepends "Fwd: " to the original when omitted. */
   subject?: string;
   labels?: string[];
+  signal?: AbortSignal;
 }
 
 export interface SendMessageResult {
@@ -116,6 +124,7 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
   async function postSend(
     url: string,
     body: string,
+    signal?: AbortSignal,
   ): Promise<SendMessageResult | SendMessageError> {
     try {
       const res = await http.post(url, {
@@ -124,8 +133,14 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
           authorization: `Bearer ${opts.apiKey}`,
         },
         body,
+        signal,
       });
       if (res.status < 200 || res.status >= 300) {
+        if (isAmbiguousMutationStatus(res.status)) {
+          throw new OutcomeUnknownError(
+            `AgentMail returned HTTP ${res.status} after send dispatch; delivery outcome is unknown`,
+          );
+        }
         const result: SendMessageError = {
           status: "failed",
           detail: `agentmail returned ${res.status}: ${res.body.slice(0, 200)}`,
@@ -137,10 +152,28 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
         }
         return result;
       }
-      const parsed = JSON.parse(res.body) as { message_id: string; thread_id: string };
+      let parsed: { message_id?: unknown; thread_id?: unknown };
+      try {
+        parsed = JSON.parse(res.body) as { message_id?: unknown; thread_id?: unknown };
+      } catch (err) {
+        throw new OutcomeUnknownError(
+          "AgentMail accepted a send request but returned an unreadable response; delivery outcome is unknown",
+          { cause: err },
+        );
+      }
+      if (typeof parsed.message_id !== "string" || typeof parsed.thread_id !== "string") {
+        throw new OutcomeUnknownError(
+          "AgentMail accepted a send request but returned an incomplete response; delivery outcome is unknown",
+        );
+      }
       return { status: "sent", messageId: parsed.message_id, threadId: parsed.thread_id };
     } catch (err) {
-      return { status: "failed", detail: `agentmail error: ${(err as Error).message}` };
+      if (signal?.aborted) throw signal.reason ?? err;
+      if (isOutcomeUnknownError(err)) throw err;
+      throw new OutcomeUnknownError(
+        "AgentMail send ended without a trustworthy response after dispatch",
+        { cause: err },
+      );
     }
   }
 
@@ -170,7 +203,7 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
         ...(input.html ? { html: input.html } : {}),
         ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
       });
-      return postSend(url, body);
+      return postSend(url, body, input.signal);
     },
     async reply(input) {
       const invalidRecipients = recipientError(input.to);
@@ -183,7 +216,7 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
         ...(input.replyAll ? { reply_all: true } : {}),
         ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
       });
-      return postSend(url, body);
+      return postSend(url, body, input.signal);
     },
     async forward(input) {
       const invalidRecipients = recipientError(input.to);
@@ -196,7 +229,7 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
         ...(input.html ? { html: input.html } : {}),
         ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
       });
-      return postSend(url, body);
+      return postSend(url, body, input.signal);
     },
     async getInbox(inboxId: string) {
       const url = `${baseUrl}/inboxes/${inboxId}`;
