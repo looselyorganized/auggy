@@ -1,8 +1,8 @@
 # Repository Security Audit
 
-**Audit date:** 2026-07-22  
-**Audited commit:** `ad2622b62759ca0664a4b6a5e3253b79591efa2a`  
-**Overall risk:** High  
+**Audit date:** 2026-07-22
+**Audited commit:** `ad2622b62759ca0664a4b6a5e3253b79591efa2a`
+**Overall risk:** High
 **Production-code changes made by the audit:** None
 
 ## Executive summary
@@ -570,4 +570,3 @@ The report distinguishes demonstrated vulnerabilities from conditional risks:
    persistence.
 9. Harden CLI secret permissions, Railway handling, auth templates, and CI
    eval execution.
-
