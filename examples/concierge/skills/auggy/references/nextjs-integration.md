@@ -62,8 +62,21 @@ const api = createAuggyClient({
 });
 ```
 
-Use this for trusted backend jobs, server actions, route handlers, cron tasks,
-and admin operations.
+Use a server client directly from trusted backend jobs, cron tasks, queue
+workers, and server-only code that has already completed authorization.
+
+A route handler is not trusted merely because it runs on the server. Before a
+public handler resolves `AUGGY_BEARER_TOKEN`, it must verify the host
+application's session, require an explicit operator/admin role, compare the
+browser `Origin` to a fixed configured application origin, and validate a
+session-bound CSRF token. Do not derive the trusted origin from `Host`,
+forwarded headers, or `request.url`.
+
+Copy
+`assets/templates/nextjs-server-client/admin-reindex-route.ts.txt` for a
+fail-closed example. It returns no authority until its session and CSRF stubs
+are replaced. Existing applications must audit routes they copied previously;
+refreshing this skill does not rewrite application route files.
 
 ## App Auth Assertion Route
 

@@ -107,9 +107,23 @@ if (queued.ok) {
 }
 ```
 
-Use the server target for backend jobs, SSR/server actions, trusted API routes,
-and agent-to-agent callers. Do not bundle a server-target generated file into
-browser code.
+This direct call is for a trusted backend job, not a public pass-through route.
+Use the server target for trusted jobs and server-only callers. Do not bundle a
+server-target generated file into browser code.
+
+A route handler remains an untrusted HTTP entry point even though it runs on
+the server. Before it resolves creator credentials, it must verify the host
+application session, require an explicit operator/admin role, compare
+`Origin` to a fixed configured application origin, and validate a
+session-bound CSRF token. Middleware, CORS, `SameSite`, and Auggy's bearer
+check are not substitutes for these local checks. Trusted cron and queue
+workers should call the generated client directly.
+
+The bundled
+`skills/auggy/assets/templates/nextjs-server-client/admin-reindex-route.ts.txt`
+is fail closed until its application-specific session and CSRF stubs are
+implemented. Updating Auggy does not rewrite application routes copied from an
+older template; audit and replace existing copies.
 
 ## Calling Routes
 
