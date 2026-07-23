@@ -17,22 +17,21 @@
  * format by construction. Do not duplicate the parser here.
  */
 
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
 import { ENV_KEY_RE, parseEnvFile, serializeEnv, type EnvLine } from "../../cli/env-parse";
+import { readManagedText, resolveManagedPath, writeManagedText } from "./admin-managed-files";
 
 export type { EnvLine } from "../../cli/env-parse";
 export { parseEnvFile, serializeEnv } from "../../cli/env-parse";
 
 const KEY_RE = ENV_KEY_RE;
+const MAX_ENV_FILE_BYTES = 1024 * 1024;
 
 // ---------------------------------------------------------------------------
 // File I/O
 // ---------------------------------------------------------------------------
 
 function envPath(agentDir: string | undefined): string | null {
-  if (!agentDir) return null;
-  return join(agentDir, ".env");
+  return resolveManagedPath(agentDir, ".env");
 }
 
 function readEnvFile(agentDir: string | undefined):
@@ -45,21 +44,17 @@ function readEnvFile(agentDir: string | undefined):
   | { error: string } {
   const path = envPath(agentDir);
   if (!path) return { error: "agent directory not configured" };
-  if (!existsSync(path)) {
+  const file = readManagedText(agentDir, ".env", MAX_ENV_FILE_BYTES);
+  if ("error" in file) return file;
+  if ("missing" in file) {
     return { lines: [], path, exists: false, modifiedIso: null };
   }
-  try {
-    const text = readFileSync(path, "utf-8");
-    const st = statSync(path);
-    return {
-      lines: parseEnvFile(text),
-      path,
-      exists: true,
-      modifiedIso: st.mtime.toISOString(),
-    };
-  } catch (err) {
-    return { error: `read failed: ${(err as Error).message}` };
-  }
+  return {
+    lines: parseEnvFile(file.content),
+    path: file.path,
+    exists: true,
+    modifiedIso: file.modifiedIso,
+  };
 }
 
 function writeEnvFile(
@@ -68,13 +63,12 @@ function writeEnvFile(
 ): { ok: true; modifiedIso: string } | { ok: false; message: string } {
   const path = envPath(agentDir);
   if (!path) return { ok: false, message: "agent directory not configured" };
-  try {
-    writeFileSync(path, serializeEnv(lines), "utf-8");
-    const st = statSync(path);
-    return { ok: true, modifiedIso: st.mtime.toISOString() };
-  } catch (err) {
-    return { ok: false, message: `write failed: ${(err as Error).message}` };
-  }
+  const result = writeManagedText(agentDir, ".env", serializeEnv(lines), {
+    maxBytes: MAX_ENV_FILE_BYTES,
+    mode: 0o600,
+  });
+  if ("error" in result) return { ok: false, message: result.error };
+  return { ok: true, modifiedIso: result.modifiedIso };
 }
 
 // ---------------------------------------------------------------------------

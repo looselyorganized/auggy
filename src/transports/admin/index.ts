@@ -44,10 +44,10 @@ import {
   revealCredential,
   setCredential,
 } from "./admin-credentials";
-import { existsSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { isIP } from "node:net";
-import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { readManagedText } from "./admin-managed-files";
 import type {
   ConsoleChatModelSnapshot,
   ConsoleChatStore,
@@ -82,10 +82,10 @@ interface AgentMeta {
 
 function readAgentMeta(agentDir: string | undefined): AgentMeta | null {
   if (!agentDir) return null;
-  const path = join(agentDir, "agent.yaml");
-  if (!existsSync(path)) return null;
+  const file = readManagedText(agentDir, "agent.yaml", 1024 * 1024);
+  if ("error" in file || "missing" in file) return null;
   try {
-    const raw = parseYaml(readFileSync(path, "utf-8"));
+    const raw = parseYaml(file.content);
     if (raw === null || typeof raw !== "object") return null;
     const r = raw as Record<string, unknown>;
     return {

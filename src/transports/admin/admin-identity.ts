@@ -10,8 +10,7 @@
  * preamble is boot-loaded.
  */
 
-import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
-import { isAbsolute, resolve, sep } from "node:path";
+import { readManagedText, resolveManagedPath, writeManagedText } from "./admin-managed-files";
 
 export interface IdentityReadResult {
   path: string;
@@ -32,13 +31,8 @@ export function resolveIdentityPath(
   agentDir: string | undefined,
   identityRel: string | undefined,
 ): string | null {
-  if (!agentDir) return null;
   const rel = identityRel ?? "./identity.md";
-  if (isAbsolute(rel)) return null;
-  const full = resolve(agentDir, rel);
-  const dirWithSep = agentDir.endsWith(sep) ? agentDir : agentDir + sep;
-  if (!full.startsWith(dirWithSep) && full !== agentDir) return null;
-  return full;
+  return resolveManagedPath(agentDir, rel);
 }
 
 export function readIdentity(
@@ -47,7 +41,9 @@ export function readIdentity(
 ): IdentityReadResult | { error: string } {
   const path = resolveIdentityPath(agentDir, identityRel);
   if (!path) return { error: "agent directory or identity path not configured" };
-  if (!existsSync(path)) {
+  const result = readManagedText(agentDir, identityRel ?? "./identity.md", MAX_IDENTITY_BYTES);
+  if ("error" in result) return result;
+  if ("missing" in result) {
     return {
       path,
       content: "",
@@ -55,18 +51,12 @@ export function readIdentity(
       modifiedIso: null,
     };
   }
-  let content = "";
-  let contentBytes = 0;
-  let modifiedIso: string | null = null;
-  try {
-    content = readFileSync(path, "utf-8");
-    const st = statSync(path);
-    contentBytes = st.size;
-    modifiedIso = st.mtime.toISOString();
-  } catch (err) {
-    return { error: `read failed: ${(err as Error).message}` };
-  }
-  return { path, content, contentBytes, modifiedIso };
+  return {
+    path: result.path,
+    content: result.content,
+    contentBytes: result.contentBytes,
+    modifiedIso: result.modifiedIso,
+  };
 }
 
 export interface IdentityWriteResult {
@@ -84,20 +74,16 @@ export function writeIdentity(
 ): IdentityWriteResult {
   const path = resolveIdentityPath(agentDir, identityRel);
   if (!path) return { ok: false, message: "agent directory or identity path not configured" };
-  if (Buffer.byteLength(content, "utf-8") > MAX_IDENTITY_BYTES) {
-    return { ok: false, message: `identity.md exceeds ${MAX_IDENTITY_BYTES} bytes` };
-  }
-  try {
-    writeFileSync(path, content, "utf-8");
-    const st = statSync(path);
-    return {
-      ok: true,
-      message: "Saved identity.md — restart the agent for changes to load into context.",
-      path,
-      modifiedIso: st.mtime.toISOString(),
-      contentBytes: st.size,
-    };
-  } catch (err) {
-    return { ok: false, message: `write failed: ${(err as Error).message}` };
-  }
+  const result = writeManagedText(agentDir, identityRel ?? "./identity.md", content, {
+    maxBytes: MAX_IDENTITY_BYTES,
+    mode: 0o600,
+  });
+  if ("error" in result) return { ok: false, message: result.error };
+  return {
+    ok: true,
+    message: "Saved identity.md — restart the agent for changes to load into context.",
+    path: result.path,
+    modifiedIso: result.modifiedIso,
+    contentBytes: result.contentBytes,
+  };
 }
