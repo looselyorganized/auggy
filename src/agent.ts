@@ -122,7 +122,11 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
 
   const outboundHandlers = new Map<
     string,
-    (peer: PeerIdentity, message: OutboundMessage) => Promise<void>
+    (
+      peer: PeerIdentity,
+      message: OutboundMessage,
+      context?: { signal?: AbortSignal },
+    ) => Promise<void>
   >();
   const threadTails = new Map<string, Promise<void>>();
 
@@ -134,7 +138,8 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     outboundHandlers.clear();
   }
 
-  async function dispatchOutbound(result: TurnResult, trigger: TurnTrigger) {
+  async function dispatchOutbound(result: TurnResult, trigger: TurnTrigger, signal?: AbortSignal) {
+    if (signal?.aborted) return;
     // Collect all messages to dispatch: single response + multi-destination responses
     const messages: OutboundMessage[] = [];
     if (result.response) messages.push(result.response);
@@ -142,12 +147,13 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     if (messages.length === 0) return;
 
     for (const msg of messages) {
+      if (signal?.aborted) return;
       const targetAugment = msg.targetAugment ?? trigger.source;
       const peer = trigger.peer;
       if (!targetAugment || !peer) continue;
       const handler = outboundHandlers.get(targetAugment);
       if (handler) {
-        await handler(peer, msg);
+        await handler(peer, msg, { signal });
       }
     }
   }
@@ -322,14 +328,18 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     result: TurnResult,
     trigger: TurnTrigger,
     threadId: string,
+    signal?: AbortSignal,
   ): Promise<void> {
-    await dispatchOutbound(result, trigger);
+    await dispatchOutbound(result, trigger, signal);
 
+    if (signal?.aborted) return;
     for (const a of effectiveAugments) {
+      if (signal?.aborted) return;
       if (a.onTurnEnd) {
         try {
-          await a.onTurnEnd(result);
+          await a.onTurnEnd(result, { signal });
         } catch (err) {
+          if (signal?.aborted) return;
           console.warn(`onTurnEnd hook "${a.name}" failed: ${err}`);
         }
       }
@@ -337,11 +347,14 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
 
     const completedTurnId = result.turnId;
     const ctx: SchedulerContext = {
-      inject: (t) => handle.inject(t),
+      inject: (t) => handle.inject(t, { signal }),
       getCompletedTranscript: async () =>
         turnLoop.getHistoryManager(threadId).getTranscript(completedTurnId),
+      ...(signal ? { signal } : {}),
     };
+    if (signal?.aborted) return;
     for (const a of effectiveAugments) {
+      if (signal?.aborted) return;
       if (a.scheduleAfterTurn) {
         try {
           await a.scheduleAfterTurn(result, ctx);
@@ -405,7 +418,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
                     historyPersistence: opts?.historyPersistence,
                     source: "transport",
                   });
-                  await runPostTurn(result, t, threadId);
+                  await runPostTurn(result, t, threadId, opts?.signal);
                   return result;
                 });
               },
@@ -479,11 +492,14 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       return agentCard;
     },
 
-    async inject(trigger: TurnTrigger): Promise<TurnResult> {
+    async inject(trigger: TurnTrigger, options?: { signal?: AbortSignal }): Promise<TurnResult> {
       lifecycle.resetIdleTimer();
       const threadId = trigger.threadId ?? trigger.turnId;
-      const result = await executeThreadTurn(trigger, threadId, { source: "inject" });
-      await runPostTurn(result, trigger, threadId);
+      const result = await executeThreadTurn(trigger, threadId, {
+        source: "inject",
+        signal: options?.signal,
+      });
+      await runPostTurn(result, trigger, threadId, options?.signal);
       return result;
     },
   };

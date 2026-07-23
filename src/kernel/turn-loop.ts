@@ -83,6 +83,7 @@ async function streamingInference(
 
   return { response, streamed, messageId };
 }
+import { isOutcomeUnknownError } from "../outcome-unknown";
 import { withTimeout } from "./timeout";
 import { createContextAllocator } from "./context-allocator";
 import { createCapabilityTable } from "./capability-table";
@@ -189,6 +190,7 @@ export function createTurnLoop(opts: {
         toolCallsSoFar: 0,
         turnStartedAt: Date.now(),
         metadata: {},
+        ...(signal ? { signal } : {}),
       };
 
       const toolCallRecords: ToolCallRecord[] = [];
@@ -241,9 +243,14 @@ export function createTurnLoop(opts: {
       // Note: trace.duration is stamped BEFORE runCostCommit so the
       // reported turn duration excludes the post-turn cost accounting
       // I/O, matching the existing semantics at every refactored site.
-      async function finalizeReturn(opts?: { withCostCommit?: boolean }): Promise<void> {
+      let admissionConfirmed = false;
+      let costCommitPromise: Promise<void> | null = null;
+
+      async function finalizeReturn(_opts?: { withCostCommit?: boolean }): Promise<void> {
         traceEmitter.finalize(trace);
-        if (opts?.withCostCommit) await runCostCommit();
+        if (admissionConfirmed && trace.inferenceSteps.length > 0) {
+          await runCostCommit();
+        }
         recordTurnSnapshot();
       }
 
@@ -380,6 +387,7 @@ export function createTurnLoop(opts: {
           errorClass: "admission-state-failed",
         };
       }
+      admissionConfirmed = true;
 
       // All gates admitted. Fall through to turn body.
       // Phase 5 (cost commit) runs after the engine call returns — see bottom of executeTurn.
@@ -402,10 +410,12 @@ export function createTurnLoop(opts: {
 
       // onTurnStart hooks — fire before context assembly
       for (const aug of augments) {
+        if (signal?.aborted) return makeAbortResult();
         if (aug.onTurnStart) {
           try {
             await aug.onTurnStart(turnState);
           } catch (err) {
+            if (signal?.aborted) return makeAbortResult();
             if (aug.required) {
               emitEvent({
                 kind: "run_error",
@@ -433,6 +443,7 @@ export function createTurnLoop(opts: {
           }
         }
       }
+      if (signal?.aborted) return makeAbortResult();
 
       // Emit run_started event
       emitEvent({
@@ -467,6 +478,7 @@ export function createTurnLoop(opts: {
             handlerResult = await aug.handleInternalTurn(trigger, {
               threadId,
               peer,
+              ...(signal ? { signal } : {}),
             });
           } catch (err) {
             // Handler threw — surface as a failed turn so the augment
@@ -568,7 +580,18 @@ export function createTurnLoop(opts: {
         try {
           const timeout = aug.constraints?.contextTimeoutMs ?? 5000;
           const priorContext = aug.receivesPriorContext ? [...contextBlocks] : undefined;
-          const result = await withTimeout(() => aug.context!(turnState, priorContext), timeout);
+          const result = await withTimeout(
+            (deadlineSignal) =>
+              aug.context!(
+                {
+                  ...turnState,
+                  signal: deadlineSignal,
+                },
+                priorContext,
+              ),
+            timeout,
+            signal,
+          );
           if (typeof result === "string") {
             contextBlocks.push({
               source: aug.name,
@@ -716,412 +739,542 @@ export function createTurnLoop(opts: {
       // commits as unpriced — partial-priced sums would mislead the budget
       // store and silently suppress unpriced_turns counters.
       async function runCostCommit(): Promise<void> {
-        const steps = trace.inferenceSteps;
-        let cost: CostResult;
-        if (steps.length === 0) {
-          cost = { priced: false, reason: "no inference recorded" };
-        } else {
-          let totalCostUsd = 0;
-          let unpricedReason: string | null = null;
-          for (const step of steps) {
-            if (step.cost.priced) {
-              totalCostUsd += step.cost.costUsd;
+        if (!costCommitPromise) {
+          costCommitPromise = (async () => {
+            const steps = trace.inferenceSteps;
+            let cost: CostResult;
+            if (steps.length === 0) {
+              cost = { priced: false, reason: "no inference recorded" };
             } else {
-              unpricedReason = step.cost.reason;
-              break; // any unpriced step → whole turn unpriced
+              let totalCostUsd = 0;
+              let unpricedReason: string | null = null;
+              for (const step of steps) {
+                if (step.cost.priced) {
+                  totalCostUsd += step.cost.costUsd;
+                } else {
+                  unpricedReason = step.cost.reason;
+                  break; // any unpriced step → whole turn unpriced
+                }
+              }
+              cost =
+                unpricedReason !== null
+                  ? { priced: false, reason: unpricedReason }
+                  : { priced: true, costUsd: totalCostUsd };
             }
-          }
-          cost =
-            unpricedReason !== null
-              ? { priced: false, reason: unpricedReason }
-              : { priced: true, costUsd: totalCostUsd };
+            for (const gate of turnGates) {
+              if (!gate.turnGate.commit) continue;
+              try {
+                await gate.turnGate.commit({
+                  turnId: trigger.turnId,
+                  peer: trigger.peer ?? null,
+                  threadId,
+                  cost,
+                });
+              } catch (err) {
+                console.error(`[turn-gate ${gate.name}] commit failed:`, err);
+              }
+            }
+          })();
         }
-        for (const gate of turnGates) {
-          if (!gate.turnGate.commit) continue;
-          try {
-            await gate.turnGate.commit({
-              turnId: trigger.turnId,
-              peer: trigger.peer ?? null,
-              threadId,
-              cost,
-            });
-          } catch (err) {
-            console.error(`[turn-gate ${gate.name}] commit failed:`, err);
-          }
-        }
+        await costCommitPromise;
       }
 
       // Inference + tool execution loop
-      capabilityTable.resetTurn();
-      const consecutiveFailures = new Map<string, number>();
-      let inferenceCount = 0;
-      const maxInferenceLoops = config.maxInferenceLoops ?? 10;
+      try {
+        capabilityTable.resetTurn();
+        const consecutiveFailures = new Map<string, number>();
+        let inferenceCount = 0;
+        const maxInferenceLoops = config.maxInferenceLoops ?? 10;
 
-      while (inferenceCount < maxInferenceLoops) {
-        if (signal?.aborted) return makeAbortResult();
-        inferenceCount++;
-        const inferStart = Date.now();
-        const {
-          response,
-          streamed: streamedText,
-          messageId: streamMessageId,
-        } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent, signal);
-        const inferDuration = Date.now() - inferStart;
+        while (inferenceCount < maxInferenceLoops) {
+          if (signal?.aborted) return makeAbortResult();
+          inferenceCount++;
+          const inferStart = Date.now();
+          const {
+            response,
+            streamed: streamedText,
+            messageId: streamMessageId,
+          } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent, signal);
+          const inferDuration = Date.now() - inferStart;
 
-        traceEmitter.recordInference(trace, {
-          model: config.model,
-          inputTokens: response.inputTokens,
-          outputTokens: response.outputTokens,
-          durationMs: inferDuration,
-          toolCalls: [],
-          cost: costFromResponse(response),
-        });
-
-        // Always append model content to history (even on tool_use turns)
-        if (response.content) {
-          history.append({
-            id: crypto.randomUUID(),
-            role: "assistant",
-            content: response.content,
-            timestamp: Date.now(),
-            tokenCount: tokenizer.count(response.content),
+          traceEmitter.recordInference(trace, {
+            model: config.model,
+            inputTokens: response.inputTokens,
+            outputTokens: response.outputTokens,
+            durationMs: inferDuration,
+            toolCalls: [],
+            cost: costFromResponse(response),
           });
-          // ADR-027 transcript capture — assistant content is part of the
-          // turn's two-way exchange and must surface to scheduleAfterTurn.
-          transcriptParts.push({ kind: "text", text: response.content });
-        }
+          if (signal?.aborted) return makeAbortResult();
 
-        // No tool calls or context window exhausted — we're done.
-        // If tool calls ARE present, always execute them regardless of
-        // finishReason. Some engines return "end_turn" alongside tool
-        // calls; dropping them would silently lose the model's work.
-        if (!response.toolCalls?.length || response.finishReason === "max_tokens") {
-          // Output validation (v1: flag and trace, don't block)
+          // Always append model content to history (even on tool_use turns)
           if (response.content) {
-            const toolNames = allTools.map((t) => t.name);
-            const augmentNames = augments.map((a) => a.name);
-            const validation = validateOutput(response.content, [...toolNames, ...augmentNames]);
-            if (validation.flagged) {
-              trace.outputValidation = {
-                flagged: true,
-                reasons: validation.reasons,
-              };
-            }
-          }
-
-          // Emit text_message event for the final response — only if we
-          // didn't already stream it AND there's actual content (skip empty
-          // text from pure tool_use responses).
-          if (!streamedText && response.content) {
-            emitEvent({
-              kind: "text_message",
-              turnId: trigger.turnId,
-              messageId: streamMessageId,
+            history.append({
+              id: crypto.randomUUID(),
               role: "assistant",
-              text: response.content,
+              content: response.content,
+              timestamp: Date.now(),
+              tokenCount: tokenizer.count(response.content),
             });
+            // ADR-027 transcript capture — assistant content is part of the
+            // turn's two-way exchange and must surface to scheduleAfterTurn.
+            transcriptParts.push({ kind: "text", text: response.content });
           }
 
-          // Emit run_finished
-          emitEvent({
-            kind: "run_finished",
-            turnId: trigger.turnId,
-            status: "completed",
-          });
-
-          await finalizeReturn({ withCostCommit: true });
-          return {
-            turnId: trigger.turnId,
-            success: true,
-            status: "completed",
-            response: response.content
-              ? { parts: [{ kind: "text", text: response.content }], contextId: trigger.contextId }
-              : undefined,
-            toolCalls: toolCallRecords,
-            trace,
-          };
-        }
-
-        // Phase 1: Validate all tool calls (synchronous — fast)
-        let terminateToolLoop = false;
-        type ToolCallEntry =
-          | {
-              type: "error";
-              call: { name: string; arguments: Record<string, unknown> };
-              error: string;
+          // No tool calls or context window exhausted — we're done.
+          // If tool calls ARE present, always execute them regardless of
+          // finishReason. Some engines return "end_turn" alongside tool
+          // calls; dropping them would silently lose the model's work.
+          if (!response.toolCalls?.length || response.finishReason === "max_tokens") {
+            // Output validation (v1: flag and trace, don't block)
+            if (response.content) {
+              const toolNames = allTools.map((t) => t.name);
+              const augmentNames = augments.map((a) => a.name);
+              const validation = validateOutput(response.content, [...toolNames, ...augmentNames]);
+              if (validation.flagged) {
+                trace.outputValidation = {
+                  flagged: true,
+                  reasons: validation.reasons,
+                };
+              }
             }
-          | {
-              type: "execute";
-              call: { name: string; arguments: Record<string, unknown> };
-              reg: { tool: Tool; augment: string };
-              validatedInput: unknown;
+
+            // Emit text_message event for the final response — only if we
+            // didn't already stream it AND there's actual content (skip empty
+            // text from pure tool_use responses).
+            if (!streamedText && response.content) {
+              emitEvent({
+                kind: "text_message",
+                turnId: trigger.turnId,
+                messageId: streamMessageId,
+                role: "assistant",
+                text: response.content,
+              });
+            }
+
+            // Emit run_finished
+            emitEvent({
+              kind: "run_finished",
+              turnId: trigger.turnId,
+              status: "completed",
+            });
+
+            await finalizeReturn({ withCostCommit: true });
+            return {
+              turnId: trigger.turnId,
+              success: true,
+              status: "completed",
+              response: response.content
+                ? {
+                    parts: [{ kind: "text", text: response.content }],
+                    contextId: trigger.contextId,
+                  }
+                : undefined,
+              toolCalls: toolCallRecords,
+              trace,
             };
-
-        const entries: ToolCallEntry[] = [];
-
-        for (const call of response.toolCalls) {
-          const check = capabilityTable.canExecute(call.name, call.arguments, turnState);
-          traceEmitter.recordCapabilityCheck(trace, {
-            tool: call.name,
-            result:
-              "allowed" in check
-                ? "allowed"
-                : "needsApproval" in check
-                  ? "needs-approval"
-                  : "denied",
-          });
-
-          if ("denied" in check) {
-            entries.push({ type: "error", call, error: `Error: ${check.reason}` });
-            break;
           }
 
-          if ("needsApproval" in check) {
-            entries.push({
-              type: "error",
-              call,
-              error: "Tool requires operator approval. Skipping for now.",
+          // Phase 1: Validate all tool calls (synchronous — fast)
+          let terminateToolLoop = false;
+          type ToolCallEntry =
+            | {
+                type: "error";
+                call: { name: string; arguments: Record<string, unknown> };
+                error: string;
+              }
+            | {
+                type: "execute";
+                call: { name: string; arguments: Record<string, unknown> };
+                reg: { tool: Tool; augment: string };
+                validatedInput: unknown;
+              };
+
+          const entries: ToolCallEntry[] = [];
+
+          for (const call of response.toolCalls) {
+            const check = capabilityTable.canExecute(call.name, call.arguments, turnState);
+            traceEmitter.recordCapabilityCheck(trace, {
+              tool: call.name,
+              result:
+                "allowed" in check
+                  ? "allowed"
+                  : "needsApproval" in check
+                    ? "needs-approval"
+                    : "denied",
             });
-            continue;
-          }
 
-          const reg = toolRegistry.get(call.name);
-          if (!reg) {
-            entries.push({ type: "error", call, error: `Error: Unknown tool "${call.name}"` });
-            continue;
-          }
+            if ("denied" in check) {
+              entries.push({ type: "error", call, error: `Error: ${check.reason}` });
+              break;
+            }
 
-          const validation = reg.tool.input.safeParse(call.arguments);
-          if (!validation.success) {
-            entries.push({
-              type: "error",
-              call,
-              error: `Validation error: ${JSON.stringify(validation.error)}`,
-            });
-            const prevCount = consecutiveFailures.get(call.name) ?? 0;
-            consecutiveFailures.set(call.name, prevCount + 1);
-            if ((consecutiveFailures.get(call.name) ?? 0) >= 2) {
+            if ("needsApproval" in check) {
               entries.push({
                 type: "error",
                 call,
-                error: `Tool "${call.name}" failed validation 2 consecutive times. Stopping tool use.`,
+                error: "Tool requires operator approval. Skipping for now.",
               });
-              terminateToolLoop = true;
+              continue;
+            }
+
+            const reg = toolRegistry.get(call.name);
+            if (!reg) {
+              entries.push({ type: "error", call, error: `Error: Unknown tool "${call.name}"` });
+              continue;
+            }
+
+            const validation = reg.tool.input.safeParse(call.arguments);
+            if (!validation.success) {
+              entries.push({
+                type: "error",
+                call,
+                error: `Validation error: ${JSON.stringify(validation.error)}`,
+              });
+              const prevCount = consecutiveFailures.get(call.name) ?? 0;
+              consecutiveFailures.set(call.name, prevCount + 1);
+              if ((consecutiveFailures.get(call.name) ?? 0) >= 2) {
+                entries.push({
+                  type: "error",
+                  call,
+                  error: `Tool "${call.name}" failed validation 2 consecutive times. Stopping tool use.`,
+                });
+                terminateToolLoop = true;
+                break;
+              }
+              continue;
+            }
+
+            consecutiveFailures.delete(call.name);
+
+            const authorizationConfigError = validateAuthorizationRequirements(reg.tool.requires, {
+              binding: "tool",
+            });
+            if (authorizationConfigError) {
+              entries.push({
+                type: "error",
+                call,
+                error: `Error: Tool "${call.name}" has invalid authorization requirements: ${authorizationConfigError}`,
+              });
+              continue;
+            }
+
+            const authorization = evaluateDelegatedAuthorization(reg.tool.requires, {
+              auth: trigger.auth,
+              input: validation.data,
+            });
+            if (!authorization.ok) {
+              emitEvent(
+                delegatedAuthorizationDeniedAuditEvent({
+                  decision: authorization,
+                  auth: trigger.auth,
+                  target: {
+                    type: "tool",
+                    toolName: call.name,
+                    augmentName: reg.augment,
+                    turnId: trigger.turnId,
+                    threadId,
+                  },
+                }),
+              );
+              entries.push({
+                type: "error",
+                call,
+                error: `Error: Tool "${call.name}" authorization denied: ${authorization.reason}`,
+              });
+              continue;
+            }
+
+            const reservation = capabilityTable.reserveToolCall(call.name);
+            if ("denied" in reservation) {
+              traceEmitter.recordCapabilityCheck(trace, {
+                tool: call.name,
+                result: "denied",
+              });
+              entries.push({ type: "error", call, error: `Error: ${reservation.reason}` });
               break;
             }
-            continue;
+            turnState.toolCallsSoFar++;
+            entries.push({ type: "execute", call, reg, validatedInput: validation.data });
           }
 
-          consecutiveFailures.delete(call.name);
+          // Phase 2: Execute validated tools in parallel (with event emission)
+          const execResults = await Promise.all(
+            entries.map(async (entry) => {
+              if (entry.type === "error") {
+                return {
+                  call: entry.call,
+                  output: entry.error,
+                  durationMs: 0,
+                  isError: true,
+                  toolCallId: crypto.randomUUID(),
+                  outcomeUnknown: false,
+                };
+              }
+              const toolCallId = `${entry.call.name}-${crypto.randomUUID()}`;
+              emitEvent({
+                kind: "tool_call_started",
+                turnId: trigger.turnId,
+                toolCallId,
+                toolName: entry.call.name,
+                augmentName: entry.reg.augment,
+              });
+              emitEvent({
+                kind: "tool_call_args",
+                turnId: trigger.turnId,
+                toolCallId,
+                args: entry.call.arguments,
+              });
 
-          const authorizationConfigError = validateAuthorizationRequirements(reg.tool.requires, {
-            binding: "tool",
-          });
-          if (authorizationConfigError) {
-            entries.push({
-              type: "error",
-              call,
-              error: `Error: Tool "${call.name}" has invalid authorization requirements: ${authorizationConfigError}`,
-            });
-            continue;
-          }
+              const execStart = Date.now();
+              let output: string;
+              let isError = false;
+              let outcomeUnknown = false;
+              let terminate: ToolResult["terminate"] | undefined;
+              try {
+                const augForTool = augments.find((a) =>
+                  a.tools?.some((t) => t.name === entry.reg.tool.name),
+                );
+                const timeout = augForTool?.constraints?.toolTimeoutMs ?? 30000;
+                const raw: string | ToolResult = await withTimeout(
+                  (deadlineSignal) =>
+                    entry.reg.tool.execute(entry.validatedInput, {
+                      turnId: trigger.turnId,
+                      peer: peer ?? null,
+                      threadId,
+                      signal: deadlineSignal,
+                      ...(trigger.auth !== undefined ? { auth: trigger.auth } : {}),
+                    }),
+                  timeout,
+                  signal,
+                );
+                if (typeof raw === "string") {
+                  output = raw;
+                } else {
+                  output = raw.content;
+                  isError = raw.isError === true;
+                  outcomeUnknown = raw.outcomeUnknown === true;
+                  terminate = raw.terminate;
+                }
+              } catch (err) {
+                outcomeUnknown = isOutcomeUnknownError(err);
+                output = outcomeUnknown
+                  ? "Error: Tool execution ended without a trustworthy result after dispatch; outcome is unknown. Do not retry automatically."
+                  : `Error: ${String(err)}`;
+                isError = true;
+              }
 
-          const authorization = evaluateDelegatedAuthorization(reg.tool.requires, {
-            auth: trigger.auth,
-            input: validation.data,
-          });
-          if (!authorization.ok) {
-            emitEvent(
-              delegatedAuthorizationDeniedAuditEvent({
-                decision: authorization,
-                auth: trigger.auth,
-                target: {
-                  type: "tool",
-                  toolName: call.name,
-                  augmentName: reg.augment,
-                  turnId: trigger.turnId,
-                  threadId,
-                },
-              }),
-            );
-            entries.push({
-              type: "error",
-              call,
-              error: `Error: Tool "${call.name}" authorization denied: ${authorization.reason}`,
-            });
-            continue;
-          }
+              emitEvent({
+                kind: "tool_call_result",
+                turnId: trigger.turnId,
+                toolCallId,
+                output,
+                isError,
+              });
 
-          entries.push({ type: "execute", call, reg, validatedInput: validation.data });
-        }
-
-        // Phase 2: Execute validated tools in parallel (with event emission)
-        const execResults = await Promise.all(
-          entries.map(async (entry) => {
-            if (entry.type === "error") {
               return {
                 call: entry.call,
-                output: entry.error,
-                durationMs: 0,
-                isError: true,
-                toolCallId: crypto.randomUUID(),
+                output,
+                durationMs: Date.now() - execStart,
+                isError,
+                toolCallId,
+                terminate,
+                outcomeUnknown,
               };
-            }
-            const toolCallId = `${entry.call.name}-${crypto.randomUUID()}`;
-            emitEvent({
-              kind: "tool_call_started",
-              turnId: trigger.turnId,
-              toolCallId,
-              toolName: entry.call.name,
-              augmentName: entry.reg.augment,
-            });
-            emitEvent({
-              kind: "tool_call_args",
-              turnId: trigger.turnId,
-              toolCallId,
-              args: entry.call.arguments,
-            });
-
-            const execStart = Date.now();
-            let output: string;
-            let isError = false;
-            let terminate: ToolResult["terminate"] | undefined;
-            try {
-              const augForTool = augments.find((a) =>
-                a.tools?.some((t) => t.name === entry.reg.tool.name),
-              );
-              const timeout = augForTool?.constraints?.toolTimeoutMs ?? 30000;
-              const toolContext = {
-                turnId: trigger.turnId,
-                peer: peer ?? null,
-                threadId,
-                ...(trigger.auth !== undefined ? { auth: trigger.auth } : {}),
-              };
-              const raw: string | ToolResult = await withTimeout(
-                () => entry.reg.tool.execute(entry.validatedInput, toolContext),
-                timeout,
-              );
-              if (typeof raw === "string") {
-                output = raw;
-              } else {
-                output = raw.content;
-                isError = raw.isError === true;
-                terminate = raw.terminate;
-              }
-            } catch (err) {
-              output = `Error: ${String(err)}`;
-              isError = true;
-            }
-
-            emitEvent({
-              kind: "tool_call_result",
-              turnId: trigger.turnId,
-              toolCallId,
-              output,
-              isError,
-            });
-
-            return {
-              call: entry.call,
-              output,
-              durationMs: Date.now() - execStart,
-              isError,
-              toolCallId,
-              terminate,
-            };
-          }),
-        );
-
-        // Phase 3: Append all results to history in order with matching toolCallIds
-        for (const { call, output, durationMs, isError, toolCallId } of execResults) {
-          const callStr = JSON.stringify(call);
-          history.append({
-            id: crypto.randomUUID(),
-            role: "tool_use",
-            toolCallId,
-            content: callStr,
-            timestamp: Date.now(),
-            tokenCount: tokenizer.count(callStr),
-          });
-          history.append({
-            id: crypto.randomUUID(),
-            role: "tool_result",
-            toolCallId,
-            content: output,
-            timestamp: Date.now(),
-            tokenCount: tokenizer.count(output),
-          });
-          if (!isError) {
-            toolCallRecords.push({
-              name: call.name,
-              input: call.arguments,
-              output,
-              durationMs,
-            });
-            capabilityTable.recordToolCall(call.name);
-          }
-        }
-
-        // Capture first non-error terminate directive from this batch.
-        // Reset per-iteration so a directive from one batch doesn't leak forward.
-        // Runtime allowlist: although the type narrows status to "input-required" |
-        // "completed", custom augments using JS or `as` casts could return any
-        // string. Reject anything outside the allowlist — kernel-controlled states
-        // (failed/canceled/rejected/auth-required) must not be augment-spoofable.
-        let pendingTerminate: ToolResult["terminate"] | undefined;
-        for (const r of execResults) {
-          if (!r.isError && r.terminate && !pendingTerminate) {
-            const s = r.terminate.status;
-            if (s === "input-required" || s === "completed") {
-              pendingTerminate = r.terminate;
-              break;
-            }
-          }
-        }
-
-        if (pendingTerminate) {
-          // Emit the directive's message as a normal assistant text message so
-          // chat widgets render it in the message bubble (not just the tool-call
-          // panel) and old AG-UI consumers see something. Skip when message is
-          // empty — emitting an empty text_message produces a blank bubble.
-          if (pendingTerminate.message) {
-            emitEvent({
-              kind: "text_message",
-              turnId: trigger.turnId,
-              messageId: crypto.randomUUID(),
-              role: "assistant",
-              text: pendingTerminate.message,
-            });
-          }
-          emitEvent({
-            kind: "run_finished",
-            turnId: trigger.turnId,
-            status: pendingTerminate.status,
-            ...(pendingTerminate.message !== undefined && {
-              message: pendingTerminate.message,
             }),
-          });
-          if (pendingTerminate.message) {
-            transcriptParts.push({ kind: "text", text: pendingTerminate.message });
-          }
-          await finalizeReturn({ withCostCommit: true });
-          return {
-            turnId: trigger.turnId,
-            success: true,
-            status: pendingTerminate.status,
-            response: pendingTerminate.message
-              ? {
-                  parts: [{ kind: "text", text: pendingTerminate.message }],
-                  contextId: trigger.contextId,
-                }
-              : undefined,
-            toolCalls: toolCallRecords,
-            trace,
-          };
-        }
+          );
 
-        // If consecutive failures terminated tool use, let model see the error and respond
-        if (terminateToolLoop) {
+          // Phase 3: Append all results to history in order with matching toolCallIds
+          for (const { call, output, durationMs, isError, toolCallId } of execResults) {
+            const callStr = JSON.stringify(call);
+            history.append({
+              id: crypto.randomUUID(),
+              role: "tool_use",
+              toolCallId,
+              content: callStr,
+              timestamp: Date.now(),
+              tokenCount: tokenizer.count(callStr),
+            });
+            history.append({
+              id: crypto.randomUUID(),
+              role: "tool_result",
+              toolCallId,
+              content: output,
+              timestamp: Date.now(),
+              tokenCount: tokenizer.count(output),
+            });
+            if (!isError) {
+              toolCallRecords.push({
+                name: call.name,
+                input: call.arguments,
+                output,
+                durationMs,
+              });
+            }
+          }
+
+          if (execResults.some((result) => result.outcomeUnknown)) {
+            emitEvent({
+              kind: "run_error",
+              turnId: trigger.turnId,
+              message: "A tool timed out after dispatch; its outcome is unknown.",
+              source: "kernel",
+            });
+            emitEvent({
+              kind: "run_finished",
+              turnId: trigger.turnId,
+              status: "failed",
+            });
+            await finalizeReturn();
+            return {
+              turnId: trigger.turnId,
+              success: false,
+              status: "failed",
+              errorResponse:
+                "A tool operation ended without a trustworthy result after it began. Its outcome is unknown and it was not retried.",
+              toolCalls: toolCallRecords,
+              trace,
+              error: {
+                message: "Tool execution outcome unknown after timeout",
+                source: "kernel",
+              },
+            };
+          }
+
+          // Capture first non-error terminate directive from this batch.
+          // Reset per-iteration so a directive from one batch doesn't leak forward.
+          // Runtime allowlist: although the type narrows status to "input-required" |
+          // "completed", custom augments using JS or `as` casts could return any
+          // string. Reject anything outside the allowlist — kernel-controlled states
+          // (failed/canceled/rejected/auth-required) must not be augment-spoofable.
+          let pendingTerminate: ToolResult["terminate"] | undefined;
+          for (const r of execResults) {
+            if (!r.isError && r.terminate && !pendingTerminate) {
+              const s = r.terminate.status;
+              if (s === "input-required" || s === "completed") {
+                pendingTerminate = r.terminate;
+                break;
+              }
+            }
+          }
+
+          if (pendingTerminate) {
+            // Emit the directive's message as a normal assistant text message so
+            // chat widgets render it in the message bubble (not just the tool-call
+            // panel) and old AG-UI consumers see something. Skip when message is
+            // empty — emitting an empty text_message produces a blank bubble.
+            if (pendingTerminate.message) {
+              emitEvent({
+                kind: "text_message",
+                turnId: trigger.turnId,
+                messageId: crypto.randomUUID(),
+                role: "assistant",
+                text: pendingTerminate.message,
+              });
+            }
+            emitEvent({
+              kind: "run_finished",
+              turnId: trigger.turnId,
+              status: pendingTerminate.status,
+              ...(pendingTerminate.message !== undefined && {
+                message: pendingTerminate.message,
+              }),
+            });
+            if (pendingTerminate.message) {
+              transcriptParts.push({ kind: "text", text: pendingTerminate.message });
+            }
+            await finalizeReturn({ withCostCommit: true });
+            return {
+              turnId: trigger.turnId,
+              success: true,
+              status: pendingTerminate.status,
+              response: pendingTerminate.message
+                ? {
+                    parts: [{ kind: "text", text: pendingTerminate.message }],
+                    contextId: trigger.contextId,
+                  }
+                : undefined,
+              toolCalls: toolCallRecords,
+              trace,
+            };
+          }
+
+          // If consecutive failures terminated tool use, let model see the error and respond
+          if (terminateToolLoop) {
+            const updatedHistory = history.getHistory(historyBudget);
+            currentPrompt = allocator.assemble(
+              contextBlocks,
+              updatedHistory,
+              toolSelection.definitions,
+              toolChoiceOpt,
+            );
+
+            const termInferStart = Date.now();
+            const {
+              response: finalResponse,
+              streamed: termStreamed,
+              messageId: termMessageId,
+            } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent, signal);
+            const termInferDuration = Date.now() - termInferStart;
+
+            // Record this final inference so its cost lands in trace.inferenceSteps[]
+            // and runCostCommit() sees it. Without this, the consecutive-failure
+            // completion path silently drops the final API call from cost
+            // accounting — and an unpriced final step would never trigger the
+            // any-unpriced→whole-turn-unpriced rule.
+            traceEmitter.recordInference(trace, {
+              model: config.model,
+              inputTokens: finalResponse.inputTokens,
+              outputTokens: finalResponse.outputTokens,
+              durationMs: termInferDuration,
+              toolCalls: [],
+              cost: costFromResponse(finalResponse),
+            });
+
+            if (finalResponse.content) {
+              history.append({
+                id: crypto.randomUUID(),
+                role: "assistant",
+                content: finalResponse.content,
+                timestamp: Date.now(),
+                tokenCount: tokenizer.count(finalResponse.content),
+              });
+              transcriptParts.push({ kind: "text", text: finalResponse.content });
+              if (!termStreamed) {
+                emitEvent({
+                  kind: "text_message",
+                  turnId: trigger.turnId,
+                  messageId: termMessageId,
+                  role: "assistant",
+                  text: finalResponse.content,
+                });
+              }
+            }
+            emitEvent({
+              kind: "run_finished",
+              turnId: trigger.turnId,
+              status: "completed",
+            });
+            await finalizeReturn({ withCostCommit: true });
+            return {
+              turnId: trigger.turnId,
+              success: true,
+              status: "completed",
+              response: finalResponse.content
+                ? {
+                    parts: [{ kind: "text", text: finalResponse.content }],
+                    contextId: trigger.contextId,
+                  }
+                : undefined,
+              toolCalls: toolCallRecords,
+              trace,
+            };
+          }
+
+          // Check abort after tool execution
+          if (signal?.aborted) return makeAbortResult();
+
+          // Rebuild prompt with updated history
           const updatedHistory = history.getHistory(historyBudget);
           currentPrompt = allocator.assemble(
             contextBlocks,
@@ -1129,108 +1282,38 @@ export function createTurnLoop(opts: {
             toolSelection.definitions,
             toolChoiceOpt,
           );
-
-          const termInferStart = Date.now();
-          const {
-            response: finalResponse,
-            streamed: termStreamed,
-            messageId: termMessageId,
-          } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent, signal);
-          const termInferDuration = Date.now() - termInferStart;
-
-          // Record this final inference so its cost lands in trace.inferenceSteps[]
-          // and runCostCommit() sees it. Without this, the consecutive-failure
-          // completion path silently drops the final API call from cost
-          // accounting — and an unpriced final step would never trigger the
-          // any-unpriced→whole-turn-unpriced rule.
-          traceEmitter.recordInference(trace, {
-            model: config.model,
-            inputTokens: finalResponse.inputTokens,
-            outputTokens: finalResponse.outputTokens,
-            durationMs: termInferDuration,
-            toolCalls: [],
-            cost: costFromResponse(finalResponse),
-          });
-
-          if (finalResponse.content) {
-            history.append({
-              id: crypto.randomUUID(),
-              role: "assistant",
-              content: finalResponse.content,
-              timestamp: Date.now(),
-              tokenCount: tokenizer.count(finalResponse.content),
-            });
-            transcriptParts.push({ kind: "text", text: finalResponse.content });
-            if (!termStreamed) {
-              emitEvent({
-                kind: "text_message",
-                turnId: trigger.turnId,
-                messageId: termMessageId,
-                role: "assistant",
-                text: finalResponse.content,
-              });
-            }
-          }
-          emitEvent({
-            kind: "run_finished",
-            turnId: trigger.turnId,
-            status: "completed",
-          });
-          await finalizeReturn({ withCostCommit: true });
-          return {
-            turnId: trigger.turnId,
-            success: true,
-            status: "completed",
-            response: finalResponse.content
-              ? {
-                  parts: [{ kind: "text", text: finalResponse.content }],
-                  contextId: trigger.contextId,
-                }
-              : undefined,
-            toolCalls: toolCallRecords,
-            trace,
-          };
         }
 
-        // Check abort after tool execution
-        if (signal?.aborted) return makeAbortResult();
-
-        // Rebuild prompt with updated history
-        const updatedHistory = history.getHistory(historyBudget);
-        currentPrompt = allocator.assemble(
-          contextBlocks,
-          updatedHistory,
-          toolSelection.definitions,
-          toolChoiceOpt,
-        );
+        // Max inference loops reached
+        emitEvent({
+          kind: "text_message",
+          turnId: trigger.turnId,
+          messageId: crypto.randomUUID(),
+          role: "assistant",
+          text: "I've completed the available actions.",
+        });
+        emitEvent({
+          kind: "run_finished",
+          turnId: trigger.turnId,
+          status: "completed",
+        });
+        transcriptParts.push({ kind: "text", text: "I've completed the available actions." });
+        await finalizeReturn({ withCostCommit: true });
+        return {
+          turnId: trigger.turnId,
+          success: true,
+          status: "completed",
+          response: {
+            parts: [{ kind: "text", text: "I've completed the available actions." }],
+            contextId: trigger.contextId,
+          },
+          toolCalls: toolCallRecords,
+          trace,
+        };
+      } catch (error) {
+        await finalizeReturn();
+        throw error;
       }
-
-      // Max inference loops reached
-      emitEvent({
-        kind: "text_message",
-        turnId: trigger.turnId,
-        messageId: crypto.randomUUID(),
-        role: "assistant",
-        text: "I've completed the available actions.",
-      });
-      emitEvent({
-        kind: "run_finished",
-        turnId: trigger.turnId,
-        status: "completed",
-      });
-      transcriptParts.push({ kind: "text", text: "I've completed the available actions." });
-      await finalizeReturn({ withCostCommit: true });
-      return {
-        turnId: trigger.turnId,
-        success: true,
-        status: "completed",
-        response: {
-          parts: [{ kind: "text", text: "I've completed the available actions." }],
-          contextId: trigger.contextId,
-        },
-        toolCalls: toolCallRecords,
-        trace,
-      };
     },
   };
 }

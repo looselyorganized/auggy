@@ -303,4 +303,104 @@ describe("runCostCommit — multi-iteration sum", () => {
     expect(cost.costUsd).toBeCloseTo(0.006, 9);
     expect(model.calls).toHaveLength(3);
   });
+
+  it("commits completed inference cost exactly once when the request aborts during a tool", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "wait-for-abort", arguments: {} }],
+      finishReason: "tool_use",
+      costUsd: 0.0042,
+    });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const controller = new AbortController();
+    const gate = captureGate();
+    const loop = createTurnLoop({
+      augments: [
+        identityAugment(),
+        {
+          name: "abortable-tool",
+          tools: [
+            {
+              name: "wait-for-abort",
+              description: "Wait until the caller cancels",
+              category: "meta",
+              input: z.object({}),
+              execute: async () => {
+                markStarted();
+                await new Promise<void>((resolve) => {
+                  controller.signal.addEventListener("abort", () => resolve(), { once: true });
+                });
+                return "canceled";
+              },
+            },
+          ],
+        },
+        gate.augment,
+      ],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const pending = loop.executeTurn(makeTrigger("go"), "thread-abort-cost", {
+      signal: controller.signal,
+    });
+    await started;
+    controller.abort(new Error("client disconnected"));
+    const result = await pending;
+
+    expect(result.status).toBe("canceled");
+    expect(gate.committedCosts).toHaveLength(1);
+    expect(gate.committedCosts[0]).toEqual({ priced: true, costUsd: 0.0042 });
+  });
+
+  it("commits prior priced inference exactly once when a later model call throws", async () => {
+    const baseModel = createMockModel();
+    baseModel.pushResponse({
+      content: "",
+      toolCalls: [{ name: "echo", arguments: { input: "x" } }],
+      finishReason: "tool_use",
+      costUsd: 0.006,
+    });
+    let calls = 0;
+    const model = {
+      ...baseModel,
+      async complete(prompt: Parameters<typeof baseModel.complete>[0]) {
+        calls++;
+        if (calls === 2) throw new Error("provider disconnected");
+        return baseModel.complete(prompt);
+      },
+    };
+    const gate = captureGate();
+    const loop = createTurnLoop({
+      augments: [
+        identityAugment(),
+        {
+          name: "echo-aug",
+          tools: [
+            {
+              name: "echo",
+              description: "echo",
+              category: "meta",
+              input: z.object({ input: z.string() }),
+              execute: async ({ input }) => input,
+            },
+          ],
+        },
+        gate.augment,
+      ],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    await expect(loop.executeTurn(makeTrigger("go"), "thread-late-engine-error")).rejects.toThrow(
+      "provider disconnected",
+    );
+    expect(gate.committedCosts).toEqual([{ priced: true, costUsd: 0.006 }]);
+  });
 });

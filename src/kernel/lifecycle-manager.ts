@@ -54,7 +54,7 @@ export function createLifecycleManager(opts: {
       for (const aug of shutdownAugments) {
         try {
           if (aug.onShutdown) {
-            await withTimeout(() => aug.onShutdown!(), 5000);
+            await withTimeout((signal) => aug.onShutdown!(signal), 5000);
           }
         } catch (err) {
           // Best-effort: surface the failure so operators can see which

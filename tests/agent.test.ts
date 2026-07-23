@@ -4,6 +4,8 @@ import { defineAgent } from "@/agent";
 import { extractText } from "@/parts";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createMockTransport, createIdentityAugment } from "@tests/fixtures/mock-augment";
+import { emptyTrace } from "@/kernel/trace-emitter";
+import type { Augment, TransportKernel } from "@/types";
 
 describe("defineAgent", () => {
   it("creates an agent that can start and stop", async () => {
@@ -181,6 +183,243 @@ describe("defineAgent", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(turnEndCalled).toBe(true);
 
+    await agent.stop();
+  });
+
+  it("inject() propagates cancellation to terminal hooks and suppresses scheduled work", async () => {
+    const model = createMockModel({ response: "Hello" });
+    const controller = new AbortController();
+    let lifecycleSignal: AbortSignal | undefined;
+    let scheduled = false;
+    const agent = defineAgent(
+      {
+        name: "test-agent",
+        model: "mock",
+        augments: [
+          {
+            name: "tracker",
+            onTurnEnd: async (_result, context) => {
+              lifecycleSignal = context?.signal;
+              controller.abort(new DOMException("caller left", "AbortError"));
+            },
+            scheduleAfterTurn: async () => {
+              scheduled = true;
+            },
+          },
+        ],
+      },
+      model,
+    );
+
+    await agent.start();
+    await agent.inject(
+      {
+        type: "message",
+        turnId: "canceled-post-turn",
+        timestamp: Date.now(),
+        source: "test",
+        peer: {
+          id: "tester",
+          kind: "human",
+          trustLevel: "creator",
+          sourceAugment: "test",
+        },
+        payload: {
+          parts: [{ kind: "text", text: "Test" }],
+          sourceAugment: "test",
+          peer: null,
+          timestamp: Date.now(),
+        },
+      },
+      { signal: controller.signal },
+    );
+
+    expect(lifecycleSignal).toBe(controller.signal);
+    expect(scheduled).toBe(false);
+    await agent.stop();
+  });
+
+  it("does not start later onTurnEnd hooks after cancellation during an earlier hook", async () => {
+    const controller = new AbortController();
+    const calls: string[] = [];
+    const agent = defineAgent(
+      {
+        name: "test-agent",
+        model: "mock",
+        augments: [
+          {
+            name: "first-hook",
+            onTurnEnd: async () => {
+              calls.push("first");
+              controller.abort(new DOMException("caller left", "AbortError"));
+            },
+          },
+          {
+            name: "second-hook",
+            onTurnEnd: async () => {
+              calls.push("second");
+            },
+          },
+        ],
+      },
+      createMockModel({ response: "Hello" }),
+    );
+
+    await agent.start();
+    await agent.inject(
+      {
+        type: "message",
+        turnId: "cancel-between-turn-end-hooks",
+        timestamp: Date.now(),
+        source: "test",
+        peer: {
+          id: "tester",
+          kind: "human",
+          trustLevel: "creator",
+          sourceAugment: "test",
+        },
+        payload: {
+          parts: [{ kind: "text", text: "Test" }],
+          sourceAugment: "test",
+          peer: null,
+          timestamp: Date.now(),
+        },
+      },
+      { signal: controller.signal },
+    );
+
+    expect(calls).toEqual(["first"]);
+    await agent.stop();
+  });
+
+  it("does not start later scheduled hooks after cancellation during an earlier hook", async () => {
+    const model = createMockModel({ response: "Hello" });
+    const controller = new AbortController();
+    const calls: string[] = [];
+    const agent = defineAgent(
+      {
+        name: "test-agent",
+        model: "mock",
+        augments: [
+          {
+            name: "first-scheduler",
+            scheduleAfterTurn: async () => {
+              calls.push("first");
+              controller.abort(new DOMException("caller left", "AbortError"));
+            },
+          },
+          {
+            name: "second-scheduler",
+            scheduleAfterTurn: async () => {
+              calls.push("second");
+            },
+          },
+        ],
+      },
+      model,
+    );
+
+    await agent.start();
+    await agent.inject(
+      {
+        type: "message",
+        turnId: "cancel-between-schedulers",
+        timestamp: Date.now(),
+        source: "test",
+        peer: {
+          id: "tester",
+          kind: "human",
+          trustLevel: "creator",
+          sourceAugment: "test",
+        },
+        payload: {
+          parts: [{ kind: "text", text: "Test" }],
+          sourceAugment: "test",
+          peer: null,
+          timestamp: Date.now(),
+        },
+      },
+      { signal: controller.signal },
+    );
+
+    expect(calls).toEqual(["first"]);
+    await agent.stop();
+  });
+
+  it("does not dispatch later outbound messages after cancellation during delivery", async () => {
+    const controller = new AbortController();
+    const delivered: string[] = [];
+    let kernel: TransportKernel | undefined;
+    const transport: Augment = {
+      name: "canceling-transport",
+      transport: {
+        concurrency: 1,
+        identify: () => null,
+        async register(registeredKernel) {
+          kernel = registeredKernel;
+          registeredKernel.onOutbound(async (_peer, message) => {
+            delivered.push(extractText(message.parts));
+            controller.abort(new DOMException("caller left", "AbortError"));
+          });
+        },
+      },
+    };
+    const internal: Augment = {
+      name: "multi-response",
+      async handleInternalTurn(trigger) {
+        if (trigger.source !== "multi-response") return null;
+        return {
+          turnId: trigger.turnId,
+          success: true,
+          status: "completed",
+          responses: [
+            {
+              parts: [{ kind: "text", text: "first" }],
+              targetAugment: "canceling-transport",
+            },
+            {
+              parts: [{ kind: "text", text: "second" }],
+              targetAugment: "canceling-transport",
+            },
+          ],
+          toolCalls: [],
+          trace: emptyTrace({
+            turnId: trigger.turnId,
+            threadId: trigger.threadId ?? trigger.turnId,
+            trigger: { type: trigger.type, sourceAugment: trigger.source },
+          }),
+        };
+      },
+    };
+    const agent = defineAgent(
+      {
+        name: "test-agent",
+        model: "mock",
+        augments: [transport, internal],
+      },
+      createMockModel({ response: "unused" }),
+    );
+
+    await agent.start();
+    expect(kernel).toBeDefined();
+    await agent.inject(
+      {
+        type: "internal",
+        turnId: "cancel-between-outbound",
+        timestamp: Date.now(),
+        source: "multi-response",
+        peer: {
+          id: "tester",
+          kind: "human",
+          trustLevel: "creator",
+          sourceAugment: "test",
+        },
+        payload: {},
+      },
+      { signal: controller.signal },
+    );
+
+    expect(delivered).toEqual(["first"]);
     await agent.stop();
   });
 });

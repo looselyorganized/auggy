@@ -2,6 +2,24 @@ import { describe, it, expect, spyOn } from "bun:test";
 import { withTimeout, TimeoutError } from "@/kernel/timeout";
 
 describe("withTimeout", () => {
+  it("does not invoke work when the caller is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort(new DOMException("caller left", "AbortError"));
+    let invoked = false;
+
+    await expect(
+      withTimeout(
+        async () => {
+          invoked = true;
+          return "late";
+        },
+        100,
+        controller.signal,
+      ),
+    ).rejects.toHaveProperty("name", "AbortError");
+    expect(invoked).toBe(false);
+  });
+
   it("returns the result when the call completes before timeout", async () => {
     const result = await withTimeout(async () => "hello", 1000);
     expect(result).toBe("hello");
@@ -41,5 +59,48 @@ describe("withTimeout", () => {
         throw new Error("custom error");
       }, 5000),
     ).rejects.toThrow("custom error");
+  });
+
+  it("combines caller cancellation with the deadline signal", async () => {
+    const caller = new AbortController();
+    let observedSignal: AbortSignal | undefined;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+
+    const pending = withTimeout(
+      async (signal) => {
+        observedSignal = signal;
+        markStarted();
+        return await new Promise<string>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      },
+      5_000,
+      caller.signal,
+    );
+
+    await started;
+    caller.abort(new Error("caller canceled"));
+
+    await expect(pending).rejects.toThrow("caller canceled");
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it("aborts cooperative work with an outcome-unknown TimeoutError", async () => {
+    let observedSignal: AbortSignal | undefined;
+    await expect(
+      withTimeout(async (signal) => {
+        observedSignal = signal;
+        return await new Promise<string>((_resolve, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
+      }, 5),
+    ).rejects.toMatchObject({
+      name: "TimeoutError",
+      outcomeUnknown: true,
+    });
+    expect(observedSignal?.aborted).toBe(true);
   });
 });

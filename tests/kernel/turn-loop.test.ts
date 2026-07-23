@@ -70,6 +70,40 @@ describe("TurnLoop", () => {
     expect(model.calls).toHaveLength(1);
   });
 
+  it("does not start later onTurnStart hooks after cancellation", async () => {
+    const controller = new AbortController();
+    const calls: string[] = [];
+    const model = createMockModel({ response: "must not run" });
+    const loop = createTurnLoop({
+      augments: [
+        {
+          name: "first-hook",
+          onTurnStart: async () => {
+            calls.push("first");
+            controller.abort(new DOMException("caller left", "AbortError"));
+          },
+        },
+        {
+          name: "second-hook",
+          onTurnStart: async () => {
+            calls.push("second");
+          },
+        },
+      ],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(makeTrigger("Hi"), "thread-canceled-hooks", {
+      signal: controller.signal,
+    });
+
+    expect(result.status).toBe("canceled");
+    expect(calls).toEqual(["first"]);
+    expect(model.calls).toHaveLength(0);
+  });
+
   it("returns a failed turn when pinned context exceeds the model budget", async () => {
     const model = createMockModel({ response: "Must not run", maxContextTokens: 100 });
     const loop = createTurnLoop({
@@ -716,6 +750,261 @@ describe("TurnLoop", () => {
 
     const result = await loop.executeTurn(makeTrigger("Go"), "thread-1");
     expect(result.toolCalls.length).toBeLessThanOrEqual(3);
+  });
+
+  it("reserves parallel tool-call quota before dispatch", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [
+        { name: "limited", arguments: { input: "one" } },
+        { name: "limited", arguments: { input: "two" } },
+        { name: "limited", arguments: { input: "three" } },
+      ],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "Done", finishReason: "end_turn" });
+    const dispatched: string[] = [];
+    const loop = createTurnLoop({
+      augments: [
+        {
+          name: "limited-aug",
+          constraints: { maxToolCallsPerTurn: 1 },
+          tools: [
+            {
+              name: "limited",
+              description: "Limited side effect",
+              category: "meta",
+              input: z.object({ input: z.string() }),
+              execute: async ({ input }) => {
+                dispatched.push(input);
+                return input;
+              },
+            },
+          ],
+        },
+      ],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(makeTrigger("Go"), "thread-parallel-limit");
+
+    expect(dispatched).toEqual(["one"]);
+    expect(result.toolCalls).toHaveLength(1);
+  });
+
+  it("counts a throwing side-effecting attempt against the parallel batch quota", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [
+        { name: "fragile", arguments: { input: "first" } },
+        { name: "fragile", arguments: { input: "second" } },
+      ],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "Done", finishReason: "end_turn" });
+    const attempts: string[] = [];
+    const loop = createTurnLoop({
+      augments: [
+        {
+          name: "fragile-aug",
+          constraints: { maxToolCallsPerTurn: 1 },
+          tools: [
+            {
+              name: "fragile",
+              description: "May fail after beginning a side effect",
+              category: "meta",
+              input: z.object({ input: z.string() }),
+              execute: async ({ input }) => {
+                attempts.push(input);
+                throw new Error("side effect outcome unknown");
+              },
+            },
+          ],
+        },
+      ],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    await loop.executeTurn(makeTrigger("Go"), "thread-throwing-limit");
+
+    expect(attempts).toEqual(["first"]);
+  });
+
+  it("counts a structured error attempt against the parallel batch quota", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [
+        { name: "fragile_result", arguments: { input: "first" } },
+        { name: "fragile_result", arguments: { input: "second" } },
+      ],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "Done", finishReason: "end_turn" });
+    const attempts: string[] = [];
+    const loop = createTurnLoop({
+      augments: [
+        {
+          name: "fragile-result-aug",
+          constraints: { maxToolCallsPerTurn: 1 },
+          tools: [
+            {
+              name: "fragile_result",
+              description: "Return a structured failure after dispatch",
+              category: "meta",
+              input: z.object({ input: z.string() }),
+              execute: async ({ input }) => {
+                attempts.push(input);
+                return { content: "failed after dispatch", isError: true };
+              },
+            },
+          ],
+        },
+      ],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    await loop.executeTurn(makeTrigger("Go"), "thread-error-result-limit");
+
+    expect(attempts).toEqual(["first"]);
+  });
+
+  it("propagates caller cancellation to an in-flight tool and performs no second inference", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "cooperative", arguments: {} }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "must not run", finishReason: "end_turn" });
+    const controller = new AbortController();
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    let observedSignal: AbortSignal | undefined;
+    const loop = createTurnLoop({
+      augments: [
+        {
+          name: "cooperative-aug",
+          tools: [
+            {
+              name: "cooperative",
+              description: "Wait for caller cancellation",
+              category: "meta",
+              input: z.object({}),
+              execute: async (_input, context) => {
+                observedSignal = context?.signal;
+                markStarted();
+                await new Promise<void>((resolve) => {
+                  context?.signal?.addEventListener("abort", () => resolve(), { once: true });
+                });
+                context?.signal?.throwIfAborted();
+                return "must not complete";
+              },
+            },
+          ],
+        },
+      ],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const pending = loop.executeTurn(makeTrigger("Go"), "thread-caller-abort", {
+      signal: controller.signal,
+    });
+    await started;
+    controller.abort(new DOMException("caller left", "AbortError"));
+    const result = await pending;
+
+    expect(observedSignal?.aborted).toBe(true);
+    expect(result.status).toBe("canceled");
+    expect(model.calls).toHaveLength(1);
+  });
+
+  it("terminates an outcome-unknown tool timeout without model retry", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "noncooperative", arguments: {} }],
+      finishReason: "tool_use",
+      costUsd: 0.001,
+    });
+    model.pushResponse({ content: "must not run", finishReason: "end_turn" });
+    const loop = createTurnLoop({
+      augments: [
+        {
+          name: "noncooperative-aug",
+          constraints: { toolTimeoutMs: 5 },
+          tools: [
+            {
+              name: "noncooperative",
+              description: "Ignore cancellation",
+              category: "meta",
+              input: z.object({}),
+              execute: async () => await new Promise<string>(() => {}),
+            },
+          ],
+        },
+      ],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(makeTrigger("Go"), "thread-outcome-unknown");
+
+    expect(result.status).toBe("failed");
+    expect(result.errorResponse).toContain("outcome is unknown");
+    expect(model.calls).toHaveLength(1);
+  });
+
+  it("terminates a structured outcome-unknown tool result without model retry", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [{ name: "ambiguous_delivery", arguments: {} }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "must not run", finishReason: "end_turn" });
+    const loop = createTurnLoop({
+      augments: [
+        {
+          name: "ambiguous-delivery-aug",
+          tools: [
+            {
+              name: "ambiguous_delivery",
+              description: "Report an ambiguous side-effecting delivery",
+              category: "communication",
+              input: z.object({}),
+              execute: async () => ({
+                content: "delivery response was lost",
+                isError: true,
+                outcomeUnknown: true,
+              }),
+            },
+          ],
+        },
+      ],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(makeTrigger("Send"), "thread-ambiguous-delivery");
+
+    expect(result.status).toBe("failed");
+    expect(result.errorResponse).toContain("outcome is unknown");
+    expect(model.calls).toHaveLength(1);
   });
 
   it("terminates tool loop after 2 consecutive validation failures for same tool", async () => {

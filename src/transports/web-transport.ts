@@ -3212,6 +3212,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                     method: req.method,
                     headers: req.headers,
                     body: buffered,
+                    signal: req.signal,
                   });
                 } catch (_err) {
                   // Body read errors are 400 — caller's problem, not ours.
@@ -3229,28 +3230,20 @@ export function webTransport(opts: WebTransportOptions): Augment {
               }
 
               try {
-                // Finding 1 — AbortController for cooperative cancellation on timeout.
-                // The controller fires on timeout so handlers that listen to the signal
-                // can bail out of side-effecting work instead of continuing after 504.
                 const timeoutMs = augmentRoute.timeoutMs ?? 30_000;
-                const controller = new AbortController();
-                const timer = setTimeout(() => controller.abort(), timeoutMs);
-                try {
-                  const response = await withTimeout(
-                    () =>
-                      augmentRoute.handler(dispatchReq, {
-                        signal: controller.signal,
-                        auth: routeAuth.context,
-                        params,
-                        ...(webhookPolicy.context ? { webhook: webhookPolicy.context } : {}),
-                        routePath: augmentRoute.path,
-                      }),
-                    timeoutMs,
-                  );
-                  return withCorsHeaders(response);
-                } finally {
-                  clearTimeout(timer);
-                }
+                const response = await withTimeout(
+                  (deadlineSignal) =>
+                    augmentRoute.handler(dispatchReq, {
+                      signal: deadlineSignal,
+                      auth: routeAuth.context,
+                      params,
+                      ...(webhookPolicy.context ? { webhook: webhookPolicy.context } : {}),
+                      routePath: augmentRoute.path,
+                    }),
+                  timeoutMs,
+                  req.signal,
+                );
+                return withCorsHeaders(response);
               } catch (err) {
                 if (err instanceof TimeoutError) {
                   return json({ error: "timeout" }, 504);

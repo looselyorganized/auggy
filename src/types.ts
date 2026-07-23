@@ -133,6 +133,8 @@ export interface ToolExecuteContext {
   peer: PeerIdentity | null;
   threadId: string;
   auth?: RouteAuthContext;
+  /** Combined request/deadline cancellation for this exact tool attempt. */
+  signal?: AbortSignal;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Tool is covariant over arbitrary model-facing schemas.
@@ -161,6 +163,11 @@ export interface ToolResult {
   content: string;
   /** Marks an expected tool-level failure without requiring the tool to throw. */
   isError?: boolean;
+  /**
+   * The tool may have crossed a side-effect boundary without learning the
+   * result. The kernel terminates the turn and never asks the model to retry.
+   */
+  outcomeUnknown?: boolean;
   /** Optional turn-termination directive. */
   terminate?: {
     status: Extract<TaskState, "input-required" | "completed">;
@@ -274,6 +281,8 @@ export interface TurnState {
   toolCallsSoFar: number;
   turnStartedAt: number;
   metadata: Record<string, unknown>;
+  /** Caller cancellation for turn-scoped context and lifecycle work. */
+  signal?: AbortSignal;
 }
 
 export interface OutboundMessage {
@@ -412,6 +421,13 @@ export interface Transcript {
 export interface SchedulerContext {
   inject(trigger: TurnTrigger): Promise<TurnResult>;
   getCompletedTranscript(): Promise<Transcript | null>;
+  /** Caller cancellation; background hooks must not begin new work after abort. */
+  signal?: AbortSignal;
+}
+
+/** Cancellation context shared by terminal turn hooks. */
+export interface TurnLifecycleContext {
+  signal?: AbortSignal;
 }
 
 /**
@@ -423,6 +439,7 @@ export interface SchedulerContext {
 export interface InternalTurnContext {
   threadId: string;
   peer: PeerIdentity | null;
+  signal?: AbortSignal;
 }
 
 // === Kernel Events (internal — emitted by turn loop, consumed by transports) ===
@@ -634,7 +651,13 @@ export interface TransportKernel {
   ): Promise<TurnResult>;
   /** Evict an in-memory thread so a later request restores durable state. */
   forgetThreadHistory?(threadId: string): void;
-  onOutbound(callback: (peer: PeerIdentity, message: OutboundMessage) => Promise<void>): void;
+  onOutbound(
+    callback: (
+      peer: PeerIdentity,
+      message: OutboundMessage,
+      context?: { signal?: AbortSignal },
+    ) => Promise<void>,
+  ): void;
   getAgentCard(): AgentCard;
   /**
    * Cross-augment HTTP routes collected at `agent.start()` after
@@ -1291,9 +1314,9 @@ export interface Augment {
   memory?: MemoryProviderSpec;
   constraints?: AugmentConstraints;
   onBoot?: () => Promise<void>;
-  onShutdown?: () => Promise<void>;
+  onShutdown?: (signal?: AbortSignal) => Promise<void>;
   onTurnStart?: (turn: TurnState) => Promise<void>;
-  onTurnEnd?: (turn: TurnResult) => Promise<void>;
+  onTurnEnd?: (turn: TurnResult, context?: TurnLifecycleContext) => Promise<void>;
   onIdle?: () => Promise<void>;
   /**
    * ADR-027: post-turn background-work hook. Fires after `onTurnEnd` for
@@ -1403,7 +1426,7 @@ export interface AgentHandle {
   ready(): Promise<void>;
   health(): AgentHealth;
   card(): AgentCard;
-  inject(trigger: TurnTrigger): Promise<TurnResult>;
+  inject(trigger: TurnTrigger, options?: { signal?: AbortSignal }): Promise<TurnResult>;
 }
 
 // === Notify augment ===
@@ -1523,10 +1546,16 @@ export interface NotifyPayload {
 export interface NotifyDeliveryResult {
   status: "sent" | "failed";
   detail?: string;
+  /** Delivery may have occurred; callers must not retry automatically. */
+  outcomeUnknown?: boolean;
 }
 
 export interface NotifyAdapter {
-  deliver(destination: NotifyDestination, payload: NotifyPayload): Promise<NotifyDeliveryResult>;
+  deliver(
+    destination: NotifyDestination,
+    payload: NotifyPayload,
+    options?: { signal?: AbortSignal },
+  ): Promise<NotifyDeliveryResult>;
 }
 
 // ---------------------------------------------------------------------------
