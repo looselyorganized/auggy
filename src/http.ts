@@ -623,6 +623,19 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
       currentHeaders.set(name, value);
     }
 
+    if (urlPolicy === "public") {
+      const reason = rejectUnsafeUrl(url);
+      if (reason) throw new Error(`http client: unsafe URL (${reason})`);
+    }
+    const parsedInitialUrl = new URL(url);
+    if (parsedInitialUrl.protocol !== "http:" && parsedInitialUrl.protocol !== "https:") {
+      throw new Error(`http client: unsupported URL scheme ${parsedInitialUrl.protocol}`);
+    }
+    if (parsedInitialUrl.username || parsedInitialUrl.password) {
+      throw new Error("http client: URL credentials are not allowed");
+    }
+    const originalOrigin = parsedInitialUrl.origin;
+
     const controller = new AbortController();
     const abortFromCaller = () => controller.abort(init.signal?.reason);
     if (init.signal?.aborted) {
@@ -631,7 +644,6 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
       init.signal?.addEventListener("abort", abortFromCaller, { once: true });
     }
     const timer = setTimeout(() => controller.abort(), timeoutMs);
-    const originalOrigin = new URL(url).origin;
 
     try {
       let currentUrl = url;
