@@ -129,6 +129,7 @@ describe("railway-cli", () => {
       const firstFetch = fetchCalls[0]!;
       const headers = firstFetch.init!.headers as Record<string, string>;
       expect(headers.authorization).toBe("Bearer railway-token");
+      expect(firstFetch.init?.redirect).toBe("error");
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

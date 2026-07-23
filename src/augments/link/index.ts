@@ -65,6 +65,7 @@ import type {
 } from "@auggy/link";
 
 import { defineTool } from "../../helpers";
+import { createRedirectRejectingFetch } from "../../http";
 import type {
   Augment,
   ContextBlock,
@@ -486,7 +487,12 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
     innerAuth = new BearerAuthProvider({ peers: buildAuthPeers(peerStateRef.current) });
   }
 
-  const peerClient = opts._peerClient ?? new PeerClient({ addressBook: dynamicAddressBook });
+  const peerClient =
+    opts._peerClient ??
+    new PeerClient({
+      addressBook: dynamicAddressBook,
+      config: { fetch: createRedirectRejectingFetch() },
+    });
 
   // Optional peer-source resolver. Constructed once at factory time; activated
   // (initial fetch + refresh loop) in transport.register so the kernel is

@@ -98,12 +98,15 @@ describe("model registry", () => {
 
   test("refresh saves provider models and later reads them from cache", async () => {
     const cacheDir = tempRoot();
-    const fetcher = async () =>
-      new Response(
+    let requestInit: RequestInit | undefined;
+    const fetcher = async (_input: string | URL | Request, init?: RequestInit) => {
+      requestInit = init;
+      return new Response(
         JSON.stringify({
           data: [{ id: "claude-fable-5", display_name: "Claude Fable 5" }],
         }),
       );
+    };
 
     const live = await listModelRegistry({
       provider: "anthropic",
@@ -122,6 +125,8 @@ describe("model registry", () => {
       source: "provider",
       status: "live",
     });
+    expect(requestInit?.redirect).toBe("error");
+    expect(new Headers(requestInit?.headers).get("x-api-key")).toBe("sk-ant-test");
     expect(existsSync(modelRegistryCachePath({ cacheDir }))).toBe(true);
 
     const cached = await listModelRegistry({

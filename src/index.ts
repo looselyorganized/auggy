@@ -192,6 +192,7 @@ export type { NotifyAugmentInternalOptions } from "./augments/notify";
 // === HTTP client (for augment authors who need HTTP) ===
 export {
   createHttpClient,
+  createRedirectRejectingFetch,
   rejectNonGlobalAddress,
   rejectUnsafeRedirect,
   rejectUnsafeUrl,

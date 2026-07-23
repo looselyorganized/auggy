@@ -1,6 +1,7 @@
 import { describe, test, expect, afterAll } from "bun:test";
 import {
   createHttpClient,
+  createRedirectRejectingFetch,
   rejectNonGlobalAddress,
   rejectUnsafeRedirect,
   rejectUnsafeUrl,
@@ -464,6 +465,7 @@ describe("public address classification", () => {
     "2001:db8::1",
     "2001::1",
     "2001:2::1",
+    "2001:100::1",
     "3fff::1",
     "64:ff9b::7f00:1",
     "::ffff:127.0.0.1",
@@ -583,6 +585,35 @@ describe("redirect destination policy", () => {
   });
 });
 
+describe("credential-bearing Fetch wrapper", () => {
+  test("forces manual redirect handling and rejects redirect responses", async () => {
+    let capturedRedirect: RequestInit["redirect"];
+    const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
+      capturedRedirect = init?.redirect;
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://attacker.example/" },
+      });
+    }) as typeof fetch;
+    const hardenedFetch = createRedirectRejectingFetch(fetchImpl);
+
+    await expect(
+      hardenedFetch("https://configured.example/", {
+        headers: { "X-API-Key": "sentinel-secret" },
+      }),
+    ).rejects.toThrow(/redirects are disabled/i);
+    expect(capturedRedirect).toBe("manual");
+  });
+
+  test("returns non-redirect responses unchanged", async () => {
+    const response = new Response("ok", { status: 200 });
+    const hardenedFetch = createRedirectRejectingFetch(
+      (async () => response) as unknown as typeof fetch,
+    );
+    expect(await hardenedFetch("https://configured.example/")).toBe(response);
+  });
+});
+
 describe("http client — SSRF guard", () => {
   test("default (guard off) allows localhost", async () => {
     const client = createHttpClient();
@@ -637,5 +668,18 @@ describe("http client — SSRF guard", () => {
     } catch (err) {
       expect((err as Error).message).not.toMatch(/unsafe URL/i);
     }
+  });
+
+  test("rejects unknown or malformed runtime policy values", () => {
+    expect(() =>
+      createHttpClient({ urlPolicy: "publci" } as unknown as Parameters<
+        typeof createHttpClient
+      >[0]),
+    ).toThrow(/invalid URL security policy/i);
+    expect(() =>
+      createHttpClient({ rejectUnsafeUrls: "true" } as unknown as Parameters<
+        typeof createHttpClient
+      >[0]),
+    ).toThrow(/must be a boolean/i);
   });
 });

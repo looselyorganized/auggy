@@ -344,7 +344,7 @@ async function request(
   }
 
   const url = buildUrl(config.baseUrl, route.path, route.params, input);
-  const init: RequestInit = { method, headers, signal: options.signal };
+  const init: RequestInit = { method, headers, signal: options.signal, redirect: "error" };
   if (route.responseMediaTypes?.[0] && !headers.has("accept")) {
     headers.set("accept", route.responseMediaTypes[0]);
   }

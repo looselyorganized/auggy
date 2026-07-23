@@ -149,7 +149,7 @@ async function request(
   }
 
   const url = buildUrl(config.baseUrl, route.path, route.params, input);
-  const init: RequestInit = { method, headers, signal: options.signal };
+  const init: RequestInit = { method, headers, signal: options.signal, redirect: "error" };
   if (method === "POST" && Object.prototype.hasOwnProperty.call(input, "body")) {
     if (!headers.has("content-type")) headers.set("content-type", "application/json");
     init.body = JSON.stringify(input.body);

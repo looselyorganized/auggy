@@ -200,10 +200,7 @@ export function rejectNonGlobalAddress(address: string): string | null {
   const blockedV6: readonly [string, number, string][] = [
     ["64:ff9b:1::", 48, "local-use NAT64 (64:ff9b:1::/48)"],
     ["100::", 64, "discard-only (100::/64)"],
-    ["2001::", 32, "Teredo (2001::/32)"],
-    ["2001:2::", 48, "benchmarking (2001:2::/48)"],
-    ["2001:10::", 28, "ORCHID (2001:10::/28)"],
-    ["2001:20::", 28, "ORCHIDv2 (2001:20::/28)"],
+    ["2001::", 23, "IETF special-purpose assignments (2001::/23)"],
     ["2001:db8::", 32, "documentation (2001:db8::/32)"],
     ["2002::", 16, "deprecated 6to4 (2002::/16)"],
     ["3fff::", 20, "documentation (3fff::/20)"],
@@ -323,6 +320,27 @@ const DEFAULT_MAX_REDIRECTS = 10;
 const DEFAULT_USER_AGENT = "auggy-http/0.1";
 const DEFAULT_MAX_BODY_BYTES = 5 * 1024 * 1024; // 5MB
 const FOLLOWED_REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+
+/**
+ * Wrap a Fetch implementation for fixed credential-bearing endpoints.
+ * Redirects are surfaced as failures so custom credentials and request bodies
+ * can never cross an origin boundary inside the underlying Fetch stack.
+ */
+export function createRedirectRejectingFetch(
+  fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
+): typeof fetch {
+  return (async (input: string | URL | Request, init?: RequestInit) => {
+    const response = await fetchImpl(input, {
+      ...init,
+      redirect: "manual",
+    });
+    if (response.redirected || FOLLOWED_REDIRECT_STATUSES.has(response.status)) {
+      await response.body?.cancel();
+      throw new Error("http client: redirects are disabled for credential-bearing requests");
+    }
+    return response;
+  }) as typeof fetch;
+}
 
 /**
  * Headers that are safe to retain after an origin transition. Every custom
@@ -574,6 +592,16 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
     opts.crossOriginRedirectHeaderAllowlist,
   );
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
+  if (
+    opts.urlPolicy !== undefined &&
+    opts.urlPolicy !== "public" &&
+    opts.urlPolicy !== "operator-configured"
+  ) {
+    throw new Error("http client: invalid URL security policy");
+  }
+  if (opts.rejectUnsafeUrls !== undefined && typeof opts.rejectUnsafeUrls !== "boolean") {
+    throw new Error("http client: rejectUnsafeUrls must be a boolean");
+  }
   if (
     opts.urlPolicy !== undefined &&
     opts.rejectUnsafeUrls !== undefined &&

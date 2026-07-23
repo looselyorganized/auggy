@@ -6,6 +6,7 @@ import {
 } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
+import { createRedirectRejectingFetch } from "../../http";
 import type { McpClientAdapter, McpConnection, McpRuntimeServer, McpToolCallResult } from "./types";
 
 export class SdkMcpClientAdapter implements McpClientAdapter {
@@ -50,7 +51,11 @@ export class SdkMcpClientAdapter implements McpClientAdapter {
   }
 }
 
-function createTransport(server: McpRuntimeServer): Transport {
+export function createTransport(
+  server: McpRuntimeServer,
+  fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
+): Transport {
+  const credentialSafeFetch = createRedirectRejectingFetch(fetchImpl);
   switch (server.transport) {
     case "stdio":
       return new StdioClientTransport({
@@ -67,6 +72,7 @@ function createTransport(server: McpRuntimeServer): Transport {
       return new StreamableHTTPClientTransport(
         new URL(mustString(server.config.url, `${server.name}.url`)),
         {
+          fetch: credentialSafeFetch,
           requestInit: {
             headers: server.config.headers,
           },
@@ -74,18 +80,12 @@ function createTransport(server: McpRuntimeServer): Transport {
       );
     case "sse":
       return new SSEClientTransport(new URL(mustString(server.config.url, `${server.name}.url`)), {
+        fetch: credentialSafeFetch,
         requestInit: {
           headers: server.config.headers,
         },
         eventSourceInit: {
-          fetch: (input, init) =>
-            fetch(input, {
-              ...init,
-              headers: {
-                ...(init?.headers as Record<string, string> | undefined),
-                ...(server.config.headers ?? {}),
-              },
-            }),
+          fetch: credentialSafeFetch,
         },
       });
   }

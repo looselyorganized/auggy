@@ -1584,6 +1584,7 @@ Names are uppercased; non-alphanumeric characters become underscores. Peer `data
 **Security defaults:**
 - `peerSource.url` MUST be `https://`. Plaintext `http://` is rejected at boot. To override for localhost dev, set `LINK_ALLOW_PLAINTEXT=1` (the same env knob the link library uses for plain-HTTP binding).
 - Registry-supplied peer URLs (and `agentCardUrl`) MUST be `https://` and must exactly match the operator pin. Plaintext or mismatched entries are skipped—they don't poison the rest of the directory and never receive a bearer. The same `LINK_ALLOW_PLAINTEXT=1` override applies only to the scheme check for localhost development; it does not disable pin matching.
+- Registry and outbound peer requests do not follow HTTP redirects. Configure the final exact endpoint; even a same-origin redirect fails closed so bearer credentials and message bodies cannot be replayed to an unreviewed destination.
 - Why: the registry is a remote trust boundary. HTTPS authenticates a host but does not authorize it to receive a name-scoped bearer. Exact endpoint and participant pins prevent a compromised or misconfigured registry from redirecting credentials.
 
 **Reliability defaults:**

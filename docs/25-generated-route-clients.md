@@ -219,7 +219,12 @@ The client throws for local/runtime failures such as:
 - missing required route params
 - missing required credentials for a generated route
 - network/fetch failures
+- HTTP redirects (configure the final agent origin directly)
 - malformed JSON when the response claims to be JSON
+
+Generated clients set `redirect: "error"` on every request. This applies to
+same-origin redirects too and prevents server bearer, agent secret, visitor
+token, or application assertion headers from following a redirect.
 
 ## Response Schemas
 

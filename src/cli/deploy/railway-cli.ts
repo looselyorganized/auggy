@@ -384,6 +384,7 @@ async function queryWorkspacesFromRailwayGraphql(args: {
         "content-type": "application/json",
         authorization: `Bearer ${token}`,
       },
+      redirect: "error",
       body: JSON.stringify({
         query: "{ me { workspaces { id name } } }",
       }),

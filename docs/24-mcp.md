@@ -103,6 +103,11 @@ Put secrets in `.env`, not `.mcp.json`:
 GITHUB_MCP_TOKEN=...
 ```
 
+Remote MCP transports do not follow redirects. Configure the final Streamable
+HTTP or SSE endpoint directly. Same-origin redirects also fail closed because
+MCP headers may contain arbitrary credentials that Fetch would otherwise carry
+to another origin.
+
 Check cloud compatibility:
 
 ```bash

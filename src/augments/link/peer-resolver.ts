@@ -46,6 +46,7 @@
  *     propagates these removals into `AddressBook` + `BearerAuthProvider`
  *     via the dynamic-providers wrappers.
  */
+import { createRedirectRejectingFetch } from "../../http";
 
 import type { LinkPeerConfig } from "./index";
 
@@ -373,7 +374,7 @@ export function createPeerResolver(opts: PeerResolverOptions): PeerResolver {
   const timeoutMs = opts.requestTimeoutMs ?? DEFAULT_TIMEOUT_MS;
   const allowPlaintext = opts.allowPlaintext === true;
   const env = opts.env ?? (process.env as Record<string, string | undefined>);
-  const fetchImpl = opts.fetchImpl ?? fetch;
+  const fetchImpl = opts.fetchImpl ?? createRedirectRejectingFetch();
 
   // HTTPS gate on the source URL at construction time. Operator-controlled
   // config; failing loud here is appropriate.
