@@ -1,5 +1,10 @@
 import { createAgentMailClient } from "../../../agentmail-client";
 import type { AgentMailClient } from "../../../agentmail-client";
+import {
+  isAmbiguousMutationStatus,
+  isOutcomeUnknownError,
+  OutcomeUnknownError,
+} from "../../../outcome-unknown";
 import type {
   NotifyAdapter,
   NotifyDestination,
@@ -40,6 +45,7 @@ export function createAgentMailAdapter(opts: CreateAgentMailAdapterOptions = {})
     async deliver(
       destination: NotifyDestination,
       payload: NotifyPayload,
+      options?: { signal?: AbortSignal },
     ): Promise<NotifyDeliveryResult> {
       if (destination.transport !== "agentmail") {
         return {
@@ -57,13 +63,27 @@ export function createAgentMailAdapter(opts: CreateAgentMailAdapterOptions = {})
           subject,
           text: formatBody(payload),
           labels: dest.labels,
+          signal: options?.signal,
         });
         if (result.status === "sent") {
           return { status: "sent" };
         }
-        return { status: "failed", detail: result.detail };
+        return {
+          status: "failed",
+          detail:
+            result.httpStatus === undefined || isAmbiguousMutationStatus(result.httpStatus)
+              ? "AgentMail delivery ended without a trustworthy response"
+              : result.detail,
+          ...(result.httpStatus === undefined || isAmbiguousMutationStatus(result.httpStatus)
+            ? { outcomeUnknown: true }
+            : {}),
+        };
       } catch (err) {
-        return { status: "failed", detail: `agentmail error: ${(err as Error).message}` };
+        if (options?.signal?.aborted || isOutcomeUnknownError(err)) throw err;
+        throw new OutcomeUnknownError(
+          "AgentMail delivery ended without a trustworthy response after dispatch",
+          { cause: err },
+        );
       }
     },
   };

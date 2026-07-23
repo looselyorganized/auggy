@@ -1,5 +1,10 @@
 import { createHttpClient } from "../../../http";
 import type { HttpClient } from "../../../http";
+import {
+  isAmbiguousMutationStatus,
+  isOutcomeUnknownError,
+  OutcomeUnknownError,
+} from "../../../outcome-unknown";
 import type {
   NotifyAdapter,
   NotifyDestination,
@@ -25,6 +30,7 @@ export function createWebhookAdapter(opts: CreateWebhookAdapterOptions = {}): No
     async deliver(
       destination: NotifyDestination,
       payload: NotifyPayload,
+      options?: { signal?: AbortSignal },
     ): Promise<NotifyDeliveryResult> {
       if (destination.transport !== "webhook") {
         return {
@@ -44,8 +50,14 @@ export function createWebhookAdapter(opts: CreateWebhookAdapterOptions = {}): No
         const res = await http.post(dest.url, {
           headers: { "content-type": "application/json", ...(dest.headers ?? {}) },
           body,
+          signal: options?.signal,
         });
         if (res.status < 200 || res.status >= 300) {
+          if (isAmbiguousMutationStatus(res.status)) {
+            throw new OutcomeUnknownError(
+              `Webhook returned HTTP ${res.status} after dispatch; delivery outcome is unknown`,
+            );
+          }
           return {
             status: "failed",
             detail: `webhook ${dest.url} returned ${res.status}: ${res.body.slice(0, 200)}`,
@@ -53,6 +65,7 @@ export function createWebhookAdapter(opts: CreateWebhookAdapterOptions = {}): No
         }
         return { status: "sent" };
       } catch (err) {
+        if (options?.signal?.aborted || isOutcomeUnknownError(err)) throw err;
         return { status: "failed", detail: `webhook ${dest.url} error: ${(err as Error).message}` };
       }
     },

@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import { createWebhookAdapter } from "../../../../src/augments/notify/adapters/webhook";
 import type { WebhookNotifyDestination } from "../../../../src/types";
 import type { HttpResponse, HttpRequestInit } from "../../../../src/http";
+import { OutcomeUnknownError } from "../../../../src/outcome-unknown";
 
 function mockHttp(
   handler: (
@@ -81,6 +82,29 @@ describe("webhookAdapter", () => {
     expect(capturedHeaders?.authorization).toBe("Bearer T");
   });
 
+  it("passes the delivery cancellation signal to HTTP", async () => {
+    const controller = new AbortController();
+    let capturedSignal: AbortSignal | undefined;
+    const adapter = createWebhookAdapter({
+      client: {
+        post: async (url, opts) => {
+          capturedSignal = opts?.signal;
+          return {
+            finalUrl: url,
+            status: 200,
+            statusText: "OK",
+            contentType: "application/json",
+            headers: new Headers(),
+            body: "{}",
+          };
+        },
+      },
+    });
+
+    await adapter.deliver(dest, { summary: "x" }, { signal: controller.signal });
+    expect(capturedSignal).toBe(controller.signal);
+  });
+
   it("4xx surfaces as failed result", async () => {
     const adapter = createWebhookAdapter({
       client: mockHttp(() => ({ status: 400, body: JSON.stringify({ error: "bad" }) })),
@@ -90,12 +114,26 @@ describe("webhookAdapter", () => {
     expect(result.detail).toContain("400");
   });
 
-  it("5xx surfaces as failed result", async () => {
+  it("classifies 5xx after webhook dispatch as outcome unknown", async () => {
     const adapter = createWebhookAdapter({
       client: mockHttp(() => ({ status: 503, body: "unavailable" })),
     });
-    const result = await adapter.deliver(dest, { summary: "x" });
-    expect(result.status).toBe("failed");
-    expect(result.detail).toContain("503");
+    await expect(adapter.deliver(dest, { summary: "x" })).rejects.toMatchObject({
+      outcomeUnknown: true,
+    });
+  });
+
+  it("preserves an outcome-unknown HTTP failure for the kernel", async () => {
+    const adapter = createWebhookAdapter({
+      client: {
+        post: async () => {
+          throw new OutcomeUnknownError("request deadline elapsed after dispatch");
+        },
+      },
+    });
+
+    expect(adapter.deliver(dest, { summary: "x" })).rejects.toMatchObject({
+      outcomeUnknown: true,
+    });
   });
 });

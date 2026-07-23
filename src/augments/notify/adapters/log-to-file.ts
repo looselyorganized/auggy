@@ -25,6 +25,7 @@ export function createLogToFileAdapter(): NotifyAdapter {
     async deliver(
       destination: NotifyDestination,
       payload: NotifyPayload,
+      options?: { signal?: AbortSignal },
     ): Promise<NotifyDeliveryResult> {
       if (destination.transport !== "log-to-file") {
         return {
@@ -43,6 +44,7 @@ export function createLogToFileAdapter(): NotifyAdapter {
       };
 
       try {
+        options?.signal?.throwIfAborted();
         // Ensure the directory exists. Relative paths resolve against CWD
         // — `auggy dev` sets CWD to the agent dir before booting, so the
         // default `./notifications.jsonl` lands in the agent dir.
