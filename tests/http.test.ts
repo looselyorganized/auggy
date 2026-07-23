@@ -183,9 +183,11 @@ describe("http client — redirect header stripping", () => {
       const client = createHttpClient();
       const res = await client.get(`http://${TEST_HOST}:${mainServer.port}/cross-redirect`, {
         headers: {
-          authorization: "Bearer secret-token",
-          cookie: "session=abc123",
-          "proxy-authorization": "Basic xyz",
+          Authorization: "Bearer secret-token",
+          Cookie: "session=abc123",
+          "Proxy-Authorization": "Basic xyz",
+          "X-API-Key": "api-key-secret",
+          "X-CSRF-Token": "csrf-secret",
         },
       });
       expect(res.status).toBe(200);
@@ -196,8 +198,44 @@ describe("http client — redirect header stripping", () => {
       expect(targetHeaders.authorization).toBeUndefined();
       expect(targetHeaders.cookie).toBeUndefined();
       expect(targetHeaders["proxy-authorization"]).toBeUndefined();
+      expect(targetHeaders["x-api-key"]).toBeUndefined();
+      expect(targetHeaders["x-csrf-token"]).toBeUndefined();
       // Non-sensitive headers should still be present.
       expect(targetHeaders["user-agent"]).toBeDefined();
+    } finally {
+      mainServer.stop(true);
+    }
+  });
+
+  test("only forwards explicitly allowlisted custom headers to an exact redirect origin", async () => {
+    const mainServer = serveOnEphemeralPort((req) => {
+      const url = new URL(req.url);
+      if (url.pathname === "/cross-redirect") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: `http://${TEST_HOST}:${crossOriginPort}/allowlisted` },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    try {
+      const targetOrigin = `http://${TEST_HOST}:${crossOriginPort}`;
+      const client = createHttpClient({
+        crossOriginRedirectHeaderAllowlist: {
+          [targetOrigin]: ["x-webhook-signature"],
+        },
+      });
+      await client.get(`http://${TEST_HOST}:${mainServer.port}/cross-redirect`, {
+        headers: {
+          "X-Webhook-Signature": "per-target-secret",
+          "X-API-Key": "must-not-follow",
+        },
+      });
+
+      const targetHeaders = receivedHeaders["cross:/allowlisted"]!;
+      expect(targetHeaders["x-webhook-signature"]).toBe("per-target-secret");
+      expect(targetHeaders["x-api-key"]).toBeUndefined();
     } finally {
       mainServer.stop(true);
     }

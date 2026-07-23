@@ -25,6 +25,13 @@ export interface HttpClientOptions {
   userAgent?: string;
   /** Headers added to every request. Request-level headers override these. */
   defaultHeaders?: Record<string, string>;
+  /**
+   * Custom headers that may follow a redirect to an exact cross-origin
+   * destination. Keys must be origins (scheme, host, and port); values are
+   * case-insensitive header names. Without an entry, only the client's
+   * non-sensitive protocol headers are forwarded.
+   */
+  crossOriginRedirectHeaderAllowlist?: Record<string, readonly string[]>;
   /** Maximum response body size in bytes. Responses exceeding this are truncated. Default 5MB. */
   maxBodyBytes?: number;
   /**
@@ -181,8 +188,67 @@ const DEFAULT_MAX_REDIRECTS = 10;
 const DEFAULT_USER_AGENT = "auggy-http/0.1";
 const DEFAULT_MAX_BODY_BYTES = 5 * 1024 * 1024; // 5MB
 
-/** Headers stripped when a redirect crosses origin boundaries. */
-const SENSITIVE_HEADERS = ["authorization", "cookie", "proxy-authorization"];
+/**
+ * Headers that are safe to retain after an origin transition. Every custom
+ * header is treated as credential-bearing unless the operator allowlists it
+ * for the exact destination origin.
+ */
+const DEFAULT_CROSS_ORIGIN_REDIRECT_HEADERS = new Set([
+  "accept",
+  "accept-encoding",
+  "accept-language",
+  "content-language",
+  "content-type",
+  "user-agent",
+]);
+
+function normalizeRedirectHeaderAllowlist(
+  configured: Record<string, readonly string[]> | undefined,
+): ReadonlyMap<string, ReadonlySet<string>> {
+  const normalized = new Map<string, ReadonlySet<string>>();
+  for (const [rawOrigin, names] of Object.entries(configured ?? {})) {
+    let parsed: URL;
+    try {
+      parsed = new URL(rawOrigin);
+    } catch {
+      throw new Error(`http client: invalid cross-origin redirect allowlist origin: ${rawOrigin}`);
+    }
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      parsed.origin === "null" ||
+      parsed.href !== `${parsed.origin}/`
+    ) {
+      throw new Error(
+        `http client: cross-origin redirect allowlist key must be an exact HTTP(S) origin: ${rawOrigin}`,
+      );
+    }
+    const normalizedNames = new Set<string>();
+    for (const name of names) {
+      const probe = new Headers();
+      probe.set(name, "value");
+      const normalizedName = [...probe.keys()][0];
+      if (!normalizedName) {
+        throw new Error("http client: redirect header allowlist contains an empty header name");
+      }
+      normalizedNames.add(normalizedName);
+    }
+    normalized.set(parsed.origin, normalizedNames);
+  }
+  return normalized;
+}
+
+function retainHeadersForRedirect(
+  headers: Headers,
+  destinationOrigin: string,
+  allowlist: ReadonlyMap<string, ReadonlySet<string>>,
+): void {
+  const explicitlyAllowed = allowlist.get(destinationOrigin);
+  for (const name of [...headers.keys()]) {
+    if (!DEFAULT_CROSS_ORIGIN_REDIRECT_HEADERS.has(name) && !explicitlyAllowed?.has(name)) {
+      headers.delete(name);
+    }
+  }
+}
 
 /**
  * Create an HTTP client with the given defaults.
@@ -199,16 +265,21 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
   const maxRedirects = opts.maxRedirects ?? DEFAULT_MAX_REDIRECTS;
   const userAgent = opts.userAgent ?? DEFAULT_USER_AGENT;
   const defaultHeaders = opts.defaultHeaders ?? {};
+  const crossOriginRedirectHeaderAllowlist = normalizeRedirectHeaderAllowlist(
+    opts.crossOriginRedirectHeaderAllowlist,
+  );
   const maxBodyBytes = opts.maxBodyBytes ?? DEFAULT_MAX_BODY_BYTES;
   const ssrfGuard = opts.rejectUnsafeUrls ?? false;
 
   const request = async (url: string, init: HttpRequestInit = {}): Promise<HttpResponse> => {
     const method = (init.method ?? "GET").toUpperCase();
-    const currentHeaders: Record<string, string> = {
-      "user-agent": userAgent,
-      ...defaultHeaders,
-      ...(init.headers ?? {}),
-    };
+    const currentHeaders = new Headers({ "user-agent": userAgent });
+    for (const [name, value] of Object.entries(defaultHeaders)) {
+      currentHeaders.set(name, value);
+    }
+    for (const [name, value] of Object.entries(init.headers ?? {})) {
+      currentHeaders.set(name, value);
+    }
 
     if (ssrfGuard) {
       const reason = rejectUnsafeUrl(url);
@@ -282,9 +353,11 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
           // stay stripped for the return to A.
           const redirectOrigin = new URL(currentUrl).origin;
           if (redirectOrigin !== originalOrigin) {
-            for (const header of SENSITIVE_HEADERS) {
-              delete currentHeaders[header];
-            }
+            retainHeadersForRedirect(
+              currentHeaders,
+              redirectOrigin,
+              crossOriginRedirectHeaderAllowlist,
+            );
           }
 
           hops += 1;
