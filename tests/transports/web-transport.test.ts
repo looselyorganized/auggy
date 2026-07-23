@@ -5260,12 +5260,95 @@ describe("webTransport agentBinding (fix C2)", () => {
 // ---------------------------------------------------------------------------
 
 describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
-  it("GET /console from loopback without bearer → bypass (no 401, falls through to next gate)", async () => {
-    // Integration test: real fetch from the test process to 127.0.0.1 → the
-    // loopback bypass in checkAdminAuth applies. Without a built SPA dist the
-    // next gate returns 503; the test asserts the bypass by checking the
-    // response is *not* 401. Non-loopback paths are covered in the unit
-    // tests (tests/transports/admin/admin-auth.test.ts).
+  it("rejects an unconfigured Host before console authentication", async () => {
+    const model = createMockModel();
+    const port = 19206;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://127.0.0.1:${port}/console`, {
+        headers: { host: "localhost.evil" },
+        redirect: "manual",
+      });
+      expect(resp.status).toBe(421);
+      expect(resp.headers.get("x-frame-options")).toBe("DENY");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("rejects forwarding headers from an unconfigured proxy even on Railway", async () => {
+    const previous = process.env.RAILWAY_ENVIRONMENT;
+    process.env.RAILWAY_ENVIRONMENT = "production";
+    const model = createMockModel();
+    const port = 19207;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    try {
+      await agent.start();
+      const resp = await fetch(`http://127.0.0.1:${port}/console/api/dashboard`, {
+        headers: {
+          authorization: `Basic ${Buffer.from(":test-token").toString("base64")}`,
+          "x-forwarded-for": "127.0.0.1",
+          "x-forwarded-proto": "https",
+        },
+      });
+      expect(resp.status).toBe(400);
+    } finally {
+      await agent.stop();
+      if (previous === undefined) delete process.env.RAILWAY_ENVIRONMENT;
+      else process.env.RAILWAY_ENVIRONMENT = previous;
+    }
+  });
+
+  it("requires same-origin login POSTs", async () => {
+    const model = createMockModel();
+    const port = 19208;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const body = new URLSearchParams({ password: "test-token" });
+      const missing = await fetch(`http://127.0.0.1:${port}/console/login`, {
+        method: "POST",
+        body,
+        redirect: "manual",
+      });
+      expect(missing.status).toBe(403);
+      expect(missing.headers.get("set-cookie")).toBeNull();
+
+      const foreign = await fetch(`http://127.0.0.1:${port}/console/login`, {
+        method: "POST",
+        headers: { origin: "https://evil.example" },
+        body,
+        redirect: "manual",
+      });
+      expect(foreign.status).toBe(403);
+
+      const valid = await fetch(`http://127.0.0.1:${port}/console/login`, {
+        method: "POST",
+        headers: { origin: `http://127.0.0.1:${port}` },
+        body,
+        redirect: "manual",
+      });
+      expect(valid.status).toBe(303);
+      expect(valid.headers.get("set-cookie")).toContain("auggy_console=");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("GET /console from loopback without bearer redirects to login", async () => {
     const model = createMockModel();
     const port = 19200;
     const aug = webTransport({
@@ -5276,9 +5359,10 @@ describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
     await agent.start();
     try {
       const resp = await fetch(`http://127.0.0.1:${port}/console`);
-      expect(resp.status).not.toBe(401);
+      expect(resp.status).toBe(200);
       expect(resp.headers.get("www-authenticate")).toBeNull();
-      await resp.text();
+      expect(resp.url).toContain("/console/login");
+      expect(await resp.text()).toContain("Console sign-in");
     } finally {
       await agent.stop();
     }

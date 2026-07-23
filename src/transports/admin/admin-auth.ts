@@ -6,6 +6,10 @@ export interface AdminAuthContext {
   bearer: string;
   agentName: string;
   callerIp: string;
+  /** Transport-computed security state after proxy-chain validation. */
+  secureRequest?: boolean;
+  /** True only for a direct loopback socket with no forwarding boundary. */
+  allowInsecureLoopback?: boolean;
   trustForwardedProto?: boolean;
 }
 
@@ -18,16 +22,12 @@ const CONSOLE_SESSION_COOKIE = "auggy_console";
 const CONSOLE_SESSION_MAX_AGE_SEC = 60 * 60 * 12;
 
 /**
- * Validate HTTP Basic auth on a `/console` request + enforce HTTPS-on-non-loopback.
+ * Validate a console session or HTTP Basic auth + enforce HTTPS off loopback.
  *
  * Order of checks:
  *   1. HTTPS gate (loopback exempt; non-loopback http → 426 + guidance body)
- *   2. Loopback bypass: if the caller is on 127.0.0.1 / ::1, skip the bearer
- *      check entirely. Threat model: anyone with shell access to the host
- *      already has filesystem read on `.env` → already has the bearer, so the
- *      bearer-on-loopback check added friction without meaningful protection.
- *      Non-loopback callers (LAN, cloud, tunneled HTTPS) still get checked.
- *   3. HTTP Basic decode + bearer compare (timing-safe)
+ *   2. Signed session-cookie check.
+ *   3. HTTP Basic decode + bearer compare (timing-safe).
  *
  * The 426 fires BEFORE the 401 — a misconfigured deployment (non-loopback,
  * plain HTTP, with a valid bearer) still gets pushed to HTTPS rather than
@@ -41,10 +41,12 @@ export function checkAdminAuth(ctx: AdminAuthContext): AdminAuthResult {
     ?.trim()
     .toLowerCase();
   const isSecureRequest =
-    url.protocol === "https:" || (ctx.trustForwardedProto === true && forwardedProto === "https");
+    ctx.secureRequest ??
+    (url.protocol === "https:" || (ctx.trustForwardedProto === true && forwardedProto === "https"));
 
   // 1. HTTPS gate
-  if (!isLoopback(ctx.callerIp) && !isSecureRequest) {
+  const insecureLoopbackAllowed = ctx.allowInsecureLoopback ?? isLoopback(ctx.callerIp);
+  if (!insecureLoopbackAllowed && !isSecureRequest) {
     const port = url.port || "8080";
     const guidance = [
       `/console requires HTTPS on non-loopback addresses.`,
@@ -67,17 +69,14 @@ export function checkAdminAuth(ctx: AdminAuthContext): AdminAuthResult {
     };
   }
 
-  // 2. Loopback bypass — see doc comment above for rationale.
-  if (isLoopback(ctx.callerIp)) {
-    return { kind: "ok" };
-  }
-
   const session = ctx.req.headers.get("cookie");
   if (session && verifyConsoleSessionCookie(session, ctx.bearer)) {
     return { kind: "ok" };
   }
 
-  // 3. HTTP Basic check (non-loopback only)
+  // 3. HTTP Basic check. Loopback is a transport property, not authority:
+  // reverse proxies, port-forwarding, and DNS rebinding can all make an
+  // attacker-controlled request appear to originate locally.
   const authHeader = ctx.req.headers.get("authorization");
   if (!authHeader?.toLowerCase().startsWith("basic ")) {
     return unauthorized(ctx.agentName, shouldRedirectToLogin(ctx.req), ctx.req);
@@ -146,7 +145,9 @@ function verifyConsoleSessionCookie(
   bearer: string,
   now = Date.now(),
 ): boolean {
-  const value = parseCookie(cookieHeader)[CONSOLE_SESSION_COOKIE];
+  const cookies = parseCookie(cookieHeader);
+  if (!cookies) return false;
+  const value = cookies[CONSOLE_SESSION_COOKIE];
   if (!value) return false;
   const [encodedPayload, signature, extra] = value.split(".");
   if (!encodedPayload || !signature || extra !== undefined) return false;
@@ -170,14 +171,16 @@ function signSessionPayload(encodedPayload: string, bearer: string): string {
     .digest("base64url");
 }
 
-function parseCookie(header: string): Record<string, string> {
+function parseCookie(header: string): Record<string, string> | null {
   const out: Record<string, string> = {};
   for (const part of header.split(";")) {
     const idx = part.indexOf("=");
     if (idx < 0) continue;
     const key = part.slice(0, idx).trim();
     const value = part.slice(idx + 1).trim();
-    if (key) out[key] = value;
+    if (!key) continue;
+    if (Object.hasOwn(out, key)) return null;
+    out[key] = value;
   }
   return out;
 }

@@ -143,7 +143,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     label: "Web Transport",
     tagline: "chat over HTTP+SSE + the /console operator UI",
     description:
-      "Exposes the agent on a port: AG-UI chat endpoint (SSE), the /console operator surface, and /health. Bearer-gated on non-loopback; loopback is open. Required if you want anything besides the CLI to talk to the agent.",
+      "Exposes the agent on a port: AG-UI chat endpoint (SSE), the authenticated /console operator surface, and /health. Console authentication is required on every interface, including loopback. Required if you want anything besides the CLI to talk to the agent.",
     type: "webTransport",
     defaultName: "webTransport",
     defaultOptions: {

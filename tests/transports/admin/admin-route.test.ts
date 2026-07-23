@@ -197,14 +197,93 @@ describe("handleAdminRoute — auth", () => {
     expect(res.status).toBe(401);
   });
 
-  it("POST /console/logout clears the session cookie", async () => {
-    const req = new Request("https://my-agent.fly.dev/console/logout", { method: "POST" });
+  it("GET /console/logout is non-mutating", async () => {
+    const req = new Request("https://my-agent.fly.dev/console/logout", {
+      headers: { authorization: basicHeader("test-bearer") },
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("POST");
+    expect(res.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("POST /console/logout requires authentication and action-bound CSRF", async () => {
+    const unauthenticated = await handleAdminRoute(
+      new Request("https://my-agent.fly.dev/console/logout", {
+        method: "POST",
+        headers: {
+          origin: "https://my-agent.fly.dev",
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ csrf: "missing-auth" }),
+      }),
+      await makeCtx({ callerIp: "10.0.0.5" }),
+    );
+    expect(unauthenticated.status).toBe(401);
+    expect(unauthenticated.headers.get("set-cookie")).toBeNull();
+
+    const missingCsrf = await handleAdminRoute(
+      new Request("https://my-agent.fly.dev/console/logout", {
+        method: "POST",
+        headers: {
+          authorization: basicHeader("test-bearer"),
+          origin: "https://my-agent.fly.dev",
+        },
+      }),
+      await makeCtx({ callerIp: "10.0.0.5" }),
+    );
+    expect(missingCsrf.status).toBe(400);
+    expect(missingCsrf.headers.get("set-cookie")).toBeNull();
+  });
+
+  it("POST /console/logout clears the session only with same-origin logout CSRF", async () => {
+    const csrf = await generateCsrfToken({
+      bearer: "test-bearer",
+      agentName: "zip",
+      actionId: "console-logout",
+    });
+    const req = new Request("https://my-agent.fly.dev/console/logout", {
+      method: "POST",
+      headers: {
+        authorization: basicHeader("test-bearer"),
+        origin: "https://my-agent.fly.dev",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ csrf }),
+    });
     const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toBe("/console/login");
     const cookie = res.headers.get("set-cookie") ?? "";
     expect(cookie).toContain("auggy_console=");
     expect(cookie).toContain("Max-Age=0");
+  });
+
+  it("uses the transport-validated HTTPS origin for logout behind TLS termination", async () => {
+    const csrf = await generateCsrfToken({
+      bearer: "test-bearer",
+      agentName: "zip",
+      actionId: "console-logout",
+    });
+    const req = new Request("http://agent.internal/console/logout", {
+      method: "POST",
+      headers: {
+        authorization: basicHeader("test-bearer"),
+        origin: "https://agent.example",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ csrf }),
+    });
+    const res = await handleAdminRoute(
+      req,
+      await makeCtx({
+        callerIp: "203.0.113.8",
+        secureRequest: true,
+        requestOrigin: "https://agent.example",
+      }),
+    );
+    expect(res.status).toBe(303);
+    expect(res.headers.get("set-cookie")).toContain("Secure");
   });
 
   it("POST /console/login rejects open redirect next values", async () => {
@@ -220,15 +299,35 @@ describe("handleAdminRoute — auth", () => {
     expect(res.headers.get("location")).toBe("/console");
   });
 
-  it("GET /console from loopback without bearer → bypass (no 401)", async () => {
-    // Loopback bypass: anyone with shell access to the host already has
-    // filesystem read on .env → already has the bearer, so the bearer-on-
-    // loopback check added friction without protection. The 503 build-required
-    // is the next gate (no staticDir in this test setup).
+  it("GET /console from loopback without bearer requires authentication", async () => {
     const req = new Request("http://127.0.0.1:8080/console");
     const res = await handleAdminRoute(req, await makeCtx({ callerIp: "127.0.0.1" }));
-    expect(res.status).not.toBe(401);
-    expect(res.status).toBe(503);
+    expect(res.status).toBe(303);
+    expect(res.headers.get("location")).toBe("/console/login?next=%2Fconsole");
+  });
+
+  it("decorates every console response with an anti-framing policy", async () => {
+    const responses = [
+      await handleAdminRoute(
+        new Request("https://my-agent.fly.dev/console/login"),
+        await makeCtx({ callerIp: "10.0.0.5" }),
+      ),
+      await handleAdminRoute(
+        new Request("https://my-agent.fly.dev/console/api/dashboard"),
+        await makeCtx({ callerIp: "10.0.0.5" }),
+      ),
+      await handleAdminRoute(
+        new Request("http://127.0.0.1:8080/console", {
+          headers: { authorization: basicHeader("test-bearer") },
+        }),
+        await makeCtx(),
+      ),
+    ];
+
+    for (const response of responses) {
+      expect(response.headers.get("x-frame-options")).toBe("DENY");
+      expect(response.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+    }
   });
 
   it("GET /console with valid bearer → 503 build-required when no staticDir", async () => {
@@ -580,7 +679,12 @@ describe("handleAdminRoute — static console", () => {
     try {
       const ctx = await makeCtx({ staticDir });
       const get = (pathname: string) =>
-        handleAdminRoute(new Request(`http://127.0.0.1:8080${pathname}`), ctx);
+        handleAdminRoute(
+          new Request(`http://127.0.0.1:8080${pathname}`, {
+            headers: { authorization: basicHeader("test-bearer") },
+          }),
+          ctx,
+        );
 
       const encodedAsset = await get("/console/%61ssets/%61pp.js");
       expect(encodedAsset.status).toBe(200);
@@ -614,7 +718,9 @@ describe("handleAdminRoute — static console", () => {
 
   it("returns a non-HTML 503 for static namespaces when the bundle is unavailable", async () => {
     const response = await handleAdminRoute(
-      new Request("http://127.0.0.1:8080/console/%61ssets/app.js"),
+      new Request("http://127.0.0.1:8080/console/%61ssets/app.js", {
+        headers: { authorization: basicHeader("test-bearer") },
+      }),
       await makeCtx(),
     );
 

@@ -53,6 +53,44 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("parseConfig", () => {
+  test("validates console proxy networks and allowed origins", () => {
+    const augments = [
+      {
+        name: "web",
+        type: "webTransport",
+        options: {
+          port: 8080,
+          auth: { type: "bearer", token: "test-token" },
+          trustedProxies: ["10.0.0.0/8", "2001:db8::1"],
+          consoleSecurity: { allowedOrigins: ["https://agent.example"] },
+        },
+      },
+    ];
+    const path = writeYaml("agent.yaml", minimalConfig({ augments }));
+    expect(parseConfig(path).augments[0]?.options?.trustedProxies).toEqual([
+      "10.0.0.0/8",
+      "2001:db8::1",
+    ]);
+  });
+
+  test("rejects malformed console proxy networks and origins", () => {
+    const augments = [
+      {
+        name: "web",
+        type: "webTransport",
+        options: {
+          port: 8080,
+          auth: { type: "bearer", token: "test-token" },
+          trustedProxies: ["0.0.0.0/0"],
+          consoleSecurity: { allowedOrigins: ["https://agent.example/path"] },
+        },
+      },
+    ];
+    const path = writeYaml("agent.yaml", minimalConfig({ augments }));
+    expect(() => parseConfig(path)).toThrow(/trustedProxies/);
+    expect(() => parseConfig(path)).toThrow(/allowedOrigins/);
+  });
+
   test("parses a minimal valid config", () => {
     const path = writeYaml("agent.yaml", minimalConfig());
     const config = parseConfig(path);

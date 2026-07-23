@@ -436,6 +436,8 @@ function resolveWebTransport(
     allowAnonymous: opts.allowAnonymous as boolean | undefined,
     publicIntegration: opts.publicIntegration as boolean | undefined,
     publicFrontendUrl: opts.publicFrontendUrl as string | undefined,
+    trustedProxies: opts.trustedProxies as string[] | undefined,
+    consoleSecurity: opts.consoleSecurity as WebTransportOptions["consoleSecurity"],
     adminRoute: opts.adminRoute as boolean | undefined,
     consoleChat: resolveConsoleChatOptions(opts, agentDir, runtimeDataRoot),
     idempotency: resolveWebIdempotencyOptions(opts, agentDir, runtimeDataRoot),

@@ -23,6 +23,10 @@ import type {
 } from "./types";
 import { KNOWN_PROVIDERS, isKnownProvider } from "./types";
 import { parseEnvFile } from "./env-parse";
+import {
+  buildConsoleAllowedOrigins,
+  compileTrustedProxyNetworks,
+} from "../transports/console-request-security";
 
 // ---------------------------------------------------------------------------
 // .env loading
@@ -153,23 +157,68 @@ function validateWebTransportOptions(
   optionsPrefix: string,
   errors: string[],
 ): void {
-  if (opts.consoleChat === undefined) return;
-  if (
-    opts.consoleChat === null ||
-    typeof opts.consoleChat !== "object" ||
-    Array.isArray(opts.consoleChat)
-  ) {
-    errors.push(`${optionsPrefix}.consoleChat: must be an object`);
-    return;
+  if (opts.trustedProxies !== undefined) {
+    if (
+      !Array.isArray(opts.trustedProxies) ||
+      opts.trustedProxies.some((entry) => typeof entry !== "string")
+    ) {
+      errors.push(`${optionsPrefix}.trustedProxies: must be an array of IP or CIDR strings`);
+    } else {
+      try {
+        compileTrustedProxyNetworks(opts.trustedProxies as string[]);
+      } catch (error) {
+        errors.push(`${optionsPrefix}.trustedProxies: ${(error as Error).message}`);
+      }
+    }
   }
 
-  const consoleChat = opts.consoleChat as Record<string, unknown>;
-  if (
-    consoleChat.dbPath !== undefined &&
-    consoleChat.dbPath !== null &&
-    (typeof consoleChat.dbPath !== "string" || consoleChat.dbPath.trim().length === 0)
-  ) {
-    errors.push(`${optionsPrefix}.consoleChat.dbPath: must be a non-empty string or null`);
+  if (opts.consoleSecurity !== undefined) {
+    if (
+      opts.consoleSecurity === null ||
+      typeof opts.consoleSecurity !== "object" ||
+      Array.isArray(opts.consoleSecurity)
+    ) {
+      errors.push(`${optionsPrefix}.consoleSecurity: must be an object`);
+    } else {
+      const security = opts.consoleSecurity as Record<string, unknown>;
+      if (
+        security.allowedOrigins !== undefined &&
+        (!Array.isArray(security.allowedOrigins) ||
+          security.allowedOrigins.some((origin) => typeof origin !== "string"))
+      ) {
+        errors.push(`${optionsPrefix}.consoleSecurity.allowedOrigins: must be an array of strings`);
+      } else if (Array.isArray(security.allowedOrigins)) {
+        try {
+          buildConsoleAllowedOrigins(
+            typeof opts.port === "number" ? opts.port : 8080,
+            security.allowedOrigins as string[],
+          );
+        } catch (error) {
+          errors.push(
+            `${optionsPrefix}.consoleSecurity.allowedOrigins: ${(error as Error).message}`,
+          );
+        }
+      }
+    }
+  }
+
+  if (opts.consoleChat !== undefined) {
+    if (
+      opts.consoleChat === null ||
+      typeof opts.consoleChat !== "object" ||
+      Array.isArray(opts.consoleChat)
+    ) {
+      errors.push(`${optionsPrefix}.consoleChat: must be an object`);
+    } else {
+      const consoleChat = opts.consoleChat as Record<string, unknown>;
+      if (
+        consoleChat.dbPath !== undefined &&
+        consoleChat.dbPath !== null &&
+        (typeof consoleChat.dbPath !== "string" || consoleChat.dbPath.trim().length === 0)
+      ) {
+        errors.push(`${optionsPrefix}.consoleChat.dbPath: must be a non-empty string or null`);
+      }
+    }
   }
 }
 

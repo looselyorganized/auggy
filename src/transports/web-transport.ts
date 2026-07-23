@@ -73,7 +73,15 @@ import {
   type ConsoleChatStore,
   type ConsoleChatToolCall,
 } from "./admin/console-chat-store";
+import {
+  buildConsoleAllowedOrigins,
+  compileTrustedProxyNetworks,
+  evaluateConsoleRequest,
+  resolveForwardedRequest,
+  type TrustedProxyNetworks,
+} from "./console-request-security";
 import { createHash, createHmac } from "node:crypto";
+import { isIP } from "node:net";
 import { join } from "node:path";
 
 const PUBLIC_PAGE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
@@ -102,6 +110,19 @@ const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
   "x-forwarded-proto",
   "x-real-ip",
 ]);
+
+function withConsoleBoundaryHeaders(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("content-security-policy", "frame-ancestors 'none'");
+  headers.set("x-frame-options", "DENY");
+  headers.set("x-content-type-options", "nosniff");
+  headers.set("referrer-policy", "no-referrer");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -228,8 +249,8 @@ export interface WebTransportOptions {
    * Allow-list of upstream proxies whose `X-Forwarded-For` / `X-Real-IP`
    * headers are trusted for per-route per-IP rate limiting (F16).
    *
-   * Each entry is an exact IP string (CIDR ranges are not yet supported —
-   * v1 keeps it simple). When the connection's remote address matches an
+   * Each entry is an exact IP string or a bounded IPv4/IPv6 CIDR. When the
+   * connection's remote address matches an
    * entry, the first XFF / X-Real-IP value is trusted. When it does not,
    * the headers are IGNORED and the connection IP is used directly.
    *
@@ -243,6 +264,17 @@ export interface WebTransportOptions {
    * Cloudflare for the first time).
    */
   trustedProxies?: string[];
+  /**
+   * Exact browser origins allowed to reach the operator console.
+   *
+   * Local origins for localhost, 127.0.0.1, and ::1 on `port` are included
+   * automatically. `AUGGY_PUBLIC_URL`, when valid, also contributes its
+   * origin. Public deployments should set this list explicitly and configure
+   * `trustedProxies` for every terminating proxy network.
+   */
+  consoleSecurity?: {
+    allowedOrigins?: string[];
+  };
   /**
    * Whether requests to `/agent/run` may proceed WITHOUT a bearer token.
    *
@@ -430,8 +462,9 @@ export function isLoopback(ip: string | null | undefined): boolean {
   if (!ip) return false;
   const norm = normalizeIp(ip);
   if (!norm) return false;
-  if (norm === "::1") return true;
-  return /^127\./.test(norm);
+  if (isIP(norm) === 6) return norm === "::1";
+  if (isIP(norm) !== 4) return false;
+  return norm.split(".")[0] === "127";
 }
 
 /**
@@ -465,48 +498,17 @@ export function isLoopback(ip: string | null | undefined): boolean {
 function getCallerIp(
   req: Request,
   server: { requestIP?: (req: Request) => { address?: string } | null } | undefined,
-  trustedProxies: readonly string[],
+  trustedProxies: TrustedProxyNetworks,
   xffOnUntrusted: () => void,
 ): string {
-  const xff = req.headers.get("x-forwarded-for");
-  const realIp = req.headers.get("x-real-ip");
   const connIp = getConnectionIp(req, server);
-  const connIpNorm = normalizeIp(connIp);
-  const proxiesNorm = trustedProxies.map((p) => normalizeIp(p) ?? p);
-  const proxyIsTrusted =
-    isRailwayRuntime() || (connIpNorm !== null && proxiesNorm.includes(connIpNorm));
-
-  if (xff && !proxyIsTrusted) {
-    // Warn-once: XFF arrived from an untrusted source. Almost certainly an
-    // operator that hasn't configured trustedProxies after deploying behind
-    // a proxy. Narrowed to XFF (not X-Real-IP) because the warning copy
-    // names XFF specifically.
-    xffOnUntrusted();
-  }
-
-  if (proxyIsTrusted && xff) {
-    // Right-to-left walk. Drop entries that are themselves trusted proxies
-    // (each such entry was a known intermediate hop). Return the first
-    // non-trusted entry — that's the client IP under the standard
-    // append-style XFF convention.
-    const entries = xff
-      .split(",")
-      .map((s) => normalizeIp(s.trim()) ?? s.trim())
-      .filter(Boolean);
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const entry = entries[i]!;
-      if (!proxiesNorm.includes(entry)) return entry;
-    }
-    // All XFF entries are themselves trusted proxies — chain consists
-    // entirely of internal hops. Fall through to connIp (the immediate
-    // peer, also a trusted proxy).
-  }
-  if (proxyIsTrusted && realIp) {
-    // X-Real-IP is a single value set by the proxy (no append semantics);
-    // trust it directly.
-    return normalizeIp(realIp.trim()) ?? realIp.trim();
-  }
-  return connIpNorm ?? "unknown";
+  const resolution = resolveForwardedRequest({
+    connectionIp: connIp,
+    headers: req.headers,
+    trustedProxies,
+  });
+  if (req.headers.has("x-forwarded-for") && !resolution.proxyTrusted) xffOnUntrusted();
+  return resolution.error ? (normalizeIp(connIp) ?? "unknown") : resolution.callerIp;
 }
 
 function getConnectionIp(
@@ -583,21 +585,6 @@ function formatAnonymousPostureLine(
   return allowAnonymous
     ? `[web] anonymous chat enabled (${sourceLabel})`
     : `[web] anonymous chat disabled (${sourceLabel})`;
-}
-
-function shouldTrustForwardedProto(
-  req: Request,
-  server: { requestIP?: (req: Request) => { address?: string } | null } | undefined,
-  trustedProxies: readonly string[],
-): boolean {
-  const forwardedProto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
-  if (forwardedProto !== "https") return false;
-  if (isRailwayRuntime()) return true;
-
-  const connIpNorm = normalizeIp(getConnectionIp(req, server));
-  if (!connIpNorm) return false;
-  const proxiesNorm = trustedProxies.map((p) => normalizeIp(p) ?? p);
-  return proxiesNorm.includes(connIpNorm);
 }
 
 // ---------------------------------------------------------------------------
@@ -874,12 +861,21 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // Cloudflare for the first time get a clear hint to configure their
   // proxy chain. Latched per-instance so the warning isn't spammed every
   // request.
-  const trustedProxies: readonly string[] = opts.trustedProxies ?? [];
+  const trustedProxies = compileTrustedProxyNetworks(opts.trustedProxies ?? []);
+  const configuredConsoleOrigins = [...(opts.consoleSecurity?.allowedOrigins ?? [])];
+  if (process.env.AUGGY_PUBLIC_URL) {
+    try {
+      configuredConsoleOrigins.push(new URL(process.env.AUGGY_PUBLIC_URL).origin);
+    } catch {
+      // Existing public URL validation reports malformed configuration.
+    }
+  }
+  const consoleAllowedOrigins = buildConsoleAllowedOrigins(opts.port, configuredConsoleOrigins);
   let xffUntrustedWarned = false;
   function xffOnUntrusted(): void {
     if (xffUntrustedWarned) return;
     xffUntrustedWarned = true;
-    if (trustedProxies.length === 0) {
+    if (trustedProxies.entries.length === 0) {
       console.warn(
         "[web-transport] X-Forwarded-For header received but trustedProxies is unset. " +
           "Per-IP rate limiting is using the connection IP, NOT the XFF header. " +
@@ -890,7 +886,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       console.warn(
         "[web-transport] X-Forwarded-For header received from a connection IP that is " +
           "NOT on trustedProxies. The header is being ignored for rate limiting. " +
-          `Configured trustedProxies: ${trustedProxies.join(", ")}.`,
+          `Configured trustedProxies: ${trustedProxies.entries.join(", ")}.`,
       );
     }
   }
@@ -1154,7 +1150,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
             { label: "Port", value: String(opts.port) },
             {
               label: "Trusted proxies",
-              value: (opts.trustedProxies ?? []).join(", ") || "(none)",
+              value: trustedProxies.entries.join(", ") || "(none)",
             },
             {
               label: "CORS origins",
@@ -3011,39 +3007,72 @@ export function webTransport(opts: WebTransportOptions): Augment {
             // `/administrative` from being captured (M3 fix preserved).
             const isAdminPath = url.pathname === "/console" || url.pathname.startsWith("/console/");
             if (adminEnabled && isAdminPath) {
+              const consoleRequest = evaluateConsoleRequest({
+                req,
+                connectionIp: getConnectionIp(req, server),
+                trustedProxies,
+                allowedOrigins: consoleAllowedOrigins,
+              });
+              if (!consoleRequest.ok) {
+                return withConsoleBoundaryHeaders(
+                  new Response(
+                    JSON.stringify({
+                      error: "console request rejected",
+                      code: "CONSOLE_REQUEST_REJECTED",
+                    }),
+                    {
+                      status: consoleRequest.status,
+                      headers: {
+                        "content-type": "application/json",
+                        "cache-control": "no-store",
+                      },
+                    },
+                  ),
+                );
+              }
               if (req.method === "HEAD") {
-                return new Response(null, {
-                  status: 405,
-                  headers: { allow: "GET, POST" },
-                });
+                return withConsoleBoundaryHeaders(
+                  new Response(null, {
+                    status: 405,
+                    headers: { allow: "GET, POST" },
+                  }),
+                );
               }
               if (req.method !== "GET" && req.method !== "POST") {
-                return new Response(null, {
-                  status: 405,
-                  headers: { allow: "GET, POST" },
-                });
+                return withConsoleBoundaryHeaders(
+                  new Response(null, {
+                    status: 405,
+                    headers: { allow: "GET, POST" },
+                  }),
+                );
               }
 
               // M4 fix — rate-limit BEFORE handling. Per-IP combined budget
               // across the entire /console* surface: 60 req/min via synthetic
               // route-key "admin" for compatibility. Defeats brute-force against
               // HTTP Basic.
-              const adminIp = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
+              const adminIp = consoleRequest.callerIp;
               const adminRl = checkRouteRateLimit("admin", adminIp, 60);
               if (!adminRl.allowed) {
-                return new Response(null, {
-                  status: 429,
-                  headers: { "retry-after": String(adminRl.retryAfterSec) },
-                });
+                return withConsoleBoundaryHeaders(
+                  new Response(null, {
+                    status: 429,
+                    headers: { "retry-after": String(adminRl.retryAfterSec) },
+                  }),
+                );
               }
 
-              if (!kernel) return new Response(null, { status: 503 });
+              if (!kernel) {
+                return withConsoleBoundaryHeaders(new Response(null, { status: 503 }));
+              }
               return handleAdminRoute(req, {
                 kernel,
                 bearer: opts.auth.token,
                 agentDir: opts.agentDir,
                 callerIp: adminIp,
-                trustForwardedProto: shouldTrustForwardedProto(req, server, trustedProxies),
+                secureRequest: consoleRequest.secure,
+                requestOrigin: consoleRequest.origin,
+                allowInsecureLoopback: consoleRequest.allowInsecureLoopback,
                 actionRegistry,
                 staticDir: adminStaticDir,
                 selfPort: opts.port,
