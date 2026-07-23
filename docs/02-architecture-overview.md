@@ -96,7 +96,7 @@ The runtime. Each file is one component with one responsibility. See [04-kernel.
 | `lifecycle-manager.ts` | Boots augments in order, runs `onShutdown` in reverse, manages the idle timer, reports health. |
 | `transport-queue.ts` | Per-transport queue: rate-limit per peer, max queue depth, concurrency cap. Returns synchronous rejection results when limits are exceeded. |
 | `trace-emitter.ts` | Builds a `TurnTrace` over the course of a turn — context assembly, tool selection, inference steps, capability checks, output validation. |
-| `timeout.ts` | `withTimeout(fn, ms)` — wraps a promise in a race against a timer. Used by augment context, tool execution, and shutdown. |
+| `timeout.ts` | `withTimeout(fn, ms, callerSignal)` — combines caller cancellation with a deadline signal. Used by augment context, tool execution, routes, and shutdown. |
 | `output-validator.ts` | Scans model output for suspicious patterns (e.g. fabricated tool names). v1 flags only — does not block. |
 | `preamble.ts` | Builds the system preamble that gets prepended to every turn — trust info, hardening rules. |
 
@@ -278,7 +278,7 @@ If accepted, the request enters the actual turn loop.
 8. **Inference loop:**
    - Call `model.complete(prompt)`.
    - If `finishReason === "end_turn"` (or no tool calls): emit `text_message`, emit `run_finished`, return.
-   - Else for each tool call: validate (capability table + Zod schema), execute in parallel via `Promise.all`, emit `tool_call_started`, `tool_call_args`, `tool_call_result` events, append `tool_use`/`tool_result` pairs to history.
+   - Else for each tool call: validate capability, schema, and delegated authorization; atomically reserve attempt quota; execute admitted calls in parallel; emit tool events; append `tool_use`/`tool_result` pairs to history.
    - Loop back to inference. Cap at 10 iterations.
 9. **Validate output** (v1: flag in trace, don't block).
 10. **Return `TurnResult`** with `status`, `response`, `toolCalls`, `trace`.
@@ -346,7 +346,8 @@ If you're reading code and asking "what stops this from happening?", one of thes
 - **Tool execution within a single inference step:** parallel. `Promise.all` over all validated tool calls.
 - **Multiple inferences in one turn:** sequential (you can't call the model in parallel — each call needs the previous tool results in history).
 - **Multiple turns from different peers:** controlled by the transport's queue. `concurrency` defaults to 1 — turns are serialized within a transport. Bumping `concurrency` lets multiple turns from different peers run simultaneously.
-- **`onTurnEnd` hooks:** fire-and-forget. They don't block the response.
+- **`onTurnEnd` hooks:** awaited sequentially before scheduled post-turn work;
+  failures are logged and swallowed.
 
 ## What you should read next
 

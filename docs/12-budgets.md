@@ -165,7 +165,9 @@ The kernel runs the augment context pipeline. `budgets.context()` reads current 
 
 ### Phase 5: Engine call + cost commit
 
-After the engine returns, the kernel calls `gate.turnGate.commit({ turnId, peer, cost })`. The budgets augment:
+On every terminal path after at least one completed inference, the kernel calls
+`gate.turnGate.commit({ turnId, peer, cost })` exactly once. This includes
+caller aborts, tool timeouts, and later inference failures. The budgets augment:
 
 1. If `cost.priced === true`: updates `peer_daily_costs` and `daily_global` with the USD amount. Marks the reservation row with `cost_usd` and `committed_at`.
 2. If `cost.priced === false`: marks the reservation as unpriced. Turn-count caps still applied.

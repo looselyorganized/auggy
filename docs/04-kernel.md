@@ -123,7 +123,11 @@ for (const aug of augments) {
   try {
     const timeout = aug.constraints?.contextTimeoutMs ?? 5000;
     const priorContext = aug.receivesPriorContext ? [...contextBlocks] : undefined;
-    const result = await withTimeout(() => aug.context!(turnState, priorContext), timeout);
+    const result = await withTimeout(
+      (signal) => aug.context!({ ...turnState, signal }, priorContext),
+      timeout,
+      requestSignal,
+    );
     if (typeof result === "string") {
       contextBlocks.push({ source: aug.name, content: result, placement: "preamble", priority: "normal", ... });
     } else {
@@ -136,7 +140,7 @@ for (const aug of augments) {
 }
 ```
 
-Sequential, in declared order. Each augment's `context()` runs with a 5-second timeout (overridable per augment via `contraints.contextTimeoutMs`). Augments that opt in via `receivesPriorContext: true` see the blocks contributed so far; otherwise they see nothing about other augments.
+Sequential, in declared order. Each augment's `context()` runs with a 5-second timeout (overridable per augment via `constraints.contextTimeoutMs`). The context receives a signal combining caller cancellation with that deadline. Augments that opt in via `receivesPriorContext: true` see the blocks contributed so far; otherwise they see nothing about other augments.
 
 The shorthand `return "some string"` form is supported — strings are wrapped as `placement: "preamble"`, `priority: "normal"`, `provenance: "augment"` blocks.
 
@@ -212,23 +216,38 @@ Each iteration that produces tool calls runs three sub-phases:
 1. Check the capability table (`canExecute`). If denied, push an error entry. If needs approval, push a "needs approval" error and skip. If allowed, proceed.
 2. Look up the tool in `toolRegistry`. Unknown tool → error entry.
 3. Run the Zod schema (`tool.input.safeParse(call.arguments)`). Failure → error entry, increment consecutive-failure counter for this tool name. If two consecutive failures of the same tool, set `terminateToolLoop = true` and break.
-4. Success → push an `execute` entry with the validated input.
+4. Enforce delegated authorization requirements.
+5. Atomically reserve global and owning-augment execution quota.
+6. Success → push an `execute` entry with the validated input.
+
+Validation and authorization failures do not consume execution quota. Once a
+call is reserved, its slot is retained even if execution throws, returns a
+structured error, or times out: the attempt crossed the dispatch boundary and
+may already have caused a side effect.
 
 **Phase 7b — Parallel execution.** `Promise.all` over all entries:
 - `error` entries return their pre-built error string.
 - `execute` entries:
   1. Emit `tool_call_started` (with `toolCallId`, `toolName`, `augmentName`).
   2. Emit `tool_call_args` (with the parsed args).
-  3. Run `withTimeout(() => tool.execute(input), toolTimeoutMs ?? 30000)`.
+  3. Run `withTimeout((signal) => tool.execute(input, { signal, ...context }), toolTimeoutMs ?? 30000, requestSignal)`.
   4. Emit `tool_call_result` (with `output` and `isError`).
 - All in parallel.
 
 **Phase 7c — Append to history.** In iteration order (so the history reflects the order the model called the tools, not the order they finished):
 - Push a `tool_use` message with `content: JSON.stringify(call)` and `toolCallId`.
 - Push a `tool_result` message with `content: output` and the same `toolCallId`.
-- If not an error, also push a `ToolCallRecord` to `toolCallRecords` and call `capabilityTable.recordToolCall(call.name)`.
+- If not an error, also push a `ToolCallRecord` to `toolCallRecords`.
 
 The kernel uses `toolCallId` to match `tool_use` to `tool_result` in history — this is what lets the history manager keep them as atomic pairs even when compaction or budget walks fire.
+
+A tool deadline aborts cooperative work. Because arbitrary tool code may ignore
+the signal or may already have crossed a side-effect boundary, a timeout is
+reported as outcome-unknown, terminates the turn, and is never fed back to the
+model for automatic retry. Tools with their own shorter deadlines use the same
+boundary through a typed outcome-unknown error or
+`ToolResult.outcomeUnknown`; this prevents nested HTTP, MCP, Bash, mail, and
+link failures from being laundered into ordinary retryable model results.
 
 ##### Termination conditions
 
@@ -237,7 +256,8 @@ The inference loop exits via one of these paths:
 2. **Context exhausted** — model returns `finishReason === "max_tokens"`. Same as above (we treat it as end-of-turn — the model couldn't finish but we're done).
 3. **Two consecutive validation failures of the same tool** — set `terminateToolLoop`, do one more inference call without tools, return whatever the model says.
 4. **Abort signal** — `makeAbortResult()` returns a `canceled` result with appropriate events.
-5. **Hit `maxInferenceLoops`** — emit a generic message + `run_finished`, return success with `"I've completed the available actions."`
+5. **Outcome unknown** — a dispatched tool cannot prove its terminal result; return `failed` before another inference.
+6. **Hit `maxInferenceLoops`** — emit a generic message + `run_finished`, return success with `"I've completed the available actions."`
 
 #### Phase 8 — Output validation (v1: flag only)
 
@@ -300,7 +320,7 @@ createCapabilityTable(augments) → {
   } | {
     denied: true; reason: string;
   };
-  recordToolCall(toolName): void;                     // bump counters
+  reserveToolCall(toolName): { reserved: true } | { denied: true; reason: string };
   resetTurn(): void;                                  // called by turn loop at the start of each turn
 }
 ```
@@ -318,14 +338,13 @@ Construction walks the augment list and builds:
 1. Global `neverExpose` → if yes, hidden from everyone.
 2. Per-level `neverExpose` for `effectiveTrustLevel(turn.peer)` → if yes, hidden from this peer only.
 
-`canExecute` checks (in order):
-1. Global limit not exceeded
-2. Per-augment limit for the owning augment not exceeded
-3. Tool isn't in global `requiresHumanApproval` (if it is, return `needsApproval`)
-4. Tool isn't in per-level `requiresHumanApproval` for `effectiveTrustLevel(turn.peer)` (if it is, return `needsApproval`)
-5. Otherwise: `allowed`
+`canExecute` enforces structural exposure and approval rules. After schema and
+delegated-authorization validation, `reserveToolCall` synchronously checks and
+increments the global and owning-augment counters. Keeping check and increment
+in one non-awaiting operation prevents same-batch `Promise.all` calls from
+sharing stale quota state.
 
-`recordToolCall` bumps the global counter and the per-augment counter. `resetTurn` clears both.
+`resetTurn` clears both counters.
 
 **Trust routing.** `effectiveTrustLevel(peer)` is a module-exported helper: it returns the peer's `trustLevel` if present, or `"creator"` if `peer === null`. Null peer means "no external initiator" — internal/scheduled triggers authored by the operator's own configuration. This mapping is the one place the kernel treats null peers as creator; both `canExpose` and `canExecute` consult it.
 
@@ -414,14 +433,22 @@ Rejected results have `status: "rejected"`, `success: false`, and a fake (empty)
 Tiny module:
 
 ```ts
-export class TimeoutError extends Error {}
-
-export function withTimeout<T>(fn: () => Promise<T>, ms: number): Promise<T> {
-  // Race fn() against a setTimeout that rejects with TimeoutError.
-  // Critically: clearTimeout in a finally block so the timer is GC'd
-  // whether fn() resolves or rejects.
+export class TimeoutError extends Error {
+  readonly outcomeUnknown = true;
 }
+
+export function withTimeout<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+  callerSignal?: AbortSignal,
+): Promise<T>;
 ```
+
+The helper combines caller cancellation with a deadline controller, passes the
+combined signal to the operation, and removes its timer and abort listener on
+every terminal path. A pre-aborted caller prevents invocation. Timeout remains
+conservative: JavaScript cannot force arbitrary work to stop, so
+`TimeoutError` explicitly marks the result outcome-unknown.
 
 Used by:
 - The augment context pipeline (`contextTimeoutMs`)
@@ -492,7 +519,7 @@ The orchestrator that ties everything together. ~200 LOC. Key responsibilities:
      - Call `turnLoop.executeTurn(trigger, threadId, { onEvent })`.
      - `dispatchOutbound(result, trigger)` — call the registered `onOutbound` callback for the target transport with each response message.
      - Eager compaction: `historyManager.compact(historyBudget, strategy)`.
-     - Fire all `onTurnEnd` hooks fire-and-forget.
+     - Await all `onTurnEnd` hooks sequentially, logging and swallowing failures.
      - Return the `TurnResult`.
 
 6. **`inject(trigger)`:** the back door. Bypasses the queue entirely — runs the turn loop directly. Used by tests and by augments that need to schedule internal work.

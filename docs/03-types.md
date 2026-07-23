@@ -163,7 +163,20 @@ export interface Tool<TInput = any> {
   category: ToolCategory;
   input: z.ZodType<TInput, any, any>;
   inputJsonSchema?: Record<string, unknown>;
-  execute: (input: TInput) => Promise<string>;
+  execute: (
+    input: TInput,
+    context?: ToolExecuteContext,
+  ) => Promise<string | ToolResult>;
+}
+
+export interface ToolResult {
+  content: string;
+  isError?: boolean;
+  outcomeUnknown?: boolean;
+  terminate?: {
+    status: "input-required" | "completed";
+    message?: string;
+  };
 }
 
 export interface ToolDefinition {
@@ -173,7 +186,14 @@ export interface ToolDefinition {
 }
 ```
 
-`Tool` is the augment-author-facing type — what you write when you `defineTool({...})`. It has a Zod schema for `input` and an `execute` function that returns a string (which becomes the tool result content).
+`Tool` is the augment-author-facing type — what you write when you
+`defineTool({...})`. Its execution context carries the resolved peer, thread,
+authorization claims, and the request/deadline cancellation signal. A plain
+string becomes model-visible tool content. `ToolResult` can additionally mark
+an expected error, request one of the two augment-controlled terminal states,
+or set `outcomeUnknown` after a side effect began without a trustworthy
+result. The kernel terminates an outcome-unknown turn before another inference;
+it never asks the model to decide whether retry is safe.
 
 `ToolDefinition` is the model-facing type — what gets sent to the model in the tools array. The kernel converts `Tool[]` → `ToolDefinition[]` via `selectTools()` in `src/kernel/tool-selector.ts`.
 
@@ -616,9 +636,9 @@ export interface Augment {
   memory?: MemoryProviderSpec;
   constraints?: AugmentConstraints;
   onBoot?: () => Promise<void>;
-  onShutdown?: () => Promise<void>;
+  onShutdown?: (signal?: AbortSignal) => Promise<void>;
   onTurnStart?: (turn: TurnState) => Promise<void>;
-  onTurnEnd?: (turn: TurnResult) => Promise<void>;
+  onTurnEnd?: (turn: TurnResult, context?: TurnLifecycleContext) => Promise<void>;
   onIdle?: () => Promise<void>;
 }
 ```
@@ -651,17 +671,17 @@ the mounted augment structure; it is not a sanitized A2A discovery contract.
 - `requiresHumanApproval` — list of tool names that need operator approval before executing (v1: tools matching this skip with a "needs approval" error)
 - `approvalPolicy` — what to do when a tool needs approval (v1: always `skip`)
 - `neverExpose` — tools the capability table will never let the model see (global; applies to every peer trust level)
-- `contextTimeoutMs` — wraps `context()` in `withTimeout` (default 5000ms)
-- `toolTimeoutMs` — wraps each `execute()` in `withTimeout` (default 30000ms)
+- `contextTimeoutMs` — wraps `context()` in `withTimeout` (default 5000ms) and passes the combined request/deadline signal in `TurnState.signal`
+- `toolTimeoutMs` — wraps each `execute()` in `withTimeout` (default 30000ms) and passes the combined signal in `ToolExecuteContext.signal`
 - `perTrustLevel` — per-trust-level additive constraints (Layer 1). Keyed by `TrustLevel` (`creator` / `agent` / `public`), each level can specify its own `neverExpose` and `requiresHumanApproval` lists. These apply only to peers at that level; top-level `neverExpose` still applies to everyone (no escape). Null peer (internal/scheduled triggers) is treated as `creator`. Example: `perTrustLevel: { public: { neverExpose: ["fs_remove"] } }` hides `fs_remove` from public peers but keeps it visible to agent and creator.
 
 **`turnGate`** is an optional `TurnGateProvider`. Augments that set this field participate in the kernel's pre-dispatch admission 2PC. The kernel calls `prepare` before running any augment context or the engine; the gate can deny the turn or commit a reservation. See Section 7b for the full contract. v0: only the built-in budgets augment ships a turn gate.
 
 **Lifecycle hooks:**
 - `onBoot` — called once at `agent.start()`. Failures throw and abort startup.
-- `onShutdown` — called once at `agent.stop()`, in reverse order, with a 5s timeout. Failures swallowed.
+- `onShutdown` — called once at `agent.stop()`, in reverse order, with a 5s timeout signal. Failures swallowed.
 - `onTurnStart` — called at the beginning of every turn, before context assembly. Failures on required augments abort the turn.
-- `onTurnEnd` — called after every turn, fire-and-forget. Failures swallowed.
+- `onTurnEnd` — called after every turn with the caller signal. Hooks run sequentially; failures are logged and swallowed.
 - `onIdle` — called by the lifecycle manager's idle timer (5min default). Used by augments that do background work like consolidation.
 
 ## Section 15 — Agent config and handle
@@ -699,7 +719,7 @@ export interface AgentHandle {
   ready(): Promise<void>;
   health(): AgentHealth;
   card(): AgentCard;
-  inject(trigger: TurnTrigger): Promise<TurnResult>;
+  inject(trigger: TurnTrigger, options?: { signal?: AbortSignal }): Promise<TurnResult>;
 }
 ```
 
@@ -707,7 +727,7 @@ export interface AgentHandle {
 
 `AgentHandle` is what `defineAgent` returns. The methods are explained in [08-agent-lifecycle.md](./08-agent-lifecycle.md).
 
-`inject()` is the back door — it lets non-transport code feed a trigger directly into the kernel without going through a transport's queue. Used by tests and by augments that need to schedule their own work (cron, internal triggers).
+`inject()` is the back door — it lets non-transport code feed a trigger directly into the kernel without going through a transport's queue. Used by tests and by augments that need to schedule their own work (cron, internal triggers). Callers may supply an abort signal, which is propagated through the turn and post-turn pipeline.
 
 ## How the type sections relate
 

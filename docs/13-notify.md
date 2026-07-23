@@ -280,9 +280,9 @@ Optional fields on the destination:
 | AgentMail response | `notify` result |
 |---|---|
 | 2xx with `{message_id, thread_id}` | `{status: "sent"}` |
-| 4xx (auth, validation, invalid recipient) | `{status: "failed", detail: "agentmail ... returned 4xx: <body excerpt>"}` |
-| 5xx (transient) | `{status: "failed", detail: "agentmail ... returned 5xx: <body excerpt>"}` — caller's responsibility to retry; the adapter does not retry. |
-| Network exception | `{status: "failed", detail: "agentmail ... error: <message>"}` |
+| Definitive 4xx (auth, validation, invalid recipient) | `{status: "failed", detail: "agentmail ... returned 4xx: <body excerpt>"}` |
+| 408 or 5xx after dispatch | Outcome-unknown. The quota reservation is retained and the turn terminates without a model retry. |
+| Network exception or malformed success response | Outcome-unknown. Provider details remain internal and the turn terminates without a model retry. |
 | 429 (rate-limited at AgentMail tier) | Surfaced as `failed` with the 429 body. The notify augment's own rate-limit machinery is the primary defense; AgentMail's quota is the second layer. |
 
 #### AgentMail-specific gotchas {#agentmail-key-scoping}
@@ -290,7 +290,12 @@ Optional fields on the destination:
 - **Suppression list is permanent.** A bounced or complained address is suppressed by AgentMail with no documented removal API. Test with a real recipient before pinning a destination in production.
 - **Key scoping.** The OTP-issued key from `agent.sign_up` is org-scoped (full access). Mint an inbox-scoped key with whitelist permissions (`message_send` only) and use that in `.env`. The org-scoped key should be rotated or kept for console use only.
 - **Recipient cap.** AgentMail supports at most 50 recipients across an email send/reply/forward. Auggy rejects explicit recipient arrays over that cap before making the network request; `replyAll` can still expand server-side and may be rejected by AgentMail.
-- **No idempotency on send.** AgentMail's `messages.send` does not accept an idempotency key as of this writing. Duplicate sends are possible if a network blip lands during the request. For high-stakes messages, rely on the notify augment's existing dedup window (`rateLimit.dedupThreshold`).
+- **No provider idempotency on send.** AgentMail's `messages.send` does not
+  accept an idempotency key as of this writing. Auggy reserves its local dedup
+  slot before dispatch and terminates the turn when delivery becomes
+  outcome-unknown, so the model is not invited to retry. An operator can still
+  reconcile ambiguous provider outcomes, and a manual retry can still create a
+  duplicate if the first send actually landed.
 - **Free tier hard cap.** 100 emails/day. The runtime's `dailyBudgetUsd` does not model AgentMail tier limits — the operator should be aware that AgentMail can refuse delivery independently of runtime budgets.
 - **Inbound delivery is not part of this adapter.** `notify` remains
   outbound-only. For bidirectional email, add the separate `agentMail` augment;
@@ -300,6 +305,13 @@ Optional fields on the destination:
 ## 5. Rate limiting
 
 Rate limiting is stateful and in-memory. State resets on agent restart. All checks apply only when `rateLimit.enabled !== false`.
+
+After validation and destination authority succeed, the augment synchronously
+reserves every applicable cooldown, cap, and dedup slot before adapter
+dispatch. Concurrent calls in one process therefore cannot all pass a stale
+check. A started attempt retains its reservation on success, failure, abort, or
+timeout because remote delivery may already have occurred. Only failures before
+dispatch avoid consuming quota.
 
 ### Rate limit checks (in order)
 
@@ -390,7 +402,10 @@ the `notify` skill scaffolded by `auggy augment add notify`.
 
 **Webhook returns non-2xx**
 
-- The `detail` field in the failed result contains the HTTP status code and the first 200 characters of the response body. Check the receiving endpoint logs.
+- Definitive 4xx responses include the status and a bounded body excerpt in the
+  failed result. A 408 or 5xx after POST dispatch is outcome-unknown because
+  the receiver may have committed the notification before returning the error;
+  check the receiving endpoint before any manual retry.
 - The `X-Api-Key` header (or whichever auth header you configured) may be wrong or missing from the `headers` map.
 
 **Telegram delivery fails**
@@ -403,6 +418,9 @@ the `notify` skill scaffolded by `auggy augment add notify`.
 
 - Rate limit state is in-memory and resets on restart. A restarted agent starts fresh — the first notification after restart always passes rate limits.
 - If running multiple agent instances (not recommended for a single config), each has independent state. Rate limits are not coordinated across instances.
+- Tool/request cancellation is forwarded through webhook, Telegram, and
+  AgentMail adapters. A deadline after dispatch remains outcome-unknown and is
+  not safe to retry automatically.
 
 ## Cross-references
 

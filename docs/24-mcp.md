@@ -251,6 +251,12 @@ Defaults are conservative: 30s timeout, four concurrent calls per server,
 
 - Treat remote MCP tool descriptions and results as untrusted external content.
 - Auggy bounds MCP tool result size before returning it to the model.
+- A remote `isError` result or an exception after tool dispatch is treated as
+  outcome-unknown. The turn terminates before another model inference because
+  a remote mutation may have partially completed.
+- A timed-out non-cooperative call keeps its per-server concurrency slot until
+  the underlying operation settles; repeated deadlines cannot accumulate
+  unbounded live calls behind `maxConcurrentCalls`.
 - Auggy bounds tool discovery pages/tool count so a broken or hostile server
   cannot make boot loop forever.
 - Missing `${ENV_VAR}` references fail that server closed; the server exposes

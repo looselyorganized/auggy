@@ -833,7 +833,7 @@ Convention: scope routes under `/<augment-name>/...` to make collisions across t
 
 | Field | Default | Behavior |
 |---|---|---|
-| `timeoutMs` | 30,000 | Handler exceeding this returns 504. The handler's promise is not cancelled (continues running; result discarded). |
+| `timeoutMs` | 30,000 | Handler exceeding this returns 504 and receives an aborted signal. The signal combines request disconnect and deadline cancellation. Non-cooperative work may continue, so handlers must treat post-dispatch timeout as outcome-unknown. |
 | `maxBodyBytes` | 1,048,576 (1 MB) | Non-GET/HEAD request bodies are buffered up to the cap using actual bytes read. Over-cap bodies return 413 before the handler runs. |
 | `rateLimit.maxPerMinute` | (no limit) | Per-route sliding-window counter, keyed on caller IP (see "Caller IP & `trustedProxies`" below). Returns 429 with `Retry-After` before body buffering. |
 
