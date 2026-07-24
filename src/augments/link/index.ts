@@ -820,20 +820,19 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
       });
 
       if (!result.ok) {
+        const outcomeUnknown =
+          result.error.code === "peer_network_error" || result.error.code === "peer_protocol_error";
         const content = JSON.stringify({
           ok: false,
           error: result.error.code,
-          message: result.error.message,
+          message: outcomeUnknown ? "Link delivery outcome is unknown." : result.error.message,
         });
         // The link SDK retries transient failures with the same idempotency
         // key, but its API has no caller AbortSignal. A final network or
         // malformed-response failure cannot prove whether the peer executed
         // the request, so terminate the turn instead of letting the model
         // issue a fresh key.
-        if (
-          result.error.code === "peer_network_error" ||
-          result.error.code === "peer_protocol_error"
-        ) {
+        if (outcomeUnknown) {
           return { content, isError: true, outcomeUnknown: true };
         }
         return content;

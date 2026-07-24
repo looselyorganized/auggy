@@ -193,9 +193,8 @@ export async function collectAdminInfoBlocks(kernel: TransportKernel): Promise<A
     try {
       const block = await aug.adminInfo();
       if (block) blocks.push(block);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error(`[admin] augment "${aug.name}" adminInfo() threw: ${message}`);
+    } catch {
+      console.error(`[admin] augment "${aug.name}" adminInfo() failed`);
       blocks.push({
         augmentName: aug.name,
         title: aug.name,
@@ -203,7 +202,7 @@ export async function collectAdminInfoBlocks(kernel: TransportKernel): Promise<A
           {
             kind: "status",
             level: "error",
-            message: `Failed to load admin info: ${message}`,
+            message: "Failed to load admin info.",
           },
         ],
       });

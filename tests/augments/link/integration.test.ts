@@ -486,7 +486,8 @@ describe("link_send tool", () => {
     const parsed = JSON.parse(result.content);
     expect(parsed.ok).toBe(false);
     expect(parsed.error).toBe("peer_network_error");
-    expect(parsed.message).toBe("ECONNREFUSED");
+    expect(parsed.message).toBe("Link delivery outcome is unknown.");
+    expect(result.content).not.toContain("ECONNREFUSED");
   });
 
   it("defaults public and missing-context callers to a no-side-effect denial", async () => {
