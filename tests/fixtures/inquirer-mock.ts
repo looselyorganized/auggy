@@ -35,6 +35,12 @@ export interface Answers {
   augmentTypes?: string[];
   /** Optional provider or bearer API key returned by masked password prompts. */
   apiKey?: string;
+  /** Ollama location choice. Defaults to local. */
+  ollamaMode?: "local" | "remote";
+  /** Remote Ollama URL returned by the wizard. */
+  ollamaBaseURL?: string;
+  /** Whether the remote Ollama endpoint uses bearer authentication. */
+  ollamaNeedsBearer?: boolean;
 }
 
 /**
@@ -55,6 +61,7 @@ export function mockInquirerPrompts(getAnswers: () => Answers): void {
     }) => {
       const answers = getAnswers();
       if (config.message.startsWith("Engine provider")) return answers.provider ?? "anthropic";
+      if (config.message.startsWith("Where does Ollama")) return answers.ollamaMode ?? "local";
       if (config.message.startsWith("Model:")) return answers.model ?? "claude-sonnet-4-6";
       return config.choices[0]?.value;
     },
@@ -64,6 +71,7 @@ export function mockInquirerPrompts(getAnswers: () => Answers): void {
         return answers.displayName ?? config.default ?? "";
       if (config.message.startsWith("Operator name")) return answers.operatorName ?? "tester";
       if (config.message.startsWith("Agent purpose")) return answers.purpose ?? "testing";
+      if (config.message.startsWith("Ollama URL")) return answers.ollamaBaseURL ?? "";
       return config.default ?? "";
     },
     password: async () => getAnswers().apiKey ?? "",
@@ -87,6 +95,11 @@ export function mockInquirerPrompts(getAnswers: () => Answers): void {
         .filter((c) => c.checked || wanted.has(c.value.type))
         .map((c) => c.value);
     },
-    confirm: async (config: { default?: boolean }) => config.default ?? false,
+    confirm: async (config: { message?: string; default?: boolean }) => {
+      if (config.message?.startsWith("Does the remote Ollama")) {
+        return getAnswers().ollamaNeedsBearer ?? config.default ?? false;
+      }
+      return config.default ?? false;
+    },
   }));
 }

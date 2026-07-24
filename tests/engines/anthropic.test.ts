@@ -263,6 +263,30 @@ beforeEach(() => {
   anthropicAbortRejectsFinal = false;
 });
 
+describe("createAnthropicEngine — credential transport", () => {
+  it("rejects an environment credential on non-loopback plaintext HTTP", () => {
+    const original = process.env.ANTHROPIC_API_KEY;
+    const sentinel = "ANTHROPIC_GROUP9_SECRET_DO_NOT_LOG";
+    process.env.ANTHROPIC_API_KEY = sentinel;
+    let error: unknown;
+    try {
+      createAnthropicEngine({
+        model: "claude-sonnet-4-6",
+        baseURL: "http://provider.example.test",
+      });
+    } catch (cause) {
+      error = cause;
+    } finally {
+      if (original === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = original;
+    }
+    expect(String(error)).toContain("plaintext HTTP");
+    expect(String(error)).not.toContain(sentinel);
+    expect(String(error)).not.toContain("provider.example.test");
+    expect(lastAnthropicConstructorArgs).toBeNull();
+  });
+});
+
 describe("createAnthropicEngine — costUsd", () => {
   it("populates costUsd when pricing is known for the model", async () => {
     // claude-sonnet-4-6: $3.00/Mtok input, $15.00/Mtok output

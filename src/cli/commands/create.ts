@@ -57,6 +57,7 @@ import {
 import { writeKnowledgeScaffold } from "../scaffold-knowledge";
 import { displayPath } from "../display-path";
 import { writeFileSafely } from "../safe-write";
+import { assertSecureCredentialTransport } from "../../engines/_shared/credential-transport";
 
 const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
   anthropic: { model: "claude-sonnet-4-6", envVar: "ANTHROPIC_API_KEY" },
@@ -221,11 +222,10 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
           ctx,
         ),
       );
-      if (!ollamaBaseURL || !/^https?:\/\//.test(ollamaBaseURL)) {
-        throw new Error(
-          `Invalid Ollama URL: ${JSON.stringify(ollamaBaseURL)}. Must start with http:// or https://`,
-        );
-      }
+      assertSecureCredentialTransport({
+        provider: "Ollama",
+        baseURL: ollamaBaseURL,
+      });
       ollamaNeedsBearer = await withEscRestart((ctx) =>
         confirm(
           {
@@ -236,6 +236,13 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
           ctx,
         ),
       );
+      if (ollamaNeedsBearer) {
+        assertSecureCredentialTransport({
+          provider: "Ollama",
+          baseURL: ollamaBaseURL,
+          credential: "<configured bearer>",
+        });
+      }
     }
   }
 

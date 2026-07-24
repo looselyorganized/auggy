@@ -50,6 +50,11 @@ engine:
   #   seed: 42
 ```
 
+Remote Ollama endpoints that receive `OLLAMA_API_KEY` must use HTTPS. Plain
+HTTP with a credential is allowed for loopback only. The explicit
+`allowInsecureHttpWithCredentials: true` override works only when
+`NODE_ENV=development` and must never be used for staging or production.
+
 ## Recommended models (tool-capable)
 
 Ollama models vary in structured tool-call reliability. The create wizard

@@ -59,6 +59,26 @@ afterEach(() => {
 });
 
 describe("runCreate writes per-agent package.json", () => {
+  test("rejects a credentialed remote Ollama plaintext URL without echoing it", async () => {
+    const sentinelUrl = "http://ollama.example.test:11434/path?secret=DO_NOT_LOG";
+    answers = {
+      provider: "ollama",
+      ollamaMode: "remote",
+      ollamaBaseURL: sentinelUrl,
+      ollamaNeedsBearer: true,
+    };
+
+    const error = await runCreate("demo-ollama-plaintext", {
+      cwd: projectParent,
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    }).catch((cause) => cause);
+
+    expect(String(error)).toContain("plaintext HTTP");
+    expect(String(error)).not.toContain("ollama.example.test");
+    expect(String(error)).not.toContain("DO_NOT_LOG");
+    expect(existsSync(agentDirFor("demo-ollama-plaintext"))).toBe(false);
+  });
+
   test("Anthropic-only: package.json lists auggy + @auggy/anthropic and nothing else", async () => {
     answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
 

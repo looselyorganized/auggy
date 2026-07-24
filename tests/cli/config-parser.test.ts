@@ -591,6 +591,59 @@ describe("engine.reasoningEffort validation", () => {
   });
 });
 
+describe("engine credential transport validation", () => {
+  test("accepts absolute HTTP(S) base URLs and a boolean development override", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "openai",
+          model: "gpt-5",
+          baseURL: "https://proxy.example.test/v1",
+          allowInsecureHttpWithCredentials: false,
+        },
+      }),
+    );
+    const config = parseConfig(path);
+    expect(config.engine.baseURL).toBe("https://proxy.example.test/v1");
+    expect(config.engine.allowInsecureHttpWithCredentials).toBe(false);
+  });
+
+  test.each(["/relative", "ftp://provider.example.test", "http://user:pass@host.test"])(
+    "rejects unsafe baseURL without echoing it: %s",
+    (baseURL) => {
+      const path = writeYaml(
+        "agent.yaml",
+        minimalConfig({
+          engine: { provider: "openai", model: "gpt-5", baseURL },
+        }),
+      );
+      let error: unknown;
+      try {
+        parseConfig(path);
+      } catch (cause) {
+        error = cause;
+      }
+      expect(String(error)).toContain("engine.baseURL");
+      expect(String(error)).not.toContain(baseURL);
+    },
+  );
+
+  test("rejects a non-boolean development override", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "openai",
+          model: "gpt-5",
+          allowInsecureHttpWithCredentials: "yes",
+        },
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow("engine.allowInsecureHttpWithCredentials");
+  });
+});
+
 describe("engine.providerRouting validation", () => {
   test("accepts valid providerRouting for openrouter", () => {
     const path = writeYaml(

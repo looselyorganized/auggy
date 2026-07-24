@@ -694,6 +694,24 @@ describe("createOpenAIEngine — SDK call payload", () => {
     createOpenAIEngine({ model: "gpt-5", apiKey: "sk-test" });
     expect(lastConstructorArgs?.apiKey).toBe("sk-test");
   });
+
+  test("rejects a credentialed non-loopback plaintext baseURL before SDK construction", () => {
+    const sentinel = "OPENAI_GROUP9_SECRET_DO_NOT_LOG";
+    let error: unknown;
+    try {
+      createOpenAIEngine({
+        model: "gpt-5",
+        apiKey: sentinel,
+        baseURL: "http://provider.example.test/v1?token=url-secret",
+      });
+    } catch (cause) {
+      error = cause;
+    }
+    expect(String(error)).toContain("plaintext HTTP");
+    expect(String(error)).not.toContain(sentinel);
+    expect(String(error)).not.toContain("provider.example.test");
+    expect(lastConstructorArgs).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

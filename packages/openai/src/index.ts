@@ -4,6 +4,7 @@ import { lookup, getFreshness, priceOpenAIResponse } from "auggy/internal/openai
 import { safeParseToolCall } from "auggy/internal/tool-call";
 import { assembleSystemBlocks } from "auggy/internal/prompt-assembly";
 import { warnCacheRatesIgnored } from "auggy/internal/cost";
+import { assertSecureCredentialTransport } from "auggy/internal/credential-transport";
 import {
   createBoundedModelFetch,
   findModelResponseLimitError,
@@ -67,6 +68,8 @@ export interface OpenAIEngineOptions {
   maxTokens?: number;
   /** Optional base URL override (for proxies or compatible providers). */
   baseURL?: string;
+  /** Development-only escape hatch for credentialed non-loopback HTTP. */
+  allowInsecureHttpWithCredentials?: boolean;
   /** Reasoning effort for reasoning-capable models.
    *  - `none`: gpt-5.1 only
    *  - `minimal | low | medium | high`: universally supported on reasoning models
@@ -90,8 +93,15 @@ export interface OpenAIEngineOptions {
 
 export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
   const responseLimits = resolveModelResponseLimits(opts.responseLimits);
+  const effectiveApiKey = opts.apiKey ?? process.env.OPENAI_API_KEY;
+  assertSecureCredentialTransport({
+    provider: "OpenAI",
+    baseURL: opts.baseURL ?? "https://api.openai.com/v1",
+    credential: effectiveApiKey,
+    allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
+  });
   const client = new OpenAI({
-    apiKey: opts.apiKey,
+    apiKey: effectiveApiKey,
     baseURL: opts.baseURL,
     fetch: createBoundedModelFetch(
       globalThis.fetch.bind(globalThis) as typeof fetch,

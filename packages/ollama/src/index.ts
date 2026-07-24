@@ -2,6 +2,7 @@ import { Ollama, type ChatRequest, type ChatResponse, type Message as OllamaMess
 import { normalizeSchema } from "auggy/internal/schema-normalize";
 import { safeParseToolCall } from "auggy/internal/tool-call";
 import { assembleSystemBlocks } from "auggy/internal/prompt-assembly";
+import { assertSecureCredentialTransport } from "auggy/internal/credential-transport";
 import {
   createBoundedModelFetch,
   ModelResponseLimitError,
@@ -81,6 +82,8 @@ export interface OllamaEngineOptions {
    *  bearer-gated proxies. Local Ollama (default `localhost:11434`)
    *  does not authenticate; leave unset for that case. */
   apiKey?: string;
+  /** Development-only escape hatch for credentialed non-loopback HTTP. */
+  allowInsecureHttpWithCredentials?: boolean;
   /** Finite application-layer response limits. Omitted fields use secure defaults. */
   responseLimits?: Partial<ModelResponseLimits>;
 }
@@ -100,8 +103,15 @@ function ollamaAccounting(value: unknown) {
 
 export function createOllamaEngine(opts: OllamaEngineOptions): ModelClient {
   const responseLimits = resolveModelResponseLimits(opts.responseLimits);
+  const effectiveBaseURL = opts.baseURL ?? "http://localhost:11434";
+  assertSecureCredentialTransport({
+    provider: "Ollama",
+    baseURL: effectiveBaseURL,
+    credential: opts.apiKey,
+    allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
+  });
   const client = new Ollama({
-    host: opts.baseURL ?? "http://localhost:11434",
+    host: effectiveBaseURL,
     ...(opts.apiKey ? { headers: { Authorization: `Bearer ${opts.apiKey}` } } : {}),
     fetch: createBoundedModelFetch(
       globalThis.fetch.bind(globalThis) as typeof fetch,

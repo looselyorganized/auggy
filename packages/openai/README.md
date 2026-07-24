@@ -39,6 +39,11 @@ engine:
   maxTokens: 4096
 ```
 
+Custom credentialed endpoints must use HTTPS. Loopback HTTP remains supported
+for local development. A non-loopback plaintext endpoint is allowed only when
+`allowInsecureHttpWithCredentials: true` and `NODE_ENV=development`; never use
+that override for staging or production.
+
 ## License
 
 Apache-2.0 — see [LICENSE](./LICENSE).

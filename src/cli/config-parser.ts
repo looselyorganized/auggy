@@ -1460,6 +1460,32 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
     if (typeof engine.model !== "string") {
       errors.push("engine.model: required string");
     }
+    if (engine.baseURL !== undefined) {
+      if (typeof engine.baseURL !== "string") {
+        errors.push("engine.baseURL: must be an absolute HTTP(S) URL");
+      } else {
+        try {
+          const baseURL = new URL(engine.baseURL);
+          if (
+            (baseURL.protocol !== "http:" && baseURL.protocol !== "https:") ||
+            baseURL.username.length > 0 ||
+            baseURL.password.length > 0
+          ) {
+            errors.push(
+              "engine.baseURL: must be an absolute HTTP(S) URL without embedded credentials",
+            );
+          }
+        } catch {
+          errors.push("engine.baseURL: must be an absolute HTTP(S) URL");
+        }
+      }
+    }
+    if (
+      engine.allowInsecureHttpWithCredentials !== undefined &&
+      typeof engine.allowInsecureHttpWithCredentials !== "boolean"
+    ) {
+      errors.push("engine.allowInsecureHttpWithCredentials: must be a boolean");
+    }
     if (engine.reasoningEffort !== undefined) {
       if (
         typeof engine.reasoningEffort !== "string" ||

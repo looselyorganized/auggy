@@ -3,6 +3,7 @@ import { lookup, getFreshness, priceAnthropicResponse } from "auggy/internal/ant
 import { normalizeSchema } from "auggy/internal/schema-normalize";
 import { safeParseToolCall } from "auggy/internal/tool-call";
 import { assembleSystemBlocks } from "auggy/internal/prompt-assembly";
+import { assertSecureCredentialTransport } from "auggy/internal/credential-transport";
 import {
   createBoundedModelFetch,
   findModelResponseLimitError,
@@ -52,6 +53,8 @@ export interface AnthropicEngineOptions {
   maxTokens?: number;
   /** Optional base URL override (for proxying or compatible providers). */
   baseURL?: string;
+  /** Development-only escape hatch for credentialed non-loopback HTTP. */
+  allowInsecureHttpWithCredentials?: boolean;
   /**
    * Override pricing for cost estimation. If set, the adapter uses these rates
    * instead of the built-in pricing table. Useful for unknown models or custom
@@ -74,8 +77,15 @@ function isProviderRecord(value: unknown): value is Record<string, unknown> {
 
 export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient {
   const responseLimits = resolveModelResponseLimits(opts.responseLimits);
+  const effectiveApiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
+  assertSecureCredentialTransport({
+    provider: "Anthropic",
+    baseURL: opts.baseURL ?? "https://api.anthropic.com",
+    credential: effectiveApiKey,
+    allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
+  });
   const client = new Anthropic({
-    apiKey: opts.apiKey,
+    apiKey: effectiveApiKey,
     baseURL: opts.baseURL,
     fetch: createBoundedModelFetch(
       globalThis.fetch.bind(globalThis) as typeof fetch,

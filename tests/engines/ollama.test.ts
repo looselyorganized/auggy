@@ -111,6 +111,24 @@ describe("createOllamaEngine — constructor", () => {
     await engine.complete(emptyPrompt({ messages: [msg({ role: "user", content: "hi" })] }));
     expect(lastConstructorArgs?.host).toBe("http://other:9999");
   });
+
+  test("rejects a bearer credential on non-loopback plaintext HTTP", () => {
+    const sentinel = "OLLAMA_GROUP9_SECRET_DO_NOT_LOG";
+    let error: unknown;
+    try {
+      createOllamaEngine({
+        model: "llama3.2",
+        baseURL: "http://other:9999",
+        apiKey: sentinel,
+      });
+    } catch (cause) {
+      error = cause;
+    }
+    expect(String(error)).toContain("plaintext HTTP");
+    expect(String(error)).not.toContain(sentinel);
+    expect(String(error)).not.toContain("other:9999");
+    expect(lastConstructorArgs).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------

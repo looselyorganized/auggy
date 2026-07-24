@@ -85,6 +85,11 @@ export interface EngineConfig {
   /** Optional proxy/gateway base URL. Ignored for openrouter (hardcoded). */
   baseURL?: string;
   /**
+   * Allows credentialed non-loopback HTTP only when NODE_ENV=development.
+   * Production, test, staging, and unset environments remain fail closed.
+   */
+  allowInsecureHttpWithCredentials?: boolean;
+  /**
    * Reasoning effort for reasoning-capable models (o-series, gpt-5, qwen3.5 thinking).
    * `none` is gpt-5.1-only; `xhigh` is gpt-5.1-codex-max+ (and most OpenRouter reasoning models).
    * Older OpenAI Chat Completions models (e.g. gpt-4) do not support this field — the API returns an error.
