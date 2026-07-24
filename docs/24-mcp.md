@@ -108,6 +108,13 @@ HTTP or SSE endpoint directly. Same-origin redirects also fail closed because
 MCP headers may contain arbitrary credentials that Fetch would otherwise carry
 to another origin.
 
+Every remote MCP endpoint must use HTTPS because URLs, session identifiers,
+tool arguments, and results may be sensitive. Loopback HTTP is allowed for
+local tunnels. For a non-loopback development sandbox only, set
+`auggy.allowInsecureHttpWithCredentials: true` on that server while
+`NODE_ENV=development`; the override is rejected in other environments and
+emits a security warning.
+
 Check cloud compatibility:
 
 ```bash

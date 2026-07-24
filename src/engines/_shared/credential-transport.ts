@@ -1,7 +1,9 @@
+import { isIP } from "node:net";
+
 export interface CredentialTransportPolicy {
   provider: string;
   baseURL: string;
-  credential?: string;
+  credential?: unknown;
   allowInsecureHttpWithCredentials?: boolean;
   nodeEnv?: string;
   warn?: (message: string) => void;
@@ -18,8 +20,8 @@ function stripIpv6Brackets(hostname: string): string {
 }
 
 function isIpv4Loopback(hostname: string): boolean {
+  if (isIP(hostname) !== 4) return false;
   const octets = hostname.split(".");
-  if (octets.length !== 4) return false;
   const first = Number(octets[0]);
   return Number.isInteger(first) && first === 127;
 }
@@ -77,6 +79,9 @@ function assertSecureCredentialUrl(
     throw new Error(`${policy.provider} ${protocols.label} must not contain embedded credentials.`);
   }
 
+  if (policy.credential !== undefined && typeof policy.credential !== "string") {
+    throw new Error(`${policy.provider} credential must be a string.`);
+  }
   const credentialAttached = policy.credential !== undefined && policy.credential.length > 0;
   if (
     url.protocol !== protocols.insecure ||

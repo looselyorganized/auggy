@@ -90,6 +90,50 @@ function writeMcpConfig(config: unknown) {
 }
 
 describe("mcp augment runtime", () => {
+  test("rejects credentialed non-loopback plaintext remote servers before connection", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        remote: {
+          type: "streamable-http",
+          url: "http://mcp.example.test/session?api_key=GROUP9_MCP_SENTINEL",
+        },
+      },
+    });
+    const adapter = new FakeMcpAdapter([]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter });
+    await manager.boot();
+
+    expect(adapter.servers).toHaveLength(0);
+    expect(manager.statuses()[0]).toMatchObject({
+      name: "remote",
+      state: "failed",
+      error: expect.stringContaining("plaintext HTTP"),
+    });
+  });
+
+  test("permits explicit credentialed plaintext MCP only in development", async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "development";
+    try {
+      writeMcpConfig({
+        mcpServers: {
+          remote: {
+            type: "streamable-http",
+            url: "http://mcp.example.test/session?api_key=GROUP9_MCP_SENTINEL",
+            auggy: { allowInsecureHttpWithCredentials: true },
+          },
+        },
+      });
+      const adapter = new FakeMcpAdapter([]);
+      const manager = createMcpManager({ agentDir: TMP, client: adapter });
+      await manager.boot();
+      expect(adapter.servers).toHaveLength(1);
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+    }
+  });
+
   test("discovers remote tools and exposes namespaced Auggy tools", async () => {
     writeMcpConfig({
       mcpServers: {

@@ -44,13 +44,28 @@ function mockHttp(
 
 describe("createAgentMailClient", () => {
   test("rejects credentials over non-loopback plaintext HTTP before dispatch", () => {
+    for (const apiBaseUrl of [
+      "http://provider.example.test/v0",
+      "http://127.evil.example.com/v0",
+    ]) {
+      expect(() =>
+        createAgentMailClient({
+          apiKey: "GROUP9_AGENTMAIL_SENTINEL",
+          apiBaseUrl,
+          http: mockHttp(() => ({ status: 200, body: "{}" })),
+        }),
+      ).toThrow(/plaintext HTTP/);
+    }
+  });
+
+  test("rejects non-string credentials before dispatch", () => {
     expect(() =>
       createAgentMailClient({
-        apiKey: "GROUP9_AGENTMAIL_SENTINEL",
-        apiBaseUrl: "http://provider.example.test/v0",
+        apiKey: 123 as unknown as string,
+        apiBaseUrl: "https://provider.example.test/v0",
         http: mockHttp(() => ({ status: 200, body: "{}" })),
       }),
-    ).toThrow(/plaintext HTTP/);
+    ).toThrow("AgentMail credential must be a string");
   });
 
   test("passes the send cancellation signal to the HTTP client", async () => {

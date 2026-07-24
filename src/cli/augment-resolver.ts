@@ -41,6 +41,7 @@ import { turnControl, type TurnControlOptions } from "../augments/turnControl";
 import { visitorAuth } from "../augments/visitorAuth";
 import type { VisitorAuthOptions, VisitorAuthAugmentExtras } from "../augments/visitorAuth/types";
 import { assertSecureCredentialTransport } from "../engines/_shared/credential-transport";
+import { createRedirectRejectingFetch } from "../http";
 // `link` (value) used to be statically imported here, which transitively
 // loaded `@auggy/link` at boot regardless of whether any agent selected the
 // link augment (Codex 1st-pass finding #3). After Phase 5 the value is
@@ -260,9 +261,9 @@ async function resolveLayeredMemory(
         | undefined,
     });
     const { createClient } = await import("@supabase/supabase-js");
-    const client = createClient(supabaseUrl, supabaseKey) as unknown as Parameters<
-      typeof layeredMemory
-    >[0]["client"];
+    const client = createClient(supabaseUrl, supabaseKey, {
+      global: { fetch: createRedirectRejectingFetch() },
+    }) as unknown as Parameters<typeof layeredMemory>[0]["client"];
     return layeredMemory({
       backend: "supabase",
       client,
@@ -299,9 +300,9 @@ async function resolveSupabaseMemory(opts: Record<string, unknown>): Promise<Aug
   // The real SupabaseClient has narrower types than SupabaseLikeClient
   // (e.g. data is null on error), so we cast through unknown.
   const { createClient } = await import("@supabase/supabase-js");
-  const client = createClient(supabaseUrl, supabaseKey) as unknown as Parameters<
-    typeof supabaseMemory
-  >[0]["client"];
+  const client = createClient(supabaseUrl, supabaseKey, {
+    global: { fetch: createRedirectRejectingFetch() },
+  }) as unknown as Parameters<typeof supabaseMemory>[0]["client"];
 
   return supabaseMemory({
     namespace: rest.namespace as string,
@@ -473,11 +474,16 @@ function resolveWebTransport(
 }
 
 function resolveWebFetch(opts: Record<string, unknown>): Augment {
+  if (opts.defaultHeaders !== undefined) {
+    throw new Error(
+      "webFetch defaultHeaders are unsafe for model-selected URLs; use exact-origin headersByOrigin",
+    );
+  }
   return webFetch({
     timeoutMs: opts.timeoutMs as number | undefined,
     maxRedirects: opts.maxRedirects as number | undefined,
     userAgent: opts.userAgent as string | undefined,
-    defaultHeaders: opts.defaultHeaders as Record<string, string> | undefined,
+    headersByOrigin: opts.headersByOrigin as Record<string, Record<string, string>> | undefined,
   });
 }
 

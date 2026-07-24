@@ -1491,6 +1491,8 @@ export interface WebhookNotifyDestination extends NotifyDestinationAuthority {
   transport: "webhook";
   url: string;
   headers?: Record<string, string>;
+  /** Development-only escape hatch for non-loopback plaintext HTTP. */
+  allowInsecureHttpWithCredentials?: boolean;
   /** Optional per-destination rate limit. Falls back to the augment-level global cap when absent. */
   rateLimit?: {
     maxPerHour?: number;

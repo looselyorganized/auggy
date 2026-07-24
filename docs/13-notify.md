@@ -142,6 +142,7 @@ returns `status: "failed"` and does not consume rate-limit quota.
 | `transport` | `"webhook"` | yes | Selects the HTTP POST adapter. |
 | `url` | `string` | yes | Full URL to POST to. Env interpolation supported via the CLI. |
 | `headers` | `Record<string, string>` | no | Additional HTTP headers (e.g. auth tokens). |
+| `allowInsecureHttpWithCredentials` | `boolean` | no | Development-only override for a non-loopback plaintext endpoint. Requires `NODE_ENV=development` and emits a warning. |
 
 ### `NotifyDestination` — telegram
 
@@ -183,7 +184,7 @@ notify({
 { "status": "sent" }
 { "status": "rate_limited", "message": "Notification suppressed — per-peer cooldown active. Next available in 85 seconds." }
 { "status": "failed",       "message": "Unknown destination 'ops'. Configured destinations: creator." }
-{ "status": "failed",       "detail": "webhook https://... returned 404: Not Found" }
+{ "status": "failed",       "detail": "webhook delivery returned HTTP 404" }
 ```
 
 The model sees the `status` field and an optional `message` or `detail` field. On `rate_limited`, the reason message includes the remaining cooldown in seconds (per-peer) so the agent can report it accurately to the visitor if relevant.
@@ -206,7 +207,7 @@ operator configures real delivery.
 
 ### Webhook adapter
 
-The webhook adapter POSTs a JSON body to the configured URL using the shared `src/http.ts` client (10-second timeout, `User-Agent: auggy-notify-webhook/0.1`).
+The webhook adapter POSTs a JSON body to the configured URL using the shared `src/http.ts` client (10-second timeout, `User-Agent: auggy-notify-webhook/0.1`). Remote endpoints must use HTTPS; loopback HTTP remains available for local development. A non-loopback plaintext sandbox additionally requires `allowInsecureHttpWithCredentials: true` and `NODE_ENV=development`.
 
 **Request body:**
 
@@ -221,11 +222,13 @@ The webhook adapter POSTs a JSON body to the configured URL using the shared `sr
 
 `reason` and `visitor` are omitted from the body when not provided by the caller. The `channel` field is always `"notify"` — it lets the receiving endpoint distinguish `notify` POSTs from other augment traffic if the endpoint is shared.
 
-**Response:** Any `2xx` status is treated as success. Any other status code is a `failed` delivery with the status code and up to 200 characters of the response body in `detail`.
+**Response:** Any `2xx` status is treated as success. Any other status code is a
+`failed` delivery with a stable status-only detail. Destination URLs, response
+bodies, and network exception text are never returned to the model.
 
 **Custom headers:** The `headers` field is merged into the request. Use it for API keys, HMAC tokens, or any other per-destination auth that the receiving server requires.
 
-> **Why a shared HTTP client?** The webhook adapter reuses `src/http.ts` rather than a raw `fetch()` call so it inherits redirect security (auth-header stripping on cross-origin redirects) and the body size cap. Both matter when the URL is operator-supplied.
+> **Why a shared HTTP client?** The webhook adapter reuses `src/http.ts` rather than a raw `fetch()` call so it can disable redirects—preventing the webhook body from being replayed to another origin—and inherit the body size cap. Both matter when the URL is operator-supplied.
 
 ### Telegram adapter
 

@@ -1,5 +1,6 @@
 import { createHttpClient } from "../../../http";
 import type { HttpClient } from "../../../http";
+import { assertSecureCredentialTransport } from "../../../engines/_shared/credential-transport";
 import {
   isAmbiguousMutationStatus,
   isOutcomeUnknownError,
@@ -22,6 +23,7 @@ export function createWebhookAdapter(opts: CreateWebhookAdapterOptions = {}): No
     opts.client ??
     createHttpClient({
       timeoutMs: 10_000,
+      maxRedirects: 0,
       userAgent: "auggy-notify-webhook/0.1",
       urlPolicy: "operator-configured",
     });
@@ -39,6 +41,19 @@ export function createWebhookAdapter(opts: CreateWebhookAdapterOptions = {}): No
         };
       }
       const dest = destination as WebhookNotifyDestination;
+      try {
+        assertSecureCredentialTransport({
+          provider: "notify webhook",
+          baseURL: dest.url,
+          credential: "<webhook-payload>",
+          allowInsecureHttpWithCredentials: dest.allowInsecureHttpWithCredentials,
+        });
+      } catch {
+        return {
+          status: "failed",
+          detail: "webhook destination failed secure transport validation",
+        };
+      }
       const body = JSON.stringify({
         summary: payload.summary,
         ...(payload.reason ? { reason: payload.reason } : {}),
@@ -60,13 +75,13 @@ export function createWebhookAdapter(opts: CreateWebhookAdapterOptions = {}): No
           }
           return {
             status: "failed",
-            detail: `webhook ${dest.url} returned ${res.status}: ${res.body.slice(0, 200)}`,
+            detail: `webhook delivery returned HTTP ${res.status}`,
           };
         }
         return { status: "sent" };
       } catch (err) {
         if (options?.signal?.aborted || isOutcomeUnknownError(err)) throw err;
-        return { status: "failed", detail: `webhook ${dest.url} error: ${(err as Error).message}` };
+        return { status: "failed", detail: "webhook delivery failed" };
       }
     },
   };

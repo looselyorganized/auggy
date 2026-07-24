@@ -236,13 +236,56 @@ function summarizeWebFetch(args: {
 // =========================================================================
 
 export interface WebFetchOptions
-  extends Omit<HttpClientOptions, "urlPolicy" | "rejectUnsafeUrls" | "resolveHostname"> {
+  extends Omit<
+    HttpClientOptions,
+    "urlPolicy" | "rejectUnsafeUrls" | "resolveHostname" | "defaultHeaders"
+  > {
+  /**
+   * Headers applied only when the model-selected URL has this exact origin.
+   * Keys must be canonical HTTP(S) origins without paths, queries, or userinfo.
+   */
+  headersByOrigin?: Record<string, Record<string, string>>;
   /**
    * Optional pre-built HTTP client. Supply this if you want to share a
    * client across augments or inject a mock in tests. If omitted, a
    * client is created from the timeout/redirect/user-agent options.
    */
   client?: HttpClient;
+}
+
+function normalizeHeadersByOrigin(
+  configured: Record<string, Record<string, string>> | undefined,
+): ReadonlyMap<string, Readonly<Record<string, string>>> {
+  const normalized = new Map<string, Readonly<Record<string, string>>>();
+  for (const [configuredOrigin, headers] of Object.entries(configured ?? {})) {
+    let parsed: URL;
+    try {
+      parsed = new URL(configuredOrigin);
+    } catch {
+      throw new Error("webFetch headersByOrigin keys must be valid HTTP(S) origins");
+    }
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      parsed.username ||
+      parsed.password ||
+      parsed.pathname !== "/" ||
+      parsed.search ||
+      parsed.hash ||
+      configuredOrigin !== parsed.origin
+    ) {
+      throw new Error("webFetch headersByOrigin keys must be canonical HTTP(S) origins");
+    }
+    if (
+      typeof headers !== "object" ||
+      headers === null ||
+      Array.isArray(headers) ||
+      Object.values(headers).some((value) => typeof value !== "string")
+    ) {
+      throw new Error("webFetch headersByOrigin values must be objects of strings");
+    }
+    normalized.set(parsed.origin, Object.freeze({ ...headers }));
+  }
+  return normalized;
 }
 
 export interface WebFetchResult {
@@ -267,12 +310,25 @@ export interface WebFetchResult {
 export function webFetch(opts: WebFetchOptions = {}): Augment {
   const {
     client: customClient,
+    headersByOrigin,
     urlPolicy: _ignoredUrlPolicy,
     rejectUnsafeUrls: _ignoredLegacyPolicy,
     resolveHostname: _ignoredResolver,
+    defaultHeaders: legacyDefaultHeaders,
     ...httpOptions
   } = opts as WebFetchOptions &
-    Partial<Pick<HttpClientOptions, "urlPolicy" | "rejectUnsafeUrls" | "resolveHostname">>;
+    Partial<
+      Pick<
+        HttpClientOptions,
+        "urlPolicy" | "rejectUnsafeUrls" | "resolveHostname" | "defaultHeaders"
+      >
+    >;
+  if (legacyDefaultHeaders !== undefined) {
+    throw new Error(
+      "webFetch defaultHeaders are unsafe for model-selected URLs; use exact-origin headersByOrigin",
+    );
+  }
+  const originHeaders = normalizeHeadersByOrigin(headersByOrigin);
   // web_fetch ingests model-supplied URLs, so its public-network policy is not
   // configurable. A custom client is an explicit transfer of this boundary to
   // the operator.
@@ -307,7 +363,10 @@ export function webFetch(opts: WebFetchOptions = {}): Augment {
 
       let response: HttpResponse;
       try {
-        response = await client.get(requestUrl, { signal: context?.signal });
+        response = await client.get(requestUrl, {
+          headers: originHeaders.get(new URL(requestUrl).origin),
+          signal: context?.signal,
+        });
       } catch (error) {
         return JSON.stringify({
           url: requestUrl,

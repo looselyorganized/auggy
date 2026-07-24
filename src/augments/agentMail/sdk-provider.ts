@@ -5,6 +5,7 @@ import {
   assertSecureCredentialTransport,
   assertSecureWebSocketCredentialTransport,
 } from "../../engines/_shared/credential-transport";
+import { createRedirectRejectingFetch } from "../../http";
 import type { AgentMailInboundLedger } from "./inbound-ledger";
 import {
   AGENTMAIL_RECEIVED_EVENT_TYPES,
@@ -70,6 +71,8 @@ export interface AgentMailSdkProviderOptions {
   connectionTimeoutMs?: number;
   /** Test-only SDK boundary. */
   _sdk?: SdkClientBoundary;
+  /** Test-only Fetch boundary. */
+  _fetch?: typeof fetch;
 }
 
 export interface AgentMailSdkAdapters {
@@ -168,10 +171,14 @@ function createSdk(options: AgentMailSdkProviderOptions): SdkClientBoundary {
   if (options._sdk) return options._sdk;
   const timeoutInSeconds =
     requirePositiveInteger(options.timeoutMs ?? 15_000, "timeoutMs", 5 * 60_000) / 1_000;
+  const credentialSafeFetch = createRedirectRejectingFetch(
+    options._fetch ?? globalThis.fetch.bind(globalThis),
+  );
   if (!options.apiBaseUrl && !options.websocketBaseUrl) {
     return new SdkAgentMailClient({
       apiKey: options.apiKey,
       timeoutInSeconds,
+      fetch: credentialSafeFetch,
     }) as unknown as SdkClientBoundary;
   }
 
@@ -201,6 +208,7 @@ function createSdk(options: AgentMailSdkProviderOptions): SdkClientBoundary {
     apiKey: options.apiKey,
     timeoutInSeconds,
     environment: { http, websockets },
+    fetch: credentialSafeFetch,
   }) as unknown as SdkClientBoundary;
 }
 

@@ -142,6 +142,29 @@ function makeOpts(): Parameters<typeof link>[0] {
 // ---------------------------------------------------------------------------
 
 describe("link augment — construction", () => {
+  it("rejects inline bearers over non-loopback plaintext HTTP", async () => {
+    const opts = makeOpts();
+    opts.peers!.researcher!.url = "http://127.evil.example.com/a2a";
+    await expect(link({ ...opts, _skipServer: true })).rejects.toThrow(/plaintext HTTP/);
+  });
+
+  it("does not honor the legacy plaintext override outside development", async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousOverride = process.env.LINK_ALLOW_PLAINTEXT;
+    process.env.NODE_ENV = "production";
+    process.env.LINK_ALLOW_PLAINTEXT = "1";
+    try {
+      const opts = makeOpts();
+      opts.peers!.researcher!.url = "http://peer.example.test/a2a";
+      await expect(link({ ...opts, _skipServer: true })).rejects.toThrow(/plaintext HTTP/);
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      if (previousOverride === undefined) delete process.env.LINK_ALLOW_PLAINTEXT;
+      else process.env.LINK_ALLOW_PLAINTEXT = previousOverride;
+    }
+  });
+
   it("returns an augment with transport, context, and tools", async () => {
     const aug = await link({ ...makeOpts(), _skipServer: true });
     expect(aug.name).toBe("link");

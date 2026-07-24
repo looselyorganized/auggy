@@ -66,6 +66,7 @@ import type {
 
 import { defineTool } from "../../helpers";
 import { createRedirectRejectingFetch } from "../../http";
+import { assertSecureCredentialTransport } from "../../engines/_shared/credential-transport";
 import type {
   Augment,
   ContextBlock,
@@ -437,6 +438,26 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
   ];
   const publicDelegationPeers = new Map(Object.entries(opts.outbound?.publicDelegationPeers ?? {}));
   const registryPins = new Map(Object.entries(opts.peerSource?.pins ?? {}));
+  const plaintextRequested = (process.env.LINK_ALLOW_PLAINTEXT ?? "") === "1";
+  const allowPlaintext = plaintextRequested && process.env.NODE_ENV === "development";
+  if (plaintextRequested && !allowPlaintext) {
+    console.warn("[security] LINK_ALLOW_PLAINTEXT is ignored unless NODE_ENV=development.");
+  }
+
+  function assertOutboundPeerTransport(name: string, peer: LinkPeerConfig): void {
+    assertSecureCredentialTransport({
+      provider: `link peer "${name}"`,
+      baseURL: peer.url,
+      credential: peer.bearer,
+      allowInsecureHttpWithCredentials: allowPlaintext,
+    });
+  }
+
+  function assertOutboundPeerTransports(peers: Record<string, LinkPeerConfig>): void {
+    for (const [name, peer] of Object.entries(peers)) {
+      assertOutboundPeerTransport(name, peer);
+    }
+  }
 
   function canUseOutbound(context: ToolExecuteContext | undefined): {
     allowed: boolean;
@@ -458,6 +479,7 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
   const peerStateRef: { current: Record<string, LinkPeerConfig> } = {
     current: opts.peers ?? {},
   };
+  assertOutboundPeerTransports(peerStateRef.current);
 
   // The library's EnvAddressBook + BearerAuthProvider take frozen snapshots
   // at construction. To support live refresh, we wrap each in a thin
@@ -498,12 +520,9 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
   // (initial fetch + refresh loop) in transport.register so the kernel is
   // already wired when the first refresh propagates peer changes.
   //
-  // `allowPlaintext` reuses the link library's localhost-dev convention:
-  // when LINK_ALLOW_PLAINTEXT=1 the resolver accepts http:// for the source
-  // URL and registry-supplied peer URLs. Production setups should leave it
-  // unset so a compromised/misconfigured registry can't repoint bearer
-  // traffic to plaintext attacker hosts.
-  const allowPlaintext = (process.env.LINK_ALLOW_PLAINTEXT ?? "") === "1";
+  // The legacy LINK_ALLOW_PLAINTEXT override is honored only in an explicit
+  // development runtime. Every active peer is checked again immediately
+  // before it enters the bearer-bearing address book.
   const resolver: PeerResolver | null =
     opts._peerResolver ??
     (opts.peerSource
@@ -548,7 +567,14 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
     for (const [name, peer] of Object.entries(next)) {
       const pin = registryPins.get(name);
       if (pin?.participantId === peer.participantId && pin.url === peer.url) {
-        pinned[name] = peer;
+        try {
+          assertOutboundPeerTransport(name, peer);
+          pinned[name] = peer;
+        } catch {
+          console.warn(
+            `[link] peerSource refresh: skipped peer "${name}" because its credential transport is insecure`,
+          );
+        }
       } else {
         console.warn(
           `[link] peerSource refresh: skipped peer "${name}" because its endpoint or participant id does not match the operator pin`,

@@ -14,6 +14,7 @@ import { isOutcomeUnknownError, OutcomeUnknownError } from "../../outcome-unknow
 import { withTimeout as withDeadline } from "../../kernel/timeout";
 import { formatMcpToolResult } from "./result";
 import { measureJsonValue, ModelResponseLimitError } from "../../engines/_shared/response-limits";
+import { assertSecureCredentialTransport } from "../../engines/_shared/credential-transport";
 import { SdkMcpClientAdapter } from "./sdk-adapter";
 import type {
   McpClientAdapter,
@@ -240,6 +241,15 @@ function resolveServer(
     ...raw.auggy,
   } satisfies McpRuntimePolicy;
   validateRuntimePolicy(policy, name);
+  const headers = interpolateRecord(raw.headers ?? {}, env, `mcpServers.${name}.headers`);
+  if (transport !== "stdio") {
+    assertSecureCredentialTransport({
+      provider: `MCP server "${name}"`,
+      baseURL: raw.url ?? "",
+      credential: "<remote-mcp-session>",
+      allowInsecureHttpWithCredentials: policy.allowInsecureHttpWithCredentials,
+    });
+  }
   return {
     name,
     transport,
@@ -247,7 +257,7 @@ function resolveServer(
       ...raw,
       cwd: typeof raw.cwd === "string" ? resolvePath(raw.cwd, agentDir) : raw.cwd,
       env: interpolateRecord(raw.env ?? {}, env, `mcpServers.${name}.env`),
-      headers: interpolateRecord(raw.headers ?? {}, env, `mcpServers.${name}.headers`),
+      headers,
     },
     policy,
   };

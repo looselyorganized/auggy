@@ -1113,6 +1113,11 @@ import { webFetch } from "auggy";
 
 const fetcher = webFetch({
   timeoutMs: 15000,
+  headersByOrigin: {
+    "https://api.example.com": {
+      authorization: `Bearer ${process.env.API_TOKEN}`,
+    },
+  },
 });
 ```
 
@@ -1134,6 +1139,12 @@ The augment forces its HTTP client to use `urlPolicy: "public"`; callers cannot 
 - HTTPS-to-HTTP redirect downgrades
 
 Rejected URLs throw from the HTTP client and are caught by the `web_fetch` tool, surfaced as structured error JSON. Redirects are manual and bounded. On a cross-origin redirect, all custom headers are removed unless the client operator explicitly allowlists a header for that exact destination origin; stripped headers are never reconstructed later in the chain.
+
+Because the model chooses each URL, global `defaultHeaders` are rejected.
+Credential-bearing headers must be configured under `headersByOrigin` with an
+exact canonical origin such as `https://api.example.com`. They are absent from
+every other initial destination and are stripped if that origin redirects
+elsewhere.
 
 Operator-configured clients can select `urlPolicy: "operator-configured"` when an integration intentionally targets a private or loopback service. That policy is for fixed, trusted configuration—not model-, peer-, or request-supplied URLs. Passing a custom client to `webFetch` explicitly transfers enforcement of this network boundary to the operator.
 
@@ -1524,7 +1535,7 @@ Names only — not purposes or examples — to keep preamble cost ~10 tokens per
 
 | Field | Required | Purpose |
 |---|---|---|
-| `url` | yes | Peer's link endpoint (`https://...`). For local-only dev, set `LINK_ALLOW_PLAINTEXT=1` to allow `http://localhost`. |
+| `url` | yes | Peer's link endpoint (`https://...`). For local-only dev, set both `NODE_ENV=development` and `LINK_ALLOW_PLAINTEXT=1` to allow plaintext HTTP. |
 | `bearer` | yes | Bearer this agent sends on outbound to the peer. |
 | `participantId` | yes | Peer's UUID. Must match the peer's self-declared id for AddressBook lookup symmetry. |
 | `inboundBearer` | yes | Bearer this agent accepts on inbound *from* the peer. Independent of `bearer`; rotate separately. |
@@ -1600,8 +1611,8 @@ Names are uppercased; non-alphanumeric characters become underscores. Peer `data
 - **Per-peer error handling:** if a single entry in the registry is invalid (malformed, insecure URL, missing env-var bearer), the augment logs a warning and skips that entry. Other entries — including removals of revoked peers — still apply. This prevents an unrelated misconfiguration from blocking trust revocations.
 
 **Security defaults:**
-- `peerSource.url` MUST be `https://`. Plaintext `http://` is rejected at boot. To override for localhost dev, set `LINK_ALLOW_PLAINTEXT=1` (the same env knob the link library uses for plain-HTTP binding).
-- Registry-supplied peer URLs (and `agentCardUrl`) MUST be `https://` and must exactly match the operator pin. Plaintext or mismatched entries are skipped—they don't poison the rest of the directory and never receive a bearer. The same `LINK_ALLOW_PLAINTEXT=1` override applies only to the scheme check for localhost development; it does not disable pin matching.
+- `peerSource.url` MUST be `https://`. Plaintext `http://` is rejected at boot. The explicit development override requires both `NODE_ENV=development` and `LINK_ALLOW_PLAINTEXT=1`.
+- Inline and registry-supplied peer URLs (and `agentCardUrl`) MUST be `https://` and registry entries must exactly match the operator pin. Plaintext or mismatched entries are skipped—they don't poison the rest of the directory and never receive a bearer. The same two-variable development override applies only to the scheme check; it does not disable pin matching.
 - Registry and outbound peer requests do not follow HTTP redirects. Configure the final exact endpoint; even a same-origin redirect fails closed so bearer credentials and message bodies cannot be replayed to an unreviewed destination.
 - Why: the registry is a remote trust boundary. HTTPS authenticates a host but does not authorize it to receive a name-scoped bearer. Exact endpoint and participant pins prevent a compromised or misconfigured registry from redirecting credentials.
 

@@ -7,6 +7,18 @@ import {
 const SENTINEL_URL = "http://sentinel-user:sentinel-pass@provider.example.test/v1?key=secret";
 
 describe("assertSecureCredentialTransport", () => {
+  test("rejects non-string credentials at the runtime boundary", () => {
+    for (const credential of [123, { token: "secret" }, true]) {
+      expect(() =>
+        assertSecureCredentialTransport({
+          provider: "test-provider",
+          baseURL: "https://provider.example.test/v1",
+          credential,
+        }),
+      ).toThrow("test-provider credential must be a string");
+    }
+  });
+
   test("allows HTTPS with credentials", () => {
     expect(() =>
       assertSecureCredentialTransport({
@@ -40,6 +52,8 @@ describe("assertSecureCredentialTransport", () => {
     "http://provider.example.test/v1",
     "http://10.0.0.1:11434",
     "http://[::ffff:10.0.0.1]:11434",
+    "http://127.evil.example.com/v1",
+    "http://127.0.evil.com/v1",
   ])("rejects credentialed non-loopback HTTP: %s", (baseURL) => {
     expect(() =>
       assertSecureCredentialTransport({
@@ -133,6 +147,13 @@ describe("assertSecureWebSocketCredentialTransport", () => {
       assertSecureWebSocketCredentialTransport({
         provider: "test-provider",
         baseURL: "ws://provider.example.test/events",
+        credential: "secret",
+      }),
+    ).toThrow(/plaintext WS/);
+    expect(() =>
+      assertSecureWebSocketCredentialTransport({
+        provider: "test-provider",
+        baseURL: "ws://127.evil.example.com/events",
         credential: "secret",
       }),
     ).toThrow(/plaintext WS/);

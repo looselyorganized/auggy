@@ -4,6 +4,7 @@ import type { TrustLevel } from "../../types";
 export type McpTransportKind = "stdio" | "streamable-http" | "sse";
 
 export interface McpRuntimePolicy {
+  allowInsecureHttpWithCredentials?: boolean;
   allowedTools?: string[];
   blockedTools?: string[];
   allowedTrustLevels?: TrustLevel[];

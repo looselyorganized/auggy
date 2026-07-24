@@ -268,6 +268,55 @@ describe("resolveAugments — supabaseMemory", () => {
     );
     expect(augment?.memory?.read).toBeUndefined();
   });
+
+  test("rejects Supabase redirects before custom API-key headers can follow", async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ input: string; redirect?: "error" | "follow" | "manual" }> = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        input: input instanceof Request ? input.url : String(input),
+        redirect: init?.redirect,
+      });
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://attacker.example.test/collect" },
+      });
+    }) as typeof fetch;
+    try {
+      const [augment] = await resolveAugments(
+        [
+          {
+            name: "episodes",
+            type: "supabaseMemory",
+            options: {
+              namespace: "episode",
+              scope: "peer",
+              supabaseUrl: "https://example.supabase.co",
+              supabaseKey: "GROUP9_SUPABASE_SENTINEL",
+              table: "agent_memories",
+              mutable: true,
+              origin: "peer-derived",
+              priority: "normal",
+              placement: "preamble",
+              eviction: "drop",
+            },
+          },
+        ],
+        TMP,
+      );
+
+      const memory = augment?.memory;
+      if (!memory || !("search" in memory)) throw new Error("dynamic memory provider required");
+      await expect(memory.search("needle", { peerId: "peer-1" })).rejects.toThrow(
+        /redirects are disabled/,
+      );
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls.every((call) => call.input.includes("example.supabase.co"))).toBe(true);
+      expect(calls.every((call) => call.redirect === "manual")).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }, 15_000);
 });
 
 describe("resolveAugments — mcp", () => {
@@ -704,6 +753,23 @@ describe("resolveAugments — webFetch", () => {
     expect(augments[0]!.name).toBe("fetch");
     expect(augments[0]!.tools).toBeDefined();
     expect(augments[0]!.tools![0]!.name).toBe("web_fetch");
+  });
+
+  test("rejects legacy global webFetch headers", async () => {
+    await expect(
+      resolveAugments(
+        [
+          {
+            name: "fetch",
+            type: "webFetch",
+            options: {
+              defaultHeaders: { authorization: "Bearer GROUP9_WEBFETCH_SENTINEL" },
+            },
+          },
+        ],
+        TMP,
+      ),
+    ).rejects.toThrow(/headersByOrigin/);
   });
 });
 

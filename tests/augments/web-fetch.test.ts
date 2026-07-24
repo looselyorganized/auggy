@@ -333,4 +333,47 @@ describe("SSRF filter", () => {
     );
     expect(result.error).toMatch(/loopback/i);
   });
+
+  test("rejects global default headers for model-selected URLs", () => {
+    expect(() =>
+      webFetch({
+        defaultHeaders: { authorization: "Bearer GROUP9_WEBFETCH_SENTINEL" },
+      } as Parameters<typeof webFetch>[0] & {
+        defaultHeaders: Record<string, string>;
+      }),
+    ).toThrow(/exact-origin headersByOrigin/);
+  });
+
+  test("sends configured headers only to their exact origin", async () => {
+    const calls: Array<{ url: string; headers?: Record<string, string> }> = [];
+    const augment = webFetch({
+      headersByOrigin: {
+        "https://api.example.test": {
+          authorization: "Bearer GROUP9_WEBFETCH_SENTINEL",
+        },
+      },
+      client: {
+        async get(url, init) {
+          calls.push({ url, headers: init?.headers });
+          return {
+            finalUrl: url,
+            status: 200,
+            statusText: "OK",
+            contentType: "application/json",
+            headers: new Headers({ "content-type": "application/json" }),
+            body: "{}",
+          };
+        },
+      } as ReturnType<typeof createHttpClient>,
+    });
+    const tool = augment.tools?.find((candidate) => candidate.name === "web_fetch");
+    if (!tool) throw new Error("web_fetch tool not found");
+    const execute = asStringTool(tool).execute;
+
+    await execute({ url: "https://api.example.test/data", prompt: "x" });
+    await execute({ url: "https://attacker.example.test/data", prompt: "x" });
+
+    expect(calls[0]?.headers?.authorization).toContain("GROUP9_WEBFETCH_SENTINEL");
+    expect(calls[1]?.headers).toBeUndefined();
+  });
 });
