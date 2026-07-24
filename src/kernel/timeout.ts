@@ -37,11 +37,13 @@ export async function withTimeout<T>(
   const controller = new AbortController();
   let timerId: ReturnType<typeof setTimeout> | undefined;
   let rejectCancellation!: (reason: unknown) => void;
+  let cancellationTriggered = false;
 
   const cancellation = new Promise<never>((_, reject) => {
     rejectCancellation = reject;
     timerId = setTimeout(() => {
       const error = new TimeoutError(ms);
+      cancellationTriggered = true;
       controller.abort(error);
       reject(error);
     }, ms);
@@ -50,19 +52,23 @@ export async function withTimeout<T>(
     const reason = callerSignal
       ? abortReason(callerSignal)
       : new DOMException("Aborted", "AbortError");
+    cancellationTriggered = true;
     controller.abort(reason);
     rejectCancellation(reason);
   };
   callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
 
-  let operationSettled = false;
+  let operationState: "pending" | "fulfilled" | "rejected" = "pending";
+  let operationRejection: unknown;
+  const currentOperationState = (): typeof operationState => operationState;
   const operation = Promise.resolve().then(() => fn(controller.signal));
   operation.then(
     () => {
-      operationSettled = true;
+      operationState = "fulfilled";
     },
-    () => {
-      operationSettled = true;
+    (reason) => {
+      operationState = "rejected";
+      operationRejection = reason;
     },
   );
 
@@ -70,7 +76,18 @@ export async function withTimeout<T>(
     const result = await Promise.race([operation, cancellation]);
     return result;
   } catch (error) {
-    if (!operationSettled) onDetached?.(operation);
+    if (cancellationTriggered && currentOperationState() === "pending" && onDetached) {
+      // Abort listeners commonly settle cooperative async work through several
+      // promise reactions. Give that already-signaled chain one event-loop
+      // turn to prove a terminal outcome before classifying it as detached.
+      // Work still pending afterward remains fail-closed and caller-owned.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
+    }
+    const acknowledgedCancellation =
+      currentOperationState() === "rejected" &&
+      (operationRejection === controller.signal.reason ||
+        (operationRejection instanceof Error && operationRejection.name === "AbortError"));
+    if (cancellationTriggered && !acknowledgedCancellation) onDetached?.(operation);
     throw error;
   } finally {
     if (timerId !== undefined) clearTimeout(timerId);

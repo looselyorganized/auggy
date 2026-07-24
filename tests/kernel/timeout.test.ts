@@ -139,4 +139,30 @@ describe("withTimeout", () => {
     await detached[0];
     expect(detachedSettled).toBe(true);
   });
+
+  it("does not report work that cooperatively acknowledges caller cancellation", async () => {
+    const caller = new AbortController();
+    let startedResolve!: () => void;
+    const started = new Promise<void>((resolve) => {
+      startedResolve = resolve;
+    });
+    const detached: Promise<unknown>[] = [];
+    const pending = withTimeout(
+      async (signal) => {
+        startedResolve();
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        signal.throwIfAborted();
+      },
+      1_000,
+      caller.signal,
+      (operation) => detached.push(operation),
+    );
+
+    await started;
+    caller.abort(new DOMException("caller left", "AbortError"));
+    await expect(pending).rejects.toThrow("caller left");
+    expect(detached).toHaveLength(0);
+  });
 });
