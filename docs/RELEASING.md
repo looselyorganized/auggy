@@ -220,18 +220,30 @@ The publish workflow's idempotency gate means a repeat push to the same version 
 
 **Provenance is currently OFF.** `npm publish --provenance` requires the source repo be **public** (sigstore can only attest from public repos).
 
-The publish workflow already grants `id-token: write`, uses Node 24, and
-requires npm 11.5.1 or newer so it is technically ready for npm trusted
-publishing. The long-lived `NPM_TOKEN` remains only as a migration fallback.
-npm automatically prefers the workflow OIDC identity once a trusted publisher
-is configured.
+The publish workflow separates uncredentialed verification from publication.
+Repository and dependency code runs in `verify`, which has neither
+`id-token: write` nor an npm token. Only the dependent `publish` job receives
+OIDC permission, and it consumes the already-packed artifacts with fixed
+workflow commands. It uses Node 24 and requires npm 11.5.1 or newer.
 
-Before removing that token, configure npm trusted publishers for all six
-packages (`auggy`, the four provider adapters, and `@auggy/evals`) against the
-exact `looselyorganized/auggy` repository and `.github/workflows/publish.yml`.
-Then complete one successful release, remove `NODE_AUTH_TOKEN` from the
-workflow, revoke `NPM_TOKEN`, and disallow token-based publishing in npm. This
-registry-side configuration cannot be completed or verified by a source PR.
+Complete this external migration before the next release:
+
+1. Create an `npm-publish` GitHub Environment. Allow deployments only from
+   protected release tags matching `v*.*.*`; require a reviewer if repository
+   policy permits.
+2. Configure npm trusted publishers for all six packages (`auggy`, the four
+   provider adapters, and `@auggy/evals`) against the exact
+   `looselyorganized/auggy` repository and `.github/workflows/publish.yml`.
+3. If a token fallback is temporarily required, create
+   `NPM_TOKEN_PUBLISH_ENV_ONLY` only in the `npm-publish` Environment.
+4. Revoke the legacy npm token and delete the repository-level `NPM_TOKEN`.
+5. Complete one controlled release, then remove `NODE_AUTH_TOKEN` from the
+   workflow, revoke the environment fallback, and disallow token-based
+   publishing in npm.
+
+Until the environment and either OIDC or its environment-only fallback are
+configured, publishing intentionally fails closed. This GitHub/npm state
+cannot be completed or verified by a source PR.
 
 Trusted publishing can authenticate a private GitHub repository, but npm
 provenance remains unavailable while the source repository is private. Keep

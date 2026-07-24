@@ -7,40 +7,25 @@ import { validateSecurityEvalRequest } from "../../scripts/validate-security-eva
 const ROOT = join(import.meta.dir, "..", "..");
 
 describe("security evaluation workflow trust boundary", () => {
-  test("the branch-selectable request workflow has no secret and executes no repository code", () => {
+  test("the paid workflow is default-branch-only and treats candidate metadata as data", () => {
     const source = readFileSync(join(ROOT, ".github/workflows/security-eval.yml"), "utf8");
     const workflow = parseYaml(source) as Record<string, unknown>;
 
     expect(workflow).toBeDefined();
-    expect(source).toContain("Security eval request");
-    expect(source).toContain("security-eval-request");
-    expect(source).toContain("permissions: {}");
-    expect(source).not.toContain("secrets.");
-    expect(source).not.toContain("actions/checkout");
-    expect(source).not.toContain("bun install");
-    expect(source).not.toContain("packages/evals/src/security/run.ts");
-  });
-
-  test("the secret-bearing workflow is default-branch trusted and treats branch artifacts as data", () => {
-    const source = readFileSync(join(ROOT, ".github/workflows/security-eval-trusted.yml"), "utf8");
-    const workflow = parseYaml(source) as Record<string, unknown>;
-
-    expect(workflow).toBeDefined();
-    expect(source).toContain("workflow_run:");
-    expect(source).toContain('workflows: ["Security eval request"]');
+    expect(source).toContain("repository_dispatch:");
+    expect(source).toContain("types: [security-eval-request]");
     expect(source).not.toContain("workflow_dispatch:");
+    expect(source).not.toContain("workflow_run:");
     expect(source).toContain("github.event.repository.default_branch");
     expect(source).toContain("persist-credentials: false");
     expect(source).toContain("validate-security-eval-request.ts");
-    expect(source).toContain("github.event.workflow_run.head_sha");
-    expect(source).toContain("ARTIFACT_MAX_BYTES: 4096");
-    expect(source).toContain("ARTIFACT_MAX_ARCHIVE_BYTES: 8192");
-    expect(source).toContain('head -c "$((ARTIFACT_MAX_ARCHIVE_BYTES + 1))"');
-    expect(source).toContain('unzip -Z1 "$REQUEST_ARCHIVE"');
-    expect(source).not.toContain("actions/download-artifact");
+    expect(source).toContain("toJson(github.event.client_payload)");
+    expect(source).toContain("head -c 4097");
+    expect(source).toContain("commits/${SOURCE_SHA}");
     expect(source).toContain("environment: security-eval");
-    expect(source).toContain("secrets.ANTHROPIC_API_KEY_SECURITY_EVAL");
-    expect(source).not.toContain("github.event.workflow_run.head_branch");
+    expect(source).toContain("secrets.ANTHROPIC_API_KEY_SECURITY_EVAL_ENV_ONLY");
+    expect(source).not.toContain("secrets.ANTHROPIC_API_KEY_SECURITY_EVAL }}");
+    expect(source).toContain("group: trusted-security-eval");
   });
 
   test("trusted request validation maps a bounded enum to fixed fixtures", () => {
@@ -79,12 +64,26 @@ describe("security evaluation workflow trust boundary", () => {
 });
 
 describe("release publishing identity", () => {
-  test("uses an OIDC-capable Node/npm while retaining the token only as a documented migration fallback", () => {
+  test("isolates repository execution from OIDC and environment-only publish credentials", () => {
     const source = readFileSync(join(ROOT, ".github/workflows/publish.yml"), "utf8");
+    const publishJob = source.slice(source.indexOf("\n  publish:"));
+    const verifyJob = source.slice(source.indexOf("\n  verify:"), source.indexOf("\n  publish:"));
+
     expect(source).toContain('node-version: "24"');
-    expect(source).toContain("id-token: write");
     expect(source).toContain("11.5.1");
-    expect(source).toContain("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}");
-    expect(source).toContain("OIDC_MIGRATION_BLOCKER");
+    expect(source.match(/package-manager-cache: false/g)?.length).toBe(2);
+    expect(verifyJob).toContain("Confirm tag commit belongs to main");
+    expect(verifyJob.indexOf("Confirm tag commit belongs to main")).toBeLessThan(
+      verifyJob.indexOf("bun install --frozen-lockfile"),
+    );
+    expect(verifyJob).not.toContain("id-token: write");
+    expect(verifyJob).not.toContain("NODE_AUTH_TOKEN");
+    expect(publishJob).toContain("needs: verify");
+    expect(publishJob).toContain("environment: npm-publish");
+    expect(publishJob).toContain("id-token: write");
+    expect(publishJob).toContain("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_PUBLISH_ENV_ONLY }}");
+    expect(publishJob).not.toContain("actions/checkout");
+    expect(publishJob).not.toContain("bun install");
+    expect(publishJob).not.toContain("bun run test");
   });
 });

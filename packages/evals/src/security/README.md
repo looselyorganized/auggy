@@ -114,28 +114,36 @@ The fixture at `fixtures/test-agent.yaml` is the canonical "any Auggy agent" tar
 
 ## CI integration
 
-`.github/workflows/security-eval.yml` is a branch-selectable, secretless request
-workflow. It never checks out the selected branch or executes repository code.
-It uploads only a bounded model choice and the triggering SHA.
+`.github/workflows/security-eval.yml` accepts only the
+`security-eval-request` `repository_dispatch` event. GitHub loads
+repository-dispatch workflows from the default branch, so candidate workflow
+code is never selected. The trusted workflow bounds and schema-validates the
+passive payload, verifies that its SHA identifies a repository commit, maps the
+model enum to a fixed default-branch fixture, and runs only the default-branch
+harness. Results are retained for 30 days.
 
-`.github/workflows/security-eval-trusted.yml` is activated through
-`workflow_run`, so GitHub loads it from the default branch. It bounds and
-schema-validates the request artifact, checks the SHA, maps the model enum to a
-fixed default-branch fixture, and runs the default-branch harness. Candidate
-branch paths, dependencies, scripts, configs, and workflow code never execute
-with the paid key. Results are retained for 30 days.
+Secret: `ANTHROPIC_API_KEY_SECURITY_EVAL_ENV_ONLY` — a dedicated, scoped key
+stored only in the protected `security-eval` GitHub Environment. Distinct from
+any other Anthropic key in the same project, so a leak limits blast radius.
+Configure that Environment to allow deployments only from the `main` branch.
+Do not create this secret at repository or organization scope: GitHub falls
+back to those scopes when an Environment secret is absent.
 
-Secret: `ANTHROPIC_API_KEY_SECURITY_EVAL` — a dedicated, scoped key stored in
-the protected `security-eval` GitHub Environment. Distinct from any other
-Anthropic key in the same project, so a leak limits blast radius. Repository
-settings must restrict environment access to trusted maintainers.
+Migration is an operator gate:
 
-**Why no `pull_request` trigger?** GitHub structurally withholds repo secrets
-from untrusted PR contexts (correct behavior — prevents secret exfiltration via
-malicious workflow changes). Combined with the cost-per-PR concern, the intended
-pattern is maintainer-controlled triggers plus a post-merge/scheduled drift
-gate. Private-preview collaborators or adopters running their own copy can wire
-their own paid key into their own CI.
+1. Create the `security-eval` Environment and restrict deployment branches to
+   `main`.
+2. Add `ANTHROPIC_API_KEY_SECURITY_EVAL_ENV_ONLY` to that Environment.
+3. Revoke the legacy key upstream, then delete the repository-level
+   `ANTHROPIC_API_KEY_SECURITY_EVAL` secret.
+4. Send a repository dispatch and verify the trusted workflow succeeds.
+
+Until all four steps are complete, treat security evals as disabled.
+
+**Why no `pull_request` or `workflow_dispatch` trigger?** Pull requests should
+not receive paid credentials, while workflow dispatch can select a
+branch-controlled workflow definition. Repository dispatch keeps the executable
+workflow on the default branch and treats candidate metadata only as data.
 
 **Comparison runs against larger models.** A second fixture variant lives at
 `fixtures/test-agent-sonnet.yaml` (identical composition, Sonnet 4.6 instead of
@@ -146,8 +154,8 @@ arbitrary config path is never accepted. Cost: ~$0.35/run vs Haiku's
 **For contributors:** see [CONTRIBUTING.md "Security eval" section](../../../../CONTRIBUTING.md). Short version — run locally before submitting, or configure your own secret + trigger in your own repository.
 
 **For Auggy adopters who deploy their own agent:** copy the workflow into your
-own repository and configure `ANTHROPIC_API_KEY_SECURITY_EVAL` in that repo's
-secrets. Your wallet, your CI cadence.
+own repository and configure a dedicated key in a branch-protected Environment.
+Your wallet, your CI cadence.
 
 For local nightly runs against your own agent: `auggy eval <agent-name>` (or `bun run packages/evals/src/security/run.ts --config path/to/agent.yaml` if `auggy` isn't on PATH for the launchd context).
 

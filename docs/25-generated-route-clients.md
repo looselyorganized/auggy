@@ -58,7 +58,17 @@ const api = createAuggyClient({
   baseUrl: "https://store.example.com",
   visitorToken: () => localStorage.getItem("auggyVisitorToken") ?? undefined,
   onVisitorToken: (token) => localStorage.setItem("auggyVisitorToken", token),
-  authAssertion: async () => sessionStorage.getItem("auggyAuthAssertion") ?? undefined,
+  authAssertion: async () => {
+    const response = await fetch("/api/auggy-auth-assertion", {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "x-auggy-csrf-request": "1" },
+    });
+    if (!response.ok) return undefined;
+    const body = (await response.json()) as { assertion?: unknown };
+    return typeof body.assertion === "string" ? body.assertion : undefined;
+  },
   // Set this when webTransport.externalAuth.header uses a custom name.
   authAssertionHeader: "x-auggy-auth-assertion",
 });
@@ -74,7 +84,9 @@ Use `authAssertion` for app-signed visitor assertions, such as a normal app
 session bridged into Auggy visitor auth. The generated client forwards the
 assertion with `x-auggy-auth-assertion` by default, or `authAssertionHeader`
 when configured; it does not create or verify the assertion. Do not put
-assertion-signing secrets in browser code. See
+assertion-signing secrets in browser code. Mint a fresh assertion for each API
+call; replay-protected assertions are intentionally one-use and must not be
+cached in local or session storage. See
 [`26-delegated-authorization.md`](./26-delegated-authorization.md) for
 copyable Supabase/Clerk assertion recipes and the route `requires` model. See
 [`examples/app-auth-bridge`](../examples/app-auth-bridge/README.md) for a

@@ -19,12 +19,12 @@ function invalid(reason: string): never {
 
 export function validateSecurityEvalRequest(
   raw: string,
-  expectedSourceSha: string,
+  expectedSourceSha?: string,
 ): ValidatedSecurityEvalRequest {
   if (Buffer.byteLength(raw, "utf8") > MAX_REQUEST_BYTES) {
     invalid(`request exceeds ${MAX_REQUEST_BYTES} bytes`);
   }
-  if (!SHA_PATTERN.test(expectedSourceSha)) {
+  if (expectedSourceSha !== undefined && !SHA_PATTERN.test(expectedSourceSha)) {
     invalid("trusted workflow supplied an invalid source SHA");
   }
 
@@ -50,7 +50,7 @@ export function validateSecurityEvalRequest(
   if (
     typeof request.sourceSha !== "string" ||
     !SHA_PATTERN.test(request.sourceSha) ||
-    request.sourceSha !== expectedSourceSha
+    (expectedSourceSha !== undefined && request.sourceSha !== expectedSourceSha)
   ) {
     invalid("source SHA does not match the triggering workflow");
   }
@@ -71,15 +71,11 @@ function argument(name: string): string {
 
 function main(): void {
   const requestPath = argument("--request");
-  const expectedSourceSha = argument("--expected-sha");
   const metadata = lstatSync(requestPath);
   if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_REQUEST_BYTES) {
     invalid(`request file must be a regular file no larger than ${MAX_REQUEST_BYTES} bytes`);
   }
-  const validated = validateSecurityEvalRequest(
-    readFileSync(requestPath, "utf8"),
-    expectedSourceSha,
-  );
+  const validated = validateSecurityEvalRequest(readFileSync(requestPath, "utf8"));
   process.stdout.write(
     `config_path=${validated.configPath}\nmodel=${validated.model}\nsource_sha=${validated.sourceSha}\n`,
   );
