@@ -593,10 +593,16 @@ The model never invokes auto-save directly. The only visible effect is that `mem
 | `autoSave.extractionFrequency.creator` | frequency | `every-turn` | Extraction cadence for creator-trust peers. |
 | `autoSave.extractionFrequency.agent` | frequency | `every-N-turns` | Extraction cadence for agent-trust peers (conservative default; agent-to-agent volume may be high). |
 | `autoSave.extractionFrequency.public.recognized` | frequency | `every-turn` | Extraction cadence for recognized public peers. |
-| `autoSave.extractionFrequency.public.anonymous` | frequency | `session-end-only` | Extraction cadence for anonymous visitors. Keeps per-visitor extraction cost to one batched call at session end rather than every turn. |
+| `autoSave.extractionFrequency.public.anonymous` | frequency | `session-end-only` | Defers anonymous extraction. Buffered turns are extracted if the authenticated visitor promotion boundary is observed; otherwise they expire without extraction because the runtime has no reliable generic session-end signal. |
 | `autoSave.everyNTurns` | `number` | `3` | N for `every-N-turns` frequency. |
 | `autoSave.confidenceThreshold` | `number` | `0.5` | Facts with confidence below this threshold are written but flagged low-confidence. |
 | `autoSave.engine` | extraction engine object | none | Required for auto-save extraction. Omit to use explicit-only memory. |
+| `autoSave.bufferLimits.maxTurnsPerThread` | `number` | `32` | Maximum deferred transcripts retained for one thread. |
+| `autoSave.bufferLimits.maxBytesPerThread` | `number` | `262144` | Maximum encoded transcript bytes retained for one thread. |
+| `autoSave.bufferLimits.maxBytesPerPeer` | `number` | `1048576` | Maximum deferred bytes retained for one peer. |
+| `autoSave.bufferLimits.maxTotalBytes` | `number` | `16777216` | Process-wide deferred transcript byte ceiling for this augment. |
+| `autoSave.bufferLimits.maxPeers` | `number` | `1024` | Maximum peers with deferred state. |
+| `autoSave.bufferLimits.idleTtlMs` | `number` | `1800000` | Idle time before deferred transcripts and cadence state are discarded. |
 
 **Frequency values:** `every-turn` | `every-N-turns` | `session-end-only` | `never`.
 
@@ -607,11 +613,18 @@ The model never invokes auto-save directly. The only visible effect is that `mem
 | `creator` | `every-turn` | ~$0.20 (low volume; operator chatting with their own agent) |
 | `agent` | `every-N-turns` (N=3) | ~$0.07 (conservative; agent-to-agent caps may not be provisioned for every-turn extraction) |
 | `public.recognized` | `every-turn` | ~$0.20 (returning identified peer; relationship-relevant) |
-| `public.anonymous` | `session-end-only` | ~$0.05 (visitor traffic dominates cost; one batched call at session end) |
+| `public.anonymous` | `session-end-only` | Up to one batched call on authenticated promotion; an unpromoted idle buffer is discarded |
 
 Cost estimates are order-of-magnitude and apply only when an extraction engine
 is configured. They are based on a small extraction model × ~500 input tokens +
 ~200 output tokens per extraction call.
+
+The deferred buffer is process-local and availability-bounded, not durable
+conversation storage. Oldest transcripts are evicted to satisfy per-thread,
+per-peer, peer-count, and global byte limits. Nothing is buffered when no
+extraction engine is configured. A restart, idle expiry, or capacity eviction
+can therefore omit auto-extracted facts; explicit `memory_write` remains the
+durable path when loss is unacceptable.
 
 #### `[AGENT-DERIVED]` origin marker
 

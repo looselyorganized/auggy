@@ -14,7 +14,11 @@ import type {
   TurnResult,
   TurnTrigger,
 } from "../../types";
-import { createBuffer, type ExtractionBuffer } from "./extractor/buffer";
+import {
+  createBuffer,
+  type ExtractionBuffer,
+  type ExtractionBufferLimits,
+} from "./extractor/buffer";
 import { type ExtractionFrequencyConfig, shouldExtract } from "./extractor/frequency";
 import { type ExtractionEngine, handleExtractionTurn } from "./extractor/inject-handler";
 import { createSqliteStore } from "./storage/sqlite-store";
@@ -58,6 +62,8 @@ export interface LayeredMemoryAutoSaveOptions {
    * route extraction through the (more expensive) primary engine.
    */
   engine?: ExtractionEngine;
+  /** Finite process-memory limits for deferred anonymous transcripts. */
+  bufferLimits?: Partial<ExtractionBufferLimits>;
 }
 
 export interface LayeredMemoryOptions {
@@ -428,9 +434,14 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
   // peerId observed on each threadId so the scheduler can detect an
   // anonymous→recognized promotion (Decision 5 of the memorist design).
   const autoSaveEnabled = opts.autoSave?.enabled ?? true;
-  const buffer: ExtractionBuffer = createBuffer();
-  const turnIndexes = new Map<string, number>();
-  const threadPeerHistory = new Map<string, import("../../types").PeerIdentity>();
+  const buffer: ExtractionBuffer = createBuffer(opts.autoSave?.bufferLimits);
+  const stateIdleTtlMs = opts.autoSave?.bufferLimits?.idleTtlMs ?? 30 * 60 * 1000;
+  const stateMaxEntries = opts.autoSave?.bufferLimits?.maxPeers ?? 1024;
+  const turnIndexes = new Map<string, { value: number; lastAccess: number }>();
+  const threadPeerHistory = new Map<
+    string,
+    { peer: import("../../types").PeerIdentity; lastAccess: number }
+  >();
   const promptTemplate = autoSaveEnabled ? loadPromptTemplate(opts.autoSave?.promptTemplate) : null;
   if (autoSaveEnabled && promptTemplate === null) {
     console.warn(
@@ -441,6 +452,17 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
   const everyNTurns = opts.autoSave?.everyNTurns ?? DEFAULT_EVERY_N_TURNS;
   const confidenceThreshold = opts.autoSave?.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD;
   const extractionEngine = opts.autoSave?.engine;
+
+  function sweepAutoSaveState(now = Date.now()): void {
+    buffer.sweep();
+    const cutoff = now - stateIdleTtlMs;
+    for (const [id, entry] of turnIndexes) {
+      if (entry.lastAccess <= cutoff) turnIndexes.delete(id);
+    }
+    for (const [id, entry] of threadPeerHistory) {
+      if (entry.lastAccess <= cutoff) threadPeerHistory.delete(id);
+    }
+  }
 
   const search = async (query: string, queryOpts?: MemoryQueryOpts): Promise<MemoryEntry[]> => {
     const results = await store.search(query, queryOpts?.peerId);
@@ -529,8 +551,9 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     ctx: SchedulerContext,
   ): Promise<void> {
     const currentPeerId = currentPeer.id;
-    const priorPeer = threadPeerHistory.get(threadId);
-    if (!priorPeer) return; // first turn on this thread
+    const priorEntry = threadPeerHistory.get(threadId);
+    if (!priorEntry) return; // first turn on this thread
+    const priorPeer = priorEntry.peer;
     if (
       priorPeer.trustLevel !== "public" ||
       priorPeer.publicSubstate !== "anonymous" ||
@@ -629,6 +652,9 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     ctx.signal?.throwIfAborted();
     if (!autoSaveEnabled) return;
     if (!promptTemplate) return;
+    // No consumer exists without an extraction engine. Do not retrieve or
+    // retain completed transcripts that can never be processed.
+    if (!extractionEngine) return;
     // Recursion guard: skip extraction-initiated turns. Without this,
     // every injected extraction turn would itself fire scheduleAfterTurn
     // and synthesize another extraction trigger ad infinitum.
@@ -642,6 +668,11 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     const peerId = transcript.peer.id;
     const threadId = transcript.threadId;
 
+    // Expired anonymous state must disappear before promotion detection;
+    // otherwise a later verification could extract data beyond the declared
+    // idle-retention window.
+    sweepAutoSaveState();
+
     // Decision 5: detect anonymous→recognized promotion and flush
     // anonymous-bound buffer BEFORE we apply the current peer's cadence.
     // Pass the full peer object so trigger.peer targets the recognized
@@ -651,10 +682,23 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
 
     // Update thread→peer history AFTER promotion detection so the
     // detector compares against the prior turn's identity.
-    threadPeerHistory.set(threadId, { ...transcript.peer });
+    const now = Date.now();
+    while (turnIndexes.size >= stateMaxEntries && !turnIndexes.has(peerId)) {
+      const oldest = turnIndexes.keys().next().value;
+      if (oldest === undefined) break;
+      turnIndexes.delete(oldest);
+    }
+    while (threadPeerHistory.size >= stateMaxEntries && !threadPeerHistory.has(threadId)) {
+      const oldest = threadPeerHistory.keys().next().value;
+      if (oldest === undefined) break;
+      threadPeerHistory.delete(oldest);
+    }
+    threadPeerHistory.delete(threadId);
+    threadPeerHistory.set(threadId, { peer: { ...transcript.peer }, lastAccess: now });
 
-    const turnIndex = turnIndexes.get(peerId) ?? 0;
-    turnIndexes.set(peerId, turnIndex + 1);
+    const turnIndex = turnIndexes.get(peerId)?.value ?? 0;
+    turnIndexes.delete(peerId);
+    turnIndexes.set(peerId, { value: turnIndex + 1, lastAccess: now });
 
     const decision = shouldExtract(
       {
@@ -874,7 +918,13 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     adminInfo,
     adminActions,
     ...(autoSaveEnabled ? { scheduleAfterTurn, handleInternalTurn } : {}),
+    onIdle: async () => {
+      sweepAutoSaveState();
+    },
     onShutdown: async () => {
+      buffer.clear();
+      turnIndexes.clear();
+      threadPeerHistory.clear();
       await store.close();
     },
   };

@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "node:path";
 import { layeredMemory } from "@/augments/layeredMemory";
 import { createTempDir } from "@tests/fixtures/temp-dir";
-import type { Augment, NamespaceMemoryProvider } from "@/types";
+import type { Augment, NamespaceMemoryProvider, TurnResult } from "@/types";
 
 describe("layeredMemory", () => {
   let aug: Augment;
@@ -30,6 +30,29 @@ describe("layeredMemory", () => {
 
   it("declares origin 'peer-derived' so untrusted peers can write", () => {
     expect(aug.memory!.defaults.origin).toBe("peer-derived");
+  });
+
+  it("does not retrieve or retain transcripts when no extraction engine consumes them", async () => {
+    let transcriptReads = 0;
+    await aug.scheduleAfterTurn?.(
+      {
+        turnId: "turn-1",
+        success: true,
+        status: "completed",
+        toolCalls: [],
+        trace: { trigger: { type: "message" } } as TurnResult["trace"],
+      },
+      {
+        inject: async () => {
+          throw new Error("must not inject");
+        },
+        getCompletedTranscript: async () => {
+          transcriptReads++;
+          return null;
+        },
+      },
+    );
+    expect(transcriptReads).toBe(0);
   });
 
   it("write tags entries with peerId from opts", async () => {
