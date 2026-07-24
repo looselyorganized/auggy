@@ -89,7 +89,7 @@
     "dx:agent": "bash scripts/dx-lab-agent.sh",
     "smoke:release": "bash scripts/release-smoke.sh",
     "build:admin": "bun run --cwd admin build",
-    "typecheck": "bunx tsc --noEmit",
+    "typecheck": "tsc --noEmit",
     "lint": "bunx --bun @biomejs/biome@2.5.5 check",
     "lint:fix": "bunx --bun @biomejs/biome@2.5.5 check --write",
     "format": "bunx --bun @biomejs/biome@2.5.5 format --write"
@@ -104,7 +104,8 @@
     "@inquirer/core": "^10.3.2",
     "@types/bun": "latest",
     "ollama": "^0.6.0",
-    "openai": "^6.34.0"
+    "openai": "^6.34.0",
+    "typescript": "5.9.3"
   },
   "peerDependencies": {
     "typescript": "^5"
