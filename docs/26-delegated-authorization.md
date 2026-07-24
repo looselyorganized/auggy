@@ -598,10 +598,21 @@ resolved caller (`anonymous`, `visitor`, `creator`, or `agent`). It is not a
 second permission system. For authorization, reason from `trustLevel`,
 `publicSubstate`, and explicit `requires` scopes/grants.
 
-If a request supplies both an Auggy visitor token and an external auth
-assertion, Auggy keeps the visitor-token identity and merges external claims
-only when the assertion maps to the same visitor id. Mismatched app claims are
-not attached to the visitor context.
+If a request supplies both an Auggy visitor token and a valid external auth
+assertion, the fresh external assertion is authoritative. Auggy does not merge
+the two identities or attach claims from one to the other.
+
+`externalAuth.visitorId` is an account namespace, not authentication evidence.
+Auggy hashes its value together with the verified provider, subject, and
+organization claims. A constant or buggy mapper therefore cannot collapse
+unrelated authenticated subjects into the same runtime peer. This changes
+custom mapped IDs from verbatim values to deterministic `vis_extmap_*`
+identifiers.
+
+Agent credentials (`x-agent-id` / `x-agent-secret`) cannot be combined with an
+external auth assertion on `/agent/run`. The transport rejects that credential
+mixture before identity resolution so agent trust and app-delegated visitor
+authority can never be composed into one turn.
 
 ## Team and Internal Users
 

@@ -92,9 +92,11 @@ copyable Supabase/Clerk assertion recipes and the route `requires` model. See
 [`examples/app-auth-bridge`](../examples/app-auth-bridge/README.md) for a
 runnable generated-client bridge.
 
-Visitor-token routes can issue a fresh `x-visitor-token` response header. When
-that happens, the browser client calls `onVisitorToken` and also returns the
-token on the result.
+Verification or application routes can issue an `x-visitor-token` response
+header. When that happens, the browser client calls `onVisitorToken` and also
+returns the token on the result. The generic `/agent/run` anonymous bootstrap
+does not exchange missing or invalid visitor credentials for a recognized
+token.
 
 ## Server Usage
 

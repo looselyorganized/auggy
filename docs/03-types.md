@@ -249,6 +249,11 @@ Trust levels are ordered from most to least:
   It is not derived from caller-controlled `threadId`.
 - `"recognized"` — a valid HMAC visitor token was verified; durable identity (peer.id is `vis_*` from the token). Memory writes attach to this durable ID across sessions.
 
+The generic web transport never exchanges a missing or invalid visitor token
+for recognized authority. Anonymous callers receive only a signed
+anonymous-session capability; recognized tokens come from `visitorAuth` or
+another explicitly trusted minter.
+
 `publicSubstate` is present **only** when `trustLevel === "public"`. Other trust levels must omit it. The budgets augment uses `publicSubstate` to apply differentiated caps (tighter defaults for anonymous, looser for recognized).
 
 `authenticatedPriorPeerId` is authorization evidence for a one-way identity
@@ -405,7 +410,7 @@ export interface TurnGateTicket {
 2. The kernel evaluates all decisions conjunctively. Any `allow: false` → rollback all tickets → reject with `errorClass: "cap-denied"`. No engine call.
 3. All `allow: true` → `confirm()` each ticket in order. Any confirm throw → rollback all → reject with `errorClass: "admission-state-failed"`. No engine call.
 4. Engine call proceeds.
-5. After the engine returns, `commit(args)` is called on each gate that defines it, passing the `CostResult`. Errors here are logged but do not fail the turn — the response already exists.
+5. After the engine returns, `commit(args)` is called on each gate that defines it, passing the `CostResult`. A commit error makes the completed inference outcome-unknown; the kernel withholds a successful terminal result and does not automatically retry it.
 
 **v0 scope:** first-party only. The budgets augment is the sole shipped implementation. The kernel cannot mechanically prevent third-party augments from violating the prepare-then-confirm contract (e.g. writing outside the transaction). Third-party turn-gate augments are out of scope until the contract has real-world miles.
 

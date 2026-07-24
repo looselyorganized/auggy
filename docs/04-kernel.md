@@ -67,7 +67,9 @@ If any confirm throws, all tickets are rolled back and the turn is rejected with
 await gate.turnGate.commit({ turnId, peer, threadId, cost });
 ```
 
-The `cost` is the aggregate `CostResult` across all inference steps. Errors in the commit phase are logged but do not fail the turn — the response already exists.
+The `cost` is the aggregate `CostResult` across all inference steps. A commit
+error after inference is outcome-unknown: the kernel withholds a successful
+terminal result and the execution is not automatically retried.
 
 **v0 scope:** first-party only. The budgets augment is the sole shipped turn gate. See [03-types.md § Section 7b](./03-types.md#section-7b--turn-gate-admission-2pc) for the full `TurnGateProvider` / `TurnGateTicket` contract.
 

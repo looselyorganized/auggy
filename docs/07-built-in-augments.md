@@ -684,7 +684,9 @@ const agent = defineAgent({
     webTransport({
       port: 8080,
       auth: { type: "bearer", token: process.env.AUTH_TOKEN! },
+      securityNamespace: "zip-production",
       rateLimitPerPeer: { maxPerMinute: 30 },
+      idempotency: { dbPath: "./data/web-idempotency.db" },
     }),
   ],
 }, anthropicModelClient);
@@ -799,14 +801,19 @@ Three permission tiers: **read-only** (default) → **writable** → **writable 
 - **Nearest-existing-ancestor canonicalization** catches escaping symlink
   parents even when the requested leaf and intermediate descendants do not
   exist. Dangling links fail closed.
-- **Mutation paths reject symlink components.** Parent directories are created
-  one segment at a time and revalidated; file leaves use `O_NOFOLLOW`, reject
-  hard-linked inodes, and compare the opened device/inode with preflight state
-  before truncation.
-- **`path.relative()`-based boundary check** — prevents `../` traversal, prefix-collision escapes (mount `/var/data/work` doesn't accept `/var/data/workspace/...`), and cross-drive escapes on Windows, while still working correctly when the mount itself is a filesystem root (e.g. `/` on POSIX)
-- **Search/list isolation** rejects traversal glob patterns, canonicalizes every
-  search result, and never follows an escaping symlink to disclose target
-  metadata.
+- **Mutation paths are descriptor-relative.** Each canonical mount root is
+  opened and pinned at boot. Parent directories are traversed one segment at a
+  time with `openat`/`mkdirat`; file leaves use `O_NOFOLLOW`; regular files must
+  have one link. Replacing a mount ancestor after boot cannot redirect a write,
+  create, or remove operation.
+- **`path.relative()`-based lexical boundary checks** prevent `../` traversal
+  and prefix-collision escapes (mount `/var/data/work` does not accept
+  `/var/data/workspace/...`) before descriptor-relative traversal.
+- **Read/list isolation is descriptor-relative.** Reads and directory listings
+  open the target from the pinned mount descriptor, inspect opened file
+  descriptors, reject symbolic and multi-link files, and cannot be redirected
+  by replacing a validated pathname. Search rejects traversal glob patterns and
+  canonicalizes every result before returning it.
 - **Binary detection** via file extension — returns an error message instead of garbage content for images, PDFs, compiled binaries
 - **Size truncation** — files over `maxReadSize` are truncated with a `[truncated at 256KB, total size: 20MB]` marker
 - **Per-mount permissions** — enforced on every operation before any file I/O
@@ -818,20 +825,20 @@ Three permission tiers: **read-only** (default) → **writable** → **writable 
   trusted instructions. Public turns do not receive it unless explicitly
   configured.
 
-Portable JavaScript does not expose descriptor-relative `openat2` resolution,
-so it cannot eliminate every parent-directory replacement race against a
-hostile process with write access to the same mount. Writable mount directories
-must therefore be inaccessible to less-trusted local users/processes and
-confined with OS/container permissions. The no-follow and inode checks reduce
-the window but are not a substitute for that deployment boundary.
+Descriptor-relative mount isolation currently requires Bun on macOS or Linux.
+The filesystem augment fails boot on unsupported platforms instead of silently
+falling back to a race-prone path-based mutation boundary. Writable mount
+directories should still be confined with OS/container permissions; descriptor
+pinning prevents namespace redirection, not direct writes by another process
+that already has access to the same inode.
 
 ### Lifecycle
 
 | Hook | What it does |
 |------|-------------|
-| `onBoot` | Creates missing writable mount roots with owner-only POSIX permissions, then resolves and caches every mount root. Missing read-only roots fail boot. Optionally loads a SKILL.md if `skillFile` is configured. |
+| `onBoot` | Creates missing writable mount roots with owner-only POSIX permissions, then resolves, opens, and pins every mount root for descriptor-relative operations. Missing read-only roots and unsupported operating systems fail boot. Optionally loads a SKILL.md if `skillFile` is configured. |
 | `context` | Produces bounded workspace policy/catalog blocks for allowed peers; scans metadata only. |
-| `onShutdown` | None. |
+| `onShutdown` | Closes pinned mount descriptors and clears cached mount state. |
 
 ### Important constraint
 
@@ -1289,7 +1296,7 @@ The runtime soft cap is **not the hard limit on agent spend**. The hard limit is
 - OpenAI: <https://platform.openai.com/settings/organization/limits>
 - OpenRouter: <https://openrouter.ai/settings/credits>
 
-**For unattended cloud-deployed agents, configuring a provider-side spend cap is required, not optional.** The runtime soft cap is the friendly first line of defense; the provider hard cap is the backstop that fires regardless of any Auggy-level configuration error or runtime bug. The engine adapters surface a clear operator-actionable message when the provider cap is reached (see the provider adapter packages such as `packages/anthropic`).
+**For unattended cloud-deployed agents, configuring a provider-side spend cap is required, not optional.** The runtime soft cap is the friendly first line of defense; the provider hard cap is the backstop that fires regardless of any Auggy-level configuration error or runtime bug. The engine adapters surface a clear operator-actionable message when the provider cap is reached (see the provider adapter packages such as `packages/anthropic`). Remote provider messages and cause chains are not retained in exposed errors because a compromised upstream can echo credentials; adapters expose only stable provider/model context and an allowlisted HTTP status.
 
 Pre-call cost estimation (a third architectural layer that gates the engine
 call before any spend) is explicitly deferred — provider caps are exact where

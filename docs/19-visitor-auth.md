@@ -147,7 +147,6 @@ config:
   port: 8080
   auth: { type: bearer, token: ${AUGGY_WEB_TOKEN} }
   visitorTokens:
-    ttlSeconds: 7776000                       # 90 days
     # signingKey is auto-injected from visitorAuth by the resolver —
     # do NOT set it here. Duplicate keys trigger a warning and visitorAuth
     # wins. enabled is also forced to true automatically.

@@ -68,13 +68,17 @@ What other headers do:
 
 ---
 
-## Visitor-token rotation
+## Anonymous bootstrap and visitor verification
 
-When `webTransport.visitorTokens.enabled: true`, **a visitor's first request MUST include a non-empty `x-visitor-token` header** (`x-visitor-token: bootstrap` is the documented sentinel value). The runtime mints a fresh `vis_<uuid>` HMAC-signed token only when an `x-visitor-token` header is present — if the header is absent entirely, no token is issued and the visitor has no continuity into future requests.
-
-Every admitted anonymous response also returns an authenticated
-`x-auggy-anonymous-session` capability. The client must retain and resend it
-until a verified visitor token is available. Responses carrying these
+Every first-contact anonymous request returns
+`428 anonymous_session_required` with an authenticated
+`x-auggy-anonymous-session` capability and performs no model or tool work. The
+client must retain the capability and retry the same request with it, retaining
+the same idempotency key when one was supplied. Continue resending it on
+anonymous requests until a verified visitor token is available. No
+`x-visitor-token: bootstrap` sentinel is required. Missing, malformed, expired,
+revoked, and wrong-agent visitor tokens remain anonymous and are never
+exchanged for fresh recognized authority. Responses carrying anonymous
 capabilities use `Cache-Control: private, no-store`.
 
 Anonymous-session capabilities last 24 hours and are invalidated when the
@@ -86,36 +90,36 @@ same idempotency key. If the retry returns 428 with a fresh
 anonymous-session, retain it and retry once more. Never treat an arbitrary 401
 as a bootstrap signal and never build an unbounded retry loop.
 
-When the runtime mints a visitor token, it returns it in the response's
-`x-visitor-token` header. The current request stays at `public/anonymous`; the
-newly-issued token is for **future** requests. The credentials carry distinct
-anonymous and recognized peer IDs. The signed visitor token records the prior
-anonymous peer/thread scope, so the next verified request can perform a
-one-way promotion of the already-bound thread. The reverse transition is
-denied, including after token revocation.
+The generic web transport verifies visitor tokens but does not mint them from
+anonymous traffic. Recognized visitor authority comes from `visitorAuth` after
+its verification flow or from another explicitly trusted token minter sharing
+the configured signing key. A verified token resolves to
+`public/recognized` with a stable `peer.id`. When `visitorAuth` upgrades an
+anonymous caller, its signed token can carry the prior anonymous peer/thread
+scope so the kernel can perform the one-way promotion. The reverse transition
+is denied, including after revocation.
 
-The next request from the same visitor includes that minted token, which
-resolves to `public/recognized` with a stable `peer.id` (the `visitorId`
-embedded in the token's payload). Promotion moves eligible anonymous memory to
-that stable peer; subsequent memory remains scoped to it.
+A correctly implemented widget must retain and resend the
+`x-auggy-anonymous-session` while anonymous. After a real verification flow
+hands it an `x-visitor-token`, it retains and sends that token on subsequent
+requests. Store browser credentials according to the application’s XSS and
+session threat model; `localStorage` is only one possible topology.
 
-A correctly-implemented widget MUST: (1) send the bootstrap sentinel on first
-contact when visitor tokens are enabled, (2) retain any
-`x-auggy-anonymous-session` response capability and resend it on anonymous
-requests, (3) retain the rotated `x-visitor-token`, and (4) send the rotated
-visitor token on subsequent requests. Store browser credentials according to
-the application’s XSS and session threat model; `localStorage` is only one
-possible topology.
+This bootstrap applies to keyed and unkeyed anonymous requests alike. For a
+request carrying `Idempotency-Key`, retain the returned anonymous session and
+retry the identical request with the same key. This prevents either a
+caller-chosen idempotency key or a discarded server-minted identity from
+becoming a resource-limit bypass while preserving exactly-once execution.
 
-If the first anonymous request also carries `Idempotency-Key`, the runtime
-returns `428 anonymous_session_required` without executing. Retain the returned
-anonymous-session (and visitor token, when present), then retry the identical
-request with the same key. This prevents an idempotency key from becoming an
-identity credential while preserving exactly-once execution.
+The signing key (`visitorTokens.signingKey`) is injected at boot by visitorAuth
+when present so the transport can verify its tokens. Operators using a custom
+minter set the same signing key directly.
 
-The signing key (`visitorTokens.signingKey`) is injected at boot by visitorAuth when present (so visitor-tokens and verify-flow tokens share trust). Operators who run with `visitorTokens` but no `visitorAuth` set their own signing key directly.
-
-Token TTL defaults to 30 days (`visitorTokens.ttlSeconds`). **Expired tokens are rejected** — `verifyVisitorToken` returns null when `payload.expiresAt <= Date.now()`. The visitor falls back to a new anonymous session on the next request and cannot reclaim the recognized thread without a newly verified token. Tokens are also checked against the revocation list on every request — a revoked token is treated as invalid regardless of TTL.
+The trusted minter chooses token TTL. **Expired tokens are rejected** —
+`verifyVisitorToken` returns null when `payload.expiresAt <= Date.now()`.
+Tokens are also checked against the revocation list on every request. An
+expired or revoked caller falls back to a new anonymous session and cannot
+reclaim the recognized thread without a newly verified token.
 
 ---
 
@@ -166,8 +170,9 @@ For creator-side chat (the operator chatting with their own agent), Auggy ships 
 
 - Valid bearer → `creator` trust, `peer.id === "creator"` (Path 1)
 - Present-but-invalid bearer → 401 (no silent downgrade to anonymous; security claim)
-- No bearer + bootstrap `x-visitor-token` → `public/anonymous`, fresh `vis_<uuid>` returned in response header (Path 4)
-- Subsequent request with the rotated token → `public/recognized`, stable `peer.id` (Path 3)
+- First contact → 428 with no execution; retry with the server-minted
+  anonymous session → `public/anonymous` with a stable anonymous peer (Path 4)
+- Invalid visitor credentials never mint replacement recognized authority
 - visitorAuth flow with console adapter → upgraded `vis_<uuid>` token, exact
   canonical thread continuity, and prior anonymous history (Path 3 via verify)
 - Independent anonymous sessions using the same logical thread ID receive

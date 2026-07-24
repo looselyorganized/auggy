@@ -104,12 +104,18 @@ same-origin validation, and a dedicated CSRF token.
 The console refuses to follow symlinks below the agent directory when managing
 `agent.yaml`, identity, `.env`, or installed skills. Replace intentionally
 symlinked managed files with regular in-workspace files, or manage them outside
-the console. The runtime's separate file-loading behavior is unchanged.
-Node/Bun does not expose descriptor-relative `openat2` confinement, so an
-untrusted process able to replace workspace directories concurrently under the
-same operating-system account remains outside this boundary. Run the agent as a
-dedicated, least-privileged user and do not grant hostile processes write access
-to its agent directory.
+the console. On macOS and Linux, the first managed-file operation pins the
+canonical agent directory and all subsequent traversal is descriptor-relative;
+replacing an ancestor cannot redirect reads or mutations. Managed-file
+operations fail closed on unsupported operating systems. Run the agent as a
+dedicated, least-privileged user and do not grant hostile processes direct write
+access to its agent directory.
+
+On Windows, the authenticated console, chat, and runtime views still start, but
+identity, credential, skill, and other agent-file management remains
+unavailable because the descriptor-relative POSIX boundary cannot be provided.
+Use ordinary project tooling for those files rather than weakening the console
+boundary.
 
 Chat Markdown rendering does not enable raw HTML, does not render remote images,
 and blocks unsafe link protocols such as `javascript:`, `data:`, `vbscript:`,
@@ -148,6 +154,12 @@ rejected during deploy preflight and again by the runtime resolver.
 - Completed conversations, unread state, titles, and model history survive a
   process restart. A run that was active during a crash or restart is recovered
   as interrupted rather than left permanently streaming.
+- Persisted thread ownership includes the resolved organization when external
+  authentication supplies one. Schema versions 2 and 3 migrate atomically.
+  Legacy bound rows have no organization and remain accessible only to the
+  same no-organization identity; they are never treated as organization
+  wildcards. An organization-bearing identity must begin a new thread instead
+  of silently adopting a legacy row.
 - Keep the Railway service at **exactly one replica**. The SQLite-backed console
   has one process/one writer semantics; mounting the same database from multiple
   replicas is unsupported and can produce contention or inconsistent runtime

@@ -172,7 +172,10 @@ caller aborts, tool timeouts, and later inference failures. The budgets augment:
 1. If `cost.priced === true`: updates `peer_daily_costs` and `daily_global` with the USD amount. Marks the reservation row with `cost_usd` and `committed_at`.
 2. If `cost.priced === false`: marks the reservation as unpriced. Turn-count caps still applied.
 
-Errors in the commit phase are logged but do not fail the turn.
+Errors in the commit phase fail closed as outcome-unknown. The inference may
+already have completed, but the runtime does not return or persist a successful
+terminal result when its known cost could not be durably committed. The same
+turn is not automatically retried.
 
 ## 6. Failure modes
 
@@ -184,7 +187,7 @@ Errors in the commit phase are logged but do not fail the turn.
 | `dailyBudgetUsd` exceeded | Same as above |
 | SQLite I/O error in prepare | `status: "rejected"`, `errorClass: "admission-state-failed"`, SSE `code: "ADMISSION_FAILED"` |
 | SQLite I/O error in confirm | Same |
-| SQLite I/O error in commit | Logged, turn continues — response already returned |
+| SQLite I/O error in commit | Outcome-unknown failure after inference; no successful terminal result or automatic retry |
 | Agent auth wrong secret | HTTP 401 before entering queue |
 
 Cap-denied rejections are expected business logic — the peer exceeded their budget. Admission-state-failed rejections are operational failures — the storage layer had a problem.
