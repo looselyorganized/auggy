@@ -456,7 +456,9 @@ shipped layered-memory augment when it awaits a same-thread injection. The
 scheduler therefore mints an unforgeable active lease. That specific
 `SchedulerContext` may run a bounded causal child for the same thread inline
 under the parent's occupied slot. Cross-thread use and overlapping sibling
-children fail closed.
+children fail closed. Owned child work, including descendants started without
+being awaited by hook code, is joined before the parent releases its lane. Each
+hook receives its own capability, which is revoked before the next hook runs.
 
 If a task throws `OutcomeUnknownError` or returns
 `outcomeUnknown: true`, the active lease quarantines the thread. New work is
@@ -484,6 +486,7 @@ export function withTimeout<T>(
   fn: (signal: AbortSignal) => Promise<T>,
   ms: number,
   callerSignal?: AbortSignal,
+  onDetached?: (operation: Promise<unknown>) => void,
 ): Promise<T>;
 ```
 
@@ -491,7 +494,9 @@ The helper combines caller cancellation with a deadline controller, passes the
 combined signal to the operation, and removes its timer and abort listener on
 every terminal path. A pre-aborted caller prevents invocation. Timeout remains
 conservative: JavaScript cannot force arbitrary work to stop, so
-`TimeoutError` explicitly marks the result outcome-unknown.
+`TimeoutError` explicitly marks the result outcome-unknown. Security-sensitive
+callers use the optional internal tracker to retain their scheduler lane until
+a non-cooperative operation actually settles.
 
 Used by:
 - The augment context pipeline (`contextTimeoutMs`)
@@ -601,7 +606,12 @@ A model that calls tools indefinitely without producing a final answer is either
 
 Conversations span turns. Each turn's history starts with whatever the previous turn left behind (within the budget walk). This is the fundamental difference between a turn (one round trip) and a thread (a conversation).
 
-`getOrCreateHistory(threadId)` lazily creates the manager on first use. There is no eviction policy for old threads in v1 — long-running agents will accumulate history managers in memory until restart. This is acceptable for the LORF use case (a small number of threads, restarts are cheap) and is the kind of thing a future "thread pruner" augment can address without touching the kernel.
+`getOrCreateHistory(threadId)` lazily creates the manager on first use. The
+agent retains at most 500 ordinary resident managers using an LRU. Active
+managers are reference-counted and excluded from eviction; the cache may
+temporarily exceed its target while every candidate is pinned, then trims when
+pins release. Forgetting a pinned thread is likewise deferred so active state
+is never replaced underneath a turn.
 
 ### Why everything is closure-based, not classes
 

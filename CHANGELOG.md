@@ -48,6 +48,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   filesystem tools. Operators can tune or disable it with
   `workspaceAwareness`.
 
+### Changed
+
+- **Agent-wide keyed turn scheduling.** All transports and trusted injection
+  now share finite agent/source/thread admission, one FIFO lane per resolved
+  thread, ordered delivery and terminal hooks, queued cancellation, graceful
+  drain, and outcome-unknown quarantine. `AgentHealth.scheduler` and
+  `AgentHandle.recoverThread()` are required public interface members. The web
+  source now defaults to four concurrent different-thread turns; set its
+  `concurrency` to `1`, or set `settings.turnScheduling.maxConcurrent` to `1`,
+  for serialized compatibility. Scheduling and quarantine remain
+  process-local; a brand-new process does not preserve unresolved quarantine
+  state.
+
 ### Removed
 
 - **Legacy `learned.md` compatibility.** The canonical creator-approved

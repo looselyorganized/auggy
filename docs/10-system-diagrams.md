@@ -350,9 +350,9 @@ POST /agent/run
 │  3. Parse body → extract last message                                │
 │  4. Build TurnTrigger { type: "message", parts: [...], peer }        │
 │  5. Open ReadableStream for SSE response                             │
-│  6. queue.enqueue(trigger, handler)                                  │
-│     └─ rate limit check ✓                                            │
-│     └─ queue depth check ✓                                           │
+│  6. sharedScheduler.submit(threadId, sourcePolicy)                   │
+│     └─ global/source/thread bounds + peer rate limit ✓               │
+│     └─ round-robin runnable-thread selection ✓                       │
 └──────────────────────────────┬───────────────────────────────────────┘
                                │
                                ▼
@@ -417,8 +417,9 @@ POST /agent/run
 │    ► emit RUN_FINISHED ──────────────────────► SSE: data: {...}     │
 │                                                                      │
 │  ► validate output (flag-only) ✓                                     │
-│  ► compact history (if over 80% budget)                              │
-│  ► fire onTurnEnd hooks (non-blocking, logged on error)              │
+│  ► compact + durably commit history                                  │
+│  ► dispatch outbound in keyed order                                  │
+│  ► await onTurnEnd + scheduleAfterTurn (errors logged)               │
 │                                                                      │
 │  RESULT: { status: "completed",                                      │
 │            response: { parts: [{ kind: "text", text: "Got it..." }]},│

@@ -393,9 +393,10 @@ This is the inverse of the boot policy: **boot is fail-fast, shutdown is best-ef
 
 The handle's `started` flag goes back to `false`. `agent.ready()` would now throw.
 
-History managers, persistence memos, outbound handlers, and scheduler runtime
-state are cleared only after drain and lifecycle shutdown. Restart reopens a
-fresh accepting scheduler and clears process-local quarantines.
+History managers, persistence memos, and outbound handlers are cleared only
+after drain and lifecycle shutdown. Restart reopens scheduler admission but
+retains unresolved quarantines on the same `AgentHandle`; only trusted
+`recoverThread()` clears them.
 
 ## The augment lifecycle hooks
 

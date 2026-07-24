@@ -189,9 +189,10 @@ without model or tool execution. A trusted `AgentHandle` recovery method
 clears the quarantine after the operator has reconciled external state.
 
 No timeout causes an active slot to be released early merely because an abort
-was requested. The slot is released only when the scheduled task promise
-settles. Underlying tool timeout behavior remains separately visible through
-the outcome-unknown marker and quarantine.
+was requested. If an operation ignores cancellation, the scheduler owns and
+joins that detached promise before releasing the slot. The timeout remains
+visible through the outcome-unknown marker and quarantine, so the same thread
+cannot be retried while the first attempt may still be running.
 
 ### Active-history pinning
 
@@ -356,9 +357,21 @@ fixtures/logs, and worktree status. Preserve the unrelated untracked
 - Calls canceled while queued will no longer run later.
 - `stop()` can take longer because it waits for genuinely active work before
   shutting dependencies down. Queued work is settled immediately.
-- Quarantined threads require explicit reconciliation and recovery or a
-  process restart. This is intentionally fail closed.
-- In-memory scheduler state is lost on process restart.
+- Quarantined threads survive `stop()`/`start()` on the same `AgentHandle` and
+  require explicit reconciliation and trusted recovery.
+- A brand-new process loses in-memory quarantine state. Deployments that must
+  preserve this boundary across process replacement need a future shared,
+  durable quarantine store; until then, restart is an explicitly documented
+  operational fail-open risk for outcome-unknown threads.
+- The in-memory quarantine key set is intentionally not evicted: automatic
+  eviction would fail open. An attacker able to force outcome-unknown results
+  across many unique threads can therefore create unbounded quarantine
+  metadata. A durable bounded store or agent-level circuit breaker is future
+  work.
+- Durable HTTP idempotency abandonment is replayed exactly to same-process
+  followers. A follower in another unsupported replica may observe the absent
+  transient claim as outcome-unknown; cross-process admission and replay
+  require the future shared coordination boundary.
 - True pre-stream HTTP overload statuses remain a transport API follow-up.
 - Horizontal replicas of one logical agent remain unsupported.
 

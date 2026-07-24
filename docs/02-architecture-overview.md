@@ -21,11 +21,11 @@
                                         │ kernel.handleInbound(trigger, {onEvent})
                                         ▼
                        ┌─────────────────────────────────┐
-                       │       Transport Queue           │
-                       │  rate limit, queue depth,       │
-                       │  concurrency cap                │
+                       │ Agent-wide Keyed Turn Scheduler │
+                       │ global/source/thread bounds,    │
+                       │ fair per-thread FIFO admission  │
                        └────────────────┬────────────────┘
-                                        │ enqueue → handler(trigger)
+                                        │ admitted complete-turn lane
                                         ▼
                   ┌────────────────────────────────────────┐
                   │              TURN LOOP                 │

@@ -658,6 +658,7 @@ export interface Augment {
   onShutdown?: (signal?: AbortSignal) => Promise<void>;
   onTurnStart?: (turn: TurnState) => Promise<void>;
   onTurnEnd?: (turn: TurnResult, context?: TurnLifecycleContext) => Promise<void>;
+  scheduleAfterTurn?: (result: TurnResult, ctx: SchedulerContext) => Promise<void>;
   onIdle?: () => Promise<void>;
 }
 ```
@@ -681,7 +682,10 @@ the mounted augment structure; it is not a sanitized A2A discovery contract.
 
 **`tools`** is the array of tools this augment provides. The capability table maps each tool back to its owning augment for per-augment enforcement.
 
-**`transport`** is the `TransportSpec` (above). An augment with a transport gets a queue and a `TransportKernel` registered against it at start time.
+**`transport`** is the `TransportSpec` (above). At start time an augment with a
+transport registers its trusted source policy with the agent-wide keyed
+scheduler and receives a `TransportKernel` that submits through that shared
+boundary.
 
 **`memory`** is the `MemoryProviderSpec` (above). The memory bus scans for these and wires them up.
 
@@ -701,6 +705,8 @@ the mounted augment structure; it is not a sanitized A2A discovery contract.
 - `onShutdown` — called once at `agent.stop()`, in reverse order, with a 5s timeout signal. Failures swallowed.
 - `onTurnStart` — called at the beginning of every turn, before context assembly. Failures on required augments abort the turn.
 - `onTurnEnd` — called after every turn with the caller signal. Hooks run sequentially; failures are logged and swallowed.
+- `scheduleAfterTurn` — called sequentially after `onTurnEnd`; its owned causal
+  injections and descendants complete inside the current keyed lane.
 - `onIdle` — called by the lifecycle manager's idle timer (5min default). Used by augments that do background work like consolidation.
 
 ## Section 15 — Agent config and handle

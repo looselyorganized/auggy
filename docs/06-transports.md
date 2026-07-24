@@ -622,7 +622,9 @@ The fix was small: replace the `collected` array with a `ReadableStream`, replac
 
 ### Rejection mapping — error codes in SSE
 
-When a turn is rejected (queue full, rate limit, or turn-gate denial), the transport synthesizes `RUN_ERROR` + `RUN_FINISHED` events — the kernel emits no events for turns that don't run. The `code` field on `RUN_ERROR` is:
+When a turn is rejected (scheduler capacity, rate limit, or turn-gate denial),
+the transport synthesizes `RUN_ERROR` + `RUN_FINISHED` events—the kernel emits
+no events for turns that do not run. The `code` field on `RUN_ERROR` is:
 
 | Rejection source | `errorClass` | SSE `code` |
 |---|---|---|
@@ -633,7 +635,12 @@ When a turn is rejected (queue full, rate limit, or turn-gate denial), the trans
 | Outcome-unknown thread quarantine | `rejection.reason` | `"THREAD_QUARANTINED"` |
 | Unhandled exception | _(none)_ | `"INTERNAL"` |
 
-**HTTP status remains 200** for the SSE stream in v0. The gate decision is embedded in the stream rather than in the HTTP status because the Response must be opened before the kernel's 2PC result is known (the stream starts synchronously; the turn runs inside the async IIFE). A future enhancement (T5) adds a synchronous gate-decision API that would allow the transport to return 429 or 503 before opening the stream at all.
+**HTTP status remains 200** for the SSE stream in v0. The gate decision is
+embedded in the stream rather than in the HTTP status because the Response
+must be opened before the kernel's admission or 2PC result is known (the
+stream starts synchronously; the turn runs inside the async IIFE). A future
+synchronous reservation API would allow the transport to return 429 or 503
+before opening the stream.
 
 ### Why the rejection events are synthesized in the transport
 
