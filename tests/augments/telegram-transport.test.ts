@@ -233,18 +233,17 @@ function makeMockKernel(opts: { handleInbound?: TransportKernel["handleInbound"]
   const handleInboundCalls: Array<{ trigger: TurnTrigger }> = [];
   const outboundCallbacks: Array<(peer: PeerIdentity, msg: OutboundMessage) => Promise<void>> = [];
   const kernel: TransportKernel = {
-    handleInbound:
-      opts.handleInbound ??
-      (async (trigger) => {
-        handleInboundCalls.push({ trigger });
-        return {
-          turnId: trigger.turnId,
-          success: true,
-          status: "completed",
-          toolCalls: [],
-          trace: {} as TurnResult["trace"],
-        };
-      }),
+    handleInbound: async (trigger, options) => {
+      handleInboundCalls.push({ trigger });
+      if (opts.handleInbound) return opts.handleInbound(trigger, options);
+      return {
+        turnId: trigger.turnId,
+        success: true,
+        status: "completed",
+        toolCalls: [],
+        trace: {} as TurnResult["trace"],
+      };
+    },
     onOutbound: (cb) => {
       outboundCallbacks.push(cb);
     },
@@ -307,6 +306,33 @@ describe("telegramTransport — polling lifecycle", () => {
     expect(handleInboundCalls[0]?.trigger.type).toBe("message");
   });
 
+  it("claims duplicate update ids before kernel dispatch", async () => {
+    const update: TelegramUpdate = {
+      update_id: 91,
+      message: {
+        message_id: 1,
+        chat: { id: 100, type: "private" },
+        from: { id: 100, is_bot: false },
+        date: 0,
+        text: "one execution",
+      },
+    };
+    const { client } = makeMockClient([[update, update], []]);
+    const { kernel, handleInboundCalls } = makeMockKernel();
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {},
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+    await aug.transport!.register(kernel, "telegram-transport");
+    await aug.onBoot?.();
+    await aug.transport!.ready?.();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await aug.onShutdown?.();
+    expect(handleInboundCalls).toHaveLength(1);
+  });
+
   it("inbound text → registered outbound callback → sendMessage to original chat_id", async () => {
     const updates: TelegramUpdate[] = [
       {
@@ -321,7 +347,24 @@ describe("telegramTransport — polling lifecycle", () => {
       },
     ];
     const { client, sent } = makeMockClient([updates, []]);
-    const { kernel, handleInboundCalls, outboundCallbacks } = makeMockKernel();
+    let outboundCallbacks: Array<(peer: PeerIdentity, msg: OutboundMessage) => Promise<void>> = [];
+    const setup = makeMockKernel({
+      handleInbound: async (trigger) => {
+        await outboundCallbacks[0]!(trigger.peer!, {
+          parts: [{ kind: "text", text: "response text" }],
+          contextId: trigger.threadId,
+        });
+        return {
+          turnId: trigger.turnId,
+          success: true,
+          status: "completed",
+          toolCalls: [],
+          trace: {} as TurnResult["trace"],
+        };
+      },
+    });
+    outboundCallbacks = setup.outboundCallbacks;
+    const { kernel, handleInboundCalls } = setup;
     const aug = telegramTransport({
       botToken: "T",
       inbound: { mode: "polling", polling: { timeoutSec: 0 } },
@@ -332,14 +375,11 @@ describe("telegramTransport — polling lifecycle", () => {
     await aug.onBoot?.();
     await aug.transport!.ready?.();
     await new Promise((r) => setTimeout(r, 30));
-    // The kernel would invoke the outbound callback with an OutboundMessage
-    // during a real turn. Simulate that here. The transport reads
-    // contextId from the message to look up the chat_id.
     expect(handleInboundCalls).toHaveLength(1);
     expect(outboundCallbacks).toHaveLength(1);
-    const peer = handleInboundCalls[0]!.trigger.peer!;
-    await outboundCallbacks[0]!(peer, {
-      parts: [{ kind: "text", text: "response text" }],
+    // Routing state is released after handleInbound settles.
+    await outboundCallbacks[0]!(handleInboundCalls[0]!.trigger.peer!, {
+      parts: [{ kind: "text", text: "late response must be dropped" }],
       contextId: "tg-chat-555",
     });
     await aug.onShutdown?.();
@@ -517,6 +557,93 @@ describe("telegramTransport — polling lifecycle", () => {
     } as unknown as Parameters<typeof telegramTransport>[0]);
     expect(aug.transport!.identify({})).toBeNull();
     expect(aug.transport!.identify(null)).toBeNull();
+  });
+
+  it("keeps concurrent same-chat reply routing until both turns settle", async () => {
+    const port = 31_000 + Math.floor(Math.random() * 5_000);
+    const { client, sent } = makeMockClient([]);
+    let outboundCallbacks: Array<(peer: PeerIdentity, msg: OutboundMessage) => Promise<void>> = [];
+    let started = 0;
+    let releaseBoth!: () => void;
+    const bothStarted = new Promise<void>((resolve) => {
+      releaseBoth = resolve;
+    });
+    const setup = makeMockKernel({
+      handleInbound: async (trigger) => {
+        started++;
+        if (started === 2) releaseBoth();
+        await bothStarted;
+        await outboundCallbacks[0]!(trigger.peer!, {
+          parts: [{ kind: "text", text: `reply-${trigger.turnId}` }],
+          contextId: trigger.threadId,
+        });
+        return {
+          turnId: trigger.turnId,
+          success: true,
+          status: "completed",
+          toolCalls: [],
+          trace: {} as TurnResult["trace"],
+        };
+      },
+    });
+    outboundCallbacks = setup.outboundCallbacks;
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: {
+        mode: "webhook",
+        webhook: {
+          publicUrl: "https://example.test/telegram",
+          port,
+          secretToken: "secret",
+        },
+      },
+      auth: {},
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+    await aug.transport!.register(setup.kernel, "telegram-transport");
+    await aug.onBoot?.();
+    await aug.transport!.ready?.();
+    try {
+      const update = (update_id: number) => ({
+        update_id,
+        message: {
+          message_id: update_id,
+          chat: { id: 777, type: "private" },
+          from: { id: 777, is_bot: false },
+          date: 0,
+          text: "hi",
+        },
+      });
+      const responses = await Promise.all(
+        [update(1), update(2)].map((body) =>
+          fetch(`http://127.0.0.1:${port}/`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-telegram-bot-api-secret-token": "secret",
+            },
+            body: JSON.stringify(body),
+          }),
+        ),
+      );
+      expect(responses.map((response) => response.status)).toEqual([200, 200]);
+      expect(sent).toHaveLength(2);
+      await outboundCallbacks[0]!(
+        {
+          id: "late",
+          kind: "human",
+          trustLevel: "public",
+          sourceAugment: "test",
+        },
+        {
+          parts: [{ kind: "text", text: "late" }],
+          contextId: "tg-chat-777",
+        },
+      );
+      expect(sent).toHaveLength(2);
+    } finally {
+      await aug.onShutdown?.();
+    }
   });
 
   it("rolls back the local webhook listener when Telegram webhook setup fails", async () => {

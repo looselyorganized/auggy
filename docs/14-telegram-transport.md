@@ -91,7 +91,13 @@ config:
 | `inbound.webhook.port` | `number` | no | `8081` | Local port the webhook HTTP server listens on. |
 | `inbound.webhook.secretToken` | `string` | yes (webhook) | — | Secret token sent by Telegram in `X-Telegram-Bot-Api-Secret-Token`. Must match server-side. |
 | `inbound.webhook.allowedUpdates` | `string[]` | no | Telegram default | Update types to receive (e.g. `["message"]`). |
+| `inbound.webhook.maxBodyBytes` | `number` | no | `262144` | Encoded request cap enforced before JSON parsing, including chunked requests. |
 | `auth` | `TelegramAuthOptions` | yes | — | Identity resolution configuration. |
+| `replay.dbPath` | `string` | no | `./data/telegram-replay.db` | Hardened SQLite update-claim ledger. CLI/cloud resolution places this under the runtime data root. |
+| `replay.namespace` | `string` | no | augment name + numeric bot ID | Stable, non-secret bot/transport scope. Set explicitly when a token has no numeric bot prefix. |
+| `replay.retentionMs` | `number` | no | `2592000000` | Claim retention horizon (30 days). |
+| `replay.maxEntries` | `number` | no | `1000000` | Maximum retained claims before oldest claims are pruned transactionally. |
+| `replay.store` | `TelegramReplayStore` | no | SQLite store | Programmatic shared transactional store for deployments that cannot share one SQLite file. |
 
 ### `TelegramAuthOptions` fields
 
@@ -121,6 +127,31 @@ config:
 | **Limitation** | Higher API polling load during idle periods | Telegram's delivery guarantee requires your server to be reachable at all times |
 
 > **Telegram enforces one active mode per bot.** Calling `setWebhook` disables `getUpdates` polling on Telegram's side. Calling `deleteWebhook` (or letting the webhook lapse) re-enables polling. If you switch modes, Telegram may continue delivering to the old webhook endpoint for a short window. The augment calls `setWebhook` at boot in webhook mode and `deleteWebhook` at shutdown — mode transitions are handled automatically if you restart the agent cleanly.
+
+### Durable update replay boundary
+
+Both polling and webhook modes claim each non-negative integer `update_id` in
+the same transactional replay ledger before dispatching it to the kernel.
+Concurrent or post-restart duplicates return without another model/tool
+execution. Reuse of one ID with different update content fails closed as a
+conflict. The ledger stores a SHA-256 payload hash, never the bot token.
+
+This is intentionally at-most-once processing. If the process or kernel fails
+after the durable claim, Auggy does not blindly retry an update whose tools may
+already have produced side effects. Webhook processing failures return `503`
+only when no stable duplicate/conflict response applies; polling advances past
+a durably claimed duplicate on the next attempt. Operators should alert on
+processing failures and reconcile outcome-unknown side effects manually.
+
+SQLite coordinates restarts and concurrent processes only when every replica
+opens the same database file on storage with working SQLite locks. Independent
+container volumes are independent replay domains. Use a single writer/sticky
+bot route or provide `replay.store` backed by a shared transactional service
+for horizontally scaled deployments. Claims older than `retentionMs` can be
+accepted again after pruning, so configure that horizon for Telegram's retry
+and operator replay window. Capacity eviction at `maxEntries` also shortens the
+deduplication horizon, so size it for the maximum per-bot update volume expected
+during `retentionMs`.
 
 ## 5. Identity resolution
 

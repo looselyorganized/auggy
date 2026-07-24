@@ -36,6 +36,14 @@ import type { TelegramBotClient, TelegramUpdate } from "../../telegram-client";
 import { createTelegramBotClient } from "../../telegram-client";
 import { runPollLoop, type PollLoopHandle } from "./polling";
 import { startWebhookServer, type WebhookServerHandle } from "./webhook";
+import { createHash } from "node:crypto";
+import {
+  createInMemoryTelegramReplayStore,
+  createSqliteTelegramReplayStore,
+  InvalidTelegramUpdateError,
+  TelegramReplayConflictError,
+  type TelegramReplayStore,
+} from "./replay-store";
 
 // ---------------------------------------------------------------------------
 // Boot-time validation
@@ -180,6 +188,8 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
   let webhookHandle: WebhookServerHandle | null = null;
   let kernel: TransportKernel | null = null;
   let registeredName: string | null = null;
+  let replayStore: TelegramReplayStore | null = opts.replay?.store ?? null;
+  let ownsReplayStore = false;
 
   /**
    * Per-thread chat_id map. Populated when an inbound update arrives, read
@@ -187,9 +197,36 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
    * Keyed by threadId (`tg-chat-<chatId>`) — same shape as the threadId we
    * pass into resolveTelegramIdentity and into the TurnTrigger.
    */
-  const threadChatIds = new Map<string, number | string>();
+  const threadChatIds = new Map<string, { chatId: number | string; activeTurns: number }>();
   const genericFailureReply =
     "I hit a runtime error while handling that message. The operator has the details.";
+
+  function getReplayStore(): TelegramReplayStore {
+    if (replayStore) return replayStore;
+    replayStore = internal._clientFactory
+      ? createInMemoryTelegramReplayStore()
+      : createSqliteTelegramReplayStore({
+          dbPath: opts.replay?.dbPath ?? "./data/telegram-replay.db",
+          retentionMs: opts.replay?.retentionMs,
+          maxEntries: opts.replay?.maxEntries,
+        });
+    ownsReplayStore = true;
+    return replayStore;
+  }
+
+  function replayNamespace(): string {
+    if (opts.replay?.namespace) return opts.replay.namespace;
+    const botId = opts.botToken.match(/^(\d+):/)?.[1];
+    if (internal._clientFactory && !botId) {
+      return `${registeredName ?? "telegram-transport"}:test-client`;
+    }
+    if (!botId) {
+      throw new Error(
+        "[telegram-transport] replay.namespace is required when botToken has no numeric bot id",
+      );
+    }
+    return `${registeredName ?? "telegram-transport"}:bot-${botId}`;
+  }
 
   // ---------------------------------------------------------------------------
   // Identity resolver (TransportSpec.identify)
@@ -235,8 +272,9 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
         // we set up at handleInbound time uses contextId === threadId.
         const threadId = message.contextId;
         if (!threadId) return;
-        const chatId = threadChatIds.get(threadId);
-        if (chatId === undefined) return;
+        const route = threadChatIds.get(threadId);
+        if (!route) return;
+        const chatId = route.chatId;
 
         try {
           await client.sendMessage(chatId, text, { signal: context?.signal });
@@ -275,6 +313,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
       webhookHandle = await startWebhookServer({
         port: webhook.port ?? 8081,
         secretToken: webhook.secretToken,
+        maxBodyBytes: webhook.maxBodyBytes,
         onUpdate: (u) => handleUpdate(u),
       });
       try {
@@ -304,6 +343,19 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
    */
   async function handleUpdate(update: TelegramUpdate): Promise<void> {
     if (!kernel) return; // Not yet registered — drop the update.
+    if (!Number.isSafeInteger(update?.update_id) || update.update_id < 0) {
+      throw new InvalidTelegramUpdateError();
+    }
+    let serialized: string;
+    try {
+      serialized = JSON.stringify(update);
+    } catch {
+      throw new InvalidTelegramUpdateError();
+    }
+    const payloadHash = createHash("sha256").update(serialized).digest("hex");
+    const claim = getReplayStore().claim(replayNamespace(), update.update_id, payloadHash);
+    if (claim === "duplicate") return;
+    if (claim === "conflict") throw new TelegramReplayConflictError();
     if (!update.message?.text || !update.message.from) return;
 
     const userId = update.message.from.id;
@@ -317,8 +369,14 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
       opts.creator,
     );
 
-    // Remember chat_id for the outbound callback.
-    threadChatIds.set(threadId, chatId);
+    // Retain chat routing only while a turn is active. A reference count
+    // keeps concurrent updates for the same chat from deleting each other's
+    // reply route.
+    const activeRoute = threadChatIds.get(threadId);
+    threadChatIds.set(threadId, {
+      chatId,
+      activeTurns: (activeRoute?.activeTurns ?? 0) + 1,
+    });
 
     const parts: Part[] = [{ kind: "text", text: update.message.text }];
     const inbound: InboundMessage = {
@@ -350,16 +408,19 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
       if (!result.success) {
         console.warn(
           `[telegram-transport] turn failed for threadId=${threadId}: status=${result.status}` +
-            `${result.error?.source ? ` source=${result.error.source}` : ""}` +
-            `${result.error?.message ? ` message=${result.error.message}` : ""}`,
+            `${result.error?.source ? ` source=${result.error.source}` : ""}`,
         );
         await sendFailureReply(chatId, failureReplyForResult(result));
       }
-    } catch (err) {
-      console.warn(
-        `[telegram-transport] kernel.handleInbound failed for threadId=${threadId}: ${(err as Error).message}`,
-      );
+    } catch {
+      console.warn(`[telegram-transport] kernel.handleInbound failed for threadId=${threadId}`);
       await sendFailureReply(chatId, genericFailureReply);
+    } finally {
+      const route = threadChatIds.get(threadId);
+      if (route) {
+        if (route.activeTurns <= 1) threadChatIds.delete(threadId);
+        else threadChatIds.set(threadId, { ...route, activeTurns: route.activeTurns - 1 });
+      }
     }
   }
 
@@ -471,6 +532,9 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
       kernel = null;
       registeredName = null;
       threadChatIds.clear();
+      if (ownsReplayStore) replayStore?.close?.();
+      replayStore = opts.replay?.store ?? null;
+      ownsReplayStore = false;
     },
   };
 }
