@@ -66,6 +66,7 @@ describe("security evaluation workflow trust boundary", () => {
 describe("release publishing identity", () => {
   test("isolates repository execution from OIDC and environment-only publish credentials", () => {
     const source = readFileSync(join(ROOT, ".github/workflows/publish.yml"), "utf8");
+    const releaseDocs = readFileSync(join(ROOT, "docs/RELEASING.md"), "utf8");
     const publishJob = source.slice(source.indexOf("\n  publish:"));
     const verifyJob = source.slice(source.indexOf("\n  verify:"), source.indexOf("\n  publish:"));
 
@@ -85,5 +86,20 @@ describe("release publishing identity", () => {
     expect(publishJob).not.toContain("actions/checkout");
     expect(publishJob).not.toContain("bun install");
     expect(publishJob).not.toContain("bun run test");
+    expect(publishJob).toContain('tar -xOf "$tarball" package/package.json');
+    expect(publishJob).toContain("manifest.name !== expectedName");
+    expect(publishJob).toContain("manifest.version !== expectedVersion");
+    expect(publishJob).toContain("manifest.publishConfig !== undefined");
+    expect(publishJob).toContain("--registry=https://registry.npmjs.org");
+    expect(publishJob).toContain("--tag=latest");
+    expect(publishJob).toContain("--access=public");
+    expect(publishJob).toContain("--ignore-scripts");
+    expect(publishJob).not.toContain('npm publish "$tarball" --access public');
+    expect(releaseDocs).toContain("workflow filename");
+    expect(releaseDocs).toContain("`publish.yml`");
+    expect(releaseDocs).toContain("Environment");
+    expect(releaseDocs).toContain("`npm-publish`");
+    expect(releaseDocs).toContain("allowed action `npm publish` only");
+    expect(releaseDocs).toContain("Do not allow\n   `npm stage publish`");
   });
 });

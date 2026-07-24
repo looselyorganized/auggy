@@ -126,7 +126,7 @@ jobs:
           path: ${{ runner.temp }}/release-artifacts
 
       # npm >=11.5.1 prefers the job's OIDC identity when trusted publishers
-      # are configured. The environment-only token is a fail-closed migration
+      # are configured. The environment-only token is a temporary migration
       # fallback and must be removed after all six publishers use OIDC.
       - name: Publish engines first, then auggy core
         env:
@@ -137,17 +137,45 @@ jobs:
           TAG_VERSION="${REF_NAME#v}"
 
           publish_pkg() {
-            local pkg_name="$1"
+            local expected_name="$1"
             local tarball="$2"
             if [ ! -f "$tarball" ]; then
-              echo "::error::Missing verified release artifact for $pkg_name."
+              echo "::error::Missing verified release artifact for $expected_name."
               exit 1
             fi
-            if npm view "$pkg_name@$TAG_VERSION" version >/dev/null 2>&1; then
-              echo "  $pkg_name@$TAG_VERSION already on npm; skipping"
+
+            if ! tar -xOf "$tarball" package/package.json |
+              EXPECTED_PACKAGE_NAME="$expected_name" EXPECTED_PACKAGE_VERSION="$TAG_VERSION" node -e '
+                const fs = require("node:fs");
+                const manifest = JSON.parse(fs.readFileSync(0, "utf8"));
+                const expectedName = process.env.EXPECTED_PACKAGE_NAME;
+                const expectedVersion = process.env.EXPECTED_PACKAGE_VERSION;
+                if (manifest.name !== expectedName) {
+                  throw new Error("release artifact package name does not match the fixed publish target");
+                }
+                if (manifest.version !== expectedVersion) {
+                  throw new Error("release artifact version does not match the release tag");
+                }
+                if (manifest.publishConfig !== undefined) {
+                  throw new Error("release artifacts must not contain publishConfig");
+                }
+              '
+            then
+              echo "::error::Release artifact manifest validation failed for $expected_name."
+              exit 1
+            fi
+
+            if npm view "$expected_name@$TAG_VERSION" version \
+              --registry=https://registry.npmjs.org >/dev/null 2>&1
+            then
+              echo "  $expected_name@$TAG_VERSION already on npm; skipping"
             else
-              echo "  publishing verified $pkg_name@$TAG_VERSION artifact"
-              npm publish "$tarball" --access public
+              echo "  publishing verified $expected_name@$TAG_VERSION artifact"
+              npm publish "$tarball" \
+                --registry=https://registry.npmjs.org \
+                --tag=latest \
+                --access=public \
+                --ignore-scripts
             fi
           }
 

@@ -232,14 +232,19 @@ Complete this external migration before the next release:
    protected release tags matching `v*.*.*`; require a reviewer if repository
    policy permits.
 2. Configure npm trusted publishers for all six packages (`auggy`, the four
-   provider adapters, and `@auggy/evals`) against the exact
-   `looselyorganized/auggy` repository and `.github/workflows/publish.yml`.
+   provider adapters, and `@auggy/evals`) with these exact claims:
+   organization `looselyorganized`, repository `auggy`, workflow filename
+   `publish.yml` (npm expects the filename, not the path), Environment
+   `npm-publish`, and allowed action `npm publish` only. Do not allow
+   `npm stage publish` for this workflow.
 3. If a token fallback is temporarily required, create
    `NPM_TOKEN_PUBLISH_ENV_ONLY` only in the `npm-publish` Environment.
 4. Revoke the legacy npm token and delete the repository-level `NPM_TOKEN`.
-5. Complete one controlled release, then remove `NODE_AUTH_TOKEN` from the
-   workflow, revoke the environment fallback, and disallow token-based
-   publishing in npm.
+5. Review every package's npm Trusted Publisher settings to confirm all five
+   claims above, then complete one controlled release without the fallback
+   token. After OIDC succeeds, remove `NODE_AUTH_TOKEN` from the workflow,
+   revoke the environment fallback, and disallow token-based publishing in
+   npm.
 
 Until the environment and either OIDC or its environment-only fallback are
 configured, publishing intentionally fails closed. This GitHub/npm state
