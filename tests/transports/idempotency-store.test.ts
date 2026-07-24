@@ -47,6 +47,147 @@ describe("web idempotency store", () => {
     }
   });
 
+  it("atomically shares anonymous network rate limits across store instances", () => {
+    let now = 10_000;
+    const dbPath = join(tmp.path, "idempotency.db");
+    const first = createWebIdempotencyStore({ dbPath, now: () => now });
+    const second = createWebIdempotencyStore({ dbPath, now: () => now });
+    const bucket = hashIdempotencyBinding({
+      audience: "agent-a",
+      kind: "anonymous-network",
+      callerIp: "203.0.113.7",
+    });
+
+    try {
+      expect(first.reserveRateLimit(bucket, 2, 60_000)).toEqual({ allowed: true });
+      expect(second.reserveRateLimit(bucket, 2, 60_000)).toEqual({ allowed: true });
+      expect(first.reserveRateLimit(bucket, 2, 60_000)).toEqual({
+        allowed: false,
+        retryAfterSec: 60,
+        reason: "limit",
+      });
+      now += 60_001;
+      expect(second.reserveRateLimit(bucket, 2, 60_000)).toEqual({ allowed: true });
+    } finally {
+      second.close();
+      first.close();
+    }
+  });
+
+  it("claims keyed executions and all rate-limit budgets in one transaction", () => {
+    const store = createWebIdempotencyStore({
+      dbPath: join(tmp.path, "idempotency.db"),
+    });
+    const globalBucket = hashIdempotencyBinding({ kind: "anonymous-global" });
+    const networkBucket = hashIdempotencyBinding({ kind: "anonymous-network", prefix: "one" });
+    const policies = [
+      { bucketHash: globalBucket, max: 1, windowMs: 60_000 },
+      { bucketHash: networkBucket, max: 1, windowMs: 60_000 },
+    ] as const;
+    const firstKey = hashIdempotencyKey("agent-a", "first");
+    const firstBinding = hashIdempotencyBinding({ request: "first" });
+
+    try {
+      const leader = store.claim(firstKey, firstBinding, undefined, policies);
+      expect(leader.status).toBe("leader");
+      if (leader.status !== "leader") throw new Error("expected leader");
+      expect(store.complete(firstKey, leader.ownerToken, "data: terminal\n\n")).toBe("complete");
+
+      expect(store.claim(firstKey, firstBinding, undefined, policies)).toMatchObject({
+        status: "replay",
+      });
+      expect(
+        store.claim(
+          hashIdempotencyKey("agent-a", "second"),
+          hashIdempotencyBinding({ request: "second" }),
+          undefined,
+          policies,
+        ),
+      ).toEqual({
+        status: "rate-limited",
+        retryAfterSec: 60,
+        reason: "limit",
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("fails closed when the shared rate-limit ledger reaches capacity", () => {
+    const store = createWebIdempotencyStore({
+      dbPath: join(tmp.path, "idempotency.db"),
+      maxRateLimitRecords: 1,
+    });
+    try {
+      expect(
+        store.reserveRateLimit(hashIdempotencyBinding({ ip: "203.0.113.1" }), 2, 60_000),
+      ).toEqual({ allowed: true });
+      expect(
+        store.reserveRateLimit(hashIdempotencyBinding({ ip: "203.0.113.2" }), 2, 60_000),
+      ).toEqual({
+        allowed: false,
+        retryAfterSec: 1,
+        reason: "capacity",
+      });
+    } finally {
+      store.close();
+    }
+  });
+
+  it("migrates the exact branded v1 execution ledger before adding shared rate limits", () => {
+    const dbPath = join(tmp.path, "idempotency.db");
+    const seed = new Database(dbPath, { create: true });
+    try {
+      seed.run(`CREATE TABLE web_idempotency (
+        key_hash       TEXT PRIMARY KEY,
+        binding_hash   TEXT NOT NULL,
+        capacity_class TEXT NOT NULL CHECK (capacity_class IN ('public', 'agent', 'creator')),
+        partition_hash TEXT NOT NULL,
+        turn_id        TEXT NOT NULL,
+        owner_token    TEXT NOT NULL,
+        state          TEXT NOT NULL CHECK (state IN ('running', 'complete', 'unknown')),
+        response_body  TEXT,
+        response_bytes INTEGER,
+        created_at     INTEGER NOT NULL,
+        heartbeat_at   INTEGER NOT NULL,
+        completed_at   INTEGER
+      )`);
+      seed.run("CREATE INDEX idx_web_idempotency_state ON web_idempotency(state, created_at)");
+      seed.run(
+        "CREATE INDEX idx_web_idempotency_capacity ON web_idempotency(capacity_class, partition_hash)",
+      );
+      seed.run("PRAGMA application_id = 1096108356");
+      seed.run("PRAGMA user_version = 1");
+    } finally {
+      seed.close();
+    }
+
+    const store = createWebIdempotencyStore({ dbPath });
+    try {
+      expect(
+        store.reserveRateLimit(hashIdempotencyBinding({ ip: "203.0.113.9" }), 1, 60_000),
+      ).toEqual({ allowed: true });
+    } finally {
+      store.close();
+    }
+
+    const probe = new Database(dbPath, { readonly: true });
+    try {
+      expect(
+        probe.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version,
+      ).toBe(2);
+      expect(
+        probe
+          .query<{ name: string }, []>(
+            "SELECT name FROM sqlite_schema WHERE name = 'web_rate_limit_hits'",
+          )
+          .get()?.name,
+      ).toBe("web_rate_limit_hits");
+    } finally {
+      probe.close();
+    }
+  });
+
   it("rejects changed bindings without storing raw keys or request content", () => {
     const dbPath = join(tmp.path, "idempotency.db");
     const store = createWebIdempotencyStore({ dbPath });

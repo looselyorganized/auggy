@@ -53,6 +53,60 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("parseConfig", () => {
+  test("accepts hardened anonymous network rate-limit policy", () => {
+    const augments = [
+      {
+        name: "web",
+        type: "webTransport",
+        options: {
+          port: 8080,
+          auth: { type: "bearer", token: "test-token" },
+          rateLimitPerPeer: {
+            maxPerMinute: 10,
+            anonymousNetwork: {
+              mode: "shared-store",
+              ipv6PrefixBits: 56,
+              globalMaxPerMinute: 500,
+            },
+          },
+        },
+      },
+    ];
+    const path = writeYaml("agent.yaml", minimalConfig({ augments }));
+    expect(parseConfig(path).augments[0]?.options?.rateLimitPerPeer).toEqual(
+      augments[0]!.options.rateLimitPerPeer,
+    );
+  });
+
+  test("rejects weakening or malformed anonymous network rate-limit policy", () => {
+    const invalidPolicies = [
+      { maxPerMinute: 0 },
+      { maxPerMinute: 10, anonymousNetwork: "shared-store" },
+      { maxPerMinute: 10, anonymousNetwork: { mode: "implicit" } },
+      { maxPerMinute: 10, anonymousNetwork: { ipv6PrefixBits: 65 } },
+      { maxPerMinute: 10, anonymousNetwork: { globalMaxPerMinute: 9 } },
+    ];
+    for (const [index, rateLimitPerPeer] of invalidPolicies.entries()) {
+      const path = writeYaml(
+        `agent-${index}.yaml`,
+        minimalConfig({
+          augments: [
+            {
+              name: "web",
+              type: "webTransport",
+              options: {
+                port: 8080,
+                auth: { type: "bearer", token: "test-token" },
+                rateLimitPerPeer,
+              },
+            },
+          ],
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(/rateLimitPerPeer/);
+    }
+  });
+
   test("validates console proxy networks and allowed origins", () => {
     const augments = [
       {
@@ -603,6 +657,43 @@ describe("webTransport external auth replay validation", () => {
   test("accepts an explicit disabled replay policy", () => {
     const path = writeYaml("agent.yaml", configWithReplayProtection({ enabled: false }));
     expect(parseConfig(path).augments[0]?.options?.externalAuth).toBeDefined();
+  });
+
+  test("rejects malformed external auth policy fields before runtime", () => {
+    const invalidPolicies: Array<[string, Record<string, unknown>]> = [
+      ["secret", { secret: "" }],
+      ["keyId", { secret: "app-secret", keyId: 42 }],
+      ["audience", { secret: "app-secret", audience: [] }],
+      ["header", { secret: "app-secret", header: 42 }],
+      ["maxTtlSeconds", { secret: "app-secret", maxTtlSeconds: "not-a-number" }],
+      ["maxTtlSeconds", { secret: "app-secret", maxTtlSeconds: Number.NaN }],
+      ["allowedProviders", { secret: "app-secret", allowedProviders: "" }],
+      ["allowedProviders", { secret: "app-secret", allowedProviders: [] }],
+      ["allowedProviders", { secret: "app-secret", allowedProviders: ["supabase", ""] }],
+      ["allowedProviders", { secret: "app-secret", allowedProviders: ["supabase", "supabase"] }],
+      ["secrets", { secret: "app-secret", secrets: "legacy" }],
+      ["secrets", { secret: "app-secret", secrets: [{ secret: 42 }] }],
+      ["visitorId", { secret: "app-secret", visitorId: {} }],
+      ["includeUnverifiedEmail", { secret: "app-secret", includeUnverifiedEmail: "true" }],
+    ];
+    for (const [field, externalAuth] of invalidPolicies) {
+      const path = writeYaml(
+        "agent.yaml",
+        minimalConfig({
+          augments: [
+            {
+              type: "webTransport",
+              options: {
+                port: 8080,
+                auth: { type: "bearer", token: "test-token" },
+                externalAuth,
+              },
+            },
+          ],
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(`externalAuth.${field}`);
+    }
   });
 });
 

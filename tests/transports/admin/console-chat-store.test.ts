@@ -111,9 +111,24 @@ describe("console chat SQLite store", () => {
   ): void {
     const db = new Database(dbPath);
     try {
+      db.run("ALTER TABLE console_chat_threads DROP COLUMN owner_org_id");
       db.run("DROP TRIGGER trg_console_chat_threads_reject_tombstone");
       db.run("DROP TABLE console_chat_tombstones");
       db.run("PRAGMA user_version = 2");
+      mutate?.(db);
+    } finally {
+      db.close();
+    }
+  }
+
+  function downgradeCurrentDatabaseToVersion3(
+    dbPath: string,
+    mutate?: (db: Database) => void,
+  ): void {
+    const db = new Database(dbPath);
+    try {
+      db.run("ALTER TABLE console_chat_threads DROP COLUMN owner_org_id");
+      db.run("PRAGMA user_version = 3");
       mutate?.(db);
     } finally {
       db.close();
@@ -145,6 +160,7 @@ describe("console chat SQLite store", () => {
         .query<{ name: string }, []>("PRAGMA table_info(console_chat_threads)")
         .all()
         .map((row) => row.name);
+      expect(columns).toContain("owner_org_id");
       expect(columns).not.toContain("visitor_token");
       expect(columns).not.toContain("email");
       expect(columns).not.toContain("csrf");
@@ -238,6 +254,63 @@ describe("console chat SQLite store", () => {
     }
   });
 
+  it("migrates the exact branded version 3 schema and preserves its data", async () => {
+    const { dbPath, store } = await openStore();
+    store.createThreadWithMessages(THREAD, [USER_MESSAGE, ASSISTANT_MESSAGE]);
+    store.createThread({
+      ...THREAD,
+      id: "legacy-unbound-visitor",
+      previewMode: "visitor",
+      owner: null,
+    });
+    store.close();
+    stores.pop();
+    downgradeCurrentDatabaseToVersion3(dbPath);
+
+    const reopened = createConsoleChatStore({ dbPath, now: () => 5_000 });
+    stores.push(reopened);
+    expect(reopened.getThread(THREAD.id)).toMatchObject({
+      id: THREAD.id,
+      owner: THREAD.owner,
+      messages: [
+        expect.objectContaining({ id: USER_MESSAGE.id }),
+        expect.objectContaining({ id: ASSISTANT_MESSAGE.id }),
+      ],
+    });
+    const persistence = createConsoleThreadHistoryPersistence(reopened);
+    await persistence.assertAccess(THREAD.id, CREATOR_PEER);
+    await expect(
+      persistence.assertAccess(THREAD.id, { ...CREATOR_PEER, orgId: "new-org" }),
+    ).rejects.toThrow(/access denied/);
+    const visitor: PeerIdentity = {
+      id: "vis_legacy",
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "recognized",
+      sourceAugment: "web",
+      orgId: "org-a",
+    };
+    await persistence.assertAccess("legacy-unbound-visitor", visitor);
+    await expect(
+      persistence.assertAccess("legacy-unbound-visitor", { ...visitor, orgId: "org-b" }),
+    ).rejects.toThrow(/access denied/);
+
+    const probe = new Database(dbPath, { readonly: true });
+    try {
+      expect(probe.query("PRAGMA user_version").get()).toEqual({
+        user_version: CONSOLE_CHAT_SCHEMA_VERSION,
+      });
+      expect(
+        probe
+          .query<{ name: string }, []>("PRAGMA table_info(console_chat_threads)")
+          .all()
+          .map(({ name }) => name),
+      ).toContain("owner_org_id");
+    } finally {
+      probe.close();
+    }
+  });
+
   it("rejects malformed or unsupported old branded schemas without partial migration", async () => {
     const malformed = await openStore();
     malformed.store.createThread(THREAD);
@@ -248,7 +321,7 @@ describe("console chat SQLite store", () => {
     });
 
     expect(() => createConsoleChatStore({ dbPath: malformed.dbPath })).toThrow(
-      /only the exact version 2 schema can be migrated/,
+      /only exact version 2 or 3 schemas can be migrated/,
     );
     const malformedProbe = new Database(malformed.dbPath, { readonly: true });
     try {
@@ -272,7 +345,7 @@ describe("console chat SQLite store", () => {
       db.run("PRAGMA user_version = 1");
     });
     expect(() => createConsoleChatStore({ dbPath: unsupported.dbPath })).toThrow(
-      /only the exact version 2 schema can be migrated/,
+      /only exact version 2 or 3 schemas can be migrated/,
     );
   });
 
@@ -1024,9 +1097,10 @@ describe("console chat SQLite store", () => {
       publicSubstate: "recognized",
       sourceAugment: "web",
       displayName: "Sensitive display name is not persisted",
-      orgId: "org-not-persisted",
+      orgId: "org-a",
     };
     const impostor: PeerIdentity = { ...visitor, id: "vis_second" };
+    const crossOrganization: PeerIdentity = { ...visitor, orgId: "org-b" };
     store.createThread({ ...THREAD, id: "visitor-thread", previewMode: "visitor", owner: null });
     const persistence = createConsoleThreadHistoryPersistence(store);
 
@@ -1039,6 +1113,15 @@ describe("console chat SQLite store", () => {
     await expect(
       persistence.commit("visitor-thread", impostor, { version: 1, messages: [] }),
     ).rejects.toThrow(/access denied/);
+    await expect(persistence.assertAccess("visitor-thread", crossOrganization)).rejects.toThrow(
+      /access denied/,
+    );
+    await expect(persistence.load("visitor-thread", crossOrganization)).rejects.toThrow(
+      /access denied/,
+    );
+    await expect(
+      persistence.commit("visitor-thread", crossOrganization, { version: 1, messages: [] }),
+    ).rejects.toThrow(/access denied/);
     expect(await persistence.load("visitor-thread", visitor)).toEqual({
       version: 1,
       messages: KERNEL_HISTORY,
@@ -1049,6 +1132,92 @@ describe("console chat SQLite store", () => {
       kind: visitor.kind,
       trustLevel: visitor.trustLevel,
       publicSubstate: visitor.publicSubstate ?? null,
+      orgId: visitor.orgId,
+    });
+  });
+
+  it("persists organization ownership across process restart", async () => {
+    const { dbPath, store } = await openStore();
+    const visitor: PeerIdentity = {
+      id: "vis_shared",
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "recognized",
+      sourceAugment: "web",
+      orgId: "org-a",
+    };
+    store.createThread({ ...THREAD, id: "visitor-thread", previewMode: "visitor", owner: null });
+    const persistence = createConsoleThreadHistoryPersistence(store);
+    await persistence.assertAccess("visitor-thread", visitor);
+    store.close();
+    stores.pop();
+
+    const reopened = createConsoleChatStore({ dbPath, now: () => 3_000 });
+    stores.push(reopened);
+    const reopenedPersistence = createConsoleThreadHistoryPersistence(reopened);
+    await expect(
+      reopenedPersistence.assertAccess("visitor-thread", { ...visitor, orgId: "org-b" }),
+    ).rejects.toThrow(/access denied/);
+    await reopenedPersistence.assertAccess("visitor-thread", visitor);
+    expect(reopened.getThread("visitor-thread")?.owner?.orgId).toBe("org-a");
+  });
+
+  it("rejects malformed organization ownership and deferred cross-organization reads", async () => {
+    const { store } = await openStore();
+    const visitor: PeerIdentity = {
+      id: "vis_shared",
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "recognized",
+      sourceAugment: "web",
+      orgId: "org-a",
+    };
+    const thread = {
+      ...THREAD,
+      id: "visitor-thread",
+      previewMode: "visitor" as const,
+      owner: null,
+    };
+    expect(() =>
+      store.createThread({
+        ...thread,
+        owner: {
+          peerId: visitor.id,
+          kind: visitor.kind,
+          trustLevel: visitor.trustLevel,
+          publicSubstate: visitor.publicSubstate ?? null,
+          orgId: "bad\norg",
+        },
+      }),
+    ).toThrow(/control characters/);
+    expect(() =>
+      store.createThread({
+        ...thread,
+        owner: {
+          peerId: visitor.id,
+          kind: visitor.kind,
+          trustLevel: visitor.trustLevel,
+          publicSubstate: visitor.publicSubstate ?? null,
+          orgId: "x".repeat(257),
+        },
+      }),
+    ).toThrow(/invalid length/);
+
+    store.beginRun({
+      thread,
+      peer: visitor,
+      runId: "run-org",
+      userMessage: USER_MESSAGE,
+      assistantMessage: ASSISTANT_MESSAGE,
+    });
+    const persistence = createDeferredConsoleThreadHistoryPersistence(store);
+    await persistence.commit(thread.id, visitor, { version: 1, messages: KERNEL_HISTORY });
+    expect(() => persistence.pendingSnapshot(thread.id, { ...visitor, orgId: "org-b" })).toThrow(
+      /access denied/,
+    );
+    expect(persistence.pendingSnapshot(thread.id, visitor)).toEqual({
+      version: 1,
+      messages: KERNEL_HISTORY,
     });
   });
 

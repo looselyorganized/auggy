@@ -27,6 +27,7 @@ import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { join } from "node:path";
 import { defineAgent } from "@/agent";
 import { webTransport } from "@/transports/web-transport";
+import { createVisitorToken, deriveSigningKey } from "@/transports/visitor-token";
 import { visitorAuth } from "../../src/augments/visitorAuth/index";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTempDir } from "@tests/fixtures/temp-dir";
@@ -61,6 +62,27 @@ function runStartedThreadId(sse: string): string {
   throw new Error("RUN_STARTED event was not present");
 }
 
+async function runAnonymous(
+  url: string,
+  init: RequestInit,
+): Promise<{
+  response: Response;
+  session: string;
+}> {
+  const bootstrap = await fetch(url, init);
+  const session = bootstrap.headers.get("x-auggy-anonymous-session");
+  expect(bootstrap.status).toBe(428);
+  expect(session).toBeTruthy();
+  expect(bootstrap.headers.get("x-visitor-token")).toBeNull();
+  expect(await bootstrap.json()).toEqual({ error: "anonymous_session_required" });
+  const headers = new Headers(init.headers);
+  headers.set("x-auggy-anonymous-session", session ?? "");
+  return {
+    response: await fetch(url, { ...init, headers }),
+    session: session ?? "",
+  };
+}
+
 describe("integration: embedding primitives (docs/20-embedding.md)", () => {
   let tmp: { path: string; cleanup: () => Promise<void> };
   let agent: AgentHandle | undefined;
@@ -83,7 +105,7 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
   // Test 1 (ported from PR #50): anonymous bootstrap — no bearer, first contact
   // ---------------------------------------------------------------------------
 
-  it("request without bearer + bootstrap visitor-token → public/anonymous + fresh token in response", async () => {
+  it("first contact requires a server-minted session and remains public/anonymous", async () => {
     const PORT = 19200;
     const model = createMockModel({ response: "hi visitor" });
     const peerCapture = createPeerCaptureAugment();
@@ -95,7 +117,6 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
       visitorTokens: {
         enabled: true,
         signingKey: SIGNING_KEY,
-        ttlSeconds: 86_400,
       },
     });
 
@@ -105,7 +126,7 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
     );
     await agent.start();
 
-    const resp = await fetch(`http://localhost:${PORT}/agent/run`, {
+    const { response: resp, session } = await runAnonymous(`http://localhost:${PORT}/agent/run`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -118,26 +139,26 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
     });
 
     expect(resp.status).toBe(200);
-    expect(resp.headers.get("x-visitor-token")).toBeTruthy(); // rotated token issued
+    expect(resp.headers.get("x-visitor-token")).toBeNull();
     await resp.text();
 
     // The agent saw the turn with public:anonymous trust.
     // The runtime binds anonymous identity to a server-minted subject, never
-    // to the caller-controlled thread ID. The separately signed visitor token
-    // can prove a one-way promotion without sharing this memory subject.
+    // to the caller-controlled thread ID. The anonymous-session capability is
+    // the only continuity credential minted by this generic transport.
     expect(peerCapture.captured).toHaveLength(1);
     const peer = peerCapture.captured[0]!;
     expect(peer.trustLevel).toBe("public");
     expect(peer.publicSubstate).toBe("anonymous");
     expect(peer.id).toMatch(/^anon_session_/);
-    expect(resp.headers.get("x-auggy-anonymous-session")).toBeTruthy();
+    expect(session).toBeTruthy();
   }, 30_000);
 
   // ---------------------------------------------------------------------------
-  // Test 2 (ported from PR #50): returning visitor — rotated token → recognized
+  // Test 2: returning anonymous session stays anonymous and stable
   // ---------------------------------------------------------------------------
 
-  it("subsequent request with rotated token → public/recognized with stable peer.id", async () => {
+  it("subsequent request with anonymous session keeps a stable anonymous peer.id", async () => {
     const PORT = 19201;
     const model = createMockModel({ response: "welcome back" });
     const peerCapture = createPeerCaptureAugment();
@@ -146,7 +167,7 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
       port: PORT,
       auth: { type: "bearer", token: BEARER },
       allowAnonymous: true,
-      visitorTokens: { enabled: true, signingKey: SIGNING_KEY, ttlSeconds: 86_400 },
+      visitorTokens: { enabled: true, signingKey: SIGNING_KEY },
     });
     agent = defineAgent(
       { name: "pa-recog", model: "mock", augments: [transport, peerCapture.augment] },
@@ -154,8 +175,8 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
     );
     await agent.start();
 
-    // Call 1: bootstrap → response carries rotated token.
-    const r1 = await fetch(`http://localhost:${PORT}/agent/run`, {
+    const url = `http://localhost:${PORT}/agent/run`;
+    const firstInit = {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -165,19 +186,15 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
         messages: [{ role: "user", content: "hi" }],
         threadId: "thread-pa-recog",
       }),
-    });
-    const rotatedToken = r1.headers.get("x-visitor-token")!;
-    const anonymousSession = r1.headers.get("x-auggy-anonymous-session")!;
-    expect(rotatedToken).toBeTruthy();
-    expect(anonymousSession).toBeTruthy();
+    } satisfies RequestInit;
+    const { response: r1, session: anonymousSession } = await runAnonymous(url, firstInit);
+    expect(r1.status).toBe(200);
     await r1.text();
 
-    // Call 2: send the rotated token → recognized.
-    const r2 = await fetch(`http://localhost:${PORT}/agent/run`, {
+    const r2 = await fetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-visitor-token": rotatedToken,
         "x-auggy-anonymous-session": anonymousSession,
       },
       body: JSON.stringify({
@@ -188,22 +205,20 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
     expect(r2.status).toBe(200);
     await r2.text();
 
-    // Two turns captured. First = anonymous (bootstrap). Second = recognized.
+    // Both admitted turns remain within the same anonymous capability.
     expect(peerCapture.captured.length).toBe(2);
-    const anon = peerCapture.captured[0]!;
-    const recog = peerCapture.captured[1]!;
-    expect(anon.publicSubstate).toBe("anonymous");
-    expect(recog.publicSubstate).toBe("recognized");
-    expect(recog.trustLevel).toBe("public");
-    expect(recog.id).toMatch(/^vis_/); // recognized peer.id is the token's visitorId
+    const first = peerCapture.captured[0]!;
+    const second = peerCapture.captured[1]!;
+    expect(first.publicSubstate).toBe("anonymous");
+    expect(second.publicSubstate).toBe("anonymous");
+    expect(second.trustLevel).toBe("public");
+    expect(second.id).toBe(first.id);
     expect(model.calls[1]?.messages.some((message) => message.content.includes("hi"))).toBe(true);
 
-    // Call 3: same rotated token → same peer.id (stable visitorId).
-    const r3 = await fetch(`http://localhost:${PORT}/agent/run`, {
+    const r3 = await fetch(url, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-visitor-token": rotatedToken,
         "x-auggy-anonymous-session": anonymousSession,
       },
       body: JSON.stringify({
@@ -214,7 +229,7 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
     expect(r3.status).toBe(200);
     await r3.text();
     expect(peerCapture.captured.length).toBe(3);
-    expect(peerCapture.captured[2]!.id).toBe(recog.id); // stable visitorId across requests
+    expect(peerCapture.captured[2]!.id).toBe(first.id);
   }, 30_000);
 
   // ---------------------------------------------------------------------------
@@ -256,7 +271,6 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
         visitorTokens: {
           enabled: true,
           signingKey: SIGNING_KEY,
-          ttlSeconds: 7_776_000,
           agentBinding: "pa-verify",
         },
       });
@@ -277,19 +291,21 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
       await agent.start();
 
       // Turn 1: anonymous visitor asks to verify. Console adapter prints verify URL.
-      const r1 = await fetch(`http://localhost:${PORT}/agent/run`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-visitor-token": "bootstrap",
+      const { response: r1, session: anonymousSession } = await runAnonymous(
+        `http://localhost:${PORT}/agent/run`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-visitor-token": "bootstrap",
+          },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: "verify me embedding-test@example.com" }],
+            threadId: "thread-pa-verify",
+          }),
         },
-        body: JSON.stringify({
-          messages: [{ role: "user", content: "verify me embedding-test@example.com" }],
-          threadId: "thread-pa-verify",
-        }),
-      });
+      );
       expect(r1.status).toBe(200);
-      const anonymousSession = r1.headers.get("x-auggy-anonymous-session");
       expect(anonymousSession).toBeTruthy();
       const firstRunBody = await r1.text();
 
@@ -325,7 +341,7 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
         headers: {
           "content-type": "application/json",
           "x-visitor-token": visToken,
-          ...(anonymousSession ? { "x-auggy-anonymous-session": anonymousSession } : {}),
+          "x-auggy-anonymous-session": anonymousSession,
         },
         body: JSON.stringify({
           messages: [{ role: "user", content: "am I recognized now?" }],
@@ -366,7 +382,7 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
       port: PORT,
       auth: { type: "bearer", token: BEARER },
       allowAnonymous: true,
-      visitorTokens: { enabled: true, signingKey: SIGNING_KEY, ttlSeconds: 86_400 },
+      visitorTokens: { enabled: true, signingKey: SIGNING_KEY },
     });
     agent = defineAgent(
       { name: "pa-xpeerid", model: "mock", augments: [transport, peerCapture.augment] },
@@ -375,7 +391,7 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
     await agent.start();
 
     // Send a forged x-peer-id — the agent MUST NOT use it as peer.id.
-    const resp = await fetch(`http://localhost:${PORT}/agent/run`, {
+    const { response: resp } = await runAnonymous(`http://localhost:${PORT}/agent/run`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -403,7 +419,7 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
     expect(peer.publicSubstate).toBe("anonymous");
   }, 30_000);
 
-  it("denies recognized-to-anonymous downgrade after visitor revocation", async () => {
+  it("does not let a revoked visitor credential downgrade into its recognized thread", async () => {
     const PORT = 19207;
     const model = createMockModel({ response: "ok" });
     let revokedVisitorId: string | null = null;
@@ -414,74 +430,48 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
       visitorTokens: {
         enabled: true,
         signingKey: SIGNING_KEY,
-        ttlSeconds: 86_400,
         revocationCheck: (visitorId) => visitorId === revokedVisitorId,
       },
     });
     agent = defineAgent({ name: "pa-revocation", model: "mock", augments: [transport] }, model);
     await agent.start();
-
-    const bootstrap = await fetch(`http://localhost:${PORT}/agent/run`, {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-visitor-token": "bootstrap",
-      },
-      body: JSON.stringify({
-        threadId: "predictable-public-thread",
-        messages: [{ role: "user", content: "anonymous start" }],
-      }),
-    });
-    const visitorToken = bootstrap.headers.get("x-visitor-token");
-    const anonymousSession = bootstrap.headers.get("x-auggy-anonymous-session");
-    expect(visitorToken).toBeTruthy();
-    expect(anonymousSession).toBeTruthy();
-    const bootstrapBody = await bootstrap.text();
+    const signingKey = await deriveSigningKey(SIGNING_KEY);
+    const issued = await createVisitorToken(
+      signingKey,
+      "pa-revocation",
+      86_400,
+      "vis_revocation_test",
+    );
 
     const recognized = await fetch(`http://localhost:${PORT}/agent/run`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-visitor-token": visitorToken!,
-        "x-auggy-anonymous-session": anonymousSession!,
+        "x-visitor-token": issued.token,
       },
       body: JSON.stringify({
         threadId: "predictable-public-thread",
-        messages: [{ role: "user", content: "recognized continuation" }],
+        messages: [{ role: "user", content: "recognized start" }],
       }),
     });
+    expect(recognized.status).toBe(200);
     const recognizedBody = await recognized.text();
-    expect(runStartedThreadId(recognizedBody)).toBe(runStartedThreadId(bootstrapBody));
-    const tokenPayload = JSON.parse(atob(visitorToken!.split(".")[0]!)) as {
-      visitorId: string;
-    };
-    revokedVisitorId = tokenPayload.visitorId;
+    revokedVisitorId = issued.payload.visitorId;
 
-    const downgrade = await fetch(`http://localhost:${PORT}/agent/run`, {
+    const { response: anonymous } = await runAnonymous(`http://localhost:${PORT}/agent/run`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
-        "x-auggy-anonymous-session": anonymousSession!,
+        "x-visitor-token": issued.token,
       },
       body: JSON.stringify({
         threadId: "predictable-public-thread",
         messages: [{ role: "user", content: "downgrade attempt" }],
       }),
     });
-    expect(await downgrade.text()).toContain('"type":"RUN_ERROR"');
+    const anonymousBody = await anonymous.text();
+    expect(runStartedThreadId(anonymousBody)).not.toBe(runStartedThreadId(recognizedBody));
     expect(model.calls).toHaveLength(2);
-
-    const unrelatedAnonymous = await fetch(`http://localhost:${PORT}/agent/run`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        threadId: "predictable-public-thread",
-        messages: [{ role: "user", content: "independent anonymous thread" }],
-      }),
-    });
-    const unrelatedBody = await unrelatedAnonymous.text();
-    expect(runStartedThreadId(unrelatedBody)).not.toBe(runStartedThreadId(bootstrapBody));
-    expect(model.calls).toHaveLength(3);
   }, 30_000);
 
   // ---------------------------------------------------------------------------
@@ -543,7 +533,7 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
       // Note: allowAnonymous: true. Even with anonymous admitted, a PRESENT
       // but WRONG bearer must still 401 — the runtime does not downgrade.
       allowAnonymous: true,
-      visitorTokens: { enabled: true, signingKey: SIGNING_KEY, ttlSeconds: 86_400 },
+      visitorTokens: { enabled: true, signingKey: SIGNING_KEY },
     });
     agent = defineAgent(
       { name: "path1-invalid", model: "mock", augments: [transport, peerCapture.augment] },
@@ -590,7 +580,7 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
       port: PORT,
       auth: { type: "bearer", token: BEARER },
       allowAnonymous: false,
-      visitorTokens: { enabled: true, signingKey: SIGNING_KEY, ttlSeconds: 86_400 },
+      visitorTokens: { enabled: true, signingKey: SIGNING_KEY },
     });
     agent = defineAgent(
       { name: "path-bearer-wins", model: "mock", augments: [transport, peerCapture.augment] },
@@ -619,11 +609,8 @@ describe("integration: embedding primitives (docs/20-embedding.md)", () => {
     expect(peer.trustLevel).toBe("creator");
     expect(peer.id).toBe("creator");
 
-    // Sanity: NO fresh visitor token is issued in the response. Pre-codex-R6
-    // (Option B follow-on) the mint logic would have issued one regardless of
-    // bearer presence, opening a creator-to-visitor demotion loop via storage
-    // round-tripping. The fix at web-transport.ts ~line 678 suppresses mint
-    // when bearer is attempted.
+    // The generic transport never rotates visitor credentials. A stale token
+    // alongside valid bearer auth cannot demote the creator.
     expect(resp.headers.get("x-visitor-token")).toBeNull();
   }, 30_000);
 });

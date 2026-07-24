@@ -106,7 +106,7 @@ export function selectBrowserConnection(
       ready: true,
       title: "Persistent visitor identity",
       summary:
-        "Start anonymously, then retain the rotated visitor token returned by the agent for later requests.",
+        "Start with a server-minted anonymous session; use a visitor token only after a trusted verification handoff.",
       typescript: browserSnippet(endpoint, { kind: "visitor-token" }),
     };
   }
@@ -209,16 +209,12 @@ function browserSnippet(endpoint: string, auth: BrowserSnippetAuth): string {
     auth.kind === "external-auth"
       ? `  const assertion = await getAuggyAuthAssertion();\n  const headers: Record<string, string> = {\n    "content-type": "application/json",\n    ${JSON.stringify(auth.header)}: assertion,\n  };`
       : auth.kind === "visitor-token"
-        ? `  const visitorToken = localStorage.getItem("auggy:visitor-token") ?? "bootstrap";\n  const headers: Record<string, string> = {\n    "content-type": "application/json",\n    "x-visitor-token": visitorToken,\n  };`
+        ? `  const visitorToken = localStorage.getItem("auggy:visitor-token");\n  const headers: Record<string, string> = { "content-type": "application/json" };\n  if (visitorToken) headers["x-visitor-token"] = visitorToken;`
         : `  const headers: Record<string, string> = { "content-type": "application/json" };`;
   const credentialHelper =
     auth.kind === "external-auth"
       ? ""
-      : `\n  const retainCredentials = (response: Response) => {\n${
-          auth.kind === "visitor-token"
-            ? `    const rotatedToken = response.headers.get("x-visitor-token");\n    if (rotatedToken) {\n      localStorage.setItem("auggy:visitor-token", rotatedToken);\n      headers["x-visitor-token"] = rotatedToken;\n    }\n`
-            : ""
-        }    const issuedSession = response.headers.get("x-auggy-anonymous-session");\n    if (issuedSession) {\n      localStorage.setItem("auggy:anonymous-session", issuedSession);\n      headers["x-auggy-anonymous-session"] = issuedSession;\n    }\n  };`;
+      : `\n  const retainCredentials = (response: Response) => {\n    const issuedSession = response.headers.get("x-auggy-anonymous-session");\n    if (issuedSession) {\n      localStorage.setItem("auggy:anonymous-session", issuedSession);\n      headers["x-auggy-anonymous-session"] = issuedSession;\n    }\n  };`;
   const credentialFlow =
     auth.kind === "external-auth"
       ? ""

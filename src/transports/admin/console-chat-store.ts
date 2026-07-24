@@ -16,7 +16,7 @@ import type {
 } from "../../types";
 
 export const CONSOLE_CHAT_APPLICATION_ID = 0x43434854; // "CCHT"
-export const CONSOLE_CHAT_SCHEMA_VERSION = 3;
+export const CONSOLE_CHAT_SCHEMA_VERSION = 4;
 
 export const CONSOLE_CHAT_RESTART_INTERRUPTION =
   "Response interrupted because the console server restarted.";
@@ -64,6 +64,7 @@ export interface ConsoleChatOwnerIdentity {
   kind: PeerKind;
   trustLevel: TrustLevel;
   publicSubstate: "anonymous" | "recognized" | null;
+  orgId?: string;
 }
 
 export function consoleChatOwnerFromPeer(peer: PeerIdentity): ConsoleChatOwnerIdentity {
@@ -72,6 +73,7 @@ export function consoleChatOwnerFromPeer(peer: PeerIdentity): ConsoleChatOwnerId
     kind: peer.kind,
     trustLevel: peer.trustLevel,
     publicSubstate: peer.publicSubstate ?? null,
+    ...(peer.orgId !== undefined ? { orgId: peer.orgId } : {}),
   };
 }
 
@@ -425,8 +427,24 @@ const TOMBSTONE_GUARD_TRIGGER_STATEMENT = `CREATE TRIGGER IF NOT EXISTS trg_cons
     SELECT RAISE(ABORT, 'console chat thread id is tombstoned');
   END`;
 
-const SCHEMA_STATEMENTS = [
+const VERSION_3_SCHEMA_STATEMENTS = [
   ...VERSION_2_SCHEMA_STATEMENTS,
+  TOMBSTONE_SCHEMA_STATEMENT,
+  TOMBSTONE_GUARD_TRIGGER_STATEMENT,
+] as const;
+
+const OWNER_ORG_COLUMN_DEFINITION =
+  "owner_org_id TEXT CHECK(owner_org_id IS NULL OR length(owner_org_id) BETWEEN 1 AND 256)";
+
+const CURRENT_THREAD_SCHEMA_STATEMENT = VERSION_2_SCHEMA_STATEMENTS[0].replace(
+  "    CHECK((bound_peer_id IS NULL",
+  `    ${OWNER_ORG_COLUMN_DEFINITION},
+    CHECK((bound_peer_id IS NULL`,
+);
+
+const SCHEMA_STATEMENTS = [
+  CURRENT_THREAD_SCHEMA_STATEMENT,
+  ...VERSION_2_SCHEMA_STATEMENTS.slice(1),
   TOMBSTONE_SCHEMA_STATEMENT,
   TOMBSTONE_GUARD_TRIGGER_STATEMENT,
 ] as const;
@@ -442,6 +460,7 @@ function expectedSchema(statements: readonly string[]): Map<string, string> {
 }
 
 const VERSION_2_EXPECTED_SCHEMA = expectedSchema(VERSION_2_SCHEMA_STATEMENTS);
+const VERSION_3_EXPECTED_SCHEMA = expectedSchema(VERSION_3_SCHEMA_STATEMENTS);
 const EXPECTED_SCHEMA = expectedSchema(SCHEMA_STATEMENTS);
 
 function hasExactSchema(
@@ -470,6 +489,7 @@ interface ThreadRow {
   owner_peer_kind: unknown;
   owner_trust_level: unknown;
   owner_public_substate: unknown;
+  owner_org_id: unknown;
   model_provider: unknown;
   model_id: unknown;
   model_display: unknown;
@@ -518,11 +538,13 @@ export function createConsoleChatStore(options: {
           return false;
         },
         migrateOwned(db, fromVersion, objects) {
-          if (fromVersion !== 2 || !hasExactSchema(objects, VERSION_2_EXPECTED_SCHEMA)) {
-            throw new Error(`${STORE_LABEL}: only the exact version 2 schema can be migrated`);
+          if (fromVersion === 2 && hasExactSchema(objects, VERSION_2_EXPECTED_SCHEMA)) {
+            db.run(TOMBSTONE_SCHEMA_STATEMENT);
+            db.run(TOMBSTONE_GUARD_TRIGGER_STATEMENT);
+          } else if (fromVersion !== 3 || !hasExactSchema(objects, VERSION_3_EXPECTED_SCHEMA)) {
+            throw new Error(`${STORE_LABEL}: only exact version 2 or 3 schemas can be migrated`);
           }
-          db.run(TOMBSTONE_SCHEMA_STATEMENT);
-          db.run(TOMBSTONE_GUARD_TRIGGER_STATEMENT);
+          db.run(`ALTER TABLE console_chat_threads ADD COLUMN ${OWNER_ORG_COLUMN_DEFINITION}`);
         },
         validate(_db, objects) {
           assertExactSchema(objects);
@@ -621,9 +643,9 @@ export function createConsoleChatStore(options: {
     db.run(
       `INSERT INTO console_chat_threads
         (id, title, preview_mode, bound_peer_id, owner_peer_kind, owner_trust_level,
-         owner_public_substate, model_provider, model_id, model_display, created_at, updated_at,
-         last_read_at, unread, run_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         owner_public_substate, owner_org_id, model_provider, model_id, model_display, created_at,
+         updated_at, last_read_at, unread, run_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       threadBindings(value),
     );
   }
@@ -689,9 +711,9 @@ export function createConsoleChatStore(options: {
       db.run(
         `INSERT INTO console_chat_threads
         (id, title, preview_mode, bound_peer_id, owner_peer_kind, owner_trust_level,
-         owner_public_substate, model_provider, model_id, model_display, created_at, updated_at,
-         last_read_at, unread, run_status)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         owner_public_substate, owner_org_id, model_provider, model_id, model_display, created_at,
+         updated_at, last_read_at, unread, run_status)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title = excluded.title,
          preview_mode = excluded.preview_mode,
@@ -699,6 +721,7 @@ export function createConsoleChatStore(options: {
          owner_peer_kind = excluded.owner_peer_kind,
          owner_trust_level = excluded.owner_trust_level,
          owner_public_substate = excluded.owner_public_substate,
+         owner_org_id = excluded.owner_org_id,
          model_provider = excluded.model_provider,
          model_id = excluded.model_id,
          model_display = excluded.model_display,
@@ -753,7 +776,7 @@ export function createConsoleChatStore(options: {
     db.run(
       `UPDATE console_chat_threads SET
          bound_peer_id = ?, owner_peer_kind = ?, owner_trust_level = ?, owner_public_substate = ?,
-         model_provider = ?, model_id = ?, model_display = ?,
+         owner_org_id = ?, model_provider = ?, model_id = ?, model_display = ?,
          updated_at = ?, run_status = ?, unread = ?, last_read_at = ?
        WHERE id = ?`,
       [
@@ -761,6 +784,7 @@ export function createConsoleChatStore(options: {
         owner?.kind ?? null,
         owner?.trustLevel ?? null,
         owner?.publicSubstate ?? null,
+        owner?.orgId ?? null,
         model?.provider ?? null,
         model?.id ?? null,
         model?.displayName ?? null,
@@ -807,12 +831,21 @@ export function createConsoleChatStore(options: {
       const result = db.run(
         `UPDATE console_chat_threads
             SET preview_mode = 'visitor', bound_peer_id = ?, owner_peer_kind = ?,
-                owner_trust_level = ?, owner_public_substate = ?,
+                owner_trust_level = ?, owner_public_substate = ?, owner_org_id = ?,
                 updated_at = MAX(updated_at, ?)
           WHERE id = ? AND preview_mode = 'anonymous'
             AND bound_peer_id = ? AND owner_peer_kind = 'human'
             AND owner_trust_level = 'public' AND owner_public_substate = 'anonymous'`,
-        [owner.peerId, owner.kind, owner.trustLevel, owner.publicSubstate, at, id, `anon-${id}`],
+        [
+          owner.peerId,
+          owner.kind,
+          owner.trustLevel,
+          owner.publicSubstate,
+          owner.orgId ?? null,
+          at,
+          id,
+          `anon-${id}`,
+        ],
       );
       if (result.changes !== 1) {
         throw new Error(`${STORE_LABEL}: anonymous thread promotion lost its ownership claim`);
@@ -1321,11 +1354,20 @@ export function createConsoleChatStore(options: {
     db.run(
       `UPDATE console_chat_threads
           SET bound_peer_id = ?, owner_peer_kind = ?, owner_trust_level = ?,
-              owner_public_substate = ?
+              owner_public_substate = ?, owner_org_id = ?
         WHERE id = ? AND preview_mode = ?
           AND bound_peer_id IS NULL AND owner_peer_kind IS NULL
-          AND owner_trust_level IS NULL AND owner_public_substate IS NULL`,
-      [owner.peerId, owner.kind, owner.trustLevel, owner.publicSubstate, id, previewMode],
+          AND owner_trust_level IS NULL AND owner_public_substate IS NULL
+          AND owner_org_id IS NULL`,
+      [
+        owner.peerId,
+        owner.kind,
+        owner.trustLevel,
+        owner.publicSubstate,
+        owner.orgId ?? null,
+        id,
+        previewMode,
+      ],
     );
 
     const row = getThreadStatement.get(id) as ThreadRow | null;
@@ -1467,6 +1509,7 @@ function threadBindings(input: ReturnType<typeof normalizeThreadInput>) {
     input.owner?.kind ?? null,
     input.owner?.trustLevel ?? null,
     input.owner?.publicSubstate ?? null,
+    input.owner?.orgId ?? null,
     input.model?.provider ?? null,
     input.model?.id ?? null,
     input.model?.displayName ?? null,
@@ -1639,7 +1682,18 @@ function normalizeOwner(
     throw new Error(`${STORE_LABEL}: thread owner trust and public substate disagree`);
   }
 
-  const normalized = { peerId, kind: owner.kind, trustLevel: owner.trustLevel, publicSubstate };
+  const orgId =
+    owner.orgId === undefined ? undefined : boundedString(owner.orgId, 256, "thread.owner.orgId");
+  if (orgId !== undefined && hasControlCharacter(orgId)) {
+    throw new Error(`${STORE_LABEL}: thread.owner.orgId contains control characters`);
+  }
+  const normalized = {
+    peerId,
+    kind: owner.kind,
+    trustLevel: owner.trustLevel,
+    publicSubstate,
+    ...(orgId !== undefined ? { orgId } : {}),
+  };
   assertOwnerMatchesPreviewMode(normalized, threadId, previewMode);
   return normalized;
 }
@@ -1653,7 +1707,8 @@ function rowToOwner(
     row.bound_peer_id === null &&
     row.owner_peer_kind === null &&
     row.owner_trust_level === null &&
-    row.owner_public_substate === null
+    row.owner_public_substate === null &&
+    row.owner_org_id === null
   ) {
     return null;
   }
@@ -1663,6 +1718,11 @@ function rowToOwner(
       kind: row.owner_peer_kind as PeerKind,
       trustLevel: row.owner_trust_level as TrustLevel,
       publicSubstate: row.owner_public_substate as "anonymous" | "recognized" | null,
+      ...(row.owner_org_id !== null
+        ? {
+            orgId: boundedString(row.owner_org_id, 256, "stored owner.orgId"),
+          }
+        : {}),
     },
     threadId,
     previewMode,
@@ -1867,6 +1927,14 @@ function boundedString(
   return value;
 }
 
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
+}
+
 function boundedCodePointString(value: unknown, maxLength: number, field: string): string {
   if (typeof value !== "string") throw new Error(`${STORE_LABEL}: ${field} must be a string`);
   const length = Array.from(value).length;
@@ -1964,7 +2032,8 @@ function sameOwner(
     left?.peerId === right?.peerId &&
     left?.kind === right?.kind &&
     left?.trustLevel === right?.trustLevel &&
-    left?.publicSubstate === right?.publicSubstate
+    left?.publicSubstate === right?.publicSubstate &&
+    left?.orgId === right?.orgId
   );
 }
 

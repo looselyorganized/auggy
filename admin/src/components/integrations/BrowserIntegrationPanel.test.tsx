@@ -49,16 +49,17 @@ describe("BrowserIntegrationPanel", () => {
     expect(html).not.toContain("x-visitor-token");
   });
 
-  it("explains visitor bootstrap, rotation, storage, and same-origin limitations", () => {
+  it("explains anonymous bootstrap, verification, storage, and same-origin limitations", () => {
     const html = renderBrowser(
       posture({ allowAnonymous: { value: true }, visitorTokensEnabled: true }),
     );
 
     expect(html).toContain("Same-origin only");
     expect(html).toContain("Visitor identity");
-    expect(html).toContain("bootstrap");
+    expect(html).toContain("server-minted anonymous session");
     expect(html).toContain("x-visitor-token");
-    expect(html).toContain("rotated visitor token");
+    expect(html).toContain("trusted verification handoff");
+    expect(html).not.toContain("rotated visitor token");
     expect(html).toContain("share an origin");
   });
 

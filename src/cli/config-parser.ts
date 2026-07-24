@@ -159,6 +159,69 @@ function validateWebTransportOptions(
   optionsPrefix: string,
   errors: string[],
 ): void {
+  if (opts.rateLimitPerPeer !== undefined) {
+    if (
+      opts.rateLimitPerPeer === null ||
+      typeof opts.rateLimitPerPeer !== "object" ||
+      Array.isArray(opts.rateLimitPerPeer)
+    ) {
+      errors.push(`${optionsPrefix}.rateLimitPerPeer: must be an object`);
+    } else {
+      const rateLimit = opts.rateLimitPerPeer as Record<string, unknown>;
+      const maxPerMinute = rateLimit.maxPerMinute;
+      if (!Number.isSafeInteger(maxPerMinute) || (maxPerMinute as number) < 1) {
+        errors.push(`${optionsPrefix}.rateLimitPerPeer.maxPerMinute: must be a positive integer`);
+      }
+      if (rateLimit.anonymousNetwork !== undefined) {
+        if (
+          rateLimit.anonymousNetwork === null ||
+          typeof rateLimit.anonymousNetwork !== "object" ||
+          Array.isArray(rateLimit.anonymousNetwork)
+        ) {
+          errors.push(`${optionsPrefix}.rateLimitPerPeer.anonymousNetwork: must be an object`);
+        } else {
+          const anonymous = rateLimit.anonymousNetwork as Record<string, unknown>;
+          if (
+            anonymous.mode !== undefined &&
+            anonymous.mode !== "shared-store" &&
+            anonymous.mode !== "trusted-edge" &&
+            anonymous.mode !== "single-process-development"
+          ) {
+            errors.push(
+              `${optionsPrefix}.rateLimitPerPeer.anonymousNetwork.mode: must be shared-store, trusted-edge, or single-process-development`,
+            );
+          }
+          if (
+            anonymous.ipv6PrefixBits !== undefined &&
+            (!Number.isSafeInteger(anonymous.ipv6PrefixBits) ||
+              (anonymous.ipv6PrefixBits as number) < 32 ||
+              (anonymous.ipv6PrefixBits as number) > 64)
+          ) {
+            errors.push(
+              `${optionsPrefix}.rateLimitPerPeer.anonymousNetwork.ipv6PrefixBits: must be an integer from 32 to 64`,
+            );
+          }
+          if (
+            anonymous.globalMaxPerMinute !== undefined &&
+            (!Number.isSafeInteger(anonymous.globalMaxPerMinute) ||
+              (anonymous.globalMaxPerMinute as number) < 1)
+          ) {
+            errors.push(
+              `${optionsPrefix}.rateLimitPerPeer.anonymousNetwork.globalMaxPerMinute: must be a positive integer`,
+            );
+          } else if (
+            typeof maxPerMinute === "number" &&
+            typeof anonymous.globalMaxPerMinute === "number" &&
+            anonymous.globalMaxPerMinute < maxPerMinute
+          ) {
+            errors.push(
+              `${optionsPrefix}.rateLimitPerPeer.anonymousNetwork.globalMaxPerMinute: cannot be less than maxPerMinute`,
+            );
+          }
+        }
+      }
+    }
+  }
   if (
     opts.maxRequestBodyBytes !== undefined &&
     (!Number.isSafeInteger(opts.maxRequestBodyBytes) || (opts.maxRequestBodyBytes as number) < 1)
@@ -202,6 +265,91 @@ function validateWebTransportOptions(
       errors.push(`${optionsPrefix}.externalAuth: must be an object`);
     } else {
       const externalAuth = opts.externalAuth as Record<string, unknown>;
+      if (typeof externalAuth.secret !== "string" || externalAuth.secret.trim() === "") {
+        errors.push(`${optionsPrefix}.externalAuth.secret: must be a non-empty string`);
+      }
+      if (
+        externalAuth.keyId !== undefined &&
+        (typeof externalAuth.keyId !== "string" || externalAuth.keyId.trim() === "")
+      ) {
+        errors.push(`${optionsPrefix}.externalAuth.keyId: must be a non-empty string`);
+      }
+      if (
+        externalAuth.audience !== undefined &&
+        (typeof externalAuth.audience !== "string" || externalAuth.audience.trim() === "")
+      ) {
+        errors.push(`${optionsPrefix}.externalAuth.audience: must be a non-empty string`);
+      }
+      if (
+        externalAuth.header !== undefined &&
+        (typeof externalAuth.header !== "string" || externalAuth.header.trim() === "")
+      ) {
+        errors.push(`${optionsPrefix}.externalAuth.header: must be a non-empty string`);
+      }
+      if (
+        externalAuth.maxTtlSeconds !== undefined &&
+        (!Number.isSafeInteger(externalAuth.maxTtlSeconds) ||
+          (externalAuth.maxTtlSeconds as number) <= 0)
+      ) {
+        errors.push(`${optionsPrefix}.externalAuth.maxTtlSeconds: must be a positive integer`);
+      }
+      if (externalAuth.allowedProviders !== undefined) {
+        if (
+          !Array.isArray(externalAuth.allowedProviders) ||
+          externalAuth.allowedProviders.length === 0 ||
+          externalAuth.allowedProviders.some(
+            (provider) => typeof provider !== "string" || provider.trim() === "",
+          )
+        ) {
+          errors.push(
+            `${optionsPrefix}.externalAuth.allowedProviders: must be a non-empty array of non-empty strings`,
+          );
+        } else if (
+          new Set(externalAuth.allowedProviders as string[]).size !==
+          externalAuth.allowedProviders.length
+        ) {
+          errors.push(`${optionsPrefix}.externalAuth.allowedProviders: entries must be unique`);
+        }
+      }
+      if (externalAuth.secrets !== undefined) {
+        if (
+          !Array.isArray(externalAuth.secrets) ||
+          externalAuth.secrets.some(
+            (entry) => entry === null || typeof entry !== "object" || Array.isArray(entry),
+          )
+        ) {
+          errors.push(`${optionsPrefix}.externalAuth.secrets: must be an array of secret objects`);
+        } else {
+          for (const [index, value] of externalAuth.secrets.entries()) {
+            const entry = value as Record<string, unknown>;
+            if (typeof entry.secret !== "string" || entry.secret.trim() === "") {
+              errors.push(
+                `${optionsPrefix}.externalAuth.secrets[${index}].secret: must be a non-empty string`,
+              );
+            }
+            if (
+              entry.keyId !== undefined &&
+              (typeof entry.keyId !== "string" || entry.keyId.trim() === "")
+            ) {
+              errors.push(
+                `${optionsPrefix}.externalAuth.secrets[${index}].keyId: must be a non-empty string`,
+              );
+            }
+          }
+        }
+      }
+      if (
+        externalAuth.includeUnverifiedEmail !== undefined &&
+        typeof externalAuth.includeUnverifiedEmail !== "boolean"
+      ) {
+        errors.push(`${optionsPrefix}.externalAuth.includeUnverifiedEmail: must be a boolean`);
+      }
+      if (
+        externalAuth.visitorId !== undefined &&
+        (typeof externalAuth.visitorId !== "string" || externalAuth.visitorId.trim() === "")
+      ) {
+        errors.push(`${optionsPrefix}.externalAuth.visitorId: must be a non-empty string`);
+      }
       if (externalAuth.replayProtection !== undefined) {
         if (
           externalAuth.replayProtection === null ||

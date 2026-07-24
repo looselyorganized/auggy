@@ -1,10 +1,11 @@
-import { createHmac } from "node:crypto";
+import { createHash, createHmac } from "node:crypto";
 import { describe, expect, test } from "bun:test";
 import {
   createExternalAuthAssertion,
   createInMemoryExternalAuthReplayStore,
   externalAuthClaimsToRouteContext,
   externalAuthClaimsToRoutePrincipal,
+  externalMappedVisitorId,
   externalSubjectVisitorId,
   verifyExternalAuthAssertion,
   type ExternalAuthClaims,
@@ -149,6 +150,52 @@ describe("external auth assertions", () => {
         maxTtlSeconds: 300,
       }),
     ).toEqual({ ok: false, reason: "ttl-too-long" });
+  });
+
+  test("fails closed on malformed restrictive verification policies", () => {
+    const assertion = createExternalAuthAssertion({
+      secret: "app-server-secret",
+      audience: "agent_zip",
+      provider: "evil",
+      subject: "user_123",
+      now,
+      ttlSeconds: 24 * 60 * 60,
+    });
+    for (const allowedProviders of ["", "supabase-evil", []] as unknown[]) {
+      expect(
+        verifyExternalAuthAssertion(assertion, {
+          secret: "app-server-secret",
+          audience: "agent_zip",
+          now,
+          allowedProviders: allowedProviders as readonly string[],
+        }),
+      ).toEqual({ ok: false, reason: "provider-not-allowed" });
+    }
+    for (const maxTtlSeconds of ["not-a-number", Number.NaN, Number.POSITIVE_INFINITY, 0]) {
+      expect(
+        verifyExternalAuthAssertion(assertion, {
+          secret: "app-server-secret",
+          audience: "agent_zip",
+          now,
+          maxTtlSeconds: maxTtlSeconds as number,
+        }),
+      ).toEqual({ ok: false, reason: "ttl-too-long" });
+    }
+  });
+
+  test("rejects non-finite and fractional assertion TTLs when minting", () => {
+    for (const ttlSeconds of [Number.NaN, Number.POSITIVE_INFINITY, 0.5]) {
+      expect(() =>
+        createExternalAuthAssertion({
+          secret: "app-server-secret",
+          audience: "agent_zip",
+          provider: "fake-provider",
+          subject: "user_123",
+          now,
+          ttlSeconds,
+        }),
+      ).toThrow(/positive integer/);
+    }
   });
 
   test("rejects empty assertion key ids", () => {
@@ -378,6 +425,7 @@ describe("external auth assertions", () => {
       publicSubstate: "recognized",
       visitorId: externalSubjectVisitorId(claims),
       agentId: "agent_zip",
+      orgId: "org_123",
       email: "alice@example.com",
       verifiedAt: now - 1000,
       externalAuth: {
@@ -405,6 +453,7 @@ describe("external auth assertions", () => {
       agentId: "agent_zip",
       issuedAt: now,
       expiresAt: now + 300_000,
+      orgId: "org_123",
       email: "alice@example.com",
       verifiedAt: now - 1000,
       externalAuth: {
@@ -430,6 +479,7 @@ describe("external auth assertions", () => {
         publicSubstate: "recognized",
         visitorId: externalSubjectVisitorId(claims),
         agentId: "agent_zip",
+        orgId: "org_123",
         email: "alice@example.com",
         verifiedAt: now - 1000,
         externalAuth: {
@@ -470,7 +520,7 @@ describe("external auth assertions", () => {
     );
   });
 
-  test("supports app-provided visitor ids for account linking", () => {
+  test("binds app-provided visitor-id namespaces to the authenticated subject", () => {
     const claims: ExternalAuthClaims = {
       provider: "fake-provider",
       subject: "user_123",
@@ -480,13 +530,82 @@ describe("external auth assertions", () => {
     };
 
     expect(externalAuthClaimsToRoutePrincipal(claims, { visitorId: "vis_existing" })).toEqual(
-      expect.objectContaining({ visitorId: "vis_existing" }),
+      expect.objectContaining({
+        visitorId: externalMappedVisitorId(claims, "vis_existing"),
+      }),
     );
     expect(
       externalAuthClaimsToRoutePrincipal(claims, {
         visitorId: (input) => `vis_${input.provider}_${input.subject}`,
       }),
-    ).toEqual(expect.objectContaining({ visitorId: "vis_fake-provider_user_123" }));
+    ).toEqual(
+      expect.objectContaining({
+        visitorId: externalMappedVisitorId(claims, "vis_fake-provider_user_123"),
+      }),
+    );
+  });
+
+  test("does not let a constant visitor-id mapper collapse distinct external subjects", () => {
+    const first: ExternalAuthClaims = {
+      provider: "fake-provider",
+      subject: "user_a",
+      audience: "agent_zip",
+      issuedAt: now,
+      expiresAt: now + 300_000,
+    };
+    const second = { ...first, subject: "user_b" };
+    const options = { visitorId: () => "vis_shared_account" };
+
+    expect(externalAuthClaimsToRoutePrincipal(first, options).visitorId).not.toBe(
+      externalAuthClaimsToRoutePrincipal(second, options).visitorId,
+    );
+  });
+
+  test("partitions default visitor identities by verified organization", () => {
+    const base = {
+      provider: "fake-provider",
+      subject: "user_123",
+    };
+    expect(externalSubjectVisitorId({ ...base, orgId: "org_a" })).not.toBe(
+      externalSubjectVisitorId({ ...base, orgId: "org_b" }),
+    );
+    expect(externalSubjectVisitorId(base)).not.toBe(
+      externalSubjectVisitorId({ ...base, orgId: "org_a" }),
+    );
+  });
+
+  test("preserves legacy no-organization visitor ids and rejects ambiguous control characters", () => {
+    const base = {
+      provider: "fake-provider",
+      subject: "user_123",
+    };
+    const legacyHash = createHash("sha256")
+      .update(base.provider)
+      .update("\0")
+      .update(base.subject)
+      .digest("base64url")
+      .slice(0, 32);
+    expect(externalSubjectVisitorId(base)).toBe(`vis_ext_${legacyHash}`);
+    expect(() => externalSubjectVisitorId({ provider: "fake\0provider", subject: "user" })).toThrow(
+      /control characters/,
+    );
+    expect(
+      verifyExternalAuthAssertion(
+        signedAssertion({
+          typ: "auggy.external-auth.v1",
+          aud: "agent_zip",
+          provider: "fake-provider",
+          sub: "user\0other",
+          iat: now,
+          exp: now + 60_000,
+        }),
+        {
+          secret: "app-server-secret",
+          audience: "agent_zip",
+          now,
+        },
+      ),
+    ).toEqual({ ok: false, reason: "invalid-payload" });
   });
 });
 

@@ -121,6 +121,28 @@ describe("kernel thread-history persistence", () => {
     }
   });
 
+  it("rejects the same peer id when its organization context changes", async () => {
+    const model = createMockModel({ response: "private response" });
+    const { agent, kernel } = await runtime(model);
+
+    try {
+      await kernel.handleInbound(
+        trigger("unmanaged-org-owner", "org a prompt", { ...PEER, orgId: "org-a" }),
+      );
+      await expect(
+        kernel.handleInbound(
+          trigger("unmanaged-org-owner", "org b history request", {
+            ...PEER,
+            orgId: "org-b",
+          }),
+        ),
+      ).rejects.toThrow("thread belongs to another peer");
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("allows only a transport-proven anonymous-to-recognized promotion", async () => {
     const model = createMockModel({ response: "ok" });
     const { agent, kernel } = await runtime(model);
@@ -630,22 +652,37 @@ describe("kernel thread-history persistence", () => {
     }
   });
 
-  it("passes the caller AbortSignal through to model inference", async () => {
+  it("propagates caller cancellation to model inference", async () => {
     const controller = new AbortController();
-    let observedSignal: AbortSignal | undefined;
+    let signalReady: ((signal: AbortSignal) => void) | undefined;
+    const observedSignal = new Promise<AbortSignal>((resolve) => {
+      signalReady = resolve;
+    });
     const model: ModelClient = {
       maxContextTokens: 100_000,
       countTokens: (text) => Math.ceil(text.length / 4),
       async complete(_prompt, options) {
-        observedSignal = options?.signal;
-        return response();
+        const signal = options?.signal;
+        if (!signal) throw new Error("missing inference signal");
+        signalReady?.(signal);
+        return await new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
       },
     };
     const { agent, kernel } = await runtime(model);
 
     try {
-      await kernel.handleInbound(trigger("signal", "hello"), { signal: controller.signal });
-      expect(observedSignal).toBe(controller.signal);
+      const turn = kernel.handleInbound(trigger("signal", "hello"), { signal: controller.signal });
+      const inferenceSignal = await observedSignal;
+      expect(inferenceSignal.aborted).toBe(false);
+
+      const reason = new Error("caller cancelled");
+      controller.abort(reason);
+
+      expect(inferenceSignal.aborted).toBe(true);
+      expect(inferenceSignal.reason).toBe(reason);
+      await expect(turn).rejects.toBe(reason);
     } finally {
       await agent.stop();
     }

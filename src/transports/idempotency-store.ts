@@ -7,14 +7,15 @@ import {
 } from "../lib/sqlite";
 
 const APPLICATION_ID = 0x41554944; // "AUID"
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const DEFAULT_MAX_RECORDS = 50_000;
+const DEFAULT_MAX_RATE_LIMIT_RECORDS = 50_000;
 const DEFAULT_MAX_REPLAY_BYTES = 2 * 1024 * 1024;
 const DEFAULT_MAX_STORED_BYTES = 256 * 1024 * 1024;
 const DEFAULT_STALE_AFTER_MS = 30_000;
 const DEFAULT_RETENTION_MS = 24 * 60 * 60 * 1000;
 
-const SCHEMA_STATEMENTS = [
+const V1_SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS web_idempotency (
     key_hash       TEXT PRIMARY KEY,
     binding_hash   TEXT NOT NULL,
@@ -35,22 +36,67 @@ const SCHEMA_STATEMENTS = [
      ON web_idempotency(capacity_class, partition_hash)`,
 ];
 
-const EXPECTED_SCHEMA = new Map(
-  SCHEMA_STATEMENTS.map((sql) => {
-    const match = sql.match(/(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([^\s(]+)/i);
-    if (!match?.[1]) throw new Error("web idempotency store: invalid schema declaration");
-    return [match[1], canonicalSqliteSchemaSql(sql)] as const;
-  }),
-);
+const RATE_LIMIT_SCHEMA_STATEMENTS = [
+  `CREATE TABLE IF NOT EXISTS web_rate_limit_hits (
+    hit_id      TEXT PRIMARY KEY,
+    bucket_hash TEXT NOT NULL,
+    occurred_at INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_web_rate_limit_bucket_time
+     ON web_rate_limit_hits(bucket_hash, occurred_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_web_rate_limit_time
+     ON web_rate_limit_hits(occurred_at)`,
+];
 
-function hasExactSchema(objects: readonly SqliteSchemaObject[]): boolean {
-  return (
-    objects.length === EXPECTED_SCHEMA.size &&
-    objects.every(
-      (object) => EXPECTED_SCHEMA.get(object.name) === canonicalSqliteSchemaSql(object.sql),
-    )
+const SCHEMA_STATEMENTS = [...V1_SCHEMA_STATEMENTS, ...RATE_LIMIT_SCHEMA_STATEMENTS];
+
+function expectedSchema(statements: readonly string[]): Map<string, string> {
+  return new Map(
+    statements.map((sql) => {
+      const match = sql.match(/(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([^\s(]+)/i);
+      if (!match?.[1]) throw new Error("web idempotency store: invalid schema declaration");
+      return [match[1], canonicalSqliteSchemaSql(sql)] as const;
+    }),
   );
 }
+
+const EXPECTED_V1_SCHEMA = expectedSchema(V1_SCHEMA_STATEMENTS);
+const EXPECTED_SCHEMA = expectedSchema(SCHEMA_STATEMENTS);
+
+function hasSchema(
+  objects: readonly SqliteSchemaObject[],
+  expected: ReadonlyMap<string, string>,
+): boolean {
+  return (
+    objects.length === expected.size &&
+    objects.every((object) => expected.get(object.name) === canonicalSqliteSchemaSql(object.sql))
+  );
+}
+
+function hasExactSchema(objects: readonly SqliteSchemaObject[]): boolean {
+  return hasSchema(objects, EXPECTED_SCHEMA);
+}
+
+function hasV1Schema(objects: readonly SqliteSchemaObject[]): boolean {
+  return hasSchema(objects, EXPECTED_V1_SCHEMA);
+}
+
+/*
+ * Keep this declaration close to the schema helpers: both legacy unstamped
+ * databases and branded v1 databases must be admitted only when every object
+ * exactly matches the prior release.
+ */
+function addRateLimitSchema(target: { run(sql: string): unknown }): void {
+  for (const statement of RATE_LIMIT_SCHEMA_STATEMENTS) target.run(statement);
+}
+
+/*
+ * This type is intentionally independent from HTTP response types so the
+ * durable store can be tested directly across multiple process-like handles.
+ */
+export type RateLimitReservation =
+  | { allowed: true }
+  | { allowed: false; retryAfterSec: number; reason: "limit" | "capacity" };
 
 function validateSchema(objects: readonly SqliteSchemaObject[]): void {
   if (!hasExactSchema(objects)) {
@@ -74,18 +120,32 @@ export type IdempotencyClaim =
   | { status: "replay"; turnId: string; responseBody: string }
   | { status: "conflict" }
   | { status: "unknown" }
-  | { status: "capacity" };
+  | { status: "capacity" }
+  | {
+      status: "rate-limited";
+      retryAfterSec: number;
+      reason: "limit" | "capacity";
+    };
+
+export interface RateLimitPolicy {
+  bucketHash: string;
+  max: number;
+  windowMs: number;
+}
 
 export interface WebIdempotencyStore {
   claim(
     keyHash: string,
     bindingHash: string,
     capacity?: { class: "public" | "agent" | "creator"; partitionHash: string },
+    rateLimits?: readonly RateLimitPolicy[],
   ): IdempotencyClaim;
   read(keyHash: string, bindingHash: string): IdempotencyClaim;
   heartbeat(keyHash: string, ownerToken: string): boolean;
   complete(keyHash: string, ownerToken: string, responseBody: string): "complete" | "unknown";
   markUnknown(keyHash: string, ownerToken: string): void;
+  reserveRateLimits(policies: readonly RateLimitPolicy[]): RateLimitReservation;
+  reserveRateLimit(bucketHash: string, max: number, windowMs: number): RateLimitReservation;
   close(): void;
 }
 
@@ -137,6 +197,7 @@ function stableJson(value: unknown): string {
 export function createWebIdempotencyStore(config: {
   dbPath: string;
   maxRecords?: number;
+  maxRateLimitRecords?: number;
   maxReplayBytes?: number;
   maxStoredBytes?: number;
   maxRecordsPerPartition?: number;
@@ -148,6 +209,11 @@ export function createWebIdempotencyStore(config: {
   now?: () => number;
 }): WebIdempotencyStore {
   const maxRecords = positiveInteger(config.maxRecords, DEFAULT_MAX_RECORDS, "maxRecords");
+  const maxRateLimitRecords = positiveInteger(
+    config.maxRateLimitRecords,
+    DEFAULT_MAX_RATE_LIMIT_RECORDS,
+    "maxRateLimitRecords",
+  );
   if (maxRecords < 3) {
     throw new Error(
       "web idempotency store: maxRecords must be at least 3 to reserve capacity for every trust class",
@@ -201,7 +267,24 @@ export function createWebIdempotencyStore(config: {
           for (const statement of SCHEMA_STATEMENTS) target.run(statement);
         },
         isLegacy(_target, objects) {
-          return hasExactSchema(objects);
+          return hasV1Schema(objects) || hasExactSchema(objects);
+        },
+        migrateLegacy(target) {
+          const objects = target
+            .query<SqliteSchemaObject, []>(
+              `SELECT type, name, sql FROM sqlite_schema
+               WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name`,
+            )
+            .all();
+          if (hasV1Schema(objects)) addRateLimitSchema(target);
+        },
+        migrateOwned(target, fromVersion, objects) {
+          if (fromVersion !== 1 || !hasV1Schema(objects)) {
+            throw new Error(
+              `web idempotency store: unsupported schema migration from version ${fromVersion}`,
+            );
+          }
+          addRateLimitSchema(target);
         },
         validate(_target, objects) {
           validateSchema(objects);
@@ -258,6 +341,87 @@ export function createWebIdempotencyStore(config: {
      SET state = 'unknown', response_body = NULL, response_bytes = NULL
      WHERE state = 'complete' AND completed_at IS NOT NULL AND completed_at < ?`,
   );
+  const deleteExpiredRateLimitHits = db.prepare(
+    "DELETE FROM web_rate_limit_hits WHERE occurred_at <= ?",
+  );
+  const countRateLimitHits = db.prepare<{ count: number }, [string, number]>(
+    `SELECT COUNT(*) AS count FROM web_rate_limit_hits
+     WHERE bucket_hash = ? AND occurred_at > ?`,
+  );
+  const countAllRateLimitHits = db.prepare<{ count: number }, []>(
+    "SELECT COUNT(*) AS count FROM web_rate_limit_hits",
+  );
+  const oldestRateLimitHit = db.prepare<{ occurred_at: number }, [string, number]>(
+    `SELECT occurred_at FROM web_rate_limit_hits
+     WHERE bucket_hash = ? AND occurred_at > ?
+     ORDER BY occurred_at ASC LIMIT 1`,
+  );
+  const insertRateLimitHit = db.prepare(
+    `INSERT INTO web_rate_limit_hits(hit_id, bucket_hash, occurred_at)
+     VALUES (?, ?, ?)`,
+  );
+
+  function validateRateLimitPolicies(policies: readonly RateLimitPolicy[]): void {
+    if (policies.length < 1 || policies.length > 4) {
+      throw new Error("web idempotency store: one to four rate-limit policies are required");
+    }
+    const seen = new Set<string>();
+    for (const policy of policies) {
+      if (!/^[0-9a-f]{64}$/.test(policy.bucketHash)) {
+        throw new Error("web idempotency store: rate-limit bucket must be a SHA-256 hex digest");
+      }
+      if (seen.has(policy.bucketHash)) {
+        throw new Error("web idempotency store: rate-limit buckets must be unique");
+      }
+      seen.add(policy.bucketHash);
+      if (!Number.isSafeInteger(policy.max) || policy.max < 1) {
+        throw new Error("web idempotency store: rate-limit max must be a positive integer");
+      }
+      if (!Number.isSafeInteger(policy.windowMs) || policy.windowMs < 1) {
+        throw new Error("web idempotency store: rate-limit windowMs must be a positive integer");
+      }
+    }
+  }
+
+  function reserveRateLimitsInTransaction(
+    policies: readonly RateLimitPolicy[],
+  ): RateLimitReservation {
+    const admittedAt = now();
+    const oldestCutoff = Math.min(...policies.map((policy) => admittedAt - policy.windowMs));
+    deleteExpiredRateLimitHits.run(oldestCutoff);
+    for (const policy of policies) {
+      const cutoff = admittedAt - policy.windowMs;
+      const bucketCount = countRateLimitHits.get(policy.bucketHash, cutoff)?.count;
+      if (!Number.isSafeInteger(bucketCount)) {
+        throw new Error("web idempotency store: invalid rate-limit bucket count");
+      }
+      if ((bucketCount ?? policy.max) >= policy.max) {
+        const oldest = oldestRateLimitHit.get(policy.bucketHash, cutoff)?.occurred_at;
+        if (!Number.isSafeInteger(oldest)) {
+          throw new Error("web idempotency store: invalid rate-limit oldest timestamp");
+        }
+        return {
+          allowed: false,
+          retryAfterSec: Math.max(
+            1,
+            Math.ceil(((oldest ?? admittedAt) + policy.windowMs - admittedAt) / 1000),
+          ),
+          reason: "limit",
+        };
+      }
+    }
+    const totalCount = countAllRateLimitHits.get()?.count;
+    if (
+      !Number.isSafeInteger(totalCount) ||
+      (totalCount ?? maxRateLimitRecords) + policies.length > maxRateLimitRecords
+    ) {
+      return { allowed: false, retryAfterSec: 1, reason: "capacity" };
+    }
+    for (const policy of policies) {
+      insertRateLimitHit.run(randomUUID(), policy.bucketHash, admittedAt);
+    }
+    return { allowed: true };
+  }
 
   function fromStored(
     keyHash: string,
@@ -281,7 +445,7 @@ export function createWebIdempotencyStore(config: {
   }
 
   return {
-    claim(keyHash, bindingHash, capacity) {
+    claim(keyHash, bindingHash, capacity, rateLimits) {
       const resolvedCapacity = capacity ?? {
         class: "creator",
         partitionHash: createHash("sha256")
@@ -291,6 +455,7 @@ export function createWebIdempotencyStore(config: {
       if (!/^[0-9a-f]{64}$/.test(resolvedCapacity.partitionHash)) {
         throw new Error("web idempotency store: partitionHash must be a SHA-256 hex digest");
       }
+      if (rateLimits !== undefined) validateRateLimitPolicies(rateLimits);
       db.run("BEGIN IMMEDIATE");
       try {
         expireReplayBodies.run(now() - retentionMs);
@@ -316,6 +481,17 @@ export function createWebIdempotencyStore(config: {
         ) {
           db.run("COMMIT");
           return { status: "capacity" };
+        }
+        if (rateLimits !== undefined) {
+          const reservation = reserveRateLimitsInTransaction(rateLimits);
+          if (!reservation.allowed) {
+            db.run("COMMIT");
+            return {
+              status: "rate-limited",
+              retryAfterSec: reservation.retryAfterSec,
+              reason: reservation.reason,
+            };
+          }
         }
         const turnId = randomUUID();
         const ownerToken = randomUUID();
@@ -375,6 +551,23 @@ export function createWebIdempotencyStore(config: {
 
     markUnknown(keyHash, ownerToken) {
       unknown.run(now(), keyHash, ownerToken);
+    },
+
+    reserveRateLimits(policies) {
+      validateRateLimitPolicies(policies);
+      db.run("BEGIN IMMEDIATE");
+      try {
+        const reservation = reserveRateLimitsInTransaction(policies);
+        db.run("COMMIT");
+        return reservation;
+      } catch (error) {
+        if (db.inTransaction) db.run("ROLLBACK");
+        throw error;
+      }
+    },
+
+    reserveRateLimit(bucketHash, max, windowMs) {
+      return this.reserveRateLimits([{ bucketHash, max, windowMs }]);
     },
 
     close() {

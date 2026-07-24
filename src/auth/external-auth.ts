@@ -11,6 +11,10 @@ import type {
 
 const ASSERTION_TYPE = "auggy.external-auth.v1";
 const DEFAULT_TTL_SECONDS = 5 * 60;
+const MAX_AUDIENCE_LENGTH = 256;
+const MAX_PROVIDER_LENGTH = 128;
+const MAX_SUBJECT_LENGTH = 512;
+const MAX_ORG_ID_LENGTH = 256;
 
 export interface ExternalAuthClaims {
   keyId?: string;
@@ -88,6 +92,11 @@ export type ExternalAuthAssertionVerification =
   | { ok: false; reason: ExternalAuthAssertionFailureReason };
 
 export interface ExternalAuthPrincipalOptions {
+  /**
+   * Optional app account namespace. The runtime hashes this value together
+   * with verified provider, subject, and organization claims; it is not used
+   * verbatim as a peer ID.
+   */
   visitorId?: string | ((claims: ExternalAuthClaims) => string);
   includeUnverifiedEmail?: boolean;
 }
@@ -118,7 +127,15 @@ export function createExternalAuthAssertion(opts: CreateExternalAuthAssertionOpt
   if (opts.keyId !== undefined && opts.keyId.trim() === "") {
     throw new Error("external auth assertion keyId must be non-empty when provided");
   }
-  if (ttlSeconds <= 0) throw new Error("external auth assertion ttlSeconds must be positive");
+  if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds <= 0) {
+    throw new Error("external auth assertion ttlSeconds must be a positive integer");
+  }
+  assertIdentityClaim("audience", opts.audience, MAX_AUDIENCE_LENGTH);
+  assertIdentityClaim("provider", opts.provider, MAX_PROVIDER_LENGTH);
+  assertIdentityClaim("subject", opts.subject, MAX_SUBJECT_LENGTH);
+  if (opts.orgId !== undefined) {
+    assertIdentityClaim("orgId", opts.orgId, MAX_ORG_ID_LENGTH);
+  }
 
   const payload: ExternalAuthAssertionPayload = {
     typ: ASSERTION_TYPE,
@@ -146,6 +163,22 @@ export function verifyExternalAuthAssertion(
   assertion: string,
   opts: VerifyExternalAuthAssertionOptions,
 ): ExternalAuthAssertionVerification {
+  if (
+    opts.allowedProviders !== undefined &&
+    (!Array.isArray(opts.allowedProviders) ||
+      opts.allowedProviders.length === 0 ||
+      opts.allowedProviders.some(
+        (provider) => typeof provider !== "string" || provider.trim() === "",
+      ))
+  ) {
+    return { ok: false, reason: "provider-not-allowed" };
+  }
+  if (
+    opts.maxTtlSeconds !== undefined &&
+    (!Number.isSafeInteger(opts.maxTtlSeconds) || opts.maxTtlSeconds <= 0)
+  ) {
+    return { ok: false, reason: "ttl-too-long" };
+  }
   const secrets = normalizeAssertionSecrets(opts);
   if (secrets.length === 0) return { ok: false, reason: "invalid-signature" };
 
@@ -210,6 +243,7 @@ export function externalAuthClaimsToRoutePrincipal(
     publicSubstate: "recognized",
     visitorId,
     agentId: claims.audience,
+    ...(claims.orgId !== undefined ? { orgId: claims.orgId } : {}),
     ...(includeEmail ? { email: claims.email } : {}),
     ...(claims.verifiedAt !== undefined ? { verifiedAt: claims.verifiedAt } : {}),
     externalAuth: routeExternalAuthClaims(claims),
@@ -228,6 +262,7 @@ export function externalAuthClaimsToRouteContext(
     agentId: claims.audience,
     issuedAt: claims.issuedAt,
     expiresAt: claims.expiresAt,
+    ...(claims.orgId !== undefined ? { orgId: claims.orgId } : {}),
     ...(principal.email !== undefined ? { email: principal.email } : {}),
     ...(principal.verifiedAt !== undefined ? { verifiedAt: principal.verifiedAt } : {}),
     externalAuth: principal.externalAuth,
@@ -236,15 +271,53 @@ export function externalAuthClaimsToRouteContext(
 }
 
 export function externalSubjectVisitorId(
-  claims: Pick<ExternalAuthClaims, "provider" | "subject">,
+  claims: Pick<ExternalAuthClaims, "provider" | "subject" | "orgId">,
 ): string {
+  assertIdentityClaim("provider", claims.provider, MAX_PROVIDER_LENGTH);
+  assertIdentityClaim("subject", claims.subject, MAX_SUBJECT_LENGTH);
+  if (claims.orgId !== undefined) {
+    assertIdentityClaim("orgId", claims.orgId, MAX_ORG_ID_LENGTH);
+  }
+  const digest = createHash("sha256");
+  if (claims.orgId === undefined) {
+    // Preserve the original no-organization identifier byte-for-byte so
+    // existing visitor memory and thread ownership remain reachable.
+    digest.update(claims.provider).update("\0").update(claims.subject);
+  } else {
+    // A versioned JSON tuple is unambiguous even when future claim syntax
+    // admits delimiter-like text.
+    digest
+      .update("auggy-external-subject-v2\0")
+      .update(JSON.stringify([claims.provider, claims.subject, claims.orgId]));
+  }
+  const hash = digest.digest("base64url").slice(0, 32);
+  return `vis_ext_${hash}`;
+}
+
+/**
+ * Bind an operator-provided account label to the authenticated subject that
+ * supplied it. A mapper is useful for choosing a stable namespace, but its
+ * output is not itself authentication evidence: a constant or buggy mapper
+ * must not collapse unrelated external subjects into one runtime peer.
+ */
+export function externalMappedVisitorId(
+  claims: Pick<ExternalAuthClaims, "provider" | "subject" | "orgId">,
+  mappedVisitorId: string,
+): string {
+  assertIdentityClaim("provider", claims.provider, MAX_PROVIDER_LENGTH);
+  assertIdentityClaim("subject", claims.subject, MAX_SUBJECT_LENGTH);
+  if (claims.orgId !== undefined) {
+    assertIdentityClaim("orgId", claims.orgId, MAX_ORG_ID_LENGTH);
+  }
+  assertIdentityClaim("visitorId", mappedVisitorId, 256);
   const hash = createHash("sha256")
-    .update(claims.provider)
-    .update("\0")
-    .update(claims.subject)
+    .update("auggy-external-mapped-visitor-v1\0")
+    .update(
+      JSON.stringify([mappedVisitorId, claims.provider, claims.subject, claims.orgId ?? null]),
+    )
     .digest("base64url")
     .slice(0, 32);
-  return `vis_ext_${hash}`;
+  return `vis_extmap_${hash}`;
 }
 
 export function createInMemoryExternalAuthReplayStore(): ExternalAuthReplayStore {
@@ -276,9 +349,26 @@ function resolveVisitorId(
   claims: ExternalAuthClaims,
   visitorId: ExternalAuthPrincipalOptions["visitorId"],
 ): string {
-  if (typeof visitorId === "function") return visitorId(claims);
-  if (typeof visitorId === "string") return visitorId;
+  if (typeof visitorId === "function") {
+    return externalMappedVisitorId(claims, visitorId(claims));
+  }
+  if (typeof visitorId === "string") {
+    return externalMappedVisitorId(claims, visitorId);
+  }
   return externalSubjectVisitorId(claims);
+}
+
+function assertIdentityClaim(label: string, value: string, maxLength: number): void {
+  if (
+    typeof value !== "string" ||
+    value.length === 0 ||
+    value.length > maxLength ||
+    hasControlCharacter(value)
+  ) {
+    throw new Error(
+      `external auth assertion ${label} must be 1-${maxLength} characters without control characters`,
+    );
+  }
 }
 
 function routeExternalAuthClaims(claims: ExternalAuthClaims): RouteExternalAuthClaims {
@@ -373,15 +463,15 @@ function decodePayload(encodedPayload: string): ExternalAuthAssertionPayload | n
   if (raw.kid !== undefined && (typeof raw.kid !== "string" || raw.kid.trim() === "")) {
     return null;
   }
-  if (typeof raw.aud !== "string" || raw.aud.length === 0) return null;
-  if (typeof raw.provider !== "string" || raw.provider.length === 0) return null;
-  if (typeof raw.sub !== "string" || raw.sub.length === 0) return null;
+  if (!isIdentityClaim(raw.aud, MAX_AUDIENCE_LENGTH)) return null;
+  if (!isIdentityClaim(raw.provider, MAX_PROVIDER_LENGTH)) return null;
+  if (!isIdentityClaim(raw.sub, MAX_SUBJECT_LENGTH)) return null;
   if (typeof raw.iat !== "number" || !Number.isFinite(raw.iat)) return null;
   if (typeof raw.exp !== "number" || !Number.isFinite(raw.exp)) return null;
   if (raw.email !== undefined && typeof raw.email !== "string") return null;
   if (raw.emailVerified !== undefined && typeof raw.emailVerified !== "boolean") return null;
   if (raw.verifiedAt !== undefined && typeof raw.verifiedAt !== "number") return null;
-  if (raw.orgId !== undefined && typeof raw.orgId !== "string") return null;
+  if (raw.orgId !== undefined && !isIdentityClaim(raw.orgId, MAX_ORG_ID_LENGTH)) return null;
   if (
     raw.roles !== undefined &&
     (!Array.isArray(raw.roles) || raw.roles.some((role) => typeof role !== "string"))
@@ -428,6 +518,23 @@ function decodePayload(encodedPayload: string): ExternalAuthAssertionPayload | n
     ...(raw.authzVersion !== undefined ? { authzVersion: raw.authzVersion } : {}),
     ...(raw.jti !== undefined ? { jti: raw.jti } : {}),
   };
+}
+
+function isIdentityClaim(value: unknown, maxLength: number): value is string {
+  return (
+    typeof value === "string" &&
+    value.length > 0 &&
+    value.length <= maxLength &&
+    !hasControlCharacter(value)
+  );
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
 }
 
 function isAuthorizationGrantPayload(value: unknown): value is AuthorizationGrant {

@@ -3,6 +3,7 @@ export interface VisitorTokenPayload {
   agentId: string;
   issuedAt: number;
   expiresAt: number;
+  orgId?: string;
   priorPeerId?: string;
   priorThreadScopeId?: string;
 }
@@ -102,6 +103,7 @@ function isVisitorTokenPayload(value: unknown): value is VisitorTokenPayload {
   if (
     keys.length !==
       4 +
+        (payload.orgId === undefined ? 0 : 1) +
         (payload.priorPeerId === undefined ? 0 : 1) +
         (payload.priorThreadScopeId === undefined ? 0 : 1) ||
     !keys.every((key) =>
@@ -110,6 +112,7 @@ function isVisitorTokenPayload(value: unknown): value is VisitorTokenPayload {
         "agentId",
         "issuedAt",
         "expiresAt",
+        "orgId",
         "priorPeerId",
         "priorThreadScopeId",
       ].includes(key),
@@ -128,6 +131,11 @@ function isVisitorTokenPayload(value: unknown): value is VisitorTokenPayload {
     typeof payload.expiresAt === "number" &&
     Number.isSafeInteger(payload.expiresAt) &&
     payload.expiresAt > payload.issuedAt &&
+    (payload.orgId === undefined ||
+      (typeof payload.orgId === "string" &&
+        payload.orgId.length > 0 &&
+        payload.orgId.length <= 256 &&
+        !hasControlCharacter(payload.orgId))) &&
     (payload.priorPeerId === undefined ||
       (typeof payload.priorPeerId === "string" &&
         payload.priorPeerId.length > 0 &&
@@ -137,4 +145,12 @@ function isVisitorTokenPayload(value: unknown): value is VisitorTokenPayload {
         payload.priorThreadScopeId.length > 0 &&
         payload.priorThreadScopeId.length <= 256))
   );
+}
+
+function hasControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return true;
+  }
+  return false;
 }

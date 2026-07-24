@@ -210,11 +210,15 @@ function AuthenticationNote({ mode }: { mode: BrowserConnectionGuidance["mode"] 
   if (mode === "visitor-token") {
     return (
       <>
-        <p>Start anonymously, then save the rotated visitor token for future requests.</p>
+        <p>
+          Start with the server-minted anonymous session. Use a visitor token only after a trusted
+          verification handoff.
+        </p>
         <p className="text-muted-foreground">
           The example uses local storage for continuity. Choose storage appropriate to your app's
-          security model. Automatic verification handoff requires the app and verification page to
-          share an origin.
+          security model. The generic conversation route never exchanges an invalid token for
+          recognized authority. Automatic verification handoff requires the app and verification
+          page to share an origin.
         </p>
       </>
     );

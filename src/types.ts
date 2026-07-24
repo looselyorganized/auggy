@@ -801,6 +801,7 @@ export interface RouteVisitorIdentity {
   agentId: string;
   issuedAt: number;
   expiresAt: number;
+  orgId?: string;
   email?: string;
   verifiedAt?: number;
   reverifyDueAt?: number;
@@ -910,6 +911,7 @@ export type RouteAuthPrincipal =
       publicSubstate: "recognized";
       visitorId: string;
       agentId: string;
+      orgId?: string;
       email?: string;
       verifiedAt?: number;
       reverifyDueAt?: number;
@@ -1132,8 +1134,8 @@ export interface TurnGateProvider {
    * uses this to debit USD totals or mark reservations completed.
    * The CostResult discriminated union forces unpriced-aware handling.
    *
-   * Optional. Errors here are logged but do not fail the turn — the
-   * response already exists.
+   * Optional. The kernel treats an error here as outcome-unknown after
+   * inference and does not return a successful terminal result.
    */
   commit?(args: {
     turnId: string;

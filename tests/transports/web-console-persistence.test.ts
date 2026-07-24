@@ -677,10 +677,14 @@ describe("webTransport console persistence boundary", () => {
   it("abandons an oversized transcript update without stranding the run lease", async () => {
     const port = 19443;
     let callCount = 0;
+    const oversizedSentinel = "GROUP8_OVERSIZED_RESPONSE_SENTINEL";
     const model: ModelClient = {
       maxContextTokens: 100_000,
       async complete() {
-        const content = callCount++ === 0 ? "x".repeat(16 * 1024 * 1024 + 1) : "recovered";
+        const content =
+          callCount++ === 0
+            ? `${oversizedSentinel}${"x".repeat(16 * 1024 * 1024 + 1)}`
+            : "recovered";
         return {
           content,
           inputTokens: 1,
@@ -727,12 +731,15 @@ describe("webTransport console persistence boundary", () => {
         runId: expect.any(String),
         result: { status: "failed" },
       });
-      expect(firstText).toContain("Internal error.");
+      expect(firstText).toContain("The model response exceeded a configured safety limit.");
+      expect(firstText).not.toContain(oversizedSentinel);
 
       const abandoned = (await readThread(port, "oversized-thread")).thread;
       expect(abandoned.runStatus).toBe("error");
       expect(abandoned.messages[1]?.content).toBe("");
-      expect(abandoned.messages[1]?.error).toBe("Console response could not be fully persisted.");
+      expect(abandoned.messages[1]?.error).toBe(
+        "The model response exceeded a configured safety limit.",
+      );
 
       const retry = await sendConsoleMessage(port, "oversized-thread", "retry small");
       expect(retry.status).toBe(200);

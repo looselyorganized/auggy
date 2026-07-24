@@ -1,7 +1,13 @@
 import { describe, it, expect } from "bun:test";
 import { createHash } from "node:crypto";
+import { join } from "node:path";
 import { z } from "zod";
-import { isLoopback, normalizeIp, webTransport } from "@/transports/web-transport";
+import {
+  isLoopback,
+  normalizeIp,
+  rateLimitNetworkIdentity,
+  webTransport,
+} from "@/transports/web-transport";
 import { createAnonymousSessionManager } from "@/transports/anonymous-session";
 import { defineRoute, json, webhook } from "@/helpers";
 import { defineAgent } from "@/agent";
@@ -12,8 +18,34 @@ import { createVisitorToken, deriveSigningKey } from "@/transports/visitor-token
 import {
   createExternalAuthAssertion,
   createInMemoryExternalAuthReplayStore,
+  externalMappedVisitorId,
 } from "@/auth/external-auth";
 import type { Augment, DelegatedAuthorizationDeniedAuditEvent, ModelClient } from "@/types";
+import { createTempDir } from "@tests/fixtures/temp-dir";
+
+async function bootstrapAnonymousRequest(
+  url: string,
+  init: RequestInit,
+): Promise<{
+  response: Response;
+  session: string;
+  visitorToken: string | null;
+}> {
+  const bootstrap = await fetch(url, init);
+  const session = bootstrap.headers.get("x-auggy-anonymous-session");
+  const visitorToken = bootstrap.headers.get("x-visitor-token");
+  expect(bootstrap.status).toBe(428);
+  expect(session).toBeTruthy();
+  expect(await bootstrap.json()).toEqual({ error: "anonymous_session_required" });
+
+  const headers = new Headers(init.headers);
+  headers.set("x-auggy-anonymous-session", session ?? "");
+  return {
+    response: await fetch(url, { ...init, headers }),
+    session: session ?? "",
+    visitorToken,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Structure tests
@@ -50,6 +82,20 @@ describe("webTransport structure", () => {
       },
     });
     await expect(aug.onBoot?.()).rejects.toThrow(/replayProtection.*store/);
+  });
+
+  it("fails closed for every no-ledger anonymous replica", async () => {
+    const options = {
+      port: 0,
+      auth: { type: "bearer" as const, token: "test-token" },
+      allowAnonymous: true,
+      rateLimitPerPeer: { maxPerMinute: 1 },
+    };
+    const first = webTransport(options);
+    const second = webTransport(options);
+
+    await expect(first.onBoot?.()).rejects.toThrow(/durable shared idempotency\.dbPath/);
+    await expect(second.onBoot?.()).rejects.toThrow(/durable shared idempotency\.dbPath/);
   });
 
   it("fails closed on malformed external auth replay configuration", async () => {
@@ -255,6 +301,25 @@ describe("webTransport identity — four paths", () => {
     expect(identity).toBeNull();
   });
 
+  it("Path 2: partial agent credentials fail closed instead of downgrading", () => {
+    const aug = webTransport({
+      port: 0,
+      auth: { type: "bearer", token: "test-token" },
+      access: {
+        agents: [{ id: "summarizer", sharedSecret: "s3cr3t" }],
+      },
+    });
+    for (const headers of [{ "x-agent-id": "summarizer" }, { "x-agent-secret": "s3cr3t" }]) {
+      expect(
+        aug.transport!.identify({
+          headers,
+          __anonymousSessionId: "anon_session_agent_unused",
+          __bearerValidated: true,
+        }),
+      ).toBeNull();
+    }
+  });
+
   // Path 3: Public recognized — visitor token payload injected
   it("Path 3: valid visitor token payload → public:recognized", () => {
     const aug = webTransport({
@@ -277,6 +342,31 @@ describe("webTransport identity — four paths", () => {
     expect(identity?.publicSubstate).toBe("recognized");
     expect(identity?.id).toBe("vis_abc123");
     expect(identity?.kind).toBe("human");
+  });
+
+  it("Path 3: carries only the signed or verified organization into peer ownership", () => {
+    const aug = webTransport({
+      port: 0,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const identity = aug.transport!.identify({
+      headers: { "x-org-id": "caller-controlled" },
+      __visitorPayload: {
+        visitorId: "vis_shared",
+        agentId: "test-agent",
+        issuedAt: Date.now() - 1000,
+        expiresAt: Date.now() + 86_400_000,
+        orgId: "verified-org",
+      },
+    });
+    expect(identity).toEqual(
+      expect.objectContaining({
+        id: "vis_shared",
+        trustLevel: "public",
+        publicSubstate: "recognized",
+        orgId: "verified-org",
+      }),
+    );
   });
 
   // Path 4: Public anonymous — no agent headers, no visitor payload
@@ -379,10 +469,14 @@ describe("webTransport HTTP server", () => {
       });
 
     try {
-      const first = await run();
+      const bootstrap = await run();
+      expect(bootstrap.status).toBe(428);
+      const session = bootstrap.headers.get("x-auggy-anonymous-session");
+      expect(await bootstrap.json()).toEqual({ error: "anonymous_session_required" });
+      expect(model.calls).toHaveLength(0);
+
+      const first = await run(session ?? undefined);
       expect(first.status).toBe(200);
-      const session = first.headers.get("x-auggy-anonymous-session");
-      expect(session).not.toBeNull();
       const firstBody = await first.text();
       expect(firstBody).toContain("RUN_FINISHED");
       const firstThreadId = firstBody.match(/"threadId":"([^"]+)"/)?.[1];
@@ -396,7 +490,13 @@ describe("webTransport HTTP server", () => {
       expect(continuationBody).toContain(`"threadId":"${firstThreadId}"`);
       expect(model.calls).toHaveLength(2);
 
-      const attemptedTakeover = await run();
+      const takeoverBootstrap = await run();
+      expect(takeoverBootstrap.status).toBe(428);
+      const takeoverSession = takeoverBootstrap.headers.get("x-auggy-anonymous-session");
+      expect(await takeoverBootstrap.json()).toEqual({ error: "anonymous_session_required" });
+      expect(model.calls).toHaveLength(2);
+
+      const attemptedTakeover = await run(takeoverSession ?? undefined);
       expect(attemptedTakeover.status).toBe(200);
       const takeoverBody = await attemptedTakeover.text();
       expect(takeoverBody).toContain("RUN_FINISHED");
@@ -484,7 +584,7 @@ describe("webTransport HTTP server", () => {
     }
   });
 
-  it("binds a replacement visitor token to the supplied anonymous session", async () => {
+  it("does not mint recognized visitor authority from an invalid token", async () => {
     const signingKey = "replacement-token-signing-key";
     const audience = "replacement-token-agent";
     const model = createMockModel({ response: "hello" });
@@ -519,20 +619,23 @@ describe("webTransport HTTP server", () => {
     try {
       const bootstrap = await request();
       const anonymousSession = bootstrap.headers.get("x-auggy-anonymous-session");
-      const firstBody = await bootstrap.text();
-      const canonicalThread = firstBody.match(/"threadId":"([^"]+)"/)?.[1];
+      expect(bootstrap.status).toBe(428);
+      expect(await bootstrap.json()).toEqual({ error: "anonymous_session_required" });
       expect(anonymousSession).toBeTruthy();
+      expect(model.calls).toHaveLength(0);
 
       const replacement = await request("invalid-token", anonymousSession ?? undefined);
       const replacementToken = replacement.headers.get("x-visitor-token");
       expect(replacement.status).toBe(200);
-      expect(replacementToken).toBeTruthy();
-      expect(await replacement.text()).toContain(`"threadId":"${canonicalThread}"`);
+      expect(replacementToken).toBeNull();
+      const replacementBody = await replacement.text();
+      const canonicalThread = replacementBody.match(/"threadId":"([^"]+)"/)?.[1];
+      expect(canonicalThread).toMatch(/^web_thread_/);
 
-      const promoted = await request(replacementToken ?? undefined, anonymousSession ?? undefined);
-      expect(promoted.status).toBe(200);
-      expect(await promoted.text()).toContain(`"threadId":"${canonicalThread}"`);
-      expect(model.calls).toHaveLength(3);
+      const continued = await request("still-invalid", anonymousSession ?? undefined);
+      expect(continued.status).toBe(200);
+      expect(await continued.text()).toContain(`"threadId":"${canonicalThread}"`);
+      expect(model.calls).toHaveLength(2);
     } finally {
       await agent.stop();
     }
@@ -682,7 +785,7 @@ describe("webTransport HTTP server", () => {
     }
   });
 
-  it("accepts POST /agent/run without x-visitor-token when visitor tokens are enabled (issues a token)", async () => {
+  it("uses only an anonymous session for first-contact bootstrap", async () => {
     const model = createMockModel({ response: "hi" });
     const port = 18902;
     const aug = webTransport({
@@ -699,13 +802,11 @@ describe("webTransport HTTP server", () => {
     await agent.start();
 
     try {
-      // First-contact anonymous request with bootstrap sentinel — the
-      // documented pattern in docs/20-embedding.md. allowAnonymous defaults
-      // true in test env (NODE_ENV !== "production"), so this request is
-      // admitted. Runtime mints a fresh visitor token in the response header.
-      // Bearer omitted because under codex R6 fix, bearer-wins; sending bearer
-      // would route to creator (Path 1) and no visitor token would be issued.
-      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+      // The server-minted anonymous session is the sole continuity
+      // capability. An invalid visitor token must never be exchanged for a
+      // recognized visitor credential.
+      const url = `http://localhost:${port}/agent/run`;
+      const init = {
         method: "POST",
         headers: {
           "content-type": "application/json",
@@ -714,10 +815,22 @@ describe("webTransport HTTP server", () => {
         body: JSON.stringify({
           messages: [{ role: "user", content: "hello" }],
         }),
-      });
-      expect(resp.status).toBe(200);
-      expect(resp.headers.get("x-visitor-token")).not.toBeNull();
-      await resp.text();
+      } satisfies RequestInit;
+      const bootstrap = await fetch(url, init);
+      const session = bootstrap.headers.get("x-auggy-anonymous-session");
+      const visitorToken = bootstrap.headers.get("x-visitor-token");
+      expect(bootstrap.status).toBe(428);
+      expect(session).toBeTruthy();
+      expect(visitorToken).toBeNull();
+      expect(await bootstrap.json()).toEqual({ error: "anonymous_session_required" });
+      expect(model.calls).toHaveLength(0);
+
+      const retryHeaders = new Headers(init.headers);
+      retryHeaders.set("x-auggy-anonymous-session", session ?? "");
+      const admitted = await fetch(url, { ...init, headers: retryHeaders });
+      expect(admitted.status).toBe(200);
+      await admitted.text();
+      expect(model.calls).toHaveLength(1);
     } finally {
       await agent.stop();
     }
@@ -791,7 +904,7 @@ describe("webTransport HTTP server", () => {
     }
   });
 
-  it("agent auth with wrong secret returns 401", async () => {
+  it("wrong or partial agent credentials return 401 without execution", async () => {
     const model = createMockModel({ response: "hi" });
     const port = 18915;
     const aug = webTransport({
@@ -805,19 +918,30 @@ describe("webTransport HTTP server", () => {
     await agent.start();
 
     try {
-      const resp = await fetch(`http://localhost:${port}/agent/run`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: "Bearer test-token",
+      const attemptedCredentials: Array<Record<string, string>> = [
+        {
           "x-agent-id": "worker-agent",
           "x-agent-secret": "wrong-secret",
         },
-        body: JSON.stringify({
-          messages: [{ role: "user", content: "hello" }],
-        }),
-      });
-      expect(resp.status).toBe(401);
+        { "x-agent-id": "worker-agent" },
+        { "x-agent-secret": "correct-secret" },
+      ];
+      for (const attemptedAgentHeaders of attemptedCredentials) {
+        const resp = await fetch(`http://localhost:${port}/agent/run`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer test-token",
+            ...attemptedAgentHeaders,
+          },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: "hello" }],
+          }),
+        });
+        expect(resp.status).toBe(401);
+        expect(await resp.json()).toEqual({ error: "invalid agent credentials" });
+      }
+      expect(model.calls).toHaveLength(0);
     } finally {
       await agent.stop();
     }
@@ -1379,13 +1503,11 @@ describe("webTransport HTTP server", () => {
     const port = 18908;
     // Use agent credentials so both requests have the same stable peer ID
     // (agent:rate-limited-agent), which the rate limiter can track across requests.
-    // Using visitor tokens would give different peer IDs: the first request with
-    // an invalid token is anonymous (anon-<threadId>), while the second with the
-    // issued token is recognized (vis_<uuid>) — these are different IDs, so the
-    // rate limiter would not fire.
+    // Agent credentials provide one stable peer key for the kernel limiter.
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
+      allowAnonymous: false,
       access: {
         agents: [{ id: "rate-limited-agent", sharedSecret: "rl-secret" }],
       },
@@ -1438,6 +1560,303 @@ describe("webTransport HTTP server", () => {
       expect(errEvent?.code).toBe("REJECTED");
     } finally {
       await agent.stop();
+    }
+  });
+
+  it("rate-limits admitted anonymous executions across multiple minted sessions", async () => {
+    const model = createMockModel({ response: "ok" });
+    const port = 19617;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      allowAnonymous: true,
+      rateLimitPerPeer: {
+        maxPerMinute: 1,
+        anonymousNetwork: { mode: "single-process-development" },
+      },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    const url = `http://localhost:${port}/agent/run`;
+    const init = {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
+    } satisfies RequestInit;
+
+    try {
+      const firstContact = await fetch(url, init);
+      const session = firstContact.headers.get("x-auggy-anonymous-session");
+      expect(firstContact.status).toBe(428);
+      expect(session).toBeTruthy();
+      await firstContact.json();
+
+      const admittedHeaders = new Headers(init.headers);
+      admittedHeaders.set("x-auggy-anonymous-session", session ?? "");
+      const admitted = await fetch(url, { ...init, headers: admittedHeaders });
+      expect(admitted.status).toBe(200);
+      await admitted.text();
+      expect(model.calls).toHaveLength(1);
+
+      const multipliedIdentity = await fetch(url, init);
+      const multipliedSession = multipliedIdentity.headers.get("x-auggy-anonymous-session");
+      expect(multipliedIdentity.status).toBe(428);
+      expect(multipliedSession).toBeTruthy();
+      await multipliedIdentity.json();
+
+      const multipliedHeaders = new Headers(init.headers);
+      multipliedHeaders.set("x-auggy-anonymous-session", multipliedSession ?? "");
+      const multipliedExecution = await fetch(url, { ...init, headers: multipliedHeaders });
+      expect(multipliedExecution.status).toBe(429);
+      expect(await multipliedExecution.json()).toEqual({ error: "rate-limited" });
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("shares anonymous network admission limits across replicas", async () => {
+    const tmp = await createTempDir();
+    const dbPath = join(tmp.path, "web-idempotency.db");
+    const modelA = createMockModel({ response: "a" });
+    const modelB = createMockModel({ response: "b" });
+    const common = {
+      auth: { type: "bearer" as const, token: "replica-token" },
+      allowAnonymous: true,
+      securityNamespace: "replicated-agent",
+      rateLimitPerPeer: { maxPerMinute: 1 },
+      idempotency: { dbPath },
+    };
+    const first = defineAgent(
+      {
+        name: "replica-a",
+        model: "mock",
+        augments: [webTransport({ ...common, port: 19618 })],
+      },
+      modelA,
+    );
+    const second = defineAgent(
+      {
+        name: "replica-b",
+        model: "mock",
+        augments: [webTransport({ ...common, port: 19619 })],
+      },
+      modelB,
+    );
+    const init = {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }),
+    } satisfies RequestInit;
+
+    await first.start();
+    await second.start();
+    try {
+      const bootstrapA = await fetch("http://localhost:19618/agent/run", init);
+      const sessionA = bootstrapA.headers.get("x-auggy-anonymous-session");
+      expect(bootstrapA.status).toBe(428);
+      await bootstrapA.json();
+
+      const bootstrapB = await fetch("http://localhost:19619/agent/run", init);
+      const sessionB = bootstrapB.headers.get("x-auggy-anonymous-session");
+      expect(bootstrapB.status).toBe(428);
+      await bootstrapB.json();
+
+      const headersA = new Headers(init.headers);
+      headersA.set("x-auggy-anonymous-session", sessionA ?? "");
+      const admitted = await fetch("http://localhost:19618/agent/run", {
+        ...init,
+        headers: headersA,
+      });
+      expect(admitted.status).toBe(200);
+      await admitted.text();
+
+      const headersB = new Headers(init.headers);
+      headersB.set("x-auggy-anonymous-session", sessionB ?? "");
+      const denied = await fetch("http://localhost:19619/agent/run", {
+        ...init,
+        headers: headersB,
+      });
+      expect(denied.status).toBe(429);
+      expect(await denied.json()).toEqual({ error: "rate-limited" });
+      expect(modelA.calls).toHaveLength(1);
+      expect(modelB.calls).toHaveLength(0);
+    } finally {
+      await second.stop();
+      await first.stop();
+      await tmp.cleanup();
+    }
+  });
+
+  it("replays an exact keyed anonymous result without consuming another execution slot", async () => {
+    const tmp = await createTempDir();
+    const model = createMockModel({ response: "once" });
+    const port = 19620;
+    const agent = defineAgent(
+      {
+        name: "anonymous-keyed-rate-limit",
+        model: "mock",
+        augments: [
+          webTransport({
+            port,
+            auth: { type: "bearer", token: "test-token" },
+            allowAnonymous: true,
+            securityNamespace: "anonymous-keyed-rate-limit",
+            rateLimitPerPeer: { maxPerMinute: 1 },
+            idempotency: { dbPath: join(tmp.path, "web-idempotency.db") },
+          }),
+        ],
+      },
+      model,
+    );
+    const url = `http://localhost:${port}/agent/run`;
+    const body = JSON.stringify({ messages: [{ role: "user", content: "hello" }] });
+    const bootstrapHeaders = {
+      "content-type": "application/json",
+      "idempotency-key": "same-execution",
+    };
+
+    await agent.start();
+    try {
+      const bootstrap = await fetch(url, {
+        method: "POST",
+        headers: bootstrapHeaders,
+        body,
+      });
+      expect(bootstrap.status).toBe(428);
+      const session = bootstrap.headers.get("x-auggy-anonymous-session") ?? "";
+      await bootstrap.json();
+
+      const headers = new Headers(bootstrapHeaders);
+      headers.set("x-auggy-anonymous-session", session);
+      const first = await fetch(url, { method: "POST", headers, body });
+      expect(first.status).toBe(200);
+      const firstBody = await first.text();
+
+      const replay = await fetch(url, { method: "POST", headers, body });
+      expect(replay.status).toBe(200);
+      expect(await replay.text()).toBe(firstBody);
+      expect(model.calls).toHaveLength(1);
+
+      headers.set("idempotency-key", "different-execution");
+      const denied = await fetch(url, { method: "POST", headers, body });
+      expect(denied.status).toBe(429);
+      expect(await denied.json()).toEqual({ error: "rate-limited" });
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      await agent.stop();
+      await tmp.cleanup();
+    }
+  });
+
+  it("shares one anonymous budget across rotating IPv6 addresses in a /64", async () => {
+    const tmp = await createTempDir();
+    const model = createMockModel({ response: "once" });
+    const port = 19621;
+    const agent = defineAgent(
+      {
+        name: "anonymous-ipv6-rate-limit",
+        model: "mock",
+        augments: [
+          webTransport({
+            port,
+            auth: { type: "bearer", token: "test-token" },
+            allowAnonymous: true,
+            trustedProxies: ["127.0.0.1", "::1"],
+            rateLimitPerPeer: { maxPerMinute: 1 },
+            idempotency: { dbPath: join(tmp.path, "web-idempotency.db") },
+          }),
+        ],
+      },
+      model,
+    );
+    const url = `http://localhost:${port}/agent/run`;
+    const body = JSON.stringify({ messages: [{ role: "user", content: "hello" }] });
+
+    async function issueAndRun(ip: string): Promise<Response> {
+      const bootstrap = await fetch(url, {
+        method: "POST",
+        headers: { "content-type": "application/json", "x-forwarded-for": ip },
+        body,
+      });
+      expect(bootstrap.status).toBe(428);
+      const headers = new Headers({
+        "content-type": "application/json",
+        "x-forwarded-for": ip,
+      });
+      headers.set("x-auggy-anonymous-session", bootstrap.headers.get("x-auggy-anonymous-session")!);
+      await bootstrap.json();
+      return fetch(url, { method: "POST", headers, body });
+    }
+
+    await agent.start();
+    try {
+      const admitted = await issueAndRun("2606:4700:4700:1::1111");
+      expect(admitted.status).toBe(200);
+      await admitted.text();
+
+      const denied = await issueAndRun("2606:4700:4700:1::2222");
+      expect(denied.status).toBe(429);
+      expect(await denied.json()).toEqual({ error: "rate-limited" });
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      await agent.stop();
+      await tmp.cleanup();
+    }
+  });
+
+  it("rejects ambiguous forwarded identities instead of charging the proxy bucket", async () => {
+    const tmp = await createTempDir();
+    const model = createMockModel({ response: "must not run" });
+    const port = 19622;
+    const agent = defineAgent(
+      {
+        name: "anonymous-forwarded-rejection",
+        model: "mock",
+        augments: [
+          webTransport({
+            port,
+            auth: { type: "bearer", token: "test-token" },
+            allowAnonymous: true,
+            trustedProxies: ["127.0.0.1", "::1"],
+            rateLimitPerPeer: { maxPerMinute: 1 },
+            idempotency: { dbPath: join(tmp.path, "web-idempotency.db") },
+          }),
+        ],
+      },
+      model,
+    );
+    const url = `http://localhost:${port}/agent/run`;
+    const body = JSON.stringify({ messages: [{ role: "user", content: "hello" }] });
+
+    await agent.start();
+    try {
+      const malformed = await fetch(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": "malformed, 203.0.113.1",
+        },
+        body,
+      });
+      expect(malformed.status).toBe(400);
+      expect(await malformed.json()).toEqual({ error: "invalid_forwarded_request" });
+
+      const ambiguous = await fetch(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": "203.0.113.1",
+          "x-real-ip": "203.0.113.1",
+        },
+        body,
+      });
+      expect(ambiguous.status).toBe(400);
+      expect(await ambiguous.json()).toEqual({ error: "invalid_forwarded_request" });
+      expect(model.calls).toHaveLength(0);
+    } finally {
+      await agent.stop();
+      await tmp.cleanup();
     }
   });
 
@@ -1518,6 +1937,8 @@ describe("webTransport HTTP server", () => {
   it("returning visitor with valid token gets no new token issued", async () => {
     const model = createMockModel({ response: "hello" });
     const port = 18921;
+    const key = await deriveSigningKey("test-signing-key");
+    const issued = await createVisitorToken(key, "test", 3_600, "vis_returning");
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
@@ -1535,40 +1956,23 @@ describe("webTransport HTTP server", () => {
     await agent.start();
 
     try {
-      // First request: anonymous (no bearer; allowAnonymous defaults true in test env)
-      // with bootstrap visitor-token → mints a fresh token in the response.
-      // (Bearer omitted because under codex R6 fix, valid bearer wins over
-      // invalid visitor-token and would route to creator with no token issuance.)
-      const resp1 = await fetch(`http://localhost:${port}/agent/run`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-visitor-token": "bootstrap",
-        },
-        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
-      });
-      const token = resp1.headers.get("x-visitor-token")!;
-      expect(token).not.toBeNull();
-      await resp1.text();
-
-      model.pushResponse({ content: "hello again", finishReason: "end_turn" });
-
-      // Second request: send valid token back → recognized → no new token.
+      // A valid token minted by the verification boundary resolves recognized
+      // and is never rotated by the generic transport.
       // Bearer kept here to verify the documented semantic: valid visitor-token
       // alongside bearer still resolves to recognized (Path 3 fires because
       // __visitorPayload is populated; Path 1 is skipped).
-      const resp2 = await fetch(`http://localhost:${port}/agent/run`, {
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           authorization: "Bearer test-token",
-          "x-visitor-token": token,
+          "x-visitor-token": issued.token,
         },
         body: JSON.stringify({ messages: [{ role: "user", content: "hello again" }] }),
       });
-      expect(resp2.status).toBe(200);
-      expect(resp2.headers.get("x-visitor-token")).toBeNull();
-      await resp2.text();
+      expect(resp.status).toBe(200);
+      expect(resp.headers.get("x-visitor-token")).toBeNull();
+      await resp.text();
     } finally {
       await agent.stop();
     }
@@ -1628,7 +2032,12 @@ describe("webTransport HTTP server", () => {
 
       const system = model.calls[0]?.systemBlocks.join("\n") ?? "";
       expect(system).toContain("trust: public");
-      expect(system).toContain("Runtime identity: vis_app_user_123");
+      expect(system).toContain(
+        `Runtime identity: ${externalMappedVisitorId(
+          { provider: "clerk", subject: "user_123" },
+          "vis_app_user_123",
+        )}`,
+      );
 
       const preflight = await fetch(`http://localhost:${port}/agent/run`, {
         method: "OPTIONS",
@@ -1698,7 +2107,63 @@ describe("webTransport HTTP server", () => {
 
       const system = model.calls[0]?.systemBlocks.join("\n") ?? "";
       expect(system).toContain("trust: public");
-      expect(system).toContain("Runtime identity: vis_app_user_123");
+      expect(system).toContain(
+        `Runtime identity: ${externalMappedVisitorId(
+          { provider: "clerk", subject: "user_123" },
+          "vis_app_user_123",
+        )}`,
+      );
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("POST /agent/run rejects mixed agent and external-auth credentials before execution", async () => {
+    const model = createMockModel({ response: "must not execute" });
+    const port = 19616;
+    const assertion = createExternalAuthAssertion({
+      secret: "app-auth-secret",
+      audience: "test",
+      provider: "clerk",
+      subject: "user_123",
+      ttlSeconds: 60,
+      orgId: "visitor-org",
+      scopes: ["orders.read"],
+    });
+    const aug = webTransport({
+      port,
+      allowAnonymous: false,
+      auth: { type: "bearer", token: "test-token" },
+      access: {
+        agents: [{ id: "worker", sharedSecret: "worker-secret" }],
+      },
+      externalAuth: {
+        secret: "app-auth-secret",
+        audience: "test",
+        allowedProviders: ["clerk"],
+      },
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const response = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-agent-id": "worker",
+          "x-agent-secret": "worker-secret",
+          "x-org-id": "agent-org",
+          "x-auggy-auth-assertion": assertion,
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "combine credentials" }],
+        }),
+      });
+      expect(response.status).toBe(400);
+      expect(await response.json()).toEqual({
+        error: "conflicting authentication credentials",
+      });
+      expect(model.calls).toHaveLength(0);
     } finally {
       await agent.stop();
     }
@@ -2073,12 +2538,8 @@ describe("webTransport HTTP server", () => {
   // ---------------------------------------------------------------------------
 
   it("Fix 1: invalid visitor token does NOT promote request to public:recognized", async () => {
-    // An invalid token must keep the request public:anonymous. The transport
-    // still issues a fresh token in the response header (for future requests)
-    // but the current request's peer is anonymous — NOT recognized.
-    // We verify by attaching a budgets augment with an anonymous-only cap of 1
-    // and confirming it fires (i.e., the request was treated as anonymous, not
-    // as recognized which would have no cap).
+    // An invalid token must keep the request public:anonymous and must not be
+    // exchanged for a fresh recognized credential.
     //
     // Ports 18960-18962 below were bumped from 18950-18952 to avoid colliding
     // with `tests/integration/full-agent.test.ts`, which also uses 18950+18951.
@@ -2105,24 +2566,23 @@ describe("webTransport HTTP server", () => {
       // (Bearer omitted because under codex R6 fix, valid bearer wins over
       // invalid visitor-token and routes to creator — which doesn't issue
       // a visitor token in the response.)
-      const resp = await fetch(`http://localhost:${port}/agent/run`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          // Malformed/garbage token — verification will fail.
-          "x-visitor-token": "this.is.garbage",
+      const { response: resp, visitorToken: newToken } = await bootstrapAnonymousRequest(
+        `http://localhost:${port}/agent/run`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            // Malformed/garbage token — verification will fail.
+            "x-visitor-token": "this.is.garbage",
+          },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: "hi" }],
+          }),
         },
-        body: JSON.stringify({
-          messages: [{ role: "user", content: "hi" }],
-        }),
-      });
+      );
       expect(resp.status).toBe(200);
 
-      // A new token MUST be issued in the response (for future requests).
-      const newToken = resp.headers.get("x-visitor-token");
-      expect(newToken).not.toBeNull();
-      expect(typeof newToken).toBe("string");
-      expect((newToken ?? "").length).toBeGreaterThan(10);
+      expect(newToken).toBeNull();
 
       // Verify the request was treated as anonymous, not recognized, by checking
       // that the identify() path selected anonymous. The SSE stream succeeds
@@ -2139,6 +2599,7 @@ describe("webTransport HTTP server", () => {
       expect(identity?.publicSubstate).toBe("anonymous");
 
       await resp.text();
+      expect(model.calls).toHaveLength(1);
     } finally {
       await agent.stop();
     }
@@ -2146,9 +2607,7 @@ describe("webTransport HTTP server", () => {
 
   it("Fix 1: missing visitor token + visitorTokens enabled stays anonymous on first request", async () => {
     // A first-contact request with a present-but-invalid x-visitor-token
-    // issues a fresh token AND stays anonymous. (Under codex R6 fix, bearer
-    // omitted: a valid bearer would route to creator and skip the
-    // anonymous-with-token-issuance flow this test exercises.)
+    // stays anonymous and receives no recognized visitor capability.
     const model = createMockModel({ response: "hi" });
     const port = 18961;
     const aug = webTransport({
@@ -2164,23 +2623,24 @@ describe("webTransport HTTP server", () => {
     await agent.start();
 
     try {
-      // Send request with x-visitor-token header present but empty/invalid.
+      // Send request with x-visitor-token header present but invalid.
       // No bearer: admitted via allowAnonymous-default-true in test env.
-      const resp = await fetch(`http://localhost:${port}/agent/run`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-visitor-token": "invalid",
+      const { response: resp, visitorToken: issuedToken } = await bootstrapAnonymousRequest(
+        `http://localhost:${port}/agent/run`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-visitor-token": "invalid",
+          },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: "first contact" }],
+          }),
         },
-        body: JSON.stringify({
-          messages: [{ role: "user", content: "first contact" }],
-        }),
-      });
+      );
       expect(resp.status).toBe(200);
 
-      // Response must include a freshly-issued visitor token for future requests.
-      const issuedToken = resp.headers.get("x-visitor-token");
-      expect(issuedToken).not.toBeNull();
+      expect(issuedToken).toBeNull();
 
       // The identify path must stay anonymous (no __visitorPayload injected
       // when token fails verification).
@@ -2191,6 +2651,7 @@ describe("webTransport HTTP server", () => {
       expect(identity?.publicSubstate).toBe("anonymous");
 
       await resp.text();
+      expect(model.calls).toHaveLength(1);
     } finally {
       await agent.stop();
     }
@@ -2200,6 +2661,8 @@ describe("webTransport HTTP server", () => {
     // Regression guard: valid tokens must still produce recognized trust.
     const model = createMockModel({ response: "hi" });
     const port = 18962;
+    const key = await deriveSigningKey("test-signing-key");
+    const validToken = await createVisitorToken(key, "test", 3_600, "vis_valid");
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
@@ -2213,38 +2676,20 @@ describe("webTransport HTTP server", () => {
     await agent.start();
 
     try {
-      // Step 1: get a valid token by sending an invalid one first.
-      // No bearer here — under codex R6 fix, valid bearer + stale visitor-token
-      // routes to creator (Path 1) and no visitor token is issued.
-      // allowAnonymous defaults true in test env (NODE_ENV !== "production").
-      const resp1 = await fetch(`http://localhost:${port}/agent/run`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-visitor-token": "stale-token",
-        },
-        body: JSON.stringify({ messages: [{ role: "user", content: "first" }] }),
-      });
-      expect(resp1.status).toBe(200);
-      const validToken = resp1.headers.get("x-visitor-token")!;
-      expect(validToken).not.toBeNull();
-      await resp1.text();
-
-      // Step 2: send the valid token — this request should be recognized.
-      model.pushResponse({ content: "welcome back", finishReason: "end_turn" });
-      const resp2 = await fetch(`http://localhost:${port}/agent/run`, {
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           authorization: "Bearer test-token",
-          "x-visitor-token": validToken,
+          "x-visitor-token": validToken.token,
         },
-        body: JSON.stringify({ messages: [{ role: "user", content: "second" }] }),
+        body: JSON.stringify({ messages: [{ role: "user", content: "recognized" }] }),
       });
-      expect(resp2.status).toBe(200);
+      expect(resp.status).toBe(200);
       // A recognized visitor gets no new token (already has a valid one).
-      expect(resp2.headers.get("x-visitor-token")).toBeNull();
-      await resp2.text();
+      expect(resp.headers.get("x-visitor-token")).toBeNull();
+      await resp.text();
+      expect(model.calls).toHaveLength(1);
     } finally {
       await agent.stop();
     }
@@ -2334,14 +2779,18 @@ describe("webTransport allowAnonymous (G3)", () => {
     const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
     await agent.start();
     try {
-      const resp = await fetch(`http://localhost:${port}/agent/run`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
-      });
+      const { response: resp } = await bootstrapAnonymousRequest(
+        `http://localhost:${port}/agent/run`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+        },
+      );
       expect(resp.status).toBe(200);
       // Drain to release the connection cleanly.
       await resp.text();
+      expect(model.calls).toHaveLength(1);
     } finally {
       await agent.stop();
     }
@@ -2427,13 +2876,17 @@ describe("webTransport allowAnonymous (G3)", () => {
     const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
     await agent.start();
     try {
-      const resp = await fetch(`http://localhost:${port}/agent/run`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
-      });
+      const { response: resp } = await bootstrapAnonymousRequest(
+        `http://localhost:${port}/agent/run`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+        },
+      );
       expect(resp.status).toBe(200);
       await resp.text();
+      expect(model.calls).toHaveLength(1);
     } finally {
       await agent.stop();
     }
@@ -2448,13 +2901,17 @@ describe("webTransport allowAnonymous (G3)", () => {
     const agent = defineAgent({ name: "t", model: "mock", augments: [aug] }, model);
     await agent.start();
     try {
-      const resp = await fetch(`http://localhost:${port}/agent/run`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
-      });
+      const { response: resp } = await bootstrapAnonymousRequest(
+        `http://localhost:${port}/agent/run`,
+        {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+        },
+      );
       expect(resp.status).toBe(200);
       await resp.text();
+      expect(model.calls).toHaveLength(1);
     } finally {
       await agent.stop();
     }
@@ -2680,6 +3137,27 @@ describe("webTransport visitorTokens.enabled guard (fix F2)", () => {
 });
 
 describe("webTransport external auth config guard", () => {
+  it("fails closed on malformed restrictive policies at boot", async () => {
+    const malformedPolicies = [
+      { secret: "current-secret", allowedProviders: "supabase-evil" },
+      { secret: "current-secret", allowedProviders: [] },
+      { secret: "current-secret", maxTtlSeconds: "not-a-number" },
+      { secret: "current-secret", maxTtlSeconds: Number.NaN },
+      { secret: "current-secret", header: 42 },
+      { secret: "current-secret", secrets: [{ secret: 42 }] },
+    ];
+    for (const externalAuth of malformedPolicies) {
+      const aug = webTransport({
+        port: 0,
+        auth: { type: "bearer", token: "test-token" },
+        externalAuth: externalAuth as unknown as NonNullable<
+          Parameters<typeof webTransport>[0]["externalAuth"]
+        >,
+      });
+      await expect(aug.onBoot?.()).rejects.toThrow(/externalAuth/);
+    }
+  });
+
   it("throws if external auth rotation keys are blank", async () => {
     const model = createMockModel({ response: "ok" });
     const currentKeyAug = webTransport({
@@ -3779,9 +4257,14 @@ describe("webTransport augment-registered routes", () => {
           visitorId === "vis_known"
             ? {
                 visitorId,
+                orgId: "org_lookup",
                 email: "alice@example.com",
                 verifiedAt: 1000,
                 reverifyDueAt: 2000,
+                externalAuth: {
+                  provider: "session-store",
+                  subject: "user_known",
+                },
               }
             : null,
       },
@@ -3811,18 +4294,30 @@ describe("webTransport augment-registered routes", () => {
         agentId: agentBinding,
         issuedAt: issued.payload.issuedAt,
         expiresAt: issued.payload.expiresAt,
+        orgId: "org_lookup",
         email: "alice@example.com",
         verifiedAt: 1000,
         reverifyDueAt: 2000,
+        externalAuth: {
+          provider: "session-store",
+          subject: "user_known",
+          orgId: "org_lookup",
+        },
         principal: {
           kind: "visitor",
           trustLevel: "public",
           publicSubstate: "recognized",
           visitorId: "vis_known",
           agentId: agentBinding,
+          orgId: "org_lookup",
           email: "alice@example.com",
           verifiedAt: 1000,
           reverifyDueAt: 2000,
+          externalAuth: {
+            provider: "session-store",
+            subject: "user_known",
+            orgId: "org_lookup",
+          },
         },
       });
     } finally {
@@ -3847,6 +4342,10 @@ describe("webTransport augment-registered routes", () => {
       orgId: "org_store_123",
       roles: ["customer", "vip"],
     });
+    const visitorId = externalMappedVisitorId(
+      { provider: "clerk", subject: "user_123", orgId: "org_store_123" },
+      "vis_app_user_123",
+    );
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
@@ -3879,10 +4378,11 @@ describe("webTransport augment-registered routes", () => {
       expect(await resp.json()).toEqual({
         mode: "visitor",
         state: "recognized",
-        visitorId: "vis_app_user_123",
+        visitorId,
         agentId: "storefront-agent",
         issuedAt: now,
         expiresAt: now + 60_000,
+        orgId: "org_store_123",
         email: "alice@example.com",
         verifiedAt: now - 1000,
         externalAuth: {
@@ -3895,8 +4395,9 @@ describe("webTransport augment-registered routes", () => {
           kind: "visitor",
           trustLevel: "public",
           publicSubstate: "recognized",
-          visitorId: "vis_app_user_123",
+          visitorId,
           agentId: "storefront-agent",
+          orgId: "org_store_123",
           email: "alice@example.com",
           verifiedAt: now - 1000,
           externalAuth: {
@@ -4461,6 +4962,10 @@ describe("webTransport augment-registered routes", () => {
       now,
       ttlSeconds: 60,
     });
+    const visitorId = externalMappedVisitorId(
+      { provider: "supabase", subject: "user_456" },
+      "vis_linked_user_456",
+    );
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
@@ -4500,13 +5005,13 @@ describe("webTransport augment-registered routes", () => {
       expect(await resp.json()).toMatchObject({
         mode: "visitor",
         state: "recognized",
-        visitorId: "vis_linked_user_456",
+        visitorId,
         agentId: "storefront-agent",
         principal: {
           kind: "visitor",
           trustLevel: "public",
           publicSubstate: "recognized",
-          visitorId: "vis_linked_user_456",
+          visitorId,
         },
       });
     } finally {
@@ -4520,7 +5025,10 @@ describe("webTransport augment-registered routes", () => {
     const now = Date.now();
     const signingKey = "visitor-route-secret";
     const agentBinding = "storefront-agent";
-    const visitorId = "vis_app_user_123";
+    const visitorId = externalMappedVisitorId(
+      { provider: "clerk", subject: "user_123", orgId: "org_store_123" },
+      "vis_app_user_123",
+    );
     const key = await deriveSigningKey(signingKey);
     const issued = await createVisitorToken(key, agentBinding, 3600, visitorId);
     const assertion = createExternalAuthAssertion({
@@ -4655,7 +5163,12 @@ describe("webTransport augment-registered routes", () => {
         externalAuth?: unknown;
         principal: { externalAuth?: unknown };
       };
-      expect(body.visitorId).toBe("vis_app_different_user");
+      expect(body.visitorId).toBe(
+        externalMappedVisitorId(
+          { provider: "clerk", subject: "different_user" },
+          "vis_app_different_user",
+        ),
+      );
       expect(body.externalAuth).toBeDefined();
       expect(body.principal.externalAuth).toBeDefined();
     } finally {
@@ -4671,6 +5184,7 @@ describe("webTransport augment-registered routes", () => {
     const key = await deriveSigningKey(signingKey);
     const revoked = await createVisitorToken(key, agentBinding, 3600, "vis_revoked");
     const mismatched = await createVisitorToken(key, agentBinding, 3600, "vis_mismatch");
+    const orgMismatched = await createVisitorToken(key, agentBinding, 3600, "vis_org_mismatch");
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
@@ -4687,7 +5201,17 @@ describe("webTransport augment-registered routes", () => {
                 verifiedAt: 1000,
                 reverifyDueAt: 2000,
               }
-            : null,
+            : visitorId === "vis_org_mismatch"
+              ? {
+                  visitorId,
+                  orgId: "org_lookup",
+                  externalAuth: {
+                    provider: "session-store",
+                    subject: "user_org",
+                    orgId: "org_assertion",
+                  },
+                }
+              : null,
       },
     });
     const fixture: Augment = {
@@ -4725,6 +5249,12 @@ describe("webTransport augment-registered routes", () => {
       });
       expect(mismatch.status).toBe(401);
       expect(await mismatch.json()).toEqual({ error: "visitor-auth-required" });
+
+      const orgMismatch = await fetch(`http://localhost:${port}/account`, {
+        headers: { "x-visitor-token": orgMismatched.token },
+      });
+      expect(orgMismatch.status).toBe(401);
+      expect(await orgMismatch.json()).toEqual({ error: "visitor-auth-required" });
     } finally {
       await agent.stop();
     }
@@ -5306,6 +5836,19 @@ describe("webTransport augment-registered routes", () => {
     expect(normalizeIp("")).toBeNull();
   });
 
+  it("aggregates equivalent and rotating IPv6 callers into a /64 budget", () => {
+    expect(rateLimitNetworkIdentity("2606:4700:4700:1::1111")).toBe(
+      rateLimitNetworkIdentity("2606:4700:4700:1::2222"),
+    );
+    expect(rateLimitNetworkIdentity("2606:4700:4700:1::1111")).toBe(
+      rateLimitNetworkIdentity("2606:4700:4700:0001:0:0:0:1111"),
+    );
+    expect(rateLimitNetworkIdentity("2606:4700:4700:1::1111")).not.toBe(
+      rateLimitNetworkIdentity("2606:4700:4700:2::1111"),
+    );
+    expect(rateLimitNetworkIdentity("::ffff:203.0.113.7")).toBe("ipv4:203.0.113.7");
+  });
+
   it("G36 isLoopback returns true for 127.0.0.1", () => {
     expect(isLoopback("127.0.0.1")).toBe(true);
   });
@@ -5444,16 +5987,19 @@ describe("webTransport agentBinding (fix C2)", () => {
     await agent.start();
 
     try {
-      const resp = await fetch(`http://localhost:${port}/agent/run`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-visitor-token": agentAToken,
+      const { response: resp, visitorToken } = await bootstrapAnonymousRequest(
+        `http://localhost:${port}/agent/run`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-visitor-token": agentAToken,
+          },
+          body: JSON.stringify({ messages: [{ role: "user", content: "cross-agent replay" }] }),
         },
-        body: JSON.stringify({ messages: [{ role: "user", content: "cross-agent replay" }] }),
-      });
+      );
       expect(resp.status).toBe(200);
-      expect(resp.headers.get("x-visitor-token")).not.toBeNull();
+      expect(visitorToken).toBeNull();
       await resp.text();
       expect(model.calls).toHaveLength(1);
     } finally {
@@ -5488,25 +6034,25 @@ describe("webTransport agentBinding (fix C2)", () => {
     await agent.start();
 
     try {
-      // Present agent-a's token to agent-b: must stay anonymous.
-      // When anonymous + invalid-ish token, webTransport issues a NEW anon token.
-      // No bearer here — under codex R6 fix, a bearer-credentialed request
-      // resolves to creator (Path 1) and the mint logic is suppressed (no
-      // fresh token issued for bearer callers; closes the creator-to-visitor
-      // demotion loop). allowAnonymous defaults true in test env.
-      const resp = await fetch(`http://localhost:${port}/agent/run`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-visitor-token": agentAToken,
+      // Present agent-a's token to agent-b: it stays anonymous and never
+      // receives a replacement recognized credential.
+      const { response: resp, visitorToken } = await bootstrapAnonymousRequest(
+        `http://localhost:${port}/agent/run`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-visitor-token": agentAToken,
+          },
+          body: JSON.stringify({
+            messages: [{ role: "user", content: "hi from agent-a replay" }],
+          }),
         },
-        body: JSON.stringify({ messages: [{ role: "user", content: "hi from agent-a replay" }] }),
-      });
+      );
       expect(resp.status).toBe(200);
-      // A new visitor token is issued — proves the request landed on anonymous path,
-      // not recognized (recognized requests do NOT get a new token).
-      expect(resp.headers.get("x-visitor-token")).not.toBeNull();
+      expect(visitorToken).toBeNull();
       await resp.text();
+      expect(model.calls).toHaveLength(1);
     } finally {
       await agent.stop();
     }

@@ -62,7 +62,8 @@ function threadOwnerTransition(
     owner.id === incoming.id &&
     owner.trustLevel === incoming.trustLevel &&
     owner.sourceAugment === incoming.sourceAugment &&
-    owner.publicSubstate === incoming.publicSubstate
+    owner.publicSubstate === incoming.publicSubstate &&
+    owner.orgId === incoming.orgId
   ) {
     return "same";
   }
@@ -72,6 +73,7 @@ function threadOwnerTransition(
     incoming.trustLevel === "public" &&
     incoming.publicSubstate === "recognized" &&
     owner.sourceAugment === incoming.sourceAugment &&
+    owner.orgId === incoming.orgId &&
     incoming.authenticatedPriorPeerId === owner.id
   ) {
     return "promote";
