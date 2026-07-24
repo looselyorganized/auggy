@@ -38,9 +38,15 @@ import { createAuggyClient } from "@/src/auggy-client";
 const api = createAuggyClient({
   baseUrl: process.env.NEXT_PUBLIC_AUGGY_BASE_URL!,
   authAssertion: async () => {
-    const res = await fetch("/api/auggy-auth-assertion", { credentials: "include" });
+    const res = await fetch("/api/auggy-auth-assertion", {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "x-auggy-csrf-request": "1" },
+    });
     if (!res.ok) return undefined;
-    return (await res.json()).assertion;
+    const body = (await res.json()) as { assertion?: unknown };
+    return typeof body.assertion === "string" ? body.assertion : undefined;
   },
 });
 ```
@@ -80,33 +86,18 @@ refreshing this skill does not rewrite application route files.
 
 ## App Auth Assertion Route
 
-A Next.js route handler can bridge existing app auth into Auggy:
+A Next.js route handler can bridge existing app auth into Auggy. Copy these
+files together instead of hand-rolling the security boundary:
 
-```ts
-// app/api/auggy-auth-assertion/route.ts
-import { createExternalAuthAssertion } from "auggy";
+- `assets/templates/app-auth-bridge/next-route.ts.txt`
+- `assets/templates/app-auth-bridge/assertion-response.ts.txt`
+- `assets/templates/app-auth-bridge/app-policy.ts.txt`
 
-export async function GET() {
-  const user = await verifyAppSessionSomehow();
-  if (!user) return Response.json({ error: "unauthorized" }, { status: 401 });
-
-  const assertion = createExternalAuthAssertion({
-    secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
-    audience: "storefront-agent",
-    provider: "custom",
-    subject: user.id,
-    ttlSeconds: 60,
-    scopes: ["orders.read"],
-    grants: [],
-    jti: crypto.randomUUID(),
-  });
-
-  return Response.json({ assertion });
-}
-```
-
-Replace `verifyAppSessionSomehow()` with the app's real Clerk, Supabase, Auth0,
-SSO, or custom session verification.
+The route is POST-only. It checks the exact configured `Origin` and custom
+CSRF request header before session verification, and every success or failure
+response is private and `no-store`. Replace the session stub with the app's
+real Clerk, Supabase, Auth0, SSO, or custom verifier without changing that
+ordering.
 
 ## Regeneration Workflow
 

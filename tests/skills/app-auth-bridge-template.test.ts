@@ -15,6 +15,7 @@ const TEMPLATES_ROOT = join(
   "templates",
 );
 const AUTH_ROOT = join(TEMPLATES_ROOT, "app-auth-bridge");
+const REFERENCES_ROOT = join(TEMPLATES_ROOT, "..", "..", "references");
 
 type AssertionSecurityModule = {
   assertionJson(body: unknown, status?: number): Response;
@@ -145,5 +146,39 @@ describe("generated app-auth bridge assertion boundary", () => {
     const yaml = readFileSync(join(AUTH_ROOT, "webtransport-external-auth.yaml.txt"), "utf8");
     expect(yaml).toContain("enabled: true");
     expect(yaml).toContain("fail closed");
+  });
+
+  test("shipped reference recipes preserve the assertion security boundary", () => {
+    for (const filename of ["generated-clients.md", "nextjs-integration.md"]) {
+      const source = readFileSync(join(REFERENCES_ROOT, filename), "utf8");
+      expect(source).toContain('fetch("/api/auggy-auth-assertion", {');
+      expect(source).toContain('method: "POST"');
+      expect(source).toContain('cache: "no-store"');
+      expect(source).toContain('"x-auggy-csrf-request": "1"');
+      expect(source).toContain("as { assertion?: unknown }");
+      expect(source).toContain('typeof body.assertion === "string"');
+      expect(source).not.toContain(
+        'fetch("/api/auggy-auth-assertion", { credentials: "include" })',
+      );
+    }
+
+    const next = readFileSync(join(REFERENCES_ROOT, "nextjs-integration.md"), "utf8");
+    for (const template of [
+      "app-auth-bridge/next-route.ts.txt",
+      "app-auth-bridge/assertion-response.ts.txt",
+      "app-auth-bridge/app-policy.ts.txt",
+    ]) {
+      expect(next).toContain(template);
+    }
+    expect(next).toContain("POST-only");
+    expect(next).toContain("Origin");
+    expect(next).toContain("CSRF");
+    expect(next).toContain("no-store");
+    expect(next).not.toContain("export async function GET()");
+    expect(next).not.toContain("return Response.json({ assertion });");
+
+    const trust = readFileSync(join(REFERENCES_ROOT, "authz-memory-trust.md"), "utf8");
+    expect(trust).toContain("replayProtection: { enabled: true, store: sharedReplayStore }");
+    expect(trust).toContain("never supplies an implicit replay store");
   });
 });

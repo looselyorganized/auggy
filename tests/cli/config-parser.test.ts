@@ -566,6 +566,46 @@ describe("link agent card capabilities", () => {
   });
 });
 
+describe("webTransport external auth replay validation", () => {
+  function configWithReplayProtection(replayProtection: unknown) {
+    return minimalConfig({
+      augments: [
+        {
+          type: "webTransport",
+          options: {
+            port: 8080,
+            auth: { type: "bearer", token: "test-token" },
+            externalAuth: {
+              secret: "app-secret",
+              replayProtection,
+            },
+          },
+        },
+      ],
+    });
+  }
+
+  test("rejects malformed or non-atomic YAML replay configuration", () => {
+    for (const replayProtection of [
+      null,
+      [],
+      {},
+      { enabled: "true" },
+      { enabled: 1 },
+      { enabled: false, store: {} },
+      { enabled: true },
+    ]) {
+      const path = writeYaml("agent.yaml", configWithReplayProtection(replayProtection));
+      expect(() => parseConfig(path)).toThrow(/externalAuth\.replayProtection/);
+    }
+  });
+
+  test("accepts an explicit disabled replay policy", () => {
+    const path = writeYaml("agent.yaml", configWithReplayProtection({ enabled: false }));
+    expect(parseConfig(path).augments[0]?.options?.externalAuth).toBeDefined();
+  });
+});
+
 describe("engine.reasoningEffort validation", () => {
   for (const effort of ["none", "minimal", "low", "medium", "high", "xhigh"]) {
     test(`accepts ${effort}`, () => {
@@ -1792,6 +1832,33 @@ describe("notify augment agentmail transport validation", () => {
     const destination = notifyOptions.destinations[0];
     expect(destination?.allowedTrustLevels).toEqual(["creator", "agent"]);
     expect(destination?.publicPolicy).toBe("escalation-only");
+  });
+
+  test("rejects malformed webhook security options", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "notify",
+            type: "notify",
+            options: {
+              destinations: [
+                {
+                  name: "ops",
+                  transport: "webhook",
+                  url: "https://example.com/notify",
+                  headers: { authorization: 123 },
+                  allowInsecureHttpWithCredentials: "yes",
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow(/headers: must be an object of strings/);
+    expect(() => parseConfig(path)).toThrow(/allowInsecureHttpWithCredentials: must be a boolean/);
   });
 
   test("rejects invalid destination authority fields", () => {

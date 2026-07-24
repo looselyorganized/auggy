@@ -56,9 +56,15 @@ const api = createAuggyClient({
   visitorToken: () => localStorage.getItem("auggyVisitorToken") ?? undefined,
   onVisitorToken: (token) => localStorage.setItem("auggyVisitorToken", token),
   authAssertion: async () => {
-    const res = await fetch("/api/auggy-auth-assertion", { credentials: "include" });
+    const res = await fetch("/api/auggy-auth-assertion", {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "x-auggy-csrf-request": "1" },
+    });
     if (!res.ok) return undefined;
-    return (await res.json()).assertion;
+    const body = (await res.json()) as { assertion?: unknown };
+    return typeof body.assertion === "string" ? body.assertion : undefined;
   },
   // Match webTransport.externalAuth.header when it is customized.
   authAssertionHeader: "x-auggy-auth-assertion",

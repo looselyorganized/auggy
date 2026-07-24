@@ -3053,6 +3053,38 @@ export function webTransport(opts: WebTransportOptions): Augment {
     adminInfo,
     adminActions,
     async onBoot() {
+      const externalAuthConfig = opts.externalAuth as unknown;
+      if (
+        externalAuthConfig !== undefined &&
+        (externalAuthConfig === null ||
+          typeof externalAuthConfig !== "object" ||
+          Array.isArray(externalAuthConfig))
+      ) {
+        throw new Error("[web-transport] externalAuth must be an object.");
+      }
+      const replayProtection = (externalAuthConfig as { replayProtection?: unknown } | undefined)
+        ?.replayProtection;
+      if (
+        replayProtection !== undefined &&
+        (replayProtection === null ||
+          typeof replayProtection !== "object" ||
+          Array.isArray(replayProtection))
+      ) {
+        throw new Error("[web-transport] externalAuth.replayProtection must be an object.");
+      }
+      if (replayProtection !== undefined) {
+        const replay = replayProtection as Record<string, unknown>;
+        if (typeof replay.enabled !== "boolean") {
+          throw new Error(
+            "[web-transport] externalAuth.replayProtection.enabled must be a boolean when replayProtection is configured.",
+          );
+        }
+        if (replay.store !== undefined && replay.enabled !== true) {
+          throw new Error(
+            "[web-transport] externalAuth.replayProtection.store requires enabled: true.",
+          );
+        }
+      }
       if (opts.cors && opts.cors.origins.length !== 1) {
         throw new Error(
           "[web-transport] cors.origins must contain exactly one browser origin. Multiple Access-Control-Allow-Origin values are not valid; run separate public origins behind an app proxy until dynamic origin matching is supported.",
@@ -3109,7 +3141,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
         if (
           opts.externalAuth.replayProtection?.enabled === true &&
           opts.externalAuth.replayProtection.store !== undefined &&
-          typeof opts.externalAuth.replayProtection.store.consume !== "function"
+          (opts.externalAuth.replayProtection.store === null ||
+            typeof opts.externalAuth.replayProtection.store !== "object" ||
+            typeof opts.externalAuth.replayProtection.store.consume !== "function")
         ) {
           throw new Error(
             "[web-transport] externalAuth.replayProtection.store must provide consume(jti, expiresAt, now).",

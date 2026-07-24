@@ -52,6 +52,32 @@ describe("webTransport structure", () => {
     await expect(aug.onBoot?.()).rejects.toThrow(/replayProtection.*store/);
   });
 
+  it("fails closed on malformed external auth replay configuration", async () => {
+    const malformed: unknown[] = [
+      null,
+      [],
+      {},
+      { enabled: "true" },
+      { enabled: 1 },
+      { store: createInMemoryExternalAuthReplayStore() },
+      { enabled: false, store: createInMemoryExternalAuthReplayStore() },
+    ];
+    for (const replayProtection of malformed) {
+      const aug = webTransport({
+        port: 0,
+        auth: { type: "bearer", token: "test-token" },
+        externalAuth: {
+          secret: "app-secret",
+          audience: "agent-test",
+          replayProtection: replayProtection as NonNullable<
+            Parameters<typeof webTransport>[0]["externalAuth"]
+          >["replayProtection"],
+        },
+      });
+      await expect(aug.onBoot?.()).rejects.toThrow(/replayProtection/);
+    }
+  });
+
   it("treats readiness as idempotent after the listener is bound", async () => {
     const aug = webTransport({
       port: 0,

@@ -193,6 +193,44 @@ function validateWebTransportOptions(
     }
   }
 
+  if (opts.externalAuth !== undefined) {
+    if (
+      opts.externalAuth === null ||
+      typeof opts.externalAuth !== "object" ||
+      Array.isArray(opts.externalAuth)
+    ) {
+      errors.push(`${optionsPrefix}.externalAuth: must be an object`);
+    } else {
+      const externalAuth = opts.externalAuth as Record<string, unknown>;
+      if (externalAuth.replayProtection !== undefined) {
+        if (
+          externalAuth.replayProtection === null ||
+          typeof externalAuth.replayProtection !== "object" ||
+          Array.isArray(externalAuth.replayProtection)
+        ) {
+          errors.push(`${optionsPrefix}.externalAuth.replayProtection: must be an object`);
+        } else {
+          const replay = externalAuth.replayProtection as Record<string, unknown>;
+          if (typeof replay.enabled !== "boolean") {
+            errors.push(
+              `${optionsPrefix}.externalAuth.replayProtection.enabled: must be a boolean`,
+            );
+          }
+          if (replay.store !== undefined) {
+            errors.push(
+              `${optionsPrefix}.externalAuth.replayProtection.store: executable stores cannot be configured in YAML`,
+            );
+          }
+          if (replay.enabled === true) {
+            errors.push(
+              `${optionsPrefix}.externalAuth.replayProtection: enabled protection requires a programmatic atomic store`,
+            );
+          }
+        }
+      }
+    }
+  }
+
   if (opts.consoleSecurity !== undefined) {
     if (
       opts.consoleSecurity === null ||
@@ -851,6 +889,21 @@ function validateNotifyOptions(
     if (dest.transport === "webhook") {
       if (typeof dest.url !== "string" || !dest.url) {
         errors.push(`${dPrefix}.url: required string for webhook transport`);
+      }
+      if (
+        dest.headers !== undefined &&
+        (typeof dest.headers !== "object" ||
+          dest.headers === null ||
+          Array.isArray(dest.headers) ||
+          Object.values(dest.headers).some((value) => typeof value !== "string"))
+      ) {
+        errors.push(`${dPrefix}.headers: must be an object of strings`);
+      }
+      if (
+        dest.allowInsecureHttpWithCredentials !== undefined &&
+        typeof dest.allowInsecureHttpWithCredentials !== "boolean"
+      ) {
+        errors.push(`${dPrefix}.allowInsecureHttpWithCredentials: must be a boolean`);
       }
     } else if (dest.transport === "telegram") {
       if (typeof dest.botToken !== "string" || !dest.botToken) {

@@ -656,6 +656,32 @@ describe("runDeploy", () => {
     expect(getAgent("zip", { auggyDir })?.cloud).toBeNull();
   });
 
+  test("secret confirmation prompt contains no value-derived bytes", async () => {
+    const sentinel = "ABCDE";
+    writeFileSync(join(agentDir, ".env"), `ANTHROPIC_API_KEY=${sentinel}\nAUGGY_WEB_TOKEN=FGHIJ\n`);
+    const prompts: string[] = [];
+    const { cli } = mockRailwayCli();
+    await expect(
+      runDeploy(
+        "zip",
+        baseDeployOptions(cli, auggyDir, {
+          yes: false,
+          promptConfirm: async (message) => {
+            prompts.push(message);
+            return false;
+          },
+        }),
+      ),
+    ).rejects.toThrow(/aborted/i);
+
+    const captured = prompts.join("\n");
+    expect(captured).toContain("ANTHROPIC_API_KEY = <set>");
+    expect(captured).not.toContain(sentinel);
+    for (const fragment of ["AB", "BC", "CD", "DE"]) {
+      expect(captured).not.toContain(fragment);
+    }
+  });
+
   test("aborts before Railway calls when local deploy preflight fails", async () => {
     const webTransportMetadataPath = join(agentDir, "augments", "webTransport", "augment.yaml");
     writeFileSync(

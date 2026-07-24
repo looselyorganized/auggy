@@ -5,17 +5,13 @@ import { join } from "node:path";
 import { loadSecretsPlan, parseEnvText, redactValue } from "../../../src/cli/deploy/secrets";
 
 describe("redactValue", () => {
-  test("empty stays empty", () => {
-    expect(redactValue("")).toBe("");
+  test("empty uses a fixed marker", () => {
+    expect(redactValue("")).toBe("<empty>");
   });
-  test("short values fully masked", () => {
-    expect(redactValue("key")).toBe("***");
-  });
-  test("medium values show a compact fingerprint", () => {
-    expect(redactValue("shortish")).toBe("sh...sh");
-  });
-  test("long values show a compact fixed-width fingerprint", () => {
-    expect(redactValue("sk-ant-abc-1234567890")).toBe("sk-a...7890");
+  test("all non-empty values use the same non-derived marker", () => {
+    for (const value of ["a", "shortish", "sk-ant-abc-1234567890"]) {
+      expect(redactValue(value)).toBe("<set>");
+    }
   });
 });
 
@@ -80,9 +76,10 @@ GOOD=ok
     expect(plan.warnings[0]).toMatch(/duplicate/i);
   });
 
-  test("redactedValue is populated and matches redactValue() output", () => {
+  test("redactedValue never contains a secret substring", () => {
     const plan = parseEnvText("ANTHROPIC_API_KEY=sk-ant-abc-1234567890\n");
-    expect(plan.variables[0]?.redactedValue).toBe("sk-a...7890");
+    expect(plan.variables[0]?.redactedValue).toBe("<set>");
+    expect(plan.variables[0]?.redactedValue).not.toContain("sk-");
   });
 });
 

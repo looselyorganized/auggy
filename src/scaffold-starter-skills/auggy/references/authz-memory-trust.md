@@ -220,12 +220,12 @@ Copyable audit hook template:
 For high-risk sessions, enable external auth replay protection in
 `webTransport.externalAuth.replayProtection`.
 
-```yaml
-externalAuth:
-  secret: ${AUGGY_EXTERNAL_AUTH_SECRET}
-  audience: ${AUGGY_EXTERNAL_AUTH_AUDIENCE}
-  replayProtection:
-    enabled: true
+```ts
+externalAuth: {
+  secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
+  audience: process.env.AUGGY_EXTERNAL_AUTH_AUDIENCE!,
+  replayProtection: { enabled: true, store: sharedReplayStore },
+}
 ```
 
 When enabled:
@@ -236,10 +236,11 @@ When enabled:
   same assertion audience and secrets
 - TTL should be bounded by assertion expiry
 
-In 0.5, Auggy includes an in-memory replay store for local or single-process
-deployments. Multi-process, multi-region, or restart-resilient deployments
-should provide a shared atomic store. The store operation must mean "record this
-`jti` until expiry only if absent."
+Auggy never supplies an implicit replay store. A configured policy without an
+explicit atomic store fails at boot. The bundled in-memory store is only for a
+documented single-process development deployment; production and multi-process
+deployments must provide a shared atomic store. The store operation must mean
+"record this `jti` until expiry only if absent."
 
 Copyable store template:
 
