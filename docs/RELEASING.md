@@ -220,6 +220,23 @@ The publish workflow's idempotency gate means a repeat push to the same version 
 
 **Provenance is currently OFF.** `npm publish --provenance` requires the source repo be **public** (sigstore can only attest from public repos).
 
+The publish workflow already grants `id-token: write`, uses Node 24, and
+requires npm 11.5.1 or newer so it is technically ready for npm trusted
+publishing. The long-lived `NPM_TOKEN` remains only as a migration fallback.
+npm automatically prefers the workflow OIDC identity once a trusted publisher
+is configured.
+
+Before removing that token, configure npm trusted publishers for all six
+packages (`auggy`, the four provider adapters, and `@auggy/evals`) against the
+exact `looselyorganized/auggy` repository and `.github/workflows/publish.yml`.
+Then complete one successful release, remove `NODE_AUTH_TOKEN` from the
+workflow, revoke `NPM_TOKEN`, and disallow token-based publishing in npm. This
+registry-side configuration cannot be completed or verified by a source PR.
+
+Trusted publishing can authenticate a private GitHub repository, but npm
+provenance remains unavailable while the source repository is private. Keep
+`--provenance` off until the public-repository gate below is complete.
+
 To turn provenance back on (when the Auggy repo goes OSS-public):
 
 1. Set repo visibility to Public in GitHub Settings

@@ -114,17 +114,21 @@ The fixture at `fixtures/test-agent.yaml` is the canonical "any Auggy agent" tar
 
 ## CI integration
 
-`.github/workflows/security-eval.yml` runs on three explicit channels — **not on every PR**:
+`.github/workflows/security-eval.yml` is a branch-selectable, secretless request
+workflow. It never checks out the selected branch or executes repository code.
+It uploads only a bounded model choice and the triggering SHA.
 
-| Trigger | When | Who pays | What it catches |
-|---|---|---|---|
-| `workflow_dispatch` | Maintainer clicks "Run workflow" in the Actions tab against any branch | Maintainer | Pre-merge verification on demand |
-| `push: branches: [main]` | Every merge to `main` | Maintainer | Regressions that slipped past review — revert if it fails |
-| `schedule: cron: "0 7 * * *"` | Daily at 07:00 UTC (midnight Pacific) | Maintainer | Model behavior drift between merges (Haiku updates, etc.) |
+`.github/workflows/security-eval-trusted.yml` is activated through
+`workflow_run`, so GitHub loads it from the default branch. It bounds and
+schema-validates the request artifact, checks the SHA, maps the model enum to a
+fixed default-branch fixture, and runs the default-branch harness. Candidate
+branch paths, dependencies, scripts, configs, and workflow code never execute
+with the paid key. Results are retained for 30 days.
 
-Each run uses the default fixture (no operator-specific config), Haiku, 3 trials per case. Cost ≈ $0.07/run; ~$2/month at this cadence. 15-minute timeout. Results uploaded as a 30-day artifact for inspection.
-
-Secret: `ANTHROPIC_API_KEY_SECURITY_EVAL` — dedicated, scoped key. Distinct from any other Anthropic key in the same project, so a leak limits blast radius.
+Secret: `ANTHROPIC_API_KEY_SECURITY_EVAL` — a dedicated, scoped key stored in
+the protected `security-eval` GitHub Environment. Distinct from any other
+Anthropic key in the same project, so a leak limits blast radius. Repository
+settings must restrict environment access to trusted maintainers.
 
 **Why no `pull_request` trigger?** GitHub structurally withholds repo secrets
 from untrusted PR contexts (correct behavior — prevents secret exfiltration via
@@ -133,7 +137,11 @@ pattern is maintainer-controlled triggers plus a post-merge/scheduled drift
 gate. Private-preview collaborators or adopters running their own copy can wire
 their own paid key into their own CI.
 
-**Comparison runs against larger models.** A second fixture variant lives at `fixtures/test-agent-sonnet.yaml` (identical composition, Sonnet 4.6 instead of Haiku 4.5). Maintainers dispatch it via the workflow's `config` input from the Actions tab to compare model-size sensitivity. Cost: ~$0.35/run vs Haiku's ~$0.07. Use case: pre-release verification, or debugging an over-refusal flake to determine whether it's model-size-sensitive (Haiku-specific) vs a real Auggy regression (would fail on Sonnet too).
+**Comparison runs against larger models.** A second fixture variant lives at
+`fixtures/test-agent-sonnet.yaml` (identical composition, Sonnet 4.6 instead of
+Haiku 4.5). Maintainers select the `sonnet` enum in the request workflow; an
+arbitrary config path is never accepted. Cost: ~$0.35/run vs Haiku's
+~$0.07.
 
 **For contributors:** see [CONTRIBUTING.md "Security eval" section](../../../../CONTRIBUTING.md). Short version — run locally before submitting, or configure your own secret + trigger in your own repository.
 

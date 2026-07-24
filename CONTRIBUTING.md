@@ -168,11 +168,18 @@ We squash-merge by default. Keep your PR description sharp — that's what becom
 
 The portable security suite at `packages/evals/src/security/` runs against a real Anthropic API call per case (see [`packages/evals/src/security/README.md`](packages/evals/src/security/README.md) for the full contract). Each run costs roughly $0.07 on Haiku.
 
-**The CI workflow does NOT auto-trigger on pull requests.** This is deliberate — to avoid burning maintainer API budget on every contributor push. The workflow runs on three explicit channels:
+**The CI workflow does NOT auto-trigger on pull requests.** This avoids both
+maintainer API spend and a more important trust failure: unmerged workflow,
+dependency, config, or harness code must never execute with the repository eval
+key.
 
-- `workflow_dispatch` — maintainers click "Run workflow" against any branch from the Actions tab to verify a PR before merging.
-- `push: main` — runs once after every merge to catch regressions.
-- `schedule` (nightly, 07:00 UTC) — catches model behavior drift between merges.
+Maintainers may dispatch `Security eval request` against a branch. That
+branch-selectable workflow checks out and executes no repository content and
+has no secret. It uploads only a bounded `haiku | sonnet` choice and the source
+commit SHA. `Trusted security eval`, loaded from the default branch, validates
+that passive data and runs only the default-branch harness and fixed fixture.
+The request therefore exercises the trusted canary; it does not evaluate
+unmerged branch behavior.
 
 **If your PR touches eval-relevant code** (kernel turn-loop, augment refusal logic, identity preamble, fixture composition, suite YAML, eval-context module, or anything under `src/augments/*`, `src/scaffold-templates/*`, `src/cli/scaffold*.ts`, `src/cli/skill-*.ts`) — see ADR-029 (`eval-as-canary-for-prompt-shape-changes`) for the full canary discipline:
 
@@ -188,6 +195,10 @@ The portable security suite at `packages/evals/src/security/` runs against a rea
    trigger you want to your copy of `.github/workflows/security-eval.yml`. Your
    CI, your spend.
 3. Mention in your PR description that you've run the suite and it passes.
+
+Repository maintainers must place `ANTHROPIC_API_KEY_SECURITY_EVAL` in the
+`security-eval` GitHub Environment and protect that environment for trusted
+maintainers. Code review cannot configure or verify that external policy.
 
 Maintainers will dispatch the eval against your PR's branch via `workflow_dispatch` if review surfaces eval-relevant changes that weren't locally verified.
 
