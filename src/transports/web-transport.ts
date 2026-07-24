@@ -38,7 +38,6 @@ import {
   type WebIdempotencyStore,
 } from "./idempotency-store";
 import {
-  createInMemoryExternalAuthReplayStore,
   externalAuthClaimsToRouteContext,
   verifyExternalAuthAssertion,
   type ExternalAuthAssertionSecret,
@@ -974,7 +973,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
   const visitorTokenTtl = opts.visitorTokens?.ttlSeconds ?? 30 * 24 * 3600;
   const externalAuthReplayProtectionEnabled = opts.externalAuth?.replayProtection?.enabled === true;
   const externalAuthReplayStore = externalAuthReplayProtectionEnabled
-    ? (opts.externalAuth?.replayProtection?.store ?? createInMemoryExternalAuthReplayStore())
+    ? (opts.externalAuth?.replayProtection?.store ?? null)
     : null;
   let securityAudience: string | null = null;
   const idempotencyMaxReplayBytes = opts.idempotency?.maxReplayBytes ?? 2 * 1024 * 1024;
@@ -3096,6 +3095,15 @@ export function webTransport(opts: WebTransportOptions): Augment {
         if (opts.externalAuth.maxTtlSeconds !== undefined && opts.externalAuth.maxTtlSeconds <= 0) {
           throw new Error(
             "[web-transport] externalAuth.maxTtlSeconds must be positive when configured.",
+          );
+        }
+        if (
+          opts.externalAuth.replayProtection?.enabled === true &&
+          opts.externalAuth.replayProtection.store === undefined
+        ) {
+          throw new Error(
+            "[web-transport] externalAuth.replayProtection requires an explicit atomic store. " +
+              "Use createInMemoryExternalAuthReplayStore() only for a documented single-process development deployment.",
           );
         }
         if (

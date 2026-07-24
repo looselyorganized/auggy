@@ -47,6 +47,9 @@ bun test examples/app-auth-bridge/app-auth-bridge.test.ts
 ## Production Checklist
 
 - Keep `AUGGY_EXTERNAL_AUTH_SECRET` on the app server only.
+- Serve assertion minting over POST. Cookie-backed routes must validate the
+  exact application Origin and a custom CSRF header before reading the session.
+- Set every assertion response to `Cache-Control: private, no-store`.
 - Mint assertions with a stable `audience` matching the Auggy agent.
 - Set `keyId` and keep the previous secret in `externalAuth.secrets` during
   rotation.

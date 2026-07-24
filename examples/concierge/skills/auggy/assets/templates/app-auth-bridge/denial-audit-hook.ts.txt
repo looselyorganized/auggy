@@ -1,6 +1,7 @@
 import {
   webTransport,
   type DelegatedAuthorizationDeniedAuditEvent,
+  type ExternalAuthReplayStore,
 } from "auggy";
 
 export function logDelegatedAuthorizationDenied(event: DelegatedAuthorizationDeniedAuditEvent) {
@@ -36,14 +37,17 @@ export function logDelegatedAuthorizationDenied(event: DelegatedAuthorizationDen
   });
 }
 
-export const web = webTransport({
-  port: 8080,
-  auth: { type: "bearer", token: process.env.AUGGY_WEB_TOKEN! },
-  externalAuth: {
-    secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
-    audience: process.env.AUGGY_EXTERNAL_AUTH_AUDIENCE!,
-    allowedProviders: ["supabase", "clerk", "custom"],
-    maxTtlSeconds: 60,
-  },
-  onDelegatedAuthorizationDenied: logDelegatedAuthorizationDenied,
-});
+export function createAuditedExternalAuthWebTransport(replayStore: ExternalAuthReplayStore) {
+  return webTransport({
+    port: 8080,
+    auth: { type: "bearer", token: process.env.AUGGY_WEB_TOKEN! },
+    externalAuth: {
+      secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
+      audience: process.env.AUGGY_EXTERNAL_AUTH_AUDIENCE!,
+      allowedProviders: ["supabase", "clerk", "custom"],
+      maxTtlSeconds: 60,
+      replayProtection: { enabled: true, store: replayStore },
+    },
+    onDelegatedAuthorizationDenied: logDelegatedAuthorizationDenied,
+  });
+}

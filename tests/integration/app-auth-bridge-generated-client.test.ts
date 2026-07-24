@@ -6,6 +6,7 @@ import { pathToFileURL } from "node:url";
 import { z } from "zod";
 import {
   createExternalAuthAssertion,
+  createInMemoryExternalAuthReplayStore,
   defineAgent,
   defineAugment,
   defineRoute,
@@ -299,6 +300,10 @@ function appAuthWebTransport(port: number) {
       audience: AUDIENCE,
       allowedProviders: ["supabase", "clerk"],
       maxTtlSeconds: 60,
+      replayProtection: {
+        enabled: true,
+        store: createInMemoryExternalAuthReplayStore(),
+      },
     },
   });
 }
@@ -318,6 +323,7 @@ function appBackendMintAssertion(appSessionToken: string): string | undefined {
     scopes: session.scopes,
     grants: session.grants,
     authzVersion: "test-app-authz-v1",
+    jti: crypto.randomUUID(),
   });
 }
 

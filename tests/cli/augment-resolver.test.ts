@@ -398,6 +398,27 @@ describe("resolveAugments — webTransport", () => {
     expect(augments[0]!.transport).toBeDefined();
   });
 
+  test("forwards externalAuth and fails closed when replay has no explicit store", async () => {
+    const configs: AugmentConfig[] = [
+      {
+        name: "web",
+        type: "webTransport",
+        options: {
+          port: 9999,
+          auth: { type: "bearer", token: "test-token" },
+          externalAuth: {
+            secret: "app-secret",
+            audience: "agent-test",
+            replayProtection: { enabled: true },
+          },
+        },
+      },
+    ];
+
+    const [web] = await resolveAugments(configs, TMP);
+    await expect(web?.onBoot?.()).rejects.toThrow(/replayProtection.*store/);
+  });
+
   test("passes creator displayName to webTransport creator identity", async () => {
     const configs: AugmentConfig[] = [
       {

@@ -42,31 +42,33 @@ Auggy runtime: verify assertion, enforce route/tool requires, call handler/tool
 Programmatic `webTransport` can verify app-signed assertions:
 
 ```ts
-import { webTransport } from "auggy";
+import { webTransport, type ExternalAuthReplayStore } from "auggy";
 
-const web = webTransport({
-  port: 8080,
-  auth: { type: "bearer", token: process.env.AUGGY_BEARER_TOKEN! },
-  visitorTokens: {
-    enabled: true,
-    signingKey: process.env.AUGGY_VISITOR_TOKEN_SIGNING_KEY!,
-    agentBinding: "storefront-agent",
-  },
-  externalAuth: {
-    secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
-    keyId: "2026-07",
-    secrets: [
-      {
-        keyId: "2026-06",
-        secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET_PREVIOUS!,
-      },
-    ],
-    audience: "storefront-agent",
-    allowedProviders: ["supabase", "clerk", "custom"],
-    maxTtlSeconds: 60,
-    replayProtection: { enabled: true },
-  },
-});
+export function createWeb(replayStore: ExternalAuthReplayStore) {
+  return webTransport({
+    port: 8080,
+    auth: { type: "bearer", token: process.env.AUGGY_BEARER_TOKEN! },
+    visitorTokens: {
+      enabled: true,
+      signingKey: process.env.AUGGY_VISITOR_TOKEN_SIGNING_KEY!,
+      agentBinding: "storefront-agent",
+    },
+    externalAuth: {
+      secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
+      keyId: "2026-07",
+      secrets: [
+        {
+          keyId: "2026-06",
+          secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET_PREVIOUS!,
+        },
+      ],
+      audience: "storefront-agent",
+      allowedProviders: ["supabase", "clerk", "custom"],
+      maxTtlSeconds: 60,
+      replayProtection: { enabled: true, store: replayStore },
+    },
+  });
+}
 ```
 
 The default assertion header is `x-auggy-auth-assertion`. Override
@@ -92,10 +94,9 @@ invalid external assertions. The public route response remains the generic
 `visitor-auth-required` body when the assertion is required, so replay internals
 are not exposed to browsers.
 
-If no replay store is supplied, `webTransport` uses a process-local in-memory
-cache. That is useful for single-process deployments and local development. For
-multi-process, multi-region, or restart-resilient deployments, pass a shared
-store:
+Replay protection requires an explicit store and fails at boot when it is
+missing. This prevents a multi-instance deployment from silently degrading to
+process-local replay state. Pass a shared store:
 
 ```ts
 const web = webTransport({
@@ -120,6 +121,9 @@ const web = webTransport({
 Replay stores must be atomic and keyed by `jti`. They should retain each key no
 longer than the assertion expiry (`expiresAt - now`), and they should be shared
 by every Auggy process that accepts the same external auth audience and secrets.
+For explicitly single-process local development, callers may deliberately pass
+`createInMemoryExternalAuthReplayStore()`. Do not use it in a multi-process,
+restart-sensitive, or horizontally scaled deployment.
 
 For `/agent/run`, a valid external auth assertion admits the request as
 `public` + `recognized` even when `allowAnonymous` is `false`. That keeps normal
@@ -198,23 +202,28 @@ protection.
 // app/api/auggy-auth-assertion/route.ts
 import { createClient } from "@supabase/supabase-js";
 import { createExternalAuthAssertion, type AuthorizationGrant } from "auggy";
+import { assertionJson, assertionMethodNotAllowed } from "./assertion-response";
 
 const supabase = createClient(process.env.SUPABASE_URL!, process.env.SUPABASE_ANON_KEY!);
 
-export async function GET(req: Request) {
+export function GET() {
+  return assertionMethodNotAllowed();
+}
+
+export async function POST(req: Request) {
   // This variant verifies the user's Supabase access token. Cookie-backed
   // Supabase apps can instead read the server session and call getUser().
   const accessToken = req.headers
     .get("authorization")
     ?.replace(/^Bearer\s+/i, "");
-  if (!accessToken) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!accessToken) return assertionJson({ error: "unauthorized" }, 401);
 
   const {
     data: { user },
     error,
   } = await supabase.auth.getUser(accessToken);
   if (error || !user) {
-    return Response.json({ error: "unauthorized" }, { status: 401 });
+    return assertionJson({ error: "unauthorized" }, 401);
   }
 
   const orgId =
@@ -239,7 +248,7 @@ export async function GET(req: Request) {
     jti: crypto.randomUUID(),
   });
 
-  return Response.json({ assertion });
+  return assertionJson({ assertion });
 }
 
 async function refundGrantsForUser(
@@ -267,11 +276,23 @@ Supabase session and app roles go into `appPolicy`; only the derived
 // app/api/auggy-auth-assertion/route.ts
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { createExternalAuthAssertion, type AuthorizationGrant } from "auggy";
+import {
+  assertionJson,
+  assertionMethodNotAllowed,
+  requireCookieAssertionRequest,
+} from "./assertion-response";
 
-export async function GET() {
+export function GET() {
+  return assertionMethodNotAllowed();
+}
+
+export async function POST(request: Request) {
+  const boundaryError = requireCookieAssertionRequest(request);
+  if (boundaryError) return boundaryError;
+
   const { isAuthenticated, userId, orgId, orgRole } = await auth();
   if (!isAuthenticated || !userId) {
-    return Response.json({ error: "unauthorized" }, { status: 401 });
+    return assertionJson({ error: "unauthorized" }, 401);
   }
 
   const user = await currentUser();
@@ -295,7 +316,7 @@ export async function GET() {
     jti: crypto.randomUUID(),
   });
 
-  return Response.json({ assertion });
+  return assertionJson({ assertion });
 }
 
 async function refundGrantsForClerkUser(session: {
@@ -311,6 +332,13 @@ async function refundGrantsForClerkUser(session: {
 Use the Clerk server API your app already trusts. Clerk organization context is
 input to `appPolicy`; the assertion carries the narrow result.
 
+Cookie-backed assertion routes must set `APP_ORIGIN` to the exact public
+application origin and call `requireCookieAssertionRequest` before session
+verification. Copy `assertion-response.ts.txt` beside the route so every
+success and failure response is `private, no-store`, and so GET fails with
+`405 Method Not Allowed`. Bearer-only routes still use POST and the same
+non-cacheable response helper.
+
 ### Generated Browser Client
 
 Generated browser clients can provide assertions through `authAssertion`:
@@ -324,9 +352,12 @@ const api = createAuggyClient({
     const headers = new Headers();
     const appAccessToken = await currentAppAccessToken();
     if (appAccessToken) headers.set("authorization", `Bearer ${appAccessToken}`);
+    headers.set("x-auggy-csrf-request", "1");
 
     const res = await fetch("/api/auggy-auth-assertion", {
+      method: "POST",
       credentials: "include",
+      cache: "no-store",
       headers,
     });
     if (!res.ok) return undefined;

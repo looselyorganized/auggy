@@ -1,31 +1,47 @@
 import { createExternalAuthAssertion } from "auggy";
 import { deriveAuggyAuthorization, type VerifiedAppSession } from "./app-policy";
+import {
+  assertionJson,
+  assertionMethodNotAllowed,
+  requireCookieAssertionRequest,
+} from "./assertion-response";
 
-export async function GET() {
-  const session = await verifyAppSession();
-  if (!session) return Response.json({ error: "unauthorized" }, { status: 401 });
-
-  const authorization = deriveAuggyAuthorization(session);
-  const assertion = createExternalAuthAssertion({
-    secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
-    keyId: process.env.AUGGY_EXTERNAL_AUTH_KEY_ID ?? "2026-07",
-    audience: process.env.AUGGY_EXTERNAL_AUTH_AUDIENCE!,
-    provider: session.provider,
-    subject: session.userId,
-    ttlSeconds: 60,
-    email: session.email,
-    emailVerified: session.emailVerified,
-    orgId: session.orgId,
-    roles: session.roles,
-    scopes: authorization.scopes,
-    grants: authorization.grants,
-    authzVersion: "2026-07-08",
-    jti: crypto.randomUUID(),
-  });
-
-  return Response.json({ assertion });
+export function GET() {
+  return assertionMethodNotAllowed();
 }
 
-async function verifyAppSession(): Promise<VerifiedAppSession | null> {
+export async function POST(request: Request) {
+  const boundaryError = requireCookieAssertionRequest(request);
+  if (boundaryError) return boundaryError;
+
+  try {
+    const session = await verifyAppSession(request);
+    if (!session) return assertionJson({ error: "unauthorized" }, 401);
+
+    const authorization = deriveAuggyAuthorization(session);
+    const assertion = createExternalAuthAssertion({
+      secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
+      keyId: process.env.AUGGY_EXTERNAL_AUTH_KEY_ID ?? "2026-07",
+      audience: process.env.AUGGY_EXTERNAL_AUTH_AUDIENCE!,
+      provider: session.provider,
+      subject: session.userId,
+      ttlSeconds: 60,
+      email: session.email,
+      emailVerified: session.emailVerified,
+      orgId: session.orgId,
+      roles: session.roles,
+      scopes: authorization.scopes,
+      grants: authorization.grants,
+      authzVersion: "2026-07-08",
+      jti: crypto.randomUUID(),
+    });
+
+    return assertionJson({ assertion });
+  } catch {
+    return assertionJson({ error: "assertion_unavailable" }, 500);
+  }
+}
+
+async function verifyAppSession(_request: Request): Promise<VerifiedAppSession | null> {
   throw new Error("Replace with Supabase, Clerk, Auth0, SSO, or custom session verification.");
 }

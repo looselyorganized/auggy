@@ -9,7 +9,10 @@ import { createMockModel } from "@tests/fixtures/mock-model";
 import { createIdentityAugment } from "@tests/fixtures/mock-augment";
 import { routeFixtureAugment } from "@tests/fixtures/route-fixture-augment";
 import { createVisitorToken, deriveSigningKey } from "@/transports/visitor-token";
-import { createExternalAuthAssertion } from "@/auth/external-auth";
+import {
+  createExternalAuthAssertion,
+  createInMemoryExternalAuthReplayStore,
+} from "@/auth/external-auth";
 import type { Augment, DelegatedAuthorizationDeniedAuditEvent, ModelClient } from "@/types";
 
 // ---------------------------------------------------------------------------
@@ -34,6 +37,19 @@ describe("webTransport structure", () => {
     await aug.onBoot?.();
     await expect(aug.transport!.ready!()).rejects.toThrow("before kernel registration");
     await aug.onShutdown?.();
+  });
+
+  it("fails closed when external auth replay protection has no explicit store", async () => {
+    const aug = webTransport({
+      port: 0,
+      auth: { type: "bearer", token: "test-token" },
+      externalAuth: {
+        secret: "app-secret",
+        audience: "agent-test",
+        replayProtection: { enabled: true },
+      },
+    });
+    await expect(aug.onBoot?.()).rejects.toThrow(/replayProtection.*store/);
   });
 
   it("treats readiness as idempotent after the listener is bound", async () => {
@@ -1682,7 +1698,10 @@ describe("webTransport HTTP server", () => {
         audience: "test",
         allowedProviders: ["clerk"],
         visitorId: (claims) => `vis_app_${claims.subject}`,
-        replayProtection: { enabled: true },
+        replayProtection: {
+          enabled: true,
+          store: createInMemoryExternalAuthReplayStore(),
+        },
       },
     });
     const agent = defineAgent(
@@ -3960,9 +3979,10 @@ describe("webTransport augment-registered routes", () => {
     }
   });
 
-  it("auth: visitor.required enforces external auth replay protection when enabled", async () => {
+  it("auth: visitor.required rejects replay across instances sharing an atomic store", async () => {
     const model = createMockModel();
     const port = 19612;
+    const replicaPort = 19614;
     const now = Date.now();
     const noJtiAssertion = createExternalAuthAssertion({
       secret: "app-auth-secret",
@@ -3984,26 +4004,30 @@ describe("webTransport augment-registered routes", () => {
     let handlerCalls = 0;
     const replayStoreCalls: Array<{ jti: string; expiresAt: number; now: number }> = [];
     const consumedJtis = new Set<string>();
-    const aug = webTransport({
-      port,
-      auth: { type: "bearer", token: "test-token" },
-      externalAuth: {
-        secret: "app-auth-secret",
-        audience: "storefront-agent",
-        allowedProviders: ["clerk"],
-        replayProtection: {
-          enabled: true,
-          store: {
-            consume(jti, expiresAt, observedNow) {
-              replayStoreCalls.push({ jti, expiresAt, now: observedNow });
-              if (consumedJtis.has(jti)) return false;
-              consumedJtis.add(jti);
-              return true;
-            },
+    const replayStore = {
+      consume(jti: string, expiresAt: number, observedNow: number) {
+        replayStoreCalls.push({ jti, expiresAt, now: observedNow });
+        if (consumedJtis.has(jti)) return false;
+        consumedJtis.add(jti);
+        return true;
+      },
+    };
+    const createTransport = (listenPort: number) =>
+      webTransport({
+        port: listenPort,
+        auth: { type: "bearer", token: "test-token" },
+        externalAuth: {
+          secret: "app-auth-secret",
+          audience: "storefront-agent",
+          allowedProviders: ["clerk"],
+          replayProtection: {
+            enabled: true,
+            store: replayStore,
           },
         },
-      },
-    });
+      });
+    const aug = createTransport(port);
+    const replica = createTransport(replicaPort);
     const fixture: Augment = {
       name: "external-auth-replay-routes",
       httpRoutes: [
@@ -4019,7 +4043,12 @@ describe("webTransport augment-registered routes", () => {
       ],
     };
     const agent = defineAgent({ name: "test", model: "mock", augments: [fixture, aug] }, model);
+    const replicaAgent = defineAgent(
+      { name: "test", model: "mock", augments: [fixture, replica] },
+      createMockModel(),
+    );
     await agent.start();
+    await replicaAgent.start();
     try {
       const missingJti = await fetch(`http://localhost:${port}/account`, {
         headers: { "x-auggy-auth-assertion": noJtiAssertion },
@@ -4033,7 +4062,7 @@ describe("webTransport augment-registered routes", () => {
       expect(first.status).toBe(200);
       expect(await first.json()).toEqual({ ok: true });
 
-      const replay = await fetch(`http://localhost:${port}/account`, {
+      const replay = await fetch(`http://localhost:${replicaPort}/account`, {
         headers: { "x-auggy-auth-assertion": assertion },
       });
       expect(replay.status).toBe(401);
@@ -4043,6 +4072,7 @@ describe("webTransport augment-registered routes", () => {
       expect(replayStoreCalls.every((call) => call.expiresAt === now + 60_000)).toBe(true);
       expect(replayStoreCalls.every((call) => call.now >= now)).toBe(true);
     } finally {
+      await replicaAgent.stop();
       await agent.stop();
     }
   });

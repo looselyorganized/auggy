@@ -1,30 +1,46 @@
 import { auth, currentUser } from "@clerk/nextjs/server";
 import { createExternalAuthAssertion } from "auggy";
 import { deriveAuggyAuthorization, type VerifiedAppSession } from "./app-policy";
+import {
+  assertionJson,
+  assertionMethodNotAllowed,
+  requireCookieAssertionRequest,
+} from "./assertion-response";
 
-export async function GET() {
-  const session = await verifyClerkSession();
-  if (!session) return Response.json({ error: "unauthorized" }, { status: 401 });
+export function GET() {
+  return assertionMethodNotAllowed();
+}
 
-  const authorization = deriveAuggyAuthorization(session);
-  const assertion = createExternalAuthAssertion({
-    secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
-    keyId: process.env.AUGGY_EXTERNAL_AUTH_KEY_ID ?? "2026-07",
-    audience: process.env.AUGGY_EXTERNAL_AUTH_AUDIENCE!,
-    provider: "clerk",
-    subject: session.userId,
-    ttlSeconds: 60,
-    email: session.email,
-    emailVerified: session.emailVerified,
-    orgId: session.orgId,
-    roles: session.roles,
-    scopes: authorization.scopes,
-    grants: authorization.grants,
-    authzVersion: "2026-07-08",
-    jti: crypto.randomUUID(),
-  });
+export async function POST(request: Request) {
+  const boundaryError = requireCookieAssertionRequest(request);
+  if (boundaryError) return boundaryError;
 
-  return Response.json({ assertion });
+  try {
+    const session = await verifyClerkSession();
+    if (!session) return assertionJson({ error: "unauthorized" }, 401);
+
+    const authorization = deriveAuggyAuthorization(session);
+    const assertion = createExternalAuthAssertion({
+      secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
+      keyId: process.env.AUGGY_EXTERNAL_AUTH_KEY_ID ?? "2026-07",
+      audience: process.env.AUGGY_EXTERNAL_AUTH_AUDIENCE!,
+      provider: "clerk",
+      subject: session.userId,
+      ttlSeconds: 60,
+      email: session.email,
+      emailVerified: session.emailVerified,
+      orgId: session.orgId,
+      roles: session.roles,
+      scopes: authorization.scopes,
+      grants: authorization.grants,
+      authzVersion: "2026-07-08",
+      jti: crypto.randomUUID(),
+    });
+
+    return assertionJson({ assertion });
+  } catch {
+    return assertionJson({ error: "assertion_unavailable" }, 500);
+  }
 }
 
 async function verifyClerkSession(): Promise<VerifiedAppSession | null> {

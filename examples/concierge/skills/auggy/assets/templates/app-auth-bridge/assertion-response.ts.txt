@@ -1,0 +1,55 @@
+const ASSERTION_RESPONSE_HEADERS = {
+  "cache-control": "private, no-store, max-age=0",
+  pragma: "no-cache",
+  vary: "Cookie, Authorization, Origin",
+  "x-content-type-options": "nosniff",
+} as const;
+
+export function assertionJson(body: unknown, status = 200): Response {
+  return Response.json(body, {
+    status,
+    headers: ASSERTION_RESPONSE_HEADERS,
+  });
+}
+
+export function assertionMethodNotAllowed(): Response {
+  const response = assertionJson({ error: "method_not_allowed" }, 405);
+  response.headers.set("allow", "POST");
+  return response;
+}
+
+export function requireCookieAssertionRequest(
+  request: Request,
+  configuredOrigin = process.env.APP_ORIGIN,
+): Response | null {
+  if (request.method !== "POST") return assertionMethodNotAllowed();
+
+  let expectedOrigin: string;
+  try {
+    if (!configuredOrigin) throw new Error("missing origin");
+    const parsed = new URL(configuredOrigin);
+    if (
+      (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+      parsed.username.length > 0 ||
+      parsed.password.length > 0
+    ) {
+      throw new Error("invalid origin");
+    }
+    expectedOrigin = parsed.origin;
+  } catch {
+    return assertionJson({ error: "assertion_origin_unavailable" }, 503);
+  }
+
+  const requestOrigin = request.headers.get("origin");
+  if (requestOrigin !== expectedOrigin) {
+    return assertionJson({ error: "csrf_forbidden" }, 403);
+  }
+  const fetchSite = request.headers.get("sec-fetch-site");
+  if (fetchSite !== null && fetchSite !== "same-origin") {
+    return assertionJson({ error: "csrf_forbidden" }, 403);
+  }
+  if (request.headers.get("x-auggy-csrf-request") !== "1") {
+    return assertionJson({ error: "csrf_forbidden" }, 403);
+  }
+  return null;
+}

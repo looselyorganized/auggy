@@ -295,7 +295,12 @@ normal app login or an external auth bridge.
 const api = createAuggyClient({
   baseUrl,
   authAssertion: async () => {
-    const res = await fetch("/api/auggy-auth-assertion", { credentials: "include" });
+    const res = await fetch("/api/auggy-auth-assertion", {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "x-auggy-csrf-request": "1" },
+    });
     if (!res.ok) return undefined;
     return (await res.json()).assertion;
   },
@@ -303,6 +308,9 @@ const api = createAuggyClient({
 ```
 
 The assertion should be short-lived and signed by trusted server-side app code.
+Cookie-authenticated assertion routes must validate an exact configured
+application `Origin` and the custom CSRF request header before reading the
+session. All assertion responses must use private, no-store caching semantics.
 The generated browser client sends it as `x-auggy-auth-assertion` by default. Set
 `authAssertionHeader` to the same non-reserved `x-*` header configured in
 `webTransport.externalAuth.header` when using a custom name. Auggy runtime

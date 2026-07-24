@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { defineAgent, webTransport } from "auggy";
+import { createInMemoryExternalAuthReplayStore, defineAgent, webTransport } from "auggy";
 import { createRouteManifest, summarizeRouteManifest } from "@/kernel/route-manifest";
 import { collectAugmentRoutes } from "@/kernel/route-collector";
 import { createTypeScriptClient, type ClientRoutesReport } from "@/cli/routes-client";
@@ -134,8 +134,9 @@ describe("app auth bridge example", () => {
 
     const clerkHandler = createClerkAuggyAssertionHandler(fakeClerk(), {
       assertion: assertionOptions(),
+      appOrigin: "http://app.local",
     });
-    const assertion = await assertionFromResponse(await clerkHandler());
+    const assertion = await assertionFromResponse(await clerkHandler(cookieAssertionRequest()));
     const events = await runAgent(port, assertion);
 
     expect(events.find((event) => event.type === "TOOL_CALL_RESULT")?.content).toBe(
@@ -159,7 +160,10 @@ function appAuthWebTransport(port: number) {
       audience: AUDIENCE,
       allowedProviders: ["supabase", "clerk"],
       maxTtlSeconds: 60,
-      replayProtection: { enabled: true },
+      replayProtection: {
+        enabled: true,
+        store: createInMemoryExternalAuthReplayStore(),
+      },
     },
   });
 }
@@ -237,9 +241,21 @@ function appBackendFetch(handler: (req: Request) => Promise<Response>): typeof f
 
 async function assertionFromResponse(response: Response): Promise<string> {
   expect(response.status).toBe(200);
+  expect(response.headers.get("cache-control")).toContain("no-store");
   const body = (await response.json()) as { assertion?: unknown };
   expect(body.assertion).toBeString();
   return body.assertion;
+}
+
+function cookieAssertionRequest(): Request {
+  return new Request("http://app.local/api/auggy-auth-assertion", {
+    method: "POST",
+    headers: {
+      origin: "http://app.local",
+      "sec-fetch-site": "same-origin",
+      "x-auggy-csrf-request": "1",
+    },
+  });
 }
 
 async function loadGeneratedBrowserClient(routesAugment: Augment): Promise<GeneratedClientModule> {

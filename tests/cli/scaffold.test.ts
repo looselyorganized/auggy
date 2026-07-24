@@ -249,7 +249,7 @@ describe("scaffoldAgent", () => {
     );
     expect(replayStore).toContain("ExternalAuthReplayStore");
     expect(replayStore).toContain("expiresAt - now");
-    expect(replayStore).toContain("replayProtection: { enabled: true, store: replayStore }");
+    expect(replayStore).toContain("createExternalAuthWebTransport(replayStore)");
 
     const auditHook = readFileSync(
       join(templatesRoot, "app-auth-bridge", "denial-audit-hook.ts.txt"),

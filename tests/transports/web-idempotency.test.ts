@@ -2,7 +2,10 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { Database } from "bun:sqlite";
 import { join } from "node:path";
 import { defineAgent } from "@/agent";
-import { createExternalAuthAssertion } from "@/auth/external-auth";
+import {
+  createExternalAuthAssertion,
+  createInMemoryExternalAuthReplayStore,
+} from "@/auth/external-auth";
 import { budgets } from "@/augments/budgets";
 import { webTransport } from "@/transports/web-transport";
 import { createVisitorToken, deriveSigningKey } from "@/transports/visitor-token";
@@ -253,7 +256,10 @@ describe("web transport durable idempotency", () => {
         secret: externalSecret,
         audience,
         allowedProviders: ["app"],
-        replayProtection: { enabled: true },
+        replayProtection: {
+          enabled: true,
+          store: createInMemoryExternalAuthReplayStore(),
+        },
       },
       idempotency: { dbPath: join(tmp.path, "web-idempotency.db") },
     });

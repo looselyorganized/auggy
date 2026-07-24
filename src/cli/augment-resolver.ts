@@ -443,6 +443,7 @@ function resolveWebTransport(
     publicFrontendUrl: opts.publicFrontendUrl as string | undefined,
     trustedProxies: opts.trustedProxies as string[] | undefined,
     consoleSecurity: opts.consoleSecurity as WebTransportOptions["consoleSecurity"],
+    externalAuth: opts.externalAuth as WebTransportOptions["externalAuth"],
     adminRoute: opts.adminRoute as boolean | undefined,
     consoleChat: resolveConsoleChatOptions(opts, agentDir, runtimeDataRoot),
     idempotency: resolveWebIdempotencyOptions(opts, agentDir, runtimeDataRoot),

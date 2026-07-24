@@ -16,6 +16,9 @@ config:
     audience: ${AUGGY_EXTERNAL_AUTH_AUDIENCE}
     allowedProviders: ["supabase", "clerk", "custom"]
     maxTtlSeconds: 60
-    # Enable replay protection for high-risk flows. See the replay template.
+    # This descriptor is intentionally configured to fail closed: YAML cannot construct the
+    # atomic shared replay store required for a multi-instance deployment.
+    # Use webtransport-external-auth.ts.txt with replay-protection-store.ts.txt
+    # for production. Do not disable replay protection to make this boot.
     replayProtection:
-      enabled: false
+      enabled: true
