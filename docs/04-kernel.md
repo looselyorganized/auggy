@@ -498,6 +498,12 @@ conservative: JavaScript cannot force arbitrary work to stop, so
 callers use the optional internal tracker to retain their scheduler lane until
 a non-cooperative operation actually settles.
 
+Caller cancellation is acknowledged only when the underlying operation rejects
+promptly with the exact abort reason or an `AbortError`. Work that fulfills,
+rejects generically, or remains pending after cancellation is treated as
+outcome-unknown: it may have crossed a side-effect boundary and cannot safely
+authorize a same-thread retry.
+
 Used by:
 - The augment context pipeline (`contextTimeoutMs`)
 - Tool execution in the loop (`toolTimeoutMs`)

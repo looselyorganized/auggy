@@ -369,6 +369,10 @@ fixtures/logs, and worktree status. Preserve the unrelated untracked
   across many unique threads can therefore create unbounded quarantine
   metadata. A durable bounded store or agent-level circuit breaker is future
   work.
+- The internal scheduler retains a caller-owned source-policy object on queued
+  items. Shipped agent paths keep those objects private and stable, and the
+  scheduler is not publicly exported; a future internal API cleanup can store
+  only the canonical registered source state as additional defense in depth.
 - Durable HTTP idempotency abandonment is replayed exactly to same-process
   followers. A follower in another unsupported replica may observe the absent
   transient claim as outcome-unknown; cross-process admission and replay
@@ -389,3 +393,84 @@ After this PR:
 These will use the same revalidation, delegated analysis, incremental tests,
 adversarial diff review, verification, and focused-PR loop. They are not mixed
 into the scheduler branch.
+
+## Execution record
+
+Implementation was completed on `security/keyed-turn-scheduler` in reviewable
+security-boundary commits. Independent subagents covered:
+
+- exploitability and alternate runtime entry paths;
+- compatibility, lifecycle, persistence, and deployment boundaries;
+- deterministic concurrency and failure-test design;
+- hostile exact-diff review after implementation.
+
+The initial finding was narrowed: current `main` already serialized history and
+model work per thread, but it did not provide agent-wide admission, fair keyed
+scheduling, complete-turn ordering, bounded direct injection, cancelable
+pending work, or safe drain semantics.
+
+### Adversarial findings and disposition
+
+- A detached causal injection could outlive its parent lane. Fixed by joining
+  all descendants and applying late quarantine before release.
+- Public `TurnResult` metadata could be mistaken for scheduler proof that an
+  idempotent attempt never started. Fixed with a runtime-owned execution-start
+  callback.
+- Same-process followers of an abandoned overload claim could receive a false
+  outcome-unknown result. Fixed by preserving and replaying the exact
+  retryable overload result.
+- Non-cooperative work could release capacity after cancellation. Fixed by
+  retaining the underlying operation and distinguishing acknowledged abort
+  rejection from fulfilled, generic-failure, and still-pending outcomes.
+- Terminal-hook and history-commit ambiguity could be swallowed. Fixed by
+  propagating typed outcome-unknown state into scheduler quarantine.
+- Startup traffic could accumulate before admission, and direct
+  `AgentHandle.inject()` could execute against partially booted augments.
+  Fixed by admitting transport traffic before the readiness barrier and
+  rejecting direct injection until `start()` completes.
+- Partial scheduler configuration could retain inconsistent defaults. Fixed by
+  validating the effective merged policy.
+
+No confirmed High or Medium finding remained after the final review cycle.
+
+### Verification results
+
+The following gates passed:
+
+```text
+bun test --max-concurrency=1 tests/kernel tests/lib tests/agent.test.ts
+  329 pass, 0 fail, 1002 assertions
+bun test --max-concurrency=1 tests/transports/web-idempotency.test.ts
+  14 pass, 0 fail, 76 assertions
+bun test --max-concurrency=1 tests/transports/web-transport.test.ts
+  171 pass, 0 fail, 603 assertions
+bun run test:admin
+  243 pass, 0 fail, 1093 assertions
+bun run build:admin
+  passed
+bun run typecheck
+  passed
+bun run lint
+  passed (one Biome schema-version informational message)
+bun run smoke:release
+  passed against the local packed core and provider adapters
+git diff --check
+  passed
+```
+
+The complete runtime command reproduced Bun 1.3.14 suite-scale port exhaustion
+(`EADDRINUSE`): 3,457 tests passed before 213 failures and two errors. Re-running
+the release-rehearsal manifest sequentially passed every shard: HTTP (63),
+base-root (84), capabilities (1,196), operator (1,061),
+transport/integration (559), kernel/lib/agent (329), contracts (457), and
+packages/examples (26). Counts overlap where the release manifest intentionally
+reuses provider contract suites.
+
+`bun audit --json` completed and reported one installed-version High advisory
+for `react-router` 7.18.1,
+[GHSA-qwww-vcr4-c8h2](https://github.com/advisories/GHSA-qwww-vcr4-c8h2).
+The advisory applies to React Server Components APIs. Auggy's shipped admin is
+a Vite client SPA using `BrowserRouter`/`MemoryRouter`, and no affected RSC
+server APIs are imported, so the advisory is not reachable in the shipped
+runtime. The installed dependency remains audit-visible and should be tracked
+for a separate compatible major upgrade.
