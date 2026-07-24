@@ -67,6 +67,46 @@ describe("model response limits", () => {
     }
   });
 
+  it("rejects unrecognized response and tool-call fields before retaining them", () => {
+    expect(() =>
+      validateModelResponse({
+        ...base,
+        ignored: "x".repeat(3_000_000),
+      } as unknown as typeof base),
+    ).toThrow(ModelResponseLimitError);
+    expect(() =>
+      validateModelResponse({
+        ...base,
+        toolCalls: [{ name: "tool", arguments: {}, ignored: "x".repeat(3_000_000) }],
+      } as unknown as typeof base),
+    ).toThrow(ModelResponseLimitError);
+  });
+
+  it("rejects accessors, symbols, and non-enumerable values in JSON response structures", () => {
+    const response = { ...base };
+    Object.defineProperty(response, "content", {
+      enumerable: true,
+      get() {
+        throw new Error("must not execute");
+      },
+    });
+    expect(() => validateModelResponse(response)).toThrow(ModelResponseLimitError);
+
+    const argumentsWithSymbol = { q: "safe" } as Record<PropertyKey, unknown>;
+    argumentsWithSymbol[Symbol("hidden")] = "x".repeat(3_000_000);
+    expect(() =>
+      validateModelResponse({
+        ...base,
+        toolCalls: [
+          {
+            name: "tool",
+            arguments: argumentsWithSymbol as Record<string, unknown>,
+          },
+        ],
+      }),
+    ).toThrow(ModelResponseLimitError);
+  });
+
   it("rejects excessive tool count before dispatch", () => {
     expect(() =>
       validateModelResponse(

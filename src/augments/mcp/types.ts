@@ -61,11 +61,11 @@ export interface McpConnection {
     timeoutMs: number,
     signal?: AbortSignal,
   ): Promise<McpToolCallResult>;
-  close(): Promise<void>;
+  close(signal?: AbortSignal): Promise<void>;
 }
 
 export interface McpClientAdapter {
-  connect(server: McpRuntimeServer): Promise<McpConnection>;
+  connect(server: McpRuntimeServer, signal?: AbortSignal): Promise<McpConnection>;
 }
 
 export interface McpServerStatus {

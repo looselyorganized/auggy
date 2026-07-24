@@ -114,12 +114,39 @@ describe("createTelegramBotClient", () => {
   });
 
   it("classifies an unreadable successful sendMessage response as outcome unknown", async () => {
+    const sentinel = "GROUP9_TELEGRAM_MALFORMED_BODY_SENTINEL";
     const client = createTelegramBotClient({
       botToken: "T",
-      client: mockHttp(() => ({ status: 200, body: "not-json" })),
+      client: mockHttp(() => ({ status: 200, body: `{${sentinel}` })),
     });
 
-    await expect(client.sendMessage(42, "hello")).rejects.toBeInstanceOf(OutcomeUnknownError);
+    try {
+      await client.sendMessage(42, "hello");
+      throw new Error("expected sendMessage to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(OutcomeUnknownError);
+      expect(Bun.inspect(error)).not.toContain(sentinel);
+    }
+  });
+
+  it("does not retain token-bearing network errors", async () => {
+    const sentinel = "GROUP9_TELEGRAM_BOT_TOKEN_SENTINEL";
+    const client = createTelegramBotClient({
+      botToken: sentinel,
+      client: {
+        post: async (url) => {
+          throw new Error(`failed request path ${url}`);
+        },
+      },
+    });
+
+    try {
+      await client.sendMessage(42, "hello");
+      throw new Error("expected sendMessage to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(OutcomeUnknownError);
+      expect(Bun.inspect(error)).not.toContain(sentinel);
+    }
   });
 
   for (const [name, body] of [
@@ -178,25 +205,39 @@ describe("createTelegramBotClient", () => {
     expect(chat.type).toBe("private");
   });
 
-  it("sendMessage 4xx surfaces structured error", async () => {
+  it("sendMessage 4xx exposes only a stable status", async () => {
+    const sentinel = "GROUP9_TELEGRAM_REMOTE_ERROR_SENTINEL";
     const client = createTelegramBotClient({
       botToken: "T",
       client: mockHttp(() => ({
         status: 400,
-        body: JSON.stringify({ ok: false, description: "chat not found" }),
+        body: JSON.stringify({ ok: false, description: sentinel }),
       })),
     });
-    await expect(client.sendMessage(0, "x")).rejects.toThrow(/chat not found/);
+    try {
+      await client.sendMessage(0, "x");
+      throw new Error("expected sendMessage to fail");
+    } catch (error) {
+      expect((error as Error).message).toBe("Telegram bot API sendMessage returned HTTP 400");
+      expect((error as Error).message).not.toContain(sentinel);
+    }
   });
 
-  it("getChat throws on bot-API error", async () => {
+  it("getChat does not expose bot-API response text", async () => {
+    const sentinel = "GROUP9_TELEGRAM_GET_CHAT_SENTINEL";
     const client = createTelegramBotClient({
       botToken: "T",
       client: mockHttp(() => ({
         status: 400,
-        body: JSON.stringify({ ok: false, description: "user not found" }),
+        body: JSON.stringify({ ok: false, description: sentinel }),
       })),
     });
-    await expect(client.getChat(999)).rejects.toThrow(/user not found/);
+    try {
+      await client.getChat(999);
+      throw new Error("expected getChat to fail");
+    } catch (error) {
+      expect((error as Error).message).toBe("Telegram bot API getChat returned HTTP 400");
+      expect((error as Error).message).not.toContain(sentinel);
+    }
   });
 });

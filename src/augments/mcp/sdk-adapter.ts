@@ -9,13 +9,48 @@ import { createMcpBoundedFetch } from "./bounded-fetch";
 import type { McpClientAdapter, McpConnection, McpRuntimeServer, McpToolCallResult } from "./types";
 
 export class SdkMcpClientAdapter implements McpClientAdapter {
-  async connect(server: McpRuntimeServer): Promise<McpConnection> {
+  async connect(server: McpRuntimeServer, signal?: AbortSignal): Promise<McpConnection> {
     const client = new Client({
       name: "auggy",
       version: "1.0.0",
     });
-    const transport = createTransport(server);
-    await client.connect(transport);
+    const transportAbort = new AbortController();
+    const transport = createTransport(
+      server,
+      globalThis.fetch.bind(globalThis),
+      transportAbort.signal,
+    );
+    let closePromise: Promise<void> | undefined;
+    const closePending = (): Promise<void> => {
+      transportAbort.abort(new DOMException("MCP connection closed", "AbortError"));
+      closePromise ??= client.close().catch(async () => {
+        // Protocol.close normally closes its attached transport. If connect
+        // failed before attachment completed, close the transport explicitly
+        // so a spawned stdio child cannot outlive the timed-out attempt.
+        await transport.close().catch(() => {});
+      });
+      return closePromise;
+    };
+    const onAbort = (): void => {
+      void closePending();
+    };
+    if (signal?.aborted) {
+      await closePending();
+      throw signal.reason ?? new Error("MCP connection cancelled");
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      await client.connect(transport);
+      if (signal?.aborted) {
+        await closePending();
+        throw signal.reason ?? new Error("MCP connection cancelled");
+      }
+    } catch (error) {
+      await closePending();
+      throw error;
+    } finally {
+      signal?.removeEventListener("abort", onAbort);
+    }
     return {
       async listTools(cursor?: string) {
         const result = await client.listTools(cursor ? { cursor } : undefined, {
@@ -38,18 +73,51 @@ export class SdkMcpClientAdapter implements McpClientAdapter {
             arguments: args,
           },
           undefined,
-          { timeout: timeoutMs, signal },
+          {
+            timeout: timeoutMs,
+            signal,
+          },
         )) as McpToolCallResult;
       },
-      async close() {
-        if ("terminateSession" in transport && typeof transport.terminateSession === "function") {
-          try {
-            await transport.terminateSession();
-          } catch {
-            // Some servers reject DELETE session termination; close still releases local resources.
-          }
+      async close(signal?: AbortSignal) {
+        if (closePromise) {
+          await closePromise;
+          return;
         }
-        await client.close();
+        const closeDeadline = new AbortController();
+        const timeout = setTimeout(
+          () =>
+            closeDeadline.abort(
+              new DOMException("MCP remote session termination timed out", "TimeoutError"),
+            ),
+          Math.min(server.policy.timeoutMs ?? 30_000, 1_250),
+        );
+        const closeSignal = signal
+          ? AbortSignal.any([signal, closeDeadline.signal])
+          : closeDeadline.signal;
+        try {
+          if ("terminateSession" in transport && typeof transport.terminateSession === "function") {
+            let rejectOnAbort: (() => void) | undefined;
+            const aborted = new Promise<never>((_resolve, reject) => {
+              rejectOnAbort = () => reject(closeSignal.reason);
+              if (closeSignal.aborted) rejectOnAbort();
+              else closeSignal.addEventListener("abort", rejectOnAbort, { once: true });
+            });
+            try {
+              await Promise.race([transport.terminateSession(), aborted]).catch(() => {});
+            } finally {
+              if (rejectOnAbort) closeSignal.removeEventListener("abort", rejectOnAbort);
+            }
+          }
+        } finally {
+          clearTimeout(timeout);
+          transportAbort.abort(
+            closeSignal.aborted
+              ? closeSignal.reason
+              : new DOMException("MCP connection closed", "AbortError"),
+          );
+          await closePending();
+        }
       },
     };
   }
@@ -58,8 +126,17 @@ export class SdkMcpClientAdapter implements McpClientAdapter {
 export function createTransport(
   server: McpRuntimeServer,
   fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
+  signal?: AbortSignal,
 ): Transport {
-  const credentialSafeFetch = createRedirectRejectingFetch(fetchImpl);
+  const abortableFetch = ((input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+    const requestSignal = init?.signal;
+    const combinedSignal =
+      signal && requestSignal
+        ? AbortSignal.any([signal, requestSignal])
+        : (signal ?? requestSignal ?? undefined);
+    return fetchImpl(input, { ...init, ...(combinedSignal ? { signal: combinedSignal } : {}) });
+  }) as typeof fetch;
+  const credentialSafeFetch = createRedirectRejectingFetch(abortableFetch);
   const boundedFetch = createMcpBoundedFetch(
     credentialSafeFetch,
     server.policy.maxTransportMessageBytes ?? 256 * 1024,

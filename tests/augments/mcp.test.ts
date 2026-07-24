@@ -168,6 +168,53 @@ describe("mcp augment runtime", () => {
     expect(adapter.connections[0]!.closed).toBe(true);
   });
 
+  test("closes independent connections concurrently and forwards lifecycle cancellation", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        first: { type: "stdio", command: "node", args: ["first.js"] },
+        second: { type: "stdio", command: "node", args: ["second.js"] },
+      },
+    });
+    const started: string[] = [];
+    const closed: string[] = [];
+    class ShutdownConnection extends FakeMcpConnection {
+      constructor(private readonly id: string) {
+        super([]);
+      }
+
+      override async close(signal?: AbortSignal) {
+        started.push(this.id);
+        if (this.id === "first") {
+          await new Promise<void>((resolve) => {
+            if (signal?.aborted) resolve();
+            else signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
+        this.closed = true;
+        closed.push(this.id);
+      }
+    }
+    class ShutdownAdapter implements McpClientAdapter {
+      async connect(server: McpRuntimeServer) {
+        return new ShutdownConnection(server.name);
+      }
+    }
+    const manager = createMcpManager({
+      agentDir: TMP,
+      client: new ShutdownAdapter(),
+    });
+    await manager.boot();
+    const controller = new AbortController();
+    const pending = manager.shutdown(controller.signal);
+    await Promise.resolve();
+
+    expect(started).toEqual(["first", "second"]);
+    expect(closed).toContain("second");
+    controller.abort(new DOMException("lifecycle deadline", "AbortError"));
+    await pending;
+    expect(closed.sort()).toEqual(["first", "second"]);
+  });
+
   test("enforces allowedTools and blockedTools before exposing tools", async () => {
     writeMcpConfig({
       mcpServers: {
@@ -509,7 +556,7 @@ describe("mcp augment runtime", () => {
     });
     class FailingCallConnection extends FakeMcpConnection {
       override async callTool(): Promise<McpToolCallResult> {
-        throw new Error("connection reset after remote mutation");
+        throw new Error("connection reset after remote mutation: mcp-secret-sentinel");
       }
     }
     class FailingCallAdapter implements McpClientAdapter {
@@ -524,9 +571,12 @@ describe("mcp augment runtime", () => {
     });
     await manager.boot();
 
-    await expect(manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT)).rejects.toMatchObject({
-      outcomeUnknown: true,
-    });
+    const error = await manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT).catch(
+      (caught) => caught,
+    );
+    expect(error).toMatchObject({ outcomeUnknown: true });
+    expect(Bun.inspect(error)).not.toContain("mcp-secret-sentinel");
+    expect((error as Error).cause).toBeUndefined();
   });
 
   test("failed external servers do not crash boot or expose tools", async () => {

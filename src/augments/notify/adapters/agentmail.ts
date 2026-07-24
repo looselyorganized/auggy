@@ -86,7 +86,7 @@ export function createAgentMailAdapter(opts: CreateAgentMailAdapterOptions = {})
           detail:
             result.httpStatus === undefined || isAmbiguousMutationStatus(result.httpStatus)
               ? "AgentMail delivery ended without a trustworthy response"
-              : result.detail,
+              : `AgentMail returned HTTP ${result.httpStatus}`,
           ...(result.httpStatus === undefined || isAmbiguousMutationStatus(result.httpStatus)
             ? { outcomeUnknown: true }
             : {}),
@@ -95,7 +95,6 @@ export function createAgentMailAdapter(opts: CreateAgentMailAdapterOptions = {})
         if (options?.signal?.aborted || isOutcomeUnknownError(err)) throw err;
         throw new OutcomeUnknownError(
           "AgentMail delivery ended without a trustworthy response after dispatch",
-          { cause: err },
         );
       }
     },

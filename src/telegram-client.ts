@@ -12,11 +12,7 @@
 
 import type { HttpClient } from "./http";
 import { createHttpClient } from "./http";
-import {
-  isAmbiguousMutationStatus,
-  isOutcomeUnknownError,
-  OutcomeUnknownError,
-} from "./outcome-unknown";
+import { isAmbiguousMutationStatus, OutcomeUnknownError } from "./outcome-unknown";
 import { assertSecureCredentialTransport } from "./engines/_shared/credential-transport";
 
 export interface SendMessageOptions {
@@ -122,22 +118,23 @@ export function createTelegramBotClient(opts: CreateTelegramBotClientOptions): T
         signal: opts.signal,
       });
     } catch (err) {
-      if (opts.signal?.aborted || isOutcomeUnknownError(err) || isReadOnly) throw err;
+      if (opts.signal?.aborted) throw opts.signal.reason ?? err;
+      if (isReadOnly) {
+        throw new Error(`Telegram bot API ${method} request failed`);
+      }
       throw new OutcomeUnknownError(
         `Telegram bot API ${method} ended without a trustworthy response after dispatch`,
-        { cause: err },
       );
     }
     let parsed: unknown;
     try {
       parsed = JSON.parse(res.body);
-    } catch (err) {
+    } catch {
       if (isReadOnly) {
         throw new Error(`Telegram bot API ${method}: non-JSON response (${res.status})`);
       }
       throw new OutcomeUnknownError(
         `Telegram bot API ${method} returned an unreadable response after dispatch`,
-        { cause: err },
       );
     }
     if (
@@ -168,9 +165,7 @@ export function createTelegramBotClient(opts: CreateTelegramBotClientOptions): T
           `Telegram bot API ${method} returned HTTP ${res.status} after dispatch; outcome is unknown`,
         );
       }
-      throw new Error(
-        `Telegram bot API ${method}: ${envelope.description ?? "unknown error"} (${res.status})`,
-      );
+      throw new Error(`Telegram bot API ${method} returned HTTP ${res.status}`);
     }
     return envelope.result as T;
   }

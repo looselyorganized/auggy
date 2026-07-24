@@ -58,20 +58,23 @@ export async function validateAdmittedAgents(
   admittedAgents: Array<{ id: string; telegramUserId: number }> | undefined,
   client: TelegramBotClient,
   log: BootLogger = console,
-): Promise<void> {
-  if (!admittedAgents || admittedAgents.length === 0) return;
+): Promise<Array<{ id: string; telegramUserId: number }>> {
+  if (!admittedAgents || admittedAgents.length === 0) return [];
+  const validated: Array<{ id: string; telegramUserId: number }> = [];
   for (const agent of admittedAgents) {
     try {
       await client.getChat(agent.telegramUserId);
+      validated.push(agent);
       log.info(
         `[telegram-transport] admittedAgent "${agent.id}" (telegramUserId=${agent.telegramUserId}) resolved successfully`,
       );
-    } catch (err) {
+    } catch {
       log.warn(
-        `[telegram-transport] admittedAgent "${agent.id}" (telegramUserId=${agent.telegramUserId}) failed boot-time validation: ${(err as Error).message}. Real agent traffic from this user_id will be silently demoted to public-anonymous. Verify the user_id is correct and the bot has access to message that user.`,
+        `[telegram-transport] admittedAgent "${agent.id}" (telegramUserId=${agent.telegramUserId}) failed boot-time validation and was removed from the active mapping. Traffic from this user_id is public-anonymous until the configuration validates on a later restart.`,
       );
     }
   }
+  return validated;
 }
 
 // ---------------------------------------------------------------------------
@@ -499,7 +502,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     adminInfo,
 
     async onBoot(): Promise<void> {
-      await validateAdmittedAgents(auth.admittedAgents, client);
+      auth.admittedAgents = await validateAdmittedAgents(auth.admittedAgents, client);
       if (opts.inbound.mode === "webhook" && !opts.inbound.webhook) {
         throw new Error(
           "[telegram-transport] inbound.mode === 'webhook' requires inbound.webhook config",

@@ -59,7 +59,6 @@ export function createTelegramAdapter(opts: CreateTelegramAdapterOptions = {}): 
         if (options?.signal?.aborted || isOutcomeUnknownError(err)) throw err;
         throw new OutcomeUnknownError(
           "Telegram delivery ended without a trustworthy response after dispatch",
-          { cause: err },
         );
       }
     },

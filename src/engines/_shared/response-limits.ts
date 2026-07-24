@@ -177,6 +177,31 @@ function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return prototype === Object.prototype || prototype === null;
 }
 
+const MODEL_RESPONSE_KEYS = new Set([
+  "content",
+  "toolCalls",
+  "inputTokens",
+  "outputTokens",
+  "cacheCreationTokens",
+  "cacheReadTokens",
+  "finishReason",
+  "costUsd",
+  "unpricedReason",
+]);
+const MODEL_TOOL_CALL_KEYS = new Set(["name", "arguments"]);
+
+function assertExactDataKeys(
+  value: Record<string, unknown>,
+  allowed: ReadonlySet<string>,
+  limit: keyof ModelResponseLimits,
+): void {
+  for (const key of Reflect.ownKeys(value)) {
+    if (typeof key !== "string" || !allowed.has(key)) throw stableLimitError(limit);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (!descriptor?.enumerable || !("value" in descriptor)) throw stableLimitError(limit);
+  }
+}
+
 export function measureJsonValue(root: unknown, limits: JsonValueLimits): JsonValueMeasurement {
   assertPositiveInteger("maxBytes", limits.maxBytes);
   assertPositiveInteger("maxDepth", limits.maxDepth);
@@ -224,9 +249,13 @@ export function measureJsonValue(root: unknown, limits: JsonValueLimits): JsonVa
       }
 
       const descriptors = Object.getOwnPropertyDescriptors(object);
-      for (const [key, descriptor] of Object.entries(descriptors)) {
-        if (!descriptor.enumerable) continue;
-        if (!("value" in descriptor)) throw stableLimitError("maxToolArgumentBytes");
+      for (const key of Reflect.ownKeys(object)) {
+        if (Array.isArray(object) && key === "length") continue;
+        if (typeof key !== "string") throw stableLimitError("maxToolArgumentBytes");
+        const descriptor = descriptors[key];
+        if (!descriptor?.enumerable || !("value" in descriptor)) {
+          throw stableLimitError("maxToolArgumentBytes");
+        }
         if (!Array.isArray(object)) {
           scalarBytes += utf8ByteLength(
             JSON.stringify(key),
@@ -265,6 +294,7 @@ export function validateModelResponse(
   const limits = resolveModelResponseLimits(configured);
   try {
     if (!isPlainRecord(response)) throw stableLimitError("maxResponseBytes");
+    assertExactDataKeys(response, MODEL_RESPONSE_KEYS, "maxResponseBytes");
     if (typeof response.content !== "string") throw stableLimitError("maxTextBytes");
     if (!["end_turn", "tool_use", "max_tokens"].includes(response.finishReason)) {
       throw stableLimitError("maxResponseBytes");
@@ -301,9 +331,9 @@ export function validateModelResponse(
     if (toolCalls.length > limits.maxToolCalls) throw stableLimitError("maxToolCalls");
 
     let argumentBytes = 0;
-    let totalBytes = textBytes;
     for (const call of toolCalls) {
       if (!isPlainRecord(call)) throw stableLimitError("maxToolArgumentBytes");
+      assertExactDataKeys(call, MODEL_TOOL_CALL_KEYS, "maxToolArgumentBytes");
       if (typeof call.name !== "string" || call.name.length === 0) {
         throw stableLimitError("maxToolNameBytes");
       }
@@ -319,8 +349,10 @@ export function validateModelResponse(
       if (argumentBytes > limits.maxTotalToolArgumentBytes) {
         throw stableLimitError("maxTotalToolArgumentBytes");
       }
-      totalBytes += nameBytes + measured.bytes;
-      if (totalBytes > limits.maxResponseBytes) throw stableLimitError("maxResponseBytes");
+    }
+    const serialized = JSON.stringify(response);
+    if (utf8ByteLength(serialized, limits.maxResponseBytes) > limits.maxResponseBytes) {
+      throw stableLimitError("maxResponseBytes");
     }
     return response;
   } catch (error) {

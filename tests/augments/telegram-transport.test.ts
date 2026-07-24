@@ -166,7 +166,7 @@ describe("validateAdmittedAgents", () => {
       info: (msg: string) => logs.push(`info: ${msg}`),
       warn: (msg: string) => logs.push(`warn: ${msg}`),
     };
-    await validateAdmittedAgents(
+    const validated = await validateAdmittedAgents(
       [
         { id: "scheduler", telegramUserId: 100 },
         { id: "billing", telegramUserId: 200 },
@@ -175,12 +175,13 @@ describe("validateAdmittedAgents", () => {
       log,
     );
     expect(logs.filter((l) => l.startsWith("info"))).toHaveLength(2);
+    expect(validated.map((agent) => agent.id)).toEqual(["scheduler", "billing"]);
   });
 
-  it("logs warning for each admittedAgent that fails to resolve, naming id and telegramUserId", async () => {
+  it("removes every admittedAgent that fails validation from the active mapping", async () => {
     const logs: string[] = [];
     const log = { info: () => {}, warn: (msg: string) => logs.push(msg) };
-    await validateAdmittedAgents(
+    const validated = await validateAdmittedAgents(
       [
         { id: "scheduler", telegramUserId: 100 },
         { id: "typo-bot", telegramUserId: 999 },
@@ -191,6 +192,7 @@ describe("validateAdmittedAgents", () => {
     expect(logs.length).toBe(1);
     expect(logs[0]).toContain("typo-bot");
     expect(logs[0]).toContain("999");
+    expect(validated).toEqual([{ id: "scheduler", telegramUserId: 100 }]);
   });
 
   it("does nothing if admittedAgents is empty or undefined", async () => {
@@ -199,6 +201,30 @@ describe("validateAdmittedAgents", () => {
     await validateAdmittedAgents(undefined, mockClient({}), log);
     await validateAdmittedAgents([], mockClient({}), log);
     expect(logs).toHaveLength(0);
+  });
+
+  it("demotes a configured agent whose identity fails boot validation", async () => {
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {
+        admittedAgents: [{ id: "typo-bot", telegramUserId: 999 }],
+      },
+      _clientFactory: () => mockClient({ 999: "fail" }),
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+
+    await aug.onBoot?.();
+    const peer = aug.transport!.identify({
+      userId: 999,
+      threadId: "tg-chat-999",
+      chatType: "private",
+    });
+    expect(peer).toMatchObject({
+      trustLevel: "public",
+      publicSubstate: "anonymous",
+    });
+    expect(peer?.id).not.toBe("typo-bot");
+    await aug.onShutdown?.();
   });
 });
 

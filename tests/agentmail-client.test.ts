@@ -148,32 +148,62 @@ describe("createAgentMailClient", () => {
     }
   });
 
+  test("never exposes a definitive provider error body", async () => {
+    const sentinel = "GROUP9_AGENTMAIL_PROVIDER_BODY_SENTINEL";
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: mockHttp(() => ({ status: 400, body: `rejected ${sentinel}` })),
+    });
+    const result = await client.send({
+      inboxId: "inb_x",
+      to: ["a@b.com"],
+      subject: "s",
+      text: "t",
+    });
+    expect(result).toEqual({
+      status: "failed",
+      detail: "agentmail returned HTTP 400",
+      httpStatus: 400,
+    });
+    expect(JSON.stringify(result)).not.toContain(sentinel);
+  });
+
   test("classifies a network throw after send dispatch as outcome unknown", async () => {
+    const sentinel = "GROUP9_AGENTMAIL_SEND_THROW_SENTINEL";
     const client = createAgentMailClient({
       apiKey: "am_test",
       http: {
         post: async () => {
-          throw new Error("ECONNREFUSED");
+          throw new Error(sentinel);
         },
         get: async () => {
-          throw new Error("ECONNREFUSED");
+          throw new Error(sentinel);
         },
       },
     });
-    await expect(
-      client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" }),
-    ).rejects.toMatchObject({ outcomeUnknown: true });
+    try {
+      await client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" });
+      throw new Error("expected send to fail");
+    } catch (error) {
+      expect(error).toMatchObject({ outcomeUnknown: true });
+      expect(Bun.inspect(error)).not.toContain(sentinel);
+    }
   });
 
   test("classifies an unreadable successful send response as outcome unknown", async () => {
+    const sentinel = "GROUP9_AGENTMAIL_MALFORMED_BODY_SENTINEL";
     const client = createAgentMailClient({
       apiKey: "am_test",
-      http: mockHttp(() => ({ status: 200, body: "not-json" })),
+      http: mockHttp(() => ({ status: 200, body: `{${sentinel}` })),
     });
 
-    await expect(
-      client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" }),
-    ).rejects.toMatchObject({ outcomeUnknown: true });
+    try {
+      await client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" });
+      throw new Error("expected send to fail");
+    } catch (error) {
+      expect(error).toMatchObject({ outcomeUnknown: true });
+      expect(Bun.inspect(error)).not.toContain(sentinel);
+    }
   });
 
   test("preserves an outcome-unknown HTTP failure", async () => {
@@ -261,32 +291,38 @@ describe("createAgentMailClient.getInbox", () => {
   });
 
   test("returns failed with httpStatus on non-2xx", async () => {
+    const sentinel = "GROUP9_AGENTMAIL_INBOX_BODY_SENTINEL";
     const client = createAgentMailClient({
       apiKey: "am_test",
-      http: mockHttp(() => ({ status: 404, body: JSON.stringify({ error: "not found" }) })),
+      http: mockHttp(() => ({ status: 404, body: JSON.stringify({ error: sentinel }) })),
     });
     const r = await client.getInbox("inb_missing");
     expect(r.status).toBe("failed");
     if (r.status === "failed") {
       expect(r.httpStatus).toBe(404);
       expect(r.detail).toContain("404");
+      expect(r.detail).not.toContain(sentinel);
     }
   });
 
   test("returns failed on network throw", async () => {
+    const sentinel = "GROUP9_AGENTMAIL_NETWORK_SENTINEL";
     const client = createAgentMailClient({
       apiKey: "am_test",
       http: {
         post: async () => {
-          throw new Error("ECONNREFUSED");
+          throw new Error(sentinel);
         },
         get: async () => {
-          throw new Error("ECONNREFUSED");
+          throw new Error(sentinel);
         },
       },
     });
     const r = await client.getInbox("inb_x");
     expect(r.status).toBe("failed");
-    if (r.status === "failed") expect(r.detail).toContain("ECONNREFUSED");
+    if (r.status === "failed") {
+      expect(r.detail).toBe("agentmail request failed");
+      expect(r.detail).not.toContain(sentinel);
+    }
   });
 });

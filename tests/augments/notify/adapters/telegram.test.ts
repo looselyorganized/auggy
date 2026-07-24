@@ -66,12 +66,13 @@ describe("telegramAdapter", () => {
 
   it("classifies a generic sendMessage throw after dispatch as outcome unknown", async () => {
     const client = mockClient(async () => {
-      throw new Error("API error: chat not found");
+      throw new Error("API error echoed telegram-secret-sentinel");
     });
     const adapter = createTelegramAdapter({ clientFactory: () => client });
-    await expect(adapter.deliver(dest, { summary: "x" })).rejects.toMatchObject({
-      outcomeUnknown: true,
-    });
+    const error = await adapter.deliver(dest, { summary: "x" }).catch((caught) => caught);
+    expect(error).toMatchObject({ outcomeUnknown: true });
+    expect(Bun.inspect(error)).not.toContain("telegram-secret-sentinel");
+    expect((error as Error).cause).toBeUndefined();
   });
 
   it("preserves an outcome-unknown Telegram failure for the kernel", async () => {

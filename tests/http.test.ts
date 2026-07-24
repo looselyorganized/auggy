@@ -376,7 +376,9 @@ describe("http client — timeout", () => {
     closedServer.stop(true);
     const client = createHttpClient({ timeoutMs: 1_000 });
 
-    await expect(client.post(url, { body: "{}" })).rejects.toBeInstanceOf(HttpOutcomeUnknownError);
+    const error = await client.post(url, { body: "{}" }).catch((caught) => caught);
+    expect(error).toBeInstanceOf(HttpOutcomeUnknownError);
+    expect((error as Error).cause).toBeUndefined();
   });
 });
 

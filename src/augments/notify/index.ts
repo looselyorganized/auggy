@@ -24,7 +24,12 @@ import type {
   ToolExecuteContext,
 } from "../../types";
 import { defineTool } from "../../helpers";
-import { readOverrides, writeOverrides } from "../../lib/admin-overrides";
+import {
+  readOverrides,
+  releaseAdminOverrideRoot,
+  retainAdminOverrideRoot,
+  writeOverrides,
+} from "../../lib/admin-overrides";
 import { createRingBuffer } from "../../lib/ring-buffer";
 /**
  * Single source of truth for the transports notify ships. The type union
@@ -59,6 +64,7 @@ export interface NotifyAugmentInternalOptions extends NotifyAugmentOptions {
 
 export function notify(opts: NotifyAugmentInternalOptions): Augment {
   const overrideDir = opts.overrideDir ?? opts.agentDir;
+  let overrideRootRetained = false;
   const defaults = {
     webhook: createWebhookAdapter(),
     telegram: createTelegramAdapter(),
@@ -81,11 +87,20 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
   const perPeerCooldownMs = rl.perPeerCooldownMs ?? cooldownMs;
 
   if (overrideDir) {
-    const overrides = readOverrides(overrideDir);
-    const overrideVal = overrides?.overrides.notify?.globalMaxPerHour;
-    if (overrideVal !== undefined) {
-      globalMaxPerHour = overrideVal;
-      globalMaxSource = "override";
+    overrideRootRetained = retainAdminOverrideRoot(overrideDir);
+    try {
+      const overrides = readOverrides(overrideDir);
+      const overrideVal = overrides?.overrides.notify?.globalMaxPerHour;
+      if (overrideVal !== undefined) {
+        globalMaxPerHour = overrideVal;
+        globalMaxSource = "override";
+      }
+    } catch (error) {
+      if (overrideRootRetained) {
+        releaseAdminOverrideRoot(overrideDir);
+        overrideRootRetained = false;
+      }
+      throw error;
     }
   }
 
@@ -593,5 +608,11 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     tools: [notifyTool],
     adminInfo,
     adminActions,
+    onShutdown: async () => {
+      if (overrideRootRetained) {
+        releaseAdminOverrideRoot(overrideDir);
+        overrideRootRetained = false;
+      }
+    },
   };
 }

@@ -38,7 +38,12 @@ import {
 } from "../../agentmail-client";
 import { isAmbiguousMutationStatus } from "../../outcome-unknown";
 import { createRingBuffer } from "../../lib/ring-buffer";
-import { readOverrides, writeOverrides } from "../../lib/admin-overrides";
+import {
+  readOverrides,
+  releaseAdminOverrideRoot,
+  retainAdminOverrideRoot,
+  writeOverrides,
+} from "../../lib/admin-overrides";
 import type {
   AdminActionResult,
   AdminInfoBlock,
@@ -141,6 +146,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   const now = opts._now ?? (() => Date.now());
   const stateDir = opts.stateDir ?? opts.agentDir;
   const overrideDir = opts.overrideDir ?? opts.agentDir;
+  let overrideRootRetained = false;
 
   const outboundOpts = opts.outbound ?? {};
   const allowedTrustLevels = outboundOpts.allowedTrustLevels ?? DEFAULT_ALLOWED_TRUST_LEVELS;
@@ -154,15 +160,6 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   // we reset back to on `agentmail-cap-reset`.
   let globalMaxPerHour = yamlGlobalMaxPerHour;
   let globalMaxSource: "yaml" | "override" = "yaml";
-
-  if (overrideDir) {
-    const overrides = readOverrides(overrideDir);
-    const overrideVal = overrides?.overrides.agentMail?.globalMaxPerHour;
-    if (typeof overrideVal === "number" && Number.isFinite(overrideVal) && overrideVal > 0) {
-      globalMaxPerHour = overrideVal;
-      globalMaxSource = "override";
-    }
-  }
 
   // Load persisted rate-limit / dedup state from the per-instance state
   // directory. Missing state starts fresh; corrupt/newer state fails closed.
@@ -306,6 +303,23 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       apiBaseUrl: opts.apiBaseUrl,
       allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
     });
+  if (overrideDir) {
+    overrideRootRetained = retainAdminOverrideRoot(overrideDir);
+    try {
+      const overrides = readOverrides(overrideDir);
+      const overrideVal = overrides?.overrides.agentMail?.globalMaxPerHour;
+      if (typeof overrideVal === "number" && Number.isFinite(overrideVal) && overrideVal > 0) {
+        globalMaxPerHour = overrideVal;
+        globalMaxSource = "override";
+      }
+    } catch (error) {
+      if (overrideRootRetained) {
+        releaseAdminOverrideRoot(overrideDir);
+        overrideRootRetained = false;
+      }
+      throw error;
+    }
+  }
 
   const inboundMode = opts.inbound?.mode ?? "none";
   const agentMailRoutes: NonNullable<Augment["httpRoutes"]> = [
@@ -1597,6 +1611,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         ownedLedger?.close();
       } catch (error) {
         failure ??= error;
+      }
+      if (overrideRootRetained) {
+        releaseAdminOverrideRoot(overrideDir);
+        overrideRootRetained = false;
       }
       if (failure) throw failure;
     })();

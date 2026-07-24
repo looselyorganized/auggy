@@ -49,7 +49,7 @@ export interface McpManager {
   tools: Tool[];
   constraints: AugmentConstraints;
   boot(): Promise<void>;
-  shutdown(): Promise<void>;
+  shutdown(signal?: AbortSignal): Promise<void>;
   statuses(): McpServerStatus[];
 }
 
@@ -183,12 +183,14 @@ export function createMcpManager(opts: McpManagerOptions = {}): McpManager {
         }
       }
     },
-    async shutdown() {
-      for (const runtime of runtimes) {
-        await runtime.connection?.close().catch(() => {});
+    async shutdown(signal) {
+      const closing = runtimes.map((runtime) => {
+        const connection = runtime.connection;
         runtime.connection = null;
-      }
+        return connection?.close(signal).catch(() => {});
+      });
       tools.splice(0, tools.length);
+      await Promise.allSettled(closing);
     },
     statuses() {
       return runtimes.map((runtime) => ({ ...runtime.status }));
@@ -279,10 +281,12 @@ async function connectWithTimeout(
   let timedOut = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   const timeoutMs = server.policy.timeoutMs!;
-  const pending = client.connect(server);
+  const controller = new AbortController();
+  const pending = client.connect(server, controller.signal);
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       timedOut = true;
+      controller.abort(new Error(`connect timed out after ${timeoutMs}ms`));
       reject(new Error(`connect timed out after ${timeoutMs}ms`));
     }, timeoutMs);
   });
@@ -294,6 +298,27 @@ async function connectWithTimeout(
   );
   try {
     return await Promise.race([pending, timeout]);
+  } catch (error) {
+    if (timedOut) {
+      // Cooperative adapters close their transport when the abort fires. Give
+      // that bounded cleanup enough time to terminate a stdio child before
+      // boot reports the failed server. A third-party non-cooperative adapter
+      // cannot hold startup open indefinitely.
+      let cleanupTimer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        pending.then(
+          async (connection) => {
+            await connection.close().catch(() => {});
+          },
+          () => {},
+        ),
+        new Promise<void>((resolve) => {
+          cleanupTimer = setTimeout(resolve, 1_250);
+        }),
+      ]);
+      if (cleanupTimer) clearTimeout(cleanupTimer);
+    }
+    throw error;
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -468,7 +493,6 @@ function toAuggyTool(
         if (context.signal?.aborted || isOutcomeUnknownError(err)) throw err;
         throw new OutcomeUnknownError(
           `MCP tool "${remoteTool.name}" ended without a trustworthy result after dispatch`,
-          { cause: err },
         );
       } finally {
         // A non-cooperative remote operation may keep running after the

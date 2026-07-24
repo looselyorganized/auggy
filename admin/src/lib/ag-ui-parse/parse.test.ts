@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { parseSSEStream, SSEParseLimitError } from "./parse";
+import type { AGUIEvent } from "./types";
 
 function stream(text: string): ReadableStream<Uint8Array> {
   return new ReadableStream({
@@ -47,7 +48,7 @@ describe("parseSSEStream limits", () => {
         canceled = true;
       },
     });
-    const events = [];
+    const events: AGUIEvent[] = [];
     const consume = async () => {
       for await (const event of parseSSEStream(body, { maxEvents: 1 })) events.push(event);
     };
@@ -71,7 +72,7 @@ describe("parseSSEStream limits", () => {
         offset++;
       },
     });
-    const events = [];
+    const events: AGUIEvent[] = [];
 
     for await (const event of parseSSEStream(body, {
       maxBufferedBytes: encoded.byteLength,

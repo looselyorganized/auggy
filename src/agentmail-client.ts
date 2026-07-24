@@ -152,7 +152,7 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
         }
         const result: SendMessageError = {
           status: "failed",
-          detail: `agentmail returned ${res.status}: ${res.body.slice(0, 200)}`,
+          detail: `agentmail returned HTTP ${res.status}`,
           httpStatus: res.status,
         };
         if (res.status === 429) {
@@ -164,10 +164,9 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
       let parsed: { message_id?: unknown; thread_id?: unknown };
       try {
         parsed = JSON.parse(res.body) as { message_id?: unknown; thread_id?: unknown };
-      } catch (err) {
+      } catch {
         throw new OutcomeUnknownError(
           "AgentMail accepted a send request but returned an unreadable response; delivery outcome is unknown",
-          { cause: err },
         );
       }
       if (typeof parsed.message_id !== "string" || typeof parsed.thread_id !== "string") {
@@ -181,7 +180,6 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
       if (isOutcomeUnknownError(err)) throw err;
       throw new OutcomeUnknownError(
         "AgentMail send ended without a trustworthy response after dispatch",
-        { cause: err },
       );
     }
   }
@@ -251,13 +249,13 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
         if (res.status < 200 || res.status >= 300) {
           return {
             status: "failed" as const,
-            detail: `agentmail returned ${res.status}: ${res.body.slice(0, 200)}`,
+            detail: `agentmail returned HTTP ${res.status}`,
             httpStatus: res.status,
           };
         }
         return { inboxId, status: "ok" as const };
-      } catch (err) {
-        return { status: "failed" as const, detail: `agentmail error: ${(err as Error).message}` };
+      } catch {
+        return { status: "failed" as const, detail: "agentmail request failed" };
       }
     },
   };

@@ -106,18 +106,19 @@ describe("agentMailAdapter", () => {
     expect(captured!.to).toEqual(["a@example.com", "b@example.com"]);
   });
 
-  it("returns failed with detail on 4xx", async () => {
+  it("returns a status-only failure on 4xx", async () => {
+    const sentinel = "GROUP9_AGENTMAIL_NOTIFY_SENTINEL";
     const adapter = createAgentMailAdapter({
       clientFactory: mockClient(() => ({
         status: "failed",
-        detail: 'agentmail returned 401: {"error":"invalid api key"}',
+        detail: `agentmail returned 401: ${sentinel}`,
         httpStatus: 401,
       })),
     });
     const result = await adapter.deliver(dest, { summary: "x" });
     expect(result.status).toBe("failed");
     expect(result.detail).toContain("401");
-    expect(result.detail).toContain("invalid api key");
+    expect(result.detail).not.toContain(sentinel);
   });
 
   it("marks a 5xx response after dispatch as outcome unknown", async () => {

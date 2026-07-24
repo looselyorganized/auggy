@@ -47,6 +47,6 @@ export function mcp(opts: McpAugmentOptions = {}): Augment {
     constraints: manager.constraints,
     adminInfo,
     onBoot: () => manager.boot(),
-    onShutdown: () => manager.shutdown(),
+    onShutdown: (signal) => manager.shutdown(signal),
   };
 }

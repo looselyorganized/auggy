@@ -758,7 +758,6 @@ export function createHttpClient(opts: HttpClientOptions = {}): HttpClient {
       if (requestDispatched && method !== "GET" && method !== "HEAD") {
         throw new HttpOutcomeUnknownError(
           "HTTP mutation ended without a trustworthy response after dispatch; outcome is unknown and must not be retried automatically",
-          { cause: error },
         );
       }
       throw error;

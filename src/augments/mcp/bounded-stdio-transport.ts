@@ -55,8 +55,23 @@ export class BoundedStdioClientTransport implements Transport {
       this.onclose?.();
     });
     await new Promise<void>((resolve, reject) => {
-      child.once("spawn", resolve);
-      child.once("error", reject);
+      const cleanup = (): void => {
+        child.off("spawn", onSpawn);
+        child.off("error", onError);
+      };
+      const onSpawn = (): void => {
+        cleanup();
+        resolve();
+      };
+      const onError = (error: Error): void => {
+        cleanup();
+        reject(error);
+      };
+      // Bun's Linux child_process compatibility exposes on/off but has
+      // shipped without ChildProcess.once. Keep this transport portable
+      // without changing the spawn/error ordering.
+      child.on("spawn", onSpawn);
+      child.on("error", onError);
     });
   }
 
@@ -169,6 +184,6 @@ async function waitForChildExit(child: ChildProcess, timeoutMs: number): Promise
       resolve(child.exitCode !== null || child.signalCode !== null);
     }, timeoutMs);
     timer.unref?.();
-    child.once("close", onClose);
+    child.on("close", onClose);
   });
 }

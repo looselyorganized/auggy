@@ -130,7 +130,7 @@ async function streamingInference(
   }
   return { response, streamed, messageId };
 }
-import { isOutcomeUnknownError } from "../outcome-unknown";
+import { isOutcomeUnknownError, OutcomeUnknownError } from "../outcome-unknown";
 import { withTimeout } from "./timeout";
 import { createContextAllocator } from "./context-allocator";
 import { createCapabilityTable } from "./capability-table";
@@ -583,15 +583,6 @@ export function createTurnLoop(opts: {
           for (const step of handlerResult.trace?.inferenceSteps ?? []) {
             traceEmitter.recordInference(trace, step);
           }
-          // Forward kernel events for run_finished — the handler returned
-          // a complete result; the transport-side observer needs a
-          // close-of-stream event regardless of whether the handler
-          // emitted any text.
-          emitEvent({
-            kind: "run_finished",
-            turnId: trigger.turnId,
-            status: handlerResult.status,
-          });
           // Inlined instead of finalizeReturn() because the snapshot must
           // see the handler's response parts merged into transcriptParts —
           // the merge happens between cost-commit and recordTurnSnapshot.
@@ -605,6 +596,11 @@ export function createTurnLoop(opts: {
             }
           }
           recordTurnSnapshot();
+          emitEvent({
+            kind: "run_finished",
+            turnId: trigger.turnId,
+            status: handlerResult.status,
+          });
           return {
             turnId: trigger.turnId,
             success: handlerResult.success,
@@ -776,9 +772,10 @@ export function createTurnLoop(opts: {
         withheldTools: toolSelection.withheld,
       });
 
-      // Phase 5 helper: cost commit (post-response, fail-safe).
-      // Called after each successful engine exit. Errors are logged; they
-      // do NOT fail the turn because the response already exists.
+      // Phase 5 helper: cost commit (post-inference, fail closed).
+      // A response is not terminally successful until every gate durably
+      // records the known inference cost. Failure after inference is
+      // outcome-unknown and must not produce a replayable success.
       //
       // Multi-iteration semantics: a single turn may invoke the model
       // multiple times (tool-use loop). We commit the SUM of all inference
@@ -817,8 +814,11 @@ export function createTurnLoop(opts: {
                   threadId,
                   cost,
                 });
-              } catch (err) {
-                console.error(`[turn-gate ${gate.name}] commit failed:`, err);
+              } catch {
+                console.error(`[turn-gate ${gate.name}] cost commit failed after inference`);
+                throw new OutcomeUnknownError(
+                  "Inference completed but durable cost accounting did not reach a terminal state.",
+                );
               }
             }
           })();
@@ -935,14 +935,12 @@ export function createTurnLoop(opts: {
               });
             }
 
-            // Emit run_finished
+            await finalizeReturn({ withCostCommit: true });
             emitEvent({
               kind: "run_finished",
               turnId: trigger.turnId,
               status: "completed",
             });
-
-            await finalizeReturn({ withCostCommit: true });
             return {
               turnId: trigger.turnId,
               success: true,
@@ -1263,6 +1261,10 @@ export function createTurnLoop(opts: {
                 text: pendingTerminate.message,
               });
             }
+            if (pendingTerminate.message) {
+              transcriptParts.push({ kind: "text", text: pendingTerminate.message });
+            }
+            await finalizeReturn({ withCostCommit: true });
             emitEvent({
               kind: "run_finished",
               turnId: trigger.turnId,
@@ -1271,10 +1273,6 @@ export function createTurnLoop(opts: {
                 message: pendingTerminate.message,
               }),
             });
-            if (pendingTerminate.message) {
-              transcriptParts.push({ kind: "text", text: pendingTerminate.message });
-            }
-            await finalizeReturn({ withCostCommit: true });
             return {
               turnId: trigger.turnId,
               success: true,
@@ -1325,12 +1323,12 @@ export function createTurnLoop(opts: {
                 });
               }
             }
+            await finalizeReturn({ withCostCommit: true });
             emitEvent({
               kind: "run_finished",
               turnId: trigger.turnId,
               status: "completed",
             });
-            await finalizeReturn({ withCostCommit: true });
             return {
               turnId: trigger.turnId,
               success: true,
@@ -1367,13 +1365,13 @@ export function createTurnLoop(opts: {
           role: "assistant",
           text: "I've completed the available actions.",
         });
+        transcriptParts.push({ kind: "text", text: "I've completed the available actions." });
+        await finalizeReturn({ withCostCommit: true });
         emitEvent({
           kind: "run_finished",
           turnId: trigger.turnId,
           status: "completed",
         });
-        transcriptParts.push({ kind: "text", text: "I've completed the available actions." });
-        await finalizeReturn({ withCostCommit: true });
         return {
           turnId: trigger.turnId,
           success: true,
