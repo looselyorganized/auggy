@@ -217,6 +217,37 @@ describe("model response limits", () => {
     }
   });
 
+  it("counts terminating provider framing bytes before resetting message limits", async () => {
+    const cases = [
+      { contentType: "text/event-stream", chunks: ["data:x\n\n"] },
+      { contentType: "text/event-stream", chunks: ["data:x\r\n\r", "\n"] },
+      { contentType: "application/x-ndjson", chunks: ['{"x":1}', "\n"] },
+    ];
+    for (const { contentType, chunks } of cases) {
+      let canceled = false;
+      const base = (async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+            },
+            cancel() {
+              canceled = true;
+            },
+          }),
+          { headers: { "content-type": contentType } },
+        )) as unknown as typeof fetch;
+      const maxResponseBytes = chunks.join("").length - 1;
+      const response = await createBoundedModelFetch(base, {
+        maxTextBytes: maxResponseBytes,
+        maxResponseBytes,
+      })("https://provider.example/");
+
+      await expect(response.text()).rejects.toBeInstanceOf(ModelResponseLimitError);
+      expect(canceled).toBe(true);
+    }
+  });
+
   it("rejects redirects before a provider API key can cross origins", async () => {
     const sentinel = "GROUP9_PROVIDER_REDIRECT_SECRET";
     let leakedHeader: string | null = null;

@@ -35,6 +35,11 @@ export function createMcpBoundedFetch(base: FetchLike, maxMessageBytes: number):
           if (isEventStream) {
             for (const byte of value) {
               messageBytes++;
+              if (messageBytes > maxMessageBytes) {
+                await reader.cancel().catch(() => {});
+                controller.error(new Error("MCP SSE event exceeded the configured byte limit."));
+                return;
+              }
               const endsLfEvent = previousByte === 0x0a && byte === 0x0a;
               const endsCrlfEvent =
                 thirdPreviousByte === 0x0d &&
@@ -50,11 +55,6 @@ export function createMcpBoundedFetch(base: FetchLike, maxMessageBytes: number):
                 thirdPreviousByte = secondPreviousByte;
                 secondPreviousByte = previousByte;
                 previousByte = byte;
-              }
-              if (messageBytes > maxMessageBytes) {
-                await reader.cancel().catch(() => {});
-                controller.error(new Error("MCP SSE event exceeded the configured byte limit."));
-                return;
               }
             }
           } else {

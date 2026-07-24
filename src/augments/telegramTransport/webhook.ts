@@ -20,6 +20,11 @@ export interface WebhookServerHandle {
 }
 
 export async function startWebhookServer(opts: WebhookServerOptions): Promise<WebhookServerHandle> {
+  if (!/^[A-Za-z0-9_-]{1,256}$/.test(opts.secretToken)) {
+    throw new TypeError(
+      "[telegram-transport.webhook] secretToken must contain 1 to 256 letters, numbers, underscores, or hyphens",
+    );
+  }
   const log = opts.log ?? console;
   const expected = Buffer.from(opts.secretToken, "utf8");
 

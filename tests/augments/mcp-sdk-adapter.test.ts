@@ -137,6 +137,29 @@ describe("MCP HTTP transport message bounds", () => {
     await expect(response.text()).rejects.toThrow(/event exceeded/i);
     expect(canceled).toBe(true);
   });
+
+  test("counts terminating SSE framing bytes at one-chunk and split boundaries", async () => {
+    for (const chunks of [["data:x\n\n"], ["data:x\r\n\r", "\n"]]) {
+      let canceled = false;
+      const base = (async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+            },
+            cancel() {
+              canceled = true;
+            },
+          }),
+          { headers: { "content-type": "text/event-stream" } },
+        )) as unknown as typeof fetch;
+      const maxMessageBytes = chunks.join("").length - 1;
+      const response = await createMcpBoundedFetch(base, maxMessageBytes)("https://mcp.example/");
+
+      await expect(response.text()).rejects.toThrow(/event exceeded/i);
+      expect(canceled).toBe(true);
+    }
+  });
 });
 
 describe("MCP stdio transport message bounds", () => {

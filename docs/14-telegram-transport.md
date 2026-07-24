@@ -94,10 +94,51 @@ config:
 | `inbound.webhook.maxBodyBytes` | `number` | no | `262144` | Encoded request cap enforced before JSON parsing, including chunked requests. |
 | `auth` | `TelegramAuthOptions` | yes | — | Identity resolution configuration. |
 | `replay.dbPath` | `string` | no | `./data/telegram-replay.db` | Hardened SQLite update-claim ledger. CLI/cloud resolution places this under the runtime data root. |
-| `replay.namespace` | `string` | no | augment name + numeric bot ID | Stable, non-secret bot/transport scope. Set explicitly when a token has no numeric bot prefix. |
+| `replay.namespace` | `string` | no | `telegram:bot-<botId>` | Stable, non-secret bot scope. Set explicitly when a token has no numeric bot prefix. |
 | `replay.retentionMs` | `number` | no | `2592000000` | Claim retention horizon (30 days). |
 | `replay.maxEntries` | `number` | no | `1000000` | Maximum retained claims before oldest claims are pruned transactionally. |
-| `replay.store` | `TelegramReplayStore` | no | SQLite store | Programmatic shared transactional store for deployments that cannot share one SQLite file. |
+| `replay.claimTimeoutMs` | `number` | no | `5000` | Maximum time to await an async shared-store claim before failing closed. |
+| `replay.store` | `TelegramReplayStore \| TelegramAsyncReplayStore` | no | SQLite store | Programmatic shared transactional store. Distributed replicas should use an async store backed by one atomic Redis, Postgres, or equivalent claim domain. |
+
+The default SQLite ledger provides durable replay protection across restarts and
+processes that open the same database file on storage with reliable SQLite
+locking. It does not coordinate replicas with independent container volumes.
+Horizontally scaled deployments must route Telegram updates through one writer
+or construct `telegramTransport()` programmatically with a shared transactional
+`TelegramAsyncReplayStore`; executable stores cannot be declared in YAML. Its
+`claimAsync()` operation must atomically bind `(namespace, updateId)` to the
+payload hash and honor the supplied abort signal. Claims are intentionally
+at-most-once: a timeout, shutdown, or failure after a claim has begun is
+outcome-unknown. Any delivery retry must use the identical namespace, update
+ID, and payload hash through the same atomic store; it must never bypass the
+claim.
+
+When moving from SQLite to a shared store, preserve the replay namespace and
+either seed every unexpired `(namespace, updateId, payloadHash)` claim or drain
+Telegram's retry horizon before cutover. Starting with an empty shared ledger
+can admit an old delivery that the SQLite ledger had already consumed.
+
+```ts
+import { telegramTransport, type TelegramAsyncReplayStore } from "auggy";
+
+const replayStore: TelegramAsyncReplayStore = {
+  async claimAsync(namespace, updateId, payloadHash, { signal }) {
+    // Atomically insert-or-read in one shared database and honor `signal`.
+    return claimTelegramUpdate(namespace, updateId, payloadHash, signal);
+  },
+};
+
+const telegram = telegramTransport({
+  botToken: process.env.TELEGRAM_BOT_TOKEN!,
+  inbound: { mode: "polling" },
+  auth: {},
+  replay: { namespace: "support-bot", store: replayStore },
+});
+```
+
+The application owns a supplied store's lifecycle; the transport does not call
+its optional `close()` method. This lets one shared client serve multiple
+transport instances safely.
 
 ### `TelegramAuthOptions` fields
 
@@ -172,7 +213,17 @@ chat; it is not used as the creator's memory/budget key. Group, supergroup, and
 channel messages are not promoted to creator trust by default even when the
 sender's user ID appears in `creatorUserIds`.
 
-**Thread ID:** All updates within the same Telegram chat share `threadId = tg-chat-<chatId>`. This maps one Telegram chat to one conversation thread in Auggy — history, memory context, and budget counters are all scoped to this threadId.
+**Thread ID:** All updates within the same Telegram bot and chat share
+`threadId = tg-bot-<botId>-chat-<chatId>` (tokens without a standard numeric
+bot prefix use a digest of the explicit non-secret replay namespace; test-only
+clients fall back to the registered augment name). The bot scope is mandatory because
+Telegram private-chat IDs are stable across bots; it prevents two configured
+bots from sharing kernel history, memory context, or budget counters.
+
+This changes the legacy `tg-chat-<chatId>` identifiers. On first deployment,
+existing Telegram conversations begin new histories. Do not copy legacy
+history into the new identifiers unless ownership is independently verified
+for the exact bot and peer.
 
 ## 6. `anonymousIdentityMode` — ephemeral vs durable
 
@@ -180,7 +231,7 @@ Anonymous public users (those not in `creatorUserIds`, `admittedAgents`, or `rec
 
 | Mode | `peer.id` | Memory behavior |
 |---|---|---|
-| `"ephemeral"` (default) | `tg_anon_<threadId>` i.e. `tg_anon_tg-chat-<chatId>` | Identity tied to the chat thread. Memory written for this peer is retained as long as the same chat is used, but the peer ID does not follow the user across different chats or after the threadId changes. |
+| `"ephemeral"` (default) | `tg_anon_<threadId>` i.e. `tg_anon_tg-bot-<botId>-chat-<chatId>` | Identity tied to the bot-scoped chat thread. Memory written for this peer is retained as long as the same bot and chat are used, but the peer ID does not follow the user across different chats or after the threadId changes. |
 | `"durable"` | `tg_user_<userId>` | Identity tied to the Telegram user ID. Memory is cross-session and cross-chat. If the user opens a new chat with the bot they are recognized by the same `peer.id`. |
 
 > **Privacy tradeoff:** Ephemeral mode (the default) matches the behavior of anonymous web visitors — the peer is recognized within a session/thread but not globally. Durable mode enables cross-session recall at the cost of linking a Telegram user ID to a persistent identity in the agent's memory store. If you enable `"durable"`, ensure your data retention posture and any applicable privacy regulations are addressed. Consider whether the `layeredMemory` retention classes are set appropriately for anonymous public data.
@@ -190,7 +241,9 @@ Anonymous public users (those not in `creatorUserIds`, `admittedAgents`, or `rec
 At boot (`onBoot`), the augment calls `getChat` for each entry in `admittedAgents`. This verifies that the configured `telegramUserId` is reachable by the bot:
 
 - **Success:** Logs `[telegram-transport] admittedAgent "<id>" (telegramUserId=<n>) resolved successfully`.
-- **Failure:** Logs a warning: `[telegram-transport] admittedAgent "<id>" (telegramUserId=<n>) failed boot-time validation: <error>. Real agent traffic from this user_id will be silently demoted to public-anonymous.`
+- **Failure:** Logs a warning without the raw upstream exception and removes
+  that entry from the active mapping for the current boot. Traffic from this
+  user ID is public-anonymous until validation succeeds on a later restart.
 
 The augment does **not** abort boot on validation failure. This is intentional — a misconfigured `admittedAgents` entry should not take down the whole agent. However, the consequence is silent trust demotion: if an agent peer sends a message with a `telegramUserId` that failed validation, it will be treated as `public-anonymous`. This can cause the agent to apply public-tier budgets and deny tools the agent peer expects to have access to.
 
@@ -251,7 +304,9 @@ Caddy forwards headers by default, so no explicit header passthrough directive i
 
 - The turn may have been rejected by the `budgets` augment (cap-denied). Check agent logs for `cap-denied` or `admission-state-failed` entries.
 - The turn may have completed without producing a `text_message` event (e.g. the model only called tools). Replies are sent via `onOutbound` when `text_message` events fire.
-- If the `threadChatIds` map entry is missing for the thread, the outbound callback will silently drop the reply. This should only happen if the update was processed before `register()` was called — check that the augment is booting before messages arrive.
+- If the `threadChatIds` map entry is missing for the thread, the outbound
+  callback silently drops the reply. Routing exists only while the inbound turn
+  is active; late or unrelated outbound messages must use `notify`.
 
 **Webhook mode: bot registers but updates never arrive**
 

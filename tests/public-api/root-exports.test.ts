@@ -1,6 +1,12 @@
 import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
+import { telegramTransport } from "../../src";
+import type {
+  TelegramAsyncReplayStore,
+  TelegramReplayClaimOptions,
+  TelegramTransportOptions,
+} from "../../src";
 
 interface PackageJson {
   exports?: Record<string, string>;
@@ -18,5 +24,24 @@ describe("public package exports", () => {
     expect(packageJson.exports?.["./client"]).toBeUndefined();
     expect(packageJson.exports?.["./routes-client"]).toBeUndefined();
     expect(exportTargets).not.toContain("routes-client");
+  });
+
+  test("exports the programmatic Telegram shared-replay boundary", () => {
+    const claimOptions: TelegramReplayClaimOptions = { signal: new AbortController().signal };
+    const store: TelegramAsyncReplayStore = {
+      async claimAsync() {
+        return "claimed";
+      },
+    };
+    const options = {
+      botToken: "1:test",
+      inbound: { mode: "polling" },
+      auth: {},
+      replay: { namespace: "public-api-test", store },
+    } satisfies TelegramTransportOptions;
+
+    expect(typeof telegramTransport).toBe("function");
+    expect(claimOptions.signal.aborted).toBe(false);
+    expect(options.replay.store).toBe(store);
   });
 });

@@ -431,6 +431,11 @@ export function createBoundedModelFetch(
           if (isSse || isNdjson) {
             for (const byte of value) {
               messageBytes++;
+              if (messageBytes > maxMessageBytes) {
+                await reader.cancel().catch(() => {});
+                controller.error(new ModelResponseLimitError("maxResponseBytes"));
+                return;
+              }
               const endsNdjsonMessage = isNdjson && byte === 0x0a;
               const endsLfEvent = isSse && previousByte === 0x0a && byte === 0x0a;
               const endsCrlfEvent =
@@ -448,11 +453,6 @@ export function createBoundedModelFetch(
                 thirdPreviousByte = secondPreviousByte;
                 secondPreviousByte = previousByte;
                 previousByte = byte;
-              }
-              if (messageBytes > maxMessageBytes) {
-                await reader.cancel().catch(() => {});
-                controller.error(new ModelResponseLimitError("maxResponseBytes"));
-                return;
               }
             }
           }

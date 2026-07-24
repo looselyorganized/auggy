@@ -1100,7 +1100,7 @@ Every inbound Telegram update resolves to a `PeerIdentity` via four paths in pri
 
 | Priority | Check | Trust level | `peer.id` |
 |---|---|---|---|
-| 1 | `creatorUserIds` or `creatorUserIdsEnv` contains sender ID | `"creator"` | `tg_user_<userId>` |
+| 1 | `creatorUserIds` or `creatorUserIdsEnv` contains sender ID | `"creator"` | `creator` |
 | 2 | `admittedAgents` has matching `telegramUserId` | `"agent"` | Agent's logical `id` field |
 | 3 | `recognizedUserIds` contains sender ID | `"public"` / `"recognized"` | `tg_user_<userId>` |
 | 4 | None of the above | `"public"` / `"anonymous"` | `tg_anon_<threadId>` (ephemeral) or `tg_user_<userId>` (durable) |

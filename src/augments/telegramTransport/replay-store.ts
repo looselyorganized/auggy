@@ -121,7 +121,7 @@ export function createSqliteTelegramReplayStore(
     `DELETE FROM telegram_update_claims
      WHERE rowid IN (
        SELECT rowid FROM telegram_update_claims
-       WHERE claimed_at < ?
+       WHERE namespace = ? AND claimed_at < ?
        ORDER BY claimed_at ASC
        LIMIT 1000
      )`,
@@ -141,7 +141,7 @@ export function createSqliteTelegramReplayStore(
   const claimTransaction = db.transaction(
     (namespace: string, updateId: number, payloadHash: string): TelegramReplayClaim => {
       const claimedAt = now();
-      purgeTime.run(claimedAt - retentionMs);
+      purgeTime.run(namespace, claimedAt - retentionMs);
       const inserted = insert.run(namespace, updateId, payloadHash, claimedAt);
       if (inserted.changes === 0) {
         const existing = select.get(namespace, updateId);

@@ -100,6 +100,26 @@ describe("telegramTransport config validation", () => {
     expect(() => parseConfig(path)).toThrow("secretToken");
   });
 
+  it("rejects invalid or oversized webhook secrets", () => {
+    for (const secretToken of ["contains spaces", "x".repeat(257)]) {
+      const path = writeYaml(
+        BASE +
+          `  - name: tg
+    type: telegramTransport
+    options:
+      botToken: TOKEN
+      inbound:
+        mode: webhook
+        webhook:
+          publicUrl: https://example.com/hook
+          secretToken: ${secretToken}
+      auth: {}
+`,
+      );
+      expect(() => parseConfig(path)).toThrow("must contain 1 to 256");
+    }
+  });
+
   it("rejects unknown inbound.mode value", () => {
     const path = writeYaml(
       BASE +
@@ -164,5 +184,43 @@ describe("telegramTransport config validation", () => {
 `,
     );
     expect(() => parseConfig(path)).toThrow("anonymousIdentityMode");
+  });
+
+  it("rejects missing or malformed auth without throwing a raw type error", () => {
+    for (const authYaml of [
+      "",
+      "      auth: null\n",
+      "      auth:\n        admittedAgents: [null]\n",
+    ]) {
+      const path = writeYaml(
+        BASE +
+          `  - name: tg
+    type: telegramTransport
+    options:
+      botToken: TOKEN
+      inbound:
+        mode: polling
+${authYaml}`,
+      );
+      expect(() => parseConfig(path)).toThrow(/auth/);
+    }
+  });
+
+  it("rejects executable replay-store placeholders in YAML", () => {
+    const path = writeYaml(
+      BASE +
+        `  - name: tg
+    type: telegramTransport
+    options:
+      botToken: TOKEN
+      inbound:
+        mode: polling
+      auth: {}
+      replay:
+        store:
+          type: redis
+`,
+    );
+    expect(() => parseConfig(path)).toThrow(/replay\.store.*programmatically/);
   });
 });

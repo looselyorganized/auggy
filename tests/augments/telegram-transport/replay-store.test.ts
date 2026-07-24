@@ -60,6 +60,27 @@ describe("SQLite Telegram replay store", () => {
     store.close?.();
   });
 
+  it("isolates time-based retention between bot namespaces", () => {
+    const path = databasePath();
+    const longRetention = createSqliteTelegramReplayStore({
+      dbPath: path,
+      retentionMs: 100_000,
+      now: () => 100,
+    });
+    const shortRetention = createSqliteTelegramReplayStore({
+      dbPath: path,
+      retentionMs: 10,
+      now: () => 10_000,
+    });
+
+    expect(longRetention.claim("long-bot", 1, "a".repeat(64))).toBe("claimed");
+    expect(shortRetention.claim("short-bot", 1, "b".repeat(64))).toBe("claimed");
+    expect(longRetention.claim("long-bot", 1, "a".repeat(64))).toBe("duplicate");
+
+    longRetention.close?.();
+    shortRetention.close?.();
+  });
+
   it("fails closed for malformed identifiers and hashes", () => {
     const store = createSqliteTelegramReplayStore({ dbPath: databasePath() });
     for (const id of [-1, 1.5, Number.MAX_SAFE_INTEGER + 1]) {

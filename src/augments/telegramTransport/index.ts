@@ -25,6 +25,7 @@ import type {
   OutboundMessage,
   Part,
   PeerIdentity,
+  TelegramAsyncReplayStore,
   TelegramAuthOptions,
   TelegramTransportOptions,
   TransportKernel,
@@ -42,7 +43,7 @@ import {
   createSqliteTelegramReplayStore,
   InvalidTelegramUpdateError,
   TelegramReplayConflictError,
-  type TelegramReplayStore,
+  type TelegramReplayStore as LocalTelegramReplayStore,
 } from "./replay-store";
 
 // ---------------------------------------------------------------------------
@@ -92,6 +93,7 @@ export function resolveTelegramIdentity(
   input: ResolveIdentityInput,
   auth: TelegramAuthOptions,
   creator: TelegramTransportOptions["creator"] = undefined,
+  sourceAugment = "telegram-transport",
 ): PeerIdentity {
   const { userId, threadId } = input;
   const chatType = input.chatType ?? "private";
@@ -104,7 +106,7 @@ export function resolveTelegramIdentity(
       id: "creator",
       kind: "human",
       trustLevel: "creator",
-      sourceAugment: "telegram-transport",
+      sourceAugment,
       displayName: creator?.displayName ?? input.displayName,
     };
   }
@@ -115,7 +117,7 @@ export function resolveTelegramIdentity(
       id: admitted.id,
       kind: "agent",
       trustLevel: "agent",
-      sourceAugment: "telegram-transport",
+      sourceAugment,
     };
   }
 
@@ -125,7 +127,7 @@ export function resolveTelegramIdentity(
       kind: "human",
       trustLevel: "public",
       publicSubstate: "recognized",
-      sourceAugment: "telegram-transport",
+      sourceAugment,
     };
   }
 
@@ -135,7 +137,7 @@ export function resolveTelegramIdentity(
     kind: "human",
     trustLevel: "public",
     publicSubstate: "anonymous",
-    sourceAugment: "telegram-transport",
+    sourceAugment,
   };
 }
 
@@ -181,7 +183,13 @@ interface InternalOptions extends TelegramTransportOptions {
 }
 
 export function telegramTransport(opts: TelegramTransportOptions): Augment {
-  const auth = normalizeTelegramAuthOptions(opts.auth);
+  const replayClaimTimeoutMs = opts.replay?.claimTimeoutMs ?? 5_000;
+  if (!Number.isSafeInteger(replayClaimTimeoutMs) || replayClaimTimeoutMs < 1) {
+    throw new TypeError("telegramTransport: replay.claimTimeoutMs must be a positive integer");
+  }
+  const configuredAuth = normalizeTelegramAuthOptions(opts.auth);
+  let auth: TelegramAuthOptions = { ...configuredAuth };
+  const botId = opts.botToken.match(/^(\d+):/)?.[1];
   const internal = opts as InternalOptions;
   const clientFactory =
     internal._clientFactory ?? (() => createTelegramBotClient({ botToken: opts.botToken }));
@@ -191,20 +199,22 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
   let webhookHandle: WebhookServerHandle | null = null;
   let kernel: TransportKernel | null = null;
   let registeredName: string | null = null;
-  let replayStore: TelegramReplayStore | null = opts.replay?.store ?? null;
+  type ActiveReplayStore = LocalTelegramReplayStore | TelegramAsyncReplayStore;
+  let replayStore: ActiveReplayStore | null = opts.replay?.store ?? null;
   let ownsReplayStore = false;
+  let lifecycleController = new AbortController();
 
   /**
    * Per-thread chat_id map. Populated when an inbound update arrives, read
    * by the outbound callback so we know where to deliver the reply.
-   * Keyed by threadId (`tg-chat-<chatId>`) — same shape as the threadId we
-   * pass into resolveTelegramIdentity and into the TurnTrigger.
+   * Keyed by the bot-scoped threadId — the same identifier we pass into
+   * resolveTelegramIdentity and the TurnTrigger.
    */
   const threadChatIds = new Map<string, { chatId: number | string; activeTurns: number }>();
   const genericFailureReply =
     "I hit a runtime error while handling that message. The operator has the details.";
 
-  function getReplayStore(): TelegramReplayStore {
+  function getReplayStore(): ActiveReplayStore {
     if (replayStore) return replayStore;
     replayStore = internal._clientFactory
       ? createInMemoryTelegramReplayStore()
@@ -215,6 +225,52 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
         });
     ownsReplayStore = true;
     return replayStore;
+  }
+
+  async function claimUpdate(
+    namespace: string,
+    updateId: number,
+    payloadHash: string,
+    lifecycleSignal: AbortSignal,
+  ): Promise<"claimed" | "duplicate" | "conflict"> {
+    const store = getReplayStore();
+    let claim: unknown;
+    if ("claimAsync" in store) {
+      lifecycleSignal.throwIfAborted();
+      const claimController = new AbortController();
+      const abortClaim = () => claimController.abort(lifecycleSignal.reason);
+      lifecycleSignal.addEventListener("abort", abortClaim, { once: true });
+      const timeout = setTimeout(
+        () => claimController.abort(new Error("Telegram replay claim timed out.")),
+        replayClaimTimeoutMs,
+      );
+      try {
+        const pending = store.claimAsync(namespace, updateId, payloadHash, {
+          signal: claimController.signal,
+        });
+        claim = await new Promise<unknown>((resolve, reject) => {
+          const rejectAborted = () =>
+            reject(
+              claimController.signal.reason ??
+                new DOMException("Telegram replay claim aborted.", "AbortError"),
+            );
+          if (claimController.signal.aborted) {
+            rejectAborted();
+            return;
+          }
+          claimController.signal.addEventListener("abort", rejectAborted, { once: true });
+          Promise.resolve(pending).then(resolve, reject);
+        });
+      } finally {
+        clearTimeout(timeout);
+        lifecycleSignal.removeEventListener("abort", abortClaim);
+      }
+    } else {
+      lifecycleSignal.throwIfAborted();
+      claim = store.claim(namespace, updateId, payloadHash);
+    }
+    if (claim === "claimed" || claim === "duplicate" || claim === "conflict") return claim;
+    throw new Error("Telegram replay store returned an invalid claim result.");
   }
 
   function replayNamespace(): string {
@@ -228,7 +284,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
         "[telegram-transport] replay.namespace is required when botToken has no numeric bot id",
       );
     }
-    return `${registeredName ?? "telegram-transport"}:bot-${botId}`;
+    return `telegram:bot-${botId}`;
   }
 
   // ---------------------------------------------------------------------------
@@ -251,6 +307,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
       { userId: r.userId, threadId: r.threadId, chatType: r.chatType, displayName: r.displayName },
       auth,
       opts.creator,
+      registeredName ?? "telegram-transport",
     );
   };
 
@@ -345,7 +402,11 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
    * wrap in TurnTrigger, call kernel.handleInbound.
    */
   async function handleUpdate(update: TelegramUpdate): Promise<void> {
-    if (!kernel) return; // Not yet registered — drop the update.
+    const currentKernel = kernel;
+    const currentRegisteredName = registeredName;
+    const lifecycleSignal = lifecycleController.signal;
+    if (!currentKernel || !currentRegisteredName) return; // Not yet registered — drop the update.
+    lifecycleSignal.throwIfAborted();
     if (!Number.isSafeInteger(update?.update_id) || update.update_id < 0) {
       throw new InvalidTelegramUpdateError();
     }
@@ -356,20 +417,36 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
       throw new InvalidTelegramUpdateError();
     }
     const payloadHash = createHash("sha256").update(serialized).digest("hex");
-    const claim = getReplayStore().claim(replayNamespace(), update.update_id, payloadHash);
+    const updateNamespace = replayNamespace();
+    const claim = await claimUpdate(
+      updateNamespace,
+      update.update_id,
+      payloadHash,
+      lifecycleSignal,
+    );
     if (claim === "duplicate") return;
     if (claim === "conflict") throw new TelegramReplayConflictError();
+    lifecycleSignal.throwIfAborted();
+    if (kernel !== currentKernel || registeredName !== currentRegisteredName) {
+      throw new DOMException("Telegram transport lifecycle changed.", "AbortError");
+    }
     if (!update.message?.text || !update.message.from) return;
 
     const userId = update.message.from.id;
     const chatId = update.message.chat.id;
     const chatType = update.message.chat.type;
     const displayName = update.message.from.first_name ?? update.message.from.username ?? undefined;
-    const threadId = `tg-chat-${chatId}`;
+    // Telegram private-chat IDs are stable across bots. Scope the thread to
+    // the bot identity so two bots cannot enter each other's kernel history.
+    const botIdentityScope = botId
+      ? `bot-${botId}`
+      : `namespace-${createHash("sha256").update(updateNamespace).digest("hex").slice(0, 16)}`;
+    const threadId = `tg-${botIdentityScope}-chat-${chatId}`;
     const peer = resolveTelegramIdentity(
       { userId, threadId, chatType, displayName },
       auth,
       opts.creator,
+      currentRegisteredName,
     );
 
     // Retain chat routing only while a turn is active. A reference count
@@ -384,7 +461,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     const parts: Part[] = [{ kind: "text", text: update.message.text }];
     const inbound: InboundMessage = {
       parts,
-      sourceAugment: "telegram-transport",
+      sourceAugment: currentRegisteredName,
       peer,
       timestamp: Date.now(),
       contextId: threadId,
@@ -395,7 +472,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
       threadId,
       contextId: threadId,
       timestamp: Date.now(),
-      source: registeredName ?? "telegram-transport",
+      source: currentRegisteredName,
       peer,
       payload: inbound,
     };
@@ -407,17 +484,20 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     const onEvent = (_e: KernelEvent): void => {};
 
     try {
-      const result = await kernel.handleInbound(trigger, { onEvent });
+      const result = await currentKernel.handleInbound(trigger, {
+        onEvent,
+        signal: lifecycleSignal,
+      });
       if (!result.success) {
         console.warn(
           `[telegram-transport] turn failed for threadId=${threadId}: status=${result.status}` +
             `${result.error?.source ? ` source=${result.error.source}` : ""}`,
         );
-        await sendFailureReply(chatId, failureReplyForResult(result));
+        await sendFailureReply(chatId, failureReplyForResult(result), lifecycleSignal);
       }
     } catch {
       console.warn(`[telegram-transport] kernel.handleInbound failed for threadId=${threadId}`);
-      await sendFailureReply(chatId, genericFailureReply);
+      await sendFailureReply(chatId, genericFailureReply, lifecycleSignal);
     } finally {
       const route = threadChatIds.get(threadId);
       if (route) {
@@ -441,9 +521,14 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     );
   }
 
-  async function sendFailureReply(chatId: number | string, text: string): Promise<void> {
+  async function sendFailureReply(
+    chatId: number | string,
+    text: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    if (signal.aborted) return;
     try {
-      await client.sendMessage(chatId, text);
+      await client.sendMessage(chatId, text, { signal });
     } catch (err) {
       console.warn(
         `[telegram-transport] sendMessage failed for failure reply chatId=${chatId}: ${(err as Error).message}`,
@@ -502,10 +587,19 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     adminInfo,
 
     async onBoot(): Promise<void> {
-      auth.admittedAgents = await validateAdmittedAgents(auth.admittedAgents, client);
+      if (lifecycleController.signal.aborted) lifecycleController = new AbortController();
       if (opts.inbound.mode === "webhook" && !opts.inbound.webhook) {
         throw new Error(
           "[telegram-transport] inbound.mode === 'webhook' requires inbound.webhook config",
+        );
+      }
+      if (
+        opts.inbound.mode === "webhook" &&
+        opts.inbound.webhook &&
+        !/^[A-Za-z0-9_-]{1,256}$/.test(opts.inbound.webhook.secretToken)
+      ) {
+        throw new Error(
+          "[telegram-transport] inbound.webhook.secretToken must contain 1 to 256 letters, numbers, underscores, or hyphens",
         );
       }
       if (opts.inbound.mode !== "polling" && opts.inbound.mode !== "webhook") {
@@ -513,9 +607,16 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
           `[telegram-transport] inbound.mode must be 'polling' or 'webhook' (got ${(opts.inbound as { mode: unknown }).mode})`,
         );
       }
+      auth = {
+        ...configuredAuth,
+        admittedAgents: await validateAdmittedAgents(configuredAuth.admittedAgents, client),
+      };
     },
 
     async onShutdown(): Promise<void> {
+      lifecycleController.abort(
+        new DOMException("Telegram transport is shutting down.", "AbortError"),
+      );
       if (pollHandle) {
         pollHandle.stop();
         await pollHandle.done;
@@ -535,7 +636,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
       kernel = null;
       registeredName = null;
       threadChatIds.clear();
-      if (ownsReplayStore) replayStore?.close?.();
+      if (ownsReplayStore) await replayStore?.close?.();
       replayStore = opts.replay?.store ?? null;
       ownsReplayStore = false;
     },

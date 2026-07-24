@@ -1752,17 +1752,40 @@ export interface TelegramReplayStore {
   close?(): void;
 }
 
+export interface TelegramReplayClaimOptions {
+  /**
+   * Aborted when the transport shuts down or the configured claim deadline
+   * expires. Distributed stores should stop pending work promptly.
+   */
+  signal: AbortSignal;
+}
+
+export interface TelegramAsyncReplayStore {
+  claimAsync(
+    namespace: string,
+    updateId: number,
+    payloadHash: string,
+    options: TelegramReplayClaimOptions,
+  ): Promise<"claimed" | "duplicate" | "conflict">;
+  close?(): void | Promise<void>;
+}
+
 export interface TelegramReplayOptions {
-  /** Shared transactional store. When omitted, a hardened SQLite store is used. */
-  store?: TelegramReplayStore;
+  /**
+   * Shared transactional store. Async stores support distributed databases.
+   * When omitted, a hardened SQLite store is used.
+   */
+  store?: TelegramReplayStore | TelegramAsyncReplayStore;
   /** SQLite path used when store is omitted. Default ./data/telegram-replay.db. */
   dbPath?: string;
-  /** Stable non-secret namespace. Defaults to augment name + numeric Telegram bot id. */
+  /** Stable non-secret namespace. Defaults to `telegram:bot-<numeric bot id>`. */
   namespace?: string;
   /** Claim retention. Default 30 days. */
   retentionMs?: number;
   /** Maximum retained update claims. Default 1,000,000. */
   maxEntries?: number;
+  /** Maximum time to await an async shared-store claim. Default 5,000 ms. */
+  claimTimeoutMs?: number;
 }
 
 export interface TelegramTransportOptions {

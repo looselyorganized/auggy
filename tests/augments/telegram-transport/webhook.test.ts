@@ -8,6 +8,12 @@ function freePort(): number {
 }
 
 describe("startWebhookServer", () => {
+  it("rejects an empty authentication secret before binding", async () => {
+    await expect(
+      startWebhookServer({ port: 0, secretToken: "", onUpdate: () => {} }),
+    ).rejects.toThrow("must contain 1 to 256");
+  });
+
   it("accepts POST with valid secret-token header and dispatches onUpdate", async () => {
     const port = freePort();
     const received: TelegramUpdate[] = [];

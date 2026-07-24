@@ -211,6 +211,20 @@ export type {
 // === Built-in transports ===
 export { webTransport } from "./transports/web-transport";
 export type { WebTransportOptions } from "./transports/web-transport";
+export { telegramTransport } from "./augments/telegramTransport";
+export type {
+  TelegramAdmittedAgent,
+  TelegramAnonymousIdentityMode,
+  TelegramAsyncReplayStore,
+  TelegramAuthOptions,
+  TelegramInboundMode,
+  TelegramPollingOptions,
+  TelegramReplayClaimOptions,
+  TelegramReplayOptions,
+  TelegramReplayStore,
+  TelegramTransportOptions,
+  TelegramWebhookOptions,
+} from "./types";
 
 // === Engines (model client adapters) ===
 // Engine factories live in per-provider packages so `auggy` core ships zero
