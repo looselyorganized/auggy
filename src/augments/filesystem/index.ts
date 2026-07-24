@@ -8,7 +8,7 @@ import {
   ftruncateSync,
   openSync,
   readSync,
-  writeFileSync,
+  writeSync,
 } from "node:fs";
 import { lstat, readFile, realpath } from "node:fs/promises";
 import { resolve, relative, extname, isAbsolute, sep, dirname, basename } from "node:path";
@@ -105,6 +105,7 @@ export interface FilesystemOptions {
   __testHooks?: {
     afterMountCanonicalized?: (canonicalPath: string) => Promise<void> | void;
     afterListTargetOpened?: () => Promise<void> | void;
+    afterWriteTargetOpened?: () => Promise<void> | void;
     afterSkillPolicyEvaluated?: () => Promise<void> | void;
   };
 }
@@ -849,10 +850,20 @@ export function filesystem(opts: FilesystemOptions): Augment {
         if (openedStats.nlink > 1) {
           throw new Error(`Path "${logicalPath}" has multiple filesystem links`);
         }
+        await opts.__testHooks?.afterWriteTargetOpened?.();
         throwIfCanceled(context);
         ftruncateSync(fd, 0);
         throwIfCanceled(context);
-        writeFileSync(fd, content, "utf8");
+        // Keep the mutation bound to the no-follow descriptor. Writing via
+        // the original path here would reintroduce a check/use race.
+        const encoded = Buffer.from(content, "utf8");
+        let offset = 0;
+        while (offset < encoded.byteLength) {
+          throwIfCanceled(context);
+          const written = writeSync(fd, encoded, offset, encoded.byteLength - offset);
+          if (written < 1) throw new Error(`Could not complete write to "${logicalPath}"`);
+          offset += written;
+        }
       } finally {
         if (fd !== null) closeSync(fd);
         closeAnchoredParent(target);

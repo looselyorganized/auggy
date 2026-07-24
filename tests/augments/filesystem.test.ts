@@ -594,6 +594,36 @@ describe("filesystem augment", () => {
       await expect(access(join(outsideRoot, "anchored.txt"))).rejects.toThrow();
     });
 
+    it("keeps a write pinned when the opened leaf path is replaced", async () => {
+      const target = join(tmp.path, "writable", "replace.txt");
+      const pinnedTarget = join(tmp.path, "writable", "replace-opened.txt");
+      const outside = join(tmp.path, "outside-write-target.txt");
+      await writeFile(target, "inside before", "utf8");
+      await writeFile(outside, "OUTSIDE_SENTINEL", "utf8");
+
+      let replaced = false;
+      const aug = filesystem({
+        mounts: [{ name: "work", path: join(tmp.path, "writable"), writable: true }],
+        __testHooks: {
+          async afterWriteTargetOpened() {
+            if (replaced) return;
+            replaced = true;
+            await rename(target, pinnedTarget);
+            await symlink(outside, target);
+          },
+        },
+      });
+
+      expect(
+        await execTool(aug, "fs_write", {
+          path: "work/replace.txt",
+          content: "descriptor-pinned",
+        }),
+      ).toContain("Written");
+      expect(await readFile(pinnedTarget, "utf8")).toBe("descriptor-pinned");
+      expect(await readFile(outside, "utf8")).toBe("OUTSIDE_SENTINEL");
+    });
+
     it("rejects an ordinary-directory replacement during root acquisition", async () => {
       const configuredParent = join(tmp.path, "acquire-configured");
       const originalParent = join(tmp.path, "acquire-original");
