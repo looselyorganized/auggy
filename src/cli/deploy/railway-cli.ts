@@ -82,7 +82,6 @@ interface RunOptions {
 interface RunOrThrowOptions {
   retryTransient?: boolean;
   acceptNonZero?: (result: { stdout: string; stderr: string; exitCode: number }) => boolean;
-  redactValues?: readonly string[];
 }
 
 export interface RailwayStatus {
@@ -134,25 +133,12 @@ const defaultSpawn: RailwaySpawnFactory = (cmd, opts = {}) => {
   };
 };
 
-function redactSensitiveText(value: string, sensitiveValues: readonly string[] = []): string {
-  let sanitized = value;
-  for (const sensitive of sensitiveValues) {
-    if (sensitive.length > 0) {
-      sanitized = sanitized.split(sensitive).join("[REDACTED]");
-    }
-  }
-  return sanitized;
-}
-
-function sensitiveCommandError(
+function commandError(
   args: readonly string[],
   result: { stderr: string; exitCode: number },
-  sensitiveValues: readonly string[] = [],
 ): Error {
-  const command = redactSensitiveText(args.join(" "), sensitiveValues);
-  const stderr = redactSensitiveText(result.stderr.trim(), sensitiveValues);
   return new Error(
-    `railway ${command} exited ${result.exitCode}${stderr.length > 0 ? `: ${stderr}` : ""}`,
+    `railway ${args.join(" ")} exited ${result.exitCode}${result.stderr.trim().length > 0 ? `: ${result.stderr.trim()}` : ""}`,
   );
 }
 
@@ -227,13 +213,7 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
     let lastResult: { stdout: string; stderr: string; exitCode: number } | null = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       let result: { stdout: string; stderr: string; exitCode: number };
-      try {
-        result = await runRailway(args, runOpts);
-      } catch (err) {
-        if (!options.redactValues?.length) throw err;
-        const message = err instanceof Error ? err.message : String(err);
-        throw new Error(redactSensitiveText(message, options.redactValues));
-      }
+      result = await runRailway(args, runOpts);
       lastResult = result;
       if (result.exitCode === 0 || options.acceptNonZero?.(result)) {
         return { stdout: result.stdout, stderr: result.stderr };
@@ -242,10 +222,10 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
         await sleep(retryDelayMs * attempt);
         continue;
       }
-      throw sensitiveCommandError(args, result, options.redactValues);
+      throw commandError(args, result);
     }
     const result = lastResult!;
-    throw sensitiveCommandError(args, result, options.redactValues);
+    throw commandError(args, result);
   }
 
   async function runInteractiveOrThrow(args: string[], runOpts: RunOptions = {}): Promise<void> {
@@ -349,25 +329,30 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
       if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
         throw new Error("Invalid Railway variable key.");
       }
-      try {
-        await runOrThrow(
-          ["variable", "set", key, "--stdin", "--skip-deploys"],
-          { cwd, stdin: value },
-          {
-            retryTransient: true,
-            redactValues: [value],
-          },
+      const args = ["variable", "set", key, "--stdin", "--skip-deploys"];
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        let result: { stdout: string; stderr: string; exitCode: number };
+        try {
+          result = await runRailway(args, { cwd, stdin: value });
+        } catch (error) {
+          if (error instanceof RailwayCliMissingError) throw error;
+          throw new Error(`Railway variable update for ${key} failed before completion.`);
+        }
+        if (result.exitCode === 0) return;
+
+        const transient = isTransientRailwayFailure(result.stdout, result.stderr);
+        if (transient && attempt < 3) {
+          await sleep(retryDelayMs * attempt);
+          continue;
+        }
+        if (transient) {
+          throw new Error(
+            `Railway variable update for ${key} has an unknown outcome after 3 attempts; deployment stopped.`,
+          );
+        }
+        throw new Error(
+          `Railway variable update for ${key} failed with exit code ${result.exitCode}.`,
         );
-      } catch (err) {
-        if (!isTransientRailwayFailure("", String((err as Error).message))) throw err;
-        const { stdout } = await runOrThrow(
-          ["variable", "list", "--json"],
-          { cwd },
-          {
-            retryTransient: true,
-          },
-        );
-        if (!variableListHasKey(stdout, key)) throw err;
       }
     },
 
@@ -593,29 +578,6 @@ function isAlreadyExistsFailure(stdout: string, stderr: string): boolean {
     "already mounted",
     "maximum of 1 railway provided domain",
   ].some((marker) => text.includes(marker));
-}
-
-function variableListHasKey(stdout: string, key: string): boolean {
-  try {
-    return jsonHasVariableKey(JSON.parse(stdout) as unknown, key);
-  } catch {
-    return stdout
-      .split(/\r?\n/)
-      .some((line) => line.trim() === key || line.trim().startsWith(`${key}=`));
-  }
-}
-
-function jsonHasVariableKey(value: unknown, key: string): boolean {
-  if (typeof value === "string") return value === key || value.startsWith(`${key}=`);
-  if (Array.isArray(value)) return value.some((item) => jsonHasVariableKey(item, key));
-  if (!value || typeof value !== "object") return false;
-
-  const record = value as Record<string, unknown>;
-  if (Object.hasOwn(record, key)) return true;
-  for (const field of ["key", "name", "variable"]) {
-    if (record[field] === key) return true;
-  }
-  return Object.values(record).some((item) => jsonHasVariableKey(item, key));
 }
 
 function extractDomainUrl(stdout: string): string | null {

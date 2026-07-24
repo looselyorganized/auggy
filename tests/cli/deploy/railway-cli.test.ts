@@ -353,11 +353,11 @@ describe("railway-cli", () => {
     expect(JSON.stringify(calls[0]!.env ?? {})).not.toContain(sentinel);
   });
 
-  test("setVariable redacts a value echoed by Railway from every diagnostic", async () => {
-    const sentinel = "GROUP9_RAILWAY_SECRET_DO_NOT_LOG";
+  test("setVariable returns stable diagnostics for transformed secret echoes", async () => {
+    const sentinel = "GROUP9_FIRST_LINE\nSECOND_LINE";
     const { factory } = mockSpawn(() => ({
-      stdout: `echoed ${sentinel}`,
-      stderr: `failed ${sentinel}`,
+      stdout: `echoed ${JSON.stringify(sentinel)}`,
+      stderr: "failed GROUP9_FIRST_LINE and truncated SECOND_",
       exitCode: 1,
     }));
     const cli = createRailwayCli({ spawn: factory });
@@ -366,12 +366,16 @@ describe("railway-cli", () => {
       .setVariable({ key: "ANTHROPIC_API_KEY", value: sentinel, cwd: "/tmp/staging" })
       .catch((cause) => cause);
 
-    expect(String(error)).not.toContain(sentinel);
-    expect(String(error)).toContain("[REDACTED]");
+    expect(String(error)).not.toContain("GROUP9_FIRST_LINE");
+    expect(String(error)).not.toContain("SECOND_LINE");
+    expect(String(error)).not.toContain("SECOND_");
+    expect(String(error)).toBe(
+      "Error: Railway variable update for ANTHROPIC_API_KEY failed with exit code 1.",
+    );
   });
 
-  test("setVariable redacts a value echoed by a synchronous spawn failure", async () => {
-    const sentinel = "GROUP9_RAILWAY_SPAWN_SECRET_DO_NOT_LOG";
+  test("setVariable suppresses raw synchronous spawn diagnostics", async () => {
+    const sentinel = "GROUP9_RAILWAY_SPAWN_SECRET_DO_NOT_LOG\nSECOND_LINE";
     const factory: RailwaySpawnFactory = () => {
       throw new Error(`spawn rejected ${sentinel}`);
     };
@@ -381,8 +385,11 @@ describe("railway-cli", () => {
       .setVariable({ key: "ANTHROPIC_API_KEY", value: sentinel, cwd: "/tmp/staging" })
       .catch((cause) => cause);
 
-    expect(String(error)).not.toContain(sentinel);
-    expect(String(error)).toContain("[REDACTED]");
+    expect(String(error)).not.toContain("GROUP9_RAILWAY");
+    expect(String(error)).not.toContain("SECOND_LINE");
+    expect(String(error)).toBe(
+      "Error: Railway variable update for ANTHROPIC_API_KEY failed before completion.",
+    );
   });
 
   test("setVariable rejects malformed keys before spawn", async () => {
@@ -421,43 +428,10 @@ describe("railway-cli", () => {
     expect(calls.every((call) => call.cmd[1] === "variable" && call.cmd[2] === "set")).toBe(true);
   });
 
-  test("setVariable verifies key presence after a persistent transient timeout", async () => {
-    const { factory, calls } = mockSpawn((args) => {
-      if (args[0] === "variable" && args[1] === "list") {
-        return {
-          stdout: JSON.stringify([{ name: "AUGGY_WEB_TOKEN" }]),
-          stderr: "",
-          exitCode: 0,
-        };
-      }
+  test("setVariable fails closed after persistent timeouts even when a key preexisted", async () => {
+    const { factory, calls } = mockSpawn(() => {
       return {
-        stdout: "",
-        stderr:
-          "Failed to fetch: error sending request for url (https://backboard.railway.com/graphql/v2)\n\nCaused by:\n    operation timed out\n",
-        exitCode: 1,
-      };
-    });
-    const cli = createRailwayCli({
-      spawn: factory,
-      retryDelayMs: 1,
-      sleep: async () => {},
-    });
-    await cli.setVariable({ key: "AUGGY_WEB_TOKEN", value: "tok-1", cwd: "/tmp/staging" });
-    expect(calls.map((call) => call.cmd)).toEqual([
-      ["railway", "variable", "set", "AUGGY_WEB_TOKEN", "--stdin", "--skip-deploys"],
-      ["railway", "variable", "set", "AUGGY_WEB_TOKEN", "--stdin", "--skip-deploys"],
-      ["railway", "variable", "set", "AUGGY_WEB_TOKEN", "--stdin", "--skip-deploys"],
-      ["railway", "variable", "list", "--json"],
-    ]);
-  });
-
-  test("setVariable throws after transient timeout when verification cannot find the key", async () => {
-    const { factory, calls } = mockSpawn((args) => {
-      if (args[0] === "variable" && args[1] === "list") {
-        return { stdout: JSON.stringify([{ name: "OTHER_KEY" }]), stderr: "", exitCode: 0 };
-      }
-      return {
-        stdout: "",
+        stdout: JSON.stringify([{ name: "AUGGY_WEB_TOKEN", value: "old-value" }]),
         stderr:
           "Failed to fetch: error sending request for url (https://backboard.railway.com/graphql/v2)\n\nCaused by:\n    operation timed out\n",
         exitCode: 1,
@@ -470,8 +444,9 @@ describe("railway-cli", () => {
     });
     await expect(
       cli.setVariable({ key: "AUGGY_WEB_TOKEN", value: "tok-1", cwd: "/tmp/staging" }),
-    ).rejects.toThrow(/operation timed out/);
-    expect(calls).toHaveLength(4);
+    ).rejects.toThrow(/unknown outcome after 3 attempts/);
+    expect(calls).toHaveLength(3);
+    expect(calls.every((call) => call.cmd[2] === "set")).toBe(true);
   });
 
   test("up runs `railway up --detach`", async () => {
