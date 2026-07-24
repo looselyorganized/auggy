@@ -2128,11 +2128,13 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
           );
         }
       }
-      if (
-        Number.isSafeInteger(scheduling.maxQueued) &&
-        Number.isSafeInteger(scheduling.maxQueuedPerThread) &&
-        (scheduling.maxQueuedPerThread as number) > (scheduling.maxQueued as number)
-      ) {
+      const effectiveMaxQueued = Number.isSafeInteger(scheduling.maxQueued)
+        ? (scheduling.maxQueued as number)
+        : 100;
+      const effectiveMaxQueuedPerThread = Number.isSafeInteger(scheduling.maxQueuedPerThread)
+        ? (scheduling.maxQueuedPerThread as number)
+        : Math.min(20, effectiveMaxQueued);
+      if (effectiveMaxQueuedPerThread > effectiveMaxQueued) {
         errors.push("settings.turnScheduling.maxQueuedPerThread: cannot exceed maxQueued");
       }
     }

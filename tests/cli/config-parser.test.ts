@@ -214,6 +214,18 @@ describe("parseConfig", () => {
       }),
     );
     expect(() => parseConfig(inconsistent)).toThrow(/cannot exceed maxQueued/);
+
+    const inconsistentWithDefault = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        settings: {
+          turnScheduling: {
+            maxQueuedPerThread: 101,
+          },
+        },
+      }),
+    );
+    expect(() => parseConfig(inconsistentWithDefault)).toThrow(/cannot exceed maxQueued/);
   });
 
   test("defaults settings to empty object when omitted", () => {

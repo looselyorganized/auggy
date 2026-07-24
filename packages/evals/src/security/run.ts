@@ -375,6 +375,7 @@ export async function bootAgent(configPath: string): Promise<{
     contextBudget: parsed.settings.contextBudget,
     compactionStrategy: parsed.settings.compactionStrategy,
     maxInferenceLoops: parsed.settings.maxInferenceLoops,
+    turnScheduling: parsed.settings.turnScheduling,
   };
 
   const agent = defineAgent(agentConfig, model);
