@@ -1331,7 +1331,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
   const idempotencyWaitersByKey = new Map<string, number>();
   const localIdempotencyExecutions = new Map<
     string,
-    { promise: Promise<void>; resolve: () => void }
+    { promise: Promise<void>; resolve: () => void; result?: IdempotencyClaim }
   >();
 
   function requireSecurityAudience(): string {
@@ -2260,6 +2260,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         ...(localExecution ? [localExecution.promise] : []),
         new Promise<void>((resolveWait) => setTimeout(resolveWait, backoffMs)),
       ]);
+      if (localExecution?.result) return localExecution.result;
       const current = store.read(keyHash, bindingHash);
       if (current.status !== "running") return current;
       backoffMs = Math.min(backoffMs * 2, 500);
@@ -2312,9 +2313,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
     localIdempotencyExecutions.set(keyHash, { promise, resolve });
   }
 
-  function finishLocalIdempotencyExecution(keyHash: string): void {
+  function finishLocalIdempotencyExecution(keyHash: string, result?: IdempotencyClaim): void {
     const execution = localIdempotencyExecutions.get(keyHash);
     if (!execution) return;
+    execution.result = result;
     localIdempotencyExecutions.delete(keyHash);
     execution.resolve();
   }
@@ -2923,6 +2925,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
         const toolCalls = new Map<string, ConsoleChatToolCall>();
         let persistenceFailure: unknown = null;
         let progressFlushTimer: ReturnType<typeof setTimeout> | null = null;
+        let schedulerExecutionStarted = false;
+        let localIdempotencyResult: IdempotencyClaim | undefined;
         const idempotencyHeartbeatTimer = durableIdempotency
           ? setInterval(
               () => {
@@ -3245,18 +3249,21 @@ export function webTransport(opts: WebTransportOptions): Augment {
             const result = await k.handleInbound(trigger, {
               onEvent,
               signal: executionSignal,
+              onExecutionStart: () => {
+                schedulerExecutionStarted = true;
+              },
               ...(runHistoryPersistence ? { historyPersistence: runHistoryPersistence } : {}),
             });
             if (result.status === "rejected") {
-              if (result.rejection && durableIdempotency) {
+              if (!schedulerExecutionStarted && result.rejection && durableIdempotency) {
                 // Scheduler rejection happens before persistence, inference,
                 // tools, delivery, or hooks. Do not turn temporary saturation
                 // into a durable replay that blocks a safe retry.
                 abandonUnstartedIdempotencyClaim = true;
               }
-              // Map errorClass to a structured code for SSE consumers.
-              // T5 will refine this to return 429/503 HTTP status before
-              // opening the stream (requires a synchronous gate-decision API).
+              // Map scheduler and turn-gate rejection to a stable SSE code.
+              // A future synchronous reservation API could return 429/503
+              // before opening the stream.
               let code: string;
               if (result.errorClass === "cap-denied") {
                 code = "CAP_DENIED";
@@ -3339,10 +3346,17 @@ export function webTransport(opts: WebTransportOptions): Augment {
             if (durableIdempotency) {
               try {
                 if (abandonUnstartedIdempotencyClaim) {
-                  durableIdempotency.store.abandon(
+                  const abandoned = durableIdempotency.store.abandon(
                     durableIdempotency.keyHash,
                     durableIdempotency.ownerToken,
                   );
+                  if (abandoned) {
+                    localIdempotencyResult = {
+                      status: "replay",
+                      turnId: publicRunId,
+                      responseBody: replayChunks.join(""),
+                    };
+                  }
                 } else if (replayOverflow) {
                   durableIdempotency.store.markUnknown(
                     durableIdempotency.keyHash,
@@ -3359,7 +3373,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 // Leave the durable running claim in place. Future attempts
                 // fail closed rather than risking duplicate execution.
               } finally {
-                finishLocalIdempotencyExecution(durableIdempotency.keyHash);
+                finishLocalIdempotencyExecution(durableIdempotency.keyHash, localIdempotencyResult);
               }
             }
             executionFinished = true;
