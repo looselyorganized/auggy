@@ -52,7 +52,7 @@ jobs:
 
       - name: Run deterministic v1 tests
         run: |
-          bun test \
+          bun test --max-concurrency=1 \
             tests/cli/create-installs-deps.test.ts \
             tests/cli/add-installs-deps.test.ts \
             tests/cli/commands/augment.test.ts \

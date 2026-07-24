@@ -83,7 +83,7 @@
   "private": false,
   "scripts": {
     "test": "bun run test:runtime && bun run test:admin",
-    "test:runtime": "bun test ./tests ./examples ./packages",
+    "test:runtime": "bun test --max-concurrency=1 ./tests ./examples ./packages",
     "test:admin": "bun run --cwd admin test",
     "test:watch": "bun test --watch ./tests ./examples ./packages",
     "dx:agent": "bash scripts/dx-lab-agent.sh",
