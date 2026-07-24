@@ -1,4 +1,4 @@
-import { lstatSync, readFileSync } from "node:fs";
+import { closeSync, constants, fstatSync, openSync, readSync } from "node:fs";
 
 const MAX_REQUEST_BYTES = 4096;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
@@ -62,6 +62,20 @@ export function validateSecurityEvalRequest(
   };
 }
 
+function readRequestFile(descriptor: number): string {
+  const buffer = Buffer.allocUnsafe(MAX_REQUEST_BYTES + 1);
+  let offset = 0;
+  while (offset < buffer.byteLength) {
+    const bytesRead = readSync(descriptor, buffer, offset, buffer.byteLength - offset, null);
+    if (bytesRead === 0) break;
+    offset += bytesRead;
+  }
+  if (offset > MAX_REQUEST_BYTES) {
+    invalid(`request file must be a regular file no larger than ${MAX_REQUEST_BYTES} bytes`);
+  }
+  return buffer.subarray(0, offset).toString("utf8");
+}
+
 function argument(name: string): string {
   const index = process.argv.indexOf(name);
   const value = index >= 0 ? process.argv[index + 1] : undefined;
@@ -71,14 +85,23 @@ function argument(name: string): string {
 
 function main(): void {
   const requestPath = argument("--request");
-  const metadata = lstatSync(requestPath);
-  if (!metadata.isFile() || metadata.isSymbolicLink() || metadata.size > MAX_REQUEST_BYTES) {
-    invalid(`request file must be a regular file no larger than ${MAX_REQUEST_BYTES} bytes`);
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(
+      requestPath,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    const metadata = fstatSync(descriptor);
+    if (!metadata.isFile() || metadata.size > MAX_REQUEST_BYTES) {
+      invalid(`request file must be a regular file no larger than ${MAX_REQUEST_BYTES} bytes`);
+    }
+    const validated = validateSecurityEvalRequest(readRequestFile(descriptor));
+    process.stdout.write(
+      `config_path=${validated.configPath}\nmodel=${validated.model}\nsource_sha=${validated.sourceSha}\n`,
+    );
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
   }
-  const validated = validateSecurityEvalRequest(readFileSync(requestPath, "utf8"));
-  process.stdout.write(
-    `config_path=${validated.configPath}\nmodel=${validated.model}\nsource_sha=${validated.sourceSha}\n`,
-  );
 }
 
 if (import.meta.main) {

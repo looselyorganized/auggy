@@ -582,6 +582,41 @@ describe("createOllamaEngine — ModelClient surface", () => {
   });
 });
 
+describe("createOllamaEngine — credential-safe errors", () => {
+  test("discards remote provider messages and causes on buffered requests", async () => {
+    const sentinel = "ollama-secret-sentinel";
+    throwOnChat = Object.assign(new Error(`upstream echoed ${sentinel}`), { status: 502 });
+    const engine = createOllamaEngine({
+      model: "llama3.2",
+      baseURL: "https://ollama.example.com",
+      apiKey: sentinel,
+    });
+
+    const error = await engine.complete(emptyPrompt()).catch((caught) => caught);
+    expect(String(error)).toContain("Ollama engine (llama3.2) request failed (HTTP 502)");
+    expect(String(error)).not.toContain(sentinel);
+    expect(Bun.inspect(error)).not.toContain(sentinel);
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  test("discards remote provider messages and causes on streaming requests", async () => {
+    const sentinel = "ollama-stream-secret-sentinel";
+    throwOnChat = new Error(`stream setup echoed ${sentinel}`);
+    const engine = createOllamaEngine({
+      model: "llama3.2",
+      baseURL: "https://ollama.example.com",
+      apiKey: sentinel,
+    });
+
+    const error = await engine
+      .complete(emptyPrompt(), { onDelta: () => {} })
+      .catch((caught) => caught);
+    expect(String(error)).toContain("Ollama engine (llama3.2) request failed.");
+    expect(Bun.inspect(error)).not.toContain(sentinel);
+    expect((error as Error).cause).toBeUndefined();
+  });
+});
+
 describe("createOllamaEngine — response limits", () => {
   test("injects the bounded transport into the SDK", () => {
     createOllamaEngine({ model: "llama3.2" });

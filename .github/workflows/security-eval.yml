@@ -1,8 +1,9 @@
 name: Trusted security eval
 
 # repository_dispatch workflows are loaded only from the default branch. The
-# caller supplies passive metadata; candidate branch workflow code, scripts,
-# dependencies, configs, and paths are never loaded or executed.
+# caller supplies passive metadata; candidate workflow code, scripts, and
+# dependencies are never loaded or executed. One fixed-path candidate fixture
+# is fetched as bounded passive data and must exactly match the trusted copy.
 
 on:
   repository_dispatch:
@@ -69,12 +70,53 @@ jobs:
             exit 1
           fi
 
+      - name: Fetch bounded candidate configuration as passive data
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          CONFIG_PATH: ${{ steps.request.outputs.config_path }}
+          CANDIDATE_CONFIG_PATH: ${{ runner.temp }}/security-eval-candidate.yaml
+        run: |
+          metadata="$(gh api "repos/${GITHUB_REPOSITORY}/contents/${CONFIG_PATH}?ref=${SOURCE_SHA}" \
+            --jq '[.type, .encoding, .size] | @tsv')"
+          IFS=$'\t' read -r object_type encoding size <<< "$metadata"
+          if [ "$object_type" != "file" ] || [ "$encoding" != "base64" ] \
+            || ! [[ "$size" =~ ^[0-9]+$ ]] || [ "$size" -gt 65536 ]; then
+            echo "::error::Candidate security-eval configuration is unavailable or exceeds 65536 bytes."
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/contents/${CONFIG_PATH}?ref=${SOURCE_SHA}" \
+            --jq '.content' \
+            | tr -d '\n' \
+            | base64 --decode \
+            > "$CANDIDATE_CONFIG_PATH"
+          if [ "$(wc -c < "$CANDIDATE_CONFIG_PATH")" -ne "$size" ]; then
+            echo "::error::Candidate security-eval configuration changed during retrieval."
+            exit 1
+          fi
+
+      - name: Verify candidate configuration with trusted code
+        id: candidate
+        env:
+          CANDIDATE_CONFIG_PATH: ${{ runner.temp }}/security-eval-candidate.yaml
+          CONFIG_PATH: ${{ steps.request.outputs.config_path }}
+          SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+        run: >-
+          bun run scripts/verify-security-eval-candidate.ts
+          --candidate "$CANDIDATE_CONFIG_PATH"
+          --trusted "$CONFIG_PATH"
+          --source-sha "$SOURCE_SHA"
+          >> "$GITHUB_OUTPUT"
+
       - name: Run trusted security eval
         env:
           # Configure this name only on the protected security-eval Environment.
           # Absence fails closed instead of falling back to the legacy repo secret.
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY_SECURITY_EVAL_ENV_ONLY }}
           CONFIG_PATH: ${{ steps.request.outputs.config_path }}
+          SECURITY_EVAL_SOURCE_SHA: ${{ steps.request.outputs.source_sha }}
+          SECURITY_EVAL_CONFIG_SHA256: ${{ steps.candidate.outputs.candidate_config_sha256 }}
+          SECURITY_EVAL_SCOPE: ${{ steps.candidate.outputs.evaluation_scope }}
         run: bun run packages/evals/src/security/run.ts --config "$CONFIG_PATH"
 
       - name: Upload results

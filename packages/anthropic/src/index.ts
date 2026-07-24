@@ -4,6 +4,7 @@ import { normalizeSchema } from "auggy/internal/schema-normalize";
 import { safeParseToolCall } from "auggy/internal/tool-call";
 import { assembleSystemBlocks } from "auggy/internal/prompt-assembly";
 import { assertSecureCredentialTransport } from "auggy/internal/credential-transport";
+import { providerRequestError } from "auggy/internal/provider-error";
 import {
   createBoundedModelFetch,
   findModelResponseLimitError,
@@ -287,7 +288,7 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
       } catch (err) {
         const responseLimitError = findModelResponseLimitError(err);
         if (responseLimitError) throw responseLimitError;
-        rewrapCostCapError(err);
+        rewrapProviderError(err, opts.model);
       }
     },
   };
@@ -296,7 +297,8 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
 /**
  * Anthropic SDK errors that indicate the operator's provider-side spend cap
  * has been reached get rewrapped with a clear, operator-actionable message.
- * Other errors are re-thrown unchanged.
+ * Other errors become stable provider diagnostics with allowlisted HTTP
+ * status metadata. Raw remote messages and causes are never retained.
  *
  * Per ADR-024, provider-side spend caps are the v1.0 hard limit on agent
  * spend. When they fire, Anthropic returns a 402 (Payment Required) or a
@@ -309,7 +311,7 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
  * than `instanceof Anthropic.APIError` — keeps the helper testable without
  * coupling to the SDK's class hierarchy.
  */
-function rewrapCostCapError(err: unknown): never {
+function rewrapProviderError(err: unknown, model: string): never {
   if (err && typeof err === "object" && "status" in err) {
     const status = (err as { status: unknown }).status;
     const message = String((err as { message?: unknown }).message ?? "");
@@ -323,12 +325,11 @@ function rewrapCostCapError(err: unknown): never {
       throw new Error(
         `Anthropic provider spend cap reached (HTTP ${String(status)}). ` +
           `Increase the cap or wait for reset in your Anthropic console at ` +
-          `https://console.anthropic.com/settings/limits. ` +
-          `(Original error: ${message})`,
+          "https://console.anthropic.com/settings/limits.",
       );
     }
   }
-  throw err;
+  throw providerRequestError("Anthropic", model, err);
 }
 
 // === AssembledPrompt → Anthropic request translation ===

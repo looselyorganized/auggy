@@ -9,6 +9,7 @@ import {
 } from "@auggy/openai";
 import { resolveSlug, priceOpenRouterResponse } from "auggy/internal/openrouter-pricing";
 import { warnCacheRatesIgnored } from "auggy/internal/cost";
+import { providerRequestError } from "auggy/internal/provider-error";
 import {
   createBoundedModelFetch,
   findModelResponseLimitError,
@@ -411,11 +412,7 @@ export function createOpenRouterEngine(opts: OpenRouterEngineOptions): ModelClie
       } catch (err) {
         const responseLimitError = findModelResponseLimitError(err);
         if (responseLimitError) throw responseLimitError;
-        // Wrap with provider+model context. Without this, an OpenRouter
-        // upstream error (e.g. provider 502) reads identically to an
-        // OpenAI direct-call error in logs.
-        const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(`OpenRouter engine (${opts.model}) failed: ${msg}`, { cause: err });
+        throw providerRequestError("OpenRouter", opts.model, err);
       }
       const usage = parseOpenAIUsage(
         isProviderRecord(completion) ? completion.usage : undefined,

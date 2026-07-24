@@ -154,6 +154,10 @@ NODE
     bun add --offline --no-summary "$adapter_tarball" "$@"
     bun -e '
       const [packageName, factoryName] = process.argv.slice(1);
+      const core = await import("auggy");
+      if (typeof core.defineAgent !== "function") {
+        throw new Error("packed Auggy core does not export defineAgent");
+      }
       const provider = await import(packageName);
       if (typeof provider[factoryName] !== "function") {
         throw new Error(`${packageName} does not export ${factoryName}`);
@@ -169,8 +173,9 @@ NODE
         "fast-uri": "3.1.4",
         hono: "4.12.31",
       };
+      const coreDirectory = dirname(Bun.resolveSync("auggy", process.cwd()));
       for (const [name, version] of Object.entries(expected)) {
-        let directory = dirname(Bun.resolveSync(name, process.cwd()));
+        let directory = dirname(Bun.resolveSync(name, coreDirectory));
         let manifest;
         for (let depth = 0; depth < 8; depth += 1) {
           const candidate = join(directory, "package.json");
@@ -188,6 +193,12 @@ NODE
             `${name} resolved to ${manifest?.version ?? "unknown"}, expected ${version}`,
           );
         }
+      }
+    '
+    bun audit --json | node -e '
+      const result = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+      if (Object.keys(result).length !== 0) {
+        throw new Error(`packed consumer has advisories: ${Object.keys(result).join(", ")}`);
       }
     '
   ) >"$LOG_DIR/provider-$slug.log" 2>&1 \
@@ -356,6 +367,17 @@ info "install agent dependencies"
 (
   cd "$AGENT_DIR"
   bun install
+)
+
+info "audit installed agent"
+(
+  cd "$AGENT_DIR"
+  bun audit --json | node -e '
+    const result = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+    if (Object.keys(result).length !== 0) {
+      throw new Error(`generated agent has advisories: ${Object.keys(result).join(", ")}`);
+    }
+  '
 )
 
 info "fill smoke env"

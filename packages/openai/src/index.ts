@@ -5,6 +5,7 @@ import { safeParseToolCall } from "auggy/internal/tool-call";
 import { assembleSystemBlocks } from "auggy/internal/prompt-assembly";
 import { warnCacheRatesIgnored } from "auggy/internal/cost";
 import { assertSecureCredentialTransport } from "auggy/internal/credential-transport";
+import { providerRequestError } from "auggy/internal/provider-error";
 import {
   createBoundedModelFetch,
   findModelResponseLimitError,
@@ -180,13 +181,7 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
       } catch (err) {
         const responseLimitError = findModelResponseLimitError(err);
         if (responseLimitError) throw responseLimitError;
-        // Wrap the SDK error so logs identify which engine + model failed,
-        // not just "OpenAIError: 429". `cause` preserves the original SDK
-        // error (including `.status`) for callers that introspect.
-        const msg = err instanceof Error ? err.message : String(err);
-        throw new Error(`OpenAI engine (${opts.model}) failed: ${msg}`, {
-          cause: err,
-        });
+        throw providerRequestError("OpenAI", opts.model, err);
       }
       const usage = parseOpenAIUsage(
         isProviderRecord(completion) ? completion.usage : undefined,

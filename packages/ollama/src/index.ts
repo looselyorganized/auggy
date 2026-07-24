@@ -1,8 +1,9 @@
-import { Ollama, type ChatRequest, type ChatResponse, type Message as OllamaMessage, type Tool as OllamaTool, type Options as OllamaOptions } from "ollama";
+import { Ollama, type AbortableAsyncIterator, type ChatRequest, type ChatResponse, type Message as OllamaMessage, type Tool as OllamaTool, type Options as OllamaOptions } from "ollama";
 import { normalizeSchema } from "auggy/internal/schema-normalize";
 import { safeParseToolCall } from "auggy/internal/tool-call";
 import { assembleSystemBlocks } from "auggy/internal/prompt-assembly";
 import { assertSecureCredentialTransport } from "auggy/internal/credential-transport";
+import { providerRequestError } from "auggy/internal/provider-error";
 import {
   createBoundedModelFetch,
   ModelResponseLimitError,
@@ -166,7 +167,15 @@ export function createOllamaEngine(opts: OllamaEngineOptions): ModelClient {
         // chunk that does NOT repeat tool_calls. We must accumulate
         // tool_calls across all chunks — relying on the last chunk loses
         // them entirely (silent empty turn, model output discarded).
-        const stream = await client.chat({ ...baseRequest, stream: true });
+        let stream: AbortableAsyncIterator<ChatResponse>;
+        try {
+          stream = await client.chat({ ...baseRequest, stream: true });
+        } catch (error) {
+          if (opts2.signal?.aborted) {
+            throw opts2.signal.reason ?? new DOMException("Operation aborted", "AbortError");
+          }
+          throw providerRequestError("Ollama", opts.model, error);
+        }
         const abortStream = () => stream.abort();
         opts2.signal?.addEventListener("abort", abortStream, { once: true });
         if (opts2.signal?.aborted) {
@@ -220,11 +229,19 @@ export function createOllamaEngine(opts: OllamaEngineOptions): ModelClient {
             }
           }
         } catch (error) {
-          stream.abort();
+          try {
+            stream.abort();
+          } catch {
+            // Cleanup failures must not replace the stable terminal error.
+          }
           if (error instanceof ModelResponseLimitError && lastChunk) {
             throw error.withAccounting(ollamaAccounting(lastChunk));
           }
-          throw error;
+          if (error instanceof ModelResponseLimitError) throw error;
+          if (opts2.signal?.aborted) {
+            throw opts2.signal.reason ?? new DOMException("Operation aborted", "AbortError");
+          }
+          throw providerRequestError("Ollama", opts.model, error);
         } finally {
           opts2.signal?.removeEventListener("abort", abortStream);
         }
@@ -247,7 +264,12 @@ export function createOllamaEngine(opts: OllamaEngineOptions): ModelClient {
       // Non-streaming path (buffered; for tests / consumers that don't
       // need streaming). Tool calls come back in response.message.tool_calls
       // directly — no accumulation needed.
-      const response = await client.chat({ ...baseRequest, stream: false });
+      let response: ChatResponse;
+      try {
+        response = await client.chat({ ...baseRequest, stream: false });
+      } catch (error) {
+        throw providerRequestError("Ollama", opts.model, error);
+      }
       try {
         if (!isProviderRecord(response)) {
           throw new ModelResponseLimitError("maxResponseBytes");

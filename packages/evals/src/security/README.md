@@ -119,8 +119,22 @@ The fixture at `fixtures/test-agent.yaml` is the canonical "any Auggy agent" tar
 repository-dispatch workflows from the default branch, so candidate workflow
 code is never selected. The trusted workflow bounds and schema-validates the
 passive payload, verifies that its SHA identifies a repository commit, maps the
-model enum to a fixed default-branch fixture, and runs only the default-branch
-harness. Results are retained for 30 days.
+model enum to a fixed default-branch fixture, retrieves that same fixed-path
+fixture from the requested commit as bounded passive data, and requires it to
+match the trusted fixture byte-for-byte. It then runs only the default-branch
+harness. Every JSONL row records the requested source SHA, verified
+configuration digest, trusted harness commit, and the explicit
+`trusted-harness-candidate-config` scope. Results are retained for 30 days.
+The harness commit is the full Git object ID. Raw provider, transport, and
+judge errors are never written to JSONL; artifacts contain stable failure
+labels so an upstream that echoes a credential cannot persist it.
+
+This paid workflow evaluates the requested commit's fixture configuration with
+trusted runtime code; it does not claim to execute or behaviorally validate
+candidate runtime code. Ordinary untrusted CI must test candidate code without
+the paid credential. If the candidate fixture changes, the paid workflow fails
+closed until that configuration is reviewed into the trusted default-branch
+fixture.
 
 Secret: `ANTHROPIC_API_KEY_SECURITY_EVAL_ENV_ONLY` — a dedicated, scoped key
 stored only in the protected `security-eval` GitHub Environment. Distinct from

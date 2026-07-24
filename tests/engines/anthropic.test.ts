@@ -615,19 +615,23 @@ describe("createAnthropicEngine — provider cost-cap error rewrap", () => {
     );
   });
 
-  it("preserves the original SDK message in parentheses", async () => {
+  it("does not retain a provider-echoed credential in cost-cap errors", async () => {
     const engine = createAnthropicEngine({
-      apiKey: "test-key",
+      apiKey: "anthropic-secret-sentinel",
       model: "claude-sonnet-4-6",
     });
-    nextAnthropicError = { status: 402, message: "Payment required: insufficient credit balance" };
+    nextAnthropicError = {
+      status: 402,
+      message: "Payment required: anthropic-secret-sentinel",
+    };
 
-    await expect(engine.complete(emptyPrompt())).rejects.toThrow(
-      /Original error: Payment required: insufficient credit balance/,
-    );
+    const error = await engine.complete(emptyPrompt()).catch((caught) => caught);
+    expect(String(error)).not.toContain("anthropic-secret-sentinel");
+    expect(Bun.inspect(error)).not.toContain("anthropic-secret-sentinel");
+    expect((error as Error).cause).toBeUndefined();
   });
 
-  it("passes 429 without cap-related text through unchanged (true rate limit, not cap)", async () => {
+  it("sanitizes non-cap 429 provider errors", async () => {
     const engine = createAnthropicEngine({
       apiKey: "test-key",
       model: "claude-sonnet-4-6",
@@ -637,24 +641,25 @@ describe("createAnthropicEngine — provider cost-cap error rewrap", () => {
       message: "Too many concurrent requests, please retry.",
     };
 
-    await expect(engine.complete(emptyPrompt())).rejects.toThrow(/Too many concurrent requests/);
-    // Importantly should NOT include the rewrapped console pointer (literal
-    // substring match, no regex — CodeQL flagged the unanchored regex form).
-    await expect(engine.complete(emptyPrompt())).rejects.not.toThrow("console.anthropic.com");
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(
+      /Anthropic engine .* request failed \(HTTP 429\)/,
+    );
+    await expect(engine.complete(emptyPrompt())).rejects.not.toThrow(/Too many concurrent/);
   });
 
-  it("passes 500 server errors through unchanged", async () => {
+  it("sanitizes 500 server errors", async () => {
     const engine = createAnthropicEngine({
       apiKey: "test-key",
       model: "claude-sonnet-4-6",
     });
     nextAnthropicError = { status: 500, message: "Internal server error" };
 
-    await expect(engine.complete(emptyPrompt())).rejects.toThrow(/Internal server error/);
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(/request failed \(HTTP 500\)/);
+    await expect(engine.complete(emptyPrompt())).rejects.not.toThrow(/Internal server error/);
     await expect(engine.complete(emptyPrompt())).rejects.not.toThrow(/provider spend cap/);
   });
 
-  it("passes errors without a status field through unchanged", async () => {
+  it("sanitizes errors without a status field", async () => {
     const engine = createAnthropicEngine({
       apiKey: "test-key",
       model: "claude-sonnet-4-6",
@@ -663,7 +668,10 @@ describe("createAnthropicEngine — provider cost-cap error rewrap", () => {
     const original = new Error("unexpected JSON parse error");
     nextAnthropicError = original as unknown as { status: number; message: string };
 
-    await expect(engine.complete(emptyPrompt())).rejects.toThrow(/unexpected JSON parse error/);
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(
+      /Anthropic engine .* request failed/,
+    );
+    await expect(engine.complete(emptyPrompt())).rejects.not.toThrow(/unexpected JSON parse error/);
   });
 });
 

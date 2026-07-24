@@ -404,15 +404,15 @@ describe("createOpenRouterEngine — SDK call payload", () => {
     expect(lastCreateArgs?.stream).toBeUndefined();
   });
 
-  test("propagates SDK errors wrapped with engine + model context", async () => {
+  test("wraps SDK errors with stable engine + model context", async () => {
     throwOnCreate = new Error("upstream provider down");
     const engine = createOpenRouterEngine({ model: "qwen/qwen3.5-397b-a17b" });
     await expect(
       engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] })),
-    ).rejects.toThrow("OpenRouter engine (qwen/qwen3.5-397b-a17b) failed: upstream provider down");
+    ).rejects.toThrow("OpenRouter engine (qwen/qwen3.5-397b-a17b) request failed.");
   });
 
-  test("preserves original SDK error as `cause`", async () => {
+  test("discards the original SDK error cause", async () => {
     const original = new Error("502 bad gateway");
     throwOnCreate = original;
     const engine = createOpenRouterEngine({ model: "qwen/qwen3.5-397b-a17b" });
@@ -420,7 +420,8 @@ describe("createOpenRouterEngine — SDK call payload", () => {
       await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
       throw new Error("should have thrown");
     } catch (err) {
-      expect((err as Error & { cause?: unknown }).cause).toBe(original);
+      expect((err as Error & { cause?: unknown }).cause).toBeUndefined();
+      expect(Bun.inspect(err)).not.toContain(original.message);
     }
   });
 
@@ -614,6 +615,25 @@ describe("createOpenRouterEngine — costUsd", () => {
       expect(result.inputTokens).toBe(0);
       expect(result.outputTokens).toBe(0);
     }
+  });
+});
+
+describe("createOpenRouterEngine — credential-safe errors", () => {
+  test("discards provider-echoed credentials from messages and causes", async () => {
+    const sentinel = "openrouter-secret-sentinel";
+    throwOnCreate = Object.assign(new Error(`upstream echoed ${sentinel}`), { status: 403 });
+    const engine = createOpenRouterEngine({
+      apiKey: sentinel,
+      model: "qwen/qwen3.5-397b-a17b",
+    });
+
+    const error = await engine.complete(emptyPrompt()).catch((caught) => caught);
+    expect(String(error)).toContain("OpenRouter engine");
+    expect(String(error)).toContain("HTTP 403");
+    expect(String(error)).not.toContain(sentinel);
+    expect(Bun.inspect(error)).not.toContain(sentinel);
+    expect((error as Error).cause).toBeUndefined();
+    expect((error as { status?: number }).status).toBe(403);
   });
 });
 

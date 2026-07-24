@@ -642,15 +642,15 @@ describe("createOpenAIEngine — SDK call payload", () => {
     expect(tools).toHaveLength(1);
   });
 
-  test("propagates SDK errors wrapped with engine + model context", async () => {
+  test("wraps SDK errors with stable engine + model context", async () => {
     throwOnCreate = new Error("rate limited");
     const engine = createOpenAIEngine({ model: "gpt-5" });
     await expect(
       engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] })),
-    ).rejects.toThrow("OpenAI engine (gpt-5) failed: rate limited");
+    ).rejects.toThrow("OpenAI engine (gpt-5) request failed.");
   });
 
-  test("preserves original SDK error as `cause`", async () => {
+  test("discards the original SDK error cause", async () => {
     const original = new Error("503 service unavailable");
     throwOnCreate = original;
     const engine = createOpenAIEngine({ model: "o3" });
@@ -659,7 +659,8 @@ describe("createOpenAIEngine — SDK call payload", () => {
       throw new Error("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
-      expect((err as Error & { cause?: unknown }).cause).toBe(original);
+      expect((err as Error & { cause?: unknown }).cause).toBeUndefined();
+      expect(Bun.inspect(err)).not.toContain(original.message);
     }
   });
 
@@ -788,6 +789,24 @@ describe("createOpenAIEngine — costUsd", () => {
       expect(result.inputTokens).toBe(0);
       expect(result.outputTokens).toBe(0);
     }
+  });
+});
+
+describe("createOpenAIEngine — credential-safe errors", () => {
+  test("discards provider-echoed credentials from messages and causes", async () => {
+    const sentinel = "openai-secret-sentinel";
+    throwOnCreate = Object.assign(new Error(`upstream echoed ${sentinel}`), { status: 401 });
+    const engine = createOpenAIEngine({
+      apiKey: sentinel,
+      model: "gpt-5",
+    });
+
+    const error = await engine.complete(emptyPrompt()).catch((caught) => caught);
+    expect(String(error)).toContain("OpenAI engine (gpt-5) request failed (HTTP 401)");
+    expect(String(error)).not.toContain(sentinel);
+    expect(Bun.inspect(error)).not.toContain(sentinel);
+    expect((error as Error).cause).toBeUndefined();
+    expect((error as { status?: number }).status).toBe(401);
   });
 });
 

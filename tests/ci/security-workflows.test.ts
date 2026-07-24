@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { validateSecurityEvalRequest } from "../../scripts/validate-security-eval-request";
+import { verifySecurityEvalCandidate } from "../../scripts/verify-security-eval-candidate";
 
 const ROOT = join(import.meta.dir, "..", "..");
 
@@ -22,6 +23,9 @@ describe("security evaluation workflow trust boundary", () => {
     expect(source).toContain("toJson(github.event.client_payload)");
     expect(source).toContain("head -c 4097");
     expect(source).toContain("commits/${SOURCE_SHA}");
+    expect(source).toContain("contents/${CONFIG_PATH}?ref=${SOURCE_SHA}");
+    expect(source).toContain("verify-security-eval-candidate.ts");
+    expect(source).toContain("SECURITY_EVAL_SOURCE_SHA");
     expect(source).toContain("environment: security-eval");
     expect(source).toContain("secrets.ANTHROPIC_API_KEY_SECURITY_EVAL_ENV_ONLY");
     expect(source).not.toContain("secrets.ANTHROPIC_API_KEY_SECURITY_EVAL }}");
@@ -60,6 +64,29 @@ describe("security evaluation workflow trust boundary", () => {
       expect(() => validateSecurityEvalRequest(JSON.stringify(request), expectedSha)).toThrow();
     }
     expect(() => validateSecurityEvalRequest("x".repeat(4097), expectedSha)).toThrow(/4096/);
+  });
+
+  test("trusted candidate ingestion accepts only the exact bounded passive fixture", () => {
+    const sourceSha = "d".repeat(40);
+    const trusted = Buffer.from("name: trusted\n", "utf8");
+    expect(
+      verifySecurityEvalCandidate({
+        candidate: Buffer.from(trusted),
+        trusted,
+        sourceSha,
+      }),
+    ).toEqual({
+      sourceSha,
+      configSha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+      scope: "trusted-harness-candidate-config",
+    });
+    expect(() =>
+      verifySecurityEvalCandidate({
+        candidate: Buffer.from("name: attacker\n"),
+        trusted,
+        sourceSha,
+      }),
+    ).toThrow(/never executes candidate-controlled configuration/);
   });
 });
 

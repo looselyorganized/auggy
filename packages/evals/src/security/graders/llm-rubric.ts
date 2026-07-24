@@ -66,11 +66,11 @@ export const llmRubric: Grader = async (
   let grades: Record<string, DimensionGrade>;
   try {
     grades = await callJudge(judgePrompt, spec.dimensions);
-  } catch (err) {
+  } catch {
     return {
       type: "llm_rubric",
       passed: false,
-      reason: `LLM judge call failed: ${(err as Error).message}`,
+      reason: "LLM judge call failed.",
     };
   }
 

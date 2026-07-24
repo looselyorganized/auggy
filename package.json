@@ -45,6 +45,7 @@
     "./internal/prompt-assembly": "./src/engines/_shared/prompt-assembly.ts",
     "./internal/response-limits": "./src/engines/_shared/response-limits.ts",
     "./internal/credential-transport": "./src/engines/_shared/credential-transport.ts",
+    "./internal/provider-error": "./src/engines/_shared/provider-error.ts",
     "./internal/anthropic-pricing": "./src/engines/anthropic/pricing.ts",
     "./internal/openai-pricing": "./src/engines/openai/pricing.ts",
     "./internal/openrouter-pricing": "./src/engines/openrouter/pricing.ts",
