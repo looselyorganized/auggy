@@ -171,6 +171,11 @@ replaceable path. The implementation was nevertheless rewritten as an explicit
 bounded `writeSync` loop, with a deterministic rename-and-symlink replacement
 test, so both the invariant and analyzer intent are unambiguous.
 
+A later CodeQL pass surfaced an unrelated pre-existing test fixture that joined
+a random name under the shared operating-system temporary directory. It was not
+runtime-reachable, but the report was true for the test code; the fixture now
+uses atomic `mkdtempSync` creation and removes the directory after use.
+
 Final hostile-review results:
 
 - identity and anonymous admission: 186 focused tests passed, no unresolved
