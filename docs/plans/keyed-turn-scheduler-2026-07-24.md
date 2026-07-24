@@ -176,7 +176,9 @@ hook. A different-thread injection or an injection after the lease is revoked
 uses normal admission.
 
 Causal depth is finite. A misbehaving recursive hook is rejected rather than
-growing the stack or bypassing queue bounds indefinitely.
+growing the stack or bypassing queue bounds indefinitely. A parent lease also
+admits only one direct causal child at a time; overlapping siblings fail closed
+instead of running same-thread history concurrently.
 
 ### Outcome-unknown quarantine
 
@@ -323,7 +325,7 @@ Confirmed High or Medium findings will be fixed and the review repeated.
 Run, at minimum:
 
 ```text
-bun test tests/kernel/turn-scheduler.test.ts
+bun test tests/kernel/keyed-turn-scheduler.test.ts
 bun test tests/kernel/agent-scheduler.test.ts
 bun test tests/kernel/thread-history-persistence.test.ts
 bun test tests/kernel/schedule-after-turn.test.ts

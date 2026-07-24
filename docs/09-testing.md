@@ -247,11 +247,12 @@ expect(first.status).toBe(200);
 const second = await runOnce();
 expect(second.status).toBe(200);              // ← still 200 (SSE)
 const events = parseSseFrames(await second.text());
-expect(events).toContain({ type: "RUN_ERROR", code: "REJECTED" });
+expect(events).toContain({ type: "RUN_ERROR", code: "SCHEDULER_RATE_LIMITED" });
 expect(events).toContain({ type: "RUN_FINISHED" });
 ```
 
-This proves that queue rejections produce visible terminal events instead of an empty 200 response. Was added after the P1 review finding ("Propagate transport-queue rejections to the SSE response").
+This proves that scheduler rejections produce visible terminal events instead
+of an empty 200 response.
 
 ## Test counts
 

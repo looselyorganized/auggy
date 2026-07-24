@@ -83,14 +83,22 @@ This section walks through the 12 influences listed in §15 of the design spec, 
 **What Auggy took:**
 - **The kernel-as-OS framing itself.** The decision to describe Auggy's kernel in terms of classic OS concerns (turn loop, context allocator, capability table, lifecycle manager) rather than agent-framework concerns (planner, memory store, retriever) comes from this framing.
 - **Context as a budgeted resource.** `src/kernel/context-allocator.ts` treats the model's context window as a finite budget with explicit percentage allocations: history (default 40%), tool schemas (default 10%), augment context (remainder). Blocks are sorted by priority and evicted when over budget.
-- **Admission control via transport queue.** `src/kernel/transport-queue.ts` implements the "too many pending turns → reject" pattern AgentRM identifies as critical for avoiding scheduling collapse.
+- **Bounded keyed admission.** `src/kernel/keyed-turn-scheduler.ts` implements
+  finite agent/source/thread admission, fair runnable-thread selection,
+  queued cancellation, and graceful drain.
 
 **What we did NOT take:**
-- **MLFQ scheduling.** v1 uses a single FIFO transport queue per transport. MLFQ would matter if one kernel hosted many competing agents sharing scheduling priority, which we don't.
+- **MLFQ scheduling.** Auggy uses per-thread FIFO with round-robin fairness
+  across runnable threads. It does not assign workload priority classes.
 - **Zombie reaping.** We don't have the "zombie" failure mode because our turns complete within a single HTTP request — no orphan state.
 
 **The specific claim an operator can quote:**
-> "We built Auggy's transport queue with explicit concurrency and depth limits because AgentRM (arXiv:2603.13110) analyzed 40,000+ GitHub issues across six frameworks — including OpenClaw — and identified scheduling collapses (zombie processes, rate-limit cascades) as one of two root causes of production agent failures. Their MLFQ-based fix reduced P95 latency by 86%. We implement the simpler admission-control version of the same principle."
+> "We built Auggy's agent-wide keyed scheduler with explicit global, source,
+> and thread limits because AgentRM (arXiv:2603.13110) analyzed 40,000+ GitHub
+> issues across six frameworks—including OpenClaw—and identified scheduling
+> collapse as one of two root causes of production agent failures. Their
+> MLFQ-based fix reduced P95 latency by 86%; Auggy implements bounded,
+> conversation-fair admission for its single-process workload."
 
 ---
 
@@ -311,7 +319,9 @@ This section walks through the 12 influences listed in §15 of the design spec, 
 
 **What Auggy took:**
 - **Per-augment tool call accounting.** `capability-table.ts` maintains per-augment counters and enforces `maxToolCallsPerTurn` per augment, not just globally. This is cgroup-style hierarchical resource management — the augment is the "group," tools are the processes, the counter is the limit.
-- **Rate limit per peer.** The transport queue's `rateLimitPerPeer: { maxPerMinute: N }` is a cgroup-style policy applied at the transport layer.
+- **Rate limit per peer.** A transport source's
+  `rateLimitPerPeer: { maxPerMinute: N }` is enforced inside the shared keyed
+  scheduler.
 - **Global + per-augment limit stacking.** If the global limit is 20 and augment A's limit is 5, augment A can only make 5 calls regardless of global budget. This is cgroup's "most-restrictive-wins" rule.
 - **Intent-driven resource declaration.** Augments declare their constraints in the augment interface — the kernel enforces them structurally. This is exactly AgentCgroup's "agents declare, kernel enforces" pattern.
 
@@ -628,7 +638,8 @@ The journal listed several items under "pro-modularity" or "kernel patterns" wit
 - **Governance as a first-class concern.** `AugmentConstraints` are structural governance (not policy documents).
 
 **What we did NOT take:**
-- **Real-time latency classes (HRT/SRT/DT).** Our transport queue doesn't distinguish latency tiers. All turns are delay-tolerant in our model.
+- **Real-time latency classes (HRT/SRT/DT).** The keyed scheduler does not
+  distinguish latency tiers. All turns use the same conversation-fair class.
 
 **The specific claim an operator can quote:**
 > "Auggy treats capability governance as a structural, kernel-level concern (capability table + trust levels + peer-derived markers) because Koubaa's *Blueprint Architecture* (TechRxiv preprint, September 2025) argues that 'today's agent architectures resemble the pre-OS era of computing — a chaos of duplicated solutions lacking fundamental abstractions for resource management, isolation, and coordination' and that **security and governance must be 'baked into the kernel, not bolted on.'** Auggy's structural security isn't a late addition — it was present in the augment interface from day one."

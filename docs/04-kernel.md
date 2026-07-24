@@ -377,7 +377,17 @@ createHistoryManager({ threadId }) → {
 
 The result is `messages.slice(startIndex)` — the kept slice in original order.
 
-**`compact(budget, strategy)`** is called by the agent's `dispatchOutbound` after every turn. The threshold is `0.8 * budget` — compaction only kicks in when history is over 80% of the budget. Three strategies:
+The turn loop keeps at most 500 ordinary resident thread managers. Active
+turns reference-count pin their exact manager across execution, durable
+commit, outbound, and transcript-consuming hooks. LRU eviction skips pinned
+entries; if all candidates are active, the cache may temporarily exceed the
+limit and trims after unpin. A requested forget is likewise deferred until the
+last pin releases. Active state is never replaced by an empty manager.
+
+**`compact(budget, strategy)`** is called after turn execution and before the
+durable history commit and outbound delivery. The threshold is `0.8 * budget`
+— compaction only kicks in when history is over 80% of the budget. Three
+strategies:
 - `"truncate"` (and `"summarize"`, treated identically in v1) — drop oldest messages until under threshold, respecting atomic tool pairs.
 - `"sliding-window"` — keep newest messages that fit within threshold, dropping the rest.
 
@@ -406,29 +416,60 @@ createLifecycleManager({ name, augments, model? }) → {
 
 **Idle timer:** the agent is supposed to call `lifecycle.resetIdleTimer()` after every turn (which `agent.ts` does in both `inject()` and the transport handler). The default interval is 5 minutes. When the timer fires, every augment with an `onIdle` hook runs. This is reserved for future use — memory consolidators, background indexers, etc.
 
-**`health()`** reports the agent's status: `healthy` if everything's ok, `degraded` if any augment is degraded, `unhealthy` if any augment failed to boot or the model is unreachable. The model reachability check is a `model.countTokens("health check")` call — if it throws, the model is considered unreachable. (This is intentionally cheap and only catches "the model client is fundamentally broken," not "the API is having a bad day.")
+**`health()`** reports lifecycle status; `AgentHandle.health()` adds the keyed
+scheduler snapshot. The snapshot contains aggregate state, gauges, counters
+that are monotonic within one start/stop lifecycle, and oldest wait only—never
+thread IDs, peer IDs, or prompt content.
 
-### `src/kernel/transport-queue.ts` — Per-transport queue
+### `src/kernel/keyed-turn-scheduler.ts` — Agent-wide turn admission
 
-Each transport gets its own queue. Constructed in `agent.ts` `start()`:
+`defineAgent` constructs exactly one scheduler. Transports register a trusted
+source policy, and every transport plus `AgentHandle.inject()` submits work to
+the same process-local boundary.
 
-```ts
-const queue = createTransportQueue({
-  concurrency: aug.transport.concurrency ?? 1,
-  maxQueueDepth: aug.transport.maxQueueDepth ?? 50,
-  rateLimitPerPeer: aug.transport.rateLimitPerPeer,
-});
-```
+The scheduler combines:
 
-The queue has one method: `enqueue(trigger, handler)`. The handler is `(trigger) → Promise<TurnResult>` — it's the function that actually runs the turn loop. The queue wraps it with:
+- an agent-wide active cap;
+- one FIFO per resolved `threadId`;
+- a global waiting cap and a per-thread waiting cap;
+- each source's `concurrency`, `maxQueueDepth`, and peer rate limit;
+- round-robin selection across runnable thread keys;
+- queued cancellation;
+- accepting, draining, and stopped lifecycle states;
+- fail-closed thread quarantine and trusted recovery;
+- aggregate, privacy-safe health counters.
 
-1. **Rate limit check.** If `rateLimitPerPeer.maxPerMinute` is set and the peer has made that many requests in the last 60 seconds, return immediately with `status: "rejected"` and `errorResponse: "Rate limit exceeded..."`. The peer's request count is tracked in a `Map<peerId, timestamps[]>` that gets cleaned of old entries on each check.
-2. **Queue depth check.** If `queue.length >= maxQueueDepth`, return immediately with `status: "rejected"` and `errorResponse: "Too many pending messages..."`.
-3. **Enqueue.** Add to the internal queue, call `processNext()`, return a promise that resolves when the handler runs.
+A same-thread waiter is pending, not active. The scheduler first selects a
+runnable key and only then consumes global and source capacity. This prevents a
+hot conversation from occupying every slot while waiting for itself.
 
-**`processNext()`** dequeues the next item if `activeCount < concurrency`, runs its handler, decrements `activeCount` on completion, and recurses to drain the queue.
+Queue caps count waiting work only. A zero queue cap still permits an
+immediately runnable request but rejects anything that would wait.
+Cancellation removes a waiting item and its abort listener before resolving a
+canceled result. Cancellation of active work is cooperative; its slot is not
+released until the actual task promise settles.
 
-Rejected results have `status: "rejected"`, `success: false`, and a fake (empty) trace. They emit no kernel events — which is exactly why the web transport had to be updated to detect this case and synthesize SSE error events when it got a rejected result.
+The keyed lane covers history authorization/load, turn execution,
+compaction/commit, ordered outbound delivery, `onTurnEnd`, and
+`scheduleAfterTurn`. A normal mutex across the last hook would deadlock the
+shipped layered-memory augment when it awaits a same-thread injection. The
+scheduler therefore mints an unforgeable active lease. That specific
+`SchedulerContext` may run a bounded causal child for the same thread inline
+under the parent's occupied slot. Cross-thread use and overlapping sibling
+children fail closed.
+
+If a task throws `OutcomeUnknownError` or returns
+`outcomeUnknown: true`, the active lease quarantines the thread. New work is
+rejected before execution until trusted host code calls
+`AgentHandle.recoverThread(threadId)`.
+
+`close()` rejects queued and new submissions with `runtime-stopping`.
+`drain()` resolves only after active complete-turn pipelines settle. Agent
+shutdown waits for this before closing augment resources.
+
+Rejected results contain an empty trace plus structured `rejection` metadata;
+they emit no kernel events because no turn loop ran. Transports synthesize
+their protocol-level terminal response.
 
 ### `src/kernel/timeout.ts` — Timeout helper
 
@@ -507,26 +548,30 @@ The orchestrator that ties everything together. ~200 LOC. Key responsibilities:
 
 2. **Generate the agent card** from the effective config. This happens once at construction; the card is cached and returned by `agent.card()` and `transportKernel.getAgentCard()`.
 
-3. **Construct the lifecycle manager and turn loop** with the effective augments.
+3. **Construct the lifecycle manager, turn loop, and one keyed scheduler** with
+   the effective augments and finite scheduling defaults.
 
 4. **`start()`:**
    - `lifecycle.boot()` — runs every augment's `onBoot` in order.
-   - For each transport augment: construct a `TransportQueue`, build a `TransportKernel` view (with `handleInbound`, `onOutbound`, `getAgentCard`), and `await aug.transport.register(transportKernel)`.
+   - For each transport augment: register its source policy, build a
+     `TransportKernel` view, and `await aug.transport.register(transportKernel)`.
    - Start the idle timer.
 
 5. **`handleInbound` (the function passed to each transport's `TransportKernel`):**
-   - `queue.enqueue(trigger, handler)` where `handler` is the actual turn-execution function.
-   - Inside the handler:
+   - Submit the canonical resolved thread to the shared scheduler.
+   - Inside the admitted complete-turn handler:
      - `lifecycle.resetIdleTimer()` (we got activity, push the idle timer back).
-     - Call `turnLoop.executeTurn(trigger, threadId, { onEvent })`.
-     - `dispatchOutbound(result, trigger)` — call the registered `onOutbound` callback for the target transport with each response message.
-     - Eager compaction: `historyManager.compact(historyBudget, strategy)`.
-     - Await all `onTurnEnd` hooks sequentially, logging and swallowing failures.
+     - authorize/load history, call `turnLoop.executeTurn`, compact, and commit;
+     - dispatch outbound in order while retaining the keyed lane;
+     - await `onTurnEnd` and `scheduleAfterTurn` sequentially;
+     - admit bounded causal same-thread follow-ups under the active lease;
      - Return the `TurnResult`.
 
-6. **`inject(trigger)`:** the back door. Bypasses the queue entirely — runs the turn loop directly. Used by tests and by augments that need to schedule internal work.
+6. **`inject(trigger)`:** a trusted entry path through the same scheduler. It
+   cannot bypass global, thread, or queue bounds.
 
-7. **`stop()`:** stops the idle timer, calls `lifecycle.shutdown()`.
+7. **`stop()`:** stops idle work, closes scheduler admission, rejects queued
+   work, drains active pipelines, then shuts augments and clears state.
 
 ## Why this shape
 

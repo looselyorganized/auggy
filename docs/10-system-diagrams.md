@@ -90,10 +90,12 @@ Everything that exists in a running Auggy agent and how the pieces connect.
 │  └──────────────────────┬───────────────────────────┘                    │
 │                         │                                                │
 │  ┌──────────────────────▼───────────────────────────┐                    │
-│  │  Transport Queue                                 │                    │
-│  │  ├── concurrency cap (default 1)                 │                    │
-│  │  ├── max queue depth (default 50)                │                    │
-│  │  ├── rate limit per peer (with stale eviction)   │                    │
+│  │  Agent-wide Keyed Scheduler                      │                    │
+│  │  ├── global active cap (default 4)               │                    │
+│  │  ├── global/thread/source waiting caps           │                    │
+│  │  ├── round-robin runnable thread selection       │                    │
+│  │  ├── queued cancellation + quarantine + drain    │                    │
+│  │  ├── source peer rate limits                     │                    │
 │  │  └── rejected → RUN_ERROR + RUN_FINISHED SSE     │                    │
 │  └──────────────────────┬───────────────────────────┘                    │
 │                         │ kernel.handleInbound(trigger, {onEvent})       │
@@ -508,7 +510,7 @@ auggy/
 │   │   ├── lifecycle-manager.ts ·· boot/shutdown/idle/health
 │   │   ├── tool-selector.ts ······ mount all <25, filter via canExpose
 │   │   ├── trace-emitter.ts ······ structured per-turn observability
-│   │   ├── transport-queue.ts ···· concurrency, depth, rate limit + eviction
+│   │   ├── keyed-turn-scheduler.ts  fair global/source/thread admission + drain
 │   │   ├── timeout.ts ············ withTimeout (timer cleanup)
 │   │   ├── output-validator.ts ··· flag suspicious output (don't block)
 │   │   └── preamble.ts ··········· trust-aware system prompt prefix

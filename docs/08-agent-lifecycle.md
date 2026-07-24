@@ -195,9 +195,10 @@ This is intentional: a half-booted agent is worse than a non-running agent. If o
 ```ts
 for (const aug of effectiveAugments) {
   if (aug.transport) {
-    const queue = createTransportQueue({
-      concurrency: aug.transport.concurrency ?? 1,
-      maxQueueDepth: aug.transport.maxQueueDepth ?? 50,
+    turnScheduler.registerSource({
+      id: `transport:${aug.name}`,
+      maxConcurrent: aug.transport.concurrency ?? 1,
+      maxQueued: aug.transport.maxQueueDepth ?? 50,
       rateLimitPerPeer: aug.transport.rateLimitPerPeer,
     });
 
@@ -214,7 +215,9 @@ for (const aug of effectiveAugments) {
 
 For each augment with a `transport` field:
 
-1. **Construct a `TransportQueue`** with the augment's queue config (concurrency, max queue depth, rate limit). Each transport gets its own queue — they don't share.
+1. **Register a source policy** with the one agent-wide scheduler. The policy
+   narrows source concurrency, waiting depth, and peer rate limits without
+   creating an independent queue.
 
 2. **Build a `TransportKernel` view.** This is the small interface the transport sees. It doesn't expose the full kernel — only `handleInbound`, `onOutbound`, and `getAgentCard`. The transport cannot reach into the agent for anything else.
 
@@ -268,49 +271,38 @@ The transport calls `transportKernel.handleInbound(trigger, { onEvent })`. Insid
 
 ```ts
 async handleInbound(trigger, opts) {
-  return queue.enqueue(trigger, async (t) => {
-    lifecycle.resetIdleTimer();
-    const threadId = t.threadId ?? t.turnId;
-    const result = await turnLoop.executeTurn(t, threadId, { onEvent: opts?.onEvent });
-
-    await dispatchOutbound(result, t);
-
-    // Eager compaction
-    const historyBudget = Math.floor(model.maxContextTokens * ((config.contextBudget?.historyPercent ?? 40) / 100));
-    turnLoop.getHistoryManager(threadId).compact(historyBudget, config.compactionStrategy ?? "truncate");
-
-    // Run onTurnEnd hooks sequentially with cancellation context
-    for (const a of effectiveAugments) {
-      if (a.onTurnEnd) {
-        await a.onTurnEnd(result, { signal: opts?.signal }).catch(() => {});
-      }
-    }
-
-    return result;
-  });
+  return scheduleTurn(trigger, {
+    source: "transport",
+    onEvent: opts?.onEvent,
+    signal: opts?.signal,
+    historyPersistence: opts?.historyPersistence,
+  }, sourcePolicy);
 }
 ```
 
 What happens:
 
-1. **Queue enqueue.** The trigger goes into the transport's queue. If rate-limited or queue-full, the queue immediately returns a `rejected` result without running the handler. The transport sees `result.status === "rejected"` and reacts (the web transport synthesizes RUN_ERROR/RUN_FINISHED SSE events).
+1. **Scheduler admission.** The trigger enters the shared bounded scheduler
+   under its canonical resolved `threadId`. Rate, agent, source, thread,
+   quarantine, and shutdown rejections return without running the handler.
 
-2. **Reset idle timer.** Activity pushes the idle timer back.
+2. **Runnable-key selection.** The scheduler selects thread keys fairly.
+   Waiting work for a busy thread consumes no active slot.
 
-3. **Compute `threadId`.** From the trigger if present, otherwise the turn ID (which makes each turn its own thread — the default for one-shot requests).
+3. **Pin thread history.** The exact resident history manager cannot be evicted
+   while this complete pipeline is active.
 
-4. **Run the turn loop.** `turnLoop.executeTurn(trigger, threadId, { onEvent })` does everything described in [04-kernel.md](./04-kernel.md) — context pipeline, prompt assembly, inference loop, tool execution, return result. The `onEvent` callback fires events as the loop progresses.
+4. **Authorize/load, run, compact, and commit.** The existing narrow
+   `withThreadLock` remains defense in depth around history and kernel work.
 
-5. **Dispatch outbound.** If the turn produced a `response` or `responses[]`, send each one through the appropriate transport's `onOutbound` callback. The default target is the trigger's source augment, but messages can specify `targetAugment` to route through a different transport.
+5. **Dispatch outbound in order.** The keyed scheduler lane remains held.
 
-6. **Eager compaction.** Run the history manager's `compact()` method against the configured strategy. This keeps history under the threshold for the next turn so the budget walk doesn't have to evict on every call.
+6. **Terminal hooks.** `onTurnEnd` then `scheduleAfterTurn` run sequentially
+   inside the keyed lane. A same-thread `SchedulerContext.inject()` receives a
+   bounded causal lease and runs inline; cross-thread use fails closed.
 
-7. **`onTurnEnd` hooks.** Awaited sequentially so cleanup settles before
-   `scheduleAfterTurn`; failures are logged and swallowed. The caller signal is
-   supplied for cooperative cancellation. If it is aborted, no new scheduled
-   post-turn work begins.
-
-8. **Return the result** to the queue, which resolves the promise the transport is awaiting.
+7. **Release pin and capacity.** Only the actual settled task releases its
+   thread and global/source slot.
 
 The transport now has the `TurnResult` and can finalize its response (close the SSE stream, send the final JSON, etc.).
 
@@ -318,22 +310,19 @@ The transport now has the `TurnResult` and can finalize its response (close the 
 
 ```ts
 async inject(trigger) {
-  lifecycle.resetIdleTimer();
-  const threadId = trigger.threadId ?? trigger.turnId;
-  const result = await turnLoop.executeTurn(trigger, threadId);
-
-  await dispatchOutbound(result, trigger);
-  // (eager compaction, onTurnEnd — same as the transport path)
-  return result;
+  return scheduleTurn(trigger, { source: "inject" }, injectSource);
 }
 ```
 
-`inject` is the back door — it bypasses the queue entirely. Used by:
+`inject` is a trusted in-process entry path, but it uses the same scheduler and
+global/thread limits as transports. It is used by:
 - **Tests.** Most kernel tests call `inject` to fire a turn directly without standing up a transport.
 - **Augments that need to schedule their own work.** A future cron augment might use `onIdle` to call `inject` with a `scheduled`-type trigger.
 - **Internal events.** An augment that detects an external event (file change, queue message, webhook) might use `inject` to feed it to the kernel.
 
-`inject` does NOT pass an `onEvent` callback (since there's no transport to forward events to). If the caller wants events, they have to pass one explicitly via `executeTurn` directly (which `inject` doesn't expose — but you can construct your own `turnLoop` for that case, or refactor `inject` to accept the option).
+An aborted queued injection is removed before persistence or model work.
+`SchedulerContext.inject()` is narrower: it admits only a causal follow-up for
+the same resolved thread and has finite nesting depth.
 
 ### C. Periodic idle hooks
 
@@ -346,7 +335,10 @@ In v1 nothing uses this, but the hook is in place for memory consolidation, back
 ```ts
 async stop() {
   lifecycle.stopIdleTimer();
+  turnScheduler.close();
+  await turnScheduler.drain();
   await lifecycle.shutdown();
+  turnLoop.clearHistoryManagers();
   started = false;
 }
 ```
@@ -364,7 +356,15 @@ stopIdleTimer() {
 
 The interval is cleared. No more idle hooks will fire after this point.
 
-### 2. Shutdown all augments
+### 2. Close admission and drain active pipelines
+
+`close()` immediately rejects queued and new work with
+`runtime-stopping`. `drain()` remains pending until every actually active
+complete-turn promise settles. Cancellation requests do not pretend
+non-cooperative work stopped, and augment resources remain available while
+active delivery and hooks finish.
+
+### 3. Shutdown all augments
 
 ```ts
 async shutdown() {
@@ -389,15 +389,13 @@ Two important properties:
 
 This is the inverse of the boot policy: **boot is fail-fast, shutdown is best-effort.** The reasoning: at boot time, a broken augment means the agent shouldn't run. At shutdown time, a broken augment means the agent is still going down regardless — we want to give every augment a chance to clean up, but we don't want one stuck augment to block the whole shutdown.
 
-### 3. Clear `started`
+### 4. Clear runtime state and `started`
 
 The handle's `started` flag goes back to `false`. `agent.ready()` would now throw.
 
-### What's NOT shut down
-
-- **In-flight turns.** If a turn was running when `stop()` was called, the queue's promise will still resolve (or reject) when the turn completes. v1 doesn't try to cancel in-flight turns. This is acceptable for the LORF use case (graceful shutdown happens when the operator restarts the agent intentionally).
-- **The `historyManagers` map.** Per-thread history managers are kept in memory and die with the process. This is the right behavior for v1 — no persistent state across restarts.
-- **The `outboundHandlers` map.** Same — dies with the process.
+History managers, persistence memos, outbound handlers, and scheduler runtime
+state are cleared only after drain and lifecycle shutdown. Restart reopens a
+fresh accepting scheduler and clears process-local quarantines.
 
 ## The augment lifecycle hooks
 
@@ -432,7 +430,10 @@ the settled turn. Hooks must therefore remain bounded and honor the supplied
 cancellation signal. Failures are logged and swallowed so they do not replace
 the turn result.
 
-The trade-off: if your `onTurnEnd` hook needs to *guarantee* it ran before the next turn (e.g. to maintain durable state), this isn't the right hook. Use `inject` with a "continuation" trigger instead, or write the work into a queue that the next turn waits on.
+The keyed scheduler now guarantees that the next same-thread turn cannot begin
+until `onTurnEnd` and scheduled terminal work settle. Hooks still need finite
+work and cooperative cancellation so one conversation does not remain busy
+indefinitely.
 
 ## The `AgentHandle` interface
 
@@ -444,15 +445,22 @@ export interface AgentHandle {
   health(): AgentHealth;
   card(): AgentCard;
   inject(trigger: TurnTrigger, options?: { signal?: AbortSignal }): Promise<TurnResult>;
+  recoverThread(threadId: string): boolean;
 }
 ```
 
-Six methods. Most users only call `start()`, `stop()`, and let transports do the rest. The other three are utility:
+Seven methods. Most users call `start()`, `stop()`, and let transports do the
+rest. The others are utilities:
 
 - **`ready()`** — throws if the agent hasn't been started. Useful as a precondition check in code that expects the agent to be running. It does *not* wait for ready — it's synchronous in spirit.
-- **`health()`** — returns an `AgentHealth` object: `status`, `agent`, `uptime`, per-augment statuses, model reachability. Used by external health checks (a load balancer pinging an internal endpoint). The web transport's `/health` doesn't actually call this in v1 — it returns a hardcoded `{status: "healthy"}`. A future enhancement would have the web transport delegate to `agent.health()` for richer health info.
+- **`health()`** — returns lifecycle fields plus aggregate scheduler state,
+  active/queued/quarantined gauges, wait duration, and counters that are
+  monotonic until restart. It contains no thread or peer identifiers.
 - **`card()`** — returns the cached `AgentCard`. Same object the web transport serves at `/.well-known/agent-card.json`.
-- **`inject()`** — the back door, described above.
+- **`inject()`** — the bounded trusted entry path described above.
+- **`recoverThread()`** — clears a fail-closed outcome-unknown quarantine
+  after a trusted operator reconciles external state. It is not a model tool
+  or transport capability.
 
 There is **no method to mutate the augment list at runtime**. Once an agent is constructed, its augments are fixed. To change them, stop the agent, construct a new one with the new config, start it. This is intentional: hot-reloading augments without restarting the kernel is a complex problem that's not in v1's scope, and the semantics (what happens to in-flight turns? what happens to pending tool calls in those turns?) are hard to get right.
 
