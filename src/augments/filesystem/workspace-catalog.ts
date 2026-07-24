@@ -1,6 +1,7 @@
-import { lstat, readdir, realpath } from "node:fs/promises";
-import { basename, isAbsolute, join, relative, sep } from "node:path";
+import { closeSync, constants, fstatSync } from "node:fs";
+import { basename } from "node:path";
 import { Glob } from "bun";
+import { duplicateFd, listDirectoryFd, openAt, tryOpenAt } from "../../lib/posix-at";
 
 const DEFAULT_MAX_ENTRIES = 24;
 const DEFAULT_SCAN_LIMIT = 500;
@@ -40,12 +41,18 @@ const STOP_WORDS = new Set([
 
 export interface WorkspaceCatalogScanOptions {
   mountName: string;
-  rootPath: string;
+  rootFd: number;
   query?: string;
   maxEntries?: number;
   scanLimit?: number;
   maxDepth?: number;
   excludes?: readonly string[];
+  allowDirectory?: (input: {
+    fd: number;
+    name: string;
+    relativePath: string;
+    depth: number;
+  }) => boolean | Promise<boolean>;
 }
 
 export interface WorkspaceCatalogEntry {
@@ -70,10 +77,30 @@ interface ScannedFile {
 }
 
 interface PendingDirectory {
-  physicalPath: string;
+  segments: string[];
   logicalPath: string;
   relativePath: string;
   depth: number;
+  expectedIdentity?: { dev: number; ino: number };
+}
+
+const O_CLOEXEC = (constants as unknown as Record<string, number>).O_CLOEXEC ?? 0;
+const DIRECTORY_FLAGS =
+  constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | O_CLOEXEC;
+
+function openDirectoryFromRoot(rootFd: number, segments: readonly string[]): number {
+  let current = duplicateFd(rootFd);
+  try {
+    for (const segment of segments) {
+      const child = openAt(current, segment, DIRECTORY_FLAGS);
+      closeSync(current);
+      current = child;
+    }
+    return current;
+  } catch (error) {
+    closeSync(current);
+    throw error;
+  }
 }
 
 /**
@@ -93,7 +120,7 @@ export async function scanWorkspaceCatalog(
   const isExcluded = createPathExcluder(opts.excludes ?? []);
   const queryTerms = termsForQuery(opts.query ?? "");
   const queue: PendingDirectory[] = [
-    { physicalPath: opts.rootPath, logicalPath: opts.mountName, relativePath: "", depth: 0 },
+    { segments: [], logicalPath: opts.mountName, relativePath: "", depth: 0 },
   ];
   const files: ScannedFile[] = [];
   let inspectedEntries = 0;
@@ -101,50 +128,80 @@ export async function scanWorkspaceCatalog(
 
   while (queue.length > 0 && inspectedEntries < scanLimit) {
     const current = queue.shift()!;
-    const children = await readdir(current.physicalPath, { withFileTypes: true });
-    children.sort((left, right) => left.name.localeCompare(right.name));
-
-    for (const child of children) {
-      if (inspectedEntries >= scanLimit) {
-        truncated = true;
-        break;
-      }
-      inspectedEntries++;
-
-      if (child.name.startsWith(".") || child.isSymbolicLink()) {
-        continue;
-      }
-
-      const physicalPath = join(current.physicalPath, child.name);
-      const logicalPath = `${current.logicalPath}/${child.name}`;
-      const relativePath = current.relativePath
-        ? `${current.relativePath}/${child.name}`
-        : child.name;
-
-      if (isExcluded(relativePath)) continue;
-
-      if (child.isDirectory()) {
-        if (current.depth + 1 < maxDepth) {
-          const canonicalDirectory = await realpath(physicalPath).catch(() => null);
-          if (!canonicalDirectory || !isWithinRoot(canonicalDirectory, opts.rootPath)) continue;
-          queue.push({
-            physicalPath: canonicalDirectory,
-            logicalPath,
-            relativePath,
-            depth: current.depth + 1,
-          });
+    let directoryFd: number | null = null;
+    try {
+      directoryFd = openDirectoryFromRoot(opts.rootFd, current.segments);
+      if (current.expectedIdentity) {
+        const opened = fstatSync(directoryFd);
+        if (
+          opened.dev !== current.expectedIdentity.dev ||
+          opened.ino !== current.expectedIdentity.ino
+        ) {
+          continue;
         }
-        continue;
       }
-      if (!child.isFile()) continue;
+      const listed = listDirectoryFd(directoryFd, Math.max(0, scanLimit - inspectedEntries));
+      if (listed.truncated) truncated = true;
+      const children = listed.names.sort((left, right) => left.localeCompare(right));
 
-      const fileLstat = await lstat(physicalPath);
-      if (!fileLstat.isFile() || fileLstat.isSymbolicLink()) continue;
-      files.push({
-        path: logicalPath,
-        size: fileLstat.size,
-        modifiedMs: fileLstat.mtimeMs,
-      });
+      for (const name of children) {
+        if (inspectedEntries >= scanLimit) {
+          truncated = true;
+          break;
+        }
+        inspectedEntries++;
+        if (name.startsWith(".")) continue;
+
+        const logicalPath = `${current.logicalPath}/${name}`;
+        const relativePath = current.relativePath ? `${current.relativePath}/${name}` : name;
+        if (isExcluded(relativePath)) continue;
+
+        const opened = tryOpenAt(
+          directoryFd,
+          name,
+          constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW | O_CLOEXEC,
+        );
+        if ("errno" in opened) continue;
+        try {
+          const stats = fstatSync(opened.fd);
+          if (stats.isDirectory()) {
+            if (
+              opts.allowDirectory &&
+              !(await opts.allowDirectory({
+                fd: opened.fd,
+                name,
+                relativePath,
+                depth: current.depth + 1,
+              }))
+            ) {
+              continue;
+            }
+            if (current.depth + 1 < maxDepth) {
+              queue.push({
+                segments: [...current.segments, name],
+                logicalPath,
+                relativePath,
+                depth: current.depth + 1,
+                expectedIdentity: { dev: stats.dev, ino: stats.ino },
+              });
+            }
+            continue;
+          }
+          if (!stats.isFile() || stats.nlink !== 1) continue;
+          files.push({
+            path: logicalPath,
+            size: stats.size,
+            modifiedMs: stats.mtimeMs,
+          });
+        } finally {
+          closeSync(opened.fd);
+        }
+      }
+    } catch {
+      // A concurrently removed or replaced directory is omitted from this
+      // bounded metadata snapshot rather than retraversed by pathname.
+    } finally {
+      if (directoryFd !== null) closeSync(directoryFd);
     }
   }
 
@@ -210,13 +267,6 @@ export function createPathExcluder(patterns: readonly string[]): (path: string) 
       return false;
     });
   };
-}
-
-function isWithinRoot(target: string, root: string): boolean {
-  const rel = relative(root, target);
-  if (rel === "") return true;
-  if (rel === ".." || rel.startsWith(`..${sep}`)) return false;
-  return !isAbsolute(rel);
 }
 
 export function renderWorkspaceCatalog(

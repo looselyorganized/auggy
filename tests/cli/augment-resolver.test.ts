@@ -716,13 +716,25 @@ describe("resolveAugments — webTransport", () => {
       const agent = defineAgent({ name: "test", model: "mock", augments }, model);
       if (!(await startAgentIfSocketsAvailable(agent))) return;
       try {
-        const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        const url = `http://localhost:${port}/agent/run`;
+        const init = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
-        });
+        } satisfies RequestInit;
+        const bootstrap = await fetch(url, init);
+        const session = bootstrap.headers.get("x-auggy-anonymous-session");
+        expect(bootstrap.status).toBe(428);
+        expect(session).toBeTruthy();
+        expect(await bootstrap.json()).toEqual({ error: "anonymous_session_required" });
+        expect(model.calls).toHaveLength(0);
+
+        const headers = new Headers(init.headers);
+        headers.set("x-auggy-anonymous-session", session ?? "");
+        const resp = await fetch(url, { ...init, headers });
         expect(resp.status).toBe(200);
         await resp.text();
+        expect(model.calls).toHaveLength(1);
       } finally {
         await agent.stop();
       }
@@ -1014,13 +1026,17 @@ describe("resolveAugments — budgets", () => {
     ];
 
     const augments = await resolveAugments(configs, TMP);
-    expect(augments).toHaveLength(1);
-    expect(augments[0]!.name).toBe("budgets");
-    expect(augments[0]!.turnGate).toBeDefined();
-    // Budgets is not a memory provider.
-    expect(augments[0]!.memory).toBeUndefined();
-    expect(augments[0]!.onShutdown).toBeDefined();
-    expect(augments[0]!.context).toBeDefined();
+    try {
+      expect(augments).toHaveLength(1);
+      expect(augments[0]!.name).toBe("budgets");
+      expect(augments[0]!.turnGate).toBeDefined();
+      // Budgets is not a memory provider.
+      expect(augments[0]!.memory).toBeUndefined();
+      expect(augments[0]!.onShutdown).toBeDefined();
+      expect(augments[0]!.context).toBeDefined();
+    } finally {
+      for (const augment of augments) await augment.onShutdown?.();
+    }
   });
 
   test("resolves budgets augment with default dbPath when omitted from options", async () => {
@@ -1033,9 +1049,13 @@ describe("resolveAugments — budgets", () => {
     ];
 
     const augments = await resolveAugments(configs, TMP);
-    expect(augments).toHaveLength(1);
-    expect(augments[0]!.name).toBe("budgets");
-    expect(augments[0]!.turnGate).toBeDefined();
+    try {
+      expect(augments).toHaveLength(1);
+      expect(augments[0]!.name).toBe("budgets");
+      expect(augments[0]!.turnGate).toBeDefined();
+    } finally {
+      for (const augment of augments) await augment.onShutdown?.();
+    }
   });
 
   test("passes agentDir so budgets admin overrides can persist", async () => {
@@ -1226,7 +1246,7 @@ describe("resolveAugments — budgets", () => {
       expect(record.summary).toContain("80%");
       expect(record.reason).toContain("$0.85 of $1.00");
     } finally {
-      await budgetAugment?.onShutdown?.();
+      for (const augment of augments) await augment.onShutdown?.();
     }
   });
 });
@@ -1775,7 +1795,7 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
       // NOT a getter — so we can't spy post-binding. Instead we verify behavior:
       // with F17's fix, the revocationCheck closure calls the va method via lateBindings.
       // We test this indirectly: for a REVOKED visitor, an HTTP request must treat
-      // them as anonymous (new token issued = anonymous path).
+      // them as anonymous (428 session bootstrap = anonymous path).
       //
       // To revoke, we use a second va instance backed by the SAME DB file and call
       // its isVisitorRevoked to verify the revoking works — but for the HTTP assertion,
@@ -1790,7 +1810,7 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
       // check would be skipped entirely — same behavior as "not revoked".
       //
       // For a definitive gate: insert the visitor into the DB as revoked, then make
-      // a second request, and assert a new token IS issued (= anonymous path).
+      // a second request, and assert the anonymous-session bootstrap is required.
       // This requires DB-level access. Use createSqliteVisitorAuthStore from the store.
       const { createSqliteVisitorAuthStore } = await import(
         "../../src/augments/visitorAuth/storage/sqlite-store"
@@ -1819,12 +1839,9 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
 
       // Second request with the same token for REVOKED visitor.
       // With F17 wired: revocationCheck returns true → visitorPayload = null →
-      //   visitor stays anonymous → new x-visitor-token header IS issued.
+      //   visitor stays anonymous → 428 + x-auggy-anonymous-session.
       // Without F17 wired (reverted): revocationCheck is null → visitor is
-      //   STILL recognized (wrong!) → new token NOT issued → assertion fails.
-      // No bearer (codex R6 mint-suppression): a bearer-credentialed request
-      // would resolve to creator (Path 1) AND suppress mint, breaking this
-      // test's revoked→anonymous→new-token assertion.
+      //   STILL recognized (wrong!) → 200 execution → assertion fails.
       const revokedResp = await fetch(`http://localhost:${PORT}/agent/run`, {
         method: "POST",
         headers: {
@@ -1833,14 +1850,11 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
         },
         body: JSON.stringify({ messages: [{ role: "user", content: "revoked" }] }),
       });
-      expect(revokedResp.status).toBe(200);
-      // A new visitor token is issued — proves the revoked visitor landed on the
-      // anonymous path (revocationCheck returned true, visitorPayload set to null).
-      // If F17 is reverted (lateBindings.revocationCheck is null), revocation is
-      // skipped and the visitor stays recognized → no new token → this assertion fails.
-      const newToken = revokedResp.headers.get("x-visitor-token");
-      expect(newToken).not.toBeNull();
-      await revokedResp.text();
+      expect(revokedResp.status).toBe(428);
+      expect(revokedResp.headers.get("x-visitor-token")).toBeNull();
+      expect(revokedResp.headers.get("x-auggy-anonymous-session")).toBeTruthy();
+      expect(await revokedResp.json()).toEqual({ error: "anonymous_session_required" });
+      expect(model.calls).toHaveLength(1);
     } finally {
       await agent.stop();
     }

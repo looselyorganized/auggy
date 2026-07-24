@@ -1,9 +1,11 @@
-import { describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it } from "bun:test";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  renameSync,
   rmSync,
   statSync,
   symlinkSync,
@@ -11,7 +13,17 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { readOverrides, writeOverrides, type AdminOverrides } from "@/lib/admin-overrides";
+import {
+  __setAdminOverrideRootAcquisitionHookForTest,
+  readOverrides,
+  releaseAdminOverrideRoot,
+  writeOverrides,
+  type AdminOverrides,
+} from "@/lib/admin-overrides";
+
+afterEach(() => {
+  __setAdminOverrideRootAcquisitionHookForTest(undefined);
+});
 
 function makeTempAgentDir(): string {
   return mkdtempSync(join(tmpdir(), "auggy-admin-overrides-test-"));
@@ -176,6 +188,83 @@ describe("admin-overrides — write", () => {
       const read = readOverrides(dir);
       expect(read?.overrides.budgets?.dailyBudgetUsd).toBe(99);
     } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps policy reads and writes pinned after an ancestor is replaced", () => {
+    const container = makeTempAgentDir();
+    const configuredParent = join(container, "configured");
+    const originalParent = join(container, "original");
+    const root = join(configuredParent, "agent");
+    mkdirSync(root, { recursive: true });
+    try {
+      writeOverrides(root, makeOverrides({ budgets: { dailyBudgetUsd: 10 } }));
+      expect(readOverrides(root)?.overrides.budgets?.dailyBudgetUsd).toBe(10);
+
+      renameSync(configuredParent, originalParent);
+      mkdirSync(root, { recursive: true });
+      const replacement = makeOverrides({ budgets: { dailyBudgetUsd: 999 } });
+      writeFileSync(join(root, "admin-overrides.json"), JSON.stringify(replacement));
+
+      expect(readOverrides(root)?.overrides.budgets?.dailyBudgetUsd).toBe(10);
+      writeOverrides(root, makeOverrides({ budgets: { dailyBudgetUsd: 20 } }));
+      expect(
+        JSON.parse(readFileSync(join(originalParent, "agent", "admin-overrides.json"), "utf8"))
+          .overrides.budgets.dailyBudgetUsd,
+      ).toBe(20);
+      expect(
+        JSON.parse(readFileSync(join(root, "admin-overrides.json"), "utf8")).overrides.budgets
+          .dailyBudgetUsd,
+      ).toBe(999);
+    } finally {
+      releaseAdminOverrideRoot(root);
+      rmSync(container, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects an ordinary-directory replacement during policy-root acquisition", () => {
+    const container = makeTempAgentDir();
+    const configuredParent = join(container, "configured");
+    const originalParent = join(container, "original");
+    const root = join(configuredParent, "agent");
+    mkdirSync(root, { recursive: true });
+    writeFileSync(
+      join(root, "admin-overrides.json"),
+      JSON.stringify(makeOverrides({ budgets: { dailyBudgetUsd: 10 } })),
+    );
+    let replaced = false;
+    __setAdminOverrideRootAcquisitionHookForTest(() => {
+      if (replaced) return;
+      replaced = true;
+      renameSync(configuredParent, originalParent);
+      mkdirSync(root, { recursive: true });
+      writeFileSync(
+        join(root, "admin-overrides.json"),
+        JSON.stringify(makeOverrides({ budgets: { dailyBudgetUsd: 999 } })),
+      );
+    });
+    try {
+      expect(() => readOverrides(root)).toThrow(/changed during acquisition/);
+    } finally {
+      releaseAdminOverrideRoot(root);
+      rmSync(container, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a symlinked policy leaf without reading or mutating its target", () => {
+    const dir = makeTempAgentDir();
+    const outside = `${dir}-outside.json`;
+    const sentinel = JSON.stringify(makeOverrides({ budgets: { dailyBudgetUsd: 777 } }));
+    try {
+      writeFileSync(outside, sentinel);
+      symlinkSync(outside, join(dir, "admin-overrides.json"));
+      expect(() => readOverrides(dir)).toThrow(/failed to open/);
+      expect(() => writeOverrides(dir, makeOverrides())).toThrow(/symlink or is unreadable/);
+      expect(readFileSync(outside, "utf8")).toBe(sentinel);
+    } finally {
+      releaseAdminOverrideRoot(dir);
+      rmSync(outside, { force: true });
       rmSync(dir, { recursive: true, force: true });
     }
   });

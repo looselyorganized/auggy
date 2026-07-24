@@ -74,8 +74,8 @@ Binary files return: `Error: Binary file (.ext, size). Use fs_list to see metada
 
 ## Security boundaries
 
-1. **Path traversal**: All paths are resolved via `fs.realpath()` (follows symlinks) and checked against the mount root using a `path.relative()`-based containment helper. Paths that escape the mount (relative result of `..` or absolute path for cross-drive) are rejected. The `relative()`-based check handles both prefix-collision siblings (`/var/data/work` does not accept `/var/data/workspace/...`) and root-level mounts (`/` on POSIX accepts nested children correctly).
-2. **Symlink escape**: Symlinks that point outside the mount boundary are detected and rejected before the file is read, using the same containment check.
+1. **Path traversal**: Paths are canonicalized and checked against the mount root with `path.relative()`. Escaping and prefix-collision paths are rejected.
+2. **Symlink and replacement escape**: Canonical mount directories are opened and pinned at boot on macOS/Linux. Reads, listings, and mutations traverse from that descriptor; file operations reject symlink components and multi-link files. Replacing a mount ancestor or a validated list target cannot redirect an operation. Unsupported operating systems fail boot.
 3. **Mount isolation**: Each mount is an independent security boundary. No cross-mount path references are possible.
 4. **No absolute paths**: The agent always uses logical paths (`mount-name/...`). Physical paths are never exposed.
 5. **Trust-level tool gating**: Mutation tools (`fs_write`, `fs_mkdir`, `fs_remove`) are structurally hidden from untrusted peers by the kernel's capability table before the model sees them. The authenticated level loses `fs_remove`. Operator and facility peers see all tools. This runs at tool-selection time; mount-level `writable` / `deletable` flags are a complementary check that runs inside the tool.

@@ -1,8 +1,17 @@
 import { z } from "zod";
 import { constants } from "node:fs";
-import type { Stats } from "node:fs";
-import { readFile, readdir, mkdir, open, rm, realpath, stat, lstat } from "node:fs/promises";
-import { resolve, join, relative, extname, isAbsolute, sep, dirname, basename } from "node:path";
+import { constants as osConstants } from "node:os";
+import {
+  closeSync,
+  fchmodSync,
+  fstatSync,
+  ftruncateSync,
+  openSync,
+  readSync,
+  writeFileSync,
+} from "node:fs";
+import { lstat, readFile, realpath } from "node:fs/promises";
+import { resolve, relative, extname, isAbsolute, sep, dirname, basename } from "node:path";
 import { Glob } from "bun";
 import type {
   AdminInfoBlock,
@@ -14,8 +23,18 @@ import type {
   TurnState,
 } from "../../types";
 import { defineTool } from "../../helpers";
-import { isSkillAllowedForTrust, readSkillFrontmatter } from "../../cli/skill-frontmatter";
+import { isSkillAllowedForTrust, parseSkillFrontmatter } from "../../cli/skill-frontmatter";
 import { extractText } from "../../parts";
+import {
+  duplicateFd,
+  listDirectoryFd,
+  mkdirAt,
+  openAbsoluteDirectoryNoFollow,
+  openAt,
+  readFileFdBounded,
+  tryOpenAt,
+  unlinkAt,
+} from "../../lib/posix-at";
 import {
   createPathExcluder,
   renderWorkspaceCatalog,
@@ -82,6 +101,12 @@ export interface FilesystemOptions {
    * never loaded by this catalog.
    */
   workspaceAwareness?: WorkspaceAwarenessOptions;
+  /** @internal Deterministic boundary hooks used only by regression tests. */
+  __testHooks?: {
+    afterMountCanonicalized?: (canonicalPath: string) => Promise<void> | void;
+    afterListTargetOpened?: () => Promise<void> | void;
+    afterSkillPolicyEvaluated?: () => Promise<void> | void;
+  };
 }
 
 export interface WorkspaceAwarenessOptions {
@@ -102,6 +127,10 @@ export interface WorkspaceAwarenessOptions {
 const DEFAULT_MAX_READ = 256 * 1024; // 256KB
 const DEFAULT_MAX_WRITE = 1024 * 1024; // 1MB
 const DEFAULT_SEARCH_EXCLUDES = [".git", "node_modules", ".next", "__pycache__", ".DS_Store"];
+const DEFAULT_LIST_LIMIT = 1000;
+const O_CLOEXEC = (constants as unknown as Record<string, number>).O_CLOEXEC ?? 0;
+const DIRECTORY_FLAGS =
+  constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW | O_CLOEXEC;
 
 const BINARY_EXTENSIONS = new Set([
   ".png",
@@ -209,17 +238,90 @@ export function filesystem(opts: FilesystemOptions): Augment {
 
   const mountMap = new Map<string, FsMount>();
   const resolvedRoots = new Map<string, string>();
+  const rootDescriptors = new Map<string, number>();
   let cachedSkill: string | null = null;
+  let acceptingOperations = true;
+  let lifecycleEpoch = 0;
 
   // --- Path resolution and security ---
 
+  async function openOrCreateConfiguredDirectory(
+    configured: string,
+    mountName: string,
+  ): Promise<number> {
+    const followDirectoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | O_CLOEXEC;
+    const missingSegments: string[] = [];
+    let current = configured;
+    let currentFd: number | null = null;
+
+    while (currentFd === null) {
+      try {
+        // The nearest existing configured ancestor is an operator-selected
+        // boundary and may intentionally contain a platform or operator
+        // symlink (for example /var -> /private/var on macOS). Pin it first;
+        // all newly materialized descendants are then opened with O_NOFOLLOW.
+        currentFd = openSync(current, followDirectoryFlags);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        const currentStats = await lstat(current).catch((lstatError: NodeJS.ErrnoException) => {
+          if (lstatError.code === "ENOENT") return null;
+          throw lstatError;
+        });
+        if (currentStats?.isSymbolicLink()) {
+          throw new Error(
+            `filesystem: writable mount "${mountName}" has an unresolved symlink component`,
+          );
+        }
+        const parent = dirname(current);
+        if (parent === current) throw error;
+        missingSegments.unshift(basename(current));
+        current = parent;
+      }
+    }
+
+    try {
+      for (const segment of missingSegments) {
+        let child = tryOpenAt(currentFd, segment, DIRECTORY_FLAGS);
+        if ("errno" in child) {
+          if (!mkdirAt(currentFd, segment, 0o700)) {
+            // A concurrent creator may have won. Reopen exactly the resulting
+            // directory without following a symlink; every other collision
+            // remains fail-closed.
+            child = tryOpenAt(currentFd, segment, DIRECTORY_FLAGS);
+            if ("errno" in child) {
+              throw new Error("descriptor-relative directory creation failed");
+            }
+          } else {
+            child = { fd: openAt(currentFd, segment, DIRECTORY_FLAGS) };
+          }
+        }
+        closeSync(currentFd);
+        currentFd = child.fd;
+      }
+      return currentFd;
+    } catch (error) {
+      closeSync(currentFd);
+      throw error;
+    }
+  }
+
   async function resolveMountRoot(mount: FsMount): Promise<string> {
+    const acquisitionEpoch = lifecycleEpoch;
+    if (!acceptingOperations) {
+      throw new Error(`filesystem: mount "${mount.name}" is shutting down`);
+    }
     const cached = resolvedRoots.get(mount.name);
     if (cached) return cached;
+    if (process.platform !== "darwin" && process.platform !== "linux") {
+      throw new Error(
+        `filesystem: mount "${mount.name}" requires descriptor-relative isolation on macOS or Linux`,
+      );
+    }
+    const configured = resolve(mount.path);
+    const followDirectoryFlags = constants.O_RDONLY | constants.O_DIRECTORY | O_CLOEXEC;
+    let rootFd: number;
     try {
-      const real = await realpath(resolve(mount.path));
-      resolvedRoots.set(mount.name, real);
-      return real;
+      rootFd = openSync(configured, followDirectoryFlags);
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       if (!mount.writable) {
@@ -227,19 +329,38 @@ export function filesystem(opts: FilesystemOptions): Augment {
           `filesystem: read-only mount "${mount.name}" does not exist at "${mount.path}"`,
         );
       }
+      rootFd = await openOrCreateConfiguredDirectory(configured, mount.name);
+    }
 
-      // Writable roots historically auto-created on first write. Do that once
-      // at boot, then cache the canonical root. The configured path is an
-      // operator-controlled boundary; descendants remain subject to the
-      // component-by-component no-symlink checks below.
-      await mkdir(resolve(mount.path), { recursive: true, mode: 0o700 });
-      const created = await realpath(resolve(mount.path));
-      const createdStats = await lstat(created);
-      if (!createdStats.isDirectory()) {
+    try {
+      const expected = fstatSync(rootFd);
+      if (!expected.isDirectory()) {
         throw new Error(`filesystem: mount "${mount.name}" is not a directory`);
       }
-      resolvedRoots.set(mount.name, created);
-      return created;
+      const canonical = await realpath(configured);
+      await opts.__testHooks?.afterMountCanonicalized?.(canonical);
+      if (!acceptingOperations || lifecycleEpoch !== acquisitionEpoch) {
+        throw new Error(`filesystem: mount "${mount.name}" acquisition was cancelled`);
+      }
+      const verificationFd = openAbsoluteDirectoryNoFollow(canonical);
+      try {
+        const verified = fstatSync(verificationFd);
+        if (
+          !verified.isDirectory() ||
+          verified.dev !== expected.dev ||
+          verified.ino !== expected.ino
+        ) {
+          throw new Error(`filesystem: mount "${mount.name}" changed during acquisition`);
+        }
+      } finally {
+        closeSync(verificationFd);
+      }
+      rootDescriptors.set(mount.name, rootFd);
+      resolvedRoots.set(mount.name, canonical);
+      return canonical;
+    } catch (error) {
+      closeSync(rootFd);
+      throw error;
     }
   }
 
@@ -284,49 +405,60 @@ export function filesystem(opts: FilesystemOptions): Augment {
     ].join("\n");
   }
 
-  async function skillFolderFromPhysicalPath(
-    mount: FsMount,
-    physicalPath: string,
-  ): Promise<string | null> {
-    const mountRoot = await resolveMountRoot(mount);
-    const relativePath = relative(mountRoot, physicalPath);
-    if (relativePath === "" || relativePath === ".") return null;
-
-    const first = relativePath.split(sep)[0];
-    return first && first !== "." ? first : null;
-  }
-
-  async function restrictedSkillError(
-    mount: FsMount,
-    folder: string | null,
-    context: ToolExecuteContext | undefined,
-  ): Promise<string | null> {
-    if (mount.name !== "skills" || !folder) return null;
-    const skillPath = join(await resolveMountRoot(mount), folder, "SKILL.md");
-    const fm = readSkillFrontmatter(skillPath);
-    if (!fm) return null;
-
-    const trustLevel = effectiveTrustLevel(context);
-    if (isSkillAllowedForTrust(fm, trustLevel)) return null;
-    return `Error: Skill "${folder}" is available only to ${fm.allowedTrustLevels!.join(", ")} peers. Current peer trust: ${trustLevel}.`;
-  }
-
-  async function restrictedSkillPathError(
-    physicalPath: string,
-    mount: FsMount,
-    context: ToolExecuteContext | undefined,
-  ): Promise<string | null> {
-    const folder = await skillFolderFromPhysicalPath(mount, physicalPath);
-    return restrictedSkillError(mount, folder, context);
-  }
-
-  async function canonicalCandidatePath(mount: FsMount, physicalPath: string): Promise<string> {
-    const candidate = await resolveNearestExistingAncestor(physicalPath, mount.name);
-    const mountRoot = await resolveMountRoot(mount);
-    if (!isWithinMount(candidate, mountRoot)) {
-      throw new Error(`Path resolves outside mount "${mount.name}" boundary`);
+  function restrictedSkillErrorForTrust(
+    folderFd: number,
+    folder: string,
+    trustLevel: TrustLevel,
+  ): string | null {
+    let skillFd: number | null = null;
+    try {
+      const opened = tryOpenAt(
+        folderFd,
+        "SKILL.md",
+        constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW | O_CLOEXEC,
+      );
+      if ("errno" in opened) {
+        if (opened.errno === osConstants.errno.ENOENT) return null;
+        return trustLevel === "creator"
+          ? null
+          : `Error: Skill "${folder}" policy cannot be verified. Current peer trust: ${trustLevel}.`;
+      }
+      skillFd = opened.fd;
+      const stats = fstatSync(skillFd);
+      if (!stats.isFile() || stats.nlink !== 1 || stats.size > 256 * 1024) {
+        return trustLevel === "creator"
+          ? null
+          : `Error: Skill "${folder}" policy cannot be verified. Current peer trust: ${trustLevel}.`;
+      }
+      const policy = readFileFdBounded(skillFd, 256 * 1024);
+      if (policy.exceeded) {
+        return trustLevel === "creator"
+          ? null
+          : `Error: Skill "${folder}" policy cannot be verified. Current peer trust: ${trustLevel}.`;
+      }
+      const fm = parseSkillFrontmatter(policy.buffer.toString("utf8"));
+      if (!fm) {
+        return trustLevel === "creator"
+          ? null
+          : `Error: Skill "${folder}" policy cannot be verified. Current peer trust: ${trustLevel}.`;
+      }
+      if (isSkillAllowedForTrust(fm, trustLevel)) return null;
+      return `Error: Skill "${folder}" is available only to ${fm.allowedTrustLevels!.join(", ")} peers. Current peer trust: ${trustLevel}.`;
+    } catch {
+      return trustLevel === "creator"
+        ? null
+        : `Error: Skill "${folder}" policy cannot be verified. Current peer trust: ${trustLevel}.`;
+    } finally {
+      if (skillFd !== null) closeSync(skillFd);
     }
-    return candidate;
+  }
+
+  function restrictedSkillErrorFromFd(
+    folderFd: number,
+    folder: string,
+    context: ToolExecuteContext | undefined,
+  ): string | null {
+    return restrictedSkillErrorForTrust(folderFd, folder, effectiveTrustLevel(context));
   }
 
   async function resolveNearestExistingAncestor(
@@ -397,73 +529,211 @@ export function filesystem(opts: FilesystemOptions): Augment {
     return { physicalPath: realTarget, mount };
   }
 
-  async function resolveMutationTarget(
+  interface AnchoredParent {
+    parentFd: number;
+    leaf: string;
+    mount: FsMount;
+    physicalPath: string;
+    mountRoot: string;
+    relativeSegments: string[];
+    skillFolderFd: number | null;
+  }
+
+  async function openAnchoredParent(
     logicalPath: string,
-    requireMount: (mount: FsMount) => string | null,
+    requireMount: ((mount: FsMount) => string | null) | undefined,
     createParents: boolean,
-  ): Promise<{ physicalPath: string; mount: FsMount; targetStats: Stats | null }> {
-    const { mountName, subPath } = parseLogicalPath(logicalPath);
-    const mount = mountMap.get(mountName);
+    resolvedTarget?: { mount: FsMount; physicalPath: string },
+  ): Promise<AnchoredParent> {
+    const parsed = parseLogicalPath(logicalPath);
+    const mountName = resolvedTarget?.mount.name ?? parsed.mountName;
+    const mount = resolvedTarget?.mount ?? mountMap.get(mountName);
     if (!mount) {
       throw new Error(
         `Unknown mount "${mountName}". Available mounts: ${[...mountMap.keys()].join(", ")}`,
       );
     }
-    const permissionError = requireMount(mount);
+    const permissionError = requireMount?.(mount);
     if (permissionError) throw new Error(permissionError);
 
     const mountRoot = await resolveMountRoot(mount);
-    const physicalPath = resolve(mountRoot, subPath);
+    const physicalPath = resolvedTarget?.physicalPath ?? resolve(mountRoot, parsed.subPath);
     if (!isWithinMount(physicalPath, mountRoot)) {
       throw new Error(`Path "${logicalPath}" resolves outside mount "${mountName}" boundary`);
     }
-    if (physicalPath === mountRoot) {
-      return { physicalPath, mount, targetStats: await lstat(physicalPath) };
+    const relativePath = relative(mountRoot, physicalPath);
+    const segments = relativePath === "" ? [] : relativePath.split(sep);
+    if (segments.some((segment) => !segment || segment === "." || segment === "..")) {
+      throw new Error(`Path "${logicalPath}" contains an unsafe component`);
     }
 
-    const parentRelative = relative(mountRoot, dirname(physicalPath));
-    const parentSegments = parentRelative === "" ? [] : parentRelative.split(sep);
-    let current = mountRoot;
-    for (const segment of parentSegments) {
-      current = join(current, segment);
-      let currentStats = await lstat(current).catch((error: NodeJS.ErrnoException) => {
-        if (error.code === "ENOENT") return null;
-        throw error;
-      });
-      if (!currentStats) {
-        if (!createParents) throw new Error(`Parent directory does not exist for "${logicalPath}"`);
-        await mkdir(current);
-        currentStats = await lstat(current);
-      }
-      if (currentStats.isSymbolicLink()) {
-        throw new Error(
-          `Path "${logicalPath}" resolves outside mount "${mountName}" boundary through a symlink`,
-        );
-      }
-      if (!currentStats.isDirectory()) {
-        throw new Error(`Parent component for "${logicalPath}" is not a directory`);
-      }
-      const canonicalParent = await realpath(current);
-      if (!isWithinMount(canonicalParent, mountRoot)) {
-        throw new Error(`Path "${logicalPath}" resolves outside mount "${mountName}" boundary`);
-      }
+    const rootFd = rootDescriptors.get(mount.name);
+    if (rootFd === undefined) {
+      throw new Error(`filesystem: mount "${mountName}" root descriptor is unavailable`);
     }
-
-    const targetStats = await lstat(physicalPath).catch((error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return null;
+    let currentFd = duplicateFd(rootFd);
+    let skillFolderFd: number | null = null;
+    try {
+      if (!fstatSync(currentFd).isDirectory()) {
+        throw new Error(`filesystem: mount "${mountName}" is not a directory`);
+      }
+      const parentSegments = segments.slice(0, -1);
+      for (const [index, segment] of parentSegments.entries()) {
+        let childFd: number;
+        try {
+          childFd = openAt(currentFd, segment, DIRECTORY_FLAGS);
+        } catch {
+          if (!createParents) {
+            throw new Error(
+              `Parent for "${logicalPath}" is unavailable or resolves outside mount boundary through a symlink`,
+            );
+          }
+          mkdirAt(currentFd, segment, 0o700);
+          try {
+            childFd = openAt(currentFd, segment, DIRECTORY_FLAGS);
+          } catch {
+            throw new Error(
+              `Could not safely create parent for "${logicalPath}": outside mount boundary or symlink`,
+            );
+          }
+        }
+        const childStats = fstatSync(childFd);
+        if (!childStats.isDirectory()) {
+          closeSync(childFd);
+          throw new Error(`Parent component for "${logicalPath}" is not a directory`);
+        }
+        if (mount.name === "skills" && index === 0) {
+          skillFolderFd = duplicateFd(childFd);
+        }
+        closeSync(currentFd);
+        currentFd = childFd;
+      }
+      return {
+        parentFd: currentFd,
+        leaf: segments.at(-1) ?? ".",
+        mount,
+        physicalPath,
+        mountRoot,
+        relativeSegments: segments,
+        skillFolderFd,
+      };
+    } catch (error) {
+      if (skillFolderFd !== null) closeSync(skillFolderFd);
+      closeSync(currentFd);
       throw error;
-    });
-    if (targetStats?.isSymbolicLink()) {
+    }
+  }
+
+  function closeAnchoredParent(target: AnchoredParent): void {
+    if (target.skillFolderFd !== null) closeSync(target.skillFolderFd);
+    closeSync(target.parentFd);
+  }
+
+  async function restrictedSkillTargetError(
+    target: AnchoredParent,
+    openedFd: number,
+    context: ToolExecuteContext | undefined,
+  ): Promise<string | null> {
+    if (target.mount.name !== "skills" || target.relativeSegments.length === 0) return null;
+    const folder = target.relativeSegments[0]!;
+    if (target.skillFolderFd !== null) {
+      const error = restrictedSkillErrorFromFd(target.skillFolderFd, folder, context);
+      await opts.__testHooks?.afterSkillPolicyEvaluated?.();
+      return error;
+    }
+    const openedStats = fstatSync(openedFd);
+    if (!openedStats.isDirectory()) return null;
+    const error = restrictedSkillErrorFromFd(openedFd, folder, context);
+    await opts.__testHooks?.afterSkillPolicyEvaluated?.();
+    return error;
+  }
+
+  function openAnchoredLeaf(target: AnchoredParent, flags: number, mode = 0): number {
+    if (target.leaf === ".") {
+      if ((flags & constants.O_DIRECTORY) === 0) {
+        throw new Error(`Path "${target.physicalPath}" is a directory`);
+      }
+      return duplicateFd(target.parentFd);
+    }
+    try {
+      return openAt(target.parentFd, target.leaf, flags | constants.O_NOFOLLOW | O_CLOEXEC, mode);
+    } catch {
       throw new Error(
-        `Path "${logicalPath}" resolves outside mount "${mountName}" boundary through a symlink`,
+        `Path "${target.physicalPath}" resolves outside mount boundary or is unavailable through a symlink`,
       );
     }
-    const canonicalTarget = await resolveNearestExistingAncestor(physicalPath, mountName);
-    if (!isWithinMount(canonicalTarget, mountRoot)) {
-      throw new Error(`Path "${logicalPath}" resolves outside mount "${mountName}" boundary`);
-    }
+  }
 
-    return { physicalPath, mount, targetStats };
+  async function scanSearchDirectory(
+    rootFd: number,
+    scanOptions: {
+      startsAtSkillsRoot: boolean;
+      pattern: Glob;
+      isExcluded: (path: string) => boolean;
+      cap: number;
+      context: ToolExecuteContext | undefined;
+    },
+  ): Promise<{ results: string[]; truncated: boolean }> {
+    const results: string[] = [];
+    const maxInspectedEntries = 10_000;
+    const maxDepth = 64;
+    let inspectedEntries = 0;
+    let truncated = false;
+
+    const walk = async (
+      directoryFd: number,
+      relativeDirectory: string,
+      depth: number,
+      skillsRoot: boolean,
+    ): Promise<void> => {
+      if (depth > maxDepth) {
+        truncated = true;
+        return;
+      }
+      const listed = listDirectoryFd(
+        directoryFd,
+        Math.max(0, maxInspectedEntries - inspectedEntries),
+      );
+      if (listed.truncated) truncated = true;
+      const names = listed.names.sort((left, right) => left.localeCompare(right));
+      for (const name of names) {
+        throwIfCanceled(scanOptions.context);
+        if (results.length >= scanOptions.cap || inspectedEntries >= maxInspectedEntries) {
+          truncated = true;
+          return;
+        }
+        inspectedEntries++;
+        if (name.startsWith(".")) continue;
+
+        const relativePath = relativeDirectory ? `${relativeDirectory}/${name}` : name;
+        if (scanOptions.isExcluded(relativePath)) continue;
+        const opened = tryOpenAt(
+          directoryFd,
+          name,
+          constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW | O_CLOEXEC,
+        );
+        if ("errno" in opened) continue;
+        try {
+          const stats = fstatSync(opened.fd);
+          if (stats.isDirectory()) {
+            if (skillsRoot) {
+              const restricted = restrictedSkillErrorFromFd(opened.fd, name, scanOptions.context);
+              await opts.__testHooks?.afterSkillPolicyEvaluated?.();
+              if (restricted) continue;
+            }
+            await walk(opened.fd, relativePath, depth + 1, false);
+            continue;
+          }
+          if (!stats.isFile() || stats.nlink !== 1) continue;
+          if (scanOptions.pattern.match(relativePath)) results.push(relativePath);
+        } finally {
+          closeSync(opened.fd);
+        }
+      }
+    };
+
+    await walk(rootFd, "", 0, scanOptions.startsAtSkillsRoot);
+    return { results, truncated };
   }
 
   // --- Tools ---
@@ -482,44 +752,38 @@ export function filesystem(opts: FilesystemOptions): Augment {
     }),
     execute: async ({ path: logicalPath }, context) => {
       throwIfCanceled(context);
-      const { physicalPath, mount } = await resolveAndValidate(logicalPath);
-      const restricted = await restrictedSkillPathError(physicalPath, mount, context);
-      if (restricted) return restricted;
-
-      // Check if it's a symlink pointing outside (extra safety)
-      const lstats = await lstat(physicalPath).catch(() => null);
-      if (lstats?.isSymbolicLink()) {
-        const realTarget = await realpath(physicalPath);
-        const mountRoot = await resolveMountRoot(mount);
-        if (!isWithinMount(realTarget, mountRoot)) {
-          return `Error: Symlink "${logicalPath}" points outside mount boundary`;
-        }
-      }
-
-      throwIfCanceled(context);
-      const handle = await open(physicalPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+      const resolvedTarget = await resolveAndValidate(logicalPath);
+      const target = await openAnchoredParent(logicalPath, undefined, false, resolvedTarget);
+      let fd: number | null = null;
       try {
         throwIfCanceled(context);
-        const stats = await handle.stat();
+        fd = openAnchoredLeaf(target, constants.O_RDONLY | constants.O_NONBLOCK);
+        const restricted = await restrictedSkillTargetError(target, fd, context);
+        if (restricted) return restricted;
+        throwIfCanceled(context);
+        const stats = fstatSync(fd);
         if (!stats.isFile()) {
           if (stats.isDirectory()) {
             return `Error: "${logicalPath}" is a directory. Use fs_list instead.`;
           }
           return `Error: "${logicalPath}" is not a regular file`;
         }
+        if (stats.nlink > 1) {
+          return `Error: "${logicalPath}" has multiple filesystem links`;
+        }
 
         // Binary detection
-        const ext = extname(physicalPath).toLowerCase();
+        const ext = extname(target.physicalPath).toLowerCase();
         if (BINARY_EXTENSIONS.has(ext)) {
           return `Error: Binary file (${ext}, ${formatSize(stats.size)}). Use fs_list to see metadata.`;
         }
 
         // Read from the validated handle so a leaf replacement cannot redirect
         // the operation after the boundary check.
-        const maxRead = mount.maxReadSize ?? DEFAULT_MAX_READ;
+        const maxRead = target.mount.maxReadSize ?? DEFAULT_MAX_READ;
         const buffer = Buffer.allocUnsafe(Math.min(stats.size, maxRead));
         throwIfCanceled(context);
-        const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
+        const bytesRead = readSync(fd, buffer, 0, buffer.byteLength, 0);
         const content = buffer.subarray(0, bytesRead).toString("utf8");
 
         if (stats.size > maxRead) {
@@ -527,7 +791,8 @@ export function filesystem(opts: FilesystemOptions): Augment {
         }
         return content;
       } finally {
-        await handle.close();
+        if (fd !== null) closeSync(fd);
+        closeAnchoredParent(target);
       }
     },
   });
@@ -558,41 +823,39 @@ export function filesystem(opts: FilesystemOptions): Augment {
       if (contentSize > maxWrite) {
         return `Error: Content exceeds max write size (${formatSize(contentSize)} > ${formatSize(maxWrite)})`;
       }
-      const { physicalPath, targetStats } = await resolveMutationTarget(
+      const target = await openAnchoredParent(
         logicalPath,
         (m) => (m.writable ? null : `Mount "${m.name}" is read-only`),
         true,
       );
 
-      throwIfCanceled(context);
-      const handle = await open(
-        physicalPath,
-        constants.O_WRONLY |
-          constants.O_NOFOLLOW |
-          (targetStats ? 0 : constants.O_CREAT | constants.O_EXCL),
-        0o600,
-      );
+      let fd: number | null = null;
       try {
         throwIfCanceled(context);
-        const openedStats = await handle.stat();
+        try {
+          fd = openAnchoredLeaf(target, constants.O_WRONLY | constants.O_NONBLOCK, 0o600);
+        } catch {
+          fd = openAnchoredLeaf(
+            target,
+            constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NONBLOCK,
+            0o600,
+          );
+          fchmodSync(fd, 0o600);
+        }
+        const openedStats = fstatSync(fd);
         if (!openedStats.isFile()) {
           throw new Error(`Path "${logicalPath}" is not a regular file`);
-        }
-        if (
-          targetStats &&
-          (openedStats.dev !== targetStats.dev || openedStats.ino !== targetStats.ino)
-        ) {
-          throw new Error(`Path "${logicalPath}" changed during security validation`);
         }
         if (openedStats.nlink > 1) {
           throw new Error(`Path "${logicalPath}" has multiple filesystem links`);
         }
         throwIfCanceled(context);
-        await handle.truncate(0);
+        ftruncateSync(fd, 0);
         throwIfCanceled(context);
-        await handle.writeFile(content, "utf8");
+        writeFileSync(fd, content, "utf8");
       } finally {
-        await handle.close();
+        if (fd !== null) closeSync(fd);
+        closeAnchoredParent(target);
       }
       return `Written ${formatSize(contentSize)} to "${logicalPath}"`;
     },
@@ -608,75 +871,98 @@ export function filesystem(opts: FilesystemOptions): Augment {
     }),
     execute: async ({ path: logicalPath }, context) => {
       throwIfCanceled(context);
-      const { physicalPath, mount } = await resolveAndValidate(logicalPath);
-      const restricted = await restrictedSkillPathError(physicalPath, mount, context);
-      if (restricted) return restricted;
+      const resolvedTarget = await resolveAndValidate(logicalPath);
+      const target = await openAnchoredParent(logicalPath, undefined, false, resolvedTarget);
+      let fd: number | null = null;
+      try {
+        throwIfCanceled(context);
+        fd = openAnchoredLeaf(
+          target,
+          target.leaf === "."
+            ? constants.O_RDONLY | constants.O_DIRECTORY
+            : constants.O_RDONLY | constants.O_NONBLOCK,
+        );
+        const stats = fstatSync(fd);
+        const restricted = await restrictedSkillTargetError(target, fd, context);
+        if (restricted) return restricted;
+        await opts.__testHooks?.afterListTargetOpened?.();
+        throwIfCanceled(context);
+        if (!stats.isDirectory()) {
+          if (!stats.isFile() || stats.nlink > 1) {
+            throw new Error(`Path "${logicalPath}" is not a regular single-link file`);
+          }
+          return JSON.stringify({
+            path: logicalPath,
+            type: "file",
+            size: stats.size,
+            sizeFormatted: formatSize(stats.size),
+            modified: stats.mtime.toISOString(),
+          });
+        }
 
-      throwIfCanceled(context);
-      const stats = await stat(physicalPath);
-      if (!stats.isDirectory()) {
-        // Single file stat
-        return JSON.stringify({
-          path: logicalPath,
-          type: "file",
-          size: stats.size,
-          sizeFormatted: formatSize(stats.size),
-          modified: stats.mtime.toISOString(),
+        const listingSkillsRoot =
+          target.mount.name === "skills" && target.relativeSegments.length === 0;
+        const listed = listDirectoryFd(fd, DEFAULT_LIST_LIMIT);
+        const results = [];
+        for (const name of listed.names) {
+          if (name.startsWith(".") && name !== ".gitignore") continue;
+          throwIfCanceled(context);
+
+          const opened = tryOpenAt(
+            fd,
+            name,
+            constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW | O_CLOEXEC,
+          );
+          if ("errno" in opened) {
+            if (listingSkillsRoot && effectiveTrustLevel(context) !== "creator") {
+              continue;
+            }
+            results.push({
+              name,
+              type: opened.errno === osConstants.errno.ELOOP ? "symlink" : "unknown",
+            });
+            continue;
+          }
+          try {
+            const entryStats = fstatSync(opened.fd);
+            if (listingSkillsRoot && entryStats.isDirectory()) {
+              const restrictedEntry = restrictedSkillErrorFromFd(opened.fd, name, context);
+              if (restrictedEntry) continue;
+            }
+            if (entryStats.isDirectory()) {
+              results.push({
+                name,
+                type: "dir",
+                modified: entryStats.mtime.toISOString(),
+              });
+            } else if (entryStats.isFile() && entryStats.nlink === 1) {
+              results.push({
+                name,
+                type: "file",
+                size: entryStats.size,
+                sizeFormatted: formatSize(entryStats.size),
+                modified: entryStats.mtime.toISOString(),
+              });
+            } else {
+              results.push({ name, type: "unknown" });
+            }
+          } finally {
+            closeSync(opened.fd);
+          }
+        }
+
+        // Sort: directories first, then files, alphabetical within each.
+        results.sort((a, b) => {
+          if (a.type === "dir" && b.type !== "dir") return -1;
+          if (a.type !== "dir" && b.type === "dir") return 1;
+          return a.name.localeCompare(b.name);
         });
+
+        return JSON.stringify({ path: logicalPath, entries: results, truncated: listed.truncated });
+      } finally {
+        if (fd !== null) closeSync(fd);
+        closeAnchoredParent(target);
       }
-
-      const listingRootFolder = await skillFolderFromPhysicalPath(mount, physicalPath);
-      const entries = await readdir(physicalPath, { withFileTypes: true });
-      throwIfCanceled(context);
-      const results = await Promise.all(
-        entries
-          .filter((e) => !e.name.startsWith(".") || e.name === ".gitignore")
-          .map(async (entry) => {
-            throwIfCanceled(context);
-            if (mount.name === "skills" && listingRootFolder === null) {
-              const entryPath = await canonicalCandidatePath(mount, join(physicalPath, entry.name));
-              const restrictedEntry = await restrictedSkillPathError(entryPath, mount, context);
-              if (restrictedEntry) return null;
-            }
-            const entryPath = join(physicalPath, entry.name);
-            try {
-              const entryStats = await lstat(entryPath);
-              if (entryStats.isSymbolicLink()) {
-                try {
-                  await canonicalCandidatePath(mount, entryPath);
-                } catch {
-                  return {
-                    name: entry.name,
-                    type: "symlink",
-                  };
-                }
-              }
-              const s = entryStats.isSymbolicLink() ? await stat(entryPath) : entryStats;
-              return {
-                name: entry.name,
-                type: s.isDirectory() ? "dir" : entryStats.isSymbolicLink() ? "symlink" : "file",
-                size: s.isDirectory() ? undefined : s.size,
-                sizeFormatted: s.isDirectory() ? undefined : formatSize(s.size),
-                modified: s.mtime.toISOString(),
-              };
-            } catch {
-              return {
-                name: entry.name,
-                type: "unknown",
-              };
-            }
-          }),
-      );
-      const visibleResults = results.filter((entry) => entry !== null);
-
-      // Sort: directories first, then files, alphabetical within each
-      visibleResults.sort((a, b) => {
-        if (a.type === "dir" && b.type !== "dir") return -1;
-        if (a.type !== "dir" && b.type === "dir") return 1;
-        return a.name.localeCompare(b.name);
-      });
-
-      return JSON.stringify({ path: logicalPath, entries: visibleResults });
     },
   });
 
@@ -690,23 +976,24 @@ export function filesystem(opts: FilesystemOptions): Augment {
     }),
     execute: async ({ path: logicalPath }, context) => {
       throwIfCanceled(context);
-      const { physicalPath, mount, targetStats } = await resolveMutationTarget(
+      const target = await openAnchoredParent(
         logicalPath,
         (m) => (m.writable ? null : `Mount "${m.name}" is read-only`),
         true,
       );
-      if (!targetStats) {
-        throwIfCanceled(context);
-        await mkdir(physicalPath);
-      }
-      throwIfCanceled(context);
-      const createdStats = await lstat(physicalPath);
-      if (createdStats.isSymbolicLink() || !createdStats.isDirectory()) {
-        throw new Error(`Path "${logicalPath}" is not a safe directory`);
-      }
-      const mountRoot = await resolveMountRoot(mount);
-      if (!isWithinMount(await realpath(physicalPath), mountRoot)) {
-        throw new Error(`Path "${logicalPath}" resolves outside mount "${mount.name}" boundary`);
+      let fd: number | null = null;
+      try {
+        if (target.leaf !== ".") {
+          throwIfCanceled(context);
+          mkdirAt(target.parentFd, target.leaf, 0o700);
+        }
+        fd = openAnchoredLeaf(target, constants.O_RDONLY | constants.O_DIRECTORY);
+        if (!fstatSync(fd).isDirectory()) {
+          throw new Error(`Path "${logicalPath}" is not a safe directory`);
+        }
+      } finally {
+        if (fd !== null) closeSync(fd);
+        closeAnchoredParent(target);
       }
       return `Created directory "${logicalPath}"`;
     },
@@ -722,7 +1009,7 @@ export function filesystem(opts: FilesystemOptions): Augment {
     }),
     execute: async ({ path: logicalPath }, context) => {
       throwIfCanceled(context);
-      const { physicalPath, mount } = await resolveMutationTarget(
+      const target = await openAnchoredParent(
         logicalPath,
         (m) => {
           if (!m.writable) return `Mount "${m.name}" is read-only`;
@@ -732,28 +1019,33 @@ export function filesystem(opts: FilesystemOptions): Augment {
         false,
       );
 
-      // Prevent deleting the mount root itself before the empty-directory
-      // branch can remove it.
-      const mountRoot = await resolveMountRoot(mount);
-      if (physicalPath === mountRoot) {
-        return `Error: Cannot delete mount root "${mount.name}"`;
-      }
-
-      const stats = await stat(physicalPath);
-      if (stats.isDirectory()) {
-        // Only remove empty directories
-        const entries = await readdir(physicalPath);
-        if (entries.length > 0) {
-          return `Error: Directory "${logicalPath}" is not empty (${entries.length} entries). Remove contents first.`;
+      let fd: number | null = null;
+      try {
+        if (target.leaf === ".") {
+          return `Error: Cannot delete mount root "${target.mount.name}"`;
         }
         throwIfCanceled(context);
-        await rm(physicalPath, { recursive: false });
-        return `Removed empty directory "${logicalPath}"`;
+        fd = openAnchoredLeaf(target, constants.O_RDONLY | constants.O_NONBLOCK);
+        const stats = fstatSync(fd);
+        if (!stats.isFile() && !stats.isDirectory()) {
+          return `Error: "${logicalPath}" is not a regular file or directory`;
+        }
+        closeSync(fd);
+        fd = null;
+        throwIfCanceled(context);
+        if (!unlinkAt(target.parentFd, target.leaf, stats.isDirectory())) {
+          if (stats.isDirectory()) {
+            return `Error: Directory "${logicalPath}" is not empty or changed during removal`;
+          }
+          return `Error: File "${logicalPath}" changed during removal`;
+        }
+        return stats.isDirectory()
+          ? `Removed empty directory "${logicalPath}"`
+          : `Removed file "${logicalPath}"`;
+      } finally {
+        if (fd !== null) closeSync(fd);
+        closeAnchoredParent(target);
       }
-
-      throwIfCanceled(context);
-      await rm(physicalPath);
-      return `Removed file "${logicalPath}"`;
     },
   });
 
@@ -769,49 +1061,44 @@ export function filesystem(opts: FilesystemOptions): Augment {
     }),
     execute: async ({ path: logicalPath, pattern, maxResults }, context) => {
       throwIfCanceled(context);
-      const { physicalPath, mount } = await resolveAndValidate(logicalPath);
-      const restricted = await restrictedSkillPathError(physicalPath, mount, context);
-      if (restricted) return restricted;
       if (isAbsolute(pattern) || pattern.split(/[\\/]+/).some((segment) => segment === "..")) {
         throw new Error(`Search pattern "${pattern}" may not leave the mount boundary`);
       }
-      const cap = Math.min(maxResults ?? 100, 1000);
-
-      const excludes = mount.searchExcludes ?? DEFAULT_SEARCH_EXCLUDES;
-      const isExcluded = createPathExcluder(excludes);
-
-      const glob = new Glob(pattern);
-      const results: string[] = [];
-
-      for await (const entry of glob.scan({
-        cwd: physicalPath,
-        absolute: false,
-        dot: false,
-      })) {
-        throwIfCanceled(context);
-        const candidatePath = await canonicalCandidatePath(mount, join(physicalPath, entry));
-        if (mount.name === "skills") {
-          const restrictedEntry = await restrictedSkillPathError(candidatePath, mount, context);
-          if (restrictedEntry) continue;
+      if (Buffer.byteLength(pattern, "utf8") > 1024) {
+        throw new Error("Search pattern exceeds the 1024-byte limit");
+      }
+      const cap = Math.min(Math.max(Math.trunc(maxResults ?? 100), 1), 1000);
+      const resolvedTarget = await resolveAndValidate(logicalPath);
+      const target = await openAnchoredParent(logicalPath, undefined, false, resolvedTarget);
+      let directoryFd: number | null = null;
+      try {
+        directoryFd = openAnchoredLeaf(target, constants.O_RDONLY | constants.O_DIRECTORY);
+        const restricted = await restrictedSkillTargetError(target, directoryFd, context);
+        if (restricted) return restricted;
+        const scanned = await scanSearchDirectory(directoryFd, {
+          startsAtSkillsRoot:
+            target.mount.name === "skills" && target.relativeSegments.length === 0,
+          pattern: new Glob(pattern),
+          isExcluded: createPathExcluder(target.mount.searchExcludes ?? DEFAULT_SEARCH_EXCLUDES),
+          cap,
+          context,
+        });
+        if (scanned.results.length === 0) {
+          return `No files matching "${pattern}" in "${logicalPath}"`;
         }
-        if (isExcluded(entry)) continue;
-
-        results.push(`${logicalPath}/${entry}`);
-        if (results.length >= cap) break;
+        const prefix = logicalPath.replace(/\/+$/, "");
+        const results = scanned.results.map((entry) => `${prefix}/${entry}`);
+        return JSON.stringify({
+          pattern,
+          searchPath: logicalPath,
+          results,
+          count: results.length,
+          truncated: scanned.truncated,
+        });
+      } finally {
+        if (directoryFd !== null) closeSync(directoryFd);
+        closeAnchoredParent(target);
       }
-
-      if (results.length === 0) {
-        return `No files matching "${pattern}" in "${logicalPath}"`;
-      }
-
-      const truncated = results.length >= cap;
-      return JSON.stringify({
-        pattern,
-        searchPath: logicalPath,
-        results,
-        count: results.length,
-        truncated,
-      });
     },
   });
 
@@ -887,6 +1174,8 @@ export function filesystem(opts: FilesystemOptions): Augment {
     tools: [fsRead, fsWrite, fsList, fsMkdir, fsRemove, fsSearch],
 
     async onBoot() {
+      lifecycleEpoch += 1;
+      acceptingOperations = true;
       // Resolve and cache all mount roots at boot
       for (const mount of opts.mounts) {
         mountMap.set(mount.name, mount);
@@ -903,6 +1192,26 @@ export function filesystem(opts: FilesystemOptions): Augment {
           console.warn(`filesystem: failed to load SKILL.md from "${opts.skillFile}": ${err}`);
         }
       }
+    },
+
+    async onShutdown() {
+      // Flip the lifecycle boundary before closing any pinned root. An
+      // operation already holding its own duplicated descriptor may finish on
+      // that pinned object, but a suspended acquisition must never reopen a
+      // replacement pathname after shutdown begins.
+      acceptingOperations = false;
+      lifecycleEpoch += 1;
+      for (const fd of rootDescriptors.values()) {
+        try {
+          closeSync(fd);
+        } catch {
+          // Shutdown is best-effort; descriptors may already be closed by a
+          // process-level teardown.
+        }
+      }
+      rootDescriptors.clear();
+      resolvedRoots.clear();
+      mountMap.clear();
     },
 
     context:
@@ -941,14 +1250,43 @@ export function filesystem(opts: FilesystemOptions): Augment {
 
             try {
               const query = turnQuery(turn);
+              await resolveMountRoot(awarenessMount);
+              const rootFd = rootDescriptors.get(awarenessMount.name);
+              if (rootFd === undefined) {
+                throw new Error(
+                  `filesystem: mount "${awarenessMount.name}" root descriptor is unavailable`,
+                );
+              }
               const catalog = await scanWorkspaceCatalog({
                 mountName: awarenessMount.name,
-                rootPath: await resolveMountRoot(awarenessMount),
+                rootFd,
                 query,
                 maxEntries: opts.workspaceAwareness?.maxEntries,
                 scanLimit: opts.workspaceAwareness?.scanLimit,
                 maxDepth: opts.workspaceAwareness?.maxDepth,
                 excludes: awarenessMount.searchExcludes ?? DEFAULT_SEARCH_EXCLUDES,
+                ...(awarenessMount.name === "skills"
+                  ? {
+                      allowDirectory: async ({
+                        fd,
+                        name,
+                        depth,
+                      }: {
+                        fd: number;
+                        name: string;
+                        depth: number;
+                      }) => {
+                        if (depth !== 1) return true;
+                        const restricted = restrictedSkillErrorForTrust(
+                          fd,
+                          name,
+                          trustLevel ?? "creator",
+                        );
+                        await opts.__testHooks?.afterSkillPolicyEvaluated?.();
+                        return restricted === null;
+                      },
+                    }
+                  : {}),
               });
               blocks.push({
                 source: "filesystem-workspace-catalog",

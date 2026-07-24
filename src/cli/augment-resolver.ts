@@ -425,7 +425,7 @@ function resolveWebTransport(
   },
 ): Augment {
   const vtBase = opts.visitorTokens as
-    | { enabled?: boolean; ttlSeconds?: number; signingKey?: string; agentBinding?: string }
+    | { enabled?: boolean; signingKey?: string; agentBinding?: string }
     | undefined;
   return webTransport({
     port: opts.port as number,
@@ -440,7 +440,7 @@ function resolveWebTransport(
     access: opts.access as { agents?: Array<{ id: string; sharedSecret: string }> } | undefined,
     concurrency: opts.concurrency as number | undefined,
     maxQueueDepth: opts.maxQueueDepth as number | undefined,
-    rateLimitPerPeer: opts.rateLimitPerPeer as { maxPerMinute: number } | undefined,
+    rateLimitPerPeer: opts.rateLimitPerPeer as WebTransportOptions["rateLimitPerPeer"],
     visitorTokens: vtBase
       ? {
           ...vtBase,
@@ -808,310 +808,323 @@ export async function resolveAugments(
     }
   }
 
-  for (const config of configs) {
-    const opts = config.options ?? {};
-    let augment: Augment;
+  try {
+    for (const config of configs) {
+      const opts = config.options ?? {};
+      let augment: Augment;
 
-    switch (config.type) {
-      case "fileMemory":
-        augment = resolveFileMemory(opts, agentDir);
-        break;
-      case "supabaseMemory":
-        augment = await resolveSupabaseMemory(opts);
-        break;
-      case "layeredMemory":
-        augment = await resolveLayeredMemory(opts, agentDir, resolverOpts.runtimeDataRoot);
-        break;
-      case "filesystem":
-        augment = resolveFilesystem(opts, agentDir);
-        break;
-      case "webTransport":
-        augment = resolveWebTransport(
-          opts,
-          agentDir,
-          overrideDir,
-          resolverOpts.runtimeDataRoot,
-          resolverOpts.creator,
-          lateBindings,
-        );
-        break;
-      case "webFetch":
-        augment = resolveWebFetch(opts);
-        break;
-      case "knowledge":
-        augment = knowledgeRoot({
-          root: resolvePath((opts.root as string | undefined) ?? "./knowledge", agentDir),
-          cacheTtlMs: opts.cacheTtlMs as number | undefined,
-          allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials as
-            | boolean
-            | undefined,
-        });
-        break;
-      case "skills":
-        augment = resolveSkills(opts, agentDir);
-        break;
-      case "bash":
-        augment = resolveBash(opts, agentDir);
-        break;
-      case "budgets": {
-        const { budgets } = await import("../augments/budgets");
-        const dbPath = (opts.dbPath as string | undefined) ?? "./budgets.db";
-        const notifications = opts.notifications as BudgetsAugmentOptions["notifications"];
-        if (notifications && notifications.enabled !== false) {
-          if (!notifyDestinationNames.has(notifications.destination)) {
-            throw new Error(
-              `[augment-resolver] budgets.notifications.destination "${notifications.destination}" does not match any notify destination. Mount notify and add a destination with that name, or disable budgets.notifications.`,
-            );
-          }
-        }
-        augment = budgets({
-          dbPath: resolveSqlitePath(
-            dbPath,
+      switch (config.type) {
+        case "fileMemory":
+          augment = resolveFileMemory(opts, agentDir);
+          break;
+        case "supabaseMemory":
+          augment = await resolveSupabaseMemory(opts);
+          break;
+        case "layeredMemory":
+          augment = await resolveLayeredMemory(opts, agentDir, resolverOpts.runtimeDataRoot);
+          break;
+        case "filesystem":
+          augment = resolveFilesystem(opts, agentDir);
+          break;
+        case "webTransport":
+          augment = resolveWebTransport(
+            opts,
             agentDir,
+            overrideDir,
             resolverOpts.runtimeDataRoot,
-            "budgets dbPath",
-          ),
-          agentDir,
-          overrideDir,
-          caps: opts.caps as BudgetsAugmentOptions["caps"],
-          anonymousGlobalLimit: opts.anonymousGlobalLimit as number | undefined,
-          dailyBudgetUsd: opts.dailyBudgetUsd as number | undefined,
-          cleanupWindowMs: opts.cleanupWindowMs as number | undefined,
-          retentionDays: opts.retentionDays as number | undefined,
-          notifications,
-          notificationDispatcher:
-            notifications && notifications.enabled !== false
-              ? dispatchBudgetNotification
-              : undefined,
-        });
-        break;
-      }
-      case "notify": {
-        augment = notify({
-          destinations: opts.destinations as NotifyAugmentOptions["destinations"],
-          rateLimit: opts.rateLimit as NotifyAugmentOptions["rateLimit"],
-          overrideDir,
-        });
-        break;
-      }
-      case "mcp":
-        augment = mcp({
-          agentDir,
-          config: opts.config as string | undefined,
-          timeoutMs: opts.timeoutMs as number | undefined,
-          maxResultBytes: opts.maxResultBytes as number | undefined,
-          maxSchemaBytes: opts.maxSchemaBytes as number | undefined,
-          maxConcurrentCalls: opts.maxConcurrentCalls as number | undefined,
-        });
-        break;
-      case "agentMail": {
-        const rawDbPath = (opts.dbPath as string | undefined) ?? "./agent-mail.db";
-        let stateDir: string | undefined;
-        let dbPath: string;
-
-        if (resolverOpts.runtimeDataRoot !== undefined) {
-          // Config parsing normally enforces this pattern. Repeat it here
-          // because callers may construct AugmentConfig objects directly.
-          if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(config.name)) {
-            throw new Error(
-              `[augment-resolver] agentMail augment name "${config.name}" is not a safe state namespace`,
-            );
-          }
-          const agentMailRoot = resolve(resolverOpts.runtimeDataRoot, "agent-mail");
-          stateDir = resolve(agentMailRoot, config.name);
-          dbPath = resolveContainedPath(rawDbPath, stateDir, `agentMail "${config.name}" dbPath`);
-          ensureDurableDirectoryChain(
-            resolverOpts.runtimeDataRoot,
-            dirname(dbPath),
-            `agentMail "${config.name}" state path`,
+            resolverOpts.creator,
+            lateBindings,
           );
-        } else {
-          // Locally, keep state beside agent.yaml and root relative database
-          // paths at that same agent project directory.
-          dbPath = resolvePath(rawDbPath, agentDir);
-        }
-
-        augment = agentMail({
-          apiKey: opts.apiKey as string,
-          inboxId: opts.inboxId as string,
-          apiBaseUrl: opts.apiBaseUrl as string | undefined,
-          allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials as
-            | boolean
-            | undefined,
-          dbPath,
-          outbound: opts.outbound as AgentMailAugmentOptions["outbound"],
-          inbound: opts.inbound as AgentMailAugmentOptions["inbound"],
-          agentDir,
-          stateDir,
-          overrideDir,
-        });
-        break;
-      }
-      case "telegramTransport": {
-        const replay = opts.replay as TelegramTransportOptions["replay"] | undefined;
-        augment = telegramTransport({
-          ...(opts as unknown as TelegramTransportOptions),
-          creator: resolverOpts.creator,
-          replay: {
-            ...replay,
+          break;
+        case "webFetch":
+          augment = resolveWebFetch(opts);
+          break;
+        case "knowledge":
+          augment = knowledgeRoot({
+            root: resolvePath((opts.root as string | undefined) ?? "./knowledge", agentDir),
+            cacheTtlMs: opts.cacheTtlMs as number | undefined,
+            allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials as
+              | boolean
+              | undefined,
+          });
+          break;
+        case "skills":
+          augment = resolveSkills(opts, agentDir);
+          break;
+        case "bash":
+          augment = resolveBash(opts, agentDir);
+          break;
+        case "budgets": {
+          const { budgets } = await import("../augments/budgets");
+          const dbPath = (opts.dbPath as string | undefined) ?? "./budgets.db";
+          const notifications = opts.notifications as BudgetsAugmentOptions["notifications"];
+          if (notifications && notifications.enabled !== false) {
+            if (!notifyDestinationNames.has(notifications.destination)) {
+              throw new Error(
+                `[augment-resolver] budgets.notifications.destination "${notifications.destination}" does not match any notify destination. Mount notify and add a destination with that name, or disable budgets.notifications.`,
+              );
+            }
+          }
+          augment = budgets({
             dbPath: resolveSqlitePath(
-              replay?.dbPath ?? "./data/telegram-replay.db",
+              dbPath,
               agentDir,
               resolverOpts.runtimeDataRoot,
-              `telegramTransport "${config.name}" replay.dbPath`,
+              "budgets dbPath",
             ),
-          },
-        });
-        break;
-      }
-      case "turnControl":
-        augment = turnControl(opts as TurnControlOptions);
-        break;
-      case "visitorAuth":
-        augment = resolveVisitorAuth(opts, agentDir, resolverOpts.runtimeDataRoot);
-        break;
-      case "link":
-        augment = await resolveLink(opts, agentDir);
-        break;
-      case "custom":
-        augment = await resolveCustom(config, agentDir);
-        break;
-      default:
-        throw new Error(`Unknown augment type: "${config.type}"`);
-    }
+            agentDir,
+            overrideDir,
+            caps: opts.caps as BudgetsAugmentOptions["caps"],
+            anonymousGlobalLimit: opts.anonymousGlobalLimit as number | undefined,
+            dailyBudgetUsd: opts.dailyBudgetUsd as number | undefined,
+            cleanupWindowMs: opts.cleanupWindowMs as number | undefined,
+            retentionDays: opts.retentionDays as number | undefined,
+            notifications,
+            notificationDispatcher:
+              notifications && notifications.enabled !== false
+                ? dispatchBudgetNotification
+                : undefined,
+          });
+          break;
+        }
+        case "notify": {
+          augment = notify({
+            destinations: opts.destinations as NotifyAugmentOptions["destinations"],
+            rateLimit: opts.rateLimit as NotifyAugmentOptions["rateLimit"],
+            overrideDir,
+          });
+          break;
+        }
+        case "mcp":
+          augment = mcp({
+            agentDir,
+            config: opts.config as string | undefined,
+            timeoutMs: opts.timeoutMs as number | undefined,
+            maxResultBytes: opts.maxResultBytes as number | undefined,
+            maxSchemaBytes: opts.maxSchemaBytes as number | undefined,
+            maxConcurrentCalls: opts.maxConcurrentCalls as number | undefined,
+          });
+          break;
+        case "agentMail": {
+          const rawDbPath = (opts.dbPath as string | undefined) ?? "./agent-mail.db";
+          let stateDir: string | undefined;
+          let dbPath: string;
 
-    // Override the auto-generated augment name with the operator's choice.
-    augment = { ...augment, name: config.name };
-    if (config.type === "notify") {
-      const notifyTool = augment.tools?.find((tool) => tool.name === "notify");
-      if (notifyTool) {
-        const destinations =
-          (config.options?.destinations as Array<Record<string, unknown>> | undefined) ?? [];
-        for (const destination of destinations) {
-          if (typeof destination.name === "string") {
-            notifyExecutorsByDestination.set(destination.name, notifyTool.execute);
+          if (resolverOpts.runtimeDataRoot !== undefined) {
+            // Config parsing normally enforces this pattern. Repeat it here
+            // because callers may construct AugmentConfig objects directly.
+            if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(config.name)) {
+              throw new Error(
+                `[augment-resolver] agentMail augment name "${config.name}" is not a safe state namespace`,
+              );
+            }
+            const agentMailRoot = resolve(resolverOpts.runtimeDataRoot, "agent-mail");
+            stateDir = resolve(agentMailRoot, config.name);
+            dbPath = resolveContainedPath(rawDbPath, stateDir, `agentMail "${config.name}" dbPath`);
+            ensureDurableDirectoryChain(
+              resolverOpts.runtimeDataRoot,
+              dirname(dbPath),
+              `agentMail "${config.name}" state path`,
+            );
+          } else {
+            // Locally, keep state beside agent.yaml and root relative database
+            // paths at that same agent project directory.
+            dbPath = resolvePath(rawDbPath, agentDir);
+          }
+
+          augment = agentMail({
+            apiKey: opts.apiKey as string,
+            inboxId: opts.inboxId as string,
+            apiBaseUrl: opts.apiBaseUrl as string | undefined,
+            allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials as
+              | boolean
+              | undefined,
+            dbPath,
+            outbound: opts.outbound as AgentMailAugmentOptions["outbound"],
+            inbound: opts.inbound as AgentMailAugmentOptions["inbound"],
+            agentDir,
+            stateDir,
+            overrideDir,
+          });
+          break;
+        }
+        case "telegramTransport": {
+          const replay = opts.replay as TelegramTransportOptions["replay"] | undefined;
+          augment = telegramTransport({
+            ...(opts as unknown as TelegramTransportOptions),
+            creator: resolverOpts.creator,
+            replay: {
+              ...replay,
+              dbPath: resolveSqlitePath(
+                replay?.dbPath ?? "./data/telegram-replay.db",
+                agentDir,
+                resolverOpts.runtimeDataRoot,
+                `telegramTransport "${config.name}" replay.dbPath`,
+              ),
+            },
+          });
+          break;
+        }
+        case "turnControl":
+          augment = turnControl(opts as TurnControlOptions);
+          break;
+        case "visitorAuth":
+          augment = resolveVisitorAuth(opts, agentDir, resolverOpts.runtimeDataRoot);
+          break;
+        case "link":
+          augment = await resolveLink(opts, agentDir);
+          break;
+        case "custom":
+          augment = await resolveCustom(config, agentDir);
+          break;
+        default:
+          throw new Error(`Unknown augment type: "${config.type}"`);
+      }
+
+      // Override the auto-generated augment name with the operator's choice.
+      augment = { ...augment, name: config.name };
+      if (config.type === "notify") {
+        const notifyTool = augment.tools?.find((tool) => tool.name === "notify");
+        if (notifyTool) {
+          const destinations =
+            (config.options?.destinations as Array<Record<string, unknown>> | undefined) ?? [];
+          for (const destination of destinations) {
+            if (typeof destination.name === "string") {
+              notifyExecutorsByDestination.set(destination.name, notifyTool.execute);
+            }
           }
         }
       }
+      augments.push(augment);
     }
-    augments.push(augment);
-  }
 
-  // Fix C1: wire the visitorAuth revocation check into webTransport's
-  // deferred closure. The closure was passed to webTransport during the loop
-  // (before visitorAuth was necessarily resolved); populating lateBindings
-  // now makes the check active for all subsequent requests.
-  //
-  // Use index-based lookup (configs[i] → augments[i]) instead of name-based
-  // search so that operator-renamed visitorAuth augments (e.g. `name: my-auth`
-  // in agent.yaml) still get wired correctly. The `.name` property is
-  // overwritten with the config name at line 396 after each factory returns,
-  // so `augments.find(a => a.name === "visitor-auth")` would fail for any
-  // non-default name and silently disable revocation.
-  const vaIdx = configs.findIndex((c) => c.type === "visitorAuth");
-  const va = vaIdx >= 0 ? (augments[vaIdx] as Augment & VisitorAuthAugmentExtras) : undefined;
-  if (va?.isVisitorRevoked) {
-    lateBindings.revocationCheck = va.isVisitorRevoked.bind(va);
-  }
-  if (va?.resolveVisitorIdentity) {
-    lateBindings.identityLookup = va.resolveVisitorIdentity.bind(va);
-  }
-  if (va?.canPromoteAnonymousThread) {
-    lateBindings.threadPromotionCheck = va.canPromoteAnonymousThread.bind(va);
-  }
+    // Fix C1: wire the visitorAuth revocation check into webTransport's
+    // deferred closure. The closure was passed to webTransport during the loop
+    // (before visitorAuth was necessarily resolved); populating lateBindings
+    // now makes the check active for all subsequent requests.
+    //
+    // Use index-based lookup (configs[i] → augments[i]) instead of name-based
+    // search so that operator-renamed visitorAuth augments (e.g. `name: my-auth`
+    // in agent.yaml) still get wired correctly. The `.name` property is
+    // overwritten with the config name at line 396 after each factory returns,
+    // so `augments.find(a => a.name === "visitor-auth")` would fail for any
+    // non-default name and silently disable revocation.
+    const vaIdx = configs.findIndex((c) => c.type === "visitorAuth");
+    const va = vaIdx >= 0 ? (augments[vaIdx] as Augment & VisitorAuthAugmentExtras) : undefined;
+    if (va?.isVisitorRevoked) {
+      lateBindings.revocationCheck = va.isVisitorRevoked.bind(va);
+    }
+    if (va?.resolveVisitorIdentity) {
+      lateBindings.identityLookup = va.resolveVisitorIdentity.bind(va);
+    }
+    if (va?.canPromoteAnonymousThread) {
+      lateBindings.threadPromotionCheck = va.canPromoteAnonymousThread.bind(va);
+    }
 
-  // Fix F18: throw when multiple visitorAuth augments are declared.
-  // Both would attempt to register GET/POST /visitor-auth/verify routes
-  // (the route-collector hard-fails on duplicate registration anyway), and
-  // only the first's revocation state would be visible to webTransport.
-  // A hard error here is more honest than a warning for a state that's
-  // unreachable at runtime.
-  const vaCount = configs.filter((c) => c.type === "visitorAuth").length;
-  if (vaCount > 1) {
-    throw new Error(
-      `[augment-resolver] Multiple visitorAuth augments declared (${vaCount}). visitorAuth is supported as a single instance per agent — both would attempt to register GET/POST /visitor-auth/verify routes (rejected by route-collector) and only the first's revocation state would be visible to webTransport. Declare exactly one visitorAuth augment.`,
-    );
-  }
+    // Fix F18: throw when multiple visitorAuth augments are declared.
+    // Both would attempt to register GET/POST /visitor-auth/verify routes
+    // (the route-collector hard-fails on duplicate registration anyway), and
+    // only the first's revocation state would be visible to webTransport.
+    // A hard error here is more honest than a warning for a state that's
+    // unreachable at runtime.
+    const vaCount = configs.filter((c) => c.type === "visitorAuth").length;
+    if (vaCount > 1) {
+      throw new Error(
+        `[augment-resolver] Multiple visitorAuth augments declared (${vaCount}). visitorAuth is supported as a single instance per agent — both would attempt to register GET/POST /visitor-auth/verify routes (rejected by route-collector) and only the first's revocation state would be visible to webTransport. Declare exactly one visitorAuth augment.`,
+      );
+    }
 
-  // Fix H3: cross-augment validation — visitorAuth.agentBinding MUST be
-  // explicitly configured and match the effective
-  // webTransport.visitorTokens.agentBinding when both augments are present.
-  // The resolver may inject that explicit visitorAuth value into webTransport,
-  // just as it injects the shared signing key. The web runtime's secure omitted
-  // default is its registered agent namespace, which the standalone
-  // visitorAuth factory cannot derive. Treating two omitted values as the
-  // legacy shared "auggy" audience would make credentials replayable across
-  // agents sharing a key.
-  const vaConfig = configs.find((c) => c.type === "visitorAuth");
-  const wtConfigs = configs.filter((c) => c.type === "webTransport");
-  if (vaConfig) {
-    const configuredVaBinding = (vaConfig.options as Record<string, unknown> | undefined)
-      ?.agentBinding as string | undefined;
-    for (const wtConfig of wtConfigs) {
-      const configuredSecurityNamespace = (wtConfig.options as Record<string, unknown> | undefined)
-        ?.securityNamespace as string | undefined;
-      const configuredWtBinding = (
-        (wtConfig.options as Record<string, unknown> | undefined)?.visitorTokens as
-          | Record<string, unknown>
-          | undefined
-      )?.agentBinding as string | undefined;
-      const visitorTokensEnabled =
-        (
+    // Fix H3: cross-augment validation — visitorAuth.agentBinding MUST be
+    // explicitly configured and match the effective
+    // webTransport.visitorTokens.agentBinding when both augments are present.
+    // The resolver may inject that explicit visitorAuth value into webTransport,
+    // just as it injects the shared signing key. The web runtime's secure omitted
+    // default is its registered agent namespace, which the standalone
+    // visitorAuth factory cannot derive. Treating two omitted values as the
+    // legacy shared "auggy" audience would make credentials replayable across
+    // agents sharing a key.
+    const vaConfig = configs.find((c) => c.type === "visitorAuth");
+    const wtConfigs = configs.filter((c) => c.type === "webTransport");
+    if (vaConfig) {
+      const configuredVaBinding = (vaConfig.options as Record<string, unknown> | undefined)
+        ?.agentBinding as string | undefined;
+      for (const wtConfig of wtConfigs) {
+        const configuredSecurityNamespace = (
+          wtConfig.options as Record<string, unknown> | undefined
+        )?.securityNamespace as string | undefined;
+        const configuredWtBinding = (
           (wtConfig.options as Record<string, unknown> | undefined)?.visitorTokens as
             | Record<string, unknown>
             | undefined
-        )?.enabled !== false;
-      if (!visitorTokensEnabled) continue;
-      if (
-        configuredVaBinding === undefined ||
-        configuredWtBinding === undefined ||
-        configuredVaBinding !== configuredWtBinding ||
-        (configuredSecurityNamespace !== undefined &&
-          configuredSecurityNamespace !== configuredVaBinding)
-      ) {
-        throw new Error(
-          `Cross-augment config mismatch: visitorAuth.agentBinding (${configuredVaBinding ?? "unset"}) ` +
-            `must be explicitly configured and match webTransport "${wtConfig.name}" visitorTokens.agentBinding (${configuredWtBinding ?? "unset"}) ` +
-            `and securityNamespace (${configuredSecurityNamespace ?? "unset"}). ` +
-            `Set visitorAuth.agentBinding to a stable value (e.g., \${AUGGY_AGENT_ID}); the resolver injects it into webTransport when omitted.`,
-        );
+        )?.agentBinding as string | undefined;
+        const visitorTokensEnabled =
+          (
+            (wtConfig.options as Record<string, unknown> | undefined)?.visitorTokens as
+              | Record<string, unknown>
+              | undefined
+          )?.enabled !== false;
+        if (!visitorTokensEnabled) continue;
+        if (
+          configuredVaBinding === undefined ||
+          configuredWtBinding === undefined ||
+          configuredVaBinding !== configuredWtBinding ||
+          (configuredSecurityNamespace !== undefined &&
+            configuredSecurityNamespace !== configuredVaBinding)
+        ) {
+          throw new Error(
+            `Cross-augment config mismatch: visitorAuth.agentBinding (${configuredVaBinding ?? "unset"}) ` +
+              `must be explicitly configured and match webTransport "${wtConfig.name}" visitorTokens.agentBinding (${configuredWtBinding ?? "unset"}) ` +
+              `and securityNamespace (${configuredSecurityNamespace ?? "unset"}). ` +
+              `Set visitorAuth.agentBinding to a stable value (e.g., \${AUGGY_AGENT_ID}); the resolver injects it into webTransport when omitted.`,
+          );
+        }
       }
     }
+
+    // Boot-time validation: warn (not error) for any tool-providing augment
+    // whose bundled skill is not mounted at <agent-dir>/skills/<folder>/SKILL.md.
+    // Per ADR-025 Decision 5 + spec §H. Runs after every factory has produced
+    // its tool surface so the discriminator (`tools.length > 0`) is final.
+    // MUST run before the skills auto-synth below — the validator pairs
+    // augments[i] with configs[i] and bails if lengths mismatch.
+    validateBundledSkills(configs, augments, agentDir);
+
+    // Auto-mount `skills` when the agent has a skills/ dir and hasn't declared
+    // its own. The skills augment is auggy's model-facing skill surface (ADR-030)
+    // — runtime infrastructure, not a feature operators opt into. Production
+    // scaffolds always create `<agentDir>/skills/` (the bundled-skill copy step
+    // populates it), so this synth fires for real agents. Test harnesses that
+    // construct agent dirs without a skills/ subdir won't trigger the synth,
+    // which keeps the resolver's length contract predictable for unit tests.
+    // Existing scaffolds with an explicit `skills` declaration still work — we
+    // don't double-mount.
+    const skillsDir = resolvePath("./skills", agentDir);
+    const hasSkills = augments.some((a) => a.name === "skills");
+    if (!hasSkills && existsSync(skillsDir)) {
+      augments.push(skills({ dir: skillsDir }));
+    }
+
+    if (resolverOpts.selfInspection) {
+      augments.push(
+        auggySelf({
+          agentDir,
+          agent: resolverOpts.selfInspection,
+          configs,
+          augments,
+        }),
+      );
+    }
+
+    return augments;
+  } catch (error) {
+    for (const augment of [...augments].reverse()) {
+      try {
+        await augment.onShutdown?.();
+      } catch {
+        // Preserve the resolution error that made the partially built graph
+        // unusable. Shutdown is best-effort during construction rollback.
+      }
+    }
+    throw error;
   }
-
-  // Boot-time validation: warn (not error) for any tool-providing augment
-  // whose bundled skill is not mounted at <agent-dir>/skills/<folder>/SKILL.md.
-  // Per ADR-025 Decision 5 + spec §H. Runs after every factory has produced
-  // its tool surface so the discriminator (`tools.length > 0`) is final.
-  // MUST run before the skills auto-synth below — the validator pairs
-  // augments[i] with configs[i] and bails if lengths mismatch.
-  validateBundledSkills(configs, augments, agentDir);
-
-  // Auto-mount `skills` when the agent has a skills/ dir and hasn't declared
-  // its own. The skills augment is auggy's model-facing skill surface (ADR-030)
-  // — runtime infrastructure, not a feature operators opt into. Production
-  // scaffolds always create `<agentDir>/skills/` (the bundled-skill copy step
-  // populates it), so this synth fires for real agents. Test harnesses that
-  // construct agent dirs without a skills/ subdir won't trigger the synth,
-  // which keeps the resolver's length contract predictable for unit tests.
-  // Existing scaffolds with an explicit `skills` declaration still work — we
-  // don't double-mount.
-  const skillsDir = resolvePath("./skills", agentDir);
-  const hasSkills = augments.some((a) => a.name === "skills");
-  if (!hasSkills && existsSync(skillsDir)) {
-    augments.push(skills({ dir: skillsDir }));
-  }
-
-  if (resolverOpts.selfInspection) {
-    augments.push(
-      auggySelf({
-        agentDir,
-        agent: resolverOpts.selfInspection,
-        configs,
-        augments,
-      }),
-    );
-  }
-
-  return augments;
 }
