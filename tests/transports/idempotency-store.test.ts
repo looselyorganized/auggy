@@ -47,6 +47,26 @@ describe("web idempotency store", () => {
     }
   });
 
+  it("abandons only an owned unstarted claim so a safe retry can lead", () => {
+    const dbPath = join(tmp.path, "idempotency.db");
+    const first = createWebIdempotencyStore({ dbPath });
+    const second = createWebIdempotencyStore({ dbPath });
+    const keyHash = hashIdempotencyKey("agent-a", "scheduler-overload");
+    const bindingHash = hashIdempotencyBinding({ peer: "visitor-1", body: { text: "hello" } });
+
+    try {
+      const leader = first.claim(keyHash, bindingHash);
+      if (leader.status !== "leader") throw new Error("expected leader");
+      expect(second.abandon(keyHash, "wrong-owner")).toBe(false);
+      expect(second.read(keyHash, bindingHash).status).toBe("running");
+      expect(first.abandon(keyHash, leader.ownerToken)).toBe(true);
+      expect(second.claim(keyHash, bindingHash).status).toBe("leader");
+    } finally {
+      second.close();
+      first.close();
+    }
+  });
+
   it("atomically shares anonymous network rate limits across store instances", () => {
     let now = 10_000;
     const dbPath = join(tmp.path, "idempotency.db");

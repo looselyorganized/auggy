@@ -1918,7 +1918,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       startServer();
     },
     identify,
-    concurrency: opts.concurrency ?? 1,
+    concurrency: opts.concurrency ?? 4,
     maxQueueDepth: opts.maxQueueDepth ?? 50,
     rateLimitPerPeer: opts.rateLimitPerPeer,
   };
@@ -2940,6 +2940,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         const replayChunks: string[] = [];
         let replayBytes = 0;
         let replayOverflow = false;
+        let abandonUnstartedIdempotencyClaim = false;
 
         const failLiveDelivery = (): void => {
           if (deliveryOverflow) return;
@@ -3245,6 +3246,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
               ...(runHistoryPersistence ? { historyPersistence: runHistoryPersistence } : {}),
             });
             if (result.status === "rejected") {
+              if (result.rejection && durableIdempotency) {
+                // Scheduler rejection happens before persistence, inference,
+                // tools, delivery, or hooks. Do not turn temporary saturation
+                // into a durable replay that blocks a safe retry.
+                abandonUnstartedIdempotencyClaim = true;
+              }
               // Map errorClass to a structured code for SSE consumers.
               // T5 will refine this to return 429/503 HTTP status before
               // opening the stream (requires a synchronous gate-decision API).
@@ -3253,6 +3260,19 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 code = "CAP_DENIED";
               } else if (result.errorClass === "admission-state-failed") {
                 code = "ADMISSION_FAILED";
+              } else if (
+                result.rejection?.reason === "peer-rate-limit" ||
+                result.rejection?.reason === "thread-capacity" ||
+                result.rejection?.reason === "source-capacity"
+              ) {
+                code = "SCHEDULER_RATE_LIMITED";
+              } else if (
+                result.rejection?.reason === "agent-capacity" ||
+                result.rejection?.reason === "runtime-stopping"
+              ) {
+                code = "SCHEDULER_UNAVAILABLE";
+              } else if (result.rejection?.reason === "thread-quarantined") {
+                code = "THREAD_QUARANTINED";
               } else {
                 code = "REJECTED";
               }
@@ -3316,7 +3336,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
             if (idempotencyHeartbeatTimer !== null) clearInterval(idempotencyHeartbeatTimer);
             if (durableIdempotency) {
               try {
-                if (replayOverflow) {
+                if (abandonUnstartedIdempotencyClaim) {
+                  durableIdempotency.store.abandon(
+                    durableIdempotency.keyHash,
+                    durableIdempotency.ownerToken,
+                  );
+                } else if (replayOverflow) {
                   durableIdempotency.store.markUnknown(
                     durableIdempotency.keyHash,
                     durableIdempotency.ownerToken,

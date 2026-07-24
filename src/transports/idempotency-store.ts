@@ -143,6 +143,8 @@ export interface WebIdempotencyStore {
   read(keyHash: string, bindingHash: string): IdempotencyClaim;
   heartbeat(keyHash: string, ownerToken: string): boolean;
   complete(keyHash: string, ownerToken: string, responseBody: string): "complete" | "unknown";
+  /** Release an owned claim that was rejected before any turn execution began. */
+  abandon(keyHash: string, ownerToken: string): boolean;
   markUnknown(keyHash: string, ownerToken: string): void;
   reserveRateLimits(policies: readonly RateLimitPolicy[]): RateLimitReservation;
   reserveRateLimit(bucketHash: string, max: number, windowMs: number): RateLimitReservation;
@@ -322,6 +324,10 @@ export function createWebIdempotencyStore(config: {
     `UPDATE web_idempotency
        SET state = 'complete', response_body = ?, response_bytes = ?,
            completed_at = ?
+     WHERE key_hash = ? AND owner_token = ? AND state = 'running'`,
+  );
+  const abandon = db.prepare(
+    `DELETE FROM web_idempotency
      WHERE key_hash = ? AND owner_token = ? AND state = 'running'`,
   );
   const unknown = db.prepare(
@@ -547,6 +553,10 @@ export function createWebIdempotencyStore(config: {
         if (db.inTransaction) db.run("ROLLBACK");
         throw error;
       }
+    },
+
+    abandon(keyHash, ownerToken) {
+      return abandon.run(keyHash, ownerToken).changes === 1;
     },
 
     markUnknown(keyHash, ownerToken) {
