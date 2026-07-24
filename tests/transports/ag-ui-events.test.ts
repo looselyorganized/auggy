@@ -93,6 +93,16 @@ describe("AG-UI event constructors", () => {
     expect(e.message).not.toContain("overloaded_error");
   });
 
+  it("classifies deeply nested provider text without recursive parsing", () => {
+    const depth = 50_000;
+    const raw = `${'{"nested":'.repeat(depth)}{"type":"overloaded_error"}${"}".repeat(depth)}`;
+
+    const event = runError({ message: raw, code: "INTERNAL" });
+
+    expect(event.code).toBe("PROVIDER_ERROR");
+    expect(event.message).not.toContain(raw);
+  });
+
   it("normalizes retryable provider availability failures", () => {
     const e = runError({
       message: "OpenRouter engine (x) failed: upstream provider 503 service unavailable",

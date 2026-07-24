@@ -54,6 +54,12 @@ import type {
   ConsoleChatThread,
   ConsoleChatThreadSummary,
 } from "./console-chat-store";
+import {
+  cloneRequestWithBoundedBody,
+  InvalidRequestBodyError,
+  readRequestBodyText,
+  RequestBodyTooLargeError,
+} from "../request-body";
 
 const AUGGY_VERSION = readPackageVersion();
 
@@ -369,6 +375,12 @@ async function dispatchAdminRoute(req: Request, ctx: AdminRouteContext): Promise
     return handleLogoutPost(req, ctx, agentName, secureRequest);
   }
 
+  if (req.method === "POST") {
+    const bounded = await boundAuthenticatedAdminRequest(req, url.pathname);
+    if (bounded instanceof Response) return bounded;
+    req = bounded;
+  }
+
   // POST /console/action/<id>[/row/<rowKey>] — dispatch action handlers
   const actionMatch = url.pathname.match(ACTION_ROUTE_RE);
   if (req.method === "POST" && actionMatch) {
@@ -535,15 +547,17 @@ async function handleLogoutPost(
 
   let csrf: string | null = null;
   try {
-    const body = await readBoundedText(req, 4096);
-    if (body === null) return jsonResponse({ error: "invalid request body" }, 400);
+    const body = await readRequestBodyText(req, 4096);
     const form = new URLSearchParams(body);
     const values = form.getAll("csrf");
     if (values.length !== 1 || Array.from(form.keys()).some((key) => key !== "csrf")) {
       return jsonResponse({ error: "invalid request body" }, 400);
     }
     csrf = values[0] ?? null;
-  } catch {
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return jsonResponse({ error: "payload too large" }, 413);
+    }
     return jsonResponse({ error: "invalid request body" }, 400);
   }
   if (!csrf) return jsonResponse({ error: "missing csrf" }, 400);
@@ -574,35 +588,31 @@ async function handleLogoutPost(
   });
 }
 
-async function readBoundedText(req: Request, maxBytes: number): Promise<string | null> {
-  if (!req.body) return "";
-  const reader = req.body.getReader();
-  const chunks: Uint8Array[] = [];
-  let total = 0;
+function adminBodyLimit(pathname: string): number {
+  if (pathname === "/console/logout") return 4 * 1024;
+  if (pathname.startsWith("/console/action/")) return 64 * 1024;
+  if (pathname === "/console/api/chat") return 17 * 1024 * 1024;
+  if (pathname.startsWith("/console/api/credentials/")) return 1100 * 1024;
+  if (pathname === "/console/api/identity" || pathname.startsWith("/console/api/skills/")) {
+    return 300 * 1024;
+  }
+  return 64 * 1024;
+}
+
+async function boundAuthenticatedAdminRequest(
+  request: Request,
+  pathname: string,
+): Promise<Request | Response> {
   try {
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
-      if (total > maxBytes) {
-        await reader.cancel();
-        return null;
-      }
-      chunks.push(value);
+    return await cloneRequestWithBoundedBody(request, adminBodyLimit(pathname));
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return jsonResponse({ error: "payload too large" }, 413);
     }
-  } finally {
-    reader.releaseLock();
-  }
-  const bytes = new Uint8Array(total);
-  let offset = 0;
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset);
-    offset += chunk.byteLength;
-  }
-  try {
-    return new TextDecoder("utf-8", { fatal: true }).decode(bytes);
-  } catch {
-    return null;
+    if (!(error instanceof InvalidRequestBodyError)) {
+      console.warn("[console] request body read failed");
+    }
+    return jsonResponse({ error: "invalid request body" }, 400);
   }
 }
 
@@ -638,8 +648,14 @@ async function handleLoginPost(
 
   let form: URLSearchParams;
   try {
-    form = new URLSearchParams(await req.text());
-  } catch {
+    form = new URLSearchParams(await readRequestBodyText(req, 4096));
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return new Response("Request body too large.", {
+        status: 413,
+        headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
     return loginPageResponse("Invalid console password.", new URL(req.url).search);
   }
 

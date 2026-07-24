@@ -83,6 +83,11 @@ import {
 import { createHash, createHmac } from "node:crypto";
 import { isIP } from "node:net";
 import { join } from "node:path";
+import {
+  InvalidRequestBodyError,
+  readRequestBodyJson,
+  RequestBodyTooLargeError,
+} from "./request-body";
 
 const PUBLIC_PAGE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 const DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER = "x-auggy-auth-assertion";
@@ -168,6 +173,14 @@ export interface WebTransportOptions {
    */
   securityNamespace?: string;
   maxMessageLength?: number;
+  /** Maximum encoded bytes accepted by POST /agent/run. Default 1 MiB. */
+  maxRequestBodyBytes?: number;
+  /** Maximum pending live SSE bytes for a slow client. Default 1 MiB. */
+  maxPendingSseBytes?: number;
+  /** Maximum pending live SSE events for a slow client. Default 1,024. */
+  maxPendingSseEvents?: number;
+  /** Maximum persisted console aggregate bytes per run. Default 4 MiB. */
+  maxConsoleRunBytes?: number;
   /**
    * Admitted agent list. Each entry has an `id` (sent as `x-agent-id` header)
    * and a `sharedSecret` (sent as `x-agent-secret` header). The transport
@@ -932,6 +945,25 @@ export function webTransport(opts: WebTransportOptions): Augment {
   }
 
   const maxMessageLength = opts.maxMessageLength ?? 4000;
+  if (!Number.isSafeInteger(maxMessageLength) || maxMessageLength < 1) {
+    throw new Error("[web-transport] maxMessageLength must be a positive integer.");
+  }
+  const maxRequestBodyBytes = opts.maxRequestBodyBytes ?? 1024 * 1024;
+  if (!Number.isSafeInteger(maxRequestBodyBytes) || maxRequestBodyBytes < 1) {
+    throw new Error("[web-transport] maxRequestBodyBytes must be a positive integer.");
+  }
+  const maxPendingSseBytes = opts.maxPendingSseBytes ?? 1024 * 1024;
+  const maxPendingSseEvents = opts.maxPendingSseEvents ?? 1024;
+  const maxConsoleRunBytes = opts.maxConsoleRunBytes ?? 4 * 1024 * 1024;
+  for (const [name, value] of [
+    ["maxPendingSseBytes", maxPendingSseBytes],
+    ["maxPendingSseEvents", maxPendingSseEvents],
+    ["maxConsoleRunBytes", maxConsoleRunBytes],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`[web-transport] ${name} must be a positive integer.`);
+    }
+  }
   // F2: visitor tokens are opt-in (enabled === true) rather than opt-out
   // (enabled !== false). Requiring an explicit signingKey at onBoot prevents
   // the silent mismatch where webTransport boots with an ephemeral key that
@@ -2035,18 +2067,41 @@ export function webTransport(opts: WebTransportOptions): Augment {
     });
 
     // --- Parse body (needed for threadId for anonymous peer ID) ---
-    let body: AGUIRunRequestBody;
+    let parsedBody: unknown;
     try {
-      body = (await req.json()) as AGUIRunRequestBody;
-    } catch {
+      parsedBody = await readRequestBodyJson(req, maxRequestBodyBytes);
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) {
+        return json({ error: "payload too large", limitBytes: maxRequestBodyBytes }, 413);
+      }
+      if (!(error instanceof InvalidRequestBodyError)) {
+        console.warn("[web-transport] request body read failed");
+      }
       return json({ error: "invalid JSON body" }, 400);
     }
+    if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
+      return json({ error: "invalid request body" }, 400);
+    }
+    const body = parsedBody as AGUIRunRequestBody;
     if (!Array.isArray(body.messages) || body.messages.length === 0) {
       return json({ error: "messages array is required" }, 400);
     }
+    if (
+      body.messages.some(
+        (message) =>
+          !message ||
+          typeof message !== "object" ||
+          typeof message.role !== "string" ||
+          message.role.length === 0 ||
+          message.role.length > 64 ||
+          typeof message.content !== "string",
+      )
+    ) {
+      return json({ error: "messages must contain role and content strings" }, 400);
+    }
 
     const lastMessage = body.messages[body.messages.length - 1]!;
-    const text = lastMessage.content ?? "";
+    const text = lastMessage.content;
     if (text.length > maxMessageLength) {
       return json({ error: "message too long", limit: maxMessageLength }, 413);
     }
@@ -2058,9 +2113,17 @@ export function webTransport(opts: WebTransportOptions): Augment {
     // Derive threadId — needed before identify() so anonymous peer IDs are stable.
     if (
       (body.threadId !== undefined && typeof body.threadId !== "string") ||
-      (body.contextId !== undefined && typeof body.contextId !== "string")
+      (body.contextId !== undefined && typeof body.contextId !== "string") ||
+      (body.taskId !== undefined && typeof body.taskId !== "string")
     ) {
       return json({ error: "invalid thread id" }, 400);
+    }
+    if (
+      (body.threadId?.length ?? 0) > 512 ||
+      (body.contextId?.length ?? 0) > 512 ||
+      (body.taskId?.length ?? 0) > 512
+    ) {
+      return json({ error: "request identifier too long", limit: 512 }, 413);
     }
     const requestedThreadId = body.threadId ?? body.contextId;
     let threadId: string = requestedThreadId ?? crypto.randomUUID();
@@ -2432,14 +2495,25 @@ export function webTransport(opts: WebTransportOptions): Augment {
     // The kernel keys restored thread authorization by persistence object
     // identity, so every run must receive this stable transport-level adapter.
     const runHistoryPersistence = consoleMetadata ? consoleHistoryPersistence : null;
-    const executionSignal = durableIdempotency ? new AbortController().signal : req.signal;
+    const deliveryAbort = new AbortController();
+    const executionSignal = durableIdempotency
+      ? deliveryAbort.signal
+      : AbortSignal.any([req.signal, deliveryAbort.signal]);
 
+    let pullPendingSse: ((controller: ReadableStreamDefaultController<Uint8Array>) => void) | null =
+      null;
+    let cancelSse: ((reason?: unknown) => void) | null = null;
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         let streamClosed = false;
+        let executionFinished = false;
+        const pendingChunks: Uint8Array[] = [];
+        let pendingBytes = 0;
+        let deliveryOverflow = false;
         let bufferedRunFinished: AGUIEvent | null = null;
         let assistantContent = "";
         let assistantError: string | null = null;
+        let consoleAggregateBytes = 0;
         const messageRoles = new Map<string, string>();
         let lastAssistantMessageId: string | null = null;
         const toolCalls = new Map<string, ConsoleChatToolCall>();
@@ -2465,6 +2539,45 @@ export function webTransport(opts: WebTransportOptions): Augment {
         let replayBytes = 0;
         let replayOverflow = false;
 
+        const failLiveDelivery = (): void => {
+          if (deliveryOverflow) return;
+          deliveryOverflow = true;
+          streamClosed = true;
+          pendingChunks.length = 0;
+          pendingBytes = 0;
+          deliveryAbort.abort(new Error("SSE delivery exceeded the configured safety limit."));
+          try {
+            controller.error(new Error("SSE delivery exceeded the configured safety limit."));
+          } catch {
+            // The client may already have disconnected.
+          }
+        };
+
+        pullPendingSse = (activeController) => {
+          if (streamClosed) return;
+          while (
+            pendingChunks.length > 0 &&
+            (activeController.desiredSize === null || activeController.desiredSize > 0)
+          ) {
+            const chunk = pendingChunks.shift()!;
+            pendingBytes -= chunk.byteLength;
+            activeController.enqueue(chunk);
+          }
+          if (executionFinished && pendingChunks.length === 0) {
+            streamClosed = true;
+            activeController.close();
+          }
+        };
+        cancelSse = () => {
+          streamClosed = true;
+          pendingChunks.length = 0;
+          pendingBytes = 0;
+          // Keyed durable runs intentionally survive a client disconnect so
+          // an exact retry can replay the canonical result. Resource-limit
+          // overflow still aborts both durable and non-durable execution.
+          if (!durableIdempotency) deliveryAbort.abort();
+        };
+
         const patchRunIdentity = (e: AGUIEvent): AGUIEvent => {
           if (e.type === "RUN_STARTED" || e.type === "RUN_FINISHED") {
             // Internal turn IDs are server-generated and remain available to
@@ -2487,12 +2600,35 @@ export function webTransport(opts: WebTransportOptions): Augment {
             }
           }
           if (streamClosed) return;
-          try {
-            controller.enqueue(encoder.encode(serialized));
-          } catch {
-            // Stream already closed (client disconnect) — swallow
-            streamClosed = true;
+          const chunk = encoder.encode(serialized);
+          if (chunk.byteLength > maxPendingSseBytes) {
+            failLiveDelivery();
+            return;
           }
+          if (
+            pendingChunks.length === 0 &&
+            (controller.desiredSize === null || controller.desiredSize > 0)
+          ) {
+            try {
+              controller.enqueue(chunk);
+              return;
+            } catch {
+              streamClosed = true;
+              pendingChunks.length = 0;
+              pendingBytes = 0;
+              if (!durableIdempotency) deliveryAbort.abort();
+              return;
+            }
+          }
+          if (
+            pendingChunks.length + 1 > maxPendingSseEvents ||
+            pendingBytes + chunk.byteLength > maxPendingSseBytes
+          ) {
+            failLiveDelivery();
+            return;
+          }
+          pendingChunks.push(chunk);
+          pendingBytes += chunk.byteLength;
         };
 
         const currentToolCalls = (): ConsoleChatToolCall[] | null =>
@@ -2537,7 +2673,18 @@ export function webTransport(opts: WebTransportOptions): Augment {
           writeProgress();
         };
 
-        const observeEvent = (event: AGUIEvent): void => {
+        const reserveConsoleBytes = (value: string): boolean => {
+          const bytes = Buffer.byteLength(value, "utf8");
+          if (consoleAggregateBytes + bytes > maxConsoleRunBytes) {
+            assistantError = "Console response exceeded the configured safety limit.";
+            failLiveDelivery();
+            return false;
+          }
+          consoleAggregateBytes += bytes;
+          return true;
+        };
+
+        const observeEvent = (event: AGUIEvent): boolean => {
           switch (event.type) {
             case "TEXT_MESSAGE_START":
               messageRoles.set(event.messageId, event.role);
@@ -2547,42 +2694,46 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 }
                 lastAssistantMessageId = event.messageId;
               }
-              return;
+              return true;
             case "TEXT_MESSAGE_CONTENT":
               if (messageRoles.get(event.messageId) === "assistant") {
+                if (!reserveConsoleBytes(event.delta)) return false;
                 assistantContent += event.delta;
                 persistProgress();
               }
-              return;
+              return true;
             case "TEXT_MESSAGE_END":
               messageRoles.delete(event.messageId);
-              return;
+              return true;
             case "TOOL_CALL_START":
+              if (!reserveConsoleBytes(event.toolCallName)) return false;
               toolCalls.set(event.toolCallId, {
                 id: event.toolCallId,
                 name: event.toolCallName,
                 status: "running",
               });
               persistProgress();
-              return;
+              return true;
             case "TOOL_CALL_ARGS": {
               const call = toolCalls.get(event.toolCallId);
               if (call) {
+                if (!reserveConsoleBytes(event.delta)) return false;
                 call.args = `${call.args ?? ""}${event.delta}`;
                 persistProgress();
               }
-              return;
+              return true;
             }
             case "TOOL_CALL_END":
-              return;
+              return true;
             case "TOOL_CALL_RESULT": {
               const call = toolCalls.get(event.toolCallId);
               if (call) {
+                if (!reserveConsoleBytes(event.content)) return false;
                 call.result = event.content;
                 call.status = "completed";
                 persistProgress();
               }
-              return;
+              return true;
             }
             case "RUN_ERROR":
               assistantError = event.message;
@@ -2590,9 +2741,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 if (call.status === "running") call.status = "error";
               }
               persistProgress();
-              return;
+              return true;
             default:
-              return;
+              return true;
           }
         };
 
@@ -2602,7 +2753,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
             bufferedRunFinished = patched;
             return;
           }
-          observeEvent(patched);
+          if (!observeEvent(patched)) return;
           writeEvent(patched);
         };
 
@@ -2782,14 +2933,23 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 finishLocalIdempotencyExecution(durableIdempotency.keyHash);
               }
             }
-            streamClosed = true;
-            try {
-              controller.close();
-            } catch {
-              /* already closed */
+            executionFinished = true;
+            if (!streamClosed && pendingChunks.length === 0) {
+              streamClosed = true;
+              try {
+                controller.close();
+              } catch {
+                /* already closed */
+              }
             }
           }
         })();
+      },
+      pull(controller) {
+        pullPendingSse?.(controller);
+      },
+      cancel(reason) {
+        cancelSse?.(reason);
       },
     });
 

@@ -1,4 +1,4 @@
-export { parseSSEStream, type ParseOptions } from "./parse";
+export { parseSSEStream, SSEParseLimitError, type ParseOptions } from "./parse";
 export type {
   AGUIEvent, AGUIEventType,
   RunStarted, RunFinished, RunError,

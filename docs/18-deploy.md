@@ -160,7 +160,7 @@ If you enable auto-save programmatically with an extraction engine,
 | `creator` | every-turn | One extraction LLM call per turn |
 | `agent` | every-N-turns (N=3) | One extraction call every 3 turns |
 | `public.recognized` | every-turn | One extraction call per turn |
-| `public.anonymous` | session-end-only | One extraction call at session end |
+| `public.anonymous` | session-end-only | One bounded batched call if the visitor authenticates before the idle buffer expires; otherwise no extraction |
 
 Each extraction call hits the configured extraction engine. Auggy does not
 silently reuse the user-facing model for extraction, because that would make
@@ -211,6 +211,7 @@ volume even when an agent's portable config uses a project-relative default:
 - `/app/data/link.db` (`link` augment, when present)
 - `/app/data/web-idempotency.db` (`webTransport` execution ledger)
 - `/app/data/console-chat.db` (`webTransport` operator conversations)
+- `/app/data/telegram-replay.db` (`telegramTransport` update-claim ledger)
 - `/app/data/agent-mail/<augment-name>/agent-mail.db` (`agentMail`; each
   instance receives an isolated state namespace)
 

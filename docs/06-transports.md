@@ -370,6 +370,26 @@ Budgets and traces use the internal UUID, never the caller's key. Direct kernel
 injection has no response-replay coordinator, so a duplicate turn ID is denied
 instead of reusing an earlier allowance.
 
+#### Request and stream bounds
+
+`POST /agent/run` reads at most `maxRequestBodyBytes` (default 1 MiB) before
+JSON parsing. The reader enforces both a valid `Content-Length` and the bytes
+actually received, so a missing or false-small header does not bypass the cap.
+Malformed UTF-8 and JSON fail without invoking the kernel. Authenticated
+console mutation routes use route-specific pre-parse caps as well; login and
+logout are capped at 4 KiB.
+
+Live SSE delivery maintains an application-owned pending queue capped by both
+`maxPendingSseBytes` (default 1 MiB) and `maxPendingSseEvents` (default 1,024).
+A slow or abandoned client cannot make that queue grow without bound. Queue
+overflow terminates delivery and cancels the turn. An exact durable idempotent
+execution may continue after an ordinary client disconnect so another exact
+request can join or replay it, but a server-side resource-limit overflow still
+aborts it. Console transcript aggregation has a separate
+`maxConsoleRunBytes` cap (default 4 MiB). The browser console parser also
+rejects more than 1 MiB of unparsed SSE data, a single event above 512 KiB, or
+more than 100,000 events.
+
 #### 3. Identity resolution — four paths
 
 Identity is resolved in a fixed priority order:

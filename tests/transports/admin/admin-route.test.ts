@@ -173,6 +173,17 @@ describe("handleAdminRoute — auth", () => {
     expect(cookie).toContain("Secure");
   });
 
+  it("POST /console/login rejects an oversized body before form parsing", async () => {
+    const req = new Request("https://my-agent.fly.dev/console/login", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: `password=${"x".repeat(5000)}`,
+    });
+    const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.55" }));
+    expect(res.status).toBe(413);
+    expect(await res.text()).not.toContain("x".repeat(100));
+  });
+
   it("session cookie admits subsequent console requests without Basic auth", async () => {
     const login = new Request("https://my-agent.fly.dev/console/login", {
       method: "POST",

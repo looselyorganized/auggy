@@ -417,6 +417,10 @@ function resolveWebTransport(
     cors: opts.cors as { origins: [string] } | undefined,
     securityNamespace: opts.securityNamespace as string | undefined,
     maxMessageLength: opts.maxMessageLength as number | undefined,
+    maxRequestBodyBytes: opts.maxRequestBodyBytes as number | undefined,
+    maxPendingSseBytes: opts.maxPendingSseBytes as number | undefined,
+    maxPendingSseEvents: opts.maxPendingSseEvents as number | undefined,
+    maxConsoleRunBytes: opts.maxConsoleRunBytes as number | undefined,
     access: opts.access as { agents?: Array<{ id: string; sharedSecret: string }> } | undefined,
     concurrency: opts.concurrency as number | undefined,
     maxQueueDepth: opts.maxQueueDepth as number | undefined,
@@ -915,12 +919,23 @@ export async function resolveAugments(
         });
         break;
       }
-      case "telegramTransport":
+      case "telegramTransport": {
+        const replay = opts.replay as TelegramTransportOptions["replay"] | undefined;
         augment = telegramTransport({
           ...(opts as unknown as TelegramTransportOptions),
           creator: resolverOpts.creator,
+          replay: {
+            ...replay,
+            dbPath: resolveSqlitePath(
+              replay?.dbPath ?? "./data/telegram-replay.db",
+              agentDir,
+              resolverOpts.runtimeDataRoot,
+              `telegramTransport "${config.name}" replay.dbPath`,
+            ),
+          },
         });
         break;
+      }
       case "turnControl":
         augment = turnControl(opts as TurnControlOptions);
         break;

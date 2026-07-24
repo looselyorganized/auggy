@@ -12,6 +12,19 @@ export interface ParseOptions {
    * Receives the raw line content (without the `data:` prefix).
    */
   onMalformed?: (rawJson: string) => void;
+  /** Maximum undecoded/partial-line UTF-8 bytes. Default 1 MiB. */
+  maxBufferedBytes?: number;
+  /** Maximum aggregate data bytes in one SSE event. Default 512 KiB. */
+  maxEventBytes?: number;
+  /** Maximum events accepted from one response. Default 100,000. */
+  maxEvents?: number;
+}
+
+export class SSEParseLimitError extends Error {
+  constructor() {
+    super("The event stream exceeded a configured safety limit.");
+    this.name = "SSEParseLimitError";
+  }
 }
 
 /**
@@ -46,9 +59,22 @@ export async function* parseSSEStream(
     throw e;
   }
 
+  const maxBufferedBytes = opts.maxBufferedBytes ?? 1024 * 1024;
+  const maxEventBytes = opts.maxEventBytes ?? 512 * 1024;
+  const maxEvents = opts.maxEvents ?? 100_000;
+  for (const value of [maxBufferedBytes, maxEventBytes, maxEvents]) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new TypeError("SSE parser limits must be positive integers");
+    }
+  }
   const reader = body.getReader();
   const decoder = new TextDecoder();
-  let buffer = "";
+  const byteEncoder = new TextEncoder();
+  let lineBuffer = new Uint8Array(Math.min(4096, maxBufferedBytes));
+  let lineBytes = 0;
+  let eventBytes = 0;
+  let eventCount = 0;
+  let streamCompleted = false;
 
   // Multi-line `data:` accumulator — flushed on event boundary (blank line)
   // or at EOF. Each `data:` line within an event is appended; flush joins
@@ -75,8 +101,11 @@ export async function* parseSSEStream(
 
   function* flushAccumulator(): Generator<AGUIEvent> {
     if (dataAccumulator.length === 0) return;
+    eventCount++;
+    if (eventCount > maxEvents) throw new SSEParseLimitError();
     const json = dataAccumulator.join("\n");
     dataAccumulator = [];
+    eventBytes = 0;
     if (json === "[DONE]") return;
     let parsed: AGUIEvent;
     try {
@@ -86,6 +115,42 @@ export async function* parseSSEStream(
       return;
     }
     yield parsed;
+  }
+
+  const appendLineBytes = (bytes: Uint8Array): void => {
+    const required = lineBytes + bytes.byteLength;
+    if (required > maxBufferedBytes) throw new SSEParseLimitError();
+    if (required > lineBuffer.byteLength) {
+      const capacity = Math.min(
+        maxBufferedBytes,
+        Math.max(required, Math.max(1, lineBuffer.byteLength * 2)),
+      );
+      const grown = new Uint8Array(capacity);
+      grown.set(lineBuffer.subarray(0, lineBytes));
+      lineBuffer = grown;
+    }
+    lineBuffer.set(bytes, lineBytes);
+    lineBytes = required;
+  };
+
+  function* processLine(raw: string): Generator<AGUIEvent> {
+    const line = raw.trim(); // absorbs trailing \r on CRLF inputs
+    if (!line) {
+      yield* flushAccumulator();
+      // A consumer may abort in response to the just-yielded event.
+      if (opts.signal?.aborted) {
+        const error = new Error("Aborted");
+        error.name = "AbortError";
+        throw error;
+      }
+      return;
+    }
+    if (line.startsWith(":")) return;
+    if (!line.startsWith("data:")) return;
+    const data = line.slice("data:".length).trim();
+    eventBytes += byteEncoder.encode(data).byteLength + (dataAccumulator.length > 0 ? 1 : 0);
+    if (eventBytes > maxEventBytes) throw new SSEParseLimitError();
+    dataAccumulator.push(data);
   }
 
   const onAbort = (): void => {
@@ -100,49 +165,38 @@ export async function* parseSSEStream(
   try {
     while (true) {
       const { done, value } = await reader.read();
-      if (done) break;
+      if (done) {
+        streamCompleted = true;
+        break;
+      }
 
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split("\n");
-      buffer = lines.pop() ?? "";
-
-      for (const raw of lines) {
-        const line = raw.trim(); // absorbs trailing \r on CRLF inputs
-        if (!line) {
-          // Blank line — event boundary. Flush any accumulated data.
-          yield* flushAccumulator();
-          // After yielding, check abort: a consumer may have aborted in
-          // response to the just-yielded event, and we want to surface that
-          // as AbortError rather than silently draining via reader.cancel().
-          if (opts.signal?.aborted) {
-            const e = new Error("Aborted");
-            e.name = "AbortError";
-            throw e;
-          }
-          continue;
+      let offset = 0;
+      while (offset < value.byteLength) {
+        const newline = value.indexOf(0x0a, offset);
+        if (newline < 0) {
+          appendLineBytes(value.subarray(offset));
+          break;
         }
-        if (line.startsWith(":")) continue; // comment
-        if (!line.startsWith("data:")) continue; // ignore other SSE field types (event:, id:, retry:)
-        dataAccumulator.push(line.slice("data:".length).trim());
+        appendLineBytes(value.subarray(offset, newline));
+        const raw = decoder.decode(lineBuffer.subarray(0, lineBytes));
+        lineBytes = 0;
+        yield* processLine(raw);
+        offset = newline + 1;
       }
     }
 
-    // EOF — finalize the decoder (flush any pending UTF-8 bytes) and process
-    // any remaining buffer content as a final line before flushing the
-    // accumulator. Without this, a stream ending mid-line (e.g. `data: {...}`
-    // with no trailing newline) silently drops its final event.
-    buffer += decoder.decode();
-    const tail = buffer.trim();
-    if (tail) {
-      if (tail.startsWith("data:")) {
-        dataAccumulator.push(tail.slice("data:".length).trim());
-      }
-      // Other field types (`event:`, `id:`, `retry:`, `:`-comments) are
-      // intentionally dropped — same as in the main loop.
+    // EOF — process a final unterminated line before flushing the event.
+    if (lineBytes > 0) {
+      yield* processLine(decoder.decode(lineBuffer.subarray(0, lineBytes)));
     }
     yield* flushAccumulator();
   } finally {
     if (opts.signal) opts.signal.removeEventListener("abort", onAbort);
+    if (!streamCompleted) {
+      await reader.cancel().catch(() => {
+        /* already closed */
+      });
+    }
     try {
       reader.releaseLock();
     } catch {

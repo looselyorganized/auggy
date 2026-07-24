@@ -1010,6 +1010,81 @@ describe("webTransport HTTP server", () => {
     }
   });
 
+  it("rejects an oversized aggregate JSON body before model execution", async () => {
+    const model = createMockModel();
+    const port = 18846;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      maxRequestBodyBytes: 128,
+    });
+    const agent = defineAgent({ name: "test", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+        },
+        body: JSON.stringify({
+          messages: Array.from({ length: 20 }, () => ({ role: "user", content: "x" })),
+        }),
+      });
+      expect(resp.status).toBe(413);
+      expect(model.calls).toHaveLength(0);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("rejects malformed message shapes and oversized identifiers before model execution", async () => {
+    const model = createMockModel();
+    const port = 18849;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent(
+      { name: "validated-run-shape", model: "mock", augments: [aug] },
+      model,
+    );
+    await agent.start();
+    try {
+      for (const body of [
+        null,
+        { messages: [null] },
+        { messages: [{ role: "user", content: 7 }] },
+        { messages: [{ role: "user", content: "ok" }], taskId: 7 },
+      ]) {
+        const response = await fetch(`http://localhost:${port}/agent/run`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: "Bearer test-token",
+          },
+          body: JSON.stringify(body),
+        });
+        expect(response.status).toBe(400);
+      }
+      const oversized = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+        },
+        body: JSON.stringify({
+          messages: [{ role: "user", content: "ok" }],
+          threadId: "t".repeat(513),
+        }),
+      });
+      expect(oversized.status).toBe(413);
+      expect(model.calls).toHaveLength(0);
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("delivers AG-UI events progressively via ReadableStream (not buffered)", async () => {
     // Model holds inference open until `release` is awaited, so we can
     // prove the SSE stream delivers RUN_STARTED before the turn finishes.
@@ -1069,6 +1144,133 @@ describe("webTransport HTTP server", () => {
 
       expect(seenRunStartedBeforeRelease).toBe(true);
       expect(buffered).toContain("RUN_FINISHED");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("aborts model work when one live SSE event exceeds the delivery cap", async () => {
+    let sawAbortedSignal = false;
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      async complete(_prompt, opts) {
+        opts?.onDelta?.({ kind: "text_delta", text: "x".repeat(2048) });
+        sawAbortedSignal = opts?.signal?.aborted === true;
+        return {
+          content: "x".repeat(2048),
+          inputTokens: 1,
+          outputTokens: 1,
+          finishReason: "end_turn",
+        };
+      },
+    };
+    const port = 18847;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      maxPendingSseBytes: 512,
+    });
+    const agent = defineAgent({ name: "bounded-sse", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const response = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+        },
+        body: JSON.stringify({ messages: [{ role: "user", content: "stream" }] }),
+      });
+      await response.text().catch(() => "");
+      expect(sawAbortedSignal).toBe(true);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("aborts model work when a slow-client SSE queue exceeds its event cap", async () => {
+    let sawAbortedSignal = false;
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      async complete(_prompt, opts) {
+        for (let index = 0; index < 16; index++) {
+          opts?.onDelta?.({ kind: "text_delta", text: `${index}` });
+        }
+        sawAbortedSignal = opts?.signal?.aborted === true;
+        return {
+          content: "0123456789101112131415",
+          inputTokens: 1,
+          outputTokens: 1,
+          finishReason: "end_turn",
+        };
+      },
+    };
+    const port = 18850;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      maxPendingSseBytes: 64 * 1024,
+      maxPendingSseEvents: 1,
+    });
+    const agent = defineAgent(
+      { name: "bounded-sse-events", model: "mock", augments: [aug] },
+      model,
+    );
+    await agent.start();
+    try {
+      const response = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+        },
+        body: JSON.stringify({ messages: [{ role: "user", content: "stream" }] }),
+      });
+      await response.text().catch(() => "");
+      expect(sawAbortedSignal).toBe(true);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("drains queued SSE events before closing a completed stream", async () => {
+    const deltas = Array.from({ length: 32 }, (_, index) => `chunk-${index}|`);
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      async complete(_prompt, opts) {
+        for (const text of deltas) opts?.onDelta?.({ kind: "text_delta", text });
+        return {
+          content: deltas.join(""),
+          inputTokens: 1,
+          outputTokens: 1,
+          finishReason: "end_turn",
+        };
+      },
+    };
+    const port = 18848;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      maxPendingSseBytes: 64 * 1024,
+      maxPendingSseEvents: 64,
+    });
+    const agent = defineAgent({ name: "drained-sse", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const response = await fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          authorization: "Bearer test-token",
+        },
+        body: JSON.stringify({ messages: [{ role: "user", content: "stream" }] }),
+      });
+      const body = await response.text();
+      for (const delta of deltas) expect(body).toContain(delta);
+      expect(body).toContain("RUN_FINISHED");
     } finally {
       await agent.stop();
     }
