@@ -371,6 +371,14 @@ export interface TurnResult {
   trace: TurnTrace;
   error?: { message: string; source: string };
   /**
+   * True when work crossed a side-effect boundary without a trustworthy
+   * terminal result. The agent scheduler quarantines the resolved thread
+   * against blind retries until a trusted operator explicitly recovers it.
+   */
+  outcomeUnknown?: boolean;
+  /** Structured admission rejection metadata for transport-specific mapping. */
+  rejection?: TurnRejection;
+  /**
    * When status is "rejected", this names the class of rejection so
    * the transport can map to the right HTTP status:
    *   - "cap-denied"             → HTTP 429 (over budget cap)
@@ -384,6 +392,21 @@ export interface TurnResult {
 }
 
 export type TurnRejectionClass = "cap-denied" | "admission-state-failed" | "engine-error";
+
+export type TurnRejectionReason =
+  | "peer-rate-limit"
+  | "thread-capacity"
+  | "source-capacity"
+  | "agent-capacity"
+  | "runtime-stopping"
+  | "thread-quarantined"
+  | "causal-depth"
+  | "causal-thread-mismatch";
+
+export interface TurnRejection {
+  reason: TurnRejectionReason;
+  retryAfterMs?: number;
+}
 
 // === Transcript + Scheduler (ADR-027) ===
 
@@ -419,6 +442,11 @@ export interface Transcript {
  *     turn was already compacted before the hook ran.
  */
 export interface SchedulerContext {
+  /**
+   * Admit a causal follow-up for the same resolved thread. Cross-thread
+   * injection from a terminal hook fails closed; use a separate trusted
+   * producer for unrelated work.
+   */
   inject(trigger: TurnTrigger): Promise<TurnResult>;
   getCompletedTranscript(): Promise<Transcript | null>;
   /** Caller cancellation; background hooks must not begin new work after abort. */
@@ -1435,6 +1463,34 @@ export interface AgentConfig {
   /** Tool-choice policy sent to the model. "auto" (default) lets the model
    *  decide; "any" forces a tool call; { name } forces a specific tool. */
   toolChoice?: "auto" | "any" | { name: string };
+  /** Bounded process-local admission and per-thread scheduling policy. */
+  turnScheduling?: Partial<TurnSchedulingConfig>;
+}
+
+export interface TurnSchedulingConfig {
+  /** Maximum active complete-turn pipelines across this agent. Default 4. */
+  maxConcurrent: number;
+  /** Maximum waiting turns across this agent. Default 100. */
+  maxQueued: number;
+  /** Maximum waiting turns for one resolved thread. Default 20. */
+  maxQueuedPerThread: number;
+  /** Maximum nested same-thread SchedulerContext.inject depth. Default 8. */
+  maxCausalDepth: number;
+}
+
+export interface TurnSchedulerSnapshot {
+  state: "accepting" | "draining" | "stopped";
+  activeTurns: number;
+  queuedTurns: number;
+  activeThreads: number;
+  queuedThreads: number;
+  quarantinedThreads: number;
+  oldestQueueWaitMs: number;
+  admitted: number;
+  settled: number;
+  rejected: number;
+  canceled: number;
+  quarantined: number;
 }
 
 export interface AgentHealth {
@@ -1443,6 +1499,7 @@ export interface AgentHealth {
   uptime: number;
   augments: Record<string, { status: "ok" | "degraded" | "failed"; error?: string }>;
   model: { reachable: boolean };
+  scheduler: TurnSchedulerSnapshot;
 }
 
 export interface AgentHandle {
@@ -1452,6 +1509,11 @@ export interface AgentHandle {
   health(): AgentHealth;
   card(): AgentCard;
   inject(trigger: TurnTrigger, options?: { signal?: AbortSignal }): Promise<TurnResult>;
+  /**
+   * Clear a fail-closed thread quarantine after a trusted operator has
+   * reconciled the outcome-unknown side effect.
+   */
+  recoverThread(threadId: string): boolean;
 }
 
 // === Notify augment ===

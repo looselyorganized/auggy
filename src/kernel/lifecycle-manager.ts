@@ -7,7 +7,7 @@ export interface LifecycleManager {
   startIdleTimer(onIdle: () => Promise<void>, intervalMs?: number): void;
   stopIdleTimer(): void;
   resetIdleTimer(): void;
-  health(): AgentHealth;
+  health(): Omit<AgentHealth, "scheduler">;
 }
 
 export function createLifecycleManager(opts: {
@@ -90,7 +90,7 @@ export function createLifecycleManager(opts: {
       }, idleIntervalMs);
     },
 
-    health(): AgentHealth {
+    health(): Omit<AgentHealth, "scheduler"> {
       const statuses = Object.fromEntries(augmentStatus);
       const hasFailed = Object.values(statuses).some((s) => s.status === "failed");
       const hasDegraded = Object.values(statuses).some((s) => s.status === "degraded");

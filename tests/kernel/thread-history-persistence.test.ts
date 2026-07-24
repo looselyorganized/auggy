@@ -506,7 +506,7 @@ describe("kernel thread-history persistence", () => {
     }
   });
 
-  it("commits restored history when an already-aborted turn is canceled", async () => {
+  it("cancels an already-aborted turn before persistence work begins", async () => {
     const model = createMockModel({ response: "must not run" });
     const restored: ThreadHistorySnapshot = {
       version: 1,
@@ -539,7 +539,7 @@ describe("kernel thread-history persistence", () => {
       });
       expect(result.status).toBe("canceled");
       expect(model.calls).toHaveLength(0);
-      expect(commits).toEqual([restored]);
+      expect(commits).toEqual([]);
     } finally {
       await agent.stop();
     }
@@ -635,6 +635,54 @@ describe("kernel thread-history persistence", () => {
         "revisit",
       ]);
     } finally {
+      await agent.stop();
+    }
+  });
+
+  it("never evicts the exact history manager owned by an active turn", async () => {
+    const activeStarted = deferred();
+    const releaseActive = deferred();
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      async complete(prompt) {
+        const latest = prompt.messages.at(-1)?.content;
+        if (latest === "held active") {
+          activeStarted.resolve();
+          await releaseActive.promise;
+          return response("active response");
+        }
+        return response("filler response");
+      },
+    };
+    const durable = new Map<string, ThreadHistorySnapshot>();
+    const historyPersistence = persistence({
+      load: async (threadId) => durable.get(threadId) ?? null,
+      commit: async (threadId, _peer, snapshot) => {
+        durable.set(threadId, structuredClone(snapshot));
+      },
+    });
+    const { agent, kernel } = await runtime(model, 2);
+
+    try {
+      const active = kernel.handleInbound(trigger("active-lru", "held active"), {
+        historyPersistence,
+      });
+      await activeStarted.promise;
+      for (let index = 0; index < 501; index++) {
+        await kernel.handleInbound(trigger(`filler-lru-${index}`, `filler ${index}`), {
+          historyPersistence,
+        });
+      }
+      releaseActive.resolve();
+      await active;
+
+      expect(durable.get("active-lru")?.messages.map((message) => message.content)).toEqual([
+        "held active",
+        "active response",
+      ]);
+    } finally {
+      releaseActive.resolve();
       await agent.stop();
     }
   });
