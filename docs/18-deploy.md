@@ -43,7 +43,7 @@ The CLI walks you through:
 8. **Railway service selection** — by default Auggy creates a new service named `<name>` in the selected project. Pass `--service <name-or-id>` to deploy into an existing Railway service instead.
 9. **`railway volume add --mount-path /app/data`** — provisions a persistent volume mounted at `/app/data`. Holds SQLite-backed state across redeploys.
 10. **`railway domain`** — assigns a `<name>-production-xxxx.up.railway.app` URL.
-11. **Push env vars** — your `.env` entries + `AUGGY_PUBLIC_URL` (the just-generated URL) are pushed via `railway variables --set`.
+11. **Push env vars** — your `.env` entries + `AUGGY_PUBLIC_URL` (the just-generated URL) are pushed with `railway variable set <KEY> --stdin --skip-deploys`. Secret values travel over subprocess stdin, not argv. This requires a current Railway CLI with `variable set --stdin` support; Auggy fails closed instead of falling back to argv on older releases.
 12. **`railway up --detach`** — uploads the bundle, kicks off the build and deploy.
 13. **Health verification** — polls `${url}/health` for a bounded window. Timeout is non-destructive; Railway may still finish booting.
 14. **Metadata write** — the cloud record lands in `<agent-dir>/.auggy-cloud.json`. Later plain `auggy deploy` runs show the saved target and ask whether to redeploy it, recreate the service, choose another target, or reset metadata.

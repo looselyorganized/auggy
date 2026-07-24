@@ -56,6 +56,7 @@ import {
 } from "../augment-metadata";
 import { writeKnowledgeScaffold } from "../scaffold-knowledge";
 import { displayPath } from "../display-path";
+import { writeFileSafely } from "../safe-write";
 
 const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
   anthropic: { model: "claude-sonnet-4-6", envVar: "ANTHROPIC_API_KEY" },
@@ -607,7 +608,9 @@ async function runCreateIntoDir(
     for (const [key, value] of Object.entries(providedEnv)) {
       autoGenLines.push(`${key}=${value}`);
     }
-    writeFileSync(join(tempDir, ".env"), buildEnv(autoGenLines, placeholderEnvVars));
+    writeFileSafely(join(tempDir, ".env"), buildEnv(autoGenLines, placeholderEnvVars), {
+      mode: 0o600,
+    });
     const exampleEnvVars = collectEnvVars(augments, provider).filter(
       (v) => !AUTO_GENERATED_ENV_VARS.has(v),
     );

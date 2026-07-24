@@ -1,5 +1,13 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse as parseYaml } from "yaml";
@@ -498,6 +506,9 @@ describe("runCreate scaffolding integration", () => {
     expect(env).toContain("ANTHROPIC_API_KEY=sk-ant-test");
     expect(envExample).toContain("ANTHROPIC_API_KEY=");
     expect(envExample).not.toContain("sk-ant-test");
+    if (process.platform !== "win32") {
+      expect(statSync(join(dir, ".env")).mode & 0o777).toBe(0o600);
+    }
     expect(logs.join("\n")).not.toContain("Set .env");
     expect(logs.join("\n")).toContain("Open in your editor");
     expect(logs.join("\n")).toContain("identity.md");

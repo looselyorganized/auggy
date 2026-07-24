@@ -57,6 +57,21 @@ GOOD=ok
     expect(plan.variables.map((v) => v.key)).toEqual(["GOOD"]);
   });
 
+  test("never includes malformed raw input in warnings", () => {
+    const sentinel = "GROUP9_ENV_SECRET_DO_NOT_LOG";
+    const plan = parseEnvText(
+      `${sentinel}\n${sentinel}-INVALID=value\nDUPLICATE=first\nDUPLICATE=second\n`,
+    );
+
+    expect(plan.warnings).toEqual([
+      "line 1: missing '=' delimiter; skipped",
+      "line 2: invalid variable name; skipped",
+      "line 4: duplicate variable name; later value overrides earlier",
+    ]);
+    expect(plan.warnings.join("\n")).not.toContain(sentinel);
+    expect(plan.warnings.join("\n")).not.toContain("DUPLICATE");
+  });
+
   test("later duplicate keys override earlier with a warning", () => {
     const plan = parseEnvText("KEY=first\nKEY=second\n");
     expect(plan.variables.length).toBe(1);

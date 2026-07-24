@@ -40,6 +40,11 @@ source appear only after the corresponding augment or capability is added.
 directory. The directory IS the agent; there is no central index file that has
 to stay in sync with the filesystem.
 
+On POSIX systems, Auggy creates and rewrites the secret-bearing `.env` file
+with owner-only permissions (`0600`). Windows deployments must enforce the
+equivalent access policy with filesystem ACLs. `.env.example` contains only
+variable names and placeholders and remains normally readable.
+
 ### Default-scaffold details
 
 - `agent.yaml` uses the top-level `identity: ./identity.md` shorthand; the runtime loads it through fileMemory with `placement: system`, `origin: operator`, and `mutable: false`. `augments:` lists enabled augment ids in boot order. Per-augment config lives in `augments/<id>/augment.yaml`.

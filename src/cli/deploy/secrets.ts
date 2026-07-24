@@ -70,7 +70,7 @@ export function parseEnvText(text: string): SecretsPlan {
     const rest = line.startsWith("export ") ? line.slice("export ".length).trimStart() : line;
     const eqIdx = rest.indexOf("=");
     if (eqIdx < 0) {
-      warnings.push(`line ${i + 1}: no '=' found, skipped: "${line}"`);
+      warnings.push(`line ${i + 1}: missing '=' delimiter; skipped`);
       continue;
     }
 
@@ -78,12 +78,12 @@ export function parseEnvText(text: string): SecretsPlan {
     const value = unquote(rest.slice(eqIdx + 1).trim());
 
     if (!KEY_RE.test(key)) {
-      warnings.push(`line ${i + 1}: invalid key "${key}", skipped`);
+      warnings.push(`line ${i + 1}: invalid variable name; skipped`);
       continue;
     }
 
     if (seen.has(key)) {
-      warnings.push(`line ${i + 1}: duplicate key "${key}" — later value overrides earlier`);
+      warnings.push(`line ${i + 1}: duplicate variable name; later value overrides earlier`);
     }
     seen.add(key);
 

@@ -54,7 +54,7 @@ interface InteractiveSpawnHandle {
 
 export type RailwaySpawnFactory = (
   cmd: string[],
-  opts?: { cwd?: string; env?: Record<string, string> },
+  opts?: { cwd?: string; env?: Record<string, string>; stdin?: string },
 ) => SpawnHandle;
 
 export type RailwayInteractiveSpawnFactory = (
@@ -76,11 +76,13 @@ interface CreateRailwayCliOptions {
 interface RunOptions {
   cwd?: string;
   env?: Record<string, string>;
+  stdin?: string;
 }
 
 interface RunOrThrowOptions {
   retryTransient?: boolean;
   acceptNonZero?: (result: { stdout: string; stderr: string; exitCode: number }) => boolean;
+  redactValues?: readonly string[];
 }
 
 export interface RailwayStatus {
@@ -102,6 +104,23 @@ export interface RailwayProject {
 }
 
 const defaultSpawn: RailwaySpawnFactory = (cmd, opts = {}) => {
+  if (opts.stdin !== undefined) {
+    const proc = Bun.spawn(cmd, {
+      cwd: opts.cwd,
+      env: opts.env ? { ...process.env, ...opts.env } : undefined,
+      stdin: "pipe",
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    proc.stdin.write(opts.stdin);
+    proc.stdin.end();
+    return {
+      exited: proc.exited,
+      stdout: proc.stdout,
+      stderr: proc.stderr,
+    };
+  }
+
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,
     env: opts.env ? { ...process.env, ...opts.env } : undefined,
@@ -114,6 +133,28 @@ const defaultSpawn: RailwaySpawnFactory = (cmd, opts = {}) => {
     stderr: proc.stderr,
   };
 };
+
+function redactSensitiveText(value: string, sensitiveValues: readonly string[] = []): string {
+  let sanitized = value;
+  for (const sensitive of sensitiveValues) {
+    if (sensitive.length > 0) {
+      sanitized = sanitized.split(sensitive).join("[REDACTED]");
+    }
+  }
+  return sanitized;
+}
+
+function sensitiveCommandError(
+  args: readonly string[],
+  result: { stderr: string; exitCode: number },
+  sensitiveValues: readonly string[] = [],
+): Error {
+  const command = redactSensitiveText(args.join(" "), sensitiveValues);
+  const stderr = redactSensitiveText(result.stderr.trim(), sensitiveValues);
+  return new Error(
+    `railway ${command} exited ${result.exitCode}${stderr.length > 0 ? `: ${stderr}` : ""}`,
+  );
+}
 
 const defaultInteractiveSpawn: RailwayInteractiveSpawnFactory = (cmd, opts = {}) => {
   const proc = Bun.spawn(cmd, {
@@ -185,7 +226,14 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
     const maxAttempts = options.retryTransient ? 3 : 1;
     let lastResult: { stdout: string; stderr: string; exitCode: number } | null = null;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const result = await runRailway(args, runOpts);
+      let result: { stdout: string; stderr: string; exitCode: number };
+      try {
+        result = await runRailway(args, runOpts);
+      } catch (err) {
+        if (!options.redactValues?.length) throw err;
+        const message = err instanceof Error ? err.message : String(err);
+        throw new Error(redactSensitiveText(message, options.redactValues));
+      }
       lastResult = result;
       if (result.exitCode === 0 || options.acceptNonZero?.(result)) {
         return { stdout: result.stdout, stderr: result.stderr };
@@ -194,18 +242,10 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
         await sleep(retryDelayMs * attempt);
         continue;
       }
-      throw new Error(
-        `railway ${args.join(" ")} exited ${result.exitCode}${
-          result.stderr ? `: ${result.stderr.trim()}` : ""
-        }`,
-      );
+      throw sensitiveCommandError(args, result, options.redactValues);
     }
     const result = lastResult!;
-    throw new Error(
-      `railway ${args.join(" ")} exited ${result.exitCode}${
-        result.stderr ? `: ${result.stderr.trim()}` : ""
-      }`,
-    );
+    throw sensitiveCommandError(args, result, options.redactValues);
   }
 
   async function runInteractiveOrThrow(args: string[], runOpts: RunOptions = {}): Promise<void> {
@@ -306,12 +346,16 @@ export function createRailwayCli(opts: CreateRailwayCliOptions = {}): RailwayCli
     },
 
     async setVariable({ key, value, cwd }) {
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+        throw new Error("Invalid Railway variable key.");
+      }
       try {
         await runOrThrow(
-          ["variable", "set", `${key}=${value}`, "--skip-deploys"],
-          { cwd },
+          ["variable", "set", key, "--stdin", "--skip-deploys"],
+          { cwd, stdin: value },
           {
             retryTransient: true,
+            redactValues: [value],
           },
         );
       } catch (err) {

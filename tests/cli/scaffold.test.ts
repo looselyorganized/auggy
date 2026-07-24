@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { scaffoldAgent } from "../../src/cli/scaffold";
@@ -31,6 +31,9 @@ describe("scaffoldAgent", () => {
     expect(existsSync(join(dir, "data", "workspace"))).toBe(true);
     expect(existsSync(join(dir, "workspace"))).toBe(false);
     expect(existsSync(join(dir, "augments"))).toBe(true);
+    if (process.platform !== "win32") {
+      expect(statSync(join(dir, ".env")).mode & 0o777).toBe(0o600);
+    }
   });
 
   test("generates a valid aug1_ UUID in agent.yaml", () => {

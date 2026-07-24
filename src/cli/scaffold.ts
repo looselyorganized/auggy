@@ -28,6 +28,7 @@ import {
   writeCustomAugmentsReadme,
 } from "./augment-metadata";
 import { AUGMENT_CATALOG, type CatalogEntry } from "./augment-catalog";
+import { writeFileSafely } from "./safe-write";
 
 export interface ScaffoldOptions {
   /** Agent name. */
@@ -121,7 +122,7 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
   );
 
   // Write .env with empty values — operator fills in secrets before first run.
-  writeFileSync(join(dir, ".env"), ENV_TEMPLATE);
+  writeFileSafely(join(dir, ".env"), ENV_TEMPLATE, { mode: 0o600 });
 
   // Write .gitignore.
   writeFileSync(join(dir, ".gitignore"), GITIGNORE_TEMPLATE);
