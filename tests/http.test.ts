@@ -25,10 +25,13 @@ function serveOnEphemeralPort(
   fetch: (req: Request) => Response | Promise<Response>,
 ): ReturnType<typeof Bun.serve> {
   let lastError: unknown;
+  const fallbackStart = 20_000 + Math.floor(Math.random() * 20_000);
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
-      // Bun can transiently report EADDRINUSE for port: 0 under full-suite load.
-      return Bun.serve({ hostname: TEST_HOST, port: 0, fetch });
+      // Bun 1.3.14 can repeatedly report EADDRINUSE for port: 0. After the
+      // first OS-assigned attempt, probe distinct bounded fallback ports.
+      const port = attempt === 0 ? 0 : fallbackStart + attempt - 1;
+      return Bun.serve({ hostname: TEST_HOST, port, fetch });
     } catch (err) {
       lastError = err;
       if ((err as { code?: string }).code !== "EADDRINUSE") throw err;

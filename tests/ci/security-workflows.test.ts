@@ -130,3 +130,46 @@ describe("release publishing identity", () => {
     expect(releaseDocs).toContain("Do not allow\n   `npm stage publish`");
   });
 });
+
+describe("release rehearsal isolation", () => {
+  test("runs the complete runtime surface in bounded test processes", () => {
+    const source = readFileSync(join(ROOT, ".github/workflows/release-rehearsal.yml"), "utf8");
+
+    expect(source).not.toContain("run: bun run test\n");
+    expect(source).toContain("Run runtime tests in bounded shards");
+    for (const path of [
+      "tests/http.test.ts",
+      "tests/agent-card.test.ts",
+      "tests/agent.test.ts",
+      "tests/agentmail-client.test.ts",
+      "tests/augment-inspector.test.ts",
+      "tests/helpers.test.ts",
+      "tests/parts.test.ts",
+      "tests/telegram-client.test.ts",
+      "tests/tokenizer.test.ts",
+      "tests/types-compile.test.ts",
+      "tests/augments/",
+      "tests/auth/",
+      "tests/config/",
+      "tests/memory/",
+      "tests/skills/",
+      "tests/cli/",
+      "tests/scripts/",
+      "tests/ci/",
+      "tests/transports/",
+      "tests/integration/",
+      "tests/kernel/",
+      "tests/lib/",
+      "tests/engines/",
+      "tests/packages/",
+      "tests/public-api/",
+      "tests/types/",
+      "tests/evals/",
+      "examples/",
+    ]) {
+      expect(source).toContain(path);
+    }
+    expect(source).toContain("bun run test:admin");
+    expect(source).toContain("bun run smoke:release");
+  });
+});
