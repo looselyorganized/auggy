@@ -396,17 +396,17 @@ describe("safeParseJson", () => {
     expect(safeParseJson('{"a":1}')).toEqual({ a: 1 });
   });
 
-  test("returns {} on malformed JSON", () => {
-    expect(safeParseJson("not json")).toEqual({});
+  test("fails closed on malformed JSON", () => {
+    expect(() => safeParseJson("not json")).toThrow("maxToolArgumentBytes");
   });
 
-  test("returns {} for arrays (object expected)", () => {
-    expect(safeParseJson("[1,2]")).toEqual({});
+  test("fails closed for arrays (object expected)", () => {
+    expect(() => safeParseJson("[1,2]")).toThrow("maxToolArgumentBytes");
   });
 
-  test("returns {} for primitives", () => {
-    expect(safeParseJson("42")).toEqual({});
-    expect(safeParseJson('"hi"')).toEqual({});
+  test("fails closed for primitives", () => {
+    expect(() => safeParseJson("42")).toThrow("maxToolArgumentBytes");
+    expect(() => safeParseJson('"hi"')).toThrow("maxToolArgumentBytes");
   });
 });
 
@@ -524,20 +524,21 @@ describe("buildOpenAIModelResponse", () => {
     expect(r.toolCalls).toBeUndefined();
   });
 
-  test("handles malformed tool arguments JSON (defaults to {})", () => {
-    const r = buildOpenAIModelResponse(
-      mockCompletion({
-        finishReason: "tool_calls",
-        toolCalls: [
-          {
-            id: "tc1",
-            type: "function",
-            function: { name: "x", arguments: "not json" },
-          },
-        ],
-      }),
-    );
-    expect(r.toolCalls).toEqual([{ name: "x", arguments: {} }]);
+  test("fails closed on malformed tool arguments JSON", () => {
+    expect(() =>
+      buildOpenAIModelResponse(
+        mockCompletion({
+          finishReason: "tool_calls",
+          toolCalls: [
+            {
+              id: "tc1",
+              type: "function",
+              function: { name: "x", arguments: "not json" },
+            },
+          ],
+        }),
+      ),
+    ).toThrow("maxToolArgumentBytes");
   });
 
   test("throws on empty choices array (visible failure not silent empty turn)", () => {
@@ -550,6 +551,23 @@ describe("buildOpenAIModelResponse", () => {
     expect(() => buildOpenAIModelResponse(mockCompletion({ emptyChoices: true }), "gpt-5")).toThrow(
       /gpt-5/,
     );
+  });
+
+  test("empty-choices error does not serialize provider-controlled metadata", () => {
+    const completion = mockCompletion({ emptyChoices: true }) as unknown as Record<string, unknown>;
+    completion.id = "sentinel-provider-id";
+    completion.usage = { secret: "sentinel-provider-usage" };
+
+    let message = "";
+    try {
+      buildOpenAIModelResponse(completion as unknown as OpenAI.Chat.ChatCompletion);
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(message).toContain("returned no choices");
+    expect(message).not.toContain("sentinel-provider-id");
+    expect(message).not.toContain("sentinel-provider-usage");
   });
 
   test("empty-choices error mentions content policy as likely cause", () => {
@@ -624,15 +642,15 @@ describe("createOpenAIEngine — SDK call payload", () => {
     expect(tools).toHaveLength(1);
   });
 
-  test("propagates SDK errors wrapped with engine + model context", async () => {
+  test("wraps SDK errors with stable engine + model context", async () => {
     throwOnCreate = new Error("rate limited");
     const engine = createOpenAIEngine({ model: "gpt-5" });
     await expect(
       engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] })),
-    ).rejects.toThrow("OpenAI engine (gpt-5) failed: rate limited");
+    ).rejects.toThrow("OpenAI engine (gpt-5) request failed.");
   });
 
-  test("preserves original SDK error as `cause`", async () => {
+  test("discards the original SDK error cause", async () => {
     const original = new Error("503 service unavailable");
     throwOnCreate = original;
     const engine = createOpenAIEngine({ model: "o3" });
@@ -641,7 +659,8 @@ describe("createOpenAIEngine — SDK call payload", () => {
       throw new Error("should have thrown");
     } catch (err) {
       expect(err).toBeInstanceOf(Error);
-      expect((err as Error & { cause?: unknown }).cause).toBe(original);
+      expect((err as Error & { cause?: unknown }).cause).toBeUndefined();
+      expect(Bun.inspect(err)).not.toContain(original.message);
     }
   });
 
@@ -675,6 +694,24 @@ describe("createOpenAIEngine — SDK call payload", () => {
   test("passes apiKey to SDK constructor", async () => {
     createOpenAIEngine({ model: "gpt-5", apiKey: "sk-test" });
     expect(lastConstructorArgs?.apiKey).toBe("sk-test");
+  });
+
+  test("rejects a credentialed non-loopback plaintext baseURL before SDK construction", () => {
+    const sentinel = "OPENAI_GROUP9_SECRET_DO_NOT_LOG";
+    let error: unknown;
+    try {
+      createOpenAIEngine({
+        model: "gpt-5",
+        apiKey: sentinel,
+        baseURL: "http://provider.example.test/v1?token=url-secret",
+      });
+    } catch (cause) {
+      error = cause;
+    }
+    expect(String(error)).toContain("plaintext HTTP");
+    expect(String(error)).not.toContain(sentinel);
+    expect(String(error)).not.toContain("provider.example.test");
+    expect(lastConstructorArgs).toBeNull();
   });
 });
 
@@ -732,6 +769,45 @@ describe("createOpenAIEngine — costUsd", () => {
     const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.costUsd).toBeCloseTo(0.0018, 8);
   });
+
+  test("fails missing or malformed usage closed as unpriced", async () => {
+    const invalidUsage: unknown[] = [
+      undefined,
+      "not-an-object",
+      { prompt_tokens: -1, completion_tokens: 5 },
+      { prompt_tokens: 10, completion_tokens: Number.POSITIVE_INFINITY },
+    ];
+
+    for (const usage of invalidUsage) {
+      nextResponse = {
+        ...mockCompletion({ inputTokens: 10, outputTokens: 5 }),
+        usage,
+      } as unknown as OpenAI.Chat.ChatCompletion;
+      const result = await createOpenAIEngine({ model: "gpt-5" }).complete(emptyPrompt());
+      expect(result.costUsd).toBeUndefined();
+      expect(result.unpricedReason).toBe("Provider returned invalid accounting metadata.");
+      expect(result.inputTokens).toBe(0);
+      expect(result.outputTokens).toBe(0);
+    }
+  });
+});
+
+describe("createOpenAIEngine — credential-safe errors", () => {
+  test("discards provider-echoed credentials from messages and causes", async () => {
+    const sentinel = "openai-secret-sentinel";
+    throwOnCreate = Object.assign(new Error(`upstream echoed ${sentinel}`), { status: 401 });
+    const engine = createOpenAIEngine({
+      apiKey: sentinel,
+      model: "gpt-5",
+    });
+
+    const error = await engine.complete(emptyPrompt()).catch((caught) => caught);
+    expect(String(error)).toContain("OpenAI engine (gpt-5) request failed (HTTP 401)");
+    expect(String(error)).not.toContain(sentinel);
+    expect(Bun.inspect(error)).not.toContain(sentinel);
+    expect((error as Error).cause).toBeUndefined();
+    expect((error as { status?: number }).status).toBe(401);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -771,5 +847,96 @@ describe("createOpenAIEngine — startup warnings", () => {
     } finally {
       console.warn = original;
     }
+  });
+});
+
+describe("createOpenAIEngine — response limits", () => {
+  test("injects the bounded transport into the SDK", () => {
+    createOpenAIEngine({ model: "gpt-5" });
+    expect(typeof lastConstructorArgs?.fetch).toBe("function");
+  });
+
+  test("rejects excessive raw tool calls before parsing their arguments", () => {
+    const toolCalls = [
+      {
+        id: "call_1",
+        type: "function" as const,
+        function: { name: "first", arguments: "{}" },
+      },
+      {
+        id: "call_2",
+        type: "function" as const,
+        function: { name: "second", arguments: "not-json" },
+      },
+    ];
+    expect(() =>
+      buildOpenAIModelResponse(mockCompletion({ finishReason: "tool_calls", toolCalls }), "gpt-5", {
+        maxToolCalls: 1,
+      }),
+    ).toThrow("maxToolCalls");
+  });
+
+  test("preserves known accounting when a completed response exceeds a limit", async () => {
+    nextResponse = mockCompletion({
+      content: "oversized",
+      inputTokens: 200,
+      outputTokens: 100,
+    });
+    const engine = createOpenAIEngine({
+      model: "gpt-5",
+      responseLimits: { maxTextBytes: 4 },
+    });
+
+    const error = await engine.complete(emptyPrompt()).catch((cause) => cause);
+    expect(error).toMatchObject({
+      name: "ModelResponseLimitError",
+      limit: "maxTextBytes",
+      accounting: {
+        inputTokens: 200,
+        outputTokens: 100,
+      },
+    });
+    expect(error.accounting.costUsd).toBeGreaterThan(0);
+  });
+
+  test("rejects malformed SDK response shapes while retaining usage", async () => {
+    nextResponse = {
+      ...mockCompletion({ inputTokens: 200, outputTokens: 100 }),
+      choices: [
+        {
+          ...mockCompletion({}).choices[0]!,
+          message: {
+            role: "assistant",
+            content: { nested: "not text" },
+            tool_calls: {},
+          },
+        },
+      ],
+    } as unknown as OpenAI.Chat.ChatCompletion;
+    const engine = createOpenAIEngine({ model: "gpt-5" });
+
+    const error = await engine.complete(emptyPrompt()).catch((cause) => cause);
+
+    expect(error).toMatchObject({
+      name: "ModelResponseLimitError",
+      accounting: { inputTokens: 200, outputTokens: 100 },
+    });
+  });
+
+  test("retains valid usage when an empty-choice completion fails", async () => {
+    nextResponse = {
+      ...mockCompletion({ inputTokens: 200, outputTokens: 100, emptyChoices: true }),
+      id: "sentinel-provider-id",
+    };
+    const engine = createOpenAIEngine({ model: "gpt-5" });
+
+    const error = await engine.complete(emptyPrompt()).catch((cause) => cause);
+
+    expect(error).toMatchObject({
+      name: "ModelResponseLimitError",
+      accounting: { inputTokens: 200, outputTokens: 100 },
+    });
+    expect(error.accounting.costUsd).toBeCloseTo(0.003, 8);
+    expect(error.message).not.toContain("sentinel-provider-id");
   });
 });

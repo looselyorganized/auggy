@@ -68,7 +68,10 @@ export function costFromResponse(response: {
   unpricedReason?: string;
 }): CostResult {
   if (response.costUsd !== undefined) {
-    return { priced: true, costUsd: response.costUsd };
+    if (Number.isFinite(response.costUsd) && response.costUsd >= 0) {
+      return { priced: true, costUsd: response.costUsd };
+    }
+    return { priced: false, reason: "engine returned invalid costUsd" };
   }
   return { priced: false, reason: response.unpricedReason ?? "engine returned no costUsd" };
 }

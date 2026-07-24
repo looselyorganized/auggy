@@ -212,9 +212,14 @@ describe("shell_exec execution", () => {
     });
     const tool = getTool(aug, "shell_exec");
     const start = performance.now();
-    const result = JSON.parse(await tool.execute({ command: "sleep 60" }));
+    let failure: unknown;
+    try {
+      await tool.execute({ command: "sleep 60" });
+    } catch (error) {
+      failure = error;
+    }
     const elapsed = performance.now() - start;
-    expect(result.exitCode).not.toBe(0);
+    expect(failure).toMatchObject({ outcomeUnknown: true });
     expect(elapsed).toBeLessThan(10_000);
   }, 20_000);
 });
@@ -435,9 +440,14 @@ describe("run_script", () => {
     });
     const tool = getTool(aug, "run_script");
     const start = performance.now();
-    const result = JSON.parse(await tool.execute({ name: "slow" }));
+    let failure: unknown;
+    try {
+      await tool.execute({ name: "slow" });
+    } catch (error) {
+      failure = error;
+    }
     const elapsed = performance.now() - start;
-    expect(result.exitCode).not.toBe(0);
+    expect(failure).toMatchObject({ outcomeUnknown: true });
     expect(elapsed).toBeLessThan(10_000);
   }, 20_000);
 });

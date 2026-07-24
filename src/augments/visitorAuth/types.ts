@@ -36,6 +36,8 @@ export interface AgentMailAgentMailConfig {
   subjectPrefix?: string;
   /** Optional override for the AgentMail API base URL (testing/sandbox). */
   apiBaseUrl?: string;
+  /** Development-only escape hatch for credentialed non-loopback HTTP. */
+  allowInsecureHttpWithCredentials?: boolean;
 }
 
 export interface AgentMailConsoleConfig {

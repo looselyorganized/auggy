@@ -1,7 +1,13 @@
 import { describe, it, expect, spyOn } from "bun:test";
 import { createMemoryTools } from "@/memory/tools";
 import { buildRegistry } from "@/memory/registry";
-import type { Augment, MemoryDefaults, ToolExecuteContext, ToolResult } from "@/types";
+import type {
+  Augment,
+  MemoryDefaults,
+  NamespaceMemoryProvider,
+  ToolExecuteContext,
+  ToolResult,
+} from "@/types";
 import { asStringTool } from "@tests/fixtures/tool-helpers";
 
 const defaults: MemoryDefaults = {
@@ -1316,6 +1322,30 @@ describe("createMemoryTools", () => {
       );
       const parsed = JSON.parse(result);
       expect(parsed.deleted).toBe(5);
+    });
+
+    it("redacts provider exceptions from model-visible forget results", async () => {
+      const sentinel = "GROUP8_MEMORY_PROVIDER_SECRET";
+      const broken = makeAug("broken", 0, "broken:");
+      if (broken.memory?.owns.kind !== "namespace") {
+        throw new Error("expected namespace memory");
+      }
+      (broken.memory as NamespaceMemoryProvider).forget = async () => {
+        throw new Error(sentinel);
+      };
+      const { tools } = createMemoryTools(buildRegistry([broken]));
+      const forgetTool = asStringTool(tools.find((tool) => tool.name === "memory_forget")!);
+      const result = await forgetTool.execute(
+        { peerId: "vis_a" },
+        {
+          turnId: "t1",
+          threadId: "th",
+          peer: { id: "op", kind: "human", trustLevel: "creator", sourceAugment: "cli" },
+        },
+      );
+
+      expect(result).toContain("provider operation failed");
+      expect(result).not.toContain(sentinel);
     });
 
     it("denies public peers", async () => {

@@ -19,11 +19,18 @@ POST <agent-url>/agent/run
 Content-Type: application/json
 Authorization: <optional — see "Identity resolution" below>
 x-visitor-token: <optional — see "Identity resolution">
+x-auggy-anonymous-session: <send the capability returned on first anonymous contact>
 x-agent-id, x-agent-secret: <optional — agent-to-agent only>
-Idempotency-Key: <optional — cost-dedup on retry>
+Idempotency-Key: <recommended — durable execution replay on retry>
 
-{ "messages": [{ "role": "user", "content": "..." }], "threadId": "<your-choice>" }
+{ "messages": [{ "role": "user", "content": "..." }], "threadId": "<logical-client-id>" }
 ```
+
+For public callers, `threadId` is a logical identifier. The server derives the
+kernel thread ID from the security namespace, authenticated peer scope, and
+logical value; clients must use the `RUN_STARTED.threadId` returned by the
+server as the canonical execution identifier. This prevents predictable
+client-chosen values from claiming another peer's history.
 
 The response is a Server-Sent Events stream of AG-UI events:
 
@@ -49,32 +56,70 @@ Full event taxonomy (TEXT_MESSAGE_*, TOOL_CALL_*, RUN_ERROR, etc.) lives in `doc
 | **1 Creator** | Valid bearer matching `webTransport.auth.token`, AND no valid `x-agent-id`+`x-agent-secret` pair (Path 2 wins for agent credentials), AND no VALID `x-visitor-token` (Path 3 wins for `public` + `recognized` callers). **Bearer wins over an invalid `x-visitor-token`** — a stale or malformed visitor-token alongside a valid bearer is ignored and the request resolves as creator. | `creator` | hardcoded `"creator"` |
 | **2 Agent** | `x-agent-id` + matching `x-agent-secret` (timing-safe compare) | `agent` | `"agent:" + x-agent-id` |
 | **3 Public / recognized** | Valid HMAC-signed `x-visitor-token` (not revoked, `agentBinding` matches). Fires even when a valid bearer is also present — explicit operator-as-visitor opt-in. | `public` + `recognized` | `payload.visitorId` from the token (stable across requests) |
-| **4 Public / anonymous** | Default — fallback when no path above matched. Admitted by `allowAnonymous` with no bearer. | `public` + `anonymous` | `"anon-" + threadId` |
+| **4 Public / anonymous** | Default — fallback when no path above matched. Admitted by `allowAnonymous` with no bearer. | `public` + `anonymous` | Server-minted subject authenticated by `x-auggy-anonymous-session`; never derived from `threadId` |
 
 What other headers do:
 
 - `x-peer-name` — cosmetic `displayName`. Does NOT affect trust.
-- `x-peer-kind` — `kind` field (`"human"` / `"agent"` / etc.). Does NOT affect trust.
-- `x-org-id` — cosmetic `orgId`. Does NOT affect trust.
-- **`x-peer-id` — accepted but UNUSED by identity resolution.** Do not rely on it for identity scoping; use `threadId` for anonymous continuity or `x-visitor-token` for durable identity.
+- `x-peer-kind` and `x-org-id` are not identity proof and must not be used for authorization.
+- **`x-peer-id` — accepted but UNUSED by identity resolution.** Do not rely on it for identity scoping; use the server-issued anonymous-session capability or a verified visitor token.
 
 `allowAnonymous` is the operator's gate (`webTransport.allowAnonymous: true` in yaml, or `AUGGY_ALLOW_ANONYMOUS=true` env var). Default rule: `NODE_ENV !== "production"`. See `docs/06-transports.md#anonymous-posture` for the resolution precedence.
 
 ---
 
-## Visitor-token rotation
+## Anonymous bootstrap and visitor verification
 
-When `webTransport.visitorTokens.enabled: true`, **a visitor's first request MUST include a non-empty `x-visitor-token` header** (`x-visitor-token: bootstrap` is the documented sentinel value). The runtime mints a fresh `vis_<uuid>` HMAC-signed token only when an `x-visitor-token` header is present — if the header is absent entirely, no token is issued and the visitor has no continuity into future requests.
+Every first-contact anonymous request returns
+`428 anonymous_session_required` with an authenticated
+`x-auggy-anonymous-session` capability and performs no model or tool work. The
+client must retain the capability and retry the same request with it, retaining
+the same idempotency key when one was supplied. Continue resending it on
+anonymous requests until a verified visitor token is available. No
+`x-visitor-token: bootstrap` sentinel is required. Missing, malformed, expired,
+revoked, and wrong-agent visitor tokens remain anonymous and are never
+exchanged for fresh recognized authority. Responses carrying anonymous
+capabilities use `Cache-Control: private, no-store`.
 
-When the runtime mints a token, it returns it in the response's `x-visitor-token` header. The current request stays at `public/anonymous`; the newly-issued token is for **future** requests.
+Anonymous-session capabilities last 24 hours and are invalidated when the
+agent's bearer secret or security namespace rotates. An expired or invalid
+capability returns 401 plus
+`x-auggy-anonymous-session-status: invalid` before the request is claimed or
+executed. A client may remove that stored capability and retry once with the
+same idempotency key. If the retry returns 428 with a fresh
+anonymous-session, retain it and retry once more. Never treat an arbitrary 401
+as a bootstrap signal and never build an unbounded retry loop.
 
-The next request from the same visitor includes that minted token, which resolves to `public/recognized` with a stable `peer.id` (the `visitorId` embedded in the token's payload). Memory namespace stays consistent across requests for that visitor.
+The generic web transport verifies visitor tokens but does not mint them from
+anonymous traffic. Recognized visitor authority comes from `visitorAuth` after
+its verification flow or from another explicitly trusted token minter sharing
+the configured signing key. A verified token resolves to
+`public/recognized` with a stable `peer.id`. When `visitorAuth` upgrades an
+anonymous caller, its signed token can carry the prior anonymous peer/thread
+scope so the kernel can perform the one-way promotion. The reverse transition
+is denied, including after revocation.
 
-A correctly-implemented widget MUST: (1) send the bootstrap sentinel on first contact, (2) read the rotated token from the response's `x-visitor-token` header, (3) persist it in `localStorage` (or wherever your topology stores client-side state), (4) send the rotated token on every subsequent request. Skip step 1 and the visitor never gets a stable identity.
+A correctly implemented widget must retain and resend the
+`x-auggy-anonymous-session` while anonymous. After a real verification flow
+hands it an `x-visitor-token`, it retains and sends that token on subsequent
+requests. Store browser credentials according to the application’s XSS and
+session threat model; `localStorage` is only one possible topology.
 
-The signing key (`visitorTokens.signingKey`) is injected at boot by visitorAuth when present (so visitor-tokens and verify-flow tokens share trust). Operators who run with `visitorTokens` but no `visitorAuth` set their own signing key directly.
+This bootstrap applies to keyed and unkeyed anonymous requests alike. For a
+request carrying `Idempotency-Key`, retain the returned anonymous session and
+retry the identical request with the same key. This prevents either a
+caller-chosen idempotency key or a discarded server-minted identity from
+becoming a resource-limit bypass while preserving exactly-once execution.
 
-Token TTL defaults to 30 days (`visitorTokens.ttlSeconds`). **Expired tokens are rejected** — `verifyVisitorToken` returns null when `payload.expiresAt < Date.now()`. The visitor falls back to anonymous on the next request and must re-bootstrap (or re-verify via visitorAuth for `vis_<uuid>` continuity). Tokens are also checked against the revocation list on every request — a revoked token is treated as invalid regardless of TTL.
+The signing key (`visitorTokens.signingKey`) is injected at boot by visitorAuth
+when present so the transport can verify its tokens. Operators using a custom
+minter set the same signing key directly.
+
+The trusted minter chooses token TTL. **Expired tokens are rejected** —
+`verifyVisitorToken` returns null when `payload.expiresAt <= Date.now()`.
+Tokens are also checked against the revocation list on every request. An
+expired or revoked caller falls back to a new anonymous session and cannot
+reclaim the recognized thread without a newly verified token.
 
 ---
 
@@ -125,12 +170,22 @@ For creator-side chat (the operator chatting with their own agent), Auggy ships 
 
 - Valid bearer → `creator` trust, `peer.id === "creator"` (Path 1)
 - Present-but-invalid bearer → 401 (no silent downgrade to anonymous; security claim)
-- No bearer + bootstrap `x-visitor-token` → `public/anonymous`, fresh `vis_<uuid>` returned in response header (Path 4)
-- Subsequent request with the rotated token → `public/recognized`, stable `peer.id` (Path 3)
-- visitorAuth flow with console adapter → upgraded `vis_<uuid>` token (Path 3 via verify)
+- First contact → 428 with no execution; retry with the server-minted
+  anonymous session → `public/anonymous` with a stable anonymous peer (Path 4)
+- Invalid visitor credentials never mint replacement recognized authority
+- visitorAuth flow with console adapter → upgraded `vis_<uuid>` token, exact
+  canonical thread continuity, and prior anonymous history (Path 3 via verify)
+- Independent anonymous sessions using the same logical thread ID receive
+  different canonical thread IDs and cannot read one another's history
+- Revoked recognized credentials cannot downgrade into their former thread
 - `x-peer-id` header is ignored for identity regardless of request shape (regression guard)
 
-Six tests. **Out of scope for this test file:** agent-path identity (Path 2, covered in `src/transports/web-transport.test.ts`), full AG-UI event taxonomy (`docs/06-transports.md` + transport unit tests), visitorAuth verify-page GET/POST mechanics (`tests/augments/visitorAuth/*.test.ts`), Idempotency-Key behavior (`tests/integration/budgets-and-trust.test.ts`).
+Eight tests. **Out of scope for this test file:** agent-path identity (Path 2,
+covered in `tests/transports/web-transport.test.ts`), full AG-UI event taxonomy
+(`docs/06-transports.md` + transport unit tests), visitorAuth verify-page
+GET/POST mechanics (`tests/augments/visitorAuth/`), and detailed idempotency
+ledger behavior (`tests/transports/web-idempotency.test.ts` and
+`tests/transports/idempotency-store.test.ts`).
 
 If you change webTransport identity resolution or visitorAuth's upgrade flow, run this test to verify the documented identity-path contract still holds.
 

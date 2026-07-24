@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import {
   collectAdminInfoBlocks,
   collectAugmentSummaries,
@@ -138,23 +138,33 @@ describe("admin-collector", () => {
   });
 
   it("renders an error status section when an augment's adminInfo throws", async () => {
+    const sentinel = "GROUP8_ADMIN_INFO_SECRET";
+    const logLines: string[] = [];
+    const errorSpy = spyOn(console, "error").mockImplementation((...values) => {
+      logLines.push(values.map(String).join(" "));
+    });
     const broken = mockAugment({
       name: "broken",
       adminInfo: async () => {
-        throw new Error("kaboom");
+        throw new Error(sentinel);
       },
     });
     const ok = mockAugment({
       name: "ok",
       adminInfo: async () => ({ augmentName: "ok", title: "OK", sections: [] }),
     });
-    const blocks = await collectAdminInfoBlocks(mockKernel([broken, ok]));
+    const blocks = await collectAdminInfoBlocks(mockKernel([broken, ok])).finally(() => {
+      errorSpy.mockRestore();
+    });
     expect(blocks).toHaveLength(2);
     expect(blocks[0]?.augmentName).toBe("broken");
     expect(blocks[0]?.sections[0]).toMatchObject({
       kind: "status",
       level: "error",
+      message: "Failed to load admin info.",
     });
+    expect(JSON.stringify(blocks)).not.toContain(sentinel);
+    expect(logLines.join("\n")).not.toContain(sentinel);
     expect(blocks[1]?.title).toBe("OK");
   });
 });

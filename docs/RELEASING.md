@@ -220,6 +220,40 @@ The publish workflow's idempotency gate means a repeat push to the same version 
 
 **Provenance is currently OFF.** `npm publish --provenance` requires the source repo be **public** (sigstore can only attest from public repos).
 
+The publish workflow separates uncredentialed verification from publication.
+Repository and dependency code runs in `verify`, which has neither
+`id-token: write` nor an npm token. Only the dependent `publish` job receives
+OIDC permission, and it consumes the already-packed artifacts with fixed
+workflow commands. It uses Node 24 and requires npm 11.5.1 or newer.
+
+Complete this external migration before the next release:
+
+1. Create an `npm-publish` GitHub Environment. Allow deployments only from
+   protected release tags matching `v*.*.*`; require a reviewer if repository
+   policy permits.
+2. Configure npm trusted publishers for all six packages (`auggy`, the four
+   provider adapters, and `@auggy/evals`) with these exact claims:
+   organization `looselyorganized`, repository `auggy`, workflow filename
+   `publish.yml` (npm expects the filename, not the path), Environment
+   `npm-publish`, and allowed action `npm publish` only. Do not allow
+   `npm stage publish` for this workflow.
+3. If a token fallback is temporarily required, create
+   `NPM_TOKEN_PUBLISH_ENV_ONLY` only in the `npm-publish` Environment.
+4. Revoke the legacy npm token and delete the repository-level `NPM_TOKEN`.
+5. Review every package's npm Trusted Publisher settings to confirm all five
+   claims above, then complete one controlled release without the fallback
+   token. After OIDC succeeds, remove `NODE_AUTH_TOKEN` from the workflow,
+   revoke the environment fallback, and disallow token-based publishing in
+   npm.
+
+Until the environment and either OIDC or its environment-only fallback are
+configured, publishing intentionally fails closed. This GitHub/npm state
+cannot be completed or verified by a source PR.
+
+Trusted publishing can authenticate a private GitHub repository, but npm
+provenance remains unavailable while the source repository is private. Keep
+`--provenance` off until the public-repository gate below is complete.
+
 To turn provenance back on (when the Auggy repo goes OSS-public):
 
 1. Set repo visibility to Public in GitHub Settings

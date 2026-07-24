@@ -60,6 +60,7 @@ export type {
   // Model
   ModelClient,
   ModelResponse,
+  ModelResponseLimits,
   ModelDelta,
   AssembledPrompt,
   // Storage
@@ -190,17 +191,40 @@ export { notify } from "./augments/notify";
 export type { NotifyAugmentInternalOptions } from "./augments/notify";
 
 // === HTTP client (for augment authors who need HTTP) ===
-export { createHttpClient } from "./http";
+export {
+  createHttpClient,
+  createRedirectRejectingFetch,
+  rejectNonGlobalAddress,
+  rejectUnsafeRedirect,
+  rejectUnsafeUrl,
+  resolvePublicHttpUrl,
+} from "./http";
 export type {
   HttpClient,
   HttpClientOptions,
+  HttpHostnameResolver,
   HttpRequestInit,
+  HttpResolvedAddress,
   HttpResponse,
 } from "./http";
 
 // === Built-in transports ===
 export { webTransport } from "./transports/web-transport";
 export type { WebTransportOptions } from "./transports/web-transport";
+export { telegramTransport } from "./augments/telegramTransport";
+export type {
+  TelegramAdmittedAgent,
+  TelegramAnonymousIdentityMode,
+  TelegramAsyncReplayStore,
+  TelegramAuthOptions,
+  TelegramInboundMode,
+  TelegramPollingOptions,
+  TelegramReplayClaimOptions,
+  TelegramReplayOptions,
+  TelegramReplayStore,
+  TelegramTransportOptions,
+  TelegramWebhookOptions,
+} from "./types";
 
 // === Engines (model client adapters) ===
 // Engine factories live in per-provider packages so `auggy` core ships zero

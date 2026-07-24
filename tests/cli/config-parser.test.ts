@@ -53,6 +53,98 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("parseConfig", () => {
+  test("accepts hardened anonymous network rate-limit policy", () => {
+    const augments = [
+      {
+        name: "web",
+        type: "webTransport",
+        options: {
+          port: 8080,
+          auth: { type: "bearer", token: "test-token" },
+          rateLimitPerPeer: {
+            maxPerMinute: 10,
+            anonymousNetwork: {
+              mode: "shared-store",
+              ipv6PrefixBits: 56,
+              globalMaxPerMinute: 500,
+            },
+          },
+        },
+      },
+    ];
+    const path = writeYaml("agent.yaml", minimalConfig({ augments }));
+    expect(parseConfig(path).augments[0]?.options?.rateLimitPerPeer).toEqual(
+      augments[0]!.options.rateLimitPerPeer,
+    );
+  });
+
+  test("rejects weakening or malformed anonymous network rate-limit policy", () => {
+    const invalidPolicies = [
+      { maxPerMinute: 0 },
+      { maxPerMinute: 10, anonymousNetwork: "shared-store" },
+      { maxPerMinute: 10, anonymousNetwork: { mode: "implicit" } },
+      { maxPerMinute: 10, anonymousNetwork: { ipv6PrefixBits: 65 } },
+      { maxPerMinute: 10, anonymousNetwork: { globalMaxPerMinute: 9 } },
+    ];
+    for (const [index, rateLimitPerPeer] of invalidPolicies.entries()) {
+      const path = writeYaml(
+        `agent-${index}.yaml`,
+        minimalConfig({
+          augments: [
+            {
+              name: "web",
+              type: "webTransport",
+              options: {
+                port: 8080,
+                auth: { type: "bearer", token: "test-token" },
+                rateLimitPerPeer,
+              },
+            },
+          ],
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(/rateLimitPerPeer/);
+    }
+  });
+
+  test("validates console proxy networks and allowed origins", () => {
+    const augments = [
+      {
+        name: "web",
+        type: "webTransport",
+        options: {
+          port: 8080,
+          auth: { type: "bearer", token: "test-token" },
+          trustedProxies: ["10.0.0.0/8", "2001:db8::1"],
+          consoleSecurity: { allowedOrigins: ["https://agent.example"] },
+        },
+      },
+    ];
+    const path = writeYaml("agent.yaml", minimalConfig({ augments }));
+    expect(parseConfig(path).augments[0]?.options?.trustedProxies).toEqual([
+      "10.0.0.0/8",
+      "2001:db8::1",
+    ]);
+  });
+
+  test("rejects malformed console proxy networks and origins", () => {
+    const augments = [
+      {
+        name: "web",
+        type: "webTransport",
+        options: {
+          port: 8080,
+          auth: { type: "bearer", token: "test-token" },
+          trustedProxies: ["0.0.0.0/0"],
+          consoleSecurity: { allowedOrigins: ["https://agent.example/path"] },
+        },
+      },
+    ];
+    const path = writeYaml("agent.yaml", minimalConfig({ augments }));
+    expect(() => parseConfig(path)).toThrow(/trustedProxies/);
+    expect(() => parseConfig(path)).toThrow(/allowedOrigins/);
+  });
+
   test("parses a minimal valid config", () => {
     const path = writeYaml("agent.yaml", minimalConfig());
     const config = parseConfig(path);
@@ -348,6 +440,261 @@ describe("link agent card capabilities", () => {
       "augments[0].options.agentCard.capabilities: must be an array of strings",
     );
   });
+
+  test("accepts an explicit outbound trust delegation", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            type: "link",
+            options: {
+              ...linkOptions,
+              peers: {
+                researcher: {
+                  url: "https://researcher.example.org",
+                  bearer: "outbound-test-bearer",
+                  participantId: "00000000-0000-4000-8000-00000000bbbb",
+                  inboundBearer: "inbound-test-bearer",
+                  inboundBearerId: "inbound-test-key",
+                },
+              },
+              outbound: {
+                allowedTrustLevels: ["creator", "agent", "public"],
+                publicDelegationPeers: {
+                  researcher: {
+                    url: "https://researcher.example.org",
+                    participantId: "00000000-0000-4000-8000-00000000bbbb",
+                  },
+                },
+              },
+            },
+          },
+        ],
+      }),
+    );
+
+    expect(parseConfig(path).augments[0]?.options?.outbound).toEqual({
+      allowedTrustLevels: ["creator", "agent", "public"],
+      publicDelegationPeers: {
+        researcher: {
+          url: "https://researcher.example.org",
+          participantId: "00000000-0000-4000-8000-00000000bbbb",
+        },
+      },
+    });
+  });
+
+  test("rejects malformed, duplicate, empty, and misspelled outbound trust policy", () => {
+    for (const outbound of [
+      { allowedTrustLevels: [] },
+      { allowedTrustLevels: ["creator", "creator"] },
+      { allowedTrustLevels: ["staff"] },
+      { allowedTrustLevels: ["public"] },
+      {
+        allowedTrustLevels: ["creator"],
+        publicDelegationPeers: {
+          researcher: {
+            url: "https://researcher.example.org",
+            participantId: "00000000-0000-4000-8000-00000000bbbb",
+          },
+        },
+      },
+      {
+        allowedTrustLevels: ["public"],
+        publicDelegationPeers: {},
+      },
+      {
+        allowedTrustLevels: ["public"],
+        publicDelegationPeers: [],
+      },
+      {
+        allowedTrustLevels: ["public"],
+        publicDelegationPeers: { researcher: "" },
+      },
+      {
+        allowedTrustLevels: ["public"],
+        publicDelegationPeers: {
+          researcher: {
+            url: "https://researcher.example.org",
+            participantId: "00000000-0000-4000-8000-00000000cccc",
+          },
+        },
+      },
+      {
+        allowedTrustLevels: ["public"],
+        publicDelegationPeers: {
+          unknown: {
+            url: "https://unknown.example.org",
+            participantId: "00000000-0000-4000-8000-00000000bbbb",
+          },
+        },
+      },
+      { allowTrustLevels: ["public"] },
+    ]) {
+      const path = writeYaml(
+        "agent.yaml",
+        minimalConfig({
+          augments: [
+            {
+              type: "link",
+              options: { ...linkOptions, outbound },
+            },
+          ],
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(/outbound/);
+    }
+  });
+
+  test("requires exact operator-owned endpoint and participant pins for peerSource", () => {
+    const valid = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            type: "link",
+            options: {
+              ...linkOptions,
+              peerSource: {
+                type: "registry",
+                url: "https://registry.example.org/peers.json",
+                pins: {
+                  researcher: {
+                    url: "https://researcher.example.org",
+                    participantId: "00000000-0000-4000-8000-00000000bbbb",
+                  },
+                },
+              },
+            },
+          },
+        ],
+      }),
+    );
+    expect(parseConfig(valid).augments[0]?.options?.peerSource).toMatchObject({
+      pins: {
+        researcher: {
+          url: "https://researcher.example.org",
+          participantId: "00000000-0000-4000-8000-00000000bbbb",
+        },
+      },
+    });
+
+    for (const peerSource of [
+      { type: "registry", url: "https://registry.example.org/peers.json" },
+      {
+        type: "registry",
+        url: "https://registry.example.org/peers.json",
+        pins: {},
+      },
+      {
+        type: "registry",
+        url: "https://registry.example.org/peers.json",
+        pins: { researcher: { participantId: "peer" } },
+      },
+      {
+        type: "registry",
+        url: "https://registry.example.org/peers.json",
+        pins: {
+          researcher: {
+            url: "https://researcher.example.org",
+            participantId: "peer",
+            delegatedOrigin: true,
+          },
+        },
+      },
+    ]) {
+      const invalid = writeYaml(
+        "agent.yaml",
+        minimalConfig({
+          augments: [
+            {
+              type: "link",
+              options: { ...linkOptions, peerSource },
+            },
+          ],
+        }),
+      );
+      expect(() => parseConfig(invalid)).toThrow(/peerSource/);
+    }
+  });
+});
+
+describe("webTransport external auth replay validation", () => {
+  function configWithReplayProtection(replayProtection: unknown) {
+    return minimalConfig({
+      augments: [
+        {
+          type: "webTransport",
+          options: {
+            port: 8080,
+            auth: { type: "bearer", token: "test-token" },
+            externalAuth: {
+              secret: "app-secret",
+              replayProtection,
+            },
+          },
+        },
+      ],
+    });
+  }
+
+  test("rejects malformed or non-atomic YAML replay configuration", () => {
+    for (const replayProtection of [
+      null,
+      [],
+      {},
+      { enabled: "true" },
+      { enabled: 1 },
+      { enabled: false, store: {} },
+      { enabled: true },
+    ]) {
+      const path = writeYaml("agent.yaml", configWithReplayProtection(replayProtection));
+      expect(() => parseConfig(path)).toThrow(/externalAuth\.replayProtection/);
+    }
+  });
+
+  test("accepts an explicit disabled replay policy", () => {
+    const path = writeYaml("agent.yaml", configWithReplayProtection({ enabled: false }));
+    expect(parseConfig(path).augments[0]?.options?.externalAuth).toBeDefined();
+  });
+
+  test("rejects malformed external auth policy fields before runtime", () => {
+    const invalidPolicies: Array<[string, Record<string, unknown>]> = [
+      ["secret", { secret: "" }],
+      ["keyId", { secret: "app-secret", keyId: 42 }],
+      ["audience", { secret: "app-secret", audience: [] }],
+      ["header", { secret: "app-secret", header: 42 }],
+      ["maxTtlSeconds", { secret: "app-secret", maxTtlSeconds: "not-a-number" }],
+      ["maxTtlSeconds", { secret: "app-secret", maxTtlSeconds: Number.NaN }],
+      ["allowedProviders", { secret: "app-secret", allowedProviders: "" }],
+      ["allowedProviders", { secret: "app-secret", allowedProviders: [] }],
+      ["allowedProviders", { secret: "app-secret", allowedProviders: ["supabase", ""] }],
+      ["allowedProviders", { secret: "app-secret", allowedProviders: ["supabase", "supabase"] }],
+      ["secrets", { secret: "app-secret", secrets: "legacy" }],
+      ["secrets", { secret: "app-secret", secrets: [{ secret: 42 }] }],
+      ["visitorId", { secret: "app-secret", visitorId: {} }],
+      ["includeUnverifiedEmail", { secret: "app-secret", includeUnverifiedEmail: "true" }],
+    ];
+    for (const [field, externalAuth] of invalidPolicies) {
+      const path = writeYaml(
+        "agent.yaml",
+        minimalConfig({
+          augments: [
+            {
+              type: "webTransport",
+              options: {
+                port: 8080,
+                auth: { type: "bearer", token: "test-token" },
+                externalAuth,
+              },
+            },
+          ],
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(`externalAuth.${field}`);
+    }
+  });
 });
 
 describe("engine.reasoningEffort validation", () => {
@@ -375,6 +722,59 @@ describe("engine.reasoningEffort validation", () => {
   });
 });
 
+describe("engine credential transport validation", () => {
+  test("accepts absolute HTTP(S) base URLs and a boolean development override", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "openai",
+          model: "gpt-5",
+          baseURL: "https://proxy.example.test/v1",
+          allowInsecureHttpWithCredentials: false,
+        },
+      }),
+    );
+    const config = parseConfig(path);
+    expect(config.engine.baseURL).toBe("https://proxy.example.test/v1");
+    expect(config.engine.allowInsecureHttpWithCredentials).toBe(false);
+  });
+
+  test.each(["/relative", "ftp://provider.example.test", "http://user:pass@host.test"])(
+    "rejects unsafe baseURL without echoing it: %s",
+    (baseURL) => {
+      const path = writeYaml(
+        "agent.yaml",
+        minimalConfig({
+          engine: { provider: "openai", model: "gpt-5", baseURL },
+        }),
+      );
+      let error: unknown;
+      try {
+        parseConfig(path);
+      } catch (cause) {
+        error = cause;
+      }
+      expect(String(error)).toContain("engine.baseURL");
+      expect(String(error)).not.toContain(baseURL);
+    },
+  );
+
+  test("rejects a non-boolean development override", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "openai",
+          model: "gpt-5",
+          allowInsecureHttpWithCredentials: "yes",
+        },
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow("engine.allowInsecureHttpWithCredentials");
+  });
+});
+
 describe("engine.providerRouting validation", () => {
   test("accepts valid providerRouting for openrouter", () => {
     const path = writeYaml(
@@ -384,7 +784,7 @@ describe("engine.providerRouting validation", () => {
           provider: "openrouter",
           model: "qwen/qwen3.5-397b-a17b",
           providerRouting: {
-            only: ["OpenAI"],
+            only: ["openai"],
             sort: "price",
             max_price: { prompt: 1, completion: 2 },
           },
@@ -392,8 +792,45 @@ describe("engine.providerRouting validation", () => {
       }),
     );
     const config = parseConfig(path);
-    expect(config.engine.providerRouting?.only).toEqual(["OpenAI"]);
+    expect(config.engine.providerRouting?.only).toEqual(["openai"]);
     expect(config.engine.providerRouting?.sort).toBe("price");
+  });
+
+  test("rejects malformed, noncanonical, and duplicate restrictive slugs", () => {
+    for (const only of [
+      [""],
+      [" openai"],
+      ["OpenAI"],
+      ["openai", "openai"],
+      ["deepinfra/turbo"],
+      ["openai%2fother"],
+    ]) {
+      const path = writeYaml(
+        "agent.yaml",
+        minimalConfig({
+          engine: {
+            provider: "openrouter",
+            model: "qwen/qwen3.5-397b-a17b",
+            providerRouting: { only },
+          },
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow("providerRouting.only");
+    }
+  });
+
+  test("rejects unknown providerRouting keys instead of ignoring typos", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "openrouter",
+          model: "qwen/qwen3.5-397b-a17b",
+          providerRouting: { onIy: ["openai"] },
+        },
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow("providerRouting.onIy");
   });
 
   test("rejects providerRouting for non-openrouter provider", () => {
@@ -1486,6 +1923,33 @@ describe("notify augment agentmail transport validation", () => {
     const destination = notifyOptions.destinations[0];
     expect(destination?.allowedTrustLevels).toEqual(["creator", "agent"]);
     expect(destination?.publicPolicy).toBe("escalation-only");
+  });
+
+  test("rejects malformed webhook security options", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "notify",
+            type: "notify",
+            options: {
+              destinations: [
+                {
+                  name: "ops",
+                  transport: "webhook",
+                  url: "https://example.com/notify",
+                  headers: { authorization: 123 },
+                  allowInsecureHttpWithCredentials: "yes",
+                },
+              ],
+            },
+          },
+        ],
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow(/headers: must be an object of strings/);
+    expect(() => parseConfig(path)).toThrow(/allowInsecureHttpWithCredentials: must be a boolean/);
   });
 
   test("rejects invalid destination authority fields", () => {

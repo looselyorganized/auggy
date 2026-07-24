@@ -103,6 +103,18 @@ Put secrets in `.env`, not `.mcp.json`:
 GITHUB_MCP_TOKEN=...
 ```
 
+Remote MCP transports do not follow redirects. Configure the final Streamable
+HTTP or SSE endpoint directly. Same-origin redirects also fail closed because
+MCP headers may contain arbitrary credentials that Fetch would otherwise carry
+to another origin.
+
+Every remote MCP endpoint must use HTTPS because URLs, session identifiers,
+tool arguments, and results may be sensitive. Loopback HTTP is allowed for
+local tunnels. For a non-loopback development sandbox only, set
+`auggy.allowInsecureHttpWithCredentials: true` on that server while
+`NODE_ENV=development`; the override is rejected in other environments and
+emits a security warning.
+
 Check cloud compatibility:
 
 ```bash
@@ -210,11 +222,14 @@ Use trust policy to limit which peers can see and call the discovered tools:
 tool name. Trust policy compiles into Auggy's structural
 `perTrustLevel.neverExpose` constraints, so withheld MCP tools are hidden before
 the model sees the tool list and are denied if a model fabricates the tool name.
+The generated tool checks the same policy again immediately before dispatch,
+before it reveals connection state or calls the remote server.
 
-MCP annotations are enforced, not just described. If a discovered tool has
-`destructiveHint: true` or `openWorldHint: true`, Auggy treats it as
-creator-only by default. To expose a risky annotated tool to `agent` or
-`public`, the operator must name that exact tool under `toolPolicies`.
+Every discovered tool is creator-only when no local trust policy is present.
+Remote MCP annotations such as `readOnlyHint`, `destructiveHint`, and
+`openWorldHint` are untrusted display metadata; they never grant, narrow, or
+widen authority. To delegate a tool to `agent` or `public`, the operator must
+do so explicitly in `.mcp.json` at the server or exact remote-tool name.
 
 You can also tune runtime caps per server:
 
@@ -229,6 +244,10 @@ You can also tune runtime caps per server:
         "maxToolPages": 5,
         "maxResultBytes": 65536,
         "maxSchemaBytes": 8192,
+        "maxArgumentBytes": 32768,
+        "maxDepth": 24,
+        "maxNodes": 5000,
+        "maxTransportMessageBytes": 131072,
         "includeToolDescriptions": true
       }
     }
@@ -237,12 +256,26 @@ You can also tune runtime caps per server:
 ```
 
 Defaults are conservative: 30s timeout, four concurrent calls per server,
-64 tools, 20 discovery pages, 128 KiB max result, and 16 KiB max input schema.
+64 tools, 20 discovery pages, 128 KiB max result, 16 KiB max input schema,
+64 KiB max call arguments, depth 32, 10,000 JSON nodes, and 256 KiB per
+transport message.
 
 ## Security Notes
 
 - Treat remote MCP tool descriptions and results as untrusted external content.
-- Auggy bounds MCP tool result size before returning it to the model.
+- Auggy validates argument bytes/depth/nodes before remote dispatch, and
+  validates schemas and results before exposing them to the model. A limit
+  violation fails closed rather than replacing an invalid schema with a
+  permissive one.
+- Remote HTTP response bodies, individual SSE events, and stdio JSON-RPC lines
+  are byte-capped before the SDK parses them. The stdio transport also caps
+  outbound request lines and does not inherit server stderr.
+- A remote `isError` result or an exception after tool dispatch is treated as
+  outcome-unknown. The turn terminates before another model inference because
+  a remote mutation may have partially completed.
+- A timed-out non-cooperative call keeps its per-server concurrency slot until
+  the underlying operation settles; repeated deadlines cannot accumulate
+  unbounded live calls behind `maxConcurrentCalls`.
 - Auggy bounds tool discovery pages/tool count so a broken or hostile server
   cannot make boot loop forever.
 - Missing `${ENV_VAR}` references fail that server closed; the server exposes
@@ -252,8 +285,10 @@ Defaults are conservative: 30s timeout, four concurrent calls per server,
   cloud runtimes.
 - Remote tool descriptions and input-schema text are normalized/truncated
   before becoming model-facing metadata.
-- Tools annotated as destructive or open-world default to creator-only exposure
-  unless explicitly overridden with a per-tool trust policy.
+- Every remotely supplied tool defaults to creator-only. Remote annotations are
+  sanitized descriptive hints, never authorization evidence.
+- Server and exact per-tool trust policy is enforced at catalog construction,
+  fabricated-call checking, and immediately before remote execution.
 - Duplicate exposed tool names fail the server closed instead of leaking
   partial tools.
 - MCP connection failures do not crash the agent; failed servers show in console

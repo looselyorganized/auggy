@@ -344,7 +344,7 @@ async function request(
   }
 
   const url = buildUrl(config.baseUrl, route.path, route.params, input);
-  const init: RequestInit = { method, headers, signal: options.signal };
+  const init: RequestInit = { method, headers, signal: options.signal, redirect: "error" };
   if (route.responseMediaTypes?.[0] && !headers.has("accept")) {
     headers.set("accept", route.responseMediaTypes[0]);
   }
@@ -472,7 +472,7 @@ function resolveAuthAssertionHeader(value: string | undefined): string {
   const header = value?.trim().toLowerCase() ?? "x-auggy-auth-assertion";
   const reserved = [
     "authorization", "content-type", "idempotency-key", "x-agent-id", "x-agent-secret",
-    "x-auggy-console-internal", "x-org-id", "x-peer-id", "x-peer-kind", "x-peer-name",
+    "x-auggy-anonymous-session", "x-auggy-anonymous-session-status", "x-auggy-console-internal", "x-org-id", "x-peer-id", "x-peer-kind", "x-peer-name",
     "x-visitor-token", "x-forwarded-for", "x-forwarded-host", "x-forwarded-port",
     "x-forwarded-proto", "x-real-ip",
   ];

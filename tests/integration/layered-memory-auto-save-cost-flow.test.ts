@@ -161,6 +161,60 @@ describe("layered-memory auto-save cost-flow (option a)", () => {
     });
   });
 
+  test("cancellation after extraction preserves known inference cost", async () => {
+    const dir = await createTempDir();
+    cleanup = dir.cleanup;
+    const dbPath = join(dir.path, "memory.db");
+    const controller = new AbortController();
+    const extractionCost = 0.0047;
+    const lm = await layeredMemory({
+      backend: "sqlite",
+      dbPath,
+      namespace: "ep",
+      retentionDays: 90,
+      autoSave: {
+        enabled: true,
+        extractionFrequency: { agent: "every-turn" },
+        engine: {
+          complete: async () => {
+            controller.abort(new DOMException("caller left", "AbortError"));
+            return {
+              text: '[{"subject":"peer","predicate":"name","object":"Sam","confidence":0.95,"isVerbatim":true}]',
+              costUsd: extractionCost,
+            };
+          },
+        },
+      },
+    });
+    const commits: RecordedCommit[] = [];
+    const agent = defineAgent(
+      {
+        name: "test-agent",
+        model: "mock",
+        augments: [recordingBudgetGate(commits), lm],
+      },
+      createMockModel({ response: "Hi Sam!" }),
+    );
+
+    await agent.start();
+    try {
+      const peer: PeerIdentity = {
+        id: "agent-peer-cancel",
+        kind: "agent",
+        trustLevel: "agent",
+        sourceAugment: "test-transport",
+      };
+      await agent.inject(makeMessageTrigger("user-turn-cancel", "th-cancel-cost", peer), {
+        signal: controller.signal,
+      });
+    } finally {
+      await agent.stop();
+    }
+
+    const extractionCommit = commits.find((commit) => commit.turnId !== "user-turn-cancel");
+    expect(extractionCommit?.cost).toEqual({ priced: true, costUsd: extractionCost });
+  });
+
   test("extraction failure still commits engine cost (parse failure path)", async () => {
     const dir = await createTempDir();
     cleanup = dir.cleanup;

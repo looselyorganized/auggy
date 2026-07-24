@@ -1,5 +1,6 @@
 import { createTelegramBotClient } from "../../../telegram-client";
 import type { TelegramBotClient } from "../../../telegram-client";
+import { isOutcomeUnknownError, OutcomeUnknownError } from "../../../outcome-unknown";
 import type {
   NotifyAdapter,
   NotifyDestination,
@@ -38,6 +39,7 @@ export function createTelegramAdapter(opts: CreateTelegramAdapterOptions = {}): 
     async deliver(
       destination: NotifyDestination,
       payload: NotifyPayload,
+      options?: { signal?: AbortSignal },
     ): Promise<NotifyDeliveryResult> {
       if (destination.transport !== "telegram") {
         return {
@@ -50,10 +52,14 @@ export function createTelegramAdapter(opts: CreateTelegramAdapterOptions = {}): 
         const client = getClient(dest.botToken);
         await client.sendMessage(dest.chatId, formatText(payload), {
           parseMode: dest.parseMode ?? "Markdown",
+          signal: options?.signal,
         });
         return { status: "sent" };
       } catch (err) {
-        return { status: "failed", detail: `telegram error: ${(err as Error).message}` };
+        if (options?.signal?.aborted || isOutcomeUnknownError(err)) throw err;
+        throw new OutcomeUnknownError(
+          "Telegram delivery ended without a trustworthy response after dispatch",
+        );
       }
     },
   };

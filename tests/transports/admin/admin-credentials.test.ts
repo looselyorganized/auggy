@@ -11,7 +11,7 @@
  */
 
 import { describe, expect, it, beforeEach, afterEach } from "bun:test";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -134,5 +134,30 @@ describe("admin-credentials — setCredential round-trips multiline", () => {
     expect(r.ok).toBe(true);
     const body = readFileSync(join(dir, ".env"), "utf-8");
     expect(body).toBe(`${["# head", "# tail"].join("\n")}\n`);
+  });
+});
+
+describe("admin-credentials — managed file isolation", () => {
+  it("refuses to read or mutate a symlinked .env", () => {
+    const root = mkdtempSync(join(tmpdir(), "cred-symlink-root-"));
+    const outside = mkdtempSync(join(tmpdir(), "cred-symlink-outside-"));
+    const target = join(outside, "secret.env");
+    const sentinel = "SENTINEL_SECRET=outside-only\n";
+    writeFileSync(target, sentinel);
+    symlinkSync(target, join(root, ".env"));
+
+    try {
+      expect(listCredentials(root)).toHaveProperty("error");
+      const revealed = revealCredential(root, "SENTINEL_SECRET");
+      expect(revealed).toHaveProperty("error");
+      expect(JSON.stringify(revealed)).not.toContain("outside-only");
+      expect(setCredential(root, "NEW_SECRET", "changed").ok).toBe(false);
+      expect(renameCredential(root, "SENTINEL_SECRET", "RENAMED", "changed").ok).toBe(false);
+      expect(deleteCredential(root, "SENTINEL_SECRET").ok).toBe(false);
+      expect(readFileSync(target, "utf-8")).toBe(sentinel);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+      rmSync(outside, { recursive: true, force: true });
+    }
   });
 });

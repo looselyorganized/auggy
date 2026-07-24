@@ -298,6 +298,7 @@ defineAgent({
     // Episodic memory
     supabaseMemory({
       namespace: "episode",
+      scope: "peer",
       client: supabase,
       table: "agent_memories",
       mutable: true,
@@ -338,12 +339,12 @@ VISITOR                                                           AGENT
 
 POST /agent/run
   { messages: [{ content: "remember I like coffee" }] }
-  headers: authorization, x-peer-id
+  headers: authorization or verified visitor/agent credentials
         │
         ▼
 ┌─ TRANSPORT ──────────────────────────────────────────────────────────┐
 │  1. Bearer auth (timing-safe) ✓                                      │
-│  2. identify() → PeerIdentity { id, kind, trustLevel }               │
+│  2. verify credentials → PeerIdentity { id, kind, trustLevel }       │
 │  3. Parse body → extract last message                                │
 │  4. Build TurnTrigger { type: "message", parts: [...], peer }        │
 │  5. Open ReadableStream for SSE response                             │

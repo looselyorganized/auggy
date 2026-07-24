@@ -615,6 +615,12 @@ describe("createTypeScriptClient", () => {
     expect(source).toContain("* - GET /me auth=visitor.required");
   });
 
+  test("reserves anonymous-session protocol headers from external auth", () => {
+    const source = createTypeScriptClient(report(), { target: "browser" });
+    expect(source).toContain('"x-auggy-anonymous-session"');
+    expect(source).toContain('"x-auggy-anonymous-session-status"');
+  });
+
   test("emits empty input maps for agents with no routes", () => {
     const source = createTypeScriptClient({
       agent: { name: "empty", configPath: "/tmp/empty/agent.yaml" },
@@ -1135,6 +1141,7 @@ describe("createTypeScriptClient", () => {
     expect(calls[0]?.url).toBe(
       "https://agent.example/services/hair%20cut?need=trim&tags=wash&tags=dry&urgent=false",
     );
+    expect(calls[0]?.init.redirect).toBe("error");
     expect(new Headers(calls[0]?.init.headers).get("authorization")).toBeNull();
     expect(new Headers(calls[0]?.init.headers).get("x-visitor-token")).toBeNull();
     expect(new Headers(calls[0]?.init.headers).get("x-auggy-auth-assertion")).toBeNull();
@@ -1181,6 +1188,7 @@ describe("createTypeScriptClient", () => {
       requestUrl: "https://agent.example/leads/lead%201/notes",
     });
     expect(calls[0]?.url).toBe("https://agent.example/leads/lead%201/notes");
+    expect(calls[0]?.init.redirect).toBe("error");
     expect(new Headers(calls[0]?.init.headers).get("authorization")).toBe("Bearer creator-secret");
     expect(new Headers(calls[0]?.init.headers).get("content-type")).toBe("application/json");
     expect(calls[0]?.init.body).toBe(JSON.stringify({ note: "Call back" }));

@@ -9,10 +9,11 @@ import type { Message, ToolDefinition, AssembledPrompt } from "../../src/types";
 // ---------------------------------------------------------------------------
 
 let lastChatArgs: ChatRequest | null = null;
-let lastConstructorArgs: { host?: string } | null = null;
+let lastConstructorArgs: { host?: string; fetch?: typeof fetch } | null = null;
 let nextResponse: ChatResponse | null = null;
 let nextStreamChunks: ChatResponse[] | null = null;
 let throwOnChat: Error | null = null;
+let streamAbortCalls = 0;
 
 const defaultResponse = (): ChatResponse => ({
   model: "llama3.2",
@@ -30,7 +31,7 @@ const defaultResponse = (): ChatResponse => ({
 
 mock.module("ollama", () => {
   class FakeOllama {
-    constructor(config?: { host?: string }) {
+    constructor(config?: { host?: string; fetch?: typeof fetch }) {
       lastConstructorArgs = config ?? null;
     }
     async chat(req: ChatRequest): Promise<ChatResponse | AsyncIterable<ChatResponse>> {
@@ -38,9 +39,15 @@ mock.module("ollama", () => {
       if (throwOnChat) throw throwOnChat;
       if (req.stream === true) {
         const chunks = nextStreamChunks ?? [defaultResponse()];
-        return (async function* () {
-          for (const c of chunks) yield c;
-        })();
+        const stream = {
+          async *[Symbol.asyncIterator]() {
+            for (const c of chunks) yield c;
+          },
+          abort() {
+            streamAbortCalls++;
+          },
+        };
+        return stream;
       }
       return nextResponse ?? defaultResponse();
     }
@@ -57,6 +64,7 @@ beforeEach(() => {
   nextResponse = null;
   nextStreamChunks = null;
   throwOnChat = null;
+  streamAbortCalls = 0;
 });
 
 // ---------------------------------------------------------------------------
@@ -102,6 +110,24 @@ describe("createOllamaEngine — constructor", () => {
     const engine = createOllamaEngine({ model: "llama3.2", baseURL: "http://other:9999" });
     await engine.complete(emptyPrompt({ messages: [msg({ role: "user", content: "hi" })] }));
     expect(lastConstructorArgs?.host).toBe("http://other:9999");
+  });
+
+  test("rejects a bearer credential on non-loopback plaintext HTTP", () => {
+    const sentinel = "OLLAMA_GROUP9_SECRET_DO_NOT_LOG";
+    let error: unknown;
+    try {
+      createOllamaEngine({
+        model: "llama3.2",
+        baseURL: "http://other:9999",
+        apiKey: sentinel,
+      });
+    } catch (cause) {
+      error = cause;
+    }
+    expect(String(error)).toContain("plaintext HTTP");
+    expect(String(error)).not.toContain(sentinel);
+    expect(String(error)).not.toContain("other:9999");
+    expect(lastConstructorArgs).toBeNull();
   });
 });
 
@@ -553,5 +579,126 @@ describe("createOllamaEngine — ModelClient surface", () => {
   test("maxContextTokens honors explicit setting", () => {
     const engine = createOllamaEngine({ model: "llama3.2", maxContextTokens: 131072 });
     expect(engine.maxContextTokens).toBe(131072);
+  });
+});
+
+describe("createOllamaEngine — credential-safe errors", () => {
+  test("discards remote provider messages and causes on buffered requests", async () => {
+    const sentinel = "ollama-secret-sentinel";
+    throwOnChat = Object.assign(new Error(`upstream echoed ${sentinel}`), { status: 502 });
+    const engine = createOllamaEngine({
+      model: "llama3.2",
+      baseURL: "https://ollama.example.com",
+      apiKey: sentinel,
+    });
+
+    const error = await engine.complete(emptyPrompt()).catch((caught) => caught);
+    expect(String(error)).toContain("Ollama engine (llama3.2) request failed (HTTP 502)");
+    expect(String(error)).not.toContain(sentinel);
+    expect(Bun.inspect(error)).not.toContain(sentinel);
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  test("discards remote provider messages and causes on streaming requests", async () => {
+    const sentinel = "ollama-stream-secret-sentinel";
+    throwOnChat = new Error(`stream setup echoed ${sentinel}`);
+    const engine = createOllamaEngine({
+      model: "llama3.2",
+      baseURL: "https://ollama.example.com",
+      apiKey: sentinel,
+    });
+
+    const error = await engine
+      .complete(emptyPrompt(), { onDelta: () => {} })
+      .catch((caught) => caught);
+    expect(String(error)).toContain("Ollama engine (llama3.2) request failed.");
+    expect(Bun.inspect(error)).not.toContain(sentinel);
+    expect((error as Error).cause).toBeUndefined();
+  });
+});
+
+describe("createOllamaEngine — response limits", () => {
+  test("injects the bounded transport into the SDK", () => {
+    createOllamaEngine({ model: "llama3.2" });
+    expect(typeof lastConstructorArgs?.fetch).toBe("function");
+  });
+
+  test("aborts a stream before emitting an oversized text chunk", async () => {
+    nextStreamChunks = [
+      {
+        ...defaultResponse(),
+        message: { role: "assistant", content: "oversized" },
+        prompt_eval_count: 200,
+        eval_count: 100,
+      },
+    ];
+    const deltas: string[] = [];
+    const engine = createOllamaEngine({
+      model: "llama3.2",
+      responseLimits: { maxTextBytes: 4 },
+    });
+
+    const error = await engine
+      .complete(emptyPrompt(), {
+        onDelta: (delta) => {
+          if (delta.kind === "text_delta") deltas.push(delta.text);
+        },
+      })
+      .catch((cause) => cause);
+
+    expect(deltas).toEqual([]);
+    expect(streamAbortCalls).toBe(1);
+    expect(error).toMatchObject({
+      name: "ModelResponseLimitError",
+      limit: "maxTextBytes",
+      accounting: {
+        inputTokens: 200,
+        outputTokens: 100,
+      },
+    });
+  });
+
+  test("rejects excessive buffered tool calls before translating them", async () => {
+    nextResponse = {
+      ...defaultResponse(),
+      message: {
+        role: "assistant",
+        content: "",
+        tool_calls: [
+          { function: { name: "first", arguments: {} } },
+          { function: { name: "second", arguments: {} } },
+        ],
+      },
+    };
+    const engine = createOllamaEngine({
+      model: "llama3.2",
+      responseLimits: { maxToolCalls: 1 },
+    });
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow("maxToolCalls");
+  });
+
+  test("rejects malformed buffered SDK shapes while retaining usage", async () => {
+    nextResponse = {
+      ...defaultResponse(),
+      message: {
+        role: "assistant",
+        content: { nested: "not text" },
+        tool_calls: {},
+      },
+      prompt_eval_count: 200,
+      eval_count: 100,
+    } as unknown as ChatResponse;
+    const engine = createOllamaEngine({ model: "llama3.2" });
+
+    const error = await engine.complete(emptyPrompt()).catch((cause) => cause);
+
+    expect(error).toMatchObject({
+      name: "ModelResponseLimitError",
+      accounting: {
+        inputTokens: 200,
+        outputTokens: 100,
+        unpricedReason: "Ollama responses are not priced.",
+      },
+    });
   });
 });

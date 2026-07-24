@@ -21,6 +21,8 @@ export interface McpServerConfig {
 
 export interface McpServerAuggyPolicy {
   cloud?: "enabled" | "disabled" | "localOnly" | "local-only";
+  /** Development-only escape hatch for credentialed non-loopback HTTP. */
+  allowInsecureHttpWithCredentials?: boolean;
   allowedTools?: string[];
   blockedTools?: string[];
   allowedTrustLevels?: TrustLevel[];
@@ -28,6 +30,10 @@ export interface McpServerAuggyPolicy {
   timeoutMs?: number;
   maxResultBytes?: number;
   maxSchemaBytes?: number;
+  maxArgumentBytes?: number;
+  maxDepth?: number;
+  maxNodes?: number;
+  maxTransportMessageBytes?: number;
   maxConcurrentCalls?: number;
   maxTools?: number;
   maxToolPages?: number;
@@ -326,6 +332,10 @@ function validatePolicyShape(value: unknown, path: string): McpServerAuggyPolicy
     "timeoutMs",
     "maxResultBytes",
     "maxSchemaBytes",
+    "maxArgumentBytes",
+    "maxDepth",
+    "maxNodes",
+    "maxTransportMessageBytes",
     "maxConcurrentCalls",
     "maxTools",
     "maxToolPages",
@@ -339,6 +349,12 @@ function validatePolicyShape(value: unknown, path: string): McpServerAuggyPolicy
     typeof out.includeToolDescriptions !== "boolean"
   ) {
     throw new Error(`${path}.includeToolDescriptions: must be a boolean`);
+  }
+  if (
+    out.allowInsecureHttpWithCredentials !== undefined &&
+    typeof out.allowInsecureHttpWithCredentials !== "boolean"
+  ) {
+    throw new Error(`${path}.allowInsecureHttpWithCredentials: must be a boolean`);
   }
   return out;
 }

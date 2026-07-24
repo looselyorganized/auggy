@@ -279,10 +279,10 @@ async handleInbound(trigger, opts) {
     const historyBudget = Math.floor(model.maxContextTokens * ((config.contextBudget?.historyPercent ?? 40) / 100));
     turnLoop.getHistoryManager(threadId).compact(historyBudget, config.compactionStrategy ?? "truncate");
 
-    // Run onTurnEnd hooks (non-blocking)
+    // Run onTurnEnd hooks sequentially with cancellation context
     for (const a of effectiveAugments) {
       if (a.onTurnEnd) {
-        a.onTurnEnd(result).catch(() => {});
+        await a.onTurnEnd(result, { signal: opts?.signal }).catch(() => {});
       }
     }
 
@@ -305,7 +305,10 @@ What happens:
 
 6. **Eager compaction.** Run the history manager's `compact()` method against the configured strategy. This keeps history under the threshold for the next turn so the budget walk doesn't have to evict on every call.
 
-7. **`onTurnEnd` hooks.** Fire-and-forget. Failures are swallowed (`.catch(() => {})`). These don't block the response.
+7. **`onTurnEnd` hooks.** Awaited sequentially so cleanup settles before
+   `scheduleAfterTurn`; failures are logged and swallowed. The caller signal is
+   supplied for cooperative cancellation. If it is aborted, no new scheduled
+   post-turn work begins.
 
 8. **Return the result** to the queue, which resolves the promise the transport is awaiting.
 
@@ -369,7 +372,7 @@ async shutdown() {
   for (const aug of [...augments].reverse()) {
     try {
       if (aug.onShutdown) {
-        await withTimeout(() => aug.onShutdown!(), 5000);
+        await withTimeout((signal) => aug.onShutdown!(signal), 5000);
       }
     } catch {
       // Best-effort shutdown
@@ -382,7 +385,7 @@ Two important properties:
 
 **Reverse declared order.** If you booted `[a, b, c]`, you shutdown `[c, b, a]`. This mirrors the boot order so dependencies stay valid: if `c` depended on `b` being available during boot, `b` is still available during `c`'s shutdown.
 
-**5-second timeout per augment, failures swallowed.** Each augment gets up to 5 seconds to shut down. If it takes longer, `withTimeout` rejects with `TimeoutError`, which is caught and swallowed. The next augment shuts down anyway.
+**5-second timeout per augment, failures swallowed.** Each augment gets up to 5 seconds to shut down and receives the deadline signal. If it takes longer, `withTimeout` rejects with `TimeoutError`, which is caught and swallowed. The next augment shuts down anyway.
 
 This is the inverse of the boot policy: **boot is fail-fast, shutdown is best-effort.** The reasoning: at boot time, a broken augment means the agent shouldn't run. At shutdown time, a broken augment means the agent is still going down regardless — we want to give every augment a chance to clean up, but we don't want one stuck augment to block the whole shutdown.
 
@@ -403,9 +406,9 @@ Every hook on `Augment` is optional. Here's the full set and when each fires:
 | Hook | Signature | When | Failure handling |
 |------|-----------|------|------------------|
 | `onBoot` | `() => Promise<void>` | Once at `agent.start()`, before transports register | Fail-fast — throws abort startup |
-| `onShutdown` | `() => Promise<void>` | Once at `agent.stop()`, in reverse order, with 5s timeout | Best-effort — failures swallowed |
+| `onShutdown` | `(signal?: AbortSignal) => Promise<void>` | Once at `agent.stop()`, in reverse order, with 5s timeout | Best-effort — failures swallowed |
 | `onTurnStart` | `(turn: TurnState) => Promise<void>` | Beginning of every turn, before context assembly | Required augment failures abort the turn; non-required failures are swallowed |
-| `onTurnEnd` | `(turn: TurnResult) => Promise<void>` | After every turn, fire-and-forget | Always swallowed (`.catch(() => {})`) |
+| `onTurnEnd` | `(turn: TurnResult, context?: TurnLifecycleContext) => Promise<void>` | After every turn, sequentially before scheduled work | Logged and swallowed |
 | `onIdle` | `() => Promise<void>` | When the idle timer fires (default 5min after last activity) | Swallowed |
 
 ### Why the asymmetry between boot and shutdown
@@ -422,9 +425,12 @@ Every hook on `Augment` is optional. Here's the full set and when each fires:
 
 This is what lets `onTurnStart` be used for setup (the `memory-bus` resets its budget here) and `onTurnEnd` for observability (a future trace exporter would write `result.trace` to a backend here).
 
-### Why `onTurnEnd` is fire-and-forget
+### Why `onTurnEnd` is sequential and best-effort
 
-If `onTurnEnd` blocked the response, slow telemetry exporters would slow down every turn. By making it fire-and-forget with swallowed errors, telemetry/observability augments can take as long as they need without affecting user-visible latency.
+`onTurnEnd` is awaited so cleanup completes before `scheduleAfterTurn` observes
+the settled turn. Hooks must therefore remain bounded and honor the supplied
+cancellation signal. Failures are logged and swallowed so they do not replace
+the turn result.
 
 The trade-off: if your `onTurnEnd` hook needs to *guarantee* it ran before the next turn (e.g. to maintain durable state), this isn't the right hook. Use `inject` with a "continuation" trigger instead, or write the work into a queue that the next turn waits on.
 
@@ -437,7 +443,7 @@ export interface AgentHandle {
   ready(): Promise<void>;
   health(): AgentHealth;
   card(): AgentCard;
-  inject(trigger: TurnTrigger): Promise<TurnResult>;
+  inject(trigger: TurnTrigger, options?: { signal?: AbortSignal }): Promise<TurnResult>;
 }
 ```
 

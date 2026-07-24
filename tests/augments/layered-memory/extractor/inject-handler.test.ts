@@ -65,6 +65,41 @@ describe("handleExtractionTurn", () => {
     }
   });
 
+  test("forwards cancellation to the extraction engine and does not swallow abort", async () => {
+    const controller = new AbortController();
+    let observedSignal: AbortSignal | undefined;
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const mockEngine = {
+      complete: async (_prompt: string, options?: { signal?: AbortSignal }) => {
+        observedSignal = options?.signal;
+        markStarted();
+        await new Promise<void>((_done, reject) => {
+          options?.signal?.addEventListener(
+            "abort",
+            () =>
+              reject(options.signal?.reason ?? new DOMException("Operation aborted", "AbortError")),
+            { once: true },
+          );
+        });
+        return { text: "must not complete", costUsd: 0 };
+      },
+    };
+    const pending = handleExtractionTurn({
+      transcript: sampleTranscript,
+      engine: mockEngine,
+      promptTemplate: "x",
+      signal: controller.signal,
+    });
+    await started;
+    controller.abort(new DOMException("caller left", "AbortError"));
+
+    expect(observedSignal).toBe(controller.signal);
+    expect(pending).rejects.toThrow("caller left");
+  });
+
   test("returns failure on malformed JSON response", async () => {
     const mockEngine = {
       complete: async (_prompt: string) => ({ text: "not json", costUsd: 0.002 }),

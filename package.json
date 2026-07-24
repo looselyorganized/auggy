@@ -43,6 +43,9 @@
     "./internal/schema-normalize": "./src/engines/_shared/schema-normalize.ts",
     "./internal/tool-call": "./src/engines/_shared/tool-call.ts",
     "./internal/prompt-assembly": "./src/engines/_shared/prompt-assembly.ts",
+    "./internal/response-limits": "./src/engines/_shared/response-limits.ts",
+    "./internal/credential-transport": "./src/engines/_shared/credential-transport.ts",
+    "./internal/provider-error": "./src/engines/_shared/provider-error.ts",
     "./internal/anthropic-pricing": "./src/engines/anthropic/pricing.ts",
     "./internal/openai-pricing": "./src/engines/openai/pricing.ts",
     "./internal/openrouter-pricing": "./src/engines/openrouter/pricing.ts",
@@ -80,23 +83,39 @@
   "private": false,
   "scripts": {
     "test": "bun run test:runtime && bun run test:admin",
-    "test:runtime": "bun test ./tests ./examples ./packages",
+    "test:runtime": "bun test --max-concurrency=1 --timeout=30000 ./tests ./examples ./packages",
     "test:admin": "bun run --cwd admin test",
     "test:watch": "bun test --watch ./tests ./examples ./packages",
     "dx:agent": "bash scripts/dx-lab-agent.sh",
     "smoke:release": "bash scripts/release-smoke.sh",
     "build:admin": "bun run --cwd admin build",
-    "typecheck": "bunx tsc --noEmit",
-    "lint": "bunx --bun @biomejs/biome check",
-    "lint:fix": "bunx --bun @biomejs/biome check --write",
-    "format": "bunx --bun @biomejs/biome format --write"
+    "typecheck": "tsc --noEmit",
+    "lint": "bunx --bun @biomejs/biome@2.5.5 check",
+    "lint:fix": "bunx --bun @biomejs/biome@2.5.5 check --write",
+    "format": "bunx --bun @biomejs/biome@2.5.5 format --write"
   },
   "devDependencies": {
+    "@anthropic-ai/sdk": "^0.94.0",
+    "@auggy/anthropic": "workspace:*",
     "@auggy/link": "^0.1.2",
-    "@types/bun": "latest"
+    "@auggy/ollama": "workspace:*",
+    "@auggy/openai": "workspace:*",
+    "@auggy/openrouter": "workspace:*",
+    "@hono/node-server": "2.0.11",
+    "@inquirer/core": "^10.3.2",
+    "@types/bun": "latest",
+    "ollama": "^0.6.0",
+    "openai": "^6.34.0",
+    "typescript": "5.9.3"
   },
   "peerDependencies": {
     "typescript": "^5"
+  },
+  "overrides": {
+    "@hono/node-server": "2.0.11",
+    "body-parser": "2.3.0",
+    "fast-uri": "3.1.4",
+    "hono": "4.12.31"
   },
   "dependencies": {
     "@inquirer/prompts": "7.8.6",

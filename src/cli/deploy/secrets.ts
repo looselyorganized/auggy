@@ -7,8 +7,8 @@
  *
  *   { variables: [{ key, value, redactedValue }], warnings: [...] }
  *
- * `redactedValue` gives a compact fingerprint so the operator can confirm
- * the right secret without dumping long masks into the terminal.
+ * `redactedValue` is a fixed marker. It never derives output from secret
+ * bytes because prompts may be recorded in terminal scrollback or CI logs.
  *
  * This module does NOT call Railway. The deploy command calls `railway-cli`'s
  * `setVariable` for each plan entry after operator confirmation.
@@ -39,15 +39,10 @@ function unquote(raw: string): string {
 }
 
 /**
- * Redact a secret for terminal display. Reveals a tiny fingerprint and uses a
- * fixed-size mask for long values so API keys do not wrap across lines. Empty
- * strings stay empty so the operator notices.
+ * Describe whether a secret is set without exposing any value-derived bytes.
  */
 export function redactValue(value: string): string {
-  if (value.length === 0) return "";
-  if (value.length <= 4) return "*".repeat(value.length);
-  if (value.length <= 12) return `${value.slice(0, 2)}...${value.slice(-2)}`;
-  return `${value.slice(0, 4)}...${value.slice(-4)}`;
+  return value.length === 0 ? "<empty>" : "<set>";
 }
 
 /**
@@ -70,7 +65,7 @@ export function parseEnvText(text: string): SecretsPlan {
     const rest = line.startsWith("export ") ? line.slice("export ".length).trimStart() : line;
     const eqIdx = rest.indexOf("=");
     if (eqIdx < 0) {
-      warnings.push(`line ${i + 1}: no '=' found, skipped: "${line}"`);
+      warnings.push(`line ${i + 1}: missing '=' delimiter; skipped`);
       continue;
     }
 
@@ -78,12 +73,12 @@ export function parseEnvText(text: string): SecretsPlan {
     const value = unquote(rest.slice(eqIdx + 1).trim());
 
     if (!KEY_RE.test(key)) {
-      warnings.push(`line ${i + 1}: invalid key "${key}", skipped`);
+      warnings.push(`line ${i + 1}: invalid variable name; skipped`);
       continue;
     }
 
     if (seen.has(key)) {
-      warnings.push(`line ${i + 1}: duplicate key "${key}" — later value overrides earlier`);
+      warnings.push(`line ${i + 1}: duplicate variable name; later value overrides earlier`);
     }
     seen.add(key);
 

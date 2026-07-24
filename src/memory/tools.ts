@@ -442,8 +442,8 @@ export function createMemoryTools(
         if (spec.forget) {
           try {
             totalDeleted += await spec.forget(targetPeerId);
-          } catch (err) {
-            errors.push(`${ns.augment.name}: ${err instanceof Error ? err.message : String(err)}`);
+          } catch {
+            errors.push(`${ns.augment.name}: provider operation failed`);
           }
         }
       }

@@ -53,6 +53,34 @@ function createStartupAdmissionBarrier(): StartupAdmissionBarrier {
   };
 }
 
+function threadOwnerTransition(
+  owner: PeerIdentity | null,
+  incoming: PeerIdentity | null,
+): "same" | "promote" | "deny" {
+  if (owner === null || incoming === null) return owner === incoming ? "same" : "deny";
+  if (
+    owner.id === incoming.id &&
+    owner.trustLevel === incoming.trustLevel &&
+    owner.sourceAugment === incoming.sourceAugment &&
+    owner.publicSubstate === incoming.publicSubstate &&
+    owner.orgId === incoming.orgId
+  ) {
+    return "same";
+  }
+  if (
+    owner.trustLevel === "public" &&
+    owner.publicSubstate === "anonymous" &&
+    incoming.trustLevel === "public" &&
+    incoming.publicSubstate === "recognized" &&
+    owner.sourceAugment === incoming.sourceAugment &&
+    owner.orgId === incoming.orgId &&
+    incoming.authenticatedPriorPeerId === owner.id
+  ) {
+    return "promote";
+  }
+  return "deny";
+}
+
 export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandle {
   const tokenizer = createTokenizer();
 
@@ -82,17 +110,25 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     string,
     { persistence: ThreadHistoryPersistence; peer: PeerIdentity }
   >();
+  const unmanagedThreadOwners = new Map<string, PeerIdentity | null>();
   const turnLoop = createTurnLoop({
     augments: effectiveAugments,
     model,
     tokenizer,
     config: effectiveConfig,
-    onHistoryEvicted: (threadId) => restoredThreads.delete(threadId),
+    onHistoryEvicted: (threadId) => {
+      restoredThreads.delete(threadId);
+      unmanagedThreadOwners.delete(threadId);
+    },
   });
 
   const outboundHandlers = new Map<
     string,
-    (peer: PeerIdentity, message: OutboundMessage) => Promise<void>
+    (
+      peer: PeerIdentity,
+      message: OutboundMessage,
+      context?: { signal?: AbortSignal },
+    ) => Promise<void>
   >();
   const threadTails = new Map<string, Promise<void>>();
 
@@ -104,7 +140,8 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     outboundHandlers.clear();
   }
 
-  async function dispatchOutbound(result: TurnResult, trigger: TurnTrigger) {
+  async function dispatchOutbound(result: TurnResult, trigger: TurnTrigger, signal?: AbortSignal) {
+    if (signal?.aborted) return;
     // Collect all messages to dispatch: single response + multi-destination responses
     const messages: OutboundMessage[] = [];
     if (result.response) messages.push(result.response);
@@ -112,12 +149,13 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     if (messages.length === 0) return;
 
     for (const msg of messages) {
+      if (signal?.aborted) return;
       const targetAugment = msg.targetAugment ?? trigger.source;
       const peer = trigger.peer;
       if (!targetAugment || !peer) continue;
       const handler = outboundHandlers.get(targetAugment);
       if (handler) {
-        await handler(peer, msg);
+        await handler(peer, msg, { signal });
       }
     }
   }
@@ -173,6 +211,20 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         throw new Error(
           `Thread history access denied for "${threadId}": persistence authorization is required`,
         );
+      }
+      if (unmanagedThreadOwners.has(threadId)) {
+        const owner = unmanagedThreadOwners.get(threadId) ?? null;
+        const transition = threadOwnerTransition(owner, peer);
+        if (transition === "deny") {
+          throw new Error(
+            `Thread history access denied for "${threadId}": thread belongs to another peer`,
+          );
+        }
+        if (transition === "promote" && peer) {
+          unmanagedThreadOwners.set(threadId, { ...peer });
+        }
+      } else {
+        unmanagedThreadOwners.set(threadId, peer ? { ...peer } : null);
       }
       return null;
     }
@@ -278,14 +330,18 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     result: TurnResult,
     trigger: TurnTrigger,
     threadId: string,
+    signal?: AbortSignal,
   ): Promise<void> {
-    await dispatchOutbound(result, trigger);
+    await dispatchOutbound(result, trigger, signal);
 
+    if (signal?.aborted) return;
     for (const a of effectiveAugments) {
+      if (signal?.aborted) return;
       if (a.onTurnEnd) {
         try {
-          await a.onTurnEnd(result);
+          await a.onTurnEnd(result, { signal });
         } catch (err) {
+          if (signal?.aborted) return;
           console.warn(`onTurnEnd hook "${a.name}" failed: ${err}`);
         }
       }
@@ -293,11 +349,14 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
 
     const completedTurnId = result.turnId;
     const ctx: SchedulerContext = {
-      inject: (t) => handle.inject(t),
+      inject: (t) => handle.inject(t, { signal }),
       getCompletedTranscript: async () =>
         turnLoop.getHistoryManager(threadId).getTranscript(completedTurnId),
+      ...(signal ? { signal } : {}),
     };
+    if (signal?.aborted) return;
     for (const a of effectiveAugments) {
+      if (signal?.aborted) return;
       if (a.scheduleAfterTurn) {
         try {
           await a.scheduleAfterTurn(result, ctx);
@@ -361,7 +420,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
                     historyPersistence: opts?.historyPersistence,
                     source: "transport",
                   });
-                  await runPostTurn(result, t, threadId);
+                  await runPostTurn(result, t, threadId, opts?.signal);
                   return result;
                 });
               },
@@ -418,6 +477,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       outboundHandlers.clear();
       turnLoop.clearHistoryManagers();
       restoredThreads.clear();
+      unmanagedThreadOwners.clear();
       threadTails.clear();
       started = false;
     },
@@ -434,11 +494,14 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       return agentCard;
     },
 
-    async inject(trigger: TurnTrigger): Promise<TurnResult> {
+    async inject(trigger: TurnTrigger, options?: { signal?: AbortSignal }): Promise<TurnResult> {
       lifecycle.resetIdleTimer();
       const threadId = trigger.threadId ?? trigger.turnId;
-      const result = await executeThreadTurn(trigger, threadId, { source: "inject" });
-      await runPostTurn(result, trigger, threadId);
+      const result = await executeThreadTurn(trigger, threadId, {
+        source: "inject",
+        signal: options?.signal,
+      });
+      await runPostTurn(result, trigger, threadId, options?.signal);
       return result;
     },
   };

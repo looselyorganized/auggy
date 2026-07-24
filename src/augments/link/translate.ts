@@ -159,8 +159,9 @@ export function handlerContextToTrigger(
   ctx: LinkHandlerContext,
   sourceAugment: string,
   threadId: string,
+  verifiedPeer?: PeerIdentity,
 ): TurnTrigger {
-  const peer = participantToPeerIdentity(ctx.from, sourceAugment);
+  const peer = verifiedPeer ?? participantToPeerIdentity(ctx.from, sourceAugment);
   const parts = ctx.parts.map(linkPartToAugment1Part);
   const timestamp = parseReceivedAtMs(ctx.received_at);
   const inbound: InboundMessage = {

@@ -12,11 +12,14 @@
 
 import type { HttpClient } from "./http";
 import { createHttpClient } from "./http";
+import { isAmbiguousMutationStatus, OutcomeUnknownError } from "./outcome-unknown";
+import { assertSecureCredentialTransport } from "./engines/_shared/credential-transport";
 
 export interface SendMessageOptions {
   parseMode?: "Markdown" | "HTML" | "MarkdownV2";
   replyToMessageId?: number;
   disableNotification?: boolean;
+  signal?: AbortSignal;
 }
 
 export interface SendMessageResult {
@@ -73,6 +76,8 @@ export interface CreateTelegramBotClientOptions {
   botToken: string;
   client?: Pick<HttpClient, "post">;
   baseUrl?: string;
+  /** Development-only escape hatch for token-bearing non-loopback HTTP. */
+  allowInsecureHttpWithCredentials?: boolean;
 }
 
 interface BotApiResponse<T> {
@@ -84,32 +89,85 @@ interface BotApiResponse<T> {
 
 export function createTelegramBotClient(opts: CreateTelegramBotClientOptions): TelegramBotClient {
   const baseUrl = opts.baseUrl ?? "https://api.telegram.org";
+  assertSecureCredentialTransport({
+    provider: "Telegram",
+    baseURL: baseUrl,
+    credential: opts.botToken,
+    allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
+  });
   const url = (method: string) => `${baseUrl}/bot${opts.botToken}/${method}`;
   const http =
-    opts.client ?? createHttpClient({ timeoutMs: 60_000, userAgent: "auggy-telegram/0.1" });
+    opts.client ??
+    createHttpClient({
+      timeoutMs: 60_000,
+      userAgent: "auggy-telegram/0.1",
+      urlPolicy: "operator-configured",
+    });
 
   async function call<T>(
     method: string,
     body: Record<string, unknown>,
     opts: { signal?: AbortSignal } = {},
   ): Promise<T> {
-    const res = await http.post(url(method), {
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: opts.signal,
-    });
-    let parsed: BotApiResponse<T>;
+    const isReadOnly = method === "getUpdates" || method === "getChat";
+    let res: Awaited<ReturnType<HttpClient["post"]>>;
     try {
-      parsed = JSON.parse(res.body) as BotApiResponse<T>;
-    } catch {
-      throw new Error(`Telegram bot API ${method}: non-JSON response (${res.status})`);
-    }
-    if (!parsed.ok) {
-      throw new Error(
-        `Telegram bot API ${method}: ${parsed.description ?? "unknown error"} (${res.status})`,
+      res = await http.post(url(method), {
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: opts.signal,
+      });
+    } catch (err) {
+      if (opts.signal?.aborted) throw opts.signal.reason ?? err;
+      if (isReadOnly) {
+        throw new Error(`Telegram bot API ${method} request failed`);
+      }
+      throw new OutcomeUnknownError(
+        `Telegram bot API ${method} ended without a trustworthy response after dispatch`,
       );
     }
-    return parsed.result as T;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(res.body);
+    } catch {
+      if (isReadOnly) {
+        throw new Error(`Telegram bot API ${method}: non-JSON response (${res.status})`);
+      }
+      throw new OutcomeUnknownError(
+        `Telegram bot API ${method} returned an unreadable response after dispatch`,
+      );
+    }
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      Array.isArray(parsed) ||
+      typeof (parsed as { ok?: unknown }).ok !== "boolean"
+    ) {
+      if (!isReadOnly) {
+        throw new OutcomeUnknownError(
+          `Telegram bot API ${method} returned a malformed response after dispatch`,
+        );
+      }
+      throw new Error(`Telegram bot API ${method}: malformed response (${res.status})`);
+    }
+    const envelope = parsed as BotApiResponse<T>;
+    if (envelope.ok && (envelope.result === undefined || envelope.result === null)) {
+      if (!isReadOnly) {
+        throw new OutcomeUnknownError(
+          `Telegram bot API ${method} returned an incomplete response after dispatch`,
+        );
+      }
+      throw new Error(`Telegram bot API ${method}: non-JSON response (${res.status})`);
+    }
+    if (!envelope.ok) {
+      if (!isReadOnly && isAmbiguousMutationStatus(res.status)) {
+        throw new OutcomeUnknownError(
+          `Telegram bot API ${method} returned HTTP ${res.status} after dispatch; outcome is unknown`,
+        );
+      }
+      throw new Error(`Telegram bot API ${method} returned HTTP ${res.status}`);
+    }
+    return envelope.result as T;
   }
 
   return {
@@ -121,7 +179,20 @@ export function createTelegramBotClient(opts: CreateTelegramBotClientOptions): T
       const result = await call<{ message_id: number; chat: { id: number | string } }>(
         "sendMessage",
         body,
+        { signal: sendOpts?.signal },
       );
+      if (
+        typeof result !== "object" ||
+        result === null ||
+        typeof result.message_id !== "number" ||
+        typeof result.chat !== "object" ||
+        result.chat === null ||
+        (typeof result.chat.id !== "number" && typeof result.chat.id !== "string")
+      ) {
+        throw new OutcomeUnknownError(
+          "Telegram bot API sendMessage returned an incomplete response after dispatch",
+        );
+      }
       return { messageId: result.message_id, chatId: result.chat.id };
     },
 
@@ -137,11 +208,21 @@ export function createTelegramBotClient(opts: CreateTelegramBotClientOptions): T
       const body: Record<string, unknown> = { url: webhookUrl, secret_token: secretToken };
       if (webhookOpts?.allowedUpdates) body.allowed_updates = webhookOpts.allowedUpdates;
       if (webhookOpts?.dropPendingUpdates) body.drop_pending_updates = true;
-      await call<true>("setWebhook", body);
+      const accepted = await call<true>("setWebhook", body);
+      if (accepted !== true) {
+        throw new OutcomeUnknownError(
+          "Telegram bot API setWebhook returned an incomplete response after dispatch",
+        );
+      }
     },
 
     async deleteWebhook() {
-      await call<true>("deleteWebhook", {});
+      const accepted = await call<true>("deleteWebhook", {});
+      if (accepted !== true) {
+        throw new OutcomeUnknownError(
+          "Telegram bot API deleteWebhook returned an incomplete response after dispatch",
+        );
+      }
     },
 
     async getChat(chatId) {

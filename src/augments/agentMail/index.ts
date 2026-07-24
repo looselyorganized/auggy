@@ -36,12 +36,19 @@ import {
   type SendMessageResult,
   type SendMessageError,
 } from "../../agentmail-client";
+import { isAmbiguousMutationStatus } from "../../outcome-unknown";
 import { createRingBuffer } from "../../lib/ring-buffer";
-import { readOverrides, writeOverrides } from "../../lib/admin-overrides";
+import {
+  readOverrides,
+  releaseAdminOverrideRoot,
+  retainAdminOverrideRoot,
+  writeOverrides,
+} from "../../lib/admin-overrides";
 import type {
   AdminActionResult,
   AdminInfoBlock,
   Augment,
+  ToolResult,
   ToolExecuteContext,
   TransportKernel,
   TrustLevel,
@@ -139,6 +146,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   const now = opts._now ?? (() => Date.now());
   const stateDir = opts.stateDir ?? opts.agentDir;
   const overrideDir = opts.overrideDir ?? opts.agentDir;
+  let overrideRootRetained = false;
 
   const outboundOpts = opts.outbound ?? {};
   const allowedTrustLevels = outboundOpts.allowedTrustLevels ?? DEFAULT_ALLOWED_TRUST_LEVELS;
@@ -152,15 +160,6 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   // we reset back to on `agentmail-cap-reset`.
   let globalMaxPerHour = yamlGlobalMaxPerHour;
   let globalMaxSource: "yaml" | "override" = "yaml";
-
-  if (overrideDir) {
-    const overrides = readOverrides(overrideDir);
-    const overrideVal = overrides?.overrides.agentMail?.globalMaxPerHour;
-    if (typeof overrideVal === "number" && Number.isFinite(overrideVal) && overrideVal > 0) {
-      globalMaxPerHour = overrideVal;
-      globalMaxSource = "override";
-    }
-  }
 
   // Load persisted rate-limit / dedup state from the per-instance state
   // directory. Missing state starts fresh; corrupt/newer state fails closed.
@@ -298,7 +297,29 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   }
 
   const client: AgentMailClient =
-    opts._client ?? createAgentMailClient({ apiKey: opts.apiKey, apiBaseUrl: opts.apiBaseUrl });
+    opts._client ??
+    createAgentMailClient({
+      apiKey: opts.apiKey,
+      apiBaseUrl: opts.apiBaseUrl,
+      allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
+    });
+  if (overrideDir) {
+    overrideRootRetained = retainAdminOverrideRoot(overrideDir);
+    try {
+      const overrides = readOverrides(overrideDir);
+      const overrideVal = overrides?.overrides.agentMail?.globalMaxPerHour;
+      if (typeof overrideVal === "number" && Number.isFinite(overrideVal) && overrideVal > 0) {
+        globalMaxPerHour = overrideVal;
+        globalMaxSource = "override";
+      }
+    } catch (error) {
+      if (overrideRootRetained) {
+        releaseAdminOverrideRoot(overrideDir);
+        overrideRootRetained = false;
+      }
+      throw error;
+    }
+  }
 
   const inboundMode = opts.inbound?.mode ?? "none";
   const agentMailRoutes: NonNullable<Augment["httpRoutes"]> = [
@@ -667,7 +688,11 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     attempt: AgentMailReviewRecord | undefined,
     result: SendMessageError,
   ): void {
-    if (attempt && result.httpStatus !== undefined) {
+    if (
+      attempt &&
+      result.httpStatus !== undefined &&
+      !isAmbiguousMutationStatus(result.httpStatus)
+    ) {
       if (releaseRateForAttempt(attempt)) reviewQueue.fail(attempt.id, result.detail);
     }
   }
@@ -678,6 +703,18 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     _rateStateDurable: boolean,
   ): void {
     if (attempt && commitRateForAttempt(attempt)) reviewQueue.approve(attempt.id, result);
+  }
+
+  function ambiguousDeliveryResult(): ToolResult {
+    return {
+      content: JSON.stringify({
+        status: "failed",
+        message:
+          "AgentMail delivery outcome is ambiguous. Do not retry; operator reconciliation is required.",
+      }),
+      isError: true,
+      outcomeUnknown: true,
+    };
   }
 
   async function sendReviewedAction(
@@ -755,7 +792,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       // AgentMail accepted the message. Without a provider HTTP response, keep
       // the durable `sending` marker so a restart or repeated proposal cannot
       // send the same reviewed action again.
-      if (result.httpStatus === undefined) {
+      if (result.httpStatus === undefined || isAmbiguousMutationStatus(result.httpStatus)) {
         return {
           ok: false,
           message: `Review ${id} has an ambiguous delivery outcome; operator reconciliation is required`,
@@ -1008,13 +1045,13 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       let result: SendMessageResult | SendMessageError;
       try {
         const { kind: _, ...sendInput } = request;
-        result = await client.send({ inboxId: opts.inboxId, ...sendInput });
-      } catch {
-        return JSON.stringify({
-          status: "failed",
-          message:
-            "agentMail delivery outcome is ambiguous. Do not retry; operator reconciliation is required.",
+        result = await client.send({
+          inboxId: opts.inboxId,
+          ...sendInput,
+          signal: context?.signal,
         });
+      } catch {
+        return ambiguousDeliveryResult();
       }
 
       if (result.status === "sent") {
@@ -1048,6 +1085,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         httpStatus: result.httpStatus,
         detail: result.detail,
       });
+      if (result.httpStatus === undefined || isAmbiguousMutationStatus(result.httpStatus)) {
+        return ambiguousDeliveryResult();
+      }
       return JSON.stringify({
         status: "failed",
         message:
@@ -1190,13 +1230,13 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       let result: SendMessageResult | SendMessageError;
       try {
         const { kind: _, ...replyInput } = request;
-        result = await client.reply({ inboxId: opts.inboxId, ...replyInput });
-      } catch {
-        return JSON.stringify({
-          status: "failed",
-          message:
-            "agentMail delivery outcome is ambiguous. Do not retry; operator reconciliation is required.",
+        result = await client.reply({
+          inboxId: opts.inboxId,
+          ...replyInput,
+          signal: context?.signal,
         });
+      } catch {
+        return ambiguousDeliveryResult();
       }
 
       if (result.status === "sent") {
@@ -1230,6 +1270,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         httpStatus: result.httpStatus,
         detail: result.detail,
       });
+      if (result.httpStatus === undefined || isAmbiguousMutationStatus(result.httpStatus)) {
+        return ambiguousDeliveryResult();
+      }
       return JSON.stringify({
         status: "failed",
         message:
@@ -1357,13 +1400,13 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       let result: SendMessageResult | SendMessageError;
       try {
         const { kind: _, ...forwardInput } = request;
-        result = await client.forward({ inboxId: opts.inboxId, ...forwardInput });
-      } catch {
-        return JSON.stringify({
-          status: "failed",
-          message:
-            "agentMail delivery outcome is ambiguous. Do not retry; operator reconciliation is required.",
+        result = await client.forward({
+          inboxId: opts.inboxId,
+          ...forwardInput,
+          signal: context?.signal,
         });
+      } catch {
+        return ambiguousDeliveryResult();
       }
 
       if (result.status === "sent") {
@@ -1397,6 +1440,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         httpStatus: result.httpStatus,
         detail: result.detail,
       });
+      if (result.httpStatus === undefined || isAmbiguousMutationStatus(result.httpStatus)) {
+        return ambiguousDeliveryResult();
+      }
       return JSON.stringify({
         status: "failed",
         message:
@@ -1448,6 +1494,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         apiKey: opts.apiKey,
         apiBaseUrl: opts.apiBaseUrl,
         websocketBaseUrl: opts.inbound?.websocketBaseUrl,
+        allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
       });
       if (inboundMode === "webhook" && !webhookRouteInstalled) {
         const webhookOptions = opts.inbound?.webhook;
@@ -1564,6 +1611,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         ownedLedger?.close();
       } catch (error) {
         failure ??= error;
+      }
+      if (overrideRootRetained) {
+        releaseAdminOverrideRoot(overrideDir);
+        overrideRootRetained = false;
       }
       if (failure) throw failure;
     })();
@@ -1958,7 +2009,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       return {
         ok: false,
         message:
-          result.httpStatus === undefined
+          result.httpStatus === undefined || isAmbiguousMutationStatus(result.httpStatus)
             ? `Send outcome is ambiguous (review ${attempt.record?.id}); do not retry until reconciled`
             : `Send failed (HTTP ${result.httpStatus})`,
       };

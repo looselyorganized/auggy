@@ -29,8 +29,14 @@ export function createStorefrontAuggyClient<TClient>(
       const headers = new Headers();
       const appAccessToken = await opts.appAccessToken?.();
       if (appAccessToken) headers.set("authorization", `Bearer ${appAccessToken}`);
+      headers.set("x-auggy-csrf-request", "1");
 
-      const res = await fetchImpl(assertionEndpoint, { credentials: "include", headers });
+      const res = await fetchImpl(assertionEndpoint, {
+        method: "POST",
+        credentials: "include",
+        cache: "no-store",
+        headers,
+      });
       if (!res.ok) return undefined;
       const body = (await res.json()) as { assertion?: unknown };
       return typeof body.assertion === "string" ? body.assertion : undefined;

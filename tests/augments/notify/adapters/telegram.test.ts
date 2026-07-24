@@ -2,15 +2,11 @@ import { describe, it, expect } from "bun:test";
 import { createTelegramAdapter } from "../../../../src/augments/notify/adapters/telegram";
 import type { TelegramNotifyDestination } from "../../../../src/types";
 import type { TelegramBotClient as Tbc } from "../../../../src/telegram-client";
+import { OutcomeUnknownError } from "../../../../src/outcome-unknown";
 
-function mockClient(
-  handler: (
-    chatId: number | string,
-    text: string,
-  ) => Promise<{ messageId: number; chatId: number | string }>,
-) {
+function mockClient(handler: Tbc["sendMessage"]) {
   const c: Tbc = {
-    sendMessage: async (chatId, text) => handler(chatId, text),
+    sendMessage: async (chatId, text, opts) => handler(chatId, text, opts),
     getUpdates: async () => [],
     setWebhook: async () => {},
     deleteWebhook: async () => {},
@@ -55,14 +51,39 @@ describe("telegramAdapter", () => {
     expect(text).toContain("alice");
   });
 
-  it("returns failed when sendMessage throws", async () => {
-    const client = mockClient(async () => {
-      throw new Error("API error: chat not found");
+  it("passes the delivery cancellation signal to Telegram", async () => {
+    const controller = new AbortController();
+    let capturedSignal: AbortSignal | undefined;
+    const client = mockClient(async (chatId, _text, opts) => {
+      capturedSignal = opts?.signal;
+      return { messageId: 1, chatId };
     });
     const adapter = createTelegramAdapter({ clientFactory: () => client });
-    const result = await adapter.deliver(dest, { summary: "x" });
-    expect(result.status).toBe("failed");
-    expect(result.detail).toContain("chat not found");
+
+    await adapter.deliver(dest, { summary: "x" }, { signal: controller.signal });
+    expect(capturedSignal).toBe(controller.signal);
+  });
+
+  it("classifies a generic sendMessage throw after dispatch as outcome unknown", async () => {
+    const client = mockClient(async () => {
+      throw new Error("API error echoed telegram-secret-sentinel");
+    });
+    const adapter = createTelegramAdapter({ clientFactory: () => client });
+    const error = await adapter.deliver(dest, { summary: "x" }).catch((caught) => caught);
+    expect(error).toMatchObject({ outcomeUnknown: true });
+    expect(Bun.inspect(error)).not.toContain("telegram-secret-sentinel");
+    expect((error as Error).cause).toBeUndefined();
+  });
+
+  it("preserves an outcome-unknown Telegram failure for the kernel", async () => {
+    const client = mockClient(async () => {
+      throw new OutcomeUnknownError("request deadline elapsed after dispatch");
+    });
+    const adapter = createTelegramAdapter({ clientFactory: () => client });
+
+    expect(adapter.deliver(dest, { summary: "x" })).rejects.toMatchObject({
+      outcomeUnknown: true,
+    });
   });
 
   it("caches client per botToken", async () => {

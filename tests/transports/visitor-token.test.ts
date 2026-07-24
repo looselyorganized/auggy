@@ -44,6 +44,25 @@ describe("visitor-token", () => {
     expect(payload!.expiresAt).toBeGreaterThan(Date.now());
   });
 
+  it("round-trips signed one-way promotion evidence while accepting legacy payloads", async () => {
+    const key = await deriveSigningKey(bearerToken);
+    const legacy = await createVisitorToken(key, agentId, 86400);
+    expect(await verifyVisitorToken(key, legacy.token)).toEqual(legacy.payload);
+    expect(legacy.payload.priorPeerId).toBeUndefined();
+
+    const promoted = await createVisitorToken(
+      key,
+      agentId,
+      86400,
+      "vis_existing",
+      "anon_session_prior",
+      "anon_session_prior",
+    );
+    expect(await verifyVisitorToken(key, promoted.token)).toEqual(promoted.payload);
+    expect(promoted.payload.priorPeerId).toBe("anon_session_prior");
+    expect(promoted.payload.priorThreadScopeId).toBe("anon_session_prior");
+  });
+
   it("verifyVisitorToken returns null for an expired token", async () => {
     const key = await deriveSigningKey(bearerToken);
     const { token } = await createVisitorToken(key, agentId, -1);

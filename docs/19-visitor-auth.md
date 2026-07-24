@@ -78,13 +78,16 @@ Response:
 - `meta` is optional, non-authoritative request context for UI correlation and
   audit trails. `meta.messageId` may be recorded with the issued token, but
   `meta` never controls visitor identity, trust, or memory migration. Identity
-  is bound by Auggy runtime context, signed visitor tokens, or a future signed
-  anonymous-session binding.
+  is bound by Auggy runtime context and signed visitor/anonymous-session
+  capabilities.
 - Route-initiated verification uses an internal `auth:<uuid>` peer id and does
   not migrate existing anonymous chat memory. If you need anonymous memory
-  migration today, use the model-tool path (`request_auth`) from the active
-  visitor turn. A future signed anonymous-session binding can make app-route
-  migration safe.
+  migration, use the model-tool path (`request_auth`) from the active visitor
+  turn. That path records the authenticated anonymous peer in the single-use
+  verification record and mints a visitor token with a signed one-way
+  transition proof. The next recognized turn may promote only that peer's
+  bound thread and memory. The public app route intentionally does not accept
+  an arbitrary anonymous subject or thread claim.
 - The route is still protected by body validation, route rate limiting, and
   visitorAuth's per-email send limit.
 
@@ -144,7 +147,6 @@ config:
   port: 8080
   auth: { type: bearer, token: ${AUGGY_WEB_TOKEN} }
   visitorTokens:
-    ttlSeconds: 7776000                       # 90 days
     # signingKey is auto-injected from visitorAuth by the resolver —
     # do NOT set it here. Duplicate keys trigger a warning and visitorAuth
     # wins. enabled is also forced to true automatically.
@@ -218,6 +220,23 @@ config:
   agentBinding: ${AUGGY_AGENT_ID}
 ```
 
+`agentBinding` is a security audience, not a display name. Configure the same
+stable, unique value on `visitorAuth.agentBinding`. The CLI resolver injects
+that value into `webTransport.visitorTokens.agentBinding`; if you also set it
+there or set `webTransport.securityNamespace`, use the same value. The web
+transport always validates the embedded audience; in direct programmatic use,
+an omitted token binding defaults to `securityNamespace`, then the registered
+agent name. The historical
+`visitorAuth` factory fallback `"auggy"` remains for standalone compatibility
+but does not authenticate to a differently named web transport. Set the
+binding explicitly before deployment or renaming an agent. CLI-managed agents
+that mount both augments fail boot unless visitorAuth supplies an explicit
+binding and the effective web binding matches.
+Existing tokens
+minted for a former binding stop authenticating and visitors must reverify;
+this fail-closed invalidation prevents replay between agents that share a
+signing key.
+
 When console mode is active, `request_auth` prints a line like:
 
 ```
@@ -270,7 +289,7 @@ The `notifyOnFirstVerify` option (operator-alert email on each new visitor) cann
 | `AGENTMAIL_INBOX_ID` | Inbox the verify email is sent FROM |
 | `AUGGY_PUBLIC_URL` | Base URL operators reach the agent at; embedded in the magic link |
 | `VISITOR_SIGNING_KEY` | HMAC key for visitor tokens; set only in `visitorAuth` — auto-injected into webTransport |
-| `AUGGY_AGENT_ID` | Stable per-agent identifier; binds visitor tokens to this agent. MUST match between visitorAuth and webTransport. Default unset (no binding check). |
+| `AUGGY_AGENT_ID` | Stable per-agent security audience; required by CLI-managed agents that combine visitorAuth and webTransport. Direct web transports default their binding to `securityNamespace`, then the registered agent name, and always enforce it. |
 
 ## Key constraints
 

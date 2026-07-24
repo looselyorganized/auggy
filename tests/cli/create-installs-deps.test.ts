@@ -1,5 +1,13 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse as parseYaml } from "yaml";
@@ -51,6 +59,26 @@ afterEach(() => {
 });
 
 describe("runCreate writes per-agent package.json", () => {
+  test("rejects a credentialed remote Ollama plaintext URL without echoing it", async () => {
+    const sentinelUrl = "http://ollama.example.test:11434/path?secret=DO_NOT_LOG";
+    answers = {
+      provider: "ollama",
+      ollamaMode: "remote",
+      ollamaBaseURL: sentinelUrl,
+      ollamaNeedsBearer: true,
+    };
+
+    const error = await runCreate("demo-ollama-plaintext", {
+      cwd: projectParent,
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    }).catch((cause) => cause);
+
+    expect(String(error)).toContain("plaintext HTTP");
+    expect(String(error)).not.toContain("ollama.example.test");
+    expect(String(error)).not.toContain("DO_NOT_LOG");
+    expect(existsSync(agentDirFor("demo-ollama-plaintext"))).toBe(false);
+  });
+
   test("Anthropic-only: package.json lists auggy + @auggy/anthropic and nothing else", async () => {
     answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
 
@@ -498,6 +526,9 @@ describe("runCreate scaffolding integration", () => {
     expect(env).toContain("ANTHROPIC_API_KEY=sk-ant-test");
     expect(envExample).toContain("ANTHROPIC_API_KEY=");
     expect(envExample).not.toContain("sk-ant-test");
+    if (process.platform !== "win32") {
+      expect(statSync(join(dir, ".env")).mode & 0o777).toBe(0o600);
+    }
     expect(logs.join("\n")).not.toContain("Set .env");
     expect(logs.join("\n")).toContain("Open in your editor");
     expect(logs.join("\n")).toContain("identity.md");

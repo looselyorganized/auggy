@@ -55,6 +55,7 @@ export function createMockSupabase(): MockSupabaseClient {
     let limitN: number | null = null;
     let mode: "select" | "delete" | "update" = "select";
     let updatePatch: Record<string, unknown> = {};
+    let selectedColumns: string[] | null = null;
 
     const builder: MockQueryBuilder = {
       async insert(row) {
@@ -62,8 +63,13 @@ export function createMockSupabase(): MockSupabaseClient {
         rows.get(table)!.push(...arr);
         return { error: null };
       },
-      select() {
+      select(columns) {
         mode = "select";
+        selectedColumns =
+          columns
+            ?.split(",")
+            .map((column) => column.trim())
+            .filter(Boolean) ?? null;
         return builder;
       },
       delete() {
@@ -169,6 +175,14 @@ export function createMockSupabase(): MockSupabaseClient {
           }
           if (limitN !== null) {
             results = results.slice(0, limitN);
+          }
+          if (selectedColumns) {
+            results = results.map(
+              (row) =>
+                Object.fromEntries(
+                  selectedColumns!.map((column) => [column, row[column]]),
+                ) as MockRow,
+            );
           }
         }
 

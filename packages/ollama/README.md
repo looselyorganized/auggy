@@ -2,6 +2,20 @@
 
 Ollama engine adapter for [auggy](https://www.npmjs.com/package/auggy) — drive your agent against a local LLM with no API key required.
 
+## Install
+
+```bash
+bun add auggy @auggy/ollama
+```
+
+`auggy create` writes the audited transitive dependency overrides. For a direct
+package install, copy the `overrides` block from the installed `auggy` manifest
+into the consumer application's root `package.json`; package managers do not
+inherit overrides from dependencies. This is required until
+`@modelcontextprotocol/sdk` accepts the fixed `@hono/node-server` v2 range.
+The peer is optional only to package installers; the adapter imports Auggy at
+runtime, so install the matching local core explicitly.
+
 ## Setup
 
 1. Install Ollama from [ollama.com](https://ollama.com)
@@ -35,6 +49,11 @@ engine:
   #   temperature: 0.7
   #   seed: 42
 ```
+
+Remote Ollama endpoints that receive `OLLAMA_API_KEY` must use HTTPS. Plain
+HTTP with a credential is allowed for loopback only. The explicit
+`allowInsecureHttpWithCredentials: true` override works only when
+`NODE_ENV=development` and must never be used for staging or production.
 
 ## Recommended models (tool-capable)
 

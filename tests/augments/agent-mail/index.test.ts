@@ -20,6 +20,7 @@ import type {
   PeerIdentity,
   RouteWebhookContext,
   ToolExecuteContext,
+  ToolResult,
   Tool,
   TransportKernel,
   TurnResult,
@@ -87,6 +88,18 @@ function tool(aug: ReturnType<typeof agentMail>, name: string): Tool<unknown> {
 
 function asStr(t: Tool<unknown>) {
   return asStringTool(t);
+}
+
+async function executeParsed(
+  target: Tool<unknown>,
+  input: unknown,
+  context?: ToolExecuteContext,
+): Promise<Record<string, unknown>> {
+  const result: string | ToolResult = await target.execute(input, context);
+  return JSON.parse(typeof result === "string" ? result : result.content) as Record<
+    string,
+    unknown
+  >;
 }
 
 const baseOpts = { apiKey: "am_test_key", inboxId: "inb_test" };
@@ -335,20 +348,39 @@ describe("reviewed send delivery outcomes", () => {
     await expectRestartReplayBlocked(stateDir);
   });
 
-  test("a definitive HTTP rejection becomes retryable as a new review", async () => {
+  test("a reviewed 5xx remains sending across restart and blocks replay", async () => {
     const stateDir = makeTmpDir();
     const { client } = fakeClient({
       async send() {
         return {
           status: "failed" as const,
-          detail: "agentmail returned 503: unavailable",
+          detail: "agentmail returned 503",
           httpStatus: 503,
         };
       },
     });
     const { reviewId, approval } = await queueAndApprove(stateDir, client);
 
-    expect(approval).toEqual({ ok: false, message: `Review ${reviewId} failed (HTTP 503)` });
+    expect(approval.ok).toBe(false);
+    expect(approval.message).toMatch(/ambiguous delivery outcome/);
+    expect(createAgentMailReviewQueue({ stateDir }).get(reviewId)?.state).toBe("sending");
+    await expectRestartReplayBlocked(stateDir);
+  });
+
+  test("a definitive 4xx HTTP rejection becomes retryable as a new review", async () => {
+    const stateDir = makeTmpDir();
+    const { client } = fakeClient({
+      async send() {
+        return {
+          status: "failed" as const,
+          detail: "agentmail returned 400: rejected",
+          httpStatus: 400,
+        };
+      },
+    });
+    const { reviewId, approval } = await queueAndApprove(stateDir, client);
+
+    expect(approval).toEqual({ ok: false, message: `Review ${reviewId} failed (HTTP 400)` });
     expect(createAgentMailReviewQueue({ stateDir }).get(reviewId)?.state).toBe("failed");
 
     const { client: restartedClient, log } = fakeClient();
@@ -450,11 +482,10 @@ describe("direct send durability journal", () => {
       },
     };
     const input = { to: ["a@x.com"], subject: "Crash window", text: "Body" };
-    const initial = JSON.parse(
-      await asStr(tool(agentMail({ ...options, _client: first.client }), "send_message")).execute(
-        input,
-        ctx(peer("agent")),
-      ),
+    const initial = await executeParsed(
+      tool(agentMail({ ...options, _client: first.client }), "send_message"),
+      input,
+      ctx(peer("agent")),
     );
     expect(initial).toMatchObject({ status: "failed" });
     expect(initial.message).toMatch(/ambiguous.*Do not retry/i);
@@ -647,8 +678,10 @@ describe("direct send durability journal", () => {
         },
       });
       const firstAugment = agentMail({ ...baseOpts, stateDir, _client: first.client });
-      const initial = JSON.parse(
-        await asStr(tool(firstAugment, "send_message")).execute(input, executeContext()),
+      const initial = await executeParsed(
+        tool(firstAugment, "send_message"),
+        input,
+        executeContext(),
       );
       expect(initial.message).toMatch(/ambiguous/i);
       expect(firstCalls).toBe(1);
@@ -734,8 +767,7 @@ describe("direct send durability journal", () => {
           ? { messageId: "inbound_1", text: "Reply body" }
           : { messageId: "inbound_1", to: ["ops@example.com"], text: "Forward body" };
       expect(
-        JSON.parse(await asStr(tool(firstAugment, toolName)).execute(input, ctx(peer("creator"))))
-          .message,
+        (await executeParsed(tool(firstAugment, toolName), input, ctx(peer("creator")))).message,
       ).toMatch(/ambiguous/i);
       expect(firstCalls).toBe(1);
 
@@ -929,7 +961,7 @@ describe("AgentMail HTTP errors surface to the model envelope", () => {
     expect(res.retryAfterSec).toBe(17);
   });
 
-  test("5xx is preserved", async () => {
+  test("5xx is outcome unknown and retains the durable reservation", async () => {
     const failingClient = fakeClient({
       async send() {
         return {
@@ -940,15 +972,14 @@ describe("AgentMail HTTP errors surface to the model envelope", () => {
       },
     });
     const aug = agentMail({ ...baseOpts, _client: failingClient.client });
-    const t = asStr(tool(aug, "send_message"));
-    const res = JSON.parse(
-      await t.execute({ to: ["a@x.com"], subject: "S", text: "B" }, ctx(peer("creator"))),
+    const result = await tool(aug, "send_message").execute(
+      { to: ["a@x.com"], subject: "S", text: "B" },
+      ctx(peer("creator")),
     );
-    expect(res.status).toBe("failed");
-    expect(res.httpStatus).toBe(503);
+    expect(result).toMatchObject({ isError: true, outcomeUnknown: true });
   });
 
-  test("failed send does NOT burn rate-limit quota", async () => {
+  test("ambiguous 5xx send consumes rate-limit quota and is not retried", async () => {
     let nowMs = 1_000_000_000_000;
     let calls = 0;
     const failingClient = fakeClient({
@@ -970,19 +1001,20 @@ describe("AgentMail HTTP errors surface to the model envelope", () => {
         rateLimit: { globalMaxPerHour: 1, perRecipientCooldownMs: 0, dedupWindowMs: 0 },
       },
     });
-    const t = asStr(tool(aug, "send_message"));
-    // First attempt fails (5xx); should NOT consume the only quota slot.
-    expect(
-      JSON.parse(await t.execute({ to: ["a@x.com"], subject: "S1", text: "B" }, ctx(peer("agent"))))
-        .status,
-    ).toBe("failed");
+    // First attempt is ambiguous and must retain the only quota slot.
+    const first = await tool(aug, "send_message").execute(
+      { to: ["a@x.com"], subject: "S1", text: "B" },
+      ctx(peer("agent")),
+    );
+    expect(first).toMatchObject({ isError: true, outcomeUnknown: true });
     nowMs += 1_000;
-    // Second attempt should be allowed to try.
-    expect(
-      JSON.parse(await t.execute({ to: ["b@x.com"], subject: "S2", text: "B" }, ctx(peer("agent"))))
-        .status,
-    ).toBe("failed");
-    expect(calls).toBe(2);
+    const second = await executeParsed(
+      tool(aug, "send_message"),
+      { to: ["b@x.com"], subject: "S2", text: "B" },
+      ctx(peer("agent")),
+    );
+    expect(second.status).toBe("rate_limited");
+    expect(calls).toBe(1);
   });
 });
 

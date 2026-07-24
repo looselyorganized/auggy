@@ -95,10 +95,130 @@ ROOT_VERSION="$(node -p "require('$ROOT/package.json').version")"
 info "pack every publishable package"
 TARBALL="$(pack_release_package "." "auggy" "$ROOT_VERSION")"
 ANTHROPIC_TARBALL="$(pack_release_package "packages/anthropic" "@auggy/anthropic" "$ROOT_VERSION")"
-pack_release_package "packages/openai" "@auggy/openai" "$ROOT_VERSION" >/dev/null
-pack_release_package "packages/openrouter" "@auggy/openrouter" "$ROOT_VERSION" >/dev/null
-pack_release_package "packages/ollama" "@auggy/ollama" "$ROOT_VERSION" >/dev/null
+OPENAI_TARBALL="$(pack_release_package "packages/openai" "@auggy/openai" "$ROOT_VERSION")"
+OPENROUTER_TARBALL="$(pack_release_package "packages/openrouter" "@auggy/openrouter" "$ROOT_VERSION")"
+OLLAMA_TARBALL="$(pack_release_package "packages/ollama" "@auggy/ollama" "$ROOT_VERSION")"
 pack_release_package "packages/evals" "@auggy/evals" "$ROOT_VERSION" >/dev/null
+
+verify_adapter_manifest() {
+  local tarball="$1"
+  local expected_name="$2"
+  tar -xOf "$tarball" package/package.json \
+    | node -e '
+        const manifest = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+        const [expectedName, expectedVersion] = process.argv.slice(1);
+        if (manifest.name !== expectedName) {
+          throw new Error(`expected ${expectedName}, packed ${manifest.name}`);
+        }
+        if (manifest.peerDependencies?.auggy !== `^${expectedVersion}`) {
+          throw new Error(`${expectedName} does not declare auggy ^${expectedVersion}`);
+        }
+        if (manifest.peerDependenciesMeta?.auggy?.optional !== true) {
+          throw new Error(`${expectedName} may not auto-install the stale registry core`);
+        }
+      ' "$expected_name" "$ROOT_VERSION" \
+    || fail "packed peer contract mismatch for $expected_name"
+}
+
+verify_adapter_consumer() {
+  local slug="$1"
+  local package_name="$2"
+  local factory_name="$3"
+  local adapter_tarball="$4"
+  local consumer_dir="$SMOKE_DIR/provider-consumers/$slug"
+  shift 4
+
+  mkdir -p "$consumer_dir"
+  node - "$consumer_dir/package.json" <<'NODE'
+const { writeFileSync } = require("node:fs");
+writeFileSync(
+  process.argv[2],
+  `${JSON.stringify({
+    name: "packed-provider-consumer",
+    private: true,
+    type: "module",
+    overrides: {
+      "@hono/node-server": "2.0.11",
+      "body-parser": "2.3.0",
+      "fast-uri": "3.1.4",
+      "hono": "4.12.31",
+    },
+  }, null, 2)}\n`,
+);
+NODE
+  (
+    cd "$consumer_dir"
+    # Install the required runtime peer first so package managers never try to
+    # satisfy it from the stale published registry version.
+    bun add --offline --no-summary "$TARBALL"
+    bun add --offline --no-summary "$adapter_tarball" "$@"
+    bun -e '
+      const [packageName, factoryName] = process.argv.slice(1);
+      const core = await import("auggy");
+      if (typeof core.defineAgent !== "function") {
+        throw new Error("packed Auggy core does not export defineAgent");
+      }
+      const provider = await import(packageName);
+      if (typeof provider[factoryName] !== "function") {
+        throw new Error(`${packageName} does not export ${factoryName}`);
+      }
+    ' "$package_name" "$factory_name"
+    bun -e '
+      import { existsSync, readFileSync } from "node:fs";
+      import { dirname, join } from "node:path";
+
+      const expected = {
+        "@hono/node-server": "2.0.11",
+        "body-parser": "2.3.0",
+        "fast-uri": "3.1.4",
+        hono: "4.12.31",
+      };
+      const coreDirectory = dirname(Bun.resolveSync("auggy", process.cwd()));
+      for (const [name, version] of Object.entries(expected)) {
+        let directory = dirname(Bun.resolveSync(name, coreDirectory));
+        let manifest;
+        for (let depth = 0; depth < 8; depth += 1) {
+          const candidate = join(directory, "package.json");
+          if (existsSync(candidate)) {
+            const parsed = JSON.parse(readFileSync(candidate, "utf8"));
+            if (parsed.name === name) {
+              manifest = parsed;
+              break;
+            }
+          }
+          directory = dirname(directory);
+        }
+        if (manifest?.version !== version) {
+          throw new Error(
+            `${name} resolved to ${manifest?.version ?? "unknown"}, expected ${version}`,
+          );
+        }
+      }
+    '
+    bun audit --json | node -e '
+      const result = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+      if (Object.keys(result).length !== 0) {
+        throw new Error(`packed consumer has advisories: ${Object.keys(result).join(", ")}`);
+      }
+    '
+  ) >"$LOG_DIR/provider-$slug.log" 2>&1 \
+    || fail "packed provider consumer failed for $package_name"
+}
+
+info "verify packed provider contracts and isolated imports"
+verify_adapter_manifest "$ANTHROPIC_TARBALL" "@auggy/anthropic"
+verify_adapter_manifest "$OPENAI_TARBALL" "@auggy/openai"
+verify_adapter_manifest "$OPENROUTER_TARBALL" "@auggy/openrouter"
+verify_adapter_manifest "$OLLAMA_TARBALL" "@auggy/ollama"
+verify_adapter_consumer \
+  "anthropic" "@auggy/anthropic" "createAnthropicEngine" "$ANTHROPIC_TARBALL"
+verify_adapter_consumer \
+  "openai" "@auggy/openai" "createOpenAIEngine" "$OPENAI_TARBALL"
+verify_adapter_consumer \
+  "openrouter" "@auggy/openrouter" "createOpenRouterEngine" \
+  "$OPENROUTER_TARBALL" "$OPENAI_TARBALL"
+verify_adapter_consumer \
+  "ollama" "@auggy/ollama" "createOllamaEngine" "$OLLAMA_TARBALL"
 
 info "verify package contents"
 PACK_LIST="$LOG_DIR/tarball-files.txt"
@@ -117,6 +237,7 @@ reject_pack_pattern() {
 require_pack_entry "src/cli/index.ts"
 require_pack_entry "src/cli/model-registry.ts"
 require_pack_entry "src/cli/model-snapshot.ts"
+require_pack_entry "src/scaffold-starter-skills/auggy/assets/templates/nextjs-server-client/admin-reindex-route.ts.txt"
 require_pack_entry "admin/dist/index.html"
 require_pack_entry "README.md"
 require_pack_entry "CHANGELOG.md"
@@ -228,6 +349,12 @@ grep -q "\"auggy\": \"file:$TARBALL\"" "$AGENT_DIR/package.json" \
 grep -q "\"@auggy/anthropic\": \"file:$ANTHROPIC_TARBALL\"" "$AGENT_DIR/package.json" \
   || fail "agent package.json did not pin @auggy/anthropic to the packed adapter"
 assert_agent_uses_folder_backed_augments fileMemory filesystem webTransport webFetch turnControl
+ADMIN_TEMPLATE="$AGENT_DIR/skills/auggy/assets/templates/nextjs-server-client/admin-reindex-route.ts.txt"
+[[ -f "$ADMIN_TEMPLATE" ]] || fail "scaffold missing hardened admin route template"
+grep -Fq 'import "server-only";' "$ADMIN_TEMPLATE" \
+  || fail "scaffold admin route template is not server-only"
+grep -Fq 'createAdminReindexHandler' "$ADMIN_TEMPLATE" \
+  || fail "scaffold admin route template lacks the fail-closed authorization boundary"
 
 SMOKE_PORT="$(
   node -e 'const net=require("net"); const server=net.createServer(); server.listen(0,"127.0.0.1",()=>{console.log(server.address().port); server.close();});'
@@ -240,6 +367,17 @@ info "install agent dependencies"
 (
   cd "$AGENT_DIR"
   bun install
+)
+
+info "audit installed agent"
+(
+  cd "$AGENT_DIR"
+  bun audit --json | node -e '
+    const result = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+    if (Object.keys(result).length !== 0) {
+      throw new Error(`generated agent has advisories: ${Object.keys(result).join(", ")}`);
+    }
+  '
 )
 
 info "fill smoke env"

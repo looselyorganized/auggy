@@ -14,7 +14,11 @@ import type {
   TurnResult,
   TurnTrigger,
 } from "../../types";
-import { createBuffer, type ExtractionBuffer } from "./extractor/buffer";
+import {
+  createBuffer,
+  type ExtractionBuffer,
+  type ExtractionBufferLimits,
+} from "./extractor/buffer";
 import { type ExtractionFrequencyConfig, shouldExtract } from "./extractor/frequency";
 import { type ExtractionEngine, handleExtractionTurn } from "./extractor/inject-handler";
 import { createSqliteStore } from "./storage/sqlite-store";
@@ -58,6 +62,8 @@ export interface LayeredMemoryAutoSaveOptions {
    * route extraction through the (more expensive) primary engine.
    */
   engine?: ExtractionEngine;
+  /** Finite process-memory limits for deferred anonymous transcripts. */
+  bufferLimits?: Partial<ExtractionBufferLimits>;
 }
 
 export interface LayeredMemoryOptions {
@@ -280,12 +286,15 @@ async function runExtractionInsideTurn(args: {
   peerId: string;
   confidenceThreshold: number;
   sourceTurnId: string;
+  signal?: AbortSignal;
 }): Promise<TurnResult> {
+  args.signal?.throwIfAborted();
   const inferenceStart = Date.now();
   const result = await handleExtractionTurn({
     transcript: args.transcript,
     engine: args.engine,
     promptTemplate: args.promptTemplate,
+    signal: args.signal,
   });
   const inferenceDurationMs = Date.now() - inferenceStart;
   const cost: CostResult =
@@ -308,6 +317,15 @@ async function runExtractionInsideTurn(args: {
 
   let written = 0;
   for (const [idx, fact] of result.facts.entries()) {
+    if (args.signal?.aborted) {
+      return buildExtractionTurnResult({
+        trigger: args.trigger,
+        status: "failed",
+        cost,
+        inferenceDurationMs,
+        errorMessage: "extraction canceled after inference completed",
+      });
+    }
     if (fact.confidence < args.confidenceThreshold) {
       // Below threshold: skip rather than write a low-signal entry.
       // Spec Decision 7 leaves a knob for "write but flag" — at v1.0
@@ -316,6 +334,15 @@ async function runExtractionInsideTurn(args: {
       continue;
     }
     try {
+      if (args.signal?.aborted) {
+        return buildExtractionTurnResult({
+          trigger: args.trigger,
+          status: "failed",
+          cost,
+          inferenceDurationMs,
+          errorMessage: "extraction canceled after inference completed",
+        });
+      }
       await args.store.writeAutoSavedEntry({
         peerId: args.peerId,
         label: buildAutoSaveLabel(args.prefix, args.peerId, args.sourceTurnId, idx),
@@ -329,14 +356,41 @@ async function runExtractionInsideTurn(args: {
         sourceTurnId: args.sourceTurnId,
         model: EXTRACTION_MODEL_LABEL,
       });
+      if (args.signal?.aborted) {
+        return buildExtractionTurnResult({
+          trigger: args.trigger,
+          status: "failed",
+          cost,
+          inferenceDurationMs,
+          errorMessage: "extraction canceled while persisting inferred memory",
+        });
+      }
       written++;
     } catch (err) {
+      if (args.signal?.aborted) {
+        return buildExtractionTurnResult({
+          trigger: args.trigger,
+          status: "failed",
+          cost,
+          inferenceDurationMs,
+          errorMessage: "extraction canceled while persisting inferred memory",
+        });
+      }
       console.warn(
         `[layered-memory.autoSave] writeAutoSavedEntry failed for fact ${idx}: ${(err as Error).message}`,
       );
     }
   }
 
+  if (args.signal?.aborted) {
+    return buildExtractionTurnResult({
+      trigger: args.trigger,
+      status: "failed",
+      cost,
+      inferenceDurationMs,
+      errorMessage: "extraction canceled after inference completed",
+    });
+  }
   return buildExtractionTurnResult({
     trigger: args.trigger,
     status: "completed",
@@ -380,9 +434,14 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
   // peerId observed on each threadId so the scheduler can detect an
   // anonymous→recognized promotion (Decision 5 of the memorist design).
   const autoSaveEnabled = opts.autoSave?.enabled ?? true;
-  const buffer: ExtractionBuffer = createBuffer();
-  const turnIndexes = new Map<string, number>();
-  const threadPeerHistory = new Map<string, string>();
+  const buffer: ExtractionBuffer = createBuffer(opts.autoSave?.bufferLimits);
+  const stateIdleTtlMs = opts.autoSave?.bufferLimits?.idleTtlMs ?? 30 * 60 * 1000;
+  const stateMaxEntries = opts.autoSave?.bufferLimits?.maxPeers ?? 1024;
+  const turnIndexes = new Map<string, { value: number; lastAccess: number }>();
+  const threadPeerHistory = new Map<
+    string,
+    { peer: import("../../types").PeerIdentity; lastAccess: number }
+  >();
   const promptTemplate = autoSaveEnabled ? loadPromptTemplate(opts.autoSave?.promptTemplate) : null;
   if (autoSaveEnabled && promptTemplate === null) {
     console.warn(
@@ -393,6 +452,17 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
   const everyNTurns = opts.autoSave?.everyNTurns ?? DEFAULT_EVERY_N_TURNS;
   const confidenceThreshold = opts.autoSave?.confidenceThreshold ?? DEFAULT_CONFIDENCE_THRESHOLD;
   const extractionEngine = opts.autoSave?.engine;
+
+  function sweepAutoSaveState(now = Date.now()): void {
+    buffer.sweep();
+    const cutoff = now - stateIdleTtlMs;
+    for (const [id, entry] of turnIndexes) {
+      if (entry.lastAccess <= cutoff) turnIndexes.delete(id);
+    }
+    for (const [id, entry] of threadPeerHistory) {
+      if (entry.lastAccess <= cutoff) threadPeerHistory.delete(id);
+    }
+  }
 
   const search = async (query: string, queryOpts?: MemoryQueryOpts): Promise<MemoryEntry[]> => {
     const results = await store.search(query, queryOpts?.peerId);
@@ -467,10 +537,10 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
    * identity — preventing the anonymous peer's (possibly exhausted) caps
    * from blocking the flush.
    *
-   * The detection rule is unchanged:
-   *   - the previously-observed peerId for this threadId is `anon-<threadId>`,
-   *   - the current peerId is different, AND
-   *   - there are buffered transcripts under the prior anonymous peerId.
+   * Detection is fail-closed: the prior turn must be public/anonymous, the
+   * current turn must be public/recognized, and the transport must provide a
+   * cryptographically authenticated prior-peer link matching that anonymous
+   * subject. Caller-controlled ID shape is never promotion evidence.
    *
    * Best-effort. ctx.inject failures are caught and logged; the buffered
    * transcripts are dropped on failure.
@@ -481,11 +551,19 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     ctx: SchedulerContext,
   ): Promise<void> {
     const currentPeerId = currentPeer.id;
-    const priorPeerId = threadPeerHistory.get(threadId);
-    if (!priorPeerId) return; // first turn on this thread
-    if (priorPeerId === currentPeerId) return; // same peer, no promotion
-    if (priorPeerId !== `anon-${threadId}`) return; // not an anonymous→other transition
-    const buffered = buffer.flush(priorPeerId);
+    const priorEntry = threadPeerHistory.get(threadId);
+    if (!priorEntry) return; // first turn on this thread
+    const priorPeer = priorEntry.peer;
+    if (
+      priorPeer.trustLevel !== "public" ||
+      priorPeer.publicSubstate !== "anonymous" ||
+      currentPeer.trustLevel !== "public" ||
+      currentPeer.publicSubstate !== "recognized" ||
+      currentPeer.authenticatedPriorPeerId !== priorPeer.id
+    ) {
+      return;
+    }
+    const buffered = buffer.flush(priorPeer.id);
     if (buffered.length === 0) return; // nothing to flush
     if (!extractionEngine || !promptTemplate) return; // can't extract
 
@@ -519,7 +597,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       prefix,
       // Use the NEW recognized peer-id, not the old anonymous one. By the time
       // this flush fires, visitorAuth's verify-route has already migrated
-      // existing memory rows from anon-<threadId> to vis_<uuid> via
+      // existing memory rows from anon_session_<uuid> to vis_<uuid> via
       // migratePeerIdOnVerify. If we wrote new facts under priorPeerId, we'd
       // recreate the orphaned-history regression that migration was designed
       // to prevent. Pragmatic deviation from "Decision 5" of the memorist
@@ -530,7 +608,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     };
     const trigger: TurnTrigger = {
       type: "internal",
-      turnId: `auto-save-flush-${priorPeerId}-${flushSourceTurnId}`,
+      turnId: `auto-save-flush-${priorPeer.id}-${flushSourceTurnId}`,
       threadId,
       timestamp: Date.now(),
       source: AUTO_SAVE_TRIGGER_SOURCE,
@@ -544,7 +622,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       await ctx.inject(trigger);
     } catch (err) {
       console.warn(
-        `[layered-memory.autoSave] promotion-flush ctx.inject failed for prior peer=${priorPeerId}: ${(err as Error).message}`,
+        `[layered-memory.autoSave] promotion-flush ctx.inject failed for prior peer=${priorPeer.id}: ${(err as Error).message}`,
       );
     }
   }
@@ -565,38 +643,62 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
    * Promotion flush (post-PR-1 behavior): before applying the standard
    * frequency dispatch, check whether the just-completed turn's peerId
    * differs from the prior peerId for the same threadId AND the prior
-   * peerId was the anonymous form (`anon-<threadId>`). If so, inject a
+   * peerId was a verified anonymous-session subject. If so, inject a
    * one-off extraction-flush trigger targeting the NEW recognized peer
    * (see `maybeFlushOnPromotion` JSDoc for why this deviates from the
    * original "Decision 5" of the memorist design).
    */
   async function scheduleAfterTurn(result: TurnResult, ctx: SchedulerContext): Promise<void> {
+    ctx.signal?.throwIfAborted();
     if (!autoSaveEnabled) return;
     if (!promptTemplate) return;
+    // No consumer exists without an extraction engine. Do not retrieve or
+    // retain completed transcripts that can never be processed.
+    if (!extractionEngine) return;
     // Recursion guard: skip extraction-initiated turns. Without this,
     // every injected extraction turn would itself fire scheduleAfterTurn
     // and synthesize another extraction trigger ad infinitum.
     if (isAutoSaveTurn(result)) return;
 
     const transcript = await ctx.getCompletedTranscript();
+    ctx.signal?.throwIfAborted();
     if (!transcript) return; // turn was compacted before the hook ran
     if (!transcript.peer) return; // no peer, no scoped namespace to write under
 
     const peerId = transcript.peer.id;
     const threadId = transcript.threadId;
 
+    // Expired anonymous state must disappear before promotion detection;
+    // otherwise a later verification could extract data beyond the declared
+    // idle-retention window.
+    sweepAutoSaveState();
+
     // Decision 5: detect anonymous→recognized promotion and flush
     // anonymous-bound buffer BEFORE we apply the current peer's cadence.
     // Pass the full peer object so trigger.peer targets the recognized
     // identity (budget caps and turn gates key off trigger.peer).
     await maybeFlushOnPromotion(threadId, transcript.peer, ctx);
+    ctx.signal?.throwIfAborted();
 
     // Update thread→peer history AFTER promotion detection so the
     // detector compares against the prior turn's identity.
-    threadPeerHistory.set(threadId, peerId);
+    const now = Date.now();
+    while (turnIndexes.size >= stateMaxEntries && !turnIndexes.has(peerId)) {
+      const oldest = turnIndexes.keys().next().value;
+      if (oldest === undefined) break;
+      turnIndexes.delete(oldest);
+    }
+    while (threadPeerHistory.size >= stateMaxEntries && !threadPeerHistory.has(threadId)) {
+      const oldest = threadPeerHistory.keys().next().value;
+      if (oldest === undefined) break;
+      threadPeerHistory.delete(oldest);
+    }
+    threadPeerHistory.delete(threadId);
+    threadPeerHistory.set(threadId, { peer: { ...transcript.peer }, lastAccess: now });
 
-    const turnIndex = turnIndexes.get(peerId) ?? 0;
-    turnIndexes.set(peerId, turnIndex + 1);
+    const turnIndex = turnIndexes.get(peerId)?.value ?? 0;
+    turnIndexes.delete(peerId);
+    turnIndexes.set(peerId, { value: turnIndex + 1, lastAccess: now });
 
     const decision = shouldExtract(
       {
@@ -674,8 +776,9 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
    */
   async function handleInternalTurn(
     trigger: TurnTrigger,
-    _ctx: InternalTurnContext,
+    ctx: InternalTurnContext,
   ): Promise<TurnResult | null> {
+    ctx.signal?.throwIfAborted();
     if (trigger.source !== AUTO_SAVE_TRIGGER_SOURCE) return null;
     if (!isAutoSaveTriggerPayload(trigger.payload)) {
       // Defensive — a stray internal trigger named auto-save without
@@ -711,6 +814,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       peerId: trigger.payload.peerId,
       confidenceThreshold: trigger.payload.confidenceThreshold,
       sourceTurnId: trigger.payload.sourceTurnId,
+      signal: ctx.signal,
     });
   }
 
@@ -814,7 +918,13 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     adminInfo,
     adminActions,
     ...(autoSaveEnabled ? { scheduleAfterTurn, handleInternalTurn } : {}),
+    onIdle: async () => {
+      sweepAutoSaveState();
+    },
     onShutdown: async () => {
+      buffer.clear();
+      turnIndexes.clear();
+      threadPeerHistory.clear();
       await store.close();
     },
   };

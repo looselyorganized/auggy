@@ -418,7 +418,18 @@ export async function runCaseTrial(
   c: SuiteCase,
   trial: number,
   trustLevel: TrustLevel,
-  meta: Pick<TrialResult, "run_id" | "run_started_at" | "suite" | "suite_version" | "model_id" | "agent_commit">,
+  meta: Pick<
+    TrialResult,
+    | "run_id"
+    | "run_started_at"
+    | "suite"
+    | "suite_version"
+    | "model_id"
+    | "agent_commit"
+    | "evaluated_source_sha"
+    | "evaluated_config_sha256"
+    | "evaluation_scope"
+  >,
   opts?: { suiteDir?: string },
 ): Promise<TrialResult> {
   const userText = concatUserMessages(c.messages);
@@ -452,8 +463,10 @@ export async function runCaseTrial(
   let error: string | undefined;
   try {
     result = await agent.inject(trigger);
-  } catch (err) {
-    error = (err as Error).message;
+  } catch {
+    // Provider and transport failures are untrusted artifact input. Keep the
+    // JSONL stable and credential-safe; trusted runtime logs carry diagnostics.
+    error = "Evaluation turn failed.";
   }
   const latency = Date.now() - start;
 
@@ -564,7 +577,7 @@ export function writeJsonl(trials: TrialResult[], suite: string): string {
 export function tryGitCommit(cwd: string = resolve(import.meta.dir, "../..")): string | undefined {
   try {
     const proc = Bun.spawnSync({
-      cmd: ["git", "rev-parse", "--short", "HEAD"],
+      cmd: ["git", "rev-parse", "HEAD"],
       cwd,
       stdout: "pipe",
       stderr: "pipe",
@@ -620,6 +633,9 @@ async function runSuite(args: {
   trustLevel: TrustLevel;
   trialsOverride?: number;
   agentCommit?: string;
+  evaluatedSourceSha?: string;
+  evaluatedConfigSha256?: string;
+  evaluationScope?: "trusted-harness-candidate-config";
 }): Promise<{ trials: TrialResult[]; summary: RunSummary; failureReasons: Map<string, string> }> {
   const runId = crypto.randomUUID();
   const runStartedAt = new Date().toISOString();
@@ -632,6 +648,9 @@ async function runSuite(args: {
     suite_version: args.suite.version,
     model_id: args.modelId,
     agent_commit: args.agentCommit,
+    evaluated_source_sha: args.evaluatedSourceSha,
+    evaluated_config_sha256: args.evaluatedConfigSha256,
+    evaluation_scope: args.evaluationScope,
   };
 
   const started = Date.now();
@@ -666,6 +685,9 @@ async function runSuite(args: {
     duration_ms: finished - started,
     model_id: args.modelId,
     agent_commit: args.agentCommit,
+    evaluated_source_sha: args.evaluatedSourceSha,
+    evaluated_config_sha256: args.evaluatedConfigSha256,
+    evaluation_scope: args.evaluationScope,
     total_cases: args.suite.cases.length,
     total_trials: out.length,
     cases_passing_pass_k: aggs.filter((a) => a.pass_k === 1).length,
@@ -693,6 +715,25 @@ export async function runEvalSuite(args: {
   trialsOverride?: number;
 }): Promise<{ exitCode: number }> {
   const commit = tryGitCommit();
+  const evaluatedSourceSha = process.env.SECURITY_EVAL_SOURCE_SHA;
+  const evaluatedConfigSha256 = process.env.SECURITY_EVAL_CONFIG_SHA256;
+  const evaluationScope = process.env.SECURITY_EVAL_SCOPE;
+  const hasProvenance =
+    evaluatedSourceSha !== undefined ||
+    evaluatedConfigSha256 !== undefined ||
+    evaluationScope !== undefined;
+  if (
+    hasProvenance &&
+    (!evaluatedSourceSha ||
+      !/^[0-9a-f]{40}$/.test(evaluatedSourceSha) ||
+      !evaluatedConfigSha256 ||
+      !/^[0-9a-f]{64}$/.test(evaluatedConfigSha256) ||
+      evaluationScope !== "trusted-harness-candidate-config")
+  ) {
+    throw new Error("Security eval candidate provenance is missing or malformed.");
+  }
+  const trustedEvaluationScope =
+    evaluationScope === "trusted-harness-candidate-config" ? evaluationScope : undefined;
 
   console.log(`Security eval runner — agent config: ${args.configPath}`);
   const { agent, modelId, agentName, trustLevel, evalContext } = await bootAgent(
@@ -712,6 +753,9 @@ export async function runEvalSuite(args: {
         trustLevel,
         trialsOverride: args.trialsOverride,
         agentCommit: commit,
+        evaluatedSourceSha,
+        evaluatedConfigSha256,
+        evaluationScope: trustedEvaluationScope,
       });
       const path = writeJsonl(trials, suite.suite);
       printSummary(summary, summary.failures, failureReasons);
@@ -732,6 +776,9 @@ export async function runEvalSuite(args: {
         trustLevel,
         trialsOverride: args.trialsOverride,
         agentCommit: commit,
+        evaluatedSourceSha,
+        evaluatedConfigSha256,
+        evaluationScope: trustedEvaluationScope,
       });
       const path = writeJsonl(trials, suite.suite);
       printSummary(summary, summary.failures, failureReasons);

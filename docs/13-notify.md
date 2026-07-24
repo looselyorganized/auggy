@@ -142,6 +142,7 @@ returns `status: "failed"` and does not consume rate-limit quota.
 | `transport` | `"webhook"` | yes | Selects the HTTP POST adapter. |
 | `url` | `string` | yes | Full URL to POST to. Env interpolation supported via the CLI. |
 | `headers` | `Record<string, string>` | no | Additional HTTP headers (e.g. auth tokens). |
+| `allowInsecureHttpWithCredentials` | `boolean` | no | Development-only override for a non-loopback plaintext endpoint. Requires `NODE_ENV=development` and emits a warning. |
 
 ### `NotifyDestination` — telegram
 
@@ -183,7 +184,7 @@ notify({
 { "status": "sent" }
 { "status": "rate_limited", "message": "Notification suppressed — per-peer cooldown active. Next available in 85 seconds." }
 { "status": "failed",       "message": "Unknown destination 'ops'. Configured destinations: creator." }
-{ "status": "failed",       "detail": "webhook https://... returned 404: Not Found" }
+{ "status": "failed",       "detail": "webhook delivery returned HTTP 404" }
 ```
 
 The model sees the `status` field and an optional `message` or `detail` field. On `rate_limited`, the reason message includes the remaining cooldown in seconds (per-peer) so the agent can report it accurately to the visitor if relevant.
@@ -206,7 +207,7 @@ operator configures real delivery.
 
 ### Webhook adapter
 
-The webhook adapter POSTs a JSON body to the configured URL using the shared `src/http.ts` client (10-second timeout, `User-Agent: auggy-notify-webhook/0.1`).
+The webhook adapter POSTs a JSON body to the configured URL using the shared `src/http.ts` client (10-second timeout, `User-Agent: auggy-notify-webhook/0.1`). Remote endpoints must use HTTPS; loopback HTTP remains available for local development. A non-loopback plaintext sandbox additionally requires `allowInsecureHttpWithCredentials: true` and `NODE_ENV=development`.
 
 **Request body:**
 
@@ -221,11 +222,13 @@ The webhook adapter POSTs a JSON body to the configured URL using the shared `sr
 
 `reason` and `visitor` are omitted from the body when not provided by the caller. The `channel` field is always `"notify"` — it lets the receiving endpoint distinguish `notify` POSTs from other augment traffic if the endpoint is shared.
 
-**Response:** Any `2xx` status is treated as success. Any other status code is a `failed` delivery with the status code and up to 200 characters of the response body in `detail`.
+**Response:** Any `2xx` status is treated as success. Any other status code is a
+`failed` delivery with a stable status-only detail. Destination URLs, response
+bodies, and network exception text are never returned to the model.
 
 **Custom headers:** The `headers` field is merged into the request. Use it for API keys, HMAC tokens, or any other per-destination auth that the receiving server requires.
 
-> **Why a shared HTTP client?** The webhook adapter reuses `src/http.ts` rather than a raw `fetch()` call so it inherits redirect security (auth-header stripping on cross-origin redirects) and the body size cap. Both matter when the URL is operator-supplied.
+> **Why a shared HTTP client?** The webhook adapter reuses `src/http.ts` rather than a raw `fetch()` call so it can disable redirects—preventing the webhook body from being replayed to another origin—and inherit the body size cap. Both matter when the URL is operator-supplied.
 
 ### Telegram adapter
 
@@ -274,15 +277,18 @@ Optional fields on the destination:
 - `subjectPrefix` — prepended to `payload.summary` to form the subject line.
 - `labels` — applied to the sent message in AgentMail (visible in `messages.list`).
 - `apiBaseUrl` — overrides the AgentMail API base URL (default `https://api.agentmail.to/v0`).
+- `allowInsecureHttpWithCredentials` — development-only escape hatch for a
+  non-loopback plaintext sandbox. It is rejected unless
+  `NODE_ENV=development`; production endpoints must use HTTPS.
 
 #### Delivery result mapping
 
 | AgentMail response | `notify` result |
 |---|---|
 | 2xx with `{message_id, thread_id}` | `{status: "sent"}` |
-| 4xx (auth, validation, invalid recipient) | `{status: "failed", detail: "agentmail ... returned 4xx: <body excerpt>"}` |
-| 5xx (transient) | `{status: "failed", detail: "agentmail ... returned 5xx: <body excerpt>"}` — caller's responsibility to retry; the adapter does not retry. |
-| Network exception | `{status: "failed", detail: "agentmail ... error: <message>"}` |
+| Definitive 4xx (auth, validation, invalid recipient) | `{status: "failed", detail: "agentmail ... returned 4xx: <body excerpt>"}` |
+| 408 or 5xx after dispatch | Outcome-unknown. The quota reservation is retained and the turn terminates without a model retry. |
+| Network exception or malformed success response | Outcome-unknown. Provider details remain internal and the turn terminates without a model retry. |
 | 429 (rate-limited at AgentMail tier) | Surfaced as `failed` with the 429 body. The notify augment's own rate-limit machinery is the primary defense; AgentMail's quota is the second layer. |
 
 #### AgentMail-specific gotchas {#agentmail-key-scoping}
@@ -290,7 +296,12 @@ Optional fields on the destination:
 - **Suppression list is permanent.** A bounced or complained address is suppressed by AgentMail with no documented removal API. Test with a real recipient before pinning a destination in production.
 - **Key scoping.** The OTP-issued key from `agent.sign_up` is org-scoped (full access). Mint an inbox-scoped key with whitelist permissions (`message_send` only) and use that in `.env`. The org-scoped key should be rotated or kept for console use only.
 - **Recipient cap.** AgentMail supports at most 50 recipients across an email send/reply/forward. Auggy rejects explicit recipient arrays over that cap before making the network request; `replyAll` can still expand server-side and may be rejected by AgentMail.
-- **No idempotency on send.** AgentMail's `messages.send` does not accept an idempotency key as of this writing. Duplicate sends are possible if a network blip lands during the request. For high-stakes messages, rely on the notify augment's existing dedup window (`rateLimit.dedupThreshold`).
+- **No provider idempotency on send.** AgentMail's `messages.send` does not
+  accept an idempotency key as of this writing. Auggy reserves its local dedup
+  slot before dispatch and terminates the turn when delivery becomes
+  outcome-unknown, so the model is not invited to retry. An operator can still
+  reconcile ambiguous provider outcomes, and a manual retry can still create a
+  duplicate if the first send actually landed.
 - **Free tier hard cap.** 100 emails/day. The runtime's `dailyBudgetUsd` does not model AgentMail tier limits — the operator should be aware that AgentMail can refuse delivery independently of runtime budgets.
 - **Inbound delivery is not part of this adapter.** `notify` remains
   outbound-only. For bidirectional email, add the separate `agentMail` augment;
@@ -300,6 +311,13 @@ Optional fields on the destination:
 ## 5. Rate limiting
 
 Rate limiting is stateful and in-memory. State resets on agent restart. All checks apply only when `rateLimit.enabled !== false`.
+
+After validation and destination authority succeed, the augment synchronously
+reserves every applicable cooldown, cap, and dedup slot before adapter
+dispatch. Concurrent calls in one process therefore cannot all pass a stale
+check. A started attempt retains its reservation on success, failure, abort, or
+timeout because remote delivery may already have occurred. Only failures before
+dispatch avoid consuming quota.
 
 ### Rate limit checks (in order)
 
@@ -390,7 +408,10 @@ the `notify` skill scaffolded by `auggy augment add notify`.
 
 **Webhook returns non-2xx**
 
-- The `detail` field in the failed result contains the HTTP status code and the first 200 characters of the response body. Check the receiving endpoint logs.
+- Definitive 4xx responses include the status and a bounded body excerpt in the
+  failed result. A 408 or 5xx after POST dispatch is outcome-unknown because
+  the receiver may have committed the notification before returning the error;
+  check the receiving endpoint before any manual retry.
 - The `X-Api-Key` header (or whichever auth header you configured) may be wrong or missing from the `headers` map.
 
 **Telegram delivery fails**
@@ -403,6 +424,9 @@ the `notify` skill scaffolded by `auggy augment add notify`.
 
 - Rate limit state is in-memory and resets on restart. A restarted agent starts fresh — the first notification after restart always passes rate limits.
 - If running multiple agent instances (not recommended for a single config), each has independent state. Rate limits are not coordinated across instances.
+- Tool/request cancellation is forwarded through webhook, Telegram, and
+  AgentMail adapters. A deadline after dispatch remains outcome-unknown and is
+  not safe to retry automatically.
 
 ## Cross-references
 

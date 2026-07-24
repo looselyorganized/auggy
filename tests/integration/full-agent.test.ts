@@ -43,10 +43,12 @@ describe("full agent integration", () => {
     await supabase.from("agent_memories").insert({
       label: "episode:2026-04-07-001",
       content: "visitor asked about the facility's open hours",
+      peer_id: "creator",
       created_at: "2026-04-07T09:00:00Z",
     });
     const episodic = supabaseMemory({
       namespace: "episode",
+      scope: "peer",
       client: supabase,
       table: "agent_memories",
       mutable: true,
@@ -190,10 +192,12 @@ describe("full agent integration", () => {
     await supabase.from("agent_memories").insert({
       label: "episode:2026-04-01-001",
       content: "visitor asked about coffee brewing setup in the facility kitchen",
+      peer_id: "creator",
       created_at: "2026-04-01T09:00:00Z",
     });
     const episodic = supabaseMemory({
       namespace: "episode",
+      scope: "peer",
       client: supabase,
       table: "agent_memories",
       mutable: true,

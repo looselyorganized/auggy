@@ -56,6 +56,7 @@ describe("augment catalog", () => {
     expect(entry).toBeDefined();
     expect(entry?.defaultName).toBe("mcp");
     expect(entry?.stability).toBe("stable");
+    expect(entry?.description).toContain("creator-only");
     expect(entry?.hasSkill).toBe(true);
   });
 
@@ -63,7 +64,8 @@ describe("augment catalog", () => {
     const entry = AUGMENT_CATALOG.find((e) => e.type === "link");
     expect(entry).toBeDefined();
     expect(entry?.stability).toBe("preview");
-    expect(entry?.description).toContain("agent trust");
+    expect(entry?.description).toContain("Public delegation is off by default");
+    expect(entry?.description).toContain("capped");
     expect(entry?.hasSkill).toBe(true);
   });
 

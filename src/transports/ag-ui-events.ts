@@ -130,14 +130,16 @@ function normalizeRunError(opts: { message: string; code?: string }): {
 }
 
 function classifyRetryableProviderError(message: string): { message: string; code: string } | null {
-  const lower = message.toLowerCase();
+  // Provider errors are already untrusted strings. A bounded flat scan finds
+  // the retry markers without JSON materialization or recursive walks that
+  // could overflow on adversarial nesting.
+  const maxScanChars = 256 * 1024;
+  const oversized = message.length > maxScanChars;
+  const lower = message.slice(0, maxScanChars).toLowerCase();
 
   if (isProviderSpendCap(lower)) return null;
 
-  const parsed = parseEmbeddedJson(message);
-  const providerType = findStringField(parsed, "type")?.toLowerCase();
-  const providerMessage = findStringField(parsed, "message")?.toLowerCase();
-  const haystack = [lower, providerType, providerMessage].filter(Boolean).join(" ");
+  const haystack = lower;
 
   if (haystack.includes("overloaded_error") || /\boverloaded\b/.test(haystack)) {
     return {
@@ -171,6 +173,13 @@ function classifyRetryableProviderError(message: string): { message: string; cod
     };
   }
 
+  if (oversized) {
+    return {
+      message: "Model provider returned an oversized invalid error response.",
+      code: "PROVIDER_ERROR",
+    };
+  }
+
   return null;
 }
 
@@ -179,36 +188,6 @@ function isProviderSpendCap(lowercaseMessage: string): boolean {
     lowercaseMessage.includes("provider spend cap") ||
     /credit|spend|billing|quota|cap|plan/.test(lowercaseMessage)
   );
-}
-
-function parseEmbeddedJson(message: string): unknown {
-  const start = message.indexOf("{");
-  if (start === -1) return null;
-  try {
-    return JSON.parse(message.slice(start));
-  } catch {
-    return null;
-  }
-}
-
-function findStringField(value: unknown, field: string): string | null {
-  if (!value || typeof value !== "object") return null;
-  if (Array.isArray(value)) {
-    for (const item of value) {
-      const found = findStringField(item, field);
-      if (found) return found;
-    }
-    return null;
-  }
-
-  const record = value as Record<string, unknown>;
-  if (typeof record[field] === "string") return record[field];
-
-  for (const child of Object.values(record)) {
-    const found = findStringField(child, field);
-    if (found) return found;
-  }
-  return null;
 }
 
 export function textMessageStart(opts: {

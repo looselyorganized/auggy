@@ -4,6 +4,7 @@ import type { TrustLevel } from "../../types";
 export type McpTransportKind = "stdio" | "streamable-http" | "sse";
 
 export interface McpRuntimePolicy {
+  allowInsecureHttpWithCredentials?: boolean;
   allowedTools?: string[];
   blockedTools?: string[];
   allowedTrustLevels?: TrustLevel[];
@@ -11,6 +12,10 @@ export interface McpRuntimePolicy {
   timeoutMs?: number;
   maxResultBytes?: number;
   maxSchemaBytes?: number;
+  maxArgumentBytes?: number;
+  maxDepth?: number;
+  maxNodes?: number;
+  maxTransportMessageBytes?: number;
   maxConcurrentCalls?: number;
   maxTools?: number;
   maxToolPages?: number;
@@ -54,12 +59,13 @@ export interface McpConnection {
     name: string,
     args: Record<string, unknown>,
     timeoutMs: number,
+    signal?: AbortSignal,
   ): Promise<McpToolCallResult>;
-  close(): Promise<void>;
+  close(signal?: AbortSignal): Promise<void>;
 }
 
 export interface McpClientAdapter {
-  connect(server: McpRuntimeServer): Promise<McpConnection>;
+  connect(server: McpRuntimeServer, signal?: AbortSignal): Promise<McpConnection>;
 }
 
 export interface McpServerStatus {

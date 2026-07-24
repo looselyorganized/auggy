@@ -43,7 +43,7 @@ The CLI walks you through:
 8. **Railway service selection** — by default Auggy creates a new service named `<name>` in the selected project. Pass `--service <name-or-id>` to deploy into an existing Railway service instead.
 9. **`railway volume add --mount-path /app/data`** — provisions a persistent volume mounted at `/app/data`. Holds SQLite-backed state across redeploys.
 10. **`railway domain`** — assigns a `<name>-production-xxxx.up.railway.app` URL.
-11. **Push env vars** — your `.env` entries + `AUGGY_PUBLIC_URL` (the just-generated URL) are pushed via `railway variables --set`.
+11. **Push env vars** — your `.env` entries + `AUGGY_PUBLIC_URL` (the just-generated URL) are pushed with `railway variable set <KEY> --stdin --skip-deploys`. Secret values travel over subprocess stdin, not argv. This requires a current Railway CLI with `variable set --stdin` support; Auggy fails closed instead of falling back to argv on older releases.
 12. **`railway up --detach`** — uploads the bundle, kicks off the build and deploy.
 13. **Health verification** — polls `${url}/health` for a bounded window. Timeout is non-destructive; Railway may still finish booting.
 14. **Metadata write** — the cloud record lands in `<agent-dir>/.auggy-cloud.json`. Later plain `auggy deploy` runs show the saved target and ask whether to redeploy it, recreate the service, choose another target, or reset metadata.
@@ -160,7 +160,7 @@ If you enable auto-save programmatically with an extraction engine,
 | `creator` | every-turn | One extraction LLM call per turn |
 | `agent` | every-N-turns (N=3) | One extraction call every 3 turns |
 | `public.recognized` | every-turn | One extraction call per turn |
-| `public.anonymous` | session-end-only | One extraction call at session end |
+| `public.anonymous` | session-end-only | One bounded batched call if the visitor authenticates before the idle buffer expires; otherwise no extraction |
 
 Each extraction call hits the configured extraction engine. Auggy does not
 silently reuse the user-facing model for extraction, because that would make
@@ -209,7 +209,9 @@ volume even when an agent's portable config uses a project-relative default:
 - `/app/data/budgets.db` (`budgets` augment)
 - `/app/data/visitor-auth.db` (`visitorAuth` augment)
 - `/app/data/link.db` (`link` augment, when present)
+- `/app/data/web-idempotency.db` (`webTransport` execution ledger)
 - `/app/data/console-chat.db` (`webTransport` operator conversations)
+- `/app/data/telegram-replay.db` (`telegramTransport` update-claim ledger)
 - `/app/data/agent-mail/<augment-name>/agent-mail.db` (`agentMail`; each
   instance receives an isolated state namespace)
 
@@ -218,6 +220,11 @@ messages, unread markers, and resumable model history. Completed turns survive
 redeploys and process restarts. If the process exits during an active turn, the
 next boot marks that run interrupted instead of presenting it as still
 streaming.
+
+`/app/data/web-idempotency.db` is part of the side-effect safety boundary.
+Back it up and restore it together with downstream state: losing the ledger
+while retaining completed side effects allows an old caller key to execute
+again.
 
 Only Link retains a root-level compatibility symlink:
 
@@ -248,6 +255,21 @@ capture each database with any `-wal` and `-shm` siblings as one set; copying a
 live `.db` file alone can omit committed WAL data. Restore and test the complete
 set before starting the agent. The CLI does not currently schedule backups or
 verify restores for you.
+
+Security-boundary releases require a drained, all-at-once rollout. Do not run
+old and new bundles concurrently: an old replica does not enforce the durable
+idempotency ledger or public-thread ownership and can re-execute a retry or
+serve caller-selected thread history. Before rollback, stop keyed and public
+traffic and drain outstanding retries; rollback otherwise deliberately reopens
+H-01/H-02.
+
+The operator console also requires explicit proxy trust. Railway environment
+markers do not make forwarding headers authoritative. Configure the actual
+ingress IPs or CIDRs as `webTransport.config.trustedProxies` and the public
+console origin as `webTransport.config.consoleSecurity.allowedOrigins`. If the
+deployment cannot provide a stable, reviewable ingress range, leave the console
+disabled (`adminRoute: false`) and use a local or SSH-tunneled console instead
+of trusting a broad private network.
 
 ---
 

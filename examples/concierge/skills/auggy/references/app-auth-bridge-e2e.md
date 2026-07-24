@@ -63,10 +63,22 @@ Browser code calls the app backend, not Auggy, to get an assertion:
 
 ```ts
 import { createExternalAuthAssertion } from "auggy";
+import {
+  assertionJson,
+  assertionMethodNotAllowed,
+  requireCookieAssertionRequest,
+} from "./assertion-response";
 
-export async function GET(request: Request) {
+export function GET() {
+  return assertionMethodNotAllowed();
+}
+
+export async function POST(request: Request) {
+  const boundaryError = requireCookieAssertionRequest(request);
+  if (boundaryError) return boundaryError;
+
   const session = await verifyAppSession(request);
-  if (!session) return Response.json({ error: "unauthorized" }, { status: 401 });
+  if (!session) return assertionJson({ error: "unauthorized" }, 401);
 
   const authorization = deriveAuggyAuthorization(session);
   const assertion = createExternalAuthAssertion({
@@ -84,11 +96,14 @@ export async function GET(request: Request) {
     jti: crypto.randomUUID(),
   });
 
-  return Response.json({ assertion });
+  return assertionJson({ assertion });
 }
 ```
 
-Use provider-specific templates when writing `verifyAppSession`.
+Use provider-specific templates when writing `verifyAppSession`. Configure
+`APP_ORIGIN` to the exact public origin for cookie-backed routes. The
+`assertion-response.ts.txt` helper makes success and failure responses
+non-cacheable and enforces the cookie/Origin/CSRF boundary.
 
 ## Browser Client
 
@@ -100,7 +115,12 @@ import { createAuggyClient } from "@/src/auggy-client";
 export const api = createAuggyClient({
   baseUrl: process.env.NEXT_PUBLIC_AUGGY_BASE_URL!,
   authAssertion: async () => {
-    const res = await fetch("/api/auggy-auth-assertion", { credentials: "include" });
+    const res = await fetch("/api/auggy-auth-assertion", {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "x-auggy-csrf-request": "1" },
+    });
     if (!res.ok) return undefined;
     const body = (await res.json()) as { assertion?: unknown };
     return typeof body.assertion === "string" ? body.assertion : undefined;
@@ -109,6 +129,11 @@ export const api = createAuggyClient({
 ```
 
 Browser code never sees `AUGGY_EXTERNAL_AUTH_SECRET`.
+
+For production, pass an atomic shared `ExternalAuthReplayStore` to the typed
+web transport template. The YAML example intentionally fails closed because a
+declarative file cannot construct that shared store. A process-local replay
+store is only an explicit single-process development choice.
 
 ## Protected Route
 

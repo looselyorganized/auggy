@@ -366,7 +366,7 @@ async function fetchJson(
   init: RequestInit,
   fetchImpl: FetchLike = fetch,
 ): Promise<Record<string, unknown>> {
-  const response = await fetchImpl(url, init);
+  const response = await fetchImpl(url, { ...init, redirect: "error" });
   if (!response.ok) {
     throw new Error(`HTTP ${response.status} from ${new URL(url).hostname}`);
   }

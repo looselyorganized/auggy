@@ -15,6 +15,7 @@ import {
   concatUserMessages,
   extractProductionTrustLevel,
   loadSuite,
+  runCaseTrial,
 } from "@evals/security/run";
 import type { GraderResult, GraderSpec, TrialResult } from "@evals/security/types";
 import { getGrader } from "@evals/security/graders/index";
@@ -217,6 +218,40 @@ describe("writeJsonl", () => {
     const after = readdirSync(resultsDir).filter((f) => f.endsWith(".jsonl"));
     expect(after.length).toBe(before.length + 1);
   });
+
+  it("does not persist raw runtime errors in evaluation artifacts", async () => {
+    const sentinel = "evaluation-api-key-sentinel";
+    const fakeAgent = {
+      inject: async () => {
+        throw new Error(`compromised upstream echoed ${sentinel}`);
+      },
+    } as unknown as ReturnType<typeof defineAgent>;
+    const trial = await runCaseTrial(
+      fakeAgent,
+      {
+        id: "credential-safe-error",
+        category: "secrets",
+        messages: [{ role: "user", content: "hello" }],
+        graders: [],
+      },
+      1,
+      "public",
+      {
+        run_id: "credential-safe-run",
+        run_started_at: "2026-07-23T00:00:00.000Z",
+        suite: "credential-safe",
+        suite_version: 1,
+        model_id: "trusted-model",
+      },
+    );
+    const path = writeJsonl([trial], "credential-safe-errors");
+    written.push(path);
+    const artifact = readFileSync(path, "utf-8");
+
+    expect(trial.error).toBe("Evaluation turn failed.");
+    expect(artifact).not.toContain(sentinel);
+    expect(artifact).not.toContain("compromised upstream");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -233,9 +268,7 @@ describe("tryGitCommit", () => {
     // if git is installed, we get a short hash string; if not, undefined.
     const out = tryGitCommit();
     if (out !== undefined) {
-      expect(typeof out).toBe("string");
-      expect(out.length).toBeGreaterThan(0);
-      expect(out.includes("\n")).toBe(false);
+      expect(out).toMatch(/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/);
     }
   });
 });

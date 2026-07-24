@@ -22,6 +22,26 @@ function tempDb(): string {
   return join(dir, "inbound.sqlite");
 }
 
+describe("AgentMail SDK credential transport", () => {
+  test("rejects remote plaintext REST and WebSocket overrides", () => {
+    expect(() =>
+      createAgentMailSdkAdapters({
+        apiKey: "GROUP9_AGENTMAIL_SDK_SENTINEL",
+        apiBaseUrl: "http://provider.example.test",
+        websocketBaseUrl: "wss://provider.example.test",
+      }),
+    ).toThrow(/plaintext HTTP/);
+
+    expect(() =>
+      createAgentMailSdkAdapters({
+        apiKey: "GROUP9_AGENTMAIL_SDK_SENTINEL",
+        apiBaseUrl: "https://provider.example.test",
+        websocketBaseUrl: "ws://provider.example.test",
+      }),
+    ).toThrow(/plaintext WS/);
+  });
+});
+
 function sdkMessage(
   messageId: string,
   overrides: Record<string, unknown> = {},

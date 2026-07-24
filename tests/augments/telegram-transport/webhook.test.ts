@@ -8,6 +8,12 @@ function freePort(): number {
 }
 
 describe("startWebhookServer", () => {
+  it("rejects an empty authentication secret before binding", async () => {
+    await expect(
+      startWebhookServer({ port: 0, secretToken: "", onUpdate: () => {} }),
+    ).rejects.toThrow("must contain 1 to 256");
+  });
+
   it("accepts POST with valid secret-token header and dispatches onUpdate", async () => {
     const port = freePort();
     const received: TelegramUpdate[] = [];
@@ -91,6 +97,27 @@ describe("startWebhookServer", () => {
       body: "not json",
     });
     expect(res.status).toBe(400);
+    server.stop();
+  });
+
+  it("rejects an oversized body before dispatch", async () => {
+    const port = freePort();
+    let calls = 0;
+    const server = await startWebhookServer({
+      port,
+      secretToken: "X",
+      maxBodyBytes: 16,
+      onUpdate: () => {
+        calls++;
+      },
+    });
+    const res = await fetch(`http://localhost:${port}/`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-telegram-bot-api-secret-token": "X" },
+      body: JSON.stringify({ update_id: 1, padding: "x".repeat(100) }),
+    });
+    expect(res.status).toBe(413);
+    expect(calls).toBe(0);
     server.stop();
   });
 });

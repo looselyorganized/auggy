@@ -89,6 +89,129 @@ async function runtime(model: ModelClient, concurrency = 2, extraAugments: Augme
 }
 
 describe("kernel thread-history persistence", () => {
+  it("binds unmanaged resident history to the peer that created it", async () => {
+    const model = createMockModel({ response: "private response" });
+    const { agent, kernel } = await runtime(model);
+
+    try {
+      await kernel.handleInbound(trigger("unmanaged-owner", "private prompt"));
+
+      const otherPeer = { ...PEER, id: "visitor-2" };
+      await expect(
+        kernel.handleInbound(trigger("unmanaged-owner", "read private history", otherPeer)),
+      ).rejects.toThrow("thread belongs to another peer");
+
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("allows the same peer to continue unmanaged resident history", async () => {
+    const model = createMockModel({ response: "ok" });
+    const { agent, kernel } = await runtime(model);
+
+    try {
+      await kernel.handleInbound(trigger("unmanaged-same-owner", "first"));
+      await kernel.handleInbound(trigger("unmanaged-same-owner", "second"));
+
+      expect(model.calls).toHaveLength(2);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("rejects the same peer id when its organization context changes", async () => {
+    const model = createMockModel({ response: "private response" });
+    const { agent, kernel } = await runtime(model);
+
+    try {
+      await kernel.handleInbound(
+        trigger("unmanaged-org-owner", "org a prompt", { ...PEER, orgId: "org-a" }),
+      );
+      await expect(
+        kernel.handleInbound(
+          trigger("unmanaged-org-owner", "org b history request", {
+            ...PEER,
+            orgId: "org-b",
+          }),
+        ),
+      ).rejects.toThrow("thread belongs to another peer");
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("allows only a transport-proven anonymous-to-recognized promotion", async () => {
+    const model = createMockModel({ response: "ok" });
+    const { agent, kernel } = await runtime(model);
+    const anonymous: PeerIdentity = {
+      id: "anon_session_00000000-0000-4000-8000-000000000001",
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "anonymous",
+      sourceAugment: "test-transport",
+    };
+    const recognized: PeerIdentity = {
+      id: "vis_00000000-0000-4000-8000-000000000002",
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "recognized",
+      authenticatedPriorPeerId: anonymous.id,
+      sourceAugment: "test-transport",
+    };
+
+    try {
+      await kernel.handleInbound(trigger("unmanaged-promotion", "anonymous", anonymous));
+      await kernel.handleInbound(trigger("unmanaged-promotion", "recognized", recognized));
+      await expect(
+        kernel.handleInbound(trigger("unmanaged-promotion", "downgrade", anonymous)),
+      ).rejects.toThrow("thread belongs to another peer");
+      await expect(
+        kernel.handleInbound(
+          trigger("unmanaged-promotion", "unproven visitor", {
+            ...recognized,
+            id: "vis_other",
+            authenticatedPriorPeerId: undefined,
+          }),
+        ),
+      ).rejects.toThrow("thread belongs to another peer");
+      expect(model.calls).toHaveLength(2);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("rejects the same subject when its issuer or trust level changes", async () => {
+    const model = createMockModel({ response: "private response" });
+    const { agent, kernel } = await runtime(model);
+
+    try {
+      await kernel.handleInbound(trigger("unmanaged-security-principal", "private prompt"));
+      await expect(
+        kernel.handleInbound(
+          trigger("unmanaged-security-principal", "changed issuer", {
+            ...PEER,
+            sourceAugment: "other-transport",
+          }),
+        ),
+      ).rejects.toThrow("thread belongs to another peer");
+      await expect(
+        kernel.handleInbound(
+          trigger("unmanaged-security-principal", "changed trust", {
+            ...PEER,
+            trustLevel: "agent",
+            publicSubstate: undefined,
+          }),
+        ),
+      ).rejects.toThrow("thread belongs to another peer");
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("requires injected continuations to prove the persisted thread owner", async () => {
     const model = createMockModel({ response: "private response" });
     const historyPersistence = persistence({
@@ -529,22 +652,37 @@ describe("kernel thread-history persistence", () => {
     }
   });
 
-  it("passes the caller AbortSignal through to model inference", async () => {
+  it("propagates caller cancellation to model inference", async () => {
     const controller = new AbortController();
-    let observedSignal: AbortSignal | undefined;
+    let signalReady: ((signal: AbortSignal) => void) | undefined;
+    const observedSignal = new Promise<AbortSignal>((resolve) => {
+      signalReady = resolve;
+    });
     const model: ModelClient = {
       maxContextTokens: 100_000,
       countTokens: (text) => Math.ceil(text.length / 4),
       async complete(_prompt, options) {
-        observedSignal = options?.signal;
-        return response();
+        const signal = options?.signal;
+        if (!signal) throw new Error("missing inference signal");
+        signalReady?.(signal);
+        return await new Promise((_, reject) => {
+          signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+        });
       },
     };
     const { agent, kernel } = await runtime(model);
 
     try {
-      await kernel.handleInbound(trigger("signal", "hello"), { signal: controller.signal });
-      expect(observedSignal).toBe(controller.signal);
+      const turn = kernel.handleInbound(trigger("signal", "hello"), { signal: controller.signal });
+      const inferenceSignal = await observedSignal;
+      expect(inferenceSignal.aborted).toBe(false);
+
+      const reason = new Error("caller cancelled");
+      controller.abort(reason);
+
+      expect(inferenceSignal.aborted).toBe(true);
+      expect(inferenceSignal.reason).toBe(reason);
+      await expect(turn).rejects.toBe(reason);
     } finally {
       await agent.stop();
     }

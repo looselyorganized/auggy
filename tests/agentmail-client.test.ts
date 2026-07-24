@@ -1,6 +1,7 @@
 import { describe, test, expect } from "bun:test";
 import { createAgentMailClient } from "../src/agentmail-client";
 import type { HttpResponse, HttpRequestInit } from "../src/http";
+import { OutcomeUnknownError } from "../src/outcome-unknown";
 
 function mockHttp(
   handler: (
@@ -42,6 +43,64 @@ function mockHttp(
 }
 
 describe("createAgentMailClient", () => {
+  test("rejects credentials over non-loopback plaintext HTTP before dispatch", () => {
+    for (const apiBaseUrl of [
+      "http://provider.example.test/v0",
+      "http://127.evil.example.com/v0",
+    ]) {
+      expect(() =>
+        createAgentMailClient({
+          apiKey: "GROUP9_AGENTMAIL_SENTINEL",
+          apiBaseUrl,
+          http: mockHttp(() => ({ status: 200, body: "{}" })),
+        }),
+      ).toThrow(/plaintext HTTP/);
+    }
+  });
+
+  test("rejects non-string credentials before dispatch", () => {
+    expect(() =>
+      createAgentMailClient({
+        apiKey: 123 as unknown as string,
+        apiBaseUrl: "https://provider.example.test/v0",
+        http: mockHttp(() => ({ status: 200, body: "{}" })),
+      }),
+    ).toThrow("AgentMail credential must be a string");
+  });
+
+  test("passes the send cancellation signal to the HTTP client", async () => {
+    const controller = new AbortController();
+    let capturedSignal: AbortSignal | undefined;
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: {
+        post: async (url, opts) => {
+          capturedSignal = opts?.signal;
+          return {
+            finalUrl: url,
+            status: 200,
+            statusText: "OK",
+            contentType: "application/json",
+            headers: new Headers(),
+            body: JSON.stringify({ message_id: "msg_1", thread_id: "thd_1" }),
+          };
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+    });
+
+    await client.send({
+      inboxId: "inb_x",
+      to: ["a@b.com"],
+      subject: "s",
+      text: "t",
+      signal: controller.signal,
+    });
+    expect(capturedSignal).toBe(controller.signal);
+  });
+
   test("posts to /inboxes/{id}/messages/send with bearer auth", async () => {
     let captured: { url: string; body: Record<string, unknown> } | null = null;
     let capturedAuth = "";
@@ -89,24 +148,91 @@ describe("createAgentMailClient", () => {
     }
   });
 
-  test("returns failed on network throw", async () => {
+  test("never exposes a definitive provider error body", async () => {
+    const sentinel = "GROUP9_AGENTMAIL_PROVIDER_BODY_SENTINEL";
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: mockHttp(() => ({ status: 400, body: `rejected ${sentinel}` })),
+    });
+    const result = await client.send({
+      inboxId: "inb_x",
+      to: ["a@b.com"],
+      subject: "s",
+      text: "t",
+    });
+    expect(result).toEqual({
+      status: "failed",
+      detail: "agentmail returned HTTP 400",
+      httpStatus: 400,
+    });
+    expect(JSON.stringify(result)).not.toContain(sentinel);
+  });
+
+  test("classifies a network throw after send dispatch as outcome unknown", async () => {
+    const sentinel = "GROUP9_AGENTMAIL_SEND_THROW_SENTINEL";
     const client = createAgentMailClient({
       apiKey: "am_test",
       http: {
         post: async () => {
-          throw new Error("ECONNREFUSED");
+          throw new Error(sentinel);
         },
         get: async () => {
-          throw new Error("ECONNREFUSED");
+          throw new Error(sentinel);
         },
       },
     });
-    const r = await client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" });
-    expect(r.status).toBe("failed");
-    if (r.status === "failed") {
-      expect(r.detail).toContain("ECONNREFUSED");
-      expect(r.httpStatus).toBeUndefined();
+    try {
+      await client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" });
+      throw new Error("expected send to fail");
+    } catch (error) {
+      expect(error).toMatchObject({ outcomeUnknown: true });
+      expect(Bun.inspect(error)).not.toContain(sentinel);
     }
+  });
+
+  test("classifies an unreadable successful send response as outcome unknown", async () => {
+    const sentinel = "GROUP9_AGENTMAIL_MALFORMED_BODY_SENTINEL";
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: mockHttp(() => ({ status: 200, body: `{${sentinel}` })),
+    });
+
+    try {
+      await client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" });
+      throw new Error("expected send to fail");
+    } catch (error) {
+      expect(error).toMatchObject({ outcomeUnknown: true });
+      expect(Bun.inspect(error)).not.toContain(sentinel);
+    }
+  });
+
+  test("preserves an outcome-unknown HTTP failure", async () => {
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: {
+        post: async () => {
+          throw new OutcomeUnknownError("request deadline elapsed after dispatch");
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+    });
+
+    await expect(
+      client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" }),
+    ).rejects.toMatchObject({ outcomeUnknown: true });
+  });
+
+  test("classifies a provider 5xx after send dispatch as outcome unknown", async () => {
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: mockHttp(() => ({ status: 503, body: "unavailable" })),
+    });
+
+    await expect(
+      client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" }),
+    ).rejects.toMatchObject({ outcomeUnknown: true });
   });
 
   test("rejects send requests with no recipients before hitting AgentMail", async () => {
@@ -165,32 +291,38 @@ describe("createAgentMailClient.getInbox", () => {
   });
 
   test("returns failed with httpStatus on non-2xx", async () => {
+    const sentinel = "GROUP9_AGENTMAIL_INBOX_BODY_SENTINEL";
     const client = createAgentMailClient({
       apiKey: "am_test",
-      http: mockHttp(() => ({ status: 404, body: JSON.stringify({ error: "not found" }) })),
+      http: mockHttp(() => ({ status: 404, body: JSON.stringify({ error: sentinel }) })),
     });
     const r = await client.getInbox("inb_missing");
     expect(r.status).toBe("failed");
     if (r.status === "failed") {
       expect(r.httpStatus).toBe(404);
       expect(r.detail).toContain("404");
+      expect(r.detail).not.toContain(sentinel);
     }
   });
 
   test("returns failed on network throw", async () => {
+    const sentinel = "GROUP9_AGENTMAIL_NETWORK_SENTINEL";
     const client = createAgentMailClient({
       apiKey: "am_test",
       http: {
         post: async () => {
-          throw new Error("ECONNREFUSED");
+          throw new Error(sentinel);
         },
         get: async () => {
-          throw new Error("ECONNREFUSED");
+          throw new Error(sentinel);
         },
       },
     });
     const r = await client.getInbox("inb_x");
     expect(r.status).toBe("failed");
-    if (r.status === "failed") expect(r.detail).toContain("ECONNREFUSED");
+    if (r.status === "failed") {
+      expect(r.detail).toBe("agentmail request failed");
+      expect(r.detail).not.toContain(sentinel);
+    }
   });
 });

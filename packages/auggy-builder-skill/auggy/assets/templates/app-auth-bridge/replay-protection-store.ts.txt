@@ -21,10 +21,7 @@ export function createSharedExternalAuthReplayStore(
 //   return result === "OK";
 // });
 //
-// webTransport({
-//   externalAuth: {
-//     secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
-//     audience: process.env.AUGGY_EXTERNAL_AUTH_AUDIENCE!,
-//     replayProtection: { enabled: true, store: replayStore },
-//   },
-// });
+// Pass replayStore to createExternalAuthWebTransport(replayStore). The
+// set-once operation must be atomic across every application instance. A
+// process-local Map is suitable only for explicitly single-process local
+// development.

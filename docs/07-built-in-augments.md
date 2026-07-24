@@ -247,6 +247,7 @@ import { supabaseMemory } from "auggy";
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const episodic = supabaseMemory({
   namespace: "episode",
+  scope: "peer",
   client: supabase,
   table: "agent_memories",
   mutable: true,
@@ -259,7 +260,11 @@ const episodic = supabaseMemory({
 
 ### What it is
 
-A namespace `MemoryProviderSpec` backed by a Supabase table. Implements `search` (ILIKE on content), `read` (eq on label), and `write` (insert). Used for episodic memory — open-ended labeled entries that accumulate over time.
+A namespace `MemoryProviderSpec` backed by a Supabase table. `scope` is
+required: use `"peer"` for peer-derived memory and `"shared"` only for
+deliberately cross-peer operator/system content. Peer scope filters by the
+resolved peer in SQL before ordering or limiting results, omits unsafe exact
+label reads, and fails closed when no peer identity is available.
 
 ### When to use it
 
@@ -286,8 +291,10 @@ A second-order benefit: having two reference providers (`fileMemory` static, `su
 ```ts
 export interface SupabaseMemoryOptions {
   namespace: string;                  // e.g. "episode" → prefix becomes "episode:"
+  scope: "peer" | "shared";           // required authorization boundary
   client: SupabaseLikeClient;
   table: string;                      // the table to read/write
+  peerColumn?: string;                // default "peer_id"
   mutable: boolean;                   // whether write() is exposed
   origin: ContextOrigin;
   priority: ContextPriority;
@@ -305,17 +312,17 @@ The `namespace` becomes the prefix — `"episode"` is normalized to `"episode:"`
 export interface SupabaseLikeClient {
   from(table: string): {
     insert(row: unknown): PromiseLike<{ error: Error | null }>;
-    select(columns?: string): {
-      eq(column: string, value: unknown): {
-        maybeSingle(): PromiseLike<{ data: unknown; error: Error | null }>;
-      };
-      ilike(column: string, value: string): {
-        order(column: string, opts?: { ascending?: boolean }): {
-          limit(n: number): PromiseLike<{ data: unknown[]; error: Error | null }>;
-        };
-      };
-    };
+    select(columns?: string): SupabaseQueryBuilder;
   };
+}
+
+export interface SupabaseQueryBuilder
+  extends PromiseLike<{ data: unknown[]; error: Error | null }> {
+  eq(column: string, value: unknown): SupabaseQueryBuilder;
+  ilike(column: string, value: string): SupabaseQueryBuilder;
+  order(column: string, opts?: { ascending?: boolean }): SupabaseQueryBuilder;
+  limit(n: number): SupabaseQueryBuilder;
+  maybeSingle(): PromiseLike<{ data: unknown; error: Error | null }>;
 }
 ```
 
@@ -333,25 +340,89 @@ create table agent_memories (
   label       text not null,
   content     text not null,
   metadata    jsonb,
+  peer_id     text not null,
   created_at  timestamptz not null default now()
 );
 
 create index agent_memories_label_idx on agent_memories (label);
 create index agent_memories_created_at_idx on agent_memories (created_at desc);
+create index agent_memories_peer_created_idx
+  on agent_memories (peer_id, created_at desc);
 ```
 
-You can have additional columns; the augment only reads and writes those four. The table name is configurable (`opts.table`).
+For an existing peer-derived table, use a staged migration rather than
+guessing ownership:
+
+```sql
+alter table agent_memories add column if not exists peer_id text;
+
+-- Backfill only from authoritative application/audit data. Quarantine rows
+-- whose owner cannot be proven; do not assign them to a convenient peer.
+create index concurrently if not exists agent_memories_peer_created_idx
+  on agent_memories (peer_id, created_at desc);
+
+-- Run only after the authoritative backfill and quarantine are complete.
+alter table agent_memories alter column peer_id set not null;
+```
+
+Rows that cannot be assigned to a verified peer must not be made visible
+through peer scope. Move deliberately global operator/system content to a
+separate table and provider configured with `scope: "shared"`.
+
+Repeat the peer boundary in database RLS as defense in depth. The precise
+session/JWT claim is deployment-specific, but the policy must compare it to
+the row rather than accept a caller-supplied query value:
+
+```sql
+alter table agent_memories enable row level security;
+alter table agent_memories force row level security;
+
+-- Replace auggy_runtime with the actual least-privilege runtime role.
+-- Audit and remove obsolete broad policies before enabling this role.
+create policy agent_memories_runtime_grant on agent_memories
+  as permissive for all to auggy_runtime
+  using (true)
+  with check (true);
+
+create policy agent_memories_peer_isolation on agent_memories
+  as restrictive for all to auggy_runtime
+  using (peer_id = current_setting('request.jwt.claim.peer_id', true))
+  with check (peer_id = current_setting('request.jwt.claim.peer_id', true));
+```
+
+PostgreSQL OR-combines permissive policies. A new permissive isolation policy
+does not neutralize an existing broad permissive policy. Inventory policies for
+the runtime role (including policies granted to `PUBLIC`), remove stale grants,
+and use a restrictive peer predicate alongside an explicit role-scoped grant
+as shown above.
+
+Supabase service-role credentials bypass RLS. If the runtime uses them, the
+augment's SQL predicate and post-validation are the primary boundary; restrict
+that credential to the server and monitor it accordingly. The table and
+peer-column names are configurable, and the configured identifier is strictly
+validated.
+
+Rollback is security-sensitive. An older binary ignores `peer_id` and can
+reopen cross-peer reads. Before rolling back, disable this provider or enforce
+an equivalent peer predicate in a database role/policy the old binary cannot
+bypass. Replace or disable service-role credentials before relying on RLS
+during rollback. Do not drop `peer_id`, its index, or the RLS policy.
 
 ### Implementation notes
 
 #### `search(query)`
 
 ```ts
-const search = async (query: string): Promise<MemoryEntry[]> => {
-  const { data, error } = await opts.client
+const scope = opts.scope; // authorization configuration is snapshotted
+const search = async (query: string, queryOpts?: MemoryQueryOpts): Promise<MemoryEntry[]> => {
+  const peerId = scope === "peer" ? requirePeerId(queryOpts) : undefined;
+  let request = opts.client
     .from(opts.table)
-    .select("label, content, metadata, created_at")
-    .ilike("content", `%${query}%`)
+    .select("label, content, metadata, created_at, peer_id")
+    .ilike("label", "episode:%");
+  if (scope === "peer") request = request.eq("peer_id", peerId);
+  const { data, error } = await request
+    .ilike("content", `%${escapedQuery}%`)
     .order("created_at", { ascending: false })
     .limit(limit);
 
@@ -363,13 +434,18 @@ const search = async (query: string): Promise<MemoryEntry[]> => {
 };
 ```
 
-The namespace post-filter (`r.label.startsWith(prefix)`) is **defense-in-depth**: even if the table holds rows from multiple namespaces (e.g. several providers sharing one table), this provider only returns rows it actually owns.
+Namespace and peer predicates are applied before `limit`; post-validation
+rejects malformed, wrong-namespace, or wrong-peer rows returned by a faulty
+client or policy.
 
-This was the P1 review finding ("Restrict Supabase memory search to the declared namespace"). The original implementation only filtered on `content` and would have leaked rows from other namespaces if a shared table was misconfigured. The post-filter makes the declared namespace ownership a hard guarantee, not a configuration assumption.
-
-There's no upper bound on how many results the post-filter throws away — if you have 100 rows matching the content query but only 5 of them are in this namespace, you get 5. The trade-off: the SQL query stays simple, the worst case is "fewer results than `limit`" (correct behavior), and you can compensate by raising `searchLimit` if you notice starvation.
+`searchLimit` is validated between 1 and 100. ILIKE wildcard characters in the
+query are escaped so a peer cannot broaden a restrictive search with `%`, `_`,
+or backslash.
 
 #### `read(label)`
+
+Exact reads are exposed only for `scope: "shared"`. Peer-scoped callers use
+`search(query, { peerId })`; a label alone is not ownership evidence.
 
 ```ts
 const read = async (label: string): Promise<MemoryEntry | null> => {
@@ -392,17 +468,21 @@ The early-return on prefix mismatch is the same defense as `search`. `lookupProv
 
 ```ts
 const write = opts.mutable
-  ? async (label: string, content: string): Promise<void> => {
+  ? async (label: string, content: string, writeOpts?: MemoryWriteOpts): Promise<void> => {
       if (!label.startsWith(prefix)) {
-        throw new Error(
-          `supabaseMemory: label "${label}" does not start with namespace prefix "${prefix}"`,
-        );
+        throw new Error("label is outside this namespace");
       }
-      const { error } = await opts.client.from(opts.table).insert({
+      const peerId = scope === "peer" ? requirePeerId(writeOpts) : undefined;
+      if (peerId && !label.startsWith(`${prefix}${peerId}:`)) {
+        throw new Error("label is not structurally bound to this peer");
+      }
+      const row = {
         label,
         content,
+        ...(peerId ? { peer_id: peerId } : {}),
         created_at: new Date().toISOString(),
-      });
+      };
+      const { error } = await opts.client.from(opts.table).insert(row);
       if (error) throw error;
     }
   : undefined;
@@ -410,7 +490,8 @@ const write = opts.mutable
 
 `write` is **insert-only**. Each call appends a new row, even if a row with that label already exists. This is intentional for episodic memory — you typically don't want to overwrite past episodes; you want a log of what happened. If a use case needs upsert, that's a different provider.
 
-The label-prefix check on write is the same defense-in-depth: we never want a write to land outside this provider's declared namespace.
+Peer-scoped writes require a resolved peer, require the label to be
+structurally peer-bound, and persist that peer in the configured peer column.
 
 ### Lifecycle
 
@@ -433,7 +514,9 @@ async (turnState) => {
   if (turnState.trigger.type !== "message") return [];   // only on message triggers
   const text = extractText((turnState.trigger.payload as InboundMessage).parts);
   if (!text) return [];
-  const entries = await aug.memory.search(text);
+  const entries = await aug.memory.search(text, {
+    peerId: turnState.trigger.peer?.id,
+  });
   return entries.map((entry) => ({
     source: aug.name,                       // "supabase-memory-episode"
     content: entry.content,
@@ -510,10 +593,16 @@ The model never invokes auto-save directly. The only visible effect is that `mem
 | `autoSave.extractionFrequency.creator` | frequency | `every-turn` | Extraction cadence for creator-trust peers. |
 | `autoSave.extractionFrequency.agent` | frequency | `every-N-turns` | Extraction cadence for agent-trust peers (conservative default; agent-to-agent volume may be high). |
 | `autoSave.extractionFrequency.public.recognized` | frequency | `every-turn` | Extraction cadence for recognized public peers. |
-| `autoSave.extractionFrequency.public.anonymous` | frequency | `session-end-only` | Extraction cadence for anonymous visitors. Keeps per-visitor extraction cost to one batched call at session end rather than every turn. |
+| `autoSave.extractionFrequency.public.anonymous` | frequency | `session-end-only` | Defers anonymous extraction. Buffered turns are extracted if the authenticated visitor promotion boundary is observed; otherwise they expire without extraction because the runtime has no reliable generic session-end signal. |
 | `autoSave.everyNTurns` | `number` | `3` | N for `every-N-turns` frequency. |
 | `autoSave.confidenceThreshold` | `number` | `0.5` | Facts with confidence below this threshold are written but flagged low-confidence. |
 | `autoSave.engine` | extraction engine object | none | Required for auto-save extraction. Omit to use explicit-only memory. |
+| `autoSave.bufferLimits.maxTurnsPerThread` | `number` | `32` | Maximum deferred transcripts retained for one thread. |
+| `autoSave.bufferLimits.maxBytesPerThread` | `number` | `262144` | Maximum encoded transcript bytes retained for one thread. |
+| `autoSave.bufferLimits.maxBytesPerPeer` | `number` | `1048576` | Maximum deferred bytes retained for one peer. |
+| `autoSave.bufferLimits.maxTotalBytes` | `number` | `16777216` | Process-wide deferred transcript byte ceiling for this augment. |
+| `autoSave.bufferLimits.maxPeers` | `number` | `1024` | Maximum peers with deferred state. |
+| `autoSave.bufferLimits.idleTtlMs` | `number` | `1800000` | Idle time before deferred transcripts and cadence state are discarded. |
 
 **Frequency values:** `every-turn` | `every-N-turns` | `session-end-only` | `never`.
 
@@ -524,11 +613,18 @@ The model never invokes auto-save directly. The only visible effect is that `mem
 | `creator` | `every-turn` | ~$0.20 (low volume; operator chatting with their own agent) |
 | `agent` | `every-N-turns` (N=3) | ~$0.07 (conservative; agent-to-agent caps may not be provisioned for every-turn extraction) |
 | `public.recognized` | `every-turn` | ~$0.20 (returning identified peer; relationship-relevant) |
-| `public.anonymous` | `session-end-only` | ~$0.05 (visitor traffic dominates cost; one batched call at session end) |
+| `public.anonymous` | `session-end-only` | Up to one batched call on authenticated promotion; an unpromoted idle buffer is discarded |
 
 Cost estimates are order-of-magnitude and apply only when an extraction engine
 is configured. They are based on a small extraction model × ~500 input tokens +
 ~200 output tokens per extraction call.
+
+The deferred buffer is process-local and availability-bounded, not durable
+conversation storage. Oldest transcripts are evicted to satisfy per-thread,
+per-peer, peer-count, and global byte limits. Nothing is buffered when no
+extraction engine is configured. A restart, idle expiry, or capacity eviction
+can therefore omit auto-extracted facts; explicit `memory_write` remains the
+durable path when loss is unacceptable.
 
 #### `[AGENT-DERIVED]` origin marker
 
@@ -576,6 +672,7 @@ const agent = defineAgent({
     }),
     supabaseMemory({
       namespace: "episode",
+      scope: "peer",
       client: supabase,
       table: "agent_memories",
       mutable: true,
@@ -587,7 +684,9 @@ const agent = defineAgent({
     webTransport({
       port: 8080,
       auth: { type: "bearer", token: process.env.AUTH_TOKEN! },
+      securityNamespace: "zip-production",
       rateLimitPerPeer: { maxPerMinute: 30 },
+      idempotency: { dbPath: "./data/web-idempotency.db" },
     }),
   ],
 }, anthropicModelClient);
@@ -699,8 +798,22 @@ Three permission tiers: **read-only** (default) → **writable** → **writable 
 
 ### Security model
 
-- **`fs.realpath()`** resolves symlinks before every boundary check — prevents symlink-escape attacks
-- **`path.relative()`-based boundary check** — prevents `../` traversal, prefix-collision escapes (mount `/var/data/work` doesn't accept `/var/data/workspace/...`), and cross-drive escapes on Windows, while still working correctly when the mount itself is a filesystem root (e.g. `/` on POSIX)
+- **Nearest-existing-ancestor canonicalization** catches escaping symlink
+  parents even when the requested leaf and intermediate descendants do not
+  exist. Dangling links fail closed.
+- **Mutation paths are descriptor-relative.** Each canonical mount root is
+  opened and pinned at boot. Parent directories are traversed one segment at a
+  time with `openat`/`mkdirat`; file leaves use `O_NOFOLLOW`; regular files must
+  have one link. Replacing a mount ancestor after boot cannot redirect a write,
+  create, or remove operation.
+- **`path.relative()`-based lexical boundary checks** prevent `../` traversal
+  and prefix-collision escapes (mount `/var/data/work` does not accept
+  `/var/data/workspace/...`) before descriptor-relative traversal.
+- **Read/list isolation is descriptor-relative.** Reads and directory listings
+  open the target from the pinned mount descriptor, inspect opened file
+  descriptors, reject symbolic and multi-link files, and cannot be redirected
+  by replacing a validated pathname. Search rejects traversal glob patterns and
+  canonicalizes every result before returning it.
 - **Binary detection** via file extension — returns an error message instead of garbage content for images, PDFs, compiled binaries
 - **Size truncation** — files over `maxReadSize` are truncated with a `[truncated at 256KB, total size: 20MB]` marker
 - **Per-mount permissions** — enforced on every operation before any file I/O
@@ -712,13 +825,20 @@ Three permission tiers: **read-only** (default) → **writable** → **writable 
   trusted instructions. Public turns do not receive it unless explicitly
   configured.
 
+Descriptor-relative mount isolation currently requires Bun on macOS or Linux.
+The filesystem augment fails boot on unsupported platforms instead of silently
+falling back to a race-prone path-based mutation boundary. Writable mount
+directories should still be confined with OS/container permissions; descriptor
+pinning prevents namespace redirection, not direct writes by another process
+that already has access to the same inode.
+
 ### Lifecycle
 
 | Hook | What it does |
 |------|-------------|
-| `onBoot` | Resolves and caches all mount root paths. Optionally loads a SKILL.md if `skillFile` is configured. |
+| `onBoot` | Creates missing writable mount roots with owner-only POSIX permissions, then resolves, opens, and pins every mount root for descriptor-relative operations. Missing read-only roots and unsupported operating systems fail boot. Optionally loads a SKILL.md if `skillFile` is configured. |
 | `context` | Produces bounded workspace policy/catalog blocks for allowed peers; scans metadata only. |
-| `onShutdown` | None. |
+| `onShutdown` | Closes pinned mount descriptors and clears cached mount state. |
 
 ### Important constraint
 
@@ -927,6 +1047,11 @@ GET /<endpoint listed in manifest>
 
 Use source names that explain where the content lives (`local`, `docs`, `handbook`, `api`) and endpoint descriptions that explain when the model should fetch each endpoint. This is the key DX rule: source selection and endpoint selection are driven by descriptions, not hidden routing logic.
 
+Remote sources that attach `token` or `tokenEnv` must use HTTPS. Plaintext HTTP
+is accepted only for loopback, or with the explicit
+`allowInsecureHttpWithCredentials: true` development override while
+`NODE_ENV=development`.
+
 ### Boot behavior
 
 Boot is graceful: if a source is unreachable at startup (HTTP) or the configured directory is missing (`file://`), the agent starts without that source's manifest and logs a warning. `knowledge_fetch` will return clear error messages until the source becomes reachable. This prevents a temporarily unavailable knowledge API from taking down a running agent.
@@ -975,7 +1100,7 @@ Every inbound Telegram update resolves to a `PeerIdentity` via four paths in pri
 
 | Priority | Check | Trust level | `peer.id` |
 |---|---|---|---|
-| 1 | `creatorUserIds` or `creatorUserIdsEnv` contains sender ID | `"creator"` | `tg_user_<userId>` |
+| 1 | `creatorUserIds` or `creatorUserIdsEnv` contains sender ID | `"creator"` | `creator` |
 | 2 | `admittedAgents` has matching `telegramUserId` | `"agent"` | Agent's logical `id` field |
 | 3 | `recognizedUserIds` contains sender ID | `"public"` / `"recognized"` | `tg_user_<userId>` |
 | 4 | None of the above | `"public"` / `"anonymous"` | `tg_anon_<threadId>` (ephemeral) or `tg_user_<userId>` (durable) |
@@ -995,30 +1120,42 @@ import { webFetch } from "auggy";
 
 const fetcher = webFetch({
   timeoutMs: 15000,
+  headersByOrigin: {
+    "https://api.example.com": {
+      authorization: `Bearer ${process.env.API_TOKEN}`,
+    },
+  },
 });
 ```
 
 A single-tool augment exposing `web_fetch(url, prompt)`. Fetches the URL, strips HTML (or passes JSON through), produces a prompt-aware summary. Built around `createHttpClient` from `src/http.ts`.
 
-### Security model — structural SSRF defense
+### Security model — resolved and pinned SSRF defense
 
-The augment instantiates its http client with `rejectUnsafeUrls: true`. Both the initial URL and every redirect hop are filtered at the http layer, *before* any network I/O, against:
+The augment forces its HTTP client to use `urlPolicy: "public"`; callers cannot turn this off through `WebFetchOptions`. Before the initial request and every redirect, the client resolves all A/AAAA answers, rejects the entire answer set if any address is not globally routable, and connects through a lookup pinned to the validated snapshot. The original hostname remains authoritative for the HTTP `Host` header, TLS SNI, and certificate verification.
 
 - Loopback (`localhost`, `127.0.0.0/8`, `::1`)
 - RFC 1918 private ranges (`10/8`, `172.16/12`, `192.168/16`)
+- Carrier-grade NAT/shared space (`100.64.0.0/10`)
 - Link-local (`169.254.0.0/16` — covers AWS EC2 metadata `169.254.169.254` and similar)
 - IPv6 link-local (`fe80::/10`) and unique-local (`fc00::/7`)
-- `0.0.0.0/8`
+- Unspecified, documentation, benchmarking, protocol-assignment, multicast, and reserved ranges
+- Unsafe IPv4-compatible, IPv4-mapped, and NAT64-embedded destinations
 - Cloud metadata FQDNs (`metadata`, `metadata.google.internal`)
 - Non-http(s) schemes (`file://`, `ftp://`, `gopher://`, …)
+- HTTPS-to-HTTP redirect downgrades
 
-Rejected URLs throw from the http client and are caught by the `web_fetch` tool, surfaced as a structured error JSON with the reason (`"blocked: loopback"`, `"blocked: RFC 1918 (10/8)"`, etc.). This is **structural** defense — the filter runs regardless of what the model or the peer says, and it covers the redirect path, not just the first hop.
+Rejected URLs throw from the HTTP client and are caught by the `web_fetch` tool, surfaced as structured error JSON. Redirects are manual and bounded. On a cross-origin redirect, all custom headers are removed unless the client operator explicitly allowlists a header for that exact destination origin; stripped headers are never reconstructed later in the chain.
 
-**Not covered by this layer:**
-- DNS rebinding — a public-looking hostname that resolves to a private IP at fetch time. The filter runs against hostnames/IP literals, not the resolved address.
-- Allow/deny lists — operators who need a private endpoint reachable (e.g. internal APIs) should build a separate augment with an explicit allowlist, not disable this filter.
+Because the model chooses each URL, global `defaultHeaders` are rejected.
+Credential-bearing headers must be configured under `headersByOrigin` with an
+exact canonical origin such as `https://api.example.com`. They are absent from
+every other initial destination and are stripped if that origin redirects
+elsewhere.
 
-The SSRF filter lives in `src/http.ts` as the exported helper `rejectUnsafeUrl(url)` so other augments can adopt it with `createHttpClient({ rejectUnsafeUrls: true })`.
+Operator-configured clients can select `urlPolicy: "operator-configured"` when an integration intentionally targets a private or loopback service. That policy is for fixed, trusted configuration—not model-, peer-, or request-supplied URLs. Passing a custom client to `webFetch` explicitly transfers enforcement of this network boundary to the operator.
+
+The URL and address helpers live in `src/http.ts`; augment authors handling untrusted URLs should use `createHttpClient({ urlPolicy: "public" })`.
 
 ### Bundled skill
 
@@ -1159,7 +1296,7 @@ The runtime soft cap is **not the hard limit on agent spend**. The hard limit is
 - OpenAI: <https://platform.openai.com/settings/organization/limits>
 - OpenRouter: <https://openrouter.ai/settings/credits>
 
-**For unattended cloud-deployed agents, configuring a provider-side spend cap is required, not optional.** The runtime soft cap is the friendly first line of defense; the provider hard cap is the backstop that fires regardless of any Auggy-level configuration error or runtime bug. The engine adapters surface a clear operator-actionable message when the provider cap is reached (see the provider adapter packages such as `packages/anthropic`).
+**For unattended cloud-deployed agents, configuring a provider-side spend cap is required, not optional.** The runtime soft cap is the friendly first line of defense; the provider hard cap is the backstop that fires regardless of any Auggy-level configuration error or runtime bug. The engine adapters surface a clear operator-actionable message when the provider cap is reached (see the provider adapter packages such as `packages/anthropic`). Remote provider messages and cause chains are not retained in exposed errors because a compromised upstream can echo credentials; adapters expose only stable provider/model context and an allowlisted HTTP status.
 
 Pre-call cost estimation (a third architectural layer that gates the engine
 call before any spend) is explicitly deferred — provider caps are exact where
@@ -1330,6 +1467,13 @@ config:
       examples:
         - "What's the state of test-time compute scaling?"
         - "Find recent papers on agent benchmarks"
+  outbound:
+    allowedTrustLevels: [creator, agent] # default; add public explicitly
+    # Required with public: exact receivers verified to enforce signed origin.
+    # publicDelegationPeers:
+    #   researcher:
+    #     url: https://researcher.example.org
+    #     participantId: <peer-uuid>
 ```
 
 ### What it is
@@ -1340,11 +1484,12 @@ shape, and to send outbound traffic to configured peers. It is not compatible
 with current A2A 1.0 clients or cards. Peer-to-peer traffic uses mutual bearer
 auth with no central service and binds a separate port from `webTransport`.
 
-`link` remains a legacy preview in the pre-1.0 line. Every configured inbound
-peer that presents a valid bearer is admitted as `trustLevel: "agent"`; there
-is no authenticated-but-reduced peer tier yet. Do not use it for public,
-customer, semi-trusted collaborator, or production A2A interoperability traffic
-until the roadmap acceptance criteria are met.
+`link` remains a legacy preview in the pre-1.0 line. A configured inbound peer
+that presents a valid bearer is the authenticated forwarding hop. Auggy-issued
+outbound calls add a short-lived HMAC origin assertion bound to the receiver,
+content, and idempotency key. The receiver caps the asserted origin at the
+forwarding hop's authority. Unsigned legacy traffic is downgraded to public
+anonymous rather than receiving agent authority.
 
 ### When to use it
 
@@ -1360,9 +1505,32 @@ interoperability.
 - **`link_send(to, text)`** — send a text message to a configured peer. Returns the peer's synchronous reply text (when available) or a task id (when the peer chose async handling).
 - **`link_list()`** — enumerate configured peers as `{ peers: [{ name, purpose?, examples? }] }`. The LLM uses this to discover *who* it can reach and *what each peer is good for*. `purpose` and `examples` come from `augments/link/augment.yaml`; both are optional. Beware: bad examples mislead the model more than they help — keep them tight or omit.
 
+Both tools default to `creator` and `agent` turns. To allow a public turn to
+delegate while preserving public authority downstream:
+
+```yaml
+outbound:
+  allowedTrustLevels: [creator, agent, public]
+  publicDelegationPeers:
+    researcher:
+      url: https://researcher.example.org
+      participantId: <peer-uuid>
+```
+
+The policy is enforced when tools are exposed and again immediately before
+network access. Public delegation additionally requires an exact peer-name,
+HTTPS endpoint, and participant-id binding in `publicDelegationPeers`. Each
+binding is the operator's attestation that that exact receiving agent has been
+upgraded and enforces signed delegated-origin provenance; it is never learned
+from a peer card or registry. If a registry reassigns a name or endpoint, the
+peer disappears from the public roster and sends fail closed. Public turns see
+only matching attested peers in `link_list` and the preamble. Missing execution
+context fails closed.
+
 ### Context block — peer roster
 
-The augment surfaces a minimal preamble block on every turn listing only peer **names**:
+For an allowed turn, the augment surfaces a minimal preamble block listing only
+peer **names**:
 
 ```
 Peers reachable via link_send: researcher, analyst. Call link_list to see what each peer is good for.
@@ -1374,7 +1542,7 @@ Names only — not purposes or examples — to keep preamble cost ~10 tokens per
 
 | Field | Required | Purpose |
 |---|---|---|
-| `url` | yes | Peer's link endpoint (`https://...`). For local-only dev, set `LINK_ALLOW_PLAINTEXT=1` to allow `http://localhost`. |
+| `url` | yes | Peer's link endpoint (`https://...`). For local-only dev, set both `NODE_ENV=development` and `LINK_ALLOW_PLAINTEXT=1` to allow plaintext HTTP. |
 | `bearer` | yes | Bearer this agent sends on outbound to the peer. |
 | `participantId` | yes | Peer's UUID. Must match the peer's self-declared id for AddressBook lookup symmetry. |
 | `inboundBearer` | yes | Bearer this agent accepts on inbound *from* the peer. Independent of `bearer`; rotate separately. |
@@ -1405,6 +1573,10 @@ config:
     type: registry
     url: https://lorf-context.up.railway.app/peers.json
     cacheSeconds: 60     # default 60; lower for snappier propagation
+    pins:
+      frontier:
+        url: https://frontier.example.org:8081
+        participantId: 54bb9528-05c6-4e2e-a419-62e6e003156c
   # peers: {...}         # optional — fallback if registry is unreachable
 ```
 
@@ -1425,7 +1597,11 @@ The registry response shape (the **stable wire contract**):
 
 Required per entry: `name`, `url`, `participantId`. Optional: `agentCardUrl` (reserved for future capability discovery; not used at v1).
 
-**Discovery separate from auth.** The registry holds public identity only. Bearers live in environment variables on each Auggy, keyed by peer name:
+**Discovery separate from authority.** The registry controls whether an
+operator-pinned peer is currently present; it cannot introduce a new peer,
+change an endpoint, or reassign a participant. Every returned entry must
+exactly match `peerSource.pins` or it is skipped. Bearers live in environment
+variables on each Auggy, keyed by peer name:
 
 | Env var | What it is |
 |---|---|
@@ -1437,14 +1613,15 @@ Names are uppercased; non-alphanumeric characters become underscores. Peer `data
 
 **Behavior:**
 - On boot, the augment fetches `peerSource.url`. On success, peers populate the AddressBook + BearerAuthProvider. On failure, the augment falls back to the inline `peers` block if present, or runs inbound-only if not.
-- A periodic refresh (TTL = `cacheSeconds`) propagates registry edits to running agents without a restart. Refresh failures preserve the last-good peer state — degradation, not outage.
+- A periodic refresh (TTL = `cacheSeconds`) propagates presence/removal edits to running agents without a restart. Endpoint or identity changes require an operator config update and restart. Refresh failures preserve the last-good peer state — degradation, not outage.
 - Peers absent from a successful refresh are **forgotten**: outbound to that name returns "unknown peer"; inbound from that participant is 401'd. In-flight conversations complete on the bearer they started with — there is no mid-stream eviction.
 - **Per-peer error handling:** if a single entry in the registry is invalid (malformed, insecure URL, missing env-var bearer), the augment logs a warning and skips that entry. Other entries — including removals of revoked peers — still apply. This prevents an unrelated misconfiguration from blocking trust revocations.
 
 **Security defaults:**
-- `peerSource.url` MUST be `https://`. Plaintext `http://` is rejected at boot. To override for localhost dev, set `LINK_ALLOW_PLAINTEXT=1` (the same env knob the link library uses for plain-HTTP binding).
-- Registry-supplied peer URLs (and `agentCardUrl`) MUST be `https://`. Plaintext entries are skipped — they don't poison the rest of the directory but they're never used for outbound traffic. Same `LINK_ALLOW_PLAINTEXT=1` override applies.
-- Why: the registry is a remote trust boundary. Without HTTPS enforcement, a compromised or misconfigured registry could repoint a peer name to an attacker-controlled host while the agent still sends the real `LINK_BEARER_<NAME>`. HTTPS is mandatory for any production deployment.
+- `peerSource.url` MUST be `https://`. Plaintext `http://` is rejected at boot. The explicit development override requires both `NODE_ENV=development` and `LINK_ALLOW_PLAINTEXT=1`.
+- Inline and registry-supplied peer URLs (and `agentCardUrl`) MUST be `https://` and registry entries must exactly match the operator pin. Plaintext or mismatched entries are skipped—they don't poison the rest of the directory and never receive a bearer. The same two-variable development override applies only to the scheme check; it does not disable pin matching.
+- Registry and outbound peer requests do not follow HTTP redirects. Configure the final exact endpoint; even a same-origin redirect fails closed so bearer credentials and message bodies cannot be replayed to an unreviewed destination.
+- Why: the registry is a remote trust boundary. HTTPS authenticates a host but does not authorize it to receive a name-scoped bearer. Exact endpoint and participant pins prevent a compromised or misconfigured registry from redirecting credentials.
 
 **Reliability defaults:**
 - Registry fetches have a **10-second timeout** (abortable). A hung registry won't stall agent startup indefinitely.
@@ -1465,18 +1642,42 @@ current A2A Agent Card. Anyone who can reach the URL can read it — keep
 descriptions and `capabilities[]` appropriately vague if you're cross-org.
 `capabilities` is a free-form `string[]`: semantic, not structural.
 
-### Trust model — important caveat
+### Trust model and rollout
 
-All admitted peers are minted as `trust: "agent"` today — there is no per-peer
-trust override. If you need to admit a peer at *reduced* privilege, the only
-downgrade today is `public` (the visitor tier), which has the wrong semantic
-for "authenticated-but-restricted peer." This is a known authorization gap and
-is one reason the roadmap calls for a more granular trust model.
+The bearer authenticates the immediate configured agent; it never proves that
+the originating caller was an agent. Auggy therefore signs origin metadata on
+each outbound delegation and verifies it before history retrieval or model
+execution. Forwarded identities are domain-separated by the receiving Link
+instance, audience, authority class, authenticated hop, original subject, and
+a signed digest of the complete forwarding path; their thread IDs include the
+receiving instance. Different users relayed by one agent—or the same user
+arriving through separate paths or Link instances—cannot share a thread or
+peer-derived memory identity.
+
+Creator authority is capped to agent when it crosses an agent bearer. Public
+anonymous/recognized state remains public. A valid origin assertion is accepted
+for at most five minutes and eight hops. Changed audience, body, idempotency
+key, origin, or signature is rejected before the kernel runs. Reserved wire
+metadata is consumed at the transport boundary and is not shown to the model.
+
+Old sender to new receiver is downgraded to public anonymous. New sender to old
+receiver remains wire-compatible for creator/agent callers, but public
+delegation is denied unless the operator explicitly attests that the receiver
+enforces provenance in `publicDelegationPeers`. Upgrade receivers, verify their
+enforcement, and only then add that attestation. Delegated traffic receives new
+thread IDs; do not alias old shared history into the new identities.
+
+Existing `peerSource` deployments must add reviewed `pins` for every permitted
+registry peer before upgrading. Copy neither values nor endpoints blindly from
+the registry being constrained. Public-delegation entries must bind both the
+same endpoint and participant id. The parser rejects missing pins and older
+participant-id-only public bindings. Endpoint or identity rotation is an
+operator configuration change followed by restart, not a registry-only edit.
 
 Operationally, treat each inbound peer bearer like an agent-privilege
 credential. Rotate inbound and outbound bearers independently, keep them out of
-registries and public metadata documents, and expose the link port only to peers that
-should receive the current `agent` capability surface.
+registries and public metadata documents, and expose the link port only to
+configured peers.
 
 ### Forward-compat with the coordinator
 

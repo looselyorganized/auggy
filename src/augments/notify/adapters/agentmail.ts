@@ -1,5 +1,10 @@
 import { createAgentMailClient } from "../../../agentmail-client";
 import type { AgentMailClient } from "../../../agentmail-client";
+import {
+  isAmbiguousMutationStatus,
+  isOutcomeUnknownError,
+  OutcomeUnknownError,
+} from "../../../outcome-unknown";
 import type {
   NotifyAdapter,
   NotifyDestination,
@@ -10,20 +15,33 @@ import type {
 
 export interface CreateAgentMailAdapterOptions {
   /** Test-only client override; production constructs from destination's apiKey. */
-  clientFactory?: (apiKey: string, baseUrl?: string) => AgentMailClient;
+  clientFactory?: (
+    apiKey: string,
+    baseUrl?: string,
+    allowInsecureHttpWithCredentials?: boolean,
+  ) => AgentMailClient;
 }
 
 export function createAgentMailAdapter(opts: CreateAgentMailAdapterOptions = {}): NotifyAdapter {
   const factory =
     opts.clientFactory ??
-    ((apiKey, baseUrl) => createAgentMailClient({ apiKey, apiBaseUrl: baseUrl }));
+    ((apiKey, baseUrl, allowInsecureHttpWithCredentials) =>
+      createAgentMailClient({
+        apiKey,
+        apiBaseUrl: baseUrl,
+        allowInsecureHttpWithCredentials,
+      }));
   const cache = new Map<string, AgentMailClient>();
 
-  function getClient(apiKey: string, baseUrl?: string): AgentMailClient {
-    const cacheKey = `${apiKey}:${baseUrl ?? ""}`;
+  function getClient(
+    apiKey: string,
+    baseUrl?: string,
+    allowInsecureHttpWithCredentials?: boolean,
+  ): AgentMailClient {
+    const cacheKey = `${apiKey}:${baseUrl ?? ""}:${allowInsecureHttpWithCredentials === true}`;
     let client = cache.get(cacheKey);
     if (!client) {
-      client = factory(apiKey, baseUrl);
+      client = factory(apiKey, baseUrl, allowInsecureHttpWithCredentials);
       cache.set(cacheKey, client);
     }
     return client;
@@ -40,6 +58,7 @@ export function createAgentMailAdapter(opts: CreateAgentMailAdapterOptions = {})
     async deliver(
       destination: NotifyDestination,
       payload: NotifyPayload,
+      options?: { signal?: AbortSignal },
     ): Promise<NotifyDeliveryResult> {
       if (destination.transport !== "agentmail") {
         return {
@@ -48,7 +67,7 @@ export function createAgentMailAdapter(opts: CreateAgentMailAdapterOptions = {})
         };
       }
       const dest = destination as AgentMailNotifyDestination;
-      const client = getClient(dest.apiKey, dest.apiBaseUrl);
+      const client = getClient(dest.apiKey, dest.apiBaseUrl, dest.allowInsecureHttpWithCredentials);
       const subject = `${dest.subjectPrefix ?? ""}${payload.summary}`;
       try {
         const result = await client.send({
@@ -57,13 +76,26 @@ export function createAgentMailAdapter(opts: CreateAgentMailAdapterOptions = {})
           subject,
           text: formatBody(payload),
           labels: dest.labels,
+          signal: options?.signal,
         });
         if (result.status === "sent") {
           return { status: "sent" };
         }
-        return { status: "failed", detail: result.detail };
+        return {
+          status: "failed",
+          detail:
+            result.httpStatus === undefined || isAmbiguousMutationStatus(result.httpStatus)
+              ? "AgentMail delivery ended without a trustworthy response"
+              : `AgentMail returned HTTP ${result.httpStatus}`,
+          ...(result.httpStatus === undefined || isAmbiguousMutationStatus(result.httpStatus)
+            ? { outcomeUnknown: true }
+            : {}),
+        };
       } catch (err) {
-        return { status: "failed", detail: `agentmail error: ${(err as Error).message}` };
+        if (options?.signal?.aborted || isOutcomeUnknownError(err)) throw err;
+        throw new OutcomeUnknownError(
+          "AgentMail delivery ended without a trustworthy response after dispatch",
+        );
       }
     },
   };

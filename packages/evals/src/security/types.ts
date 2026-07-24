@@ -114,6 +114,9 @@ export interface TrialResult {
   suite: string;
   suite_version: number;
   agent_commit?: string;
+  evaluated_source_sha?: string;
+  evaluated_config_sha256?: string;
+  evaluation_scope?: "trusted-harness-candidate-config";
   model_id: string;
   case_id: string;
   category: string;
@@ -149,6 +152,9 @@ export interface RunSummary {
   duration_ms: number;
   model_id: string;
   agent_commit?: string;
+  evaluated_source_sha?: string;
+  evaluated_config_sha256?: string;
+  evaluation_scope?: "trusted-harness-candidate-config";
   total_cases: number;
   total_trials: number;
   cases_passing_pass_k: number;

@@ -76,18 +76,46 @@ These stay out of the v1 first-run console:
 The CLI remains the control plane for create, configure, doctor, run, deploy,
 logs, and augment installation.
 
-## Auth
+## Auth and browser boundary
 
-On non-loopback hosts, `/console` uses HTTP Basic auth with a blank username and
-the agent bearer as the password (`AUGGY_WEB_TOKEN` in the agent's `.env`). The
-same bearer is accepted by `/agent/run` for creator-authorized chat, but the
-transport may also allow anonymous, visitor-token, or external-auth traffic
-depending on configuration. Loopback console requests skip the bearer check
-because shell access to the host already grants access to the local `.env`.
+`/console` always requires authentication, including on loopback. The first-party
+login page accepts the agent bearer (`AUGGY_WEB_TOKEN` in the agent's `.env`) and
+sets an HTTP-only session cookie. HTTP Basic with a blank username and the same
+bearer as the password remains available for operator automation. The bearer is
+also accepted by `/agent/run` for creator-authorized chat, but that route may
+separately allow anonymous, visitor-token, or external-auth traffic.
+
+The console validates the exact Host and Origin before authentication. Local
+origins for `localhost`, `127.0.0.1`, and `::1` on the configured port are
+allowed automatically. Public deployments must configure exact
+`consoleSecurity.allowedOrigins`; a valid `AUGGY_PUBLIC_URL` contributes its
+origin automatically. Forwarding headers are accepted only from an immediate
+peer in `trustedProxies`; deployment-platform environment variables never grant
+proxy trust.
 
 State-mutating endpoints additionally require a CSRF token bound to the
 specific action. Chat uses a dedicated `console-chat` CSRF token because the
 server attaches the bearer when proxying to `/agent/run`.
+
+All console responses deny framing with CSP `frame-ancestors 'none'` and
+`X-Frame-Options: DENY`. Logout is POST-only and requires authentication,
+same-origin validation, and a dedicated CSRF token.
+
+The console refuses to follow symlinks below the agent directory when managing
+`agent.yaml`, identity, `.env`, or installed skills. Replace intentionally
+symlinked managed files with regular in-workspace files, or manage them outside
+the console. On macOS and Linux, the first managed-file operation pins the
+canonical agent directory and all subsequent traversal is descriptor-relative;
+replacing an ancestor cannot redirect reads or mutations. Managed-file
+operations fail closed on unsupported operating systems. Run the agent as a
+dedicated, least-privileged user and do not grant hostile processes direct write
+access to its agent directory.
+
+On Windows, the authenticated console, chat, and runtime views still start, but
+identity, credential, skill, and other agent-file management remains
+unavailable because the descriptor-relative POSIX boundary cannot be provided.
+Use ordinary project tooling for those files rather than weakening the console
+boundary.
 
 Chat Markdown rendering does not enable raw HTML, does not render remote images,
 and blocks unsafe link protocols such as `javascript:`, `data:`, `vbscript:`,
@@ -126,6 +154,12 @@ rejected during deploy preflight and again by the runtime resolver.
 - Completed conversations, unread state, titles, and model history survive a
   process restart. A run that was active during a crash or restart is recovered
   as interrupted rather than left permanently streaming.
+- Persisted thread ownership includes the resolved organization when external
+  authentication supplies one. Schema versions 2 and 3 migrate atomically.
+  Legacy bound rows have no organization and remain accessible only to the
+  same no-organization identity; they are never treated as organization
+  wildcards. An organization-bearing identity must begin a new thread instead
+  of silently adopting a legacy row.
 - Keep the Railway service at **exactly one replica**. The SQLite-backed console
   has one process/one writer semantics; mounting the same database from multiple
   replicas is unsupported and can produce contention or inconsistent runtime

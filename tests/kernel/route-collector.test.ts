@@ -312,6 +312,23 @@ describe("collectAugmentRoutes", () => {
     expect(result.errors).toHaveLength(1);
   });
 
+  test("rejects fail-open augment route body limits", () => {
+    const invalid = [Number.NaN, Number.POSITIVE_INFINITY, 0, -1, 1.5];
+    const result = collectAugmentRoutes(
+      invalid.map((maxBodyBytes, index) =>
+        aug(`invalid-${index}`, [
+          {
+            ...route("POST", `/invalid-${index}`),
+            maxBodyBytes,
+          },
+        ]),
+      ),
+    );
+    expect(result.routes).toHaveLength(0);
+    expect(result.errors).toHaveLength(invalid.length);
+    for (const error of result.errors) expect(error).toContain("maxBodyBytes");
+  });
+
   test("collects multiple errors, does not stop at first", () => {
     const result = collectAugmentRoutes([
       aug("a", [route("GET", "/agent/run")]),

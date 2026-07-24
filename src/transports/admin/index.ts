@@ -44,15 +44,22 @@ import {
   revealCredential,
   setCredential,
 } from "./admin-credentials";
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { readFileSync } from "node:fs";
+import { isIP } from "node:net";
 import { parse as parseYaml } from "yaml";
+import { readManagedText } from "./admin-managed-files";
 import type {
   ConsoleChatModelSnapshot,
   ConsoleChatStore,
   ConsoleChatThread,
   ConsoleChatThreadSummary,
 } from "./console-chat-store";
+import {
+  cloneRequestWithBoundedBody,
+  InvalidRequestBodyError,
+  readRequestBodyText,
+  RequestBodyTooLargeError,
+} from "../request-body";
 
 const AUGGY_VERSION = readPackageVersion();
 
@@ -81,10 +88,10 @@ interface AgentMeta {
 
 function readAgentMeta(agentDir: string | undefined): AgentMeta | null {
   if (!agentDir) return null;
-  const path = join(agentDir, "agent.yaml");
-  if (!existsSync(path)) return null;
+  const file = readManagedText(agentDir, "agent.yaml", 1024 * 1024);
+  if ("error" in file || "missing" in file) return null;
   try {
-    const raw = parseYaml(readFileSync(path, "utf-8"));
+    const raw = parseYaml(file.content);
     if (raw === null || typeof raw !== "object") return null;
     const r = raw as Record<string, unknown>;
     return {
@@ -244,6 +251,12 @@ export interface AdminRouteContext {
   bearer: string;
   agentDir: string | undefined;
   callerIp: string;
+  /** Effective scheme after the transport validates the immediate proxy and forwarding chain. */
+  secureRequest?: boolean;
+  /** Exact effective origin after Host, scheme, and proxy validation. */
+  requestOrigin?: string;
+  /** True only for a direct loopback socket with no forwarding boundary. */
+  allowInsecureLoopback?: boolean;
   /** True when the transport has validated that X-Forwarded-Proto came from a trusted proxy. */
   trustForwardedProto?: boolean;
   /** S8 — built once at boot by `buildAdminActionRegistry`. */
@@ -300,6 +313,7 @@ const CRED_DELETE_ACTION = "cred-delete";
 const CRED_RENAME_ACTION = "cred-rename";
 
 const CONSOLE_CHAT_ACTION = "console-chat";
+const CONSOLE_LOGOUT_ACTION = "console-logout";
 const CONSOLE_CHAT_THREAD_ROUTE_RE = /^\/console\/api\/chat\/threads\/([^/]+)$/;
 const CONSOLE_CHAT_THREAD_ACTION_ROUTE_RE =
   /^\/console\/api\/chat\/threads\/([^/]+)\/(rename|read-state|delete)$/;
@@ -325,30 +339,20 @@ const EXPIRED_CSRF_HTML = `<!doctype html>
 </html>`;
 
 export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Promise<Response> {
+  return withConsoleSecurityHeaders(await dispatchAdminRoute(req, ctx));
+}
+
+async function dispatchAdminRoute(req: Request, ctx: AdminRouteContext): Promise<Response> {
   const url = new URL(req.url);
   const agentCard = ctx.kernel.getAgentCard();
   const agentName = agentCard.provider.name || "auggy";
 
   const secureRequest = isSecureConsoleRequest(req, ctx);
   if (url.pathname === "/console/login") {
-    if (!isLoopbackIp(ctx.callerIp) && !secureRequest) return consoleHttpsRequiredResponse(url);
+    if (!isInsecureLoopbackAllowed(ctx) && !secureRequest) return consoleHttpsRequiredResponse(url);
     if (req.method === "GET") return loginPageResponse(undefined, url.search);
     if (req.method === "POST") return handleLoginPost(req, ctx, secureRequest);
     return new Response(null, { status: 405, headers: { allow: "GET, POST" } });
-  }
-  if (url.pathname === "/console/logout") {
-    if (!isLoopbackIp(ctx.callerIp) && !secureRequest) return consoleHttpsRequiredResponse(url);
-    if (req.method !== "GET" && req.method !== "POST") {
-      return new Response(null, { status: 405, headers: { allow: "GET, POST" } });
-    }
-    return new Response(null, {
-      status: 303,
-      headers: {
-        location: "/console/login",
-        "set-cookie": createConsoleSessionClearCookie(secureRequest),
-        "cache-control": "no-store",
-      },
-    });
   }
 
   // Auth + HTTPS gate
@@ -357,10 +361,25 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
     bearer: ctx.bearer,
     agentName,
     callerIp: ctx.callerIp,
+    secureRequest: ctx.secureRequest,
+    allowInsecureLoopback: ctx.allowInsecureLoopback,
     trustForwardedProto: ctx.trustForwardedProto,
   });
   if (auth.kind === "https-required") return auth.response;
   if (auth.kind === "unauthorized") return auth.response;
+
+  if (url.pathname === "/console/logout") {
+    if (req.method !== "POST") {
+      return new Response(null, { status: 405, headers: { allow: "POST" } });
+    }
+    return handleLogoutPost(req, ctx, agentName, secureRequest);
+  }
+
+  if (req.method === "POST") {
+    const bounded = await boundAuthenticatedAdminRequest(req, url.pathname);
+    if (bounded instanceof Response) return bounded;
+    req = bounded;
+  }
 
   // POST /console/action/<id>[/row/<rowKey>] — dispatch action handlers
   const actionMatch = url.pathname.match(ACTION_ROUTE_RE);
@@ -509,6 +528,107 @@ export async function handleAdminRoute(req: Request, ctx: AdminRouteContext): Pr
   return new Response(null, { status: 404 });
 }
 
+async function handleLogoutPost(
+  req: Request,
+  ctx: AdminRouteContext,
+  agentName: string,
+  secureRequest: boolean,
+): Promise<Response> {
+  const origin = req.headers.get("origin");
+  const expectedOrigin = ctx.requestOrigin ?? new URL(req.url).origin;
+  if (!origin || origin !== expectedOrigin) {
+    return jsonResponse({ error: "same-origin request required" }, 403);
+  }
+
+  const contentLength = req.headers.get("content-length");
+  if (contentLength && (!/^\d+$/.test(contentLength) || Number(contentLength) > 4096)) {
+    return jsonResponse({ error: "invalid request body" }, 400);
+  }
+
+  let csrf: string | null = null;
+  try {
+    const body = await readRequestBodyText(req, 4096);
+    const form = new URLSearchParams(body);
+    const values = form.getAll("csrf");
+    if (values.length !== 1 || Array.from(form.keys()).some((key) => key !== "csrf")) {
+      return jsonResponse({ error: "invalid request body" }, 400);
+    }
+    csrf = values[0] ?? null;
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return jsonResponse({ error: "payload too large" }, 413);
+    }
+    return jsonResponse({ error: "invalid request body" }, 400);
+  }
+  if (!csrf) return jsonResponse({ error: "missing csrf" }, 400);
+
+  const result = await validateCsrfToken({
+    token: csrf,
+    bearer: ctx.bearer,
+    agentName,
+    actionId: CONSOLE_LOGOUT_ACTION,
+  });
+  if (!result.valid) {
+    return jsonResponse(
+      {
+        error:
+          result.reason === "expired" ? "Session expired — reload the page." : "CSRF check failed.",
+      },
+      result.reason === "expired" ? 419 : 403,
+    );
+  }
+
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location: "/console/login",
+      "set-cookie": createConsoleSessionClearCookie(secureRequest),
+      "cache-control": "no-store",
+    },
+  });
+}
+
+function adminBodyLimit(pathname: string): number {
+  if (pathname === "/console/logout") return 4 * 1024;
+  if (pathname.startsWith("/console/action/")) return 64 * 1024;
+  if (pathname === "/console/api/chat") return 17 * 1024 * 1024;
+  if (pathname.startsWith("/console/api/credentials/")) return 1100 * 1024;
+  if (pathname === "/console/api/identity" || pathname.startsWith("/console/api/skills/")) {
+    return 300 * 1024;
+  }
+  return 64 * 1024;
+}
+
+async function boundAuthenticatedAdminRequest(
+  request: Request,
+  pathname: string,
+): Promise<Request | Response> {
+  try {
+    return await cloneRequestWithBoundedBody(request, adminBodyLimit(pathname));
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return jsonResponse({ error: "payload too large" }, 413);
+    }
+    if (!(error instanceof InvalidRequestBodyError)) {
+      console.warn("[console] request body read failed");
+    }
+    return jsonResponse({ error: "invalid request body" }, 400);
+  }
+}
+
+function withConsoleSecurityHeaders(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("content-security-policy", "frame-ancestors 'none'");
+  headers.set("x-frame-options", "DENY");
+  headers.set("referrer-policy", "no-referrer");
+  headers.set("x-content-type-options", "nosniff");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 async function handleLoginPost(
   req: Request,
   ctx: AdminRouteContext,
@@ -528,8 +648,14 @@ async function handleLoginPost(
 
   let form: URLSearchParams;
   try {
-    form = new URLSearchParams(await req.text());
-  } catch {
+    form = new URLSearchParams(await readRequestBodyText(req, 4096));
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return new Response("Request body too large.", {
+        status: 413,
+        headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
+      });
+    }
     return loginPageResponse("Invalid console password.", new URL(req.url).search);
   }
 
@@ -676,6 +802,13 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
     actionId: CONSOLE_CHAT_ACTION,
   });
   csrfTokens.push({ actionId: CONSOLE_CHAT_ACTION, rowKey: undefined, token: chatToken });
+
+  const logoutToken = await generateCsrfToken({
+    bearer: ctx.bearer,
+    agentName,
+    actionId: CONSOLE_LOGOUT_ACTION,
+  });
+  csrfTokens.push({ actionId: CONSOLE_LOGOUT_ACTION, rowKey: undefined, token: logoutToken });
 
   return new Response(
     JSON.stringify({
@@ -1803,6 +1936,7 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 function isSecureConsoleRequest(req: Request, ctx: AdminRouteContext): boolean {
+  if (ctx.secureRequest !== undefined) return ctx.secureRequest;
   const url = new URL(req.url);
   const forwardedProto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
   return (
@@ -1831,7 +1965,13 @@ function consoleHttpsRequiredResponse(url: URL): Response {
 }
 
 function isLoopbackIp(ip: string): boolean {
-  return ip === "::1" || ip.startsWith("127.") || ip.startsWith("::ffff:127.");
+  const mapped = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i)?.[1] ?? ip;
+  if (isIP(mapped) === 6) return mapped === "::1";
+  return isIP(mapped) === 4 && mapped.split(".")[0] === "127";
+}
+
+function isInsecureLoopbackAllowed(ctx: AdminRouteContext): boolean {
+  return ctx.allowInsecureLoopback ?? isLoopbackIp(ctx.callerIp);
 }
 
 function safeConsoleNextPath(next: string | null): string {

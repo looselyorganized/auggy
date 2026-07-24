@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { checkAdminAuth } from "@/transports/admin/admin-auth";
+import { checkAdminAuth, createConsoleSessionSetCookie } from "@/transports/admin/admin-auth";
 
 function basicHeader(username: string, password: string): string {
   return `Basic ${Buffer.from(`${username}:${password}`).toString("base64")}`;
@@ -39,20 +39,35 @@ describe("admin-auth — HTTPS gate", () => {
     });
     expect(result.kind).toBe("ok");
   });
+
+  it("does not grant the HTTP exemption to a forwarded loopback identity", () => {
+    const result = checkAdminAuth({
+      req: makeReq(
+        { authorization: basicHeader("", "test-token") },
+        "http://agent.internal/console",
+      ),
+      bearer: "test-token",
+      agentName: "zip",
+      callerIp: "127.0.0.1",
+      secureRequest: false,
+      allowInsecureLoopback: false,
+    });
+    expect(result.kind).toBe("https-required");
+  });
 });
 
-describe("admin-auth — loopback bypass", () => {
-  it("loopback caller is allowed without any Authorization header", () => {
+describe("admin-auth — loopback is not an authentication boundary", () => {
+  it("rejects an unauthenticated IPv4 loopback caller", () => {
     const result = checkAdminAuth({
       req: makeReq({}, "http://127.0.0.1:8080/console"),
       bearer: "test-token",
       agentName: "zip",
       callerIp: "127.0.0.1",
     });
-    expect(result.kind).toBe("ok");
+    expect(result.kind).toBe("unauthorized");
   });
 
-  it("loopback caller is allowed even with a wrong bearer (bypass is unconditional)", () => {
+  it("rejects wrong credentials from loopback", () => {
     const result = checkAdminAuth({
       req: makeReq(
         { authorization: basicHeader("", "wrong-token") },
@@ -62,21 +77,50 @@ describe("admin-auth — loopback bypass", () => {
       agentName: "zip",
       callerIp: "127.0.0.1",
     });
-    expect(result.kind).toBe("ok");
+    expect(result.kind).toBe("unauthorized");
   });
 
-  it("IPv6 loopback (::1) is also bypassed", () => {
+  it("rejects an unauthenticated IPv6 loopback caller", () => {
     const result = checkAdminAuth({
       req: makeReq({}, "http://[::1]:8080/console"),
       bearer: "test-token",
       agentName: "zip",
       callerIp: "::1",
     });
+    expect(result.kind).toBe("unauthorized");
+  });
+
+  it("accepts valid credentials from loopback over local HTTP", () => {
+    const result = checkAdminAuth({
+      req: makeReq(
+        { authorization: basicHeader("", "test-token") },
+        "http://127.0.0.1:8080/console",
+      ),
+      bearer: "test-token",
+      agentName: "zip",
+      callerIp: "127.0.0.1",
+    });
     expect(result.kind).toBe("ok");
   });
 });
 
 describe("admin-auth — HTTP Basic (non-loopback only)", () => {
+  it("rejects duplicate console session cookies regardless of ordering", () => {
+    const valid = createConsoleSessionSetCookie({
+      bearer: "test-token",
+      secure: true,
+    }).split(";")[0]!;
+    for (const cookie of [`${valid}; auggy_console=invalid`, `auggy_console=invalid; ${valid}`]) {
+      const result = checkAdminAuth({
+        req: makeReq({ cookie }, "https://my-agent.fly.dev/console/api/dashboard"),
+        bearer: "test-token",
+        agentName: "zip",
+        callerIp: "10.0.0.5",
+      });
+      expect(result.kind).toBe("unauthorized");
+    }
+  });
+
   it("redirects browser GETs without Authorization to the console login screen", () => {
     const result = checkAdminAuth({
       req: makeReq({}, "https://my-agent.fly.dev/console"),

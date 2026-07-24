@@ -248,6 +248,85 @@ describe("notify augment", () => {
     expect(result.status).toBe("rate_limited");
   });
 
+  it("applies dedup when a destination has an explicit quota policy", async () => {
+    const deliveries: Array<{ destination: string; result: "sent" | "failed" }> = [];
+    const aug = notify({
+      destinations: [
+        {
+          name: "verify-out",
+          transport: "webhook",
+          url: "https://example.com/verify",
+          allowedTrustLevels: ALL_TRUST_LEVELS,
+          rateLimit: { maxPerHour: 50, cooldownMs: 0 },
+        },
+      ],
+      rateLimit: { cooldownMs: 0, dedupWindowMs: 60_000, dedupThreshold: 0.9 },
+      adapters: { webhook: mockAdapter(deliveries) },
+    });
+    const tool = getNotifyTool(aug);
+
+    const first = JSON.parse(
+      await tool.execute(
+        { to: "verify-out", summary: "same verification alert" },
+        makeContext(makePeer("peer-one")),
+      ),
+    );
+    const second = JSON.parse(
+      await tool.execute(
+        { to: "verify-out", summary: "same verification alert" },
+        makeContext(makePeer("peer-two")),
+      ),
+    );
+
+    expect(first.status).toBe("sent");
+    expect(second.status).toBe("rate_limited");
+    expect(deliveries).toHaveLength(1);
+  });
+
+  it("atomically reserves explicit-policy dedup before concurrent delivery", async () => {
+    let releaseDelivery!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseDelivery = resolve;
+    });
+    let deliveryAttempts = 0;
+    const adapter: NotifyAdapter = {
+      async deliver() {
+        deliveryAttempts++;
+        await release;
+        return { status: "sent" };
+      },
+    };
+    const aug = notify({
+      destinations: [
+        {
+          name: "verify-out",
+          transport: "webhook",
+          url: "https://example.com/verify",
+          allowedTrustLevels: ALL_TRUST_LEVELS,
+          rateLimit: { maxPerHour: 50, cooldownMs: 0 },
+        },
+      ],
+      rateLimit: { cooldownMs: 0, dedupWindowMs: 60_000, dedupThreshold: 0.9 },
+      adapters: { webhook: adapter },
+    });
+    const tool = getNotifyTool(aug);
+
+    const first = tool.execute(
+      { to: "verify-out", summary: "same concurrent alert" },
+      makeContext(makePeer("peer-one")),
+    );
+    const second = tool.execute(
+      { to: "verify-out", summary: "same concurrent alert" },
+      makeContext(makePeer("peer-two")),
+    );
+    releaseDelivery();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(JSON.parse(firstResult).status).toBe("sent");
+    expect(JSON.parse(secondResult).status).toBe("rate_limited");
+    expect(deliveryAttempts).toBe(1);
+  });
+
   it("blocks after global hourly cap reached", async () => {
     const aug = notify({
       ...baseOpts,
@@ -420,5 +499,113 @@ describe("notify augment", () => {
     await tool.execute({ to: "creator", summary: "2" }, ctx);
     const third = JSON.parse(await tool.execute({ to: "creator", summary: "3" }, ctx));
     expect(third.status).toBe("rate_limited");
+  });
+
+  test("atomically reserves global quota before concurrent delivery", async () => {
+    let releaseDelivery!: () => void;
+    const release = new Promise<void>((resolve) => {
+      releaseDelivery = resolve;
+    });
+    let deliveryAttempts = 0;
+    const adapter: NotifyAdapter = {
+      async deliver() {
+        deliveryAttempts++;
+        await release;
+        return { status: "sent" };
+      },
+    };
+    const aug = notify({
+      destinations: [
+        {
+          name: "creator",
+          transport: "webhook",
+          url: "https://example.com/notify",
+          allowedTrustLevels: ALL_TRUST_LEVELS,
+        },
+      ],
+      rateLimit: { globalMaxPerHour: 1, cooldownMs: 0, dedupThreshold: 0 },
+      adapters: { webhook: adapter },
+    });
+    const tool = getNotifyTool(aug);
+
+    const first = tool.execute(
+      { to: "creator", summary: "first" },
+      makeContext(makePeer("peer-one")),
+    );
+    const second = tool.execute(
+      { to: "creator", summary: "second" },
+      makeContext(makePeer("peer-two")),
+    );
+    releaseDelivery();
+    const [firstResult, secondResult] = await Promise.all([first, second]);
+
+    expect(JSON.parse(firstResult).status).toBe("sent");
+    expect(JSON.parse(secondResult).status).toBe("rate_limited");
+    expect(deliveryAttempts).toBe(1);
+  });
+
+  test("a failed delivery attempt still consumes its reserved quota", async () => {
+    let deliveryAttempts = 0;
+    const adapter: NotifyAdapter = {
+      async deliver() {
+        deliveryAttempts++;
+        return { status: "failed", detail: "delivery outcome unknown" };
+      },
+    };
+    const aug = notify({
+      destinations: [
+        {
+          name: "creator",
+          transport: "webhook",
+          url: "https://example.com/notify",
+          allowedTrustLevels: ALL_TRUST_LEVELS,
+        },
+      ],
+      rateLimit: { globalMaxPerHour: 1, cooldownMs: 0, dedupThreshold: 0 },
+      adapters: { webhook: adapter },
+    });
+    const tool = getNotifyTool(aug);
+
+    const first = JSON.parse(
+      await tool.execute({ to: "creator", summary: "first" }, makeContext(makePeer("peer-one"))),
+    );
+    const second = JSON.parse(
+      await tool.execute({ to: "creator", summary: "second" }, makeContext(makePeer("peer-two"))),
+    );
+
+    expect(first.status).toBe("failed");
+    expect(second.status).toBe("rate_limited");
+    expect(deliveryAttempts).toBe(1);
+  });
+
+  test("a thrown adapter attempt is terminal outcome unknown", async () => {
+    const aug = notify({
+      destinations: [
+        {
+          name: "creator",
+          transport: "webhook",
+          url: "https://example.com/notify",
+          allowedTrustLevels: ALL_TRUST_LEVELS,
+        },
+      ],
+      rateLimit: { cooldownMs: 0, dedupThreshold: 0 },
+      adapters: {
+        webhook: {
+          async deliver() {
+            throw new Error("connection reset after dispatch");
+          },
+        },
+      },
+    });
+    const tool = aug.tools!.find((candidate) => candidate.name === "notify")!;
+
+    const result = await tool.execute(
+      { to: "creator", summary: "ambiguous" },
+      makeContext(makePeer("peer-one")),
+    );
+
+    expect(result).toMatchObject({ isError: true, outcomeUnknown: true });
+    if (typeof result === "string") throw new Error("expected structured result");
+    expect(result.content).not.toContain("connection reset");
   });
 });

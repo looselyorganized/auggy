@@ -189,6 +189,10 @@ Read `skills/auggy/references/nextjs-integration.md`. Keep browser generated
 clients in browser-safe code and server generated clients in server-only code.
 Never ship creator bearer tokens, agent credentials, provider API keys, or
 external auth signing secrets to the browser.
+Treat publicly reachable route handlers as untrusted entry points: verify the
+host application's session and explicit role before using a server client, and
+enforce exact Origin plus session-bound CSRF for browser actions. Trusted jobs
+should call the server client directly instead of routing through public HTTP.
 For starter files, inspect `skills/auggy/assets/templates/nextjs-browser-client/`
 and `skills/auggy/assets/templates/nextjs-server-client/`.
 

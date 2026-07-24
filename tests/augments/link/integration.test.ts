@@ -7,6 +7,7 @@ import type {
   PeerSendError,
 } from "@auggy/link";
 
+import { defineAgent } from "@/agent";
 import { _createLinkForTesting, link } from "@/augments/link";
 import type {
   AgentCard,
@@ -19,6 +20,7 @@ import type {
   TurnTrigger,
 } from "@/types";
 import { asStringTool } from "../../fixtures/tool-helpers";
+import { createMockModel } from "../../fixtures/mock-model";
 
 const SELF_PARTICIPANT_ID = "00000000-0000-4000-8000-00000000aaaa";
 const PEER_PARTICIPANT_ID = "00000000-0000-4000-8000-00000000bbbb";
@@ -140,6 +142,29 @@ function makeOpts(): Parameters<typeof link>[0] {
 // ---------------------------------------------------------------------------
 
 describe("link augment — construction", () => {
+  it("rejects inline bearers over non-loopback plaintext HTTP", async () => {
+    const opts = makeOpts();
+    opts.peers!.researcher!.url = "http://127.evil.example.com/a2a";
+    await expect(link({ ...opts, _skipServer: true })).rejects.toThrow(/plaintext HTTP/);
+  });
+
+  it("does not honor the legacy plaintext override outside development", async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    const previousOverride = process.env.LINK_ALLOW_PLAINTEXT;
+    process.env.NODE_ENV = "production";
+    process.env.LINK_ALLOW_PLAINTEXT = "1";
+    try {
+      const opts = makeOpts();
+      opts.peers!.researcher!.url = "http://peer.example.test/a2a";
+      await expect(link({ ...opts, _skipServer: true })).rejects.toThrow(/plaintext HTTP/);
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+      if (previousOverride === undefined) delete process.env.LINK_ALLOW_PLAINTEXT;
+      else process.env.LINK_ALLOW_PLAINTEXT = previousOverride;
+    }
+  });
+
   it("returns an augment with transport, context, and tools", async () => {
     const aug = await link({ ...makeOpts(), _skipServer: true });
     expect(aug.name).toBe("link");
@@ -185,7 +210,8 @@ describe("link augment — construction", () => {
     expect(serialized).toContain("Status");
     expect(serialized).toContain("preview");
     expect(serialized).toContain("configured peers are admitted as agent trust");
-    expect(serialized).toContain("bearer possession grants peer admission");
+    expect(serialized).toContain("signed and capped by the authenticated forwarding peer");
+    expect(serialized).toContain("creator, agent");
     await aug.onShutdown!();
   });
 });
@@ -223,9 +249,10 @@ describe("link augment — inbound flow", () => {
     expect(captured).toBeDefined();
     expect(captured?.type).toBe("message");
     expect(captured?.source).toBe("link");
-    expect(captured?.threadId).toBe(`link-${PEER_PARTICIPANT_ID}`);
-    expect(captured?.peer?.id).toBe(PEER_PARTICIPANT_ID);
-    expect(captured?.peer?.trustLevel).toBe("agent");
+    expect(captured?.threadId).toMatch(/^link-[A-Za-z0-9_-]{32}$/);
+    expect(captured?.peer?.id).toMatch(/^link-unprovenanced-/);
+    expect(captured?.peer?.trustLevel).toBe("public");
+    expect(captured?.peer?.publicSubstate).toBe("anonymous");
     expect(captured?.peer?.sourceAugment).toBe("link");
 
     const inbound = captured?.payload as {
@@ -258,11 +285,12 @@ describe("link augment — inbound flow", () => {
     await augment.onShutdown!();
   });
 
-  it("kernel thrown error surfaces as ErrorOutcome (no propagation past the augment)", async () => {
+  it("sanitizes a thrown kernel error before returning an ErrorOutcome", async () => {
+    const sentinel = "sk-live-link-dispatch-secret";
     const { augment, dispatch } = await _createLinkForTesting(makeOpts());
     const kernel: TransportKernel = {
       handleInbound: async () => {
-        throw new Error("boom");
+        throw new Error(sentinel);
       },
       onOutbound: () => {},
       getAgentCard: () => ({}) as AgentCard,
@@ -273,7 +301,8 @@ describe("link augment — inbound flow", () => {
     const outcome = await dispatch(makeLinkContext());
     expect(outcome.kind).toBe("error");
     if (outcome.kind === "error") {
-      expect(outcome.message).toContain("boom");
+      expect(outcome.message).toBe("link augment: turn dispatch failed");
+      expect(outcome.message).not.toContain(sentinel);
     }
     await augment.onShutdown!();
   });
@@ -304,7 +333,7 @@ describe("link augment — inbound flow", () => {
 // ---------------------------------------------------------------------------
 
 describe("link augment — trust gate", () => {
-  it("trust: 'agent' participant → PeerIdentity.trustLevel = 'agent'", async () => {
+  it("downgrades an unprovenanced agent participant to public anonymous", async () => {
     const { augment, dispatch } = await _createLinkForTesting(makeOpts());
     let peer: PeerIdentity | null | undefined;
     const kernel: TransportKernel = {
@@ -319,12 +348,13 @@ describe("link augment — trust gate", () => {
     };
     await augment.transport!.register(kernel, "link");
     await dispatch(makeLinkContext({ from: { ...makeLinkContext().from, trust: "agent" } }));
-    expect(peer?.trustLevel).toBe("agent");
+    expect(peer?.trustLevel).toBe("public");
+    expect(peer?.publicSubstate).toBe("anonymous");
     expect(peer?.kind).toBe("agent");
     await augment.onShutdown!();
   });
 
-  it("trust: 'public' participant translates to public trust without publicSubstate", async () => {
+  it("normalizes an unprovenanced public participant to public anonymous", async () => {
     const { augment, dispatch } = await _createLinkForTesting(makeOpts());
     let peer: PeerIdentity | null | undefined;
     const kernel: TransportKernel = {
@@ -341,7 +371,7 @@ describe("link augment — trust gate", () => {
     const ctx = makeLinkContext();
     await dispatch({ ...ctx, from: { ...ctx.from, trust: "public" } });
     expect(peer?.trustLevel).toBe("public");
-    expect(peer?.publicSubstate).toBeUndefined();
+    expect(peer?.publicSubstate).toBe("anonymous");
     await augment.onShutdown!();
   });
 });
@@ -356,10 +386,18 @@ describe("link_send tool", () => {
   }
 
   it("invokes PeerClient.send with text parts; returns ok+message+text on sync reply", async () => {
-    const calls: Array<{ to: string; parts: readonly LinkPart[] }> = [];
+    const calls: Array<{
+      to: string;
+      parts: readonly LinkPart[];
+      idempotencyKey?: string;
+    }> = [];
     const fakePeerClient = {
-      send: async (args: { to: string; parts: readonly LinkPart[] }) => {
-        calls.push({ to: args.to, parts: args.parts });
+      send: async (args: { to: string; parts: readonly LinkPart[]; idempotencyKey?: string }) => {
+        calls.push({
+          to: args.to,
+          parts: args.parts,
+          idempotencyKey: args.idempotencyKey,
+        });
         return {
           ok: true as const,
           value: {
@@ -385,7 +423,9 @@ describe("link_send tool", () => {
     );
     expect(calls).toHaveLength(1);
     expect(calls[0]?.to).toBe("researcher");
-    expect(calls[0]?.parts).toEqual([{ kind: "text", text: "hello" }]);
+    expect(calls[0]?.idempotencyKey).toMatch(/^[0-9a-f-]{36}$/);
+    expect(calls[0]?.parts[0]?.text).toBe("hello");
+    expect(calls[0]?.parts[0]?.metadata?.auggy_link_origin_v1).toBeDefined();
     const parsed = JSON.parse(result);
     expect(parsed).toEqual({ ok: true, outcome: "message", text: "world" });
   });
@@ -439,14 +479,405 @@ describe("link_send tool", () => {
       _peerClient: fakePeerClient as unknown as import("@auggy/link").PeerClient,
     });
     const sendTool = aug.tools!.find((t) => t.name === "link_send")!;
-    const result = await asStringTool(sendTool).execute(
-      { to: "researcher", text: "hello" },
-      makeToolCtx(),
-    );
-    const parsed = JSON.parse(result);
+    const result = await sendTool.execute({ to: "researcher", text: "hello" }, makeToolCtx());
+    expect(typeof result).toBe("object");
+    if (typeof result === "string") throw new Error("expected structured outcome-unknown result");
+    expect(result).toMatchObject({ isError: true, outcomeUnknown: true });
+    const parsed = JSON.parse(result.content);
     expect(parsed.ok).toBe(false);
     expect(parsed.error).toBe("peer_network_error");
-    expect(parsed.message).toBe("ECONNREFUSED");
+    expect(parsed.message).toBe("Link delivery outcome is unknown.");
+    expect(result.content).not.toContain("ECONNREFUSED");
+  });
+
+  it("defaults public and missing-context callers to a no-side-effect denial", async () => {
+    let sends = 0;
+    const fakePeerClient = {
+      send: async () => {
+        sends++;
+        throw new Error("must not execute");
+      },
+    };
+    const aug = await link({
+      ...makeOpts(),
+      _skipServer: true,
+      _peerClient: fakePeerClient as unknown as import("@auggy/link").PeerClient,
+    });
+    expect(aug.constraints?.perTrustLevel?.public?.neverExpose).toEqual(["link_send", "link_list"]);
+    const sendTool = aug.tools!.find((tool) => tool.name === "link_send")!;
+    const publicContext: ToolExecuteContext = {
+      turnId: "public-turn",
+      threadId: "public-thread",
+      peer: {
+        id: "visitor-1",
+        kind: "human",
+        trustLevel: "public",
+        publicSubstate: "recognized",
+        sourceAugment: "web",
+      },
+    };
+
+    expect(
+      JSON.parse(
+        await asStringTool(sendTool).execute({ to: "researcher", text: "hello" }, publicContext),
+      ),
+    ).toMatchObject({ ok: false, error: "link_authorization_denied" });
+    expect(
+      JSON.parse(await asStringTool(sendTool).execute({ to: "researcher", text: "hello" })),
+    ).toMatchObject({ ok: false, error: "link_authorization_denied" });
+    expect(sends).toBe(0);
+  });
+
+  it("turn loop denies a fabricated public link_send before the client runs", async () => {
+    let sends = 0;
+    const fakePeerClient = {
+      send: async () => {
+        sends++;
+        throw new Error("must not execute");
+      },
+    };
+    const augment = await link({
+      ...makeOpts(),
+      _skipServer: true,
+      _peerClient: fakePeerClient as unknown as import("@auggy/link").PeerClient,
+    });
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      finishReason: "tool_use",
+      toolCalls: [{ name: "link_send", arguments: { to: "researcher", text: "delegate" } }],
+    });
+    model.pushResponse({ content: "denied", finishReason: "end_turn" });
+    const agent = defineAgent(
+      { name: "link-security-test", model: "mock", augments: [augment] },
+      model,
+    );
+    await agent.start();
+    try {
+      const peer: PeerIdentity = {
+        id: "visitor",
+        kind: "human",
+        trustLevel: "public",
+        publicSubstate: "recognized",
+        sourceAugment: "test",
+      };
+      const result = await agent.inject({
+        type: "message",
+        turnId: "public-link-turn",
+        threadId: `public-link-thread-${crypto.randomUUID()}`,
+        timestamp: Date.now(),
+        source: "test",
+        peer,
+        payload: {
+          parts: [{ kind: "text", text: "delegate" }],
+          sourceAugment: "test",
+          peer,
+          timestamp: Date.now(),
+        },
+      });
+      expect(result.toolCalls).toHaveLength(0);
+      expect(result.trace.capabilityChecks).toContainEqual({
+        tool: "link_send",
+        result: "denied",
+      });
+      expect(sends).toBe(0);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("preserves authenticated public origin without upgrading downstream authority", async () => {
+    const captured: Array<{
+      parts: readonly LinkPart[];
+      idempotencyKey?: string;
+    }> = [];
+    const fakePeerClient = {
+      send: async (args: { parts: readonly LinkPart[]; idempotencyKey?: string }) => {
+        captured.push({ parts: args.parts, idempotencyKey: args.idempotencyKey });
+        return {
+          ok: true as const,
+          value: {
+            outcome: {
+              message_id: "reply",
+              role: "agent" as const,
+              parts: [{ kind: "text" as const, text: "ok" }],
+            },
+            idempotencyKey: args.idempotencyKey!,
+          },
+        };
+      },
+    };
+    const sender = await link({
+      ...makeOpts(),
+      outbound: {
+        allowedTrustLevels: ["creator", "agent", "public"],
+        publicDelegationPeers: {
+          researcher: {
+            url: "https://researcher.example.org",
+            participantId: PEER_PARTICIPANT_ID,
+          },
+        },
+      },
+      _skipServer: true,
+      _peerClient: fakePeerClient as unknown as import("@auggy/link").PeerClient,
+    });
+    const sendTool = sender.tools!.find((tool) => tool.name === "link_send")!;
+    await asStringTool(sendTool).execute(
+      { to: "researcher", text: "delegated request" },
+      {
+        turnId: "public-turn",
+        threadId: "public-thread",
+        peer: {
+          id: "vis_original",
+          kind: "human",
+          trustLevel: "public",
+          publicSubstate: "recognized",
+          sourceAugment: "web",
+        },
+      },
+    );
+    expect(captured).toHaveLength(1);
+
+    const receiverOpts = makeOpts();
+    const { augment: receiver, dispatch } = await _createLinkForTesting({
+      ...receiverOpts,
+      agentCard: {
+        ...receiverOpts.agentCard,
+        id: PEER_PARTICIPANT_ID,
+      },
+      peers: {
+        sender: {
+          url: "https://sender.example.org",
+          bearer: "receiver-outbound",
+          participantId: SELF_PARTICIPANT_ID,
+          inboundBearer: "outbound-secret",
+          inboundBearerId: "sender-inbound-key",
+        },
+      },
+    });
+    const { kernel, triggers } = makeStubKernel((trigger) => completedResult(trigger, "received"));
+    await receiver.transport!.register(kernel, "link");
+    const outcome = await dispatch({
+      from: {
+        id: SELF_PARTICIPANT_ID,
+        locator: "https://sender.example.org",
+        type: "agent",
+        trust: "agent",
+      },
+      parts: [...captured[0]!.parts],
+      idempotency_key: captured[0]!.idempotencyKey,
+      request_id: "request-1",
+      received_at: new Date().toISOString(),
+    });
+
+    expect(outcome.kind).toBe("message");
+    expect(triggers).toHaveLength(1);
+    expect(triggers[0]?.peer).toMatchObject({
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "recognized",
+      sourceAugment: "link",
+      delegatedOrigin: {
+        subject: "vis_original",
+        sourceAugment: "web",
+        viaPeerId: SELF_PARTICIPANT_ID,
+        hopCount: 1,
+      },
+    });
+    expect(triggers[0]?.peer?.id).toMatch(/^link-origin-/);
+    expect(triggers[0]?.threadId).toMatch(/^link-[A-Za-z0-9_-]{32}$/);
+    await receiver.onShutdown!();
+  });
+
+  it("rejects content, audience, idempotency, and signature tampering before dispatch", async () => {
+    const captured: {
+      parts?: readonly LinkPart[];
+      idempotencyKey?: string;
+    } = {};
+    const fakePeerClient = {
+      send: async (args: { parts: readonly LinkPart[]; idempotencyKey?: string }) => {
+        captured.parts = args.parts;
+        captured.idempotencyKey = args.idempotencyKey;
+        return {
+          ok: true as const,
+          value: {
+            outcome: {
+              message_id: "reply",
+              role: "agent" as const,
+              parts: [{ kind: "text" as const, text: "ok" }],
+            },
+            idempotencyKey: args.idempotencyKey!,
+          },
+        };
+      },
+    };
+    const sender = await link({
+      ...makeOpts(),
+      outbound: {
+        allowedTrustLevels: ["public"],
+        publicDelegationPeers: {
+          researcher: {
+            url: "https://researcher.example.org",
+            participantId: PEER_PARTICIPANT_ID,
+          },
+        },
+      },
+      _skipServer: true,
+      _peerClient: fakePeerClient as unknown as import("@auggy/link").PeerClient,
+    });
+    await asStringTool(sender.tools!.find((tool) => tool.name === "link_send")!).execute(
+      { to: "researcher", text: "signed text" },
+      {
+        turnId: "public-turn",
+        threadId: "public-thread",
+        peer: {
+          id: "visitor",
+          kind: "human",
+          trustLevel: "public",
+          publicSubstate: "anonymous",
+          sourceAugment: "web",
+        },
+      },
+    );
+
+    const receiverOpts = makeOpts();
+    const { augment: receiver, dispatch } = await _createLinkForTesting({
+      ...receiverOpts,
+      agentCard: { ...receiverOpts.agentCard, id: PEER_PARTICIPANT_ID },
+      peers: {
+        sender: {
+          url: "https://sender.example.org",
+          bearer: "unused",
+          participantId: SELF_PARTICIPANT_ID,
+          inboundBearer: "outbound-secret",
+          inboundBearerId: "sender-key",
+        },
+      },
+    });
+    const { kernel, triggers } = makeStubKernel((trigger) =>
+      completedResult(trigger, "unexpected"),
+    );
+    await receiver.transport!.register(kernel, "link");
+
+    const baseContext = {
+      from: {
+        id: SELF_PARTICIPANT_ID,
+        locator: "https://sender.example.org",
+        type: "agent" as const,
+        trust: "agent" as const,
+      },
+      idempotency_key: captured.idempotencyKey,
+      request_id: "request-tamper",
+      received_at: new Date().toISOString(),
+    };
+    const variants: LinkPart[][] = [];
+    const changedText = structuredClone(captured.parts!) as LinkPart[];
+    changedText[0]!.text = "changed";
+    variants.push(changedText);
+    for (const field of ["audience", "signature"] as const) {
+      const changed = structuredClone(captured.parts!) as LinkPart[];
+      const envelope = changed[0]!.metadata!.auggy_link_origin_v1 as Record<string, unknown>;
+      envelope[field] = field === "audience" ? SELF_PARTICIPANT_ID : "A".repeat(43);
+      variants.push(changed);
+    }
+    const changedIssuer = structuredClone(captured.parts!) as LinkPart[];
+    (changedIssuer[0]!.metadata!.auggy_link_origin_v1 as Record<string, unknown>).issuer =
+      PEER_PARTICIPANT_ID;
+    variants.push(changedIssuer);
+    const changedOrigin = structuredClone(captured.parts!) as LinkPart[];
+    const originEnvelope = changedOrigin[0]!.metadata!.auggy_link_origin_v1 as Record<
+      string,
+      unknown
+    >;
+    (originEnvelope.origin as Record<string, unknown>).subject = "different-visitor";
+    variants.push(changedOrigin);
+    const expired = structuredClone(captured.parts!) as LinkPart[];
+    (expired[0]!.metadata!.auggy_link_origin_v1 as Record<string, unknown>).expiresAt = 0;
+    variants.push(expired);
+    const duplicated = structuredClone(captured.parts!) as LinkPart[];
+    duplicated.push(structuredClone(duplicated[0]!));
+    variants.push(duplicated);
+
+    for (const parts of variants) {
+      const outcome = await dispatch({ ...baseContext, parts });
+      expect(outcome).toMatchObject({
+        kind: "error",
+        message: "link augment: delegated origin verification failed",
+      });
+    }
+    const idempotencyOutcome = await dispatch({
+      ...baseContext,
+      parts: [...captured.parts!],
+      idempotency_key: "different-key",
+    });
+    expect(idempotencyOutcome.kind).toBe("error");
+    expect(triggers).toHaveLength(0);
+    await receiver.onShutdown!();
+  });
+
+  it("denies public delegation to a receiver without an operator provenance attestation", async () => {
+    let sends = 0;
+    const sender = await link({
+      ...makeOpts(),
+      outbound: {
+        allowedTrustLevels: ["public"],
+        publicDelegationPeers: {
+          "upgraded-peer": {
+            url: "https://upgraded.example.org",
+            participantId: "00000000-0000-4000-8000-00000000dddd",
+          },
+        },
+      },
+      _skipServer: true,
+      _peerClient: {
+        send: async () => {
+          sends++;
+          throw new Error("must not send");
+        },
+      } as unknown as import("@auggy/link").PeerClient,
+    });
+    const publicContext = {
+      turnId: "public-turn",
+      threadId: "public-thread",
+      peer: {
+        id: "visitor",
+        kind: "human" as const,
+        trustLevel: "public" as const,
+        publicSubstate: "anonymous" as const,
+        sourceAugment: "web",
+      },
+    };
+    const result = JSON.parse(
+      await asStringTool(sender.tools!.find((tool) => tool.name === "link_send")!).execute(
+        { to: "researcher", text: "must remain local" },
+        publicContext,
+      ),
+    );
+    const list = JSON.parse(
+      await asStringTool(sender.tools!.find((tool) => tool.name === "link_list")!).execute(
+        {},
+        publicContext,
+      ),
+    );
+    const context = await sender.context!({
+      ...publicContext,
+      tools: [],
+      history: [],
+      contextBlocks: [],
+      trigger: {
+        type: "message",
+        turnId: "public-turn",
+        payload: { parts: [] },
+      },
+    } as unknown as TurnState);
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: "link_authorization_denied",
+    });
+    expect(list).toEqual({ peers: [] });
+    expect(context).toEqual([]);
+    expect(sends).toBe(0);
   });
 });
 
@@ -552,6 +983,36 @@ describe("link_list tool", () => {
     const parsed = JSON.parse(result);
     expect(parsed.peers[0]).toEqual({ name: "researcher", purpose: "Knows ML papers." });
   });
+
+  it("denies public and missing-context roster discovery by default", async () => {
+    const aug = await link({ ...makeOpts(), _skipServer: true });
+    const listTool = aug.tools!.find((tool) => tool.name === "link_list")!;
+    const publicResult = JSON.parse(
+      await asStringTool(listTool).execute(
+        {},
+        {
+          turnId: "public-turn",
+          threadId: "public-thread",
+          peer: {
+            id: "visitor",
+            kind: "human",
+            trustLevel: "public",
+            publicSubstate: "anonymous",
+            sourceAugment: "web",
+          },
+        },
+      ),
+    );
+    const missingContextResult = JSON.parse(await asStringTool(listTool).execute({}));
+    expect(publicResult).toMatchObject({
+      ok: false,
+      error: "link_authorization_denied",
+    });
+    expect(missingContextResult).toMatchObject({
+      ok: false,
+      error: "link_authorization_denied",
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -620,6 +1081,19 @@ describe("link augment — context block", () => {
     const blocks = await aug.context!(makeTurnState());
     expect(blocks).toEqual([]);
   });
+
+  it("does not advertise the peer roster to public turns by default", async () => {
+    const aug = await link({ ...makeOpts(), _skipServer: true });
+    const turn = makeTurnState();
+    turn.peer = {
+      id: "visitor",
+      kind: "human",
+      trustLevel: "public",
+      publicSubstate: "recognized",
+      sourceAugment: "web",
+    };
+    expect(await aug.context!(turn)).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -679,7 +1153,16 @@ describe("link augment — peerSource integration", () => {
       _skipServer: true,
       _skipRefreshLoop: true,
       _peerResolver: resolver,
-      peerSource: { type: "registry", url: "https://example.org/peers.json" },
+      peerSource: {
+        type: "registry",
+        url: "https://example.org/peers.json",
+        pins: {
+          frontier: {
+            url: "https://frontier.example.org",
+            participantId: PEER_PARTICIPANT_ID,
+          },
+        },
+      },
       peers: undefined,
     });
 
@@ -722,7 +1205,16 @@ describe("link augment — peerSource integration", () => {
       _skipServer: true,
       _skipRefreshLoop: true,
       _peerResolver: resolver,
-      peerSource: { type: "registry", url: "https://example.org/peers.json" },
+      peerSource: {
+        type: "registry",
+        url: "https://example.org/peers.json",
+        pins: {
+          backup: {
+            url: "https://backup.example.org",
+            participantId: "00000000-0000-4000-8000-00000000eeee",
+          },
+        },
+      },
       peers: {
         backup: {
           url: "https://backup.example.org",
@@ -766,7 +1258,16 @@ describe("link augment — peerSource integration", () => {
       _skipServer: true,
       _skipRefreshLoop: true,
       _peerResolver: resolver,
-      peerSource: { type: "registry", url: "https://example.org/peers.json" },
+      peerSource: {
+        type: "registry",
+        url: "https://example.org/peers.json",
+        pins: {
+          frontier: {
+            url: "https://frontier.example.org",
+            participantId: PEER_PARTICIPANT_ID,
+          },
+        },
+      },
       peers: undefined,
     });
 
@@ -789,6 +1290,96 @@ describe("link augment — peerSource integration", () => {
     const blocks = await aug.context!(makeTurnState());
     expect(blocks).toEqual([]);
 
+    await aug.onShutdown!();
+  });
+
+  it("fails closed when a registry redirects an attested alias without changing its id", async () => {
+    let sends = 0;
+    const resolver = makeStubResolver(
+      () =>
+        ({
+          ok: true,
+          resolved: {
+            peers: {
+              frontier: {
+                url: "https://replacement.example.org",
+                bearer: "replacement-outbound",
+                participantId: PEER_PARTICIPANT_ID,
+                inboundBearer: "replacement-inbound",
+                inboundBearerId: "replacement-key",
+              },
+            },
+            skipped: [],
+          },
+        }) as ResolverResult,
+    );
+    const aug = await link({
+      ...makeOpts(),
+      outbound: {
+        allowedTrustLevels: ["public"],
+        publicDelegationPeers: {
+          frontier: {
+            url: "https://frontier.example.org",
+            participantId: PEER_PARTICIPANT_ID,
+          },
+        },
+      },
+      _skipServer: true,
+      _skipRefreshLoop: true,
+      _peerResolver: resolver,
+      _peerClient: {
+        send: async () => {
+          sends++;
+          throw new Error("must not send");
+        },
+      } as unknown as import("@auggy/link").PeerClient,
+      peerSource: {
+        type: "registry",
+        url: "https://example.org/peers.json",
+        pins: {
+          frontier: {
+            url: "https://frontier.example.org",
+            participantId: PEER_PARTICIPANT_ID,
+          },
+        },
+      },
+      peers: undefined,
+    });
+    const { kernel } = makeStubKernel((turn) => completedResult(turn, "unexpected"));
+    await aug.transport!.register(kernel, "link");
+    const publicContext: ToolExecuteContext = {
+      turnId: "public-turn",
+      threadId: "public-thread",
+      peer: {
+        id: "visitor",
+        kind: "human",
+        trustLevel: "public",
+        publicSubstate: "recognized",
+        sourceAugment: "web",
+      },
+    };
+
+    const list = JSON.parse(
+      await asStringTool(aug.tools!.find((tool) => tool.name === "link_list")!).execute(
+        {},
+        publicContext,
+      ),
+    );
+    const send = JSON.parse(
+      await asStringTool(aug.tools!.find((tool) => tool.name === "link_send")!).execute(
+        { to: "frontier", text: "must remain local" },
+        publicContext,
+      ),
+    );
+    const context = await aug.context!({
+      ...makeTurnState(),
+      peer: publicContext.peer,
+    });
+
+    expect(list).toEqual({ peers: [] });
+    expect(send).toMatchObject({ ok: false, error: "link_authorization_denied" });
+    expect(context).toEqual([]);
+    expect(sends).toBe(0);
     await aug.onShutdown!();
   });
 });

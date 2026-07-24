@@ -168,11 +168,26 @@ We squash-merge by default. Keep your PR description sharp — that's what becom
 
 The portable security suite at `packages/evals/src/security/` runs against a real Anthropic API call per case (see [`packages/evals/src/security/README.md`](packages/evals/src/security/README.md) for the full contract). Each run costs roughly $0.07 on Haiku.
 
-**The CI workflow does NOT auto-trigger on pull requests.** This is deliberate — to avoid burning maintainer API budget on every contributor push. The workflow runs on three explicit channels:
+**The CI workflow does NOT auto-trigger on pull requests.** This avoids both
+maintainer API spend and a more important trust failure: unmerged workflow,
+dependency, config, or harness code must never execute with the repository eval
+key.
 
-- `workflow_dispatch` — maintainers click "Run workflow" against any branch from the Actions tab to verify a PR before merging.
-- `push: main` — runs once after every merge to catch regressions.
-- `schedule` (nightly, 07:00 UTC) — catches model behavior drift between merges.
+Maintainers may request the `Trusted security eval` through GitHub's
+`repository_dispatch` API. GitHub loads that workflow only from the default
+branch. It validates a bounded `haiku | sonnet` choice and source commit SHA,
+then runs only the default-branch harness and fixed fixture. The request
+therefore exercises the trusted canary; it does not evaluate unmerged branch
+behavior.
+
+```bash
+SOURCE_SHA="$(git rev-parse HEAD)"
+gh api --method POST "repos/looselyorganized/auggy/dispatches" \
+  -f event_type=security-eval-request \
+  -F client_payload[schema]=1 \
+  -f client_payload[model]=haiku \
+  -f client_payload[sourceSha]="$SOURCE_SHA"
+```
 
 **If your PR touches eval-relevant code** (kernel turn-loop, augment refusal logic, identity preamble, fixture composition, suite YAML, eval-context module, or anything under `src/augments/*`, `src/scaffold-templates/*`, `src/cli/scaffold*.ts`, `src/cli/skill-*.ts`) — see ADR-029 (`eval-as-canary-for-prompt-shape-changes`) for the full canary discipline:
 
@@ -183,13 +198,21 @@ The portable security suite at `packages/evals/src/security/` runs against a rea
    ANTHROPIC_API_KEY=... auggy eval my-agent                   # against a registered agent
    ```
    The underlying script is still `bun run packages/evals/src/security/run.ts`; `auggy eval` is a thin wrapper that resolves the agent.yaml path from the agent index (or the bundled fixture) and forwards the same flags.
-2. **Or:** configure `ANTHROPIC_API_KEY_SECURITY_EVAL` in your own repository's
-   GitHub secrets (Settings -> Secrets and variables -> Actions), and add the
-   trigger you want to your copy of `.github/workflows/security-eval.yml`. Your
-   CI, your spend.
+2. **Or:** configure a dedicated key in a branch-protected Environment in your
+   own repository and use the default-branch-only dispatch workflow. Your CI,
+   your spend.
 3. Mention in your PR description that you've run the suite and it passes.
 
-Maintainers will dispatch the eval against your PR's branch via `workflow_dispatch` if review surfaces eval-relevant changes that weren't locally verified.
+Repository maintainers must place
+`ANTHROPIC_API_KEY_SECURITY_EVAL_ENV_ONLY` only in the `security-eval` GitHub
+Environment and restrict that Environment to deployments from `main`. Revoke
+and delete any legacy repository-scoped `ANTHROPIC_API_KEY_SECURITY_EVAL`
+before enabling the workflow. If this migration is incomplete, leave the eval
+disabled; the workflow intentionally does not read the legacy secret.
+
+Maintainers may label the trusted canary run with your PR commit through the
+repository-dispatch payload if review surfaces eval-relevant changes that were
+not locally verified.
 
 ## Cost guardrails (deploying Auggy)
 

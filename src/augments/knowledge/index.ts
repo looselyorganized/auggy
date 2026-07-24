@@ -34,6 +34,8 @@ import type { Augment, ContextBlock } from "../../types";
 import { defineTool } from "../../helpers";
 import { createHttpClient } from "../../http";
 import type { HttpClient } from "../../http";
+import { isOutcomeUnknownError } from "../../outcome-unknown";
+import { assertSecureCredentialTransport } from "../../engines/_shared/credential-transport";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -56,6 +58,8 @@ export interface ManifestOptions {
   baseUrl: string;
   /** Optional auth token for the org API (HTTP scheme only). */
   token?: string;
+  /** Development-only escape hatch for credentialed non-loopback HTTP. */
+  allowInsecureHttpWithCredentials?: boolean;
   /** Manifest cache TTL in milliseconds. Default 1 hour. */
   cacheTtlMs?: number;
   /** Optional pre-built HTTP client (for sharing across augments or testing). */
@@ -69,6 +73,8 @@ export interface KnowledgeRootOptions {
   client?: HttpClient;
   /** Default manifest cache TTL in milliseconds. Default 1 hour. */
   cacheTtlMs?: number;
+  /** Development-only default for credentialed non-loopback HTTP sources. */
+  allowInsecureHttpWithCredentials?: boolean;
 }
 
 interface KnowledgeSourceConfig {
@@ -78,6 +84,7 @@ interface KnowledgeSourceConfig {
   token?: string;
   tokenEnv?: string;
   cacheTtlMs?: number;
+  allowInsecureHttpWithCredentials?: boolean;
 }
 
 interface KnowledgeSourcesFile {
@@ -112,6 +119,8 @@ export function knowledgeRoot(opts: KnowledgeRootOptions): Augment {
           token,
           cacheTtlMs: source.cacheTtlMs ?? opts.cacheTtlMs,
           client: opts.client,
+          allowInsecureHttpWithCredentials:
+            source.allowInsecureHttpWithCredentials ?? opts.allowInsecureHttpWithCredentials,
         }),
       };
     });
@@ -128,8 +137,10 @@ export function knowledgeRoot(opts: KnowledgeRootOptions): Augment {
       endpoint: z.string().describe("The endpoint path listed by that source"),
       prompt: z.string().optional().describe("Optional: what you want to know from the content"),
     }),
-    execute: async ({ source, endpoint, prompt }) => {
+    execute: async ({ source, endpoint, prompt }, context) => {
+      context?.signal?.throwIfAborted();
       const sources = await loadSources();
+      context?.signal?.throwIfAborted();
       const selected = sources.find((s) => s.name === source);
       if (!selected) {
         return JSON.stringify({
@@ -143,7 +154,7 @@ export function knowledgeRoot(opts: KnowledgeRootOptions): Augment {
         return JSON.stringify({ error: `Knowledge source ${source} has no fetch tool` });
       }
 
-      const content = await tool.execute({ endpoint, prompt });
+      const content = await tool.execute({ endpoint, prompt }, context);
       try {
         const parsed = JSON.parse(content as string) as Record<string, unknown>;
         return JSON.stringify({ source, ...parsed });
@@ -232,6 +243,14 @@ function validateSourcesFile(raw: unknown): KnowledgeSourcesFile {
     if (typeof s.baseUrl !== "string" || !s.baseUrl.trim()) {
       throw new Error(`knowledge source ${s.name} baseUrl must be a non-empty string`);
     }
+    if (
+      s.allowInsecureHttpWithCredentials !== undefined &&
+      typeof s.allowInsecureHttpWithCredentials !== "boolean"
+    ) {
+      throw new Error(
+        `knowledge source ${s.name} allowInsecureHttpWithCredentials must be a boolean`,
+      );
+    }
     out.push({
       name: s.name,
       description: typeof s.description === "string" ? s.description : undefined,
@@ -239,6 +258,10 @@ function validateSourcesFile(raw: unknown): KnowledgeSourcesFile {
       token: typeof s.token === "string" ? s.token : undefined,
       tokenEnv: typeof s.tokenEnv === "string" ? s.tokenEnv : undefined,
       cacheTtlMs: typeof s.cacheTtlMs === "number" ? s.cacheTtlMs : undefined,
+      allowInsecureHttpWithCredentials:
+        typeof s.allowInsecureHttpWithCredentials === "boolean"
+          ? s.allowInsecureHttpWithCredentials
+          : undefined,
     });
   }
 
@@ -508,6 +531,14 @@ const DEFAULT_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
 export function knowledge(opts: ManifestOptions): Augment {
   const isFile = FILE_SCHEME_RE.test(opts.baseUrl);
+  if (!isFile) {
+    assertSecureCredentialTransport({
+      provider: "knowledge",
+      baseURL: opts.baseUrl,
+      credential: opts.token,
+      allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
+    });
+  }
 
   // For HTTP/HTTPS: keep existing behavior (trim trailing slash, init client).
   // For file://: parse to an absolute filesystem path; the http client is
@@ -523,11 +554,13 @@ export function knowledge(opts: ManifestOptions): Augment {
         createHttpClient({
           timeoutMs: 10_000,
           userAgent: "auggy-knowledge/0.2",
+          urlPolicy: "operator-configured",
           defaultHeaders: opts.token ? { authorization: `Bearer ${opts.token}` } : {},
         }))
       : createHttpClient({
           timeoutMs: 10_000,
           userAgent: "auggy-knowledge/0.2",
+          urlPolicy: "operator-configured",
           defaultHeaders: opts.token ? { authorization: `Bearer ${opts.token}` } : {},
         });
   const cacheTtl = opts.cacheTtlMs ?? DEFAULT_CACHE_TTL;
@@ -543,7 +576,8 @@ export function knowledge(opts: ManifestOptions): Augment {
   // file:// helpers
   // ---------------------------------------------------------------------------
 
-  async function resolveRealBase(): Promise<string> {
+  async function resolveRealBase(signal?: AbortSignal): Promise<string> {
+    signal?.throwIfAborted();
     if (cachedRealBase) return cachedRealBase;
     // Validate the base dir exists and is a directory — fail fast with a
     // clean error if the operator pointed baseUrl at something invalid.
@@ -555,6 +589,7 @@ export function knowledge(opts: ManifestOptions): Augment {
     if (!baseStat.isDirectory()) {
       throw new Error(`knowledge: file:// base "${fileBasePath}" is not a directory`);
     }
+    signal?.throwIfAborted();
     cachedRealBase = await realpath(fileBasePath);
     return cachedRealBase;
   }
@@ -563,15 +598,18 @@ export function knowledge(opts: ManifestOptions): Augment {
   // Manifest fetching (HTTP or file)
   // ---------------------------------------------------------------------------
 
-  async function fetchManifest(force = false): Promise<Manifest | null> {
+  async function fetchManifest(force = false, signal?: AbortSignal): Promise<Manifest | null> {
+    signal?.throwIfAborted();
     if (!force && cachedManifest && Date.now() < cacheExpiresAt) {
       return cachedManifest;
     }
 
     if (isFile) {
       try {
-        const realBase = await resolveRealBase();
+        const realBase = await resolveRealBase(signal);
+        signal?.throwIfAborted();
         const manifestPath = await safeResolveUnderBase(realBase, "manifest");
+        signal?.throwIfAborted();
         const body = await readFile(manifestPath, "utf-8");
         const parsed: unknown = JSON.parse(body);
         const validated = validateManifest(parsed);
@@ -585,6 +623,7 @@ export function knowledge(opts: ManifestOptions): Augment {
         cacheExpiresAt = Date.now() + cacheTtl;
         return cachedManifest;
       } catch (err) {
+        if (signal?.aborted || isOutcomeUnknownError(err)) throw err;
         console.warn(
           `[knowledge] failed to read file:// manifest from ${fileBasePath}: ${(err as Error).message}`,
         );
@@ -593,7 +632,7 @@ export function knowledge(opts: ManifestOptions): Augment {
     }
 
     try {
-      const res = await client.get(`${httpBaseUrl}/manifest`);
+      const res = await client.get(`${httpBaseUrl}/manifest`, { signal });
       if (res.status !== 200) {
         console.warn(`[knowledge] manifest returned ${res.status}: ${res.body.slice(0, 200)}`);
         return cachedManifest;
@@ -610,6 +649,7 @@ export function knowledge(opts: ManifestOptions): Augment {
       cacheExpiresAt = Date.now() + cacheTtl;
       return cachedManifest;
     } catch (err) {
+      if (signal?.aborted || isOutcomeUnknownError(err)) throw err;
       console.warn(`[knowledge] failed to fetch manifest: ${(err as Error).message}`);
       return cachedManifest;
     }
@@ -659,10 +699,13 @@ export function knowledge(opts: ManifestOptions): Augment {
   // must both be advertised explicitly to be reachable.
   // ---------------------------------------------------------------------------
 
-  async function checkManifestAllowlist(requestedPath: string): Promise<string | null> {
+  async function checkManifestAllowlist(
+    requestedPath: string,
+    signal?: AbortSignal,
+  ): Promise<string | null> {
     // Use cached manifest if fresh; otherwise force a reload (caller-side
     // side-effect: also populates cachedManifest for subsequent context()).
-    const manifest = await fetchManifest();
+    const manifest = await fetchManifest(false, signal);
     if (!manifest) {
       return JSON.stringify({
         error:
@@ -685,18 +728,24 @@ export function knowledge(opts: ManifestOptions): Augment {
   // knowledge_fetch tool — file:// branch
   // ---------------------------------------------------------------------------
 
-  async function fetchFromFile(endpoint: string, prompt?: string): Promise<string> {
+  async function fetchFromFile(
+    endpoint: string,
+    prompt?: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    signal?.throwIfAborted();
     const path = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
 
     // High-1: allowlist runs first (simple, single-pass per fetch). Traversal
     // rejection lives in safeResolveUnderBase as defense-in-depth.
-    const allowlistError = await checkManifestAllowlist(path);
+    const allowlistError = await checkManifestAllowlist(path, signal);
     if (allowlistError) return allowlistError;
 
     let realBase: string;
     try {
-      realBase = await resolveRealBase();
+      realBase = await resolveRealBase(signal);
     } catch (err) {
+      if (signal?.aborted || isOutcomeUnknownError(err)) throw err;
       return JSON.stringify({
         error: `Failed to resolve manifest base: ${(err as Error).message}`,
         hint: "Check the file:// baseUrl in agent.yaml and that the directory exists.",
@@ -705,8 +754,10 @@ export function knowledge(opts: ManifestOptions): Augment {
 
     let resolved: string;
     try {
+      signal?.throwIfAborted();
       resolved = await safeResolveUnderBase(realBase, path);
     } catch (err) {
+      if (signal?.aborted || isOutcomeUnknownError(err)) throw err;
       // Traversal-rejection or null-byte path. Surface as a clean error
       // envelope (NOT a thrown exception) so the model sees a recoverable
       // tool failure rather than a crash.
@@ -721,7 +772,9 @@ export function knowledge(opts: ManifestOptions): Augment {
       // (matches the scaffolded example dir convention where `/mission` is
       // backed by `mission.md`). This is a convenience for file://-mode
       // operators; HTTP-mode behavior is unchanged.
+      signal?.throwIfAborted();
       body = await readFile(resolved, "utf-8").catch(async (err: unknown) => {
+        signal?.throwIfAborted();
         const e = err as NodeJS.ErrnoException;
         if (e.code === "ENOENT" || e.code === "EISDIR") {
           // Try .md fallback under the same boundary check.
@@ -731,6 +784,7 @@ export function knowledge(opts: ManifestOptions): Augment {
         throw err;
       });
     } catch (err) {
+      if (signal?.aborted || isOutcomeUnknownError(err)) throw err;
       const e = err as NodeJS.ErrnoException;
       if (e.code === "ENOENT") {
         return JSON.stringify({
@@ -764,16 +818,21 @@ export function knowledge(opts: ManifestOptions): Augment {
   // knowledge_fetch tool — HTTP branch (unchanged)
   // ---------------------------------------------------------------------------
 
-  async function fetchFromHttp(endpoint: string, prompt?: string): Promise<string> {
+  async function fetchFromHttp(
+    endpoint: string,
+    prompt?: string,
+    signal?: AbortSignal,
+  ): Promise<string> {
+    signal?.throwIfAborted();
     const path = endpoint.startsWith("/") ? endpoint : `/${endpoint}`;
 
     // High-1: allowlist runs first. Same shape as the file:// branch — manifest
     // is the authoritative endpoint contract regardless of transport.
-    const allowlistError = await checkManifestAllowlist(path);
+    const allowlistError = await checkManifestAllowlist(path, signal);
     if (allowlistError) return allowlistError;
 
     try {
-      const res = await client.get(`${httpBaseUrl}${path}`);
+      const res = await client.get(`${httpBaseUrl}${path}`, { signal });
       if (res.status !== 200) {
         return JSON.stringify({
           error: `Org API returned ${res.status} for ${path}`,
@@ -807,6 +866,7 @@ export function knowledge(opts: ManifestOptions): Augment {
         content: res.body.slice(0, 20_000),
       });
     } catch (err) {
+      if (signal?.aborted || isOutcomeUnknownError(err)) throw err;
       return JSON.stringify({
         error: `Failed to fetch ${path}: ${(err as Error).message}`,
         hint: "The org API may be temporarily unreachable.",
@@ -829,11 +889,11 @@ export function knowledge(opts: ManifestOptions): Augment {
         .describe("The endpoint path (e.g. '/vision', '/initiatives', '/solutions/architecture')"),
       prompt: z.string().optional().describe("Optional: what you want to know from the content"),
     }),
-    execute: async ({ endpoint, prompt }) => {
+    execute: async ({ endpoint, prompt }, context) => {
       if (isFile) {
-        return fetchFromFile(endpoint, prompt);
+        return fetchFromFile(endpoint, prompt, context?.signal);
       }
-      return fetchFromHttp(endpoint, prompt);
+      return fetchFromHttp(endpoint, prompt, context?.signal);
     },
   });
 
@@ -893,8 +953,8 @@ export function knowledge(opts: ManifestOptions): Augment {
     tools: [manifestFetchTool],
     adminInfo,
 
-    context: async () => {
-      const manifest = await fetchManifest();
+    context: async (turn) => {
+      const manifest = await fetchManifest(false, turn.signal);
       if (!manifest) return [];
 
       const block: ContextBlock = {

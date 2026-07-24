@@ -18,7 +18,7 @@ export interface CapabilityTable {
     input: unknown,
     turn: TurnState,
   ): { allowed: true } | { needsApproval: true; reason: string } | { denied: true; reason: string };
-  recordToolCall(toolName: string): void;
+  reserveToolCall(toolName: string): { reserved: true } | { denied: true; reason: string };
   resetTurn(): void;
 }
 
@@ -116,27 +116,6 @@ export function createCapabilityTable(augments: Augment[]): CapabilityTable {
         };
       }
 
-      // Global limit
-      if (globalCalls >= globalLimit) {
-        return {
-          denied: true,
-          reason: `Global max tool calls per turn (${globalLimit}) exceeded`,
-        };
-      }
-
-      // Per-augment limit
-      const owner = toolOwner.get(toolName);
-      if (owner) {
-        const limit = augmentLimits.get(owner) ?? KERNEL_DEFAULT_MAX_TOOL_CALLS;
-        const count = augmentCallCounts.get(owner) ?? 0;
-        if (count >= limit) {
-          return {
-            denied: true,
-            reason: `Max tool calls for augment "${owner}" (${limit}) exceeded`,
-          };
-        }
-      }
-
       // Global approval gate (applies to every trust level).
       if (requiresApproval.has(toolName)) {
         return {
@@ -156,12 +135,30 @@ export function createCapabilityTable(augments: Augment[]): CapabilityTable {
       return { allowed: true };
     },
 
-    recordToolCall(toolName: string) {
-      globalCalls++;
+    reserveToolCall(toolName: string) {
+      if (globalCalls >= globalLimit) {
+        return {
+          denied: true as const,
+          reason: `Global max tool calls per turn (${globalLimit}) exceeded`,
+        };
+      }
       const owner = toolOwner.get(toolName);
+      if (owner) {
+        const limit = augmentLimits.get(owner) ?? KERNEL_DEFAULT_MAX_TOOL_CALLS;
+        const count = augmentCallCounts.get(owner) ?? 0;
+        if (count >= limit) {
+          return {
+            denied: true as const,
+            reason: `Max tool calls for augment "${owner}" (${limit}) exceeded`,
+          };
+        }
+      }
+
+      globalCalls++;
       if (owner) {
         augmentCallCounts.set(owner, (augmentCallCounts.get(owner) ?? 0) + 1);
       }
+      return { reserved: true as const };
     },
 
     resetTurn() {

@@ -1,5 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
-import { access, writeFile, mkdir, symlink, readFile } from "node:fs/promises";
+import {
+  access,
+  writeFile,
+  mkdir,
+  symlink,
+  readFile,
+  link,
+  rename,
+  unlink,
+} from "node:fs/promises";
 import { join } from "node:path";
 import { filesystem, isWithinMount } from "@/augments/filesystem";
 import type { ContextBlock, PeerIdentity, ToolExecuteContext, TurnState } from "@/types";
@@ -181,6 +190,18 @@ describe("filesystem augment", () => {
     });
   });
 
+  it("creates and canonicalizes a missing writable mount root at boot", async () => {
+    const root = join(tmp.path, "not-created", "work");
+    const aug = filesystem({
+      mounts: [{ name: "work", path: root, writable: true }],
+    });
+
+    expect(await execTool(aug, "fs_write", { path: "work/new.txt", content: "safe" })).toContain(
+      "Written",
+    );
+    expect(await readFile(join(root, "new.txt"), "utf8")).toBe("safe");
+  });
+
   // === fs_read ===
 
   describe("fs_read", () => {
@@ -298,6 +319,75 @@ describe("filesystem augment", () => {
       );
     });
 
+    it("rejects readable hard links to files outside the mount", async () => {
+      const outside = join(tmp.path, "outside-read-hardlink.txt");
+      const inside = join(tmp.path, "readable", "hardlink.txt");
+      await writeFile(outside, "outside secret", "utf8");
+      await link(outside, inside);
+
+      const aug = createTestFs();
+      expect(await execTool(aug, "fs_read", { path: "read/hardlink.txt" })).toContain(
+        "multiple filesystem links",
+      );
+    });
+
+    it("rejects a write through an escaping symlink parent when the leaf does not exist", async () => {
+      const outside = join(tmp.path, "outside-write");
+      await mkdir(outside, { recursive: true });
+      await symlink(outside, join(tmp.path, "writable", "escape-parent"), "dir");
+
+      const aug = createTestFs();
+      await expect(
+        execTool(aug, "fs_write", {
+          path: "work/escape-parent/new.txt",
+          content: "must stay inside the mount",
+        }),
+      ).rejects.toThrow(/outside mount.*boundary/);
+      await expect(access(join(outside, "new.txt"))).rejects.toThrow();
+    });
+
+    it("rejects mkdir through an escaping symlink parent when the target does not exist", async () => {
+      const outside = join(tmp.path, "outside-mkdir");
+      await mkdir(outside, { recursive: true });
+      await symlink(outside, join(tmp.path, "writable", "escape-parent"), "dir");
+
+      const aug = createTestFs();
+      await expect(
+        execTool(aug, "fs_mkdir", { path: "work/escape-parent/new-directory" }),
+      ).rejects.toThrow(/outside mount.*boundary/);
+      await expect(access(join(outside, "new-directory"))).rejects.toThrow();
+    });
+
+    it("rejects writes through any symlinked parent, including links that currently stay inside", async () => {
+      await mkdir(join(tmp.path, "writable", "real-parent"), { recursive: true });
+      await symlink(
+        join(tmp.path, "writable", "real-parent"),
+        join(tmp.path, "writable", "linked-parent"),
+        "dir",
+      );
+
+      const aug = createTestFs();
+      await expect(
+        execTool(aug, "fs_write", {
+          path: "work/linked-parent/new.txt",
+          content: "do not follow mutation aliases",
+        }),
+      ).rejects.toThrow(/symlink/);
+      await expect(access(join(tmp.path, "writable", "real-parent", "new.txt"))).rejects.toThrow();
+    });
+
+    it("rejects search patterns that traverse outside the mount", async () => {
+      await writeFile(join(tmp.path, "outside-search-secret.txt"), "secret", "utf8");
+      const aug = createTestFs();
+
+      await expect(
+        execTool(aug, "fs_search", {
+          path: "read",
+          pattern: "../outside-search-secret.txt",
+        }),
+      ).rejects.toThrow(/may not leave the mount boundary/);
+    });
+
     // Codex review P2: separator-suffix check broke mounts rooted at
     // filesystem roots ("/" on POSIX). These pure-unit tests verify the
     // new `path.relative`-based boundary check handles root mounts,
@@ -351,6 +441,22 @@ describe("filesystem augment", () => {
   // === fs_write ===
 
   describe("fs_write", () => {
+    it("does not begin a mutation when the turn is already canceled", async () => {
+      const aug = createTestFs();
+      const controller = new AbortController();
+      controller.abort(new DOMException("caller left", "AbortError"));
+
+      await expect(
+        execTool(
+          aug,
+          "fs_write",
+          { path: "work/canceled.txt", content: "must not be written" },
+          { ...creatorCtx, signal: controller.signal },
+        ),
+      ).rejects.toThrow("caller left");
+      await expect(access(join(tmp.path, "writable", "canceled.txt"))).rejects.toThrow();
+    });
+
     it("writes a file to a writable mount", async () => {
       const aug = createTestFs();
       const result = await execTool(aug, "fs_write", {
@@ -405,6 +511,240 @@ describe("filesystem augment", () => {
       });
       expect(result).toContain("exceeds max write size");
     });
+
+    it("enforces maxWriteSize in UTF-8 bytes", async () => {
+      const aug = filesystem({
+        mounts: [
+          {
+            name: "work",
+            path: join(tmp.path, "writable"),
+            writable: true,
+            maxWriteSize: 4,
+          },
+        ],
+      });
+      const result = await execTool(aug, "fs_write", {
+        path: "work/unicode.txt",
+        content: "ééé",
+      });
+      expect(result).toContain("exceeds max write size");
+      await expect(access(join(tmp.path, "writable", "unicode.txt"))).rejects.toThrow();
+    });
+
+    it("rejects oversized content before creating parent directories", async () => {
+      const aug = filesystem({
+        mounts: [
+          {
+            name: "work",
+            path: join(tmp.path, "writable"),
+            writable: true,
+            maxWriteSize: 2,
+          },
+        ],
+      });
+      const result = await execTool(aug, "fs_write", {
+        path: "work/must-not-exist/nested/file.txt",
+        content: "too large",
+      });
+      expect(result).toContain("exceeds max write size");
+      await expect(access(join(tmp.path, "writable", "must-not-exist"))).rejects.toThrow();
+    });
+
+    it("rejects writing through a hard-linked leaf", async () => {
+      const outside = join(tmp.path, "outside-hardlink.txt");
+      const inside = join(tmp.path, "writable", "hardlink.txt");
+      await writeFile(outside, "outside content", "utf8");
+      await link(outside, inside);
+
+      const aug = createTestFs();
+      await expect(
+        execTool(aug, "fs_write", {
+          path: "work/hardlink.txt",
+          content: "must not mutate the outside alias",
+        }),
+      ).rejects.toThrow(/multiple filesystem links/);
+      expect(await readFile(outside, "utf8")).toBe("outside content");
+    });
+
+    it("keeps the mount pinned when an ancestor is replaced after boot", async () => {
+      const configuredParent = join(tmp.path, "configured-parent");
+      const originalParent = join(tmp.path, "original-parent");
+      const outsideParent = join(tmp.path, "outside-parent");
+      const configuredRoot = join(configuredParent, "mount");
+      const outsideRoot = join(outsideParent, "mount");
+      await mkdir(configuredRoot, { recursive: true });
+      await mkdir(outsideRoot, { recursive: true });
+      const aug = filesystem({
+        mounts: [{ name: "work", path: configuredRoot, writable: true }],
+      });
+      await aug.onBoot!();
+
+      await rename(configuredParent, originalParent);
+      await symlink(outsideParent, configuredParent, "dir");
+
+      const tool = aug.tools!.find((candidate) => candidate.name === "fs_write");
+      if (!tool) throw new Error("fs_write not found");
+      expect(
+        await asStringTool(tool).execute({
+          path: "work/anchored.txt",
+          content: "pinned",
+        }),
+      ).toContain("Written");
+      expect(await readFile(join(originalParent, "mount", "anchored.txt"), "utf8")).toBe("pinned");
+      await expect(access(join(outsideRoot, "anchored.txt"))).rejects.toThrow();
+    });
+
+    it("keeps a write pinned when the opened leaf path is replaced", async () => {
+      const target = join(tmp.path, "writable", "replace.txt");
+      const pinnedTarget = join(tmp.path, "writable", "replace-opened.txt");
+      const outside = join(tmp.path, "outside-write-target.txt");
+      await writeFile(target, "inside before", "utf8");
+      await writeFile(outside, "OUTSIDE_SENTINEL", "utf8");
+
+      let replaced = false;
+      const aug = filesystem({
+        mounts: [{ name: "work", path: join(tmp.path, "writable"), writable: true }],
+        __testHooks: {
+          async afterWriteTargetOpened() {
+            if (replaced) return;
+            replaced = true;
+            await rename(target, pinnedTarget);
+            await symlink(outside, target);
+          },
+        },
+      });
+
+      expect(
+        await execTool(aug, "fs_write", {
+          path: "work/replace.txt",
+          content: "descriptor-pinned",
+        }),
+      ).toContain("Written");
+      expect(await readFile(pinnedTarget, "utf8")).toBe("descriptor-pinned");
+      expect(await readFile(outside, "utf8")).toBe("OUTSIDE_SENTINEL");
+    });
+
+    it("rejects an ordinary-directory replacement during root acquisition", async () => {
+      const configuredParent = join(tmp.path, "acquire-configured");
+      const originalParent = join(tmp.path, "acquire-original");
+      const configuredRoot = join(configuredParent, "mount");
+      await mkdir(configuredRoot, { recursive: true });
+      await writeFile(join(configuredRoot, "original.txt"), "original", "utf8");
+      let replaced = false;
+      const aug = filesystem({
+        mounts: [{ name: "work", path: configuredRoot, writable: true }],
+        __testHooks: {
+          async afterMountCanonicalized() {
+            if (replaced) return;
+            replaced = true;
+            await rename(configuredParent, originalParent);
+            await mkdir(configuredRoot, { recursive: true });
+            await writeFile(join(configuredRoot, "replacement.txt"), "replacement", "utf8");
+          },
+        },
+      });
+
+      await expect(aug.onBoot!()).rejects.toThrow(/changed during acquisition/);
+    });
+
+    it("does not reacquire a mount after shutdown cancels a suspended acquisition", async () => {
+      let markCanonicalized: (() => void) | undefined;
+      const canonicalized = new Promise<void>((resolve) => {
+        markCanonicalized = resolve;
+      });
+      let resumeAcquisition: (() => void) | undefined;
+      const suspended = new Promise<void>((resolve) => {
+        resumeAcquisition = resolve;
+      });
+      const aug = filesystem({
+        mounts: [{ name: "work", path: join(tmp.path, "readable"), writable: false }],
+        __testHooks: {
+          async afterMountCanonicalized() {
+            markCanonicalized?.();
+            await suspended;
+          },
+        },
+      });
+
+      const boot = aug.onBoot!();
+      await canonicalized;
+      await aug.onShutdown!();
+      resumeAcquisition?.();
+
+      await expect(boot).rejects.toThrow(/acquisition was cancelled/);
+      const readTool = aug.tools!.find((candidate) => candidate.name === "fs_read");
+      if (!readTool) throw new Error("fs_read not found");
+      let shutdownError: unknown;
+      try {
+        await asStringTool(readTool).execute({
+          path: "work/hello.txt",
+        });
+      } catch (error) {
+        shutdownError = error;
+      }
+      expect(String(shutdownError)).toMatch(/shutting down|Unknown mount/);
+    });
+
+    it("pins a missing writable root beneath an operator-configured symlink", async () => {
+      const outside = join(tmp.path, "missing-root-outside");
+      const replacement = join(tmp.path, "missing-root-replacement");
+      const configuredParent = join(tmp.path, "missing-root-parent");
+      await mkdir(outside, { recursive: true });
+      await mkdir(replacement, { recursive: true });
+      await symlink(outside, configuredParent, "dir");
+      const aug = filesystem({
+        mounts: [
+          {
+            name: "work",
+            path: join(configuredParent, "new-root"),
+            writable: true,
+          },
+        ],
+      });
+
+      await aug.onBoot!();
+      await unlink(configuredParent);
+      await symlink(replacement, configuredParent, "dir");
+      expect(
+        await execTool(aug, "fs_write", {
+          path: "work/pinned.txt",
+          content: "pinned",
+        }),
+      ).toContain("Written");
+      expect(await readFile(join(outside, "new-root", "pinned.txt"), "utf8")).toBe("pinned");
+      await expect(access(join(replacement, "new-root", "pinned.txt"))).rejects.toThrow();
+    });
+
+    it("rejects FIFO write targets without blocking for a reader", async () => {
+      if (process.platform === "win32") return;
+      const fifo = join(tmp.path, "writable", "blocked.fifo");
+      const created = Bun.spawnSync(["mkfifo", fifo]);
+      expect(created.exitCode).toBe(0);
+      const reader = Bun.spawn([
+        process.execPath,
+        "-e",
+        [
+          'import { openSync, closeSync, constants } from "node:fs";',
+          "await Bun.sleep(1000);",
+          "const path = process.argv.at(-1);",
+          "if (path) { const fd = openSync(path, constants.O_RDONLY); closeSync(fd); }",
+        ].join(" "),
+        fifo,
+      ]);
+      const startedAt = performance.now();
+      try {
+        await expect(
+          execTool(createTestFs(), "fs_write", {
+            path: "work/blocked.fifo",
+            content: "must not block",
+          }),
+        ).rejects.toThrow();
+        expect(performance.now() - startedAt).toBeLessThan(500);
+      } finally {
+        reader.kill();
+        await reader.exited;
+      }
+    });
   });
 
   // === fs_list ===
@@ -438,6 +778,80 @@ describe("filesystem augment", () => {
       };
       expect(parsed.type).toBe("file");
       expect(parsed.size).toBe(11); // "hello world"
+    });
+
+    it("does not follow escaping symlinks when listing metadata", async () => {
+      const outside = join(tmp.path, "outside-list-secret.txt");
+      await writeFile(outside, "sensitive-size", "utf8");
+      await symlink(outside, join(tmp.path, "readable", "outside-link.txt"));
+
+      const aug = createTestFs();
+      const result = await execTool(aug, "fs_list", { path: "read" });
+      const parsed = JSON.parse(result) as {
+        entries: Array<{ name: string; type: string; size?: number; modified?: string }>;
+      };
+      const linkEntry = parsed.entries.find((entry) => entry.name === "outside-link.txt");
+      expect(linkEntry).toEqual({ name: "outside-link.txt", type: "symlink" });
+    });
+
+    it("keeps a directory listing pinned when its path is replaced after opening", async () => {
+      const target = join(tmp.path, "writable", "target");
+      const pinnedTarget = join(tmp.path, "writable", "pinned-target");
+      const outside = join(tmp.path, "outside-list");
+      await mkdir(target);
+      await writeFile(join(target, "inside.txt"), "inside", "utf8");
+      await mkdir(outside);
+      await writeFile(join(outside, "OUTSIDE_SENTINEL"), "secret", "utf8");
+
+      let replaced = false;
+      const aug = filesystem({
+        mounts: [{ name: "work", path: join(tmp.path, "writable"), writable: true }],
+        __testHooks: {
+          async afterListTargetOpened() {
+            if (replaced) return;
+            replaced = true;
+            await rename(target, pinnedTarget);
+            await symlink(outside, target);
+          },
+        },
+      });
+
+      const result = JSON.parse(await execTool(aug, "fs_list", { path: "work/target" })) as {
+        entries: Array<{ name: string }>;
+      };
+      expect(result.entries.map(({ name }) => name)).toEqual(["inside.txt"]);
+      expect(result.entries.map(({ name }) => name)).not.toContain("OUTSIDE_SENTINEL");
+    });
+
+    it("returns complete repeatable root listings sequentially and concurrently", async () => {
+      const aug = createTestFs();
+      await aug.onBoot!();
+      const tool = aug.tools!.find((candidate) => candidate.name === "fs_list");
+      if (!tool) throw new Error("fs_list not found");
+      const list = () =>
+        asStringTool(tool).execute({
+          path: "read",
+        });
+
+      const first = await list();
+      const second = await list();
+      expect(second).toBe(first);
+
+      const [third, fourth] = await Promise.all([list(), list()]);
+      expect(third).toBe(first);
+      expect(fourth).toBe(first);
+    });
+
+    it("bounds directory listing output before materializing every entry", async () => {
+      for (let index = 0; index < 1005; index++) {
+        await writeFile(join(tmp.path, "writable", `entry-${index}.txt`), "x", "utf8");
+      }
+      const result = JSON.parse(await execTool(createTestFs(), "fs_list", { path: "work" })) as {
+        entries: Array<{ name: string }>;
+        truncated: boolean;
+      };
+      expect(result.entries).toHaveLength(1000);
+      expect(result.truncated).toBe(true);
     });
   });
 
@@ -571,6 +985,33 @@ describe("filesystem augment", () => {
 
       expect(result.results).toEqual(["workspace/notes/keep.md"]);
     });
+
+    it("searches the pinned mount after its pathname is replaced", async () => {
+      const configured = join(tmp.path, "search-configured");
+      const pinned = join(tmp.path, "search-pinned");
+      await mkdir(configured, { recursive: true });
+      await writeFile(join(configured, "original.md"), "original", "utf8");
+      const aug = filesystem({
+        mounts: [{ name: "workspace", path: configured }],
+        workspaceAwareness: { enabled: false },
+      });
+      await aug.onBoot!();
+
+      await rename(configured, pinned);
+      await mkdir(configured, { recursive: true });
+      await writeFile(join(configured, "OUTSIDE_SENTINEL.md"), "replacement", "utf8");
+
+      const tool = aug.tools!.find((candidate) => candidate.name === "fs_search");
+      if (!tool) throw new Error("fs_search not found");
+      const result = JSON.parse(
+        await asStringTool(tool).execute({
+          path: "workspace",
+          pattern: "**/*.md",
+        }),
+      ) as { results: string[] };
+      expect(result.results).toEqual(["workspace/original.md"]);
+      expect(JSON.stringify(result)).not.toContain("OUTSIDE_SENTINEL");
+    });
   });
 
   // === Creator-only skill visibility ===
@@ -680,6 +1121,69 @@ describe("filesystem augment", () => {
         const denied = await execTool(aug, "fs_search", { path, pattern: "**/*.md" }, publicCtx);
         expect(denied).toContain('Skill "auggy"');
       }
+    });
+
+    it("keeps skill authorization and reads bound to the same folder descriptor", async () => {
+      await writeSkill("public", "---\nname: public\ndescription: Public.\n---\n# Public");
+      await writeSkill(
+        "secret",
+        "---\nname: secret\ndescription: Secret.\nallowedTrustLevels: creator\n---\n# Secret",
+      );
+      let swapped = false;
+      const aug = filesystem({
+        mounts: [{ name: "skills", path: join(tmp.path, "skills") }],
+        __testHooks: {
+          async afterSkillPolicyEvaluated() {
+            if (swapped) return;
+            swapped = true;
+            await rename(
+              join(tmp.path, "skills", "public"),
+              join(tmp.path, "skills", "was-public"),
+            );
+            await rename(join(tmp.path, "skills", "secret"), join(tmp.path, "skills", "public"));
+          },
+        },
+      });
+
+      const result = await execTool(aug, "fs_read", { path: "skills/public/SKILL.md" }, publicCtx);
+      expect(result).toContain("# Public");
+      expect(result).not.toContain("# Secret");
+    });
+
+    it("fails closed for a present but structurally invalid skill policy", async () => {
+      const folder = join(tmp.path, "skills", "broken");
+      await mkdir(folder, { recursive: true });
+      await writeFile(join(folder, "SKILL.md"), "not valid frontmatter", "utf8");
+      const aug = filesystem({ mounts: [{ name: "skills", path: join(tmp.path, "skills") }] });
+
+      const denied = await execTool(aug, "fs_read", { path: "skills/broken/SKILL.md" }, publicCtx);
+      expect(denied).toContain("policy cannot be verified");
+      await expect(
+        execTool(aug, "fs_read", { path: "skills/broken/SKILL.md" }, creatorCtx),
+      ).resolves.toContain("not valid frontmatter");
+    });
+
+    it("applies skill visibility policy to explicitly public workspace awareness", async () => {
+      await writeSkill(
+        "secret",
+        "---\nname: secret\ndescription: Secret.\nallowedTrustLevels: creator\n---\n# Secret",
+      );
+      await writeSkill("public", "---\nname: public\ndescription: Public.\n---\n# Public");
+      const aug = filesystem({
+        mounts: [{ name: "skills", path: join(tmp.path, "skills") }],
+        workspaceAwareness: {
+          mount: "skills",
+          trustLevels: ["creator", "public"],
+        },
+      });
+      await aug.onBoot!();
+
+      const blocks = (await aug.context!(
+        messageTurn(publicPeer, "What skills are available?"),
+      )) as ContextBlock[];
+      const catalog = blocks.find((block) => block.source === "filesystem-workspace-catalog");
+      expect(catalog?.content).toContain('"skills/public/SKILL.md"');
+      expect(catalog?.content).not.toContain("skills/secret");
     });
   });
 
@@ -809,6 +1313,26 @@ describe("filesystem augment", () => {
       expect(catalog?.content).not.toContain("draft.tmp");
     });
 
+    it("catalogs the pinned workspace after its pathname is replaced", async () => {
+      const workspace = join(tmp.path, "workspace-replaced");
+      const pinned = join(tmp.path, "workspace-pinned");
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(workspace, "original.md"), "original", "utf8");
+      const aug = filesystem({ mounts: [{ name: "workspace", path: workspace }] });
+      await aug.onBoot!();
+
+      await rename(workspace, pinned);
+      await mkdir(workspace, { recursive: true });
+      await writeFile(join(workspace, "OUTSIDE_SENTINEL.md"), "replacement", "utf8");
+
+      const blocks = (await aug.context!(
+        messageTurn(creatorPeer, "Review workspace"),
+      )) as ContextBlock[];
+      const catalog = blocks.find((block) => block.source === "filesystem-workspace-catalog");
+      expect(catalog?.content).toContain('"workspace/original.md"');
+      expect(catalog?.content).not.toContain("OUTSIDE_SENTINEL");
+    });
+
     it("does not claim a truncated scan proves the workspace is empty", async () => {
       const workspace = join(tmp.path, "workspace-truncated-empty");
       await mkdir(workspace, { recursive: true });
@@ -825,8 +1349,8 @@ describe("filesystem augment", () => {
       )) as ContextBlock[];
       const catalog = blocks.find((block) => block.source === "filesystem-workspace-catalog");
 
-      expect(catalog?.content).toContain("No visible files were found within the bounded scan");
-      expect(catalog?.content).toContain("Omitted paths may still exist");
+      expect(catalog?.content).toContain("within a bounded scan");
+      expect(catalog?.content).toMatch(/[Oo]mitted path(?:s)? may still exist/);
       expect(catalog?.content).not.toContain("currently has no visible files");
     });
 

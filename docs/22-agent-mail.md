@@ -112,6 +112,11 @@ config:
     #   timestampToleranceSeconds: 300
 ```
 
+Credential-bearing AgentMail endpoints require HTTPS/WSS. Plaintext HTTP/WS is
+accepted only for loopback development. A remote sandbox that cannot use TLS
+requires both `allowInsecureHttpWithCredentials: true` and
+`NODE_ENV=development`; never enable that override in a deployed agent.
+
 `webTransport` is required for `inbound.mode: webhook`. It is also required
 with `adminRoute` enabled whenever an executable trust level requires outbound
 human review, because review decisions are creator-authenticated admin actions.

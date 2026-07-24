@@ -4,7 +4,9 @@ import type {
   AgentCard,
   OutboundMessage,
   PeerIdentity,
+  TelegramAsyncReplayStore,
   TelegramAuthOptions,
+  TelegramReplayClaimOptions,
   TransportKernel,
   TurnResult,
   TurnTrigger,
@@ -166,7 +168,7 @@ describe("validateAdmittedAgents", () => {
       info: (msg: string) => logs.push(`info: ${msg}`),
       warn: (msg: string) => logs.push(`warn: ${msg}`),
     };
-    await validateAdmittedAgents(
+    const validated = await validateAdmittedAgents(
       [
         { id: "scheduler", telegramUserId: 100 },
         { id: "billing", telegramUserId: 200 },
@@ -175,12 +177,13 @@ describe("validateAdmittedAgents", () => {
       log,
     );
     expect(logs.filter((l) => l.startsWith("info"))).toHaveLength(2);
+    expect(validated.map((agent) => agent.id)).toEqual(["scheduler", "billing"]);
   });
 
-  it("logs warning for each admittedAgent that fails to resolve, naming id and telegramUserId", async () => {
+  it("removes every admittedAgent that fails validation from the active mapping", async () => {
     const logs: string[] = [];
     const log = { info: () => {}, warn: (msg: string) => logs.push(msg) };
-    await validateAdmittedAgents(
+    const validated = await validateAdmittedAgents(
       [
         { id: "scheduler", telegramUserId: 100 },
         { id: "typo-bot", telegramUserId: 999 },
@@ -191,6 +194,7 @@ describe("validateAdmittedAgents", () => {
     expect(logs.length).toBe(1);
     expect(logs[0]).toContain("typo-bot");
     expect(logs[0]).toContain("999");
+    expect(validated).toEqual([{ id: "scheduler", telegramUserId: 100 }]);
   });
 
   it("does nothing if admittedAgents is empty or undefined", async () => {
@@ -199,6 +203,69 @@ describe("validateAdmittedAgents", () => {
     await validateAdmittedAgents(undefined, mockClient({}), log);
     await validateAdmittedAgents([], mockClient({}), log);
     expect(logs).toHaveLength(0);
+  });
+
+  it("demotes a configured agent whose identity fails boot validation", async () => {
+    const aug = telegramTransport({
+      botToken: "123:test-token",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {
+        admittedAgents: [{ id: "typo-bot", telegramUserId: 999 }],
+      },
+      _clientFactory: () => mockClient({ 999: "fail" }),
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+
+    await aug.onBoot?.();
+    const peer = aug.transport!.identify({
+      userId: 999,
+      threadId: "tg-chat-999",
+      chatType: "private",
+    });
+    expect(peer).toMatchObject({
+      trustLevel: "public",
+      publicSubstate: "anonymous",
+    });
+    expect(peer?.id).not.toBe("typo-bot");
+    await aug.onShutdown?.();
+  });
+
+  it("revalidates configured admitted agents after a transport restart", async () => {
+    let attempts = 0;
+    const client = mockClient({});
+    client.getChat = async (chatId) => {
+      attempts++;
+      if (attempts === 1) throw new Error("temporarily unavailable");
+      return { id: Number(chatId), type: "private" };
+    };
+    const aug = telegramTransport({
+      botToken: "123:test-token",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {
+        admittedAgents: [{ id: "recovering-agent", telegramUserId: 999 }],
+      },
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+
+    await aug.onBoot?.();
+    expect(
+      aug.transport!.identify({
+        userId: 999,
+        threadId: "tg-bot-123-chat-999",
+        chatType: "private",
+      })?.trustLevel,
+    ).toBe("public");
+    await aug.onShutdown?.();
+
+    await aug.onBoot?.();
+    expect(
+      aug.transport!.identify({
+        userId: 999,
+        threadId: "tg-bot-123-chat-999",
+        chatType: "private",
+      })?.trustLevel,
+    ).toBe("agent");
+    expect(attempts).toBe(2);
+    await aug.onShutdown?.();
   });
 });
 
@@ -233,18 +300,17 @@ function makeMockKernel(opts: { handleInbound?: TransportKernel["handleInbound"]
   const handleInboundCalls: Array<{ trigger: TurnTrigger }> = [];
   const outboundCallbacks: Array<(peer: PeerIdentity, msg: OutboundMessage) => Promise<void>> = [];
   const kernel: TransportKernel = {
-    handleInbound:
-      opts.handleInbound ??
-      (async (trigger) => {
-        handleInboundCalls.push({ trigger });
-        return {
-          turnId: trigger.turnId,
-          success: true,
-          status: "completed",
-          toolCalls: [],
-          trace: {} as TurnResult["trace"],
-        };
-      }),
+    handleInbound: async (trigger, options) => {
+      handleInboundCalls.push({ trigger });
+      if (opts.handleInbound) return opts.handleInbound(trigger, options);
+      return {
+        turnId: trigger.turnId,
+        success: true,
+        status: "completed",
+        toolCalls: [],
+        trace: {} as TurnResult["trace"],
+      };
+    },
     onOutbound: (cb) => {
       outboundCallbacks.push(cb);
     },
@@ -290,7 +356,7 @@ describe("telegramTransport — polling lifecycle", () => {
     const { client } = makeMockClient([updates, []]);
     const { kernel, handleInboundCalls } = makeMockKernel();
     const aug = telegramTransport({
-      botToken: "T",
+      botToken: "123:test-token",
       inbound: { mode: "polling", polling: { timeoutSec: 0 } },
       auth: { creatorUserIds: [100] },
       _clientFactory: () => client,
@@ -303,8 +369,325 @@ describe("telegramTransport — polling lifecycle", () => {
     await aug.onShutdown?.();
     expect(handleInboundCalls).toHaveLength(1);
     expect(handleInboundCalls[0]?.trigger.peer?.trustLevel).toBe("creator");
-    expect(handleInboundCalls[0]?.trigger.threadId).toBe("tg-chat-100");
+    expect(handleInboundCalls[0]?.trigger.threadId).toBe("tg-bot-123-chat-100");
     expect(handleInboundCalls[0]?.trigger.type).toBe("message");
+  });
+
+  it("isolates the same Telegram chat across distinct bot identities", async () => {
+    const update: TelegramUpdate = {
+      update_id: 90,
+      message: {
+        message_id: 1,
+        chat: { id: 100, type: "private" },
+        from: { id: 100, is_bot: false },
+        date: 0,
+        text: "bot-scoped history",
+      },
+    };
+    let dispatchCount = 0;
+    let resolveBothDispatches!: () => void;
+    const bothDispatched = new Promise<void>((resolve) => {
+      resolveBothDispatches = resolve;
+    });
+    const instances = [
+      { botToken: "111:first-token", name: "telegram-primary" },
+      { botToken: "222:second-token", name: "telegram-secondary" },
+    ].map(({ botToken, name }) => {
+      const { client } = makeMockClient([[update], []]);
+      const setup = makeMockKernel({
+        handleInbound: async (trigger) => {
+          dispatchCount++;
+          if (dispatchCount === 2) resolveBothDispatches();
+          return {
+            turnId: trigger.turnId,
+            success: true,
+            status: "completed",
+            toolCalls: [],
+            trace: {} as TurnResult["trace"],
+          };
+        },
+      });
+      const aug = telegramTransport({
+        botToken,
+        inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+        auth: {},
+        _clientFactory: () => client,
+      } as unknown as Parameters<typeof telegramTransport>[0]);
+      return { aug, name, setup };
+    });
+
+    try {
+      for (const { aug, name, setup } of instances) {
+        await aug.transport!.register(setup.kernel, name);
+        await aug.onBoot?.();
+        await aug.transport!.ready?.();
+      }
+      await bothDispatched;
+
+      const first = instances[0]!.setup.handleInboundCalls[0]!.trigger;
+      const second = instances[1]!.setup.handleInboundCalls[0]!.trigger;
+      expect(first.threadId).toBe("tg-bot-111-chat-100");
+      expect(second.threadId).toBe("tg-bot-222-chat-100");
+      expect(first.threadId).not.toBe(second.threadId);
+      expect(first.peer?.sourceAugment).toBe("telegram-primary");
+      expect(second.peer?.sourceAugment).toBe("telegram-secondary");
+      expect(first.payload.sourceAugment).toBe("telegram-primary");
+      expect(second.payload.sourceAugment).toBe("telegram-secondary");
+    } finally {
+      for (const { aug } of instances) await aug.onShutdown?.();
+    }
+  });
+
+  it("claims duplicate update ids before kernel dispatch", async () => {
+    const update: TelegramUpdate = {
+      update_id: 91,
+      message: {
+        message_id: 1,
+        chat: { id: 100, type: "private" },
+        from: { id: 100, is_bot: false },
+        date: 0,
+        text: "one execution",
+      },
+    };
+    const { client } = makeMockClient([[update, update], []]);
+    const { kernel, handleInboundCalls } = makeMockKernel();
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {},
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+    await aug.transport!.register(kernel, "telegram-transport");
+    await aug.onBoot?.();
+    await aug.transport!.ready?.();
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    await aug.onShutdown?.();
+    expect(handleInboundCalls).toHaveLength(1);
+  });
+
+  it("awaits one shared atomic claim across concurrent transport instances", async () => {
+    let claimCalls = 0;
+    const claimNamespaces: string[] = [];
+    let releaseClaims!: () => void;
+    const bothClaimsStarted = new Promise<void>((resolve) => {
+      releaseClaims = resolve;
+    });
+    let settledClaims = 0;
+    let releaseSettledClaims!: () => void;
+    const bothClaimsSettled = new Promise<void>((resolve) => {
+      releaseSettledClaims = resolve;
+    });
+    let observeDispatch!: () => void;
+    const dispatchObserved = new Promise<void>((resolve) => {
+      observeDispatch = resolve;
+    });
+    const claims = new Map<string, string>();
+    const sharedStore: TelegramAsyncReplayStore = {
+      async claimAsync(namespace, updateId, payloadHash, { signal }) {
+        expect(signal.aborted).toBe(false);
+        claimCalls++;
+        claimNamespaces.push(namespace);
+        if (claimCalls === 2) releaseClaims();
+        await bothClaimsStarted;
+        const key = `${namespace}\0${updateId}`;
+        const existing = claims.get(key);
+        settledClaims++;
+        if (settledClaims === 2) releaseSettledClaims();
+        if (existing === undefined) {
+          claims.set(key, payloadHash);
+          return "claimed";
+        }
+        return existing === payloadHash ? "duplicate" : "conflict";
+      },
+    };
+    const update: TelegramUpdate = {
+      update_id: 92,
+      message: {
+        message_id: 1,
+        chat: { id: 100, type: "private" },
+        from: { id: 100, is_bot: false },
+        date: 0,
+        text: "one distributed execution",
+      },
+    };
+    const instances = ["telegram-primary", "telegram-secondary"].map((name) => {
+      const { client } = makeMockClient([[update], []]);
+      const setup = makeMockKernel({
+        handleInbound: async (trigger) => {
+          observeDispatch();
+          return {
+            turnId: trigger.turnId,
+            success: true,
+            status: "completed",
+            toolCalls: [],
+            trace: {} as TurnResult["trace"],
+          };
+        },
+      });
+      const aug = telegramTransport({
+        botToken: "333:shared-token",
+        inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+        auth: {},
+        replay: { store: sharedStore },
+        _clientFactory: () => client,
+      } as unknown as Parameters<typeof telegramTransport>[0]);
+      return { aug, name, setup };
+    });
+
+    try {
+      for (const { aug, name, setup } of instances) {
+        await aug.transport!.register(setup.kernel, name);
+        await aug.onBoot?.();
+        await aug.transport!.ready?.();
+      }
+      await Promise.all([bothClaimsSettled, dispatchObserved]);
+
+      expect(instances.reduce((sum, { setup }) => sum + setup.handleInboundCalls.length, 0)).toBe(
+        1,
+      );
+      expect(claimCalls).toBe(2);
+      expect(new Set(claimNamespaces)).toEqual(new Set(["telegram:bot-333"]));
+    } finally {
+      for (const { aug } of instances) await aug.onShutdown?.();
+    }
+  });
+
+  it("fails closed when an async replay store returns an invalid claim", async () => {
+    const update: TelegramUpdate = {
+      update_id: 93,
+      message: {
+        message_id: 1,
+        chat: { id: 100, type: "private" },
+        from: { id: 100, is_bot: false },
+        date: 0,
+        text: "must not dispatch",
+      },
+    };
+    let observeClaim!: () => void;
+    const claimObserved = new Promise<void>((resolve) => {
+      observeClaim = resolve;
+    });
+    const { client } = makeMockClient([[update], []]);
+    const setup = makeMockKernel();
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {},
+      replay: {
+        namespace: "invalid-store-test",
+        store: {
+          async claimAsync() {
+            observeClaim();
+            return "unexpected" as "claimed";
+          },
+        },
+      },
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+    await aug.transport!.register(setup.kernel, "telegram-transport");
+    await aug.onBoot?.();
+    await aug.transport!.ready?.();
+    await claimObserved;
+    await aug.onShutdown?.();
+
+    expect(setup.handleInboundCalls).toHaveLength(0);
+  });
+
+  it("aborts a stalled async replay claim during shutdown without dispatch", async () => {
+    const update: TelegramUpdate = {
+      update_id: 94,
+      message: {
+        message_id: 1,
+        chat: { id: 100, type: "private" },
+        from: { id: 100, is_bot: false },
+        date: 0,
+        text: "must not outlive shutdown",
+      },
+    };
+    let observeClaim!: (signal: AbortSignal) => void;
+    const claimObserved = new Promise<AbortSignal>((resolve) => {
+      observeClaim = resolve;
+    });
+    const { client } = makeMockClient([[update], []]);
+    const setup = makeMockKernel();
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {},
+      replay: {
+        namespace: "stalled-store-test",
+        store: {
+          async claimAsync(
+            _namespace: string,
+            _updateId: number,
+            _payloadHash: string,
+            options: TelegramReplayClaimOptions,
+          ) {
+            observeClaim(options.signal);
+            return new Promise<"claimed">(() => {});
+          },
+        },
+      },
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+    await aug.transport!.register(setup.kernel, "telegram-transport");
+    await aug.onBoot?.();
+    await aug.transport!.ready?.();
+    const signal = await claimObserved;
+    await aug.onShutdown?.();
+
+    expect(signal.aborted).toBe(true);
+    expect(setup.handleInboundCalls).toHaveLength(0);
+  });
+
+  it("propagates shutdown cancellation to an in-flight kernel turn", async () => {
+    const update: TelegramUpdate = {
+      update_id: 95,
+      message: {
+        message_id: 1,
+        chat: { id: 100, type: "private" },
+        from: { id: 100, is_bot: false },
+        date: 0,
+        text: "cancel on shutdown",
+      },
+    };
+    let observeTurn!: (signal: AbortSignal) => void;
+    const turnObserved = new Promise<AbortSignal>((resolve) => {
+      observeTurn = resolve;
+    });
+    const { client } = makeMockClient([[update], []]);
+    const setup = makeMockKernel({
+      handleInbound: async (trigger, options) => {
+        const signal = options?.signal;
+        if (!signal) throw new Error("expected lifecycle signal");
+        observeTurn(signal);
+        await new Promise<void>((resolve) => {
+          if (signal.aborted) resolve();
+          else signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        return {
+          turnId: trigger.turnId,
+          success: false,
+          status: "canceled",
+          toolCalls: [],
+          trace: {} as TurnResult["trace"],
+        };
+      },
+    });
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {},
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+    await aug.transport!.register(setup.kernel, "telegram-transport");
+    await aug.onBoot?.();
+    await aug.transport!.ready?.();
+    const signal = await turnObserved;
+    await aug.onShutdown?.();
+
+    expect(signal.aborted).toBe(true);
+    expect(setup.handleInboundCalls).toHaveLength(1);
   });
 
   it("inbound text → registered outbound callback → sendMessage to original chat_id", async () => {
@@ -321,7 +704,24 @@ describe("telegramTransport — polling lifecycle", () => {
       },
     ];
     const { client, sent } = makeMockClient([updates, []]);
-    const { kernel, handleInboundCalls, outboundCallbacks } = makeMockKernel();
+    let outboundCallbacks: Array<(peer: PeerIdentity, msg: OutboundMessage) => Promise<void>> = [];
+    const setup = makeMockKernel({
+      handleInbound: async (trigger) => {
+        await outboundCallbacks[0]!(trigger.peer!, {
+          parts: [{ kind: "text", text: "response text" }],
+          contextId: trigger.threadId,
+        });
+        return {
+          turnId: trigger.turnId,
+          success: true,
+          status: "completed",
+          toolCalls: [],
+          trace: {} as TurnResult["trace"],
+        };
+      },
+    });
+    outboundCallbacks = setup.outboundCallbacks;
+    const { kernel, handleInboundCalls } = setup;
     const aug = telegramTransport({
       botToken: "T",
       inbound: { mode: "polling", polling: { timeoutSec: 0 } },
@@ -332,14 +732,11 @@ describe("telegramTransport — polling lifecycle", () => {
     await aug.onBoot?.();
     await aug.transport!.ready?.();
     await new Promise((r) => setTimeout(r, 30));
-    // The kernel would invoke the outbound callback with an OutboundMessage
-    // during a real turn. Simulate that here. The transport reads
-    // contextId from the message to look up the chat_id.
     expect(handleInboundCalls).toHaveLength(1);
     expect(outboundCallbacks).toHaveLength(1);
-    const peer = handleInboundCalls[0]!.trigger.peer!;
-    await outboundCallbacks[0]!(peer, {
-      parts: [{ kind: "text", text: "response text" }],
+    // Routing state is released after handleInbound settles.
+    await outboundCallbacks[0]!(handleInboundCalls[0]!.trigger.peer!, {
+      parts: [{ kind: "text", text: "late response must be dropped" }],
       contextId: "tg-chat-555",
     });
     await aug.onShutdown?.();
@@ -517,6 +914,131 @@ describe("telegramTransport — polling lifecycle", () => {
     } as unknown as Parameters<typeof telegramTransport>[0]);
     expect(aug.transport!.identify({})).toBeNull();
     expect(aug.transport!.identify(null)).toBeNull();
+  });
+
+  it("rejects an empty webhook secret before network validation or setup", async () => {
+    let getChatCalls = 0;
+    let setWebhookCalls = 0;
+    const client: TelegramBotClient = {
+      async sendMessage(chatId) {
+        return { messageId: 1, chatId };
+      },
+      async getUpdates() {
+        return [];
+      },
+      async setWebhook() {
+        setWebhookCalls++;
+      },
+      async deleteWebhook() {},
+      async getChat(chatId) {
+        getChatCalls++;
+        return { id: Number(chatId), type: "private" };
+      },
+    };
+    const aug = telegramTransport({
+      botToken: "123:test-token",
+      inbound: {
+        mode: "webhook",
+        webhook: {
+          publicUrl: "https://example.test/telegram",
+          secretToken: "",
+        },
+      },
+      auth: { admittedAgents: [{ id: "agent", telegramUserId: 1 }] },
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+
+    await expect(aug.onBoot?.()).rejects.toThrow("must contain 1 to 256");
+    expect(getChatCalls).toBe(0);
+    expect(setWebhookCalls).toBe(0);
+    await aug.onShutdown?.();
+  });
+
+  it("keeps concurrent same-chat reply routing until both turns settle", async () => {
+    const port = 31_000 + Math.floor(Math.random() * 5_000);
+    const { client, sent } = makeMockClient([]);
+    let outboundCallbacks: Array<(peer: PeerIdentity, msg: OutboundMessage) => Promise<void>> = [];
+    let started = 0;
+    let releaseBoth!: () => void;
+    const bothStarted = new Promise<void>((resolve) => {
+      releaseBoth = resolve;
+    });
+    const setup = makeMockKernel({
+      handleInbound: async (trigger) => {
+        started++;
+        if (started === 2) releaseBoth();
+        await bothStarted;
+        await outboundCallbacks[0]!(trigger.peer!, {
+          parts: [{ kind: "text", text: `reply-${trigger.turnId}` }],
+          contextId: trigger.threadId,
+        });
+        return {
+          turnId: trigger.turnId,
+          success: true,
+          status: "completed",
+          toolCalls: [],
+          trace: {} as TurnResult["trace"],
+        };
+      },
+    });
+    outboundCallbacks = setup.outboundCallbacks;
+    const aug = telegramTransport({
+      botToken: "T",
+      inbound: {
+        mode: "webhook",
+        webhook: {
+          publicUrl: "https://example.test/telegram",
+          port,
+          secretToken: "secret",
+        },
+      },
+      auth: {},
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+    await aug.transport!.register(setup.kernel, "telegram-transport");
+    await aug.onBoot?.();
+    await aug.transport!.ready?.();
+    try {
+      const update = (update_id: number) => ({
+        update_id,
+        message: {
+          message_id: update_id,
+          chat: { id: 777, type: "private" },
+          from: { id: 777, is_bot: false },
+          date: 0,
+          text: "hi",
+        },
+      });
+      const responses = await Promise.all(
+        [update(1), update(2)].map((body) =>
+          fetch(`http://127.0.0.1:${port}/`, {
+            method: "POST",
+            headers: {
+              "content-type": "application/json",
+              "x-telegram-bot-api-secret-token": "secret",
+            },
+            body: JSON.stringify(body),
+          }),
+        ),
+      );
+      expect(responses.map((response) => response.status)).toEqual([200, 200]);
+      expect(sent).toHaveLength(2);
+      await outboundCallbacks[0]!(
+        {
+          id: "late",
+          kind: "human",
+          trustLevel: "public",
+          sourceAugment: "test",
+        },
+        {
+          parts: [{ kind: "text", text: "late" }],
+          contextId: "tg-chat-777",
+        },
+      );
+      expect(sent).toHaveLength(2);
+    } finally {
+      await aug.onShutdown?.();
+    }
   });
 
   it("rolls back the local webhook listener when Telegram webhook setup fails", async () => {

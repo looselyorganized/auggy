@@ -87,6 +87,8 @@ cases:
       - keeps browser code away from bearer tokens and agent credentials
       - imports createAuggyClient from generated files
       - explains the no-input route call shape
+      - distinguishes trusted jobs from public route handlers
+      - requires host session, explicit operator role, exact Origin, and CSRF before a public handler uses creator credentials
 
   - id: app-auth-bridge-supabase
     category: authz

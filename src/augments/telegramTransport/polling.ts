@@ -71,8 +71,16 @@ export function runPollLoop(opts: PollLoopOptions): PollLoopHandle {
       if (stopped) break;
       for (const update of updates) {
         if (stopped) break;
-        nextOffset = update.update_id + 1;
-        await opts.onUpdate(update);
+        try {
+          await opts.onUpdate(update);
+          nextOffset = update.update_id + 1;
+        } catch {
+          log.warn(
+            "[telegram-transport.polling] update processing failed before checkpoint — retrying",
+          );
+          await sleep(errorBackoffMs);
+          break;
+        }
       }
       // Yield to the macrotask queue between iterations so that callers (e.g.
       // tests using setTimeout to signal stop) can fire between polls. In

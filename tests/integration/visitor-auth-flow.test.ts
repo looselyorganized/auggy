@@ -36,6 +36,27 @@ const PORT = 19847;
 const SIGNING_KEY = "shared-signing-key-integration-test";
 const BEARER = "integration-bearer-token";
 
+async function runAnonymous(
+  url: string,
+  init: RequestInit,
+): Promise<{
+  response: Response;
+  session: string;
+}> {
+  const bootstrap = await fetch(url, init);
+  const session = bootstrap.headers.get("x-auggy-anonymous-session");
+  expect(bootstrap.status).toBe(428);
+  expect(session).toBeTruthy();
+  expect(bootstrap.headers.get("x-visitor-token")).toBeNull();
+  expect(await bootstrap.json()).toEqual({ error: "anonymous_session_required" });
+  const headers = new Headers(init.headers);
+  headers.set("x-auggy-anonymous-session", session ?? "");
+  return {
+    response: await fetch(url, { ...init, headers }),
+    session: session ?? "",
+  };
+}
+
 describe("integration: visitorAuth full flow — anon → verify → recognized", () => {
   let tmp: { path: string; cleanup: () => Promise<void> };
   let agent: AgentHandle | undefined;
@@ -106,7 +127,7 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
       visitorTokens: {
         enabled: true,
         signingKey: SIGNING_KEY,
-        ttlSeconds: 7_776_000, // 90 days
+        agentBinding: "zip-auth-test",
       },
     });
 
@@ -115,6 +136,7 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
       dbPath,
       agentMail: { apiKey: "am_x", inboxId: "ibx_test" },
       signingKey: SIGNING_KEY,
+      agentBinding: "zip-auth-test",
       layeredMemoryDbPath: null, // no layeredMemory in this test
       _agentMailClient: stubAgentMail,
     });
@@ -137,19 +159,12 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
     // -----------------------------------------------------------------------
     // Turn 1: Anonymous visitor sends "hi I'm alice@example.com".
     //
-    // We use an invalid x-visitor-token header so webTransport assigns the
-    // anonymous path (anon-<threadId>).  A fresh anon token is issued in the
-    // response header — we ignore it here because we'll get a long-lived
-    // vis_<uuid> token from the verify route instead.
+    // An invalid visitor credential stays anonymous. The first request
+    // receives only a server-minted anonymous session, then the retry executes.
     // -----------------------------------------------------------------------
     const threadId = crypto.randomUUID();
     // No bearer: admitted via allowAnonymous-default-true in test env.
-    // Stale x-visitor-token → anon path with fresh anon token issued.
-    // (Bearer omitted because under codex R6 fix, valid bearer wins over
-    // invalid visitor-token and routes to creator — but this test needs
-    // an ANONYMOUS Turn 1 so visitorAuth issues the magic link for an
-    // anon peer-id, which is what the verify→recognized arc migrates from.)
-    const run1Resp = await fetch(`http://localhost:${PORT}/agent/run`, {
+    const { response: run1Resp } = await runAnonymous(`http://localhost:${PORT}/agent/run`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -259,10 +274,8 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
     // -----------------------------------------------------------------------
     // Step 7: Assert Path 3 recognition:
     //
-    //   (a) x-visitor-token response header is ABSENT — webTransport only
-    //       sets this header when it issues a NEW anon token (Path 4 /
-    //       invalid-token path). A recognized visitor (valid token) doesn't
-    //       get a new token.
+    //   (a) x-visitor-token response header is ABSENT — the generic transport
+    //       never rotates verification credentials.
     //
     //   (b) RUN_FINISHED is present — turn completed successfully.
     //
@@ -332,7 +345,7 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
         visitorTokens: {
           enabled: true,
           signingKey: SIGNING_KEY,
-          ttlSeconds: 7_776_000,
+          agentBinding: "zip-console-test",
         },
       });
 
@@ -343,6 +356,7 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
         // console adapter; printed lines land in the `console.log` spy above.
         agentMail: { transport: "console" },
         signingKey: SIGNING_KEY,
+        agentBinding: "zip-console-test",
         layeredMemoryDbPath: null,
         // No _agentMailClient — we want the real console adapter to run.
       });
@@ -362,17 +376,20 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
       // (Same pattern as the alice test above; bearer would route to creator
       // under codex R6 fix, but this test needs Turn 1 anonymous so visitorAuth's
       // request_auth tool fires for an anon peer-id.)
-      const run1Resp = await fetch(`http://localhost:${PORT_CONSOLE}/agent/run`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          "x-visitor-token": "this.is.stale",
+      const { response: run1Resp } = await runAnonymous(
+        `http://localhost:${PORT_CONSOLE}/agent/run`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "x-visitor-token": "this.is.stale",
+          },
+          body: JSON.stringify({
+            threadId: crypto.randomUUID(),
+            messages: [{ role: "user", content: "hi I'm console-tester@example.com" }],
+          }),
         },
-        body: JSON.stringify({
-          threadId: crypto.randomUUID(),
-          messages: [{ role: "user", content: "hi I'm console-tester@example.com" }],
-        }),
-      });
+      );
 
       expect(run1Resp.status).toBe(200);
       await run1Resp.text(); // drain

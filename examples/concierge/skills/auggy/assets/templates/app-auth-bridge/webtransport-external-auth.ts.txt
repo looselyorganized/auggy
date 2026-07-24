@@ -1,21 +1,24 @@
-import { webTransport } from "auggy";
+import { webTransport, type ExternalAuthReplayStore } from "auggy";
 
-export const web = webTransport({
-  port: 8080,
-  auth: { type: "bearer", token: process.env.AUGGY_WEB_TOKEN! },
-  visitorTokens: {
-    enabled: true,
-    agentBinding: process.env.AUGGY_AGENT_ID!,
-  },
-  externalAuth: {
-    secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
-    keyId: "2026-07",
-    secrets:
-      process.env.AUGGY_EXTERNAL_AUTH_SECRET_PREVIOUS !== undefined
-        ? [{ keyId: "2026-06", secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET_PREVIOUS }]
-        : [],
-    audience: process.env.AUGGY_EXTERNAL_AUTH_AUDIENCE!,
-    allowedProviders: ["supabase", "clerk", "custom"],
-    maxTtlSeconds: 60,
-  },
-});
+export function createExternalAuthWebTransport(replayStore: ExternalAuthReplayStore) {
+  return webTransport({
+    port: 8080,
+    auth: { type: "bearer", token: process.env.AUGGY_WEB_TOKEN! },
+    visitorTokens: {
+      enabled: true,
+      agentBinding: process.env.AUGGY_AGENT_ID!,
+    },
+    externalAuth: {
+      secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET!,
+      keyId: "2026-07",
+      secrets:
+        process.env.AUGGY_EXTERNAL_AUTH_SECRET_PREVIOUS !== undefined
+          ? [{ keyId: "2026-06", secret: process.env.AUGGY_EXTERNAL_AUTH_SECRET_PREVIOUS }]
+          : [],
+      audience: process.env.AUGGY_EXTERNAL_AUTH_AUDIENCE!,
+      allowedProviders: ["supabase", "clerk", "custom"],
+      maxTtlSeconds: 60,
+      replayProtection: { enabled: true, store: replayStore },
+    },
+  });
+}

@@ -133,6 +133,8 @@ export interface ToolExecuteContext {
   peer: PeerIdentity | null;
   threadId: string;
   auth?: RouteAuthContext;
+  /** Combined request/deadline cancellation for this exact tool attempt. */
+  signal?: AbortSignal;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Tool is covariant over arbitrary model-facing schemas.
@@ -161,6 +163,11 @@ export interface ToolResult {
   content: string;
   /** Marks an expected tool-level failure without requiring the tool to throw. */
   isError?: boolean;
+  /**
+   * The tool may have crossed a side-effect boundary without learning the
+   * result. The kernel terminates the turn and never asks the model to retry.
+   */
+  outcomeUnknown?: boolean;
   /** Optional turn-termination directive. */
   terminate?: {
     status: Extract<TaskState, "input-required" | "completed">;
@@ -190,18 +197,42 @@ export interface PeerIdentity {
   kind: PeerKind;
   trustLevel: TrustLevel;
   /**
+   * Authenticated origin carried across a delegated transport hop.
+   *
+   * The active transport mints the local `id` and records the original
+   * subject separately so peer-derived storage never trusts a caller-chosen
+   * cross-transport identifier. Only transports that authenticate and verify
+   * the delegation envelope may populate this field.
+   */
+  delegatedOrigin?: {
+    subject: string;
+    sourceAugment: string;
+    viaPeerId: string;
+    hopCount: number;
+  };
+  /**
    * Substate within the `public` trust level. Set by the transport at
    * identity resolution. Differentiates first-contact anonymous visitors
    * from those holding a valid agent-issued visitor token.
    *
-   * - "anonymous": no token, ephemeral peer.id (anon-<threadId>).
-   *   Memory writes attach to ephemeral identity.
+   * - "anonymous": no verified visitor token. The web transport uses a
+   *   server-minted anonymous-session subject; it is never derived from the
+   *   caller-controlled thread ID.
    * - "recognized": HMAC-verified visitor token, durable peer.id (vis_*).
    *   Memory writes attach to durable identity.
    *
    * Present iff trustLevel === "public". Other trust levels MUST omit it.
    */
   publicSubstate?: "anonymous" | "recognized";
+  /**
+   * Authenticated one-way identity transition asserted by the transport.
+   * A public/recognized peer may use it to prove ownership of the prior
+   * anonymous subject during thread and memory promotion.
+   *
+   * This is authorization evidence, not caller metadata. Transports MUST omit
+   * it unless they cryptographically verified the prior subject.
+   */
+  authenticatedPriorPeerId?: string;
   sourceAugment: string;
   displayName?: string;
   orgId?: string;
@@ -250,6 +281,8 @@ export interface TurnState {
   toolCallsSoFar: number;
   turnStartedAt: number;
   metadata: Record<string, unknown>;
+  /** Caller cancellation for turn-scoped context and lifecycle work. */
+  signal?: AbortSignal;
 }
 
 export interface OutboundMessage {
@@ -388,6 +421,13 @@ export interface Transcript {
 export interface SchedulerContext {
   inject(trigger: TurnTrigger): Promise<TurnResult>;
   getCompletedTranscript(): Promise<Transcript | null>;
+  /** Caller cancellation; background hooks must not begin new work after abort. */
+  signal?: AbortSignal;
+}
+
+/** Cancellation context shared by terminal turn hooks. */
+export interface TurnLifecycleContext {
+  signal?: AbortSignal;
 }
 
 /**
@@ -399,6 +439,7 @@ export interface SchedulerContext {
 export interface InternalTurnContext {
   threadId: string;
   peer: PeerIdentity | null;
+  signal?: AbortSignal;
 }
 
 // === Kernel Events (internal — emitted by turn loop, consumed by transports) ===
@@ -522,6 +563,27 @@ export interface ModelResponse {
   unpricedReason?: string; // set when costUsd is absent, describes why pricing was unavailable
 }
 
+export interface ModelResponseLimits {
+  /** Maximum UTF-8 bytes in assistant text across one inference. Default 1 MiB. */
+  maxTextBytes: number;
+  /** Maximum tool calls returned by one inference. Default 32. */
+  maxToolCalls: number;
+  /** Maximum UTF-8 bytes in one tool name. Default 256. */
+  maxToolNameBytes: number;
+  /** Maximum serialized UTF-8 bytes in one tool-call argument object. Default 64 KiB. */
+  maxToolArgumentBytes: number;
+  /** Maximum aggregate serialized argument bytes across one response. Default 256 KiB. */
+  maxTotalToolArgumentBytes: number;
+  /** Maximum JSON nesting depth in tool arguments. Default 32. */
+  maxArgumentDepth: number;
+  /** Maximum JSON nodes in each tool argument object. Default 10,000. */
+  maxArgumentNodes: number;
+  /** Maximum aggregate UTF-8 bytes retained from one model response. Default 2 MiB. */
+  maxResponseBytes: number;
+  /** Maximum streamed text delta events per inference. Default 10,000. */
+  maxStreamEvents: number;
+}
+
 export type ModelDelta = { kind: "text_delta"; text: string };
 
 export interface ModelClient {
@@ -610,7 +672,13 @@ export interface TransportKernel {
   ): Promise<TurnResult>;
   /** Evict an in-memory thread so a later request restores durable state. */
   forgetThreadHistory?(threadId: string): void;
-  onOutbound(callback: (peer: PeerIdentity, message: OutboundMessage) => Promise<void>): void;
+  onOutbound(
+    callback: (
+      peer: PeerIdentity,
+      message: OutboundMessage,
+      context?: { signal?: AbortSignal },
+    ) => Promise<void>,
+  ): void;
   getAgentCard(): AgentCard;
   /**
    * Cross-augment HTTP routes collected at `agent.start()` after
@@ -733,6 +801,7 @@ export interface RouteVisitorIdentity {
   agentId: string;
   issuedAt: number;
   expiresAt: number;
+  orgId?: string;
   email?: string;
   verifiedAt?: number;
   reverifyDueAt?: number;
@@ -842,6 +911,7 @@ export type RouteAuthPrincipal =
       publicSubstate: "recognized";
       visitorId: string;
       agentId: string;
+      orgId?: string;
       email?: string;
       verifiedAt?: number;
       reverifyDueAt?: number;
@@ -1064,8 +1134,8 @@ export interface TurnGateProvider {
    * uses this to debit USD totals or mark reservations completed.
    * The CostResult discriminated union forces unpriced-aware handling.
    *
-   * Optional. Errors here are logged but do not fail the turn — the
-   * response already exists.
+   * Optional. The kernel treats an error here as outcome-unknown after
+   * inference and does not return a successful terminal result.
    */
   commit?(args: {
     turnId: string;
@@ -1267,9 +1337,9 @@ export interface Augment {
   memory?: MemoryProviderSpec;
   constraints?: AugmentConstraints;
   onBoot?: () => Promise<void>;
-  onShutdown?: () => Promise<void>;
+  onShutdown?: (signal?: AbortSignal) => Promise<void>;
   onTurnStart?: (turn: TurnState) => Promise<void>;
-  onTurnEnd?: (turn: TurnResult) => Promise<void>;
+  onTurnEnd?: (turn: TurnResult, context?: TurnLifecycleContext) => Promise<void>;
   onIdle?: () => Promise<void>;
   /**
    * ADR-027: post-turn background-work hook. Fires after `onTurnEnd` for
@@ -1360,6 +1430,8 @@ export interface AgentConfig {
   compactionStrategy?: CompactionStrategy;
   /** Max inference loop iterations per turn. Default 10. */
   maxInferenceLoops?: number;
+  /** Mandatory model-output bounds. Omitted fields use finite secure defaults. */
+  responseLimits?: Partial<ModelResponseLimits>;
   /** Tool-choice policy sent to the model. "auto" (default) lets the model
    *  decide; "any" forces a tool call; { name } forces a specific tool. */
   toolChoice?: "auto" | "any" | { name: string };
@@ -1379,7 +1451,7 @@ export interface AgentHandle {
   ready(): Promise<void>;
   health(): AgentHealth;
   card(): AgentCard;
-  inject(trigger: TurnTrigger): Promise<TurnResult>;
+  inject(trigger: TurnTrigger, options?: { signal?: AbortSignal }): Promise<TurnResult>;
 }
 
 // === Notify augment ===
@@ -1421,6 +1493,8 @@ export interface WebhookNotifyDestination extends NotifyDestinationAuthority {
   transport: "webhook";
   url: string;
   headers?: Record<string, string>;
+  /** Development-only escape hatch for non-loopback plaintext HTTP. */
+  allowInsecureHttpWithCredentials?: boolean;
   /** Optional per-destination rate limit. Falls back to the augment-level global cap when absent. */
   rateLimit?: {
     maxPerHour?: number;
@@ -1456,6 +1530,8 @@ export interface AgentMailNotifyDestination extends NotifyDestinationAuthority {
   labels?: string[];
   /** Override the AgentMail API base URL (testing/sandbox). Default: https://api.agentmail.to/v0 */
   apiBaseUrl?: string;
+  /** Development-only escape hatch for credentialed non-loopback HTTP. */
+  allowInsecureHttpWithCredentials?: boolean;
   /** Optional per-destination rate limit. Falls back to the augment-level global cap when absent. */
   rateLimit?: {
     maxPerHour?: number;
@@ -1499,10 +1575,16 @@ export interface NotifyPayload {
 export interface NotifyDeliveryResult {
   status: "sent" | "failed";
   detail?: string;
+  /** Delivery may have occurred; callers must not retry automatically. */
+  outcomeUnknown?: boolean;
 }
 
 export interface NotifyAdapter {
-  deliver(destination: NotifyDestination, payload: NotifyPayload): Promise<NotifyDeliveryResult>;
+  deliver(
+    destination: NotifyDestination,
+    payload: NotifyPayload,
+    options?: { signal?: AbortSignal },
+  ): Promise<NotifyDeliveryResult>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1603,6 +1685,8 @@ export interface AgentMailAugmentOptions {
   inboxId: string;
   /** Override AgentMail API base URL (testing/sandbox). */
   apiBaseUrl?: string;
+  /** Development-only escape hatch for credentialed non-loopback HTTP/WS. */
+  allowInsecureHttpWithCredentials?: boolean;
   /** SQLite store path for inbound dedup. Default `"./agent-mail.db"`. */
   dbPath?: string;
   /** Outbound policy + tools configuration. */
@@ -1633,6 +1717,8 @@ export interface TelegramWebhookOptions {
   port?: number;
   secretToken: string;
   allowedUpdates?: string[];
+  /** Maximum encoded webhook request bytes. Default 256 KiB. */
+  maxBodyBytes?: number;
 }
 
 export interface TelegramAdmittedAgent {
@@ -1657,6 +1743,51 @@ export interface TelegramAuthOptions {
   anonymousIdentityMode?: TelegramAnonymousIdentityMode;
 }
 
+export interface TelegramReplayStore {
+  claim(
+    namespace: string,
+    updateId: number,
+    payloadHash: string,
+  ): "claimed" | "duplicate" | "conflict";
+  close?(): void;
+}
+
+export interface TelegramReplayClaimOptions {
+  /**
+   * Aborted when the transport shuts down or the configured claim deadline
+   * expires. Distributed stores should stop pending work promptly.
+   */
+  signal: AbortSignal;
+}
+
+export interface TelegramAsyncReplayStore {
+  claimAsync(
+    namespace: string,
+    updateId: number,
+    payloadHash: string,
+    options: TelegramReplayClaimOptions,
+  ): Promise<"claimed" | "duplicate" | "conflict">;
+  close?(): void | Promise<void>;
+}
+
+export interface TelegramReplayOptions {
+  /**
+   * Shared transactional store. Async stores support distributed databases.
+   * When omitted, a hardened SQLite store is used.
+   */
+  store?: TelegramReplayStore | TelegramAsyncReplayStore;
+  /** SQLite path used when store is omitted. Default ./data/telegram-replay.db. */
+  dbPath?: string;
+  /** Stable non-secret namespace. Defaults to `telegram:bot-<numeric bot id>`. */
+  namespace?: string;
+  /** Claim retention. Default 30 days. */
+  retentionMs?: number;
+  /** Maximum retained update claims. Default 1,000,000. */
+  maxEntries?: number;
+  /** Maximum time to await an async shared-store claim. Default 5,000 ms. */
+  claimTimeoutMs?: number;
+}
+
 export interface TelegramTransportOptions {
   botToken: string;
   inbound: {
@@ -1666,4 +1797,5 @@ export interface TelegramTransportOptions {
   };
   auth: TelegramAuthOptions;
   creator?: CreatorConfig;
+  replay?: TelegramReplayOptions;
 }

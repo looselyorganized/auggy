@@ -6,6 +6,7 @@ import type {
   SendMessageResult,
   SendMessageError,
 } from "../../../../src/agentmail-client";
+import { OutcomeUnknownError } from "../../../../src/outcome-unknown";
 
 const unusedSendResult: SendMessageResult = {
   status: "sent",
@@ -76,6 +77,20 @@ describe("agentMailAdapter", () => {
     expect(captured!.subject).toBe("[Auggy] Daily digest");
   });
 
+  it("passes the delivery cancellation signal to AgentMail", async () => {
+    const controller = new AbortController();
+    let capturedSignal: AbortSignal | undefined;
+    const adapter = createAgentMailAdapter({
+      clientFactory: mockClient((input) => {
+        capturedSignal = input.signal;
+        return { status: "sent", messageId: "m1", threadId: "t1" };
+      }),
+    });
+
+    await adapter.deliver(dest, { summary: "x" }, { signal: controller.signal });
+    expect(capturedSignal).toBe(controller.signal);
+  });
+
   it("normalizes string `to` to single-element array; passes array through", async () => {
     let captured: SendMessageInput | null = null;
     const adapter = createAgentMailAdapter({
@@ -91,21 +106,22 @@ describe("agentMailAdapter", () => {
     expect(captured!.to).toEqual(["a@example.com", "b@example.com"]);
   });
 
-  it("returns failed with detail on 4xx", async () => {
+  it("returns a status-only failure on 4xx", async () => {
+    const sentinel = "GROUP9_AGENTMAIL_NOTIFY_SENTINEL";
     const adapter = createAgentMailAdapter({
       clientFactory: mockClient(() => ({
         status: "failed",
-        detail: 'agentmail returned 401: {"error":"invalid api key"}',
+        detail: `agentmail returned 401: ${sentinel}`,
         httpStatus: 401,
       })),
     });
     const result = await adapter.deliver(dest, { summary: "x" });
     expect(result.status).toBe("failed");
     expect(result.detail).toContain("401");
-    expect(result.detail).toContain("invalid api key");
+    expect(result.detail).not.toContain(sentinel);
   });
 
-  it("returns failed with detail on 5xx", async () => {
+  it("marks a 5xx response after dispatch as outcome unknown", async () => {
     const adapter = createAgentMailAdapter({
       clientFactory: mockClient(() => ({
         status: "failed",
@@ -114,11 +130,24 @@ describe("agentMailAdapter", () => {
       })),
     });
     const result = await adapter.deliver(dest, { summary: "x" });
-    expect(result.status).toBe("failed");
-    expect(result.detail).toContain("503");
+    expect(result).toMatchObject({ status: "failed", outcomeUnknown: true });
+    expect(result.detail).not.toContain("503");
   });
 
-  it("returns failed when the client throws (network error)", async () => {
+  it("marks a status-less AgentMail failure as outcome unknown", async () => {
+    const adapter = createAgentMailAdapter({
+      clientFactory: mockClient(() => ({
+        status: "failed",
+        detail: "connection reset",
+      })),
+    });
+
+    const result = await adapter.deliver(dest, { summary: "x" });
+    expect(result).toMatchObject({ status: "failed", outcomeUnknown: true });
+    expect(result.detail).not.toContain("connection reset");
+  });
+
+  it("classifies a generic client throw after dispatch as outcome unknown", async () => {
     const adapter = createAgentMailAdapter({
       clientFactory: (_apiKey, _baseUrl) => ({
         send: async () => {
@@ -129,9 +158,26 @@ describe("agentMailAdapter", () => {
         getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
       }),
     });
-    const result = await adapter.deliver(dest, { summary: "x" });
-    expect(result.status).toBe("failed");
-    expect(result.detail).toContain("ECONNREFUSED");
+    await expect(adapter.deliver(dest, { summary: "x" })).rejects.toMatchObject({
+      outcomeUnknown: true,
+    });
+  });
+
+  it("preserves an outcome-unknown AgentMail failure for the kernel", async () => {
+    const adapter = createAgentMailAdapter({
+      clientFactory: () => ({
+        send: async () => {
+          throw new OutcomeUnknownError("request deadline elapsed after dispatch");
+        },
+        reply: async () => unusedSendResult,
+        forward: async () => unusedSendResult,
+        getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
+      }),
+    });
+
+    expect(adapter.deliver(dest, { summary: "x" })).rejects.toMatchObject({
+      outcomeUnknown: true,
+    });
   });
 
   it("rejects non-agentmail destinations without calling client", async () => {

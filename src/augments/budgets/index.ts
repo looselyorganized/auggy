@@ -8,7 +8,12 @@ import type {
   TurnGateTicket,
   TurnState,
 } from "../../types";
-import { readOverrides, writeOverrides } from "../../lib/admin-overrides";
+import {
+  readOverrides,
+  releaseAdminOverrideRoot,
+  retainAdminOverrideRoot,
+  writeOverrides,
+} from "../../lib/admin-overrides";
 import { createBudgetStore, type BudgetStore } from "./budget-store";
 import type {
   BudgetsConfig,
@@ -70,11 +75,7 @@ function formatPercent(threshold: number): string {
 
 export function budgets(opts: BudgetsAugmentOptions): Augment {
   const overrideDir = opts.overrideDir ?? opts.agentDir;
-  const store: BudgetStore = createBudgetStore({
-    dbPath: opts.dbPath,
-    cleanupWindowMs: opts.cleanupWindowMs,
-    retentionDays: opts.retentionDays,
-  });
+  let overrideRootRetained = false;
   const notificationThresholds = normalizeThresholds(opts.notifications);
   const sentThresholds = new Set<string>();
 
@@ -87,12 +88,35 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
   let dailyBudgetSource: "yaml" | "override" = "yaml";
 
   if (overrideDir) {
-    const overrides = readOverrides(overrideDir);
-    const overrideVal = overrides?.overrides.budgets?.dailyBudgetUsd;
-    if (overrideVal !== undefined) {
-      currentDailyBudgetUsd = overrideVal;
-      dailyBudgetSource = "override";
+    overrideRootRetained = retainAdminOverrideRoot(overrideDir);
+    try {
+      const overrides = readOverrides(overrideDir);
+      const overrideVal = overrides?.overrides.budgets?.dailyBudgetUsd;
+      if (overrideVal !== undefined) {
+        currentDailyBudgetUsd = overrideVal;
+        dailyBudgetSource = "override";
+      }
+    } catch (error) {
+      if (overrideRootRetained) {
+        releaseAdminOverrideRoot(overrideDir);
+        overrideRootRetained = false;
+      }
+      throw error;
     }
+  }
+  let store: BudgetStore;
+  try {
+    store = createBudgetStore({
+      dbPath: opts.dbPath,
+      cleanupWindowMs: opts.cleanupWindowMs,
+      retentionDays: opts.retentionDays,
+    });
+  } catch (error) {
+    if (overrideRootRetained) {
+      releaseAdminOverrideRoot(overrideDir);
+      overrideRootRetained = false;
+    }
+    throw error;
   }
 
   // Periodic sweep: mark reservations stuck in pending state (engine errored
@@ -403,7 +427,14 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
 
     onShutdown: async () => {
       clearInterval(sweepTimer);
-      await store.close();
+      try {
+        await store.close();
+      } finally {
+        if (overrideRootRetained) {
+          releaseAdminOverrideRoot(overrideDir);
+          overrideRootRetained = false;
+        }
+      }
     },
   };
 }

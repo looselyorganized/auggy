@@ -9,10 +9,15 @@ import type {
   McpRuntimeServer,
   McpToolCallResult,
 } from "../../src/augments/mcp/types";
-import type { TurnTrigger } from "../../src/types";
+import type { ToolExecuteContext, TurnTrigger } from "../../src/types";
 import { createMockModel } from "../fixtures/mock-model";
 
 const TMP = join(import.meta.dir, ".tmp-mcp-test");
+const INTERNAL_TOOL_CONTEXT: ToolExecuteContext = {
+  turnId: "internal-turn",
+  threadId: "internal-thread",
+  peer: null,
+};
 
 beforeEach(() => {
   mkdirSync(TMP, { recursive: true });
@@ -25,7 +30,12 @@ afterEach(() => {
 
 class FakeMcpConnection implements McpConnection {
   closed = false;
-  calls: { name: string; args: Record<string, unknown>; timeoutMs: number }[] = [];
+  calls: {
+    name: string;
+    args: Record<string, unknown>;
+    timeoutMs: number;
+    signal?: AbortSignal;
+  }[] = [];
 
   constructor(
     private tools: McpRemoteTool[],
@@ -37,8 +47,13 @@ class FakeMcpConnection implements McpConnection {
     return { tools: this.tools, nextCursor: this.nextCursor };
   }
 
-  async callTool(name: string, args: Record<string, unknown>, timeoutMs: number) {
-    this.calls.push({ name, args, timeoutMs });
+  async callTool(
+    name: string,
+    args: Record<string, unknown>,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ) {
+    this.calls.push({ name, args, timeoutMs, signal });
     return this.result;
   }
 
@@ -75,6 +90,50 @@ function writeMcpConfig(config: unknown) {
 }
 
 describe("mcp augment runtime", () => {
+  test("rejects credentialed non-loopback plaintext remote servers before connection", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        remote: {
+          type: "streamable-http",
+          url: "http://mcp.example.test/session?api_key=GROUP9_MCP_SENTINEL",
+        },
+      },
+    });
+    const adapter = new FakeMcpAdapter([]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter });
+    await manager.boot();
+
+    expect(adapter.servers).toHaveLength(0);
+    expect(manager.statuses()[0]).toMatchObject({
+      name: "remote",
+      state: "failed",
+      error: expect.stringContaining("plaintext HTTP"),
+    });
+  });
+
+  test("permits explicit credentialed plaintext MCP only in development", async () => {
+    const previousNodeEnv = process.env.NODE_ENV;
+    process.env.NODE_ENV = "development";
+    try {
+      writeMcpConfig({
+        mcpServers: {
+          remote: {
+            type: "streamable-http",
+            url: "http://mcp.example.test/session?api_key=GROUP9_MCP_SENTINEL",
+            auggy: { allowInsecureHttpWithCredentials: true },
+          },
+        },
+      });
+      const adapter = new FakeMcpAdapter([]);
+      const manager = createMcpManager({ agentDir: TMP, client: adapter });
+      await manager.boot();
+      expect(adapter.servers).toHaveLength(1);
+    } finally {
+      if (previousNodeEnv === undefined) delete process.env.NODE_ENV;
+      else process.env.NODE_ENV = previousNodeEnv;
+    }
+  });
+
   test("discovers remote tools and exposes namespaced Auggy tools", async () => {
     writeMcpConfig({
       mcpServers: {
@@ -99,7 +158,7 @@ describe("mcp augment runtime", () => {
       tools: 1,
     });
 
-    const result = await manager.tools[0]!.execute({ q: "auggy" });
+    const result = await manager.tools[0]!.execute({ q: "auggy" }, INTERNAL_TOOL_CONTEXT);
     expect(result).toEqual({ content: "ok" });
     expect(adapter.connections[0]!.calls[0]).toMatchObject({
       name: "search",
@@ -107,6 +166,53 @@ describe("mcp augment runtime", () => {
     });
     await manager.shutdown();
     expect(adapter.connections[0]!.closed).toBe(true);
+  });
+
+  test("closes independent connections concurrently and forwards lifecycle cancellation", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        first: { type: "stdio", command: "node", args: ["first.js"] },
+        second: { type: "stdio", command: "node", args: ["second.js"] },
+      },
+    });
+    const started: string[] = [];
+    const closed: string[] = [];
+    class ShutdownConnection extends FakeMcpConnection {
+      constructor(private readonly id: string) {
+        super([]);
+      }
+
+      override async close(signal?: AbortSignal) {
+        started.push(this.id);
+        if (this.id === "first") {
+          await new Promise<void>((resolve) => {
+            if (signal?.aborted) resolve();
+            else signal?.addEventListener("abort", () => resolve(), { once: true });
+          });
+        }
+        this.closed = true;
+        closed.push(this.id);
+      }
+    }
+    class ShutdownAdapter implements McpClientAdapter {
+      async connect(server: McpRuntimeServer) {
+        return new ShutdownConnection(server.name);
+      }
+    }
+    const manager = createMcpManager({
+      agentDir: TMP,
+      client: new ShutdownAdapter(),
+    });
+    await manager.boot();
+    const controller = new AbortController();
+    const pending = manager.shutdown(controller.signal);
+    await Promise.resolve();
+
+    expect(started).toEqual(["first", "second"]);
+    expect(closed).toContain("second");
+    controller.abort(new DOMException("lifecycle deadline", "AbortError"));
+    await pending;
+    expect(closed.sort()).toEqual(["first", "second"]);
   });
 
   test("enforces allowedTools and blockedTools before exposing tools", async () => {
@@ -133,7 +239,7 @@ describe("mcp augment runtime", () => {
     expect(manager.tools.map((tool) => tool.name)).toEqual(["mcp_ops_read_status"]);
   });
 
-  test("builds trust constraints from server policy and risky annotations", async () => {
+  test("remote annotations never narrow or widen explicit operator trust policy", async () => {
     writeMcpConfig({
       mcpServers: {
         ops: { type: "streamable-http", url: "https://mcp.example.com" },
@@ -162,13 +268,34 @@ describe("mcp augment runtime", () => {
     const manager = createMcpManager({ agentDir: TMP, client: adapter });
     await manager.boot();
 
+    expect(manager.constraints.perTrustLevel).toBeUndefined();
+    expect(manager.statuses()[0]?.restrictedTools).toBe(0);
+  });
+
+  test("defaults every remotely supplied tool to creator-only", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+    });
+    const adapter = new FakeMcpAdapter([
+      { name: "read_status", inputSchema: { type: "object" } },
+      {
+        name: "delete_all",
+        inputSchema: { type: "object" },
+        annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: false },
+      },
+    ]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter });
+    await manager.boot();
+
     expect(manager.constraints.perTrustLevel?.agent?.neverExpose).toEqual([
+      "mcp_ops_read_status",
       "mcp_ops_delete_all",
-      "mcp_ops_search_web",
     ]);
     expect(manager.constraints.perTrustLevel?.public?.neverExpose).toEqual([
+      "mcp_ops_read_status",
       "mcp_ops_delete_all",
-      "mcp_ops_search_web",
     ]);
     expect(manager.constraints.perTrustLevel?.creator).toBeUndefined();
     expect(manager.statuses()[0]?.restrictedTools).toBe(2);
@@ -195,7 +322,7 @@ describe("mcp augment runtime", () => {
     expect(manager.constraints.perTrustLevel?.agent).toBeUndefined();
   });
 
-  test("allows explicit per-tool trust override for risky tools", async () => {
+  test("allows explicit per-tool trust delegation regardless of remote annotations", async () => {
     writeMcpConfig({
       mcpServers: {
         ops: { type: "streamable-http", url: "https://mcp.example.com" },
@@ -222,6 +349,234 @@ describe("mcp augment runtime", () => {
 
     expect(manager.constraints.perTrustLevel?.public?.neverExpose).toEqual(["mcp_ops_delete_all"]);
     expect(manager.constraints.perTrustLevel?.agent).toBeUndefined();
+  });
+
+  test("re-enforces trust immediately before execution", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+    });
+    const adapter = new FakeMcpAdapter([{ name: "read_status", inputSchema: { type: "object" } }]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter });
+    await manager.boot();
+
+    const result = await manager.tools[0]!.execute(
+      {},
+      {
+        turnId: "turn-public",
+        threadId: "thread-public",
+        peer: {
+          id: "visitor",
+          kind: "human",
+          trustLevel: "public",
+          publicSubstate: "recognized",
+          sourceAugment: "test",
+        },
+      },
+    );
+
+    expect(result).toEqual({
+      content: 'MCP tool "read_status" is not available at trust level "public".',
+      isError: true,
+    });
+    expect(adapter.connections[0]!.calls).toHaveLength(0);
+  });
+
+  test("denies execution when the required context is missing", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+    });
+    const adapter = new FakeMcpAdapter([{ name: "read_status", inputSchema: { type: "object" } }]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter });
+    await manager.boot();
+
+    const result = await manager.tools[0]!.execute({});
+    expect(result).toEqual({
+      content: 'MCP tool "read_status" requires an authenticated execution context.',
+      isError: true,
+    });
+    expect(adapter.connections[0]!.calls).toHaveLength(0);
+  });
+
+  test("execution-time trust check honors explicit delegation", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: {
+          type: "streamable-http",
+          url: "https://mcp.example.com",
+          auggy: { allowedTrustLevels: ["creator", "agent"] },
+        },
+      },
+    });
+    const adapter = new FakeMcpAdapter([{ name: "read_status", inputSchema: { type: "object" } }]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter });
+    await manager.boot();
+
+    const result = await manager.tools[0]!.execute(
+      {},
+      {
+        turnId: "turn-agent",
+        threadId: "thread-agent",
+        peer: {
+          id: "agent-peer",
+          kind: "agent",
+          trustLevel: "agent",
+          sourceAugment: "test",
+        },
+      },
+    );
+
+    expect(result).toEqual({ content: "ok" });
+    expect(adapter.connections[0]!.calls).toHaveLength(1);
+  });
+
+  test("passes tool cancellation to the MCP connection", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+    });
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    class CancelableConnection extends FakeMcpConnection {
+      override async callTool(
+        name: string,
+        args: Record<string, unknown>,
+        timeoutMs: number,
+        signal?: AbortSignal,
+      ) {
+        this.calls.push({ name, args, timeoutMs, signal });
+        markStarted();
+        await new Promise<void>((_resolve, reject) => {
+          signal?.addEventListener(
+            "abort",
+            () => reject(signal.reason ?? new DOMException("Aborted", "AbortError")),
+            { once: true },
+          );
+        });
+        return { content: [{ type: "text", text: "must not complete" }] };
+      }
+    }
+    class CancelableAdapter implements McpClientAdapter {
+      connection = new CancelableConnection([
+        { name: "read_status", inputSchema: { type: "object" } },
+      ]);
+      async connect() {
+        return this.connection;
+      }
+    }
+    const adapter = new CancelableAdapter();
+    const manager = createMcpManager({ agentDir: TMP, client: adapter });
+    await manager.boot();
+    const controller = new AbortController();
+
+    const pending = manager.tools[0]!.execute(
+      {},
+      {
+        ...INTERNAL_TOOL_CONTEXT,
+        signal: controller.signal,
+      },
+    );
+
+    await started;
+    const forwarded = adapter.connection.calls[0]?.signal;
+    expect(forwarded).toBeDefined();
+    expect(forwarded).not.toBe(controller.signal);
+    controller.abort(new DOMException("caller left", "AbortError"));
+    await expect(pending).rejects.toThrow("caller left");
+    expect(forwarded?.aborted).toBe(true);
+  });
+
+  test("classifies an MCP policy timeout as outcome unknown", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+    });
+    let releaseFirst: (() => void) | undefined;
+    class NonCooperativeConnection extends FakeMcpConnection {
+      override async callTool(
+        name: string,
+        args: Record<string, unknown>,
+        timeoutMs: number,
+        signal?: AbortSignal,
+      ) {
+        this.calls.push({ name, args, timeoutMs, signal });
+        if (this.calls.length === 1) {
+          await new Promise<void>((resolve) => {
+            releaseFirst = resolve;
+          });
+        }
+        return { content: [{ type: "text", text: "done" }] };
+      }
+    }
+    class NonCooperativeAdapter implements McpClientAdapter {
+      connection = new NonCooperativeConnection([
+        { name: "mutate", inputSchema: { type: "object" } },
+      ]);
+      async connect() {
+        return this.connection;
+      }
+    }
+    const manager = createMcpManager({
+      agentDir: TMP,
+      client: new NonCooperativeAdapter(),
+      timeoutMs: 5,
+      maxConcurrentCalls: 1,
+    });
+    await manager.boot();
+
+    await expect(manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT)).rejects.toMatchObject({
+      outcomeUnknown: true,
+    });
+    const whileUnderlyingCallIsRunning = await manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT);
+    expect(JSON.stringify(whileUnderlyingCallIsRunning)).toContain("is busy");
+
+    releaseFirst?.();
+    // Drain the deterministic promise chain: remote call resolution, the
+    // async adapter continuation, and the manager's reservation finalizer.
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(await manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT)).toMatchObject({
+      content: "done",
+    });
+  });
+
+  test("classifies a thrown MCP call failure after dispatch as outcome unknown", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+    });
+    class FailingCallConnection extends FakeMcpConnection {
+      override async callTool(): Promise<McpToolCallResult> {
+        throw new Error("connection reset after remote mutation: mcp-secret-sentinel");
+      }
+    }
+    class FailingCallAdapter implements McpClientAdapter {
+      connection = new FailingCallConnection([{ name: "mutate", inputSchema: { type: "object" } }]);
+      async connect() {
+        return this.connection;
+      }
+    }
+    const manager = createMcpManager({
+      agentDir: TMP,
+      client: new FailingCallAdapter(),
+    });
+    await manager.boot();
+
+    const error = await manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT).catch(
+      (caught) => caught,
+    );
+    expect(error).toMatchObject({ outcomeUnknown: true });
+    expect(Bun.inspect(error)).not.toContain("mcp-secret-sentinel");
+    expect((error as Error).cause).toBeUndefined();
   });
 
   test("failed external servers do not crash boot or expose tools", async () => {
@@ -295,8 +650,8 @@ describe("mcp augment runtime", () => {
       maxConcurrentCalls: 1,
     });
     await manager.boot();
-    const first = manager.tools[0]!.execute({});
-    const second = await manager.tools[0]!.execute({});
+    const first = manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT);
+    const second = await manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT);
     expect(JSON.stringify(second)).toContain("is busy");
     release?.();
     await first;
@@ -431,7 +786,7 @@ describe("mcp augment runtime", () => {
     expect(JSON.stringify(tool.inputJsonSchema)).toContain("[truncated]");
   });
 
-  test("caps model-facing MCP tool output", async () => {
+  test("fails closed when model-facing MCP tool output exceeds the cap", async () => {
     writeMcpConfig({
       mcpServers: {
         local: { type: "stdio", command: "node" },
@@ -442,8 +797,90 @@ describe("mcp augment runtime", () => {
     });
     const manager = createMcpManager({ agentDir: TMP, client: adapter, maxResultBytes: 64 });
     await manager.boot();
-    const result = await manager.tools[0]!.execute({});
-    expect(JSON.stringify(result)).toContain("truncated to 64 bytes");
+    const result = await manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT);
+    expect(result).toEqual({
+      content: "MCP tool result exceeded the configured safety limit.",
+      isError: true,
+      outcomeUnknown: true,
+    });
+  });
+
+  test("rejects oversized call arguments before remote dispatch", async () => {
+    writeMcpConfig({
+      mcpServers: { local: { type: "stdio", command: "node" } },
+    });
+    const adapter = new FakeMcpAdapter([{ name: "write", inputSchema: { type: "object" } }]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter, maxArgumentBytes: 32 });
+    await manager.boot();
+    const result = await manager.tools[0]!.execute(
+      { payload: "x".repeat(100) },
+      INTERNAL_TOOL_CONTEXT,
+    );
+    expect(result).toEqual({
+      content: "MCP tool arguments exceeded the configured safety limit.",
+      isError: true,
+    });
+    expect(adapter.connections[0]!.calls).toHaveLength(0);
+  });
+
+  test("fails tool discovery closed for excessively deep schemas", async () => {
+    writeMcpConfig({
+      mcpServers: { local: { type: "stdio", command: "node" } },
+    });
+    const schema: Record<string, unknown> = { type: "object" };
+    let cursor = schema;
+    for (let index = 0; index < 40; index++) {
+      const child: Record<string, unknown> = { type: "object" };
+      cursor.properties = { child };
+      cursor = child;
+    }
+    const adapter = new FakeMcpAdapter([{ name: "deep", inputSchema: schema }]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter, maxDepth: 32 });
+    await manager.boot();
+    expect(manager.tools).toHaveLength(0);
+    expect(manager.statuses()[0]?.state).toBe("failed");
+  });
+
+  test("fails server startup closed for invalid programmatic resource limits", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+    });
+    const adapter = new FakeMcpAdapter([{ name: "status", inputSchema: { type: "object" } }]);
+    const manager = createMcpManager({
+      agentDir: TMP,
+      client: adapter,
+      maxTransportMessageBytes: Number.POSITIVE_INFINITY,
+    });
+
+    await manager.boot();
+
+    expect(adapter.servers).toHaveLength(0);
+    expect(manager.tools).toHaveLength(0);
+    expect(manager.statuses()[0]).toMatchObject({
+      state: "failed",
+      error: expect.stringContaining("maxTransportMessageBytes must be a positive safe integer"),
+    });
+  });
+
+  test("does not turn an oversized or invalid remote schema into a permissive one", async () => {
+    writeMcpConfig({
+      mcpServers: { local: { type: "stdio", command: "node" } },
+    });
+    const adapter = new FakeMcpAdapter([
+      {
+        name: "invalid",
+        inputSchema: {
+          type: "string",
+          description: "x".repeat(20_000),
+        },
+      },
+    ]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter, maxSchemaBytes: 1024 });
+    await manager.boot();
+    expect(manager.tools).toHaveLength(0);
+    expect(manager.statuses()[0]?.state).toBe("failed");
   });
 
   test("boot-populated MCP tools are available to the turn loop", async () => {
@@ -483,6 +920,51 @@ describe("mcp augment runtime", () => {
       expect(result.success).toBe(true);
       expect(result.toolCalls[0]?.name).toBe("mcp_github_search");
       expect(adapter.connections[0]!.calls[0]?.name).toBe("search");
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  test("remote MCP error after dispatch is terminal and is not sent back for model retry", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "stdio", command: "node" },
+      },
+    });
+    const adapter = new FakeMcpAdapter([{ name: "mutate", inputSchema: { type: "object" } }], {
+      content: [{ type: "text", text: "remote mutation returned an error" }],
+      isError: true,
+    });
+    const augment = mcp({ agentDir: TMP, client: adapter });
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      finishReason: "tool_use",
+      toolCalls: [{ name: "mcp_ops_mutate", arguments: {} }],
+    });
+    model.pushResponse({ content: "retrying", finishReason: "end_turn" });
+    const agent = defineAgent({ name: "mcp-test", model: "mock", augments: [augment] }, model);
+
+    await agent.start();
+    try {
+      const trigger: TurnTrigger = {
+        type: "message",
+        turnId: "turn-mcp-error",
+        threadId: "thread-mcp-error",
+        timestamp: Date.now(),
+        source: "test",
+        peer: null,
+        payload: {
+          parts: [{ kind: "text", text: "mutate" }],
+          sourceAugment: "test",
+          peer: null,
+          timestamp: Date.now(),
+        },
+      };
+      const result = await agent.inject(trigger);
+      expect(result.status).toBe("failed");
+      expect(model.calls).toHaveLength(1);
+      expect(adapter.connections[0]!.calls).toHaveLength(1);
     } finally {
       await agent.stop();
     }

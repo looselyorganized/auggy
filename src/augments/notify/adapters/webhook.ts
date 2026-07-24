@@ -1,5 +1,11 @@
 import { createHttpClient } from "../../../http";
 import type { HttpClient } from "../../../http";
+import { assertSecureCredentialTransport } from "../../../engines/_shared/credential-transport";
+import {
+  isAmbiguousMutationStatus,
+  isOutcomeUnknownError,
+  OutcomeUnknownError,
+} from "../../../outcome-unknown";
 import type {
   NotifyAdapter,
   NotifyDestination,
@@ -14,12 +20,19 @@ export interface CreateWebhookAdapterOptions {
 
 export function createWebhookAdapter(opts: CreateWebhookAdapterOptions = {}): NotifyAdapter {
   const http =
-    opts.client ?? createHttpClient({ timeoutMs: 10_000, userAgent: "auggy-notify-webhook/0.1" });
+    opts.client ??
+    createHttpClient({
+      timeoutMs: 10_000,
+      maxRedirects: 0,
+      userAgent: "auggy-notify-webhook/0.1",
+      urlPolicy: "operator-configured",
+    });
 
   return {
     async deliver(
       destination: NotifyDestination,
       payload: NotifyPayload,
+      options?: { signal?: AbortSignal },
     ): Promise<NotifyDeliveryResult> {
       if (destination.transport !== "webhook") {
         return {
@@ -28,6 +41,19 @@ export function createWebhookAdapter(opts: CreateWebhookAdapterOptions = {}): No
         };
       }
       const dest = destination as WebhookNotifyDestination;
+      try {
+        assertSecureCredentialTransport({
+          provider: "notify webhook",
+          baseURL: dest.url,
+          credential: "<webhook-payload>",
+          allowInsecureHttpWithCredentials: dest.allowInsecureHttpWithCredentials,
+        });
+      } catch {
+        return {
+          status: "failed",
+          detail: "webhook destination failed secure transport validation",
+        };
+      }
       const body = JSON.stringify({
         summary: payload.summary,
         ...(payload.reason ? { reason: payload.reason } : {}),
@@ -39,16 +65,23 @@ export function createWebhookAdapter(opts: CreateWebhookAdapterOptions = {}): No
         const res = await http.post(dest.url, {
           headers: { "content-type": "application/json", ...(dest.headers ?? {}) },
           body,
+          signal: options?.signal,
         });
         if (res.status < 200 || res.status >= 300) {
+          if (isAmbiguousMutationStatus(res.status)) {
+            throw new OutcomeUnknownError(
+              `Webhook returned HTTP ${res.status} after dispatch; delivery outcome is unknown`,
+            );
+          }
           return {
             status: "failed",
-            detail: `webhook ${dest.url} returned ${res.status}: ${res.body.slice(0, 200)}`,
+            detail: `webhook delivery returned HTTP ${res.status}`,
           };
         }
         return { status: "sent" };
       } catch (err) {
-        return { status: "failed", detail: `webhook ${dest.url} error: ${(err as Error).message}` };
+        if (options?.signal?.aborted || isOutcomeUnknownError(err)) throw err;
+        return { status: "failed", detail: "webhook delivery failed" };
       }
     },
   };

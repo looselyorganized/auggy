@@ -58,7 +58,17 @@ const api = createAuggyClient({
   baseUrl: "https://store.example.com",
   visitorToken: () => localStorage.getItem("auggyVisitorToken") ?? undefined,
   onVisitorToken: (token) => localStorage.setItem("auggyVisitorToken", token),
-  authAssertion: async () => sessionStorage.getItem("auggyAuthAssertion") ?? undefined,
+  authAssertion: async () => {
+    const response = await fetch("/api/auggy-auth-assertion", {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "x-auggy-csrf-request": "1" },
+    });
+    if (!response.ok) return undefined;
+    const body = (await response.json()) as { assertion?: unknown };
+    return typeof body.assertion === "string" ? body.assertion : undefined;
+  },
   // Set this when webTransport.externalAuth.header uses a custom name.
   authAssertionHeader: "x-auggy-auth-assertion",
 });
@@ -74,15 +84,19 @@ Use `authAssertion` for app-signed visitor assertions, such as a normal app
 session bridged into Auggy visitor auth. The generated client forwards the
 assertion with `x-auggy-auth-assertion` by default, or `authAssertionHeader`
 when configured; it does not create or verify the assertion. Do not put
-assertion-signing secrets in browser code. See
+assertion-signing secrets in browser code. Mint a fresh assertion for each API
+call; replay-protected assertions are intentionally one-use and must not be
+cached in local or session storage. See
 [`26-delegated-authorization.md`](./26-delegated-authorization.md) for
 copyable Supabase/Clerk assertion recipes and the route `requires` model. See
 [`examples/app-auth-bridge`](../examples/app-auth-bridge/README.md) for a
 runnable generated-client bridge.
 
-Visitor-token routes can issue a fresh `x-visitor-token` response header. When
-that happens, the browser client calls `onVisitorToken` and also returns the
-token on the result.
+Verification or application routes can issue an `x-visitor-token` response
+header. When that happens, the browser client calls `onVisitorToken` and also
+returns the token on the result. The generic `/agent/run` anonymous bootstrap
+does not exchange missing or invalid visitor credentials for a recognized
+token.
 
 ## Server Usage
 
@@ -107,9 +121,23 @@ if (queued.ok) {
 }
 ```
 
-Use the server target for backend jobs, SSR/server actions, trusted API routes,
-and agent-to-agent callers. Do not bundle a server-target generated file into
-browser code.
+This direct call is for a trusted backend job, not a public pass-through route.
+Use the server target for trusted jobs and server-only callers. Do not bundle a
+server-target generated file into browser code.
+
+A route handler remains an untrusted HTTP entry point even though it runs on
+the server. Before it resolves creator credentials, it must verify the host
+application session, require an explicit operator/admin role, compare
+`Origin` to a fixed configured application origin, and validate a
+session-bound CSRF token. Middleware, CORS, `SameSite`, and Auggy's bearer
+check are not substitutes for these local checks. Trusted cron and queue
+workers should call the generated client directly.
+
+The bundled
+`skills/auggy/assets/templates/nextjs-server-client/admin-reindex-route.ts.txt`
+is fail closed until its application-specific session and CSRF stubs are
+implemented. Updating Auggy does not rewrite application routes copied from an
+older template; audit and replace existing copies.
 
 ## Calling Routes
 
@@ -219,7 +247,12 @@ The client throws for local/runtime failures such as:
 - missing required route params
 - missing required credentials for a generated route
 - network/fetch failures
+- HTTP redirects (configure the final agent origin directly)
 - malformed JSON when the response claims to be JSON
+
+Generated clients set `redirect: "error"` on every request. This applies to
+same-origin redirects too and prevents server bearer, agent secret, visitor
+token, or application assertion headers from following a redirect.
 
 ## Response Schemas
 
@@ -276,7 +309,12 @@ normal app login or an external auth bridge.
 const api = createAuggyClient({
   baseUrl,
   authAssertion: async () => {
-    const res = await fetch("/api/auggy-auth-assertion", { credentials: "include" });
+    const res = await fetch("/api/auggy-auth-assertion", {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "x-auggy-csrf-request": "1" },
+    });
     if (!res.ok) return undefined;
     return (await res.json()).assertion;
   },
@@ -284,6 +322,9 @@ const api = createAuggyClient({
 ```
 
 The assertion should be short-lived and signed by trusted server-side app code.
+Cookie-authenticated assertion routes must validate an exact configured
+application `Origin` and the custom CSRF request header before reading the
+session. All assertion responses must use private, no-store caching semantics.
 The generated browser client sends it as `x-auggy-auth-assertion` by default. Set
 `authAssertionHeader` to the same non-reserved `x-*` header configured in
 `webTransport.externalAuth.header` when using a custom name. Auggy runtime

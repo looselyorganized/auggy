@@ -1,5 +1,14 @@
 import { describe, test, expect, afterAll } from "bun:test";
-import { createHttpClient, rejectUnsafeUrl } from "../src/http";
+import {
+  createHttpClient,
+  createRedirectRejectingFetch,
+  HttpOutcomeUnknownError,
+  HttpTimeoutError,
+  rejectNonGlobalAddress,
+  rejectUnsafeRedirect,
+  rejectUnsafeUrl,
+  resolvePublicHttpUrl,
+} from "../src/http";
 
 // ---------------------------------------------------------------------------
 // Test HTTP server — serves controlled responses for redirect, body size,
@@ -16,10 +25,13 @@ function serveOnEphemeralPort(
   fetch: (req: Request) => Response | Promise<Response>,
 ): ReturnType<typeof Bun.serve> {
   let lastError: unknown;
+  const fallbackStart = 20_000 + Math.floor(Math.random() * 20_000);
   for (let attempt = 0; attempt < 20; attempt++) {
     try {
-      // Bun can transiently report EADDRINUSE for port: 0 under full-suite load.
-      return Bun.serve({ hostname: TEST_HOST, port: 0, fetch });
+      // Bun 1.3.14 can repeatedly report EADDRINUSE for port: 0. After the
+      // first OS-assigned attempt, probe distinct bounded fallback ports.
+      const port = attempt === 0 ? 0 : fallbackStart + attempt - 1;
+      return Bun.serve({ hostname: TEST_HOST, port, fetch });
     } catch (err) {
       lastError = err;
       if ((err as { code?: string }).code !== "EADDRINUSE") throw err;
@@ -71,6 +83,13 @@ function startTestServer() {
 
     if (path === "/redirect-no-location") {
       return new Response("no location header", { status: 302 });
+    }
+
+    if (path === "/not-modified-with-location") {
+      return new Response(null, {
+        status: 304,
+        headers: { location: "/final" },
+      });
     }
 
     // --- Redirect chain exceeding limit ---
@@ -183,9 +202,11 @@ describe("http client — redirect header stripping", () => {
       const client = createHttpClient();
       const res = await client.get(`http://${TEST_HOST}:${mainServer.port}/cross-redirect`, {
         headers: {
-          authorization: "Bearer secret-token",
-          cookie: "session=abc123",
-          "proxy-authorization": "Basic xyz",
+          Authorization: "Bearer secret-token",
+          Cookie: "session=abc123",
+          "Proxy-Authorization": "Basic xyz",
+          "X-API-Key": "api-key-secret",
+          "X-CSRF-Token": "csrf-secret",
         },
       });
       expect(res.status).toBe(200);
@@ -196,8 +217,44 @@ describe("http client — redirect header stripping", () => {
       expect(targetHeaders.authorization).toBeUndefined();
       expect(targetHeaders.cookie).toBeUndefined();
       expect(targetHeaders["proxy-authorization"]).toBeUndefined();
+      expect(targetHeaders["x-api-key"]).toBeUndefined();
+      expect(targetHeaders["x-csrf-token"]).toBeUndefined();
       // Non-sensitive headers should still be present.
       expect(targetHeaders["user-agent"]).toBeDefined();
+    } finally {
+      mainServer.stop(true);
+    }
+  });
+
+  test("only forwards explicitly allowlisted custom headers to an exact redirect origin", async () => {
+    const mainServer = serveOnEphemeralPort((req) => {
+      const url = new URL(req.url);
+      if (url.pathname === "/cross-redirect") {
+        return new Response(null, {
+          status: 302,
+          headers: { location: `http://${TEST_HOST}:${crossOriginPort}/allowlisted` },
+        });
+      }
+      return new Response("not found", { status: 404 });
+    });
+
+    try {
+      const targetOrigin = `http://${TEST_HOST}:${crossOriginPort}`;
+      const client = createHttpClient({
+        crossOriginRedirectHeaderAllowlist: {
+          [targetOrigin]: ["x-webhook-signature"],
+        },
+      });
+      await client.get(`http://${TEST_HOST}:${mainServer.port}/cross-redirect`, {
+        headers: {
+          "X-Webhook-Signature": "per-target-secret",
+          "X-API-Key": "must-not-follow",
+        },
+      });
+
+      const targetHeaders = receivedHeaders["cross:/allowlisted"]!;
+      expect(targetHeaders["x-webhook-signature"]).toBe("per-target-secret");
+      expect(targetHeaders["x-api-key"]).toBeUndefined();
     } finally {
       mainServer.stop(true);
     }
@@ -275,6 +332,13 @@ describe("http client — redirect behavior", () => {
     expect(res.body).toBe("no location header");
   });
 
+  test("does not follow non-redirect 3xx statuses", async () => {
+    const client = createHttpClient();
+    const res = await client.get(`http://${TEST_HOST}:${serverPort}/not-modified-with-location`);
+    expect(res.status).toBe(304);
+    expect(res.finalUrl).toContain("/not-modified-with-location");
+  });
+
   test("throws on redirect limit exceeded", async () => {
     const client = createHttpClient({ maxRedirects: 3 });
     expect(client.get(`http://${TEST_HOST}:${serverPort}/redirect-loop`)).rejects.toThrow(
@@ -301,10 +365,23 @@ describe("http client — timeout", () => {
 
     try {
       const client = createHttpClient({ timeoutMs: 200 });
-      expect(client.get(`http://${TEST_HOST}:${slowServer.port}/`)).rejects.toThrow();
+      const pending = client.get(`http://${TEST_HOST}:${slowServer.port}/`);
+      expect(pending).rejects.toBeInstanceOf(HttpTimeoutError);
+      expect(pending).rejects.toMatchObject({ outcomeUnknown: true, ms: 200 });
     } finally {
       slowServer.stop(true);
     }
+  });
+
+  test("classifies a dispatched mutation without a response as outcome unknown", async () => {
+    const closedServer = serveOnEphemeralPort(() => new Response("unused"));
+    const url = `http://${TEST_HOST}:${closedServer.port}/`;
+    closedServer.stop(true);
+    const client = createHttpClient({ timeoutMs: 1_000 });
+
+    const error = await client.post(url, { body: "{}" }).catch((caught) => caught);
+    expect(error).toBeInstanceOf(HttpOutcomeUnknownError);
+    expect((error as Error).cause).toBeUndefined();
   });
 });
 
@@ -386,11 +463,172 @@ describe("rejectUnsafeUrl helper", () => {
     expect(rejectUnsafeUrl("http://localhost./")).toMatch(/loopback/i);
   });
 
-  test("accepts public IPv6 addresses (does not over-block)", () => {
-    // 2001:db8::/32 is RFC 3849 documentation prefix — not private. The
-    // filter should not match it. (This test exists to ensure we don't
-    // regress into blocking the full 2xxx range.)
-    expect(rejectUnsafeUrl("http://[2001:db8::1]/")).toBeNull();
+  test("rejects IPv6 documentation space and accepts genuine global unicast", () => {
+    expect(rejectUnsafeUrl("http://[2001:db8::1]/")).toMatch(/documentation/i);
+    expect(rejectUnsafeUrl("http://[2606:4700:4700::1111]/")).toBeNull();
+  });
+});
+
+describe("public address classification", () => {
+  const nonGlobalAddresses = [
+    "0.0.0.0",
+    "100.64.0.1",
+    "198.18.0.1",
+    "192.0.2.1",
+    "198.51.100.1",
+    "203.0.113.1",
+    "224.0.0.1",
+    "240.0.0.1",
+    "255.255.255.255",
+    "2001:db8::1",
+    "2001::1",
+    "2001:2::1",
+    "2001:100::1",
+    "3fff::1",
+    "64:ff9b::7f00:1",
+    "::ffff:127.0.0.1",
+  ];
+
+  for (const address of nonGlobalAddresses) {
+    test(`rejects non-global address ${address}`, () => {
+      expect(rejectNonGlobalAddress(address)).not.toBeNull();
+    });
+  }
+
+  test("accepts global IPv4, IPv6, and NAT64 addresses", () => {
+    expect(rejectNonGlobalAddress("1.1.1.1")).toBeNull();
+    expect(rejectNonGlobalAddress("2606:4700:4700::1111")).toBeNull();
+    expect(rejectNonGlobalAddress("64:ff9b::101:101")).toBeNull();
+  });
+
+  test("canonicalizes alternative IPv4 URL forms before classification", () => {
+    expect(rejectUnsafeUrl("http://2130706433/")).toMatch(/loopback/i);
+    expect(rejectUnsafeUrl("http://0177.0.0.1/")).toMatch(/loopback/i);
+    expect(rejectUnsafeUrl("http://0x7f000001/")).toMatch(/loopback/i);
+    expect(rejectUnsafeUrl("http://127.1/")).toMatch(/loopback/i);
+    expect(rejectUnsafeUrl("http://192.168.1/")).toMatch(/RFC 1918/i);
+  });
+});
+
+describe("public DNS resolution", () => {
+  test("rejects a private DNS answer before connection", async () => {
+    await expect(
+      resolvePublicHttpUrl("https://public-looking.test/", async () => [
+        { address: "10.0.0.1", family: 4 },
+      ]),
+    ).rejects.toThrow(/non-global.*RFC 1918/i);
+  });
+
+  test("rejects a mixed public and private answer set", async () => {
+    await expect(
+      resolvePublicHttpUrl("https://mixed.test/", async () => [
+        { address: "1.1.1.1", family: 4 },
+        { address: "fd00::1", family: 6 },
+      ]),
+    ).rejects.toThrow(/non-global.*unique-local/i);
+  });
+
+  test("rejects empty, malformed, and family-mismatched answers", async () => {
+    await expect(resolvePublicHttpUrl("https://empty.test/", async () => [])).rejects.toThrow(
+      /no addresses/i,
+    );
+    await expect(
+      resolvePublicHttpUrl("https://malformed.test/", async () => [
+        { address: "not-an-address", family: 4 },
+      ]),
+    ).rejects.toThrow(/invalid DNS address/i);
+    await expect(
+      resolvePublicHttpUrl("https://mismatch.test/", async () => [
+        { address: "1.1.1.1", family: 6 },
+      ]),
+    ).rejects.toThrow(/invalid DNS address/i);
+  });
+
+  test("accepts an all-global dual-stack answer snapshot", async () => {
+    await expect(
+      resolvePublicHttpUrl("https://dual-stack.test/", async () => [
+        { address: "1.1.1.1", family: 4 },
+        { address: "2606:4700:4700::1111", family: 6 },
+      ]),
+    ).resolves.toEqual([
+      { address: "1.1.1.1", family: 4 },
+      { address: "2606:4700:4700::1111", family: 6 },
+    ]);
+  });
+
+  test("fails closed on resolver errors, excessive answers, and cancellation", async () => {
+    await expect(
+      resolvePublicHttpUrl("https://failure.test/", async () => {
+        throw new Error("resolver unavailable");
+      }),
+    ).rejects.toThrow(/resolver unavailable/i);
+
+    await expect(
+      resolvePublicHttpUrl("https://many.test/", async () =>
+        Array.from({ length: 33 }, (_, index) => ({
+          address: `1.1.1.${index + 1}`,
+          family: 4 as const,
+        })),
+      ),
+    ).rejects.toThrow(/too many/i);
+
+    const controller = new AbortController();
+    const pending = resolvePublicHttpUrl(
+      "https://cancelled.test/",
+      () => new Promise(() => {}),
+      controller.signal,
+    );
+    controller.abort(new Error("cancelled"));
+    await expect(pending).rejects.toThrow(/cancelled/i);
+  });
+});
+
+describe("redirect destination policy", () => {
+  test("rejects HTTPS downgrade and redirect URL credentials", () => {
+    expect(rejectUnsafeRedirect("https://example.com/start", "http://example.com/next")).toMatch(
+      /downgrade/i,
+    );
+    expect(
+      rejectUnsafeRedirect("https://example.com/start", "https://user:secret@example.net/next"),
+    ).toMatch(/credentials/i);
+  });
+
+  test("allows secure and explicitly configured initial plaintext flows", () => {
+    expect(
+      rejectUnsafeRedirect("https://example.com/start", "https://example.net/next"),
+    ).toBeNull();
+    expect(
+      rejectUnsafeRedirect("http://127.0.0.1:3000/start", "http://127.0.0.1:3000/next"),
+    ).toBeNull();
+  });
+});
+
+describe("credential-bearing Fetch wrapper", () => {
+  test("forces manual redirect handling and rejects redirect responses", async () => {
+    let capturedRedirect: RequestInit["redirect"];
+    const fetchImpl = (async (_input: string | URL | Request, init?: RequestInit) => {
+      capturedRedirect = init?.redirect;
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://attacker.example/" },
+      });
+    }) as typeof fetch;
+    const hardenedFetch = createRedirectRejectingFetch(fetchImpl);
+
+    await expect(
+      hardenedFetch("https://configured.example/", {
+        headers: { "X-API-Key": "sentinel-secret" },
+      }),
+    ).rejects.toThrow(/redirects are disabled/i);
+    expect(capturedRedirect).toBe("manual");
+  });
+
+  test("returns non-redirect responses unchanged", async () => {
+    const response = new Response("ok", { status: 200 });
+    const hardenedFetch = createRedirectRejectingFetch(
+      (async () => response) as unknown as typeof fetch,
+    );
+    expect(await hardenedFetch("https://configured.example/")).toBe(response);
   });
 });
 
@@ -448,5 +686,18 @@ describe("http client — SSRF guard", () => {
     } catch (err) {
       expect((err as Error).message).not.toMatch(/unsafe URL/i);
     }
+  });
+
+  test("rejects unknown or malformed runtime policy values", () => {
+    expect(() =>
+      createHttpClient({ urlPolicy: "publci" } as unknown as Parameters<
+        typeof createHttpClient
+      >[0]),
+    ).toThrow(/invalid URL security policy/i);
+    expect(() =>
+      createHttpClient({ rejectUnsafeUrls: "true" } as unknown as Parameters<
+        typeof createHttpClient
+      >[0]),
+    ).toThrow(/must be a boolean/i);
   });
 });

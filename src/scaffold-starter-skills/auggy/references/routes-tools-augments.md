@@ -138,7 +138,9 @@ Build routes for:
 - final handoff: `POST /checkout/create`, `POST /quotes/:id/accept`
 - account lookup: `GET /orders/:id`, `GET /account`
 - webhooks: `POST /webhooks/stripe`
-- operator actions: `POST /admin/reindex`
+- operator actions: `POST /admin/reindex` behind creator authorization; any
+  public app wrapper must separately verify the app session, operator role,
+  Origin, and CSRF before attaching creator credentials
 
 Use matching tools when the agent should mediate the same capability.
 

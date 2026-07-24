@@ -24,7 +24,12 @@ import type {
   ToolExecuteContext,
 } from "../../types";
 import { defineTool } from "../../helpers";
-import { readOverrides, writeOverrides } from "../../lib/admin-overrides";
+import {
+  readOverrides,
+  releaseAdminOverrideRoot,
+  retainAdminOverrideRoot,
+  writeOverrides,
+} from "../../lib/admin-overrides";
 import { createRingBuffer } from "../../lib/ring-buffer";
 /**
  * Single source of truth for the transports notify ships. The type union
@@ -59,6 +64,7 @@ export interface NotifyAugmentInternalOptions extends NotifyAugmentOptions {
 
 export function notify(opts: NotifyAugmentInternalOptions): Augment {
   const overrideDir = opts.overrideDir ?? opts.agentDir;
+  let overrideRootRetained = false;
   const defaults = {
     webhook: createWebhookAdapter(),
     telegram: createTelegramAdapter(),
@@ -81,11 +87,20 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
   const perPeerCooldownMs = rl.perPeerCooldownMs ?? cooldownMs;
 
   if (overrideDir) {
-    const overrides = readOverrides(overrideDir);
-    const overrideVal = overrides?.overrides.notify?.globalMaxPerHour;
-    if (overrideVal !== undefined) {
-      globalMaxPerHour = overrideVal;
-      globalMaxSource = "override";
+    overrideRootRetained = retainAdminOverrideRoot(overrideDir);
+    try {
+      const overrides = readOverrides(overrideDir);
+      const overrideVal = overrides?.overrides.notify?.globalMaxPerHour;
+      if (overrideVal !== undefined) {
+        globalMaxPerHour = overrideVal;
+        globalMaxSource = "override";
+      }
+    } catch (error) {
+      if (overrideRootRetained) {
+        releaseAdminOverrideRoot(overrideDir);
+        overrideRootRetained = false;
+      }
+      throw error;
     }
   }
 
@@ -247,9 +262,11 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
       // No explicit per-destination limit — update per-peer cooldown and global counter.
       // Key is per (peerId, destName) so activity on one destination doesn't bleed into others.
       peerLastNotify.set(`${peerId}:${destName}`, now);
-      recentSummaries.push({ summary, timestamp: now });
       globalCountThisHour++;
     }
+    // Deduplication is a separate cross-destination boundary and applies even
+    // when a destination supplies its own cooldown/hourly quota.
+    if (dedupThreshold > 0) recentSummaries.push({ summary, timestamp: now });
   }
 
   const notifyTool = defineTool({
@@ -326,25 +343,42 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
           message: `No adapter registered for transport '${destination.transport}'.`,
         });
       }
+      if (context.signal?.aborted) {
+        return JSON.stringify({
+          status: "failed",
+          message: "Notification canceled before dispatch.",
+        });
+      }
+
+      // Reserve synchronously before the first await. Started attempts retain
+      // quota even on throw/timeout because remote delivery may have occurred.
+      if (enabled && trustLevel !== "creator" && context.peer) {
+        recordNotification(context.peer.id, summary, destination.name, destHasExplicitLimit);
+      }
 
       let result: NotifyDeliveryResult;
       try {
-        result = await adapter.deliver(destination, { summary, reason, visitor });
-      } catch (err) {
+        result = await adapter.deliver(
+          destination,
+          { summary, reason, visitor },
+          { signal: context.signal },
+        );
+      } catch {
         recordDispatch({
           timestamp: new Date().toISOString().slice(11, 19),
           destination: destination.name,
           status: "failed",
           summary,
         });
-        return JSON.stringify({
-          status: "failed",
-          message: `Adapter for '${destination.transport}' threw: ${(err as Error).message}`,
-        });
-      }
-
-      if (result.status === "sent" && trustLevel !== "creator" && context.peer) {
-        recordNotification(context.peer.id, summary, destination.name, destHasExplicitLimit);
+        return {
+          content: JSON.stringify({
+            status: "failed",
+            message:
+              "Notification dispatch ended without a trustworthy delivery result; outcome is unknown.",
+          }),
+          isError: true,
+          outcomeUnknown: true,
+        };
       }
 
       recordDispatch({
@@ -354,10 +388,11 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
         summary,
       });
 
-      return JSON.stringify({
+      const content = JSON.stringify({
         status: result.status,
         ...(result.detail ? { detail: result.detail } : {}),
       });
+      return result.outcomeUnknown ? { content, isError: true, outcomeUnknown: true } : content;
     },
   });
 
@@ -573,5 +608,11 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     tools: [notifyTool],
     adminInfo,
     adminActions,
+    onShutdown: async () => {
+      if (overrideRootRetained) {
+        releaseAdminOverrideRoot(overrideDir);
+        overrideRootRetained = false;
+      }
+    },
   };
 }

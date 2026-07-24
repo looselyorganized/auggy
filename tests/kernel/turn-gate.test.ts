@@ -415,23 +415,23 @@ describe("Turn-gate 2PC dispatch", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Cost commit throws — turn still succeeds; error is logged, result.success is true
+  // Cost commit throws — completed inference becomes outcome-unknown
   // -------------------------------------------------------------------------
-  it("turn still succeeds when cost commit throws", async () => {
+  it("fails closed as outcome-unknown when cost commit throws", async () => {
     const gate = fakeTurnGate({
       name: "throwing-commit-gate",
       decision: { allow: true },
-      commitError: new Error("commit db timeout"),
+      commitError: new Error("commit db timeout: accounting-secret-sentinel"),
     });
 
     const loop = makeLoop([gate]);
-    const result = await loop.executeTurn(makeTrigger(), "t-8");
-
-    // The turn response was already built before commit ran — it must succeed.
-    expect(result.success).toBe(true);
-    expect(result.status).toBe("completed");
-    // No errorClass (it's a success)
-    expect(result.errorClass).toBeUndefined();
+    const error = await loop.executeTurn(makeTrigger(), "t-8").catch((caught) => caught);
+    expect(error).toMatchObject({
+      outcomeUnknown: true,
+      message: "Inference completed but durable cost accounting did not reach a terminal state.",
+    });
+    expect(Bun.inspect(error)).not.toContain("accounting-secret-sentinel");
+    expect((error as Error).cause).toBeUndefined();
   });
 
   // -------------------------------------------------------------------------
@@ -463,7 +463,8 @@ describe("Turn-gate 2PC dispatch", () => {
     expect(result.success).toBe(false);
     expect(result.status).toBe("rejected");
     expect(result.errorClass).toBe("admission-state-failed");
-    expect(result.error?.message).toContain("db connection failed");
+    expect(result.error?.message).toBe('Turn gate "gate-b" failed during admission.');
+    expect(result.error?.message).not.toContain("db connection failed");
     // Gate A's ticket should have been rolled back.
     expect(rollbacksA).toHaveLength(1);
     expect(model.calls).toHaveLength(0);

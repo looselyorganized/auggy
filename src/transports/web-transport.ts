@@ -23,14 +23,17 @@ import {
   runError,
   type AGUIEvent,
 } from "./ag-ui-events";
+import { deriveSigningKey, verifyVisitorToken, type VisitorTokenPayload } from "./visitor-token";
+import { createAnonymousSessionManager } from "./anonymous-session";
 import {
-  deriveSigningKey,
-  createVisitorToken,
-  verifyVisitorToken,
-  type VisitorTokenPayload,
-} from "./visitor-token";
+  createWebIdempotencyStore,
+  hashIdempotencyBinding,
+  hashIdempotencyKey,
+  type IdempotencyClaim,
+  type RateLimitPolicy,
+  type WebIdempotencyStore,
+} from "./idempotency-store";
 import {
-  createInMemoryExternalAuthReplayStore,
   externalAuthClaimsToRouteContext,
   verifyExternalAuthAssertion,
   type ExternalAuthAssertionSecret,
@@ -47,7 +50,12 @@ import { validateRouteWebhookPolicyConfig, verifyRouteWebhookPolicy } from "./we
 import { withTimeout, TimeoutError } from "../kernel/timeout";
 import { matchRoutePath, parseRoutePattern } from "../kernel/route-pattern";
 import { resolveConfigBool } from "../config";
-import { readOverrides, writeOverrides } from "../lib/admin-overrides";
+import {
+  readOverrides,
+  releaseAdminOverrideRoot,
+  retainAdminOverrideRoot,
+  writeOverrides,
+} from "../lib/admin-overrides";
 import type { AdminActionResult, AdminInfoBlock } from "../types";
 import {
   type AdminActionRegistry,
@@ -55,6 +63,11 @@ import {
   handleAdminRoute,
   resolveDistDir,
 } from "./admin/index";
+import {
+  releaseManagedRoot,
+  retainManagedRoot,
+  supportsManagedFileIsolation,
+} from "./admin/admin-managed-files";
 import { renderAgentIntegrationPage, renderInfoPage } from "./info-page";
 import {
   createConsoleChatStore,
@@ -65,11 +78,27 @@ import {
   type ConsoleChatStore,
   type ConsoleChatToolCall,
 } from "./admin/console-chat-store";
+import {
+  buildConsoleAllowedOrigins,
+  compileTrustedProxyNetworks,
+  evaluateConsoleRequest,
+  resolveForwardedRequest,
+  type TrustedProxyNetworks,
+} from "./console-request-security";
+import { createHash, createHmac } from "node:crypto";
+import { isIP } from "node:net";
 import { join } from "node:path";
+import {
+  InvalidRequestBodyError,
+  readRequestBodyJson,
+  RequestBodyTooLargeError,
+} from "./request-body";
 
 const PUBLIC_PAGE_CACHE_CONTROL = "public, max-age=0, must-revalidate";
 const DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER = "x-auggy-auth-assertion";
 const CONSOLE_INTERNAL_RUN_HEADER = "x-auggy-console-internal";
+const ANONYMOUS_SESSION_HEADER = "x-auggy-anonymous-session";
+const ANONYMOUS_SESSION_STATUS_HEADER = "x-auggy-anonymous-session-status";
 const HTTP_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
   "authorization",
@@ -77,6 +106,8 @@ const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
   "idempotency-key",
   "x-agent-id",
   "x-agent-secret",
+  ANONYMOUS_SESSION_HEADER,
+  ANONYMOUS_SESSION_STATUS_HEADER,
   CONSOLE_INTERNAL_RUN_HEADER,
   "x-org-id",
   "x-peer-id",
@@ -89,6 +120,19 @@ const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
   "x-forwarded-proto",
   "x-real-ip",
 ]);
+
+function withConsoleBoundaryHeaders(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set("content-security-policy", "frame-ancestors 'none'");
+  headers.set("x-frame-options", "DENY");
+  headers.set("x-content-type-options", "nosniff");
+  headers.set("referrer-policy", "no-referrer");
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -108,8 +152,9 @@ export interface WebTransportExternalAuthOptions extends ExternalAuthPrincipalOp
     store?: ExternalAuthReplayStore;
   };
   /**
-   * Expected assertion audience. Defaults to visitorTokens.agentBinding when
-   * configured, otherwise the agent-card provider name at runtime.
+   * Expected assertion audience. Defaults to the transport security namespace
+   * (securityNamespace, visitorTokens.agentBinding, then registered agent
+   * name).
    */
   audience?: string;
   /**
@@ -121,11 +166,164 @@ export interface WebTransportExternalAuthOptions extends ExternalAuthPrincipalOp
   maxTtlSeconds?: number;
 }
 
+function validateExternalAuthRuntimeOptions(value: unknown): void {
+  if (value === undefined) return;
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("[web-transport] externalAuth must be an object.");
+  }
+  const config = value as Record<string, unknown>;
+  if (typeof config.secret !== "string" || config.secret.trim() === "") {
+    throw new Error(
+      "[web-transport] externalAuth.secret is required and must be a non-empty string.",
+    );
+  }
+  for (const field of ["keyId", "audience"] as const) {
+    if (
+      config[field] !== undefined &&
+      (typeof config[field] !== "string" || config[field].trim() === "")
+    ) {
+      throw new Error(`[web-transport] externalAuth.${field} must be a non-empty string.`);
+    }
+  }
+  if (config.header !== undefined) {
+    if (typeof config.header !== "string") {
+      throw new Error("[web-transport] externalAuth.header must be a string.");
+    }
+    const header = config.header.trim().toLowerCase();
+    if (
+      !header ||
+      !HTTP_HEADER_NAME.test(header) ||
+      !header.startsWith("x-") ||
+      RESERVED_EXTERNAL_AUTH_HEADERS.has(header)
+    ) {
+      throw new Error(
+        "[web-transport] externalAuth.header must be a non-reserved x-* HTTP header name.",
+      );
+    }
+  }
+  if (
+    config.maxTtlSeconds !== undefined &&
+    (!Number.isSafeInteger(config.maxTtlSeconds) || (config.maxTtlSeconds as number) <= 0)
+  ) {
+    throw new Error(
+      "[web-transport] externalAuth.maxTtlSeconds must be a positive integer when configured.",
+    );
+  }
+  if (config.allowedProviders !== undefined) {
+    if (
+      !Array.isArray(config.allowedProviders) ||
+      config.allowedProviders.length === 0 ||
+      config.allowedProviders.some(
+        (provider) => typeof provider !== "string" || provider.trim() === "",
+      ) ||
+      new Set(config.allowedProviders).size !== config.allowedProviders.length
+    ) {
+      throw new Error(
+        "[web-transport] externalAuth.allowedProviders must be a non-empty array of unique, non-empty strings.",
+      );
+    }
+  }
+  if (config.secrets !== undefined) {
+    if (
+      !Array.isArray(config.secrets) ||
+      config.secrets.some(
+        (entry) => entry === null || typeof entry !== "object" || Array.isArray(entry),
+      )
+    ) {
+      throw new Error("[web-transport] externalAuth.secrets must be an array of secret objects.");
+    }
+    for (const value of config.secrets) {
+      const entry = value as Record<string, unknown>;
+      if (typeof entry.secret !== "string" || entry.secret.trim() === "") {
+        throw new Error(
+          "[web-transport] externalAuth.secrets entries require a non-empty string secret.",
+        );
+      }
+      if (
+        entry.keyId !== undefined &&
+        (typeof entry.keyId !== "string" || entry.keyId.trim() === "")
+      ) {
+        throw new Error(
+          "[web-transport] externalAuth.secrets keyId must be a non-empty string when configured.",
+        );
+      }
+    }
+  }
+  if (
+    config.includeUnverifiedEmail !== undefined &&
+    typeof config.includeUnverifiedEmail !== "boolean"
+  ) {
+    throw new Error("[web-transport] externalAuth.includeUnverifiedEmail must be a boolean.");
+  }
+  if (
+    config.visitorId !== undefined &&
+    !(
+      (typeof config.visitorId === "string" && config.visitorId.trim() !== "") ||
+      typeof config.visitorId === "function"
+    )
+  ) {
+    throw new Error(
+      "[web-transport] externalAuth.visitorId must be a non-empty string or function.",
+    );
+  }
+
+  const replayProtection = config.replayProtection;
+  if (
+    replayProtection !== undefined &&
+    (replayProtection === null ||
+      typeof replayProtection !== "object" ||
+      Array.isArray(replayProtection))
+  ) {
+    throw new Error("[web-transport] externalAuth.replayProtection must be an object.");
+  }
+  if (replayProtection === undefined) return;
+  const replay = replayProtection as Record<string, unknown>;
+  if (typeof replay.enabled !== "boolean") {
+    throw new Error(
+      "[web-transport] externalAuth.replayProtection.enabled must be a boolean when replayProtection is configured.",
+    );
+  }
+  if (replay.store !== undefined && replay.enabled !== true) {
+    throw new Error("[web-transport] externalAuth.replayProtection.store requires enabled: true.");
+  }
+  if (replay.enabled !== true) return;
+  if (replay.store === undefined) {
+    throw new Error(
+      "[web-transport] externalAuth.replayProtection requires an explicit atomic store. " +
+        "Use createInMemoryExternalAuthReplayStore() only for a documented single-process development deployment.",
+    );
+  }
+  if (
+    replay.store === null ||
+    typeof replay.store !== "object" ||
+    typeof (replay.store as { consume?: unknown }).consume !== "function"
+  ) {
+    throw new Error(
+      "[web-transport] externalAuth.replayProtection.store must provide consume(jti, expiresAt, now).",
+    );
+  }
+}
+
 export interface WebTransportOptions {
   port: number;
   auth: { type: "bearer"; token: string };
   cors?: { origins: [string] };
+  /**
+   * Stable deployment identity used to scope anonymous capabilities and the
+   * idempotency ledger. Replicas of one logical agent must share it; unrelated
+   * agents sharing storage or credentials must use different values. Defaults
+   * to visitorTokens.agentBinding, then the registered agent name.
+   */
+  securityNamespace?: string;
   maxMessageLength?: number;
+  /** Maximum encoded bytes accepted by POST /agent/run. Default 1 MiB. */
+  maxRequestBodyBytes?: number;
+  /** Maximum pending live SSE bytes for a slow client. Default 1 MiB. */
+  maxPendingSseBytes?: number;
+  /** Maximum pending live SSE events for a slow client. Default 1,024. */
+  maxPendingSseEvents?: number;
+  /** Maximum persisted console aggregate bytes per run. Default 4 MiB. */
+  maxConsoleRunBytes?: number;
   /**
    * Admitted agent list. Each entry has an `id` (sent as `x-agent-id` header)
    * and a `sharedSecret` (sent as `x-agent-secret` header). The transport
@@ -134,10 +332,23 @@ export interface WebTransportOptions {
   access?: { agents?: AgentAccessEntry[] };
   concurrency?: number;
   maxQueueDepth?: number;
-  rateLimitPerPeer?: { maxPerMinute: number };
+  rateLimitPerPeer?: {
+    maxPerMinute: number;
+    /**
+     * Anonymous callers also consume a network-prefix and deployment-global
+     * execution budget so minting sessions cannot multiply the peer limit.
+     * The default `shared-store` mode requires a durable idempotency database.
+     */
+    anonymousNetwork?: {
+      mode?: "shared-store" | "trusted-edge" | "single-process-development";
+      /** IPv6 aggregation prefix. Defaults to /64 and may only be stricter. */
+      ipv6PrefixBits?: number;
+      /** Deployment-wide anonymous executions per minute. Defaults to 100x the peer limit. */
+      globalMaxPerMinute?: number;
+    };
+  };
   visitorTokens?: {
     enabled?: boolean;
-    ttlSeconds?: number;
     signingKey?: string;
     /**
      * Optional real-time revocation check. Called after HMAC verification
@@ -162,12 +373,13 @@ export interface WebTransportOptions {
     threadPromotionCheck?: (visitorId: string, threadId: string) => boolean;
     /**
      * Stable identifier for this agent used to scope visitor tokens (fix C2).
-     * MUST match visitorAuth's `agentBinding` option. Default: `"auggy"`.
+     * MUST match visitorAuth's `agentBinding` option. Defaults to
+     * securityNamespace, then the registered agent name.
      * Tokens minted for a different agentBinding are rejected, preventing
      * cross-agent replay when two agents share the same signing key.
      *
-     * Only enforce when explicitly configured — leaving this unset means the
-     * default `"auggy"` is used, which matches the visitorAuth default.
+     * The binding is always enforced. Direct visitorAuth integrations should
+     * configure both sides explicitly so renaming cannot strand issued tokens.
      */
     agentBinding?: string;
   };
@@ -206,8 +418,8 @@ export interface WebTransportOptions {
    * Allow-list of upstream proxies whose `X-Forwarded-For` / `X-Real-IP`
    * headers are trusted for per-route per-IP rate limiting (F16).
    *
-   * Each entry is an exact IP string (CIDR ranges are not yet supported —
-   * v1 keeps it simple). When the connection's remote address matches an
+   * Each entry is an exact IP string or a bounded IPv4/IPv6 CIDR. When the
+   * connection's remote address matches an
    * entry, the first XFF / X-Real-IP value is trusted. When it does not,
    * the headers are IGNORED and the connection IP is used directly.
    *
@@ -221,6 +433,17 @@ export interface WebTransportOptions {
    * Cloudflare for the first time).
    */
   trustedProxies?: string[];
+  /**
+   * Exact browser origins allowed to reach the operator console.
+   *
+   * Local origins for localhost, 127.0.0.1, and ::1 on `port` are included
+   * automatically. `AUGGY_PUBLIC_URL`, when valid, also contributes its
+   * origin. Public deployments should set this list explicitly and configure
+   * `trustedProxies` for every terminating proxy network.
+   */
+  consoleSecurity?: {
+    allowedOrigins?: string[];
+  };
   /**
    * Whether requests to `/agent/run` may proceed WITHOUT a bearer token.
    *
@@ -264,6 +487,32 @@ export interface WebTransportOptions {
    */
   consoleChat?: {
     dbPath?: string | null;
+  };
+  /**
+   * Durable execution ledger for caller-supplied Idempotency-Key values.
+   * CLI-managed agents default to data/web-idempotency.db. Programmatic
+   * callers must configure a durable path before keyed requests are accepted;
+   * tests and disposable development processes may explicitly opt into
+   * `dbPath: ":memory:"`.
+   */
+  idempotency?: {
+    dbPath?: string | null;
+    maxRecords?: number;
+    /** Maximum live shared rate-limit hit records before admission fails closed. */
+    maxRateLimitRecords?: number;
+    maxReplayBytes?: number;
+    maxStoredBytes?: number;
+    maxRecordsPerPartition?: number;
+    maxPublicRecords?: number;
+    maxAgentRecords?: number;
+    maxCreatorRecords?: number;
+    waitTimeoutMs?: number;
+    staleAfterMs?: number;
+    retentionMs?: number;
+    maxWaiters?: number;
+    maxWaitersPerKey?: number;
+    /** Optional metrics hook; receives counts only, never keys or request data. */
+    onWaiterCountChange?: (counts: { active: number; forKey: number }) => void;
   };
   /**
    * G36 — agent project directory. Used by
@@ -370,6 +619,60 @@ export function normalizeIp(ip: string | null | undefined): string | null {
   return m ? m[1]! : ip;
 }
 
+function parseIpv6ForRateLimit(address: string): bigint | null {
+  if (address.includes("%") || isIP(address) !== 6) return null;
+  let normalized = address.toLowerCase();
+  if (normalized.includes(".")) {
+    const lastColon = normalized.lastIndexOf(":");
+    const octets = normalized.slice(lastColon + 1).split(".");
+    if (
+      octets.length !== 4 ||
+      octets.some((part) => !/^(0|[1-9]\d{0,2})$/.test(part) || Number(part) > 255)
+    ) {
+      return null;
+    }
+    const embedded = octets.reduce((value, part) => value * 256 + Number(part), 0);
+    normalized = `${normalized.slice(0, lastColon)}:${(embedded >>> 16).toString(16)}:${(
+      embedded & 0xffff
+    ).toString(16)}`;
+  }
+  const halves = normalized.split("::");
+  if (halves.length > 2) return null;
+  const left = halves[0] ? halves[0].split(":") : [];
+  const right = halves[1] ? halves[1].split(":") : [];
+  const omitted = 8 - left.length - right.length;
+  if ((halves.length === 1 && omitted !== 0) || (halves.length === 2 && omitted < 1)) return null;
+  const groups = [...left, ...Array.from({ length: omitted }, () => "0"), ...right];
+  if (groups.length !== 8) return null;
+  let value = 0n;
+  for (const group of groups) {
+    if (!/^[0-9a-f]{1,4}$/.test(group)) return null;
+    value = (value << 16n) | BigInt(Number.parseInt(group, 16));
+  }
+  return value;
+}
+
+/**
+ * Return the stable caller-network identity used for anonymous admission.
+ * IPv6 callers share a /64 by default, while mapped IPv4 forms collapse to
+ * the same exact IPv4 identity.
+ */
+export function rateLimitNetworkIdentity(ip: string, ipv6PrefixBits = 64): string | null {
+  const normalized = normalizeIp(ip);
+  if (!normalized) return null;
+  if (isIP(normalized) === 4) return `ipv4:${normalized}`;
+  const parsed = parseIpv6ForRateLimit(normalized);
+  if (parsed === null) return null;
+  if (parsed >> 32n === 0xffffn) {
+    const value = Number(parsed & 0xffff_ffffn);
+    return `ipv4:${(value >>> 24) & 0xff}.${(value >>> 16) & 0xff}.${(value >>> 8) & 0xff}.${
+      value & 0xff
+    }`;
+  }
+  const prefix = parsed >> BigInt(128 - ipv6PrefixBits);
+  return `ipv6/${ipv6PrefixBits}:${prefix.toString(16)}`;
+}
+
 /**
  * Returns true iff `ip` is a loopback address (127.0.0.0/8 or ::1).
  *
@@ -384,8 +687,9 @@ export function isLoopback(ip: string | null | undefined): boolean {
   if (!ip) return false;
   const norm = normalizeIp(ip);
   if (!norm) return false;
-  if (norm === "::1") return true;
-  return /^127\./.test(norm);
+  if (isIP(norm) === 6) return norm === "::1";
+  if (isIP(norm) !== 4) return false;
+  return norm.split(".")[0] === "127";
 }
 
 /**
@@ -416,51 +720,32 @@ export function isLoopback(ip: string | null | undefined): boolean {
  *
  * Returns `"unknown"` when no source resolves.
  */
+function resolveCallerIp(
+  req: Request,
+  server: { requestIP?: (req: Request) => { address?: string } | null } | undefined,
+  trustedProxies: TrustedProxyNetworks,
+  xffOnUntrusted: () => void,
+): { callerIp: string; error: boolean } {
+  const connIp = getConnectionIp(req, server);
+  const resolution = resolveForwardedRequest({
+    connectionIp: connIp,
+    headers: req.headers,
+    trustedProxies,
+  });
+  if (req.headers.has("x-forwarded-for") && !resolution.proxyTrusted) xffOnUntrusted();
+  return {
+    callerIp: resolution.error ? (normalizeIp(connIp) ?? "unknown") : resolution.callerIp,
+    error: resolution.error !== undefined,
+  };
+}
+
 function getCallerIp(
   req: Request,
   server: { requestIP?: (req: Request) => { address?: string } | null } | undefined,
-  trustedProxies: readonly string[],
+  trustedProxies: TrustedProxyNetworks,
   xffOnUntrusted: () => void,
 ): string {
-  const xff = req.headers.get("x-forwarded-for");
-  const realIp = req.headers.get("x-real-ip");
-  const connIp = getConnectionIp(req, server);
-  const connIpNorm = normalizeIp(connIp);
-  const proxiesNorm = trustedProxies.map((p) => normalizeIp(p) ?? p);
-  const proxyIsTrusted =
-    isRailwayRuntime() || (connIpNorm !== null && proxiesNorm.includes(connIpNorm));
-
-  if (xff && !proxyIsTrusted) {
-    // Warn-once: XFF arrived from an untrusted source. Almost certainly an
-    // operator that hasn't configured trustedProxies after deploying behind
-    // a proxy. Narrowed to XFF (not X-Real-IP) because the warning copy
-    // names XFF specifically.
-    xffOnUntrusted();
-  }
-
-  if (proxyIsTrusted && xff) {
-    // Right-to-left walk. Drop entries that are themselves trusted proxies
-    // (each such entry was a known intermediate hop). Return the first
-    // non-trusted entry — that's the client IP under the standard
-    // append-style XFF convention.
-    const entries = xff
-      .split(",")
-      .map((s) => normalizeIp(s.trim()) ?? s.trim())
-      .filter(Boolean);
-    for (let i = entries.length - 1; i >= 0; i--) {
-      const entry = entries[i]!;
-      if (!proxiesNorm.includes(entry)) return entry;
-    }
-    // All XFF entries are themselves trusted proxies — chain consists
-    // entirely of internal hops. Fall through to connIp (the immediate
-    // peer, also a trusted proxy).
-  }
-  if (proxyIsTrusted && realIp) {
-    // X-Real-IP is a single value set by the proxy (no append semantics);
-    // trust it directly.
-    return normalizeIp(realIp.trim()) ?? realIp.trim();
-  }
-  return connIpNorm ?? "unknown";
+  return resolveCallerIp(req, server, trustedProxies, xffOnUntrusted).callerIp;
 }
 
 function getConnectionIp(
@@ -539,21 +824,6 @@ function formatAnonymousPostureLine(
     : `[web] anonymous chat disabled (${sourceLabel})`;
 }
 
-function shouldTrustForwardedProto(
-  req: Request,
-  server: { requestIP?: (req: Request) => { address?: string } | null } | undefined,
-  trustedProxies: readonly string[],
-): boolean {
-  const forwardedProto = req.headers.get("x-forwarded-proto")?.split(",")[0]?.trim().toLowerCase();
-  if (forwardedProto !== "https") return false;
-  if (isRailwayRuntime()) return true;
-
-  const connIpNorm = normalizeIp(getConnectionIp(req, server));
-  if (!connIpNorm) return false;
-  const proxiesNorm = trustedProxies.map((p) => normalizeIp(p) ?? p);
-  return proxiesNorm.includes(connIpNorm);
-}
-
 // ---------------------------------------------------------------------------
 // Idempotency-Key validation
 // ---------------------------------------------------------------------------
@@ -562,6 +832,38 @@ const IDEMPOTENCY_KEY_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
 function validateIdempotencyKey(value: string): boolean {
   return IDEMPOTENCY_KEY_RE.test(value);
+}
+
+function idempotencyAuthorizationBinding(value: RouteVisitorAuthContext | undefined): unknown {
+  if (value?.state !== "recognized") return value;
+
+  // A retry may carry freshly minted visitor and external-auth envelopes.
+  // Remove only the known proof-envelope fields at their exact schema paths.
+  // Arbitrary grant constraints are authorization data, even when an
+  // application names one "expiresAt", "jti", or "keyId".
+  const {
+    issuedAt: _issuedAt,
+    expiresAt: _expiresAt,
+    principal,
+    externalAuth,
+    ...topLevel
+  } = value;
+  const { externalAuth: principalExternalAuth, ...stablePrincipal } = principal;
+  const stableExternalAuth = externalAuth
+    ? (({ keyId: _keyId, jti: _jti, ...claims }) => claims)(externalAuth)
+    : undefined;
+  const stablePrincipalExternalAuth = principalExternalAuth
+    ? (({ keyId: _keyId, jti: _jti, ...claims }) => claims)(principalExternalAuth)
+    : undefined;
+
+  return {
+    ...topLevel,
+    ...(stableExternalAuth ? { externalAuth: stableExternalAuth } : {}),
+    principal: {
+      ...stablePrincipal,
+      ...(stablePrincipalExternalAuth ? { externalAuth: stablePrincipalExternalAuth } : {}),
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -599,6 +901,23 @@ function resolveConsoleChatDbPath(opts: WebTransportOptions): string | null {
     return configured;
   }
   return opts.agentDir ? join(opts.agentDir, "data", "console-chat.db") : ":memory:";
+}
+
+function resolveIdempotencyDbPath(opts: WebTransportOptions): string | null {
+  const configured = opts.idempotency?.dbPath;
+  if (configured === null) return null;
+  if (configured !== undefined) {
+    if (configured.trim() === "") {
+      throw new Error("[web-transport] idempotency.dbPath must be non-empty or null.");
+    }
+    return configured;
+  }
+  if (opts.agentDir) return join(opts.agentDir, "data", "web-idempotency.db");
+  // Programmatic runtimes have no reliable way to infer whether they are
+  // disposable development processes. Keyed execution must fail closed
+  // unless the caller explicitly opts into either a durable file or the
+  // development-only in-memory ledger.
+  return null;
 }
 
 function appendTextSegmentBoundary(content: string): string {
@@ -724,12 +1043,15 @@ function parseConsoleRunMetadata(
  */
 export function webTransport(opts: WebTransportOptions): Augment {
   const overrideDir = opts.overrideDir ?? opts.agentDir;
+  const configuredExternalAuthHeader =
+    typeof opts.externalAuth?.header === "string" ? opts.externalAuth.header : undefined;
   const externalAuthHeaderName =
-    opts.externalAuth?.header?.trim().toLowerCase() ?? DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER;
+    configuredExternalAuthHeader?.trim().toLowerCase() ?? DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER;
   let server: ReturnType<typeof Bun.serve> | null = null;
   let startServer: (() => void) | null = null;
   let kernel: TransportKernel | null = null;
   let consoleChatStore: ConsoleChatStore | null = null;
+  let idempotencyStore: WebIdempotencyStore | null = null;
   let consoleHistoryPersistence: ReturnType<
     typeof createDeferredConsoleThreadHistoryPersistence
   > | null = null;
@@ -778,12 +1100,58 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // Cloudflare for the first time get a clear hint to configure their
   // proxy chain. Latched per-instance so the warning isn't spammed every
   // request.
-  const trustedProxies: readonly string[] = opts.trustedProxies ?? [];
+  const trustedProxies = compileTrustedProxyNetworks(opts.trustedProxies ?? []);
+  const anonymousNetworkConfig = opts.rateLimitPerPeer?.anonymousNetwork;
+  const anonymousNetworkMode = anonymousNetworkConfig?.mode ?? "shared-store";
+  if (
+    anonymousNetworkMode !== "shared-store" &&
+    anonymousNetworkMode !== "trusted-edge" &&
+    anonymousNetworkMode !== "single-process-development"
+  ) {
+    throw new Error("[web-transport] rateLimitPerPeer.anonymousNetwork.mode is invalid.");
+  }
+  const anonymousIpv6PrefixBits = anonymousNetworkConfig?.ipv6PrefixBits ?? 64;
+  if (
+    !Number.isSafeInteger(anonymousIpv6PrefixBits) ||
+    anonymousIpv6PrefixBits < 32 ||
+    anonymousIpv6PrefixBits > 64
+  ) {
+    throw new Error(
+      "[web-transport] rateLimitPerPeer.anonymousNetwork.ipv6PrefixBits must be an integer from 32 to 64.",
+    );
+  }
+  const peerRateLimit = opts.rateLimitPerPeer?.maxPerMinute;
+  if (peerRateLimit !== undefined && (!Number.isSafeInteger(peerRateLimit) || peerRateLimit < 1)) {
+    throw new Error("[web-transport] rateLimitPerPeer.maxPerMinute must be a positive integer.");
+  }
+  const defaultGlobalAnonymousLimit =
+    peerRateLimit === undefined
+      ? undefined
+      : Math.min(Number.MAX_SAFE_INTEGER, peerRateLimit * 100);
+  const globalAnonymousLimit =
+    anonymousNetworkConfig?.globalMaxPerMinute ?? defaultGlobalAnonymousLimit;
+  if (
+    globalAnonymousLimit !== undefined &&
+    (!Number.isSafeInteger(globalAnonymousLimit) || globalAnonymousLimit < (peerRateLimit ?? 1))
+  ) {
+    throw new Error(
+      "[web-transport] rateLimitPerPeer.anonymousNetwork.globalMaxPerMinute must be a positive integer at least as large as maxPerMinute.",
+    );
+  }
+  const configuredConsoleOrigins = [...(opts.consoleSecurity?.allowedOrigins ?? [])];
+  if (process.env.AUGGY_PUBLIC_URL) {
+    try {
+      configuredConsoleOrigins.push(new URL(process.env.AUGGY_PUBLIC_URL).origin);
+    } catch {
+      // Existing public URL validation reports malformed configuration.
+    }
+  }
+  const consoleAllowedOrigins = buildConsoleAllowedOrigins(opts.port, configuredConsoleOrigins);
   let xffUntrustedWarned = false;
   function xffOnUntrusted(): void {
     if (xffUntrustedWarned) return;
     xffUntrustedWarned = true;
-    if (trustedProxies.length === 0) {
+    if (trustedProxies.entries.length === 0) {
       console.warn(
         "[web-transport] X-Forwarded-For header received but trustedProxies is unset. " +
           "Per-IP rate limiting is using the connection IP, NOT the XFF header. " +
@@ -794,7 +1162,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       console.warn(
         "[web-transport] X-Forwarded-For header received from a connection IP that is " +
           "NOT on trustedProxies. The header is being ignored for rate limiting. " +
-          `Configured trustedProxies: ${trustedProxies.join(", ")}.`,
+          `Configured trustedProxies: ${trustedProxies.entries.join(", ")}.`,
       );
     }
   }
@@ -815,31 +1183,106 @@ export function webTransport(opts: WebTransportOptions): Augment {
     }
   }
 
-  function checkRouteRateLimit(
-    routeKey: string,
-    ip: string,
-    max: number,
+  function checkLocalRateLimits(
+    policies: readonly { key: string; max: number; windowMs: number }[],
   ): { allowed: true } | { allowed: false; retryAfterSec: number } {
-    const fullKey = `${routeKey}|${ip}`;
     const now = Date.now();
     const windowStart = now - 60_000;
     if (++routeHitsTouchCount >= ROUTE_HITS_GC_INTERVAL) {
       routeHitsTouchCount = 0;
       gcStaleRouteHits(windowStart);
     }
-    const hits = (routeHits.get(fullKey) ?? []).filter((t) => t > windowStart);
-    if (hits.length >= max) {
-      const oldestInWindow = hits[0]!;
-      const retryAfterMs = oldestInWindow + 60_000 - now;
-      routeHits.set(fullKey, hits);
-      return { allowed: false, retryAfterSec: Math.max(1, Math.ceil(retryAfterMs / 1000)) };
+    const admitted = new Map<string, number[]>();
+    for (const policy of policies) {
+      const cutoff = now - policy.windowMs;
+      const hits = (routeHits.get(policy.key) ?? []).filter((timestamp) => timestamp > cutoff);
+      routeHits.set(policy.key, hits);
+      if (hits.length >= policy.max) {
+        const retryAfterMs = hits[0]! + policy.windowMs - now;
+        return { allowed: false, retryAfterSec: Math.max(1, Math.ceil(retryAfterMs / 1000)) };
+      }
+      admitted.set(policy.key, hits);
     }
-    hits.push(now);
-    routeHits.set(fullKey, hits);
+    for (const [key, hits] of admitted) {
+      hits.push(now);
+      routeHits.set(key, hits);
+    }
     return { allowed: true };
   }
 
+  function checkRouteRateLimit(
+    routeKey: string,
+    ip: string,
+    max: number,
+  ): { allowed: true } | { allowed: false; retryAfterSec: number } {
+    return checkLocalRateLimits([{ key: `${routeKey}|${ip}`, max, windowMs: 60_000 }]);
+  }
+
+  function anonymousRateLimitPolicies(callerIp: string): RateLimitPolicy[] {
+    if (peerRateLimit === undefined || globalAnonymousLimit === undefined) return [];
+    const network = rateLimitNetworkIdentity(callerIp, anonymousIpv6PrefixBits);
+    if (!network) throw new Error("anonymous caller network is unavailable");
+    const audience = requireSecurityAudience();
+    return [
+      {
+        bucketHash: hashIdempotencyBinding({
+          audience,
+          kind: "anonymous-global",
+        }),
+        max: globalAnonymousLimit,
+        windowMs: 60_000,
+      },
+      {
+        bucketHash: hashIdempotencyBinding({
+          audience,
+          kind: "anonymous-network",
+          network,
+        }),
+        max: peerRateLimit,
+        windowMs: 60_000,
+      },
+    ];
+  }
+
+  function reserveAnonymousExecution(
+    callerIp: string,
+    store = idempotencyStore,
+  ): { allowed: true } | { allowed: false; retryAfterSec: number } {
+    if (anonymousNetworkMode === "trusted-edge") return { allowed: true };
+    const policies = anonymousRateLimitPolicies(callerIp);
+    if (anonymousNetworkMode === "shared-store") {
+      if (!store) throw new Error("shared anonymous rate-limit store is unavailable");
+      return store.reserveRateLimits(policies);
+    }
+    return checkLocalRateLimits(
+      policies.map((policy) => ({
+        key: `anonymous|${policy.bucketHash}`,
+        max: policy.max,
+        windowMs: policy.windowMs,
+      })),
+    );
+  }
+
   const maxMessageLength = opts.maxMessageLength ?? 4000;
+  if (!Number.isSafeInteger(maxMessageLength) || maxMessageLength < 1) {
+    throw new Error("[web-transport] maxMessageLength must be a positive integer.");
+  }
+  const maxRequestBodyBytes = opts.maxRequestBodyBytes ?? 1024 * 1024;
+  if (!Number.isSafeInteger(maxRequestBodyBytes) || maxRequestBodyBytes < 1) {
+    throw new Error("[web-transport] maxRequestBodyBytes must be a positive integer.");
+  }
+  const maxPendingSseBytes = opts.maxPendingSseBytes ?? 1024 * 1024;
+  const maxPendingSseEvents = opts.maxPendingSseEvents ?? 1024;
+  const maxConsoleRunBytes = opts.maxConsoleRunBytes ?? 4 * 1024 * 1024;
+  for (const [name, value] of [
+    ["maxPendingSseBytes", maxPendingSseBytes],
+    ["maxPendingSseEvents", maxPendingSseEvents],
+    ["maxConsoleRunBytes", maxConsoleRunBytes],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`[web-transport] ${name} must be a positive integer.`);
+    }
+  }
   // F2: visitor tokens are opt-in (enabled === true) rather than opt-out
   // (enabled !== false). Requiring an explicit signingKey at onBoot prevents
   // the silent mismatch where webTransport boots with an ephemeral key that
@@ -847,12 +1290,88 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // the augment-resolver, visitorAuth's signingKey is auto-injected and
   // enabled is set to true. Direct callers must pass both explicitly.
   const visitorTokensEnabled = opts.visitorTokens?.enabled === true;
-  const visitorTokenTtl = opts.visitorTokens?.ttlSeconds ?? 30 * 24 * 3600;
   const externalAuthReplayProtectionEnabled = opts.externalAuth?.replayProtection?.enabled === true;
   const externalAuthReplayStore = externalAuthReplayProtectionEnabled
-    ? (opts.externalAuth?.replayProtection?.store ?? createInMemoryExternalAuthReplayStore())
+    ? (opts.externalAuth?.replayProtection?.store ?? null)
     : null;
+  let securityAudience: string | null = null;
+  const idempotencyMaxReplayBytes = opts.idempotency?.maxReplayBytes ?? 2 * 1024 * 1024;
+  const idempotencyMaxStoredBytes = opts.idempotency?.maxStoredBytes ?? 256 * 1024 * 1024;
+  const idempotencyWaitTimeoutMs = opts.idempotency?.waitTimeoutMs ?? 30_000;
+  const idempotencyStaleAfterMs = opts.idempotency?.staleAfterMs ?? 30_000;
+  const idempotencyRetentionMs = opts.idempotency?.retentionMs ?? 24 * 60 * 60 * 1000;
+  const idempotencyMaxWaiters = opts.idempotency?.maxWaiters ?? 64;
+  const idempotencyMaxWaitersPerKey = opts.idempotency?.maxWaitersPerKey ?? 8;
+  if (!Number.isSafeInteger(idempotencyWaitTimeoutMs) || idempotencyWaitTimeoutMs < 1) {
+    throw new Error("[web-transport] idempotency.waitTimeoutMs must be a positive integer.");
+  }
+  if (!Number.isSafeInteger(idempotencyStaleAfterMs) || idempotencyStaleAfterMs < 3) {
+    throw new Error("[web-transport] idempotency.staleAfterMs must be an integer of at least 3.");
+  }
+  for (const [label, value] of [
+    ["maxStoredBytes", idempotencyMaxStoredBytes],
+    ["retentionMs", idempotencyRetentionMs],
+    ["maxWaiters", idempotencyMaxWaiters],
+    ["maxWaitersPerKey", idempotencyMaxWaitersPerKey],
+  ] as const) {
+    if (!Number.isSafeInteger(value) || value < 1) {
+      throw new Error(`[web-transport] idempotency.${label} must be a positive integer.`);
+    }
+  }
+  if (idempotencyMaxWaitersPerKey > idempotencyMaxWaiters) {
+    throw new Error("[web-transport] idempotency.maxWaitersPerKey cannot exceed maxWaiters.");
+  }
+  let anonymousSessionManager: ReturnType<typeof createAnonymousSessionManager> | null = null;
   let signingKey: CryptoKey | null = null;
+  let activeIdempotencyWaiters = 0;
+  let managedRootRetained = false;
+  let overrideRootRetained = false;
+  const idempotencyWaitersByKey = new Map<string, number>();
+  const localIdempotencyExecutions = new Map<
+    string,
+    { promise: Promise<void>; resolve: () => void }
+  >();
+
+  function requireSecurityAudience(): string {
+    if (!securityAudience) {
+      throw new Error("[web-transport] security namespace is unavailable before registration");
+    }
+    return securityAudience;
+  }
+
+  function canonicalPublicThreadId(
+    requested: string | undefined,
+    idempotencyKey: string | null,
+    authenticatedThreadScopeId: string,
+  ): string {
+    const canonicalPattern = /^web_thread_[0-9a-f]{32}_[0-9a-f]{32}$/;
+    const peerScope = createHmac("sha256", opts.auth.token)
+      .update("auggy-public-thread-peer-v1\0")
+      .update(requireSecurityAudience())
+      .update("\0")
+      .update(authenticatedThreadScopeId)
+      .digest("hex")
+      .slice(0, 32);
+    if (requested?.startsWith(`web_thread_${peerScope}_`) && canonicalPattern.test(requested)) {
+      return requested;
+    }
+
+    const logicalThreadId =
+      requested ??
+      (idempotencyKey === null
+        ? crypto.randomUUID()
+        : hashIdempotencyKey(requireSecurityAudience(), idempotencyKey));
+    const logicalHash = createHmac("sha256", opts.auth.token)
+      .update("auggy-public-thread-logical-v1\0")
+      .update(requireSecurityAudience())
+      .update("\0")
+      .update(authenticatedThreadScopeId)
+      .update("\0")
+      .update(logicalThreadId)
+      .digest("hex")
+      .slice(0, 32);
+    return `web_thread_${peerScope}_${logicalHash}`;
+  }
 
   // Anonymous-public posture (G3 — concierge-readiness gate). Resolved once
   // at factory time across yaml > env > default precedence. The resolution
@@ -867,6 +1386,21 @@ export function webTransport(opts: WebTransportOptions): Augment {
     () => process.env.NODE_ENV !== "production",
   );
   let allowAnonymous = allowAnonymousResolution.value;
+
+  function anonymousRateLimitConfigurationError(enabled: boolean): string | null {
+    if (!enabled || peerRateLimit === undefined) return null;
+    if (anonymousNetworkMode === "trusted-edge") return null;
+    if (anonymousNetworkMode === "single-process-development") {
+      return isPublicishRuntime()
+        ? "single-process-development anonymous rate limiting is unavailable in production or public deployments"
+        : null;
+    }
+    const dbPath = resolveIdempotencyDbPath(opts);
+    if (dbPath === null || dbPath === ":memory:") {
+      return "anonymous rate limiting requires a durable shared idempotency.dbPath or an explicit trusted-edge mode";
+    }
+    return null;
+  }
 
   // G36 — setter for the posture-flip action to call. Mutates the
   // closure variable above; the identity resolver reads `allowAnonymous`
@@ -983,7 +1517,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
             { label: "Port", value: String(opts.port) },
             {
               label: "Trusted proxies",
-              value: (opts.trustedProxies ?? []).join(", ") || "(none)",
+              value: trustedProxies.entries.join(", ") || "(none)",
             },
             {
               label: "CORS origins",
@@ -1049,6 +1583,13 @@ export function webTransport(opts: WebTransportOptions): Augment {
   const adminActions = {
     "posture-flip": async (params: Record<string, unknown>): Promise<AdminActionResult> => {
       const value = params.value === true || params.value === "true";
+      const boundaryError = anonymousRateLimitConfigurationError(value);
+      if (boundaryError) {
+        return {
+          ok: false,
+          message: `could not enable anonymous access: ${boundaryError}; agent state unchanged`,
+        };
+      }
       try {
         await persistAllowAnonymousOverride(value);
       } catch (err) {
@@ -1075,6 +1616,13 @@ export function webTransport(opts: WebTransportOptions): Augment {
         "AUGGY_ALLOW_ANONYMOUS",
         () => process.env.NODE_ENV !== "production",
       );
+      const boundaryError = anonymousRateLimitConfigurationError(reResolved.value);
+      if (boundaryError) {
+        return {
+          ok: false,
+          message: `could not reset anonymous access: ${boundaryError}; agent state unchanged`,
+        };
+      }
       setAllowAnonymous(reResolved.value);
       (
         allowAnonymousResolution as unknown as {
@@ -1113,7 +1661,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
     const req = raw as {
       headers: Record<string, string>;
       __visitorPayload?: VisitorTokenPayload;
-      __threadId?: string;
+      __anonymousSessionId?: string;
+      __authenticatedPriorPeerId?: string;
       // True iff the HTTP handler already validated a bearer token for this
       // request. Path 1 (creator) requires this — without it the request
       // arrived via the allowAnonymous path and MUST NOT be promoted to
@@ -1125,7 +1674,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
 
     const agentId = headers["x-agent-id"];
     const agentSecret = headers["x-agent-secret"];
+    const hasAnyAgentHeader = typeof agentId === "string" || typeof agentSecret === "string";
     const hasAgentHeaders = typeof agentId === "string" && typeof agentSecret === "string";
+    if (hasAnyAgentHeader && !hasAgentHeaders) return null;
 
     // PATH 2: Agent credentials — present regardless of bearer auth.
     // If x-agent-id / x-agent-secret are both set, this is a deliberate
@@ -1185,29 +1736,63 @@ export function webTransport(opts: WebTransportOptions): Augment {
         kind,
         trustLevel: "public",
         publicSubstate: "recognized",
+        ...(req.__authenticatedPriorPeerId
+          ? { authenticatedPriorPeerId: req.__authenticatedPriorPeerId }
+          : {}),
         sourceAugment: "web",
         displayName: headers["x-peer-name"],
-        orgId: headers["x-org-id"],
+        ...(req.__visitorPayload.orgId !== undefined ? { orgId: req.__visitorPayload.orgId } : {}),
       };
     }
 
-    // PATH 4: Public anonymous — no agent headers, no verified visitor token.
-    // Use the threadId from the request body (injected as __threadId) for the peer ID.
-    const threadId = req.__threadId ?? crypto.randomUUID();
+    // PATH 4: Public anonymous — no agent headers or verified visitor token.
+    // The peer ID comes from a separately authenticated, server-minted
+    // anonymous session capability. It must never be derived from the
+    // caller-controlled thread ID that the capability protects.
+    if (!req.__anonymousSessionId) return null;
     return {
-      id: `anon-${threadId}`,
+      id: req.__anonymousSessionId,
       kind,
       trustLevel: "public",
       publicSubstate: "anonymous",
       sourceAugment: "web",
       displayName: headers["x-peer-name"],
-      orgId: headers["x-org-id"],
     };
   };
 
   const transport: TransportSpec = {
     async register(k: TransportKernel, _augmentName: string) {
       kernel = k;
+      const registeredAgentName = k.getAgentCard().provider.name;
+      if (
+        opts.securityNamespace !== undefined &&
+        opts.visitorTokens?.agentBinding !== undefined &&
+        opts.securityNamespace !== opts.visitorTokens.agentBinding
+      ) {
+        throw new Error(
+          "[web-transport] securityNamespace must match visitorTokens.agentBinding when both are configured.",
+        );
+      }
+      securityAudience =
+        opts.securityNamespace ?? opts.visitorTokens?.agentBinding ?? registeredAgentName;
+      if (
+        securityAudience.length === 0 ||
+        securityAudience.length > 256 ||
+        securityAudience.trim() !== securityAudience
+      ) {
+        throw new Error(
+          "[web-transport] securityNamespace must be a non-empty, trimmed string of at most 256 characters.",
+        );
+      }
+      anonymousSessionManager = createAnonymousSessionManager({
+        audience: securityAudience,
+        secret: createHash("sha256")
+          .update("auggy-anonymous-session-v1\0")
+          .update(securityAudience)
+          .update("\0")
+          .update(opts.auth.token)
+          .digest(),
+      });
       augmentRoutes = k.getAugmentRoutes();
       augmentRouteMap = new Map();
       const patternRoutes: import("../types").AugmentHttpRoute[] = [];
@@ -1219,7 +1804,19 @@ export function webTransport(opts: WebTransportOptions): Augment {
       // G36 — apply admin-overrides on top of yaml/env/default.
       // The override file is read once at boot; the closure values are the
       // runtime source of truth thereafter.
-      const overrides = readOverrides(overrideDir);
+      if (overrideDir && !overrideRootRetained) {
+        overrideRootRetained = retainAdminOverrideRoot(overrideDir);
+      }
+      let overrides: ReturnType<typeof readOverrides>;
+      try {
+        overrides = readOverrides(overrideDir);
+      } catch (error) {
+        if (overrideRootRetained) {
+          releaseAdminOverrideRoot(overrideDir);
+          overrideRootRetained = false;
+        }
+        throw error;
+      }
       if (overrides?.overrides.webTransport?.allowAnonymous !== undefined) {
         allowAnonymous = overrides.overrides.webTransport.allowAnonymous;
         // Mark the resolution source so /console can display "/console override".
@@ -1389,15 +1986,13 @@ export function webTransport(opts: WebTransportOptions): Augment {
   }
 
   function resolveExternalAuthAudience(): string {
-    return (
-      opts.externalAuth?.audience ??
-      opts.visitorTokens?.agentBinding ??
-      kernel?.getAgentCard()?.provider?.name ??
-      "auggy"
-    );
+    return opts.externalAuth?.audience ?? requireSecurityAudience();
   }
 
-  async function resolveExternalVisitorAuth(req: Request): Promise<RouteVisitorAuthContext | null> {
+  async function resolveExternalVisitorAuth(
+    req: Request,
+    replayMode: "consume" | "defer" = "consume",
+  ): Promise<RouteVisitorAuthContext | null> {
     const config = opts.externalAuth;
     if (!config) return null;
 
@@ -1415,19 +2010,21 @@ export function webTransport(opts: WebTransportOptions): Augment {
     if (!verified.ok) return null;
     if (externalAuthReplayStore) {
       if (!verified.claims.jti) return null;
-      const now = Date.now();
-      let accepted = false;
-      try {
-        accepted = await externalAuthReplayStore.consume(
-          verified.claims.jti,
-          verified.claims.expiresAt,
-          now,
-        );
-      } catch {
-        console.warn("[web-transport] external auth replay store failed.");
-        return null;
+      if (replayMode === "consume") {
+        const now = Date.now();
+        let accepted = false;
+        try {
+          accepted = await externalAuthReplayStore.consume(
+            verified.claims.jti,
+            verified.claims.expiresAt,
+            now,
+          );
+        } catch {
+          console.warn("[web-transport] external auth replay store failed.");
+          return null;
+        }
+        if (!accepted) return null;
       }
-      if (!accepted) return null;
     }
 
     return externalAuthClaimsToRouteContext(verified.claims, {
@@ -1442,8 +2039,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
       state: "anonymous",
       principal: anonymousRoutePrincipal(),
     };
-    const externalAuth = await resolveExternalVisitorAuth(req);
-    if (externalAuth?.state === "recognized") return externalAuth;
+    const externalVisitorAuth = await resolveExternalVisitorAuth(req);
+    if (externalVisitorAuth?.state === "recognized") return externalVisitorAuth;
     if (!visitorTokensEnabled || !signingKey) return anonymous;
 
     const tokenHeader = req.headers.get("x-visitor-token");
@@ -1460,8 +2057,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return anonymous;
     }
 
-    const expectedBinding = opts.visitorTokens?.agentBinding;
-    if (expectedBinding !== undefined && payload.agentId !== expectedBinding) {
+    const expectedBinding = requireSecurityAudience();
+    if (payload.agentId !== expectedBinding) {
       return anonymous;
     }
 
@@ -1477,6 +2074,31 @@ export function webTransport(opts: WebTransportOptions): Augment {
     if (identity && identity.visitorId !== payload.visitorId) {
       return anonymous;
     }
+    const orgCandidates = [payload.orgId, identity?.orgId, identity?.externalAuth?.orgId].filter(
+      (value): value is string => value !== undefined,
+    );
+    if (
+      orgCandidates.some(
+        (value) =>
+          value.length === 0 ||
+          value.length > 256 ||
+          [...value].some((character) => {
+            const code = character.charCodeAt(0);
+            return code <= 0x1f || code === 0x7f;
+          }),
+      ) ||
+      new Set(orgCandidates).size > 1
+    ) {
+      return anonymous;
+    }
+    const orgId = orgCandidates[0];
+    const canonicalExternalAuth =
+      identity?.externalAuth === undefined
+        ? undefined
+        : {
+            ...identity.externalAuth,
+            ...(orgId !== undefined ? { orgId } : {}),
+          };
 
     const visitorAuth: RouteVisitorAuthContext = {
       mode: "visitor",
@@ -1485,17 +2107,22 @@ export function webTransport(opts: WebTransportOptions): Augment {
       agentId: payload.agentId,
       issuedAt: payload.issuedAt,
       expiresAt: payload.expiresAt,
-      ...(identity ?? {}),
+      ...(orgId !== undefined ? { orgId } : {}),
+      ...(identity?.email !== undefined ? { email: identity.email } : {}),
+      ...(identity?.verifiedAt !== undefined ? { verifiedAt: identity.verifiedAt } : {}),
+      ...(identity?.reverifyDueAt !== undefined ? { reverifyDueAt: identity.reverifyDueAt } : {}),
+      ...(canonicalExternalAuth !== undefined ? { externalAuth: canonicalExternalAuth } : {}),
       principal: {
         kind: "visitor",
         trustLevel: "public",
         publicSubstate: "recognized",
         visitorId: payload.visitorId,
         agentId: payload.agentId,
+        ...(orgId !== undefined ? { orgId } : {}),
         ...(identity?.email !== undefined ? { email: identity.email } : {}),
         ...(identity?.verifiedAt !== undefined ? { verifiedAt: identity.verifiedAt } : {}),
         ...(identity?.reverifyDueAt !== undefined ? { reverifyDueAt: identity.reverifyDueAt } : {}),
-        ...(identity?.externalAuth !== undefined ? { externalAuth: identity.externalAuth } : {}),
+        ...(canonicalExternalAuth !== undefined ? { externalAuth: canonicalExternalAuth } : {}),
       },
     };
     return visitorAuth;
@@ -1524,7 +2151,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     ) {
       return null;
     }
-    const expectedBinding = opts.visitorTokens.agentBinding ?? "auggy";
+    const expectedBinding = requireSecurityAudience();
     if (payload.agentId !== expectedBinding) return null;
     if (opts.visitorTokens.revocationCheck?.(payload.visitorId)) return null;
 
@@ -1548,10 +2175,20 @@ export function webTransport(opts: WebTransportOptions): Augment {
   function resolveAgentRunTurnAuth(
     visitorPayload: VisitorTokenPayload | null,
     externalAuth: RouteVisitorAuthContext | null,
+    peer: PeerIdentity,
   ): RouteVisitorAuthContext | undefined {
     if (visitorPayload === null || externalAuth?.state !== "recognized") return undefined;
     if (externalAuth.visitorId !== visitorPayload.visitorId) return undefined;
     if (externalAuth.agentId !== visitorPayload.agentId) return undefined;
+    if (
+      peer.trustLevel !== "public" ||
+      peer.publicSubstate !== "recognized" ||
+      peer.id !== externalAuth.visitorId ||
+      (peer.orgId ?? null) !== (externalAuth.orgId ?? null) ||
+      (visitorPayload.orgId ?? null) !== (externalAuth.orgId ?? null)
+    ) {
+      return undefined;
+    }
     return externalAuth;
   }
 
@@ -1606,7 +2243,102 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return null;
   }
 
-  async function handleAgentRun(req: Request): Promise<Response> {
+  async function waitForIdempotencyResult(
+    store: WebIdempotencyStore,
+    keyHash: string,
+    bindingHash: string,
+    signal: AbortSignal,
+  ): Promise<IdempotencyClaim | null> {
+    const deadline = Date.now() + idempotencyWaitTimeoutMs;
+    let backoffMs = 25;
+    while (Date.now() < deadline) {
+      if (signal.aborted) return null;
+      const localExecution = localIdempotencyExecutions.get(keyHash);
+      await Promise.race([
+        ...(localExecution ? [localExecution.promise] : []),
+        new Promise<void>((resolveWait) => setTimeout(resolveWait, backoffMs)),
+      ]);
+      const current = store.read(keyHash, bindingHash);
+      if (current.status !== "running") return current;
+      backoffMs = Math.min(backoffMs * 2, 500);
+    }
+    return store.read(keyHash, bindingHash);
+  }
+
+  function admitIdempotencyWaiter(keyHash: string): (() => void) | null {
+    const perKey = idempotencyWaitersByKey.get(keyHash) ?? 0;
+    if (
+      activeIdempotencyWaiters >= idempotencyMaxWaiters ||
+      perKey >= idempotencyMaxWaitersPerKey
+    ) {
+      return null;
+    }
+    activeIdempotencyWaiters++;
+    idempotencyWaitersByKey.set(keyHash, perKey + 1);
+    try {
+      opts.idempotency?.onWaiterCountChange?.({
+        active: activeIdempotencyWaiters,
+        forKey: perKey + 1,
+      });
+    } catch {
+      // Metrics hooks are observational and cannot affect admission.
+    }
+    let released = false;
+    return () => {
+      if (released) return;
+      released = true;
+      activeIdempotencyWaiters--;
+      const remaining = (idempotencyWaitersByKey.get(keyHash) ?? 1) - 1;
+      if (remaining === 0) idempotencyWaitersByKey.delete(keyHash);
+      else idempotencyWaitersByKey.set(keyHash, remaining);
+      try {
+        opts.idempotency?.onWaiterCountChange?.({
+          active: activeIdempotencyWaiters,
+          forKey: remaining,
+        });
+      } catch {
+        // Metrics hooks are observational and cannot affect admission.
+      }
+    };
+  }
+
+  function beginLocalIdempotencyExecution(keyHash: string): void {
+    let resolve!: () => void;
+    const promise = new Promise<void>((done) => {
+      resolve = done;
+    });
+    localIdempotencyExecutions.set(keyHash, { promise, resolve });
+  }
+
+  function finishLocalIdempotencyExecution(keyHash: string): void {
+    const execution = localIdempotencyExecutions.get(keyHash);
+    if (!execution) return;
+    localIdempotencyExecutions.delete(keyHash);
+    execution.resolve();
+  }
+
+  function replaySse(body: string): Response {
+    const headers: Record<string, string> = {
+      "content-type": "text/event-stream",
+      "cache-control": "private, no-store",
+      connection: "keep-alive",
+    };
+    if (opts.cors) {
+      headers["access-control-allow-origin"] = opts.cors.origins.join(",");
+      headers["access-control-expose-headers"] =
+        `${ANONYMOUS_SESSION_HEADER}, ${ANONYMOUS_SESSION_STATUS_HEADER}, x-visitor-token, idempotency-key`;
+    }
+    return new Response(body, { status: 200, headers });
+  }
+
+  async function handleAgentRun(
+    req: Request,
+    caller: { callerIp: string; error: boolean },
+  ): Promise<Response> {
+    if (caller.error) {
+      return json({ error: "invalid_forwarded_request" }, 400);
+    }
+    const callerIp = caller.callerIp;
     const suppliedConsoleMarker = req.headers.get(CONSOLE_INTERNAL_RUN_HEADER);
     const isConsoleRun =
       suppliedConsoleMarker !== null &&
@@ -1617,11 +2349,36 @@ export function webTransport(opts: WebTransportOptions): Augment {
     if (suppliedConsoleMarker !== null && !isConsoleRun) {
       return json({ error: "forbidden" }, 403);
     }
+    const idempotencyKey = req.headers.get("idempotency-key");
+    if (idempotencyKey !== null && !validateIdempotencyKey(idempotencyKey)) {
+      return json(
+        {
+          error: "invalid_idempotency_key",
+          reason: "Idempotency-Key must be 1–128 characters matching [A-Za-z0-9_-]",
+        },
+        400,
+      );
+    }
+    const agentIdHeader = req.headers.get("x-agent-id");
+    const agentSecretHeader = req.headers.get("x-agent-secret");
+    const hasAnyAgentCredential = agentIdHeader !== null || agentSecretHeader !== null;
+    if ((agentIdHeader === null) !== (agentSecretHeader === null)) {
+      return json({ error: "invalid agent credentials" }, 401);
+    }
+    if (hasAnyAgentCredential && req.headers.has(externalAuthHeaderName)) {
+      return json({ error: "conflicting authentication credentials" }, 400);
+    }
     const authHeader = req.headers.get("authorization") ?? "";
     let externalVisitorAuth: RouteVisitorAuthContext | null | undefined;
     async function readExternalVisitorAuth(): Promise<RouteVisitorAuthContext | null> {
       if (externalVisitorAuth !== undefined) return externalVisitorAuth;
-      externalVisitorAuth = await resolveExternalVisitorAuth(req);
+      // Verify first, then consume the replay ID only after this request wins
+      // the durable execution claim. Exact keyed followers and replays can
+      // therefore join the one authorized execution.
+      externalVisitorAuth = await resolveExternalVisitorAuth(
+        req,
+        idempotencyKey !== null && !isConsoleRun ? "defer" : "consume",
+      );
       return externalVisitorAuth;
     }
 
@@ -1645,26 +2402,9 @@ export function webTransport(opts: WebTransportOptions): Augment {
     }
 
     // --- Idempotency-Key ---
-    let turnId: string;
-    const idempotencyKey = req.headers.get("idempotency-key");
-    if (idempotencyKey !== null) {
-      if (!validateIdempotencyKey(idempotencyKey)) {
-        return json(
-          {
-            error: "invalid_idempotency_key",
-            reason: "Idempotency-Key must be 1–128 characters matching [A-Za-z0-9_-]",
-          },
-          400,
-        );
-      }
-      turnId = idempotencyKey;
-    } else {
-      turnId = crypto.randomUUID();
-    }
-
+    let publicRunId: string = crypto.randomUUID();
     // --- Visitor token handling ---
     let visitorPayload: VisitorTokenPayload | null = null;
-    let newToken: string | null = null;
     async function applyExternalVisitorAuth(): Promise<void> {
       const externalAuth = await readExternalVisitorAuth();
       if (externalAuth?.state === "recognized") {
@@ -1673,6 +2413,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
           agentId: externalAuth.agentId,
           issuedAt: externalAuth.issuedAt,
           expiresAt: externalAuth.expiresAt,
+          ...(externalAuth.orgId !== undefined ? { orgId: externalAuth.orgId } : {}),
         };
       }
     }
@@ -1689,52 +2430,17 @@ export function webTransport(opts: WebTransportOptions): Augment {
             visitorPayload = null;
           }
         }
-        // Fix C2: reject tokens minted for a different agentBinding.
-        // Only enforced when agentBinding is explicitly configured; leaving it
-        // unset skips the check for backward compatibility.
+        // Fix C2: reject tokens minted for a different security audience even
+        // when agentBinding is omitted. Shared signing keys must never make a
+        // visitor credential portable across logical agents.
         if (visitorPayload) {
-          const expectedBinding = opts.visitorTokens?.agentBinding;
-          if (expectedBinding !== undefined && visitorPayload.agentId !== expectedBinding) {
+          const expectedBinding = requireSecurityAudience();
+          if (visitorPayload.agentId !== expectedBinding) {
             visitorPayload = null;
           }
         }
       }
       await applyExternalVisitorAuth();
-      if (!visitorPayload) {
-        // Check if this looks like an agent auth attempt — don't issue visitor
-        // tokens to agent-credential requests (they'll be resolved as agent/creator).
-        const agentId = req.headers.get("x-agent-id");
-        const agentSecret = req.headers.get("x-agent-secret");
-        const hasAgentHeaders = agentId !== null && agentSecret !== null;
-        const hasVisitorTokenAttempt = tokenHeader !== null;
-
-        if (hasVisitorTokenAttempt && !hasAgentHeaders && !hasBearerAttempt) {
-          // Had a visitor token header but it was invalid or missing — mint a fresh
-          // token to send in the response so the recipient has a valid token for their
-          // NEXT request. Do NOT assign issued.payload to visitorPayload here: the
-          // current request presented either no token or a bad one, so it stays
-          // public:anonymous. The freshly-issued token is for future requests only.
-          //
-          // Skip mint when bearer is present (post codex round-6 fix). A bearer-
-          // credentialed request resolves as creator (Path 1) under the new
-          // bearer-precedence semantic, and a creator does not need a visitor
-          // token. Worse, if we minted a fresh token and returned it: a confused
-          // client that stored the response token in localStorage and sent it on
-          // the next request would silently route to Path 3 (recognized) —
-          // a creator-to-visitor demotion through the mint-then-re-present loop.
-          // This guard closes that footgun.
-          //
-          // Fix C2: use agentBinding when configured, else agent-card name.
-          // This ensures the anon-token and the visitorAuth-minted token agree on
-          // the agentId embedded in the payload, enabling the agentBinding check below.
-          const agentName =
-            opts.visitorTokens?.agentBinding ?? kernel?.getAgentCard()?.provider?.name ?? "auggy";
-          const issued = await createVisitorToken(signingKey, agentName, visitorTokenTtl);
-          newToken = issued.token;
-          // visitorPayload intentionally left null — this request is anonymous.
-        }
-        // hasAgentHeaders or hasBearerAttempt case: no visitor token issued.
-      }
     }
     await applyExternalVisitorAuth();
 
@@ -1747,18 +2453,41 @@ export function webTransport(opts: WebTransportOptions): Augment {
     });
 
     // --- Parse body (needed for threadId for anonymous peer ID) ---
-    let body: AGUIRunRequestBody;
+    let parsedBody: unknown;
     try {
-      body = (await req.json()) as AGUIRunRequestBody;
-    } catch {
+      parsedBody = await readRequestBodyJson(req, maxRequestBodyBytes);
+    } catch (error) {
+      if (error instanceof RequestBodyTooLargeError) {
+        return json({ error: "payload too large", limitBytes: maxRequestBodyBytes }, 413);
+      }
+      if (!(error instanceof InvalidRequestBodyError)) {
+        console.warn("[web-transport] request body read failed");
+      }
       return json({ error: "invalid JSON body" }, 400);
     }
+    if (!parsedBody || typeof parsedBody !== "object" || Array.isArray(parsedBody)) {
+      return json({ error: "invalid request body" }, 400);
+    }
+    const body = parsedBody as AGUIRunRequestBody;
     if (!Array.isArray(body.messages) || body.messages.length === 0) {
       return json({ error: "messages array is required" }, 400);
     }
+    if (
+      body.messages.some(
+        (message) =>
+          !message ||
+          typeof message !== "object" ||
+          typeof message.role !== "string" ||
+          message.role.length === 0 ||
+          message.role.length > 64 ||
+          typeof message.content !== "string",
+      )
+    ) {
+      return json({ error: "messages must contain role and content strings" }, 400);
+    }
 
     const lastMessage = body.messages[body.messages.length - 1]!;
-    const text = lastMessage.content ?? "";
+    const text = lastMessage.content;
     if (text.length > maxMessageLength) {
       return json({ error: "message too long", limit: maxMessageLength }, 413);
     }
@@ -1770,11 +2499,20 @@ export function webTransport(opts: WebTransportOptions): Augment {
     // Derive threadId — needed before identify() so anonymous peer IDs are stable.
     if (
       (body.threadId !== undefined && typeof body.threadId !== "string") ||
-      (body.contextId !== undefined && typeof body.contextId !== "string")
+      (body.contextId !== undefined && typeof body.contextId !== "string") ||
+      (body.taskId !== undefined && typeof body.taskId !== "string")
     ) {
       return json({ error: "invalid thread id" }, 400);
     }
-    const threadId = body.threadId ?? body.contextId ?? crypto.randomUUID();
+    if (
+      (body.threadId?.length ?? 0) > 512 ||
+      (body.contextId?.length ?? 0) > 512 ||
+      (body.taskId?.length ?? 0) > 512
+    ) {
+      return json({ error: "request identifier too long", limit: 512 }, 413);
+    }
+    const requestedThreadId = body.threadId ?? body.contextId;
+    let threadId: string = requestedThreadId ?? crypto.randomUUID();
     if (isConsoleRun && !isConsoleChatIdentifier(threadId)) {
       return json({ error: "invalid console thread id" }, 400);
     }
@@ -1797,31 +2535,81 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return json({ error: "invalid console run metadata" }, 400);
     }
     if (consoleMetadata?.runId) {
-      if (idempotencyKey !== null && turnId !== consoleMetadata.runId) {
+      if (idempotencyKey !== null && idempotencyKey !== consoleMetadata.runId) {
         return json({ error: "conflicting console run id" }, 400);
       }
-      turnId = consoleMetadata.runId;
+      publicRunId = consoleMetadata.runId;
     }
 
-    // Build identify argument. Inject __threadId so the anonymous path can use
-    // it. Inject __bearerValidated so Path 1 (creator) can refuse to mint
-    // creator trust for the allowAnonymous bypass — only requests that arrived
-    // with a bearer that passed `isValidAuth` are eligible for creator.
+    // Build the trusted identify argument. The HTTP handler adds a verified
+    // anonymous-session ID below when this request takes the anonymous path.
+    // Path 1 (creator) still requires an already-validated bearer.
     const identifyArg: {
       headers: Record<string, string>;
       __visitorPayload?: VisitorTokenPayload;
-      __threadId: string;
+      __anonymousSessionId?: string;
+      __authenticatedPriorPeerId?: string;
       __bearerValidated: boolean;
-    } = { headers, __threadId: threadId, __bearerValidated: hasBearerAttempt };
+    } = { headers, __bearerValidated: hasBearerAttempt };
     if (visitorPayload) {
       identifyArg.__visitorPayload = visitorPayload;
     }
 
     // --- Check agent auth failure explicitly ---
     // If x-agent-id + x-agent-secret are present, identify() returns null on bad secret.
-    const agentIdHeader = req.headers.get("x-agent-id");
-    const agentSecretHeader = req.headers.get("x-agent-secret");
-    const isAgentAttempt = agentIdHeader !== null && agentSecretHeader !== null;
+    const isAgentAttempt = hasAnyAgentCredential;
+    let anonymousSessionToken: string | null = null;
+    let anonymousSessionId: string | undefined;
+    const suppliedSession = req.headers.get(ANONYMOUS_SESSION_HEADER);
+    let authenticatedAnonymousSession: ReturnType<
+      NonNullable<typeof anonymousSessionManager>["verify"]
+    > | null = null;
+    if (!hasBearerAttempt && !isAgentAttempt && suppliedSession) {
+      authenticatedAnonymousSession = anonymousSessionManager?.verify(suppliedSession) ?? null;
+      if (!authenticatedAnonymousSession) {
+        return json({ error: "invalid anonymous session" }, 401, {
+          [ANONYMOUS_SESSION_STATUS_HEADER]: "invalid",
+          "access-control-expose-headers": `${ANONYMOUS_SESSION_HEADER}, ${ANONYMOUS_SESSION_STATUS_HEADER}, x-visitor-token, idempotency-key`,
+        });
+      }
+    }
+    let authenticatedPriorPeerId = visitorPayload?.priorPeerId;
+    let authenticatedThreadScopeId =
+      visitorPayload?.priorThreadScopeId ?? visitorPayload?.visitorId;
+    if (authenticatedAnonymousSession) {
+      if (
+        authenticatedPriorPeerId !== undefined &&
+        authenticatedPriorPeerId !== authenticatedAnonymousSession.peerId
+      ) {
+        return json({ error: "visitor promotion proof mismatch" }, 403);
+      }
+      authenticatedPriorPeerId ??= authenticatedAnonymousSession.peerId;
+      authenticatedThreadScopeId ??= authenticatedAnonymousSession.threadScopeId;
+    }
+    if (!hasBearerAttempt && !visitorPayload && !isAgentAttempt) {
+      if (isConsoleRun && consoleMetadata?.previewMode === "anonymous") {
+        // The console route is already authenticated and creates this
+        // server-managed thread before proxying its internal request. Preserve
+        // the store's bound anonymous owner without accepting a caller-derived
+        // ID or exposing an anonymous session capability to the browser.
+        anonymousSessionId = `anon-${threadId}`;
+      } else {
+        if (authenticatedAnonymousSession) {
+          anonymousSessionId = authenticatedAnonymousSession.peerId;
+        } else {
+          const issuedSession = anonymousSessionManager?.issue();
+          if (!issuedSession) {
+            return json({ error: "anonymous session unavailable" }, 503);
+          }
+          anonymousSessionId = issuedSession.payload.peerId;
+          authenticatedThreadScopeId = issuedSession.payload.threadScopeId;
+          anonymousSessionToken = issuedSession.token;
+        }
+      }
+      identifyArg.__anonymousSessionId = anonymousSessionId;
+    } else if (visitorPayload && authenticatedPriorPeerId) {
+      identifyArg.__authenticatedPriorPeerId = authenticatedPriorPeerId;
+    }
 
     const peer = identify(identifyArg);
     if (!peer) {
@@ -1831,6 +2619,26 @@ export function webTransport(opts: WebTransportOptions): Augment {
       }
       // Fallback (should not happen with the four-path design, but guard).
       return json({ error: "missing peer identity" }, 400);
+    }
+    if (!isConsoleRun && peer.trustLevel === "public") {
+      threadId = canonicalPublicThreadId(
+        requestedThreadId,
+        idempotencyKey,
+        authenticatedThreadScopeId ?? peer.id,
+      );
+    } else if (!isConsoleRun && requestedThreadId === undefined && idempotencyKey !== null) {
+      threadId = `web_idem_thread_${createHash("sha256")
+        .update("auggy-keyed-thread-v1\0")
+        .update(requireSecurityAudience())
+        .update("\0")
+        .update(peer.sourceAugment)
+        .update("\0")
+        .update(peer.trustLevel)
+        .update("\0")
+        .update(peer.id)
+        .update("\0")
+        .update(hashIdempotencyKey(requireSecurityAudience(), idempotencyKey))
+        .digest("hex")}`;
     }
 
     if (
@@ -1860,6 +2668,171 @@ export function webTransport(opts: WebTransportOptions): Augment {
       return json({ error: "console thread identity does not match" }, 403);
     }
 
+    const resolvedExternalAuth = await readExternalVisitorAuth();
+    const turnAuth = resolveAgentRunTurnAuth(visitorPayload, resolvedExternalAuth, peer);
+    if (resolvedExternalAuth?.state === "recognized" && turnAuth === undefined) {
+      return json({ error: "conflicting authentication identity" }, 403);
+    }
+    if (!isConsoleRun && anonymousSessionToken !== null) {
+      return json({ error: "anonymous_session_required" }, 428, {
+        [ANONYMOUS_SESSION_HEADER]: anonymousSessionToken,
+        "cache-control": "private, no-store",
+        "access-control-expose-headers": `${ANONYMOUS_SESSION_HEADER}, ${ANONYMOUS_SESSION_STATUS_HEADER}, x-visitor-token, idempotency-key`,
+      });
+    }
+
+    const requiresAnonymousAdmission =
+      !isConsoleRun &&
+      peer.trustLevel === "public" &&
+      peer.publicSubstate === "anonymous" &&
+      peerRateLimit !== undefined;
+    if (requiresAnonymousAdmission && idempotencyKey === null) {
+      let networkLimit: { allowed: true } | { allowed: false; retryAfterSec: number };
+      try {
+        networkLimit = reserveAnonymousExecution(callerIp);
+      } catch {
+        return json({ error: "rate_limit_unavailable" }, 503);
+      }
+      if (!networkLimit.allowed) {
+        return json({ error: "rate-limited" }, 429, {
+          "retry-after": String(networkLimit.retryAfterSec),
+        });
+      }
+    }
+
+    let internalTurnId = idempotencyKey === null ? publicRunId : crypto.randomUUID();
+    let durableIdempotency: {
+      store: WebIdempotencyStore;
+      keyHash: string;
+      ownerToken: string;
+    } | null = null;
+    if (idempotencyKey !== null && !isConsoleRun) {
+      const store = idempotencyStore;
+      if (!store) {
+        return json({ error: "idempotency_unavailable" }, 503);
+      }
+      const audience = requireSecurityAudience();
+      const keyHash = hashIdempotencyKey(audience, idempotencyKey);
+      const capacityClass =
+        peer.trustLevel === "creator"
+          ? "creator"
+          : peer.trustLevel === "agent"
+            ? "agent"
+            : "public";
+      const partitionHash = hashIdempotencyBinding({
+        audience,
+        capacityClass,
+        subject:
+          capacityClass === "public" && peer.publicSubstate === "anonymous"
+            ? "all-anonymous"
+            : peer.id,
+      });
+      const bindingHash = hashIdempotencyBinding({
+        audience,
+        peer: {
+          id: peer.id,
+          kind: peer.kind,
+          trustLevel: peer.trustLevel,
+          publicSubstate: peer.publicSubstate,
+          sourceAugment: peer.sourceAugment,
+          displayName: peer.displayName,
+          orgId: peer.orgId,
+        },
+        threadId,
+        contextId: body.contextId,
+        taskId: body.taskId,
+        messages: body.messages,
+        auth: idempotencyAuthorizationBinding(turnAuth),
+      });
+      let claim: IdempotencyClaim;
+      try {
+        claim = store.claim(
+          keyHash,
+          bindingHash,
+          {
+            class: capacityClass,
+            partitionHash,
+          },
+          requiresAnonymousAdmission && anonymousNetworkMode !== "trusted-edge"
+            ? anonymousRateLimitPolicies(callerIp)
+            : undefined,
+        );
+        if (claim.status === "running") {
+          const releaseWaiter = admitIdempotencyWaiter(keyHash);
+          if (!releaseWaiter) {
+            return json({ error: "idempotency_waiter_capacity_reached" }, 429, {
+              "retry-after": "1",
+            });
+          }
+          try {
+            claim = (await waitForIdempotencyResult(store, keyHash, bindingHash, req.signal)) ?? {
+              status: "running",
+              turnId: claim.turnId,
+            };
+          } finally {
+            releaseWaiter();
+          }
+        }
+      } catch {
+        return json({ error: "idempotency_unavailable" }, 503);
+      }
+
+      if (claim.status === "replay") return replaySse(claim.responseBody);
+      if (claim.status === "conflict") {
+        return json({ error: "idempotency_key_conflict" }, 409);
+      }
+      if (claim.status === "unknown") {
+        return json({ error: "idempotency_outcome_unknown" }, 409);
+      }
+      if (claim.status === "capacity") {
+        return json({ error: "idempotency_capacity_reached" }, 503);
+      }
+      if (claim.status === "rate-limited") {
+        return json({ error: "rate-limited" }, 429, {
+          "retry-after": String(claim.retryAfterSec),
+        });
+      }
+      if (claim.status === "running") {
+        return json({ error: "idempotency_in_progress" }, 409, { "retry-after": "1" });
+      }
+
+      internalTurnId = claim.turnId;
+      publicRunId = claim.turnId;
+      if (externalAuthReplayStore && turnAuth?.state === "recognized") {
+        const replayId = turnAuth.externalAuth?.jti;
+        let accepted = false;
+        if (replayId) {
+          try {
+            accepted = await externalAuthReplayStore.consume(
+              replayId,
+              turnAuth.expiresAt,
+              Date.now(),
+            );
+          } catch {
+            console.warn("[web-transport] external auth replay store failed.");
+          }
+        }
+        if (!accepted) {
+          // The assertion was replayed under a different execution claim, or
+          // the replay store failed. Preserve this claim as outcome-unknown so
+          // the caller cannot cycle the same key until an unsafe execution is
+          // eventually admitted.
+          try {
+            store.markUnknown(keyHash, claim.ownerToken);
+          } catch {
+            return json({ error: "idempotency_unavailable" }, 503);
+          }
+          return json({ error: "unauthorized" }, 401);
+        }
+      }
+      beginLocalIdempotencyExecution(keyHash);
+      durableIdempotency = {
+        store,
+        keyHash,
+        ownerToken: claim.ownerToken,
+      };
+    }
+
     const runStartedAt = Date.now();
     if (consoleMetadata && consoleChatStore) {
       try {
@@ -1875,7 +2848,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
             runStatus: "streaming",
           },
           peer,
-          runId: turnId,
+          runId: publicRunId,
           userMessage: {
             id: consoleMetadata.userMessageId,
             role: "user",
@@ -1897,7 +2870,6 @@ export function webTransport(opts: WebTransportOptions): Augment {
       }
     }
 
-    const turnAuth = resolveAgentRunTurnAuth(visitorPayload, await readExternalVisitorAuth());
     const parts: Part[] = [{ kind: "text", text }];
     const inbound: InboundMessage = {
       parts,
@@ -1909,7 +2881,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     };
     const trigger: TurnTrigger = {
       type: "message",
-      turnId,
+      turnId: internalTurnId,
       threadId,
       contextId: body.contextId,
       taskId: body.taskId,
@@ -1925,36 +2897,140 @@ export function webTransport(opts: WebTransportOptions): Augment {
     // The kernel keys restored thread authorization by persistence object
     // identity, so every run must receive this stable transport-level adapter.
     const runHistoryPersistence = consoleMetadata ? consoleHistoryPersistence : null;
+    const deliveryAbort = new AbortController();
+    const executionSignal = durableIdempotency
+      ? deliveryAbort.signal
+      : AbortSignal.any([req.signal, deliveryAbort.signal]);
 
+    let pullPendingSse: ((controller: ReadableStreamDefaultController<Uint8Array>) => void) | null =
+      null;
+    let cancelSse: ((reason?: unknown) => void) | null = null;
     const stream = new ReadableStream<Uint8Array>({
       start(controller) {
         let streamClosed = false;
+        let executionFinished = false;
+        const pendingChunks: Uint8Array[] = [];
+        let pendingBytes = 0;
+        let deliveryOverflow = false;
         let bufferedRunFinished: AGUIEvent | null = null;
         let assistantContent = "";
         let assistantError: string | null = null;
+        let consoleAggregateBytes = 0;
         const messageRoles = new Map<string, string>();
         let lastAssistantMessageId: string | null = null;
         const toolCalls = new Map<string, ConsoleChatToolCall>();
         let persistenceFailure: unknown = null;
         let progressFlushTimer: ReturnType<typeof setTimeout> | null = null;
+        const idempotencyHeartbeatTimer = durableIdempotency
+          ? setInterval(
+              () => {
+                try {
+                  durableIdempotency.store.heartbeat(
+                    durableIdempotency.keyHash,
+                    durableIdempotency.ownerToken,
+                  );
+                } catch {
+                  // A failed heartbeat cannot authorize takeover. Once stale,
+                  // followers create an outcome-unknown tombstone.
+                }
+              },
+              Math.max(1, Math.floor(idempotencyStaleAfterMs / 3)),
+            )
+          : null;
+        const replayChunks: string[] = [];
+        let replayBytes = 0;
+        let replayOverflow = false;
 
-        const patchThreadId = (e: AGUIEvent): AGUIEvent => {
-          if (e.type === "RUN_FINISHED" && !e.threadId) {
-            // Spread to preserve `result` (and any future fields) the
-            // translator attaches; only the threadId needs patching.
-            return { ...e, threadId };
+        const failLiveDelivery = (): void => {
+          if (deliveryOverflow) return;
+          deliveryOverflow = true;
+          streamClosed = true;
+          pendingChunks.length = 0;
+          pendingBytes = 0;
+          deliveryAbort.abort(new Error("SSE delivery exceeded the configured safety limit."));
+          try {
+            controller.error(new Error("SSE delivery exceeded the configured safety limit."));
+          } catch {
+            // The client may already have disconnected.
+          }
+        };
+
+        pullPendingSse = (activeController) => {
+          if (streamClosed) return;
+          while (
+            pendingChunks.length > 0 &&
+            (activeController.desiredSize === null || activeController.desiredSize > 0)
+          ) {
+            const chunk = pendingChunks.shift()!;
+            pendingBytes -= chunk.byteLength;
+            activeController.enqueue(chunk);
+          }
+          if (executionFinished && pendingChunks.length === 0) {
+            streamClosed = true;
+            activeController.close();
+          }
+        };
+        cancelSse = () => {
+          streamClosed = true;
+          pendingChunks.length = 0;
+          pendingBytes = 0;
+          // Keyed durable runs intentionally survive a client disconnect so
+          // an exact retry can replay the canonical result. Resource-limit
+          // overflow still aborts both durable and non-durable execution.
+          if (!durableIdempotency) deliveryAbort.abort();
+        };
+
+        const patchRunIdentity = (e: AGUIEvent): AGUIEvent => {
+          if (e.type === "RUN_STARTED" || e.type === "RUN_FINISHED") {
+            // Internal turn IDs are server-generated and remain available to
+            // budgets/traces. The caller sees its stable public run ID.
+            return { ...e, threadId, runId: publicRunId };
           }
           return e;
         };
 
         const writeEvent = (e: AGUIEvent) => {
-          if (streamClosed) return; // guard against enqueue after close
-          try {
-            controller.enqueue(encoder.encode(serializeSSE(patchThreadId(e))));
-          } catch {
-            // Stream already closed (client disconnect) — swallow
-            streamClosed = true;
+          const serialized = serializeSSE(patchRunIdentity(e));
+          if (durableIdempotency && !replayOverflow) {
+            const eventBytes = Buffer.byteLength(serialized, "utf8");
+            if (replayBytes + eventBytes > idempotencyMaxReplayBytes) {
+              replayOverflow = true;
+              replayChunks.length = 0;
+            } else {
+              replayBytes += eventBytes;
+              replayChunks.push(serialized);
+            }
           }
+          if (streamClosed) return;
+          const chunk = encoder.encode(serialized);
+          if (chunk.byteLength > maxPendingSseBytes) {
+            failLiveDelivery();
+            return;
+          }
+          if (
+            pendingChunks.length === 0 &&
+            (controller.desiredSize === null || controller.desiredSize > 0)
+          ) {
+            try {
+              controller.enqueue(chunk);
+              return;
+            } catch {
+              streamClosed = true;
+              pendingChunks.length = 0;
+              pendingBytes = 0;
+              if (!durableIdempotency) deliveryAbort.abort();
+              return;
+            }
+          }
+          if (
+            pendingChunks.length + 1 > maxPendingSseEvents ||
+            pendingBytes + chunk.byteLength > maxPendingSseBytes
+          ) {
+            failLiveDelivery();
+            return;
+          }
+          pendingChunks.push(chunk);
+          pendingBytes += chunk.byteLength;
         };
 
         const currentToolCalls = (): ConsoleChatToolCall[] | null =>
@@ -1965,7 +3041,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
           try {
             const updated = consoleChatStore.updateRun(
               threadId,
-              turnId,
+              publicRunId,
               consoleMetadata.assistantMessageId,
               {
                 content: assistantContent,
@@ -1999,7 +3075,18 @@ export function webTransport(opts: WebTransportOptions): Augment {
           writeProgress();
         };
 
-        const observeEvent = (event: AGUIEvent): void => {
+        const reserveConsoleBytes = (value: string): boolean => {
+          const bytes = Buffer.byteLength(value, "utf8");
+          if (consoleAggregateBytes + bytes > maxConsoleRunBytes) {
+            assistantError = "Console response exceeded the configured safety limit.";
+            failLiveDelivery();
+            return false;
+          }
+          consoleAggregateBytes += bytes;
+          return true;
+        };
+
+        const observeEvent = (event: AGUIEvent): boolean => {
           switch (event.type) {
             case "TEXT_MESSAGE_START":
               messageRoles.set(event.messageId, event.role);
@@ -2009,42 +3096,46 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 }
                 lastAssistantMessageId = event.messageId;
               }
-              return;
+              return true;
             case "TEXT_MESSAGE_CONTENT":
               if (messageRoles.get(event.messageId) === "assistant") {
+                if (!reserveConsoleBytes(event.delta)) return false;
                 assistantContent += event.delta;
                 persistProgress();
               }
-              return;
+              return true;
             case "TEXT_MESSAGE_END":
               messageRoles.delete(event.messageId);
-              return;
+              return true;
             case "TOOL_CALL_START":
+              if (!reserveConsoleBytes(event.toolCallName)) return false;
               toolCalls.set(event.toolCallId, {
                 id: event.toolCallId,
                 name: event.toolCallName,
                 status: "running",
               });
               persistProgress();
-              return;
+              return true;
             case "TOOL_CALL_ARGS": {
               const call = toolCalls.get(event.toolCallId);
               if (call) {
+                if (!reserveConsoleBytes(event.delta)) return false;
                 call.args = `${call.args ?? ""}${event.delta}`;
                 persistProgress();
               }
-              return;
+              return true;
             }
             case "TOOL_CALL_END":
-              return;
+              return true;
             case "TOOL_CALL_RESULT": {
               const call = toolCalls.get(event.toolCallId);
               if (call) {
+                if (!reserveConsoleBytes(event.content)) return false;
                 call.result = event.content;
                 call.status = "completed";
                 persistProgress();
               }
-              return;
+              return true;
             }
             case "RUN_ERROR":
               assistantError = event.message;
@@ -2052,19 +3143,19 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 if (call.status === "running") call.status = "error";
               }
               persistProgress();
-              return;
+              return true;
             default:
-              return;
+              return true;
           }
         };
 
         const emitTranslatedEvent = (event: AGUIEvent): void => {
-          const patched = patchThreadId(event);
+          const patched = patchRunIdentity(event);
           if (patched.type === "RUN_FINISHED") {
             bufferedRunFinished = patched;
             return;
           }
-          observeEvent(patched);
+          if (!observeEvent(patched)) return;
           writeEvent(patched);
         };
 
@@ -2088,7 +3179,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
               const finished = pendingHistory
                 ? consoleChatStore.finishRunWithKernelHistory(
                     threadId,
-                    turnId,
+                    publicRunId,
                     consoleMetadata.assistantMessageId,
                     peer,
                     pendingHistory,
@@ -2096,7 +3187,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                   )
                 : consoleChatStore.finishRun(
                     threadId,
-                    turnId,
+                    publicRunId,
                     consoleMetadata.assistantMessageId,
                     finishInput,
                   );
@@ -2116,12 +3207,17 @@ export function webTransport(opts: WebTransportOptions): Augment {
               // oversized model response). Clear the run lease without
               // replacing the last valid partial transcript.
               try {
-                consoleChatStore.abandonRun(threadId, turnId, consoleMetadata.assistantMessageId, {
-                  status: status === "interrupted" ? "interrupted" : "error",
-                  error: "Console response could not be fully persisted.",
-                  unread: consoleMetadata.unreadOnFinish,
-                  updatedAt: Date.now(),
-                });
+                consoleChatStore.abandonRun(
+                  threadId,
+                  publicRunId,
+                  consoleMetadata.assistantMessageId,
+                  {
+                    status: status === "interrupted" ? "interrupted" : "error",
+                    error: "Console response could not be fully persisted.",
+                    unread: consoleMetadata.unreadOnFinish,
+                    updatedAt: Date.now(),
+                  },
+                );
               } catch {
                 // The outer handler still emits a failed terminal event. A
                 // process restart recovers any genuinely unreachable lease.
@@ -2145,7 +3241,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
           try {
             const result = await k.handleInbound(trigger, {
               onEvent,
-              signal: req.signal,
+              signal: executionSignal,
               ...(runHistoryPersistence ? { historyPersistence: runHistoryPersistence } : {}),
             });
             if (result.status === "rejected") {
@@ -2168,7 +3264,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
               writeEvent(errorEvent);
               bufferedRunFinished = runFinished({
                 threadId,
-                runId: trigger.turnId,
+                runId: publicRunId,
                 status: result.status,
               });
             }
@@ -2181,14 +3277,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
             finishPersistedRun(
               persistedStatus,
               bufferedRunFinished ??
-                runFinished({ threadId, runId: trigger.turnId, status: result.status }),
+                runFinished({ threadId, runId: publicRunId, status: result.status }),
             );
           } catch (err) {
-            const interrupted = req.signal.aborted;
+            const interrupted = executionSignal.aborted;
             const normalizedError = runError({ message: String(err), code: "INTERNAL" });
             const errorEvent = interrupted
               ? runError({ message: "Request interrupted.", code: "ABORTED" })
-              : !consoleMetadata || normalizedError.code?.startsWith("PROVIDER_")
+              : normalizedError.code?.startsWith("PROVIDER_")
                 ? normalizedError
                 : runError({ message: "Internal error.", code: "INTERNAL" });
             observeEvent(errorEvent);
@@ -2198,7 +3294,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 interrupted ? "interrupted" : "error",
                 runFinished({
                   threadId,
-                  runId: trigger.turnId,
+                  runId: publicRunId,
                   status: interrupted ? "canceled" : "failed",
                 }),
                 true,
@@ -2210,35 +3306,67 @@ export function webTransport(opts: WebTransportOptions): Augment {
               writeEvent(
                 runFinished({
                   threadId,
-                  runId: trigger.turnId,
+                  runId: publicRunId,
                   status: interrupted ? "canceled" : "failed",
                 }),
               );
             }
           } finally {
             if (progressFlushTimer !== null) clearTimeout(progressFlushTimer);
-            streamClosed = true;
-            try {
-              controller.close();
-            } catch {
-              /* already closed */
+            if (idempotencyHeartbeatTimer !== null) clearInterval(idempotencyHeartbeatTimer);
+            if (durableIdempotency) {
+              try {
+                if (replayOverflow) {
+                  durableIdempotency.store.markUnknown(
+                    durableIdempotency.keyHash,
+                    durableIdempotency.ownerToken,
+                  );
+                } else {
+                  durableIdempotency.store.complete(
+                    durableIdempotency.keyHash,
+                    durableIdempotency.ownerToken,
+                    replayChunks.join(""),
+                  );
+                }
+              } catch {
+                // Leave the durable running claim in place. Future attempts
+                // fail closed rather than risking duplicate execution.
+              } finally {
+                finishLocalIdempotencyExecution(durableIdempotency.keyHash);
+              }
+            }
+            executionFinished = true;
+            if (!streamClosed && pendingChunks.length === 0) {
+              streamClosed = true;
+              try {
+                controller.close();
+              } catch {
+                /* already closed */
+              }
             }
           }
         })();
+      },
+      pull(controller) {
+        pullPendingSse?.(controller);
+      },
+      cancel(reason) {
+        cancelSse?.(reason);
       },
     });
 
     const sseHeaders: Record<string, string> = {
       "content-type": "text/event-stream",
-      "cache-control": "no-cache",
+      "cache-control": "private, no-store",
       connection: "keep-alive",
     };
-    if (newToken) {
-      sseHeaders["x-visitor-token"] = newToken;
+    if (anonymousSessionToken) {
+      sseHeaders[ANONYMOUS_SESSION_HEADER] = anonymousSessionToken;
     }
     if (opts.cors) {
       sseHeaders["access-control-allow-origin"] = opts.cors.origins.join(",");
-      sseHeaders["access-control-expose-headers"] = "x-visitor-token, idempotency-key";
+      sseHeaders["access-control-expose-headers"] =
+        `${ANONYMOUS_SESSION_HEADER}, ${ANONYMOUS_SESSION_STATUS_HEADER}, x-visitor-token, idempotency-key`;
     }
     return new Response(stream, { status: 200, headers: sseHeaders });
   }
@@ -2251,6 +3379,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       "x-peer-kind",
       "x-peer-name",
       "x-org-id",
+      ANONYMOUS_SESSION_HEADER,
       "x-visitor-token",
       DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER,
       "x-agent-id",
@@ -2263,7 +3392,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     const headers: Record<string, string> = {
       "access-control-allow-methods": "GET, POST, OPTIONS",
       "access-control-allow-headers": allowedHeaders.join(", "),
-      "access-control-expose-headers": "x-visitor-token, idempotency-key",
+      "access-control-expose-headers": `${ANONYMOUS_SESSION_HEADER}, ${ANONYMOUS_SESSION_STATUS_HEADER}, x-visitor-token, idempotency-key`,
       "access-control-max-age": "86400",
     };
     if (opts.cors) {
@@ -2304,7 +3433,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
       headers.set("access-control-allow-origin", opts.cors.origins.join(","));
     }
     if (!headers.has("access-control-expose-headers")) {
-      headers.set("access-control-expose-headers", "x-visitor-token, idempotency-key");
+      headers.set(
+        "access-control-expose-headers",
+        `${ANONYMOUS_SESSION_HEADER}, ${ANONYMOUS_SESSION_STATUS_HEADER}, x-visitor-token, idempotency-key`,
+      );
     }
     return new Response(response.body, {
       status: response.status,
@@ -2321,59 +3453,39 @@ export function webTransport(opts: WebTransportOptions): Augment {
     adminInfo,
     adminActions,
     async onBoot() {
+      validateExternalAuthRuntimeOptions(opts.externalAuth as unknown);
+      const anonymousBoundaryError = anonymousRateLimitConfigurationError(allowAnonymous);
+      if (anonymousBoundaryError) {
+        throw new Error(`[web-transport] ${anonymousBoundaryError}.`);
+      }
+      if (allowAnonymous && peerRateLimit !== undefined) {
+        if (anonymousNetworkMode === "trusted-edge") {
+          console.warn(
+            "[web-transport] anonymous network admission is delegated to an explicitly trusted edge; the edge must enforce the configured deployment-wide and caller-network limits.",
+          );
+        } else if (anonymousNetworkMode === "single-process-development") {
+          console.warn(
+            "[web-transport] anonymous network admission is process-local and development-only; replicas and restarts do not share its counters.",
+          );
+        }
+      }
+      if (opts.adminRoute !== false && opts.agentDir && !managedRootRetained) {
+        if (!supportsManagedFileIsolation()) {
+          console.warn(
+            "[web-transport] console managed-file operations are unavailable on this platform; authentication, chat, and read-only runtime views remain enabled.",
+          );
+        } else if (!retainManagedRoot(opts.agentDir)) {
+          throw new Error(
+            "[web-transport] console-managed files require a real agent directory and descriptor-relative isolation on macOS or Linux.",
+          );
+        } else {
+          managedRootRetained = true;
+        }
+      }
       if (opts.cors && opts.cors.origins.length !== 1) {
         throw new Error(
           "[web-transport] cors.origins must contain exactly one browser origin. Multiple Access-Control-Allow-Origin values are not valid; run separate public origins behind an app proxy until dynamic origin matching is supported.",
         );
-      }
-      if (opts.externalAuth) {
-        if (!opts.externalAuth.secret) {
-          throw new Error(
-            "[web-transport] externalAuth.secret is required when externalAuth is configured.",
-          );
-        }
-        if (opts.externalAuth.keyId !== undefined && opts.externalAuth.keyId.trim() === "") {
-          throw new Error("[web-transport] externalAuth.keyId must be non-empty when configured.");
-        }
-        for (const entry of opts.externalAuth.secrets ?? []) {
-          if (!entry.secret) {
-            throw new Error(
-              "[web-transport] externalAuth.secrets entries require a non-empty secret.",
-            );
-          }
-          if (entry.keyId !== undefined && entry.keyId.trim() === "") {
-            throw new Error(
-              "[web-transport] externalAuth.secrets keyId must be non-empty when configured.",
-            );
-          }
-        }
-        if (opts.externalAuth.header !== undefined) {
-          const header = externalAuthHeaderName;
-          if (
-            !header ||
-            !HTTP_HEADER_NAME.test(header) ||
-            !header.startsWith("x-") ||
-            RESERVED_EXTERNAL_AUTH_HEADERS.has(header)
-          ) {
-            throw new Error(
-              "[web-transport] externalAuth.header must be a non-reserved x-* HTTP header name.",
-            );
-          }
-        }
-        if (opts.externalAuth.maxTtlSeconds !== undefined && opts.externalAuth.maxTtlSeconds <= 0) {
-          throw new Error(
-            "[web-transport] externalAuth.maxTtlSeconds must be positive when configured.",
-          );
-        }
-        if (
-          opts.externalAuth.replayProtection?.enabled === true &&
-          opts.externalAuth.replayProtection.store !== undefined &&
-          typeof opts.externalAuth.replayProtection.store.consume !== "function"
-        ) {
-          throw new Error(
-            "[web-transport] externalAuth.replayProtection.store must provide consume(jti, expiresAt, now).",
-          );
-        }
       }
       if (visitorTokensEnabled) {
         const keySource = opts.visitorTokens?.signingKey;
@@ -2385,6 +3497,22 @@ export function webTransport(opts: WebTransportOptions): Augment {
           );
         }
         signingKey = await deriveSigningKey(keySource);
+      }
+      const idempotencyDbPath = resolveIdempotencyDbPath(opts);
+      if (idempotencyDbPath !== null) {
+        idempotencyStore = createWebIdempotencyStore({
+          dbPath: idempotencyDbPath,
+          maxRecords: opts.idempotency?.maxRecords,
+          maxRateLimitRecords: opts.idempotency?.maxRateLimitRecords,
+          maxReplayBytes: idempotencyMaxReplayBytes,
+          maxStoredBytes: idempotencyMaxStoredBytes,
+          maxRecordsPerPartition: opts.idempotency?.maxRecordsPerPartition,
+          maxPublicRecords: opts.idempotency?.maxPublicRecords,
+          maxAgentRecords: opts.idempotency?.maxAgentRecords,
+          maxCreatorRecords: opts.idempotency?.maxCreatorRecords,
+          staleAfterMs: idempotencyStaleAfterMs,
+          retentionMs: idempotencyRetentionMs,
+        });
       }
       const consoleDbPath = resolveConsoleChatDbPath(opts);
       if (consoleDbPath !== null) {
@@ -2419,39 +3547,72 @@ export function webTransport(opts: WebTransportOptions): Augment {
             // `/administrative` from being captured (M3 fix preserved).
             const isAdminPath = url.pathname === "/console" || url.pathname.startsWith("/console/");
             if (adminEnabled && isAdminPath) {
+              const consoleRequest = evaluateConsoleRequest({
+                req,
+                connectionIp: getConnectionIp(req, server),
+                trustedProxies,
+                allowedOrigins: consoleAllowedOrigins,
+              });
+              if (!consoleRequest.ok) {
+                return withConsoleBoundaryHeaders(
+                  new Response(
+                    JSON.stringify({
+                      error: "console request rejected",
+                      code: "CONSOLE_REQUEST_REJECTED",
+                    }),
+                    {
+                      status: consoleRequest.status,
+                      headers: {
+                        "content-type": "application/json",
+                        "cache-control": "no-store",
+                      },
+                    },
+                  ),
+                );
+              }
               if (req.method === "HEAD") {
-                return new Response(null, {
-                  status: 405,
-                  headers: { allow: "GET, POST" },
-                });
+                return withConsoleBoundaryHeaders(
+                  new Response(null, {
+                    status: 405,
+                    headers: { allow: "GET, POST" },
+                  }),
+                );
               }
               if (req.method !== "GET" && req.method !== "POST") {
-                return new Response(null, {
-                  status: 405,
-                  headers: { allow: "GET, POST" },
-                });
+                return withConsoleBoundaryHeaders(
+                  new Response(null, {
+                    status: 405,
+                    headers: { allow: "GET, POST" },
+                  }),
+                );
               }
 
               // M4 fix — rate-limit BEFORE handling. Per-IP combined budget
               // across the entire /console* surface: 60 req/min via synthetic
               // route-key "admin" for compatibility. Defeats brute-force against
               // HTTP Basic.
-              const adminIp = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
+              const adminIp = consoleRequest.callerIp;
               const adminRl = checkRouteRateLimit("admin", adminIp, 60);
               if (!adminRl.allowed) {
-                return new Response(null, {
-                  status: 429,
-                  headers: { "retry-after": String(adminRl.retryAfterSec) },
-                });
+                return withConsoleBoundaryHeaders(
+                  new Response(null, {
+                    status: 429,
+                    headers: { "retry-after": String(adminRl.retryAfterSec) },
+                  }),
+                );
               }
 
-              if (!kernel) return new Response(null, { status: 503 });
+              if (!kernel) {
+                return withConsoleBoundaryHeaders(new Response(null, { status: 503 }));
+              }
               return handleAdminRoute(req, {
                 kernel,
                 bearer: opts.auth.token,
                 agentDir: opts.agentDir,
                 callerIp: adminIp,
-                trustForwardedProto: shouldTrustForwardedProto(req, server, trustedProxies),
+                secureRequest: consoleRequest.secure,
+                requestOrigin: consoleRequest.origin,
+                allowInsecureLoopback: consoleRequest.allowInsecureLoopback,
                 actionRegistry,
                 staticDir: adminStaticDir,
                 selfPort: opts.port,
@@ -2499,7 +3660,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
             }
 
             if (req.method === "POST" && url.pathname === "/agent/run") {
-              return handleAgentRun(req);
+              return handleAgentRun(
+                req,
+                resolveCallerIp(req, server, trustedProxies, xffOnUntrusted),
+              );
             }
             if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/agent/") {
               if (!publicIntegration) return new Response(null, { status: 404 });
@@ -2591,6 +3755,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                     method: req.method,
                     headers: req.headers,
                     body: buffered,
+                    signal: req.signal,
                   });
                 } catch (_err) {
                   // Body read errors are 400 — caller's problem, not ours.
@@ -2608,28 +3773,20 @@ export function webTransport(opts: WebTransportOptions): Augment {
               }
 
               try {
-                // Finding 1 — AbortController for cooperative cancellation on timeout.
-                // The controller fires on timeout so handlers that listen to the signal
-                // can bail out of side-effecting work instead of continuing after 504.
                 const timeoutMs = augmentRoute.timeoutMs ?? 30_000;
-                const controller = new AbortController();
-                const timer = setTimeout(() => controller.abort(), timeoutMs);
-                try {
-                  const response = await withTimeout(
-                    () =>
-                      augmentRoute.handler(dispatchReq, {
-                        signal: controller.signal,
-                        auth: routeAuth.context,
-                        params,
-                        ...(webhookPolicy.context ? { webhook: webhookPolicy.context } : {}),
-                        routePath: augmentRoute.path,
-                      }),
-                    timeoutMs,
-                  );
-                  return withCorsHeaders(response);
-                } finally {
-                  clearTimeout(timer);
-                }
+                const response = await withTimeout(
+                  (deadlineSignal) =>
+                    augmentRoute.handler(dispatchReq, {
+                      signal: deadlineSignal,
+                      auth: routeAuth.context,
+                      params,
+                      ...(webhookPolicy.context ? { webhook: webhookPolicy.context } : {}),
+                      routePath: augmentRoute.path,
+                    }),
+                  timeoutMs,
+                  req.signal,
+                );
+                return withCorsHeaders(response);
               } catch (err) {
                 if (err instanceof TimeoutError) {
                   return json({ error: "timeout" }, 504);
@@ -2674,10 +3831,24 @@ export function webTransport(opts: WebTransportOptions): Augment {
         server.stop();
         server = null;
       }
+      if (managedRootRetained) {
+        releaseManagedRoot(opts.agentDir);
+        managedRootRetained = false;
+      }
+      if (overrideRootRetained) {
+        releaseAdminOverrideRoot(overrideDir);
+        overrideRootRetained = false;
+      }
       consoleHistoryPersistence?.discardAllPending();
       consoleHistoryPersistence = null;
       consoleChatStore?.close();
       consoleChatStore = null;
+      idempotencyStore?.close();
+      idempotencyStore = null;
+      for (const execution of localIdempotencyExecutions.values()) execution.resolve();
+      localIdempotencyExecutions.clear();
+      idempotencyWaitersByKey.clear();
+      activeIdempotencyWaiters = 0;
       startServer = null;
       kernel = null;
       augmentRoutes = [];

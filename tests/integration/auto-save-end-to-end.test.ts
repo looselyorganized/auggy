@@ -370,6 +370,7 @@ describe("auto-save end-to-end", () => {
         kind: "human",
         trustLevel: "public",
         publicSubstate: "recognized",
+        authenticatedPriorPeerId: ANON_PEER_ID,
         sourceAugment: "web",
       };
       await agent.inject(

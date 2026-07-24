@@ -1,5 +1,5 @@
 import { describe, test, expect, afterEach } from "bun:test";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { scaffoldAgent } from "../../src/cli/scaffold";
@@ -31,6 +31,9 @@ describe("scaffoldAgent", () => {
     expect(existsSync(join(dir, "data", "workspace"))).toBe(true);
     expect(existsSync(join(dir, "workspace"))).toBe(false);
     expect(existsSync(join(dir, "augments"))).toBe(true);
+    if (process.platform !== "win32") {
+      expect(statSync(join(dir, ".env")).mode & 0o777).toBe(0o600);
+    }
   });
 
   test("generates a valid aug1_ UUID in agent.yaml", () => {
@@ -199,6 +202,17 @@ describe("scaffoldAgent", () => {
     expect(browserClient).toContain("authAssertion");
     expect(browserClient).toContain("NEXT_PUBLIC_AUGGY_BASE_URL");
 
+    const adminRoute = readFileSync(
+      join(templatesRoot, "nextjs-server-client", "admin-reindex-route.ts.txt"),
+      "utf-8",
+    );
+    expect(adminRoute).toContain('import "server-only";');
+    expect(adminRoute).toContain("createAdminReindexHandler");
+    expect(adminRoute).toContain("verifyAppOperatorSession");
+    expect(adminRoute).toContain("verifyAppCsrfToken");
+    expect(adminRoute).toContain("return null;");
+    expect(adminRoute).toContain("return false;");
+
     const authBridge = readFileSync(
       join(templatesRoot, "app-auth-bridge", "next-route.ts.txt"),
       "utf-8",
@@ -235,7 +249,7 @@ describe("scaffoldAgent", () => {
     );
     expect(replayStore).toContain("ExternalAuthReplayStore");
     expect(replayStore).toContain("expiresAt - now");
-    expect(replayStore).toContain("replayProtection: { enabled: true, store: replayStore }");
+    expect(replayStore).toContain("createExternalAuthWebTransport(replayStore)");
 
     const auditHook = readFileSync(
       join(templatesRoot, "app-auth-bridge", "denial-audit-hook.ts.txt"),

@@ -12,7 +12,12 @@ export function ServiceSearch() {
       createAuggyClient({
         baseUrl: process.env.NEXT_PUBLIC_AUGGY_BASE_URL!,
         authAssertion: async () => {
-          const res = await fetch("/api/auggy-auth-assertion", { credentials: "include" });
+          const res = await fetch("/api/auggy-auth-assertion", {
+            method: "POST",
+            credentials: "include",
+            cache: "no-store",
+            headers: { "x-auggy-csrf-request": "1" },
+          });
           if (!res.ok) return undefined;
           const body = (await res.json()) as { assertion?: unknown };
           return typeof body.assertion === "string" ? body.assertion : undefined;

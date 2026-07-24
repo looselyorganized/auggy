@@ -141,6 +141,10 @@ describe("Anthropic message coalescing", () => {
 let nextAnthropicResponse: Record<string, unknown> | null = null;
 let nextAnthropicError: { status: number; message: string } | null = null;
 let lastAnthropicRequestOptions: { signal?: AbortSignal } | null = null;
+let lastAnthropicConstructorArgs: Record<string, unknown> | null = null;
+let nextAnthropicStreamTexts: string[] | null = null;
+let anthropicStreamAbortCalls = 0;
+let anthropicAbortRejectsFinal = false;
 
 mock.module("@anthropic-ai/sdk", () => {
   const makeResponse = (overrides?: Record<string, unknown>) =>
@@ -156,6 +160,10 @@ mock.module("@anthropic-ai/sdk", () => {
     };
 
   class FakeAnthropic {
+    constructor(opts: Record<string, unknown>) {
+      lastAnthropicConstructorArgs = opts;
+    }
+
     messages = {
       create: async (
         _params: Record<string, unknown>,
@@ -171,8 +179,38 @@ mock.module("@anthropic-ai/sdk", () => {
         return nextAnthropicResponse !== null ? nextAnthropicResponse : makeResponse();
       },
       stream: (_params: Record<string, unknown>) => {
-        // Not used by these tests (non-streaming path only).
-        throw new Error("streaming not mocked in costUsd tests");
+        let onText: ((text: string) => void) | null = null;
+        let aborted = false;
+        const currentMessage =
+          nextAnthropicResponse !== null
+            ? nextAnthropicResponse
+            : makeResponse({
+                id: "msg_stream",
+                type: "message",
+                role: "assistant",
+                content: [{ type: "text", text: (nextAnthropicStreamTexts ?? []).join("") }],
+                model: "claude-sonnet-4-6",
+                stop_reason: "end_turn",
+                stop_sequence: null,
+                usage: { input_tokens: 100, output_tokens: 50 },
+              });
+        return {
+          currentMessage,
+          on(event: string, handler: (text: string) => void) {
+            if (event === "text") onText = handler;
+          },
+          abort() {
+            anthropicStreamAbortCalls++;
+            aborted = true;
+          },
+          async finalMessage() {
+            for (const text of nextAnthropicStreamTexts ?? []) onText?.(text);
+            if (aborted && anthropicAbortRejectsFinal) {
+              throw new Error("stream aborted");
+            }
+            return currentMessage;
+          },
+        };
       },
     };
   }
@@ -219,6 +257,34 @@ function anthropicMsg(partial: Partial<Message>): Message {
 beforeEach(() => {
   nextAnthropicResponse = null;
   nextAnthropicError = null;
+  lastAnthropicConstructorArgs = null;
+  nextAnthropicStreamTexts = null;
+  anthropicStreamAbortCalls = 0;
+  anthropicAbortRejectsFinal = false;
+});
+
+describe("createAnthropicEngine — credential transport", () => {
+  it("rejects an environment credential on non-loopback plaintext HTTP", () => {
+    const original = process.env.ANTHROPIC_API_KEY;
+    const sentinel = "ANTHROPIC_GROUP9_SECRET_DO_NOT_LOG";
+    process.env.ANTHROPIC_API_KEY = sentinel;
+    let error: unknown;
+    try {
+      createAnthropicEngine({
+        model: "claude-sonnet-4-6",
+        baseURL: "http://provider.example.test",
+      });
+    } catch (cause) {
+      error = cause;
+    } finally {
+      if (original === undefined) delete process.env.ANTHROPIC_API_KEY;
+      else process.env.ANTHROPIC_API_KEY = original;
+    }
+    expect(String(error)).toContain("plaintext HTTP");
+    expect(String(error)).not.toContain(sentinel);
+    expect(String(error)).not.toContain("provider.example.test");
+    expect(lastAnthropicConstructorArgs).toBeNull();
+  });
 });
 
 describe("createAnthropicEngine — costUsd", () => {
@@ -549,19 +615,23 @@ describe("createAnthropicEngine — provider cost-cap error rewrap", () => {
     );
   });
 
-  it("preserves the original SDK message in parentheses", async () => {
+  it("does not retain a provider-echoed credential in cost-cap errors", async () => {
     const engine = createAnthropicEngine({
-      apiKey: "test-key",
+      apiKey: "anthropic-secret-sentinel",
       model: "claude-sonnet-4-6",
     });
-    nextAnthropicError = { status: 402, message: "Payment required: insufficient credit balance" };
+    nextAnthropicError = {
+      status: 402,
+      message: "Payment required: anthropic-secret-sentinel",
+    };
 
-    await expect(engine.complete(emptyPrompt())).rejects.toThrow(
-      /Original error: Payment required: insufficient credit balance/,
-    );
+    const error = await engine.complete(emptyPrompt()).catch((caught) => caught);
+    expect(String(error)).not.toContain("anthropic-secret-sentinel");
+    expect(Bun.inspect(error)).not.toContain("anthropic-secret-sentinel");
+    expect((error as Error).cause).toBeUndefined();
   });
 
-  it("passes 429 without cap-related text through unchanged (true rate limit, not cap)", async () => {
+  it("sanitizes non-cap 429 provider errors", async () => {
     const engine = createAnthropicEngine({
       apiKey: "test-key",
       model: "claude-sonnet-4-6",
@@ -571,24 +641,25 @@ describe("createAnthropicEngine — provider cost-cap error rewrap", () => {
       message: "Too many concurrent requests, please retry.",
     };
 
-    await expect(engine.complete(emptyPrompt())).rejects.toThrow(/Too many concurrent requests/);
-    // Importantly should NOT include the rewrapped console pointer (literal
-    // substring match, no regex — CodeQL flagged the unanchored regex form).
-    await expect(engine.complete(emptyPrompt())).rejects.not.toThrow("console.anthropic.com");
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(
+      /Anthropic engine .* request failed \(HTTP 429\)/,
+    );
+    await expect(engine.complete(emptyPrompt())).rejects.not.toThrow(/Too many concurrent/);
   });
 
-  it("passes 500 server errors through unchanged", async () => {
+  it("sanitizes 500 server errors", async () => {
     const engine = createAnthropicEngine({
       apiKey: "test-key",
       model: "claude-sonnet-4-6",
     });
     nextAnthropicError = { status: 500, message: "Internal server error" };
 
-    await expect(engine.complete(emptyPrompt())).rejects.toThrow(/Internal server error/);
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(/request failed \(HTTP 500\)/);
+    await expect(engine.complete(emptyPrompt())).rejects.not.toThrow(/Internal server error/);
     await expect(engine.complete(emptyPrompt())).rejects.not.toThrow(/provider spend cap/);
   });
 
-  it("passes errors without a status field through unchanged", async () => {
+  it("sanitizes errors without a status field", async () => {
     const engine = createAnthropicEngine({
       apiKey: "test-key",
       model: "claude-sonnet-4-6",
@@ -597,6 +668,166 @@ describe("createAnthropicEngine — provider cost-cap error rewrap", () => {
     const original = new Error("unexpected JSON parse error");
     nextAnthropicError = original as unknown as { status: number; message: string };
 
-    await expect(engine.complete(emptyPrompt())).rejects.toThrow(/unexpected JSON parse error/);
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow(
+      /Anthropic engine .* request failed/,
+    );
+    await expect(engine.complete(emptyPrompt())).rejects.not.toThrow(/unexpected JSON parse error/);
+  });
+});
+
+describe("createAnthropicEngine — response limits", () => {
+  it("injects the bounded transport into the SDK", () => {
+    createAnthropicEngine({ model: "claude-sonnet-4-6" });
+    expect(typeof lastAnthropicConstructorArgs?.fetch).toBe("function");
+  });
+
+  it("validates text incrementally and retains accounting on failure", async () => {
+    nextAnthropicResponse = {
+      id: "msg_test",
+      type: "message",
+      role: "assistant",
+      content: [
+        { type: "text", text: "ab" },
+        { type: "text", text: "cde" },
+      ],
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 200, output_tokens: 100 },
+    };
+    const engine = createAnthropicEngine({
+      model: "claude-sonnet-4-6",
+      responseLimits: { maxTextBytes: 4 },
+    });
+
+    const error = await engine.complete(emptyPrompt()).catch((cause) => cause);
+    expect(error).toMatchObject({
+      name: "ModelResponseLimitError",
+      limit: "maxTextBytes",
+      accounting: {
+        inputTokens: 200,
+        outputTokens: 100,
+      },
+    });
+    expect(error.accounting.costUsd).toBeGreaterThan(0);
+  });
+
+  it("rejects invalid and excessive tool blocks before returning a prefix", async () => {
+    nextAnthropicResponse = {
+      id: "msg_test",
+      type: "message",
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: "tool_1", name: "first", input: {} },
+        { type: "tool_use", id: "tool_2", name: "second", input: {} },
+      ],
+      model: "claude-sonnet-4-6",
+      stop_reason: "tool_use",
+      stop_sequence: null,
+      usage: { input_tokens: 20, output_tokens: 10 },
+    };
+    const engine = createAnthropicEngine({
+      model: "claude-sonnet-4-6",
+      responseLimits: { maxToolCalls: 1 },
+    });
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow("maxToolCalls");
+
+    nextAnthropicResponse = {
+      ...(nextAnthropicResponse as Record<string, unknown>),
+      content: [{ type: "tool_use", id: "tool_1", name: "first", input: [] }],
+    };
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow("maxToolArgumentBytes");
+  });
+
+  it("retains final usage when a last streaming delta crosses the limit", async () => {
+    nextAnthropicStreamTexts = ["oversized"];
+    nextAnthropicResponse = {
+      id: "msg_stream",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "oversized" }],
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 200, output_tokens: 100 },
+    };
+    const deltas: string[] = [];
+    const engine = createAnthropicEngine({
+      model: "claude-sonnet-4-6",
+      responseLimits: { maxTextBytes: 4 },
+    });
+
+    const error = await engine
+      .complete(emptyPrompt(), {
+        onDelta: (delta) => {
+          if (delta.kind === "text_delta") deltas.push(delta.text);
+        },
+      })
+      .catch((cause) => cause);
+
+    expect(deltas).toEqual([]);
+    expect(anthropicStreamAbortCalls).toBe(1);
+    expect(error).toMatchObject({
+      name: "ModelResponseLimitError",
+      limit: "maxTextBytes",
+      accounting: {
+        inputTokens: 200,
+        outputTokens: 100,
+      },
+    });
+    expect(error.accounting.costUsd).toBeGreaterThan(0);
+  });
+
+  it("records an aborted limited stream as unpriced when final usage rejects", async () => {
+    anthropicAbortRejectsFinal = true;
+    nextAnthropicStreamTexts = ["oversized"];
+    nextAnthropicResponse = {
+      id: "msg_stream",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "oversized" }],
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 200, output_tokens: 100 },
+    };
+    const engine = createAnthropicEngine({
+      model: "claude-sonnet-4-6",
+      responseLimits: { maxTextBytes: 4 },
+    });
+
+    const error = await engine
+      .complete(emptyPrompt(), { onDelta: () => {} })
+      .catch((cause) => cause);
+
+    expect(error).toMatchObject({
+      name: "ModelResponseLimitError",
+      accounting: {
+        inputTokens: 200,
+        outputTokens: 100,
+        unpricedReason: expect.stringContaining("before final billing usage"),
+      },
+    });
+    expect(error.accounting.costUsd).toBeUndefined();
+  });
+
+  it("rejects malformed buffered response collections with known accounting", async () => {
+    nextAnthropicResponse = {
+      id: "msg_bad",
+      type: "message",
+      role: "assistant",
+      content: { nested: "not-an-array" },
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      usage: { input_tokens: 200, output_tokens: 100 },
+    };
+    const engine = createAnthropicEngine({ model: "claude-sonnet-4-6" });
+
+    const error = await engine.complete(emptyPrompt()).catch((cause) => cause);
+
+    expect(error).toMatchObject({
+      name: "ModelResponseLimitError",
+      accounting: { inputTokens: 200, outputTokens: 100 },
+    });
   });
 });

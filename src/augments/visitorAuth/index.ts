@@ -14,7 +14,17 @@
 import { existsSync } from "node:fs";
 import { z } from "zod";
 import { defineRoute, defineTool, json } from "../../helpers";
-import { createAgentMailClient, type AgentMailClient } from "../../agentmail-client";
+import {
+  createAgentMailClient,
+  type AgentMailClient,
+  type SendMessageError,
+  type SendMessageResult,
+} from "../../agentmail-client";
+import {
+  isAmbiguousMutationStatus,
+  isOutcomeUnknownError,
+  OutcomeUnknownError,
+} from "../../outcome-unknown";
 import { createConsoleMailClient } from "./console-mail-client";
 import { createVisitorToken, deriveSigningKey } from "../../transports/visitor-token";
 import type {
@@ -416,6 +426,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     agentMail = createAgentMailClient({
       apiKey: opts.agentMail.apiKey,
       apiBaseUrl: opts.agentMail.apiBaseUrl,
+      allowInsecureHttpWithCredentials: opts.agentMail.allowInsecureHttpWithCredentials,
     });
   }
 
@@ -483,6 +494,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     sourceMessageId?: string | null;
     recentMessages?: RecentVisitorMessage[];
     requireRecentEmail: boolean;
+    signal?: AbortSignal;
   }): Promise<RequestAuthResult> {
     const fail = (
       status: "rejected" | "failed",
@@ -528,6 +540,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     // future per-IP keying (e.g. "ip:...") can coexist without collision.
     const rlKey = `email:${email}`;
     return withVerificationLock(rlKey, async () => {
+      input.signal?.throwIfAborted();
       const t = now();
       const rl = rateLimiter.check(rlKey, t);
       if (!rl.allowed) {
@@ -558,18 +571,42 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
 
       // Serialize sends for the same email so parallel requests cannot bypass
       // the cooldown between the policy check and successful delivery record.
-      const sendResult = await agentMail.send({
-        inboxId: mailInboxId,
-        to: [email],
-        subject,
-        text,
-        html,
-        labels: ["visitor-auth", "verify"],
-      });
+      let sendResult: SendMessageResult | SendMessageError;
+      try {
+        input.signal?.throwIfAborted();
+        sendResult = await agentMail.send({
+          inboxId: mailInboxId,
+          to: [email],
+          subject,
+          text,
+          html,
+          labels: ["visitor-auth", "verify"],
+          signal: input.signal,
+        });
+      } catch (error) {
+        // A canceled or ambiguous send must never leave a redeemable token.
+        // The caller still receives the original error so the kernel can mark
+        // the operation outcome-unknown and suppress automatic retry.
+        store.invalidateTokenIfStillOpen(token, now());
+        if (isOutcomeUnknownError(error)) rateLimiter.record(rlKey, t);
+        throw error;
+      }
 
       if (sendResult.status !== "sent") {
-        // A failed delivery does not consume quota, but its token must not be redeemable.
+        // A failed delivery must not leave its token redeemable. A failure
+        // without a provider status crossed the dispatch boundary without a
+        // trustworthy outcome, so conservatively reserve rate-limit capacity
+        // and stop the kernel from automatically retrying the send.
         store.invalidateTokenIfStillOpen(token, t + 1);
+        if (
+          verificationDelivery === "email" &&
+          (sendResult.httpStatus === undefined || isAmbiguousMutationStatus(sendResult.httpStatus))
+        ) {
+          rateLimiter.record(rlKey, t);
+          throw new OutcomeUnknownError(
+            "Verification delivery ended without a trustworthy provider response after dispatch",
+          );
+        }
         return fail(
           "failed",
           "send_failed",
@@ -662,6 +699,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
         threadId: ctx.threadId,
         recentMessages: recentByPeer.get(ctx.peer.id) ?? [],
         requireRecentEmail: true,
+        signal: ctx.signal,
       });
       return JSON.stringify(result);
     },
@@ -857,7 +895,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
         requestJsonSchema: { body: verifyTokenJsonSchema },
         requestMediaTypes: ["application/x-www-form-urlencoded", "application/json"],
         responseMediaTypes: ["text/html"],
-        handler: async (req, _opts) => {
+        handler: async (req, routeContext) => {
           if (!booted || !signingCryptoKey) {
             return new Response(buildVerifyFailurePage({ reason: "unknown" }), {
               status: 503,
@@ -937,6 +975,8 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
             agentBinding,
             ttlSec,
             reuseVisitorId,
+            consume.peerId ?? undefined,
+            consume.peerId ?? undefined,
           );
 
           // Record / touch the verified-visitor row:
@@ -983,6 +1023,8 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
                   agentBinding,
                   ttlSec,
                   winner.visitorId,
+                  consume.peerId ?? undefined,
+                  consume.peerId ?? undefined,
                 );
               } else {
                 // Defensive: winner row vanished or is revoked between INSERT failure
@@ -1010,11 +1052,9 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           if (opts.notifyOnFirstVerify) {
             const cfg = opts.notifyOnFirstVerify;
             if (!store.hasNotifiedFirstVerifyFor(consume.email!)) {
-              // F5: mark-after-send — only record the ledger entry when the send
-              // actually succeeds.  Trade-off: if the agent crashes between
-              // send-success and markNotifiedFirstVerifyFor, the operator gets a
-              // duplicate notification on the next verify retry.  Accepted —
-              // a duplicate ops note is preferable to a permanently dropped one.
+              // Mark confirmed sends and ambiguous post-dispatch outcomes. A
+              // lost provider response may still mean the operator note was
+              // delivered, so retrying it would duplicate a side effect.
               const subject = `${cfg.subjectPrefix ?? "[New verified visitor] "}${consume.email}`;
               const text = `A new visitor verified their email: ${consume.email!} (vis_id: ${minted.payload.visitorId}).`;
               try {
@@ -1024,17 +1064,29 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
                   subject,
                   text,
                   labels: ["visitor-auth", "first-verify-operator-note"],
+                  signal: routeContext.signal,
                 });
                 if (notifyResult.status === "sent") {
                   store.markNotifiedFirstVerifyFor(consume.email!, t);
+                } else if (
+                  notifyResult.httpStatus === undefined ||
+                  isAmbiguousMutationStatus(notifyResult.httpStatus)
+                ) {
+                  store.markNotifiedFirstVerifyFor(consume.email!, t);
+                  console.warn(
+                    "[visitor-auth] first-verify operator notification outcome is ambiguous; suppressing automatic retry.",
+                  );
                 } else {
                   console.warn(
                     `[visitor-auth] first-verify operator notification failed (destination redacted): ${(notifyResult as { detail?: string }).detail ?? "unknown"}. Will retry on next verify.`,
                   );
                 }
               } catch (err) {
+                store.markNotifiedFirstVerifyFor(consume.email!, t);
                 console.warn(
-                  `[visitor-auth] first-verify operator notification failed: ${(err as Error).message}`,
+                  isOutcomeUnknownError(err)
+                    ? "[visitor-auth] first-verify operator notification outcome is ambiguous; suppressing automatic retry."
+                    : "[visitor-auth] first-verify operator notification failed after dispatch; suppressing automatic retry.",
                 );
               }
             }
@@ -1061,7 +1113,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
         responseMediaTypes: ["application/json"],
         maxBodyBytes: 8_192,
         rateLimit: { maxPerMinute: 20 },
-        handler: async ({ body }) => {
+        handler: async ({ body, signal }) => {
           const authRequestId = crypto.randomUUID();
           const result = await requestEmailVerification({
             email: body.email,
@@ -1069,6 +1121,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
             threadId: authRequestId,
             sourceMessageId: sourceMessageIdFromRouteMeta(body.meta),
             requireRecentEmail: false,
+            signal,
           });
           return json(result, requestAuthHttpStatus(result));
         },

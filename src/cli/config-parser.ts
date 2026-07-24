@@ -23,6 +23,11 @@ import type {
 } from "./types";
 import { KNOWN_PROVIDERS, isKnownProvider } from "./types";
 import { parseEnvFile } from "./env-parse";
+import {
+  buildConsoleAllowedOrigins,
+  compileTrustedProxyNetworks,
+} from "../transports/console-request-security";
+import { DEFAULT_EXTRACTION_BUFFER_LIMITS } from "../augments/layeredMemory/extractor/buffer";
 
 // ---------------------------------------------------------------------------
 // .env loading
@@ -143,6 +148,8 @@ const BUILTIN_TYPES = new Set([
 ]);
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const VALID_ROUTING_SORTS = new Set(["price", "throughput", "latency"]);
+const VALID_ROUTING_KEYS = new Set(["only", "ignore", "sort", "max_price"]);
+const PROVIDER_SLUG_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
 // ---------------------------------------------------------------------------
 // Per-augment option validators
@@ -153,23 +160,273 @@ function validateWebTransportOptions(
   optionsPrefix: string,
   errors: string[],
 ): void {
-  if (opts.consoleChat === undefined) return;
+  if (opts.rateLimitPerPeer !== undefined) {
+    if (
+      opts.rateLimitPerPeer === null ||
+      typeof opts.rateLimitPerPeer !== "object" ||
+      Array.isArray(opts.rateLimitPerPeer)
+    ) {
+      errors.push(`${optionsPrefix}.rateLimitPerPeer: must be an object`);
+    } else {
+      const rateLimit = opts.rateLimitPerPeer as Record<string, unknown>;
+      const maxPerMinute = rateLimit.maxPerMinute;
+      if (!Number.isSafeInteger(maxPerMinute) || (maxPerMinute as number) < 1) {
+        errors.push(`${optionsPrefix}.rateLimitPerPeer.maxPerMinute: must be a positive integer`);
+      }
+      if (rateLimit.anonymousNetwork !== undefined) {
+        if (
+          rateLimit.anonymousNetwork === null ||
+          typeof rateLimit.anonymousNetwork !== "object" ||
+          Array.isArray(rateLimit.anonymousNetwork)
+        ) {
+          errors.push(`${optionsPrefix}.rateLimitPerPeer.anonymousNetwork: must be an object`);
+        } else {
+          const anonymous = rateLimit.anonymousNetwork as Record<string, unknown>;
+          if (
+            anonymous.mode !== undefined &&
+            anonymous.mode !== "shared-store" &&
+            anonymous.mode !== "trusted-edge" &&
+            anonymous.mode !== "single-process-development"
+          ) {
+            errors.push(
+              `${optionsPrefix}.rateLimitPerPeer.anonymousNetwork.mode: must be shared-store, trusted-edge, or single-process-development`,
+            );
+          }
+          if (
+            anonymous.ipv6PrefixBits !== undefined &&
+            (!Number.isSafeInteger(anonymous.ipv6PrefixBits) ||
+              (anonymous.ipv6PrefixBits as number) < 32 ||
+              (anonymous.ipv6PrefixBits as number) > 64)
+          ) {
+            errors.push(
+              `${optionsPrefix}.rateLimitPerPeer.anonymousNetwork.ipv6PrefixBits: must be an integer from 32 to 64`,
+            );
+          }
+          if (
+            anonymous.globalMaxPerMinute !== undefined &&
+            (!Number.isSafeInteger(anonymous.globalMaxPerMinute) ||
+              (anonymous.globalMaxPerMinute as number) < 1)
+          ) {
+            errors.push(
+              `${optionsPrefix}.rateLimitPerPeer.anonymousNetwork.globalMaxPerMinute: must be a positive integer`,
+            );
+          } else if (
+            typeof maxPerMinute === "number" &&
+            typeof anonymous.globalMaxPerMinute === "number" &&
+            anonymous.globalMaxPerMinute < maxPerMinute
+          ) {
+            errors.push(
+              `${optionsPrefix}.rateLimitPerPeer.anonymousNetwork.globalMaxPerMinute: cannot be less than maxPerMinute`,
+            );
+          }
+        }
+      }
+    }
+  }
   if (
-    opts.consoleChat === null ||
-    typeof opts.consoleChat !== "object" ||
-    Array.isArray(opts.consoleChat)
+    opts.maxRequestBodyBytes !== undefined &&
+    (!Number.isSafeInteger(opts.maxRequestBodyBytes) || (opts.maxRequestBodyBytes as number) < 1)
   ) {
-    errors.push(`${optionsPrefix}.consoleChat: must be an object`);
-    return;
+    errors.push(`${optionsPrefix}.maxRequestBodyBytes: must be a positive integer`);
+  }
+  for (const field of [
+    "maxPendingSseBytes",
+    "maxPendingSseEvents",
+    "maxConsoleRunBytes",
+  ] as const) {
+    if (
+      opts[field] !== undefined &&
+      (!Number.isSafeInteger(opts[field]) || (opts[field] as number) < 1)
+    ) {
+      errors.push(`${optionsPrefix}.${field}: must be a positive integer`);
+    }
   }
 
-  const consoleChat = opts.consoleChat as Record<string, unknown>;
-  if (
-    consoleChat.dbPath !== undefined &&
-    consoleChat.dbPath !== null &&
-    (typeof consoleChat.dbPath !== "string" || consoleChat.dbPath.trim().length === 0)
-  ) {
-    errors.push(`${optionsPrefix}.consoleChat.dbPath: must be a non-empty string or null`);
+  if (opts.trustedProxies !== undefined) {
+    if (
+      !Array.isArray(opts.trustedProxies) ||
+      opts.trustedProxies.some((entry) => typeof entry !== "string")
+    ) {
+      errors.push(`${optionsPrefix}.trustedProxies: must be an array of IP or CIDR strings`);
+    } else {
+      try {
+        compileTrustedProxyNetworks(opts.trustedProxies as string[]);
+      } catch (error) {
+        errors.push(`${optionsPrefix}.trustedProxies: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  if (opts.externalAuth !== undefined) {
+    if (
+      opts.externalAuth === null ||
+      typeof opts.externalAuth !== "object" ||
+      Array.isArray(opts.externalAuth)
+    ) {
+      errors.push(`${optionsPrefix}.externalAuth: must be an object`);
+    } else {
+      const externalAuth = opts.externalAuth as Record<string, unknown>;
+      if (typeof externalAuth.secret !== "string" || externalAuth.secret.trim() === "") {
+        errors.push(`${optionsPrefix}.externalAuth.secret: must be a non-empty string`);
+      }
+      if (
+        externalAuth.keyId !== undefined &&
+        (typeof externalAuth.keyId !== "string" || externalAuth.keyId.trim() === "")
+      ) {
+        errors.push(`${optionsPrefix}.externalAuth.keyId: must be a non-empty string`);
+      }
+      if (
+        externalAuth.audience !== undefined &&
+        (typeof externalAuth.audience !== "string" || externalAuth.audience.trim() === "")
+      ) {
+        errors.push(`${optionsPrefix}.externalAuth.audience: must be a non-empty string`);
+      }
+      if (
+        externalAuth.header !== undefined &&
+        (typeof externalAuth.header !== "string" || externalAuth.header.trim() === "")
+      ) {
+        errors.push(`${optionsPrefix}.externalAuth.header: must be a non-empty string`);
+      }
+      if (
+        externalAuth.maxTtlSeconds !== undefined &&
+        (!Number.isSafeInteger(externalAuth.maxTtlSeconds) ||
+          (externalAuth.maxTtlSeconds as number) <= 0)
+      ) {
+        errors.push(`${optionsPrefix}.externalAuth.maxTtlSeconds: must be a positive integer`);
+      }
+      if (externalAuth.allowedProviders !== undefined) {
+        if (
+          !Array.isArray(externalAuth.allowedProviders) ||
+          externalAuth.allowedProviders.length === 0 ||
+          externalAuth.allowedProviders.some(
+            (provider) => typeof provider !== "string" || provider.trim() === "",
+          )
+        ) {
+          errors.push(
+            `${optionsPrefix}.externalAuth.allowedProviders: must be a non-empty array of non-empty strings`,
+          );
+        } else if (
+          new Set(externalAuth.allowedProviders as string[]).size !==
+          externalAuth.allowedProviders.length
+        ) {
+          errors.push(`${optionsPrefix}.externalAuth.allowedProviders: entries must be unique`);
+        }
+      }
+      if (externalAuth.secrets !== undefined) {
+        if (
+          !Array.isArray(externalAuth.secrets) ||
+          externalAuth.secrets.some(
+            (entry) => entry === null || typeof entry !== "object" || Array.isArray(entry),
+          )
+        ) {
+          errors.push(`${optionsPrefix}.externalAuth.secrets: must be an array of secret objects`);
+        } else {
+          for (const [index, value] of externalAuth.secrets.entries()) {
+            const entry = value as Record<string, unknown>;
+            if (typeof entry.secret !== "string" || entry.secret.trim() === "") {
+              errors.push(
+                `${optionsPrefix}.externalAuth.secrets[${index}].secret: must be a non-empty string`,
+              );
+            }
+            if (
+              entry.keyId !== undefined &&
+              (typeof entry.keyId !== "string" || entry.keyId.trim() === "")
+            ) {
+              errors.push(
+                `${optionsPrefix}.externalAuth.secrets[${index}].keyId: must be a non-empty string`,
+              );
+            }
+          }
+        }
+      }
+      if (
+        externalAuth.includeUnverifiedEmail !== undefined &&
+        typeof externalAuth.includeUnverifiedEmail !== "boolean"
+      ) {
+        errors.push(`${optionsPrefix}.externalAuth.includeUnverifiedEmail: must be a boolean`);
+      }
+      if (
+        externalAuth.visitorId !== undefined &&
+        (typeof externalAuth.visitorId !== "string" || externalAuth.visitorId.trim() === "")
+      ) {
+        errors.push(`${optionsPrefix}.externalAuth.visitorId: must be a non-empty string`);
+      }
+      if (externalAuth.replayProtection !== undefined) {
+        if (
+          externalAuth.replayProtection === null ||
+          typeof externalAuth.replayProtection !== "object" ||
+          Array.isArray(externalAuth.replayProtection)
+        ) {
+          errors.push(`${optionsPrefix}.externalAuth.replayProtection: must be an object`);
+        } else {
+          const replay = externalAuth.replayProtection as Record<string, unknown>;
+          if (typeof replay.enabled !== "boolean") {
+            errors.push(
+              `${optionsPrefix}.externalAuth.replayProtection.enabled: must be a boolean`,
+            );
+          }
+          if (replay.store !== undefined) {
+            errors.push(
+              `${optionsPrefix}.externalAuth.replayProtection.store: executable stores cannot be configured in YAML`,
+            );
+          }
+          if (replay.enabled === true) {
+            errors.push(
+              `${optionsPrefix}.externalAuth.replayProtection: enabled protection requires a programmatic atomic store`,
+            );
+          }
+        }
+      }
+    }
+  }
+
+  if (opts.consoleSecurity !== undefined) {
+    if (
+      opts.consoleSecurity === null ||
+      typeof opts.consoleSecurity !== "object" ||
+      Array.isArray(opts.consoleSecurity)
+    ) {
+      errors.push(`${optionsPrefix}.consoleSecurity: must be an object`);
+    } else {
+      const security = opts.consoleSecurity as Record<string, unknown>;
+      if (
+        security.allowedOrigins !== undefined &&
+        (!Array.isArray(security.allowedOrigins) ||
+          security.allowedOrigins.some((origin) => typeof origin !== "string"))
+      ) {
+        errors.push(`${optionsPrefix}.consoleSecurity.allowedOrigins: must be an array of strings`);
+      } else if (Array.isArray(security.allowedOrigins)) {
+        try {
+          buildConsoleAllowedOrigins(
+            typeof opts.port === "number" ? opts.port : 8080,
+            security.allowedOrigins as string[],
+          );
+        } catch (error) {
+          errors.push(
+            `${optionsPrefix}.consoleSecurity.allowedOrigins: ${(error as Error).message}`,
+          );
+        }
+      }
+    }
+  }
+
+  if (opts.consoleChat !== undefined) {
+    if (
+      opts.consoleChat === null ||
+      typeof opts.consoleChat !== "object" ||
+      Array.isArray(opts.consoleChat)
+    ) {
+      errors.push(`${optionsPrefix}.consoleChat: must be an object`);
+    } else {
+      const consoleChat = opts.consoleChat as Record<string, unknown>;
+      if (
+        consoleChat.dbPath !== undefined &&
+        consoleChat.dbPath !== null &&
+        (typeof consoleChat.dbPath !== "string" || consoleChat.dbPath.trim().length === 0)
+      ) {
+        errors.push(`${optionsPrefix}.consoleChat.dbPath: must be a non-empty string or null`);
+      }
+    }
   }
 }
 
@@ -455,6 +712,38 @@ function validateLayeredMemoryOptions(
       errors,
     );
   }
+  if (a.bufferLimits !== undefined) {
+    const prefix = `${optionsPrefix}.autoSave.bufferLimits`;
+    if (
+      a.bufferLimits === null ||
+      typeof a.bufferLimits !== "object" ||
+      Array.isArray(a.bufferLimits)
+    ) {
+      errors.push(`${prefix}: must be an object`);
+    } else {
+      const configured = a.bufferLimits as Record<string, unknown>;
+      const knownKeys = Object.keys(DEFAULT_EXTRACTION_BUFFER_LIMITS);
+      for (const key of Object.keys(configured)) {
+        if (!knownKeys.includes(key)) errors.push(`${prefix}.${key}: unknown buffer limit`);
+      }
+      const resolved = { ...DEFAULT_EXTRACTION_BUFFER_LIMITS };
+      for (const key of knownKeys) {
+        const value = configured[key];
+        if (value === undefined) continue;
+        if (!Number.isSafeInteger(value) || (value as number) < 1) {
+          errors.push(`${prefix}.${key}: must be a positive safe integer`);
+          continue;
+        }
+        resolved[key as keyof typeof resolved] = value as number;
+      }
+      if (resolved.maxBytesPerThread > resolved.maxBytesPerPeer) {
+        errors.push(`${prefix}: maxBytesPerThread cannot exceed maxBytesPerPeer`);
+      }
+      if (resolved.maxBytesPerPeer > resolved.maxTotalBytes) {
+        errors.push(`${prefix}: maxBytesPerPeer cannot exceed maxTotalBytes`);
+      }
+    }
+  }
 }
 
 /**
@@ -527,6 +816,15 @@ function validateLinkOptions(
             errors.push(`${peerPrefix}.${field}: required non-empty string`);
           }
         }
+        if (p.purpose !== undefined && typeof p.purpose !== "string") {
+          errors.push(`${peerPrefix}.purpose: must be a string`);
+        }
+        if (
+          p.examples !== undefined &&
+          (!Array.isArray(p.examples) || p.examples.some((example) => typeof example !== "string"))
+        ) {
+          errors.push(`${peerPrefix}.examples: must be an array of strings`);
+        }
       }
     }
   }
@@ -537,6 +835,11 @@ function validateLinkOptions(
       errors.push(`${optionsPrefix}.peerSource: must be an object`);
     } else {
       const ps = peerSource as Record<string, unknown>;
+      for (const key of Object.keys(ps)) {
+        if (key !== "type" && key !== "url" && key !== "cacheSeconds" && key !== "pins") {
+          errors.push(`${optionsPrefix}.peerSource.${key}: unknown option`);
+        }
+      }
       if (ps.type !== "registry") {
         errors.push(
           `${optionsPrefix}.peerSource.type: must be "registry" (no other source types at v1)`,
@@ -552,6 +855,161 @@ function validateLinkOptions(
         errors.push(
           `${optionsPrefix}.peerSource.cacheSeconds: must be a positive number (seconds)`,
         );
+      }
+      if (
+        !ps.pins ||
+        typeof ps.pins !== "object" ||
+        Array.isArray(ps.pins) ||
+        Object.keys(ps.pins).length === 0
+      ) {
+        errors.push(
+          `${optionsPrefix}.peerSource.pins: required non-empty peer-name to endpoint/participant object`,
+        );
+      } else {
+        for (const [name, value] of Object.entries(ps.pins as Record<string, unknown>)) {
+          const pinPrefix = `${optionsPrefix}.peerSource.pins.${name || "<empty>"}`;
+          if (name.length === 0 || !value || typeof value !== "object" || Array.isArray(value)) {
+            errors.push(`${pinPrefix}: must be an endpoint/participant object`);
+            continue;
+          }
+          const pin = value as Record<string, unknown>;
+          if (Object.keys(pin).some((key) => key !== "url" && key !== "participantId")) {
+            errors.push(`${pinPrefix}: unknown option`);
+          }
+          if (typeof pin.url !== "string" || pin.url.length === 0) {
+            errors.push(`${pinPrefix}.url: required non-empty string`);
+          }
+          if (typeof pin.participantId !== "string" || pin.participantId.length === 0) {
+            errors.push(`${pinPrefix}.participantId: required non-empty string`);
+          }
+        }
+      }
+    }
+  }
+
+  const outbound = opts.outbound;
+  if (outbound !== undefined) {
+    if (!outbound || typeof outbound !== "object" || Array.isArray(outbound)) {
+      errors.push(`${optionsPrefix}.outbound: must be an object`);
+    } else {
+      const policy = outbound as Record<string, unknown>;
+      for (const key of Object.keys(policy)) {
+        if (key !== "allowedTrustLevels" && key !== "publicDelegationPeers") {
+          errors.push(`${optionsPrefix}.outbound.${key}: unknown option`);
+        }
+      }
+      const levels = policy.allowedTrustLevels;
+      if (!Array.isArray(levels) || levels.length === 0) {
+        errors.push(`${optionsPrefix}.outbound.allowedTrustLevels: must be a non-empty array`);
+      } else {
+        const seen = new Set<string>();
+        for (let index = 0; index < levels.length; index++) {
+          const level = levels[index];
+          if (level !== "creator" && level !== "agent" && level !== "public") {
+            errors.push(
+              `${optionsPrefix}.outbound.allowedTrustLevels[${index}]: must be "creator", "agent", or "public"`,
+            );
+          } else if (seen.has(level)) {
+            errors.push(
+              `${optionsPrefix}.outbound.allowedTrustLevels[${index}]: duplicate "${level}"`,
+            );
+          } else {
+            seen.add(level);
+          }
+        }
+      }
+
+      const publicPeers = policy.publicDelegationPeers;
+      if (publicPeers !== undefined) {
+        if (
+          !publicPeers ||
+          typeof publicPeers !== "object" ||
+          Array.isArray(publicPeers) ||
+          Object.keys(publicPeers).length === 0
+        ) {
+          errors.push(
+            `${optionsPrefix}.outbound.publicDelegationPeers: must be a non-empty peer-name to endpoint/participant object`,
+          );
+        } else {
+          for (const [peer, value] of Object.entries(publicPeers as Record<string, unknown>)) {
+            if (peer.length === 0 || !value || typeof value !== "object" || Array.isArray(value)) {
+              errors.push(
+                `${optionsPrefix}.outbound.publicDelegationPeers.${peer || "<empty>"}: must be an endpoint/participant object`,
+              );
+              continue;
+            }
+            const binding = value as Record<string, unknown>;
+            if (Object.keys(binding).some((key) => key !== "url" && key !== "participantId")) {
+              errors.push(
+                `${optionsPrefix}.outbound.publicDelegationPeers.${peer}: unknown option`,
+              );
+            }
+            if (typeof binding.url !== "string" || binding.url.length === 0) {
+              errors.push(
+                `${optionsPrefix}.outbound.publicDelegationPeers.${peer}.url: required non-empty string`,
+              );
+            }
+            if (typeof binding.participantId !== "string" || binding.participantId.length === 0) {
+              errors.push(
+                `${optionsPrefix}.outbound.publicDelegationPeers.${peer}.participantId: required non-empty string`,
+              );
+            }
+          }
+        }
+      }
+      const permitsPublic = Array.isArray(levels) && levels.includes("public");
+      const hasPublicPeerBindings =
+        publicPeers !== null &&
+        typeof publicPeers === "object" &&
+        !Array.isArray(publicPeers) &&
+        Object.keys(publicPeers).length > 0;
+      if (permitsPublic && !hasPublicPeerBindings) {
+        errors.push(
+          `${optionsPrefix}.outbound.publicDelegationPeers: required when public trust is allowed`,
+        );
+      } else if (!permitsPublic && publicPeers !== undefined) {
+        errors.push(
+          `${optionsPrefix}.outbound.publicDelegationPeers: requires public in allowedTrustLevels`,
+        );
+      } else if (permitsPublic && hasPublicPeerBindings && peerSource === undefined) {
+        const configuredPeers =
+          peers && typeof peers === "object" && !Array.isArray(peers)
+            ? (peers as Record<string, unknown>)
+            : {};
+        for (const [peer, value] of Object.entries(publicPeers as Record<string, unknown>)) {
+          const configured = configuredPeers[peer] as Record<string, unknown> | undefined;
+          const binding = value as Record<string, unknown>;
+          if (!configured) {
+            errors.push(
+              `${optionsPrefix}.outbound.publicDelegationPeers: unknown inline peer "${peer}"`,
+            );
+          } else if (
+            configured.participantId !== binding.participantId ||
+            configured.url !== binding.url
+          ) {
+            errors.push(
+              `${optionsPrefix}.outbound.publicDelegationPeers.${peer}: must match the inline peer url and participantId`,
+            );
+          }
+        }
+      } else if (permitsPublic && hasPublicPeerBindings && peerSource !== undefined) {
+        const source =
+          peerSource && typeof peerSource === "object" && !Array.isArray(peerSource)
+            ? (peerSource as Record<string, unknown>)
+            : {};
+        const pins =
+          source.pins && typeof source.pins === "object" && !Array.isArray(source.pins)
+            ? (source.pins as Record<string, unknown>)
+            : {};
+        for (const [peer, value] of Object.entries(publicPeers as Record<string, unknown>)) {
+          const binding = value as Record<string, unknown>;
+          const pin = pins[peer] as Record<string, unknown> | undefined;
+          if (!pin || pin.participantId !== binding.participantId || pin.url !== binding.url) {
+            errors.push(
+              `${optionsPrefix}.outbound.publicDelegationPeers.${peer}: must match the peerSource endpoint and participant pin`,
+            );
+          }
+        }
       }
     }
   }
@@ -612,6 +1070,21 @@ function validateNotifyOptions(
     if (dest.transport === "webhook") {
       if (typeof dest.url !== "string" || !dest.url) {
         errors.push(`${dPrefix}.url: required string for webhook transport`);
+      }
+      if (
+        dest.headers !== undefined &&
+        (typeof dest.headers !== "object" ||
+          dest.headers === null ||
+          Array.isArray(dest.headers) ||
+          Object.values(dest.headers).some((value) => typeof value !== "string"))
+      ) {
+        errors.push(`${dPrefix}.headers: must be an object of strings`);
+      }
+      if (
+        dest.allowInsecureHttpWithCredentials !== undefined &&
+        typeof dest.allowInsecureHttpWithCredentials !== "boolean"
+      ) {
+        errors.push(`${dPrefix}.allowInsecureHttpWithCredentials: must be a boolean`);
       }
     } else if (dest.transport === "telegram") {
       if (typeof dest.botToken !== "string" || !dest.botToken) {
@@ -901,6 +1374,40 @@ function validateTelegramTransportOptions(
   if (typeof opts.botToken !== "string" || !opts.botToken) {
     errors.push(`${prefix}.botToken: required string`);
   }
+  if (opts.replay !== undefined) {
+    if (opts.replay === null || typeof opts.replay !== "object" || Array.isArray(opts.replay)) {
+      errors.push(`${prefix}.replay: must be an object`);
+    } else {
+      const replay = opts.replay as Record<string, unknown>;
+      if (replay.store !== undefined) {
+        errors.push(
+          `${prefix}.replay.store: executable replay stores cannot be configured in YAML; construct telegramTransport programmatically`,
+        );
+      }
+      if (
+        replay.dbPath !== undefined &&
+        (typeof replay.dbPath !== "string" || replay.dbPath.trim().length === 0)
+      ) {
+        errors.push(`${prefix}.replay.dbPath: must be a non-empty string`);
+      }
+      if (
+        replay.namespace !== undefined &&
+        (typeof replay.namespace !== "string" ||
+          replay.namespace.length === 0 ||
+          replay.namespace.length > 256)
+      ) {
+        errors.push(`${prefix}.replay.namespace: must contain 1 to 256 characters`);
+      }
+      for (const field of ["retentionMs", "maxEntries", "claimTimeoutMs"] as const) {
+        if (
+          replay[field] !== undefined &&
+          (!Number.isSafeInteger(replay[field]) || (replay[field] as number) < 1)
+        ) {
+          errors.push(`${prefix}.replay.${field}: must be a positive integer`);
+        }
+      }
+    }
+  }
 
   const inbound = opts.inbound as Record<string, unknown> | undefined;
   if (!inbound || typeof inbound !== "object") {
@@ -934,8 +1441,13 @@ function validateTelegramTransportOptions(
       if (typeof webhook.publicUrl !== "string" || !webhook.publicUrl) {
         errors.push(`${prefix}.inbound.webhook.publicUrl: required string`);
       }
-      if (typeof webhook.secretToken !== "string" || !webhook.secretToken) {
-        errors.push(`${prefix}.inbound.webhook.secretToken: required string`);
+      if (
+        typeof webhook.secretToken !== "string" ||
+        !/^[A-Za-z0-9_-]{1,256}$/.test(webhook.secretToken)
+      ) {
+        errors.push(
+          `${prefix}.inbound.webhook.secretToken: must contain 1 to 256 letters, numbers, underscores, or hyphens`,
+        );
       }
       if (
         webhook.port !== undefined &&
@@ -943,11 +1455,19 @@ function validateTelegramTransportOptions(
       ) {
         errors.push(`${prefix}.inbound.webhook.port: must be a positive number ≤ 65535`);
       }
+      if (
+        webhook.maxBodyBytes !== undefined &&
+        (!Number.isSafeInteger(webhook.maxBodyBytes) || (webhook.maxBodyBytes as number) < 1)
+      ) {
+        errors.push(`${prefix}.inbound.webhook.maxBodyBytes: must be a positive integer`);
+      }
     }
   }
 
   const auth = opts.auth as Record<string, unknown> | undefined;
-  if (auth !== undefined && typeof auth === "object") {
+  if (auth === undefined || auth === null || typeof auth !== "object" || Array.isArray(auth)) {
+    errors.push(`${prefix}.auth: required object`);
+  } else {
     if (auth.creatorUserIds !== undefined) {
       if (!Array.isArray(auth.creatorUserIds)) {
         errors.push(`${prefix}.auth.creatorUserIds: must be an array of numbers`);
@@ -965,15 +1485,28 @@ function validateTelegramTransportOptions(
     ) {
       errors.push(`${prefix}.auth.creatorUserIdsEnv: must be a non-empty string`);
     }
-    if (auth.recognizedUserIds !== undefined && !Array.isArray(auth.recognizedUserIds)) {
-      errors.push(`${prefix}.auth.recognizedUserIds: must be an array of numbers`);
+    if (auth.recognizedUserIds !== undefined) {
+      if (!Array.isArray(auth.recognizedUserIds)) {
+        errors.push(`${prefix}.auth.recognizedUserIds: must be an array of numbers`);
+      } else {
+        for (let i = 0; i < auth.recognizedUserIds.length; i++) {
+          if (typeof auth.recognizedUserIds[i] !== "number") {
+            errors.push(`${prefix}.auth.recognizedUserIds[${i}]: must be a number`);
+          }
+        }
+      }
     }
     if (auth.admittedAgents !== undefined) {
       if (!Array.isArray(auth.admittedAgents)) {
         errors.push(`${prefix}.auth.admittedAgents: must be an array`);
       } else {
         for (let i = 0; i < auth.admittedAgents.length; i++) {
-          const a = auth.admittedAgents[i] as Record<string, unknown>;
+          const value = auth.admittedAgents[i];
+          if (value === null || typeof value !== "object" || Array.isArray(value)) {
+            errors.push(`${prefix}.auth.admittedAgents[${i}]: must be an object`);
+            continue;
+          }
+          const a = value as Record<string, unknown>;
           if (typeof a.id !== "string" || !a.id) {
             errors.push(`${prefix}.auth.admittedAgents[${i}].id: required string`);
           }
@@ -1186,6 +1719,32 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
     if (typeof engine.model !== "string") {
       errors.push("engine.model: required string");
     }
+    if (engine.baseURL !== undefined) {
+      if (typeof engine.baseURL !== "string") {
+        errors.push("engine.baseURL: must be an absolute HTTP(S) URL");
+      } else {
+        try {
+          const baseURL = new URL(engine.baseURL);
+          if (
+            (baseURL.protocol !== "http:" && baseURL.protocol !== "https:") ||
+            baseURL.username.length > 0 ||
+            baseURL.password.length > 0
+          ) {
+            errors.push(
+              "engine.baseURL: must be an absolute HTTP(S) URL without embedded credentials",
+            );
+          }
+        } catch {
+          errors.push("engine.baseURL: must be an absolute HTTP(S) URL");
+        }
+      }
+    }
+    if (
+      engine.allowInsecureHttpWithCredentials !== undefined &&
+      typeof engine.allowInsecureHttpWithCredentials !== "boolean"
+    ) {
+      errors.push("engine.allowInsecureHttpWithCredentials: must be a boolean");
+    }
     if (engine.reasoningEffort !== undefined) {
       if (
         typeof engine.reasoningEffort !== "string" ||
@@ -1207,23 +1766,43 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         errors.push("engine.providerRouting: only valid for provider 'openrouter'");
       } else {
         const r = engine.providerRouting as Record<string, unknown>;
+        for (const key of Object.keys(r)) {
+          if (!VALID_ROUTING_KEYS.has(key)) {
+            errors.push(`engine.providerRouting.${key}: unknown routing option`);
+          }
+        }
         if (r.only !== undefined) {
           if (
             !Array.isArray(r.only) ||
             r.only.length === 0 ||
-            !r.only.every((v) => typeof v === "string")
+            r.only.length > 32 ||
+            !r.only.every((v) => typeof v === "string" && PROVIDER_SLUG_PATTERN.test(v)) ||
+            new Set(r.only).size !== r.only.length
           ) {
-            errors.push("engine.providerRouting.only: must be a non-empty array of strings");
+            errors.push(
+              "engine.providerRouting.only: must contain 1 to 32 unique canonical lowercase base-provider slugs",
+            );
           }
         }
         if (r.ignore !== undefined) {
           if (
             !Array.isArray(r.ignore) ||
             r.ignore.length === 0 ||
-            !r.ignore.every((v) => typeof v === "string")
+            r.ignore.length > 32 ||
+            !r.ignore.every((v) => typeof v === "string" && PROVIDER_SLUG_PATTERN.test(v)) ||
+            new Set(r.ignore).size !== r.ignore.length
           ) {
-            errors.push("engine.providerRouting.ignore: must be a non-empty array of strings");
+            errors.push(
+              "engine.providerRouting.ignore: must contain 1 to 32 unique canonical lowercase base-provider slugs",
+            );
           }
+        }
+        if (
+          Array.isArray(r.only) &&
+          Array.isArray(r.ignore) &&
+          r.only.some((slug) => (r.ignore as unknown[]).includes(slug))
+        ) {
+          errors.push("engine.providerRouting: a provider cannot appear in both only and ignore");
         }
         if (
           r.sort !== undefined &&
@@ -1242,6 +1821,11 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
             errors.push("engine.providerRouting.max_price: must be an object");
           } else {
             const mp = r.max_price as Record<string, unknown>;
+            for (const key of Object.keys(mp)) {
+              if (key !== "prompt" && key !== "completion") {
+                errors.push(`engine.providerRouting.max_price.${key}: unknown price option`);
+              }
+            }
             if (mp.prompt !== undefined && (typeof mp.prompt !== "number" || mp.prompt <= 0)) {
               errors.push("engine.providerRouting.max_price.prompt: must be a positive number");
             }
@@ -1252,6 +1836,51 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
               errors.push("engine.providerRouting.max_price.completion: must be a positive number");
             }
           }
+        }
+      }
+    }
+    if (engine.responseLimits !== undefined) {
+      if (
+        typeof engine.responseLimits !== "object" ||
+        engine.responseLimits === null ||
+        Array.isArray(engine.responseLimits)
+      ) {
+        errors.push("engine.responseLimits: must be an object");
+      } else {
+        const responseLimits = engine.responseLimits as Record<string, unknown>;
+        const allowed = new Set([
+          "maxTextBytes",
+          "maxToolCalls",
+          "maxToolNameBytes",
+          "maxToolArgumentBytes",
+          "maxTotalToolArgumentBytes",
+          "maxArgumentDepth",
+          "maxArgumentNodes",
+          "maxResponseBytes",
+          "maxStreamEvents",
+        ]);
+        for (const [key, value] of Object.entries(responseLimits)) {
+          if (!allowed.has(key)) {
+            errors.push(`engine.responseLimits.${key}: unknown response limit`);
+          } else if (!Number.isSafeInteger(value) || (value as number) < 1) {
+            errors.push(`engine.responseLimits.${key}: must be a positive integer`);
+          }
+        }
+        if (
+          typeof responseLimits.maxToolArgumentBytes === "number" &&
+          typeof responseLimits.maxTotalToolArgumentBytes === "number" &&
+          responseLimits.maxToolArgumentBytes > responseLimits.maxTotalToolArgumentBytes
+        ) {
+          errors.push(
+            "engine.responseLimits.maxToolArgumentBytes: cannot exceed maxTotalToolArgumentBytes",
+          );
+        }
+        if (
+          typeof responseLimits.maxTextBytes === "number" &&
+          typeof responseLimits.maxResponseBytes === "number" &&
+          responseLimits.maxTextBytes > responseLimits.maxResponseBytes
+        ) {
+          errors.push("engine.responseLimits.maxTextBytes: cannot exceed maxResponseBytes");
         }
       }
     }

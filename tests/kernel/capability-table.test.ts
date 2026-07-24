@@ -78,14 +78,14 @@ describe("CapabilityTable", () => {
     ];
     const table = createCapabilityTable(augments);
 
-    // First 2 calls allowed
+    // First 2 attempts reserve capacity.
     expect(table.canExecute("tool-a", {}, stubTurn)).toEqual({ allowed: true });
-    table.recordToolCall("tool-a");
+    expect(table.reserveToolCall("tool-a")).toEqual({ reserved: true });
     expect(table.canExecute("tool-b", {}, stubTurn)).toEqual({ allowed: true });
-    table.recordToolCall("tool-b");
+    expect(table.reserveToolCall("tool-b")).toEqual({ reserved: true });
 
     // 3rd call denied
-    const result = table.canExecute("tool-a", {}, stubTurn);
+    const result = table.reserveToolCall("tool-a");
     expect(result).toHaveProperty("denied", true);
   });
 
@@ -105,8 +105,8 @@ describe("CapabilityTable", () => {
     const table = createCapabilityTable(augments);
 
     // Conservative augment exhausted after 1 call
-    table.recordToolCall("c-tool");
-    expect(table.canExecute("c-tool", {}, stubTurn)).toHaveProperty("denied", true);
+    table.reserveToolCall("c-tool");
+    expect(table.reserveToolCall("c-tool")).toHaveProperty("denied", true);
 
     // Liberal augment still has 10 calls available
     expect(table.canExecute("l-tool", {}, stubTurn)).toEqual({ allowed: true });
@@ -122,11 +122,23 @@ describe("CapabilityTable", () => {
     ];
     const table = createCapabilityTable(augments);
 
-    table.recordToolCall("tool-a");
-    expect(table.canExecute("tool-a", {}, stubTurn)).toHaveProperty("denied", true);
+    table.reserveToolCall("tool-a");
+    expect(table.reserveToolCall("tool-a")).toHaveProperty("denied", true);
 
     table.resetTurn();
-    expect(table.canExecute("tool-a", {}, stubTurn)).toEqual({ allowed: true });
+    expect(table.reserveToolCall("tool-a")).toEqual({ reserved: true });
+  });
+
+  it("a zero limit reserves no tool attempts", () => {
+    const table = createCapabilityTable([
+      {
+        name: "closed",
+        constraints: { maxToolCallsPerTurn: 0 },
+        tools: [makeTool("closed-tool")],
+      },
+    ]);
+
+    expect(table.reserveToolCall("closed-tool")).toEqual(expect.objectContaining({ denied: true }));
   });
 });
 

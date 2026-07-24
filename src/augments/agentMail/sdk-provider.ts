@@ -1,6 +1,11 @@
 /** AgentMail SDK adapters for REST catch-up and reconnecting WebSocket delivery. */
 
 import { AgentMailClient as SdkAgentMailClient } from "agentmail";
+import {
+  assertSecureCredentialTransport,
+  assertSecureWebSocketCredentialTransport,
+} from "../../engines/_shared/credential-transport";
+import { createRedirectRejectingFetch } from "../../http";
 import type { AgentMailInboundLedger } from "./inbound-ledger";
 import {
   AGENTMAIL_RECEIVED_EVENT_TYPES,
@@ -59,11 +64,15 @@ export interface AgentMailSdkProviderOptions {
   apiBaseUrl?: string;
   /** WebSocket origin override for local/sandbox providers. */
   websocketBaseUrl?: string;
+  /** Development-only escape hatch for credentialed non-loopback HTTP/WS. */
+  allowInsecureHttpWithCredentials?: boolean;
   timeoutMs?: number;
   handshakeTimeoutMs?: number;
   connectionTimeoutMs?: number;
   /** Test-only SDK boundary. */
   _sdk?: SdkClientBoundary;
+  /** Test-only Fetch boundary. */
+  _fetch?: typeof fetch;
 }
 
 export interface AgentMailSdkAdapters {
@@ -162,10 +171,14 @@ function createSdk(options: AgentMailSdkProviderOptions): SdkClientBoundary {
   if (options._sdk) return options._sdk;
   const timeoutInSeconds =
     requirePositiveInteger(options.timeoutMs ?? 15_000, "timeoutMs", 5 * 60_000) / 1_000;
+  const credentialSafeFetch = createRedirectRejectingFetch(
+    options._fetch ?? globalThis.fetch.bind(globalThis),
+  );
   if (!options.apiBaseUrl && !options.websocketBaseUrl) {
     return new SdkAgentMailClient({
       apiKey: options.apiKey,
       timeoutInSeconds,
+      fetch: credentialSafeFetch,
     }) as unknown as SdkClientBoundary;
   }
 
@@ -179,10 +192,23 @@ function createSdk(options: AgentMailSdkProviderOptions): SdkClientBoundary {
     ["ws:", "wss:"],
     "websocketBaseUrl",
   );
+  assertSecureCredentialTransport({
+    provider: "AgentMail SDK",
+    baseURL: http,
+    credential: options.apiKey,
+    allowInsecureHttpWithCredentials: options.allowInsecureHttpWithCredentials,
+  });
+  assertSecureWebSocketCredentialTransport({
+    provider: "AgentMail SDK",
+    baseURL: websockets,
+    credential: options.apiKey,
+    allowInsecureHttpWithCredentials: options.allowInsecureHttpWithCredentials,
+  });
   return new SdkAgentMailClient({
     apiKey: options.apiKey,
     timeoutInSeconds,
     environment: { http, websockets },
+    fetch: credentialSafeFetch,
   }) as unknown as SdkClientBoundary;
 }
 

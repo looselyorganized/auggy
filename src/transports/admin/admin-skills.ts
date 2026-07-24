@@ -17,19 +17,28 @@
  */
 
 import {
-  cpSync,
-  existsSync,
-  mkdirSync,
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
   readFileSync,
   readdirSync,
-  rmSync,
-  statSync,
-  writeFileSync,
+  realpathSync,
 } from "node:fs";
-import { dirname, join, resolve, sep } from "node:path";
+import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { readSkillFrontmatter, type SkillFrontmatter } from "../../cli/skill-frontmatter";
+import type { SkillFrontmatter } from "../../cli/skill-frontmatter";
 import { augmentFolderForType, buildFolderToTypeMap } from "../../cli/scaffold-skills";
+import {
+  ensureManagedDirectory,
+  inspectManagedDirectory,
+  listManagedDirectoryNames,
+  readManagedText,
+  removeManagedTree,
+  resolveManagedPath,
+  writeManagedText,
+} from "./admin-managed-files";
 
 // ---------------------------------------------------------------------------
 // Types surfaced to the SPA via /console/api/skills
@@ -96,19 +105,51 @@ export function bundledSkillSourceDir(folder: string): string | null {
   // `import.meta.url` resolves relative to THIS file: `src/transports/admin/`.
   // From there → up to `src/`, then into `augments/<folder>/skill/`.
   const here = dirname(fileURLToPath(import.meta.url));
-  const candidate = resolve(here, "../../augments", folder, "skill");
-  return existsSync(candidate) ? candidate : null;
+  const root = resolve(here, "../../augments");
+  const candidate = resolve(root, folder, "skill");
+  try {
+    for (const path of [resolve(root, folder), candidate]) {
+      const info = lstatSync(path);
+      if (info.isSymbolicLink() || !info.isDirectory()) return null;
+    }
+    const canonicalRoot = realpathSync.native(root);
+    const canonicalCandidate = realpathSync.native(candidate);
+    const rootPrefix = canonicalRoot.endsWith(sep) ? canonicalRoot : `${canonicalRoot}${sep}`;
+    if (!canonicalCandidate.startsWith(rootPrefix)) return null;
+
+    let cursor = canonicalRoot;
+    for (const part of relative(canonicalRoot, canonicalCandidate).split(sep)) {
+      cursor = join(cursor, part);
+      const info = lstatSync(cursor);
+      if (info.isSymbolicLink() || !info.isDirectory()) return null;
+    }
+    return canonicalCandidate;
+  } catch {
+    return null;
+  }
 }
 
 function readBundledSkillContent(folder: string): string | null {
   const dir = bundledSkillSourceDir(folder);
   if (!dir) return null;
-  const file = join(dir, "SKILL.md");
-  if (!existsSync(file)) return null;
+  return readTrustedBundledFile(join(dir, "SKILL.md"));
+}
+
+function readTrustedBundledFile(file: string): string | null {
+  let descriptor: number | undefined;
   try {
-    return readFileSync(file, "utf-8");
+    descriptor = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+    const info = fstatSync(descriptor);
+    // Bundled sources live inside the trusted application tree. A hard link
+    // does not change their resolved path or let a console request traverse
+    // outside that tree, and package/worktree tooling may legitimately use
+    // hard links. Managed destination files still require a single link.
+    if (!info.isFile()) return null;
+    return readFileSync(descriptor, "utf-8");
   } catch {
     return null;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
   }
 }
 
@@ -136,14 +177,9 @@ export function validateSkillFolderName(raw: string): string | null {
  * when `agentDir` is unset.
  */
 export function installedSkillDir(agentDir: string | undefined, folder: string): string | null {
-  if (!agentDir) return null;
   const safe = validateSkillFolderName(folder);
   if (!safe) return null;
-  const base = join(agentDir, "skills");
-  const full = join(base, safe);
-  const baseWithSep = base.endsWith(sep) ? base : base + sep;
-  if (!full.startsWith(baseWithSep)) return null;
-  return full;
+  return resolveManagedPath(agentDir, join("skills", safe));
 }
 
 // ---------------------------------------------------------------------------
@@ -152,23 +188,14 @@ export function installedSkillDir(agentDir: string | undefined, folder: string):
 
 function listInstalledFolders(agentDir: string | undefined): string[] {
   if (!agentDir) return [];
-  const base = join(agentDir, "skills");
-  if (!existsSync(base)) return [];
-  let entries: string[];
-  try {
-    entries = readdirSync(base);
-  } catch {
-    return [];
-  }
+  const listed = listManagedDirectoryNames(agentDir, "skills");
+  if ("error" in listed || "missing" in listed) return [];
   const folders: string[] = [];
-  for (const name of entries) {
+  for (const name of listed.names) {
     const safe = validateSkillFolderName(name);
     if (!safe) continue;
-    try {
-      if (!statSync(join(base, safe)).isDirectory()) continue;
-    } catch {
-      continue;
-    }
+    const child = inspectManagedDirectory(agentDir, join("skills", safe));
+    if ("error" in child || !child.exists) continue;
     folders.push(safe);
   }
   folders.sort((a, b) => a.localeCompare(b));
@@ -196,17 +223,14 @@ export function collectSkillsInfo(
   const folderToType = buildFolderToTypeMap();
 
   const installed: InstalledSkillInfo[] = installedFolders.map((folder) => {
-    const dir = installedSkillDir(agentDir, folder)!;
-    const file = join(dir, "SKILL.md");
     let content = "";
     let contentBytes = 0;
-    try {
-      content = readFileSync(file, "utf-8");
-      contentBytes = Buffer.byteLength(content, "utf-8");
-    } catch {
-      // file missing or unreadable — surfaced as frontmatterValid=false below
+    const file = readManagedText(agentDir, join("skills", folder, "SKILL.md"), MAX_SKILL_BYTES);
+    if (!("error" in file) && !("missing" in file)) {
+      content = file.content;
+      contentBytes = file.contentBytes;
     }
-    const fm: SkillFrontmatter | null = content ? readSkillFrontmatter(file) : null;
+    const fm: SkillFrontmatter | null = content ? parseFrontmatterFromString(content) : null;
     const source = content ? classifyInstalledSkill(folder, content) : "manual";
     const fromAugmentType = folderToType.get(folder);
     const isMountedOwner =
@@ -287,13 +311,10 @@ export function readInstalledSkillContent(
 ): { content: string } | { error: string } {
   const dir = installedSkillDir(agentDir, folder);
   if (!dir) return { error: "invalid skill folder" };
-  const file = join(dir, "SKILL.md");
-  if (!existsSync(file)) return { error: "skill not installed" };
-  try {
-    return { content: readFileSync(file, "utf-8") };
-  } catch (err) {
-    return { error: `unreadable: ${(err as Error).message}` };
-  }
+  const result = readManagedText(agentDir, join("skills", folder, "SKILL.md"), MAX_SKILL_BYTES);
+  if ("error" in result) return result;
+  if ("missing" in result) return { error: "skill not installed" };
+  return { content: result.content };
 }
 
 export function writeInstalledSkillContent(
@@ -306,25 +327,27 @@ export function writeInstalledSkillContent(
   if (Buffer.byteLength(content, "utf-8") > MAX_SKILL_BYTES) {
     return { ok: false, message: `SKILL.md exceeds ${MAX_SKILL_BYTES} bytes` };
   }
-  try {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "SKILL.md"), content, "utf-8");
-    return { ok: true, message: `Saved ${folder}/SKILL.md` };
-  } catch (err) {
-    return { ok: false, message: `write failed: ${(err as Error).message}` };
-  }
+  const ensured = ensureManagedDirectory(agentDir, join("skills", folder));
+  if ("error" in ensured) return { ok: false, message: ensured.error };
+  const result = writeManagedText(agentDir, join("skills", folder, "SKILL.md"), content, {
+    maxBytes: MAX_SKILL_BYTES,
+    mode: 0o600,
+  });
+  if ("error" in result) return { ok: false, message: result.error };
+  return { ok: true, message: `Saved ${folder}/SKILL.md` };
 }
 
 export function removeInstalledSkill(agentDir: string | undefined, folder: string): MutationResult {
   const dir = installedSkillDir(agentDir, folder);
   if (!dir) return { ok: false, message: "invalid skill folder" };
-  if (!existsSync(dir)) return { ok: false, message: "skill not installed" };
-  try {
-    rmSync(dir, { recursive: true, force: true });
-    return { ok: true, message: `Removed ${folder}` };
-  } catch (err) {
-    return { ok: false, message: `remove failed: ${(err as Error).message}` };
-  }
+  const inspected = inspectManagedDirectory(agentDir, join("skills", folder));
+  if ("error" in inspected) return { ok: false, message: inspected.error };
+  if (!inspected.exists) return { ok: false, message: "skill not installed" };
+  const removed = removeManagedTree(agentDir, join("skills", folder));
+  if ("error" in removed) return { ok: false, message: `remove failed: ${removed.error}` };
+  return removed.removed
+    ? { ok: true, message: `Removed ${folder}` }
+    : { ok: false, message: "skill not installed" };
 }
 
 export function resetInstalledSkill(agentDir: string | undefined, folder: string): MutationResult {
@@ -332,14 +355,16 @@ export function resetInstalledSkill(agentDir: string | undefined, folder: string
   if (!src) return { ok: false, message: "no bundled skill for this folder" };
   const dest = installedSkillDir(agentDir, folder);
   if (!dest) return { ok: false, message: "invalid skill folder" };
+  const inspected = inspectManagedDirectory(agentDir, join("skills", folder));
+  if ("error" in inspected) return { ok: false, message: inspected.error };
   try {
-    // Remove and recopy — atomic enough for a local workbench, no concurrent
-    // writers. Avoids leaving stale auxiliary files when the bundled tree shrinks.
-    if (existsSync(dest)) rmSync(dest, { recursive: true, force: true });
-    cpSync(src, dest, { recursive: true });
-    return { ok: true, message: `Reset ${folder} to bundled version` };
-  } catch (err) {
-    return { ok: false, message: `reset failed: ${(err as Error).message}` };
+    if (inspected.exists) {
+      const removed = removeManagedTree(agentDir, join("skills", folder));
+      if ("error" in removed) throw new Error(removed.error);
+    }
+    return copyBundledTree(agentDir, folder, src, "Reset");
+  } catch {
+    return { ok: false, message: "reset failed: managed tree changed or contains a symlink" };
   }
 }
 
@@ -384,20 +409,23 @@ export function createSkill(
   }
   const dir = installedSkillDir(agentDir, safe);
   if (!dir) return { ok: false, message: "invalid skill folder" };
-  if (existsSync(dir)) {
+  const inspected = inspectManagedDirectory(agentDir, join("skills", safe));
+  if ("error" in inspected) return { ok: false, message: inspected.error };
+  if (inspected.exists) {
     return { ok: false, message: `skill "${safe}" already exists — use Edit / Reset / Remove` };
   }
   const body = content ?? STARTER_SKILL_TEMPLATE.replace(/\{\{NAME\}\}/g, safe);
   if (Buffer.byteLength(body, "utf-8") > MAX_SKILL_BYTES) {
     return { ok: false, message: `SKILL.md exceeds ${MAX_SKILL_BYTES} bytes` };
   }
-  try {
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, "SKILL.md"), body, "utf-8");
-    return { ok: true, message: `Created ${safe}` };
-  } catch (err) {
-    return { ok: false, message: `create failed: ${(err as Error).message}` };
-  }
+  const ensured = ensureManagedDirectory(agentDir, join("skills", safe));
+  if ("error" in ensured) return { ok: false, message: ensured.error };
+  const result = writeManagedText(agentDir, join("skills", safe, "SKILL.md"), body, {
+    maxBytes: MAX_SKILL_BYTES,
+    mode: 0o600,
+  });
+  if ("error" in result) return { ok: false, message: result.error };
+  return { ok: true, message: `Created ${safe}` };
 }
 
 export function installBundledSkill(agentDir: string | undefined, folder: string): MutationResult {
@@ -411,12 +439,93 @@ export function installBundledSkill(agentDir: string | undefined, folder: string
   if (!src) return { ok: false, message: "bundled skill not on disk" };
   const dest = installedSkillDir(agentDir, safe);
   if (!dest) return { ok: false, message: "invalid skill folder" };
-  if (existsSync(dest)) return { ok: false, message: "skill already installed (use Reset)" };
+  const inspected = inspectManagedDirectory(agentDir, join("skills", safe));
+  if ("error" in inspected) return { ok: false, message: inspected.error };
+  if (inspected.exists) return { ok: false, message: "skill already installed (use Reset)" };
+  return copyBundledTree(agentDir, safe, src, "Installed");
+}
+
+function assertTreeHasNoSymlinks(root: string, requireSingleLink = true): void {
+  const info = lstatSync(root);
+  if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("unsafe skill directory");
+  for (const entry of readdirSync(root, { withFileTypes: true })) {
+    const path = join(root, entry.name);
+    if (entry.isSymbolicLink()) throw new Error("unsafe skill symlink");
+    if (entry.isDirectory()) {
+      assertTreeHasNoSymlinks(path, requireSingleLink);
+      continue;
+    }
+    const file = lstatSync(path);
+    if (!entry.isFile() || !file.isFile() || (requireSingleLink && file.nlink !== 1)) {
+      throw new Error("unsafe skill file");
+    }
+  }
+}
+
+function copyBundledTree(
+  agentDir: string | undefined,
+  folder: string,
+  sourceRoot: string,
+  verb: "Installed" | "Reset",
+): MutationResult {
   try {
-    cpSync(src, dest, { recursive: true });
-    return { ok: true, message: `Installed ${safe} from bundle` };
-  } catch (err) {
-    return { ok: false, message: `install failed: ${(err as Error).message}` };
+    // Bundled sources live in the trusted application tree. A hard link there
+    // does not expand authority beyond code the same account can already
+    // mutate; managed destination files still require exactly one link.
+    assertTreeHasNoSymlinks(sourceRoot, false);
+    const ensured = ensureManagedDirectory(agentDir, join("skills", folder));
+    if ("error" in ensured) return { ok: false, message: ensured.error };
+    copyBundledDirectory(agentDir, folder, sourceRoot, sourceRoot);
+    return {
+      ok: true,
+      message:
+        verb === "Installed"
+          ? `Installed ${folder} from bundle`
+          : `Reset ${folder} to bundled version`,
+    };
+  } catch {
+    const dest = installedSkillDir(agentDir, folder);
+    if (dest) {
+      try {
+        removeManagedTree(agentDir, join("skills", folder));
+      } catch {
+        // Leave a changed tree untouched rather than following it during cleanup.
+      }
+    }
+    return { ok: false, message: `${verb.toLowerCase()} failed: unsafe bundled skill tree` };
+  }
+}
+
+function copyBundledDirectory(
+  agentDir: string | undefined,
+  folder: string,
+  sourceRoot: string,
+  sourceDir: string,
+): void {
+  const relativeDir = relative(sourceRoot, sourceDir);
+  if (relativeDir) {
+    const ensured = ensureManagedDirectory(agentDir, join("skills", folder, relativeDir));
+    if ("error" in ensured) throw new Error(ensured.error);
+  }
+  for (const entry of readdirSync(sourceDir, { withFileTypes: true })) {
+    const source = join(sourceDir, entry.name);
+    const destination = join("skills", folder, relativeDir, entry.name);
+    if (entry.isSymbolicLink()) throw new Error("bundled skill contains a symlink");
+    if (entry.isDirectory()) {
+      copyBundledDirectory(agentDir, folder, sourceRoot, source);
+      continue;
+    }
+    if (!entry.isFile()) {
+      throw new Error("bundled skill contains a non-regular file");
+    }
+    const content = readTrustedBundledFile(source);
+    if (content === null) throw new Error("bundled skill contains an unsafe file");
+    const written = writeManagedText(agentDir, destination, content, {
+      maxBytes: MAX_SKILL_BYTES,
+      mode: 0o600,
+      createParents: true,
+    });
+    if ("error" in written) throw new Error(written.error);
   }
 }
 

@@ -1,4 +1,5 @@
 import type { Transcript } from "../../../types";
+import { isOutcomeUnknownError } from "../../../outcome-unknown";
 import { type ExtractedFact, parseExtractionResponse } from "./parse";
 
 /**
@@ -17,7 +18,10 @@ import { type ExtractedFact, parseExtractionResponse } from "./parse";
  * extraction LLM emits a JSON array; the handler parses it via parse.ts.
  */
 export interface ExtractionEngine {
-  complete(prompt: string): Promise<{ text: string; costUsd: number }>;
+  complete(
+    prompt: string,
+    options?: { signal?: AbortSignal },
+  ): Promise<{ text: string; costUsd: number }>;
 }
 
 export interface ExtractionInput {
@@ -30,6 +34,7 @@ export interface ExtractionInput {
    * `layeredMemory.options.autoSave.promptTemplate`.
    */
   promptTemplate: string;
+  signal?: AbortSignal;
 }
 
 /**
@@ -55,13 +60,15 @@ export type ExtractionResult =
  * best-effort — they never affect the user-facing turn.
  */
 export async function handleExtractionTurn(input: ExtractionInput): Promise<ExtractionResult> {
+  input.signal?.throwIfAborted();
   const transcriptText = renderTranscript(input.transcript);
   const prompt = input.promptTemplate.replace("{{TRANSCRIPT}}", transcriptText);
 
   let response: { text: string; costUsd: number };
   try {
-    response = await input.engine.complete(prompt);
+    response = await input.engine.complete(prompt, { signal: input.signal });
   } catch (err) {
+    if (input.signal?.aborted || isOutcomeUnknownError(err)) throw err;
     return {
       success: false,
       error: (err as Error).message,

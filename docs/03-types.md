@@ -163,7 +163,20 @@ export interface Tool<TInput = any> {
   category: ToolCategory;
   input: z.ZodType<TInput, any, any>;
   inputJsonSchema?: Record<string, unknown>;
-  execute: (input: TInput) => Promise<string>;
+  execute: (
+    input: TInput,
+    context?: ToolExecuteContext,
+  ) => Promise<string | ToolResult>;
+}
+
+export interface ToolResult {
+  content: string;
+  isError?: boolean;
+  outcomeUnknown?: boolean;
+  terminate?: {
+    status: "input-required" | "completed";
+    message?: string;
+  };
 }
 
 export interface ToolDefinition {
@@ -173,7 +186,14 @@ export interface ToolDefinition {
 }
 ```
 
-`Tool` is the augment-author-facing type — what you write when you `defineTool({...})`. It has a Zod schema for `input` and an `execute` function that returns a string (which becomes the tool result content).
+`Tool` is the augment-author-facing type — what you write when you
+`defineTool({...})`. Its execution context carries the resolved peer, thread,
+authorization claims, and the request/deadline cancellation signal. A plain
+string becomes model-visible tool content. `ToolResult` can additionally mark
+an expected error, request one of the two augment-controlled terminal states,
+or set `outcomeUnknown` after a side effect began without a trustworthy
+result. The kernel terminates an outcome-unknown turn before another inference;
+it never asks the model to decide whether retry is safe.
 
 `ToolDefinition` is the model-facing type — what gets sent to the model in the tools array. The kernel converts `Tool[]` → `ToolDefinition[]` via `selectTools()` in `src/kernel/tool-selector.ts`.
 
@@ -192,6 +212,13 @@ export interface PeerIdentity {
   kind: PeerKind;
   trustLevel: TrustLevel;
   publicSubstate?: "anonymous" | "recognized";  // set iff trustLevel === "public"
+  authenticatedPriorPeerId?: string; // verified one-way identity transition
+  delegatedOrigin?: {
+    subject: string;       // original subject, not used directly as local peer.id
+    sourceAugment: string; // transport that first resolved the subject
+    viaPeerId: string;     // authenticated immediate forwarding peer
+    hopCount: number;
+  };
   sourceAugment: string;     // which augment minted this identity
   displayName?: string;
   orgId?: string;
@@ -217,10 +244,33 @@ Trust levels are ordered from most to least:
 - **`public`** — everyone else. Inputs from `public` peers should be treated as potentially adversarial.
 
 **`publicSubstate`** differentiates two sub-populations within `public` trust:
-- `"anonymous"` — no visitor token present; ephemeral identity (peer.id is `anon-<threadId>`). Memory writes attach to this ephemeral ID.
+- `"anonymous"` — no verified visitor token; web callers receive a signed
+  anonymous-session capability whose server-minted subject becomes `peer.id`.
+  It is not derived from caller-controlled `threadId`.
 - `"recognized"` — a valid HMAC visitor token was verified; durable identity (peer.id is `vis_*` from the token). Memory writes attach to this durable ID across sessions.
 
+The generic web transport never exchanges a missing or invalid visitor token
+for recognized authority. Anonymous callers receive only a signed
+anonymous-session capability; recognized tokens come from `visitorAuth` or
+another explicitly trusted minter.
+
 `publicSubstate` is present **only** when `trustLevel === "public"`. Other trust levels must omit it. The budgets augment uses `publicSubstate` to apply differentiated caps (tighter defaults for anonymous, looser for recognized).
+
+`authenticatedPriorPeerId` is authorization evidence for a one-way identity
+transition, such as a recognized visitor proving ownership of its earlier
+anonymous-session subject. A transport may set it only after
+cryptographically verifying that relationship. It is not caller metadata,
+must not be copied from headers or model output, and is deliberately omitted
+from logs and model-visible identity context. The kernel uses it only to
+authorize promotion of already-bound thread and memory state; it never permits
+a recognized-to-anonymous downgrade.
+
+`delegatedOrigin` is authenticated transport evidence for an identity relayed
+across a delegation boundary. The receiving transport mints a namespaced local
+`peer.id`; peer-derived storage never indexes directly by the asserted subject.
+Only a transport that verifies the delegation envelope may set this field.
+Link uses it to preserve the original subject/source and bounded hop count
+while capping trust to the authenticated forwarding peer.
 
 Route auth contexts also expose `auth.principal.kind`. That field is a
 TypeScript discriminator for the concrete identity payload (`anonymous`,
@@ -360,7 +410,7 @@ export interface TurnGateTicket {
 2. The kernel evaluates all decisions conjunctively. Any `allow: false` → rollback all tickets → reject with `errorClass: "cap-denied"`. No engine call.
 3. All `allow: true` → `confirm()` each ticket in order. Any confirm throw → rollback all → reject with `errorClass: "admission-state-failed"`. No engine call.
 4. Engine call proceeds.
-5. After the engine returns, `commit(args)` is called on each gate that defines it, passing the `CostResult`. Errors here are logged but do not fail the turn — the response already exists.
+5. After the engine returns, `commit(args)` is called on each gate that defines it, passing the `CostResult`. A commit error makes the completed inference outcome-unknown; the kernel withholds a successful terminal result and does not automatically retry it.
 
 **v0 scope:** first-party only. The budgets augment is the sole shipped implementation. The kernel cannot mechanically prevent third-party augments from violating the prepare-then-confirm contract (e.g. writing outside the transaction). Third-party turn-gate augments are out of scope until the contract has real-world miles.
 
@@ -591,9 +641,9 @@ export interface Augment {
   memory?: MemoryProviderSpec;
   constraints?: AugmentConstraints;
   onBoot?: () => Promise<void>;
-  onShutdown?: () => Promise<void>;
+  onShutdown?: (signal?: AbortSignal) => Promise<void>;
   onTurnStart?: (turn: TurnState) => Promise<void>;
-  onTurnEnd?: (turn: TurnResult) => Promise<void>;
+  onTurnEnd?: (turn: TurnResult, context?: TurnLifecycleContext) => Promise<void>;
   onIdle?: () => Promise<void>;
 }
 ```
@@ -626,17 +676,17 @@ the mounted augment structure; it is not a sanitized A2A discovery contract.
 - `requiresHumanApproval` — list of tool names that need operator approval before executing (v1: tools matching this skip with a "needs approval" error)
 - `approvalPolicy` — what to do when a tool needs approval (v1: always `skip`)
 - `neverExpose` — tools the capability table will never let the model see (global; applies to every peer trust level)
-- `contextTimeoutMs` — wraps `context()` in `withTimeout` (default 5000ms)
-- `toolTimeoutMs` — wraps each `execute()` in `withTimeout` (default 30000ms)
+- `contextTimeoutMs` — wraps `context()` in `withTimeout` (default 5000ms) and passes the combined request/deadline signal in `TurnState.signal`
+- `toolTimeoutMs` — wraps each `execute()` in `withTimeout` (default 30000ms) and passes the combined signal in `ToolExecuteContext.signal`
 - `perTrustLevel` — per-trust-level additive constraints (Layer 1). Keyed by `TrustLevel` (`creator` / `agent` / `public`), each level can specify its own `neverExpose` and `requiresHumanApproval` lists. These apply only to peers at that level; top-level `neverExpose` still applies to everyone (no escape). Null peer (internal/scheduled triggers) is treated as `creator`. Example: `perTrustLevel: { public: { neverExpose: ["fs_remove"] } }` hides `fs_remove` from public peers but keeps it visible to agent and creator.
 
 **`turnGate`** is an optional `TurnGateProvider`. Augments that set this field participate in the kernel's pre-dispatch admission 2PC. The kernel calls `prepare` before running any augment context or the engine; the gate can deny the turn or commit a reservation. See Section 7b for the full contract. v0: only the built-in budgets augment ships a turn gate.
 
 **Lifecycle hooks:**
 - `onBoot` — called once at `agent.start()`. Failures throw and abort startup.
-- `onShutdown` — called once at `agent.stop()`, in reverse order, with a 5s timeout. Failures swallowed.
+- `onShutdown` — called once at `agent.stop()`, in reverse order, with a 5s timeout signal. Failures swallowed.
 - `onTurnStart` — called at the beginning of every turn, before context assembly. Failures on required augments abort the turn.
-- `onTurnEnd` — called after every turn, fire-and-forget. Failures swallowed.
+- `onTurnEnd` — called after every turn with the caller signal. Hooks run sequentially; failures are logged and swallowed.
 - `onIdle` — called by the lifecycle manager's idle timer (5min default). Used by augments that do background work like consolidation.
 
 ## Section 15 — Agent config and handle
@@ -658,6 +708,7 @@ export interface AgentConfig {
     toolSchemaPercent?: number;     // default 10
   };
   compactionStrategy?: CompactionStrategy;  // default "truncate"
+  responseLimits?: Partial<ModelResponseLimits>;
 }
 
 export interface AgentHealth {
@@ -674,15 +725,26 @@ export interface AgentHandle {
   ready(): Promise<void>;
   health(): AgentHealth;
   card(): AgentCard;
-  inject(trigger: TurnTrigger): Promise<TurnResult>;
+  inject(trigger: TurnTrigger, options?: { signal?: AbortSignal }): Promise<TurnResult>;
 }
 ```
 
 `AgentConfig` is what users pass to `defineAgent`. The `model: string` field is just a label that ends up in traces — the actual model client is passed as the second argument to `defineAgent(config, model)`.
 
+`responseLimits` is a mandatory kernel boundary with finite defaults, even
+when the field is omitted. One inference is limited to 1 MiB of UTF-8 text, 32
+tool calls, 256-byte tool names, 64 KiB per tool argument object, 256 KiB of
+arguments in aggregate, depth 32, 10,000 nodes per argument object, 2 MiB
+across the retained response, and 10,000 streamed text events. The kernel
+validates the completed response before it can dispatch any returned tool.
+Streaming adapters also apply the cumulative text/event checks before
+forwarding deltas where their transport permits early cancellation. A
+violation rejects the whole model response with a stable sanitized error;
+Auggy never executes a valid-looking prefix of an oversized response.
+
 `AgentHandle` is what `defineAgent` returns. The methods are explained in [08-agent-lifecycle.md](./08-agent-lifecycle.md).
 
-`inject()` is the back door — it lets non-transport code feed a trigger directly into the kernel without going through a transport's queue. Used by tests and by augments that need to schedule their own work (cron, internal triggers).
+`inject()` is the back door — it lets non-transport code feed a trigger directly into the kernel without going through a transport's queue. Used by tests and by augments that need to schedule their own work (cron, internal triggers). Callers may supply an abort signal, which is propagated through the turn and post-turn pipeline.
 
 ## How the type sections relate
 

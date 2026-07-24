@@ -28,6 +28,7 @@ import {
   writeCustomAugmentsReadme,
 } from "./augment-metadata";
 import { AUGMENT_CATALOG, type CatalogEntry } from "./augment-catalog";
+import { writeFileSafely } from "./safe-write";
 
 export interface ScaffoldOptions {
   /** Agent name. */
@@ -121,7 +122,7 @@ export function scaffoldAgent(opts: ScaffoldOptions): string {
   );
 
   // Write .env with empty values — operator fills in secrets before first run.
-  writeFileSync(join(dir, ".env"), ENV_TEMPLATE);
+  writeFileSafely(join(dir, ".env"), ENV_TEMPLATE, { mode: 0o600 });
 
   // Write .gitignore.
   writeFileSync(join(dir, ".gitignore"), GITIGNORE_TEMPLATE);
@@ -205,8 +206,8 @@ engine:
   maxContextTokens: 200000   # for openrouter, set per-model — defaults vary
   maxTokens: 4096            # sent as max_completion_tokens for openai/openrouter
   # reasoningEffort: medium  # optional: none|minimal|low|medium|high|xhigh
-  # providerRouting:         # openrouter only — slugs not semantically validated
-  #   only: [OpenAI]
+  # providerRouting:         # openrouter only — base slugs verified before inference
+  #   only: [openai]         # canonical lowercase slug; variants with "/" are rejected
   #   sort: price
 
 settings:

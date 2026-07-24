@@ -20,6 +20,7 @@ import { createSqliteVisitorAuthStore } from "../../src/augments/visitorAuth/sto
 import { defineAgent } from "../../src/agent";
 import { createMockModel } from "../fixtures/mock-model";
 import type { AgentHandle } from "../../src/types";
+import { asStringTool } from "../fixtures/tool-helpers";
 
 const TMP = join(import.meta.dir, ".tmp-resolver-test");
 
@@ -191,6 +192,133 @@ describe("resolveAugments — filesystem", () => {
   });
 });
 
+describe("resolveAugments — supabaseMemory", () => {
+  test("rejects a Supabase key over non-loopback plaintext HTTP", async () => {
+    await expect(
+      resolveAugments(
+        [
+          {
+            name: "episodes",
+            type: "supabaseMemory",
+            options: {
+              namespace: "episode",
+              scope: "peer",
+              supabaseUrl: "http://provider.example.test",
+              supabaseKey: "GROUP9_SUPABASE_SENTINEL",
+              table: "agent_memories",
+              mutable: true,
+              origin: "peer-derived",
+              priority: "normal",
+              placement: "preamble",
+              eviction: "drop",
+            },
+          },
+        ],
+        TMP,
+      ),
+    ).rejects.toThrow(/plaintext HTTP/);
+  });
+
+  test("requires an explicit peer or shared scope", async () => {
+    await expect(
+      resolveAugments(
+        [
+          {
+            name: "episodes",
+            type: "supabaseMemory",
+            options: {
+              namespace: "episode",
+              supabaseUrl: "https://example.supabase.co",
+              supabaseKey: "test-key",
+              table: "agent_memories",
+              mutable: true,
+              origin: "peer-derived",
+              priority: "normal",
+              placement: "preamble",
+              eviction: "drop",
+            },
+          },
+        ],
+        TMP,
+      ),
+    ).rejects.toThrow(/requires explicit scope/);
+  });
+
+  test("keeps exact reads unavailable for peer-scoped memory", async () => {
+    const [augment] = await resolveAugments(
+      [
+        {
+          name: "episodes",
+          type: "supabaseMemory",
+          options: {
+            namespace: "episode",
+            scope: "peer",
+            supabaseUrl: "https://example.supabase.co",
+            supabaseKey: "test-key",
+            table: "agent_memories",
+            mutable: true,
+            origin: "peer-derived",
+            priority: "normal",
+            placement: "preamble",
+            eviction: "drop",
+          },
+        },
+      ],
+      TMP,
+    );
+    expect(augment?.memory?.read).toBeUndefined();
+  });
+
+  test("rejects Supabase redirects before custom API-key headers can follow", async () => {
+    const originalFetch = globalThis.fetch;
+    const calls: Array<{ input: string; redirect?: "error" | "follow" | "manual" }> = [];
+    globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+      calls.push({
+        input: input instanceof Request ? input.url : String(input),
+        redirect: init?.redirect,
+      });
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://attacker.example.test/collect" },
+      });
+    }) as typeof fetch;
+    try {
+      const [augment] = await resolveAugments(
+        [
+          {
+            name: "episodes",
+            type: "supabaseMemory",
+            options: {
+              namespace: "episode",
+              scope: "peer",
+              supabaseUrl: "https://example.supabase.co",
+              supabaseKey: "GROUP9_SUPABASE_SENTINEL",
+              table: "agent_memories",
+              mutable: true,
+              origin: "peer-derived",
+              priority: "normal",
+              placement: "preamble",
+              eviction: "drop",
+            },
+          },
+        ],
+        TMP,
+      );
+
+      const memory = augment?.memory;
+      if (!memory || !("search" in memory)) throw new Error("dynamic memory provider required");
+      await expect(memory.search("needle", { peerId: "peer-1" })).rejects.toThrow(
+        /redirects are disabled/,
+      );
+      expect(calls.length).toBeGreaterThan(0);
+      expect(calls.every((call) => call.input.includes("example.supabase.co"))).toBe(true);
+      expect(calls.every((call) => call.redirect === "manual")).toBe(true);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }, 15_000);
+});
+
 describe("resolveAugments — mcp", () => {
   test("resolves the MCP augment with lifecycle-managed tools", async () => {
     const augments = await resolveAugments([{ name: "mcp", type: "mcp", options: {} }], TMP);
@@ -203,11 +331,119 @@ describe("resolveAugments — mcp", () => {
   });
 });
 
+describe("resolveAugments — link", () => {
+  test("forwards outbound trust policy and peer routing metadata", async () => {
+    writeFileSync(
+      join(TMP, "package.json"),
+      JSON.stringify({ name: "link-resolver-test", dependencies: { "@auggy/link": "^0.1.2" } }),
+    );
+    mkdirSync(join(TMP, "node_modules", "@auggy"), { recursive: true });
+    symlinkSync(
+      join(process.cwd(), "node_modules", "@auggy", "link"),
+      join(TMP, "node_modules", "@auggy", "link"),
+      "dir",
+    );
+    const [augment] = await resolveAugments(
+      [
+        {
+          name: "mesh",
+          type: "link",
+          options: {
+            dbPath: "./link.db",
+            agentCard: {
+              id: "00000000-0000-4000-8000-00000000aaaa",
+              name: "resolver-agent",
+              description: "Resolver test",
+              endpointUrl: "https://resolver.example.org",
+            },
+            outbound: {
+              allowedTrustLevels: ["public"],
+              publicDelegationPeers: {
+                researcher: {
+                  url: "https://researcher.example.org",
+                  participantId: "00000000-0000-4000-8000-00000000bbbb",
+                },
+              },
+            },
+            peers: {
+              researcher: {
+                url: "https://researcher.example.org",
+                bearer: "outbound",
+                participantId: "00000000-0000-4000-8000-00000000bbbb",
+                inboundBearer: "inbound",
+                inboundBearerId: "inbound-id",
+                purpose: "Research specialist",
+                examples: ["Find a paper"],
+              },
+            },
+          },
+        },
+      ],
+      TMP,
+    );
+
+    expect(augment?.constraints?.perTrustLevel?.creator?.neverExpose).toEqual([
+      "link_send",
+      "link_list",
+    ]);
+    expect(augment?.constraints?.perTrustLevel?.agent?.neverExpose).toEqual([
+      "link_send",
+      "link_list",
+    ]);
+    expect(augment?.constraints?.perTrustLevel?.public).toBeUndefined();
+    const list = augment?.tools?.find((tool) => tool.name === "link_list");
+    expect(list).toBeDefined();
+    const result = JSON.parse(
+      await asStringTool(list!).execute(
+        {},
+        {
+          turnId: "public-turn",
+          threadId: "public-thread",
+          peer: {
+            id: "visitor",
+            kind: "human",
+            trustLevel: "public",
+            publicSubstate: "recognized",
+            sourceAugment: "web",
+          },
+        },
+      ),
+    );
+    expect(result.peers).toEqual([
+      {
+        name: "researcher",
+        purpose: "Research specialist",
+        examples: ["Find a paper"],
+      },
+    ]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // layeredMemory
 // ---------------------------------------------------------------------------
 
 describe("resolveAugments — layeredMemory", () => {
+  test("rejects a Supabase backend key over non-loopback plaintext HTTP", async () => {
+    await expect(
+      resolveAugments(
+        [
+          {
+            name: "memory",
+            type: "layeredMemory",
+            options: {
+              backend: "supabase",
+              namespace: "test",
+              supabaseUrl: "http://provider.example.test",
+              supabaseKey: "GROUP9_LAYERED_SUPABASE_SENTINEL",
+            },
+          },
+        ],
+        TMP,
+      ),
+    ).rejects.toThrow(/plaintext HTTP/);
+  });
+
   test("passes autoSave options through to the layeredMemory augment", async () => {
     const augments = await resolveAugments(
       [
@@ -255,6 +491,27 @@ describe("resolveAugments — webTransport", () => {
     expect(augments).toHaveLength(1);
     expect(augments[0]!.name).toBe("web");
     expect(augments[0]!.transport).toBeDefined();
+  });
+
+  test("forwards externalAuth and fails closed when replay has no explicit store", async () => {
+    const configs: AugmentConfig[] = [
+      {
+        name: "web",
+        type: "webTransport",
+        options: {
+          port: 9999,
+          auth: { type: "bearer", token: "test-token" },
+          externalAuth: {
+            secret: "app-secret",
+            audience: "agent-test",
+            replayProtection: { enabled: true },
+          },
+        },
+      },
+    ];
+
+    const [web] = await resolveAugments(configs, TMP);
+    await expect(web?.onBoot?.()).rejects.toThrow(/replayProtection.*store/);
   });
 
   test("passes creator displayName to webTransport creator identity", async () => {
@@ -389,8 +646,8 @@ describe("resolveAugments — webTransport", () => {
   // Without this, the Credentials and Identity tabs render
   // "agent directory not configured" / "agent directory or identity path not
   // configured" errors. End-to-end: scaffold a .env file, hit
-  // /console/api/credentials from loopback, assert it returns the parsed
-  // entries (not the "not configured" error).
+  // /console/api/credentials with explicit console auth, assert it returns
+  // the parsed entries (not the "not configured" error).
   test("forwards agentDir to webTransport so /console can read .env", async () => {
     const { writeFileSync } = await import("node:fs");
     const port = getLikelyFreePort();
@@ -416,7 +673,10 @@ describe("resolveAugments — webTransport", () => {
     const agent = defineAgent({ name: "test", model: "mock", augments }, model);
     if (!(await startAgentIfSocketsAvailable(agent))) return;
     try {
-      const resp = await fetch(`http://127.0.0.1:${port}/console/api/credentials`);
+      const authorization = `Basic ${Buffer.from(":test-token").toString("base64")}`;
+      const resp = await fetch(`http://127.0.0.1:${port}/console/api/credentials`, {
+        headers: { authorization },
+      });
       expect(resp.status).toBe(200);
       const body = (await resp.json()) as { error?: string; entries?: unknown[] };
       // The bug surfaced as `{ error: "agent directory not configured" }`.
@@ -456,13 +716,25 @@ describe("resolveAugments — webTransport", () => {
       const agent = defineAgent({ name: "test", model: "mock", augments }, model);
       if (!(await startAgentIfSocketsAvailable(agent))) return;
       try {
-        const resp = await fetch(`http://localhost:${port}/agent/run`, {
+        const url = `http://localhost:${port}/agent/run`;
+        const init = {
           method: "POST",
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
-        });
+        } satisfies RequestInit;
+        const bootstrap = await fetch(url, init);
+        const session = bootstrap.headers.get("x-auggy-anonymous-session");
+        expect(bootstrap.status).toBe(428);
+        expect(session).toBeTruthy();
+        expect(await bootstrap.json()).toEqual({ error: "anonymous_session_required" });
+        expect(model.calls).toHaveLength(0);
+
+        const headers = new Headers(init.headers);
+        headers.set("x-auggy-anonymous-session", session ?? "");
+        const resp = await fetch(url, { ...init, headers });
         expect(resp.status).toBe(200);
         await resp.text();
+        expect(model.calls).toHaveLength(1);
       } finally {
         await agent.stop();
       }
@@ -493,6 +765,23 @@ describe("resolveAugments — webFetch", () => {
     expect(augments[0]!.name).toBe("fetch");
     expect(augments[0]!.tools).toBeDefined();
     expect(augments[0]!.tools![0]!.name).toBe("web_fetch");
+  });
+
+  test("rejects legacy global webFetch headers", async () => {
+    await expect(
+      resolveAugments(
+        [
+          {
+            name: "fetch",
+            type: "webFetch",
+            options: {
+              defaultHeaders: { authorization: "Bearer GROUP9_WEBFETCH_SENTINEL" },
+            },
+          },
+        ],
+        TMP,
+      ),
+    ).rejects.toThrow(/headersByOrigin/);
   });
 });
 
@@ -737,13 +1026,17 @@ describe("resolveAugments — budgets", () => {
     ];
 
     const augments = await resolveAugments(configs, TMP);
-    expect(augments).toHaveLength(1);
-    expect(augments[0]!.name).toBe("budgets");
-    expect(augments[0]!.turnGate).toBeDefined();
-    // Budgets is not a memory provider.
-    expect(augments[0]!.memory).toBeUndefined();
-    expect(augments[0]!.onShutdown).toBeDefined();
-    expect(augments[0]!.context).toBeDefined();
+    try {
+      expect(augments).toHaveLength(1);
+      expect(augments[0]!.name).toBe("budgets");
+      expect(augments[0]!.turnGate).toBeDefined();
+      // Budgets is not a memory provider.
+      expect(augments[0]!.memory).toBeUndefined();
+      expect(augments[0]!.onShutdown).toBeDefined();
+      expect(augments[0]!.context).toBeDefined();
+    } finally {
+      for (const augment of augments) await augment.onShutdown?.();
+    }
   });
 
   test("resolves budgets augment with default dbPath when omitted from options", async () => {
@@ -756,9 +1049,13 @@ describe("resolveAugments — budgets", () => {
     ];
 
     const augments = await resolveAugments(configs, TMP);
-    expect(augments).toHaveLength(1);
-    expect(augments[0]!.name).toBe("budgets");
-    expect(augments[0]!.turnGate).toBeDefined();
+    try {
+      expect(augments).toHaveLength(1);
+      expect(augments[0]!.name).toBe("budgets");
+      expect(augments[0]!.turnGate).toBeDefined();
+    } finally {
+      for (const augment of augments) await augment.onShutdown?.();
+    }
   });
 
   test("passes agentDir so budgets admin overrides can persist", async () => {
@@ -949,7 +1246,7 @@ describe("resolveAugments — budgets", () => {
       expect(record.summary).toContain("80%");
       expect(record.reason).toContain("$0.85 of $1.00");
     } finally {
-      await budgetAugment?.onShutdown?.();
+      for (const augment of augments) await augment.onShutdown?.();
     }
   });
 });
@@ -1406,7 +1703,7 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
     const VISITOR_ID = `vis_f17_regression_${Date.now()}`;
     const { token: visitorToken } = await createVisitorToken(
       cryptoKey,
-      "", // no agentBinding
+      "f17-test",
       86_400, // 24h TTL
       VISITOR_ID,
     );
@@ -1428,6 +1725,7 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
             apiBaseUrl: "http://127.0.0.1:1/agentmail-unreachable",
           },
           signingKey: SIGNING_KEY,
+          agentBinding: "f17-test",
           layeredMemoryDbPath: null,
           // Use the test's TMP dir for the VA DB.
           dbPath: join(TMP, "f17-va.db"),
@@ -1497,7 +1795,7 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
       // NOT a getter — so we can't spy post-binding. Instead we verify behavior:
       // with F17's fix, the revocationCheck closure calls the va method via lateBindings.
       // We test this indirectly: for a REVOKED visitor, an HTTP request must treat
-      // them as anonymous (new token issued = anonymous path).
+      // them as anonymous (428 session bootstrap = anonymous path).
       //
       // To revoke, we use a second va instance backed by the SAME DB file and call
       // its isVisitorRevoked to verify the revoking works — but for the HTTP assertion,
@@ -1512,7 +1810,7 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
       // check would be skipped entirely — same behavior as "not revoked".
       //
       // For a definitive gate: insert the visitor into the DB as revoked, then make
-      // a second request, and assert a new token IS issued (= anonymous path).
+      // a second request, and assert the anonymous-session bootstrap is required.
       // This requires DB-level access. Use createSqliteVisitorAuthStore from the store.
       const { createSqliteVisitorAuthStore } = await import(
         "../../src/augments/visitorAuth/storage/sqlite-store"
@@ -1541,12 +1839,9 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
 
       // Second request with the same token for REVOKED visitor.
       // With F17 wired: revocationCheck returns true → visitorPayload = null →
-      //   visitor stays anonymous → new x-visitor-token header IS issued.
+      //   visitor stays anonymous → 428 + x-auggy-anonymous-session.
       // Without F17 wired (reverted): revocationCheck is null → visitor is
-      //   STILL recognized (wrong!) → new token NOT issued → assertion fails.
-      // No bearer (codex R6 mint-suppression): a bearer-credentialed request
-      // would resolve to creator (Path 1) AND suppress mint, breaking this
-      // test's revoked→anonymous→new-token assertion.
+      //   STILL recognized (wrong!) → 200 execution → assertion fails.
       const revokedResp = await fetch(`http://localhost:${PORT}/agent/run`, {
         method: "POST",
         headers: {
@@ -1555,14 +1850,11 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
         },
         body: JSON.stringify({ messages: [{ role: "user", content: "revoked" }] }),
       });
-      expect(revokedResp.status).toBe(200);
-      // A new visitor token is issued — proves the revoked visitor landed on the
-      // anonymous path (revocationCheck returned true, visitorPayload set to null).
-      // If F17 is reverted (lateBindings.revocationCheck is null), revocation is
-      // skipped and the visitor stays recognized → no new token → this assertion fails.
-      const newToken = revokedResp.headers.get("x-visitor-token");
-      expect(newToken).not.toBeNull();
-      await revokedResp.text();
+      expect(revokedResp.status).toBe(428);
+      expect(revokedResp.headers.get("x-visitor-token")).toBeNull();
+      expect(revokedResp.headers.get("x-auggy-anonymous-session")).toBeTruthy();
+      expect(await revokedResp.json()).toEqual({ error: "anonymous_session_required" });
+      expect(model.calls).toHaveLength(1);
     } finally {
       await agent.stop();
     }
@@ -1653,10 +1945,14 @@ describe("resolveAugments — cross-augment agentBinding validation (fix H3)", (
     expect(augments).toHaveLength(2);
   });
 
-  test("throws when visitorAuth has agentBinding but webTransport does not", async () => {
-    await expect(resolveAugments([vaConfig("agent-A"), wtConfig(undefined)], TMP)).rejects.toThrow(
-      /agentBinding/,
-    );
+  test("injects an explicit visitorAuth binding into webTransport when omitted", async () => {
+    const configs = [vaConfig("agent-A"), wtConfig(undefined)];
+    const augments = await resolveAugments(configs, TMP);
+    expect(augments).toHaveLength(2);
+    expect(
+      ((configs[1]!.options as Record<string, unknown>).visitorTokens as Record<string, unknown>)
+        .agentBinding,
+    ).toBe("agent-A");
   });
 
   test("checks every webTransport for an agentBinding mismatch", async () => {
@@ -1669,18 +1965,27 @@ describe("resolveAugments — cross-augment agentBinding validation (fix H3)", (
     );
   });
 
-  test("treats omitted bindings as the effective auggy default", async () => {
-    const defaulted = await resolveAugments([vaConfig(undefined), wtConfig(undefined)], TMP);
-    expect(defaulted).toHaveLength(2);
-
-    const explicitVisitorDefault = await resolveAugments(
-      [vaConfig("auggy"), wtConfig(undefined)],
-      TMP,
+  test("rejects a securityNamespace that overrides the visitor binding", async () => {
+    const web = wtConfig("agent-A");
+    web.options = { ...web.options, securityNamespace: "agent-B" };
+    await expect(resolveAugments([vaConfig("agent-A"), web], TMP)).rejects.toThrow(
+      /securityNamespace.*agent-B/,
     );
-    expect(explicitVisitorDefault).toHaveLength(2);
+  });
 
-    const explicitWebDefault = await resolveAugments([vaConfig(undefined), wtConfig("auggy")], TMP);
-    expect(explicitWebDefault).toHaveLength(2);
+  test("requires explicit matching bindings instead of a shared default", async () => {
+    await expect(resolveAugments([vaConfig(undefined), wtConfig(undefined)], TMP)).rejects.toThrow(
+      /explicitly configured/,
+    );
+    const injected = [vaConfig("auggy"), wtConfig(undefined)];
+    await expect(resolveAugments(injected, TMP)).resolves.toHaveLength(2);
+    expect(
+      ((injected[1]!.options as Record<string, unknown>).visitorTokens as Record<string, unknown>)
+        .agentBinding,
+    ).toBe("auggy");
+    await expect(resolveAugments([vaConfig(undefined), wtConfig("auggy")], TMP)).rejects.toThrow(
+      /explicitly configured/,
+    );
   });
 
   test("does not throw when neither augment is present", async () => {
@@ -1709,6 +2014,7 @@ describe("resolveAugments — single-source signingKey injection (fix F2)", () =
         publicUrl: "https://zip.test",
         agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
         signingKey,
+        agentBinding: "resolver-test-agent",
         layeredMemoryDbPath: null,
       },
     };

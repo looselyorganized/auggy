@@ -56,9 +56,15 @@ const api = createAuggyClient({
   visitorToken: () => localStorage.getItem("auggyVisitorToken") ?? undefined,
   onVisitorToken: (token) => localStorage.setItem("auggyVisitorToken", token),
   authAssertion: async () => {
-    const res = await fetch("/api/auggy-auth-assertion", { credentials: "include" });
+    const res = await fetch("/api/auggy-auth-assertion", {
+      method: "POST",
+      credentials: "include",
+      cache: "no-store",
+      headers: { "x-auggy-csrf-request": "1" },
+    });
     if (!res.ok) return undefined;
-    return (await res.json()).assertion;
+    const body = (await res.json()) as { assertion?: unknown };
+    return typeof body.assertion === "string" ? body.assertion : undefined;
   },
   // Match webTransport.externalAuth.header when it is customized.
   authAssertionHeader: "x-auggy-auth-assertion",
@@ -95,8 +101,19 @@ const result = await api.post("/admin/reindex", {
 });
 ```
 
-Keep server clients in server-only code: backend jobs, SSR/server actions,
-trusted API routes, and agent-to-agent callers.
+This direct call is for a trusted backend job, not a public pass-through route.
+Keep server clients in server-only code. If a publicly reachable route handler
+uses one, it must independently verify the host application's session, require
+an explicit operator/admin role, compare `Origin` to a fixed configured
+application origin, and validate a session-bound CSRF token before resolving
+credentials or calling Auggy. Middleware, CORS, `SameSite`, and Auggy's bearer
+check do not authorize the browser caller to the host application.
+
+The fail-closed Next.js example is
+`assets/templates/nextjs-server-client/admin-reindex-route.ts.txt`. Its session
+and CSRF stubs deny until replaced with the application's server-side
+implementations. Trusted cron and queue workers should call the generated
+server client directly rather than invoke that HTTP route.
 
 ## Calling Routes
 

@@ -165,12 +165,17 @@ The kernel runs the augment context pipeline. `budgets.context()` reads current 
 
 ### Phase 5: Engine call + cost commit
 
-After the engine returns, the kernel calls `gate.turnGate.commit({ turnId, peer, cost })`. The budgets augment:
+On every terminal path after at least one completed inference, the kernel calls
+`gate.turnGate.commit({ turnId, peer, cost })` exactly once. This includes
+caller aborts, tool timeouts, and later inference failures. The budgets augment:
 
 1. If `cost.priced === true`: updates `peer_daily_costs` and `daily_global` with the USD amount. Marks the reservation row with `cost_usd` and `committed_at`.
 2. If `cost.priced === false`: marks the reservation as unpriced. Turn-count caps still applied.
 
-Errors in the commit phase are logged but do not fail the turn.
+Errors in the commit phase fail closed as outcome-unknown. The inference may
+already have completed, but the runtime does not return or persist a successful
+terminal result when its known cost could not be durably committed. The same
+turn is not automatically retried.
 
 ## 6. Failure modes
 
@@ -182,7 +187,7 @@ Errors in the commit phase are logged but do not fail the turn.
 | `dailyBudgetUsd` exceeded | Same as above |
 | SQLite I/O error in prepare | `status: "rejected"`, `errorClass: "admission-state-failed"`, SSE `code: "ADMISSION_FAILED"` |
 | SQLite I/O error in confirm | Same |
-| SQLite I/O error in commit | Logged, turn continues — response already returned |
+| SQLite I/O error in commit | Outcome-unknown failure after inference; no successful terminal result or automatic retry |
 | Agent auth wrong secret | HTTP 401 before entering queue |
 
 Cap-denied rejections are expected business logic — the peer exceeded their budget. Admission-state-failed rejections are operational failures — the storage layer had a problem.
@@ -197,7 +202,7 @@ One row per turn. Primary key: `turn_id`.
 
 | Column | Type | Description |
 |---|---|---|
-| `turn_id` | TEXT PK | The turn's UUID (or Idempotency-Key if provided). |
+| `turn_id` | TEXT PK | Internal server-generated turn UUID. The web transport keeps caller idempotency keys in its separate hashed replay ledger. |
 | `peer_id` | TEXT | Peer identity. |
 | `thread_id` | TEXT | Thread this turn belongs to. |
 | `day` | TEXT | `YYYY-MM-DD` UTC. |

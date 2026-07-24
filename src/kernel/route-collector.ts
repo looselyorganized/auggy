@@ -114,6 +114,16 @@ export function collectAugmentRoutes(augments: readonly Augment[]): CollectAugme
         continue;
       }
 
+      if (
+        r.maxBodyBytes !== undefined &&
+        (!Number.isSafeInteger(r.maxBodyBytes) || r.maxBodyBytes < 1)
+      ) {
+        errors.push(
+          `Augment "${aug.name}" registered HTTP route ${r.method} "${r.path}" with invalid maxBodyBytes — must be a positive safe integer.`,
+        );
+        continue;
+      }
+
       const policyError = validateRoutePolicy(aug.name, r);
       if (policyError) {
         errors.push(policyError);

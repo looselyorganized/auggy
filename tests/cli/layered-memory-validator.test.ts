@@ -47,6 +47,13 @@ describe("validateLayeredMemoryOptions", () => {
             anonymous: session-end-only
         everyNTurns: 3
         confidenceThreshold: 0.5
+        bufferLimits:
+          maxTurnsPerThread: 8
+          maxBytesPerThread: 1024
+          maxBytesPerPeer: 4096
+          maxTotalBytes: 16384
+          maxPeers: 16
+          idleTtlMs: 60000
 `,
     );
     expect(() => parseConfig(path)).not.toThrow();
@@ -156,5 +163,40 @@ describe("validateLayeredMemoryOptions", () => {
 `,
     );
     expect(() => parseConfig(path)).toThrow(/everyNTurns/);
+  });
+
+  it("rejects unknown and non-integer buffer limit keys", () => {
+    const path = writeYaml(
+      `${BASE}  - name: memory
+    type: layeredMemory
+    options:
+      backend: sqlite
+      namespace: test
+      dbPath: ./memory.sqlite
+      autoSave:
+        bufferLimits:
+          maxBytesPerThred: 1024
+          maxPeers: 1.5
+`,
+    );
+    expect(() => parseConfig(path)).toThrow(/maxBytesPerThred|positive safe integer/);
+  });
+
+  it("rejects buffer byte limits with unsafe relationships", () => {
+    const path = writeYaml(
+      `${BASE}  - name: memory
+    type: layeredMemory
+    options:
+      backend: sqlite
+      namespace: test
+      dbPath: ./memory.sqlite
+      autoSave:
+        bufferLimits:
+          maxBytesPerThread: 4096
+          maxBytesPerPeer: 2048
+          maxTotalBytes: 1024
+`,
+    );
+    expect(() => parseConfig(path)).toThrow(/cannot exceed/);
   });
 });

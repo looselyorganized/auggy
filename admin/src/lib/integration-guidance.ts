@@ -8,6 +8,8 @@ const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
   "idempotency-key",
   "x-agent-id",
   "x-agent-secret",
+  "x-auggy-anonymous-session",
+  "x-auggy-anonymous-session-status",
   "x-auggy-console-internal",
   "x-org-id",
   "x-peer-id",
@@ -104,7 +106,7 @@ export function selectBrowserConnection(
       ready: true,
       title: "Persistent visitor identity",
       summary:
-        "Start anonymously, then retain the rotated visitor token returned by the agent for later requests.",
+        "Start with a server-minted anonymous session; use a visitor token only after a trusted verification handoff.",
       typescript: browserSnippet(endpoint, { kind: "visitor-token" }),
     };
   }
@@ -199,34 +201,43 @@ type BrowserSnippetAuth =
   | { kind: "anonymous" };
 
 function browserSnippet(endpoint: string, auth: BrowserSnippetAuth): string {
+  const anonymousSessionSetup =
+    auth.kind === "external-auth"
+      ? ""
+      : `\n  const anonymousSession = localStorage.getItem("auggy:anonymous-session");\n  if (anonymousSession) headers["x-auggy-anonymous-session"] = anonymousSession;`;
   const setup =
     auth.kind === "external-auth"
       ? `  const assertion = await getAuggyAuthAssertion();\n  const headers: Record<string, string> = {\n    "content-type": "application/json",\n    ${JSON.stringify(auth.header)}: assertion,\n  };`
       : auth.kind === "visitor-token"
-        ? `  const visitorToken = localStorage.getItem("auggy:visitor-token") ?? "bootstrap";\n  const headers: Record<string, string> = {\n    "content-type": "application/json",\n    "x-visitor-token": visitorToken,\n  };`
+        ? `  const visitorToken = localStorage.getItem("auggy:visitor-token");\n  const headers: Record<string, string> = { "content-type": "application/json" };\n  if (visitorToken) headers["x-visitor-token"] = visitorToken;`
         : `  const headers: Record<string, string> = { "content-type": "application/json" };`;
-  const rotate =
-    auth.kind === "visitor-token"
-      ? `\n  const rotatedToken = response.headers.get("x-visitor-token");\n  if (rotatedToken) localStorage.setItem("auggy:visitor-token", rotatedToken);`
-      : "";
+  const credentialHelper =
+    auth.kind === "external-auth"
+      ? ""
+      : `\n  const retainCredentials = (response: Response) => {\n    const issuedSession = response.headers.get("x-auggy-anonymous-session");\n    if (issuedSession) {\n      localStorage.setItem("auggy:anonymous-session", issuedSession);\n      headers["x-auggy-anonymous-session"] = issuedSession;\n    }\n  };`;
+  const credentialFlow =
+    auth.kind === "external-auth"
+      ? ""
+      : `\n  retainCredentials(response);\n  if (\n    response.status === 401 &&\n    response.headers.get("x-auggy-anonymous-session-status") === "invalid" &&\n    headers["x-auggy-anonymous-session"]\n  ) {\n    localStorage.removeItem("auggy:anonymous-session");\n    delete headers["x-auggy-anonymous-session"];\n    response = await fetch(${JSON.stringify(endpoint)}, { method: "POST", headers, body, signal });\n    retainCredentials(response);\n  }\n  if (response.status === 428 && headers["x-auggy-anonymous-session"]) {\n    response = await fetch(${JSON.stringify(endpoint)}, { method: "POST", headers, body, signal });\n    retainCredentials(response);\n  }`;
 
   return `${sseReaderSource()}
 
 async function* streamAgentMessage(
   threadId: string,
-  turnId: string,
+  idempotencyKey: string,
   message: string,
   signal?: AbortSignal,
 ) {
-${setup}
-  headers["idempotency-key"] = turnId;
-  const response = await fetch(${JSON.stringify(endpoint)}, {
+${setup}${anonymousSessionSetup}${credentialHelper}
+  headers["idempotency-key"] = idempotencyKey;
+  const body = JSON.stringify({ threadId, messages: [{ role: "user", content: message }] });
+  let response = await fetch(${JSON.stringify(endpoint)}, {
     method: "POST",
     headers,
-    body: JSON.stringify({ threadId, messages: [{ role: "user", content: message }] }),
+    body,
     signal,
-  });
-  if (!response.ok) throw new Error(\`Agent request failed: \${response.status}\`);${rotate}
+  });${credentialFlow}
+  if (!response.ok) throw new Error(\`Agent request failed: \${response.status}\`);
   yield* readAgentEvents(response);
 }`;
 }
@@ -236,7 +247,7 @@ function serverSnippet(endpoint: string): string {
 
 async function* streamAgentMessage(
   threadId: string,
-  turnId: string,
+  idempotencyKey: string,
   message: string,
   signal?: AbortSignal,
 ) {
@@ -247,7 +258,7 @@ async function* streamAgentMessage(
     headers: {
       authorization: \`Bearer \${token}\`,
       "content-type": "application/json",
-      "idempotency-key": turnId,
+      "idempotency-key": idempotencyKey,
     },
     body: JSON.stringify({ threadId, messages: [{ role: "user", content: message }] }),
     signal,

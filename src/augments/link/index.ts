@@ -65,17 +65,25 @@ import type {
 } from "@auggy/link";
 
 import { defineTool } from "../../helpers";
+import { createRedirectRejectingFetch } from "../../http";
+import { assertSecureCredentialTransport } from "../../engines/_shared/credential-transport";
 import type {
   Augment,
   ContextBlock,
   ToolExecuteContext,
   TransportKernel,
   TransportSpec,
+  TrustLevel,
   TurnState,
 } from "../../types";
 import { handlerContextToTrigger, turnResultToHandlerOutcome } from "./translate";
 import { createPeerResolver, type PeerResolver, type SkippedPeer } from "./peer-resolver";
 import { importFromAgent } from "../../cli/import-from-agent";
+import {
+  createAuthenticatedLinkParts,
+  resolveAuthenticatedLinkPeer,
+  threadIdForLinkPeer,
+} from "./provenance";
 
 // ---------------------------------------------------------------------------
 // Options
@@ -105,6 +113,12 @@ import { importFromAgent } from "../../cli/import-from-agent";
  *   examples        — optional 1–2 example asks suitable for delegation. Used
  *                     by the LLM for few-shot routing. Beware: bad examples
  *                     mislead more than they help.
+ *
+ * Public delegation is authorized separately by peer name under
+ * `outbound.publicDelegationPeers`. That operator-owned
+ * name/endpoint/participant binding attests that each exact receiver enforces
+ * signed delegated-origin assertions; the attestation is intentionally never
+ * learned from the peer or registry.
  */
 export interface LinkPeerConfig {
   url: string;
@@ -135,6 +149,11 @@ export type PeerSourceConfig = {
    * The URL must serve a JSON body matching `RegistryResponse`.
    */
   url: string;
+  /**
+   * Operator-owned endpoint and identity pins. Registry entries are activated
+   * only when both fields match exactly.
+   */
+  pins: Record<string, { url: string; participantId: string }>;
   /**
    * In-memory cache TTL. After this many seconds the next operation that
    * needs peer state triggers a re-fetch. Default 60.
@@ -217,6 +236,10 @@ export interface LinkAugmentAgentCard {
  *           type: registry
  *           url: https://lorf-context.up.railway.app/peers.json
  *           cacheSeconds: 60
+ *           pins:
+ *             researcher:
+ *               url: https://researcher.example.org
+ *               participantId: <uuid>
  *
  * Bearers (env, per peer name `researcher`):
  *   LINK_BEARER_RESEARCHER          # outbound bearer
@@ -255,6 +278,22 @@ export interface LinkAugmentOptions {
    * fetch fails. See `PeerSourceConfig` for the JSON contract.
    */
   peerSource?: PeerSourceConfig;
+  /**
+   * Outbound delegation authority. Defaults to creator and agent. Public
+   * delegation is disabled unless the operator explicitly opts in and names
+   * each provenance-enforcing receiver; signed provenance then keeps
+   * downstream authority at public.
+   */
+  outbound?: {
+    allowedTrustLevels?: TrustLevel[];
+    /**
+     * Exact peer-name to endpoint/participant bindings that may receive
+     * public-originated requests. A binding attests that the exact receiver
+     * enforces signed delegated-origin provenance. Required when
+     * `allowedTrustLevels` includes `public`.
+     */
+    publicDelegationPeers?: Record<string, { url: string; participantId: string }>;
+  };
 }
 
 /**
@@ -370,10 +409,7 @@ function buildAuthPeers(
   return Object.freeze(out);
 }
 
-/** Stable threadId for a given peer. */
-function threadIdForPeer(participantId: string): string {
-  return `link-${participantId}`;
-}
+const DEFAULT_OUTBOUND_TRUST_LEVELS: readonly TrustLevel[] = ["creator", "agent"];
 
 // ---------------------------------------------------------------------------
 // Factory
@@ -397,6 +433,40 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
   } = await importFromAgent<typeof import("@auggy/link")>(opts.agentDir, "@auggy/link");
 
   const port = opts.port ?? 8081;
+  const outboundTrustLevels = opts.outbound?.allowedTrustLevels ?? [
+    ...DEFAULT_OUTBOUND_TRUST_LEVELS,
+  ];
+  const publicDelegationPeers = new Map(Object.entries(opts.outbound?.publicDelegationPeers ?? {}));
+  const registryPins = new Map(Object.entries(opts.peerSource?.pins ?? {}));
+  const plaintextRequested = (process.env.LINK_ALLOW_PLAINTEXT ?? "") === "1";
+  const allowPlaintext = plaintextRequested && process.env.NODE_ENV === "development";
+  if (plaintextRequested && !allowPlaintext) {
+    console.warn("[security] LINK_ALLOW_PLAINTEXT is ignored unless NODE_ENV=development.");
+  }
+
+  function assertOutboundPeerTransport(name: string, peer: LinkPeerConfig): void {
+    assertSecureCredentialTransport({
+      provider: `link peer "${name}"`,
+      baseURL: peer.url,
+      credential: peer.bearer,
+      allowInsecureHttpWithCredentials: allowPlaintext,
+    });
+  }
+
+  function assertOutboundPeerTransports(peers: Record<string, LinkPeerConfig>): void {
+    for (const [name, peer] of Object.entries(peers)) {
+      assertOutboundPeerTransport(name, peer);
+    }
+  }
+
+  function canUseOutbound(context: ToolExecuteContext | undefined): {
+    allowed: boolean;
+    trustLevel?: TrustLevel;
+  } {
+    if (!context) return { allowed: false };
+    const trustLevel = context.peer?.trustLevel ?? "creator";
+    return { allowed: outboundTrustLevels.includes(trustLevel), trustLevel };
+  }
 
   // ---------------------------------------------------------------------------
   // Peer state — mutable so peerSource refreshes propagate to tools + context
@@ -409,6 +479,7 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
   const peerStateRef: { current: Record<string, LinkPeerConfig> } = {
     current: opts.peers ?? {},
   };
+  assertOutboundPeerTransports(peerStateRef.current);
 
   // The library's EnvAddressBook + BearerAuthProvider take frozen snapshots
   // at construction. To support live refresh, we wrap each in a thin
@@ -438,18 +509,20 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
     innerAuth = new BearerAuthProvider({ peers: buildAuthPeers(peerStateRef.current) });
   }
 
-  const peerClient = opts._peerClient ?? new PeerClient({ addressBook: dynamicAddressBook });
+  const peerClient =
+    opts._peerClient ??
+    new PeerClient({
+      addressBook: dynamicAddressBook,
+      config: { fetch: createRedirectRejectingFetch() },
+    });
 
   // Optional peer-source resolver. Constructed once at factory time; activated
   // (initial fetch + refresh loop) in transport.register so the kernel is
   // already wired when the first refresh propagates peer changes.
   //
-  // `allowPlaintext` reuses the link library's localhost-dev convention:
-  // when LINK_ALLOW_PLAINTEXT=1 the resolver accepts http:// for the source
-  // URL and registry-supplied peer URLs. Production setups should leave it
-  // unset so a compromised/misconfigured registry can't repoint bearer
-  // traffic to plaintext attacker hosts.
-  const allowPlaintext = (process.env.LINK_ALLOW_PLAINTEXT ?? "") === "1";
+  // The legacy LINK_ALLOW_PLAINTEXT override is honored only in an explicit
+  // development runtime. Every active peer is checked again immediately
+  // before it enters the bearer-bearing address book.
   const resolver: PeerResolver | null =
     opts._peerResolver ??
     (opts.peerSource
@@ -486,12 +559,29 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
    * and swaps the inner auth + address-book instances so subsequent
    * inbound/outbound traffic sees the new state immediately.
    *
-   * Caller is responsible for filtering: this function trusts the input as
-   * the authoritative peer set. Peers absent from `next` are dropped (the
-   * "forget" semantics in §4.4 of the spec).
+   * The registry controls liveness only. A peer is activated only when its
+   * endpoint and participant id exactly match the operator-owned pin.
    */
   function applyResolvedPeers(next: Record<string, LinkPeerConfig>): void {
-    peerStateRef.current = next;
+    const pinned: Record<string, LinkPeerConfig> = {};
+    for (const [name, peer] of Object.entries(next)) {
+      const pin = registryPins.get(name);
+      if (pin?.participantId === peer.participantId && pin.url === peer.url) {
+        try {
+          assertOutboundPeerTransport(name, peer);
+          pinned[name] = peer;
+        } catch {
+          console.warn(
+            `[link] peerSource refresh: skipped peer "${name}" because its credential transport is insecure`,
+          );
+        }
+      } else {
+        console.warn(
+          `[link] peerSource refresh: skipped peer "${name}" because its endpoint or participant id does not match the operator pin`,
+        );
+      }
+    }
+    peerStateRef.current = pinned;
     rebuildAddressBook();
     rebuildAuth();
   }
@@ -520,17 +610,35 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
       };
     }
 
-    const threadId = threadIdForPeer(ctx.from.id);
-    const trigger = handlerContextToTrigger(ctx, registeredName, threadId);
-    try {
-      const result = await kernel.handleInbound(trigger);
-      return turnResultToHandlerOutcome(result);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+    const configuredPeer = Object.values(peerStateRef.current).find(
+      (candidate) => candidate.participantId === ctx.from.id,
+    );
+    const resolution = resolveAuthenticatedLinkPeer({
+      parts: ctx.parts,
+      immediate: ctx.from,
+      selfParticipantId: opts.agentCard.id,
+      inboundBearer: configuredPeer?.inboundBearer,
+      sourceAugment: registeredName,
+      idempotencyKey: ctx.idempotency_key,
+    });
+    if (!resolution.ok) {
       return {
         kind: "error",
         code: -32603,
-        message: `link augment: turn dispatch failed: ${message}`,
+        message: "link augment: delegated origin verification failed",
+      };
+    }
+
+    const threadId = threadIdForLinkPeer(ctx.from.id, resolution.peer);
+    const trigger = handlerContextToTrigger(ctx, registeredName, threadId, resolution.peer);
+    try {
+      const result = await kernel.handleInbound(trigger);
+      return turnResultToHandlerOutcome(result);
+    } catch {
+      return {
+        kind: "error",
+        code: -32603,
+        message: "link augment: turn dispatch failed",
       };
     }
   };
@@ -662,18 +770,72 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
         .describe("Peer short name from the link config (also surfaced by `link_list`)."),
       text: z.string().describe("Message text to send. v0.1 link traffic is text-only."),
     }),
-    execute: async ({ to, text }, _ctx?: ToolExecuteContext) => {
+    execute: async ({ to, text }, ctx?: ToolExecuteContext) => {
+      ctx?.signal?.throwIfAborted();
+      const authority = canUseOutbound(ctx);
+      if (!authority.allowed) {
+        return JSON.stringify({
+          ok: false,
+          error: "link_authorization_denied",
+          message:
+            authority.trustLevel === undefined
+              ? "link_send requires an authenticated execution context"
+              : `link_send is not available at trust level "${authority.trustLevel}"`,
+        });
+      }
+      const configuredPeer = peerStateRef.current[to];
+      if (
+        authority.trustLevel === "public" &&
+        (!configuredPeer ||
+          publicDelegationPeers.get(to)?.participantId !== configuredPeer.participantId ||
+          publicDelegationPeers.get(to)?.url !== configuredPeer.url)
+      ) {
+        return JSON.stringify({
+          ok: false,
+          error: "link_authorization_denied",
+          message: `link_send public delegation is not authorized for peer "${to}"`,
+        });
+      }
+      if (!configuredPeer) {
+        return JSON.stringify({
+          ok: false,
+          error: "peer_config_error",
+          message: `Unknown peer "${to}"`,
+        });
+      }
+      const idempotencyKey = crypto.randomUUID();
+      const parts = createAuthenticatedLinkParts({
+        parts: [{ kind: "text", text }],
+        peer: ctx?.peer ?? null,
+        issuer: opts.agentCard.id,
+        audience: configuredPeer.participantId,
+        bearer: configuredPeer.bearer,
+        idempotencyKey,
+      });
+      ctx?.signal?.throwIfAborted();
       const result = await peerClient.send({
         to,
-        parts: [{ kind: "text", text }],
+        parts,
+        idempotencyKey,
       });
 
       if (!result.ok) {
-        return JSON.stringify({
+        const outcomeUnknown =
+          result.error.code === "peer_network_error" || result.error.code === "peer_protocol_error";
+        const content = JSON.stringify({
           ok: false,
           error: result.error.code,
-          message: result.error.message,
+          message: outcomeUnknown ? "Link delivery outcome is unknown." : result.error.message,
         });
+        // The link SDK retries transient failures with the same idempotency
+        // key, but its API has no caller AbortSignal. A final network or
+        // malformed-response failure cannot prove whether the peer executed
+        // the request, so terminate the turn instead of letting the model
+        // issue a fresh key.
+        if (outcomeUnknown) {
+          return { content, isError: true, outcomeUnknown: true };
+        }
+        return content;
       }
 
       const { outcome } = result.value;
@@ -705,13 +867,31 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
       "List peers configured for Auggy's legacy A2A-v0.2 link preview. Returns `{ peers: [{ name, purpose?, examples? }] }`. The `name` is the value to pass as the `to` argument to `link_send`. `purpose` and `examples` (when present) describe what the peer is good for and what kinds of asks to delegate.",
     category: "communication",
     input: z.object({}),
-    execute: async () => {
-      const list = Object.entries(peerStateRef.current).map(([name, cfg]) => {
-        const entry: { name: string; purpose?: string; examples?: string[] } = { name };
-        if (cfg.purpose) entry.purpose = cfg.purpose;
-        if (cfg.examples && cfg.examples.length > 0) entry.examples = cfg.examples;
-        return entry;
-      });
+    execute: async (_input, ctx?: ToolExecuteContext) => {
+      const authority = canUseOutbound(ctx);
+      if (!authority.allowed) {
+        return JSON.stringify({
+          ok: false,
+          error: "link_authorization_denied",
+          message:
+            authority.trustLevel === undefined
+              ? "link_list requires an authenticated execution context"
+              : `link_list is not available at trust level "${authority.trustLevel}"`,
+        });
+      }
+      const list = Object.entries(peerStateRef.current)
+        .filter(
+          ([name, peer]) =>
+            authority.trustLevel !== "public" ||
+            (publicDelegationPeers.get(name)?.participantId === peer.participantId &&
+              publicDelegationPeers.get(name)?.url === peer.url),
+        )
+        .map(([name, cfg]) => {
+          const entry: { name: string; purpose?: string; examples?: string[] } = { name };
+          if (cfg.purpose) entry.purpose = cfg.purpose;
+          if (cfg.examples && cfg.examples.length > 0) entry.examples = cfg.examples;
+          return entry;
+        });
       return JSON.stringify({ peers: list });
     },
   });
@@ -720,12 +900,21 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
   // Context — minimal peer roster
   // ---------------------------------------------------------------------------
   //
-  // Surfaces peer NAMES only (not purpose/examples) in every turn's preamble
+  // Surfaces peer NAMES only (not purpose/examples) in authorized turns.
   // so the LLM has awareness without context bloat. The model calls
   // `link_list` when it needs the richer per-peer purpose/examples for
   // routing decisions. Empty peers → no block (don't pollute preamble).
-  const context = async (_turn: TurnState): Promise<ContextBlock[]> => {
-    const names = Object.keys(peerStateRef.current);
+  const context = async (turn: TurnState): Promise<ContextBlock[]> => {
+    const trustLevel = turn.peer?.trustLevel ?? "creator";
+    if (!outboundTrustLevels.includes(trustLevel)) return [];
+    const names = Object.entries(peerStateRef.current)
+      .filter(
+        ([name, peer]) =>
+          trustLevel !== "public" ||
+          (publicDelegationPeers.get(name)?.participantId === peer.participantId &&
+            publicDelegationPeers.get(name)?.url === peer.url),
+      )
+      .map(([name]) => name);
     if (names.length === 0) return [];
     const content =
       `Peers reachable via link_send: ${names.join(", ")}. ` +
@@ -755,7 +944,14 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
           rows: [
             { label: "Status", value: "preview" },
             { label: "Inbound trust", value: "configured peers are admitted as agent trust" },
-            { label: "Auth boundary", value: "bearer possession grants peer admission" },
+            {
+              label: "Delegated origin",
+              value: "signed and capped by the authenticated forwarding peer",
+            },
+            {
+              label: "Outbound trust",
+              value: outboundTrustLevels.join(", ") || "(none)",
+            },
             { label: "Listen port", value: String(opts.port ?? 8081) },
             { label: "Agent id", value: opts.agentCard?.id ?? "(unset)" },
             { label: "Agent name", value: opts.agentCard?.name ?? "(unset)" },
@@ -782,6 +978,13 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
     transport,
     context,
     tools: [linkSendTool, linkListTool],
+    constraints: {
+      perTrustLevel: Object.fromEntries(
+        (["creator", "agent", "public"] as const)
+          .filter((level) => !outboundTrustLevels.includes(level))
+          .map((level) => [level, { neverExpose: ["link_send", "link_list"] }]),
+      ),
+    },
     adminInfo,
     async onShutdown() {
       // Stop the refresh loop FIRST so an in-flight refresh doesn't try to

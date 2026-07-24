@@ -3,12 +3,24 @@ import { lookup, getFreshness, priceAnthropicResponse } from "auggy/internal/ant
 import { normalizeSchema } from "auggy/internal/schema-normalize";
 import { safeParseToolCall } from "auggy/internal/tool-call";
 import { assembleSystemBlocks } from "auggy/internal/prompt-assembly";
+import { assertSecureCredentialTransport } from "auggy/internal/credential-transport";
+import { providerRequestError } from "auggy/internal/provider-error";
+import {
+  createBoundedModelFetch,
+  findModelResponseLimitError,
+  ModelResponseLimitError,
+  resolveModelResponseLimits,
+  StreamingResponseLimitTracker,
+  utf8ByteLength,
+  validateModelResponse,
+} from "auggy/internal/response-limits";
 import type {
   AssembledPrompt,
   Message,
   ModelClient,
   ModelDelta,
   ModelResponse,
+  ModelResponseLimits,
   ToolDefinition,
 } from "auggy";
 
@@ -42,6 +54,8 @@ export interface AnthropicEngineOptions {
   maxTokens?: number;
   /** Optional base URL override (for proxying or compatible providers). */
   baseURL?: string;
+  /** Development-only escape hatch for credentialed non-loopback HTTP. */
+  allowInsecureHttpWithCredentials?: boolean;
   /**
    * Override pricing for cost estimation. If set, the adapter uses these rates
    * instead of the built-in pricing table. Useful for unknown models or custom
@@ -54,12 +68,30 @@ export interface AnthropicEngineOptions {
    * `cacheReadUsdPerMtok` to avoid under-reporting cached responses.
    */
   costOverride?: import("auggy/internal/cost").Pricing;
+  /** Finite application-layer response limits. Omitted fields use secure defaults. */
+  responseLimits?: Partial<ModelResponseLimits>;
+}
+
+function isProviderRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
 }
 
 export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient {
+  const responseLimits = resolveModelResponseLimits(opts.responseLimits);
+  const effectiveApiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
+  assertSecureCredentialTransport({
+    provider: "Anthropic",
+    baseURL: opts.baseURL ?? "https://api.anthropic.com",
+    credential: effectiveApiKey,
+    allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
+  });
   const client = new Anthropic({
-    apiKey: opts.apiKey,
+    apiKey: effectiveApiKey,
     baseURL: opts.baseURL,
+    fetch: createBoundedModelFetch(
+      globalThis.fetch.bind(globalThis) as typeof fetch,
+      responseLimits,
+    ),
   });
 
   const maxContextTokens = opts.maxContextTokens ?? 200_000;
@@ -123,26 +155,68 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
         ...(tools.length > 0 ? { tools, tool_choice: toolChoice } : {}),
       };
 
-      const withCost = (r: ModelResponse, rawUsage: Anthropic.Messages.Usage): ModelResponse => {
+      const accountingForUsage = (rawUsage: Anthropic.Messages.Usage) => {
+        const usage: Record<string, unknown> = isProviderRecord(rawUsage) ? rawUsage : {};
+        const inputTokens = (usage.input_tokens ?? Number.NaN) as number;
+        const outputTokens = (usage.output_tokens ?? Number.NaN) as number;
+        const cacheCreationTokens = usage.cache_creation_input_tokens as number | null | undefined;
+        const cacheReadTokens = usage.cache_read_input_tokens as number | null | undefined;
         const result = priceAnthropicResponse(opts.model, opts.costOverride, {
-          input_tokens: rawUsage.input_tokens,
-          output_tokens: rawUsage.output_tokens,
-          cache_creation_input_tokens: rawUsage.cache_creation_input_tokens ?? null,
-          cache_read_input_tokens: rawUsage.cache_read_input_tokens ?? null,
+          input_tokens: inputTokens,
+          output_tokens: outputTokens,
+          cache_creation_input_tokens: cacheCreationTokens ?? null,
+          cache_read_input_tokens: cacheReadTokens ?? null,
           // cache_creation (TTL breakdown) and service_tier are new fields not yet
           // in the Anthropic SDK type; cast defensively via unknown.
-          cache_creation: (rawUsage as unknown as Record<string, unknown>).cache_creation as
+          cache_creation: usage.cache_creation as
             | { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number }
             | null
             | undefined,
-          service_tier: (rawUsage as unknown as Record<string, unknown>).service_tier as
+          service_tier: usage.service_tier as
             | string
             | null
             | undefined,
         });
+        const base = {
+          inputTokens,
+          outputTokens,
+          ...(cacheCreationTokens != null
+            ? { cacheCreationTokens }
+            : {}),
+          ...(cacheReadTokens != null
+            ? { cacheReadTokens }
+            : {}),
+        };
         return result.priced
-          ? { ...r, costUsd: result.costUsd }
-          : { ...r, costUsd: undefined, unpricedReason: result.reason };
+          ? { ...base, costUsd: result.costUsd }
+          : { ...base, unpricedReason: result.reason };
+      };
+      const withAccounting = (
+        response: ModelResponse,
+        accounting: ReturnType<typeof accountingForUsage>,
+      ): ModelResponse => {
+        return {
+          ...response,
+          ...("costUsd" in accounting ? { costUsd: accounting.costUsd } : {}),
+          ...("unpricedReason" in accounting
+            ? { unpricedReason: accounting.unpricedReason }
+            : {}),
+        };
+      };
+      const incompleteAccountingForUsage = (rawUsage: unknown) => {
+        const usage: Record<string, unknown> = isProviderRecord(rawUsage) ? rawUsage : {};
+        return {
+          inputTokens: (usage.input_tokens ?? 0) as number,
+          outputTokens: (usage.output_tokens ?? 0) as number,
+          ...(usage.cache_creation_input_tokens !== undefined
+            ? { cacheCreationTokens: usage.cache_creation_input_tokens as number }
+            : {}),
+          ...(usage.cache_read_input_tokens !== undefined
+            ? { cacheReadTokens: usage.cache_read_input_tokens as number }
+            : {}),
+          unpricedReason:
+            "Anthropic stream ended after a response limit before final billing usage was available.",
+        };
       };
 
       try {
@@ -152,18 +226,69 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
           // finalMessage. This is intentional: text streaming is the latency
           // win; tool args are small.
           const stream = client.messages.stream(params, { signal: opts2.signal });
+          const tracker = new StreamingResponseLimitTracker(responseLimits);
+          const limitFailure: { error: ModelResponseLimitError | null } = { error: null };
           stream.on("text", (text) => {
+            if (limitFailure.error) return;
+            try {
+              if (typeof text !== "string") {
+                throw new ModelResponseLimitError("maxTextBytes");
+              }
+              tracker.pushText(text);
+            } catch (error) {
+              limitFailure.error =
+                error instanceof ModelResponseLimitError
+                  ? error
+                  : new ModelResponseLimitError("maxTextBytes");
+              stream.abort();
+              return;
+            }
             opts2.onDelta!({ kind: "text_delta", text });
           });
-          const finalMessage = await stream.finalMessage();
-          return withCost(buildModelResponse(finalMessage), finalMessage.usage);
+          let finalMessage: Anthropic.Messages.Message;
+          try {
+            finalMessage = await stream.finalMessage();
+          } catch (error) {
+            if (limitFailure.error) {
+              const partialUsage = (
+                stream as unknown as { currentMessage?: { usage?: unknown } }
+              ).currentMessage?.usage;
+              throw limitFailure.error.withAccounting(
+                incompleteAccountingForUsage(partialUsage),
+              );
+            }
+            throw error;
+          }
+          const accounting = accountingForUsage(finalMessage.usage);
+          if (limitFailure.error) throw limitFailure.error.withAccounting(accounting);
+          try {
+            return withAccounting(
+              buildModelResponse(finalMessage, responseLimits),
+              accounting,
+            );
+          } catch (error) {
+            if (error instanceof ModelResponseLimitError) {
+              throw error.withAccounting(accounting);
+            }
+            throw error;
+          }
         }
 
         // Non-streaming path (backward compat for tests, other consumers)
         const response = await client.messages.create(params, { signal: opts2?.signal });
-        return withCost(buildModelResponse(response), response.usage);
+        const accounting = accountingForUsage(response.usage);
+        try {
+          return withAccounting(buildModelResponse(response, responseLimits), accounting);
+        } catch (error) {
+          if (error instanceof ModelResponseLimitError) {
+            throw error.withAccounting(accounting);
+          }
+          throw error;
+        }
       } catch (err) {
-        rewrapCostCapError(err);
+        const responseLimitError = findModelResponseLimitError(err);
+        if (responseLimitError) throw responseLimitError;
+        rewrapProviderError(err, opts.model);
       }
     },
   };
@@ -172,7 +297,8 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
 /**
  * Anthropic SDK errors that indicate the operator's provider-side spend cap
  * has been reached get rewrapped with a clear, operator-actionable message.
- * Other errors are re-thrown unchanged.
+ * Other errors become stable provider diagnostics with allowlisted HTTP
+ * status metadata. Raw remote messages and causes are never retained.
  *
  * Per ADR-024, provider-side spend caps are the v1.0 hard limit on agent
  * spend. When they fire, Anthropic returns a 402 (Payment Required) or a
@@ -185,7 +311,7 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
  * than `instanceof Anthropic.APIError` — keeps the helper testable without
  * coupling to the SDK's class hierarchy.
  */
-function rewrapCostCapError(err: unknown): never {
+function rewrapProviderError(err: unknown, model: string): never {
   if (err && typeof err === "object" && "status" in err) {
     const status = (err as { status: unknown }).status;
     const message = String((err as { message?: unknown }).message ?? "");
@@ -199,12 +325,11 @@ function rewrapCostCapError(err: unknown): never {
       throw new Error(
         `Anthropic provider spend cap reached (HTTP ${String(status)}). ` +
           `Increase the cap or wait for reset in your Anthropic console at ` +
-          `https://console.anthropic.com/settings/limits. ` +
-          `(Original error: ${message})`,
+          "https://console.anthropic.com/settings/limits.",
       );
     }
   }
-  throw err;
+  throw providerRequestError("Anthropic", model, err);
 }
 
 // === AssembledPrompt → Anthropic request translation ===
@@ -361,47 +486,77 @@ function convertTools(toolDefs: ToolDefinition[]): AnthropicTool[] {
 
 // === Anthropic response → ModelResponse translation ===
 
-function buildModelResponse(response: Anthropic.Messages.Message): ModelResponse {
+function buildModelResponse(
+  response: Anthropic.Messages.Message,
+  responseLimits?: Partial<ModelResponseLimits>,
+): ModelResponse {
+  const limits = resolveModelResponseLimits(responseLimits);
+  const rawResponse = response as unknown;
+  if (
+    !isProviderRecord(rawResponse) ||
+    !Array.isArray(rawResponse.content) ||
+    !isProviderRecord(rawResponse.usage)
+  ) {
+    throw new ModelResponseLimitError("maxResponseBytes");
+  }
   let content = "";
+  let contentBytes = 0;
   const toolCalls: {
     name: string;
     arguments: Record<string, unknown>;
   }[] = [];
 
-  for (const block of response.content) {
+  for (const block of rawResponse.content) {
+    if (!isProviderRecord(block) || typeof block.type !== "string") {
+      throw new ModelResponseLimitError("maxResponseBytes");
+    }
     if (block.type === "text") {
+      if (typeof block.text !== "string") {
+        throw new ModelResponseLimitError("maxTextBytes");
+      }
+      contentBytes += utf8ByteLength(
+        block.text,
+        Math.max(0, limits.maxTextBytes - contentBytes),
+      );
+      if (contentBytes > limits.maxTextBytes) {
+        throw new ModelResponseLimitError("maxTextBytes");
+      }
       content += block.text;
     } else if (block.type === "tool_use") {
-      // Validate input is a plain object — the model could hallucinate
-      // a non-object value which would break downstream JSON.stringify
       const input = block.input;
-      const args =
-        input && typeof input === "object" && !Array.isArray(input)
-          ? (input as Record<string, unknown>)
-          : {};
-      toolCalls.push({ name: block.name, arguments: args });
+      if (
+        typeof block.name !== "string" ||
+        !isProviderRecord(input)
+      ) {
+        throw new ModelResponseLimitError("maxToolArgumentBytes");
+      }
+      if (toolCalls.length >= limits.maxToolCalls) {
+        throw new ModelResponseLimitError("maxToolCalls");
+      }
+      toolCalls.push({ name: block.name, arguments: input });
     }
   }
 
   const finishReason: ModelResponse["finishReason"] =
-    response.stop_reason === "tool_use"
+    rawResponse.stop_reason === "tool_use"
       ? "tool_use"
-      : response.stop_reason === "max_tokens"
+      : rawResponse.stop_reason === "max_tokens"
         ? "max_tokens"
         : "end_turn";
 
   // Anthropic's SDK may return null or omit cache fields when caching isn't active.
   // Map nullish values to undefined so ModelResponse consumers can rely on undefined-checking.
-  const cacheCreationTokens = response.usage.cache_creation_input_tokens ?? undefined;
-  const cacheReadTokens = response.usage.cache_read_input_tokens ?? undefined;
+  const usage = rawResponse.usage;
+  const cacheCreationTokens = usage.cache_creation_input_tokens ?? undefined;
+  const cacheReadTokens = usage.cache_read_input_tokens ?? undefined;
 
-  return {
+  return validateModelResponse({
     content,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-    inputTokens: response.usage.input_tokens,
-    outputTokens: response.usage.output_tokens,
-    ...(cacheCreationTokens !== undefined ? { cacheCreationTokens } : {}),
-    ...(cacheReadTokens !== undefined ? { cacheReadTokens } : {}),
+    inputTokens: (usage.input_tokens ?? Number.NaN) as number,
+    outputTokens: (usage.output_tokens ?? Number.NaN) as number,
+    ...(cacheCreationTokens !== undefined ? { cacheCreationTokens: cacheCreationTokens as number } : {}),
+    ...(cacheReadTokens !== undefined ? { cacheReadTokens: cacheReadTokens as number } : {}),
     finishReason,
-  };
+  }, limits);
 }
