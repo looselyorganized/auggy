@@ -1,13 +1,17 @@
 import { describe, expect, test } from "bun:test";
 import { defineAgent } from "../../src/agent";
 import { emptyTrace } from "../../src/kernel/trace-emitter";
+import { OutcomeUnknownError } from "../../src/outcome-unknown";
+import { z } from "zod";
 import type {
   AssembledPrompt,
   Augment,
   InboundMessage,
   ModelClient,
   ModelResponse,
+  SchedulerContext,
   TransportKernel,
+  TurnResult,
   TurnTrigger,
 } from "../../src/types";
 
@@ -252,6 +256,251 @@ describe("agent-wide keyed turn scheduling", () => {
     }
   });
 
+  test("joins a detached causal child and applies its late quarantine before release", async () => {
+    const childStarted = deferred();
+    const releaseChild = deferred();
+    let successorExecuted = false;
+    const causal: Augment = {
+      name: "detached-causal",
+      async handleInternalTurn(current) {
+        if (current.source !== "detached-child") return null;
+        childStarted.resolve();
+        await releaseChild.promise;
+        return {
+          turnId: current.turnId,
+          success: false,
+          status: "failed",
+          outcomeUnknown: true,
+          toolCalls: [],
+          trace: emptyTrace({
+            turnId: current.turnId,
+            threadId: current.threadId ?? current.turnId,
+            trigger: { type: current.type, sourceAugment: current.source },
+          }),
+        };
+      },
+      async scheduleAfterTurn(result, context) {
+        if (result.turnId !== "outer") return;
+        const detached = trigger("detached", "same", "web");
+        void context.inject({
+          ...detached,
+          source: "detached-child",
+          type: "internal",
+          payload: {},
+        });
+      },
+    };
+    const transport = capturedTransport("web");
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      async complete(prompt) {
+        if (prompt.messages.at(-1)?.content === "successor") successorExecuted = true;
+        return response();
+      },
+    };
+    const agent = defineAgent(
+      {
+        name: "detached-causal",
+        model: "mock",
+        augments: [transport.augment, causal],
+        turnScheduling: {
+          maxConcurrent: 1,
+          maxQueued: 5,
+          maxQueuedPerThread: 5,
+          maxCausalDepth: 2,
+        },
+      },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const outer = transport.kernel().handleInbound(trigger("outer", "same", "web"));
+      await childStarted.promise;
+      const successor = transport.kernel().handleInbound(trigger("successor", "same", "web"));
+      await Promise.resolve();
+      expect(successorExecuted).toBe(false);
+      expect(agent.health().scheduler).toMatchObject({
+        activeTurns: 1,
+        queuedTurns: 1,
+      });
+
+      releaseChild.resolve();
+      expect((await outer).status).toBe("completed");
+      expect(await successor).toMatchObject({
+        status: "rejected",
+        rejection: { reason: "thread-quarantined" },
+      });
+      expect(successorExecuted).toBe(false);
+    } finally {
+      releaseChild.resolve();
+      await agent.stop();
+    }
+  });
+
+  test("quarantines outcome-unknown terminal hook failures before lane release", async () => {
+    for (const hook of ["onTurnEnd", "scheduleAfterTurn"] as const) {
+      const ambiguous: Augment = {
+        name: `ambiguous-${hook}`,
+        [hook]: async () => {
+          throw new OutcomeUnknownError(`${hook} crossed a side-effect boundary`);
+        },
+      };
+      const agent = defineAgent(
+        {
+          name: `ambiguous-${hook}`,
+          model: "mock",
+          augments: [ambiguous],
+        },
+        {
+          maxContextTokens: 100_000,
+          countTokens: (text) => Math.ceil(text.length / 4),
+          async complete() {
+            return response();
+          },
+        },
+      );
+      await agent.start();
+      try {
+        expect((await agent.inject(trigger(`${hook}-first`, hook, "test"))).status).toBe(
+          "completed",
+        );
+        expect(await agent.inject(trigger(`${hook}-retry`, hook, "test"))).toMatchObject({
+          status: "rejected",
+          rejection: { reason: "thread-quarantined" },
+        });
+      } finally {
+        await agent.stop();
+      }
+    }
+  });
+
+  test("revokes each terminal hook context before the next hook begins", async () => {
+    let retainedContext: SchedulerContext | undefined;
+    let lateResult: TurnResult | null = null;
+    const capture: Augment = {
+      name: "capture-context",
+      async scheduleAfterTurn(_result, context) {
+        retainedContext = context;
+      },
+    };
+    const attemptLateUse: Augment = {
+      name: "attempt-late-use",
+      async scheduleAfterTurn() {
+        lateResult = await retainedContext!.inject(trigger("late", "same", "test"));
+      },
+    };
+    const agent = defineAgent(
+      {
+        name: "scoped-hook-context",
+        model: "mock",
+        augments: [capture, attemptLateUse],
+      },
+      {
+        maxContextTokens: 100_000,
+        countTokens: (text) => Math.ceil(text.length / 4),
+        async complete() {
+          return response();
+        },
+      },
+    );
+    await agent.start();
+    try {
+      expect((await agent.inject(trigger("outer", "same", "test"))).status).toBe("completed");
+      expect(lateResult).toMatchObject({
+        status: "rejected",
+        rejection: { reason: "causal-context-expired" },
+      });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  test("retains the lane for a canceled non-cooperative tool and rejects blind retry", async () => {
+    const toolStarted = deferred();
+    const releaseTool = deferred();
+    let modelCalls = 0;
+    let retryExecuted = false;
+    const toolAugment: Augment = {
+      name: "side-effecting-tool",
+      tools: [
+        {
+          name: "place_order",
+          description: "Place an order",
+          category: "communication",
+          input: z.object({}),
+          async execute() {
+            toolStarted.resolve();
+            await releaseTool.promise;
+            return "placed";
+          },
+        },
+      ],
+    };
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      async complete(prompt) {
+        modelCalls++;
+        if (prompt.messages.at(-1)?.content === "retry") retryExecuted = true;
+        return {
+          content: "",
+          toolCalls: [{ name: "place_order", arguments: {} }],
+          finishReason: "tool_use",
+          inputTokens: 1,
+          outputTokens: 1,
+        };
+      },
+    };
+    const agent = defineAgent(
+      {
+        name: "non-cooperative-tool",
+        model: "mock",
+        augments: [toolAugment],
+        turnScheduling: {
+          maxConcurrent: 1,
+          maxQueued: 2,
+          maxQueuedPerThread: 2,
+          maxCausalDepth: 2,
+        },
+      },
+      model,
+    );
+    const controller = new AbortController();
+    await agent.start();
+
+    try {
+      const first = agent.inject(trigger("first", "order-thread", "test"), {
+        signal: controller.signal,
+      });
+      await toolStarted.promise;
+      controller.abort(new DOMException("caller left", "AbortError"));
+      const retry = agent.inject(trigger("retry", "order-thread", "test"));
+      await Promise.resolve();
+      expect(retryExecuted).toBe(false);
+      expect(agent.health().scheduler).toMatchObject({
+        activeTurns: 1,
+        queuedTurns: 1,
+      });
+
+      releaseTool.resolve();
+      expect(await first).toMatchObject({
+        status: "failed",
+        outcomeUnknown: true,
+      });
+      expect(await retry).toMatchObject({
+        status: "rejected",
+        rejection: { reason: "thread-quarantined" },
+      });
+      expect(retryExecuted).toBe(false);
+      expect(modelCalls).toBe(1);
+    } finally {
+      releaseTool.resolve();
+      await agent.stop();
+    }
+  });
+
   test("cancels queued work before model execution and reuses capacity", async () => {
     const release = deferred();
     const started = deferred();
@@ -347,6 +596,14 @@ describe("agent-wide keyed turn scheduling", () => {
       expect(first.outcomeUnknown).toBe(true);
       const denied = await agent.inject(trigger("retry", "thread", "test"));
       expect(denied).toMatchObject({
+        status: "rejected",
+        rejection: { reason: "thread-quarantined" },
+      });
+
+      await agent.stop();
+      await agent.start();
+      const deniedAfterRestart = await agent.inject(trigger("restart-retry", "thread", "test"));
+      expect(deniedAfterRestart).toMatchObject({
         status: "rejected",
         rejection: { reason: "thread-quarantined" },
       });

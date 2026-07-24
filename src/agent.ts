@@ -28,7 +28,7 @@ import {
   type SchedulerSourcePolicy,
 } from "./kernel/keyed-turn-scheduler";
 import { emptyTrace } from "./kernel/trace-emitter";
-import { isOutcomeUnknownError } from "./outcome-unknown";
+import { isOutcomeUnknownError, OutcomeUnknownError } from "./outcome-unknown";
 
 const DEFAULT_TURN_SCHEDULING: TurnSchedulingConfig = {
   maxConcurrent: 4,
@@ -344,7 +344,9 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         // The durable outcome is unknown. Drop the resident copy so a retry
         // must re-authorize and restore the store's authoritative snapshot.
         turnLoop.forgetHistoryManager(threadId);
-        throw error;
+        throw new OutcomeUnknownError("Thread history commit outcome is unknown.", {
+          cause: error,
+        });
       }
     }
   }
@@ -357,6 +359,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       signal?: AbortSignal;
       historyPersistence?: ThreadHistoryPersistence;
       source: "transport" | "inject";
+      trackDetachedOperation?: (operation: Promise<unknown>) => void;
     },
   ): Promise<TurnResult> {
     return withThreadLock(threadId, async () => {
@@ -371,6 +374,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         result = await turnLoop.executeTurn(trigger, threadId, {
           onEvent: options.onEvent,
           signal: options.signal,
+          trackDetachedOperation: options.trackDetachedOperation,
         });
       } catch (error) {
         // Model/tool failures can happen after history was mutated. Persist a
@@ -412,6 +416,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         try {
           await a.onTurnEnd(result, { signal });
         } catch (err) {
+          if (isOutcomeUnknownError(err)) lease.quarantine();
           if (signal?.aborted) return;
           console.warn(`onTurnEnd hook "${a.name}" failed: ${err}`);
         }
@@ -419,30 +424,54 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     }
 
     const completedTurnId = result.turnId;
-    const ctx: SchedulerContext = {
-      inject: (t) =>
-        scheduleTurn(
-          t,
-          {
-            source: "inject",
-            signal,
-          },
-          injectSource,
-          lease,
-        ),
-      getCompletedTranscript: async () =>
-        turnLoop.getHistoryManager(threadId).getTranscript(completedTurnId),
-      ...(signal ? { signal } : {}),
-    };
     if (signal?.aborted) return;
     for (const a of effectiveAugments) {
       if (signal?.aborted) return;
       if (a.scheduleAfterTurn) {
+        let contextActive = true;
+        const ctx: SchedulerContext = {
+          inject: (t) => {
+            if (!contextActive) {
+              const causalThreadId = t.threadId ?? t.turnId;
+              return Promise.resolve(
+                schedulerTerminalResult(t, causalThreadId, {
+                  status: "rejected",
+                  reason: "causal-context-expired",
+                }),
+              );
+            }
+            const injected = scheduleTurn(
+              t,
+              {
+                source: "inject",
+                signal,
+              },
+              injectSource,
+              lease,
+            );
+            // The scheduler owns and joins the underlying causal task even
+            // when a hook intentionally detaches this public promise. Attach
+            // a rejection observer so a discarded promise cannot be unhandled.
+            void injected.catch((error) => {
+              if (isOutcomeUnknownError(error)) lease.quarantine();
+            });
+            return injected;
+          },
+          getCompletedTranscript: async () =>
+            turnLoop.getHistoryManager(threadId).getTranscript(completedTurnId),
+          ...(signal ? { signal } : {}),
+        };
         try {
           await a.scheduleAfterTurn(result, ctx);
         } catch (err) {
+          if (isOutcomeUnknownError(err)) lease.quarantine();
           console.warn(`scheduleAfterTurn hook "${a.name}" threw: ${(err as Error).message}`);
+        } finally {
+          contextActive = false;
         }
+        // A hook may intentionally detach ctx.inject(). The scheduler still
+        // owns that causal work, so declaration-order hooks cannot overlap it.
+        await lease.join();
       }
     }
   }
@@ -476,6 +505,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
             ? "This conversation requires operator recovery before it can continue."
             : result.reason === "causal-depth" ||
                 result.reason === "causal-concurrency" ||
+                result.reason === "causal-context-expired" ||
                 result.reason === "causal-thread-mismatch"
               ? "The scheduled follow-up was rejected by the runtime."
               : "Too many pending messages. Please try again later.";
@@ -504,6 +534,8 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       onEvent?: import("./types").KernelEventHandler;
       signal?: AbortSignal;
       historyPersistence?: ThreadHistoryPersistence;
+      beforeExecute?: () => Promise<void>;
+      onExecutionStart?: () => void;
     },
     sourcePolicy: SchedulerSourcePolicy,
     parentLease?: KeyedTurnLease,
@@ -517,6 +549,14 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     }
 
     const executeCompleteTurn = async (lease: KeyedTurnLease): Promise<TurnResult> => {
+      await options.beforeExecute?.();
+      if (options.signal?.aborted) {
+        return schedulerTerminalResult(trigger, threadId, {
+          status: "canceled",
+          reason: options.signal.reason,
+        });
+      }
+      options.onExecutionStart?.();
       lifecycle.resetIdleTimer();
       // Repair a stale persistence memo before pinning creates a replacement
       // manager for this ID. The pin then protects the exact manager through
@@ -531,6 +571,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
           signal: options.signal,
           historyPersistence: options.historyPersistence,
           source: options.source,
+          trackDetachedOperation: (operation) => lease.track(operation),
         });
         if (result.outcomeUnknown) lease.quarantine();
         await runPostTurn(result, trigger, threadId, lease, options.signal);
@@ -609,12 +650,12 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
                   onEvent?: import("./types").KernelEventHandler;
                   signal?: AbortSignal;
                   historyPersistence?: ThreadHistoryPersistence;
+                  onExecutionStart?: () => void;
                 },
               ): Promise<TurnResult> {
                 // A listener may bind before a later transport finishes its
                 // ready hook. Hold all traffic until the entire ready phase
                 // succeeds so failed startup cannot process a partial turn.
-                await admission.wait(opts?.signal);
                 return scheduleTurn(
                   trigger,
                   {
@@ -622,6 +663,8 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
                     onEvent: opts?.onEvent,
                     signal: opts?.signal,
                     historyPersistence: opts?.historyPersistence,
+                    beforeExecute: () => admission.wait(opts?.signal),
+                    onExecutionStart: opts?.onExecutionStart,
                   },
                   sourcePolicy,
                 );

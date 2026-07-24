@@ -468,9 +468,19 @@ describe("kernel thread-history persistence", () => {
     try {
       await expect(
         kernel.handleInbound(trigger("commit-failure", "hello"), { historyPersistence }),
-      ).rejects.toThrow("disk full");
+      ).rejects.toMatchObject({ outcomeUnknown: true });
       expect(model.calls).toHaveLength(1);
 
+      const denied = await kernel.handleInbound(trigger("commit-failure", "retry"), {
+        historyPersistence,
+      });
+      expect(denied).toMatchObject({
+        status: "rejected",
+        rejection: { reason: "thread-quarantined" },
+      });
+      expect(model.calls).toHaveLength(1);
+
+      expect(agent.recoverThread("commit-failure")).toBe(true);
       await kernel.handleInbound(trigger("commit-failure", "retry"), { historyPersistence });
       expect(loads).toBe(2);
       expect(model.calls[1]!.messages.map((message) => message.content)).toEqual(["retry"]);

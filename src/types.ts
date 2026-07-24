@@ -402,6 +402,7 @@ export type TurnRejectionReason =
   | "thread-quarantined"
   | "causal-depth"
   | "causal-concurrency"
+  | "causal-context-expired"
   | "causal-thread-mismatch";
 
 export interface TurnRejection {
@@ -697,6 +698,8 @@ export interface TransportKernel {
       onEvent?: KernelEventHandler;
       signal?: AbortSignal;
       historyPersistence?: ThreadHistoryPersistence;
+      /** Runtime-owned proof that scheduler admission reached task execution. */
+      onExecutionStart?: () => void;
     },
   ): Promise<TurnResult>;
   /** Evict an in-memory thread so a later request restores durable state. */
@@ -1380,12 +1383,14 @@ export interface Augment {
    * and `getCompletedTranscript` (retrieve the just-completed turn's
    * transcript snapshot).
    *
-   * Errors thrown from this hook are caught and logged; they NEVER block
-   * the user-facing turn or affect the response delivered to the peer.
-   * Background work is best-effort by design.
+   * Errors thrown from this hook are caught and logged and do not replace the
+   * already-produced response content. The hook is awaited, however, and its
+   * owned causal injections and descendants extend turn completion and keyed
+   * lane occupancy.
    *
-   * Multiple augments registering the hook execute sequentially in
-   * declaration order (ADR-027 Decision 2).
+   * Multiple augments registering the hook execute sequentially in declaration
+   * order (ADR-027 Decision 2). Each hook's SchedulerContext is revoked before
+   * the next hook begins.
    */
   scheduleAfterTurn?: (result: TurnResult, ctx: SchedulerContext) => Promise<void>;
   /**

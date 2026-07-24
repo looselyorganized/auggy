@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
   createKeyedTurnScheduler,
+  type KeyedTurnLease,
   type ScheduledRunResult,
 } from "../../src/kernel/keyed-turn-scheduler";
 
@@ -422,6 +423,90 @@ describe("keyed turn scheduler", () => {
     });
   });
 
+  test("owns detached causal descendants until they settle and preserves quarantine", async () => {
+    const scheduler = createKeyedTurnScheduler({
+      maxConcurrent: 1,
+      maxQueued: 2,
+      maxQueuedPerKey: 2,
+      maxCausalDepth: 3,
+    });
+    const childStarted = deferred();
+    const grandchildStarted = deferred();
+    const releaseGrandchild = deferred();
+    let parentSettled = false;
+    let successorExecuted = false;
+
+    const parent = scheduler.submit({ key: "a", source }, async (lease) => {
+      void scheduler.runCausal(lease, { key: "a" }, async (childLease) => {
+        childStarted.resolve();
+        void scheduler.runCausal(childLease, { key: "a" }, async (grandchildLease) => {
+          grandchildStarted.resolve();
+          await releaseGrandchild.promise;
+          grandchildLease.quarantine();
+          return "grandchild";
+        });
+        return "child";
+      });
+      await childStarted.promise;
+      return "parent";
+    });
+    void parent.then(() => {
+      parentSettled = true;
+    });
+    await grandchildStarted.promise;
+
+    const successor = scheduler.submit({ key: "a", source }, async () => {
+      successorExecuted = true;
+      return "successor";
+    });
+    await Promise.resolve();
+    expect(parentSettled).toBe(false);
+    expect(successorExecuted).toBe(false);
+    expect(scheduler.snapshot()).toMatchObject({
+      activeTurns: 1,
+      activeThreads: 1,
+      queuedTurns: 1,
+    });
+
+    releaseGrandchild.resolve();
+    expect(expectValue(await parent)).toBe("parent");
+    expect(await successor).toMatchObject({
+      status: "rejected",
+      reason: "thread-quarantined",
+    });
+    expect(successorExecuted).toBe(false);
+    expect(scheduler.snapshot().quarantinedThreads).toBe(1);
+  });
+
+  test("revokes a child lease when that exact causal execution settles", async () => {
+    const scheduler = createKeyedTurnScheduler({
+      maxConcurrent: 1,
+      maxQueued: 1,
+      maxQueuedPerKey: 1,
+      maxCausalDepth: 3,
+    });
+    let staleLease: KeyedTurnLease | undefined;
+    let staleTaskExecuted = false;
+
+    const parent = scheduler.submit({ key: "a", source }, async (rootLease) => {
+      const child = await scheduler.runCausal(rootLease, { key: "a" }, async (childLease) => {
+        staleLease = childLease;
+        return "child";
+      });
+      expect(expectValue(child)).toBe("child");
+      await expect(
+        scheduler.runCausal(staleLease!, { key: "a" }, async () => {
+          staleTaskExecuted = true;
+          return "must-not-run";
+        }),
+      ).rejects.toThrow("invalid, inactive");
+      return "parent";
+    });
+
+    expect(expectValue(await parent)).toBe("parent");
+    expect(staleTaskExecuted).toBe(false);
+  });
+
   test("quarantines outcome-unknown threads until explicit recovery", async () => {
     const scheduler = createKeyedTurnScheduler({
       maxConcurrent: 1,
@@ -438,6 +523,17 @@ describe("keyed turn scheduler", () => {
 
     const denied = await scheduler.submit({ key: "a", source }, async () => "must-not-run");
     expect(denied).toMatchObject({ status: "rejected", reason: "thread-quarantined" });
+    scheduler.close();
+    await scheduler.drain();
+    scheduler.reopen();
+    const deniedAfterRestart = await scheduler.submit(
+      { key: "a", source },
+      async () => "must-not-run",
+    );
+    expect(deniedAfterRestart).toMatchObject({
+      status: "rejected",
+      reason: "thread-quarantined",
+    });
     expect(scheduler.recover("a")).toBe(true);
     const recovered = await scheduler.submit({ key: "a", source }, async () => "recovered");
     expect(expectValue(recovered)).toBe("recovered");

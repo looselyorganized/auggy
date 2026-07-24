@@ -148,6 +148,7 @@ import {
 export interface TurnLoopOptions {
   signal?: AbortSignal;
   onEvent?: KernelEventHandler;
+  trackDetachedOperation?: (operation: Promise<unknown>) => void;
 }
 
 export interface TurnLoop {
@@ -684,6 +685,7 @@ export function createTurnLoop(opts: {
               ),
             timeout,
             signal,
+            options?.trackDetachedOperation,
           );
           if (typeof result === "string") {
             contextBlocks.push({
@@ -1160,6 +1162,7 @@ export function createTurnLoop(opts: {
               let output: string;
               let isError = false;
               let outcomeUnknown = false;
+              let detachedOperation = false;
               let terminate: ToolResult["terminate"] | undefined;
               try {
                 const augForTool = augments.find((a) =>
@@ -1177,6 +1180,10 @@ export function createTurnLoop(opts: {
                     }),
                   timeout,
                   signal,
+                  (operation) => {
+                    detachedOperation = true;
+                    options?.trackDetachedOperation?.(operation);
+                  },
                 );
                 if (typeof raw === "string") {
                   output = raw;
@@ -1187,7 +1194,7 @@ export function createTurnLoop(opts: {
                   terminate = raw.terminate;
                 }
               } catch (err) {
-                outcomeUnknown = isOutcomeUnknownError(err);
+                outcomeUnknown = detachedOperation || isOutcomeUnknownError(err);
                 const failureCategory = err instanceof Error ? "error-object" : "non-error-value";
                 console.warn(
                   `[turn-loop] tool execution failed tool=${entry.reg.tool.name} category=${failureCategory} outcomeUnknown=${outcomeUnknown}`,

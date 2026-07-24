@@ -27,6 +27,7 @@ export async function withTimeout<T>(
   fn: (signal: AbortSignal) => Promise<T>,
   ms: number,
   callerSignal?: AbortSignal,
+  onDetached?: (operation: Promise<unknown>) => void,
 ): Promise<T> {
   if (!Number.isFinite(ms) || ms <= 0) {
     throw new Error("Timeout must be a positive finite number of milliseconds");
@@ -54,11 +55,23 @@ export async function withTimeout<T>(
   };
   callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
 
+  let operationSettled = false;
   const operation = Promise.resolve().then(() => fn(controller.signal));
+  operation.then(
+    () => {
+      operationSettled = true;
+    },
+    () => {
+      operationSettled = true;
+    },
+  );
 
   try {
     const result = await Promise.race([operation, cancellation]);
     return result;
+  } catch (error) {
+    if (!operationSettled) onDetached?.(operation);
+    throw error;
   } finally {
     if (timerId !== undefined) clearTimeout(timerId);
     callerSignal?.removeEventListener("abort", abortFromCaller);

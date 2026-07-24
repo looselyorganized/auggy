@@ -12,6 +12,7 @@ export type SchedulerRejectionReason =
   | "thread-quarantined"
   | "causal-depth"
   | "causal-concurrency"
+  | "causal-context-expired"
   | "causal-thread-mismatch";
 
 export interface KeyedTurnSchedulerConfig {
@@ -75,6 +76,10 @@ export interface KeyedTurnLease {
   readonly key: string;
   readonly depth: number;
   quarantine(): void;
+  /** Retain this lane until detached work actually settles. */
+  track(work: Promise<unknown>): void;
+  /** Wait for work causally owned by this exact lease. */
+  join(): Promise<void>;
 }
 
 export interface KeyedTurnScheduler {
@@ -98,6 +103,8 @@ export interface KeyedTurnScheduler {
 interface InternalLease extends KeyedTurnLease {
   readonly schedulerToken: symbol;
   readonly root: RootLeaseState;
+  readonly ownedWork: Set<Promise<unknown>>;
+  active: boolean;
   childActive: boolean;
 }
 
@@ -264,17 +271,38 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
   }
 
   function makeLease(key: string, depth: number, root: RootLeaseState): InternalLease {
-    return {
+    const lease: InternalLease = {
       key,
       depth,
       schedulerToken,
       root,
+      ownedWork: new Set(),
+      active: true,
       childActive: false,
       quarantine() {
         if (!root.active || root.quarantined) return;
         root.quarantined = true;
       },
+      track(work) {
+        if (!root.active || !lease.active) return;
+        const observed = Promise.resolve(work);
+        lease.ownedWork.add(observed);
+        observed.then(
+          () => lease.ownedWork.delete(observed),
+          () => lease.ownedWork.delete(observed),
+        );
+      },
+      join() {
+        return waitForOwnedWork(lease);
+      },
     };
+    return lease;
+  }
+
+  async function waitForOwnedWork(lease: InternalLease): Promise<void> {
+    while (lease.ownedWork.size > 0) {
+      await Promise.allSettled([...lease.ownedWork]);
+    }
   }
 
   function startItem(item: PendingItem): void {
@@ -316,11 +344,15 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
     Promise.resolve()
       .then(() => item.task(lease))
       .then(
-        (value) => {
+        async (value) => {
+          await waitForOwnedWork(lease);
+          lease.active = false;
           finish();
           item.resolve({ status: "completed", value });
         },
-        (error) => {
+        async (error) => {
+          await waitForOwnedWork(lease);
+          lease.active = false;
           finish();
           item.reject(error);
         },
@@ -485,7 +517,7 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
       });
     },
 
-    async runCausal<T>(
+    runCausal<T>(
       parent: KeyedTurnLease,
       options: SchedulerCausalOptions,
       task: (lease: KeyedTurnLease) => Promise<T>,
@@ -495,39 +527,49 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
         internal.schedulerToken !== schedulerToken ||
         !internal.root ||
         !internal.root.active ||
+        !internal.active ||
         parent.key !== options.key
       ) {
-        throw new Error(
-          "causal scheduler lease is invalid, inactive, or belongs to another thread",
+        return Promise.reject(
+          new Error("causal scheduler lease is invalid, inactive, or belongs to another thread"),
         );
       }
       if (options.signal?.aborted) {
         canceled++;
-        return { status: "canceled", reason: abortReason(options.signal) };
+        return Promise.resolve({ status: "canceled", reason: abortReason(options.signal) });
       }
       if (internal.root.quarantined || quarantinedKeys.has(options.key)) {
         rejected++;
-        return { status: "rejected", reason: "thread-quarantined" };
+        return Promise.resolve({ status: "rejected", reason: "thread-quarantined" });
       }
       if (parent.depth >= config.maxCausalDepth) {
         rejected++;
-        return { status: "rejected", reason: "causal-depth" };
+        return Promise.resolve({ status: "rejected", reason: "causal-depth" });
       }
       if (internal.childActive) {
         rejected++;
-        return { status: "rejected", reason: "causal-concurrency" };
+        return Promise.resolve({ status: "rejected", reason: "causal-concurrency" });
       }
 
       internal.childActive = true;
       admitted++;
       const lease = makeLease(options.key, parent.depth + 1, internal.root);
-      try {
-        const value = await task(lease);
-        return { status: "completed", value };
-      } finally {
-        internal.childActive = false;
-        settled++;
-      }
+      const execution = (async (): Promise<ScheduledRunResult<T>> => {
+        try {
+          const value = await task(lease);
+          await waitForOwnedWork(lease);
+          return { status: "completed", value };
+        } catch (error) {
+          await waitForOwnedWork(lease);
+          throw error;
+        } finally {
+          lease.active = false;
+          internal.childActive = false;
+          settled++;
+        }
+      })();
+      internal.track(execution);
+      return execution;
     },
 
     close(): void {
@@ -549,7 +591,6 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
       if (state !== "stopped" || activeTurns !== 0 || queuedTurns !== 0) {
         throw new Error("scheduler can reopen only after it has fully stopped");
       }
-      quarantinedKeys.clear();
       for (const source of sources.values()) {
         source.active = 0;
         source.queued = 0;
