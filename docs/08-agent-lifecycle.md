@@ -310,12 +310,15 @@ The transport now has the `TurnResult` and can finalize its response (close the 
 
 ```ts
 async inject(trigger) {
+  if (!started) throw new Error("Agent not started");
   return scheduleTurn(trigger, { source: "inject" }, injectSource);
 }
 ```
 
 `inject` is a trusted in-process entry path, but it uses the same scheduler and
-global/thread limits as transports. It is used by:
+global/thread limits as transports. It fails closed until `start()` has
+completed, so model or tool work cannot run against unbooted or partially
+booted augments. It is used by:
 - **Tests.** Most kernel tests call `inject` to fire a turn directly without standing up a transport.
 - **Augments that need to schedule their own work.** A future cron augment might use `onIdle` to call `inject` with a `scheduled`-type trigger.
 - **Internal events.** An augment that detects an external event (file change, queue message, webhook) might use `inject` to feed it to the kernel.

@@ -92,6 +92,59 @@ function capturedTransport(
 }
 
 describe("agent-wide keyed turn scheduling", () => {
+  test("rejects direct injection before startup is complete", async () => {
+    const bootStarted = deferred();
+    const releaseBoot = deferred();
+    let modelCalls = 0;
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      async complete() {
+        modelCalls++;
+        return response();
+      },
+    };
+    const agent = defineAgent(
+      {
+        name: "startup-gated-injection",
+        model: "mock",
+        augments: [
+          {
+            name: "slow-boot",
+            async onBoot() {
+              bootStarted.resolve();
+              await releaseBoot.promise;
+            },
+          },
+        ],
+      },
+      model,
+    );
+
+    await expect(agent.inject(trigger("before-start", "thread", "test"))).rejects.toThrow(
+      "Agent not started",
+    );
+
+    const starting = agent.start();
+    await bootStarted.promise;
+    await expect(agent.inject(trigger("during-start", "thread", "test"))).rejects.toThrow(
+      "Agent not started",
+    );
+    expect(modelCalls).toBe(0);
+
+    releaseBoot.resolve();
+    await starting;
+    try {
+      expect((await agent.inject(trigger("after-start", "thread", "test"))).status).toBe(
+        "completed",
+      );
+      expect(modelCalls).toBe(1);
+    } finally {
+      releaseBoot.resolve();
+      await agent.stop();
+    }
+  });
+
   test("shares the global cap across transports and direct injection", async () => {
     const releases = [deferred(), deferred(), deferred()];
     const twoStarted = deferred();

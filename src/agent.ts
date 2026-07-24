@@ -745,6 +745,9 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     },
 
     async inject(trigger: TurnTrigger, options?: { signal?: AbortSignal }): Promise<TurnResult> {
+      if (!started) {
+        throw new Error("Agent not started. Call and await start() before inject().");
+      }
       return scheduleTurn(
         trigger,
         {

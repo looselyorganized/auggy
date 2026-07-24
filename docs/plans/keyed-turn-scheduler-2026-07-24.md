@@ -311,6 +311,7 @@ A fresh reviewer will receive the exact completed diff and check for:
 - abort races that execute a dequeued canceled item;
 - fail-open invalid configuration;
 - a lane released before outbound or terminal hooks;
+- direct injection before all startup hooks have completed;
 - same-thread causal injection deadlocks or forged/reused leases;
 - recursion that bypasses causal bounds;
 - outcome-unknown work that silently resumes;
