@@ -90,9 +90,9 @@
     "smoke:release": "bash scripts/release-smoke.sh",
     "build:admin": "bun run --cwd admin build",
     "typecheck": "bunx tsc --noEmit",
-    "lint": "bunx --bun @biomejs/biome check",
-    "lint:fix": "bunx --bun @biomejs/biome check --write",
-    "format": "bunx --bun @biomejs/biome format --write"
+    "lint": "bunx --bun @biomejs/biome@2.5.5 check",
+    "lint:fix": "bunx --bun @biomejs/biome@2.5.5 check --write",
+    "format": "bunx --bun @biomejs/biome@2.5.5 format --write"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.94.0",
