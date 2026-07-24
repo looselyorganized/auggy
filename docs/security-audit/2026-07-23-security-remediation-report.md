@@ -2,6 +2,8 @@
 
 Date: 2026-07-23
 
+Final verification: 2026-07-24
+
 Repository: `looselyorganized/auggy`
 
 Audit source: `docs/security-audit/2026-07-22-repository-security-audit.md`
@@ -72,15 +74,15 @@ retried.
 
 | Group | Findings | Result and introduced invariant | Primary commits |
 | --- | --- | --- | --- |
-| 1 — Identity, idempotency, memory, and filesystem | H-01, H-02, H-03, H-09, M-05, filesystem byte-count Low | Threads bind to one resolved peer before retrieval or inference. Idempotency binds peer, thread, body, and execution; concurrent duplicates join or replay. Anonymous rate limits use atomic shared policies rather than thread IDs. Supabase reads filter ownership before limiting. Writable paths are descriptor-pinned and reject symlink, prefix, nonexistent-descendant, and replacement escapes. | `76e972f`, `d7a0c1e`, `303e565`, `b0ed607`, `03454bf`, `2527916`, `8269a87` |
+| 1 — Identity, idempotency, memory, and filesystem | H-01, H-02, H-03, H-09, M-05, filesystem byte-count Low | Threads bind to one resolved peer before retrieval or inference. Idempotency binds peer, thread, body, and execution; concurrent duplicates join or replay. Anonymous rate limits use atomic shared policies rather than thread IDs. Supabase reads filter ownership before limiting. Writable paths are descriptor-pinned and reject symlink, prefix, nonexistent-descendant, and replacement escapes. | `76e972f`, `d7a0c1e`, `303e565`, `b0ed607`, `03454bf`, `2527916`, `8269a87`, `11919e4` |
 | 2 — Console and browser boundaries | H-04, M-08, M-09, forced-logout CSRF Low | Console access no longer depends on a client-derived loopback address. Host, Origin, proxy, session, framing, and CSRF checks fail closed. Managed files cannot traverse symlinks. Browser guidance uses a server-minted anonymous session or trusted external verification handoff instead of inventing recognized visitor authority. | `a888408`, `5dfc9a0`, `6943070`, `2527916`, `8269a87` |
-| 3 — Link and MCP trust | H-05, H-06 | Link provenance preserves the originating caller's maximum authority. Public callers cannot acquire agent authority by delegation. Remote MCP annotations are non-authoritative, tools default creator-only, and delegation is rechecked immediately before execution. | `2a2ca74`, `b6a9be6`, `42c6230` |
+| 3 — Link and MCP trust | H-05, H-06 | Link provenance preserves the originating caller's maximum authority. Public callers cannot acquire agent authority by delegation. Remote MCP annotations are non-authoritative, tools default creator-only, and delegation is rechecked immediately before execution. | `2a2ca74`, `b6a9be6`, `42c6230`, `691cb56` |
 | 4 — Redirect and SSRF hardening | H-07, H-08 | Credential headers are normalized and stripped across origin changes; redirects cannot restore them. Initial and redirected destinations require all-address public DNS validation, pinned lookup behavior, special-use address rejection, and downgrade protection. | `8a72845`, `54126ff`, `cf583ab`, `d7b379c`, `501a230` |
 | 5 — Generated admin routes | H-10 | Shipped privileged Next.js handlers fail closed until the host verifies a session, explicit admin role, Origin, and CSRF. Server credentials remain server-only and scaffold tests exercise anonymous, non-admin, and admin behavior. | `38ea970`, `09ae6bf` |
 | 6 — Dependencies and provider packages | Original twelve advisories, undeclared core peers, M-18 | Vulnerable transitive versions were upgraded without blind lockfile overrides. Each provider declares a compatible optional core peer, is packed with local consumer checks, and OpenRouter restrictive routing fails closed when invalid or unverifiable. | `566127c`, `5d88f72`, `6900925`, `a575c5d` |
 | 7 — Quotas, accounting, and cancellation | M-01, M-02, M-03, M-10 | Tool and notification quota is reserved before dispatch, inference cost commits exactly once before successful completion, cancellation reaches first-party operations, and non-cancelable post-dispatch failures become outcome-unknown. | `afeb330`, `e3946b1`, `3256e25`, `626f22a`, `3ddd350` |
-| 8 — Bounded resources and replay | M-04, M-06, M-07, M-11, M-12, M-19, SSE/backpressure Low | Byte limits precede body parsing. Provider and MCP bodies, streams, text, tool calls, arguments, depth, nodes, and accessors are bounded. Anonymous memory has thread, peer, global, and TTL limits. Telegram update admission is durable and atomic. Public errors are stable and streaming queues terminate when their limits are exceeded. | `1cb0a15`, `b17e111`, `9648ca3`, `be27cbc`, `3ddd350` |
-| 9 — Secrets, assertions, provider transport, and CI | M-13, M-14, M-15, M-16, M-17, malformed-env Low, Telegram-validation Low, release-provenance Low | Secret files use owner-only permissions, Railway values do not enter diagnostic text, malformed env warnings omit content, credentialed plaintext non-loopback providers fail closed, generated assertions use no-store and durable replay protection, and security evaluation executes only a trusted harness against an exactly bound candidate configuration and SHA. Provider exceptions expose stable allowlisted metadata without raw causes. | `5e1af06`, `88abbee`, `04a5070`, `4a8e7a6`, `546c824`, `39e7226`, `e803aba`, `cf748ed`, `db72fa5`, `47a1095`, `a575c5d` |
+| 8 — Bounded resources and replay | M-04, M-06, M-07, M-11, M-12, M-19, SSE/backpressure Low | Byte limits precede body parsing. Provider and MCP bodies, streams, text, tool calls, arguments, depth, nodes, and accessors are bounded. Anonymous memory has thread, peer, global, and TTL limits. Telegram update admission is bot-scoped, durable, atomic, cancellation-aware, and supports a shared transactional store. Public errors are stable and streaming queues terminate when their limits are exceeded. | `1cb0a15`, `b17e111`, `9648ca3`, `be27cbc`, `3ddd350`, `1977c41`, `691cb56` |
+| 9 — Secrets, assertions, provider transport, and CI | M-13, M-14, M-15, M-16, M-17, malformed-env Low, Telegram-validation Low, release-provenance Low | Secret files use owner-only permissions, Railway values do not enter diagnostic text, malformed env warnings omit content, credentialed plaintext non-loopback providers fail closed, generated assertions use no-store and durable replay protection, and security evaluation executes only a trusted harness against an exactly bound candidate configuration and SHA. Provider exceptions expose stable allowlisted metadata without raw causes. Release rehearsal uses bounded runtime processes and the local packed repository. | `5e1af06`, `88abbee`, `04a5070`, `4a8e7a6`, `546c824`, `39e7226`, `e803aba`, `cf748ed`, `db72fa5`, `47a1095`, `a575c5d`, `a0dbdaa` |
 
 ## Revalidation and severity review
 
@@ -143,6 +145,32 @@ Lifecycle review additionally validated real stalled-child MCP cleanup,
 bounded shutdown, cost-commit failure behavior, malformed model-response
 rejection, and Windows fail-closed managed-file behavior.
 
+The final two hostile rounds found and closed additional Telegram and resource
+boundary issues:
+
+- conversation IDs are scoped to the stable numeric bot identity, and the
+  registered transport name is preserved as provenance, so two bots cannot
+  enter the same kernel history;
+- the default replay namespace is stable across augment renames, while two
+  same-bot instances still converge on one atomic claim;
+- SQLite time retention is namespace-local, so a short-retention bot cannot
+  prune another bot's protected claims;
+- programmatic and YAML webhook secrets use the same non-empty, bounded
+  character policy before network work or listener binding;
+- transport shutdown cancels pending replay admission, kernel execution, and
+  reply delivery;
+- terminating SSE/NDJSON framing bytes count toward the configured message
+  limit; and
+- remaining link, memory-forget, and admin-collector exception paths expose
+  stable diagnostics without raw upstream text.
+
+CodeQL's filesystem race annotation at the descriptor write was independently
+reproduced and classified as a false positive: the old call received a numeric
+descriptor opened with no-follow behavior and never reopened the attacker-
+replaceable path. The implementation was nevertheless rewritten as an explicit
+bounded `writeSync` loop, with a deterministic rename-and-symlink replacement
+test, so both the invariant and analyzer intent are unambiguous.
+
 Final hostile-review results:
 
 - identity and anonymous admission: 186 focused tests passed, no unresolved
@@ -165,8 +193,12 @@ Final hostile-review results:
   should be treated as an identity migration.
 - Anonymous browser first contact now returns `428` with a server-minted session
   instead of executing a model turn or minting recognized visitor authority.
-- Telegram replay state is durable and must be shared for cross-instance
-  exactly-once admission.
+- Telegram replay state is durable. Same-file processes coordinate through
+  SQLite; distributed replicas must use one writer or an async transactional
+  shared store for cross-instance at-most-once admission. Bot-scoped thread IDs
+  replace legacy `tg-chat-<chatId>` IDs, so the first deployment starts a new
+  Telegram history rather than ambiguously importing history from another bot.
+  The default replay namespace is the stable `telegram:bot-<botId>`.
 - POSIX mutable filesystem and console-managed operations require
   descriptor-relative primitives. On Windows, managed-file operations fail
   closed while non-file console and chat functions remain available.
@@ -187,27 +219,25 @@ Completed local gates:
 | Command | Result |
 | --- | --- |
 | `bun run typecheck` | Passed |
-| cached Biome 2.5.5 `biome check` | Passed; only the existing 2.5.0 configuration-schema informational notice was emitted |
+| `bun run lint` (Biome 2.5.5) | Passed; only the existing 2.5.0 configuration-schema informational notice was emitted |
 | `git diff --check` | Passed |
-| `bun test --max-concurrency=1 --timeout=30000` | 3,952 passed, 0 failed, 12,248 assertions, 280 files |
-| `cd admin && bun test --max-concurrency=1` | 243 passed, 0 failed, 1,093 assertions, 29 files |
+| eight bounded runtime test processes matching release rehearsal | 3,723 passed, 0 failed |
+| `bun run test:admin` | 243 passed, 0 failed, 1,093 assertions, 29 files |
 | `cd admin && bun run build` | Passed; Vite emitted only its non-fatal large-chunk advisory |
+| final Telegram/config/public replay set | 62 passed, 0 failed, 141 assertions |
+| filesystem descriptor-confinement set | 76 passed, 0 failed, 164 assertions |
 | focused identity/rate review | 186 passed, 0 failed |
 | focused lifecycle/MCP/model-limit review | 148 passed, 0 failed |
 | focused provider/sentinel review | 183 passed, 0 failed |
 
 Dependency and packaging gates:
 
-- The last successful `bun audit --json` on the current unchanged lockfile
-  returned `{}`. A final sandboxed rerun reached the audit command but network
-  access was refused. `bun.lock` is unchanged by the late hardening commits.
-- `bun run smoke:release` previously passed the local tarball, provider,
-  CLI/scaffold, health, console, MCP, and cloud checks after the dependency
-  remediation. The final local rerun installed the workspace, typechecked,
-  rebuilt the console, and packed every publishable package, then the managed
-  sandbox denied Bun temporary-file writes before the first isolated consumer
-  install. The preserved log contains no package or import failure. The pull
-  request's release-rehearsal CI is the final unsandboxed packaging authority.
+- Final `bun audit --json` returned `{}` against the current lockfile.
+- Final `bun run smoke:release` passed workspace installation, typecheck,
+  console build, packing every publishable package, isolated provider
+  installation/import, package-content checks, packed CLI installation,
+  scaffold creation, dependency audit, doctor, health, console assets, MCP
+  doctor, and cloud preflight.
 
 No dependency versions or package versions changed after the successful audit.
 There are no known remaining vulnerable locked dependencies from the original
@@ -233,6 +263,13 @@ advisory set.
   defense-in-depth. Authorization does not depend on model interpretation, and
   request/response resource caps bound the exposure, but stricter display-field
   normalization can be added separately.
+- A conflicting Telegram polling payload for an already claimed update ID can
+  keep that authenticated offset retrying until operator intervention. This
+  requires a compromised or faulty authenticated source/store and cannot cause
+  duplicate execution.
+- Release shard paths are deliberately explicit. The workflow contract test
+  guards today's complete surface, but maintainers must add future top-level
+  test directories to the manifest.
 
 ## Rollback considerations
 
@@ -254,13 +291,14 @@ There is one independent, non-stacked pull request:
 
 | PR | Branch | Base | State |
 | --- | --- | --- | --- |
-| [#159](https://github.com/looselyorganized/auggy/pull/159) | `security/audit-remediation` | `main` | Draft pending final CI packaging confirmation; not merged |
+| [#159](https://github.com/looselyorganized/auggy/pull/159) | `security/audit-remediation` | `main` | Open; not merged |
 
 Recommended review order within the PR is the numbered remediation sequence:
 identity/filesystem, console, link/MCP, HTTP, scaffold, dependencies, quotas,
 bounded runtime, then secrets/CI. Review the four late adversarial-closure
-commits (`2527916`, `8269a87`, `3ddd350`, and `a575c5d`) immediately after their
-related group, followed by the documentation synchronization commit `780886b`.
+commits (`2527916`, `8269a87`, `3ddd350`, `a575c5d`, `1977c41`, `691cb56`,
+`11919e4`, and `a0dbdaa`) immediately after their related groups, followed by
+the documentation synchronization commits.
 
 At report creation, the only unrelated worktree content is the pre-existing
 untracked `order-support/` directory. It was not read, modified, staged, or
