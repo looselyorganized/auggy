@@ -213,6 +213,11 @@ engine:
 settings:
   compactionStrategy: truncate
   maxInferenceLoops: 10
+  turnScheduling:
+    maxConcurrent: 4       # different threads may run concurrently
+    maxQueued: 100         # total waiting turns across this process
+    maxQueuedPerThread: 20 # one hot conversation cannot consume the backlog
+    maxCausalDepth: 8      # bounded same-thread scheduled follow-ups
 
 augments:
 ${augmentLines}

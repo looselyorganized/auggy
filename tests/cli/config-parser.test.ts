@@ -164,7 +164,16 @@ describe("parseConfig", () => {
         purpose: "test purpose",
         displayName: "Jim",
         creator: { displayName: "Alex" },
-        settings: { compactionStrategy: "truncate", maxInferenceLoops: 5 },
+        settings: {
+          compactionStrategy: "truncate",
+          maxInferenceLoops: 5,
+          turnScheduling: {
+            maxConcurrent: 8,
+            maxQueued: 200,
+            maxQueuedPerThread: 25,
+            maxCausalDepth: 4,
+          },
+        },
       }),
     );
     const config = parseConfig(path);
@@ -173,6 +182,38 @@ describe("parseConfig", () => {
     expect(config.creator).toEqual({ displayName: "Alex" });
     expect(config.settings.compactionStrategy).toBe("truncate");
     expect(config.settings.maxInferenceLoops).toBe(5);
+    expect(config.settings.turnScheduling).toEqual({
+      maxConcurrent: 8,
+      maxQueued: 200,
+      maxQueuedPerThread: 25,
+      maxCausalDepth: 4,
+    });
+  });
+
+  test("rejects unsafe turn-scheduling settings", () => {
+    const invalidValues = [0, -1, 1.5, Number.NaN, Number.POSITIVE_INFINITY];
+    for (const maxConcurrent of invalidValues) {
+      const path = writeYaml(
+        "agent.yaml",
+        minimalConfig({
+          settings: { turnScheduling: { maxConcurrent } },
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(/turnScheduling\.maxConcurrent/);
+    }
+
+    const inconsistent = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        settings: {
+          turnScheduling: {
+            maxQueued: 2,
+            maxQueuedPerThread: 3,
+          },
+        },
+      }),
+    );
+    expect(() => parseConfig(inconsistent)).toThrow(/cannot exceed maxQueued/);
   });
 
   test("defaults settings to empty object when omitted", () => {

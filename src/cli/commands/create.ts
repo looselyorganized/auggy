@@ -999,6 +999,12 @@ function buildAgentYaml(
     settings: {
       compactionStrategy: "truncate",
       maxInferenceLoops: 10,
+      turnScheduling: {
+        maxConcurrent: 4,
+        maxQueued: 100,
+        maxQueuedPerThread: 20,
+        maxCausalDepth: 8,
+      },
     },
     augments: augments.map((entry) => augmentIdForCatalogEntry(entry)),
   };

@@ -2096,9 +2096,46 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   }
   if (
     settings.maxInferenceLoops !== undefined &&
-    (typeof settings.maxInferenceLoops !== "number" || settings.maxInferenceLoops < 1)
+    (!Number.isSafeInteger(settings.maxInferenceLoops) ||
+      (settings.maxInferenceLoops as number) < 1)
   ) {
     errors.push("settings.maxInferenceLoops: must be a positive integer");
+  }
+  if (settings.turnScheduling !== undefined) {
+    if (
+      typeof settings.turnScheduling !== "object" ||
+      settings.turnScheduling === null ||
+      Array.isArray(settings.turnScheduling)
+    ) {
+      errors.push("settings.turnScheduling: must be an object");
+    } else {
+      const scheduling = settings.turnScheduling as Record<string, unknown>;
+      const constraints = {
+        maxConcurrent: 1,
+        maxQueued: 0,
+        maxQueuedPerThread: 0,
+        maxCausalDepth: 1,
+      } as const;
+      for (const [key, value] of Object.entries(scheduling)) {
+        if (!(key in constraints)) {
+          errors.push(`settings.turnScheduling.${key}: unknown scheduling setting`);
+          continue;
+        }
+        const minimum = constraints[key as keyof typeof constraints];
+        if (!Number.isSafeInteger(value) || (value as number) < minimum) {
+          errors.push(
+            `settings.turnScheduling.${key}: must be a safe integer greater than or equal to ${minimum}`,
+          );
+        }
+      }
+      if (
+        Number.isSafeInteger(scheduling.maxQueued) &&
+        Number.isSafeInteger(scheduling.maxQueuedPerThread) &&
+        (scheduling.maxQueuedPerThread as number) > (scheduling.maxQueued as number)
+      ) {
+        errors.push("settings.turnScheduling.maxQueuedPerThread: cannot exceed maxQueued");
+      }
+    }
   }
 
   // Security eval overrides (optional). Per-agent context for the portable
