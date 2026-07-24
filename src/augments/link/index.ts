@@ -608,12 +608,11 @@ export async function link(opts: LinkAugmentInternalOptions): Promise<Augment> {
     try {
       const result = await kernel.handleInbound(trigger);
       return turnResultToHandlerOutcome(result);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
+    } catch {
       return {
         kind: "error",
         code: -32603,
-        message: `link augment: turn dispatch failed: ${message}`,
+        message: "link augment: turn dispatch failed",
       };
     }
   };

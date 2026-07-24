@@ -703,6 +703,7 @@ export interface AgentConfig {
     toolSchemaPercent?: number;     // default 10
   };
   compactionStrategy?: CompactionStrategy;  // default "truncate"
+  responseLimits?: Partial<ModelResponseLimits>;
 }
 
 export interface AgentHealth {
@@ -724,6 +725,17 @@ export interface AgentHandle {
 ```
 
 `AgentConfig` is what users pass to `defineAgent`. The `model: string` field is just a label that ends up in traces — the actual model client is passed as the second argument to `defineAgent(config, model)`.
+
+`responseLimits` is a mandatory kernel boundary with finite defaults, even
+when the field is omitted. One inference is limited to 1 MiB of UTF-8 text, 32
+tool calls, 256-byte tool names, 64 KiB per tool argument object, 256 KiB of
+arguments in aggregate, depth 32, 10,000 nodes per argument object, 2 MiB
+across the retained response, and 10,000 streamed text events. The kernel
+validates the completed response before it can dispatch any returned tool.
+Streaming adapters also apply the cumulative text/event checks before
+forwarding deltas where their transport permits early cancellation. A
+violation rejects the whole model response with a stable sanitized error;
+Auggy never executes a valid-looking prefix of an oversized response.
 
 `AgentHandle` is what `defineAgent` returns. The methods are explained in [08-agent-lifecycle.md](./08-agent-lifecycle.md).
 

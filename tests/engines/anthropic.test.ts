@@ -141,6 +141,10 @@ describe("Anthropic message coalescing", () => {
 let nextAnthropicResponse: Record<string, unknown> | null = null;
 let nextAnthropicError: { status: number; message: string } | null = null;
 let lastAnthropicRequestOptions: { signal?: AbortSignal } | null = null;
+let lastAnthropicConstructorArgs: Record<string, unknown> | null = null;
+let nextAnthropicStreamTexts: string[] | null = null;
+let anthropicStreamAbortCalls = 0;
+let anthropicAbortRejectsFinal = false;
 
 mock.module("@anthropic-ai/sdk", () => {
   const makeResponse = (overrides?: Record<string, unknown>) =>
@@ -156,6 +160,10 @@ mock.module("@anthropic-ai/sdk", () => {
     };
 
   class FakeAnthropic {
+    constructor(opts: Record<string, unknown>) {
+      lastAnthropicConstructorArgs = opts;
+    }
+
     messages = {
       create: async (
         _params: Record<string, unknown>,
@@ -171,8 +179,38 @@ mock.module("@anthropic-ai/sdk", () => {
         return nextAnthropicResponse !== null ? nextAnthropicResponse : makeResponse();
       },
       stream: (_params: Record<string, unknown>) => {
-        // Not used by these tests (non-streaming path only).
-        throw new Error("streaming not mocked in costUsd tests");
+        let onText: ((text: string) => void) | null = null;
+        let aborted = false;
+        const currentMessage =
+          nextAnthropicResponse !== null
+            ? nextAnthropicResponse
+            : makeResponse({
+                id: "msg_stream",
+                type: "message",
+                role: "assistant",
+                content: [{ type: "text", text: (nextAnthropicStreamTexts ?? []).join("") }],
+                model: "claude-sonnet-4-6",
+                stop_reason: "end_turn",
+                stop_sequence: null,
+                usage: { input_tokens: 100, output_tokens: 50 },
+              });
+        return {
+          currentMessage,
+          on(event: string, handler: (text: string) => void) {
+            if (event === "text") onText = handler;
+          },
+          abort() {
+            anthropicStreamAbortCalls++;
+            aborted = true;
+          },
+          async finalMessage() {
+            for (const text of nextAnthropicStreamTexts ?? []) onText?.(text);
+            if (aborted && anthropicAbortRejectsFinal) {
+              throw new Error("stream aborted");
+            }
+            return currentMessage;
+          },
+        };
       },
     };
   }
@@ -219,6 +257,10 @@ function anthropicMsg(partial: Partial<Message>): Message {
 beforeEach(() => {
   nextAnthropicResponse = null;
   nextAnthropicError = null;
+  lastAnthropicConstructorArgs = null;
+  nextAnthropicStreamTexts = null;
+  anthropicStreamAbortCalls = 0;
+  anthropicAbortRejectsFinal = false;
 });
 
 describe("createAnthropicEngine — costUsd", () => {
@@ -598,5 +640,162 @@ describe("createAnthropicEngine — provider cost-cap error rewrap", () => {
     nextAnthropicError = original as unknown as { status: number; message: string };
 
     await expect(engine.complete(emptyPrompt())).rejects.toThrow(/unexpected JSON parse error/);
+  });
+});
+
+describe("createAnthropicEngine — response limits", () => {
+  it("injects the bounded transport into the SDK", () => {
+    createAnthropicEngine({ model: "claude-sonnet-4-6" });
+    expect(typeof lastAnthropicConstructorArgs?.fetch).toBe("function");
+  });
+
+  it("validates text incrementally and retains accounting on failure", async () => {
+    nextAnthropicResponse = {
+      id: "msg_test",
+      type: "message",
+      role: "assistant",
+      content: [
+        { type: "text", text: "ab" },
+        { type: "text", text: "cde" },
+      ],
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 200, output_tokens: 100 },
+    };
+    const engine = createAnthropicEngine({
+      model: "claude-sonnet-4-6",
+      responseLimits: { maxTextBytes: 4 },
+    });
+
+    const error = await engine.complete(emptyPrompt()).catch((cause) => cause);
+    expect(error).toMatchObject({
+      name: "ModelResponseLimitError",
+      limit: "maxTextBytes",
+      accounting: {
+        inputTokens: 200,
+        outputTokens: 100,
+      },
+    });
+    expect(error.accounting.costUsd).toBeGreaterThan(0);
+  });
+
+  it("rejects invalid and excessive tool blocks before returning a prefix", async () => {
+    nextAnthropicResponse = {
+      id: "msg_test",
+      type: "message",
+      role: "assistant",
+      content: [
+        { type: "tool_use", id: "tool_1", name: "first", input: {} },
+        { type: "tool_use", id: "tool_2", name: "second", input: {} },
+      ],
+      model: "claude-sonnet-4-6",
+      stop_reason: "tool_use",
+      stop_sequence: null,
+      usage: { input_tokens: 20, output_tokens: 10 },
+    };
+    const engine = createAnthropicEngine({
+      model: "claude-sonnet-4-6",
+      responseLimits: { maxToolCalls: 1 },
+    });
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow("maxToolCalls");
+
+    nextAnthropicResponse = {
+      ...(nextAnthropicResponse as Record<string, unknown>),
+      content: [{ type: "tool_use", id: "tool_1", name: "first", input: [] }],
+    };
+    await expect(engine.complete(emptyPrompt())).rejects.toThrow("maxToolArgumentBytes");
+  });
+
+  it("retains final usage when a last streaming delta crosses the limit", async () => {
+    nextAnthropicStreamTexts = ["oversized"];
+    nextAnthropicResponse = {
+      id: "msg_stream",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "oversized" }],
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 200, output_tokens: 100 },
+    };
+    const deltas: string[] = [];
+    const engine = createAnthropicEngine({
+      model: "claude-sonnet-4-6",
+      responseLimits: { maxTextBytes: 4 },
+    });
+
+    const error = await engine
+      .complete(emptyPrompt(), {
+        onDelta: (delta) => {
+          if (delta.kind === "text_delta") deltas.push(delta.text);
+        },
+      })
+      .catch((cause) => cause);
+
+    expect(deltas).toEqual([]);
+    expect(anthropicStreamAbortCalls).toBe(1);
+    expect(error).toMatchObject({
+      name: "ModelResponseLimitError",
+      limit: "maxTextBytes",
+      accounting: {
+        inputTokens: 200,
+        outputTokens: 100,
+      },
+    });
+    expect(error.accounting.costUsd).toBeGreaterThan(0);
+  });
+
+  it("records an aborted limited stream as unpriced when final usage rejects", async () => {
+    anthropicAbortRejectsFinal = true;
+    nextAnthropicStreamTexts = ["oversized"];
+    nextAnthropicResponse = {
+      id: "msg_stream",
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: "oversized" }],
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      stop_sequence: null,
+      usage: { input_tokens: 200, output_tokens: 100 },
+    };
+    const engine = createAnthropicEngine({
+      model: "claude-sonnet-4-6",
+      responseLimits: { maxTextBytes: 4 },
+    });
+
+    const error = await engine
+      .complete(emptyPrompt(), { onDelta: () => {} })
+      .catch((cause) => cause);
+
+    expect(error).toMatchObject({
+      name: "ModelResponseLimitError",
+      accounting: {
+        inputTokens: 200,
+        outputTokens: 100,
+        unpricedReason: expect.stringContaining("before final billing usage"),
+      },
+    });
+    expect(error.accounting.costUsd).toBeUndefined();
+  });
+
+  it("rejects malformed buffered response collections with known accounting", async () => {
+    nextAnthropicResponse = {
+      id: "msg_bad",
+      type: "message",
+      role: "assistant",
+      content: { nested: "not-an-array" },
+      model: "claude-sonnet-4-6",
+      stop_reason: "end_turn",
+      usage: { input_tokens: 200, output_tokens: 100 },
+    };
+    const engine = createAnthropicEngine({ model: "claude-sonnet-4-6" });
+
+    const error = await engine.complete(emptyPrompt()).catch((cause) => cause);
+
+    expect(error).toMatchObject({
+      name: "ModelResponseLimitError",
+      accounting: { inputTokens: 200, outputTokens: 100 },
+    });
   });
 });

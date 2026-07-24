@@ -5,6 +5,7 @@
  * registry, and CLI commands. They are internal to the CLI — not part
  * of the Auggy public API surface.
  */
+import type { ModelResponseLimits } from "../types";
 
 // ---------------------------------------------------------------------------
 // Config types — the output of parsing agent.yaml
@@ -79,6 +80,8 @@ export interface EngineConfig {
   maxContextTokens?: number;
   /** Max output tokens per turn (sent as `max_completion_tokens` for openai/openrouter). */
   maxTokens?: number;
+  /** Finite model response limits enforced by both adapters and the kernel. */
+  responseLimits?: Partial<ModelResponseLimits>;
   /** Optional proxy/gateway base URL. Ignored for openrouter (hardcoded). */
   baseURL?: string;
   /**

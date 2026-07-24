@@ -60,6 +60,7 @@ export type {
   // Model
   ModelClient,
   ModelResponse,
+  ModelResponseLimits,
   ModelDelta,
   AssembledPrompt,
   // Storage

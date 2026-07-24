@@ -1,12 +1,11 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
-import {
-  getDefaultEnvironment,
-  StdioClientTransport,
-} from "@modelcontextprotocol/sdk/client/stdio.js";
+import { getDefaultEnvironment } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { createRedirectRejectingFetch } from "../../http";
+import { BoundedStdioClientTransport } from "./bounded-stdio-transport";
+import { createMcpBoundedFetch } from "./bounded-fetch";
 import type { McpClientAdapter, McpConnection, McpRuntimeServer, McpToolCallResult } from "./types";
 
 export class SdkMcpClientAdapter implements McpClientAdapter {
@@ -61,9 +60,13 @@ export function createTransport(
   fetchImpl: typeof fetch = globalThis.fetch.bind(globalThis),
 ): Transport {
   const credentialSafeFetch = createRedirectRejectingFetch(fetchImpl);
+  const boundedFetch = createMcpBoundedFetch(
+    credentialSafeFetch,
+    server.policy.maxTransportMessageBytes ?? 256 * 1024,
+  );
   switch (server.transport) {
     case "stdio":
-      return new StdioClientTransport({
+      return new BoundedStdioClientTransport({
         command: mustString(server.config.command, `${server.name}.command`),
         args: server.config.args,
         cwd: typeof server.config.cwd === "string" ? server.config.cwd : undefined,
@@ -71,13 +74,13 @@ export function createTransport(
           ...getDefaultEnvironment(),
           ...(server.config.env ?? {}),
         },
-        stderr: "ignore",
+        maxMessageBytes: server.policy.maxTransportMessageBytes ?? 256 * 1024,
       });
     case "streamable-http":
       return new StreamableHTTPClientTransport(
         new URL(mustString(server.config.url, `${server.name}.url`)),
         {
-          fetch: credentialSafeFetch,
+          fetch: boundedFetch,
           requestInit: {
             headers: server.config.headers,
           },
@@ -85,12 +88,12 @@ export function createTransport(
       );
     case "sse":
       return new SSEClientTransport(new URL(mustString(server.config.url, `${server.name}.url`)), {
-        fetch: credentialSafeFetch,
+        fetch: boundedFetch,
         requestInit: {
           headers: server.config.headers,
         },
         eventSourceInit: {
-          fetch: credentialSafeFetch,
+          fetch: boundedFetch,
         },
       });
   }

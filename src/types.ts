@@ -563,6 +563,27 @@ export interface ModelResponse {
   unpricedReason?: string; // set when costUsd is absent, describes why pricing was unavailable
 }
 
+export interface ModelResponseLimits {
+  /** Maximum UTF-8 bytes in assistant text across one inference. Default 1 MiB. */
+  maxTextBytes: number;
+  /** Maximum tool calls returned by one inference. Default 32. */
+  maxToolCalls: number;
+  /** Maximum UTF-8 bytes in one tool name. Default 256. */
+  maxToolNameBytes: number;
+  /** Maximum serialized UTF-8 bytes in one tool-call argument object. Default 64 KiB. */
+  maxToolArgumentBytes: number;
+  /** Maximum aggregate serialized argument bytes across one response. Default 256 KiB. */
+  maxTotalToolArgumentBytes: number;
+  /** Maximum JSON nesting depth in tool arguments. Default 32. */
+  maxArgumentDepth: number;
+  /** Maximum JSON nodes in each tool argument object. Default 10,000. */
+  maxArgumentNodes: number;
+  /** Maximum aggregate UTF-8 bytes retained from one model response. Default 2 MiB. */
+  maxResponseBytes: number;
+  /** Maximum streamed text delta events per inference. Default 10,000. */
+  maxStreamEvents: number;
+}
+
 export type ModelDelta = { kind: "text_delta"; text: string };
 
 export interface ModelClient {
@@ -1407,6 +1428,8 @@ export interface AgentConfig {
   compactionStrategy?: CompactionStrategy;
   /** Max inference loop iterations per turn. Default 10. */
   maxInferenceLoops?: number;
+  /** Mandatory model-output bounds. Omitted fields use finite secure defaults. */
+  responseLimits?: Partial<ModelResponseLimits>;
   /** Tool-choice policy sent to the model. "auto" (default) lets the model
    *  decide; "any" forces a tool call; { name } forces a specific tool. */
   toolChoice?: "auto" | "any" | { name: string };
@@ -1686,6 +1709,8 @@ export interface TelegramWebhookOptions {
   port?: number;
   secretToken: string;
   allowedUpdates?: string[];
+  /** Maximum encoded webhook request bytes. Default 256 KiB. */
+  maxBodyBytes?: number;
 }
 
 export interface TelegramAdmittedAgent {
@@ -1710,6 +1735,28 @@ export interface TelegramAuthOptions {
   anonymousIdentityMode?: TelegramAnonymousIdentityMode;
 }
 
+export interface TelegramReplayStore {
+  claim(
+    namespace: string,
+    updateId: number,
+    payloadHash: string,
+  ): "claimed" | "duplicate" | "conflict";
+  close?(): void;
+}
+
+export interface TelegramReplayOptions {
+  /** Shared transactional store. When omitted, a hardened SQLite store is used. */
+  store?: TelegramReplayStore;
+  /** SQLite path used when store is omitted. Default ./data/telegram-replay.db. */
+  dbPath?: string;
+  /** Stable non-secret namespace. Defaults to augment name + numeric Telegram bot id. */
+  namespace?: string;
+  /** Claim retention. Default 30 days. */
+  retentionMs?: number;
+  /** Maximum retained update claims. Default 1,000,000. */
+  maxEntries?: number;
+}
+
 export interface TelegramTransportOptions {
   botToken: string;
   inbound: {
@@ -1719,4 +1766,5 @@ export interface TelegramTransportOptions {
   };
   auth: TelegramAuthOptions;
   creator?: CreatorConfig;
+  replay?: TelegramReplayOptions;
 }

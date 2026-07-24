@@ -11,6 +11,10 @@ export interface McpRuntimePolicy {
   timeoutMs?: number;
   maxResultBytes?: number;
   maxSchemaBytes?: number;
+  maxArgumentBytes?: number;
+  maxDepth?: number;
+  maxNodes?: number;
+  maxTransportMessageBytes?: number;
   maxConcurrentCalls?: number;
   maxTools?: number;
   maxToolPages?: number;

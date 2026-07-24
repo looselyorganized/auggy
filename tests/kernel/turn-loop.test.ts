@@ -137,7 +137,7 @@ describe("TurnLoop", () => {
     expect(result.success).toBe(false);
     expect(result.status).toBe("failed");
     expect(result.error?.source).toBe("context-allocator");
-    expect(result.error?.message).toContain('Pinned context block "identity"');
+    expect(result.error?.message).toBe("Context assembly failed.");
     expect(result.errorResponse).toContain("required context exceeds");
     expect(model.calls).toHaveLength(0);
     expect(events).toContainEqual(
@@ -716,6 +716,76 @@ describe("TurnLoop", () => {
     expect(model.calls).toHaveLength(0);
   });
 
+  it("does not expose required-context exception text in kernel events", async () => {
+    const sentinel = "sk-live-secret-required-context";
+    const model = createMockModel();
+    const events: KernelEvent[] = [];
+    const loop = createTurnLoop({
+      augments: [
+        {
+          name: "critical",
+          required: true,
+          context: async () => {
+            throw new Error(sentinel);
+          },
+        },
+      ],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+    const result = await loop.executeTurn(makeTrigger("Hi"), "thread-secret-context", {
+      onEvent: (event) => events.push(event),
+    });
+    expect(JSON.stringify(events)).not.toContain(sentinel);
+    expect(result.errorResponse).not.toContain(sentinel);
+    expect(JSON.stringify(result.error)).not.toContain(sentinel);
+  });
+
+  it("rejects an excessive provider tool-call structure before dispatch", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      content: "",
+      toolCalls: [
+        { name: "echo", arguments: { input: "one" } },
+        { name: "echo", arguments: { input: "two" } },
+      ],
+      finishReason: "tool_use",
+    });
+    let executions = 0;
+    const loop = createTurnLoop({
+      augments: [
+        {
+          name: "echo",
+          tools: [
+            {
+              name: "echo",
+              description: "Echo",
+              category: "meta",
+              input: z.object({ input: z.string() }),
+              execute: async () => {
+                executions++;
+                return "ok";
+              },
+            },
+          ],
+        },
+      ],
+      model,
+      tokenizer: createTokenizer(),
+      config: {
+        name: "test",
+        model: "mock",
+        augments: [],
+        responseLimits: { maxToolCalls: 1 },
+      },
+    });
+    const result = await loop.executeTurn(makeTrigger("Hi"), "thread-response-limit");
+    expect(result.success).toBe(false);
+    expect(result.errorResponse).toBe("The model response exceeded a configured safety limit.");
+    expect(executions).toBe(0);
+  });
+
   it("enforces maxToolCallsPerTurn", async () => {
     const model = createMockModel();
     for (let i = 0; i < 10; i++) {
@@ -796,6 +866,7 @@ describe("TurnLoop", () => {
   });
 
   it("counts a throwing side-effecting attempt against the parallel batch quota", async () => {
+    const sentinel = "sk-live-tool-exception-secret";
     const model = createMockModel();
     model.pushResponse({
       content: "",
@@ -820,7 +891,7 @@ describe("TurnLoop", () => {
               input: z.object({ input: z.string() }),
               execute: async ({ input }) => {
                 attempts.push(input);
-                throw new Error("side effect outcome unknown");
+                throw new Error(sentinel);
               },
             },
           ],
@@ -831,9 +902,21 @@ describe("TurnLoop", () => {
       config: { name: "test", model: "mock", augments: [] },
     });
 
-    await loop.executeTurn(makeTrigger("Go"), "thread-throwing-limit");
+    const warnings: string[] = [];
+    const originalWarn = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(args.map(String).join(" "));
+    try {
+      await loop.executeTurn(makeTrigger("Go"), "thread-throwing-limit");
+    } finally {
+      console.warn = originalWarn;
+    }
 
     expect(attempts).toEqual(["first"]);
+    expect(JSON.stringify(model.calls[1])).not.toContain(sentinel);
+    expect(JSON.stringify(model.calls[1])).toContain("Tool execution failed");
+    expect(warnings.join("\n")).toContain("tool=fragile");
+    expect(warnings.join("\n")).toContain("category=error-object");
+    expect(warnings.join("\n")).not.toContain(sentinel);
   });
 
   it("counts a structured error attempt against the parallel batch quota", async () => {

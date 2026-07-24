@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import { createMcpBoundedFetch } from "../../src/augments/mcp/bounded-fetch";
+import { BoundedStdioClientTransport } from "../../src/augments/mcp/bounded-stdio-transport";
 import { createTransport } from "../../src/augments/mcp/sdk-adapter";
 import type { McpRuntimeServer } from "../../src/augments/mcp/types";
 
@@ -57,4 +59,121 @@ describe("MCP credential redirect boundary", () => {
       }
     });
   }
+});
+
+describe("MCP HTTP transport message bounds", () => {
+  test("rejects a declared oversized response before reading it", async () => {
+    let canceled = false;
+    const base = (async () =>
+      new Response(
+        new ReadableStream({
+          cancel() {
+            canceled = true;
+          },
+        }),
+        { headers: { "content-length": "9" } },
+      )) as unknown as typeof fetch;
+
+    await expect(createMcpBoundedFetch(base, 8)("https://mcp.example/")).rejects.toThrow(
+      /byte limit/i,
+    );
+    expect(canceled).toBe(true);
+  });
+
+  test("cancels a chunked response as soon as aggregate bytes exceed the cap", async () => {
+    let canceled = false;
+    const base = (async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("1234"));
+            controller.enqueue(new TextEncoder().encode("56789"));
+          },
+          cancel() {
+            canceled = true;
+          },
+        }),
+      )) as unknown as typeof fetch;
+    const response = await createMcpBoundedFetch(base, 8)("https://mcp.example/");
+
+    await expect(response.text()).rejects.toThrow(/byte limit/i);
+    expect(canceled).toBe(true);
+  });
+
+  test("caps each SSE event independently for LF and CRLF separators", async () => {
+    const chunks = ["data:a\r\n\r", "\ndata:b\n", "\ndata:c\r\n\r\n"];
+    const base = (async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            for (const chunk of chunks) controller.enqueue(new TextEncoder().encode(chunk));
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/event-stream; charset=utf-8" } },
+      )) as unknown as typeof fetch;
+    const response = await createMcpBoundedFetch(base, 12)("https://mcp.example/");
+
+    expect(await response.text()).toBe(chunks.join(""));
+  });
+
+  test("cancels an oversized SSE event even when it spans chunks", async () => {
+    let canceled = false;
+    const base = (async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode("data:12"));
+            controller.enqueue(new TextEncoder().encode("3456"));
+          },
+          cancel() {
+            canceled = true;
+          },
+        }),
+        { headers: { "content-type": "text/event-stream" } },
+      )) as unknown as typeof fetch;
+    const response = await createMcpBoundedFetch(base, 10)("https://mcp.example/");
+
+    await expect(response.text()).rejects.toThrow(/event exceeded/i);
+    expect(canceled).toBe(true);
+  });
+});
+
+describe("MCP stdio transport message bounds", () => {
+  test("gates late child output after a fatal oversized message", async () => {
+    const childScript = [
+      'process.on("SIGTERM", () => {});',
+      'process.stdout.write("x".repeat(33));',
+      'setTimeout(() => process.stdout.write("\\n{\\"jsonrpc\\":\\"2.0\\",\\"method\\":\\"late\\"}\\n"), 150);',
+      "setTimeout(() => process.exit(0), 200);",
+    ].join("");
+    const transport = new BoundedStdioClientTransport({
+      command: process.execPath,
+      args: ["-e", childScript],
+      env: {},
+      maxMessageBytes: 32,
+    });
+    const messages: unknown[] = [];
+    const error = new Promise<Error>((resolve) => {
+      transport.onerror = resolve;
+    });
+    transport.onmessage = (message) => messages.push(message);
+
+    await transport.start();
+    expect((await error).message).toMatch(/byte limit/i);
+    await transport.close();
+
+    expect(messages).toHaveLength(0);
+  });
+
+  test("rejects invalid direct byte limits", () => {
+    expect(
+      () =>
+        new BoundedStdioClientTransport({
+          command: process.execPath,
+          env: {},
+          maxMessageBytes: Number.POSITIVE_INFINITY,
+        }),
+    ).toThrow(/positive safe integer/i);
+  });
 });

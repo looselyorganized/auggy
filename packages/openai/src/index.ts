@@ -4,12 +4,22 @@ import { lookup, getFreshness, priceOpenAIResponse } from "auggy/internal/openai
 import { safeParseToolCall } from "auggy/internal/tool-call";
 import { assembleSystemBlocks } from "auggy/internal/prompt-assembly";
 import { warnCacheRatesIgnored } from "auggy/internal/cost";
+import {
+  createBoundedModelFetch,
+  findModelResponseLimitError,
+  measureJsonValue,
+  ModelResponseLimitError,
+  resolveModelResponseLimits,
+  utf8ByteLength,
+  validateModelResponse,
+} from "auggy/internal/response-limits";
 import type {
   AssembledPrompt,
   Message,
   ModelClient,
   ModelDelta,
   ModelResponse,
+  ModelResponseLimits,
   ToolDefinition,
 } from "auggy";
 
@@ -74,12 +84,19 @@ export interface OpenAIEngineOptions {
    * usage is parsed from OpenAI Chat Completions responses).
    */
   costOverride?: import("auggy/internal/cost").Pricing;
+  /** Finite application-layer response limits. Omitted fields use secure defaults. */
+  responseLimits?: Partial<ModelResponseLimits>;
 }
 
 export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
+  const responseLimits = resolveModelResponseLimits(opts.responseLimits);
   const client = new OpenAI({
     apiKey: opts.apiKey,
     baseURL: opts.baseURL,
+    fetch: createBoundedModelFetch(
+      globalThis.fetch.bind(globalThis) as typeof fetch,
+      responseLimits,
+    ),
   });
 
   const maxContextTokens = opts.maxContextTokens ?? 128_000;
@@ -151,6 +168,8 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
           signal: requestOptions?.signal,
         });
       } catch (err) {
+        const responseLimitError = findModelResponseLimitError(err);
+        if (responseLimitError) throw responseLimitError;
         // Wrap the SDK error so logs identify which engine + model failed,
         // not just "OpenAIError: 429". `cause` preserves the original SDK
         // error (including `.status`) for callers that introspect.
@@ -159,13 +178,29 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
           cause: err,
         });
       }
-      const response = buildOpenAIModelResponse(completion, opts.model);
-      const result = priceOpenAIResponse(opts.model, opts.costOverride, {
-        prompt_tokens: completion.usage?.prompt_tokens ?? response.inputTokens,
-        completion_tokens: completion.usage?.completion_tokens ?? response.outputTokens,
-        reasoning_tokens: (completion.usage as Record<string, unknown> | null | undefined)
-          ?.reasoning_tokens as number | undefined,
-      });
+      const usage = parseOpenAIUsage(
+        isProviderRecord(completion) ? completion.usage : undefined,
+      );
+      const { inputTokens, outputTokens } = usage;
+      const result = usage.valid
+        ? priceOpenAIResponse(opts.model, opts.costOverride, {
+            prompt_tokens: inputTokens,
+            completion_tokens: outputTokens,
+            reasoning_tokens: usage.reasoningTokens,
+          })
+        : { priced: false as const, reason: INVALID_USAGE_REASON };
+      const accounting = result.priced
+        ? { inputTokens, outputTokens, costUsd: result.costUsd }
+        : { inputTokens, outputTokens, unpricedReason: result.reason };
+      let response: ModelResponse;
+      try {
+        response = buildOpenAIModelResponse(completion, opts.model, responseLimits);
+      } catch (error) {
+        if (error instanceof ModelResponseLimitError) {
+          throw error.withAccounting(accounting);
+        }
+        throw error;
+      }
       return result.priced
         ? { ...response, costUsd: result.costUsd }
         : { ...response, costUsd: undefined, unpricedReason: result.reason };
@@ -362,66 +397,162 @@ export function convertOpenAITools(toolDefs: ToolDefinition[]): OpenAI.Chat.Chat
 // OpenAI response → ModelResponse translation
 // ===========================================================================
 
-/** Defensive JSON.parse that returns `{}` on malformed input. Used to recover
- *  tool call argument objects from the SDK's string-form `function.arguments`. */
-export function safeParseJson(s: string): Record<string, unknown> {
+/** Strictly parses a bounded tool argument object from the SDK string form. */
+export function safeParseJson(
+  s: string,
+  configured?: Partial<ModelResponseLimits>,
+): Record<string, unknown> {
+  const limits = resolveModelResponseLimits(configured);
+  if (typeof s !== "string") {
+    throw new ModelResponseLimitError("maxToolArgumentBytes");
+  }
+  if (utf8ByteLength(s, limits.maxToolArgumentBytes) > limits.maxToolArgumentBytes) {
+    throw new ModelResponseLimitError("maxToolArgumentBytes");
+  }
   try {
     const parsed = JSON.parse(s);
     if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      measureJsonValue(parsed, {
+        maxBytes: limits.maxToolArgumentBytes,
+        maxDepth: limits.maxArgumentDepth,
+        maxNodes: limits.maxArgumentNodes,
+      });
       return parsed as Record<string, unknown>;
     }
   } catch {
-    /* fall through */
+    throw new ModelResponseLimitError("maxToolArgumentBytes");
   }
-  return {};
+  throw new ModelResponseLimitError("maxToolArgumentBytes");
+}
+
+function isProviderRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+const INVALID_USAGE_REASON = "Provider returned invalid accounting metadata.";
+
+export interface ParsedOpenAIUsage {
+  inputTokens: number;
+  outputTokens: number;
+  reasoningTokens?: number;
+  valid: boolean;
+}
+
+function isUsageToken(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) >= 0;
+}
+
+/**
+ * Parse OpenAI-compatible usage without converting absent or malformed
+ * counters into a priced zero-token inference.
+ */
+export function parseOpenAIUsage(value: unknown): ParsedOpenAIUsage {
+  if (!isProviderRecord(value)) {
+    return { inputTokens: 0, outputTokens: 0, valid: false };
+  }
+  const promptTokens = value.prompt_tokens;
+  const completionTokens = value.completion_tokens;
+  const reasoningTokens = value.reasoning_tokens;
+  if (
+    !isUsageToken(promptTokens) ||
+    !isUsageToken(completionTokens) ||
+    (reasoningTokens !== undefined && !isUsageToken(reasoningTokens))
+  ) {
+    return { inputTokens: 0, outputTokens: 0, valid: false };
+  }
+  return {
+    inputTokens: promptTokens,
+    outputTokens: completionTokens,
+    ...(reasoningTokens !== undefined ? { reasoningTokens } : {}),
+    valid: true,
+  };
 }
 
 export function buildOpenAIModelResponse(
   completion: OpenAI.Chat.ChatCompletion,
   modelLabel: string = "openai",
+  configured?: Partial<ModelResponseLimits>,
 ): ModelResponse {
-  const choice = completion.choices[0];
+  const limits = resolveModelResponseLimits(configured);
+  const rawCompletion = completion as unknown;
+  if (!isProviderRecord(rawCompletion) || !Array.isArray(rawCompletion.choices)) {
+    throw new ModelResponseLimitError("maxResponseBytes");
+  }
+  const choice = rawCompletion.choices[0];
   if (!choice) {
     // Empty choices array — rare API edge case (typically a content policy
     // rejection that was caught before generation). We throw rather than
     // return an empty response because a silent empty turn means the agent
     // sends nothing back to the user with no explanation. The thrown error
     // wraps up through the kernel's transport layer.
-    throw new Error(
-      `OpenAI engine (${modelLabel}) returned no choices in completion ` +
-        `(usage=${JSON.stringify(completion.usage)}, id=${completion.id ?? "?"}). ` +
+    throw new ModelResponseLimitError(
+      "maxResponseBytes",
+      `OpenAI engine (${modelLabel}) returned no choices in completion. ` +
         `Likely a content-policy rejection — inspect the prompt for blocked content.`,
     );
   }
+  if (!isProviderRecord(choice) || !isProviderRecord(choice.message)) {
+    throw new ModelResponseLimitError("maxResponseBytes");
+  }
 
   const message = choice.message;
+  if (message.content !== null && message.content !== undefined && typeof message.content !== "string") {
+    throw new ModelResponseLimitError("maxTextBytes");
+  }
   const content = message.content ?? "";
-  const toolCalls = (message.tool_calls ?? [])
+  const rawToolCalls = message.tool_calls ?? [];
+  if (!Array.isArray(rawToolCalls)) {
+    throw new ModelResponseLimitError("maxToolCalls");
+  }
+  if (rawToolCalls.length > limits.maxToolCalls) {
+    throw new ModelResponseLimitError("maxToolCalls");
+  }
+  const toolCalls = rawToolCalls
     .map((tc) => {
       // OpenAI v6 may return either function or custom tool calls. Auggy
       // only emits function tools, so non-function results are dropped.
+      if (!isProviderRecord(tc)) {
+        throw new ModelResponseLimitError("maxToolArgumentBytes");
+      }
       if (tc.type === "function") {
+        if (
+          !isProviderRecord(tc.function) ||
+          typeof tc.function.name !== "string" ||
+          typeof tc.function.arguments !== "string"
+        ) {
+          throw new ModelResponseLimitError("maxToolArgumentBytes");
+        }
         return {
           name: tc.function.name,
-          arguments: safeParseJson(tc.function.arguments),
+          arguments: safeParseJson(tc.function.arguments, limits),
         };
       }
       return null;
     })
     .filter((x): x is { name: string; arguments: Record<string, unknown> } => x !== null);
 
+  const finishReasonValue = choice.finish_reason;
+  if (
+    typeof finishReasonValue !== "string" ||
+    !["stop", "tool_calls", "function_call", "length", "content_filter"].includes(
+      finishReasonValue,
+    )
+  ) {
+    throw new ModelResponseLimitError("maxResponseBytes");
+  }
   const finishReason: ModelResponse["finishReason"] =
-    choice.finish_reason === "tool_calls" || choice.finish_reason === "function_call"
+    finishReasonValue === "tool_calls" || finishReasonValue === "function_call"
       ? "tool_use"
-      : choice.finish_reason === "length"
+      : finishReasonValue === "length"
         ? "max_tokens"
         : "end_turn";
 
-  return {
+  const usage = parseOpenAIUsage(rawCompletion.usage);
+  return validateModelResponse({
     content,
     toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-    inputTokens: completion.usage?.prompt_tokens ?? 0,
-    outputTokens: completion.usage?.completion_tokens ?? 0,
+    inputTokens: usage.inputTokens,
+    outputTokens: usage.outputTokens,
     finishReason,
-  };
+  }, limits);
 }

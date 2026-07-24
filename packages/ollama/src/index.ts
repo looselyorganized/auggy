@@ -2,12 +2,20 @@ import { Ollama, type ChatRequest, type ChatResponse, type Message as OllamaMess
 import { normalizeSchema } from "auggy/internal/schema-normalize";
 import { safeParseToolCall } from "auggy/internal/tool-call";
 import { assembleSystemBlocks } from "auggy/internal/prompt-assembly";
+import {
+  createBoundedModelFetch,
+  ModelResponseLimitError,
+  resolveModelResponseLimits,
+  StreamingResponseLimitTracker,
+  validateModelResponse,
+} from "auggy/internal/response-limits";
 import type {
   AssembledPrompt,
   Message,
   ModelClient,
   ModelDelta,
   ModelResponse,
+  ModelResponseLimits,
   ToolDefinition,
 } from "auggy";
 
@@ -73,12 +81,32 @@ export interface OllamaEngineOptions {
    *  bearer-gated proxies. Local Ollama (default `localhost:11434`)
    *  does not authenticate; leave unset for that case. */
   apiKey?: string;
+  /** Finite application-layer response limits. Omitted fields use secure defaults. */
+  responseLimits?: Partial<ModelResponseLimits>;
+}
+
+function isProviderRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function ollamaAccounting(value: unknown) {
+  const response = isProviderRecord(value) ? value : {};
+  return {
+    inputTokens: (response.prompt_eval_count ?? 0) as number,
+    outputTokens: (response.eval_count ?? 0) as number,
+    unpricedReason: "Ollama responses are not priced.",
+  };
 }
 
 export function createOllamaEngine(opts: OllamaEngineOptions): ModelClient {
+  const responseLimits = resolveModelResponseLimits(opts.responseLimits);
   const client = new Ollama({
     host: opts.baseURL ?? "http://localhost:11434",
     ...(opts.apiKey ? { headers: { Authorization: `Bearer ${opts.apiKey}` } } : {}),
+    fetch: createBoundedModelFetch(
+      globalThis.fetch.bind(globalThis) as typeof fetch,
+      responseLimits,
+    ),
   });
 
   const maxContextTokens = opts.maxContextTokens ?? 8_192;
@@ -139,35 +167,105 @@ export function createOllamaEngine(opts: OllamaEngineOptions): ModelClient {
         let accumulated = "";
         let lastChunk: ChatResponse | null = null;
         const accumulatedToolCalls: NonNullable<OllamaMessage["tool_calls"]> = [];
+        const tracker = new StreamingResponseLimitTracker(responseLimits);
         try {
           for await (const chunk of stream) {
-            if (chunk.message?.content) {
-              accumulated += chunk.message.content;
-              opts2.onDelta?.({ kind: "text_delta", text: chunk.message.content });
-            }
-            if (chunk.message?.tool_calls) {
-              accumulatedToolCalls.push(...chunk.message.tool_calls);
+            if (!isProviderRecord(chunk)) {
+              throw new ModelResponseLimitError("maxResponseBytes");
             }
             lastChunk = chunk;
+            const message = chunk.message;
+            if (message !== undefined && !isProviderRecord(message)) {
+              throw new ModelResponseLimitError("maxResponseBytes");
+            }
+            const content = message?.content;
+            if (content !== undefined && content !== null && typeof content !== "string") {
+              throw new ModelResponseLimitError("maxTextBytes");
+            }
+            if (content) {
+              tracker.pushText(content);
+              accumulated += content;
+              opts2.onDelta?.({ kind: "text_delta", text: content });
+            }
+            const chunkToolCalls = message?.tool_calls;
+            if (chunkToolCalls !== undefined && !Array.isArray(chunkToolCalls)) {
+              throw new ModelResponseLimitError("maxToolCalls");
+            }
+            if (chunkToolCalls) {
+              if (
+                accumulatedToolCalls.length + chunkToolCalls.length >
+                responseLimits.maxToolCalls
+              ) {
+                throw new ModelResponseLimitError("maxToolCalls");
+              }
+              for (const toolCall of chunkToolCalls) {
+                accumulatedToolCalls.push(
+                  toolCall as NonNullable<OllamaMessage["tool_calls"]>[number],
+                );
+              }
+              validateModelResponse(
+                buildModelResponse(accumulated, chunk, accumulatedToolCalls),
+                responseLimits,
+              );
+            }
           }
+        } catch (error) {
+          stream.abort();
+          if (error instanceof ModelResponseLimitError && lastChunk) {
+            throw error.withAccounting(ollamaAccounting(lastChunk));
+          }
+          throw error;
         } finally {
           opts2.signal?.removeEventListener("abort", abortStream);
         }
         if (!lastChunk) {
           throw new Error("Ollama stream returned no chunks");
         }
-        return buildModelResponse(accumulated, lastChunk, accumulatedToolCalls);
+        try {
+          return validateModelResponse(
+            buildModelResponse(accumulated, lastChunk, accumulatedToolCalls),
+            responseLimits,
+          );
+        } catch (error) {
+          if (error instanceof ModelResponseLimitError) {
+            throw error.withAccounting(ollamaAccounting(lastChunk));
+          }
+          throw error;
+        }
       }
 
       // Non-streaming path (buffered; for tests / consumers that don't
       // need streaming). Tool calls come back in response.message.tool_calls
       // directly — no accumulation needed.
       const response = await client.chat({ ...baseRequest, stream: false });
-      return buildModelResponse(
-        response.message?.content ?? "",
-        response,
-        response.message?.tool_calls ?? [],
-      );
+      try {
+        if (!isProviderRecord(response)) {
+          throw new ModelResponseLimitError("maxResponseBytes");
+        }
+        if (response.message !== undefined && !isProviderRecord(response.message)) {
+          throw new ModelResponseLimitError("maxResponseBytes");
+        }
+        const content = response.message?.content;
+        if (content !== undefined && content !== null && typeof content !== "string") {
+          throw new ModelResponseLimitError("maxTextBytes");
+        }
+        const rawToolCalls = response.message?.tool_calls ?? [];
+        if (!Array.isArray(rawToolCalls)) {
+          throw new ModelResponseLimitError("maxToolCalls");
+        }
+        if (rawToolCalls.length > responseLimits.maxToolCalls) {
+          throw new ModelResponseLimitError("maxToolCalls");
+        }
+        return validateModelResponse(
+          buildModelResponse(content ?? "", response as unknown as ChatResponse, rawToolCalls),
+          responseLimits,
+        );
+      } catch (error) {
+        if (error instanceof ModelResponseLimitError) {
+          throw error.withAccounting(ollamaAccounting(response));
+        }
+        throw error;
+      }
     },
   };
 }
@@ -285,13 +383,28 @@ function buildModelResponse(
   response: ChatResponse,
   rawToolCalls: NonNullable<OllamaMessage["tool_calls"]>,
 ): ModelResponse {
+  if (
+    typeof content !== "string" ||
+    !isProviderRecord(response) ||
+    !Array.isArray(rawToolCalls)
+  ) {
+    throw new ModelResponseLimitError("maxResponseBytes");
+  }
   const toolCalls: { name: string; arguments: Record<string, unknown> }[] = [];
   for (const tc of rawToolCalls) {
+    if (
+      !isProviderRecord(tc) ||
+      !isProviderRecord(tc.function) ||
+      typeof tc.function.name !== "string" ||
+      !isProviderRecord(tc.function.arguments)
+    ) {
+      throw new ModelResponseLimitError("maxToolArgumentBytes");
+    }
     // tc.function.arguments is `{[key: string]: any}` per Ollama SDK
     // types — already an object, no parsing needed.
     toolCalls.push({
       name: tc.function.name,
-      arguments: tc.function.arguments as Record<string, unknown>,
+      arguments: tc.function.arguments,
     });
   }
 
@@ -315,8 +428,8 @@ function buildModelResponse(
     // the final response. Streaming chunks before the final one don't carry
     // these — that's why buildModelResponse takes the lastChunk in the
     // streaming path. Field names mirror Anthropic's inputTokens/outputTokens.
-    inputTokens: response.prompt_eval_count ?? 0,
-    outputTokens: response.eval_count ?? 0,
+    inputTokens: (response.prompt_eval_count ?? 0) as number,
+    outputTokens: (response.eval_count ?? 0) as number,
     finishReason,
     // costUsd: undefined — Ollama is free; no pricing apparatus.
   };

@@ -237,6 +237,10 @@ You can also tune runtime caps per server:
         "maxToolPages": 5,
         "maxResultBytes": 65536,
         "maxSchemaBytes": 8192,
+        "maxArgumentBytes": 32768,
+        "maxDepth": 24,
+        "maxNodes": 5000,
+        "maxTransportMessageBytes": 131072,
         "includeToolDescriptions": true
       }
     }
@@ -245,12 +249,20 @@ You can also tune runtime caps per server:
 ```
 
 Defaults are conservative: 30s timeout, four concurrent calls per server,
-64 tools, 20 discovery pages, 128 KiB max result, and 16 KiB max input schema.
+64 tools, 20 discovery pages, 128 KiB max result, 16 KiB max input schema,
+64 KiB max call arguments, depth 32, 10,000 JSON nodes, and 256 KiB per
+transport message.
 
 ## Security Notes
 
 - Treat remote MCP tool descriptions and results as untrusted external content.
-- Auggy bounds MCP tool result size before returning it to the model.
+- Auggy validates argument bytes/depth/nodes before remote dispatch, and
+  validates schemas and results before exposing them to the model. A limit
+  violation fails closed rather than replacing an invalid schema with a
+  permissive one.
+- Remote HTTP response bodies, individual SSE events, and stdio JSON-RPC lines
+  are byte-capped before the SDK parses them. The stdio transport also caps
+  outbound request lines and does not inherit server stderr.
 - A remote `isError` result or an exception after tool dispatch is treated as
   outcome-unknown. The turn terminates before another model inference because
   a remote mutation may have partially completed.

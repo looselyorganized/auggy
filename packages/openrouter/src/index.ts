@@ -4,11 +4,24 @@ import {
   buildOpenAIModelResponse,
   convertOpenAIMessages,
   convertOpenAITools,
+  parseOpenAIUsage,
   type ReasoningEffort,
 } from "@auggy/openai";
 import { resolveSlug, priceOpenRouterResponse } from "auggy/internal/openrouter-pricing";
 import { warnCacheRatesIgnored } from "auggy/internal/cost";
-import type { AssembledPrompt, ModelClient, ModelDelta, ModelResponse } from "auggy";
+import {
+  createBoundedModelFetch,
+  findModelResponseLimitError,
+  ModelResponseLimitError,
+  resolveModelResponseLimits,
+} from "auggy/internal/response-limits";
+import type {
+  AssembledPrompt,
+  ModelClient,
+  ModelDelta,
+  ModelResponse,
+  ModelResponseLimits,
+} from "auggy";
 
 /**
  * OpenRouter engine — wraps the official `openai` SDK with the OpenRouter
@@ -59,12 +72,18 @@ export interface OpenRouterEngineOptions {
    * usage is parsed from OpenRouter responses).
    */
   costOverride?: import("auggy/internal/cost").Pricing;
+  /** Finite application-layer response limits. Omitted fields use secure defaults. */
+  responseLimits?: Partial<ModelResponseLimits>;
 }
 
 export type OpenRouterProviderDirectoryFetch = (
   input: string | URL | Request,
   init?: RequestInit,
 ) => Promise<Response>;
+
+function isProviderRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
 
 /** OpenRouter provider routing config (forwarded as the `provider` body field).
  *  Mirrors `ProviderRouting` in `src/cli/types.ts` but lives here so the
@@ -293,6 +312,7 @@ export function createOpenRouterEngine(opts: OpenRouterEngineOptions): ModelClie
     );
   }
   const providerRouting = validateProviderRouting(opts.providerRouting);
+  const responseLimits = resolveModelResponseLimits(opts.responseLimits);
   const directoryFetch: OpenRouterProviderDirectoryFetch =
     opts.providerDirectoryFetch ?? globalThis.fetch.bind(globalThis);
 
@@ -300,6 +320,10 @@ export function createOpenRouterEngine(opts: OpenRouterEngineOptions): ModelClie
     apiKey,
     baseURL: OPENROUTER_BASE_URL,
     defaultHeaders: { "X-Title": "Auggy" },
+    fetch: createBoundedModelFetch(
+      globalThis.fetch.bind(globalThis) as typeof fetch,
+      responseLimits,
+    ),
   });
 
   const maxContextTokens = opts.maxContextTokens ?? 128_000;
@@ -385,17 +409,43 @@ export function createOpenRouterEngine(opts: OpenRouterEngineOptions): ModelClie
           { signal: requestOptions?.signal },
         );
       } catch (err) {
+        const responseLimitError = findModelResponseLimitError(err);
+        if (responseLimitError) throw responseLimitError;
         // Wrap with provider+model context. Without this, an OpenRouter
         // upstream error (e.g. provider 502) reads identically to an
         // OpenAI direct-call error in logs.
         const msg = err instanceof Error ? err.message : String(err);
         throw new Error(`OpenRouter engine (${opts.model}) failed: ${msg}`, { cause: err });
       }
-      const response = buildOpenAIModelResponse(completion, `openrouter:${opts.model}`);
-      const result = priceOpenRouterResponse(opts.model, opts.costOverride, {
-        prompt_tokens: response.inputTokens,
-        completion_tokens: response.outputTokens,
-      });
+      const usage = parseOpenAIUsage(
+        isProviderRecord(completion) ? completion.usage : undefined,
+      );
+      const { inputTokens, outputTokens } = usage;
+      const result = usage.valid
+        ? priceOpenRouterResponse(opts.model, opts.costOverride, {
+            prompt_tokens: inputTokens,
+            completion_tokens: outputTokens,
+          })
+        : {
+            priced: false as const,
+            reason: "Provider returned invalid accounting metadata.",
+          };
+      const accounting = result.priced
+        ? { inputTokens, outputTokens, costUsd: result.costUsd }
+        : { inputTokens, outputTokens, unpricedReason: result.reason };
+      let response: ModelResponse;
+      try {
+        response = buildOpenAIModelResponse(
+          completion,
+          `openrouter:${opts.model}`,
+          responseLimits,
+        );
+      } catch (error) {
+        if (error instanceof ModelResponseLimitError) {
+          throw error.withAccounting(accounting);
+        }
+        throw error;
+      }
       return result.priced
         ? { ...response, costUsd: result.costUsd }
         : { ...response, costUsd: undefined, unpricedReason: result.reason };

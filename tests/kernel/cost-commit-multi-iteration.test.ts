@@ -3,7 +3,15 @@ import { z } from "zod";
 import { createTurnLoop } from "@/kernel/turn-loop";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTokenizer } from "@/tokenizer";
-import type { Augment, TurnTrigger, PeerIdentity, InboundMessage, CostResult } from "@/types";
+import { ModelResponseLimitError } from "@/engines/_shared/response-limits";
+import type {
+  Augment,
+  TurnTrigger,
+  PeerIdentity,
+  InboundMessage,
+  CostResult,
+  ModelClient,
+} from "@/types";
 
 function makeTrigger(text: string): TurnTrigger {
   const peer: PeerIdentity = {
@@ -70,6 +78,162 @@ function captureGate(): {
 }
 
 describe("runCostCommit — multi-iteration sum", () => {
+  it("commits known cost when a completed provider response violates a limit", async () => {
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      async complete() {
+        throw new ModelResponseLimitError("maxResponseBytes").withAccounting({
+          inputTokens: 100,
+          outputTokens: 50,
+          costUsd: 0.0042,
+        });
+      },
+    };
+    const gate = captureGate();
+    const loop = createTurnLoop({
+      augments: [identityAugment(), gate.augment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(makeTrigger("hi"), "thread-limit-cost");
+
+    expect(result.status).toBe("failed");
+    expect(result.errorResponse).toBe("The model response exceeded a configured safety limit.");
+    expect(result.trace.inferenceSteps).toHaveLength(1);
+    expect(gate.committedCosts).toEqual([{ priced: true, costUsd: 0.0042 }]);
+  });
+
+  it("preserves provider accounting when the kernel stream limit fires first", async () => {
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      async complete(_prompt, options) {
+        options?.onDelta?.({ kind: "text_delta", text: "oversized" });
+        throw new ModelResponseLimitError("maxTextBytes").withAccounting({
+          inputTokens: 100,
+          outputTokens: 50,
+          costUsd: 0.0042,
+        });
+      },
+    };
+    const gate = captureGate();
+    const loop = createTurnLoop({
+      augments: [identityAugment(), gate.augment],
+      model,
+      tokenizer: createTokenizer(),
+      config: {
+        name: "test",
+        model: "mock",
+        augments: [],
+        responseLimits: { maxTextBytes: 4 },
+      },
+    });
+
+    const result = await loop.executeTurn(makeTrigger("hi"), "thread-kernel-stream-limit-cost");
+
+    expect(result.status).toBe("failed");
+    expect(result.trace.inferenceSteps).toHaveLength(1);
+    expect(gate.committedCosts).toEqual([{ priced: true, costUsd: 0.0042 }]);
+  });
+
+  it("makes a multi-step turn unpriced when a limited stream has unknown final billing", async () => {
+    let call = 0;
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      async complete(_prompt, options) {
+        call++;
+        if (call === 1) {
+          return {
+            content: "",
+            toolCalls: [{ name: "echo", arguments: { input: "x" } }],
+            inputTokens: 10,
+            outputTokens: 5,
+            costUsd: 0.001,
+            finishReason: "tool_use",
+          };
+        }
+        options?.onDelta?.({ kind: "text_delta", text: "oversized" });
+        throw new ModelResponseLimitError("maxTextBytes").withAccounting({
+          inputTokens: 20,
+          outputTokens: 0,
+          unpricedReason: "Final billing usage unavailable after stream abort.",
+        });
+      },
+    };
+    const echo: Augment = {
+      name: "echo",
+      tools: [
+        {
+          name: "echo",
+          description: "Echo",
+          category: "meta",
+          input: z.object({ input: z.string() }),
+          execute: async ({ input }) => input,
+        },
+      ],
+    };
+    const gate = captureGate();
+    const loop = createTurnLoop({
+      augments: [identityAugment(), echo, gate.augment],
+      model,
+      tokenizer: createTokenizer(),
+      config: {
+        name: "test",
+        model: "mock",
+        augments: [],
+        responseLimits: { maxTextBytes: 4 },
+      },
+    });
+
+    const result = await loop.executeTurn(makeTrigger("hi"), "thread-unpriced-stream-limit");
+
+    expect(result.status).toBe("failed");
+    expect(result.trace.inferenceSteps).toHaveLength(2);
+    expect(gate.committedCosts).toEqual([
+      { priced: false, reason: "Final billing usage unavailable after stream abort." },
+    ]);
+  });
+
+  it("fails malformed provider accounting closed as unpriced", async () => {
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      async complete() {
+        return {
+          content: "invalid accounting",
+          inputTokens: -100,
+          outputTokens: Number.POSITIVE_INFINITY,
+          costUsd: -1,
+          finishReason: "end_turn",
+        };
+      },
+    };
+    const gate = captureGate();
+    const loop = createTurnLoop({
+      augments: [identityAugment(), gate.augment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(makeTrigger("hi"), "thread-invalid-accounting");
+
+    expect(result.status).toBe("failed");
+    expect(result.trace.inferenceSteps).toHaveLength(1);
+    expect(result.trace.inferenceSteps[0]).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      cost: { priced: false },
+    });
+    expect(gate.committedCosts).toEqual([
+      { priced: false, reason: "Provider returned invalid accounting metadata." },
+    ]);
+  });
+
   it("commits sum of priced costs across all inference steps", async () => {
     const model = createMockModel();
     // Iteration 1: tool call
@@ -402,5 +566,62 @@ describe("runCostCommit — multi-iteration sum", () => {
       "provider disconnected",
     );
     expect(gate.committedCosts).toEqual([{ priced: true, costUsd: 0.006 }]);
+  });
+
+  it("includes an accounted terminal provider failure exactly once", async () => {
+    let calls = 0;
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      async complete() {
+        calls++;
+        if (calls === 1) {
+          return {
+            content: "",
+            toolCalls: [{ name: "echo", arguments: { input: "x" } }],
+            inputTokens: 10,
+            outputTokens: 5,
+            costUsd: 0.006,
+            finishReason: "tool_use",
+          };
+        }
+        throw new ModelResponseLimitError(
+          "maxResponseBytes",
+          "Provider returned no response choices.",
+        ).withAccounting({
+          inputTokens: 20,
+          outputTokens: 10,
+          costUsd: 0.004,
+        });
+      },
+    };
+    const gate = captureGate();
+    const loop = createTurnLoop({
+      augments: [
+        identityAugment(),
+        {
+          name: "echo-aug",
+          tools: [
+            {
+              name: "echo",
+              description: "echo",
+              category: "meta",
+              input: z.object({ input: z.string() }),
+              execute: async ({ input }) => input,
+            },
+          ],
+        },
+        gate.augment,
+      ],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const result = await loop.executeTurn(makeTrigger("go"), "thread-accounted-provider-error");
+
+    expect(result.status).toBe("failed");
+    expect(result.trace.inferenceSteps).toHaveLength(2);
+    expect(gate.committedCosts).toEqual([{ priced: true, costUsd: 0.01 }]);
   });
 });

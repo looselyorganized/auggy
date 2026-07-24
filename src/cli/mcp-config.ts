@@ -28,6 +28,10 @@ export interface McpServerAuggyPolicy {
   timeoutMs?: number;
   maxResultBytes?: number;
   maxSchemaBytes?: number;
+  maxArgumentBytes?: number;
+  maxDepth?: number;
+  maxNodes?: number;
+  maxTransportMessageBytes?: number;
   maxConcurrentCalls?: number;
   maxTools?: number;
   maxToolPages?: number;
@@ -326,6 +330,10 @@ function validatePolicyShape(value: unknown, path: string): McpServerAuggyPolicy
     "timeoutMs",
     "maxResultBytes",
     "maxSchemaBytes",
+    "maxArgumentBytes",
+    "maxDepth",
+    "maxNodes",
+    "maxTransportMessageBytes",
     "maxConcurrentCalls",
     "maxTools",
     "maxToolPages",

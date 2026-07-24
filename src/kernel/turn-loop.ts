@@ -21,6 +21,30 @@ import type {
 import type { Tokenizer } from "../tokenizer";
 import { extractText } from "../parts";
 import { costFromResponse } from "../engines/_shared/cost";
+import {
+  type ModelResponseAccounting,
+  findModelResponseLimitError,
+  ModelResponseLimitError,
+  resolveModelResponseLimits,
+  StreamingResponseLimitTracker,
+  utf8ByteLength,
+  validateModelResponse,
+} from "../engines/_shared/response-limits";
+
+function accountingFromResponse(response: ModelResponse): ModelResponseAccounting {
+  return {
+    inputTokens: response.inputTokens,
+    outputTokens: response.outputTokens,
+    ...(response.cacheCreationTokens !== undefined
+      ? { cacheCreationTokens: response.cacheCreationTokens }
+      : {}),
+    ...(response.cacheReadTokens !== undefined
+      ? { cacheReadTokens: response.cacheReadTokens }
+      : {}),
+    ...(response.costUsd !== undefined ? { costUsd: response.costUsd } : {}),
+    ...(response.unpricedReason !== undefined ? { unpricedReason: response.unpricedReason } : {}),
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Streaming inference helper
@@ -41,17 +65,33 @@ async function streamingInference(
   prompt: AssembledPrompt,
   turnId: string,
   emitEvent: KernelEventHandler,
+  responseLimits: ReturnType<typeof resolveModelResponseLimits>,
   signal?: AbortSignal,
 ): Promise<{ response: ModelResponse; streamed: boolean; messageId: string }> {
   const messageId = crypto.randomUUID();
   let streamed = false;
+  const limitFailure: { error: ModelResponseLimitError | null } = { error: null };
+  const limitAbort = new AbortController();
+  const inferenceSignal = signal ? AbortSignal.any([signal, limitAbort.signal]) : limitAbort.signal;
+  const tracker = new StreamingResponseLimitTracker(responseLimits);
 
   let response: ModelResponse;
   try {
     response = await model.complete(prompt, {
-      signal,
+      signal: inferenceSignal,
       onDelta: (delta) => {
         if (delta.kind === "text_delta") {
+          if (limitFailure.error) return;
+          try {
+            tracker.pushText(delta.text);
+          } catch (error) {
+            limitFailure.error =
+              error instanceof ModelResponseLimitError
+                ? error
+                : new ModelResponseLimitError("maxTextBytes");
+            limitAbort.abort(limitFailure.error);
+            return;
+          }
           if (!streamed) {
             emitEvent({
               kind: "text_message_start",
@@ -74,13 +114,20 @@ async function streamingInference(
     if (streamed) {
       emitEvent({ kind: "text_message_end", turnId, messageId });
     }
-    throw err;
+    const providerLimitError = findModelResponseLimitError(err);
+    if (limitFailure.error && providerLimitError?.accounting) {
+      limitFailure.error.withAccounting(providerLimitError.accounting);
+    }
+    throw limitFailure.error ?? providerLimitError ?? err;
   }
 
   if (streamed) {
     emitEvent({ kind: "text_message_end", turnId, messageId });
   }
 
+  if (limitFailure.error) {
+    throw limitFailure.error.withAccounting(accountingFromResponse(response));
+  }
   return { response, streamed, messageId };
 }
 import { isOutcomeUnknownError } from "../outcome-unknown";
@@ -123,6 +170,7 @@ export function createTurnLoop(opts: {
   onHistoryEvicted?: (threadId: string) => void;
 }): TurnLoop {
   const { augments, model, tokenizer, config } = opts;
+  const responseLimits = resolveModelResponseLimits(config.responseLimits);
 
   const traceEmitter = createTraceEmitter();
   const historyManagers = new Map<string, HistoryManager>();
@@ -300,7 +348,7 @@ export function createTurnLoop(opts: {
             threadId,
             trigger,
           });
-        } catch (err) {
+        } catch {
           // prepare itself threw — treat as admission-state-failed.
           // Roll back any tickets already prepared.
           for (const t of tickets) {
@@ -319,7 +367,7 @@ export function createTurnLoop(opts: {
             toolCalls: [],
             trace,
             error: {
-              message: `turn-gate "${gate.name}" prepare failed: ${err instanceof Error ? err.message : String(err)}`,
+              message: `Turn gate "${gate.name}" failed during admission.`,
               source: gate.name,
             },
             errorClass: "admission-state-failed",
@@ -414,13 +462,13 @@ export function createTurnLoop(opts: {
         if (aug.onTurnStart) {
           try {
             await aug.onTurnStart(turnState);
-          } catch (err) {
+          } catch {
             if (signal?.aborted) return makeAbortResult();
             if (aug.required) {
               emitEvent({
                 kind: "run_error",
                 turnId: trigger.turnId,
-                message: String(err),
+                message: "A required turn initialization hook failed.",
                 source: aug.name,
               });
               emitEvent({
@@ -436,7 +484,7 @@ export function createTurnLoop(opts: {
                 errorResponse: "An internal error occurred during turn initialization.",
                 toolCalls: [],
                 trace,
-                error: { message: String(err), source: aug.name },
+                error: { message: "Required turn initialization hook failed.", source: aug.name },
               };
             }
             // Non-required: log and continue
@@ -480,7 +528,7 @@ export function createTurnLoop(opts: {
               peer,
               ...(signal ? { signal } : {}),
             });
-          } catch (err) {
+          } catch {
             // Handler threw — surface as a failed turn so the augment
             // author can debug, and so cost-commit still fires.
             //
@@ -502,7 +550,7 @@ export function createTurnLoop(opts: {
             emitEvent({
               kind: "run_error",
               turnId: trigger.turnId,
-              message: err instanceof Error ? err.message : String(err),
+              message: "An internal turn handler failed.",
               source: aug.name,
             });
             emitEvent({
@@ -518,7 +566,7 @@ export function createTurnLoop(opts: {
               toolCalls: toolCallRecords,
               trace,
               error: {
-                message: err instanceof Error ? err.message : String(err),
+                message: "Internal turn handler failed.",
                 source: aug.name,
               },
             };
@@ -605,12 +653,12 @@ export function createTurnLoop(opts: {
           } else {
             contextBlocks.push(...result);
           }
-        } catch (err) {
+        } catch {
           if (aug.required) {
             emitEvent({
               kind: "run_error",
               turnId: trigger.turnId,
-              message: String(err),
+              message: "A required context provider failed.",
               source: aug.name,
             });
             emitEvent({
@@ -626,7 +674,7 @@ export function createTurnLoop(opts: {
               errorResponse: "An internal error occurred. Please try again.",
               toolCalls: [],
               trace,
-              error: { message: String(err), source: aug.name },
+              error: { message: "Required context provider failed.", source: aug.name },
             };
           }
           // Non-required: skip and continue
@@ -678,12 +726,11 @@ export function createTurnLoop(opts: {
           toolSelection.definitions,
           toolChoiceOpt,
         );
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
+      } catch {
         emitEvent({
           kind: "run_error",
           turnId: trigger.turnId,
-          message,
+          message: "Context assembly failed.",
           source: "context-allocator",
         });
         emitEvent({
@@ -699,7 +746,7 @@ export function createTurnLoop(opts: {
           errorResponse: "The agent's required context exceeds its configured model budget.",
           toolCalls: [],
           trace,
-          error: { message, source: "context-allocator" },
+          error: { message: "Context assembly failed.", source: "context-allocator" },
         };
       }
 
@@ -779,6 +826,53 @@ export function createTurnLoop(opts: {
         await costCommitPromise;
       }
 
+      async function runRecordedInference(prompt: AssembledPrompt): Promise<{
+        response: ModelResponse;
+        streamed: boolean;
+        messageId: string;
+      }> {
+        const startedAt = Date.now();
+        try {
+          const result = await streamingInference(
+            model,
+            prompt,
+            trigger.turnId,
+            emitEvent,
+            responseLimits,
+            signal,
+          );
+          try {
+            validateModelResponse(result.response, responseLimits);
+          } catch (error) {
+            if (error instanceof ModelResponseLimitError) {
+              throw error.withAccounting(accountingFromResponse(result.response));
+            }
+            throw error;
+          }
+          traceEmitter.recordInference(trace, {
+            model: config.model,
+            inputTokens: result.response.inputTokens,
+            outputTokens: result.response.outputTokens,
+            durationMs: Date.now() - startedAt,
+            toolCalls: [],
+            cost: costFromResponse(result.response),
+          });
+          return result;
+        } catch (error) {
+          if (error instanceof ModelResponseLimitError && error.accounting) {
+            traceEmitter.recordInference(trace, {
+              model: config.model,
+              inputTokens: error.accounting.inputTokens,
+              outputTokens: error.accounting.outputTokens,
+              durationMs: Date.now() - startedAt,
+              toolCalls: [],
+              cost: costFromResponse(error.accounting),
+            });
+          }
+          throw error;
+        }
+      }
+
       // Inference + tool execution loop
       try {
         capabilityTable.resetTurn();
@@ -789,22 +883,11 @@ export function createTurnLoop(opts: {
         while (inferenceCount < maxInferenceLoops) {
           if (signal?.aborted) return makeAbortResult();
           inferenceCount++;
-          const inferStart = Date.now();
           const {
             response,
             streamed: streamedText,
             messageId: streamMessageId,
-          } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent, signal);
-          const inferDuration = Date.now() - inferStart;
-
-          traceEmitter.recordInference(trace, {
-            model: config.model,
-            inputTokens: response.inputTokens,
-            outputTokens: response.outputTokens,
-            durationMs: inferDuration,
-            toolCalls: [],
-            cost: costFromResponse(response),
-          });
+          } = await runRecordedInference(currentPrompt);
           if (signal?.aborted) return makeAbortResult();
 
           // Always append model content to history (even on tool_use turns)
@@ -1058,9 +1141,17 @@ export function createTurnLoop(opts: {
                 }
               } catch (err) {
                 outcomeUnknown = isOutcomeUnknownError(err);
+                const failureCategory = err instanceof Error ? "error-object" : "non-error-value";
+                console.warn(
+                  `[turn-loop] tool execution failed tool=${entry.reg.tool.name} category=${failureCategory} outcomeUnknown=${outcomeUnknown}`,
+                );
                 output = outcomeUnknown
                   ? "Error: Tool execution ended without a trustworthy result after dispatch; outcome is unknown. Do not retry automatically."
-                  : `Error: ${String(err)}`;
+                  : "Error: Tool execution failed. The operator has diagnostic context.";
+                isError = true;
+              }
+              if (utf8ByteLength(output) > responseLimits.maxResponseBytes) {
+                output = "Error: Tool output exceeded the configured safety limit.";
                 isError = true;
               }
 
@@ -1209,27 +1300,11 @@ export function createTurnLoop(opts: {
               toolChoiceOpt,
             );
 
-            const termInferStart = Date.now();
             const {
               response: finalResponse,
               streamed: termStreamed,
               messageId: termMessageId,
-            } = await streamingInference(model, currentPrompt, trigger.turnId, emitEvent, signal);
-            const termInferDuration = Date.now() - termInferStart;
-
-            // Record this final inference so its cost lands in trace.inferenceSteps[]
-            // and runCostCommit() sees it. Without this, the consecutive-failure
-            // completion path silently drops the final API call from cost
-            // accounting — and an unpriced final step would never trigger the
-            // any-unpriced→whole-turn-unpriced rule.
-            traceEmitter.recordInference(trace, {
-              model: config.model,
-              inputTokens: finalResponse.inputTokens,
-              outputTokens: finalResponse.outputTokens,
-              durationMs: termInferDuration,
-              toolCalls: [],
-              cost: costFromResponse(finalResponse),
-            });
+            } = await runRecordedInference(currentPrompt);
 
             if (finalResponse.content) {
               history.append({
@@ -1311,6 +1386,26 @@ export function createTurnLoop(opts: {
           trace,
         };
       } catch (error) {
+        if (error instanceof ModelResponseLimitError) {
+          emitEvent({
+            kind: "run_error",
+            turnId: trigger.turnId,
+            message: error.publicMessage,
+            source: "model-response-limits",
+          });
+          emitEvent({ kind: "run_finished", turnId: trigger.turnId, status: "failed" });
+          await finalizeReturn();
+          return {
+            turnId: trigger.turnId,
+            success: false,
+            status: "failed",
+            errorResponse: error.publicMessage,
+            toolCalls: toolCallRecords,
+            trace,
+            error: { message: error.publicMessage, source: "model-response-limits" },
+            errorClass: "engine-error",
+          };
+        }
         await finalizeReturn();
         throw error;
       }

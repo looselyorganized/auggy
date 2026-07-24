@@ -13,6 +13,7 @@ import type { AugmentConstraints, Tool, ToolExecuteContext, TrustLevel } from ".
 import { isOutcomeUnknownError, OutcomeUnknownError } from "../../outcome-unknown";
 import { withTimeout as withDeadline } from "../../kernel/timeout";
 import { formatMcpToolResult } from "./result";
+import { measureJsonValue, ModelResponseLimitError } from "../../engines/_shared/response-limits";
 import { SdkMcpClientAdapter } from "./sdk-adapter";
 import type {
   McpClientAdapter,
@@ -32,6 +33,10 @@ export interface McpManagerOptions {
   timeoutMs?: number;
   maxResultBytes?: number;
   maxSchemaBytes?: number;
+  maxArgumentBytes?: number;
+  maxDepth?: number;
+  maxNodes?: number;
+  maxTransportMessageBytes?: number;
   maxConcurrentCalls?: number;
   maxTools?: number;
   maxToolPages?: number;
@@ -63,6 +68,10 @@ interface ToolTrustRestriction {
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_MAX_RESULT_BYTES = 128 * 1024;
 const DEFAULT_MAX_SCHEMA_BYTES = 16 * 1024;
+const DEFAULT_MAX_ARGUMENT_BYTES = 64 * 1024;
+const DEFAULT_MAX_DEPTH = 32;
+const DEFAULT_MAX_NODES = 10_000;
+const DEFAULT_MAX_TRANSPORT_MESSAGE_BYTES = 256 * 1024;
 const DEFAULT_MAX_CONCURRENT_CALLS = 4;
 const DEFAULT_MAX_TOOLS = 64;
 const DEFAULT_MAX_TOOL_PAGES = 20;
@@ -70,6 +79,18 @@ const MAX_TOOL_DESCRIPTION_CHARS = 700;
 const MAX_SCHEMA_TEXT_CHARS = 300;
 const ALL_TRUST_LEVELS: TrustLevel[] = ["creator", "agent", "public"];
 const DEFAULT_MCP_TRUST_LEVELS: TrustLevel[] = ["creator"];
+const POSITIVE_POLICY_KEYS = [
+  "timeoutMs",
+  "maxResultBytes",
+  "maxSchemaBytes",
+  "maxArgumentBytes",
+  "maxDepth",
+  "maxNodes",
+  "maxTransportMessageBytes",
+  "maxConcurrentCalls",
+  "maxTools",
+  "maxToolPages",
+] as const satisfies readonly (keyof McpRuntimePolicy)[];
 
 const toolInputSchema = z.record(z.string(), z.unknown());
 
@@ -207,6 +228,10 @@ function resolveServer(
     timeoutMs: opts.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     maxResultBytes: opts.maxResultBytes ?? DEFAULT_MAX_RESULT_BYTES,
     maxSchemaBytes: opts.maxSchemaBytes ?? DEFAULT_MAX_SCHEMA_BYTES,
+    maxArgumentBytes: opts.maxArgumentBytes ?? DEFAULT_MAX_ARGUMENT_BYTES,
+    maxDepth: opts.maxDepth ?? DEFAULT_MAX_DEPTH,
+    maxNodes: opts.maxNodes ?? DEFAULT_MAX_NODES,
+    maxTransportMessageBytes: opts.maxTransportMessageBytes ?? DEFAULT_MAX_TRANSPORT_MESSAGE_BYTES,
     maxConcurrentCalls: opts.maxConcurrentCalls ?? DEFAULT_MAX_CONCURRENT_CALLS,
     maxTools: opts.maxTools ?? DEFAULT_MAX_TOOLS,
     maxToolPages: opts.maxToolPages ?? DEFAULT_MAX_TOOL_PAGES,
@@ -214,6 +239,7 @@ function resolveServer(
     ...config.auggy?.servers?.[name],
     ...raw.auggy,
   } satisfies McpRuntimePolicy;
+  validateRuntimePolicy(policy, name);
   return {
     name,
     transport,
@@ -225,6 +251,15 @@ function resolveServer(
     },
     policy,
   };
+}
+
+function validateRuntimePolicy(policy: McpRuntimePolicy, serverName: string): void {
+  for (const key of POSITIVE_POLICY_KEYS) {
+    const value = policy[key];
+    if (!Number.isSafeInteger(value) || (value ?? 0) < 1) {
+      throw new TypeError(`mcp: server "${serverName}" ${key} must be a positive safe integer`);
+    }
+  }
 }
 
 async function connectWithTimeout(
@@ -324,7 +359,12 @@ function toAuggyTool(
   toolName: string,
   allowedTrustLevels: readonly TrustLevel[],
 ): Tool {
-  const schema = sanitizeInputSchema(remoteTool.inputSchema, server.policy.maxSchemaBytes!);
+  const schema = sanitizeInputSchema(
+    remoteTool.inputSchema,
+    server.policy.maxSchemaBytes!,
+    server.policy.maxDepth!,
+    server.policy.maxNodes!,
+  );
   return {
     name: toolName,
     description: buildToolDescription(server.name, remoteTool, server.policy),
@@ -347,6 +387,18 @@ function toAuggyTool(
       }
       if (!runtime.connection || runtime.status.state !== "connected") {
         return { content: `MCP server "${server.name}" is not connected.` };
+      }
+      try {
+        measureJsonValue(input, {
+          maxBytes: server.policy.maxArgumentBytes!,
+          maxDepth: server.policy.maxDepth!,
+          maxNodes: server.policy.maxNodes!,
+        });
+      } catch {
+        return {
+          content: "MCP tool arguments exceeded the configured safety limit.",
+          isError: true,
+        };
       }
       if (runtime.activeCalls >= server.policy.maxConcurrentCalls!) {
         return { content: `MCP server "${server.name}" is busy. Try again later.` };
@@ -383,7 +435,10 @@ function toAuggyTool(
           server.policy.timeoutMs!,
           context.signal,
         );
-        const content = formatMcpToolResult(result, server.policy.maxResultBytes!);
+        const content = formatMcpToolResult(result, server.policy.maxResultBytes!, {
+          maxDepth: server.policy.maxDepth!,
+          maxNodes: server.policy.maxNodes!,
+        });
         if (result.isError) {
           return {
             content,
@@ -393,6 +448,13 @@ function toAuggyTool(
         }
         return { content };
       } catch (err) {
+        if (err instanceof ModelResponseLimitError) {
+          return {
+            content: "MCP tool result exceeded the configured safety limit.",
+            isError: true,
+            outcomeUnknown: true,
+          };
+        }
         if (context.signal?.aborted || isOutcomeUnknownError(err)) throw err;
         throw new OutcomeUnknownError(
           `MCP tool "${remoteTool.name}" ended without a trustworthy result after dispatch`,
@@ -476,15 +538,21 @@ function trustBlocksToConstraints(
 function sanitizeInputSchema(
   schema: Record<string, unknown> | undefined,
   maxBytes: number,
+  maxDepth: number,
+  maxNodes: number,
 ): Record<string, unknown> {
-  if (schema?.type !== "object") return { type: "object", additionalProperties: true };
+  if (schema === undefined) return { type: "object", additionalProperties: false };
+  measureJsonValue(schema, { maxBytes, maxDepth, maxNodes });
+  if (schema.type !== "object") {
+    throw new ModelResponseLimitError("maxToolArgumentBytes");
+  }
   const sanitized = sanitizeSchemaValue(schema);
   if (!isRecord(sanitized) || sanitized.type !== "object") {
-    return { type: "object", additionalProperties: true };
+    throw new ModelResponseLimitError("maxToolArgumentBytes");
   }
   const serialized = JSON.stringify(sanitized);
   if (new TextEncoder().encode(serialized).length > maxBytes) {
-    return { type: "object", additionalProperties: true };
+    throw new ModelResponseLimitError("maxToolArgumentBytes");
   }
   return sanitized;
 }

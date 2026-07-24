@@ -1,12 +1,23 @@
 import type { McpToolCallResult } from "./types";
+import { measureJsonValue, stringifyJsonWithinLimits } from "../../engines/_shared/response-limits";
 
-export function formatMcpToolResult(result: McpToolCallResult, maxBytes: number): string {
+export function formatMcpToolResult(
+  result: McpToolCallResult,
+  maxBytes: number,
+  structure: { maxDepth: number; maxNodes: number } = { maxDepth: 32, maxNodes: 10_000 },
+): string {
+  const limits = {
+    maxBytes,
+    maxDepth: structure.maxDepth,
+    maxNodes: structure.maxNodes,
+  };
+  measureJsonValue(result, limits);
   const parts: string[] = [];
   if (result.isError) parts.push("MCP tool returned an error.");
 
   for (const item of result.content ?? []) {
     if (!isRecord(item)) {
-      parts.push(JSON.stringify(item));
+      parts.push(stringifyJsonWithinLimits(item, limits));
       continue;
     }
     if (item.type === "text" && typeof item.text === "string") {
@@ -17,18 +28,19 @@ export function formatMcpToolResult(result: McpToolCallResult, maxBytes: number)
       if (typeof item.resource.text === "string") {
         parts.push(item.resource.text);
       } else {
-        parts.push(JSON.stringify(redactMeta(item)));
+        parts.push(stringifyJsonWithinLimits(redactMeta(item), limits));
       }
       continue;
     }
-    parts.push(JSON.stringify(redactMeta(item)));
+    parts.push(stringifyJsonWithinLimits(redactMeta(item), limits));
   }
 
   if (result.structuredContent) {
-    parts.push(JSON.stringify(result.structuredContent, null, 2));
+    parts.push(stringifyJsonWithinLimits(result.structuredContent, limits));
   }
 
-  const content = parts.filter(Boolean).join("\n\n") || JSON.stringify(redactMeta(result));
+  const content =
+    parts.filter(Boolean).join("\n\n") || stringifyJsonWithinLimits(redactMeta(result), limits);
   return capString(content, maxBytes);
 }
 

@@ -236,6 +236,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
       contextBudget: config.settings.contextBudget,
       compactionStrategy: config.settings.compactionStrategy,
       maxInferenceLoops: config.settings.maxInferenceLoops,
+      responseLimits: config.engine.responseLimits,
     };
   } catch (err) {
     releaseRuntimePidManifest(agentName, pidManifestClaimed);

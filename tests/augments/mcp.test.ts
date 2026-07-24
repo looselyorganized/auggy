@@ -692,7 +692,7 @@ describe("mcp augment runtime", () => {
     expect(JSON.stringify(tool.inputJsonSchema)).toContain("[truncated]");
   });
 
-  test("caps model-facing MCP tool output", async () => {
+  test("fails closed when model-facing MCP tool output exceeds the cap", async () => {
     writeMcpConfig({
       mcpServers: {
         local: { type: "stdio", command: "node" },
@@ -704,7 +704,89 @@ describe("mcp augment runtime", () => {
     const manager = createMcpManager({ agentDir: TMP, client: adapter, maxResultBytes: 64 });
     await manager.boot();
     const result = await manager.tools[0]!.execute({}, INTERNAL_TOOL_CONTEXT);
-    expect(JSON.stringify(result)).toContain("truncated to 64 bytes");
+    expect(result).toEqual({
+      content: "MCP tool result exceeded the configured safety limit.",
+      isError: true,
+      outcomeUnknown: true,
+    });
+  });
+
+  test("rejects oversized call arguments before remote dispatch", async () => {
+    writeMcpConfig({
+      mcpServers: { local: { type: "stdio", command: "node" } },
+    });
+    const adapter = new FakeMcpAdapter([{ name: "write", inputSchema: { type: "object" } }]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter, maxArgumentBytes: 32 });
+    await manager.boot();
+    const result = await manager.tools[0]!.execute(
+      { payload: "x".repeat(100) },
+      INTERNAL_TOOL_CONTEXT,
+    );
+    expect(result).toEqual({
+      content: "MCP tool arguments exceeded the configured safety limit.",
+      isError: true,
+    });
+    expect(adapter.connections[0]!.calls).toHaveLength(0);
+  });
+
+  test("fails tool discovery closed for excessively deep schemas", async () => {
+    writeMcpConfig({
+      mcpServers: { local: { type: "stdio", command: "node" } },
+    });
+    const schema: Record<string, unknown> = { type: "object" };
+    let cursor = schema;
+    for (let index = 0; index < 40; index++) {
+      const child: Record<string, unknown> = { type: "object" };
+      cursor.properties = { child };
+      cursor = child;
+    }
+    const adapter = new FakeMcpAdapter([{ name: "deep", inputSchema: schema }]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter, maxDepth: 32 });
+    await manager.boot();
+    expect(manager.tools).toHaveLength(0);
+    expect(manager.statuses()[0]?.state).toBe("failed");
+  });
+
+  test("fails server startup closed for invalid programmatic resource limits", async () => {
+    writeMcpConfig({
+      mcpServers: {
+        ops: { type: "streamable-http", url: "https://mcp.example.com" },
+      },
+    });
+    const adapter = new FakeMcpAdapter([{ name: "status", inputSchema: { type: "object" } }]);
+    const manager = createMcpManager({
+      agentDir: TMP,
+      client: adapter,
+      maxTransportMessageBytes: Number.POSITIVE_INFINITY,
+    });
+
+    await manager.boot();
+
+    expect(adapter.servers).toHaveLength(0);
+    expect(manager.tools).toHaveLength(0);
+    expect(manager.statuses()[0]).toMatchObject({
+      state: "failed",
+      error: expect.stringContaining("maxTransportMessageBytes must be a positive safe integer"),
+    });
+  });
+
+  test("does not turn an oversized or invalid remote schema into a permissive one", async () => {
+    writeMcpConfig({
+      mcpServers: { local: { type: "stdio", command: "node" } },
+    });
+    const adapter = new FakeMcpAdapter([
+      {
+        name: "invalid",
+        inputSchema: {
+          type: "string",
+          description: "x".repeat(20_000),
+        },
+      },
+    ]);
+    const manager = createMcpManager({ agentDir: TMP, client: adapter, maxSchemaBytes: 1024 });
+    await manager.boot();
+    expect(manager.tools).toHaveLength(0);
+    expect(manager.statuses()[0]?.state).toBe("failed");
   });
 
   test("boot-populated MCP tools are available to the turn loop", async () => {

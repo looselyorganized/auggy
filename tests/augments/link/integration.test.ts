@@ -262,11 +262,12 @@ describe("link augment — inbound flow", () => {
     await augment.onShutdown!();
   });
 
-  it("kernel thrown error surfaces as ErrorOutcome (no propagation past the augment)", async () => {
+  it("sanitizes a thrown kernel error before returning an ErrorOutcome", async () => {
+    const sentinel = "sk-live-link-dispatch-secret";
     const { augment, dispatch } = await _createLinkForTesting(makeOpts());
     const kernel: TransportKernel = {
       handleInbound: async () => {
-        throw new Error("boom");
+        throw new Error(sentinel);
       },
       onOutbound: () => {},
       getAgentCard: () => ({}) as AgentCard,
@@ -277,7 +278,8 @@ describe("link augment — inbound flow", () => {
     const outcome = await dispatch(makeLinkContext());
     expect(outcome.kind).toBe("error");
     if (outcome.kind === "error") {
-      expect(outcome.message).toContain("boom");
+      expect(outcome.message).toBe("link augment: turn dispatch failed");
+      expect(outcome.message).not.toContain(sentinel);
     }
     await augment.onShutdown!();
   });

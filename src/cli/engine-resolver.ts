@@ -86,6 +86,7 @@ export async function resolveEngine(
         maxTokens: config.maxTokens,
         baseURL: config.baseURL,
         costOverride: config.costOverride,
+        responseLimits: config.responseLimits,
         // apiKey intentionally omitted — SDK reads ANTHROPIC_API_KEY from env.
       };
       return mod.createAnthropicEngine(opts);
@@ -101,6 +102,7 @@ export async function resolveEngine(
         baseURL: config.baseURL,
         reasoningEffort: config.reasoningEffort,
         costOverride: config.costOverride,
+        responseLimits: config.responseLimits,
         // apiKey intentionally omitted — SDK reads OPENAI_API_KEY from env.
       };
       return mod.createOpenAIEngine(opts);
@@ -116,6 +118,7 @@ export async function resolveEngine(
         reasoningEffort: config.reasoningEffort,
         providerRouting: config.providerRouting,
         costOverride: config.costOverride,
+        responseLimits: config.responseLimits,
         // baseURL intentionally NOT passed — hardcoded to OpenRouter.
         // apiKey intentionally omitted — engine reads OPENROUTER_API_KEY from env.
       };
@@ -132,6 +135,7 @@ export async function resolveEngine(
         baseURL: config.baseURL,
         keepAlive: config.keepAlive,
         options: config.options,
+        responseLimits: config.responseLimits,
         // costOverride: NOT supported (free local runtime; no pricing apparatus).
         // reasoningEffort: NOT a concept in Ollama models.
         // apiKey is read from OLLAMA_API_KEY env var when present. Local

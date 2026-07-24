@@ -591,6 +591,30 @@ describe("createOpenRouterEngine — costUsd", () => {
     const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.costUsd).toBeCloseTo(0.003, 8);
   });
+
+  test("fails missing or malformed usage closed as unpriced", async () => {
+    const invalidUsage: unknown[] = [
+      undefined,
+      "not-an-object",
+      { prompt_tokens: -1, completion_tokens: 5 },
+      { prompt_tokens: 10, completion_tokens: Number.NaN },
+    ];
+
+    for (const usage of invalidUsage) {
+      nextResponse = {
+        ...defaultResponse(),
+        usage,
+      } as unknown as OpenAI.Chat.ChatCompletion;
+      const result = await createOpenRouterEngine({
+        apiKey: "sk-test",
+        model: "openai/gpt-5",
+      }).complete(emptyPrompt());
+      expect(result.costUsd).toBeUndefined();
+      expect(result.unpricedReason).toBe("Provider returned invalid accounting metadata.");
+      expect(result.inputTokens).toBe(0);
+      expect(result.outputTokens).toBe(0);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -650,5 +674,71 @@ describe("createOpenRouterEngine — startup warnings", () => {
     } finally {
       console.warn = original;
     }
+  });
+});
+
+describe("createOpenRouterEngine — response limits", () => {
+  test("injects the bounded transport into the SDK", () => {
+    createOpenRouterEngine({
+      apiKey: "sk-test",
+      model: "qwen/qwen3.5-397b-a17b",
+      costOverride: { inputUsdPerMtok: 1, outputUsdPerMtok: 1 },
+    });
+    expect(typeof lastConstructorArgs?.fetch).toBe("function");
+  });
+
+  test("fails a completed oversized response as a whole and retains accounting", async () => {
+    const response = defaultResponse();
+    nextResponse = {
+      ...response,
+      choices: [
+        {
+          ...response.choices[0]!,
+          message: {
+            ...response.choices[0]!.message,
+            content: "oversized",
+          },
+        },
+      ],
+      usage: { prompt_tokens: 200, completion_tokens: 100, total_tokens: 300 },
+    };
+    const engine = createOpenRouterEngine({
+      apiKey: "sk-test",
+      model: "qwen/qwen3.5-397b-a17b",
+      costOverride: { inputUsdPerMtok: 1, outputUsdPerMtok: 2 },
+      responseLimits: { maxTextBytes: 4 },
+    });
+
+    const error = await engine.complete(emptyPrompt()).catch((cause) => cause);
+    expect(error).toMatchObject({
+      name: "ModelResponseLimitError",
+      limit: "maxTextBytes",
+      accounting: {
+        inputTokens: 200,
+        outputTokens: 100,
+      },
+    });
+    expect(error.accounting.costUsd).toBeCloseTo(0.0004, 8);
+  });
+
+  test("retains valid usage when an empty-choice completion fails", async () => {
+    nextResponse = {
+      ...mockCompletionWithTokens(200, 100, "openai/gpt-5"),
+      id: "sentinel-provider-id",
+      choices: [],
+    };
+    const engine = createOpenRouterEngine({
+      apiKey: "sk-test",
+      model: "openai/gpt-5",
+    });
+
+    const error = await engine.complete(emptyPrompt()).catch((cause) => cause);
+
+    expect(error).toMatchObject({
+      name: "ModelResponseLimitError",
+      accounting: { inputTokens: 200, outputTokens: 100 },
+    });
+    expect(error.accounting.costUsd).toBeCloseTo(0.003, 8);
+    expect(error.message).not.toContain("sentinel-provider-id");
   });
 });

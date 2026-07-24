@@ -159,6 +159,25 @@ function validateWebTransportOptions(
   optionsPrefix: string,
   errors: string[],
 ): void {
+  if (
+    opts.maxRequestBodyBytes !== undefined &&
+    (!Number.isSafeInteger(opts.maxRequestBodyBytes) || (opts.maxRequestBodyBytes as number) < 1)
+  ) {
+    errors.push(`${optionsPrefix}.maxRequestBodyBytes: must be a positive integer`);
+  }
+  for (const field of [
+    "maxPendingSseBytes",
+    "maxPendingSseEvents",
+    "maxConsoleRunBytes",
+  ] as const) {
+    if (
+      opts[field] !== undefined &&
+      (!Number.isSafeInteger(opts[field]) || (opts[field] as number) < 1)
+    ) {
+      errors.push(`${optionsPrefix}.${field}: must be a positive integer`);
+    }
+  }
+
   if (opts.trustedProxies !== undefined) {
     if (
       !Array.isArray(opts.trustedProxies) ||
@@ -1121,6 +1140,35 @@ function validateTelegramTransportOptions(
   if (typeof opts.botToken !== "string" || !opts.botToken) {
     errors.push(`${prefix}.botToken: required string`);
   }
+  if (opts.replay !== undefined) {
+    if (opts.replay === null || typeof opts.replay !== "object" || Array.isArray(opts.replay)) {
+      errors.push(`${prefix}.replay: must be an object`);
+    } else {
+      const replay = opts.replay as Record<string, unknown>;
+      if (
+        replay.dbPath !== undefined &&
+        (typeof replay.dbPath !== "string" || replay.dbPath.trim().length === 0)
+      ) {
+        errors.push(`${prefix}.replay.dbPath: must be a non-empty string`);
+      }
+      if (
+        replay.namespace !== undefined &&
+        (typeof replay.namespace !== "string" ||
+          replay.namespace.length === 0 ||
+          replay.namespace.length > 256)
+      ) {
+        errors.push(`${prefix}.replay.namespace: must contain 1 to 256 characters`);
+      }
+      for (const field of ["retentionMs", "maxEntries"] as const) {
+        if (
+          replay[field] !== undefined &&
+          (!Number.isSafeInteger(replay[field]) || (replay[field] as number) < 1)
+        ) {
+          errors.push(`${prefix}.replay.${field}: must be a positive integer`);
+        }
+      }
+    }
+  }
 
   const inbound = opts.inbound as Record<string, unknown> | undefined;
   if (!inbound || typeof inbound !== "object") {
@@ -1162,6 +1210,12 @@ function validateTelegramTransportOptions(
         (typeof webhook.port !== "number" || webhook.port <= 0 || webhook.port > 65535)
       ) {
         errors.push(`${prefix}.inbound.webhook.port: must be a positive number ≤ 65535`);
+      }
+      if (
+        webhook.maxBodyBytes !== undefined &&
+        (!Number.isSafeInteger(webhook.maxBodyBytes) || (webhook.maxBodyBytes as number) < 1)
+      ) {
+        errors.push(`${prefix}.inbound.webhook.maxBodyBytes: must be a positive integer`);
       }
     }
   }
@@ -1497,6 +1551,51 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
               errors.push("engine.providerRouting.max_price.completion: must be a positive number");
             }
           }
+        }
+      }
+    }
+    if (engine.responseLimits !== undefined) {
+      if (
+        typeof engine.responseLimits !== "object" ||
+        engine.responseLimits === null ||
+        Array.isArray(engine.responseLimits)
+      ) {
+        errors.push("engine.responseLimits: must be an object");
+      } else {
+        const responseLimits = engine.responseLimits as Record<string, unknown>;
+        const allowed = new Set([
+          "maxTextBytes",
+          "maxToolCalls",
+          "maxToolNameBytes",
+          "maxToolArgumentBytes",
+          "maxTotalToolArgumentBytes",
+          "maxArgumentDepth",
+          "maxArgumentNodes",
+          "maxResponseBytes",
+          "maxStreamEvents",
+        ]);
+        for (const [key, value] of Object.entries(responseLimits)) {
+          if (!allowed.has(key)) {
+            errors.push(`engine.responseLimits.${key}: unknown response limit`);
+          } else if (!Number.isSafeInteger(value) || (value as number) < 1) {
+            errors.push(`engine.responseLimits.${key}: must be a positive integer`);
+          }
+        }
+        if (
+          typeof responseLimits.maxToolArgumentBytes === "number" &&
+          typeof responseLimits.maxTotalToolArgumentBytes === "number" &&
+          responseLimits.maxToolArgumentBytes > responseLimits.maxTotalToolArgumentBytes
+        ) {
+          errors.push(
+            "engine.responseLimits.maxToolArgumentBytes: cannot exceed maxTotalToolArgumentBytes",
+          );
+        }
+        if (
+          typeof responseLimits.maxTextBytes === "number" &&
+          typeof responseLimits.maxResponseBytes === "number" &&
+          responseLimits.maxTextBytes > responseLimits.maxResponseBytes
+        ) {
+          errors.push("engine.responseLimits.maxTextBytes: cannot exceed maxResponseBytes");
         }
       }
     }
