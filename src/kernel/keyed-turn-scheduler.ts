@@ -1,5 +1,8 @@
 export type SchedulerState = "accepting" | "draining" | "stopped";
 
+const RATE_LIMIT_WINDOW_MS = 60_000;
+const MAX_TRACKED_RATE_LIMIT_PEERS_PER_SOURCE = 10_000;
+
 export type SchedulerRejectionReason =
   | "peer-rate-limit"
   | "thread-capacity"
@@ -8,6 +11,7 @@ export type SchedulerRejectionReason =
   | "runtime-stopping"
   | "thread-quarantined"
   | "causal-depth"
+  | "causal-concurrency"
   | "causal-thread-mismatch";
 
 export interface KeyedTurnSchedulerConfig {
@@ -94,6 +98,7 @@ export interface KeyedTurnScheduler {
 interface InternalLease extends KeyedTurnLease {
   readonly schedulerToken: symbol;
   readonly root: RootLeaseState;
+  childActive: boolean;
 }
 
 interface PendingItem {
@@ -113,6 +118,7 @@ interface SourceState {
   readonly maxQueued: number;
   readonly rateLimitPerPeer?: { maxPerMinute: number };
   readonly peerTimestamps: Map<string, number[]>;
+  lastPeerSweepAt: number;
   active: number;
   queued: number;
 }
@@ -182,6 +188,7 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
       maxQueued: policy.maxQueued,
       ...(policy.rateLimitPerPeer ? { rateLimitPerPeer: { ...policy.rateLimitPerPeer } } : {}),
       peerTimestamps: new Map(),
+      lastPeerSweepAt: now(),
       active: 0,
       queued: 0,
     };
@@ -262,6 +269,7 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
       depth,
       schedulerToken,
       root,
+      childActive: false,
       quarantine() {
         if (!root.active || root.quarantined) return;
         root.quarantined = true;
@@ -373,9 +381,21 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
   ): { limited: boolean; retryAfterMs?: number } {
     if (!source.rateLimitPerPeer || !peerId) return { limited: false };
     const currentTime = now();
-    const windowMs = 60_000;
+    if (currentTime - source.lastPeerSweepAt >= RATE_LIMIT_WINDOW_MS) {
+      const cutoff = currentTime - RATE_LIMIT_WINDOW_MS;
+      for (const [trackedPeer, timestamps] of source.peerTimestamps) {
+        if ((timestamps.at(-1) ?? 0) <= cutoff) source.peerTimestamps.delete(trackedPeer);
+      }
+      source.lastPeerSweepAt = currentTime;
+    }
+    if (
+      !source.peerTimestamps.has(peerId) &&
+      source.peerTimestamps.size >= MAX_TRACKED_RATE_LIMIT_PEERS_PER_SOURCE
+    ) {
+      return { limited: true, retryAfterMs: 1_000 };
+    }
     const timestamps = (source.peerTimestamps.get(peerId) ?? []).filter(
-      (timestamp) => currentTime - timestamp < windowMs,
+      (timestamp) => currentTime - timestamp < RATE_LIMIT_WINDOW_MS,
     );
     if (timestamps.length === 0) source.peerTimestamps.delete(peerId);
     else source.peerTimestamps.set(peerId, timestamps);
@@ -384,7 +404,7 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
     }
     return {
       limited: true,
-      retryAfterMs: Math.max(1, windowMs - (currentTime - timestamps[0]!)),
+      retryAfterMs: Math.max(1, RATE_LIMIT_WINDOW_MS - (currentTime - timestamps[0]!)),
     };
   }
 
@@ -493,13 +513,19 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
         rejected++;
         return { status: "rejected", reason: "causal-depth" };
       }
+      if (internal.childActive) {
+        rejected++;
+        return { status: "rejected", reason: "causal-concurrency" };
+      }
 
+      internal.childActive = true;
       admitted++;
       const lease = makeLease(options.key, parent.depth + 1, internal.root);
       try {
         const value = await task(lease);
         return { status: "completed", value };
       } finally {
+        internal.childActive = false;
         settled++;
       }
     },
@@ -524,6 +550,17 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
         throw new Error("scheduler can reopen only after it has fully stopped");
       }
       quarantinedKeys.clear();
+      for (const source of sources.values()) {
+        source.active = 0;
+        source.queued = 0;
+        source.peerTimestamps.clear();
+        source.lastPeerSweepAt = now();
+      }
+      admitted = 0;
+      settled = 0;
+      rejected = 0;
+      canceled = 0;
+      quarantined = 0;
       state = "accepting";
     },
 

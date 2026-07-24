@@ -236,6 +236,63 @@ describe("web transport durable idempotency", () => {
     }
   });
 
+  it("abandons an unstarted durable claim when scheduler admission rejects it", async () => {
+    const barrier = createBarrierModel();
+    const port = 19402;
+    const transport = webTransport({
+      port,
+      auth: { type: "bearer", token: BEARER },
+      concurrency: 1,
+      maxQueueDepth: 0,
+      idempotency: { dbPath: join(tmp.path, "web-idempotency.db") },
+    });
+    const agent = defineAgent(
+      {
+        name: "idempotency",
+        model: "barrier",
+        augments: [transport],
+        turnScheduling: {
+          maxConcurrent: 1,
+          maxQueued: 0,
+          maxQueuedPerThread: 0,
+        },
+      },
+      barrier.model,
+    );
+    await agent.start();
+
+    try {
+      const activeResponsePromise = request(port, {
+        key: "active-request",
+        threadId: "active-thread",
+      });
+      await barrier.started;
+
+      const overloaded = await request(port, {
+        key: "retryable-request",
+        threadId: "retryable-thread",
+      });
+      expect(overloaded.status).toBe(200);
+      expect(await overloaded.text()).toContain("SCHEDULER_RATE_LIMITED");
+      expect(barrier.calls).toHaveLength(1);
+
+      barrier.release();
+      const activeResponse = await activeResponsePromise;
+      expect(await activeResponse.text()).toContain("barrier complete");
+
+      const retry = await request(port, {
+        key: "retryable-request",
+        threadId: "retryable-thread",
+      });
+      expect(retry.status).toBe(200);
+      expect(await retry.text()).toContain("barrier complete");
+      expect(barrier.calls).toHaveLength(2);
+    } finally {
+      barrier.release();
+      await agent.stop();
+    }
+  });
+
   it("coalesces replay-protected external auth behind the keyed execution", async () => {
     const barrier = createBarrierModel();
     const audience = "idempotency-external-replay";

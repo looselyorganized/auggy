@@ -201,6 +201,57 @@ describe("agent-wide keyed turn scheduling", () => {
     }
   });
 
+  test("runs a causal same-thread follow-up before releasing the parent lane", async () => {
+    const hookStarted = deferred();
+    const allowFollowup = deferred();
+    const promptOrder: string[] = [];
+    const schedulerAugment: Augment = {
+      name: "causal-followup",
+      async scheduleAfterTurn(result, context) {
+        if (result.turnId !== "outer") return;
+        hookStarted.resolve();
+        await allowFollowup.promise;
+        await context.inject(trigger("followup", "same", "web"));
+      },
+    };
+    const transport = capturedTransport("web");
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      async complete(prompt) {
+        promptOrder.push(prompt.messages.at(-1)?.content ?? "");
+        return response();
+      },
+    };
+    const agent = defineAgent(
+      {
+        name: "causal-order",
+        model: "mock",
+        augments: [transport.augment, schedulerAugment],
+        turnScheduling: {
+          maxConcurrent: 1,
+          maxQueued: 5,
+          maxQueuedPerThread: 5,
+          maxCausalDepth: 2,
+        },
+      },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const outer = transport.kernel().handleInbound(trigger("outer", "same", "web"));
+      await hookStarted.promise;
+      const successor = transport.kernel().handleInbound(trigger("successor", "same", "web"));
+      allowFollowup.resolve();
+      await Promise.all([outer, successor]);
+      expect(promptOrder).toEqual(["outer", "followup", "successor"]);
+    } finally {
+      allowFollowup.resolve();
+      await agent.stop();
+    }
+  });
+
   test("cancels queued work before model execution and reuses capacity", async () => {
     const release = deferred();
     const started = deferred();

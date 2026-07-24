@@ -278,6 +278,37 @@ describe("keyed turn scheduler", () => {
     expect(expectValue(await replacement)).toBe("replacement");
   });
 
+  test("exposes frozen aggregate metrics without thread or peer identifiers", async () => {
+    let now = 1_000;
+    const scheduler = createKeyedTurnScheduler({
+      maxConcurrent: 1,
+      maxQueued: 2,
+      maxQueuedPerKey: 2,
+      maxCausalDepth: 1,
+      now: () => now,
+    });
+    const release = deferred();
+    const active = scheduler.submit(
+      { key: "secret-thread", source, peerId: "secret-peer" },
+      async () => {
+        await release.promise;
+        return "active";
+      },
+    );
+    await Promise.resolve();
+    const queued = scheduler.submit(
+      { key: "other-secret-thread", source, peerId: "other-secret-peer" },
+      async () => "queued",
+    );
+    now += 250;
+    const snapshot = scheduler.snapshot();
+    expect(Object.isFrozen(snapshot)).toBe(true);
+    expect(snapshot.oldestQueueWaitMs).toBe(250);
+    expect(JSON.stringify(snapshot)).not.toContain("secret");
+    release.resolve();
+    await Promise.all([active, queued]);
+  });
+
   test("keeps active capacity occupied until non-cooperative work settles", async () => {
     const scheduler = createKeyedTurnScheduler({
       maxConcurrent: 1,
@@ -348,6 +379,46 @@ describe("keyed turn scheduler", () => {
       admitted: 3,
       rejected: 1,
       settled: 3,
+    });
+  });
+
+  test("rejects concurrent causal siblings instead of violating thread serialization", async () => {
+    const scheduler = createKeyedTurnScheduler({
+      maxConcurrent: 1,
+      maxQueued: 2,
+      maxQueuedPerKey: 2,
+      maxCausalDepth: 2,
+    });
+    const childStarted = deferred();
+    const releaseChild = deferred();
+    let siblingExecuted = false;
+
+    const parent = scheduler.submit({ key: "a", source }, async (lease) => {
+      const child = scheduler.runCausal(lease, { key: "a" }, async () => {
+        childStarted.resolve();
+        await releaseChild.promise;
+        return "child";
+      });
+      await childStarted.promise;
+      const sibling = await scheduler.runCausal(lease, { key: "a" }, async () => {
+        siblingExecuted = true;
+        return "sibling";
+      });
+      expect(sibling).toMatchObject({
+        status: "rejected",
+        reason: "causal-concurrency",
+      });
+      releaseChild.resolve();
+      expect(expectValue(await child)).toBe("child");
+      return "parent";
+    });
+
+    expect(expectValue(await parent)).toBe("parent");
+    expect(siblingExecuted).toBe(false);
+    expect(scheduler.snapshot()).toMatchObject({
+      admitted: 2,
+      rejected: 1,
+      settled: 2,
     });
   });
 

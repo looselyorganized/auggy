@@ -474,7 +474,9 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
           ? "The agent is stopping. Please retry after it restarts."
           : result.reason === "thread-quarantined"
             ? "This conversation requires operator recovery before it can continue."
-            : result.reason === "causal-depth" || result.reason === "causal-thread-mismatch"
+            : result.reason === "causal-depth" ||
+                result.reason === "causal-concurrency" ||
+                result.reason === "causal-thread-mismatch"
               ? "The scheduled follow-up was rejected by the runtime."
               : "Too many pending messages. Please try again later.";
     return {

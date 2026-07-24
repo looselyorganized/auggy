@@ -401,6 +401,7 @@ export type TurnRejectionReason =
   | "runtime-stopping"
   | "thread-quarantined"
   | "causal-depth"
+  | "causal-concurrency"
   | "causal-thread-mismatch";
 
 export interface TurnRejection {
@@ -743,8 +744,11 @@ export interface TransportSpec {
    */
   ready?(): Promise<void>;
   identify(raw: unknown): PeerIdentity | null;
+  /** Source-specific active cap inside the agent-wide scheduler. */
   concurrency?: number;
+  /** Source-specific waiting cap inside the agent-wide scheduler. */
   maxQueueDepth?: number;
+  /** Source-specific peer admission policy enforced by the scheduler. */
   rateLimitPerPeer?: { maxPerMinute: number };
 }
 

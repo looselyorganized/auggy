@@ -330,7 +330,9 @@ export interface WebTransportOptions {
    * does a timing-safe comparison before minting agent trust.
    */
   access?: { agents?: AgentAccessEntry[] };
+  /** Maximum active turns from this web source inside the agent scheduler. Default 4. */
   concurrency?: number;
+  /** Maximum waiting turns from this web source. Default 50. */
   maxQueueDepth?: number;
   rateLimitPerPeer?: {
     maxPerMinute: number;
@@ -1170,7 +1172,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // Lazy GC: every Nth call to checkRouteRateLimit, scan the routeHits map
   // and drop entries whose newest timestamp is outside the 60s window.
   // Bounded work per request keeps unique-caller entries from accumulating
-  // forever. transport-queue.ts:36 evicts the looked-up key in-band; here
+  // forever. The agent scheduler evicts looked-up peer windows in-band; here
   // the analog needs a sweep because checkRouteRateLimit always touches the
   // current key, so other stale keys never get their own eviction trigger.
   let routeHitsTouchCount = 0;

@@ -18,7 +18,7 @@ export interface TraceEmitter {
 /**
  * Build a fresh TurnTrace with all sub-structures initialized to empty.
  * Shared between TraceEmitter.startTurn (the regular turn path) and
- * transport-queue admission rejections (where no real trace is ever
+ * scheduler admission rejections (where no real trace is ever
  * accumulated but the TurnResult.trace shape must still be filled in).
  */
 export function emptyTrace(opts: {
