@@ -300,7 +300,12 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   }
 
   const client: AgentMailClient =
-    opts._client ?? createAgentMailClient({ apiKey: opts.apiKey, apiBaseUrl: opts.apiBaseUrl });
+    opts._client ??
+    createAgentMailClient({
+      apiKey: opts.apiKey,
+      apiBaseUrl: opts.apiBaseUrl,
+      allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
+    });
 
   const inboundMode = opts.inbound?.mode ?? "none";
   const agentMailRoutes: NonNullable<Augment["httpRoutes"]> = [
@@ -1475,6 +1480,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         apiKey: opts.apiKey,
         apiBaseUrl: opts.apiBaseUrl,
         websocketBaseUrl: opts.inbound?.websocketBaseUrl,
+        allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
       });
       if (inboundMode === "webhook" && !webhookRouteInstalled) {
         const webhookOptions = opts.inbound?.webhook;

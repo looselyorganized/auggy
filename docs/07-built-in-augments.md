@@ -1040,6 +1040,11 @@ GET /<endpoint listed in manifest>
 
 Use source names that explain where the content lives (`local`, `docs`, `handbook`, `api`) and endpoint descriptions that explain when the model should fetch each endpoint. This is the key DX rule: source selection and endpoint selection are driven by descriptions, not hidden routing logic.
 
+Remote sources that attach `token` or `tokenEnv` must use HTTPS. Plaintext HTTP
+is accepted only for loopback, or with the explicit
+`allowInsecureHttpWithCredentials: true` development override while
+`NODE_ENV=development`.
+
 ### Boot behavior
 
 Boot is graceful: if a source is unreachable at startup (HTTP) or the configured directory is missing (`file://`), the agent starts without that source's manifest and logs a warning. `knowledge_fetch` will return clear error messages until the source becomes reachable. This prevents a temporarily unavailable knowledge API from taking down a running agent.

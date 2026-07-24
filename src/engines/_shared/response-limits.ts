@@ -1,4 +1,5 @@
 import type { ModelResponse, ModelResponseLimits } from "../../types";
+import { createRedirectRejectingFetch } from "../../http";
 
 export const DEFAULT_MODEL_RESPONSE_LIMITS: Readonly<ModelResponseLimits> = {
   maxTextBytes: 1024 * 1024,
@@ -352,11 +353,12 @@ export function createBoundedModelFetch(
   configured?: Partial<ModelResponseLimits>,
 ): typeof fetch {
   const limits = resolveModelResponseLimits(configured);
+  const credentialSafeFetch = createRedirectRejectingFetch(base);
   const maxMessageBytes = limits.maxResponseBytes;
   const maxTransportBytes = Math.min(Number.MAX_SAFE_INTEGER, limits.maxResponseBytes * 4);
 
   const bounded = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
-    const response = await base(input, init);
+    const response = await credentialSafeFetch(input, init);
     if (!response.body) return response;
     const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
     const isSse = contentType.startsWith("text/event-stream");

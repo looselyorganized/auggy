@@ -274,6 +274,9 @@ Optional fields on the destination:
 - `subjectPrefix` — prepended to `payload.summary` to form the subject line.
 - `labels` — applied to the sent message in AgentMail (visible in `messages.list`).
 - `apiBaseUrl` — overrides the AgentMail API base URL (default `https://api.agentmail.to/v0`).
+- `allowInsecureHttpWithCredentials` — development-only escape hatch for a
+  non-loopback plaintext sandbox. It is rejected unless
+  `NODE_ENV=development`; production endpoints must use HTTPS.
 
 #### Delivery result mapping
 

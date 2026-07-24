@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { assertSecureCredentialTransport } from "../../src/engines/_shared/credential-transport";
+import {
+  assertSecureCredentialTransport,
+  assertSecureWebSocketCredentialTransport,
+} from "../../src/engines/_shared/credential-transport";
 
 const SENTINEL_URL = "http://sentinel-user:sentinel-pass@provider.example.test/v1?key=secret";
 
@@ -108,4 +111,30 @@ describe("assertSecureCredentialTransport", () => {
       ).toThrow(/valid absolute HTTP\(S\) URL/);
     },
   );
+});
+
+describe("assertSecureWebSocketCredentialTransport", () => {
+  test("allows WSS and loopback WS but rejects remote credentialed WS", () => {
+    expect(() =>
+      assertSecureWebSocketCredentialTransport({
+        provider: "test-provider",
+        baseURL: "wss://provider.example.test/events",
+        credential: "secret",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertSecureWebSocketCredentialTransport({
+        provider: "test-provider",
+        baseURL: "ws://127.0.0.1:8080/events",
+        credential: "secret",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      assertSecureWebSocketCredentialTransport({
+        provider: "test-provider",
+        baseURL: "ws://provider.example.test/events",
+        credential: "secret",
+      }),
+    ).toThrow(/plaintext WS/);
+  });
 });

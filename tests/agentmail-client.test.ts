@@ -43,6 +43,16 @@ function mockHttp(
 }
 
 describe("createAgentMailClient", () => {
+  test("rejects credentials over non-loopback plaintext HTTP before dispatch", () => {
+    expect(() =>
+      createAgentMailClient({
+        apiKey: "GROUP9_AGENTMAIL_SENTINEL",
+        apiBaseUrl: "http://provider.example.test/v0",
+        http: mockHttp(() => ({ status: 200, body: "{}" })),
+      }),
+    ).toThrow(/plaintext HTTP/);
+  });
+
   test("passes the send cancellation signal to the HTTP client", async () => {
     const controller = new AbortController();
     let capturedSignal: AbortSignal | undefined;

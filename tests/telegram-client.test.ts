@@ -35,6 +35,20 @@ function mockHttp(
 }
 
 describe("createTelegramBotClient", () => {
+  it("rejects a bot token over non-loopback plaintext HTTP", () => {
+    expect(() =>
+      createTelegramBotClient({
+        botToken: "GROUP9_TELEGRAM_SENTINEL",
+        baseUrl: "http://provider.example.test",
+        client: {
+          post: async () => {
+            throw new Error("must not dispatch");
+          },
+        },
+      }),
+    ).toThrow(/plaintext HTTP/);
+  });
+
   it("posts sendMessage with chat_id and text", async () => {
     let captured: { url?: string; body?: unknown } = {};
     const client = createTelegramBotClient({

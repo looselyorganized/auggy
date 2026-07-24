@@ -50,6 +50,7 @@ export interface AgentMailSetupOptions {
   inboxId?: string;
   otp?: string;
   baseUrl?: string;
+  allowInsecureHttpWithCredentials?: boolean;
 }
 
 export interface AgentMailSetupResult {
@@ -80,6 +81,10 @@ export function agentMailCommand(deps: AgentMailCommandDeps = {}): Command {
     .option("--inbox-id <id>", "existing AgentMail inbox ID for manual mode")
     .option("--otp <code>", "AgentMail signup OTP code")
     .option("--base-url <url>", "AgentMail API base URL")
+    .option(
+      "--allow-insecure-http-with-credentials",
+      "allow plaintext remote AgentMail only when NODE_ENV=development",
+    )
     .action(async (target: string, opts: AgentMailSetupOptions) => {
       try {
         const result = await runAgentMailSetup(target, opts, deps);
@@ -116,7 +121,11 @@ export async function runAgentMailSetup(
   }
 
   const provisioner =
-    deps.provisioner ?? createAgentMailProvisioningClient({ apiBaseUrl: opts.baseUrl });
+    deps.provisioner ??
+    createAgentMailProvisioningClient({
+      apiBaseUrl: opts.baseUrl,
+      allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
+    });
   const prompts = {
     select: deps.promptSelect ?? select,
     input: deps.promptInput ?? input,

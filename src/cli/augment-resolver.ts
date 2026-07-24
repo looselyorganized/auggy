@@ -40,6 +40,7 @@ import { telegramTransport } from "../augments/telegramTransport";
 import { turnControl, type TurnControlOptions } from "../augments/turnControl";
 import { visitorAuth } from "../augments/visitorAuth";
 import type { VisitorAuthOptions, VisitorAuthAugmentExtras } from "../augments/visitorAuth/types";
+import { assertSecureCredentialTransport } from "../engines/_shared/credential-transport";
 // `link` (value) used to be statically imported here, which transitively
 // loaded `@auggy/link` at boot regardless of whether any agent selected the
 // link augment (Codex 1st-pass finding #3). After Phase 5 the value is
@@ -250,6 +251,14 @@ async function resolveLayeredMemory(
         "layeredMemory: supabase backend requires supabaseUrl and supabaseKey options",
       );
     }
+    assertSecureCredentialTransport({
+      provider: "layeredMemory Supabase",
+      baseURL: supabaseUrl,
+      credential: supabaseKey,
+      allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials as
+        | boolean
+        | undefined,
+    });
     const { createClient } = await import("@supabase/supabase-js");
     const client = createClient(supabaseUrl, supabaseKey) as unknown as Parameters<
       typeof layeredMemory
@@ -279,6 +288,12 @@ async function resolveSupabaseMemory(opts: Record<string, unknown>): Promise<Aug
       'supabaseMemory requires explicit scope: "peer" or "shared"; peer scope also requires a peer_id column migration',
     );
   }
+  assertSecureCredentialTransport({
+    provider: "supabaseMemory",
+    baseURL: supabaseUrl,
+    credential: supabaseKey,
+    allowInsecureHttpWithCredentials: rest.allowInsecureHttpWithCredentials as boolean | undefined,
+  });
 
   // Lazy import — only load @supabase/supabase-js when supabaseMemory is used.
   // The real SupabaseClient has narrower types than SupabaseLikeClient
@@ -821,6 +836,9 @@ export async function resolveAugments(
         augment = knowledgeRoot({
           root: resolvePath((opts.root as string | undefined) ?? "./knowledge", agentDir),
           cacheTtlMs: opts.cacheTtlMs as number | undefined,
+          allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials as
+            | boolean
+            | undefined,
         });
         break;
       case "skills":
@@ -911,6 +929,9 @@ export async function resolveAugments(
           apiKey: opts.apiKey as string,
           inboxId: opts.inboxId as string,
           apiBaseUrl: opts.apiBaseUrl as string | undefined,
+          allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials as
+            | boolean
+            | undefined,
           dbPath,
           outbound: opts.outbound as AgentMailAugmentOptions["outbound"],
           inbound: opts.inbound as AgentMailAugmentOptions["inbound"],

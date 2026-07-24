@@ -78,6 +78,11 @@ default, with an optional Supabase backend for manual/programmatic configs.
 Every read, write, search, recent-entry listing, and forget operation is scoped
 to the current peer.
 
+Resolver-created Supabase clients attach an API key and therefore require an
+HTTPS `supabaseUrl` (loopback HTTP remains available for local development).
+The explicit `allowInsecureHttpWithCredentials: true` override works only when
+`NODE_ENV=development`.
+
 ### `MemoryDefaults`
 
 ```ts

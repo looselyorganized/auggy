@@ -13,6 +13,7 @@ import {
   isOutcomeUnknownError,
   OutcomeUnknownError,
 } from "./outcome-unknown";
+import { assertSecureCredentialTransport } from "./engines/_shared/credential-transport";
 
 const DEFAULT_BASE_URL = "https://api.agentmail.to/v0";
 const MAX_RECIPIENTS = 50;
@@ -21,6 +22,8 @@ export interface AgentMailClientOptions {
   apiKey: string;
   /** Override AgentMail API base URL (testing/sandbox). */
   apiBaseUrl?: string;
+  /** Development-only escape hatch for credentialed non-loopback HTTP. */
+  allowInsecureHttpWithCredentials?: boolean;
   /** Timeout per request. Default 15s. */
   timeoutMs?: number;
   /** Test-only HTTP client override. */
@@ -114,6 +117,12 @@ export interface AgentMailClient {
 
 export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailClient {
   const baseUrl = opts.apiBaseUrl ?? DEFAULT_BASE_URL;
+  assertSecureCredentialTransport({
+    provider: "AgentMail",
+    baseURL: baseUrl,
+    credential: opts.apiKey,
+    allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
+  });
   const http =
     opts.http ??
     createHttpClient({

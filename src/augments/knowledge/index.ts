@@ -35,6 +35,7 @@ import { defineTool } from "../../helpers";
 import { createHttpClient } from "../../http";
 import type { HttpClient } from "../../http";
 import { isOutcomeUnknownError } from "../../outcome-unknown";
+import { assertSecureCredentialTransport } from "../../engines/_shared/credential-transport";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -57,6 +58,8 @@ export interface ManifestOptions {
   baseUrl: string;
   /** Optional auth token for the org API (HTTP scheme only). */
   token?: string;
+  /** Development-only escape hatch for credentialed non-loopback HTTP. */
+  allowInsecureHttpWithCredentials?: boolean;
   /** Manifest cache TTL in milliseconds. Default 1 hour. */
   cacheTtlMs?: number;
   /** Optional pre-built HTTP client (for sharing across augments or testing). */
@@ -70,6 +73,8 @@ export interface KnowledgeRootOptions {
   client?: HttpClient;
   /** Default manifest cache TTL in milliseconds. Default 1 hour. */
   cacheTtlMs?: number;
+  /** Development-only default for credentialed non-loopback HTTP sources. */
+  allowInsecureHttpWithCredentials?: boolean;
 }
 
 interface KnowledgeSourceConfig {
@@ -79,6 +84,7 @@ interface KnowledgeSourceConfig {
   token?: string;
   tokenEnv?: string;
   cacheTtlMs?: number;
+  allowInsecureHttpWithCredentials?: boolean;
 }
 
 interface KnowledgeSourcesFile {
@@ -113,6 +119,8 @@ export function knowledgeRoot(opts: KnowledgeRootOptions): Augment {
           token,
           cacheTtlMs: source.cacheTtlMs ?? opts.cacheTtlMs,
           client: opts.client,
+          allowInsecureHttpWithCredentials:
+            source.allowInsecureHttpWithCredentials ?? opts.allowInsecureHttpWithCredentials,
         }),
       };
     });
@@ -235,6 +243,14 @@ function validateSourcesFile(raw: unknown): KnowledgeSourcesFile {
     if (typeof s.baseUrl !== "string" || !s.baseUrl.trim()) {
       throw new Error(`knowledge source ${s.name} baseUrl must be a non-empty string`);
     }
+    if (
+      s.allowInsecureHttpWithCredentials !== undefined &&
+      typeof s.allowInsecureHttpWithCredentials !== "boolean"
+    ) {
+      throw new Error(
+        `knowledge source ${s.name} allowInsecureHttpWithCredentials must be a boolean`,
+      );
+    }
     out.push({
       name: s.name,
       description: typeof s.description === "string" ? s.description : undefined,
@@ -242,6 +258,10 @@ function validateSourcesFile(raw: unknown): KnowledgeSourcesFile {
       token: typeof s.token === "string" ? s.token : undefined,
       tokenEnv: typeof s.tokenEnv === "string" ? s.tokenEnv : undefined,
       cacheTtlMs: typeof s.cacheTtlMs === "number" ? s.cacheTtlMs : undefined,
+      allowInsecureHttpWithCredentials:
+        typeof s.allowInsecureHttpWithCredentials === "boolean"
+          ? s.allowInsecureHttpWithCredentials
+          : undefined,
     });
   }
 
@@ -511,6 +531,14 @@ const DEFAULT_CACHE_TTL = 60 * 60 * 1000; // 1 hour
 
 export function knowledge(opts: ManifestOptions): Augment {
   const isFile = FILE_SCHEME_RE.test(opts.baseUrl);
+  if (!isFile) {
+    assertSecureCredentialTransport({
+      provider: "knowledge",
+      baseURL: opts.baseUrl,
+      credential: opts.token,
+      allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
+    });
+  }
 
   // For HTTP/HTTPS: keep existing behavior (trim trailing slash, init client).
   // For file://: parse to an absolute filesystem path; the http client is

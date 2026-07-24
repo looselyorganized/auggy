@@ -1526,6 +1526,8 @@ export interface AgentMailNotifyDestination extends NotifyDestinationAuthority {
   labels?: string[];
   /** Override the AgentMail API base URL (testing/sandbox). Default: https://api.agentmail.to/v0 */
   apiBaseUrl?: string;
+  /** Development-only escape hatch for credentialed non-loopback HTTP. */
+  allowInsecureHttpWithCredentials?: boolean;
   /** Optional per-destination rate limit. Falls back to the augment-level global cap when absent. */
   rateLimit?: {
     maxPerHour?: number;
@@ -1679,6 +1681,8 @@ export interface AgentMailAugmentOptions {
   inboxId: string;
   /** Override AgentMail API base URL (testing/sandbox). */
   apiBaseUrl?: string;
+  /** Development-only escape hatch for credentialed non-loopback HTTP/WS. */
+  allowInsecureHttpWithCredentials?: boolean;
   /** SQLite store path for inbound dedup. Default `"./agent-mail.db"`. */
   dbPath?: string;
   /** Outbound policy + tools configuration. */

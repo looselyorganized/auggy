@@ -789,6 +789,15 @@ describe("manifest construction", () => {
     expect(() => knowledge({ baseUrl: "http://localhost:3000" })).not.toThrow();
     expect(() => knowledge({ baseUrl: "https://example.com" })).not.toThrow();
   });
+
+  it("rejects a bearer token over non-loopback plaintext HTTP", () => {
+    expect(() =>
+      knowledge({
+        baseUrl: "http://provider.example.test",
+        token: "GROUP9_KNOWLEDGE_SENTINEL",
+      }),
+    ).toThrow(/plaintext HTTP/);
+  });
 });
 
 // ---------------------------------------------------------------------------

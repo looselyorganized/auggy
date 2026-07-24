@@ -17,6 +17,7 @@ import {
   isOutcomeUnknownError,
   OutcomeUnknownError,
 } from "./outcome-unknown";
+import { assertSecureCredentialTransport } from "./engines/_shared/credential-transport";
 
 export interface SendMessageOptions {
   parseMode?: "Markdown" | "HTML" | "MarkdownV2";
@@ -79,6 +80,8 @@ export interface CreateTelegramBotClientOptions {
   botToken: string;
   client?: Pick<HttpClient, "post">;
   baseUrl?: string;
+  /** Development-only escape hatch for token-bearing non-loopback HTTP. */
+  allowInsecureHttpWithCredentials?: boolean;
 }
 
 interface BotApiResponse<T> {
@@ -90,6 +93,12 @@ interface BotApiResponse<T> {
 
 export function createTelegramBotClient(opts: CreateTelegramBotClientOptions): TelegramBotClient {
   const baseUrl = opts.baseUrl ?? "https://api.telegram.org";
+  assertSecureCredentialTransport({
+    provider: "Telegram",
+    baseURL: baseUrl,
+    credential: opts.botToken,
+    allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
+  });
   const url = (method: string) => `${baseUrl}/bot${opts.botToken}/${method}`;
   const http =
     opts.client ??

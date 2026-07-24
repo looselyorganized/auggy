@@ -7,6 +7,12 @@ export interface CredentialTransportPolicy {
   warn?: (message: string) => void;
 }
 
+interface CredentialUrlProtocols {
+  secure: "https:" | "wss:";
+  insecure: "http:" | "ws:";
+  label: "baseURL" | "websocketBaseURL";
+}
+
 function stripIpv6Brackets(hostname: string): string {
   return hostname.startsWith("[") && hostname.endsWith("]") ? hostname.slice(1, -1) : hostname;
 }
@@ -48,23 +54,35 @@ export function isLoopbackProviderHostname(rawHostname: string): boolean {
  * never include the raw URL, whose userinfo, query, or path can contain
  * credentials.
  */
-export function assertSecureCredentialTransport(policy: CredentialTransportPolicy): void {
+function assertSecureCredentialUrl(
+  policy: CredentialTransportPolicy,
+  protocols: CredentialUrlProtocols,
+): void {
+  const protocolLabel = protocols.secure === "https:" ? "HTTP(S)" : "WebSocket (WS/WSS)";
   let url: URL;
   try {
     url = new URL(policy.baseURL);
   } catch {
-    throw new Error(`${policy.provider} baseURL must be a valid absolute HTTP(S) URL.`);
+    throw new Error(
+      `${policy.provider} ${protocols.label} must be a valid absolute ${protocolLabel} URL.`,
+    );
   }
 
-  if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error(`${policy.provider} baseURL must be a valid absolute HTTP(S) URL.`);
+  if (url.protocol !== protocols.secure && url.protocol !== protocols.insecure) {
+    throw new Error(
+      `${policy.provider} ${protocols.label} must be a valid absolute ${protocolLabel} URL.`,
+    );
   }
   if (url.username.length > 0 || url.password.length > 0) {
-    throw new Error(`${policy.provider} baseURL must not contain embedded credentials.`);
+    throw new Error(`${policy.provider} ${protocols.label} must not contain embedded credentials.`);
   }
 
   const credentialAttached = policy.credential !== undefined && policy.credential.length > 0;
-  if (url.protocol !== "http:" || !credentialAttached || isLoopbackProviderHostname(url.hostname)) {
+  if (
+    url.protocol !== protocols.insecure ||
+    !credentialAttached ||
+    isLoopbackProviderHostname(url.hostname)
+  ) {
     return;
   }
 
@@ -77,6 +95,22 @@ export function assertSecureCredentialTransport(policy: CredentialTransportPolic
   }
 
   throw new Error(
-    `${policy.provider} refuses to send credentials over non-loopback plaintext HTTP. Use HTTPS or a loopback tunnel.`,
+    `${policy.provider} refuses to send credentials over non-loopback plaintext ${protocols.insecure.slice(0, -1).toUpperCase()}. Use ${protocols.secure.slice(0, -1).toUpperCase()} or a loopback tunnel.`,
   );
+}
+
+export function assertSecureCredentialTransport(policy: CredentialTransportPolicy): void {
+  assertSecureCredentialUrl(policy, {
+    secure: "https:",
+    insecure: "http:",
+    label: "baseURL",
+  });
+}
+
+export function assertSecureWebSocketCredentialTransport(policy: CredentialTransportPolicy): void {
+  assertSecureCredentialUrl(policy, {
+    secure: "wss:",
+    insecure: "ws:",
+    label: "websocketBaseURL",
+  });
 }

@@ -426,6 +426,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     agentMail = createAgentMailClient({
       apiKey: opts.agentMail.apiKey,
       apiBaseUrl: opts.agentMail.apiBaseUrl,
+      allowInsecureHttpWithCredentials: opts.agentMail.allowInsecureHttpWithCredentials,
     });
   }
 

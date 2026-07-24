@@ -15,20 +15,33 @@ import type {
 
 export interface CreateAgentMailAdapterOptions {
   /** Test-only client override; production constructs from destination's apiKey. */
-  clientFactory?: (apiKey: string, baseUrl?: string) => AgentMailClient;
+  clientFactory?: (
+    apiKey: string,
+    baseUrl?: string,
+    allowInsecureHttpWithCredentials?: boolean,
+  ) => AgentMailClient;
 }
 
 export function createAgentMailAdapter(opts: CreateAgentMailAdapterOptions = {}): NotifyAdapter {
   const factory =
     opts.clientFactory ??
-    ((apiKey, baseUrl) => createAgentMailClient({ apiKey, apiBaseUrl: baseUrl }));
+    ((apiKey, baseUrl, allowInsecureHttpWithCredentials) =>
+      createAgentMailClient({
+        apiKey,
+        apiBaseUrl: baseUrl,
+        allowInsecureHttpWithCredentials,
+      }));
   const cache = new Map<string, AgentMailClient>();
 
-  function getClient(apiKey: string, baseUrl?: string): AgentMailClient {
-    const cacheKey = `${apiKey}:${baseUrl ?? ""}`;
+  function getClient(
+    apiKey: string,
+    baseUrl?: string,
+    allowInsecureHttpWithCredentials?: boolean,
+  ): AgentMailClient {
+    const cacheKey = `${apiKey}:${baseUrl ?? ""}:${allowInsecureHttpWithCredentials === true}`;
     let client = cache.get(cacheKey);
     if (!client) {
-      client = factory(apiKey, baseUrl);
+      client = factory(apiKey, baseUrl, allowInsecureHttpWithCredentials);
       cache.set(cacheKey, client);
     }
     return client;
@@ -54,7 +67,7 @@ export function createAgentMailAdapter(opts: CreateAgentMailAdapterOptions = {})
         };
       }
       const dest = destination as AgentMailNotifyDestination;
-      const client = getClient(dest.apiKey, dest.apiBaseUrl);
+      const client = getClient(dest.apiKey, dest.apiBaseUrl, dest.allowInsecureHttpWithCredentials);
       const subject = `${dest.subjectPrefix ?? ""}${payload.summary}`;
       try {
         const result = await client.send({

@@ -1,9 +1,12 @@
 import { createHttpClient, type HttpClient } from "../http";
+import { assertSecureCredentialTransport } from "../engines/_shared/credential-transport";
 
 export const AGENTMAIL_DEFAULT_BASE_URL = "https://api.agentmail.to/v0";
 
 export interface AgentMailProvisioningClientOptions {
   apiBaseUrl?: string;
+  /** Development-only escape hatch for credentialed non-loopback HTTP. */
+  allowInsecureHttpWithCredentials?: boolean;
   timeoutMs?: number;
   http?: Pick<HttpClient, "post">;
 }
@@ -68,6 +71,13 @@ export function createAgentMailProvisioningClient(
   opts: AgentMailProvisioningClientOptions = {},
 ): AgentMailProvisioningClient {
   const baseUrl = opts.apiBaseUrl ?? AGENTMAIL_DEFAULT_BASE_URL;
+  assertSecureCredentialTransport({
+    provider: "AgentMail provisioning",
+    baseURL: baseUrl,
+    // Provisioning returns and subsequently sends API keys on this channel.
+    credential: "provisioning-credential",
+    allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
+  });
   const http =
     opts.http ??
     createHttpClient({

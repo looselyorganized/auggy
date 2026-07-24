@@ -193,6 +193,32 @@ describe("resolveAugments — filesystem", () => {
 });
 
 describe("resolveAugments — supabaseMemory", () => {
+  test("rejects a Supabase key over non-loopback plaintext HTTP", async () => {
+    await expect(
+      resolveAugments(
+        [
+          {
+            name: "episodes",
+            type: "supabaseMemory",
+            options: {
+              namespace: "episode",
+              scope: "peer",
+              supabaseUrl: "http://provider.example.test",
+              supabaseKey: "GROUP9_SUPABASE_SENTINEL",
+              table: "agent_memories",
+              mutable: true,
+              origin: "peer-derived",
+              priority: "normal",
+              placement: "preamble",
+              eviction: "drop",
+            },
+          },
+        ],
+        TMP,
+      ),
+    ).rejects.toThrow(/plaintext HTTP/);
+  });
+
   test("requires an explicit peer or shared scope", async () => {
     await expect(
       resolveAugments(
@@ -349,6 +375,26 @@ describe("resolveAugments — link", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveAugments — layeredMemory", () => {
+  test("rejects a Supabase backend key over non-loopback plaintext HTTP", async () => {
+    await expect(
+      resolveAugments(
+        [
+          {
+            name: "memory",
+            type: "layeredMemory",
+            options: {
+              backend: "supabase",
+              namespace: "test",
+              supabaseUrl: "http://provider.example.test",
+              supabaseKey: "GROUP9_LAYERED_SUPABASE_SENTINEL",
+            },
+          },
+        ],
+        TMP,
+      ),
+    ).rejects.toThrow(/plaintext HTTP/);
+  });
+
   test("passes autoSave options through to the layeredMemory augment", async () => {
     const augments = await resolveAugments(
       [

@@ -176,4 +176,35 @@ describe("model response limits", () => {
       expect(canceled).toBe(true);
     }
   });
+
+  it("rejects redirects before a provider API key can cross origins", async () => {
+    const sentinel = "GROUP9_PROVIDER_REDIRECT_SECRET";
+    let leakedHeader: string | null = null;
+    const target = Bun.serve({
+      port: 0,
+      fetch(request) {
+        leakedHeader = request.headers.get("x-api-key");
+        return new Response("unexpected");
+      },
+    });
+    const redirector = Bun.serve({
+      port: 0,
+      fetch() {
+        return Response.redirect(`http://127.0.0.1:${target.port}/capture`, 302);
+      },
+    });
+
+    try {
+      const bounded = createBoundedModelFetch(globalThis.fetch.bind(globalThis));
+      await expect(
+        bounded(`http://127.0.0.1:${redirector.port}/start`, {
+          headers: { "x-api-key": sentinel },
+        }),
+      ).rejects.toThrow(/redirects are disabled/);
+      expect(leakedHeader).toBeNull();
+    } finally {
+      redirector.stop(true);
+      target.stop(true);
+    }
+  });
 });
