@@ -75,6 +75,28 @@ jobs:
       - name: Pricing freshness check
         run: bun run scripts/check-pricing-freshness.ts
 
+  inventory:
+    name: v1 test-surface inventory
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runtime: ${{ steps.surface.outputs.runtime }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Validate tracked test surface
+        id: surface
+        run: |
+          bun scripts/test-surface-inventory.ts check
+          echo "runtime=$(bun scripts/test-surface-inventory.ts matrix runtime)" >> "$GITHUB_OUTPUT"
+
   console:
     name: v1 console gate
     runs-on: ubuntu-latest
@@ -94,9 +116,10 @@ jobs:
 
       - name: Validate creator console
         working-directory: admin
-        run: |
-          bun run lint
-          bun test
+        run: bun run lint
+
+      - name: Run inventoried creator console tests
+        run: bun scripts/test-surface-inventory.ts run console
 
       - name: Build creator console
         run: bun run build:admin
@@ -191,25 +214,14 @@ jobs:
         run: bun test --max-concurrency=1 "$TEST_PATH"
 
   runtime_shards:
-    name: v1 runtime shard (${{ matrix.name }})
+    name: v1 runtime shard (${{ matrix.shard }})
+    needs: inventory
     runs-on: ubuntu-latest
     timeout-minutes: 10
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - name: capabilities
-            paths: tests/augments tests/auth tests/config tests/memory tests/skills
-          - name: operator
-            paths: tests/cli tests/scripts tests/ci
-          - name: transport
-            paths: tests/transports tests/integration
-          - name: kernel
-            paths: tests/kernel tests/lib
-          - name: contracts
-            paths: tests/engines tests/packages tests/public-api tests/types tests/evals
-          - name: workspaces
-            paths: packages examples
+        shard: ${{ fromJSON(needs.inventory.outputs.runtime) }}
 
     steps:
       - name: Checkout
@@ -225,10 +237,8 @@ jobs:
 
       - name: Run sequential runtime shard
         env:
-          TEST_PATHS: ${{ matrix.paths }}
-        run: |
-          read -r -a test_paths <<< "$TEST_PATHS"
-          bun test --max-concurrency=1 --timeout=30000 "${test_paths[@]}"
+          TEST_SHARD: ${{ matrix.shard }}
+        run: bun scripts/test-surface-inventory.ts run "$TEST_SHARD"
 
   test:
     name: v1 release gate
@@ -237,6 +247,7 @@ jobs:
       - lint
       - typecheck
       - pricing
+      - inventory
       - console
       - deterministic_tests
       - linux_boundaries
@@ -250,12 +261,13 @@ jobs:
           LINT_RESULT: ${{ needs.lint.result }}
           TYPECHECK_RESULT: ${{ needs.typecheck.result }}
           PRICING_RESULT: ${{ needs.pricing.result }}
+          INVENTORY_RESULT: ${{ needs.inventory.result }}
           CONSOLE_RESULT: ${{ needs.console.result }}
           TEST_RESULT: ${{ needs.deterministic_tests.result }}
           LINUX_RESULT: ${{ needs.linux_boundaries.result }}
           SHARD_RESULT: ${{ needs.runtime_shards.result }}
         run: |
-          if [[ "$LINT_RESULT" != "success" || "$TYPECHECK_RESULT" != "success" || "$PRICING_RESULT" != "success" || "$CONSOLE_RESULT" != "success" || "$TEST_RESULT" != "success" || "$LINUX_RESULT" != "success" || "$SHARD_RESULT" != "success" ]]; then
-            echo "lint=$LINT_RESULT typecheck=$TYPECHECK_RESULT pricing=$PRICING_RESULT console=$CONSOLE_RESULT deterministic-tests=$TEST_RESULT linux-boundaries=$LINUX_RESULT runtime-shards=$SHARD_RESULT"
+          if [[ "$LINT_RESULT" != "success" || "$TYPECHECK_RESULT" != "success" || "$PRICING_RESULT" != "success" || "$INVENTORY_RESULT" != "success" || "$CONSOLE_RESULT" != "success" || "$TEST_RESULT" != "success" || "$LINUX_RESULT" != "success" || "$SHARD_RESULT" != "success" ]]; then
+            echo "lint=$LINT_RESULT typecheck=$TYPECHECK_RESULT pricing=$PRICING_RESULT inventory=$INVENTORY_RESULT console=$CONSOLE_RESULT deterministic-tests=$TEST_RESULT linux-boundaries=$LINUX_RESULT runtime-shards=$SHARD_RESULT"
             exit 1
           fi

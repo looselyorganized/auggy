@@ -51,12 +51,25 @@
       ]
     },
     {
+      "id": "doctor",
+      "suite": "runtime",
+      "selectors": [
+        {
+          "kind": "exact",
+          "path": "tests/cli/commands/doctor.test.ts"
+        }
+      ]
+    },
+    {
       "id": "operator",
       "suite": "runtime",
       "selectors": [
         {
           "kind": "tree",
-          "path": "tests/cli"
+          "path": "tests/cli",
+          "exclude": [
+            "tests/cli/commands/doctor.test.ts"
+          ]
         },
         {
           "kind": "tree",

@@ -66,19 +66,14 @@ jobs:
       # Keep port-heavy and subprocess-heavy suites in bounded processes.
       # Bun 1.3.14 can starve MCP stdio startup when the complete repository
       # suite shares one long-lived test process.
+      - name: Validate tracked test surface
+        run: bun scripts/test-surface-inventory.ts check
+
       - name: Run runtime tests in bounded shards
-        run: |
-          bun test --max-concurrency=1 --timeout=30000 tests/http.test.ts
-          bun test --max-concurrency=1 --timeout=30000 tests/agent-card.test.ts tests/agent.test.ts tests/agentmail-client.test.ts tests/augment-inspector.test.ts tests/helpers.test.ts tests/parts.test.ts tests/telegram-client.test.ts tests/tokenizer.test.ts tests/types-compile.test.ts
-          bun test --max-concurrency=1 --timeout=30000 tests/augments/ tests/auth/ tests/config/ tests/memory/ tests/skills/
-          bun test --max-concurrency=1 --timeout=30000 tests/cli/ tests/scripts/ tests/ci/
-          bun test --max-concurrency=1 --timeout=30000 tests/transports/ tests/integration/
-          bun test --max-concurrency=1 --timeout=30000 tests/kernel/ tests/lib/
-          bun test --max-concurrency=1 --timeout=30000 tests/engines/ tests/packages/ tests/public-api/ tests/types/ tests/evals/
-          bun test --max-concurrency=1 --timeout=30000 examples/
+        run: bun scripts/test-surface-inventory.ts run-runtime
 
       - name: Run console tests
-        run: bun run test:admin
+        run: bun scripts/test-surface-inventory.ts run console
 
       - name: Smoke packed release
         run: bun run smoke:release

@@ -47,6 +47,12 @@ describe("tracked CI test-surface inventory", () => {
     expect(inventory.shards.find((shard) => shard.id === "base")?.files).toContain(
       "tests/agent.test.ts",
     );
+    expect(inventory.shards.find((shard) => shard.id === "doctor")?.files).toEqual([
+      "tests/cli/commands/doctor.test.ts",
+    ]);
+    expect(inventory.shards.find((shard) => shard.id === "operator")?.files).not.toContain(
+      "tests/cli/commands/doctor.test.ts",
+    );
   });
 
   test("automatically assigns additions inside known roots", () => {
