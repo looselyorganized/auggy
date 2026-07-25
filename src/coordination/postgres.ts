@@ -1,5 +1,5 @@
-import { SQL } from "bun";
 import { migratePostgresCoordinator, type PostgresMigrationExecutor } from "./migrations";
+import { createSecurePostgresCoordinationClient } from "./postgres-url";
 import type {
   AdmitResult,
   ClaimResult,
@@ -129,7 +129,8 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     assertIdentifier("instanceId", options.instanceId);
     this.#config = options;
     this.#ownsSql = !options.sql;
-    this.#sql = (options.sql ?? new SQL(options.url!)) as unknown as SqlTransaction;
+    this.#sql = (options.sql ??
+      createSecurePostgresCoordinationClient(options.url!)) as unknown as SqlTransaction;
   }
 
   async migrate(): Promise<void> {
@@ -433,7 +434,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     return instance[0] !== undefined && bool(instance[0], "draining");
   }
 
-  /** Source identities and policies are server-owned and immutable within a namespace. */
+  /** Trusted runtime integration provisions immutable source policy per namespace. */
   async sourcePolicy(
     tx: SqlTransaction,
     incoming: DistributedTurnRequest["source"],

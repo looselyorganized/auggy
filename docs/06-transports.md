@@ -1329,5 +1329,8 @@ only the environment variable named by `urlEnv`, never a URL in `agent.yaml`:
 auggy coordination migrate --config ./agent.yaml
 ```
 
-It prints only the applied schema identifiers and does not start the agent or
-enable replicas.
+It prints only the applied schema identifiers plus an explicit reminder that
+runtime replicas remain unsupported. It does not start the agent or enable
+replicas. Remote PostgreSQL endpoints must use `sslmode=verify-full`;
+plaintext or opportunistic TLS is accepted only for exact localhost and
+literal loopback development endpoints.

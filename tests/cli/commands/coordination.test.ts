@@ -10,7 +10,8 @@ import {
 } from "../../../src/cli/commands/coordination";
 
 const roots: string[] = [];
-const SENTINEL_URL = "postgres://auggy-secret-sentinel@db.example.invalid/coordination";
+const SENTINEL_URL =
+  "postgres://auggy-secret-sentinel@db.example.invalid/coordination?sslmode=verify-full";
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -125,6 +126,28 @@ describe("runCoordinationMigrate", () => {
     }
   });
 
+  test("rejects an insecure remote URL before creating a client without leaking it", async () => {
+    const root = writeAgent();
+    const insecureUrl = "postgres://auggy-secret-sentinel@db.example.invalid/coordination";
+    let connected = false;
+    let thrown: Error | undefined;
+    try {
+      await runCoordinationMigrate(undefined, {
+        cwd: root,
+        env: { AUGGY_COORDINATION_DATABASE_URL: insecureUrl },
+        createClient: () => {
+          connected = true;
+          return fakeClient();
+        },
+      });
+    } catch (error) {
+      thrown = error as Error;
+    }
+    expect(connected).toBe(false);
+    expect(thrown?.message).toBe("coordination migration failed");
+    expect(String(thrown)).not.toContain("auggy-secret-sentinel");
+  });
+
   test("sanitizes migration and close errors while always closing a created client", async () => {
     const root = writeAgent();
     let closed = false;
@@ -183,7 +206,7 @@ describe("coordinationCommand", () => {
       console.error = originalError;
     }
     expect(stdout).toEqual([
-      "Coordination schema ready: 20260724_01_distributed_turn_coordination",
+      "Coordination preview schema provisioned: 20260724_01_distributed_turn_coordination. Runtime replicas remain unsupported.",
     ]);
     expect(stderr).toEqual([]);
     expect(`${stdout}\n${stderr}`).not.toContain(SENTINEL_URL);

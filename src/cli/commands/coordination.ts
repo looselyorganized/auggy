@@ -4,10 +4,13 @@
  * an agent or enable replicas.
  */
 
-import { SQL } from "bun";
 import { Command } from "commander";
 import { POSTGRES_COORDINATION_MIGRATIONS, migratePostgresCoordinator } from "../../coordination";
 import type { PostgresMigrationExecutor } from "../../coordination/migrations";
+import {
+  assertSecurePostgresCoordinationUrl,
+  createSecurePostgresCoordinationClient,
+} from "../../coordination/postgres-url";
 import { parseConfig } from "../config-parser";
 import { resolveConfigPath } from "../resolve-config";
 
@@ -36,7 +39,7 @@ export interface CoordinationMigrateCommandDeps {
 class SafeCoordinationMigrationError extends Error {}
 
 function createClient(url: string): CoordinationMigrationClient {
-  return new SQL(url) as unknown as CoordinationMigrationClient;
+  return createSecurePostgresCoordinationClient(url) as unknown as CoordinationMigrationClient;
 }
 
 function safeMigrationError(): SafeCoordinationMigrationError {
@@ -72,6 +75,11 @@ export async function runCoordinationMigrate(
       `coordination database environment variable ${coordination.urlEnv} is missing or empty`,
     );
   }
+  try {
+    assertSecurePostgresCoordinationUrl(url);
+  } catch {
+    throw safeMigrationError();
+  }
 
   let client: CoordinationMigrationClient | undefined;
   let failure: Error | undefined;
@@ -99,7 +107,7 @@ export function coordinationCommand(deps: CoordinationMigrateCommandDeps = {}): 
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
   const command = new Command("coordination").description(
-    "Provision and inspect distributed coordination",
+    "Provision the disabled distributed-coordination preview",
   );
   command
     .command("migrate [name]")
@@ -108,7 +116,9 @@ export function coordinationCommand(deps: CoordinationMigrateCommandDeps = {}): 
     .action(async (name: string | undefined, opts: { config?: string }) => {
       try {
         const migrations = await run(name, { config: opts.config });
-        console.log(`Coordination schema ready: ${migrations.join(", ")}`);
+        console.log(
+          `Coordination preview schema provisioned: ${migrations.join(", ")}. Runtime replicas remain unsupported.`,
+        );
         exit(0);
       } catch (err) {
         const message =
