@@ -21,11 +21,11 @@
                                         │ kernel.handleInbound(trigger, {onEvent})
                                         ▼
                        ┌─────────────────────────────────┐
-                       │       Transport Queue           │
-                       │  rate limit, queue depth,       │
-                       │  concurrency cap                │
+                       │ Agent-wide Keyed Turn Scheduler │
+                       │ global/source/thread bounds,    │
+                       │ fair per-thread FIFO admission  │
                        └────────────────┬────────────────┘
-                                        │ enqueue → handler(trigger)
+                                        │ admitted complete-turn lane
                                         ▼
                   ┌────────────────────────────────────────┐
                   │              TURN LOOP                 │
@@ -72,9 +72,13 @@ Defines `defineAgent(config, model) → AgentHandle`. This is the primary entry 
 1. Wires the memory bus (`wireMemoryBus`) to synthesize context for memory providers and add the synthetic `memory-bus` augment with the five generic memory tools.
 2. Generates the agent card from the *effective* config (with the synthetic augment included).
 3. Constructs a `LifecycleManager` and a `TurnLoop`.
-4. Returns an `AgentHandle` with `start()`, `stop()`, `health()`, `card()`, and `inject()`.
+4. Creates one bounded keyed turn scheduler for the process.
+5. Returns an `AgentHandle` with `start()`, `stop()`, `health()`, `card()`,
+   `inject()`, and trusted thread-quarantine recovery.
 
-`start()` boots all augments, registers transports (each gets its own `TransportQueue` and a `TransportKernel` view onto the runtime), and starts the idle timer.
+`start()` boots all augments, registers each transport's source policy with the
+shared scheduler, gives each transport a `TransportKernel` view onto the
+runtime, and starts the idle timer.
 
 ### `src/agent-card.ts`
 `generateAgentCard(config) → AgentCard`. Walks the augment list and produces
@@ -94,7 +98,7 @@ The runtime. Each file is one component with one responsibility. See [04-kernel.
 | `history-manager.ts` | Per-thread message log. Knows how to walk backwards from newest within a token budget, keep `tool_use`/`tool_result` pairs atomic, and compact when over threshold. |
 | `tool-selector.ts` | Filters tools through `capabilityTable.canExpose` and converts them to `ToolDefinition[]` for the model. (Two-phase selection deferred — v1 mounts all <25 tools.) |
 | `lifecycle-manager.ts` | Boots augments in order, runs `onShutdown` in reverse, manages the idle timer, reports health. |
-| `transport-queue.ts` | Per-transport queue: rate-limit per peer, max queue depth, concurrency cap. Returns synchronous rejection results when limits are exceeded. |
+| `keyed-turn-scheduler.ts` | Agent-wide, per-thread FIFO scheduler: global/source/thread bounds, fair runnable-key selection, queued cancellation, causal leases, quarantine, drain, and aggregate metrics. |
 | `trace-emitter.ts` | Builds a `TurnTrace` over the course of a turn — context assembly, tool selection, inference steps, capability checks, output validation. |
 | `timeout.ts` | `withTimeout(fn, ms, callerSignal)` — combines caller cancellation with a deadline signal. Used by augment context, tool execution, routes, and shutdown. |
 | `output-validator.ts` | Scans model output for suspicious patterns (e.g. fabricated tool names). v1 flags only — does not block. |
@@ -258,11 +262,18 @@ return new Response(stream, { headers: { "content-type": "text/event-stream" } }
 
 The HTTP response is now an open SSE stream. Every event the kernel emits will be written to the stream as a `data: {...}\n\n` frame and flushed to the client immediately.
 
-### 4. The transport queue gates the request
+### 4. The agent-wide scheduler gates the request
 
-The transport's `concurrency`/`maxQueueDepth`/`rateLimitPerPeer` settings live in the queue. If the request is rejected (rate limit, queue full), the queue returns a `TurnResult` with `status: "rejected"` and the transport synthesizes a `RUN_ERROR` (code: `REJECTED`) + `RUN_FINISHED` event pair into the SSE stream and closes it.
+Every transport and `AgentHandle.inject()` submits to the same scheduler. The
+resolved `threadId` is the serialization key. Agent-wide
+`settings.turnScheduling` limits combine with the source transport's
+`concurrency`, `maxQueueDepth`, and `rateLimitPerPeer` policy. If admission is
+rejected, the scheduler returns a structured rejected `TurnResult` without
+running persistence, inference, tools, delivery, or hooks. The web transport
+synthesizes a stable `RUN_ERROR` plus `RUN_FINISHED` pair into the SSE stream.
 
-If accepted, the request enters the actual turn loop.
+If accepted, one runnable thread consumes an active slot. Waiting work for a
+busy thread does not consume a slot, so unrelated threads can make progress.
 
 ### 5. The turn loop runs
 
@@ -287,9 +298,13 @@ If accepted, the request enters the actual turn loop.
 
 After `kernel.handleInbound` resolves, the transport closes the ReadableStream. The client has now received the full sequence of AG-UI events for the turn.
 
-### 7. Eager compaction + onTurnEnd hooks
+### 7. Durable completion, delivery, and hooks
 
-After the turn returns, `defineAgent` runs `historyManager.compact()` against the configured strategy (`truncate` by default), then fires every augment's `onTurnEnd` hook (non-blocking — failures are swallowed).
+Before the keyed lane is released, `defineAgent` compacts and durably commits
+history, delivers outbound messages in order, then awaits `onTurnEnd` and
+`scheduleAfterTurn` hooks. A scheduled same-thread injection uses a bounded
+causal lease so it cannot deadlock or be overtaken by the next customer turn.
+Hook failures are logged and swallowed.
 
 ## Lifecycle: from boot to shutdown
 
@@ -306,8 +321,9 @@ agent.start()                            ← user code
    │       (fileMemory loads its file, supabaseMemory does nothing,
    │        webTransport starts Bun.serve)
    │
+   ├─ create one KeyedTurnScheduler(settings.turnScheduling)
    ├─ for each transport augment:
-   │    ├─ create TransportQueue(spec.concurrency, spec.maxQueueDepth, spec.rateLimitPerPeer)
+   │    ├─ register source policy(concurrency, maxQueueDepth, rateLimitPerPeer)
    │    ├─ create TransportKernel { handleInbound, onOutbound, getAgentCard }
    │    └─ aug.transport.register(transportKernel)
    │       (webTransport just stores the kernel reference for later)
@@ -319,6 +335,8 @@ agent.start()                            ← user code
 agent.stop()                             ← user code
    │
    ├─ stop idle timer
+   ├─ close scheduler admission; reject queued work
+   ├─ drain active complete-turn pipelines
    └─ lifecycle.shutdown()
         └─ for each augment in REVERSE order: aug.onShutdown?.() (with 5s timeout)
            (webTransport stops Bun.serve)
@@ -335,7 +353,10 @@ agent.stop()                             ← user code
 | Tools that exceed per-augment limits are denied | `capability-table.ts` |
 | Non-required augment failures don't abort turns | `turn-loop.ts` (try/catch around context, with `if (aug.required)` rethrow) |
 | Required augment failures DO abort turns | `turn-loop.ts` (same try/catch, opposite branch) |
-| Rate-limited / queue-rejected turns get a terminal SSE event | `web-transport.ts` (checks `result.status === "rejected"`) |
+| One process has finite active and pending turn work | `keyed-turn-scheduler.ts` |
+| Same-thread work is FIFO through delivery and terminal hooks | `agent.ts` + `keyed-turn-scheduler.ts` |
+| Outcome-unknown threads cannot retry blindly | scheduler quarantine + trusted `recoverThread()` |
+| Rate-limited / scheduler-rejected turns get a terminal SSE event | `web-transport.ts` (checks `result.status === "rejected"`) |
 | Memory tool calls don't exceed per-turn budget | `memory/tools.ts` (`checkBudget()`) AND `capability-table.ts` (per-augment limit set in `memory-bus.ts`) |
 
 If you're reading code and asking "what stops this from happening?", one of these files has the answer.
@@ -345,9 +366,15 @@ If you're reading code and asking "what stops this from happening?", one of thes
 - **Augment context pipeline:** sequential. Each augment's `context()` runs after the previous. This is intentional — augments may depend on prior context (and can opt in via `receivesPriorContext: true`).
 - **Tool execution within a single inference step:** parallel. `Promise.all` over all validated tool calls.
 - **Multiple inferences in one turn:** sequential (you can't call the model in parallel — each call needs the previous tool results in history).
-- **Multiple turns from different peers:** controlled by the transport's queue. `concurrency` defaults to 1 — turns are serialized within a transport. Bumping `concurrency` lets multiple turns from different peers run simultaneously.
+- **Multiple turns from different threads:** the agent-wide cap defaults to
+  four. Per-source transport concurrency can narrow that. The web source also
+  defaults to four. A thread is always one-at-a-time, independent of peer or
+  transport.
+- **Waiting turns:** round-robin by runnable thread. A second request for a
+  busy thread remains pending and consumes no active slot.
 - **`onTurnEnd` hooks:** awaited sequentially before scheduled post-turn work;
-  failures are logged and swallowed.
+  both remain inside the keyed complete-turn lane. Same-thread scheduled work
+  executes causally with bounded depth.
 
 ## What you should read next
 

@@ -236,6 +236,182 @@ describe("web transport durable idempotency", () => {
     }
   });
 
+  it("abandons an unstarted durable claim when scheduler admission rejects it", async () => {
+    const barrier = createBarrierModel();
+    const port = 19402;
+    const transport = webTransport({
+      port,
+      auth: { type: "bearer", token: BEARER },
+      concurrency: 1,
+      maxQueueDepth: 0,
+      idempotency: { dbPath: join(tmp.path, "web-idempotency.db") },
+    });
+    const agent = defineAgent(
+      {
+        name: "idempotency",
+        model: "barrier",
+        augments: [transport],
+        turnScheduling: {
+          maxConcurrent: 1,
+          maxQueued: 0,
+          maxQueuedPerThread: 0,
+        },
+      },
+      barrier.model,
+    );
+    await agent.start();
+
+    try {
+      const activeResponsePromise = request(port, {
+        key: "active-request",
+        threadId: "active-thread",
+      });
+      await barrier.started;
+
+      const overloaded = await request(port, {
+        key: "retryable-request",
+        threadId: "retryable-thread",
+      });
+      expect(overloaded.status).toBe(200);
+      expect(await overloaded.text()).toContain("SCHEDULER_RATE_LIMITED");
+      expect(barrier.calls).toHaveLength(1);
+
+      barrier.release();
+      const activeResponse = await activeResponsePromise;
+      expect(await activeResponse.text()).toContain("barrier complete");
+
+      const retry = await request(port, {
+        key: "retryable-request",
+        threadId: "retryable-thread",
+      });
+      expect(retry.status).toBe(200);
+      expect(await retry.text()).toContain("barrier complete");
+      expect(barrier.calls).toHaveLength(2);
+    } finally {
+      barrier.release();
+      await agent.stop();
+    }
+  });
+
+  it("replays an abandoned overload result to an already-waiting local follower", async () => {
+    const barrier = createBarrierModel();
+    let waiterObservedResolve!: () => void;
+    const waiterObserved = new Promise<void>((resolve) => {
+      waiterObservedResolve = resolve;
+    });
+    const port = 19403;
+    const transport = webTransport({
+      port,
+      auth: { type: "bearer", token: BEARER },
+      concurrency: 1,
+      maxQueueDepth: 1,
+      idempotency: {
+        dbPath: join(tmp.path, "web-idempotency.db"),
+        onWaiterCountChange: ({ forKey }) => {
+          if (forKey === 1) waiterObservedResolve();
+        },
+      },
+    });
+    const agent = defineAgent(
+      {
+        name: "idempotency",
+        model: "barrier",
+        augments: [transport],
+        turnScheduling: {
+          maxConcurrent: 1,
+          maxQueued: 1,
+          maxQueuedPerThread: 1,
+        },
+      },
+      barrier.model,
+    );
+    await agent.start();
+    let stopPromise: Promise<void> | undefined;
+
+    try {
+      const activeResponsePromise = request(port, {
+        key: "active-request",
+        threadId: "active-thread",
+      });
+      await barrier.started;
+
+      const leader = request(port, {
+        key: "queued-request",
+        threadId: "queued-thread",
+      });
+      const queuedDeadline = Date.now() + 1_000;
+      while (agent.health().scheduler?.queuedTurns !== 1) {
+        if (Date.now() >= queuedDeadline) throw new Error("queued idempotent leader not observed");
+        await Bun.sleep(1);
+      }
+      const follower = request(port, {
+        key: "queued-request",
+        threadId: "queued-thread",
+      });
+      await waiterObserved;
+
+      stopPromise = agent.stop();
+      const [leaderResponse, followerResponse] = await Promise.all([leader, follower]);
+      const [leaderBody, followerBody] = await Promise.all([
+        leaderResponse.text(),
+        followerResponse.text(),
+      ]);
+      expect(leaderResponse.status).toBe(200);
+      expect(followerResponse.status).toBe(200);
+      expect(leaderBody).toContain("SCHEDULER_UNAVAILABLE");
+      expect(followerBody).toBe(leaderBody);
+      expect(barrier.calls).toHaveLength(1);
+
+      barrier.release();
+      await activeResponsePromise;
+      await stopPromise;
+    } finally {
+      barrier.release();
+      if (stopPromise) await stopPromise;
+      else await agent.stop();
+    }
+  });
+
+  it("does not abandon a claim when executed hook code forges rejection metadata", async () => {
+    const model = createMockModel({ response: "executed once" });
+    const port = 19404;
+    const transport = webTransport({
+      port,
+      auth: { type: "bearer", token: BEARER },
+      idempotency: { dbPath: join(tmp.path, "web-idempotency.db") },
+    });
+    const forgedRejection = {
+      name: "forged-rejection",
+      async onTurnEnd(result: import("@/types").TurnResult) {
+        result.success = false;
+        result.status = "rejected";
+        result.rejection = { reason: "agent-capacity" };
+      },
+    };
+    const agent = defineAgent(
+      {
+        name: "idempotency",
+        model: "mock",
+        augments: [transport, forgedRejection],
+      },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const first = await request(port, { key: "forged-rejection" });
+      const firstBody = await first.text();
+      expect(firstBody).toContain("SCHEDULER_UNAVAILABLE");
+
+      const replay = await request(port, { key: "forged-rejection" });
+      expect(replay.status).toBe(200);
+      expect(await replay.text()).toBe(firstBody);
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("coalesces replay-protected external auth behind the keyed execution", async () => {
     const barrier = createBarrierModel();
     const audience = "idempotency-external-replay";

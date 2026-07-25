@@ -103,4 +103,66 @@ describe("withTimeout", () => {
     });
     expect(observedSignal?.aborted).toBe(true);
   });
+
+  it("reports non-cooperative work that remains detached after caller cancellation", async () => {
+    const caller = new AbortController();
+    let release!: () => void;
+    let started!: () => void;
+    const didStart = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const underlying = new Promise<string>((resolve) => {
+      release = () => resolve("late");
+    });
+    const detached: Promise<unknown>[] = [];
+    const pending = withTimeout(
+      async () => {
+        started();
+        return underlying;
+      },
+      5_000,
+      caller.signal,
+      (operation) => detached.push(operation),
+    );
+
+    await didStart;
+    caller.abort(new DOMException("caller left", "AbortError"));
+    await expect(pending).rejects.toHaveProperty("name", "AbortError");
+    expect(detached).toHaveLength(1);
+    let detachedSettled = false;
+    void detached[0]!.then(() => {
+      detachedSettled = true;
+    });
+    await Promise.resolve();
+    expect(detachedSettled).toBe(false);
+    release();
+    await detached[0];
+    expect(detachedSettled).toBe(true);
+  });
+
+  it("does not report work that cooperatively acknowledges caller cancellation", async () => {
+    const caller = new AbortController();
+    let startedResolve!: () => void;
+    const started = new Promise<void>((resolve) => {
+      startedResolve = resolve;
+    });
+    const detached: Promise<unknown>[] = [];
+    const pending = withTimeout(
+      async (signal) => {
+        startedResolve();
+        await new Promise<void>((resolve) => {
+          signal.addEventListener("abort", () => resolve(), { once: true });
+        });
+        signal.throwIfAborted();
+      },
+      1_000,
+      caller.signal,
+      (operation) => detached.push(operation),
+    );
+
+    await started;
+    caller.abort(new DOMException("caller left", "AbortError"));
+    await expect(pending).rejects.toThrow("caller left");
+    expect(detached).toHaveLength(0);
+  });
 });

@@ -148,6 +148,7 @@ import {
 export interface TurnLoopOptions {
   signal?: AbortSignal;
   onEvent?: KernelEventHandler;
+  trackDetachedOperation?: (operation: Promise<unknown>) => void;
 }
 
 export interface TurnLoop {
@@ -158,6 +159,8 @@ export interface TurnLoop {
   ): Promise<TurnResult>;
   getHistoryManager(threadId: string): HistoryManager;
   hasHistoryManager(threadId: string): boolean;
+  /** Prevent this thread's exact resident manager from being evicted while active. */
+  pinHistoryManager(threadId: string): () => void;
   forgetHistoryManager(threadId: string): void;
   clearHistoryManagers(): void;
 }
@@ -175,22 +178,48 @@ export function createTurnLoop(opts: {
   const traceEmitter = createTraceEmitter();
   const historyManagers = new Map<string, HistoryManager>();
   const historyLastAccess = new Map<string, number>();
+  const historyPins = new Map<string, number>();
+  const deferredHistoryEvictions = new Set<string>();
   const MAX_HISTORY_THREADS = 500;
 
   function evictHistory(threadId: string) {
+    if ((historyPins.get(threadId) ?? 0) > 0) {
+      deferredHistoryEvictions.add(threadId);
+      return false;
+    }
     historyManagers.delete(threadId);
     historyLastAccess.delete(threadId);
+    deferredHistoryEvictions.delete(threadId);
     opts.onHistoryEvicted?.(threadId);
+    return true;
+  }
+
+  function evictHistoriesToLimit(): void {
+    while (historyManagers.size > MAX_HISTORY_THREADS) {
+      let oldestId: string | null = null;
+      let oldestTime = Infinity;
+      for (const [id, timestamp] of historyLastAccess) {
+        if ((historyPins.get(id) ?? 0) > 0) continue;
+        if (timestamp < oldestTime) {
+          oldestTime = timestamp;
+          oldestId = id;
+        }
+      }
+      if (!oldestId || !evictHistory(oldestId)) return;
+    }
   }
 
   function getOrCreateHistory(threadId: string): HistoryManager {
     let hm = historyManagers.get(threadId);
     if (!hm) {
-      // Evict oldest thread if at capacity
+      // Evict the oldest inactive thread if at capacity. When every resident
+      // manager is pinned, allow bounded temporary overshoot rather than
+      // replacing state that an active turn will later commit.
       if (historyManagers.size >= MAX_HISTORY_THREADS) {
         let oldestId: string | null = null;
         let oldestTime = Infinity;
         for (const [id, t] of historyLastAccess) {
+          if ((historyPins.get(id) ?? 0) > 0) continue;
           if (t < oldestTime) {
             oldestTime = t;
             oldestId = id;
@@ -212,6 +241,23 @@ export function createTurnLoop(opts: {
     hasHistoryManager(threadId: string) {
       return historyManagers.has(threadId);
     },
+    pinHistoryManager(threadId: string) {
+      getOrCreateHistory(threadId);
+      historyPins.set(threadId, (historyPins.get(threadId) ?? 0) + 1);
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        const remaining = (historyPins.get(threadId) ?? 1) - 1;
+        if (remaining > 0) {
+          historyPins.set(threadId, remaining);
+          return;
+        }
+        historyPins.delete(threadId);
+        if (deferredHistoryEvictions.has(threadId)) evictHistory(threadId);
+        evictHistoriesToLimit();
+      };
+    },
     forgetHistoryManager(threadId: string) {
       evictHistory(threadId);
     },
@@ -219,6 +265,8 @@ export function createTurnLoop(opts: {
       const threadIds = [...historyManagers.keys()];
       historyManagers.clear();
       historyLastAccess.clear();
+      historyPins.clear();
+      deferredHistoryEvictions.clear();
       for (const threadId of threadIds) opts.onHistoryEvicted?.(threadId);
     },
 
@@ -612,6 +660,8 @@ export function createTurnLoop(opts: {
             trace,
             error: handlerResult.error,
             errorClass: handlerResult.errorClass,
+            outcomeUnknown: handlerResult.outcomeUnknown,
+            rejection: handlerResult.rejection,
           };
         }
         // No handler claimed; fall through to the standard inference loop.
@@ -635,6 +685,7 @@ export function createTurnLoop(opts: {
               ),
             timeout,
             signal,
+            options?.trackDetachedOperation,
           );
           if (typeof result === "string") {
             contextBlocks.push({
@@ -1111,6 +1162,7 @@ export function createTurnLoop(opts: {
               let output: string;
               let isError = false;
               let outcomeUnknown = false;
+              let detachedOperation = false;
               let terminate: ToolResult["terminate"] | undefined;
               try {
                 const augForTool = augments.find((a) =>
@@ -1128,6 +1180,10 @@ export function createTurnLoop(opts: {
                     }),
                   timeout,
                   signal,
+                  (operation) => {
+                    detachedOperation = true;
+                    options?.trackDetachedOperation?.(operation);
+                  },
                 );
                 if (typeof raw === "string") {
                   output = raw;
@@ -1138,7 +1194,7 @@ export function createTurnLoop(opts: {
                   terminate = raw.terminate;
                 }
               } catch (err) {
-                outcomeUnknown = isOutcomeUnknownError(err);
+                outcomeUnknown = detachedOperation || isOutcomeUnknownError(err);
                 const failureCategory = err instanceof Error ? "error-object" : "non-error-value";
                 console.warn(
                   `[turn-loop] tool execution failed tool=${entry.reg.tool.name} category=${failureCategory} outcomeUnknown=${outcomeUnknown}`,
@@ -1227,6 +1283,7 @@ export function createTurnLoop(opts: {
                 message: "Tool execution outcome unknown after timeout",
                 source: "kernel",
               },
+              outcomeUnknown: true,
             };
           }
 

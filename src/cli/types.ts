@@ -5,7 +5,7 @@
  * registry, and CLI commands. They are internal to the CLI — not part
  * of the Auggy public API surface.
  */
-import type { ModelResponseLimits } from "../types";
+import type { ModelResponseLimits, TurnSchedulingConfig } from "../types";
 
 // ---------------------------------------------------------------------------
 // Config types — the output of parsing agent.yaml
@@ -155,6 +155,7 @@ export interface AgentSettings {
   };
   compactionStrategy?: "truncate" | "summarize" | "sliding-window";
   maxInferenceLoops?: number;
+  turnScheduling?: Partial<TurnSchedulingConfig>;
 }
 
 /**

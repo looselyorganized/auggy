@@ -493,12 +493,13 @@ describe("runCostCommit — multi-iteration sum", () => {
               description: "Wait until the caller cancels",
               category: "meta",
               input: z.object({}),
-              execute: async () => {
+              execute: async (_input, context) => {
                 markStarted();
                 await new Promise<void>((resolve) => {
-                  controller.signal.addEventListener("abort", () => resolve(), { once: true });
+                  context?.signal?.addEventListener("abort", () => resolve(), { once: true });
                 });
-                return "canceled";
+                context?.signal?.throwIfAborted();
+                return "must not complete";
               },
             },
           ],

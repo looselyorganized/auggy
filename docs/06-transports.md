@@ -42,7 +42,10 @@ export interface TransportSpec {
 
 The `augmentName` parameter was added in commit `0710e2f` (Phase B) to support correct outbound dispatch. See the multi-transport composition section below for why this matters.
 
-**`identify(raw)`** is a pure function from "whatever the transport's wire format hands you" to `PeerIdentity | null`. It runs once per inbound request, before the request enters the queue. Returning `null` means "I cannot identify this peer" — the transport is responsible for what to do with that (the web transport returns a 400 error).
+**`identify(raw)`** is a pure function from "whatever the transport's wire
+format hands you" to `PeerIdentity | null`. It runs before scheduler admission.
+Returning `null` means "I cannot identify this peer" — the transport is
+responsible for what to do with that.
 
 The web transport's handler first verifies bearer, admitted-agent, visitor,
 external-auth, and anonymous-session credentials. It then passes only verified
@@ -51,7 +54,11 @@ are not identity or authorization proof; `x-peer-name` is cosmetic. The
 resolved trust level is a deterministic result of the credential path:
 creator, agent, public-recognized, or public-anonymous.
 
-**`concurrency`**, **`maxQueueDepth`**, and **`rateLimitPerPeer`** are configuration for the per-transport queue that the runtime constructs when the agent starts. Defaults: `1`, `50`, none. See [04-kernel.md § transport-queue.ts](./04-kernel.md#srckerneltransport-queuets--per-transport-queue) for details.
+**`concurrency`**, **`maxQueueDepth`**, and **`rateLimitPerPeer`** narrow this
+source inside the shared agent-wide scheduler. They do not create an
+independent execution queue. Generic defaults are `1`, `50`, and none; the
+built-in web source defaults concurrency to `4`. See
+[04-kernel.md § agent-wide turn admission](./04-kernel.md#srckernelkeyed-turn-schedulerts--agent-wide-turn-admission).
 
 ### `TransportKernel` — what the runtime gives back
 
@@ -234,7 +241,7 @@ export interface WebTransportOptions {
   securityNamespace?: string;   // stable logical-agent identity shared by replicas
   maxMessageLength?: number;     // default 4000
   access?: { agents?: AgentAccessEntry[] };  // admitted agent list
-  concurrency?: number;          // default 1
+  concurrency?: number;          // web source default 4
   maxQueueDepth?: number;        // default 50
   rateLimitPerPeer?: { maxPerMinute: number };
   visitorTokens?: {
@@ -615,22 +622,33 @@ The fix was small: replace the `collected` array with a `ReadableStream`, replac
 
 ### Rejection mapping — error codes in SSE
 
-When a turn is rejected (queue full, rate limit, or turn-gate denial), the transport synthesizes `RUN_ERROR` + `RUN_FINISHED` events — the kernel emits no events for turns that don't run. The `code` field on `RUN_ERROR` is:
+When a turn is rejected (scheduler capacity, rate limit, or turn-gate denial),
+the transport synthesizes `RUN_ERROR` + `RUN_FINISHED` events—the kernel emits
+no events for turns that do not run. The `code` field on `RUN_ERROR` is:
 
 | Rejection source | `errorClass` | SSE `code` |
 |---|---|---|
 | Turn-gate cap denied | `"cap-denied"` | `"CAP_DENIED"` |
 | Turn-gate confirm error | `"admission-state-failed"` | `"ADMISSION_FAILED"` |
-| Queue full / rate limit | _(none)_ | `"REJECTED"` |
+| Scheduler peer/source/thread limit | `rejection.reason` | `"SCHEDULER_RATE_LIMITED"` |
+| Scheduler agent limit / shutdown | `rejection.reason` | `"SCHEDULER_UNAVAILABLE"` |
+| Outcome-unknown thread quarantine | `rejection.reason` | `"THREAD_QUARANTINED"` |
 | Unhandled exception | _(none)_ | `"INTERNAL"` |
 
-**HTTP status remains 200** for the SSE stream in v0. The gate decision is embedded in the stream rather than in the HTTP status because the Response must be opened before the kernel's 2PC result is known (the stream starts synchronously; the turn runs inside the async IIFE). A future enhancement (T5) adds a synchronous gate-decision API that would allow the transport to return 429 or 503 before opening the stream at all.
+**HTTP status remains 200** for the SSE stream in v0. The gate decision is
+embedded in the stream rather than in the HTTP status because the Response
+must be opened before the kernel's admission or 2PC result is known (the
+stream starts synchronously; the turn runs inside the async IIFE). A future
+synchronous reservation API would allow the transport to return 429 or 503
+before opening the stream.
 
 ### Why the rejection events are synthesized in the transport
 
-The transport-queue rejects requests without ever calling the turn loop. That means **no kernel events fire** — the turn loop never ran. The kernel can't emit events for a turn that didn't happen.
+The scheduler rejects requests without calling the turn loop. That means **no
+kernel events fire** — the turn never ran.
 
-The transport has to detect this case (by checking `result.status === "rejected"`) and synthesize the error event itself. This is a layering choice: we could have made the transport-queue emit a kernel event when it rejects, but kernel events are scoped to a turn that's running, and a rejected turn doesn't have a running turn loop. Putting the synthesis in the transport is cleaner.
+The transport detects `result.status === "rejected"` and synthesizes the error
+event. Kernel events remain scoped to turns that actually run.
 
 ### `GET /health`
 
@@ -753,25 +771,49 @@ return {
 
 The web transport uses `onBoot` to start the HTTP server (Bun.serve) and `onShutdown` to stop it. Failures in `onBoot` abort agent startup (lifecycle manager throws). The 5-second shutdown timeout from the lifecycle manager applies to `onShutdown`.
 
-## Per-transport concurrency and queueing
+## Agent-wide keyed concurrency and source policy
 
-When `defineAgent.start()` registers a transport, it constructs a `TransportQueue` around it:
+`defineAgent` creates one scheduler before transports register. Every
+`TransportKernel.handleInbound()` and `AgentHandle.inject()` enters it.
 
-```ts
-const queue = createTransportQueue({
-  concurrency: aug.transport.concurrency ?? 1,
-  maxQueueDepth: aug.transport.maxQueueDepth ?? 50,
-  rateLimitPerPeer: aug.transport.rateLimitPerPeer,
-});
+```yaml
+settings:
+  turnScheduling:
+    maxConcurrent: 4
+    maxQueued: 100
+    maxQueuedPerThread: 20
+    maxCausalDepth: 8
 ```
 
-The `TransportKernel`'s `handleInbound` method wraps the actual turn-loop call in `queue.enqueue(trigger, handler)`. This means **every inbound request goes through the queue** before reaching the kernel. The queue enforces:
+The scheduler enforces:
 
-- **Rate limit per peer** — sliding 60-second window, configurable max.
-- **Max queue depth** — if more than `maxQueueDepth` requests are waiting, new ones get rejected immediately.
-- **Concurrency cap** — only `concurrency` turns run at once. Excess requests wait.
+- **One active complete pipeline per resolved thread.** The lane includes
+  history, model/tools, durable commit, ordered outbound, and terminal hooks.
+- **Agent-wide concurrency.** Different runnable threads share
+  `maxConcurrent`.
+- **Fairness.** Runnable thread keys are selected round-robin; a same-thread
+  waiter consumes no active slot.
+- **Finite waiting work.** Agent, per-thread, and source waiting caps all
+  apply.
+- **Queued cancellation.** An aborted waiting request is removed and never
+  reaches persistence or inference.
+- **Source policy.** A transport's `concurrency`, `maxQueueDepth`, and peer
+  rate limit can narrow its share of the agent boundary.
 
-For the web transport, the default concurrency is 1 (one turn at a time) which is appropriate for an agent that expects to be talked to by one peer at a time. Bumping concurrency lets multiple peers' turns run in parallel — which is safe because each turn has its own `TurnState`, history is per-thread, and the kernel doesn't share mutable state across turns.
+The built-in web source defaults to four active turns. Set its `concurrency` to
+one to restore serialized web ingress, or lower the agent-wide cap to one to
+serialize every source. Increasing a source cap above the agent cap cannot
+exceed the agent boundary.
+
+When a durable idempotent web leader is rejected by scheduler admission, the
+transport abandons only its owned, unstarted claim. Temporary saturation is
+therefore not stored as a replayable terminal result; rate-limit reservations
+remain consumed.
+
+HTTP status remains `200` after an SSE stream is opened. A real pre-stream
+`429`/`503` requires a future synchronous reservation API; current overload is
+truthfully represented by the stable SSE error code and structured
+`TurnResult.rejection`.
 
 ## Why the kernel doesn't speak protocols
 
@@ -780,7 +822,7 @@ Every protocol decision in Auggy is in the transport, not the kernel:
 - **HTTP routing, status codes, headers** — `web-transport.ts` only.
 - **SSE frame format** — `ag-ui-events.ts` only.
 - **Bearer token auth** — `web-transport.ts` only.
-- **Rate limiting policy** — `transport-queue.ts` (kernel-side, but configured per transport).
+- **Rate limiting policy** — `keyed-turn-scheduler.ts` (kernel-side, configured per transport).
 - **`threadId` minting** — `web-transport.ts` only.
 - **Agent Card serving** — `web-transport.ts` only.
 
@@ -1182,11 +1224,17 @@ ssh -L 8080:127.0.0.1:8080 my-host
 
 ## Multi-transport composition
 
-Auggy's kernel multiplexes turns from N mounted transports into shared agent state. Each transport is a separate augment with its own queue, its own identity resolver, and its own boot lifecycle. The kernel never talks directly to individual transports — everything flows through the `TransportSpec`/`TransportKernel` interface described above.
+Auggy's kernel multiplexes turns from N mounted transports into shared agent
+state. Each transport is a separate augment with its own source policy,
+identity resolver, and boot lifecycle; all share the agent-wide scheduler.
 
 ### How the kernel handles multiple transports
 
-When `defineAgent` boots an agent with multiple transport augments, each transport calls `register(kernel, augmentName)` independently. The `kernel` handle passed to each transport is backed by the same turn loop, the same history manager, and the same memory bus — but each transport gets its own `TransportQueue` (independent concurrency, depth, and rate-limit counters).
+When `defineAgent` boots an agent with multiple transport augments, each
+transport calls `register(kernel, augmentName)` independently. The handles are
+backed by the same turn loop, history cache, memory bus, and keyed scheduler.
+Each transport retains source-specific concurrency, depth, and rate policy
+inside that common boundary.
 
 Inbound updates from any transport reach the shared turn loop via `kernel.handleInbound(trigger)`. The trigger includes `trigger.source`, which is the `augmentName` the transport received at registration time. After the turn runs, any `OutboundMessage`s the kernel emits are dispatched via `agent.outboundHandlers`, which is keyed by augment name — so replies route back to the originating transport automatically.
 

@@ -361,6 +361,8 @@ export interface TurnResult {
   toolCalls: ToolCallRecord[];
   trace: TurnTrace;
   error?: { message: string; source: string };
+  outcomeUnknown?: boolean;
+  rejection?: { reason: TurnRejectionReason; retryAfterMs?: number };
 }
 ```
 
@@ -373,6 +375,13 @@ export interface TurnResult {
 - `"admission-state-failed"` — confirm phase threw (storage issue). Maps to HTTP 5xx.
 - `"engine-error"` — the engine call itself threw. Maps to HTTP 5xx.
 - Other strings — HTTP 5xx fallback.
+
+`rejection` describes scheduler admission failures such as peer rate limit,
+thread/source/agent capacity, runtime shutdown, quarantine, causal-depth, or
+overlapping causal-child limits. No prompt or peer data is included.
+`outcomeUnknown: true` means work crossed a side-effect boundary without a
+trustworthy terminal result; the agent quarantines that thread before
+releasing its lane.
 
 Optional for backward compatibility; older rejection sites may omit it.
 
@@ -606,7 +615,12 @@ export interface TransportSpec {
 
 `identify(raw)` is a pure function from "whatever the transport's wire format hands you" to `PeerIdentity | null`. The web transport implements it by reading `x-peer-*` headers; a future spine transport would read auth tokens from a different envelope.
 
-`concurrency`, `maxQueueDepth`, and `rateLimitPerPeer` are configuration for the per-transport queue that the runtime constructs around `handleInbound`. Defaults: `1`, `50`, none.
+`concurrency`, `maxQueueDepth`, and `rateLimitPerPeer` are source-specific
+policies enforced by the agent-wide keyed scheduler. They do not create an
+independent queue. `maxQueueDepth` counts waiting work from that source;
+`concurrency` limits its active work. Defaults are `1`, `50`, and none for a
+generic transport; the built-in web transport defaults its source concurrency
+to `4`.
 
 ## Section 14 — Augment
 
@@ -644,6 +658,7 @@ export interface Augment {
   onShutdown?: (signal?: AbortSignal) => Promise<void>;
   onTurnStart?: (turn: TurnState) => Promise<void>;
   onTurnEnd?: (turn: TurnResult, context?: TurnLifecycleContext) => Promise<void>;
+  scheduleAfterTurn?: (result: TurnResult, ctx: SchedulerContext) => Promise<void>;
   onIdle?: () => Promise<void>;
 }
 ```
@@ -667,7 +682,10 @@ the mounted augment structure; it is not a sanitized A2A discovery contract.
 
 **`tools`** is the array of tools this augment provides. The capability table maps each tool back to its owning augment for per-augment enforcement.
 
-**`transport`** is the `TransportSpec` (above). An augment with a transport gets a queue and a `TransportKernel` registered against it at start time.
+**`transport`** is the `TransportSpec` (above). At start time an augment with a
+transport registers its trusted source policy with the agent-wide keyed
+scheduler and receives a `TransportKernel` that submits through that shared
+boundary.
 
 **`memory`** is the `MemoryProviderSpec` (above). The memory bus scans for these and wires them up.
 
@@ -687,6 +705,8 @@ the mounted augment structure; it is not a sanitized A2A discovery contract.
 - `onShutdown` — called once at `agent.stop()`, in reverse order, with a 5s timeout signal. Failures swallowed.
 - `onTurnStart` — called at the beginning of every turn, before context assembly. Failures on required augments abort the turn.
 - `onTurnEnd` — called after every turn with the caller signal. Hooks run sequentially; failures are logged and swallowed.
+- `scheduleAfterTurn` — called sequentially after `onTurnEnd`; its owned causal
+  injections and descendants complete inside the current keyed lane.
 - `onIdle` — called by the lifecycle manager's idle timer (5min default). Used by augments that do background work like consolidation.
 
 ## Section 15 — Agent config and handle
@@ -709,6 +729,12 @@ export interface AgentConfig {
   };
   compactionStrategy?: CompactionStrategy;  // default "truncate"
   responseLimits?: Partial<ModelResponseLimits>;
+  turnScheduling?: Partial<{
+    maxConcurrent: number;       // default 4
+    maxQueued: number;           // default 100
+    maxQueuedPerThread: number;  // default 20
+    maxCausalDepth: number;      // default 8
+  }>;
 }
 
 export interface AgentHealth {
@@ -717,6 +743,7 @@ export interface AgentHealth {
   uptime: number;
   augments: Record<string, { status: "ok" | "degraded" | "failed"; error?: string }>;
   model: { reachable: boolean };
+  scheduler: TurnSchedulerSnapshot;
 }
 
 export interface AgentHandle {
@@ -726,6 +753,7 @@ export interface AgentHandle {
   health(): AgentHealth;
   card(): AgentCard;
   inject(trigger: TurnTrigger, options?: { signal?: AbortSignal }): Promise<TurnResult>;
+  recoverThread(threadId: string): boolean;
 }
 ```
 
@@ -744,7 +772,21 @@ Auggy never executes a valid-looking prefix of an oversized response.
 
 `AgentHandle` is what `defineAgent` returns. The methods are explained in [08-agent-lifecycle.md](./08-agent-lifecycle.md).
 
-`inject()` is the back door — it lets non-transport code feed a trigger directly into the kernel without going through a transport's queue. Used by tests and by augments that need to schedule their own work (cron, internal triggers). Callers may supply an abort signal, which is propagated through the turn and post-turn pipeline.
+`turnScheduling` is a finite process-local boundary. `maxConcurrent` limits
+complete active turn pipelines across every transport and injection path.
+`maxQueued` is the total waiting budget; `maxQueuedPerThread` prevents one hot
+conversation from consuming it. `maxCausalDepth` bounds nested same-thread
+`SchedulerContext.inject()` work. Queue settings may be zero; active and causal
+limits must be positive safe integers.
+
+`inject()` lets trusted non-transport code feed a trigger into the same
+agent-wide scheduler used by transports. It no longer bypasses concurrency or
+queue bounds. Callers may supply an abort signal; cancellation while queued
+removes the item before any persistence or model work.
+
+`recoverThread()` is a trusted host API. It clears a fail-closed scheduler
+quarantine only after an operator has reconciled an outcome-unknown external
+side effect. It is never exposed to the model or inferred from model output.
 
 ## How the type sections relate
 

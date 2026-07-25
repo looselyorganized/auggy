@@ -46,6 +46,8 @@ export type {
   TurnTriggerType,
   TurnState,
   TurnResult,
+  TurnRejection,
+  TurnRejectionReason,
   OutboundMessage,
   InboundMessage,
   Message,
@@ -92,6 +94,9 @@ export type {
   TurnTrace,
   // History
   CompactionStrategy,
+  // Turn scheduling
+  TurnSchedulingConfig,
+  TurnSchedulerSnapshot,
 } from "./types";
 
 // === Agent definition ===

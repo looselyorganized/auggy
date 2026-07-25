@@ -3,6 +3,14 @@ import { defineAgent } from "@/agent";
 import type { Augment, TransportKernel } from "@/types";
 import { createMockModel } from "@tests/fixtures/mock-model";
 
+function deferred<T = void>() {
+  let resolve!: (value?: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((res) => {
+    resolve = res as (value?: T | PromiseLike<T>) => void;
+  });
+  return { promise, resolve };
+}
+
 function transportAugment(
   name: string,
   hooks: {
@@ -279,5 +287,86 @@ describe("transport readiness lifecycle", () => {
     expect(pendingInbound).not.toBeNull();
     await expect(pendingInbound!).rejects.toThrow("later readiness failed");
     expect(model.calls).toHaveLength(0);
+  });
+
+  it("bounds traffic received while a later transport is still becoming ready", async () => {
+    const model = createMockModel();
+    const laterReady = deferred();
+    const laterStarted = deferred();
+    let firstKernel: TransportKernel | null = null;
+    let admitted: ReturnType<TransportKernel["handleInbound"]> | null = null;
+    const rejected: Array<ReturnType<TransportKernel["handleInbound"]>> = [];
+    const makeTrigger = (id: string) => ({
+      type: "message" as const,
+      turnId: id,
+      threadId: id,
+      timestamp: Date.now(),
+      source: "first",
+      peer: null,
+      payload: {
+        parts: [{ kind: "text" as const, text: id }],
+        sourceAugment: "first",
+        peer: null,
+        timestamp: Date.now(),
+      },
+    });
+    const first = transportAugment("first", {
+      register: async (kernel) => {
+        firstKernel = kernel;
+      },
+      ready: async () => {
+        admitted = firstKernel!.handleInbound(makeTrigger("startup-admitted"));
+        rejected.push(
+          firstKernel!.handleInbound(makeTrigger("startup-rejected-1")),
+          firstKernel!.handleInbound(makeTrigger("startup-rejected-2")),
+        );
+        const results = await Promise.all(rejected);
+        expect(results).toEqual([
+          expect.objectContaining({
+            status: "rejected",
+            rejection: { reason: "thread-capacity" },
+          }),
+          expect.objectContaining({
+            status: "rejected",
+            rejection: { reason: "thread-capacity" },
+          }),
+        ]);
+        expect(model.calls).toHaveLength(0);
+      },
+    });
+    const later = transportAugment("later", {
+      ready: async () => {
+        laterStarted.resolve();
+        await laterReady.promise;
+      },
+    });
+    const agent = defineAgent(
+      {
+        name: "bounded-startup-admission",
+        model: "mock",
+        augments: [first, later],
+        turnScheduling: {
+          maxConcurrent: 1,
+          maxQueued: 0,
+          maxQueuedPerThread: 0,
+          maxCausalDepth: 2,
+        },
+      },
+      model,
+    );
+
+    const starting = agent.start();
+    await laterStarted.promise;
+    expect(agent.health().scheduler).toMatchObject({
+      activeTurns: 1,
+      queuedTurns: 0,
+      admitted: 1,
+      rejected: 2,
+    });
+    laterReady.resolve();
+    await starting;
+    expect((await admitted!).status).toBe("completed");
+    expect(model.calls).toHaveLength(1);
+    await agent.stop();
   });
 });

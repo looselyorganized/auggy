@@ -1557,7 +1557,7 @@ describe("webTransport HTTP server", () => {
       expect(types).toContain("RUN_ERROR");
       expect(types).toContain("RUN_FINISHED");
       const errEvent = events.find((e) => e.type === "RUN_ERROR");
-      expect(errEvent?.code).toBe("REJECTED");
+      expect(errEvent?.code).toBe("SCHEDULER_RATE_LIMITED");
     } finally {
       await agent.stop();
     }

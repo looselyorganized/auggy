@@ -702,12 +702,14 @@ What happens at boot:
    and tool-derived skill entries. This generic payload is not a current A2A
    Agent Card and must not be assumed safe to publish without review.
 5. `lifecycle.boot()` runs: `fileMemory.onBoot()` reads `zip-soul.md`. `supabaseMemory` has no onBoot. `webTransport.onBoot()` starts Bun.serve on port 8080. `memory-bus` has no onBoot.
-6. The web transport is registered with a `TransportQueue` (concurrency 1, queue depth 50, rate limit 30/min/peer).
+6. The web source policy is registered with the agent-wide keyed scheduler
+   (web concurrency 4, source queue depth 50, rate limit 30/min/peer).
 7. The agent is now serving requests on `http://localhost:8080`.
 
 What happens on a turn:
 1. A peer POSTs to `/agent/run`. The web transport identifies them, builds a trigger.
-2. The transport queue lets the request through (under rate limit, queue not full).
+2. The agent-wide scheduler admits the resolved thread (under all
+   agent/source/thread/rate limits).
 3. Turn loop runs:
    - `onTurnStart`: `memory-bus` resets the budget.
    - Context pipeline: `fileMemory`'s synthesized `context()` reads `zip-soul.md` from cache and returns one system block. `supabaseMemory`'s synthesized `context()` searches the DB for `episode:` rows matching the user's text and returns matching entries as preamble blocks.

@@ -330,7 +330,9 @@ export interface WebTransportOptions {
    * does a timing-safe comparison before minting agent trust.
    */
   access?: { agents?: AgentAccessEntry[] };
+  /** Maximum active turns from this web source inside the agent scheduler. Default 4. */
   concurrency?: number;
+  /** Maximum waiting turns from this web source. Default 50. */
   maxQueueDepth?: number;
   rateLimitPerPeer?: {
     maxPerMinute: number;
@@ -1170,7 +1172,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // Lazy GC: every Nth call to checkRouteRateLimit, scan the routeHits map
   // and drop entries whose newest timestamp is outside the 60s window.
   // Bounded work per request keeps unique-caller entries from accumulating
-  // forever. transport-queue.ts:36 evicts the looked-up key in-band; here
+  // forever. The agent scheduler evicts looked-up peer windows in-band; here
   // the analog needs a sweep because checkRouteRateLimit always touches the
   // current key, so other stale keys never get their own eviction trigger.
   let routeHitsTouchCount = 0;
@@ -1329,7 +1331,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
   const idempotencyWaitersByKey = new Map<string, number>();
   const localIdempotencyExecutions = new Map<
     string,
-    { promise: Promise<void>; resolve: () => void }
+    { promise: Promise<void>; resolve: () => void; result?: IdempotencyClaim }
   >();
 
   function requireSecurityAudience(): string {
@@ -1918,7 +1920,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
       startServer();
     },
     identify,
-    concurrency: opts.concurrency ?? 1,
+    concurrency: opts.concurrency ?? 4,
     maxQueueDepth: opts.maxQueueDepth ?? 50,
     rateLimitPerPeer: opts.rateLimitPerPeer,
   };
@@ -2258,6 +2260,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         ...(localExecution ? [localExecution.promise] : []),
         new Promise<void>((resolveWait) => setTimeout(resolveWait, backoffMs)),
       ]);
+      if (localExecution?.result) return localExecution.result;
       const current = store.read(keyHash, bindingHash);
       if (current.status !== "running") return current;
       backoffMs = Math.min(backoffMs * 2, 500);
@@ -2310,9 +2313,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
     localIdempotencyExecutions.set(keyHash, { promise, resolve });
   }
 
-  function finishLocalIdempotencyExecution(keyHash: string): void {
+  function finishLocalIdempotencyExecution(keyHash: string, result?: IdempotencyClaim): void {
     const execution = localIdempotencyExecutions.get(keyHash);
     if (!execution) return;
+    execution.result = result;
     localIdempotencyExecutions.delete(keyHash);
     execution.resolve();
   }
@@ -2921,6 +2925,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
         const toolCalls = new Map<string, ConsoleChatToolCall>();
         let persistenceFailure: unknown = null;
         let progressFlushTimer: ReturnType<typeof setTimeout> | null = null;
+        let schedulerExecutionStarted = false;
+        let localIdempotencyResult: IdempotencyClaim | undefined;
         const idempotencyHeartbeatTimer = durableIdempotency
           ? setInterval(
               () => {
@@ -2940,6 +2946,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         const replayChunks: string[] = [];
         let replayBytes = 0;
         let replayOverflow = false;
+        let abandonUnstartedIdempotencyClaim = false;
 
         const failLiveDelivery = (): void => {
           if (deliveryOverflow) return;
@@ -3242,17 +3249,39 @@ export function webTransport(opts: WebTransportOptions): Augment {
             const result = await k.handleInbound(trigger, {
               onEvent,
               signal: executionSignal,
+              onExecutionStart: () => {
+                schedulerExecutionStarted = true;
+              },
               ...(runHistoryPersistence ? { historyPersistence: runHistoryPersistence } : {}),
             });
             if (result.status === "rejected") {
-              // Map errorClass to a structured code for SSE consumers.
-              // T5 will refine this to return 429/503 HTTP status before
-              // opening the stream (requires a synchronous gate-decision API).
+              if (!schedulerExecutionStarted && result.rejection && durableIdempotency) {
+                // Scheduler rejection happens before persistence, inference,
+                // tools, delivery, or hooks. Do not turn temporary saturation
+                // into a durable replay that blocks a safe retry.
+                abandonUnstartedIdempotencyClaim = true;
+              }
+              // Map scheduler and turn-gate rejection to a stable SSE code.
+              // A future synchronous reservation API could return 429/503
+              // before opening the stream.
               let code: string;
               if (result.errorClass === "cap-denied") {
                 code = "CAP_DENIED";
               } else if (result.errorClass === "admission-state-failed") {
                 code = "ADMISSION_FAILED";
+              } else if (
+                result.rejection?.reason === "peer-rate-limit" ||
+                result.rejection?.reason === "thread-capacity" ||
+                result.rejection?.reason === "source-capacity"
+              ) {
+                code = "SCHEDULER_RATE_LIMITED";
+              } else if (
+                result.rejection?.reason === "agent-capacity" ||
+                result.rejection?.reason === "runtime-stopping"
+              ) {
+                code = "SCHEDULER_UNAVAILABLE";
+              } else if (result.rejection?.reason === "thread-quarantined") {
+                code = "THREAD_QUARANTINED";
               } else {
                 code = "REJECTED";
               }
@@ -3316,7 +3345,19 @@ export function webTransport(opts: WebTransportOptions): Augment {
             if (idempotencyHeartbeatTimer !== null) clearInterval(idempotencyHeartbeatTimer);
             if (durableIdempotency) {
               try {
-                if (replayOverflow) {
+                if (abandonUnstartedIdempotencyClaim) {
+                  const abandoned = durableIdempotency.store.abandon(
+                    durableIdempotency.keyHash,
+                    durableIdempotency.ownerToken,
+                  );
+                  if (abandoned) {
+                    localIdempotencyResult = {
+                      status: "replay",
+                      turnId: publicRunId,
+                      responseBody: replayChunks.join(""),
+                    };
+                  }
+                } else if (replayOverflow) {
                   durableIdempotency.store.markUnknown(
                     durableIdempotency.keyHash,
                     durableIdempotency.ownerToken,
@@ -3332,7 +3373,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 // Leave the durable running claim in place. Future attempts
                 // fail closed rather than risking duplicate execution.
               } finally {
-                finishLocalIdempotencyExecution(durableIdempotency.keyHash);
+                finishLocalIdempotencyExecution(durableIdempotency.keyHash, localIdempotencyResult);
               }
             }
             executionFinished = true;

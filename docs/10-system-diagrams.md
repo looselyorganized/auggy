@@ -90,10 +90,12 @@ Everything that exists in a running Auggy agent and how the pieces connect.
 │  └──────────────────────┬───────────────────────────┘                    │
 │                         │                                                │
 │  ┌──────────────────────▼───────────────────────────┐                    │
-│  │  Transport Queue                                 │                    │
-│  │  ├── concurrency cap (default 1)                 │                    │
-│  │  ├── max queue depth (default 50)                │                    │
-│  │  ├── rate limit per peer (with stale eviction)   │                    │
+│  │  Agent-wide Keyed Scheduler                      │                    │
+│  │  ├── global active cap (default 4)               │                    │
+│  │  ├── global/thread/source waiting caps           │                    │
+│  │  ├── round-robin runnable thread selection       │                    │
+│  │  ├── queued cancellation + quarantine + drain    │                    │
+│  │  ├── source peer rate limits                     │                    │
 │  │  └── rejected → RUN_ERROR + RUN_FINISHED SSE     │                    │
 │  └──────────────────────┬───────────────────────────┘                    │
 │                         │ kernel.handleInbound(trigger, {onEvent})       │
@@ -348,9 +350,9 @@ POST /agent/run
 │  3. Parse body → extract last message                                │
 │  4. Build TurnTrigger { type: "message", parts: [...], peer }        │
 │  5. Open ReadableStream for SSE response                             │
-│  6. queue.enqueue(trigger, handler)                                  │
-│     └─ rate limit check ✓                                            │
-│     └─ queue depth check ✓                                           │
+│  6. sharedScheduler.submit(threadId, sourcePolicy)                   │
+│     └─ global/source/thread bounds + peer rate limit ✓               │
+│     └─ round-robin runnable-thread selection ✓                       │
 └──────────────────────────────┬───────────────────────────────────────┘
                                │
                                ▼
@@ -415,8 +417,9 @@ POST /agent/run
 │    ► emit RUN_FINISHED ──────────────────────► SSE: data: {...}     │
 │                                                                      │
 │  ► validate output (flag-only) ✓                                     │
-│  ► compact history (if over 80% budget)                              │
-│  ► fire onTurnEnd hooks (non-blocking, logged on error)              │
+│  ► compact + durably commit history                                  │
+│  ► dispatch outbound in keyed order                                  │
+│  ► await onTurnEnd + scheduleAfterTurn (errors logged)               │
 │                                                                      │
 │  RESULT: { status: "completed",                                      │
 │            response: { parts: [{ kind: "text", text: "Got it..." }]},│
@@ -508,7 +511,7 @@ auggy/
 │   │   ├── lifecycle-manager.ts ·· boot/shutdown/idle/health
 │   │   ├── tool-selector.ts ······ mount all <25, filter via canExpose
 │   │   ├── trace-emitter.ts ······ structured per-turn observability
-│   │   ├── transport-queue.ts ···· concurrency, depth, rate limit + eviction
+│   │   ├── keyed-turn-scheduler.ts  fair global/source/thread admission + drain
 │   │   ├── timeout.ts ············ withTimeout (timer cleanup)
 │   │   ├── output-validator.ts ··· flag suspicious output (don't block)
 │   │   └── preamble.ts ··········· trust-aware system prompt prefix

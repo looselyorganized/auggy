@@ -11,6 +11,7 @@ import type {
   PeerIdentity,
   OutboundMessage,
   SchedulerContext,
+  TurnSchedulingConfig,
   ThreadHistoryPersistence,
 } from "./types";
 import { createTokenizer } from "./tokenizer";
@@ -18,12 +19,38 @@ import { generateAgentCard } from "./agent-card";
 import { wireMemoryBus } from "./memory/memory-bus";
 import { createTurnLoop } from "./kernel/turn-loop";
 import { createLifecycleManager } from "./kernel/lifecycle-manager";
-import { createTransportQueue } from "./kernel/transport-queue";
 import { collectAugmentRoutes } from "./kernel/route-collector";
 import type { CollectedRoute } from "./kernel/route-collector";
+import {
+  createKeyedTurnScheduler,
+  type KeyedTurnLease,
+  type ScheduledRunResult,
+  type SchedulerSourcePolicy,
+} from "./kernel/keyed-turn-scheduler";
+import { emptyTrace } from "./kernel/trace-emitter";
+import { isOutcomeUnknownError, OutcomeUnknownError } from "./outcome-unknown";
+
+const DEFAULT_TURN_SCHEDULING: TurnSchedulingConfig = {
+  maxConcurrent: 4,
+  maxQueued: 100,
+  maxQueuedPerThread: 20,
+  maxCausalDepth: 8,
+};
+
+function resolveTurnScheduling(configured: AgentConfig["turnScheduling"]): TurnSchedulingConfig {
+  const maxQueued = configured?.maxQueued ?? DEFAULT_TURN_SCHEDULING.maxQueued;
+  return {
+    maxConcurrent: configured?.maxConcurrent ?? DEFAULT_TURN_SCHEDULING.maxConcurrent,
+    maxQueued,
+    maxQueuedPerThread:
+      configured?.maxQueuedPerThread ??
+      Math.min(DEFAULT_TURN_SCHEDULING.maxQueuedPerThread, maxQueued),
+    maxCausalDepth: configured?.maxCausalDepth ?? DEFAULT_TURN_SCHEDULING.maxCausalDepth,
+  };
+}
 
 interface StartupAdmissionBarrier {
-  wait(): Promise<void>;
+  wait(signal?: AbortSignal): Promise<void>;
   open(): void;
   close(error: Error): void;
 }
@@ -31,24 +58,50 @@ interface StartupAdmissionBarrier {
 function createStartupAdmissionBarrier(): StartupAdmissionBarrier {
   let state: "pending" | "open" | "closed" = "pending";
   let closeError: Error | null = null;
-  const waiters: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
+  const waiters: Array<{
+    resolve: () => void;
+    reject: (error: Error) => void;
+    signal?: AbortSignal;
+    abortListener?: () => void;
+  }> = [];
 
   return {
-    wait() {
+    wait(signal) {
+      if (signal?.aborted) return Promise.resolve();
       if (state === "open") return Promise.resolve();
       if (state === "closed") return Promise.reject(closeError);
-      return new Promise<void>((resolve, reject) => waiters.push({ resolve, reject }));
+      return new Promise<void>((resolve, reject) => {
+        const waiter = {
+          resolve,
+          reject,
+          ...(signal ? { signal } : {}),
+          abortListener: undefined as (() => void) | undefined,
+        };
+        waiter.abortListener = () => {
+          const index = waiters.indexOf(waiter);
+          if (index >= 0) waiters.splice(index, 1);
+          resolve();
+        };
+        signal?.addEventListener("abort", waiter.abortListener, { once: true });
+        waiters.push(waiter);
+      });
     },
     open() {
       if (state !== "pending") return;
       state = "open";
-      for (const waiter of waiters.splice(0)) waiter.resolve();
+      for (const waiter of waiters.splice(0)) {
+        waiter.signal?.removeEventListener("abort", waiter.abortListener!);
+        waiter.resolve();
+      }
     },
     close(error) {
       if (state !== "pending") return;
       state = "closed";
       closeError = error;
-      for (const waiter of waiters.splice(0)) waiter.reject(error);
+      for (const waiter of waiters.splice(0)) {
+        waiter.signal?.removeEventListener("abort", waiter.abortListener!);
+        waiter.reject(error);
+      }
     },
   };
 }
@@ -131,11 +184,26 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     ) => Promise<void>
   >();
   const threadTails = new Map<string, Promise<void>>();
+  const turnScheduling = resolveTurnScheduling(effectiveConfig.turnScheduling);
+  const turnScheduler = createKeyedTurnScheduler({
+    maxConcurrent: turnScheduling.maxConcurrent,
+    maxQueued: turnScheduling.maxQueued,
+    maxQueuedPerKey: turnScheduling.maxQueuedPerThread,
+    maxCausalDepth: turnScheduling.maxCausalDepth,
+  });
+  const injectSource: SchedulerSourcePolicy = {
+    id: "kernel:inject",
+    maxConcurrent: turnScheduling.maxConcurrent,
+    maxQueued: turnScheduling.maxQueued,
+  };
+  turnScheduler.registerSource(injectSource);
 
   let started = false;
 
   async function rollbackStartup(): Promise<void> {
     lifecycle.stopIdleTimer();
+    turnScheduler.close();
+    await turnScheduler.drain();
     await lifecycle.shutdown();
     outboundHandlers.clear();
   }
@@ -276,7 +344,9 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         // The durable outcome is unknown. Drop the resident copy so a retry
         // must re-authorize and restore the store's authoritative snapshot.
         turnLoop.forgetHistoryManager(threadId);
-        throw error;
+        throw new OutcomeUnknownError("Thread history commit outcome is unknown.", {
+          cause: error,
+        });
       }
     }
   }
@@ -289,6 +359,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       signal?: AbortSignal;
       historyPersistence?: ThreadHistoryPersistence;
       source: "transport" | "inject";
+      trackDetachedOperation?: (operation: Promise<unknown>) => void;
     },
   ): Promise<TurnResult> {
     return withThreadLock(threadId, async () => {
@@ -303,6 +374,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         result = await turnLoop.executeTurn(trigger, threadId, {
           onEvent: options.onEvent,
           signal: options.signal,
+          trackDetachedOperation: options.trackDetachedOperation,
         });
       } catch (error) {
         // Model/tool failures can happen after history was mutated. Persist a
@@ -320,16 +392,19 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
   // (handleInbound) and kernel-injected ones (inject). ADR-027 requires both
   // paths run the same surface so PR β's auto-save and any future post-turn
   // augment behavior fires identically regardless of how the turn entered.
-  // History compaction and durable commit happen before this function, while
-  // holding the per-thread lock. The lock is deliberately released before
-  // hooks so scheduleAfterTurn can inject into the same thread without a
-  // self-deadlock. Sequential ordering preserves ADR-027 Decision 2: scheduleAfterTurn
-  // must observe a fully-settled onTurnEnd. Errors in either hook family
-  // are caught and logged so background work is best-effort.
+  // History compaction and durable commit happen before this function. The
+  // narrow history lock is released, but the agent-wide scheduler retains its
+  // keyed lease across delivery and hooks. SchedulerContext.inject uses that
+  // unforgeable lease for a bounded causal same-thread child, avoiding
+  // self-deadlock without allowing a later customer turn to overtake terminal
+  // work. Sequential ordering preserves ADR-027 Decision 2:
+  // scheduleAfterTurn observes a fully-settled onTurnEnd. Errors in either
+  // hook family are caught and logged so background work is best-effort.
   async function runPostTurn(
     result: TurnResult,
     trigger: TurnTrigger,
     threadId: string,
+    lease: KeyedTurnLease,
     signal?: AbortSignal,
   ): Promise<void> {
     await dispatchOutbound(result, trigger, signal);
@@ -341,6 +416,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         try {
           await a.onTurnEnd(result, { signal });
         } catch (err) {
+          if (isOutcomeUnknownError(err)) lease.quarantine();
           if (signal?.aborted) return;
           console.warn(`onTurnEnd hook "${a.name}" failed: ${err}`);
         }
@@ -348,28 +424,193 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     }
 
     const completedTurnId = result.turnId;
-    const ctx: SchedulerContext = {
-      inject: (t) => handle.inject(t, { signal }),
-      getCompletedTranscript: async () =>
-        turnLoop.getHistoryManager(threadId).getTranscript(completedTurnId),
-      ...(signal ? { signal } : {}),
-    };
     if (signal?.aborted) return;
     for (const a of effectiveAugments) {
       if (signal?.aborted) return;
       if (a.scheduleAfterTurn) {
+        let contextActive = true;
+        const ctx: SchedulerContext = {
+          inject: (t) => {
+            if (!contextActive) {
+              const causalThreadId = t.threadId ?? t.turnId;
+              return Promise.resolve(
+                schedulerTerminalResult(t, causalThreadId, {
+                  status: "rejected",
+                  reason: "causal-context-expired",
+                }),
+              );
+            }
+            const injected = scheduleTurn(
+              t,
+              {
+                source: "inject",
+                signal,
+              },
+              injectSource,
+              lease,
+            );
+            // The scheduler owns and joins the underlying causal task even
+            // when a hook intentionally detaches this public promise. Attach
+            // a rejection observer so a discarded promise cannot be unhandled.
+            void injected.catch((error) => {
+              if (isOutcomeUnknownError(error)) lease.quarantine();
+            });
+            return injected;
+          },
+          getCompletedTranscript: async () =>
+            turnLoop.getHistoryManager(threadId).getTranscript(completedTurnId),
+          ...(signal ? { signal } : {}),
+        };
         try {
           await a.scheduleAfterTurn(result, ctx);
         } catch (err) {
+          if (isOutcomeUnknownError(err)) lease.quarantine();
           console.warn(`scheduleAfterTurn hook "${a.name}" threw: ${(err as Error).message}`);
+        } finally {
+          contextActive = false;
         }
+        // A hook may intentionally detach ctx.inject(). The scheduler still
+        // owns that causal work, so declaration-order hooks cannot overlap it.
+        await lease.join();
       }
     }
+  }
+
+  function schedulerTerminalResult(
+    trigger: TurnTrigger,
+    threadId: string,
+    result: Exclude<ScheduledRunResult<TurnResult>, { status: "completed" }>,
+  ): TurnResult {
+    if (result.status === "canceled") {
+      return {
+        turnId: trigger.turnId,
+        success: false,
+        status: "canceled",
+        errorResponse: "Turn was aborted.",
+        toolCalls: [],
+        trace: emptyTrace({
+          turnId: trigger.turnId,
+          threadId,
+          trigger: { type: trigger.type, sourceAugment: trigger.source },
+        }),
+      };
+    }
+
+    const errorResponse =
+      result.reason === "peer-rate-limit"
+        ? "Rate limit exceeded. Please wait before sending more messages."
+        : result.reason === "runtime-stopping"
+          ? "The agent is stopping. Please retry after it restarts."
+          : result.reason === "thread-quarantined"
+            ? "This conversation requires operator recovery before it can continue."
+            : result.reason === "causal-depth" ||
+                result.reason === "causal-concurrency" ||
+                result.reason === "causal-context-expired" ||
+                result.reason === "causal-thread-mismatch"
+              ? "The scheduled follow-up was rejected by the runtime."
+              : "Too many pending messages. Please try again later.";
+    return {
+      turnId: trigger.turnId,
+      success: false,
+      status: "rejected",
+      errorResponse,
+      rejection: {
+        reason: result.reason,
+        ...(result.retryAfterMs !== undefined ? { retryAfterMs: result.retryAfterMs } : {}),
+      },
+      toolCalls: [],
+      trace: emptyTrace({
+        turnId: trigger.turnId,
+        threadId,
+        trigger: { type: trigger.type, sourceAugment: trigger.source },
+      }),
+    };
+  }
+
+  async function scheduleTurn(
+    trigger: TurnTrigger,
+    options: {
+      source: "transport" | "inject";
+      onEvent?: import("./types").KernelEventHandler;
+      signal?: AbortSignal;
+      historyPersistence?: ThreadHistoryPersistence;
+      beforeExecute?: () => Promise<void>;
+      onExecutionStart?: () => void;
+    },
+    sourcePolicy: SchedulerSourcePolicy,
+    parentLease?: KeyedTurnLease,
+  ): Promise<TurnResult> {
+    const threadId = trigger.threadId ?? trigger.turnId;
+    if (parentLease && parentLease.key !== threadId) {
+      return schedulerTerminalResult(trigger, threadId, {
+        status: "rejected",
+        reason: "causal-thread-mismatch",
+      });
+    }
+
+    const executeCompleteTurn = async (lease: KeyedTurnLease): Promise<TurnResult> => {
+      await options.beforeExecute?.();
+      if (options.signal?.aborted) {
+        return schedulerTerminalResult(trigger, threadId, {
+          status: "canceled",
+          reason: options.signal.reason,
+        });
+      }
+      options.onExecutionStart?.();
+      lifecycle.resetIdleTimer();
+      // Repair a stale persistence memo before pinning creates a replacement
+      // manager for this ID. The pin then protects the exact manager through
+      // transcript-consuming hooks and any causal same-thread child.
+      if (restoredThreads.has(threadId) && !turnLoop.hasHistoryManager(threadId)) {
+        restoredThreads.delete(threadId);
+      }
+      const unpinHistory = turnLoop.pinHistoryManager(threadId);
+      try {
+        const result = await executeThreadTurn(trigger, threadId, {
+          onEvent: options.onEvent,
+          signal: options.signal,
+          historyPersistence: options.historyPersistence,
+          source: options.source,
+          trackDetachedOperation: (operation) => lease.track(operation),
+        });
+        if (result.outcomeUnknown) lease.quarantine();
+        await runPostTurn(result, trigger, threadId, lease, options.signal);
+        return result;
+      } catch (error) {
+        if (isOutcomeUnknownError(error)) lease.quarantine();
+        throw error;
+      } finally {
+        unpinHistory();
+      }
+    };
+
+    const scheduled = parentLease
+      ? await turnScheduler.runCausal(
+          parentLease,
+          {
+            key: threadId,
+            ...(options.signal ? { signal: options.signal } : {}),
+          },
+          executeCompleteTurn,
+        )
+      : await turnScheduler.submit(
+          {
+            key: threadId,
+            source: sourcePolicy,
+            ...(trigger.peer?.id ? { peerId: trigger.peer.id } : {}),
+            ...(options.signal ? { signal: options.signal } : {}),
+          },
+          executeCompleteTurn,
+        );
+    return scheduled.status === "completed"
+      ? scheduled.value
+      : schedulerTerminalResult(trigger, threadId, scheduled);
   }
 
   const handle: AgentHandle = {
     async start() {
       if (started) throw new Error("Agent already started. Call stop() first.");
+      if (turnScheduler.snapshot().state === "stopped") turnScheduler.reopen();
       const admission = createStartupAdmissionBarrier();
       try {
         await lifecycle.boot();
@@ -392,11 +633,15 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         // could arrive without a kernel handle.
         for (const aug of effectiveAugments) {
           if (aug.transport) {
-            const queue = createTransportQueue({
-              concurrency: aug.transport.concurrency ?? 1,
-              maxQueueDepth: aug.transport.maxQueueDepth ?? 50,
-              rateLimitPerPeer: aug.transport.rateLimitPerPeer,
-            });
+            const sourcePolicy: SchedulerSourcePolicy = {
+              id: `transport:${aug.name}`,
+              maxConcurrent: aug.transport.concurrency ?? 1,
+              maxQueued: aug.transport.maxQueueDepth ?? 50,
+              ...(aug.transport.rateLimitPerPeer
+                ? { rateLimitPerPeer: aug.transport.rateLimitPerPeer }
+                : {}),
+            };
+            turnScheduler.registerSource(sourcePolicy);
 
             const transportKernel: TransportKernel = {
               async handleInbound(
@@ -405,24 +650,24 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
                   onEvent?: import("./types").KernelEventHandler;
                   signal?: AbortSignal;
                   historyPersistence?: ThreadHistoryPersistence;
+                  onExecutionStart?: () => void;
                 },
               ): Promise<TurnResult> {
                 // A listener may bind before a later transport finishes its
                 // ready hook. Hold all traffic until the entire ready phase
                 // succeeds so failed startup cannot process a partial turn.
-                await admission.wait();
-                return queue.enqueue(trigger, async (t) => {
-                  lifecycle.resetIdleTimer();
-                  const threadId = t.threadId ?? t.turnId;
-                  const result = await executeThreadTurn(t, threadId, {
+                return scheduleTurn(
+                  trigger,
+                  {
+                    source: "transport",
                     onEvent: opts?.onEvent,
                     signal: opts?.signal,
                     historyPersistence: opts?.historyPersistence,
-                    source: "transport",
-                  });
-                  await runPostTurn(result, t, threadId, opts?.signal);
-                  return result;
-                });
+                    beforeExecute: () => admission.wait(opts?.signal),
+                    onExecutionStart: opts?.onExecutionStart,
+                  },
+                  sourcePolicy,
+                );
               },
               onOutbound(callback) {
                 outboundHandlers.set(aug.name, callback);
@@ -472,8 +717,10 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     async stop() {
       if (!started) return; // no-op if not started
       lifecycle.stopIdleTimer();
-      await lifecycle.shutdown();
+      turnScheduler.close();
+      await turnScheduler.drain();
       await Promise.all([...threadTails.values()].map((tail) => tail.catch(() => {})));
+      await lifecycle.shutdown();
       outboundHandlers.clear();
       turnLoop.clearHistoryManagers();
       restoredThreads.clear();
@@ -487,7 +734,10 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     },
 
     health(): AgentHealth {
-      return lifecycle.health();
+      return {
+        ...lifecycle.health(),
+        scheduler: turnScheduler.snapshot(),
+      };
     },
 
     card(): AgentCard {
@@ -495,14 +745,21 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     },
 
     async inject(trigger: TurnTrigger, options?: { signal?: AbortSignal }): Promise<TurnResult> {
-      lifecycle.resetIdleTimer();
-      const threadId = trigger.threadId ?? trigger.turnId;
-      const result = await executeThreadTurn(trigger, threadId, {
-        source: "inject",
-        signal: options?.signal,
-      });
-      await runPostTurn(result, trigger, threadId, options?.signal);
-      return result;
+      if (!started) {
+        throw new Error("Agent not started. Call and await start() before inject().");
+      }
+      return scheduleTurn(
+        trigger,
+        {
+          source: "inject",
+          signal: options?.signal,
+        },
+        injectSource,
+      );
+    },
+
+    recoverThread(threadId: string): boolean {
+      return turnScheduler.recover(threadId);
     },
   };
 

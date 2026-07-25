@@ -55,8 +55,6 @@ describe("scheduleAfterTurn lifecycle hook", () => {
     );
     await agent.start();
     await agent.inject(makeMessageTrigger("t1", "th1"));
-    // Allow non-blocking onTurnEnd fire-and-forget calls to resolve.
-    await new Promise((r) => setTimeout(r, 5));
     await agent.stop();
     expect(events).toEqual([
       "aug1.onTurnEnd",
