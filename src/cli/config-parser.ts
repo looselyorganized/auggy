@@ -62,6 +62,16 @@ export function loadEnvFile(dir: string): void {
 // ---------------------------------------------------------------------------
 
 const ENV_VAR_RE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const CANONICAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+const DEFAULT_DISTRIBUTED_COORDINATION = {
+  urlEnv: "AUGGY_COORDINATION_DATABASE_URL",
+  leaseDurationMs: 30_000,
+  heartbeatIntervalMs: 5_000,
+  claimPollMs: 100,
+  maxWaitMs: 30_000,
+} as const;
 
 /**
  * Recursively walk all string values in an object tree and replace
@@ -2139,6 +2149,75 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       }
     }
   }
+  if (settings.coordination !== undefined) {
+    if (
+      typeof settings.coordination !== "object" ||
+      settings.coordination === null ||
+      Array.isArray(settings.coordination)
+    ) {
+      errors.push("settings.coordination: must be an object");
+    } else {
+      const coordination = settings.coordination as Record<string, unknown>;
+      const allowed = new Set([
+        "mode",
+        "namespace",
+        "urlEnv",
+        "leaseDurationMs",
+        "heartbeatIntervalMs",
+        "claimPollMs",
+        "maxWaitMs",
+      ]);
+      for (const key of Object.keys(coordination)) {
+        if (!allowed.has(key))
+          errors.push(`settings.coordination.${key}: unknown coordination setting`);
+      }
+      if (coordination.mode !== "postgres") {
+        errors.push('settings.coordination.mode: must be "postgres"');
+      }
+      if (
+        typeof coordination.namespace !== "string" ||
+        !CANONICAL_UUID_RE.test(coordination.namespace)
+      ) {
+        errors.push("settings.coordination.namespace: must be a canonical lowercase UUID");
+      }
+      const urlEnv = coordination.urlEnv ?? DEFAULT_DISTRIBUTED_COORDINATION.urlEnv;
+      if (typeof urlEnv !== "string" || !ENV_VAR_NAME_RE.test(urlEnv)) {
+        errors.push("settings.coordination.urlEnv: must be a safe environment-variable name");
+      }
+      const numericFields = {
+        leaseDurationMs: { minimum: 1_000, maximum: 300_000 },
+        heartbeatIntervalMs: { minimum: 100, maximum: 100_000 },
+        claimPollMs: { minimum: 10, maximum: 10_000 },
+        maxWaitMs: { minimum: 0, maximum: 300_000 },
+      } as const;
+      for (const key of Object.keys(numericFields) as Array<keyof typeof numericFields>) {
+        const limits = numericFields[key];
+        const value = coordination[key] ?? DEFAULT_DISTRIBUTED_COORDINATION[key];
+        if (
+          !Number.isSafeInteger(value) ||
+          (value as number) < limits.minimum ||
+          (value as number) > limits.maximum
+        ) {
+          errors.push(
+            `settings.coordination.${key}: must be a safe integer between ${limits.minimum} and ${limits.maximum}`,
+          );
+        }
+      }
+      const leaseDurationMs =
+        coordination.leaseDurationMs ?? DEFAULT_DISTRIBUTED_COORDINATION.leaseDurationMs;
+      const heartbeatIntervalMs =
+        coordination.heartbeatIntervalMs ?? DEFAULT_DISTRIBUTED_COORDINATION.heartbeatIntervalMs;
+      if (
+        Number.isSafeInteger(leaseDurationMs) &&
+        Number.isSafeInteger(heartbeatIntervalMs) &&
+        (heartbeatIntervalMs as number) * 3 > (leaseDurationMs as number)
+      ) {
+        errors.push(
+          "settings.coordination.heartbeatIntervalMs: three heartbeats must fit within leaseDurationMs",
+        );
+      }
+    }
+  }
 
   // Security eval overrides (optional). Per-agent context for the portable
   // security eval suite — consumed by packages/evals/src/security/eval-context.ts.
@@ -2198,6 +2277,29 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       ? [buildIdentityFileMemoryConfig(identityShorthand), ...parsedAugments]
       : parsedAugments;
 
+  const parsedSettings = { ...settings } as AgentSettings;
+  if (settings.coordination !== undefined && typeof settings.coordination === "object") {
+    const coordination = settings.coordination as Record<string, unknown>;
+    parsedSettings.coordination = {
+      mode: "postgres",
+      namespace: coordination.namespace as string,
+      urlEnv:
+        (coordination.urlEnv as string | undefined) ?? DEFAULT_DISTRIBUTED_COORDINATION.urlEnv,
+      leaseDurationMs:
+        (coordination.leaseDurationMs as number | undefined) ??
+        DEFAULT_DISTRIBUTED_COORDINATION.leaseDurationMs,
+      heartbeatIntervalMs:
+        (coordination.heartbeatIntervalMs as number | undefined) ??
+        DEFAULT_DISTRIBUTED_COORDINATION.heartbeatIntervalMs,
+      claimPollMs:
+        (coordination.claimPollMs as number | undefined) ??
+        DEFAULT_DISTRIBUTED_COORDINATION.claimPollMs,
+      maxWaitMs:
+        (coordination.maxWaitMs as number | undefined) ??
+        DEFAULT_DISTRIBUTED_COORDINATION.maxWaitMs,
+    };
+  }
+
   return {
     id: raw.id as string,
     name: raw.name as string,
@@ -2206,7 +2308,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
     purpose: raw.purpose as string | undefined,
     identity: identityShorthand,
     engine: engine as unknown as EngineConfig,
-    settings: settings as AgentSettings,
+    settings: parsedSettings,
     augments: finalAugments,
     securityEval,
   };

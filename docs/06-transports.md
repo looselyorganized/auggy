@@ -1294,3 +1294,28 @@ Both augments start at the same time. The `web` transport serves the AG-UI HTTP 
 For full configuration options, see:
 - [docs/13-notify.md](./13-notify.md) — the `notify` augment for proactive outbound messages across both transports
 - [docs/14-telegram-transport.md](./14-telegram-transport.md) — `telegramTransport` full operator reference
+
+## Distributed coordination topology (preview contract)
+
+`settings.coordination` reserves a stable PostgreSQL coordination namespace for a
+logical agent. It contains only a database environment-variable *name*, never a
+database URL or credential:
+
+```yaml
+settings:
+  coordination:
+    mode: postgres
+    namespace: 5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7
+    # urlEnv defaults to AUGGY_COORDINATION_DATABASE_URL
+    leaseDurationMs: 30000
+    heartbeatIntervalMs: 5000
+    claimPollMs: 100
+    maxWaitMs: 30000
+```
+
+This is deliberately a **fail-closed declaration**, not an instruction to run
+multiple replicas yet. Current scheduling, thread serialization, history
+commits, idempotency, and quarantine state are process-local or unfenced. A
+future runtime preflight must verify shared, fenced replacements for each of
+those boundaries before it can enable distributed execution. Until then deploy
+one runtime replica for each logical agent namespace.
