@@ -2,6 +2,11 @@
 
 Exploratory product and architecture notes for ways Auggy can be applied in real organizations.
 
+The canonical product definition and ownership boundary is the
+[Product North Star](../01-philosophy.md). The documents in this folder explore
+narrower applications of that thesis; they do not redefine Auggy as a managed
+platform, system of record, or general application framework.
+
 These docs are intentionally more market-facing than the core architecture references in `docs/`. They should still stay grounded in actual Auggy primitives: augments, transports, memory, trust tiers, budgets, skills, and agent-to-agent interfaces.
 
 The canonical roadmap is [`../ROADMAP.md`](../ROADMAP.md). Use-case notes can

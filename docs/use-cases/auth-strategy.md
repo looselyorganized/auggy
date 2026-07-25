@@ -215,7 +215,7 @@ Do not expose:
 
 ## Current route and delegated auth contract
 
-The route-auth foundation shipped in `0.5.0`.
+The route-auth foundation is implemented in the unpublished `0.5.0` candidate.
 
 Current route auth modes:
 
@@ -360,7 +360,7 @@ Auth should become part of the app-backend route layer, not a separate platform 
 
 Roadmap placement:
 
-1. Shipped in `0.5.0`: route auth modes, structured route context, delegated app auth,
+1. Implemented in the `0.5.0` candidate: route auth modes, structured route context, delegated app auth,
    route/tool `requires`, Stripe webhook policy, key rotation, audit hooks, and
    replay protection.
 2. `0.6.x`: app-builder recipes and scaffolds that teach the bridge without

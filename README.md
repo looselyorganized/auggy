@@ -361,8 +361,8 @@ The default notification destination writes JSON Lines locally with no secrets.
 Configure a webhook, Telegram, or AgentMail destination when you need real
 delivery.
 
-For model-callable email (outbound ships in `0.5.0`; durable inbound is in the
-current unreleased source):
+For model-callable email and the durable inbound/review foundation implemented
+in the unpublished `0.5.0` candidate:
 
 ```bash
 auggy augment add agentMail

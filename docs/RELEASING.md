@@ -4,7 +4,15 @@ This is the explicit checklist for cutting a release of the `auggy` npm package.
 
 ## The core principle: PRs ≠ releases
 
-**Feature PRs do not bump the version.** `package.json.version` always reflects the *last published* release. The handful of commits between releases land on `main` without version bumps. When you decide it's time to ship, *that* is a deliberate "release PR" — a separate, intentional PR whose entire job is to bump the version, update the changelog, and merge.
+**Feature PRs do not bump the version.** Ordinarily, `package.json.version`
+reflects the last published release. The handful of commits between releases
+land on `main` without version bumps. When you decide it is time to ship, that
+is a deliberate release PR whose job is to set the version, update the
+changelog, and merge.
+
+The unpublished `0.5.0` already present on `main` is a one-time exception to
+that rule. The release workflow must handle it explicitly; never infer registry
+state from the working-tree version.
 
 This separation is enforced by `release-rehearsal.yml`: the npm-version-conflict gate and tarball-packaging gate **only run when the PR bumps the version**. Feature PRs see lint/typecheck/test (defense-in-depth, also covered by `ci.yml`) — and that's it.
 
@@ -17,20 +25,25 @@ Pre-1.0 (semver §4: *"Anything MAY change at any time"*), this lets us ship at 
 git checkout main && git pull
 git tag v0.5.0                   # tag MUST match package.json version
 git push origin v0.5.0
-# CI publishes to npm + creates GitHub Release; watch the workflow run.
+# CI publishes to npm; verify the workflow and release artifacts.
 ```
 
-## 0.5 preview posture
+## Current release state
 
-For `0.5.0`, the npm packages are public but the source repository may remain
-private. Keep this posture until the project intentionally moves to a public
-OSS repository:
+As of 2026-07-25, npm's latest version is `0.4.4`. The repository is versioned
+as an unpublished `0.5.0` candidate, and there is no `v0.5.0` tag. Do not treat
+the package version in the working tree as proof of publication.
 
-- package manifests should point `homepage` at `https://auggy.dev`
-- package manifests should use the support email in `bugs`
-- omit `repository` metadata while the repo is private
-- keep npm provenance off because provenance requires a public source repo
-- do not describe the repo as publicly open source until the repo is public
+The next release follows the
+[OSS Production Release Plan](./plans/production-readiness-roadmap-2026-07-24.md):
+make the source public, migrate publication to trusted OIDC, publish one
+`0.5.0-rc.1` under `next`, then publish final `0.5.0` under `latest` after the
+RC gate passes.
+
+Until the repository visibility actually changes, do not describe the source
+as public OSS and do not claim provenance. Before the RC, all publishable
+package manifests must contain the exact public GitHub `repository` URL needed
+for npm trusted publishing.
 
 ## The invariant
 
@@ -240,7 +253,9 @@ The publish workflow's idempotency gate means a repeat push to the same version 
 
 ## Provenance gate
 
-**Provenance is currently OFF.** `npm publish --provenance` requires the source repo be **public** (sigstore can only attest from public repos).
+**Provenance is currently unavailable because the source repository is
+private.** The `0.5.0` RC is blocked on making the repository public and using
+npm trusted publishing.
 
 The publish workflow separates uncredentialed verification from publication.
 Repository and dependency code runs in `verify`, which has neither
@@ -248,7 +263,7 @@ Repository and dependency code runs in `verify`, which has neither
 OIDC permission, and it consumes the already-packed artifacts with fixed
 workflow commands. It uses Node 24 and requires npm 11.5.1 or newer.
 
-Complete this external migration before the next release:
+Complete this external migration before the RC:
 
 1. Create an `npm-publish` GitHub Environment. Allow deployments only from
    protected release tags matching `v*.*.*`; require a reviewer if repository
@@ -263,28 +278,19 @@ Complete this external migration before the next release:
    `NPM_TOKEN_PUBLISH_ENV_ONLY` only in the `npm-publish` Environment.
 4. Revoke the legacy npm token and delete the repository-level `NPM_TOKEN`.
 5. Review every package's npm Trusted Publisher settings to confirm all five
-   claims above, then complete one controlled release without the fallback
-   token. After OIDC succeeds, remove `NODE_AUTH_TOKEN` from the workflow,
-   revoke the environment fallback, and disallow token-based publishing in
-   npm.
+   claims above, then publish `0.5.0-rc.1` without the fallback token. After
+   OIDC succeeds, remove `NODE_AUTH_TOKEN` from the workflow, revoke the
+   environment fallback, and disallow token-based publishing in npm.
 
 Until the environment and either OIDC or its environment-only fallback are
 configured, publishing intentionally fails closed. This GitHub/npm state
 cannot be completed or verified by a source PR.
 
-Trusted publishing can authenticate a private GitHub repository, but npm
-provenance remains unavailable while the source repository is private. Keep
-`--provenance` off until the public-repository gate below is complete.
-
-To turn provenance back on (when the Auggy repo goes OSS-public):
-
-1. Set repo visibility to Public in GitHub Settings
-2. In `.github/workflows/publish.yml`, change the publish command to:
-   ```yaml
-   run: npm publish --provenance --access public
-   ```
-3. Cut a release and verify the npm package page shows the green "Provenance" badge with a sigstore transparency-log link
-4. Update this doc — remove the gate, note the date provenance went live
+Current npm trusted publishing automatically generates provenance for public
+packages published from public GitHub repositories; no `--provenance` flag is
+required. Exact package `repository` metadata, the public repository, a
+GitHub-hosted runner, and `id-token: write` remain required. Verify every RC
+package page shows its provenance attestation before publishing final `0.5.0`.
 
 The supply-chain integrity signal is meaningful for OSS adopters. Don't ship v1.0 without it.
 
@@ -300,8 +306,12 @@ From `v0.3.1` onward, every release follows the cut-from-main flow above. No mor
 
 ## Things this checklist does NOT cover (yet)
 
-- **Pre-release tags (`v1.0.0-rc.1`).** The workflow regex `v*.*.*` doesn't match these. When we need prerelease, update the regex AND add an npm dist-tag step (`--tag next`) so prereleases don't replace `latest`.
+- **Pre-release tags (`v1.0.0-rc.1`).** Current workflow validation rejects
+  these and publication hardcodes `latest`. The `0.5.0` RC plan requires this
+  support to be implemented and contract-tested before the RC tag is pushed.
 - **Cherry-pick / hotfix releases.** When we have a `release/X.Y` branch alongside `main` and need to ship a patch from there without dragging in main. We'll codify it when we hit the case.
-- **Cross-package monorepo releases.** Not relevant until we have more than one publishable package in this repo.
+- **Independent package versioning.** Core, all four provider adapters, and
+  `@auggy/evals` currently release in lockstep. Independent version lines need
+  a separate design before use.
 
 When you do one of the above for the first time, add a section here.

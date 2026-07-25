@@ -9,6 +9,8 @@ Status values:
 - **On main** — implemented in the current unreleased source but not published.
 - **Preview** — implemented for deliberate experimentation; its API or
   production posture may still change.
+- **Unsupported** — deliberately unavailable; nearby foundations must not be
+  mistaken for a usable production capability.
 
 When this file disagrees with code, code wins.
 
@@ -26,6 +28,9 @@ When this file disagrees with code, code wins.
 | Console capability runtime map | On main | [`21`](./21-console.md) | Observed augments, routes, tools, memory, skills, reported safeguards, issues, and notes |
 | CLI create/run/doctor lifecycle | Published | root [`README`](../README.md) | Scaffold, local operation, diagnostics, and background process commands |
 | Railway deploy | Published | [`18`](./18-deploy.md) | Railway-first staging, secrets, persistent volume, and health verification |
+| Keyed turn scheduling | On main | [`04`](./04-kernel.md), [`08`](./08-agent-lifecycle.md) | Bounded agent/source/thread admission and process-local outcome-unknown quarantine |
+| Auggy Builder Skill | On main | [`11`](./11-skills.md) | Portable coding-agent guidance and evals; public installation UX remains roadmap work |
+| Multiple replicas for one logical agent | Unsupported | [coordination report](./plans/distributed-coordination-implementation-report-2026-07-24.md) | Configuration fails closed; PostgreSQL coordinator foundation is not wired into runtime execution |
 
 ## Built-In Augments
 
@@ -63,6 +68,7 @@ framework, durable workflow engine, or persistent job queue.
 
 ## Package Snapshot
 
-- Latest published package: `0.5.0`.
-- Current source: unreleased post-`0.5.0` work.
+- Latest published package: `0.4.4`.
+- Current source: the unpublished `0.5.0` candidate.
+- Release plan: [`plans/production-readiness-roadmap-2026-07-24.md`](./plans/production-readiness-roadmap-2026-07-24.md).
 - Source of truth: code in `src/`, followed by the numbered reference docs.

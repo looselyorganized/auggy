@@ -549,7 +549,28 @@ Builds a `TurnTrace` over the course of a turn. Methods:
 - `recordCapabilityCheck(trace, opts)` — appends to `capabilityChecks`.
 - `finalize(trace)` — sets `duration = now - timestamp`.
 
-The trace is stored on the `TurnResult` and is the main observability output. Future plans add a trace exporter augment.
+The trace is stored on the `TurnResult` for the direct caller. It contains
+turn/thread identifiers and may be adjacent to tool inputs and outputs, so it
+must not be copied wholesale into logs, metric labels, or an operational
+exporter.
+
+Each current inference step carries a fixed terminal `outcome` (`completed`,
+`failed`, `canceled`, or `outcome-unknown`). This is separate from the whole
+turn outcome: a model call may complete and incur cost before later parsing or
+persistence fails. Legacy/custom traces that omit the field are interpreted as
+completed for backward compatibility.
+
+`src/kernel/runtime-signals.ts` separately records cardinality-free,
+process-lifetime counters and timings. Its methods accept only fixed outcome
+enums and non-negative numeric values; they cannot accept prompts, peer or
+thread identifiers, destinations, tool payloads, model names, exception text,
+headers, or provider response bodies. `agent.operationalSnapshot()` combines
+those counters with the scheduler snapshot and instantaneous process memory.
+The authenticated console dashboard includes the same snapshot.
+
+The operational snapshot resets on every start attempt and is neither a
+durable audit log nor a billing ledger. The operator may sample it into their
+monitoring system; Auggy does not call exporter callbacks from the turn path.
 
 ### `src/agent.ts` — `defineAgent`
 

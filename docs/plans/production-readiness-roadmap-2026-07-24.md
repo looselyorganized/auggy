@@ -1,105 +1,345 @@
-# Production Readiness Roadmap
+# OSS Production Release Plan
 
-**Date:** 2026-07-24
-**Status:** recorded follow-on work
-**Precondition:** distributed coordination groups 1–4
+**Originally recorded:** 2026-07-24
 
-Auggy has no production users to migrate today, which makes this the least
-expensive point to establish explicit contracts. These seven workstreams are
-the next sequence after distributed coordination. Each uses the same
-revalidate, delegate, test-first, slice, hostile-review, verify, and PR loop.
+**Reconciled:** 2026-07-25
 
-## 1. Tenant cell and isolation contract
+**Status:** engineering hardening, then release preparation
 
-Define one logical agent/tenant cell across database roles and schemas, object
-storage prefixes, encryption keys, credentials, egress identity, queues, audit
-streams, admin authority, and quotas. Ensure request data cannot select a
-namespace. Add cross-tenant negative and confused-deputy tests.
+**Immediate target:** `0.5.0` public-source production preview
 
-**Done when:** the isolation matrix is executable, all owned stores require a
-namespace, cross-cell operations fail closed, and a compromised agent cell
-cannot read or spend another cell's resources.
+**Later target:** `1.0.0` OSS GA
 
-## 2. Observability, SLOs, and capacity signals
+## Release decision
 
-Add bounded metrics and traces for admission, queue wait, model/tool latency,
-outbox lag, lease health, unknown outcomes, quarantine, recovery, provider
-errors, and cost. Define concierge and order-support availability and latency
-SLOs with burn alerts. Prove prompt, peer, credential, and tool-argument
-redaction.
+The next release is `0.5.0`, not `0.6.0` or `1.0.0`.
 
-**Done when:** operators can distinguish overload, provider failure,
-coordination loss, stuck delivery, and an application bug without inspecting
-customer content.
+The source tree is already versioned as `0.5.0`, but npm still serves `0.4.4`
+for `auggy`, all four provider adapters, and `@auggy/evals`. There is no
+`v0.5.0` tag. Documentation that described `0.5.0` as published was ahead of
+external reality.
 
-## 3. Durable delivery and human recovery
+`0.5.0` should be the first release whose source repository is public. It is a
+public preview that can be used for production work inside the supported
+topology below. It is not a claim that every augment is stable, every workload
+has a certified capacity, or Auggy supplies managed infrastructure.
 
-Complete transactional outbox delivery for web, Telegram, AgentMail, link, and
-notification paths. Add stable recipient operation IDs, retries with bounded
-backoff, dead-letter state, reconciliation, and operator workflows for
-outcome-unknown effects.
+Because the delta from `v0.4.4` is unusually large, release one npm candidate
+as `0.5.0-rc.1` under the `next` dist-tag before publishing final `0.5.0` under
+`latest`. The release candidate validates the public-repository, OIDC,
+provenance, packaging, installation, and deployment path without consuming the
+final version.
 
-**Done when:** crash tests prove committed replies are not lost, recipients do
-not receive duplicates where they support idempotency, and every ambiguous
-effect has an auditable recovery path.
+## Supported production contract for 0.5
 
-## 4. Data lifecycle, backup, and disaster recovery
+The production claim is topology-specific.
 
-Define retention, export, deletion, legal hold, encryption/key rotation,
-backups, point-in-time recovery, regional failure, and restore consistency
-across coordinator, history, memory, outbox, and provider artifacts.
+Supported:
 
-**Done when:** timed restore drills meet declared RPO/RTO, deleted tenant data
-does not survive outside documented backup windows, and recovery cannot replay
-completed effects.
+- one Auggy runtime process for each logical agent deployment;
+- several independent Auggy deployments that perform different operations;
+- a durable POSIX volume for runtime-owned SQLite and file state;
+- an operator-owned TLS reverse proxy, secrets system, network policy, backup
+  process, monitoring, and deployment platform;
+- explicit production authentication, proxy trust, anonymous-admission, and
+  transport configuration;
+- exact package-version pins during the public preview;
+- deterministic application authorization and systems of record outside the
+  model;
+- bounded process-local concurrency across different threads, with one lane
+  per resolved thread; and
+- the stable and on-main capabilities identified in `docs/FEATURES.md`, with
+  preview augments remaining explicitly opt-in.
 
-## 5. Provider resilience and routing policy
+Not supported or promised by 0.5:
 
-Add per-provider circuit breakers, bounded retries, jittered backoff, timeout
-budgets, health-aware routing, spend-aware degradation, and explicit
-idempotency classifications. Keep credentials and policy decisions
-server-side.
+- multiple replicas serving one logical Auggy deployment;
+- a shared volume as a substitute for distributed coordination;
+- transparent autoscaling or a managed Auggy control plane;
+- a universal requests-per-second or concurrent-user number;
+- exactly-once delivery for external systems that do not provide an
+  idempotency contract;
+- durable multi-hour workflows, compensation, or a persistent job queue;
+- tenant provisioning, billing, application databases, or business-state
+  ownership; or
+- contractual availability, latency, recovery, or support SLAs.
 
-**Done when:** failure injection proves a provider brownout cannot exhaust all
-worker capacity, amplify spend, bypass allowlists, or silently retry
-non-idempotent operations.
+`settings.coordination` must continue to reject startup until every required
+shared and fenced runtime boundary is wired. The PostgreSQL coordinator merged
+in PR #163 is a disabled foundation, not a supported replica mode.
 
-## 6. Real workload and chaos certification
+## Evidence already complete
 
-Turn the initial load harness into repeatable release certification across
-machine sizes and deployment platforms. Include burst, soak, reconnect,
-rolling deploy, database failover, provider stall, slow consumer, and
-multi-tenant noisy-neighbor profiles.
+The following work is release evidence and should not be repeated as an
+unbounded new platform program:
 
-**Done when:** each supported topology publishes a measured capacity envelope
-and passes zero-duplicate, isolation, bounded-memory, drain, recovery, and SLO
-criteria.
+- PR #159 completed the repository-wide security audit remediation. Its final
+  audit and packed-release gates passed with no unresolved High or Medium
+  finding and no known vulnerable locked dependency at that point.
+- PR #160 added bounded agent-wide keyed turn scheduling and explicit
+  outcome-unknown quarantine.
+- PR #161 added Telegram conflict quarantine and compare-and-set operator
+  recovery.
+- PR #162 made the complete tracked test inventory an executable CI and
+  release-rehearsal boundary.
+- PR #163 added the fail-closed distributed topology contract and tested
+  PostgreSQL coordination foundation while deliberately leaving replicas
+  unsupported.
+- Main CI and CodeQL passed after PR #163, and no pull request was open when
+  this plan was reconciled.
 
-## 7. Versioned public contracts and upgrades
+This evidence closes the earlier security and distributed-foundation passes;
+it does not make the runtime production-ready by itself. Before the release
+candidate, complete the seven engineering gates in
+[`production-readiness-engineering-boundary-2026-07-25.md`](./production-readiness-engineering-boundary-2026-07-25.md):
 
-Stabilize configuration, storage, coordinator, effect-idempotency, health, and
-operator APIs as versioned v1 contracts. Add compatibility fixtures,
-deprecation policy, schema/tooling version checks, upgrade rehearsals, and
-rollback documentation.
+1. runtime observability and capacity signals;
+2. runtime-state lifecycle and recovery;
+3. delivery and authenticated operator recovery semantics;
+4. bounded provider resilience;
+5. real runtime load and soak evidence;
+6. public contracts, migrations, and rollback; and
+7. independent-agent isolation on a shared host.
 
-**Done when:** the previous compatible release can participate in a rolling
-upgrade, incompatible binaries fail before traffic, and every persisted
-format has a tested migration and rollback policy.
+These gates are Auggy runtime obligations, not managed-platform work.
+Horizontal scaling for one logical Auggy remains a separate, deferred product
+decision. Release preparation starts after the seven engineering checkpoints
+pass; the OSS/supply-chain, packaging, clean-install, public-repository, and
+deployment gates below still apply afterward.
 
-## Recommended order
+## Current release blockers
 
-1. Tenant cell and isolation contract.
-2. Observability and SLOs.
-3. Durable delivery and recovery.
-4. Data lifecycle and disaster recovery.
-5. Provider resilience.
-6. Workload and chaos certification.
-7. Versioned v1 contracts and upgrade policy.
+### P0 — Secret-scanning disposition before public visibility
 
-The workstreams can overlap in research, but their implementation order is
-intentional: isolation and observability are prerequisites for safely
-operating delivery, recovery, and resilience at multi-tenant scale.
+GitHub reports one open secret-scanning alert at a committed test fixture. The
+alert classifies the value as a Stripe webhook signing secret; the location is
+in `tests/transports/webhook-policy.test.ts` and was introduced by the Svix
+webhook test commit.
 
-These workstreams do not relax the current single-replica restriction. Replica
-enablement remains gated by every shared and fenced runtime boundary recorded
-in the distributed-coordination implementation report.
+Do not make the repository public until the value is classified without
+printing it:
+
+- if it was ever live, rotate it, purge it from public history as required,
+  and close the alert as revoked;
+- if it is a synthetic third-party test vector, replace the detector-shaped
+  literal with a runtime-derived deterministic fixture and resolve the alert
+  as a false positive with evidence; and
+- verify the open-alert count is zero before changing repository visibility.
+
+### P0 — Public repository and package identity
+
+The repository is currently private. Before the RC:
+
+- complete a full-history credential, private-data, license, and artifact
+  review;
+- add the exact public GitHub `repository` metadata required by npm trusted
+  publishing to all six publishable packages;
+- verify README, license, contribution, code-of-conduct, support, and security
+  reporting paths from an anonymous browser session;
+- change repository visibility to public only after the secret gate passes;
+- keep CodeQL, secret scanning, push protection, and Dependabot alerts enabled;
+- enable private vulnerability reporting and its maintainer notifications; and
+- verify forks, issues, branch protection, and release permissions behave as
+  intended for a public repository.
+
+### P0 — Trusted publishing and provenance
+
+No GitHub Actions Environment currently exists. Legacy repository secrets named
+`NPM_TOKEN` and `ANTHROPIC_API_KEY_SECURITY_EVAL` remain even though the
+hardened workflows expect environment-scoped identities.
+
+Before the RC:
+
+- create the protected `npm-publish` Environment;
+- configure npm trusted publishers for `auggy`, the four provider adapters,
+  and `@auggy/evals`, bound exactly to this repository, `publish.yml`, and the
+  `npm-publish` Environment;
+- add an environment-only token fallback only if the initial OIDC migration
+  truly requires it;
+- create and protect the `security-eval` Environment and migrate its key to the
+  environment-only name used by the trusted workflow;
+- revoke and delete the legacy repository-level npm and evaluation secrets;
+- verify that repository/dependency code runs only in the uncredentialed
+  release job and that the credentialed job publishes only verified artifacts;
+  and
+- confirm npm displays automatically generated provenance for every RC package.
+
+Current npm trusted publishing automatically generates provenance when OIDC
+publishes a public package from a public repository. The workflow does not need
+to add `--provenance`; it does need exact repository metadata and correct OIDC
+claims.
+
+### P0 — Release automation must support the actual release
+
+The current release rehearsal only enables version-specific checks when the
+package version differs from the PR base. Since `main` is already versioned
+`0.5.0`, a same-version release-preparation PR would skip those checks.
+
+Before the RC:
+
+- make an explicit `release/*` PR invoke version-conflict, package-version
+  parity, and pack checks even when the base already has the same version;
+- support exact prerelease tags such as `v0.5.0-rc.1`;
+- publish prereleases with the `next` dist-tag and stable releases with
+  `latest`;
+- keep stable and prerelease package versions identical across all six
+  publishable packages;
+- create a GitHub prerelease/release from the verified tag and attach checksums
+  or otherwise document that npm provenance is the artifact identity; and
+- add workflow contract tests for stable tags, prerelease tags, dist-tags,
+  artifact names, and fail-closed malformed versions.
+
+### P0 — Release truth and compatibility
+
+Before the RC branch is cut:
+
+- land the product north star and make it the canonical ownership boundary;
+- correct every claim that `0.5.0` is already published;
+- consolidate all changes since `v0.4.4` into the `0.5.0` changelog entry;
+- identify breaking changes, including removed compatibility paths and new
+  required public interface members;
+- publish a stable/preview/unsupported capability matrix;
+- ensure generated starter skills, examples, package READMEs, and reference
+  docs describe the same 0.5 behavior; and
+- state the single-replica and persistent-volume contract in the root README,
+  deployment guide, health/operations docs, and release notes.
+
+## Release-candidate gate
+
+Create `release/0.5.0-rc.1` from a frozen `main`. Do not merge new features
+after the freeze; accept only release-blocking fixes and documentation truth.
+
+Required automated verification:
+
+```sh
+bun install --frozen-lockfile
+bun run test:inventory
+bun run test
+bun run typecheck
+bun run lint
+bun run build:admin
+bun audit --json
+bun run smoke:release
+git diff --check
+```
+
+`bun audit --json` sends dependency and lockfile-derived package metadata to
+the advisory service. Obtain explicit operator approval for that egress at the
+time the release gate is run and record only advisory results, not unrelated
+environment data.
+
+Additional release checks:
+
+- run the PostgreSQL coordination suite against the pinned CI service even
+  though replica mode remains disabled;
+- run the security-eval trusted harness if its protected Environment is ready;
+- inspect all six tarballs and import them in isolated consumer projects;
+- install the packed CLI in an isolated prefix and scaffold each provider
+  choice against local adapter tarballs;
+- verify a generated agent boots, serves health and console assets, and rejects
+  missing or unsafe configuration clearly;
+- run a real hosted-model conversation with one supported provider;
+- run the concierge and order-support examples through their authorized,
+  denied, confirmation, restart, and failure paths; and
+- confirm no sentinel credential appears in output, artifacts, argv captures,
+  fixtures, generated clients, or logs.
+
+Publish `0.5.0-rc.1` to npm under `next`, then verify from a machine or isolated
+environment that has no repository checkout and no existing Auggy state:
+
+```sh
+npm view auggy@next version
+npm i -g auggy@next
+auggy --version
+auggy create rc-smoke
+auggy doctor
+auggy run
+```
+
+Verify every provider/evals package at the exact RC version, every provenance
+attestation, the GitHub prerelease, and the package links back to the public
+source repository.
+
+## Operational RC validation
+
+The RC must prove the declared single-replica profile, not a fictional managed
+fleet:
+
+- deploy one generated Auggy to Railway using one persistent volume;
+- validate health, console authentication, visitor admission, one real model
+  turn, one deterministic route, one tool call, restart persistence, logs, and
+  removal;
+- exercise bounded same-thread and different-thread concurrency without
+  claiming a universal traffic limit;
+- run a bounded soak that watches memory, file descriptors, queue wait,
+  provider latency, rejections, outcome-unknown state, and shutdown drain;
+- kill and restart the process during queued and active work and verify the
+  documented recovery behavior;
+- test backup and restore of runtime-owned state on the supported volume; and
+- record machine size, model/provider, limits, duration, and results so the
+  evidence is reproducible rather than marketed as a general capacity number.
+
+Any confirmed High or Medium security, data-loss, cross-peer authorization,
+packaging, or clean-install failure blocks final `0.5.0`. A documented preview
+limitation does not block the release unless the implementation violates its
+stated boundary.
+
+## Final 0.5.0 release
+
+After the RC gate passes:
+
+1. Cut `release/0.5.0` from the tested RC line.
+2. Apply only confirmed RC fixes.
+3. Set all six publishable packages to `0.5.0`.
+4. Finalize the changelog date and release notes.
+5. Repeat the automated release gate and focused tests for every RC fix.
+6. Open the release PR and require CI, CodeQL, and release rehearsal to pass.
+7. Merge without publishing from the PR.
+8. Tag the exact merge commit `v0.5.0` and push the tag.
+9. Verify npm publishes all six packages under `latest` with provenance.
+10. Verify the GitHub Release, anonymous clone, clean install, scaffold, doctor,
+    boot, docs links, and supported Railway deployment.
+11. Deprecate no older version unless there is a concrete security or
+    compatibility reason.
+12. Monitor installation and issue reports before reopening feature work.
+
+Rollback is a new patch or RC, never republishing the same npm version. A bad
+RC can be deprecated without affecting `latest`. A bad stable release should
+be deprecated and replaced with `0.5.1`; unpublishing is a last resort.
+
+## Reconciliation of the previous seven workstreams
+
+The previous plan mixed runtime obligations with managed-platform obligations.
+They are reclassified as follows.
+
+| Previous workstream | 0.5 OSS release disposition | Long-term owner |
+| --- | --- | --- |
+| Tenant cell and isolation | Do not build tenant provisioning. Require namespaces for Auggy-owned stores and test cross-peer/cross-agent isolation. | The deployer owns accounts, database roles, object-store prefixes, keys, queues, egress, and tenant infrastructure. |
+| Observability, SLOs, and capacity | Ship bounded health, trace, scheduler, quarantine, and safe diagnostic contracts. Do not promise concierge/order-support SLOs. | The deployer defines dashboards, alerts, retention, and service SLOs. |
+| Durable delivery and recovery | Keep explicit per-transport dedupe, reconciliation, and outcome-unknown semantics. Do not build a universal transactional outbox for 0.5. | Each augment owns its external delivery contract; applications use a queue/workflow engine when stronger durability is required. |
+| Data lifecycle, backup, and DR | Document every runtime-owned state location, retention control, backup boundary, and restore order. Perform one supported-topology restore smoke. | The deployer owns backup infrastructure, legal hold, regional recovery, and RPO/RTO. |
+| Provider resilience and routing | Keep bounded timeouts, cancellation, response limits, safe errors, and fail-closed restrictive routing. | Circuit breakers, multi-provider failover, and spend-aware routing remain optional adapters or post-release work. |
+| Workload and chaos certification | Run a reproducible single-replica RC soak and publish no universal RPS claim. | Broader platform/machine/provider certification follows adopter demand. |
+| Versioned contracts and upgrades | Document 0.5 migrations and breaking changes; exact pins remain recommended. | Stable public contracts, deprecation policy, and migration guarantees are 1.0 obligations. Rolling replica upgrades wait for supported replicas. |
+
+## What remains for 1.0
+
+`1.0.0` is an API and operator-confidence commitment, not completion of a
+managed platform.
+
+Before 1.0:
+
+- obtain real adopter feedback from at least one post-0.4 public release;
+- define and test the stable public TypeScript, configuration, route/client,
+  storage, health, and migration contracts;
+- provide a deprecation and upgrade policy;
+- make the first-run, custom-augment, auth, deployment, backup, and recovery
+  paths understandable without repository archaeology;
+- repeat a complete security and dependency review against the public release
+  candidate; and
+- demonstrate that the release and provenance pipeline has already succeeded
+  on the public repository.
+
+Multi-replica support is valuable for high-traffic deployments, but it is not a
+prerequisite for Auggy to be a useful OSS runtime or for `1.0.0` unless the
+project chooses to advertise replicas as part of the 1.0 support contract.

@@ -423,9 +423,9 @@ Every hook on `Augment` is optional. Here's the full set and when each fires:
 
 `onTurnStart` receives `TurnState` — the *read-only* view of the turn before context assembly. It can mutate `turnState.metadata` (the augment scratchpad), but not anything else.
 
-`onTurnEnd` receives `TurnResult` — the *complete* result of the turn, including the response, tool calls, and trace. It can read everything but cannot affect the result (the result has already been built and is on its way back to the transport).
+`onTurnEnd` receives `TurnResult` — the *complete* result of the turn, including the response, tool calls, and trace. It can read everything but cannot affect the result (the result has already been built and is on its way back to the transport). Because that object contains customer content, it is not the default operational telemetry surface. Use the aggregate runtime snapshot for ordinary monitoring.
 
-This is what lets `onTurnStart` be used for setup (the `memory-bus` resets its budget here) and `onTurnEnd` for observability (a future trace exporter would write `result.trace` to a backend here).
+This is what lets `onTurnStart` be used for setup (the `memory-bus` resets its budget here) and `onTurnEnd` for explicit application-owned terminal work. Any custom trace exporter is a content-processing integration and must define its own redaction, retention, access, and failure policy.
 
 ### Why `onTurnEnd` is sequential and best-effort
 

@@ -247,15 +247,17 @@ They keep `settings.coordination` fail-closed:
 
 ## Follow-on roadmap
 
-The next seven production-readiness workstreams are recorded in
-[`production-readiness-roadmap-2026-07-24.md`](./production-readiness-roadmap-2026-07-24.md):
+The earlier seven workstreams were reconciled against Auggy's product boundary
+in the
+[`OSS Production Release Plan`](./production-readiness-roadmap-2026-07-24.md).
+They are no longer treated as one mandatory managed-platform program.
 
-1. tenant cell and isolation contract;
-2. observability, SLOs, and capacity signals;
-3. durable delivery and human recovery;
-4. data lifecycle, backup, and disaster recovery;
-5. provider resilience and routing policy;
-6. real workload and chaos certification;
-7. versioned public contracts and upgrades.
+The immediate target is a public-source `0.5.0` production preview with a
+documented single-replica contract. Auggy retains responsibility for its own
+runtime isolation, health, persistence semantics, safe provider boundaries,
+release artifacts, and migrations. The deployer retains responsibility for
+tenant infrastructure, load balancing, databases and systems of record,
+backup services, monitoring/SLOs, and durable application workflows.
 
-Recommended implementation order remains 1 through 7.
+Replica enablement remains a separate future capability gated by the residual
+blockers above. It is not a prerequisite for the first OSS production release.

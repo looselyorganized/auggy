@@ -151,6 +151,13 @@ rejected during deploy preflight and again by the runtime resolver.
 
 ### Restart, scaling, and backup contract
 
+The authenticated dashboard payload includes a `runtime` object containing
+bounded process-local capacity, outcome, timing, kernel response-delivery,
+thread-recovery, shutdown, and memory signals. It is returned with
+`Cache-Control: no-store`. The object contains no
+customer identifiers or content and resets after a runtime restart. The
+console is a viewer for these signals, not a metrics store or alerting system.
+
 - Completed conversations, unread state, titles, and model history survive a
   process restart. A run that was active during a crash or restart is recovered
   as interrupted rather than left permanently streaming.

@@ -6,10 +6,15 @@ the compact feature/status matrix.
 
 ## Release Framing
 
-- **Latest published release:** `0.5.0`.
-- **Current source:** unreleased post-`0.5.0` work. The app-backend foundation
-  has shipped; durable AgentMail inbound/review is implemented but not yet
-  published.
+- **Latest published release:** `0.4.4`.
+- **Current source:** the unpublished `0.5.0` candidate. It includes the
+  app-backend foundation, durable AgentMail inbound/review, the security-audit
+  remediation, keyed turn scheduling, Telegram conflict recovery, CI
+  test-surface enforcement, and a fail-closed distributed-coordination
+  foundation.
+- **Immediate release plan:** publish one `0.5.0-rc.1` under npm's `next`
+  dist-tag, validate the public OSS path, then publish final `0.5.0`. See the
+  [OSS Production Release Plan](./plans/production-readiness-roadmap-2026-07-24.md).
 - **Pre-1.0 cadence:** do not jump straight from `0.5.x` to `1.0.0`. Ship useful
   `0.x` releases as the app-backend surface hardens.
 - **`1.0.0`:** the OSS GA line. It should mean the docs, examples, release
@@ -25,11 +30,11 @@ completed plans are removed once their durable decisions reach reference docs.
 
 ---
 
-## 0.5.0 — App-Backend Foundation
+## 0.5.0 Candidate — OSS Production Preview
 
-Status: **published in `0.5.0`**.
+Status: **implemented on `main`; not published**.
 
-What has landed:
+The candidate includes:
 
 - Deterministic augment HTTP routes beside `/agent/run`.
 - Route groups, exact paths, full-segment path params, query/body parsing,
@@ -51,6 +56,15 @@ What has landed:
   sessions, route authorization, and protected tool authorization together.
 - Concierge example proving shared route/tool/domain logic.
 - `auggy doctor` route posture checks for custom augment routes.
+- Portable Auggy builder skill sources and evals for coding-agent guidance.
+- Basic `auggy augment create <name>` scaffolding with a typed tool, test, and
+  optional skill.
+- Durable AgentMail inbound catch-up, outbound review, reconciliation, and
+  persistent-volume admission.
+- Repository-wide security remediation, bounded turn scheduling, Telegram
+  conflict recovery, and complete tracked-test inventory enforcement.
+- A fail-closed PostgreSQL coordination foundation that remains disabled until
+  the complete replica contract exists.
 
 ---
 
@@ -59,10 +73,8 @@ What has landed:
 Goal: make the app-backend pattern obvious without requiring users to reverse
 engineer examples.
 
-- Auggy Builder Skill for Claude, Codex, Cursor, and similar coding agents:
-  an installable companion skill that teaches agents to explain Auggy, scaffold
-  projects, create augments, generate route clients, wire app auth safely, and
-  run validation.
+- Public installation/distribution UX for the existing Auggy Builder Skill for
+  Claude, Codex, Cursor, and similar coding agents.
 - `auggy augment create <name> --with-route --with-tool` scaffolds a custom
   augment with a domain function, route wrapper, tool wrapper, schema, tests, and
   env validation.

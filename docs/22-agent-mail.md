@@ -1,8 +1,8 @@
 # `agentMail` augment
 
-**Availability:** outbound email ships in `0.5.0`. Durable inbound delivery,
-outbound human review, and Svix webhook verification are implemented in the
-current unreleased source and are not in the published package yet.
+**Availability:** outbound email and the durable inbound/review foundation are
+implemented in the unpublished `0.5.0` candidate. The latest npm release,
+`0.4.4`, does not include them.
 
 `agentMail` gives an agent a policy-gated AgentMail inbox. It exposes
 `send_message`, `reply_to_message`, and `forward_message`, and can turn admitted

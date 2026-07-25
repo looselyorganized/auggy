@@ -164,9 +164,8 @@ installed into scaffolded agents as a direct dependency.
 Shared core helpers for adapters remain under `src/engines/_shared/`, with
 pricing tables under `src/engines/<provider>/pricing.ts`.
 
-Engines are a reasoning-engine concern, not a model-metadata concern — see
-[01-philosophy.md](./01-philosophy.md) for why the vocabulary is `engines` and
-not `models`.
+Auggy uses `engine` for an executable reasoning-provider adapter and keeps that
+separate from model metadata such as model IDs, limits, and pricing snapshots.
 
 ### `src/cli/` — the `auggy` CLI (Plan 3)
 Turns Auggy from "write a `main.ts`" into "configure a YAML file and run `auggy start`." Each file is one concern.

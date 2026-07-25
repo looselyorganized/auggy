@@ -9,6 +9,7 @@ For installation and first-run instructions, start with the root
 
 ## Start Here
 
+- [Product North Star](./01-philosophy.md)
 - [Architecture Overview](./02-architecture-overview.md)
 - [Built-In Augments](./07-built-in-augments.md)
 - [Agent Lifecycle](./08-agent-lifecycle.md)
@@ -62,7 +63,7 @@ Use this order when documentation disagrees:
 | Doc | What it covers |
 | --- | --- |
 | [Feature Status](./FEATURES.md) | Current core, add-on, and preview capability status |
-| [01 Philosophy](./01-philosophy.md) | Runtime motivation and design principles |
+| [01 Product North Star](./01-philosophy.md) | Product purpose, engineering value, ownership boundaries, and positioning |
 | [02 Architecture Overview](./02-architecture-overview.md) | Module map and turn data flow |
 | [03 Types](./03-types.md) | Shared runtime contracts |
 | [04 Kernel](./04-kernel.md) | Turn loop, context allocation, history, and tool execution |
@@ -133,5 +134,6 @@ current reference document explicitly promotes a behavior.
 
 ## Operations
 
+- [OSS Production Release Plan](./plans/production-readiness-roadmap-2026-07-24.md)
 - [Releasing](./RELEASING.md)
 - [Todos](./todos.md)

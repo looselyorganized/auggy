@@ -86,7 +86,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inferred structurally. Agent Card capabilities, including Link's
   `agentCard.capabilities`, remain separate discovery metadata.
 
-## [0.5.0] - 2026-07-07
+## [0.5.0] - Unreleased
+
+This candidate has not been published to npm. Before the final release, merge
+the entries in the top-level `[Unreleased]` section into this section and set
+the actual release date.
 
 ### Added
 

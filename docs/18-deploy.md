@@ -339,6 +339,39 @@ The Railway volume is **NOT** automatically deleted (Railway retains it as a saf
 
 ---
 
+## Runtime observability contract
+
+The authenticated console dashboard and `AgentHandle.operationalSnapshot()`
+expose the same versioned, process-local snapshot. It includes:
+
+- scheduler activity, queue age, cumulative queue wait, fixed rejection
+  reasons, and quarantine counts;
+- turn, inference, tool, kernel response-delivery, hook, thread-quarantine
+  recovery, and shutdown counters and timings; shutdown reports in-progress
+  elapsed time from the moment admission begins draining;
+- priced versus unpriced inference accounting; and
+- current process RSS, heap, external, and array-buffer memory.
+
+The snapshot has no peer, thread, turn, request, message, destination, model,
+or tool-argument labels. It never includes prompts, responses, headers,
+provider error bodies, exception messages, or credentials. Counters reset when
+the process starts and are not suitable as a durable audit or billing record.
+Sampling must not be used as an authorization or quota boundary.
+
+`GET /health` remains a simple liveness check for deployment compatibility. It
+does not mean the scheduler is accepting work. Operators should alert on the
+snapshot's explicit readiness state, queue wait/rejections, quarantines,
+provider failures, kernel response-delivery failures or in-flight growth, and memory trend.
+Thresholds depend on the measured workload; Auggy does not publish a universal
+capacity or SLO number.
+
+This first snapshot does not claim to observe notification-provider,
+AgentMail, Telegram, or other augment-owned delivery/recovery operations.
+Those paths publish their own authenticated status until the Group 3 delivery
+contract connects them to a common bounded signal boundary.
+
+---
+
 ## What you should NOT expect from the current Railway deploy path
 
 - **Auto-rollback** on failed deploys. If `railway up` succeeds but the agent crashes at boot, Railway's auto-restart loop kicks in but doesn't roll back to the previous build. Use `railway logs` to diagnose.
@@ -346,7 +379,9 @@ The Railway volume is **NOT** automatically deleted (Railway retains it as a saf
 - **Managed backups.** The deploy path provisions durable storage but does not schedule snapshots, export SQLite files, or test restores.
 - **Plugin abstraction for other providers.** `--to fly` / `--to render` are deferred until concrete demand.
 - **Cross-machine cloud-record sync.** Each checkout has its own `<agent-dir>/.auggy-cloud.json`. Cloud deployment doesn't sync state back.
-- **Built-in observability.** Use Railway's metrics dashboard and `railway logs`. Long-term observability is a v2 concern.
+- **A managed monitoring service.** Auggy exposes a bounded process-local
+  operational snapshot; the deploying team still owns collection, dashboards,
+  alerts, retention, and SLOs.
 
 ---
 
