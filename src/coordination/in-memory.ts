@@ -28,6 +28,8 @@ interface StoredThread {
 
 interface NamespaceState {
   drainingInstances: Set<string>;
+  maxConcurrent: number;
+  maxQueued: number;
   requests: Map<string, StoredRequest>;
   threads: Map<string, StoredThread>;
   sources: Map<string, DistributedSourcePolicy>;
@@ -35,6 +37,8 @@ interface NamespaceState {
 
 const namespaces = new Map<string, NamespaceState>();
 let transaction: Promise<void> = Promise.resolve();
+const MAX_CAPACITY = 1_000_000;
+const MAX_LEASE_MS = 3_600_000;
 
 function assertIdentifier(name: string, value: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value)) {
@@ -42,9 +46,9 @@ function assertIdentifier(name: string, value: string): void {
   }
 }
 
-function assertLimit(name: string, value: number, minimum: number): void {
-  if (!Number.isSafeInteger(value) || value < minimum) {
-    throw new Error(`${name} must be a safe integer greater than or equal to ${minimum}`);
+function assertLimit(name: string, value: number, minimum: number, maximum = MAX_CAPACITY): void {
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be a safe integer from ${minimum} through ${maximum}`);
   }
 }
 
@@ -53,7 +57,7 @@ function assertConfig(config: DistributedCoordinatorConfig): void {
   assertIdentifier("instanceId", config.instanceId);
   assertLimit("maxConcurrent", config.maxConcurrent, 1);
   assertLimit("maxQueued", config.maxQueued, 0);
-  assertLimit("leaseMs", config.leaseMs, 1);
+  assertLimit("leaseMs", config.leaseMs, 1, MAX_LEASE_MS);
 }
 
 function assertRequest(request: DistributedTurnRequest): void {
@@ -109,6 +113,8 @@ export function createInMemoryDistributedTurnCoordinator(
     if (!value) {
       value = {
         drainingInstances: new Set(),
+        maxConcurrent: config.maxConcurrent,
+        maxQueued: config.maxQueued,
         requests: new Map(),
         threads: new Map(),
         sources: new Map(),
@@ -116,6 +122,15 @@ export function createInMemoryDistributedTurnCoordinator(
       namespaces.set(config.namespace, value);
     }
     return value;
+  }
+
+  /** Fleet config drift can only make limits more restrictive until migrated deliberately. */
+  function namespacePolicy(
+    current: NamespaceState,
+  ): Pick<NamespaceState, "maxConcurrent" | "maxQueued"> {
+    current.maxConcurrent = Math.min(current.maxConcurrent, config.maxConcurrent);
+    current.maxQueued = Math.min(current.maxQueued, config.maxQueued);
+    return current;
   }
 
   async function exclusive<T>(operation: () => T): Promise<T> {
@@ -163,6 +178,27 @@ export function createInMemoryDistributedTurnCoordinator(
     existing.maxConcurrent = Math.min(existing.maxConcurrent, incoming.maxConcurrent);
     existing.maxQueued = Math.min(existing.maxQueued, incoming.maxQueued);
     return existing;
+  }
+
+  function earliestEligibleThreadHead(
+    requests: Iterable<StoredRequest>,
+    active: readonly StoredRequest[],
+  ): StoredRequest | undefined {
+    const heads = new Map<string, StoredRequest>();
+    for (const request of requests) {
+      if (request.state !== "queued") continue;
+      const prior = heads.get(request.threadId);
+      if (
+        !prior ||
+        request.queuedAt < prior.queuedAt ||
+        (request.queuedAt === prior.queuedAt && request.requestId < prior.requestId)
+      ) {
+        heads.set(request.threadId, request);
+      }
+    }
+    return [...heads.values()]
+      .filter((request) => !active.some((candidate) => candidate.threadId === request.threadId))
+      .sort((a, b) => a.queuedAt - b.queuedAt || a.requestId.localeCompare(b.requestId))[0];
   }
 
   function leaseFrom(request: StoredRequest): DistributedTurnLease {
@@ -217,16 +253,19 @@ export function createInMemoryDistributedTurnCoordinator(
               return sameBinding(existing, request)
                 ? { status: "joined", state: existing.state }
                 : { status: "conflict" };
+            if (current.drainingInstances.has(config.instanceId))
+              return { status: "rejected", reason: "draining" };
+            const limits = namespacePolicy(current);
             const policy = sourcePolicy(current, request.source);
             const queued = [...current.requests.values()].filter((item) => item.state === "queued");
             const active = [...current.requests.values()].filter((item) => item.state === "active");
             const threadBusy = active.some((item) => item.threadId === request.threadId);
             const globalDirectSlot =
-              queued.length === 0 && active.length < config.maxConcurrent && !threadBusy;
+              queued.length === 0 && active.length < limits.maxConcurrent && !threadBusy;
             const sourceDirectSlot =
               queued.filter((item) => item.source.id === policy.id).length === 0 &&
               active.filter((item) => item.source.id === policy.id).length < policy.maxConcurrent;
-            if (queued.length >= config.maxQueued && !globalDirectSlot)
+            if (queued.length >= limits.maxQueued && !globalDirectSlot)
               return { status: "rejected", reason: "global-capacity" };
             if (
               queued.filter((item) => item.source.id === policy.id).length >= policy.maxQueued &&
@@ -251,6 +290,7 @@ export function createInMemoryDistributedTurnCoordinator(
           exclusive(() => {
             assertRequest(request);
             const current = state();
+            const limits = namespacePolicy(current);
             const timestamp = now();
             expire(current, timestamp);
             const stored = current.requests.get(request.requestId);
@@ -272,7 +312,7 @@ export function createInMemoryDistributedTurnCoordinator(
             if (active.some((item) => item.threadId === stored.threadId))
               return { status: "waiting" };
             if (
-              active.length >= config.maxConcurrent ||
+              active.length >= limits.maxConcurrent ||
               active.filter((item) => item.source.id === stored.source.id).length >=
                 policy.maxConcurrent
             )
@@ -281,6 +321,8 @@ export function createInMemoryDistributedTurnCoordinator(
               .filter((item) => item.state === "queued" && item.threadId === stored.threadId)
               .sort((a, b) => a.queuedAt - b.queuedAt || a.requestId.localeCompare(b.requestId))[0];
             if (threadHead !== stored) return { status: "waiting" };
+            const fairHead = earliestEligibleThreadHead(current.requests.values(), active);
+            if (fairHead !== stored) return { status: "waiting" };
             thread.nextFence++;
             stored.state = "active";
             stored.fence = thread.nextFence;

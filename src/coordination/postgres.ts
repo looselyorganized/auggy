@@ -13,6 +13,8 @@ import type {
 } from "./types";
 
 type Row = Record<string, unknown>;
+const MAX_CAPACITY = 1_000_000;
+const MAX_LEASE_MS = 3_600_000;
 
 interface SqlTransaction extends PostgresMigrationExecutor {
   begin<T>(callback: (transaction: SqlTransaction) => Promise<T>): Promise<T>;
@@ -70,9 +72,17 @@ function assertRequest(request: DistributedTurnRequest): void {
   assertIdentifier("requestId", request.requestId);
   assertIdentifier("threadId", request.threadId);
   assertIdentifier("source.id", request.source.id);
-  if (!Number.isSafeInteger(request.source.maxConcurrent) || request.source.maxConcurrent < 1)
+  if (
+    !Number.isSafeInteger(request.source.maxConcurrent) ||
+    request.source.maxConcurrent < 1 ||
+    request.source.maxConcurrent > MAX_CAPACITY
+  )
     throw new Error("source.maxConcurrent is invalid");
-  if (!Number.isSafeInteger(request.source.maxQueued) || request.source.maxQueued < 0)
+  if (
+    !Number.isSafeInteger(request.source.maxQueued) ||
+    request.source.maxQueued < 0 ||
+    request.source.maxQueued > MAX_CAPACITY
+  )
     throw new Error("source.maxQueued is invalid");
   if (!/^[A-Za-z0-9_-]{16,160}$/.test(request.bindingHash))
     throw new Error("bindingHash must be a one-way canonical request hash");
@@ -91,11 +101,23 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
 
   constructor(options: PostgresCoordinatorOptions) {
     if (!options.sql && !options.url) throw new Error("Postgres coordination requires url or sql");
-    if (!Number.isSafeInteger(options.maxConcurrent) || options.maxConcurrent < 1)
+    if (
+      !Number.isSafeInteger(options.maxConcurrent) ||
+      options.maxConcurrent < 1 ||
+      options.maxConcurrent > MAX_CAPACITY
+    )
       throw new Error("maxConcurrent must be positive");
-    if (!Number.isSafeInteger(options.maxQueued) || options.maxQueued < 0)
+    if (
+      !Number.isSafeInteger(options.maxQueued) ||
+      options.maxQueued < 0 ||
+      options.maxQueued > MAX_CAPACITY
+    )
       throw new Error("maxQueued must not be negative");
-    if (!Number.isSafeInteger(options.leaseMs) || options.leaseMs < 1)
+    if (
+      !Number.isSafeInteger(options.leaseMs) ||
+      options.leaseMs < 1 ||
+      options.leaseMs > MAX_LEASE_MS
+    )
       throw new Error("leaseMs must be positive");
     assertIdentifier("namespace", options.namespace);
     assertIdentifier("instanceId", options.instanceId);
@@ -116,7 +138,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     return this.safe({ status: "unavailable" }, async () =>
       this.#sql.begin(async (tx) => {
         assertRequest(request);
-        await this.lockNamespace(tx);
+        const limits = await this.lockNamespace(tx);
         const policy = await this.sourcePolicy(tx, request.source);
         const existing = await tx.unsafe<Row>(
           "SELECT thread_id, source_id, binding_hash, state FROM auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 FOR UPDATE",
@@ -130,12 +152,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
             ? { status: "joined", state: text(row, "state") as CoordinationRequestState }
             : { status: "conflict" };
         }
-        const namespace = await tx.unsafe<Row>(
-          "SELECT draining FROM auggy_coordination_namespaces WHERE namespace = $1 FOR UPDATE",
-          [this.#config.namespace],
-        );
-        if (namespace[0] && bool(namespace[0], "draining"))
-          return { status: "rejected", reason: "draining" };
+        if (await this.instanceDraining(tx)) return { status: "rejected", reason: "draining" };
         const queue = await tx.unsafe<Row>(
           "SELECT count(*)::integer AS total, count(*) FILTER (WHERE source_id = $2)::integer AS source_total FROM auggy_coordination_requests WHERE namespace = $1 AND state = 'queued'",
           [this.#config.namespace, request.source.id],
@@ -150,12 +167,12 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         if (!activeCount) throw new Error("missing active count");
         const globalDirectSlot =
           number(count, "total") === 0 &&
-          number(activeCount, "total") < this.#config.maxConcurrent &&
+          number(activeCount, "total") < limits.maxConcurrent &&
           activeCount.thread_busy !== true;
         const sourceDirectSlot =
           number(count, "source_total") === 0 &&
           number(activeCount, "source_total") < policy.maxConcurrent;
-        if (number(count, "total") >= this.#config.maxQueued && !globalDirectSlot)
+        if (number(count, "total") >= limits.maxQueued && !globalDirectSlot)
           return { status: "rejected", reason: "global-capacity" };
         if (number(count, "source_total") >= policy.maxQueued && !sourceDirectSlot)
           return { status: "rejected", reason: "source-capacity" };
@@ -178,7 +195,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     return this.safe({ status: "unavailable" }, async () =>
       this.#sql.begin(async (tx) => {
         assertRequest(request);
-        await this.lockNamespace(tx);
+        const limits = await this.lockNamespace(tx);
         await this.expire(tx);
         const policy = await this.sourcePolicy(tx, request.source);
         const found = await tx.unsafe<Row>(
@@ -197,11 +214,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         if (state === "outcome_unknown") return { status: "quarantined" };
         if (isTerminal(state)) return { status: "terminal", state };
         if (state === "active") return { status: "waiting" };
-        const instance = await tx.unsafe<Row>(
-          "INSERT INTO auggy_coordination_instances (namespace, instance_id) VALUES ($1, $2) ON CONFLICT (namespace, instance_id) DO UPDATE SET updated_at = clock_timestamp() RETURNING draining",
-          [this.#config.namespace, this.#config.instanceId],
-        );
-        if (instance[0] && bool(instance[0], "draining")) return { status: "waiting" };
+        if (await this.instanceDraining(tx)) return { status: "waiting" };
         const thread = await tx.unsafe<Row>(
           "INSERT INTO auggy_coordination_threads (namespace, thread_id) VALUES ($1, $2) ON CONFLICT (namespace, thread_id) DO UPDATE SET updated_at = clock_timestamp() RETURNING quarantined, next_fence",
           [this.#config.namespace, request.threadId],
@@ -213,22 +226,17 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           [this.#config.namespace, policy.id],
         );
         const current = capacity[0];
+        const fairHead = await tx.unsafe<Row>(
+          "WITH thread_heads AS (SELECT DISTINCT ON (thread_id) request_id, thread_id, queued_at FROM auggy_coordination_requests WHERE namespace = $1 AND state = 'queued' ORDER BY thread_id, queued_at, request_id), eligible AS (SELECT thread_heads.request_id, thread_heads.queued_at FROM thread_heads WHERE NOT EXISTS (SELECT 1 FROM auggy_coordination_requests active WHERE active.namespace = $1 AND active.thread_id = thread_heads.thread_id AND active.state = 'active')) SELECT request_id FROM eligible ORDER BY queued_at, request_id LIMIT 1",
+          [this.#config.namespace],
+        );
+        if (!fairHead[0] || text(fairHead[0], "request_id") !== request.requestId)
+          return { status: "waiting" };
         if (
           !current ||
-          number(current, "active") >= this.#config.maxConcurrent ||
+          number(current, "active") >= limits.maxConcurrent ||
           number(current, "source_active") >= policy.maxConcurrent
         )
-          return { status: "waiting" };
-        const activeThread = await tx.unsafe<Row>(
-          "SELECT request_id FROM auggy_coordination_requests WHERE namespace = $1 AND thread_id = $2 AND state = 'active' LIMIT 1",
-          [this.#config.namespace, request.threadId],
-        );
-        if (activeThread[0]) return { status: "waiting" };
-        const head = await tx.unsafe<Row>(
-          "SELECT request_id FROM auggy_coordination_requests WHERE namespace = $1 AND thread_id = $2 AND state = 'queued' ORDER BY queued_at, request_id LIMIT 1",
-          [this.#config.namespace, request.threadId],
-        );
-        if (!head[0] || text(head[0], "request_id") !== request.requestId)
           return { status: "waiting" };
         const fenced = await tx.unsafe<Row>(
           "UPDATE auggy_coordination_threads SET next_fence = next_fence + 1, updated_at = clock_timestamp() WHERE namespace = $1 AND thread_id = $2 RETURNING next_fence",
@@ -356,15 +364,31 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     });
   }
 
-  async #lockNamespace(tx: SqlTransaction): Promise<void> {
-    await tx.unsafe(
-      "INSERT INTO auggy_coordination_namespaces (namespace) VALUES ($1) ON CONFLICT (namespace) DO UPDATE SET updated_at = clock_timestamp()",
-      [this.#config.namespace],
+  async #lockNamespace(
+    tx: SqlTransaction,
+  ): Promise<Pick<DistributedCoordinatorConfig, "maxConcurrent" | "maxQueued">> {
+    const policy = await tx.unsafe<Row>(
+      "INSERT INTO auggy_coordination_namespaces (namespace, max_concurrent, max_queued) VALUES ($1, $2, $3) ON CONFLICT (namespace) DO UPDATE SET max_concurrent = LEAST(auggy_coordination_namespaces.max_concurrent, EXCLUDED.max_concurrent), max_queued = LEAST(auggy_coordination_namespaces.max_queued, EXCLUDED.max_queued), updated_at = clock_timestamp() RETURNING max_concurrent, max_queued",
+      [this.#config.namespace, this.#config.maxConcurrent, this.#config.maxQueued],
     );
     await tx.unsafe(
       "SELECT namespace FROM auggy_coordination_namespaces WHERE namespace = $1 FOR UPDATE",
       [this.#config.namespace],
     );
+    const row = policy[0];
+    if (!row) throw new Error("missing namespace policy row");
+    return {
+      maxConcurrent: number(row, "max_concurrent"),
+      maxQueued: number(row, "max_queued"),
+    };
+  }
+
+  async instanceDraining(tx: SqlTransaction): Promise<boolean> {
+    const instance = await tx.unsafe<Row>(
+      "INSERT INTO auggy_coordination_instances (namespace, instance_id) VALUES ($1, $2) ON CONFLICT (namespace, instance_id) DO UPDATE SET updated_at = clock_timestamp() RETURNING draining",
+      [this.#config.namespace, this.#config.instanceId],
+    );
+    return instance[0] !== undefined && bool(instance[0], "draining");
   }
 
   /** Persist the most restrictive replica policy: config drift cannot create capacity. */

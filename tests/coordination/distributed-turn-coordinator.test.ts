@@ -3,6 +3,7 @@ import {
   createInMemoryDistributedTurnCoordinator,
   resetInMemoryDistributedCoordination,
 } from "../../src/coordination";
+import { POSTGRES_COORDINATION_MIGRATIONS } from "../../src/coordination/migrations";
 
 const hash = "S7l_qm3W92Yd4JbKzV1LQYdKebJ4Q-4C3m3VnuDhxQY";
 const source = { id: "web", maxConcurrent: 1, maxQueued: 2 };
@@ -31,6 +32,14 @@ function request(requestId: string, threadId = "thread-1", bindingHash = hash) {
 afterEach(resetInMemoryDistributedCoordination);
 
 describe("distributed turn coordinator", () => {
+  test("derives every persisted migration checksum from its immutable SQL", () => {
+    for (const migration of POSTGRES_COORDINATION_MIGRATIONS) {
+      expect(new Bun.CryptoHasher("sha256").update(migration.sql).digest("hex")).toBe(
+        migration.checksum,
+      );
+    }
+  });
+
   test("joins an exact duplicate but rejects a changed canonical binding", async () => {
     const coordinator = replica("instance-a", () => 1);
     expect(await coordinator.admit(request("request-1"))).toEqual({ status: "admitted" });
@@ -82,7 +91,16 @@ describe("distributed turn coordinator", () => {
       status: "rejected",
       reason: "global-capacity",
     });
-    const sourceBound = replica("instance-b", () => 1, { maxQueued: 4 });
+    const sourceBound = createInMemoryDistributedTurnCoordinator(
+      {
+        namespace: "source-prod",
+        instanceId: "instance-b",
+        maxConcurrent: 1,
+        maxQueued: 4,
+        leaseMs: 100,
+      },
+      { now: () => 1 },
+    );
     await sourceBound.admit({
       ...request("request-3", "thread-3"),
       source: { ...source, maxQueued: 1 },
@@ -102,6 +120,46 @@ describe("distributed turn coordinator", () => {
       status: "rejected",
       reason: "global-capacity",
     });
+  });
+
+  test("uses the most restrictive namespace policy across replica configuration drift", async () => {
+    const restrictive = replica("instance-a", () => 1, { maxConcurrent: 1, maxQueued: 1 });
+    const permissive = replica("instance-b", () => 1, { maxConcurrent: 10, maxQueued: 10 });
+    const wideSource = { id: "web", maxConcurrent: 10, maxQueued: 10 };
+    await restrictive.admit({ ...request("request-1"), source: wideSource });
+    const active = await restrictive.claim({ ...request("request-1"), source: wideSource });
+    if (active.status !== "acquired") throw new Error("expected acquisition");
+    expect(
+      await permissive.admit({
+        ...request("request-2", "thread-2"),
+        source: wideSource,
+      }),
+    ).toEqual({ status: "admitted" });
+    expect(
+      await permissive.claim({
+        ...request("request-2", "thread-2"),
+        source: wideSource,
+      }),
+    ).toEqual({ status: "waiting" });
+    expect(
+      await permissive.admit({
+        ...request("request-3", "thread-3"),
+        source: wideSource,
+      }),
+    ).toEqual({ status: "rejected", reason: "global-capacity" });
+  });
+
+  test("claims the earliest eligible thread head even when a newer replica polls first", async () => {
+    let now = 1;
+    const first = replica("instance-a", () => now++, { maxConcurrent: 2, maxQueued: 3 });
+    const second = replica("instance-b", () => now++, { maxConcurrent: 2, maxQueued: 3 });
+    const wideSource = { id: "web", maxConcurrent: 2, maxQueued: 3 };
+    const older = { ...request("older", "thread-older"), source: wideSource };
+    const newer = { ...request("newer", "thread-newer"), source: wideSource };
+    await first.admit(older);
+    await second.admit(newer);
+    expect(await second.claim(newer)).toEqual({ status: "waiting" });
+    expect((await first.claim(older)).status).toBe("acquired");
   });
 
   test("treats source-policy drift as restrictive and releases capacity only after a fenced terminal write", async () => {
@@ -154,7 +212,7 @@ describe("distributed turn coordinator", () => {
     ).toEqual({ status: "ok" });
   });
 
-  test("isolates namespaces, drains new admission, and fails closed during database outage", async () => {
+  test("isolates namespaces, rejects admission on a draining replica, and fails closed during outage", async () => {
     const first = replica("instance-a", () => 1);
     const other = createInMemoryDistributedTurnCoordinator(
       {
@@ -169,8 +227,10 @@ describe("distributed turn coordinator", () => {
     expect(await first.admit(request("request-1"))).toEqual({ status: "admitted" });
     expect(await other.admit(request("request-1"))).toEqual({ status: "admitted" });
     expect(await first.setDraining(true)).toEqual({ status: "ok" });
-    expect(await first.admit(request("request-2", "thread-2"))).toEqual({ status: "admitted" });
-    expect(await first.claim(request("request-2", "thread-2"))).toEqual({ status: "waiting" });
+    expect(await first.admit(request("request-2", "thread-2"))).toEqual({
+      status: "rejected",
+      reason: "draining",
+    });
     expect(await first.health()).toMatchObject({ status: "draining" });
     const unavailable = replica("instance-c", () => 1, { failClosed: () => true });
     expect(await unavailable.admit(request("request-3", "thread-3"))).toEqual({

@@ -2,11 +2,7 @@
  * These statements are deliberately not run by the runtime. Operators invoke
  * migratePostgresCoordinator during provisioning or a controlled deployment.
  */
-export const POSTGRES_COORDINATION_MIGRATIONS = [
-  {
-    id: "20260724_01_distributed_turn_coordination",
-    checksum: "bccd28354c9d9d217d0aa51a8c7c901d0a0e82d8310cfe88c9c1c69bc0872cfa",
-    sql: `
+const INITIAL_COORDINATION_MIGRATION_SQL = `
 CREATE TABLE IF NOT EXISTS auggy_coordination_migrations (
   id TEXT PRIMARY KEY,
   checksum TEXT NOT NULL,
@@ -15,7 +11,8 @@ CREATE TABLE IF NOT EXISTS auggy_coordination_migrations (
 
 CREATE TABLE IF NOT EXISTS auggy_coordination_namespaces (
   namespace TEXT PRIMARY KEY,
-  draining BOOLEAN NOT NULL DEFAULT FALSE,
+  max_concurrent INTEGER NOT NULL CHECK (max_concurrent > 0),
+  max_queued INTEGER NOT NULL CHECK (max_queued >= 0),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
@@ -80,7 +77,18 @@ CREATE TABLE IF NOT EXISTS auggy_coordination_events (
   reason TEXT,
   created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
-`,
+`;
+
+/** Recomputed from immutable migration SQL; migration rejects any mismatch. */
+export const postgresCoordinationMigrationChecksum = new Bun.CryptoHasher("sha256")
+  .update(INITIAL_COORDINATION_MIGRATION_SQL)
+  .digest("hex");
+
+export const POSTGRES_COORDINATION_MIGRATIONS = [
+  {
+    id: "20260724_01_distributed_turn_coordination",
+    checksum: postgresCoordinationMigrationChecksum,
+    sql: INITIAL_COORDINATION_MIGRATION_SQL,
   },
 ] as const;
 
@@ -99,9 +107,6 @@ export async function migratePostgresCoordinator(sql: PostgresMigrationExecutor)
       "CREATE TABLE IF NOT EXISTS auggy_coordination_migrations (id TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())",
     );
     await tx.unsafe(
-      "ALTER TABLE auggy_coordination_migrations ADD COLUMN IF NOT EXISTS checksum TEXT",
-    );
-    await tx.unsafe(
       "SELECT pg_advisory_xact_lock(hashtextextended('auggy_coordination_migrations', 0))",
     );
     for (const migration of POSTGRES_COORDINATION_MIGRATIONS) {
@@ -110,7 +115,7 @@ export async function migratePostgresCoordinator(sql: PostgresMigrationExecutor)
         [migration.id],
       );
       if (applied.length > 0) {
-        if (applied[0]?.checksum !== migration.checksum)
+        if (typeof applied[0]?.checksum !== "string" || applied[0]?.checksum !== migration.checksum)
           throw new Error(`coordination migration checksum mismatch: ${migration.id}`);
         continue;
       }
