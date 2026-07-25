@@ -1,7 +1,7 @@
 # Telegram conflict quarantine and operator recovery
 
-Date: 2026-07-24  
-Branch: `security/telegram-conflict-recovery`  
+Date: 2026-07-24
+Branch: `security/telegram-conflict-recovery`
 Base: merged `main` at `e7c8e76`
 
 ## Objective
@@ -237,3 +237,59 @@ Port-binding suites run sequentially. The final PR remains unmerged.
 This PR does not add general horizontal scaling for one logical Auggy agent.
 It hardens the already public Telegram shared-store coordination boundary only.
 CI test-surface inventory enforcement remains the next separate PR.
+
+## Execution outcome
+
+Implemented all five slices. The residual replay-payload and polling-ownership
+findings remain classified as confirmed, conditional Medium
+availability/integrity issues under an authenticated or faulty source
+precondition. Volatile polling offsets remain reclassified as non-vulnerable
+because the durable ledger prevents repeated execution.
+
+The first hostile exact-diff review found three Medium gaps:
+
+1. recovery on one replica did not wake a different paused replica;
+2. an HTTP 409 with an empty, malformed, or contradictory body bypassed typed
+   ownership quarantine; and
+3. restart read but did not immediately apply persisted quarantine.
+
+All three were fixed with shared-state reconciliation, status-first 409
+classification, and an initial poll-loop conflict latch. Direct regressions
+cover remote-replica recovery, four 409 body shapes, and zero polling before
+persisted-conflict recovery. A second fresh hostile review found no unresolved
+High or Medium issue.
+
+Final focused verification:
+
+```text
+bun test --max-concurrency=1 tests/telegram-client.test.ts \
+  tests/augments/telegram-transport/polling.test.ts \
+  tests/augments/telegram-transport/replay-store.test.ts \
+  tests/augments/telegram-transport.test.ts \
+  tests/augments/telegram-transport/webhook.test.ts \
+  tests/public-api/root-exports.test.ts \
+  tests/transports/admin/admin-boot-validation.test.ts
+# 102 passed, 0 failed, 279 assertions
+
+bun run typecheck
+# passed
+
+bun run lint
+# passed; Biome reported only a non-failing 2.5.0/2.5.5 schema-version notice
+
+bun run smoke:release
+# passed against local packed repository artifacts
+
+git diff --check
+# passed
+```
+
+Low operational residuals:
+
+- ownership and invalid-sequence latches are process-local and recur from the
+  authoritative source after restart;
+- a replacement durable incident can cause one extra poll before the new
+  incident re-quarantines, but atomic claims still prevent dispatch;
+- custom async stores that ignore cancellation can make recovery outcome
+  ambiguous during shutdown; and
+- each quarantined replica performs one shared-state inspection per second.
