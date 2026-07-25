@@ -99,3 +99,7 @@ format has a tested migration and rollback policy.
 The workstreams can overlap in research, but their implementation order is
 intentional: isolation and observability are prerequisites for safely
 operating delivery, recovery, and resilience at multi-tenant scale.
+
+These workstreams do not relax the current single-replica restriction. Replica
+enablement remains gated by every shared and fenced runtime boundary recorded
+in the distributed-coordination implementation report.

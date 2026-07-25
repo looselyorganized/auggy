@@ -175,7 +175,7 @@ export function createInMemoryDistributedTurnCoordinator(
     }
   }
 
-  /** Source identities and policies are server-owned and immutable within a namespace. */
+  /** Trusted runtime integration provisions immutable source policy per namespace. */
   function sourcePolicy(
     current: NamespaceState,
     incoming: DistributedSourcePolicy,
