@@ -29,6 +29,7 @@ import {
 } from "./kernel/keyed-turn-scheduler";
 import { emptyTrace } from "./kernel/trace-emitter";
 import { isOutcomeUnknownError, OutcomeUnknownError } from "./outcome-unknown";
+import { enumerateDistributedCoordinationBlockers } from "./coordination/topology";
 
 const DEFAULT_TURN_SCHEDULING: TurnSchedulingConfig = {
   maxConcurrent: 4,
@@ -610,6 +611,14 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
   const handle: AgentHandle = {
     async start() {
       if (started) throw new Error("Agent already started. Call stop() first.");
+      if (effectiveConfig.coordination) {
+        const blockers = enumerateDistributedCoordinationBlockers();
+        if (blockers.length > 0) {
+          throw new Error(
+            `Distributed coordination cannot start until shared fenced stores are available: ${blockers.join(", ")}`,
+          );
+        }
+      }
       if (turnScheduler.snapshot().state === "stopped") turnScheduler.reopen();
       const admission = createStartupAdmissionBarrier();
       try {
