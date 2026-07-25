@@ -8,27 +8,35 @@
  */
 
 export type DistributedCoordinationBlocker =
-  | "process-local-turn-scheduler"
+  | "process-local-fleet-admission"
   | "process-local-thread-serialization"
   | "unfenced-thread-history"
   | "process-local-idempotency-store"
-  | "process-local-quarantine-and-health";
+  | "process-local-quarantine-and-health"
+  | "process-local-mutable-stores"
+  | "unfenced-delivery-outbox";
 
 export interface DistributedCoordinationTopology {
-  turnScheduler: "process-local" | "shared-fenced";
+  /** Fleet-wide admission; the local keyed scheduler remains a per-process executor. */
+  fleetAdmission: "process-local" | "shared-fenced";
   threadSerialization: "process-local" | "shared-fenced";
   threadHistory: "unfenced" | "fenced";
   idempotency: "process-local" | "shared";
   quarantineAndHealth: "process-local" | "shared";
+  /** Budgets, replay ledgers, mutable memory, visitor state, and selected augment stores. */
+  mutableStores: "process-local" | "shared-fenced";
+  delivery: "process-local" | "shared-outbox";
 }
 
 /** Conservative representation of the current single-process runtime. */
 export const PROCESS_LOCAL_COORDINATION_TOPOLOGY: DistributedCoordinationTopology = {
-  turnScheduler: "process-local",
+  fleetAdmission: "process-local",
   threadSerialization: "process-local",
   threadHistory: "unfenced",
   idempotency: "process-local",
   quarantineAndHealth: "process-local",
+  mutableStores: "process-local",
+  delivery: "process-local",
 };
 
 /** Enumerate the fail-closed prerequisites that remain for replica safety. */
@@ -36,7 +44,7 @@ export function enumerateDistributedCoordinationBlockers(
   topology: DistributedCoordinationTopology = PROCESS_LOCAL_COORDINATION_TOPOLOGY,
 ): DistributedCoordinationBlocker[] {
   const blockers: DistributedCoordinationBlocker[] = [];
-  if (topology.turnScheduler !== "shared-fenced") blockers.push("process-local-turn-scheduler");
+  if (topology.fleetAdmission !== "shared-fenced") blockers.push("process-local-fleet-admission");
   if (topology.threadSerialization !== "shared-fenced") {
     blockers.push("process-local-thread-serialization");
   }
@@ -45,5 +53,7 @@ export function enumerateDistributedCoordinationBlockers(
   if (topology.quarantineAndHealth !== "shared") {
     blockers.push("process-local-quarantine-and-health");
   }
+  if (topology.mutableStores !== "shared-fenced") blockers.push("process-local-mutable-stores");
+  if (topology.delivery !== "shared-outbox") blockers.push("unfenced-delivery-outbox");
   return blockers;
 }

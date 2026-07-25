@@ -65,7 +65,9 @@ describe("defineAgent", () => {
     } catch (error) {
       startupError = error as Error;
     }
-    expect(startupError?.message).toContain("process-local-turn-scheduler");
+    expect(startupError?.message).toContain("process-local-fleet-admission");
+    expect(startupError?.message).toContain("process-local-mutable-stores");
+    expect(startupError?.message).toContain("unfenced-delivery-outbox");
     expect(startupError?.message).not.toContain("AUGGY_COORDINATION_DATABASE_URL");
     expect(booted).toBe(false);
     expect(registered).toBe(false);

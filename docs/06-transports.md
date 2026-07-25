@@ -1314,8 +1314,10 @@ settings:
 ```
 
 This is deliberately a **fail-closed declaration**, not an instruction to run
-multiple replicas yet. Current scheduling, thread serialization, history
-commits, idempotency, and quarantine state are process-local or unfenced. A
-future runtime preflight must verify shared, fenced replacements for each of
-those boundaries before it can enable distributed execution. Until then deploy
-one runtime replica for each logical agent namespace.
+multiple replicas yet. Current fleet admission, thread serialization, history
+commits, idempotency, quarantine, mutable augment stores, and outbound delivery
+are process-local or unfenced. The local keyed scheduler will remain the
+per-process executor behind a future fleet coordinator. Runtime preflight must
+also verify shared budgets, replay ledgers, mutable memory, visitor state, and a
+durable fenced delivery outbox before it can enable distributed execution.
+Until then deploy one runtime replica for each logical agent namespace.
