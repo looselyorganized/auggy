@@ -47,6 +47,28 @@ Concrete checks the workflows enforce:
 | Tag is `v<major>.<minor>.<patch>` | `publish.yml` (regex `v*.*.*`) | Tag push only | Only releases trigger publishes |
 | Version already on npm? | `publish.yml` (idempotency gate) | Tag push only | Retroactive tags don't republish |
 
+### Tracked test-surface inventory
+
+`tests/ci/test-surface-manifest.json` is the canonical bounded test inventory
+for both primary CI and release rehearsal. The validator derives exact test
+paths from Git's tracked tree, rejects unassigned or multiply assigned tests,
+and executes each shard sequentially with exact `./` argv entries. Run:
+
+```bash
+bun run test:inventory
+bun run test
+```
+
+Tests added under an existing selector enter its shard automatically. A new
+area within a declared suite root must be assigned explicitly in the manifest.
+A new repository-level test root requires deliberate expansion of both the
+suite-root policy and manifest; otherwise its test-shaped files fail closed.
+Stale selectors and exclusions also fail. Untracked local tests are
+intentionally not part of release evidence until they are added to Git. The
+inventory requires a complete checkout, so source archives and sparse
+checkouts should use direct `bun test` commands for local exploration rather
+than claiming the release gate passed.
+
 ## Cutting a new release
 
 ### 0. Between releases (feature PRs)

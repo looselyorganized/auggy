@@ -101,6 +101,8 @@ test removal.
 Add one JSON manifest with schema version, suite, shard ID, and bounded
 selectors. Supported selectors are exact file, immediate children of a
 directory, and recursive tree. Selectors may contain exact exclusions.
+An intentionally predeclared tracked root with no tests must opt into the
+literal `allowEmpty: true` policy; exact-file selectors can never be empty.
 Wildcards, shell syntax, absolute paths, backslashes, dot segments, duplicate
 separators, control characters, and ambiguous overlaps are rejected.
 
@@ -118,16 +120,20 @@ Canonical runtime shards:
 
 Console tests have one separate `console` shard rooted at `admin/src`.
 
-New tests within a known root are automatically resolved and executed. A new
-top-level area fails unassigned until the manifest explicitly assigns it.
+New tests within a known selector are automatically resolved and executed. A
+new area inside a declared suite root fails unassigned until the manifest
+explicitly assigns it. A repository-level test root outside the declared
+runtime/admin roots fails until both root policy and manifest are deliberately
+expanded.
 
 ### 2. Tracked inventory validator
 
 Add a dependency-free Bun CLI/library that:
 
-- reads `git ls-files --stage -z`;
+- reads the complete bounded `git ls-files --stage -z` tree;
 - admits regular tracked modes `100644` and `100755`;
 - rejects test-shaped symlinks and non-stage-zero entries;
+- rejects test-shaped files outside every declared runtime/admin suite root;
 - validates path normalization, NFC form, case-fold collisions, and duplicate
   input;
 - recognizes the pinned Bun filename patterns;
@@ -229,9 +235,58 @@ Port-heavy suites run sequentially. The final PR remains unmerged.
 - Requires a complete Git checkout for tracked inventory. Source archives and
   sparse checkouts must use direct Bun commands or provide the complete tree.
 - Untracked tests are intentionally absent until added to Git.
-- New tests under known roots no longer need workflow edits; new areas require
-  one manifest change.
+- New tests under known selectors no longer need workflow edits. New areas
+  inside a declared suite root require a manifest change; repository-level
+  roots require both suite-root policy and manifest changes.
 - Platform-conditional files remain inventoried, but Linux CI cannot prove
   Windows-only branches.
 - Rollback is code/workflow-only; there is no persisted data migration.
 - This PR is independent of Telegram conflict recovery PR #161.
+
+## Execution outcome
+
+Implemented the inventory, bounded runner, primary-CI matrix integration,
+release-rehearsal integration, local scripts, parsed workflow contracts,
+release guidance, and residual-risk update. The implementation adds one
+inventory regression file, so the final tracked surface is 253 runtime files
+plus 29 console files, 282 total, across nine runtime shards and one console
+shard.
+
+An initial combined operator run exposed the listener-sensitive doctor suite.
+It now has a dedicated sequential shard; the remaining operator shard passed
+1,041 tests, and the doctor shard passed all 30 tests when run outside the
+socket-restricted sandbox.
+
+The fresh hostile exact-diff review confirmed and closed three Low,
+invariant-breaking gaps:
+
+1. Git enumeration was scoped to known roots, so a repository-level
+   `src/...test.ts` file was invisible. Enumeration now covers the complete
+   bounded tracked tree and rejects test-shaped files outside declared suite
+   roots.
+2. The parsed primary-workflow test still used substring checks for the
+   multiline inventory step, so commented commands could satisfy it. The test
+   now requires the exact normalized executable body.
+3. A frozen 29-file console assertion rejected legitimate additions under the
+   existing console selector. It is now addition-safe while exact ownership
+   and total-count parity remain enforced.
+
+No unresolved High or Medium issue remains. The reviewer also confirmed that
+`allowEmpty: true` is narrow: only the predeclared `packages` selector uses it,
+exact selectors cannot, ownership still fails on gaps or overlaps, and its
+containing shard must remain nonempty.
+
+Final verification:
+
+- focused inventory/workflow set: 19 passed, 0 failed, 109 assertions;
+- inventory check: 253 runtime + 29 admin files across 10 shards;
+- complete `bun run test`: passed every canonical runtime shard and all 243
+  console tests across 29 console files;
+- `bun run typecheck`: passed;
+- `bun run lint`: passed with only the existing Biome schema-version
+  informational notice;
+- `bun run smoke:release`: passed local workspace install, typecheck, console
+  build, all package packs/imports, isolated packed CLI install, scaffold,
+  installed-agent audit, doctor, health, console assets, MCP, and cloud
+  preflight;
+- `git diff --check`: passed.

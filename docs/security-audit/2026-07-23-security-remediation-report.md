@@ -268,13 +268,18 @@ advisory set.
   defense-in-depth. Authorization does not depend on model interpretation, and
   request/response resource caps bound the exposure, but stricter display-field
   normalization can be added separately.
-- A conflicting Telegram polling payload for an already claimed update ID can
-  keep that authenticated offset retrying until operator intervention. This
-  requires a compromised or faulty authenticated source/store and cannot cause
-  duplicate execution.
-- Release shard paths are deliberately explicit. The workflow contract test
-  guards today's complete surface, but maintainers must add future top-level
-  test directories to the manifest.
+- A compromised or faulty authenticated Telegram source can still force a
+  durable availability quarantine by contradicting a claimed update or polling
+  ownership. Recovery is an explicit operator decision after source
+  reconciliation; conflicting payloads cannot execute and recovery cannot
+  supply or advance an offset.
+- Tests added under known inventory selectors enter a bounded shard
+  automatically.
+  A new area inside a declared suite root requires an explicit manifest
+  assignment; a repository-level root requires deliberate suite-root and
+  manifest expansion. Pull-request CI remains branch-controlled, so review and
+  branch protection—not a privileged `pull_request_target` workflow—remain the
+  trust boundary for coordinated edits to tests, policy, and workflows.
 
 ## Rollback considerations
 

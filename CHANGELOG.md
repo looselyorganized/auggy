@@ -50,6 +50,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Fail-closed tracked test inventory.** Primary CI, local release tests, and
+  release rehearsal now derive exact sequential Bun shards from one validated
+  Git-tracked manifest. New tests under existing selectors are included
+  automatically; unassigned areas, overlaps, stale policy, unsafe paths, and
+  empty shards stop the release gate.
 - **Telegram conflict quarantine and recovery.** Replay payload mismatches now
   atomically quarantine a bot namespace across restart and shared-store
   replicas. The console exposes conflict-bound, confirm-required recovery that
