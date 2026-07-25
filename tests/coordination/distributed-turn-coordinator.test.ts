@@ -19,6 +19,7 @@ function replica(
       instanceId,
       maxConcurrent: extra.maxConcurrent ?? 1,
       maxQueued: extra.maxQueued ?? 2,
+      maxQueuedPerThread: extra.maxQueued ?? 2,
       leaseMs: 100,
     },
     { now, failClosed: extra.failClosed },
@@ -97,6 +98,7 @@ describe("distributed turn coordinator", () => {
         instanceId: "instance-b",
         maxConcurrent: 1,
         maxQueued: 4,
+        maxQueuedPerThread: 2,
         leaseMs: 100,
       },
       { now: () => 1 },
@@ -122,7 +124,7 @@ describe("distributed turn coordinator", () => {
     });
   });
 
-  test("uses the most restrictive namespace policy across replica configuration drift", async () => {
+  test("fails closed on namespace policy drift without mutating the established limits", async () => {
     const restrictive = replica("instance-a", () => 1, { maxConcurrent: 1, maxQueued: 1 });
     const permissive = replica("instance-b", () => 1, { maxConcurrent: 10, maxQueued: 10 });
     const wideSource = { id: "web", maxConcurrent: 10, maxQueued: 10 };
@@ -130,23 +132,11 @@ describe("distributed turn coordinator", () => {
     const active = await restrictive.claim({ ...request("request-1"), source: wideSource });
     if (active.status !== "acquired") throw new Error("expected acquisition");
     expect(
-      await permissive.admit({
-        ...request("request-2", "thread-2"),
-        source: wideSource,
-      }),
+      await permissive.admit({ ...request("request-2", "thread-2"), source: wideSource }),
+    ).toEqual({ status: "unavailable" });
+    expect(
+      await restrictive.admit({ ...request("request-3", "thread-3"), source: wideSource }),
     ).toEqual({ status: "admitted" });
-    expect(
-      await permissive.claim({
-        ...request("request-2", "thread-2"),
-        source: wideSource,
-      }),
-    ).toEqual({ status: "waiting" });
-    expect(
-      await permissive.admit({
-        ...request("request-3", "thread-3"),
-        source: wideSource,
-      }),
-    ).toEqual({ status: "rejected", reason: "global-capacity" });
   });
 
   test("claims the earliest eligible thread head even when a newer replica polls first", async () => {
@@ -162,25 +152,71 @@ describe("distributed turn coordinator", () => {
     expect((await first.claim(older)).status).toBe("acquired");
   });
 
-  test("treats source-policy drift as restrictive and releases capacity only after a fenced terminal write", async () => {
+  test("does not let a source-saturated queue head block another runnable source", async () => {
+    let now = 1;
+    const coordinator = replica("instance-a", () => now++, {
+      maxConcurrent: 2,
+      maxQueued: 4,
+    });
+    const sourceA = { id: "source-a", maxConcurrent: 1, maxQueued: 4 };
+    const sourceB = { id: "source-b", maxConcurrent: 1, maxQueued: 4 };
+    const activeA = { ...request("a-active", "a-active-thread"), source: sourceA };
+    const queuedA = { ...request("a-queued", "a-queued-thread"), source: sourceA };
+    const queuedB = { ...request("b-queued", "b-queued-thread"), source: sourceB };
+    await coordinator.admit(activeA);
+    expect((await coordinator.claim(activeA)).status).toBe("acquired");
+    await coordinator.admit(queuedA);
+    await coordinator.admit(queuedB);
+
+    expect((await coordinator.claim(queuedB)).status).toBe("acquired");
+  });
+
+  test("bounds pending work per thread without consuming another thread's queue budget", async () => {
+    const coordinator = createInMemoryDistributedTurnCoordinator(
+      {
+        namespace: "thread-cap-prod",
+        instanceId: "instance-a",
+        maxConcurrent: 1,
+        maxQueued: 3,
+        maxQueuedPerThread: 1,
+        leaseMs: 100,
+      },
+      { now: () => 1 },
+    );
+    expect(await coordinator.admit(request("thread-first"))).toEqual({ status: "admitted" });
+    expect(await coordinator.admit(request("thread-second"))).toEqual({
+      status: "rejected",
+      reason: "thread-capacity",
+    });
+    expect(await coordinator.admit(request("other-thread", "thread-2"))).toEqual({
+      status: "admitted",
+    });
+  });
+
+  test("rejects source-policy drift and releases capacity only after a fenced terminal write", async () => {
     const first = replica("instance-a", () => 1, { maxConcurrent: 2, maxQueued: 3 });
     const second = replica("instance-b", () => 1, { maxConcurrent: 2, maxQueued: 3 });
+    const fixedSource = { id: "web", maxConcurrent: 1, maxQueued: 1 };
     await first.admit({
       ...request("request-1"),
-      source: { id: "web", maxConcurrent: 1, maxQueued: 1 },
+      source: fixedSource,
     });
-    const active = await first.claim(request("request-1"));
+    const active = await first.claim({ ...request("request-1"), source: fixedSource });
     if (active.status !== "acquired") throw new Error("expected acquisition");
-    await second.admit({
-      ...request("request-2", "thread-2"),
-      source: { id: "web", maxConcurrent: 10, maxQueued: 10 },
-    });
-    expect(await second.claim(request("request-2", "thread-2"))).toEqual({ status: "waiting" });
+    expect(
+      await second.admit({
+        ...request("drifted", "thread-2"),
+        source: { id: "web", maxConcurrent: 10, maxQueued: 10 },
+      }),
+    ).toEqual({ status: "unavailable" });
+    const waiting = { ...request("request-2", "thread-2"), source: fixedSource };
+    expect(await second.admit(waiting)).toEqual({ status: "admitted" });
+    expect(await second.claim(waiting)).toEqual({ status: "waiting" });
     expect(await first.complete({ ...active.lease, sourceId: "other-source" })).toEqual({
       status: "stale",
     });
     expect(await first.complete(active.lease)).toEqual({ status: "ok" });
-    expect((await second.claim(request("request-2", "thread-2"))).status).toBe("acquired");
+    expect((await second.claim(waiting)).status).toBe("acquired");
   });
 
   test("requeues an unstarted expired lease but quarantines started work until fenced recovery", async () => {
@@ -212,6 +248,33 @@ describe("distributed turn coordinator", () => {
     ).toEqual({ status: "ok" });
   });
 
+  test("sweeps an expired started lease during health and frees zero-queue capacity", async () => {
+    let now = 0;
+    const coordinator = replica("instance-a", () => now, {
+      maxConcurrent: 1,
+      maxQueued: 0,
+    });
+    const startedRequest = request("started");
+    await coordinator.admit(startedRequest);
+    const started = await coordinator.claim(startedRequest);
+    if (started.status !== "acquired") throw new Error("expected acquisition");
+    expect(await coordinator.markExecutionStarted(started.lease)).toEqual({ status: "ok" });
+
+    now = 101;
+    expect(await coordinator.health()).toMatchObject({
+      active: 0,
+      queued: 0,
+      quarantined: 1,
+    });
+    expect(await coordinator.admit(request("same-thread"))).toEqual({
+      status: "rejected",
+      reason: "thread-quarantined",
+    });
+    expect(await coordinator.admit(request("other-thread", "thread-2"))).toEqual({
+      status: "admitted",
+    });
+  });
+
   test("isolates namespaces, rejects admission on a draining replica, and fails closed during outage", async () => {
     const first = replica("instance-a", () => 1);
     const other = createInMemoryDistributedTurnCoordinator(
@@ -220,6 +283,7 @@ describe("distributed turn coordinator", () => {
         instanceId: "instance-b",
         maxConcurrent: 1,
         maxQueued: 1,
+        maxQueuedPerThread: 1,
         leaseMs: 100,
       },
       { now: () => 1 },

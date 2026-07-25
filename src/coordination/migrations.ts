@@ -13,6 +13,7 @@ CREATE TABLE IF NOT EXISTS auggy_coordination_namespaces (
   namespace TEXT PRIMARY KEY,
   max_concurrent INTEGER NOT NULL CHECK (max_concurrent > 0),
   max_queued INTEGER NOT NULL CHECK (max_queued >= 0),
+  max_queued_per_thread INTEGER NOT NULL CHECK (max_queued_per_thread >= 0),
   updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp()
 );
 
@@ -104,10 +105,10 @@ export interface PostgresMigrationExecutor {
 export async function migratePostgresCoordinator(sql: PostgresMigrationExecutor): Promise<void> {
   await sql.begin(async (tx) => {
     await tx.unsafe(
-      "CREATE TABLE IF NOT EXISTS auggy_coordination_migrations (id TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())",
+      "SELECT pg_advisory_xact_lock(hashtextextended('auggy_coordination_migrations', 0))",
     );
     await tx.unsafe(
-      "SELECT pg_advisory_xact_lock(hashtextextended('auggy_coordination_migrations', 0))",
+      "CREATE TABLE IF NOT EXISTS auggy_coordination_migrations (id TEXT PRIMARY KEY, checksum TEXT NOT NULL, applied_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp())",
     );
     for (const migration of POSTGRES_COORDINATION_MIGRATIONS) {
       const applied = await tx.unsafe<{ id: string; checksum: string }>(

@@ -24,6 +24,8 @@ export interface DistributedCoordinatorConfig {
   instanceId: string;
   maxConcurrent: number;
   maxQueued: number;
+  /** Maximum waiting requests for one canonical thread. */
+  maxQueuedPerThread: number;
   leaseMs: number;
 }
 
@@ -49,7 +51,15 @@ export interface DistributedTurnLease {
 export type AdmitResult =
   | { status: "admitted" }
   | { status: "joined"; state: CoordinationRequestState }
-  | { status: "rejected"; reason: "global-capacity" | "source-capacity" | "draining" }
+  | {
+      status: "rejected";
+      reason:
+        | "global-capacity"
+        | "source-capacity"
+        | "thread-capacity"
+        | "thread-quarantined"
+        | "draining";
+    }
   | { status: "conflict" }
   | { status: "unavailable" };
 

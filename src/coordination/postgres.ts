@@ -114,6 +114,12 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     )
       throw new Error("maxQueued must not be negative");
     if (
+      !Number.isSafeInteger(options.maxQueuedPerThread) ||
+      options.maxQueuedPerThread < 0 ||
+      options.maxQueuedPerThread > options.maxQueued
+    )
+      throw new Error("maxQueuedPerThread must be between zero and maxQueued");
+    if (
       !Number.isSafeInteger(options.leaseMs) ||
       options.leaseMs < 1 ||
       options.leaseMs > MAX_LEASE_MS
@@ -139,6 +145,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       this.#sql.begin(async (tx) => {
         assertRequest(request);
         const limits = await this.#lockNamespace(tx);
+        await this.#expire(tx);
         const policy = await this.sourcePolicy(tx, request.source);
         const existing = await tx.unsafe<Row>(
           "SELECT thread_id, source_id, binding_hash, state FROM auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 FOR UPDATE",
@@ -153,9 +160,16 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
             : { status: "conflict" };
         }
         if (await this.instanceDraining(tx)) return { status: "rejected", reason: "draining" };
+        const threadState = await tx.unsafe<Row>(
+          "SELECT quarantined FROM auggy_coordination_threads WHERE namespace = $1 AND thread_id = $2",
+          [this.#config.namespace, request.threadId],
+        );
+        if (threadState[0] && bool(threadState[0], "quarantined")) {
+          return { status: "rejected", reason: "thread-quarantined" };
+        }
         const queue = await tx.unsafe<Row>(
-          "SELECT count(*)::integer AS total, count(*) FILTER (WHERE source_id = $2)::integer AS source_total FROM auggy_coordination_requests WHERE namespace = $1 AND state = 'queued'",
-          [this.#config.namespace, request.source.id],
+          "SELECT count(*)::integer AS total, count(*) FILTER (WHERE source_id = $2)::integer AS source_total, count(*) FILTER (WHERE thread_id = $3)::integer AS thread_total FROM auggy_coordination_requests WHERE namespace = $1 AND state = 'queued'",
+          [this.#config.namespace, request.source.id, request.threadId],
         );
         const count = queue[0];
         if (!count) throw new Error("missing queue count");
@@ -176,6 +190,12 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           return { status: "rejected", reason: "global-capacity" };
         if (number(count, "source_total") >= policy.maxQueued && !sourceDirectSlot)
           return { status: "rejected", reason: "source-capacity" };
+        if (
+          number(count, "thread_total") >= limits.maxQueuedPerThread &&
+          !(number(count, "thread_total") === 0 && globalDirectSlot && sourceDirectSlot)
+        ) {
+          return { status: "rejected", reason: "thread-capacity" };
+        }
         await tx.unsafe(
           "INSERT INTO auggy_coordination_requests (namespace, request_id, thread_id, source_id, binding_hash, state) VALUES ($1, $2, $3, $4, $5, 'queued')",
           [
@@ -227,7 +247,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         );
         const current = capacity[0];
         const fairHead = await tx.unsafe<Row>(
-          "WITH thread_heads AS (SELECT DISTINCT ON (thread_id) request_id, thread_id, queued_at FROM auggy_coordination_requests WHERE namespace = $1 AND state = 'queued' ORDER BY thread_id, queued_at, request_id), eligible AS (SELECT thread_heads.request_id, thread_heads.queued_at FROM thread_heads WHERE NOT EXISTS (SELECT 1 FROM auggy_coordination_requests active WHERE active.namespace = $1 AND active.thread_id = thread_heads.thread_id AND active.state = 'active')) SELECT request_id FROM eligible ORDER BY queued_at, request_id LIMIT 1",
+          "WITH thread_heads AS (SELECT DISTINCT ON (thread_id) request_id, thread_id, source_id, queued_at FROM auggy_coordination_requests WHERE namespace = $1 AND state = 'queued' ORDER BY thread_id, queued_at, request_id), eligible AS (SELECT heads.request_id, heads.queued_at FROM thread_heads heads JOIN auggy_coordination_sources source_policy ON source_policy.namespace = $1 AND source_policy.source_id = heads.source_id WHERE NOT EXISTS (SELECT 1 FROM auggy_coordination_requests active_thread WHERE active_thread.namespace = $1 AND active_thread.thread_id = heads.thread_id AND active_thread.state = 'active') AND (SELECT count(*) FROM auggy_coordination_requests active_source WHERE active_source.namespace = $1 AND active_source.source_id = heads.source_id AND active_source.state = 'active') < source_policy.max_concurrent) SELECT request_id FROM eligible ORDER BY queued_at, request_id LIMIT 1",
           [this.#config.namespace],
         );
         if (!fairHead[0] || text(fairHead[0], "request_id") !== request.requestId)
@@ -321,6 +341,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     return this.safe<LeaseResult>({ status: "unavailable" }, async () =>
       this.#sql.begin(async (tx) => {
         await this.#lockNamespace(tx);
+        await this.#expire(tx);
         const rows = await tx.unsafe<Row>(
           "UPDATE auggy_coordination_threads SET quarantined = FALSE, quarantine_fence = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND thread_id = $2 AND quarantined = TRUE AND quarantine_fence = $3 RETURNING thread_id",
           [this.#config.namespace, threadId, expectedFence],
@@ -346,41 +367,62 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   }
 
   async health(): Promise<DistributedCoordinatorHealth> {
-    return this.safe({ status: "unavailable", active: 0, queued: 0, quarantined: 0 }, async () => {
-      const rows = await this.#sql.unsafe<Row>(
-        "SELECT (SELECT draining FROM auggy_coordination_instances WHERE namespace = $1 AND instance_id = $2) AS draining, EXISTS (SELECT 1 FROM auggy_coordination_namespaces WHERE namespace = $1) AS exists, count(*) FILTER (WHERE state = 'active')::integer AS active, count(*) FILTER (WHERE state = 'queued')::integer AS queued, (SELECT count(*)::integer FROM auggy_coordination_threads WHERE namespace = $1 AND quarantined) AS quarantined FROM auggy_coordination_requests WHERE namespace = $1",
-        [this.#config.namespace, this.#config.instanceId],
-      );
-      const row = rows[0];
-      if (!row) throw new Error("missing coordinator health row");
-      if (row.exists !== true)
-        return { status: "unavailable", active: 0, queued: 0, quarantined: 0 };
-      return {
-        status: row.draining === true ? "draining" : "healthy",
-        active: number(row, "active"),
-        queued: number(row, "queued"),
-        quarantined: number(row, "quarantined"),
-      };
-    });
+    return this.safe<DistributedCoordinatorHealth>(
+      { status: "unavailable", active: 0, queued: 0, quarantined: 0 },
+      async () =>
+        this.#sql.begin(async (tx) => {
+          await this.#lockNamespace(tx);
+          await this.#expire(tx);
+          const draining = await this.instanceDraining(tx);
+          const rows = await tx.unsafe<Row>(
+            "SELECT count(*) FILTER (WHERE state = 'active')::integer AS active, count(*) FILTER (WHERE state = 'queued')::integer AS queued, (SELECT count(*)::integer FROM auggy_coordination_threads WHERE namespace = $1 AND quarantined) AS quarantined FROM auggy_coordination_requests WHERE namespace = $1",
+            [this.#config.namespace],
+          );
+          const row = rows[0];
+          if (!row) throw new Error("missing coordinator health row");
+          return {
+            status: draining ? "draining" : "healthy",
+            active: number(row, "active"),
+            queued: number(row, "queued"),
+            quarantined: number(row, "quarantined"),
+          };
+        }),
+    );
   }
 
   async #lockNamespace(
     tx: SqlTransaction,
-  ): Promise<Pick<DistributedCoordinatorConfig, "maxConcurrent" | "maxQueued">> {
-    const policy = await tx.unsafe<Row>(
-      "INSERT INTO auggy_coordination_namespaces (namespace, max_concurrent, max_queued) VALUES ($1, $2, $3) ON CONFLICT (namespace) DO UPDATE SET max_concurrent = LEAST(auggy_coordination_namespaces.max_concurrent, EXCLUDED.max_concurrent), max_queued = LEAST(auggy_coordination_namespaces.max_queued, EXCLUDED.max_queued), updated_at = clock_timestamp() RETURNING max_concurrent, max_queued",
-      [this.#config.namespace, this.#config.maxConcurrent, this.#config.maxQueued],
-    );
+  ): Promise<
+    Pick<DistributedCoordinatorConfig, "maxConcurrent" | "maxQueued" | "maxQueuedPerThread">
+  > {
     await tx.unsafe(
-      "SELECT namespace FROM auggy_coordination_namespaces WHERE namespace = $1 FOR UPDATE",
+      "INSERT INTO auggy_coordination_namespaces (namespace, max_concurrent, max_queued, max_queued_per_thread) VALUES ($1, $2, $3, $4) ON CONFLICT (namespace) DO NOTHING",
+      [
+        this.#config.namespace,
+        this.#config.maxConcurrent,
+        this.#config.maxQueued,
+        this.#config.maxQueuedPerThread,
+      ],
+    );
+    const policy = await tx.unsafe<Row>(
+      "SELECT max_concurrent, max_queued, max_queued_per_thread FROM auggy_coordination_namespaces WHERE namespace = $1 FOR UPDATE",
       [this.#config.namespace],
     );
     const row = policy[0];
     if (!row) throw new Error("missing namespace policy row");
-    return {
+    const stored = {
       maxConcurrent: number(row, "max_concurrent"),
       maxQueued: number(row, "max_queued"),
+      maxQueuedPerThread: number(row, "max_queued_per_thread"),
     };
+    if (
+      stored.maxConcurrent !== this.#config.maxConcurrent ||
+      stored.maxQueued !== this.#config.maxQueued ||
+      stored.maxQueuedPerThread !== this.#config.maxQueuedPerThread
+    ) {
+      throw new Error("coordinator namespace policy mismatch");
+    }
+    return stored;
   }
 
   async instanceDraining(tx: SqlTransaction): Promise<boolean> {
@@ -391,22 +433,33 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     return instance[0] !== undefined && bool(instance[0], "draining");
   }
 
-  /** Persist the most restrictive replica policy: config drift cannot create capacity. */
+  /** Source identities and policies are server-owned and immutable within a namespace. */
   async sourcePolicy(
     tx: SqlTransaction,
     incoming: DistributedTurnRequest["source"],
   ): Promise<DistributedTurnRequest["source"]> {
-    const rows = await tx.unsafe<Row>(
-      "INSERT INTO auggy_coordination_sources (namespace, source_id, max_concurrent, max_queued) VALUES ($1, $2, $3, $4) ON CONFLICT (namespace, source_id) DO UPDATE SET max_concurrent = LEAST(auggy_coordination_sources.max_concurrent, EXCLUDED.max_concurrent), max_queued = LEAST(auggy_coordination_sources.max_queued, EXCLUDED.max_queued), updated_at = clock_timestamp() RETURNING source_id, max_concurrent, max_queued",
+    await tx.unsafe(
+      "INSERT INTO auggy_coordination_sources (namespace, source_id, max_concurrent, max_queued) VALUES ($1, $2, $3, $4) ON CONFLICT (namespace, source_id) DO NOTHING",
       [this.#config.namespace, incoming.id, incoming.maxConcurrent, incoming.maxQueued],
+    );
+    const rows = await tx.unsafe<Row>(
+      "SELECT source_id, max_concurrent, max_queued FROM auggy_coordination_sources WHERE namespace = $1 AND source_id = $2 FOR UPDATE",
+      [this.#config.namespace, incoming.id],
     );
     const row = rows[0];
     if (!row) throw new Error("missing source policy row");
-    return {
+    const stored = {
       id: text(row, "source_id"),
       maxConcurrent: number(row, "max_concurrent"),
       maxQueued: number(row, "max_queued"),
     };
+    if (
+      stored.maxConcurrent !== incoming.maxConcurrent ||
+      stored.maxQueued !== incoming.maxQueued
+    ) {
+      throw new Error("coordinator source policy mismatch");
+    }
+    return stored;
   }
 
   async #expire(tx: SqlTransaction): Promise<void> {
