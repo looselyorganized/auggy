@@ -25,6 +25,54 @@ describe("defineAgent", () => {
     await agent.stop();
   });
 
+  it("fails closed before booting or registering transports when distributed coordination is declared", async () => {
+    let booted = false;
+    let registered = false;
+    const agent = defineAgent(
+      {
+        name: "distributed-test-agent",
+        model: "mock",
+        coordination: {
+          mode: "postgres",
+          namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+          urlEnv: "AUGGY_COORDINATION_DATABASE_URL",
+          leaseDurationMs: 30_000,
+          heartbeatIntervalMs: 5_000,
+          claimPollMs: 100,
+          maxWaitMs: 30_000,
+        },
+        augments: [
+          {
+            name: "probe",
+            onBoot: async () => {
+              booted = true;
+            },
+            transport: {
+              identify: () => null,
+              register: async () => {
+                registered = true;
+              },
+            },
+          },
+        ],
+      },
+      createMockModel({ response: "unused" }),
+    );
+
+    let startupError: Error | undefined;
+    try {
+      await agent.start();
+    } catch (error) {
+      startupError = error as Error;
+    }
+    expect(startupError?.message).toContain("process-local-fleet-admission");
+    expect(startupError?.message).toContain("process-local-mutable-stores");
+    expect(startupError?.message).toContain("unfenced-delivery-outbox");
+    expect(startupError?.message).not.toContain("AUGGY_COORDINATION_DATABASE_URL");
+    expect(booted).toBe(false);
+    expect(registered).toBe(false);
+  });
+
   it("processes a message through the full pipeline", async () => {
     const model = createMockModel({ response: "I am a test agent." });
     const transport = createMockTransport();

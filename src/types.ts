@@ -1474,6 +1474,23 @@ export interface AgentConfig {
   toolChoice?: "auto" | "any" | { name: string };
   /** Bounded process-local admission and per-thread scheduling policy. */
   turnScheduling?: Partial<TurnSchedulingConfig>;
+  /**
+   * Declares an intended PostgreSQL coordination topology. The current
+   * runtime deliberately refuses to treat this declaration as replica
+   * enablement until its shared-store and fencing preflight is complete.
+   */
+  coordination?: DistributedCoordinationConfig;
+}
+
+/** Public, secret-free distributed coordinator configuration. */
+export interface DistributedCoordinationConfig {
+  mode: "postgres";
+  namespace: string;
+  urlEnv: string;
+  leaseDurationMs: number;
+  heartbeatIntervalMs: number;
+  claimPollMs: number;
+  maxWaitMs: number;
 }
 
 export interface TurnSchedulingConfig {

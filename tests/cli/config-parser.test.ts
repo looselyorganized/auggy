@@ -228,6 +228,50 @@ describe("parseConfig", () => {
     expect(() => parseConfig(inconsistentWithDefault)).toThrow(/cannot exceed maxQueued/);
   });
 
+  test("parses a secret-free distributed coordination contract with secure defaults", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        settings: {
+          coordination: {
+            mode: "postgres",
+            namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+          },
+        },
+      }),
+    );
+
+    expect(parseConfig(path).settings.coordination).toEqual({
+      mode: "postgres",
+      namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+      urlEnv: "AUGGY_COORDINATION_DATABASE_URL",
+      leaseDurationMs: 30_000,
+      heartbeatIntervalMs: 5_000,
+      claimPollMs: 100,
+      maxWaitMs: 30_000,
+    });
+  });
+
+  test("rejects unsafe or ambiguous distributed coordination settings", () => {
+    const invalid = [
+      { mode: "redis", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7" },
+      { mode: "postgres", namespace: "not-a-uuid" },
+      { mode: "postgres", namespace: "5D9B9796-65BA-43D0-9BA9-57F1A9DB5EF7" },
+      { mode: "postgres", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7", urlEnv: "URL;SECRET" },
+      {
+        mode: "postgres",
+        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        leaseDurationMs: 10_000,
+        heartbeatIntervalMs: 4_000,
+      },
+      { mode: "postgres", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7", unknown: true },
+    ];
+    for (const coordination of invalid) {
+      const path = writeYaml("agent.yaml", minimalConfig({ settings: { coordination } }));
+      expect(() => parseConfig(path)).toThrow(/settings\.coordination/);
+    }
+  });
+
   test("defaults settings to empty object when omitted", () => {
     const path = writeYaml("agent.yaml", minimalConfig());
     const config = parseConfig(path);

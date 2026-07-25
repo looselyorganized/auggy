@@ -10,6 +10,7 @@
  *   auggy skill add <augment>        Repair/reinstall a bundled skill
  *   auggy run [name] [--no-open]     Run agent in foreground; opens /console/chat by default
  *   auggy doctor [name]              Check whether an agent is ready to run
+ *   auggy coordination migrate [name] Apply configured coordination migrations
  *   auggy models list [provider]     List known/provider engine models
  *   auggy routes [name]              Show route manifest/OpenAPI/client output for an agent
  *   auggy augment create <slug>      Scaffold a local custom augment
@@ -33,6 +34,7 @@ import { runCreate } from "./commands/create";
 import { skillCommand } from "./commands/add-skill";
 import { runCommand } from "./commands/run";
 import { doctorCommand } from "./commands/doctor";
+import { coordinationCommand } from "./commands/coordination";
 import { routesCommand } from "./commands/routes";
 import { augmentCommand } from "./commands/augment";
 import { agentMailCommand } from "./commands/agentmail";
@@ -102,6 +104,7 @@ export function buildCli(): Command {
   program.addCommand(skillCommand());
   program.addCommand(runCommand());
   program.addCommand(doctorCommand());
+  program.addCommand(coordinationCommand());
   program.addCommand(modelsCommand());
   program.addCommand(routesCommand());
   program.addCommand(augmentCommand());

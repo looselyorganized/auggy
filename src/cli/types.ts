@@ -156,6 +156,26 @@ export interface AgentSettings {
   compactionStrategy?: "truncate" | "summarize" | "sliding-window";
   maxInferenceLoops?: number;
   turnScheduling?: Partial<TurnSchedulingConfig>;
+  /**
+   * Opt-in contract for the forthcoming PostgreSQL-backed distributed turn
+   * coordinator. Supplying this setting does not enable replicas until the
+   * runtime preflight can prove every participating store is shared and
+   * fenced.
+   */
+  coordination?: DistributedCoordinationConfig;
+}
+
+/** Configuration for a fail-closed PostgreSQL distributed coordinator. */
+export interface DistributedCoordinationConfig {
+  mode: "postgres";
+  /** Stable UUID namespace shared only by replicas of this logical agent. */
+  namespace: string;
+  /** Name of the environment variable containing the PostgreSQL URL. */
+  urlEnv: string;
+  leaseDurationMs: number;
+  heartbeatIntervalMs: number;
+  claimPollMs: number;
+  maxWaitMs: number;
 }
 
 /**

@@ -97,6 +97,7 @@ export type {
   // Turn scheduling
   TurnSchedulingConfig,
   TurnSchedulerSnapshot,
+  DistributedCoordinationConfig,
 } from "./types";
 
 // === Agent definition ===
