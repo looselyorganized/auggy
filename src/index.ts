@@ -103,6 +103,23 @@ export type {
 // === Agent definition ===
 export { defineAgent } from "./agent";
 
+// === Distributed coordination ===
+export {
+  createInMemoryDistributedTurnCoordinator,
+  migratePostgresCoordinator,
+  POSTGRES_COORDINATION_MIGRATIONS,
+  PostgresDistributedTurnCoordinator,
+  resetInMemoryDistributedCoordination,
+} from "./coordination";
+export type {
+  DistributedCoordinatorConfig,
+  DistributedCoordinatorHealth,
+  DistributedSourcePolicy,
+  DistributedTurnCoordinator,
+  DistributedTurnLease,
+  DistributedTurnRequest,
+} from "./coordination";
+
 // === Agent Card ===
 export { generateAgentCard } from "./agent-card";
 
