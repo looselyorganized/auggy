@@ -213,16 +213,17 @@ bounded port range. The same HTTP suite and all canonical runtime shards passed
 outside the network sandbox, so this was classified as socket isolation rather
 than an application regression.
 
-Two egress-dependent gates remain externally blocked in this environment:
+Local egress-dependent attempts remained policy-blocked: direct
 `bun audit --json` was denied permission to send dependency metadata to the
-advisory service, and `bun run smoke:release` cannot complete its isolated
-consumer installs inside the restricted temp/cache sandbox. Smoke successfully
-completed frozen workspace installation, typecheck, console build, and packing
-before that boundary. These gates must pass either with explicit egress
-approval or in CI before the draft PR is marked ready.
+advisory service, and local `bun run smoke:release` could not complete isolated
+consumer installs inside the restricted temp/cache sandbox. The trusted PR
+release-rehearsal gate then passed the complete `bun run smoke:release`,
+including its packed-provider and generated-agent advisory checks. No
+dependencies changed in this branch.
 
 CI additionally runs the PostgreSQL test file with the digest-pinned service
-and a passwordless, runner-local test URL.
+and a passwordless, runner-local test URL. CI, CodeQL, all runtime shards, the
+PostgreSQL gate, and release rehearsal passed on PR #163.
 
 ## Residual blockers before replica enablement
 
