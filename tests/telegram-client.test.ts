@@ -1,7 +1,7 @@
 import { describe, it, expect } from "bun:test";
 import type { HttpClient, HttpResponse } from "../src/http";
 import { OutcomeUnknownError } from "../src/outcome-unknown";
-import { createTelegramBotClient } from "../src/telegram-client";
+import { createTelegramBotClient, TelegramBotApiError } from "../src/telegram-client";
 
 type HttpPostInit = Parameters<HttpClient["post"]>[1];
 
@@ -94,6 +94,63 @@ describe("createTelegramBotClient", () => {
     });
     await client.getUpdates({ timeoutSec: 30, signal: controller.signal });
     expect(capturedSignal).toBe(controller.signal);
+  });
+
+  for (const [label, body] of [
+    ["empty", ""],
+    ["malformed", "{TELEGRAM_409_BODY_SENTINEL"],
+    [
+      "contradictory successful",
+      JSON.stringify({
+        ok: true,
+        result: [{ update_id: 1, text: "TELEGRAM_409_BODY_SENTINEL" }],
+      }),
+    ],
+    [
+      "error envelope",
+      JSON.stringify({
+        ok: false,
+        error_code: 409,
+        description: "TELEGRAM_409_BODY_SENTINEL",
+      }),
+    ],
+  ] as const) {
+    it(`returns typed redacted status for a getUpdates ownership conflict with ${label} body`, async () => {
+      const client = createTelegramBotClient({
+        botToken: "TELEGRAM_409_TOKEN_SENTINEL",
+        client: mockHttp(() => ({ status: 409, body })),
+      });
+
+      try {
+        await client.getUpdates({ timeoutSec: 30 });
+        throw new Error("expected getUpdates to fail");
+      } catch (error) {
+        expect(error).toBeInstanceOf(TelegramBotApiError);
+        expect(error).toMatchObject({
+          method: "getUpdates",
+          httpStatus: 409,
+        });
+        expect((error as Error).message).toBe("Telegram bot API getUpdates returned HTTP 409");
+        expect(Bun.inspect(error)).not.toContain("TELEGRAM_409_BODY_SENTINEL");
+        expect(Bun.inspect(error)).not.toContain("TELEGRAM_409_TOKEN_SENTINEL");
+      }
+    });
+  }
+
+  it("classifies a getUpdates API 409 carried in an HTTP 200 envelope", async () => {
+    const client = createTelegramBotClient({
+      botToken: "T",
+      client: mockHttp(() => ({
+        status: 200,
+        body: JSON.stringify({ ok: false, error_code: 409 }),
+      })),
+    });
+
+    await expect(client.getUpdates({ timeoutSec: 30 })).rejects.toMatchObject({
+      method: "getUpdates",
+      httpStatus: 200,
+      apiErrorCode: 409,
+    });
   });
 
   it("sendMessage passes abort signal to HTTP client", async () => {

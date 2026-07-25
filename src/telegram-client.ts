@@ -87,6 +87,21 @@ interface BotApiResponse<T> {
   error_code?: number;
 }
 
+/** Sanitized Telegram API failure metadata suitable for runtime decisions. */
+export class TelegramBotApiError extends Error {
+  readonly method: string;
+  readonly httpStatus: number;
+  readonly apiErrorCode?: number;
+
+  constructor(method: string, httpStatus: number, apiErrorCode?: number) {
+    super(`Telegram bot API ${method} returned HTTP ${httpStatus}`);
+    this.name = "TelegramBotApiError";
+    this.method = method;
+    this.httpStatus = httpStatus;
+    if (Number.isSafeInteger(apiErrorCode)) this.apiErrorCode = apiErrorCode;
+  }
+}
+
 export function createTelegramBotClient(opts: CreateTelegramBotClientOptions): TelegramBotClient {
   const baseUrl = opts.baseUrl ?? "https://api.telegram.org";
   assertSecureCredentialTransport({
@@ -125,6 +140,12 @@ export function createTelegramBotClient(opts: CreateTelegramBotClientOptions): T
       throw new OutcomeUnknownError(
         `Telegram bot API ${method} ended without a trustworthy response after dispatch`,
       );
+    }
+    // Telegram uses HTTP 409 to report an exclusive getUpdates ownership
+    // conflict. Status is authoritative even when a proxy strips, corrupts, or
+    // contradicts the JSON envelope.
+    if (method === "getUpdates" && res.status === 409) {
+      throw new TelegramBotApiError(method, res.status);
     }
     let parsed: unknown;
     try {
@@ -165,7 +186,7 @@ export function createTelegramBotClient(opts: CreateTelegramBotClientOptions): T
           `Telegram bot API ${method} returned HTTP ${res.status} after dispatch; outcome is unknown`,
         );
       }
-      throw new Error(`Telegram bot API ${method} returned HTTP ${res.status}`);
+      throw new TelegramBotApiError(method, res.status, envelope.error_code);
     }
     return envelope.result as T;
   }
