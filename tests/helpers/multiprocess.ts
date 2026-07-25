@@ -7,6 +7,11 @@ export interface JsonLineWorkerOptions {
   script: string;
   args?: readonly string[];
   cwd?: string;
+  /**
+   * Explicit test-only environment. Callers must not pass secrets as command
+   * arguments because worker argument failures are surfaced in diagnostics.
+   */
+  env?: Record<string, string | undefined>;
 }
 
 export interface JsonLineWorker {
@@ -53,6 +58,7 @@ function boundedText(stream: ReadableStream<Uint8Array> | null): Promise<string>
 export function spawnJsonLineWorker(options: JsonLineWorkerOptions): JsonLineWorker {
   const child = Bun.spawn([process.execPath, resolve(options.script), ...(options.args ?? [])], {
     cwd: options.cwd ?? process.cwd(),
+    env: options.env,
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",

@@ -17,6 +17,7 @@ interface WorkflowStep {
 interface WorkflowJob {
   needs?: string | string[];
   outputs?: Record<string, string>;
+  services?: Record<string, { image?: string }>;
   strategy?: {
     matrix?: Record<string, unknown>;
   };
@@ -220,9 +221,20 @@ describe("tracked test-surface workflow enforcement", () => {
 
     const aggregate = requireJob(jobs, "test");
     expect(normalizedNeeds(aggregate)).toContain("inventory");
+    expect(normalizedNeeds(aggregate)).toContain("postgres_coordination");
     expect(requireStep(aggregate, "Verify constituent gates").env?.INVENTORY_RESULT).toBe(
       "${{ needs.inventory.result }}",
     );
+    expect(
+      requireStep(aggregate, "Verify constituent gates").env?.POSTGRES_COORDINATION_RESULT,
+    ).toBe("${{ needs.postgres_coordination.result }}");
+
+    const postgres = requireJob(jobs, "postgres_coordination");
+    expect(postgres.services?.postgres?.image).toBe("postgres:17-alpine");
+    expect(
+      requireStep(postgres, "Run PostgreSQL coordination integration tests").env
+        ?.AUGGY_TEST_POSTGRES_URL,
+    ).toBe("postgresql://postgres:postgres@localhost:5432/postgres");
   });
 
   test("release rehearsal executes the same canonical bounded inventory", () => {

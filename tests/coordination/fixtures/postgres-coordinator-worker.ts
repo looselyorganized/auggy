@@ -1,0 +1,68 @@
+import { PostgresDistributedTurnCoordinator } from "../../../src/coordination";
+
+const [namespace, instanceId] = process.argv.slice(2);
+const url = process.env.AUGGY_TEST_POSTGRES_URL;
+
+if (!namespace || !instanceId || !url) process.exit(2);
+
+const coordinator = new PostgresDistributedTurnCoordinator({
+  url,
+  namespace,
+  instanceId,
+  maxConcurrent: 2,
+  maxQueued: 4,
+  leaseMs: 500,
+});
+
+function emit(value: Record<string, unknown>): void {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
+try {
+  await coordinator.migrate();
+  emit({ event: "READY" });
+
+  const reader = Bun.stdin.stream().getReader();
+  const decoder = new TextDecoder();
+  let buffered = "";
+  while (true) {
+    const newline = buffered.indexOf("\n");
+    if (newline >= 0) {
+      const line = buffered.slice(0, newline);
+      buffered = buffered.slice(newline + 1);
+      if (line.length === 0) continue;
+      const message = JSON.parse(line) as { event?: unknown };
+      if (message.event !== "GO") continue;
+      const request = {
+        requestId: "multiprocess-request",
+        threadId: "multiprocess-thread",
+        source: { id: "web", maxConcurrent: 2, maxQueued: 4 },
+        bindingHash: "S7l_qm3W92Yd4JbKzV1LQYdKebJ4Q-4C3m3VnuDhxQY",
+      };
+      const admitted = await coordinator.admit(request);
+      const claimed = await coordinator.claim(request);
+      emit({
+        event: "CLAIM",
+        admitted: admitted.status,
+        claimed: claimed.status,
+        fence: claimed.status === "acquired" ? claimed.lease.fence : null,
+      });
+      await coordinator.close();
+      process.exit(0);
+    }
+    const chunk = await reader.read();
+    if (chunk.done) break;
+    buffered += decoder.decode(chunk.value, { stream: true });
+  }
+  await coordinator.close();
+  process.exit(0);
+} catch {
+  // Parent tests deliberately suppress worker stderr. Do not serialize an
+  // operational error because it can contain driver or deployment details.
+  try {
+    await coordinator.close();
+  } catch {
+    // Best effort during a failed connection.
+  }
+  process.exit(1);
+}
