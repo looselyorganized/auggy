@@ -1,7 +1,7 @@
 # Distributed Coordination Plan
 
-**Date:** 2026-07-24  
-**Status:** implementation plan  
+**Date:** 2026-07-24
+**Status:** implementation plan
 **Scope:** multiple runtime replicas serving one logical Auggy agent
 
 ## Outcome

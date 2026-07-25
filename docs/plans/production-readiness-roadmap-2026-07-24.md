@@ -1,7 +1,7 @@
 # Production Readiness Roadmap
 
-**Date:** 2026-07-24  
-**Status:** recorded follow-on work  
+**Date:** 2026-07-24
+**Status:** recorded follow-on work
 **Precondition:** distributed coordination groups 1–4
 
 Auggy has no production users to migrate today, which makes this the least
