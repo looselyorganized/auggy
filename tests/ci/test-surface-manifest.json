@@ -110,6 +110,20 @@
       ]
     },
     {
+      "id": "load",
+      "suite": "runtime",
+      "selectors": [
+        {
+          "kind": "tree",
+          "path": "tests/helpers"
+        },
+        {
+          "kind": "tree",
+          "path": "tests/load"
+        }
+      ]
+    },
+    {
       "id": "contracts",
       "suite": "runtime",
       "selectors": [
