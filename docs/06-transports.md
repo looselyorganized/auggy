@@ -1321,3 +1321,13 @@ per-process executor behind a future fleet coordinator. Runtime preflight must
 also verify shared budgets, replay ledgers, mutable memory, visitor state, and a
 durable fenced delivery outbox before it can enable distributed execution.
 Until then deploy one runtime replica for each logical agent namespace.
+
+Provision the dedicated coordination database explicitly; the command reads
+only the environment variable named by `urlEnv`, never a URL in `agent.yaml`:
+
+```sh
+auggy coordination migrate --config ./agent.yaml
+```
+
+It prints only the applied schema identifiers and does not start the agent or
+enable replicas.
