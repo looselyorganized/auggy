@@ -1,0 +1,164 @@
+{
+  "schema": 1,
+  "shards": [
+    {
+      "id": "http",
+      "suite": "runtime",
+      "selectors": [
+        {
+          "kind": "exact",
+          "path": "tests/http.test.ts"
+        }
+      ]
+    },
+    {
+      "id": "base",
+      "suite": "runtime",
+      "selectors": [
+        {
+          "kind": "children",
+          "path": "tests",
+          "exclude": [
+            "tests/http.test.ts"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "capabilities",
+      "suite": "runtime",
+      "selectors": [
+        {
+          "kind": "tree",
+          "path": "tests/augments"
+        },
+        {
+          "kind": "tree",
+          "path": "tests/auth"
+        },
+        {
+          "kind": "tree",
+          "path": "tests/config"
+        },
+        {
+          "kind": "tree",
+          "path": "tests/memory"
+        },
+        {
+          "kind": "tree",
+          "path": "tests/skills"
+        }
+      ]
+    },
+    {
+      "id": "doctor",
+      "suite": "runtime",
+      "selectors": [
+        {
+          "kind": "exact",
+          "path": "tests/cli/commands/doctor.test.ts"
+        }
+      ]
+    },
+    {
+      "id": "operator",
+      "suite": "runtime",
+      "selectors": [
+        {
+          "kind": "tree",
+          "path": "tests/cli",
+          "exclude": [
+            "tests/cli/commands/doctor.test.ts"
+          ]
+        },
+        {
+          "kind": "tree",
+          "path": "tests/scripts"
+        },
+        {
+          "kind": "tree",
+          "path": "tests/ci"
+        }
+      ]
+    },
+    {
+      "id": "transport",
+      "suite": "runtime",
+      "selectors": [
+        {
+          "kind": "tree",
+          "path": "tests/transports"
+        },
+        {
+          "kind": "tree",
+          "path": "tests/integration"
+        }
+      ]
+    },
+    {
+      "id": "kernel",
+      "suite": "runtime",
+      "selectors": [
+        {
+          "kind": "tree",
+          "path": "tests/kernel"
+        },
+        {
+          "kind": "tree",
+          "path": "tests/lib"
+        }
+      ]
+    },
+    {
+      "id": "contracts",
+      "suite": "runtime",
+      "selectors": [
+        {
+          "kind": "tree",
+          "path": "tests/engines"
+        },
+        {
+          "kind": "tree",
+          "path": "tests/packages"
+        },
+        {
+          "kind": "tree",
+          "path": "tests/public-api"
+        },
+        {
+          "kind": "tree",
+          "path": "tests/types"
+        },
+        {
+          "kind": "tree",
+          "path": "tests/evals"
+        }
+      ]
+    },
+    {
+      "id": "workspaces",
+      "suite": "runtime",
+      "selectors": [
+        {
+          "kind": "tree",
+          "path": "examples"
+        },
+        {
+          "kind": "tree",
+          "path": "packages",
+          "allowEmpty": true
+        }
+      ]
+    },
+    {
+      "id": "console",
+      "suite": "admin",
+      "selectors": [
+        {
+          "kind": "tree",
+          "path": "admin/src"
+        }
+      ]
+    }
+  ]
+}

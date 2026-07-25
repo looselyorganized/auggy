@@ -7,6 +7,48 @@ import { verifySecurityEvalCandidate } from "../../scripts/verify-security-eval-
 
 const ROOT = join(import.meta.dir, "..", "..");
 
+interface WorkflowStep {
+  id?: string;
+  name?: string;
+  run?: string;
+  env?: Record<string, string>;
+}
+
+interface WorkflowJob {
+  needs?: string | string[];
+  outputs?: Record<string, string>;
+  strategy?: {
+    matrix?: Record<string, unknown>;
+  };
+  steps?: WorkflowStep[];
+}
+
+function readWorkflow(filename: string): {
+  source: string;
+  jobs: Record<string, WorkflowJob>;
+} {
+  const source = readFileSync(join(ROOT, ".github/workflows", filename), "utf8");
+  const workflow = parseYaml(source) as { jobs?: Record<string, WorkflowJob> };
+  if (!workflow.jobs) throw new Error(`${filename} has no jobs`);
+  return { source, jobs: workflow.jobs };
+}
+
+function requireJob(jobs: Record<string, WorkflowJob>, id: string): WorkflowJob {
+  const job = jobs[id];
+  if (!job) throw new Error(`workflow is missing job ${id}`);
+  return job;
+}
+
+function requireStep(job: WorkflowJob, name: string): WorkflowStep {
+  const step = job.steps?.find((candidate) => candidate.name === name);
+  if (!step) throw new Error(`workflow is missing step ${name}`);
+  return step;
+}
+
+function normalizedNeeds(job: WorkflowJob): string[] {
+  return Array.isArray(job.needs) ? job.needs : job.needs ? [job.needs] : [];
+}
+
 describe("security evaluation workflow trust boundary", () => {
   test("the paid workflow is default-branch-only and treats candidate metadata as data", () => {
     const source = readFileSync(join(ROOT, ".github/workflows/security-eval.yml"), "utf8");
@@ -131,45 +173,72 @@ describe("release publishing identity", () => {
   });
 });
 
-describe("release rehearsal isolation", () => {
-  test("runs the complete runtime surface in bounded test processes", () => {
-    const source = readFileSync(join(ROOT, ".github/workflows/release-rehearsal.yml"), "utf8");
+describe("tracked test-surface workflow enforcement", () => {
+  test("local full-suite scripts use the canonical inventory runner", () => {
+    const packageJson = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as {
+      scripts?: Record<string, string>;
+    };
 
-    expect(source).not.toContain("run: bun run test\n");
-    expect(source).toContain("Run runtime tests in bounded shards");
-    for (const path of [
-      "tests/http.test.ts",
-      "tests/agent-card.test.ts",
-      "tests/agent.test.ts",
-      "tests/agentmail-client.test.ts",
-      "tests/augment-inspector.test.ts",
-      "tests/helpers.test.ts",
-      "tests/parts.test.ts",
-      "tests/telegram-client.test.ts",
-      "tests/tokenizer.test.ts",
-      "tests/types-compile.test.ts",
-      "tests/augments/",
-      "tests/auth/",
-      "tests/config/",
-      "tests/memory/",
-      "tests/skills/",
-      "tests/cli/",
-      "tests/scripts/",
-      "tests/ci/",
-      "tests/transports/",
-      "tests/integration/",
-      "tests/kernel/",
-      "tests/lib/",
-      "tests/engines/",
-      "tests/packages/",
-      "tests/public-api/",
-      "tests/types/",
-      "tests/evals/",
-      "examples/",
-    ]) {
-      expect(source).toContain(path);
-    }
-    expect(source).toContain("bun run test:admin");
-    expect(source).toContain("bun run smoke:release");
+    expect(packageJson.scripts?.["test:inventory"]).toBe(
+      "bun scripts/test-surface-inventory.ts check",
+    );
+    expect(packageJson.scripts?.["test:runtime"]).toBe(
+      "bun scripts/test-surface-inventory.ts run-runtime",
+    );
+    expect(packageJson.scripts?.["test:admin"]).toBe(
+      "bun scripts/test-surface-inventory.ts run console",
+    );
+    expect(packageJson.scripts?.test).toBe("bun run test:runtime && bun run test:admin");
+  });
+
+  test("primary CI derives its runtime matrix and aggregate gate from inventory", () => {
+    const { jobs } = readWorkflow("ci.yml");
+    const inventory = requireJob(jobs, "inventory");
+    const surface = requireStep(inventory, "Validate tracked test surface");
+    expect(inventory.outputs?.runtime).toBe("${{ steps.surface.outputs.runtime }}");
+    expect(surface.id).toBe("surface");
+    expect(surface.run?.trim()).toBe(
+      [
+        "bun scripts/test-surface-inventory.ts check",
+        'echo "runtime=$(bun scripts/test-surface-inventory.ts matrix runtime)" >> "$GITHUB_OUTPUT"',
+      ].join("\n"),
+    );
+
+    const runtime = requireJob(jobs, "runtime_shards");
+    expect(normalizedNeeds(runtime)).toEqual(["inventory"]);
+    expect(runtime.strategy?.matrix?.shard).toBe(
+      "${{ fromJSON(needs.inventory.outputs.runtime) }}",
+    );
+    const runtimeStep = requireStep(runtime, "Run sequential runtime shard");
+    expect(runtimeStep.env?.TEST_SHARD).toBe("${{ matrix.shard }}");
+    expect(runtimeStep.run).toBe('bun scripts/test-surface-inventory.ts run "$TEST_SHARD"');
+
+    const consoleJob = requireJob(jobs, "console");
+    expect(requireStep(consoleJob, "Run inventoried creator console tests").run).toBe(
+      "bun scripts/test-surface-inventory.ts run console",
+    );
+
+    const aggregate = requireJob(jobs, "test");
+    expect(normalizedNeeds(aggregate)).toContain("inventory");
+    expect(requireStep(aggregate, "Verify constituent gates").env?.INVENTORY_RESULT).toBe(
+      "${{ needs.inventory.result }}",
+    );
+  });
+
+  test("release rehearsal executes the same canonical bounded inventory", () => {
+    const { jobs } = readWorkflow("release-rehearsal.yml");
+    const rehearse = requireJob(jobs, "rehearse");
+
+    expect(requireStep(rehearse, "Validate tracked test surface").run).toBe(
+      "bun scripts/test-surface-inventory.ts check",
+    );
+    expect(requireStep(rehearse, "Run runtime tests in bounded shards").run).toBe(
+      "bun scripts/test-surface-inventory.ts run-runtime",
+    );
+    expect(requireStep(rehearse, "Run console tests").run).toBe(
+      "bun scripts/test-surface-inventory.ts run console",
+    );
+    expect(requireStep(rehearse, "Smoke packed release").run).toBe("bun run smoke:release");
+    expect(rehearse.steps?.some((step) => step.run?.includes("bun test "))).toBeFalse();
   });
 });
