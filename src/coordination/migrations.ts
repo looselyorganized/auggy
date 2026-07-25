@@ -110,7 +110,7 @@ export async function migratePostgresCoordinator(sql: PostgresMigrationExecutor)
       "SELECT pg_advisory_xact_lock(hashtextextended('auggy_coordination_migrations', 0))",
     );
     for (const migration of POSTGRES_COORDINATION_MIGRATIONS) {
-      const applied = await tx.unsafe<{ id: string }>(
+      const applied = await tx.unsafe<{ id: string; checksum: string }>(
         "SELECT id, checksum FROM auggy_coordination_migrations WHERE id = $1 FOR UPDATE",
         [migration.id],
       );

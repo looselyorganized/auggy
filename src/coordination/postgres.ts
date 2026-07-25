@@ -135,10 +135,10 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   }
 
   async admit(request: DistributedTurnRequest): Promise<AdmitResult> {
-    return this.safe({ status: "unavailable" }, async () =>
+    return this.safe<AdmitResult>({ status: "unavailable" }, async () =>
       this.#sql.begin(async (tx) => {
         assertRequest(request);
-        const limits = await this.lockNamespace(tx);
+        const limits = await this.#lockNamespace(tx);
         const policy = await this.sourcePolicy(tx, request.source);
         const existing = await tx.unsafe<Row>(
           "SELECT thread_id, source_id, binding_hash, state FROM auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 FOR UPDATE",
@@ -192,11 +192,11 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   }
 
   async claim(request: DistributedTurnRequest): Promise<ClaimResult> {
-    return this.safe({ status: "unavailable" }, async () =>
+    return this.safe<ClaimResult>({ status: "unavailable" }, async () =>
       this.#sql.begin(async (tx) => {
         assertRequest(request);
-        const limits = await this.lockNamespace(tx);
-        await this.expire(tx);
+        const limits = await this.#lockNamespace(tx);
+        await this.#expire(tx);
         const policy = await this.sourcePolicy(tx, request.source);
         const found = await tx.unsafe<Row>(
           "SELECT state, thread_id, source_id, binding_hash, fence, owner_instance, lease_expires_at FROM auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 FOR UPDATE",
@@ -271,10 +271,10 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
 
   async heartbeat(lease: DistributedTurnLease): Promise<LeaseResult> {
     if (!this.validLease(lease)) return { status: "stale" };
-    return this.safe({ status: "unavailable" }, async () =>
+    return this.safe<LeaseResult>({ status: "unavailable" }, async () =>
       this.#sql.begin(async (tx) => {
-        await this.lockNamespace(tx);
-        await this.expire(tx);
+        await this.#lockNamespace(tx);
+        await this.#expire(tx);
         const rows = await tx.unsafe<Row>(
           "UPDATE auggy_coordination_requests SET lease_expires_at = clock_timestamp() + ($1 * interval '1 millisecond'), updated_at = clock_timestamp() WHERE namespace = $2 AND request_id = $3 AND thread_id = $4 AND source_id = $5 AND state = 'active' AND fence = $6 AND owner_instance = $7 AND lease_expires_at > clock_timestamp() RETURNING lease_expires_at",
           [
@@ -305,7 +305,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   async cancel(
     request: Pick<DistributedTurnRequest, "requestId" | "bindingHash">,
   ): Promise<LeaseResult> {
-    return this.safe({ status: "unavailable" }, async () => {
+    return this.safe<LeaseResult>({ status: "unavailable" }, async () => {
       const rows = await this.#sql.unsafe<Row>(
         "UPDATE auggy_coordination_requests SET state = 'canceled', terminal_at = clock_timestamp(), updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND binding_hash = $3 AND state = 'queued' RETURNING request_id",
         [this.#config.namespace, request.requestId, request.bindingHash],
@@ -318,9 +318,9 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     assertIdentifier("threadId", threadId);
     if (reason.trim().length < 3 || reason.length > 160)
       throw new Error("recovery reason must be a concise operator audit record");
-    return this.safe({ status: "unavailable" }, async () =>
+    return this.safe<LeaseResult>({ status: "unavailable" }, async () =>
       this.#sql.begin(async (tx) => {
-        await this.lockNamespace(tx);
+        await this.#lockNamespace(tx);
         const rows = await tx.unsafe<Row>(
           "UPDATE auggy_coordination_threads SET quarantined = FALSE, quarantine_fence = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND thread_id = $2 AND quarantined = TRUE AND quarantine_fence = $3 RETURNING thread_id",
           [this.#config.namespace, threadId, expectedFence],
@@ -336,7 +336,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   }
 
   async setDraining(draining: boolean): Promise<LeaseResult> {
-    return this.safe({ status: "unavailable" }, async () => {
+    return this.safe<LeaseResult>({ status: "unavailable" }, async () => {
       await this.#sql.unsafe(
         "INSERT INTO auggy_coordination_instances (namespace, instance_id, draining) VALUES ($1, $2, $3) ON CONFLICT (namespace, instance_id) DO UPDATE SET draining = EXCLUDED.draining, updated_at = clock_timestamp()",
         [this.#config.namespace, this.#config.instanceId, draining],
@@ -429,7 +429,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     values: unknown[],
   ): Promise<LeaseResult> {
     if (!this.validLease(lease)) return { status: "stale" };
-    return this.safe({ status: "unavailable" }, async () => {
+    return this.safe<LeaseResult>({ status: "unavailable" }, async () => {
       const rows = await this.#sql.unsafe<Row>(
         `UPDATE auggy_coordination_requests SET ${set} WHERE namespace = $${values.length + 1} AND request_id = $${values.length + 2} AND thread_id = $${values.length + 3} AND source_id = $${values.length + 4} AND state = 'active' AND fence = $${values.length + 5} AND owner_instance = $${values.length + 6} AND lease_expires_at > clock_timestamp() RETURNING request_id`,
         [

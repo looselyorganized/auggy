@@ -334,7 +334,7 @@ export function createInMemoryDistributedTurnCoordinator(
         { status: "unavailable" } as ClaimResult,
       ),
     markExecutionStarted: (lease) =>
-      safe(
+      safe<LeaseResult>(
         () =>
           exclusive(() => {
             const current = state();
@@ -347,7 +347,7 @@ export function createInMemoryDistributedTurnCoordinator(
         { status: "unavailable" },
       ),
     heartbeat: (lease) =>
-      safe(
+      safe<LeaseResult>(
         () =>
           exclusive(() => {
             const current = state();
@@ -362,7 +362,7 @@ export function createInMemoryDistributedTurnCoordinator(
     complete: (lease) => settle("completed", lease),
     fail: (lease) => settle("failed", lease),
     cancel: (request) =>
-      safe(
+      safe<LeaseResult>(
         () =>
           exclusive(() => {
             const current = state();
@@ -376,7 +376,7 @@ export function createInMemoryDistributedTurnCoordinator(
         { status: "unavailable" },
       ),
     recover: (threadId, expectedFence, reason) =>
-      safe(
+      safe<LeaseResult>(
         () =>
           exclusive(() => {
             assertIdentifier("threadId", threadId);
@@ -393,7 +393,7 @@ export function createInMemoryDistributedTurnCoordinator(
         { status: "unavailable" },
       ),
     setDraining: (draining) =>
-      safe(
+      safe<LeaseResult>(
         () =>
           exclusive(() => {
             const current = state();
@@ -431,7 +431,7 @@ export function createInMemoryDistributedTurnCoordinator(
     stateName: "completed" | "failed",
     lease: DistributedTurnLease,
   ): Promise<LeaseResult> {
-    return safe(
+    return safe<LeaseResult>(
       () =>
         exclusive(() => {
           const current = state();
