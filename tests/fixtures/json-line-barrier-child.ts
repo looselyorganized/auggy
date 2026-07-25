@@ -19,6 +19,15 @@ async function nextMessage(): Promise<Record<string, unknown> | null> {
 
 const worker = process.argv[2] ?? "child";
 if (process.argv[3] === "noisy") console.error("x".repeat(128 * 1024));
+if (process.argv[3] === "malformed") {
+  // Sentinel-shaped text makes accidental test-output reflection detectable.
+  console.log("postgres://credential-sentinel@db.invalid/test");
+  process.exit(0);
+}
+if (process.argv[3] === "unexpected") {
+  console.log(JSON.stringify({ event: "credential-sentinel" }));
+  process.exit(0);
+}
 console.log(JSON.stringify({ event: "READY", worker }));
 const message = await nextMessage();
 if (message?.event !== "GO") throw new Error("expected explicit GO barrier message");

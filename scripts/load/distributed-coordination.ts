@@ -41,6 +41,10 @@ export interface SyntheticLoadMetrics {
   unavailable: number;
   outcomeUnknown: number;
   duplicateMutations: number;
+  /** Duplicate deliveries that attached to a still-running mutation. */
+  inFlightMutationJoins: number;
+  /** Duplicate deliveries that replayed a mutation only after it completed. */
+  completedMutationReplays: number;
   sameThreadOverlap: number;
   staleFenceAccepts: number;
   staleFenceRejects: number;
@@ -100,7 +104,10 @@ interface WorkItem {
 interface ActiveWork extends WorkItem {
   startedMs: number;
   fence: number;
+  outcomeUnknown: boolean;
 }
+
+type MutationState = "active" | "completed" | "outcome_unknown";
 
 function assertFiniteInteger(value: number, name: string, min: number, max: number): void {
   if (!Number.isSafeInteger(value) || value < min || value > max) {
@@ -223,7 +230,7 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
   const waiting: WorkItem[] = [];
   const active: ActiveWork[] = [];
   const activeThreads = new Set<string>();
-  const completedMutations = new Set<string>();
+  const mutationStates = new Map<string, MutationState>();
   const mutationNamespaces = new Map<string, Set<string>>();
   const fences = new Map<string, number>();
   const quarantinedThreads = new Set<string>();
@@ -234,6 +241,8 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
   let completed = 0;
   let rejections = 0;
   let duplicateMutations = 0;
+  let inFlightMutationJoins = 0;
+  let completedMutationReplays = 0;
   let sameThreadOverlap = 0;
   let staleFenceAccepts = 0;
   let staleFenceRejects = 0;
@@ -255,6 +264,13 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
       clock = finished.startedMs + finished.durationMs;
       active.shift();
       activeThreads.delete(`${finished.namespace}:${finished.thread}`);
+      if (finished.mutationKey) {
+        const mutationKey = `${finished.namespace}:${finished.mutationKey}`;
+        // A joined delivery may observe the terminal outcome only after the
+        // owner reaches this point. It must not be reported as a completed
+        // replay merely because the owner began its side effect.
+        mutationStates.set(mutationKey, finished.outcomeUnknown ? "outcome_unknown" : "completed");
+      }
       completed++;
     }
   };
@@ -280,10 +296,27 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
       const mutationKey = candidate.mutationKey
         ? `${candidate.namespace}:${candidate.mutationKey}`
         : null;
-      if (mutationKey && completedMutations.has(mutationKey)) {
-        // A duplicate delivery replays the previous result without another mutation.
-        progressed = true;
-        continue;
+      if (mutationKey) {
+        const state = mutationStates.get(mutationKey);
+        if (state === "active") {
+          // The duplicate joins the owner. It cannot receive a terminal
+          // result until the active mutation settles.
+          inFlightMutationJoins++;
+          progressed = true;
+          continue;
+        }
+        if (state === "completed") {
+          completedMutationReplays++;
+          progressed = true;
+          continue;
+        }
+        if (state === "outcome_unknown") {
+          // Replaying an ambiguous mutation is unsafe. Model the same
+          // operator-recovery boundary as the coordinator instead.
+          recoveryRejected++;
+          progressed = true;
+          continue;
+        }
       }
       const threadKey = `${candidate.namespace}:${candidate.thread}`;
       if (activeThreads.has(threadKey)) sameThreadOverlap++;
@@ -291,17 +324,22 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
       const fence = (fences.get(threadKey) ?? 0) + 1;
       fences.set(threadKey, fence);
       waits.push(Math.max(0, clock - candidate.arrivalMs));
-      active.push({ ...candidate, startedMs: clock, fence });
-      if (
+      const candidateOutcomeUnknown =
         options.faults.outcomeUnknownEvery > 0 &&
-        candidate.id % options.faults.outcomeUnknownEvery === 0
-      ) {
+        candidate.id % options.faults.outcomeUnknownEvery === 0;
+      active.push({
+        ...candidate,
+        startedMs: clock,
+        fence,
+        outcomeUnknown: candidateOutcomeUnknown,
+      });
+      if (candidateOutcomeUnknown) {
         outcomeUnknown++;
         quarantinedThreads.add(threadKey);
       }
       if (candidate.mutationKey) {
-        if (completedMutations.has(mutationKey!)) duplicateMutations++;
-        completedMutations.add(mutationKey!);
+        if (mutationStates.has(mutationKey!)) duplicateMutations++;
+        mutationStates.set(mutationKey!, "active");
         const namespaces = mutationNamespaces.get(candidate.mutationKey) ?? new Set<string>();
         const hadDifferentNamespace = namespaces.size > 0 && !namespaces.has(candidate.namespace);
         namespaces.add(candidate.namespace);
@@ -383,6 +421,8 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
     unavailable,
     outcomeUnknown,
     duplicateMutations,
+    inFlightMutationJoins,
+    completedMutationReplays,
     sameThreadOverlap,
     staleFenceAccepts,
     staleFenceRejects,

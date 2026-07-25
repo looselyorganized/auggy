@@ -1,6 +1,6 @@
 import { PostgresDistributedTurnCoordinator } from "../../../src/coordination";
 
-const [namespace, instanceId] = process.argv.slice(2);
+const [namespace, instanceId, mode = "claim"] = process.argv.slice(2);
 const url = process.env.AUGGY_TEST_POSTGRES_URL;
 
 if (!namespace || !instanceId || !url) process.exit(2);
@@ -42,6 +42,20 @@ try {
       };
       const admitted = await coordinator.admit(request);
       const claimed = await coordinator.claim(request);
+      if (mode === "effect" && claimed.status === "acquired") {
+        const started = await coordinator.markExecutionStarted(claimed.lease);
+        if (started.status !== "ok") throw new Error("failed to mark child execution started");
+        // This phase is the deterministic boundary immediately after a
+        // non-idempotent effect would be dispatched. The parent kills this
+        // process before it can emit a terminal coordinator update.
+        emit({
+          event: "EFFECT_BEGUN",
+          admitted: admitted.status,
+          claimed: claimed.status,
+          fence: claimed.lease.fence,
+        });
+        continue;
+      }
       emit({
         event: "CLAIM",
         admitted: admitted.status,

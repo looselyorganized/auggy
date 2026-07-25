@@ -230,7 +230,9 @@ describe("tracked test-surface workflow enforcement", () => {
     ).toBe("${{ needs.postgres_coordination.result }}");
 
     const postgres = requireJob(jobs, "postgres_coordination");
-    expect(postgres.services?.postgres?.image).toBe("postgres:17-alpine");
+    expect(postgres.services?.postgres?.image).toBe(
+      "postgres:17.10-alpine3.24@sha256:742f40ea20b9ff2ff31db5458d127452988a2164df9e17441e191f3b72252193",
+    );
     expect(
       requireStep(postgres, "Run PostgreSQL coordination integration tests").env
         ?.AUGGY_TEST_POSTGRES_URL,

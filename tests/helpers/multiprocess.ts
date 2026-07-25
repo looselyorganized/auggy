@@ -20,6 +20,7 @@ export interface JsonLineWorker {
   send(value: Record<string, unknown>): void;
   closeInput(): void;
   stderr(): Promise<string>;
+  kill(): Promise<void>;
   terminate(): Promise<void>;
 }
 
@@ -83,7 +84,9 @@ export function spawnJsonLineWorker(options: JsonLineWorkerOptions): JsonLineWor
         try {
           value = JSON.parse(line);
         } catch {
-          throw new Error(`worker emitted invalid JSON: ${line.slice(0, 256)}`);
+          // Child stdout can accidentally contain deployment diagnostics.
+          // Treat it as untrusted and never reflect it into test output.
+          throw new Error("worker emitted invalid JSON");
         }
         if (typeof value !== "object" || value === null || Array.isArray(value)) {
           throw new Error("worker JSON line must be an object");
@@ -119,8 +122,7 @@ export function spawnJsonLineWorker(options: JsonLineWorkerOptions): JsonLineWor
     stdin.end();
   }
 
-  async function terminate(): Promise<void> {
-    closeInput();
+  async function kill(): Promise<void> {
     try {
       child.kill("SIGKILL");
     } catch {
@@ -129,7 +131,12 @@ export function spawnJsonLineWorker(options: JsonLineWorkerOptions): JsonLineWor
     await child.exited;
   }
 
-  return { process: child, next, send, closeInput, stderr: () => stderr, terminate };
+  async function terminate(): Promise<void> {
+    closeInput();
+    await kill();
+  }
+
+  return { process: child, next, send, closeInput, stderr: () => stderr, kill, terminate };
 }
 
 /** Creates an explicit two-phase barrier for a fixed group of JSON-line workers. */
@@ -140,7 +147,7 @@ export function createJsonLineBarrier(workers: readonly JsonLineWorker[]): JsonL
       const messages = await Promise.all(workers.map((worker) => worker.next()));
       for (const message of messages) {
         if (message.event !== "READY") {
-          throw new Error(`expected READY from worker, received ${JSON.stringify(message)}`);
+          throw new Error("expected READY from worker");
         }
       }
     },

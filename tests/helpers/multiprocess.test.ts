@@ -41,4 +41,32 @@ describe("JSON-line multi-process barrier", () => {
     expect(stderr).toContain("worker stderr suppressed");
     expect(stderr).not.toContain("x".repeat(64));
   });
+
+  test("redacts malformed child stdout from diagnostics", async () => {
+    const worker = spawnJsonLineWorker({ script: CHILD, args: ["malformed", "malformed"] });
+    workers.push(worker);
+
+    let failure: unknown;
+    try {
+      await worker.next();
+    } catch (error) {
+      failure = error;
+    }
+    expect(String(failure)).toContain("worker emitted invalid JSON");
+    expect(String(failure)).not.toContain("credential-sentinel");
+  });
+
+  test("redacts unexpected barrier messages from diagnostics", async () => {
+    const worker = spawnJsonLineWorker({ script: CHILD, args: ["unexpected", "unexpected"] });
+    workers.push(worker);
+
+    let failure: unknown;
+    try {
+      await createJsonLineBarrier([worker]).waitUntilReady();
+    } catch (error) {
+      failure = error;
+    }
+    expect(String(failure)).toContain("expected READY from worker");
+    expect(String(failure)).not.toContain("credential-sentinel");
+  });
 });

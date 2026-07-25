@@ -20,16 +20,18 @@ describe("synthetic distributed coordination load harness", () => {
     expect(evaluateSyntheticLoad(first, DEFAULT_SYNTHETIC_LOAD_THRESHOLDS)).toEqual([]);
   });
 
-  test("replays duplicate order mutations without overlap or stale fence acceptance", () => {
+  test("joins in-flight duplicates and replays only completed order mutations", () => {
     const metrics = runSyntheticDistributedLoad({
       profile: "order-support",
-      seed: 19,
+      seed: 7,
       requests: 180,
       maxActive: 8,
     });
 
     expect(metrics.completed).toBeLessThanOrEqual(metrics.requested);
     expect(metrics.duplicateMutations).toBe(0);
+    expect(metrics.inFlightMutationJoins).toBeGreaterThan(0);
+    expect(metrics.completedMutationReplays).toBeGreaterThan(0);
     expect(metrics.sameThreadOverlap).toBe(0);
     expect(metrics.staleFenceAccepts).toBe(0);
     expect(metrics.staleFenceRejects).toBe(1);
