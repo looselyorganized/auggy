@@ -1799,6 +1799,21 @@ export interface TelegramAdmittedAgent {
 
 export type TelegramAnonymousIdentityMode = "ephemeral" | "durable";
 
+export type TelegramReplayClaim =
+  | "claimed"
+  | "duplicate"
+  | "conflict"
+  | "quarantined"
+  | "discarded";
+
+/** Privacy-safe active replay conflict metadata. Payload hashes remain store-private. */
+export interface TelegramReplayConflict {
+  /** Opaque, server-minted identifier used for compare-and-set recovery. */
+  id: string;
+  updateId: number;
+  detectedAt: number;
+}
+
 export interface TelegramAuthOptions {
   creatorUserIds?: number[];
   /** Env var containing comma-separated Telegram user IDs that resolve as creator. */
@@ -1815,11 +1830,18 @@ export interface TelegramAuthOptions {
 }
 
 export interface TelegramReplayStore {
-  claim(
-    namespace: string,
-    updateId: number,
-    payloadHash: string,
-  ): "claimed" | "duplicate" | "conflict";
+  /**
+   * Atomically claim an update. A hash mismatch must also atomically
+   * quarantine the namespace before returning "conflict".
+   */
+  claim(namespace: string, updateId: number, payloadHash: string): TelegramReplayClaim;
+  /** Return the active namespace conflict without payload hashes or content. */
+  getConflict(namespace: string): TelegramReplayConflict | null;
+  /**
+   * Atomically retain the canonical claim, discard the exact conflicting
+   * payload, and clear only the matching active conflict.
+   */
+  resolveConflict(namespace: string, conflictId: string): boolean;
   close?(): void;
 }
 
@@ -1837,7 +1859,16 @@ export interface TelegramAsyncReplayStore {
     updateId: number,
     payloadHash: string,
     options: TelegramReplayClaimOptions,
-  ): Promise<"claimed" | "duplicate" | "conflict">;
+  ): Promise<TelegramReplayClaim>;
+  getConflictAsync(
+    namespace: string,
+    options: TelegramReplayClaimOptions,
+  ): Promise<TelegramReplayConflict | null>;
+  resolveConflictAsync(
+    namespace: string,
+    conflictId: string,
+    options: TelegramReplayClaimOptions,
+  ): Promise<boolean>;
   close?(): void | Promise<void>;
 }
 

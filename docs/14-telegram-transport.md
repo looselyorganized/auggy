@@ -97,7 +97,7 @@ config:
 | `replay.namespace` | `string` | no | `telegram:bot-<botId>` | Stable, non-secret bot scope. Set explicitly when a token has no numeric bot prefix. |
 | `replay.retentionMs` | `number` | no | `2592000000` | Claim retention horizon (30 days). |
 | `replay.maxEntries` | `number` | no | `1000000` | Maximum retained claims before oldest claims are pruned transactionally. |
-| `replay.claimTimeoutMs` | `number` | no | `5000` | Maximum time to await an async shared-store claim before failing closed. |
+| `replay.claimTimeoutMs` | `number` | no | `5000` | Maximum time to await an async shared-store claim, conflict inspection, or recovery before failing closed. |
 | `replay.store` | `TelegramReplayStore \| TelegramAsyncReplayStore` | no | SQLite store | Programmatic shared transactional store. Distributed replicas should use an async store backed by one atomic Redis, Postgres, or equivalent claim domain. |
 
 The default SQLite ledger provides durable replay protection across restarts and
@@ -107,8 +107,13 @@ Horizontally scaled deployments must route Telegram updates through one writer
 or construct `telegramTransport()` programmatically with a shared transactional
 `TelegramAsyncReplayStore`; executable stores cannot be declared in YAML. Its
 `claimAsync()` operation must atomically bind `(namespace, updateId)` to the
-payload hash and honor the supplied abort signal. Claims are intentionally
-at-most-once: a timeout, shutdown, or failure after a claim has begun is
+payload hash and honor the supplied abort signal. It must also atomically
+quarantine the namespace on a hash mismatch. `getConflictAsync()` exposes only
+the opaque incident ID, update ID, and detection time.
+`resolveConflictAsync()` must compare-and-set the exact active incident, retain
+the canonical claim, persist an exact conflicting-hash discard tombstone, and
+only then clear quarantine. Claims and recovery are intentionally at-most-once:
+a timeout, shutdown, or failure after an operation has begun is
 outcome-unknown. Any delivery retry must use the identical namespace, update
 ID, and payload hash through the same atomic store; it must never bypass the
 claim.
@@ -123,8 +128,15 @@ import { telegramTransport, type TelegramAsyncReplayStore } from "auggy";
 
 const replayStore: TelegramAsyncReplayStore = {
   async claimAsync(namespace, updateId, payloadHash, { signal }) {
-    // Atomically insert-or-read in one shared database and honor `signal`.
+    // Atomically insert/read or quarantine in one shared database.
     return claimTelegramUpdate(namespace, updateId, payloadHash, signal);
+  },
+  async getConflictAsync(namespace, { signal }) {
+    return inspectTelegramConflict(namespace, signal);
+  },
+  async resolveConflictAsync(namespace, conflictId, { signal }) {
+    // CAS the incident and persist its discard tombstone before returning true.
+    return discardTelegramConflict(namespace, conflictId, signal);
   },
 };
 
@@ -162,7 +174,7 @@ transport instances safely.
 | | Polling | Webhook |
 |---|---|---|
 | **How it works** | Agent calls `getUpdates` in a long-poll loop (one request at a time, up to `timeoutSec`). | Telegram POSTs each update to your `publicUrl`. Agent runs a local HTTP server on `port`. |
-| **Public HTTPS required** | No | Yes — valid TLS certificate, publicly roachable domain |
+| **Public HTTPS required** | No | Yes — valid TLS certificate, publicly reachable domain |
 | **Latency** | One `timeoutSec` cycle (≤30 s) to receive a message after bot restart | Near-immediate delivery |
 | **Best for** | Self-hosted / home lab / development; no reverse proxy required | Cloud deployments with a public domain |
 | **Limitation** | Higher API polling load during idle periods | Telegram's delivery guarantee requires your server to be reachable at all times |
@@ -175,7 +187,9 @@ Both polling and webhook modes claim each non-negative integer `update_id` in
 the same transactional replay ledger before dispatching it to the kernel.
 Concurrent or post-restart duplicates return without another model/tool
 execution. Reuse of one ID with different update content fails closed as a
-conflict. The ledger stores a SHA-256 payload hash, never the bot token.
+conflict and atomically quarantines that bot's complete replay namespace. The
+ledger stores canonical and conflicting SHA-256 payload hashes, never the bot
+token or message content. Quarantine and recovery survive restart.
 
 This is intentionally at-most-once processing. If the process or kernel fails
 after the durable claim, Auggy does not blindly retry an update whose tools may
@@ -183,6 +197,20 @@ already have produced side effects. Webhook processing failures return `503`
 only when no stable duplicate/conflict response applies; polling advances past
 a durably claimed duplicate on the next attempt. Operators should alert on
 processing failures and reconcile outcome-unknown side effects manually.
+
+The console reports a quarantined Telegram transport and always registers a
+confirm-required recovery action. Recovery accepts only the current opaque
+conflict ID. It retains the canonical claim and permanently acknowledges only
+the exact conflicting delivery as discarded; it cannot execute the conflicting
+payload or accept an operator-supplied offset. A third distinct payload for the
+same ID creates a new incident.
+
+Polling also pauses on Telegram Bot API `getUpdates` status `409`, which
+indicates a competing poller or webhook owner, and on a malformed/non-monotonic
+update batch. Stop the competing deployment or reconcile the source first,
+then use the same console action and current incident ID. Ownership recovery
+does not modify replay state or advance the polling offset. Auggy never
+automatically deletes a webhook in response to this condition.
 
 SQLite coordinates restarts and concurrent processes only when every replica
 opens the same database file on storage with working SQLite locks. Independent
@@ -308,6 +336,26 @@ Caddy forwards headers by default, so no explicit header passthrough directive i
   callback silently drops the reply. Routing exists only while the inbound turn
   is active; late or unrelated outbound messages must use `notify`.
 
+**Console reports `Transport quarantined`**
+
+- For `replay-payload`, investigate why one authenticated `update_id` arrived
+  with different content. Back up the replay database and reconcile any
+  already-started side effects before recovery.
+- For `polling-ownership`, stop the other `getUpdates` consumer or remove the
+  stale webhook outside Auggy. Do not recover while another owner is active.
+- For `invalid-update-sequence`, correct the proxy/provider response before
+  recovery. The entire batch was rejected before partial dispatch.
+- Copy the current conflict ID into the confirm-required Telegram recovery
+  action. Stale, malformed, already-resolved, and cross-bot IDs fail closed.
+- All replicas sharing a namespace/store must observe the same durable replay
+  state. A process-local or per-volume store is not sufficient for one bot
+  served by multiple replicas.
+
+While replay-quarantined, each polling replica checks the shared conflict state
+once per second. A successful compare-and-set recovery on any replica therefore
+wakes the others without another operator action. Size and monitor the shared
+store for this low-rate reconciliation traffic.
+
 **Webhook mode: bot registers but updates never arrive**
 
 - Verify the `publicUrl` is HTTPS and publicly reachable from the internet (not just localhost).
@@ -319,7 +367,9 @@ Caddy forwards headers by default, so no explicit header passthrough directive i
 
 - Telegram only allows one active mode per bot at a time. Setting a webhook (`setWebhook`) disables polling (`getUpdates`). Removing the webhook (`deleteWebhook`) re-enables polling.
 - The augment calls `setWebhook` at boot (webhook mode) and `deleteWebhook` at shutdown (webhook mode). If a previous run crashed without calling `deleteWebhook`, Telegram may still be posting to the old URL. Call `https://api.telegram.org/bot<token>/deleteWebhook` manually to clear it.
-- Do not run two agent instances for the same bot with different modes simultaneously — they will conflict.
+- Do not run two agent instances for the same bot with different modes
+  simultaneously. Polling detects Telegram's ownership `409`, pauses without
+  retry churn, and requires explicit recovery after the deployment is fixed.
 
 **`admittedAgents` validation failures at boot**
 

@@ -50,6 +50,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Telegram conflict quarantine and recovery.** Replay payload mismatches now
+  atomically quarantine a bot namespace across restart and shared-store
+  replicas. The console exposes conflict-bound, confirm-required recovery that
+  retains canonical claims and discards only the reconciled delivery. Polling
+  separately pauses on competing-owner `409` responses and malformed update
+  sequences without advancing offsets. Custom replay stores must implement
+  conflict inspection and compare-and-set recovery.
 - **Agent-wide keyed turn scheduling.** All transports and trusted injection
   now share finite agent/source/thread admission, one FIFO lane per resolved
   thread, ordered delivery and terminal hooks, queued cancellation, graceful

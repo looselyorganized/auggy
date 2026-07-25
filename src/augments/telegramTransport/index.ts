@@ -19,6 +19,7 @@
  */
 
 import type {
+  AdminActionResult,
   Augment,
   InboundMessage,
   KernelEvent,
@@ -27,6 +28,8 @@ import type {
   PeerIdentity,
   TelegramAsyncReplayStore,
   TelegramAuthOptions,
+  TelegramReplayClaim,
+  TelegramReplayConflict,
   TelegramTransportOptions,
   TransportKernel,
   TransportSpec,
@@ -180,6 +183,56 @@ interface InternalOptions extends TelegramTransportOptions {
   /** Test-only: override the bot client factory. Useful for unit tests
    *  that don't want to hit the real Telegram bot API. */
   _clientFactory?: () => TelegramBotClient;
+  /** Test-only: shorten distributed conflict reconciliation checks. */
+  _replayConflictCheckMs?: number;
+}
+
+const MAX_CANONICAL_UPDATE_DEPTH = 64;
+const MAX_CANONICAL_UPDATE_NODES = 50_000;
+
+function canonicalTelegramUpdate(value: unknown): string {
+  const ancestors = new Set<object>();
+  let nodes = 0;
+
+  function encode(current: unknown, depth: number, inArray: boolean): string | undefined {
+    nodes++;
+    if (nodes > MAX_CANONICAL_UPDATE_NODES || depth > MAX_CANONICAL_UPDATE_DEPTH) {
+      throw new InvalidTelegramUpdateError();
+    }
+    if (current === null) return "null";
+    if (typeof current === "string" || typeof current === "boolean") {
+      return JSON.stringify(current);
+    }
+    if (typeof current === "number") {
+      if (!Number.isFinite(current)) throw new InvalidTelegramUpdateError();
+      return JSON.stringify(current);
+    }
+    if (current === undefined) return inArray ? "null" : undefined;
+    if (typeof current !== "object") throw new InvalidTelegramUpdateError();
+    if (ancestors.has(current)) throw new InvalidTelegramUpdateError();
+    ancestors.add(current);
+    try {
+      if (Array.isArray(current)) {
+        return `[${current.map((entry) => encode(entry, depth + 1, true) ?? "null").join(",")}]`;
+      }
+      const prototype = Object.getPrototypeOf(current);
+      if (prototype !== Object.prototype && prototype !== null) {
+        throw new InvalidTelegramUpdateError();
+      }
+      const entries: string[] = [];
+      for (const key of Object.keys(current as Record<string, unknown>).sort()) {
+        const encoded = encode((current as Record<string, unknown>)[key], depth + 1, false);
+        if (encoded !== undefined) entries.push(`${JSON.stringify(key)}:${encoded}`);
+      }
+      return `{${entries.join(",")}}`;
+    } finally {
+      ancestors.delete(current);
+    }
+  }
+
+  const encoded = encode(value, 0, false);
+  if (encoded === undefined) throw new InvalidTelegramUpdateError();
+  return encoded;
 }
 
 export function telegramTransport(opts: TelegramTransportOptions): Augment {
@@ -191,6 +244,10 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
   let auth: TelegramAuthOptions = { ...configuredAuth };
   const botId = opts.botToken.match(/^(\d+):/)?.[1];
   const internal = opts as InternalOptions;
+  const replayConflictCheckMs = internal._replayConflictCheckMs ?? 1_000;
+  if (!Number.isSafeInteger(replayConflictCheckMs) || replayConflictCheckMs < 1) {
+    throw new TypeError("telegramTransport: replay conflict check interval must be positive");
+  }
   const clientFactory =
     internal._clientFactory ?? (() => createTelegramBotClient({ botToken: opts.botToken }));
   const client = clientFactory();
@@ -215,16 +272,79 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     "I hit a runtime error while handling that message. The operator has the details.";
 
   function getReplayStore(): ActiveReplayStore {
-    if (replayStore) return replayStore;
-    replayStore = internal._clientFactory
-      ? createInMemoryTelegramReplayStore()
-      : createSqliteTelegramReplayStore({
-          dbPath: opts.replay?.dbPath ?? "./data/telegram-replay.db",
-          retentionMs: opts.replay?.retentionMs,
-          maxEntries: opts.replay?.maxEntries,
-        });
-    ownsReplayStore = true;
+    if (!replayStore) {
+      replayStore = internal._clientFactory
+        ? createInMemoryTelegramReplayStore()
+        : createSqliteTelegramReplayStore({
+            dbPath: opts.replay?.dbPath ?? "./data/telegram-replay.db",
+            retentionMs: opts.replay?.retentionMs,
+            maxEntries: opts.replay?.maxEntries,
+          });
+      ownsReplayStore = true;
+    }
+    if ("claimAsync" in replayStore) {
+      if (
+        typeof replayStore.claimAsync !== "function" ||
+        typeof replayStore.getConflictAsync !== "function" ||
+        typeof replayStore.resolveConflictAsync !== "function"
+      ) {
+        throw new Error(
+          "telegramTransport: async replay.store must implement conflict-capable claim, inspection, and recovery",
+        );
+      }
+    } else if (
+      typeof replayStore.claim !== "function" ||
+      typeof replayStore.getConflict !== "function" ||
+      typeof replayStore.resolveConflict !== "function"
+    ) {
+      throw new Error(
+        "telegramTransport: replay.store must implement conflict-capable claim, inspection, and recovery",
+      );
+    }
     return replayStore;
+  }
+
+  async function awaitReplayOperation<T>(
+    lifecycleSignal: AbortSignal,
+    label: string,
+    operation: (signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
+    lifecycleSignal.throwIfAborted();
+    const operationController = new AbortController();
+    const abortOperation = () => operationController.abort(lifecycleSignal.reason);
+    lifecycleSignal.addEventListener("abort", abortOperation, { once: true });
+    const timeout = setTimeout(
+      () => operationController.abort(new Error(`Telegram replay ${label} timed out.`)),
+      replayClaimTimeoutMs,
+    );
+    try {
+      const pending = operation(operationController.signal);
+      return await new Promise<T>((resolve, reject) => {
+        const onAbort = () =>
+          reject(
+            operationController.signal.reason ??
+              new DOMException(`Telegram replay ${label} aborted.`, "AbortError"),
+          );
+        if (operationController.signal.aborted) {
+          onAbort();
+          return;
+        }
+        operationController.signal.addEventListener("abort", onAbort, { once: true });
+        Promise.resolve(pending).then(
+          (value) => {
+            operationController.signal.removeEventListener("abort", onAbort);
+            resolve(value);
+          },
+          (error) => {
+            operationController.signal.removeEventListener("abort", onAbort);
+            reject(error);
+          },
+        );
+      });
+    } finally {
+      clearTimeout(timeout);
+      lifecycleSignal.removeEventListener("abort", abortOperation);
+    }
   }
 
   async function claimUpdate(
@@ -232,45 +352,123 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     updateId: number,
     payloadHash: string,
     lifecycleSignal: AbortSignal,
-  ): Promise<"claimed" | "duplicate" | "conflict"> {
+  ): Promise<TelegramReplayClaim> {
     const store = getReplayStore();
     let claim: unknown;
     if ("claimAsync" in store) {
-      lifecycleSignal.throwIfAborted();
-      const claimController = new AbortController();
-      const abortClaim = () => claimController.abort(lifecycleSignal.reason);
-      lifecycleSignal.addEventListener("abort", abortClaim, { once: true });
-      const timeout = setTimeout(
-        () => claimController.abort(new Error("Telegram replay claim timed out.")),
-        replayClaimTimeoutMs,
+      claim = await awaitReplayOperation(lifecycleSignal, "claim", (signal) =>
+        store.claimAsync(namespace, updateId, payloadHash, { signal }),
       );
-      try {
-        const pending = store.claimAsync(namespace, updateId, payloadHash, {
-          signal: claimController.signal,
-        });
-        claim = await new Promise<unknown>((resolve, reject) => {
-          const rejectAborted = () =>
-            reject(
-              claimController.signal.reason ??
-                new DOMException("Telegram replay claim aborted.", "AbortError"),
-            );
-          if (claimController.signal.aborted) {
-            rejectAborted();
-            return;
-          }
-          claimController.signal.addEventListener("abort", rejectAborted, { once: true });
-          Promise.resolve(pending).then(resolve, reject);
-        });
-      } finally {
-        clearTimeout(timeout);
-        lifecycleSignal.removeEventListener("abort", abortClaim);
-      }
     } else {
       lifecycleSignal.throwIfAborted();
       claim = store.claim(namespace, updateId, payloadHash);
     }
-    if (claim === "claimed" || claim === "duplicate" || claim === "conflict") return claim;
+    if (
+      claim === "claimed" ||
+      claim === "duplicate" ||
+      claim === "conflict" ||
+      claim === "quarantined" ||
+      claim === "discarded"
+    ) {
+      return claim;
+    }
     throw new Error("Telegram replay store returned an invalid claim result.");
+  }
+
+  async function getReplayConflict(
+    namespace: string,
+    lifecycleSignal: AbortSignal,
+  ): Promise<TelegramReplayConflict | null> {
+    lifecycleSignal.throwIfAborted();
+    let conflict: TelegramReplayConflict | null;
+    try {
+      const store = getReplayStore();
+      conflict =
+        "claimAsync" in store
+          ? await awaitReplayOperation(lifecycleSignal, "conflict inspection", (signal) =>
+              store.getConflictAsync(namespace, { signal }),
+            )
+          : store.getConflict(namespace);
+    } catch {
+      if (lifecycleSignal.aborted) lifecycleSignal.throwIfAborted();
+      throw new Error("Telegram replay conflict inspection failed.");
+    }
+    if (conflict === null) return null;
+    if (
+      typeof conflict !== "object" ||
+      typeof conflict.id !== "string" ||
+      !/^[A-Za-z0-9_-]{1,128}$/.test(conflict.id) ||
+      !Number.isSafeInteger(conflict.updateId) ||
+      conflict.updateId < 0 ||
+      !Number.isSafeInteger(conflict.detectedAt) ||
+      conflict.detectedAt < 0
+    ) {
+      throw new Error("Telegram replay store returned invalid conflict metadata.");
+    }
+    return Object.freeze({ ...conflict });
+  }
+
+  async function resolveReplayConflict(
+    namespace: string,
+    conflictId: string,
+    lifecycleSignal: AbortSignal,
+  ): Promise<boolean> {
+    lifecycleSignal.throwIfAborted();
+    let resolved: unknown;
+    try {
+      const store = getReplayStore();
+      resolved =
+        "claimAsync" in store
+          ? await awaitReplayOperation(lifecycleSignal, "conflict recovery", (signal) =>
+              store.resolveConflictAsync(namespace, conflictId, { signal }),
+            )
+          : store.resolveConflict(namespace, conflictId);
+    } catch {
+      if (lifecycleSignal.aborted) lifecycleSignal.throwIfAborted();
+      throw new Error("Telegram replay conflict recovery failed.");
+    }
+    if (typeof resolved !== "boolean") {
+      throw new Error("Telegram replay store returned an invalid recovery result.");
+    }
+    return resolved;
+  }
+
+  async function waitForReplayRecovery(
+    conflict: { id: string },
+    signal: AbortSignal,
+  ): Promise<void> {
+    let warned = false;
+    while (!signal.aborted) {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => {
+          signal.removeEventListener("abort", onAbort);
+          resolve();
+        }, replayConflictCheckMs);
+        const onAbort = () => {
+          clearTimeout(timer);
+          reject(signal.reason ?? new DOMException("Telegram replay check aborted.", "AbortError"));
+        };
+        if (signal.aborted) {
+          onAbort();
+          return;
+        }
+        signal.addEventListener("abort", onAbort, { once: true });
+      });
+      try {
+        const active = await getReplayConflict(replayNamespace(), signal);
+        if (!active || active.id !== conflict.id) return;
+        warned = false;
+      } catch {
+        if (signal.aborted) signal.throwIfAborted();
+        if (!warned) {
+          console.warn(
+            "[telegram-transport.polling] replay conflict reconciliation check failed; polling remains quarantined",
+          );
+          warned = true;
+        }
+      }
+    }
+    signal.throwIfAborted();
   }
 
   function replayNamespace(): string {
@@ -352,10 +550,21 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
       if (pollHandle || webhookHandle) return;
 
       if (opts.inbound.mode === "polling") {
+        const durableConflict = await getReplayConflict(
+          replayNamespace(),
+          lifecycleController.signal,
+        );
         pollHandle = runPollLoop({
           client,
           timeoutSec: opts.inbound.polling?.timeoutSec ?? 30,
           onUpdate: (u) => handleUpdate(u),
+          initialConflict: durableConflict
+            ? {
+                ...durableConflict,
+                kind: "replay-payload",
+              }
+            : undefined,
+          waitForReplayRecovery: (conflict, signal) => waitForReplayRecovery(conflict, signal),
         });
         return;
       }
@@ -407,12 +616,16 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     const lifecycleSignal = lifecycleController.signal;
     if (!currentKernel || !currentRegisteredName) return; // Not yet registered — drop the update.
     lifecycleSignal.throwIfAborted();
-    if (!Number.isSafeInteger(update?.update_id) || update.update_id < 0) {
+    if (
+      !Number.isSafeInteger(update?.update_id) ||
+      update.update_id < 0 ||
+      update.update_id >= Number.MAX_SAFE_INTEGER
+    ) {
       throw new InvalidTelegramUpdateError();
     }
     let serialized: string;
     try {
-      serialized = JSON.stringify(update);
+      serialized = canonicalTelegramUpdate(update);
     } catch {
       throw new InvalidTelegramUpdateError();
     }
@@ -424,8 +637,14 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
       payloadHash,
       lifecycleSignal,
     );
-    if (claim === "duplicate") return;
-    if (claim === "conflict") throw new TelegramReplayConflictError();
+    if (claim === "duplicate" || claim === "discarded") return;
+    if (claim === "conflict" || claim === "quarantined") {
+      const conflict = await getReplayConflict(updateNamespace, lifecycleSignal);
+      if (!conflict) {
+        throw new Error("Telegram replay store reported quarantine without active conflict state.");
+      }
+      throw new TelegramReplayConflictError(conflict);
+    }
     lifecycleSignal.throwIfAborted();
     if (kernel !== currentKernel || registeredName !== currentRegisteredName) {
       throw new DOMException("Telegram transport lifecycle changed.", "AbortError");
@@ -536,10 +755,88 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     }
   }
 
+  const adminActions: Record<
+    string,
+    (params: Record<string, string>) => Promise<AdminActionResult>
+  > = {};
+  let recoverActionId: string | null = null;
+
+  function ensureRecoverAction(): string {
+    if (recoverActionId) return recoverActionId;
+    const domainDigest = createHash("sha256").update(replayNamespace()).digest("hex").slice(0, 16);
+    recoverActionId = `telegram-conflict-recover-${domainDigest}`;
+    adminActions[recoverActionId] = async (params) => {
+      const requestedIncident = params.incident?.trim();
+      if (!requestedIncident || !/^[A-Za-z0-9_-]{1,128}$/.test(requestedIncident)) {
+        return { ok: false, message: "A valid current Telegram conflict ID is required." };
+      }
+
+      const signal = lifecycleController.signal;
+      if (signal.aborted) {
+        return { ok: false, message: "Telegram transport is not running." };
+      }
+      const namespace = replayNamespace();
+      const durableConflict = await getReplayConflict(namespace, signal);
+      if (durableConflict) {
+        if (durableConflict.id !== requestedIncident) {
+          return {
+            ok: false,
+            message: "Telegram conflict changed or the supplied ID is stale.",
+          };
+        }
+        const resolved = await resolveReplayConflict(namespace, requestedIncident, signal);
+        if (!resolved) {
+          return {
+            ok: false,
+            message: "Telegram conflict changed before recovery; inspect current status.",
+          };
+        }
+        pollHandle?.recoverConflict(requestedIncident);
+        return {
+          ok: true,
+          message: `Discarded the reconciled Telegram delivery at update_id=${durableConflict.updateId}; canonical replay state was retained.`,
+        };
+      }
+
+      const pollConflict = pollHandle?.snapshot().conflict;
+      if (!pollConflict || pollConflict.id !== requestedIncident) {
+        return { ok: false, message: "No matching active Telegram conflict was found." };
+      }
+      if (!pollHandle?.recoverConflict(requestedIncident)) {
+        return { ok: false, message: "Telegram polling recovery did not take effect." };
+      }
+      return {
+        ok: true,
+        message:
+          pollConflict.kind === "polling-ownership"
+            ? "Telegram polling resumed at the unchanged offset."
+            : "Telegram polling resumed after operator reconciliation.",
+      };
+    };
+    return recoverActionId;
+  }
+
   const adminInfo = async (): Promise<import("../../types").AdminInfoBlock> => {
     const mode = opts.inbound.mode;
+    const actionId = ensureRecoverAction();
+    const durableConflict = lifecycleController.signal.aborted
+      ? null
+      : await getReplayConflict(replayNamespace(), lifecycleController.signal);
+    const pollSnapshot = pollHandle?.snapshot();
+    const activeConflict =
+      durableConflict ??
+      (pollSnapshot?.conflict
+        ? {
+            id: pollSnapshot.conflict.id,
+            updateId: pollSnapshot.conflict.updateId,
+            detectedAt: pollSnapshot.conflict.detectedAt,
+          }
+        : null);
+    const conflictKind = durableConflict
+      ? "replay-payload"
+      : (pollSnapshot?.conflict?.kind ?? null);
     return {
-      augmentName: "telegram-transport",
+      augmentName: registeredName ?? "telegram-transport",
       title: "Telegram transport",
       sections: [
         {
@@ -569,11 +866,33 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
         },
         {
           kind: "status",
-          level: pollHandle || webhookHandle ? "ok" : "warn",
-          message:
-            pollHandle || webhookHandle
+          level: activeConflict ? "error" : pollHandle || webhookHandle ? "ok" : "warn",
+          message: activeConflict
+            ? `Transport quarantined (${conflictKind})${
+                activeConflict.updateId !== undefined
+                  ? ` at update_id=${activeConflict.updateId}`
+                  : ""
+              }. Conflict ID: ${activeConflict.id}. Reconcile the source before recovery.`
+            : pollHandle || webhookHandle
               ? "Transport running."
               : "Transport not yet started (boot in progress or shutdown).",
+        },
+      ],
+      actions: [
+        {
+          id: actionId,
+          label: "Recover reconciled Telegram conflict",
+          confirmRequired: true,
+          inputs: [
+            {
+              name: "incident",
+              label: "Current conflict ID",
+              type: "text",
+              required: true,
+              helpText:
+                "Replay recovery permanently discards only the conflicting delivery and retains the canonical claim.",
+            },
+          ],
         },
       ],
     };
@@ -585,6 +904,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     category: "transports",
     transport,
     adminInfo,
+    adminActions,
 
     async onBoot(): Promise<void> {
       if (lifecycleController.signal.aborted) lifecycleController = new AbortController();
@@ -607,6 +927,9 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
           `[telegram-transport] inbound.mode must be 'polling' or 'webhook' (got ${(opts.inbound as { mode: unknown }).mode})`,
         );
       }
+      getReplayStore();
+      ensureRecoverAction();
+      await getReplayConflict(replayNamespace(), lifecycleController.signal);
       auth = {
         ...configuredAuth,
         admittedAgents: await validateAdmittedAgents(configuredAuth.admittedAgents, client),

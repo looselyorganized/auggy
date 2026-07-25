@@ -1,4 +1,7 @@
 import { describe, it, expect } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { resolveTelegramIdentity } from "../../src/augments/telegramTransport";
 import type {
   AgentCard,
@@ -7,6 +10,7 @@ import type {
   TelegramAsyncReplayStore,
   TelegramAuthOptions,
   TelegramReplayClaimOptions,
+  TelegramReplayStore,
   TransportKernel,
   TurnResult,
   TurnTrigger,
@@ -144,8 +148,13 @@ describe("resolveTelegramIdentity", () => {
 });
 
 import { validateAdmittedAgents, telegramTransport } from "../../src/augments/telegramTransport";
+import {
+  createInMemoryTelegramReplayStore,
+  createSqliteTelegramReplayStore,
+} from "../../src/augments/telegramTransport/replay-store";
 import type { TelegramBotClient } from "../../src/telegram-client";
 import type { TelegramUpdate } from "../../src/telegram-client";
+import { buildAdminActionRegistry } from "../../src/transports/admin";
 
 function mockClient(behavior: Record<number, "ok" | "fail">): TelegramBotClient {
   return {
@@ -438,7 +447,7 @@ describe("telegramTransport — polling lifecycle", () => {
     }
   });
 
-  it("claims duplicate update ids before kernel dispatch", async () => {
+  it("quarantines a non-monotonic polling batch without partial dispatch", async () => {
     const update: TelegramUpdate = {
       update_id: 91,
       message: {
@@ -460,9 +469,16 @@ describe("telegramTransport — polling lifecycle", () => {
     await aug.transport!.register(kernel, "telegram-transport");
     await aug.onBoot?.();
     await aug.transport!.ready?.();
-    await new Promise((resolve) => setTimeout(resolve, 30));
+    let info = await aug.adminInfo!();
+    for (let attempts = 0; attempts < 20; attempts++) {
+      const status = info.sections.at(-1);
+      if (status?.kind === "status" && status.level === "error") break;
+      await Promise.resolve();
+      info = await aug.adminInfo!();
+    }
     await aug.onShutdown?.();
-    expect(handleInboundCalls).toHaveLength(1);
+    expect(handleInboundCalls).toHaveLength(0);
+    expect(info.sections.at(-1)).toMatchObject({ kind: "status", level: "error" });
   });
 
   it("awaits one shared atomic claim across concurrent transport instances", async () => {
@@ -499,9 +515,16 @@ describe("telegramTransport — polling lifecycle", () => {
         }
         return existing === payloadHash ? "duplicate" : "conflict";
       },
+      async getConflictAsync() {
+        return null;
+      },
+      async resolveConflictAsync() {
+        return false;
+      },
     };
-    const update: TelegramUpdate = {
+    const update = {
       update_id: 92,
+      delivery_metadata: [{ sequence: 1, source: "telegram" }, ["nested", null]],
       message: {
         message_id: 1,
         chat: { id: 100, type: "private" },
@@ -509,9 +532,20 @@ describe("telegramTransport — polling lifecycle", () => {
         date: 0,
         text: "one distributed execution",
       },
-    };
-    const instances = ["telegram-primary", "telegram-secondary"].map((name) => {
-      const { client } = makeMockClient([[update], []]);
+    } as TelegramUpdate;
+    const reorderedUpdate = {
+      message: {
+        text: "one distributed execution",
+        date: 0,
+        from: { is_bot: false, id: 100 },
+        chat: { type: "private", id: 100 },
+        message_id: 1,
+      },
+      delivery_metadata: [{ source: "telegram", sequence: 1 }, ["nested", null]],
+      update_id: 92,
+    } as TelegramUpdate;
+    const instances = ["telegram-primary", "telegram-secondary"].map((name, index) => {
+      const { client } = makeMockClient([[index === 0 ? update : reorderedUpdate], []]);
       const setup = makeMockKernel({
         handleInbound: async (trigger) => {
           observeDispatch();
@@ -552,6 +586,313 @@ describe("telegramTransport — polling lifecycle", () => {
     }
   });
 
+  it("resumes a quarantined replica after another replica performs exact recovery", async () => {
+    const baseStore = createInMemoryTelegramReplayStore();
+    let conflictObserved!: () => void;
+    const conflictReady = new Promise<void>((resolve) => {
+      conflictObserved = resolve;
+    });
+    const sharedStore: TelegramReplayStore = {
+      claim(namespace, updateId, payloadHash) {
+        const result = baseStore.claim(namespace, updateId, payloadHash);
+        if (result === "conflict") conflictObserved();
+        return result;
+      },
+      getConflict: (namespace) => baseStore.getConflict(namespace),
+      resolveConflict: (namespace, conflictId) => baseStore.resolveConflict(namespace, conflictId),
+    };
+    const canonical: TelegramUpdate = {
+      update_id: 10,
+      message: {
+        message_id: 1,
+        chat: { id: 100, type: "private" },
+        from: { id: 100, is_bot: false },
+        date: 0,
+        text: "canonical",
+      },
+    };
+    const conflicting: TelegramUpdate = {
+      ...canonical,
+      message: { ...canonical.message!, text: "conflicting" },
+    };
+    const later: TelegramUpdate = {
+      ...canonical,
+      update_id: 11,
+      message: { ...canonical.message!, message_id: 2, text: "later" },
+    };
+
+    let firstCalls = 0;
+    const firstClient = makeMockClient([[canonical], []]).client;
+    const firstSetup = makeMockKernel();
+    const first = telegramTransport({
+      botToken: "777:shared-token",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {},
+      replay: { store: sharedStore },
+      _clientFactory: () => firstClient,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+    firstSetup.kernel.handleInbound = async (trigger) => {
+      firstCalls++;
+      return {
+        turnId: trigger.turnId,
+        success: true,
+        status: "completed",
+        toolCalls: [],
+        trace: {} as TurnResult["trace"],
+      };
+    };
+    await first.transport!.register(firstSetup.kernel, "telegram-primary");
+    await first.onBoot?.();
+    await first.transport!.ready?.();
+    while (firstCalls < 1) await Promise.resolve();
+    await first.onShutdown?.();
+
+    let batchCalls = 0;
+    let laterDispatched!: () => void;
+    const laterReady = new Promise<void>((resolve) => {
+      laterDispatched = resolve;
+    });
+    const secondClient: TelegramBotClient = {
+      ...makeMockClient([]).client,
+      async getUpdates(options) {
+        batchCalls++;
+        if (batchCalls <= 2) return [conflicting, later];
+        return await new Promise<TelegramUpdate[]>((_, reject) => {
+          options.signal?.addEventListener("abort", () => reject(options.signal?.reason), {
+            once: true,
+          });
+        });
+      },
+    };
+    const secondSetup = makeMockKernel({
+      handleInbound: async (trigger) => {
+        laterDispatched();
+        return {
+          turnId: trigger.turnId,
+          success: true,
+          status: "completed",
+          toolCalls: [],
+          trace: {} as TurnResult["trace"],
+        };
+      },
+    });
+    const second = telegramTransport({
+      botToken: "777:shared-token",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {},
+      replay: { store: sharedStore },
+      _clientFactory: () => secondClient,
+      _replayConflictCheckMs: 1,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+    const recoveryReplica = telegramTransport({
+      botToken: "777:shared-token",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {},
+      replay: { store: sharedStore },
+      _clientFactory: () => makeMockClient([[]]).client,
+      _replayConflictCheckMs: 1,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+
+    try {
+      await second.transport!.register(secondSetup.kernel, "telegram-secondary");
+      await second.onBoot?.();
+      await second.transport!.ready?.();
+      await conflictReady;
+      await recoveryReplica.onBoot?.();
+
+      const conflict = sharedStore.getConflict("telegram:bot-777");
+      expect(conflict).not.toBeNull();
+      expect(batchCalls).toBe(1);
+      expect(secondSetup.handleInboundCalls).toHaveLength(0);
+      const info = await recoveryReplica.adminInfo!();
+      expect(info.sections.at(-1)).toMatchObject({ kind: "status", level: "error" });
+      const action = info.actions![0]!;
+      const stale = await recoveryReplica.adminActions![action.id]!({ incident: "stale-id" });
+      expect(stale.ok).toBe(false);
+
+      const recovered = await recoveryReplica.adminActions![action.id]!({
+        incident: conflict!.id,
+      });
+      expect(recovered.ok).toBe(true);
+      await laterReady;
+      expect(batchCalls).toBe(2);
+      expect(secondSetup.handleInboundCalls).toHaveLength(1);
+      expect(secondSetup.handleInboundCalls[0]!.trigger.payload.parts).toEqual([
+        { kind: "text", text: "later" },
+      ]);
+    } finally {
+      await second.onShutdown?.();
+      await recoveryReplica.onShutdown?.();
+      baseStore.close?.();
+    }
+  });
+
+  it("scopes recovery action ids per replay namespace", async () => {
+    const augments = ["801:first", "802:second"].map((botToken) =>
+      telegramTransport({
+        botToken,
+        inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+        auth: {},
+        _clientFactory: () => makeMockClient([[]]).client,
+      } as unknown as Parameters<typeof telegramTransport>[0]),
+    );
+
+    try {
+      for (const augment of augments) await augment.onBoot?.();
+      const registry = await buildAdminActionRegistry(augments);
+      expect(registry.size).toBe(2);
+      expect([...registry.keys()].every((id) => id.startsWith("telegram-conflict-recover-"))).toBe(
+        true,
+      );
+    } finally {
+      for (const augment of augments) await augment.onShutdown?.();
+    }
+  });
+
+  it("does not poll after restart until persisted replay quarantine is recovered", async () => {
+    const root = mkdtempSync(join(tmpdir(), "telegram-quarantine-restart-"));
+    const dbPath = join(root, "replay.db");
+    const seed = createSqliteTelegramReplayStore({
+      dbPath,
+      randomUUID: () => "persisted-restart-incident",
+    });
+    seed.claim("telegram:bot-804", 50, "a".repeat(64));
+    seed.claim("telegram:bot-804", 50, "b".repeat(64));
+    seed.close?.();
+
+    const reopened = createSqliteTelegramReplayStore({ dbPath });
+    let pollCalls = 0;
+    let pollStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      pollStarted = resolve;
+    });
+    const client: TelegramBotClient = {
+      ...makeMockClient([]).client,
+      async getUpdates(options) {
+        pollCalls++;
+        pollStarted();
+        return await new Promise<TelegramUpdate[]>((_, reject) => {
+          options.signal?.addEventListener("abort", () => reject(options.signal?.reason), {
+            once: true,
+          });
+        });
+      },
+    };
+    const setup = makeMockKernel();
+    const aug = telegramTransport({
+      botToken: "804:test",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {},
+      replay: { store: reopened },
+      _clientFactory: () => client,
+      _replayConflictCheckMs: 1,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+
+    try {
+      await aug.transport!.register(setup.kernel, "telegram-restarted");
+      await aug.onBoot?.();
+      await aug.transport!.ready?.();
+      const info = await aug.adminInfo!();
+      expect(info.sections.at(-1)).toMatchObject({ kind: "status", level: "error" });
+      expect(pollCalls).toBe(0);
+
+      const action = info.actions![0]!;
+      expect(
+        await aug.adminActions![action.id]!({ incident: "persisted-restart-incident" }),
+      ).toMatchObject({ ok: true });
+      await started;
+      expect(pollCalls).toBe(1);
+    } finally {
+      await aug.onShutdown?.();
+      reopened.close?.();
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails boot for an async shared store without conflict recovery capability", async () => {
+    const { client } = makeMockClient([[]]);
+    const aug = telegramTransport({
+      botToken: "778:test",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {},
+      replay: {
+        store: {
+          async claimAsync() {
+            return "claimed";
+          },
+        } as unknown as TelegramAsyncReplayStore,
+      },
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+
+    await expect(aug.onBoot?.()).rejects.toThrow("conflict-capable");
+  });
+
+  it("sanitizes async replay-store inspection and recovery failures", async () => {
+    const sentinel = "postgres://user:secret@store.example/replay";
+    const inspectionFailure = telegramTransport({
+      botToken: "805:test",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {},
+      replay: {
+        store: {
+          async claimAsync() {
+            return "claimed";
+          },
+          async getConflictAsync() {
+            throw new Error(sentinel);
+          },
+          async resolveConflictAsync() {
+            return false;
+          },
+        },
+      },
+      _clientFactory: () => makeMockClient([[]]).client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+    try {
+      await inspectionFailure.onBoot?.();
+      throw new Error("expected inspection failure");
+    } catch (error) {
+      expect((error as Error).message).toBe("Telegram replay conflict inspection failed.");
+      expect(Bun.inspect(error)).not.toContain(sentinel);
+    } finally {
+      await inspectionFailure.onShutdown?.();
+    }
+
+    const conflict = { id: "safe-incident", updateId: 1, detectedAt: 1 };
+    const recoveryFailure = telegramTransport({
+      botToken: "806:test",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: {},
+      replay: {
+        store: {
+          async claimAsync() {
+            return "quarantined";
+          },
+          async getConflictAsync() {
+            return conflict;
+          },
+          async resolveConflictAsync() {
+            throw new Error(sentinel);
+          },
+        },
+      },
+      _clientFactory: () => makeMockClient([[]]).client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+    try {
+      await recoveryFailure.onBoot?.();
+      const info = await recoveryFailure.adminInfo!();
+      const action = info.actions![0]!;
+      await recoveryFailure.adminActions![action.id]!({ incident: conflict.id });
+      throw new Error("expected recovery failure");
+    } catch (error) {
+      expect((error as Error).message).toBe("Telegram replay conflict recovery failed.");
+      expect(Bun.inspect(error)).not.toContain(sentinel);
+    } finally {
+      await recoveryFailure.onShutdown?.();
+    }
+  });
+
   it("fails closed when an async replay store returns an invalid claim", async () => {
     const update: TelegramUpdate = {
       update_id: 93,
@@ -579,6 +920,12 @@ describe("telegramTransport — polling lifecycle", () => {
           async claimAsync() {
             observeClaim();
             return "unexpected" as "claimed";
+          },
+          async getConflictAsync() {
+            return null;
+          },
+          async resolveConflictAsync() {
+            return false;
           },
         },
       },
@@ -625,6 +972,12 @@ describe("telegramTransport — polling lifecycle", () => {
           ) {
             observeClaim(options.signal);
             return new Promise<"claimed">(() => {});
+          },
+          async getConflictAsync() {
+            return null;
+          },
+          async resolveConflictAsync() {
+            return false;
           },
         },
       },
@@ -952,6 +1305,83 @@ describe("telegramTransport — polling lifecycle", () => {
     expect(getChatCalls).toBe(0);
     expect(setWebhookCalls).toBe(0);
     await aug.onShutdown?.();
+  });
+
+  it("quarantines webhook conflicts until exact operator recovery", async () => {
+    const port = 31_000 + Math.floor(Math.random() * 5_000);
+    const replayStore = createInMemoryTelegramReplayStore();
+    const { client } = makeMockClient([]);
+    const setup = makeMockKernel();
+    const aug = telegramTransport({
+      botToken: "803:test-token",
+      inbound: {
+        mode: "webhook",
+        webhook: {
+          publicUrl: "https://example.test/telegram",
+          port,
+          secretToken: "secret",
+        },
+      },
+      auth: {},
+      replay: { store: replayStore },
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+    const canonical: TelegramUpdate = {
+      update_id: 40,
+      message: {
+        message_id: 1,
+        chat: { id: 803, type: "private" },
+        from: { id: 803, is_bot: false },
+        date: 0,
+        text: "canonical",
+      },
+    };
+    const conflicting: TelegramUpdate = {
+      ...canonical,
+      message: { ...canonical.message!, text: "conflicting" },
+    };
+    const later: TelegramUpdate = {
+      ...canonical,
+      update_id: 41,
+      message: { ...canonical.message!, message_id: 2, text: "later" },
+    };
+    const deliver = (body: TelegramUpdate) =>
+      fetch(`http://127.0.0.1:${port}/`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-telegram-bot-api-secret-token": "secret",
+        },
+        body: JSON.stringify(body),
+      });
+
+    await aug.transport!.register(setup.kernel, "telegram-primary");
+    await aug.onBoot?.();
+    await aug.transport!.ready?.();
+    try {
+      expect((await deliver(canonical)).status).toBe(200);
+      expect((await deliver(conflicting)).status).toBe(409);
+      expect((await deliver(later)).status).toBe(409);
+      expect(setup.handleInboundCalls).toHaveLength(1);
+
+      const conflict = replayStore.getConflict("telegram:bot-803");
+      const info = await aug.adminInfo!();
+      expect(info.sections.at(-1)).toMatchObject({ kind: "status", level: "error" });
+      const action = info.actions![0]!;
+      expect(await aug.adminActions![action.id]!({ incident: conflict!.id })).toMatchObject({
+        ok: true,
+      });
+
+      expect((await deliver(conflicting)).status).toBe(200);
+      expect((await deliver(later)).status).toBe(200);
+      expect(setup.handleInboundCalls).toHaveLength(2);
+      expect(setup.handleInboundCalls[1]!.trigger.payload.parts).toEqual([
+        { kind: "text", text: "later" },
+      ]);
+    } finally {
+      await aug.onShutdown?.();
+      replayStore.close?.();
+    }
   });
 
   it("keeps concurrent same-chat reply routing until both turns settle", async () => {

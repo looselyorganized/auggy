@@ -1,7 +1,8 @@
 import { afterEach, describe, expect, it } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
+import { Database } from "bun:sqlite";
 import { createSqliteTelegramReplayStore } from "../../../src/augments/telegramTransport/replay-store";
 
 const roots: string[] = [];
@@ -15,12 +16,67 @@ function databasePath(): string {
   return join(root, "claims.db");
 }
 
+function seedV1Database(path: string): void {
+  const db = new Database(path, { create: true });
+  db.run(`CREATE TABLE telegram_update_claims (
+    namespace TEXT NOT NULL,
+    update_id INTEGER NOT NULL,
+    payload_hash TEXT NOT NULL,
+    claimed_at INTEGER NOT NULL,
+    PRIMARY KEY (namespace, update_id)
+  )`);
+  db.run(`CREATE INDEX idx_telegram_claims_time
+     ON telegram_update_claims(claimed_at)`);
+  db.run("INSERT INTO telegram_update_claims VALUES (?, ?, ?, ?)", [
+    "migrated-bot",
+    4,
+    "a".repeat(64),
+    100,
+  ]);
+  db.run("PRAGMA application_id = 1413960272");
+  db.run("PRAGMA user_version = 1");
+  db.close();
+  chmodSync(path, 0o600);
+}
+
 describe("SQLite Telegram replay store", () => {
-  it("atomically claims one payload and detects duplicate/conflict", () => {
-    const store = createSqliteTelegramReplayStore({ dbPath: databasePath() });
+  it("atomically quarantines a namespace on payload conflict", () => {
+    const store = createSqliteTelegramReplayStore({
+      dbPath: databasePath(),
+      randomUUID: () => "incident-1",
+      now: () => 123,
+    });
     expect(store.claim("bot-1", 10, "a".repeat(64))).toBe("claimed");
     expect(store.claim("bot-1", 10, "a".repeat(64))).toBe("duplicate");
     expect(store.claim("bot-1", 10, "b".repeat(64))).toBe("conflict");
+    expect(store.claim("bot-1", 11, "c".repeat(64))).toBe("quarantined");
+    expect(store.getConflict("bot-1")).toEqual({
+      id: "incident-1",
+      updateId: 10,
+      detectedAt: 123,
+    });
+    store.close?.();
+  });
+
+  it("recovers by discarding only the conflicting payload and retaining the canonical claim", () => {
+    const incidentIds = ["incident-recover", "incident-third-payload"];
+    const store = createSqliteTelegramReplayStore({
+      dbPath: databasePath(),
+      randomUUID: () => incidentIds.shift()!,
+    });
+    expect(store.claim("bot", 20, "a".repeat(64))).toBe("claimed");
+    expect(store.claim("bot", 20, "b".repeat(64))).toBe("conflict");
+    expect(store.resolveConflict("bot", "wrong")).toBe(false);
+    expect(store.resolveConflict("other-bot", "incident-recover")).toBe(false);
+    expect(store.resolveConflict("bot", "incident-recover")).toBe(true);
+    expect(store.resolveConflict("bot", "incident-recover")).toBe(false);
+    expect(store.getConflict("bot")).toBeNull();
+    expect(store.claim("bot", 20, "a".repeat(64))).toBe("duplicate");
+    expect(store.claim("bot", 20, "b".repeat(64))).toBe("discarded");
+    expect(store.claim("bot", 21, "c".repeat(64))).toBe("claimed");
+    expect(store.claim("bot", 20, "d".repeat(64))).toBe("conflict");
+    expect(store.resolveConflict("bot", "incident-recover")).toBe(false);
+    expect(store.getConflict("bot")?.id).toBe("incident-third-payload");
     store.close?.();
   });
 
@@ -35,6 +91,43 @@ describe("SQLite Telegram replay store", () => {
     second.close?.();
   });
 
+  it("persists unresolved quarantine and resolved discard state across reopen", () => {
+    const path = databasePath();
+    const first = createSqliteTelegramReplayStore({
+      dbPath: path,
+      randomUUID: () => "incident-persisted",
+    });
+    expect(first.claim("bot", 30, "a".repeat(64))).toBe("claimed");
+    expect(first.claim("bot", 30, "b".repeat(64))).toBe("conflict");
+    first.close?.();
+
+    const quarantined = createSqliteTelegramReplayStore({ dbPath: path });
+    expect(quarantined.claim("bot", 31, "c".repeat(64))).toBe("quarantined");
+    expect(quarantined.getConflict("bot")?.id).toBe("incident-persisted");
+    expect(quarantined.resolveConflict("bot", "incident-persisted")).toBe(true);
+    quarantined.close?.();
+
+    const resolved = createSqliteTelegramReplayStore({ dbPath: path });
+    expect(resolved.getConflict("bot")).toBeNull();
+    expect(resolved.claim("bot", 30, "b".repeat(64))).toBe("discarded");
+    expect(resolved.claim("bot", 31, "c".repeat(64))).toBe("claimed");
+    resolved.close?.();
+  });
+
+  it("migrates an exact branded v1 database without losing canonical claims", () => {
+    const path = databasePath();
+    seedV1Database(path);
+    const store = createSqliteTelegramReplayStore({
+      dbPath: path,
+      randomUUID: () => "incident-after-migration",
+      now: () => 100,
+    });
+    expect(store.claim("migrated-bot", 4, "a".repeat(64))).toBe("duplicate");
+    expect(store.claim("migrated-bot", 4, "b".repeat(64))).toBe("conflict");
+    expect(store.getConflict("migrated-bot")?.id).toBe("incident-after-migration");
+    store.close?.();
+  });
+
   it("coordinates claims across two live store instances", () => {
     const path = databasePath();
     const first = createSqliteTelegramReplayStore({ dbPath: path });
@@ -44,6 +137,25 @@ describe("SQLite Telegram replay store", () => {
       second.claim("shared-bot", 99, "c".repeat(64)),
     ];
     expect(results.sort()).toEqual(["claimed", "duplicate"]);
+    first.close?.();
+    second.close?.();
+  });
+
+  it("resolves one conflict exactly once across two live store instances", () => {
+    const path = databasePath();
+    const first = createSqliteTelegramReplayStore({
+      dbPath: path,
+      randomUUID: () => "incident-cas",
+    });
+    const second = createSqliteTelegramReplayStore({ dbPath: path });
+    expect(first.claim("shared-bot", 100, "a".repeat(64))).toBe("claimed");
+    expect(second.claim("shared-bot", 100, "b".repeat(64))).toBe("conflict");
+    const conflictId = first.getConflict("shared-bot")!.id;
+    expect([
+      first.resolveConflict("shared-bot", conflictId),
+      second.resolveConflict("shared-bot", conflictId),
+    ]).toEqual([true, false]);
+    expect(first.claim("shared-bot", 100, "b".repeat(64))).toBe("discarded");
     first.close?.();
     second.close?.();
   });
@@ -87,6 +199,8 @@ describe("SQLite Telegram replay store", () => {
       expect(() => store.claim("bot", id, "a".repeat(64))).toThrow();
     }
     expect(() => store.claim("bot", 1, "secret-token")).toThrow();
+    expect(() => store.getConflict("")).toThrow();
+    expect(() => store.resolveConflict("bot", "")).toThrow();
     store.close?.();
   });
 });
