@@ -5,6 +5,18 @@
  */
 
 export type SyntheticLoadProfile = "concierge" | "order-support";
+export type SyntheticLoadMode = "reference-model";
+
+export interface SyntheticLoadFaults {
+  /** Simulates an unavailable coordinator before an item enters the queue. */
+  coordinatorUnavailableEvery?: number;
+  /** Simulates a started operation whose terminal result is unknown. */
+  outcomeUnknownEvery?: number;
+  /** Deliberately breaks the fenced-write seam for negative tests. */
+  acceptStaleFences?: boolean;
+  /** Deliberately breaks namespace-keyed storage for negative tests. */
+  allowCrossNamespaceReads?: boolean;
+}
 
 export interface SyntheticLoadOptions {
   profile: SyntheticLoadProfile;
@@ -14,12 +26,15 @@ export interface SyntheticLoadOptions {
   maxActive?: number;
   maxQueued?: number;
   namespaceCount?: number;
+  faults?: SyntheticLoadFaults;
 }
 
 export interface SyntheticLoadMetrics {
+  mode: SyntheticLoadMode;
   profile: SyntheticLoadProfile;
   seed: number;
   replicas: number;
+  replicaAssignments: number[];
   requested: number;
   completed: number;
   rejections: number;
@@ -28,7 +43,9 @@ export interface SyntheticLoadMetrics {
   duplicateMutations: number;
   sameThreadOverlap: number;
   staleFenceAccepts: number;
+  staleFenceRejects: number;
   namespaceViolations: number;
+  namespaceRejects: number;
   throughputPerSecond: number;
   activePeak: number;
   queuedPeak: number;
@@ -72,6 +89,7 @@ interface WorkItem {
   arrivalMs: number;
   durationMs: number;
   mutationKey: string | null;
+  replicaId: number;
 }
 
 interface ActiveWork extends WorkItem {
@@ -102,7 +120,11 @@ function createRandom(seed: number): () => number {
   };
 }
 
-function makeWorkload(options: Required<SyntheticLoadOptions>): WorkItem[] {
+interface NormalisedSyntheticLoadOptions extends Omit<Required<SyntheticLoadOptions>, "faults"> {
+  faults: Required<SyntheticLoadFaults>;
+}
+
+function makeWorkload(options: NormalisedSyntheticLoadOptions): WorkItem[] {
   const random = createRandom(options.seed);
   const work: WorkItem[] = [];
   const sessions = Math.max(2, Math.min(80, Math.ceil(options.requests / 8)));
@@ -130,13 +152,14 @@ function makeWorkload(options: Required<SyntheticLoadOptions>): WorkItem[] {
           ? 8 + Math.floor(random() * 18)
           : 6 + Math.floor(random() * 12),
       mutationKey,
+      replicaId: id % options.replicas,
     });
   }
   return work.sort((left, right) => left.arrivalMs - right.arrivalMs || left.id - right.id);
 }
 
-function normaliseOptions(input: SyntheticLoadOptions): Required<SyntheticLoadOptions> {
-  const options: Required<SyntheticLoadOptions> = {
+function normaliseOptions(input: SyntheticLoadOptions): NormalisedSyntheticLoadOptions {
+  const options: NormalisedSyntheticLoadOptions = {
     profile: input.profile,
     seed: input.seed ?? 20260724,
     replicas: input.replicas ?? 3,
@@ -144,6 +167,12 @@ function normaliseOptions(input: SyntheticLoadOptions): Required<SyntheticLoadOp
     maxActive: input.maxActive ?? 12,
     maxQueued: input.maxQueued ?? 500,
     namespaceCount: input.namespaceCount ?? 2,
+    faults: {
+      coordinatorUnavailableEvery: input.faults?.coordinatorUnavailableEvery ?? 0,
+      outcomeUnknownEvery: input.faults?.outcomeUnknownEvery ?? 0,
+      acceptStaleFences: input.faults?.acceptStaleFences ?? false,
+      allowCrossNamespaceReads: input.faults?.allowCrossNamespaceReads ?? false,
+    },
   };
   if (options.profile !== "concierge" && options.profile !== "order-support") {
     throw new Error("profile must be concierge or order-support");
@@ -169,6 +198,13 @@ function normaliseOptions(input: SyntheticLoadOptions): Required<SyntheticLoadOp
     DEFAULT_SYNTHETIC_LOAD_THRESHOLDS.maxQueue,
   );
   assertFiniteInteger(options.namespaceCount, "namespaceCount", 1, 1_000);
+  assertFiniteInteger(
+    options.faults.coordinatorUnavailableEvery,
+    "coordinatorUnavailableEvery",
+    0,
+    10_000,
+  );
+  assertFiniteInteger(options.faults.outcomeUnknownEvery, "outcomeUnknownEvery", 0, 10_000);
   return options;
 }
 
@@ -180,6 +216,7 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
   const activeThreads = new Set<string>();
   const completedMutations = new Set<string>();
   const fences = new Map<string, number>();
+  const replicaAssignments = Array.from({ length: options.replicas }, () => 0);
   const waits: number[] = [];
   let activePeak = 0;
   let queuedPeak = 0;
@@ -187,8 +224,12 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
   let rejections = 0;
   let duplicateMutations = 0;
   let sameThreadOverlap = 0;
-  const staleFenceAccepts = 0;
+  let staleFenceAccepts = 0;
+  let staleFenceRejects = 0;
   let namespaceViolations = 0;
+  let namespaceRejects = 0;
+  let unavailable = 0;
+  let outcomeUnknown = 0;
   let clock = 0;
 
   const completeUntil = (untilMs: number): void => {
@@ -226,6 +267,12 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
       fences.set(threadKey, fence);
       waits.push(Math.max(0, clock - candidate.arrivalMs));
       active.push({ ...candidate, startedMs: clock, fence });
+      if (
+        options.faults.outcomeUnknownEvery > 0 &&
+        candidate.id % options.faults.outcomeUnknownEvery === 0
+      ) {
+        outcomeUnknown++;
+      }
       if (candidate.mutationKey) {
         if (completedMutations.has(candidate.mutationKey)) duplicateMutations++;
         completedMutations.add(candidate.mutationKey);
@@ -236,6 +283,14 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
   };
 
   for (const item of makeWorkload(options)) {
+    replicaAssignments[item.replicaId]!++;
+    if (
+      options.faults.coordinatorUnavailableEvery > 0 &&
+      item.id % options.faults.coordinatorUnavailableEvery === 0
+    ) {
+      unavailable++;
+      continue;
+    }
     completeUntil(item.arrivalMs);
     clock = Math.max(clock, item.arrivalMs);
     admit();
@@ -243,11 +298,29 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
       rejections++;
       continue;
     }
-    // Every generated namespace is explicit; this guard makes leakage observable if the model changes.
-    if (!item.namespace.startsWith("tenant-")) namespaceViolations++;
     waiting.push(item);
     queuedPeak = Math.max(queuedPeak, waiting.length);
     admit();
+  }
+
+  for (const fence of fences.values()) {
+    const attemptedFence = fence - 1;
+    const accepted = options.faults.acceptStaleFences || attemptedFence === fence;
+    if (accepted) staleFenceAccepts++;
+    else staleFenceRejects++;
+    // One adversarial probe is enough to exercise the seam while keeping output bounded.
+    break;
+  }
+
+  if (options.namespaceCount > 1) {
+    const records = new Map<string, string>();
+    const recordId = "protected-order";
+    records.set(`tenant-0:${recordId}`, "tenant-0");
+    const crossNamespaceResult = options.faults.allowCrossNamespaceReads
+      ? records.get(`tenant-0:${recordId}`)
+      : records.get(`tenant-1:${recordId}`);
+    if (crossNamespaceResult === undefined) namespaceRejects++;
+    else namespaceViolations++;
   }
   while (waiting.length > 0 || active.length > 0) {
     if (active.length === 0) {
@@ -263,18 +336,22 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
   waits.sort((left, right) => left - right);
   const elapsedMs = Math.max(1, clock);
   return {
+    mode: "reference-model",
     profile: options.profile,
     seed: options.seed,
     replicas: options.replicas,
+    replicaAssignments,
     requested: options.requests,
     completed,
     rejections,
-    unavailable: 0,
-    outcomeUnknown: 0,
+    unavailable,
+    outcomeUnknown,
     duplicateMutations,
     sameThreadOverlap,
     staleFenceAccepts,
+    staleFenceRejects,
     namespaceViolations,
+    namespaceRejects,
     throughputPerSecond: Number(((completed * 1_000) / elapsedMs).toFixed(3)),
     activePeak,
     queuedPeak,

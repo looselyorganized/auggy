@@ -11,6 +11,9 @@ describe("synthetic distributed coordination load harness", () => {
     const second = runSyntheticDistributedLoad({ profile: "concierge", seed: 7, requests: 120 });
 
     expect(first).toEqual(second);
+    expect(first.mode).toBe("reference-model");
+    expect(first.replicaAssignments).toHaveLength(3);
+    expect(first.replicaAssignments.reduce((total, count) => total + count, 0)).toBe(120);
     expect(first.completed).toBe(120);
     expect(first.activePeak).toBeGreaterThan(0);
     expect(first.queueWaitMs.p99).toBeGreaterThanOrEqual(first.queueWaitMs.p95);
@@ -29,8 +32,36 @@ describe("synthetic distributed coordination load harness", () => {
     expect(metrics.duplicateMutations).toBe(0);
     expect(metrics.sameThreadOverlap).toBe(0);
     expect(metrics.staleFenceAccepts).toBe(0);
+    expect(metrics.staleFenceRejects).toBe(1);
     expect(metrics.namespaceViolations).toBe(0);
+    expect(metrics.namespaceRejects).toBe(1);
     expect(evaluateSyntheticLoad(metrics)).toEqual([]);
+  });
+
+  test("makes deliberately broken fencing, namespace, and availability seams visible", () => {
+    const metrics = runSyntheticDistributedLoad({
+      profile: "order-support",
+      requests: 24,
+      faults: {
+        acceptStaleFences: true,
+        allowCrossNamespaceReads: true,
+        coordinatorUnavailableEvery: 7,
+        outcomeUnknownEvery: 5,
+      },
+    });
+
+    expect(metrics.staleFenceAccepts).toBe(1);
+    expect(metrics.namespaceViolations).toBe(1);
+    expect(metrics.unavailable).toBeGreaterThan(0);
+    expect(metrics.outcomeUnknown).toBeGreaterThan(0);
+    expect(evaluateSyntheticLoad(metrics)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("stale fence accepts"),
+        expect.stringContaining("namespace violations"),
+        expect.stringContaining("unavailable"),
+        expect.stringContaining("outcome unknown"),
+      ]),
+    );
   });
 
   test("rejects oversized synthetic runs before allocating an unbounded workload", () => {
