@@ -109,7 +109,8 @@ Canonical runtime shards:
 - `http`: the isolated root HTTP suite;
 - `base`: remaining immediate root tests;
 - `capabilities`: augment, auth, config, memory, and skill tests;
-- `operator`: CLI, script, and CI tests;
+- `doctor`: the port-listener-sensitive doctor suite in its own process;
+- `operator`: remaining CLI, script, and CI tests;
 - `transport`: transport and integration tests;
 - `kernel`: kernel and library tests;
 - `contracts`: engine, package-contract, public API, type, and eval tests; and
