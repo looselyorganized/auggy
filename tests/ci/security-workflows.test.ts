@@ -174,14 +174,35 @@ describe("release publishing identity", () => {
 });
 
 describe("tracked test-surface workflow enforcement", () => {
+  test("local full-suite scripts use the canonical inventory runner", () => {
+    const packageJson = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+
+    expect(packageJson.scripts?.["test:inventory"]).toBe(
+      "bun scripts/test-surface-inventory.ts check",
+    );
+    expect(packageJson.scripts?.["test:runtime"]).toBe(
+      "bun scripts/test-surface-inventory.ts run-runtime",
+    );
+    expect(packageJson.scripts?.["test:admin"]).toBe(
+      "bun scripts/test-surface-inventory.ts run console",
+    );
+    expect(packageJson.scripts?.test).toBe("bun run test:runtime && bun run test:admin");
+  });
+
   test("primary CI derives its runtime matrix and aggregate gate from inventory", () => {
     const { jobs } = readWorkflow("ci.yml");
     const inventory = requireJob(jobs, "inventory");
     const surface = requireStep(inventory, "Validate tracked test surface");
     expect(inventory.outputs?.runtime).toBe("${{ steps.surface.outputs.runtime }}");
     expect(surface.id).toBe("surface");
-    expect(surface.run).toContain("bun scripts/test-surface-inventory.ts check");
-    expect(surface.run).toContain("bun scripts/test-surface-inventory.ts matrix runtime");
+    expect(surface.run?.trim()).toBe(
+      [
+        "bun scripts/test-surface-inventory.ts check",
+        'echo "runtime=$(bun scripts/test-surface-inventory.ts matrix runtime)" >> "$GITHUB_OUTPUT"',
+      ].join("\n"),
+    );
 
     const runtime = requireJob(jobs, "runtime_shards");
     expect(normalizedNeeds(runtime)).toEqual(["inventory"]);

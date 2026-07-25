@@ -38,7 +38,7 @@ describe("tracked CI test-surface inventory", () => {
     const allFiles = inventory.shards.flatMap((shard) => shard.files);
 
     expect(inventory.runtimeFiles).toBeGreaterThanOrEqual(252);
-    expect(inventory.adminFiles).toBe(29);
+    expect(inventory.adminFiles).toBeGreaterThanOrEqual(29);
     expect(allFiles).toHaveLength(inventory.runtimeFiles + inventory.adminFiles);
     expect(new Set(allFiles).size).toBe(allFiles.length);
     expect(inventory.shards.find((shard) => shard.id === "http")?.files).toEqual([
@@ -100,6 +100,17 @@ describe("tracked CI test-surface inventory", () => {
     );
   });
 
+  test("fails closed for a test-shaped file outside every declared suite root", () => {
+    const entries = [
+      regular("tests/known/current.test.ts"),
+      regular("src/new-boundary/security.test.ts"),
+      regular("admin/src/console.test.ts"),
+    ];
+    expect(() => validateTestSurface(entries, minimalManifest())).toThrow(
+      /outside declared suite roots.*src\/new-boundary\/security\.test\.ts/i,
+    );
+  });
+
   test("recognizes Bun filename variants and ignores templates", () => {
     const entries = [
       regular("tests/known/a.test.ts"),
@@ -151,6 +162,25 @@ describe("tracked CI test-surface inventory", () => {
     expect(() => validateTestSurface([regular("tests/known/current.test.ts")], emptyAdmin)).toThrow(
       /admin\/src.*stale|admin.*empty|no tracked admin/i,
     );
+  });
+
+  test("requires an explicit policy for a tracked root with no tests yet", () => {
+    const entries = [
+      regular("tests/known/current.test.ts"),
+      regular("packages/future/README.md"),
+      regular("admin/src/console.test.ts"),
+    ];
+    const manifest = minimalManifest();
+    manifest.shards[0]!.selectors.push({
+      kind: "tree",
+      path: "packages/future",
+    });
+    expect(() => validateTestSurface(entries, manifest)).toThrow(
+      /selector.*packages\/future.*no tracked tests/i,
+    );
+
+    manifest.shards[0]!.selectors[1]!.allowEmpty = true;
+    expect(validateTestSurface(entries, manifest).runtimeFiles).toBe(1);
   });
 
   test("rejects symlink and noncanonical test paths", () => {

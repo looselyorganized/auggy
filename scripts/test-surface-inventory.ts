@@ -8,6 +8,7 @@ export interface TestSurfaceSelector {
   kind: TestSelectorKind;
   path: string;
   exclude?: string[];
+  allowEmpty?: true;
 }
 
 export interface TestSurfaceShardManifest {
@@ -47,6 +48,8 @@ export interface BunTestInvocation {
 const ROOT = resolve(import.meta.dir, "..");
 const MANIFEST_PATH = "tests/ci/test-surface-manifest.json";
 const MAX_MANIFEST_BYTES = 64 * 1024;
+const MAX_GIT_TREE_BYTES = 16 * 1024 * 1024;
+const MAX_TRACKED_ENTRIES = 100_000;
 const TEST_FILE_PATTERN = /(?:\.test|_test|\.spec|_spec)\.(?:js|jsx|ts|tsx)$/;
 const SAFE_SHARD_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const REGULAR_GIT_MODES = new Set(["100644", "100755"]);
@@ -162,7 +165,7 @@ function parseManifest(value: unknown): TestSurfaceManifest {
       }
       assertExactKeys(
         rawSelector,
-        ["kind", "path", "exclude"],
+        ["kind", "path", "exclude", "allowEmpty"],
         `selector ${selectorIndex} in shard ${rawShard.id}`,
       );
       if (
@@ -179,6 +182,12 @@ function parseManifest(value: unknown): TestSurfaceManifest {
             rawShard.id
           } is outside its suite roots`,
         );
+      }
+      if (rawSelector.allowEmpty !== undefined && rawSelector.allowEmpty !== true) {
+        fail(`selector ${selectorIndex} in shard ${rawShard.id} has invalid allowEmpty policy`);
+      }
+      if (rawSelector.kind === "exact" && rawSelector.allowEmpty === true) {
+        fail(`exact selector ${selectorIndex} in shard ${rawShard.id} cannot allow an empty match`);
       }
       const exclude: string[] = [];
       if (rawSelector.exclude !== undefined) {
@@ -198,7 +207,12 @@ function parseManifest(value: unknown): TestSurfaceManifest {
           exclude.push(excluded);
         }
       }
-      const selectorKey = JSON.stringify([rawSelector.kind, rawSelector.path, [...exclude].sort()]);
+      const selectorKey = JSON.stringify([
+        rawSelector.kind,
+        rawSelector.path,
+        [...exclude].sort(),
+        rawSelector.allowEmpty === true,
+      ]);
       if (selectorKeys.has(selectorKey)) {
         fail(`shard ${rawShard.id} has a duplicate selector`);
       }
@@ -207,6 +221,7 @@ function parseManifest(value: unknown): TestSurfaceManifest {
         kind: rawSelector.kind,
         path: rawSelector.path,
         ...(exclude.length > 0 ? { exclude } : {}),
+        ...(rawSelector.allowEmpty === true ? { allowEmpty: true as const } : {}),
       };
     });
     return {
@@ -249,10 +264,14 @@ export function validateTestSurface(
 ): TestSurfaceInventory {
   const manifest = parseManifest(rawManifest);
   const entries = [...rawEntries];
+  if (entries.length > MAX_TRACKED_ENTRIES) {
+    fail(`tracked tree exceeds ${MAX_TRACKED_ENTRIES} entries`);
+  }
+  const testCandidates = entries.filter((entry) => isBunTestPath(entry.path));
   const paths = new Set<string>();
   const foldedPaths = new Map<string, string>();
 
-  for (const entry of entries) {
+  for (const entry of testCandidates) {
     validateSafePath(entry.path, "tracked path");
     if (paths.has(entry.path)) fail(`duplicate tracked path ${describePath(entry.path)}`);
     paths.add(entry.path);
@@ -264,12 +283,6 @@ export function validateTestSurface(
       );
     }
     foldedPaths.set(folded, entry.path);
-  }
-
-  const tests = entries
-    .filter((entry) => suiteForPath(entry.path) !== null && isBunTestPath(entry.path))
-    .sort((a, b) => comparePaths(a.path, b.path));
-  for (const entry of tests) {
     if (entry.stage !== 0) {
       fail(`tracked test has unresolved Git stage ${entry.stage}: ${describePath(entry.path)}`);
     }
@@ -277,6 +290,15 @@ export function validateTestSurface(
       fail(`tracked test is not a regular file: ${describePath(entry.path)} (${entry.mode})`);
     }
   }
+  const outsideSuite = testCandidates
+    .filter((entry) => suiteForPath(entry.path) === null)
+    .sort((a, b) => comparePaths(a.path, b.path));
+  if (outsideSuite.length > 0) {
+    fail(
+      `tracked Bun test is outside declared suite roots: ${describePath(outsideSuite[0]!.path)}`,
+    );
+  }
+  const tests = testCandidates.sort((a, b) => comparePaths(a.path, b.path));
 
   for (const shard of manifest.shards) {
     for (const selector of shard.selectors) {
@@ -296,6 +318,11 @@ export function validateTestSurface(
             )} of shard ${shard.id} is missing or outside the selector`,
           );
         }
+      }
+      if (!selector.allowEmpty && !tests.some((entry) => selectorMatches(selector, entry.path))) {
+        fail(
+          `selector ${describePath(selector.path)} in shard ${shard.id} resolves to no tracked tests`,
+        );
       }
     }
   }
@@ -347,16 +374,16 @@ export function validateTestSurface(
 }
 
 export function readGitTreeEntries(root = ROOT): GitTreeEntry[] {
-  const result = Bun.spawnSync(
-    ["git", "ls-files", "--stage", "-z", "--", "tests", "examples", "packages", "admin/src"],
-    {
-      cwd: root,
-      stdout: "pipe",
-      stderr: "pipe",
-      env: process.env,
-    },
-  );
+  const result = Bun.spawnSync(["git", "ls-files", "--stage", "-z"], {
+    cwd: root,
+    stdout: "pipe",
+    stderr: "pipe",
+    env: process.env,
+  });
   if (result.exitCode !== 0) fail("git ls-files failed");
+  if (result.stdout.byteLength > MAX_GIT_TREE_BYTES) {
+    fail("git ls-files output exceeds 16 MiB");
+  }
   let source: string;
   try {
     source = new TextDecoder("utf-8", { fatal: true }).decode(result.stdout);

@@ -145,7 +145,8 @@
         },
         {
           "kind": "tree",
-          "path": "packages"
+          "path": "packages",
+          "allowEmpty": true
         }
       ]
     },
