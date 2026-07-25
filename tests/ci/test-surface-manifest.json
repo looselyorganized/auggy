@@ -124,6 +124,16 @@
       ]
     },
     {
+      "id": "coordination",
+      "suite": "runtime",
+      "selectors": [
+        {
+          "kind": "tree",
+          "path": "tests/coordination"
+        }
+      ]
+    },
+    {
       "id": "contracts",
       "suite": "runtime",
       "selectors": [
