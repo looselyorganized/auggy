@@ -144,6 +144,7 @@ import {
   evaluateDelegatedAuthorization,
   validateAuthorizationRequirements,
 } from "../authz/delegated-authorization";
+import type { RuntimeSignals } from "./runtime-signals";
 
 export interface TurnLoopOptions {
   signal?: AbortSignal;
@@ -171,6 +172,7 @@ export function createTurnLoop(opts: {
   tokenizer: Tokenizer;
   config: AgentConfig;
   onHistoryEvicted?: (threadId: string) => void;
+  operationalSignals?: RuntimeSignals;
 }): TurnLoop {
   const { augments, model, tokenizer, config } = opts;
   const responseLimits = resolveModelResponseLimits(config.responseLimits);
@@ -576,7 +578,7 @@ export function createTurnLoop(opts: {
               peer,
               ...(signal ? { signal } : {}),
             });
-          } catch {
+          } catch (error) {
             // Handler threw — surface as a failed turn so the augment
             // author can debug, and so cost-commit still fires.
             //
@@ -617,6 +619,7 @@ export function createTurnLoop(opts: {
                 message: "Internal turn handler failed.",
                 source: aug.name,
               },
+              ...(isOutcomeUnknownError(error) ? { outcomeUnknown: true } : {}),
             };
           }
           if (handlerResult === null || handlerResult === undefined) {
@@ -630,6 +633,19 @@ export function createTurnLoop(opts: {
           // (response, toolCalls, status) flow through to the caller.
           for (const step of handlerResult.trace?.inferenceSteps ?? []) {
             traceEmitter.recordInference(trace, step);
+            opts.operationalSignals?.recordInference({
+              outcome:
+                step.outcome ??
+                (handlerResult.outcomeUnknown
+                  ? "outcome-unknown"
+                  : handlerResult.status === "canceled"
+                    ? "canceled"
+                    : "completed"),
+              durationMs: step.durationMs,
+              inputTokens: step.inputTokens,
+              outputTokens: step.outputTokens,
+              cost: step.cost,
+            });
           }
           // Inlined instead of finalizeReturn() because the snapshot must
           // see the handler's response parts merged into transcriptParts —
@@ -902,22 +918,44 @@ export function createTurnLoop(opts: {
           }
           traceEmitter.recordInference(trace, {
             model: config.model,
+            outcome: "completed",
             inputTokens: result.response.inputTokens,
             outputTokens: result.response.outputTokens,
             durationMs: Date.now() - startedAt,
             toolCalls: [],
             cost: costFromResponse(result.response),
           });
+          opts.operationalSignals?.recordInference({
+            outcome: "completed",
+            durationMs: Date.now() - startedAt,
+            inputTokens: result.response.inputTokens,
+            outputTokens: result.response.outputTokens,
+            cost: costFromResponse(result.response),
+          });
           return result;
         } catch (error) {
           if (error instanceof ModelResponseLimitError && error.accounting) {
+            const cost = costFromResponse(error.accounting);
             traceEmitter.recordInference(trace, {
               model: config.model,
+              outcome: "failed",
               inputTokens: error.accounting.inputTokens,
               outputTokens: error.accounting.outputTokens,
               durationMs: Date.now() - startedAt,
               toolCalls: [],
-              cost: costFromResponse(error.accounting),
+              cost,
+            });
+            opts.operationalSignals?.recordInference({
+              outcome: "failed",
+              durationMs: Date.now() - startedAt,
+              inputTokens: error.accounting.inputTokens,
+              outputTokens: error.accounting.outputTokens,
+              cost,
+            });
+          } else {
+            opts.operationalSignals?.recordInference({
+              outcome: signal?.aborted ? "canceled" : "failed",
+              durationMs: Date.now() - startedAt,
             });
           }
           throw error;
@@ -1134,6 +1172,7 @@ export function createTurnLoop(opts: {
           const execResults = await Promise.all(
             entries.map(async (entry) => {
               if (entry.type === "error") {
+                opts.operationalSignals?.recordTool({ outcome: "denied", durationMs: 0 });
                 return {
                   call: entry.call,
                   output: entry.error,
@@ -1208,6 +1247,11 @@ export function createTurnLoop(opts: {
                 output = "Error: Tool output exceeded the configured safety limit.";
                 isError = true;
               }
+
+              opts.operationalSignals?.recordTool({
+                outcome: outcomeUnknown ? "outcome-unknown" : isError ? "failed" : "completed",
+                durationMs: Date.now() - execStart,
+              });
 
               emitEvent({
                 kind: "tool_call_result",

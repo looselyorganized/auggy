@@ -248,6 +248,51 @@ export interface WebDashboardState {
   agentAccessEntries?: string;
 }
 
+/**
+ * Process-lifetime, aggregate runtime state. It intentionally has no dynamic
+ * labels, customer identifiers, content, destinations, or exception text.
+ */
+export interface RuntimeOperationalState {
+  schemaVersion: 1;
+  scope: "process";
+  startedAt: number;
+  collectedAt: number;
+  readiness: {
+    accepting: boolean;
+    state: "not-started" | "accepting" | "draining" | "stopped";
+  };
+  scheduler: {
+    state: "accepting" | "draining" | "stopped";
+    activeTurns: number;
+    queuedTurns: number;
+    activeThreads: number;
+    queuedThreads: number;
+    quarantinedThreads: number;
+    oldestQueueWaitMs: number;
+    queueWait: { count: number; totalMs: number; maxMs: number };
+    admitted: number;
+    settled: number;
+    rejected: number;
+    canceled: number;
+    quarantined: number;
+    rejectedByReason: Record<string, number>;
+  };
+  turns: Record<string, number>;
+  inference: Record<string, number>;
+  tools: Record<string, number>;
+  responseDelivery: Record<string, number>;
+  hooks: Record<string, number>;
+  threadRecovery: Record<string, number>;
+  shutdown: Record<string, number | boolean>;
+  memory: {
+    rssBytes: number;
+    heapTotalBytes: number;
+    heapUsedBytes: number;
+    externalBytes: number;
+    arrayBuffersBytes: number;
+  };
+}
+
 export interface DashboardData {
   card: AgentCardLite;
   /** Auggy package/runtime version from package.json. */
@@ -258,6 +303,8 @@ export interface DashboardData {
   tools: ToolInventoryInfo;
   routes: RoutesInfo;
   web: WebDashboardState;
+  /** Present for current runtimes; optional so an older runtime remains readable during rollback. */
+  runtime?: RuntimeOperationalState | null;
   blocks: AdminInfoBlock[];
   csrfTokens: CsrfToken[];
   /** Skills snapshot — installed + bundled-but-not-installed. */

@@ -20,11 +20,16 @@ import {
   type ExtractionBufferLimits,
 } from "./extractor/buffer";
 import { type ExtractionFrequencyConfig, shouldExtract } from "./extractor/frequency";
-import { type ExtractionEngine, handleExtractionTurn } from "./extractor/inject-handler";
+import {
+  type ExtractionEngine,
+  type ExtractionResult,
+  handleExtractionTurn,
+} from "./extractor/inject-handler";
 import { createSqliteStore } from "./storage/sqlite-store";
 import { createSupabaseStore, type LayeredSupabaseClient } from "./storage/supabase-store";
 import type { MemoryStore, StoreEntry } from "./storage/types";
 import { emptyTrace } from "../../kernel/trace-emitter";
+import { isOutcomeUnknownError } from "../../outcome-unknown";
 
 /**
  * Optional auto-save block (PR β / ADR-018 Phase 2). When `enabled` is
@@ -228,10 +233,12 @@ function buildExtractionTurnResult(args: {
   status: "completed" | "failed";
   cost: CostResult;
   inferenceDurationMs: number;
+  inferenceOutcome?: "completed" | "failed" | "canceled" | "outcome-unknown";
   inputTokens?: number;
   outputTokens?: number;
   errorMessage?: string;
   responseText?: string;
+  outcomeUnknown?: boolean;
 }): TurnResult {
   const turnId = args.trigger.turnId;
   const threadId = args.trigger.threadId ?? turnId;
@@ -240,14 +247,17 @@ function buildExtractionTurnResult(args: {
     threadId,
     trigger: { type: "internal", sourceAugment: AUTO_SAVE_TRIGGER_SOURCE },
   });
-  trace.inferenceSteps.push({
-    model: EXTRACTION_MODEL_LABEL,
-    inputTokens: args.inputTokens ?? 0,
-    outputTokens: args.outputTokens ?? 0,
-    durationMs: args.inferenceDurationMs,
-    toolCalls: [],
-    cost: args.cost,
-  });
+  if (args.inferenceOutcome) {
+    trace.inferenceSteps.push({
+      model: EXTRACTION_MODEL_LABEL,
+      outcome: args.inferenceOutcome,
+      inputTokens: args.inputTokens ?? 0,
+      outputTokens: args.outputTokens ?? 0,
+      durationMs: args.inferenceDurationMs,
+      toolCalls: [],
+      cost: args.cost,
+    });
+  }
   return {
     turnId,
     success: args.status === "completed",
@@ -259,6 +269,7 @@ function buildExtractionTurnResult(args: {
     error: args.errorMessage
       ? { message: args.errorMessage, source: AUTO_SAVE_TRIGGER_SOURCE }
       : undefined,
+    ...(args.outcomeUnknown ? { outcomeUnknown: true } : {}),
     trace,
   };
 }
@@ -290,12 +301,26 @@ async function runExtractionInsideTurn(args: {
 }): Promise<TurnResult> {
   args.signal?.throwIfAborted();
   const inferenceStart = Date.now();
-  const result = await handleExtractionTurn({
-    transcript: args.transcript,
-    engine: args.engine,
-    promptTemplate: args.promptTemplate,
-    signal: args.signal,
-  });
+  let result: ExtractionResult;
+  try {
+    result = await handleExtractionTurn({
+      transcript: args.transcript,
+      engine: args.engine,
+      promptTemplate: args.promptTemplate,
+      signal: args.signal,
+    });
+  } catch (error) {
+    if (!isOutcomeUnknownError(error)) throw error;
+    return buildExtractionTurnResult({
+      trigger: args.trigger,
+      status: "failed",
+      cost: { priced: false, reason: "extraction inference outcome is unknown" },
+      inferenceDurationMs: Date.now() - inferenceStart,
+      inferenceOutcome: "outcome-unknown",
+      errorMessage: "extraction inference outcome is unknown",
+      outcomeUnknown: true,
+    });
+  }
   const inferenceDurationMs = Date.now() - inferenceStart;
   const cost: CostResult =
     result.costUsd > 0
@@ -311,6 +336,7 @@ async function runExtractionInsideTurn(args: {
       status: "failed",
       cost,
       inferenceDurationMs,
+      inferenceOutcome: result.inferenceOutcome,
       errorMessage: result.error,
     });
   }
@@ -323,6 +349,7 @@ async function runExtractionInsideTurn(args: {
         status: "failed",
         cost,
         inferenceDurationMs,
+        inferenceOutcome: result.inferenceOutcome,
         errorMessage: "extraction canceled after inference completed",
       });
     }
@@ -340,6 +367,7 @@ async function runExtractionInsideTurn(args: {
           status: "failed",
           cost,
           inferenceDurationMs,
+          inferenceOutcome: result.inferenceOutcome,
           errorMessage: "extraction canceled after inference completed",
         });
       }
@@ -362,6 +390,7 @@ async function runExtractionInsideTurn(args: {
           status: "failed",
           cost,
           inferenceDurationMs,
+          inferenceOutcome: result.inferenceOutcome,
           errorMessage: "extraction canceled while persisting inferred memory",
         });
       }
@@ -373,6 +402,7 @@ async function runExtractionInsideTurn(args: {
           status: "failed",
           cost,
           inferenceDurationMs,
+          inferenceOutcome: result.inferenceOutcome,
           errorMessage: "extraction canceled while persisting inferred memory",
         });
       }
@@ -388,6 +418,7 @@ async function runExtractionInsideTurn(args: {
       status: "failed",
       cost,
       inferenceDurationMs,
+      inferenceOutcome: result.inferenceOutcome,
       errorMessage: "extraction canceled after inference completed",
     });
   }
@@ -396,6 +427,7 @@ async function runExtractionInsideTurn(args: {
     status: "completed",
     cost,
     inferenceDurationMs,
+    inferenceOutcome: result.inferenceOutcome,
     responseText: `extracted ${written} fact(s) from turn ${args.sourceTurnId}`,
   });
 }

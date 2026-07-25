@@ -17,6 +17,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { defineAgent } from "@/agent";
 import { layeredMemory } from "@/augments/layeredMemory";
+import { OutcomeUnknownError } from "@/outcome-unknown";
 import type {
   Augment,
   CostResult,
@@ -253,6 +254,7 @@ describe("layered-memory auto-save cost-flow (option a)", () => {
       createMockModel({ response: "ack" }),
     );
     await agent.start();
+    let inferenceSnapshot: ReturnType<typeof agent.operationalSnapshot>["inference"] | undefined;
     try {
       const peer: PeerIdentity = {
         id: "agent-peer-fail",
@@ -261,6 +263,7 @@ describe("layered-memory auto-save cost-flow (option a)", () => {
         sourceAugment: "test-transport",
       };
       await agent.inject(makeMessageTrigger("user-turn-fail", "th-fail", peer));
+      inferenceSnapshot = agent.operationalSnapshot().inference;
     } finally {
       await agent.stop();
     }
@@ -274,6 +277,8 @@ describe("layered-memory auto-save cost-flow (option a)", () => {
       priced: true,
       costUsd: FAILED_COST_USD,
     });
+    // The extraction engine completed and billed; the later parse failed.
+    expect(inferenceSnapshot).toMatchObject({ attempts: 2, completed: 2, failed: 0 });
   });
 
   test("extraction is skipped (no extra commit) when frequency dispatcher returns skip", async () => {
@@ -370,6 +375,7 @@ describe("layered-memory auto-save cost-flow (option a)", () => {
     // — if this fires, the handler regressed and is now throwing.
     const originalWarn = console.warn;
     const warnings: string[] = [];
+    let inferenceSnapshot: ReturnType<typeof agent.operationalSnapshot>["inference"] | undefined;
     console.warn = (...args: unknown[]) => {
       warnings.push(args.map((a) => String(a)).join(" "));
     };
@@ -386,6 +392,7 @@ describe("layered-memory auto-save cost-flow (option a)", () => {
         // The user-facing turn must succeed; auto-save's failure must
         // not propagate.
         await agent.inject(makeMessageTrigger("user-turn-throw", "th-throw", peer));
+        inferenceSnapshot = agent.operationalSnapshot().inference;
       } finally {
         await agent.stop();
       }
@@ -406,5 +413,61 @@ describe("layered-memory auto-save cost-flow (option a)", () => {
     expect(commits.find((c) => c.turnId === "user-turn-throw")).toBeDefined();
     const extractionCommit = commits.find((c) => c.turnId !== "user-turn-throw");
     expect(extractionCommit).toBeDefined();
+    expect(inferenceSnapshot).toMatchObject({ attempts: 2, completed: 1, failed: 1 });
+  });
+
+  test("quarantines an outcome-unknown extraction and rejects blind same-thread retry", async () => {
+    const dir = await createTempDir();
+    cleanup = dir.cleanup;
+    const lm = await layeredMemory({
+      backend: "sqlite",
+      dbPath: join(dir.path, "memory.db"),
+      namespace: "ep",
+      retentionDays: 90,
+      autoSave: {
+        enabled: true,
+        extractionFrequency: { agent: "every-turn" },
+        engine: {
+          complete: async () => {
+            throw new OutcomeUnknownError("sentinel-ambiguous-extraction");
+          },
+        },
+      },
+    });
+    const agent = defineAgent(
+      { name: "test-agent", model: "mock", augments: [lm] },
+      createMockModel({ response: "ack" }),
+    );
+    const peer: PeerIdentity = {
+      id: "agent-peer-unknown",
+      kind: "agent",
+      trustLevel: "agent",
+      sourceAugment: "test-transport",
+    };
+
+    await agent.start();
+    try {
+      const first = await agent.inject(
+        makeMessageTrigger("unknown-parent", "unknown-thread", peer),
+      );
+      expect(first.status).toBe("completed");
+      const snapshot = agent.operationalSnapshot();
+      expect(snapshot.turns).toMatchObject({ total: 2, completed: 1, outcomeUnknown: 1 });
+      expect(snapshot.inference).toMatchObject({
+        attempts: 2,
+        completed: 1,
+        failed: 0,
+        outcomeUnknown: 1,
+      });
+      expect(JSON.stringify(snapshot)).not.toContain("sentinel-ambiguous-extraction");
+
+      const retry = await agent.inject(makeMessageTrigger("blind-retry", "unknown-thread", peer));
+      expect(retry).toMatchObject({
+        status: "rejected",
+        rejection: { reason: "thread-quarantined" },
+      });
+    } finally {
+      await agent.stop();
+    }
   });
 });

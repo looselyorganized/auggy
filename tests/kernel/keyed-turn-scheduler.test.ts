@@ -305,9 +305,68 @@ describe("keyed turn scheduler", () => {
     const snapshot = scheduler.snapshot();
     expect(Object.isFrozen(snapshot)).toBe(true);
     expect(snapshot.oldestQueueWaitMs).toBe(250);
+    expect(snapshot.queueWait).toEqual({ count: 0, totalMs: 0, maxMs: 0 });
     expect(JSON.stringify(snapshot)).not.toContain("secret");
     release.resolve();
     await Promise.all([active, queued]);
+    expect(scheduler.snapshot().queueWait).toEqual({ count: 1, totalMs: 250, maxMs: 250 });
+  });
+
+  test("counts admission rejections by a fixed reason without identifier labels", async () => {
+    const scheduler = createKeyedTurnScheduler({
+      maxConcurrent: 1,
+      maxQueued: 0,
+      maxQueuedPerKey: 0,
+      maxCausalDepth: 1,
+    });
+    const release = deferred();
+    const active = scheduler.submit({ key: "secret-active", source }, async () => {
+      await release.promise;
+    });
+    await Promise.resolve();
+    await scheduler.submit({ key: "secret-rejected", source }, async () => undefined);
+
+    const snapshot = scheduler.snapshot();
+    expect(snapshot.rejectedByReason).toMatchObject({ "thread-capacity": 1 });
+    expect(Object.keys(snapshot.rejectedByReason).sort()).toEqual(
+      [
+        "agent-capacity",
+        "causal-concurrency",
+        "causal-context-expired",
+        "causal-depth",
+        "causal-thread-mismatch",
+        "peer-rate-limit",
+        "runtime-stopping",
+        "source-capacity",
+        "thread-capacity",
+        "thread-quarantined",
+      ].sort(),
+    );
+    expect(JSON.stringify(snapshot)).not.toContain("secret");
+    release.resolve();
+    await active;
+  });
+
+  test("keeps operational wait fields finite when a clock is invalid", async () => {
+    let now = 1;
+    const scheduler = createKeyedTurnScheduler({
+      maxConcurrent: 1,
+      maxQueued: 1,
+      maxQueuedPerKey: 1,
+      maxCausalDepth: 1,
+      now: () => now,
+    });
+    const release = deferred();
+    const active = scheduler.submit({ key: "a", source }, async () => {
+      await release.promise;
+    });
+    await Promise.resolve();
+    const queued = scheduler.submit({ key: "b", source }, async () => undefined);
+    now = Number.POSITIVE_INFINITY;
+    expect(scheduler.snapshot().oldestQueueWaitMs).toBe(0);
+    release.resolve();
+    await Promise.all([active, queued]);
+    expect(JSON.stringify(scheduler.snapshot())).not.toContain("null");
   });
 
   test("keeps active capacity occupied until non-cooperative work settles", async () => {
@@ -381,6 +440,21 @@ describe("keyed turn scheduler", () => {
       rejected: 1,
       settled: 3,
     });
+  });
+
+  test("counts a causal cross-thread attempt as a structured rejection", async () => {
+    const scheduler = createKeyedTurnScheduler({
+      maxConcurrent: 1,
+      maxQueued: 1,
+      maxQueuedPerKey: 1,
+      maxCausalDepth: 2,
+    });
+    const root = await scheduler.submit({ key: "a", source }, async (lease) =>
+      scheduler.runCausal(lease, { key: "b" }, async () => "must-not-run"),
+    );
+    const nested = expectValue(root);
+    expect(nested).toEqual({ status: "rejected", reason: "causal-thread-mismatch" });
+    expect(scheduler.snapshot().rejectedByReason["causal-thread-mismatch"]).toBe(1);
   });
 
   test("rejects concurrent causal siblings instead of violating thread serialization", async () => {

@@ -813,6 +813,7 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
   return new Response(
     JSON.stringify({
       card: ctx.kernel.getAgentCard(),
+      runtime: ctx.kernel.getOperationalSnapshot?.() ?? null,
       auggyVersion: AUGGY_VERSION,
       agentMeta,
       augments,

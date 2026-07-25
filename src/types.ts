@@ -334,6 +334,8 @@ export interface TurnTrace {
   };
   inferenceSteps: {
     model: string;
+    /** Terminal outcome of this exact inference attempt. Legacy traces omit it and imply completed. */
+    outcome?: "completed" | "failed" | "canceled" | "outcome-unknown";
     inputTokens: number;
     outputTokens: number;
     durationMs: number;
@@ -712,6 +714,8 @@ export interface TransportKernel {
     ) => Promise<void>,
   ): void;
   getAgentCard(): AgentCard;
+  /** Process-local, aggregate operational state for authenticated operator surfaces. */
+  getOperationalSnapshot?(): RuntimeOperationalSnapshot;
   /**
    * Cross-augment HTTP routes collected at `agent.start()` after
    * `lifecycle.boot()`. Returns a frozen array — transports MUST NOT mutate.
@@ -1512,11 +1516,88 @@ export interface TurnSchedulerSnapshot {
   queuedThreads: number;
   quarantinedThreads: number;
   oldestQueueWaitMs: number;
+  queueWait: { count: number; totalMs: number; maxMs: number };
   admitted: number;
   settled: number;
   rejected: number;
   canceled: number;
   quarantined: number;
+  rejectedByReason: Record<TurnRejectionReason, number>;
+}
+
+export interface RuntimeSignalsSnapshot {
+  schemaVersion: 1;
+  scope: "process";
+  startedAt: number;
+  collectedAt: number;
+  turns: {
+    total: number;
+    completed: number;
+    failed: number;
+    canceled: number;
+    rejected: number;
+    outcomeUnknown: number;
+    totalDurationMs: number;
+    maxDurationMs: number;
+  };
+  inference: {
+    attempts: number;
+    completed: number;
+    failed: number;
+    canceled: number;
+    outcomeUnknown: number;
+    inputTokens: number;
+    outputTokens: number;
+    pricedCostUsd: number;
+    unpriced: number;
+    totalDurationMs: number;
+    maxDurationMs: number;
+  };
+  tools: {
+    attempts: number;
+    completed: number;
+    failed: number;
+    denied: number;
+    outcomeUnknown: number;
+    totalDurationMs: number;
+    maxDurationMs: number;
+  };
+  responseDelivery: {
+    attempts: number;
+    completed: number;
+    failed: number;
+    outcomeUnknown: number;
+    inFlight: number;
+    totalDurationMs: number;
+    maxDurationMs: number;
+  };
+  hooks: { failed: number; outcomeUnknown: number };
+  threadRecovery: { attempted: number; completed: number; rejected: number };
+  shutdown: {
+    attempts: number;
+    completed: number;
+    inProgress: boolean;
+    startedAt: number;
+    elapsedMs: number;
+    hookFailures: number;
+    lastDurationMs: number;
+    maxDurationMs: number;
+  };
+  memory: {
+    rssBytes: number;
+    heapTotalBytes: number;
+    heapUsedBytes: number;
+    externalBytes: number;
+    arrayBuffersBytes: number;
+  };
+}
+
+export interface RuntimeOperationalSnapshot extends RuntimeSignalsSnapshot {
+  readiness: {
+    accepting: boolean;
+    state: "not-started" | "accepting" | "draining" | "stopped";
+  };
+  scheduler: TurnSchedulerSnapshot;
 }
 
 export interface AgentHealth {
@@ -1533,6 +1614,8 @@ export interface AgentHandle {
   stop(): Promise<void>;
   ready(): Promise<void>;
   health(): AgentHealth;
+  /** Aggregate, process-lifetime operational signals with no customer content or identifiers. */
+  operationalSnapshot(): RuntimeOperationalSnapshot;
   card(): AgentCard;
   inject(trigger: TurnTrigger, options?: { signal?: AbortSignal }): Promise<TurnResult>;
   /**

@@ -2,6 +2,7 @@ export type SchedulerState = "accepting" | "draining" | "stopped";
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
 const MAX_TRACKED_RATE_LIMIT_PEERS_PER_SOURCE = 10_000;
+const MAX_OPERATIONAL_COUNTER = Number.MAX_SAFE_INTEGER;
 
 export type SchedulerRejectionReason =
   | "peer-rate-limit"
@@ -60,11 +61,13 @@ export interface TurnSchedulerSnapshot {
   queuedThreads: number;
   quarantinedThreads: number;
   oldestQueueWaitMs: number;
+  queueWait: { count: number; totalMs: number; maxMs: number };
   admitted: number;
   settled: number;
   rejected: number;
   canceled: number;
   quarantined: number;
+  rejectedByReason: Record<SchedulerRejectionReason, number>;
 }
 
 interface RootLeaseState {
@@ -97,6 +100,8 @@ export interface KeyedTurnScheduler {
   drain(): Promise<void>;
   reopen(): void;
   recover(key: string): boolean;
+  /** Count a kernel-owned rejection that occurs before a causal task can be submitted. */
+  recordExternalRejection(reason: SchedulerRejectionReason): void;
   snapshot(): TurnSchedulerSnapshot;
 }
 
@@ -140,6 +145,14 @@ function abortReason(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("Operation aborted", "AbortError");
 }
 
+function safeElapsedMs(value: number): number {
+  return Number.isFinite(value) && value >= 0 ? value : 0;
+}
+
+function addOperationalCounter(current: number, value = 1): number {
+  return Math.min(MAX_OPERATIONAL_COUNTER, current + safeElapsedMs(value));
+}
+
 export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): KeyedTurnScheduler {
   assertSafeInteger("maxConcurrent", config.maxConcurrent, 1);
   assertSafeInteger("maxQueued", config.maxQueued, 0);
@@ -167,6 +180,30 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
   let rejected = 0;
   let canceled = 0;
   let quarantined = 0;
+  let queueWaitCount = 0;
+  let queueWaitTotalMs = 0;
+  let queueWaitMaxMs = 0;
+  let rejectedByReason = emptyRejectedByReason();
+
+  function emptyRejectedByReason(): Record<SchedulerRejectionReason, number> {
+    return {
+      "peer-rate-limit": 0,
+      "thread-capacity": 0,
+      "source-capacity": 0,
+      "agent-capacity": 0,
+      "runtime-stopping": 0,
+      "thread-quarantined": 0,
+      "causal-depth": 0,
+      "causal-concurrency": 0,
+      "causal-context-expired": 0,
+      "causal-thread-mismatch": 0,
+    };
+  }
+
+  function recordRejection(reason: SchedulerRejectionReason): void {
+    rejected++;
+    rejectedByReason[reason] = addOperationalCounter(rejectedByReason[reason]);
+  }
 
   function sourceState(policy: SchedulerSourcePolicy): SourceState {
     if (policy.id.trim().length === 0) throw new Error("source id must not be empty");
@@ -240,7 +277,7 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
     retryAfterMs?: number,
   ): void {
     if (item.state === "queued") removeQueuedItem(item);
-    rejected++;
+    recordRejection(reason);
     item.resolve({
       status: "rejected",
       reason,
@@ -307,6 +344,10 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
 
   function startItem(item: PendingItem): void {
     if (item.state === "queued") {
+      const waitedMs = safeElapsedMs(now() - item.enqueuedAt);
+      queueWaitCount = addOperationalCounter(queueWaitCount);
+      queueWaitTotalMs = addOperationalCounter(queueWaitTotalMs, waitedMs);
+      queueWaitMaxMs = Math.max(queueWaitMaxMs, waitedMs);
       const queue = queues.get(item.key);
       if (!queue || queue[0] !== item) {
         throw new Error(`scheduler invariant violated for thread "${item.key}"`);
@@ -399,7 +440,7 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
     reason: SchedulerRejectionReason,
     retryAfterMs?: number,
   ): Promise<ScheduledRunResult<T>> {
-    rejected++;
+    recordRejection(reason);
     return Promise.resolve({
       status: "rejected",
       reason,
@@ -489,17 +530,17 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
         }
         const keyQueued = queues.get(options.key)?.length ?? 0;
         if (keyQueued >= config.maxQueuedPerKey) {
-          rejected++;
+          recordRejection("thread-capacity");
           resolve({ status: "rejected", reason: "thread-capacity" });
           return;
         }
         if (source.queued >= source.maxQueued) {
-          rejected++;
+          recordRejection("source-capacity");
           resolve({ status: "rejected", reason: "source-capacity" });
           return;
         }
         if (queuedTurns >= config.maxQueued) {
-          rejected++;
+          recordRejection("agent-capacity");
           resolve({ status: "rejected", reason: "agent-capacity" });
           return;
         }
@@ -528,26 +569,30 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
         !internal.root ||
         !internal.root.active ||
         !internal.active ||
-        parent.key !== options.key
+        internal.key !== parent.key
       ) {
         return Promise.reject(
           new Error("causal scheduler lease is invalid, inactive, or belongs to another thread"),
         );
+      }
+      if (parent.key !== options.key) {
+        recordRejection("causal-thread-mismatch");
+        return Promise.resolve({ status: "rejected", reason: "causal-thread-mismatch" });
       }
       if (options.signal?.aborted) {
         canceled++;
         return Promise.resolve({ status: "canceled", reason: abortReason(options.signal) });
       }
       if (internal.root.quarantined || quarantinedKeys.has(options.key)) {
-        rejected++;
+        recordRejection("thread-quarantined");
         return Promise.resolve({ status: "rejected", reason: "thread-quarantined" });
       }
       if (parent.depth >= config.maxCausalDepth) {
-        rejected++;
+        recordRejection("causal-depth");
         return Promise.resolve({ status: "rejected", reason: "causal-depth" });
       }
       if (internal.childActive) {
-        rejected++;
+        recordRejection("causal-concurrency");
         return Promise.resolve({ status: "rejected", reason: "causal-concurrency" });
       }
 
@@ -602,11 +647,19 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
       rejected = 0;
       canceled = 0;
       quarantined = 0;
+      queueWaitCount = 0;
+      queueWaitTotalMs = 0;
+      queueWaitMaxMs = 0;
+      rejectedByReason = emptyRejectedByReason();
       state = "accepting";
     },
 
     recover(key: string): boolean {
       return quarantinedKeys.delete(key);
+    },
+
+    recordExternalRejection(reason: SchedulerRejectionReason): void {
+      recordRejection(reason);
     },
 
     snapshot(): TurnSchedulerSnapshot {
@@ -616,7 +669,7 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
         for (const queue of queues.values()) {
           for (const item of queue) oldest = Math.min(oldest, item.enqueuedAt);
         }
-        oldestQueueWaitMs = Math.max(0, now() - oldest);
+        oldestQueueWaitMs = safeElapsedMs(now() - oldest);
       }
       return Object.freeze({
         state,
@@ -626,11 +679,17 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
         queuedThreads: queues.size,
         quarantinedThreads: quarantinedKeys.size,
         oldestQueueWaitMs,
+        queueWait: Object.freeze({
+          count: queueWaitCount,
+          totalMs: queueWaitTotalMs,
+          maxMs: queueWaitMaxMs,
+        }),
         admitted,
         settled,
         rejected,
         canceled,
         quarantined,
+        rejectedByReason: Object.freeze({ ...rejectedByReason }),
       });
     },
   };

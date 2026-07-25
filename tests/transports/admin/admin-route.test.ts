@@ -12,7 +12,14 @@ import {
   handleAdminRoute,
 } from "@/transports/admin/index";
 import { generateCsrfToken } from "@/transports/admin/admin-csrf";
-import type { AdminActionInput, AgentCard, Augment, TransportKernel, TurnResult } from "@/types";
+import type {
+  AdminActionInput,
+  AgentCard,
+  Augment,
+  RuntimeOperationalSnapshot,
+  TransportKernel,
+  TurnResult,
+} from "@/types";
 
 const numberInput: AdminActionInput = {
   name: "value",
@@ -396,6 +403,41 @@ describe("handleAdminRoute — auth", () => {
     expect(body.web.allowAnonymous.value).toBeNull();
     expect(body.web.publicIntegration.value).toBeNull();
     expect(body.tools).toEqual({ totalTools: 0, entries: [] });
+  });
+
+  it("includes detailed runtime signals only behind console authentication", async () => {
+    const ctx = await makeCtx();
+    ctx.kernel.getOperationalSnapshot = () =>
+      ({
+        schemaVersion: 1,
+        scope: "process",
+        readiness: { accepting: true, state: "accepting" },
+        scheduler: { activeTurns: 2, queuedTurns: 3 },
+        turns: { total: 5 },
+        memory: { rssBytes: 123 },
+      }) as unknown as RuntimeOperationalSnapshot;
+
+    const denied = await handleAdminRoute(
+      new Request("https://my-agent.fly.dev/console/api/dashboard"),
+      ctx,
+    );
+    expect(denied.status).toBe(401);
+
+    const allowed = await handleAdminRoute(
+      new Request("http://127.0.0.1:8080/console/api/dashboard", {
+        headers: { authorization: basicHeader("test-bearer") },
+      }),
+      ctx,
+    );
+    expect(allowed.status).toBe(200);
+    expect(allowed.headers.get("cache-control")).toBe("no-store, must-revalidate");
+    const body = (await allowed.json()) as { runtime: RuntimeOperationalSnapshot };
+    expect(body.runtime).toMatchObject({
+      scope: "process",
+      readiness: { accepting: true },
+      scheduler: { activeTurns: 2, queuedTurns: 3 },
+      turns: { total: 5 },
+    });
   });
 
   it("GET /console/api/dashboard includes safe tool inventory metadata", async () => {

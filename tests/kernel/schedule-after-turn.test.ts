@@ -72,7 +72,7 @@ describe("scheduleAfterTurn lifecycle hook", () => {
       const aug: Augment = {
         name: "throws",
         scheduleAfterTurn: async () => {
-          throw new Error("boom");
+          throw new Error("sentinel-hook-secret");
         },
       };
       const agent = defineAgent(
@@ -86,7 +86,8 @@ describe("scheduleAfterTurn lifecycle hook", () => {
       const calls = warnSpy.mock.calls.map((args) => args.join(" ")).join("\n");
       expect(calls).toContain("scheduleAfterTurn");
       expect(calls).toContain("throws");
-      expect(calls).toContain("boom");
+      expect(calls).toContain("category=error-object");
+      expect(calls).not.toContain("sentinel-hook-secret");
     } finally {
       console.warn = originalWarn;
     }

@@ -465,6 +465,12 @@ describe("agent-wide keyed turn scheduling", () => {
         status: "rejected",
         rejection: { reason: "causal-context-expired" },
       });
+      expect(agent.operationalSnapshot()).toMatchObject({
+        turns: { rejected: 1 },
+        scheduler: {
+          rejectedByReason: { "causal-context-expired": 1 },
+        },
+      });
     } finally {
       await agent.stop();
     }
@@ -713,6 +719,10 @@ describe("agent-wide keyed turn scheduling", () => {
     await started.promise;
     const queued = transport.kernel().handleInbound(trigger("queued", "b", "web"));
     const stopping = agent.stop();
+    expect(agent.operationalSnapshot()).toMatchObject({
+      readiness: { accepting: false, state: "draining" },
+      shutdown: { attempts: 1, completed: 0, inProgress: true },
+    });
     expect(await queued).toMatchObject({
       status: "rejected",
       rejection: { reason: "runtime-stopping" },
@@ -723,5 +733,62 @@ describe("agent-wide keyed turn scheduling", () => {
     await active;
     await stopping;
     expect(events).toEqual(["model:start", "model:end", "shutdown"]);
+    expect(agent.operationalSnapshot().shutdown).toMatchObject({
+      attempts: 1,
+      completed: 1,
+      inProgress: false,
+    });
+  });
+
+  test("serializes concurrent stops so a late shutdown cannot corrupt a restart", async () => {
+    const shutdownStarted = deferred();
+    const releaseShutdown = deferred();
+    let shutdownCalls = 0;
+    const transport = capturedTransport("web", {
+      onShutdown: async () => {
+        shutdownCalls++;
+        if (shutdownCalls === 1) {
+          shutdownStarted.resolve();
+          await releaseShutdown.promise;
+        }
+      },
+    });
+    const agent = defineAgent(
+      { name: "serialized-lifecycle", model: "mock", augments: [transport.augment] },
+      {
+        maxContextTokens: 100_000,
+        countTokens: (text) => Math.ceil(text.length / 4),
+        async complete() {
+          return response();
+        },
+      },
+    );
+    await agent.start();
+
+    const firstStop = agent.stop();
+    await shutdownStarted.promise;
+    let secondSettled = false;
+    const secondStop = agent.stop().then(() => {
+      secondSettled = true;
+    });
+    await Promise.resolve();
+    expect(secondSettled).toBe(false);
+    expect(agent.operationalSnapshot().shutdown).toMatchObject({
+      attempts: 1,
+      completed: 0,
+      inProgress: true,
+    });
+
+    releaseShutdown.resolve();
+    await Promise.all([firstStop, secondStop]);
+    expect(shutdownCalls).toBe(1);
+    expect(agent.operationalSnapshot().shutdown).toMatchObject({ attempts: 1, completed: 1 });
+
+    await agent.start();
+    expect(
+      (await transport.kernel().handleInbound(trigger("after-restart", "new", "web"))).status,
+    ).toBe("completed");
+    await agent.stop();
+    expect(shutdownCalls).toBe(2);
   });
 });

@@ -13,6 +13,7 @@ import type {
   SchedulerContext,
   TurnSchedulingConfig,
   ThreadHistoryPersistence,
+  RuntimeOperationalSnapshot,
 } from "./types";
 import { createTokenizer } from "./tokenizer";
 import { generateAgentCard } from "./agent-card";
@@ -30,6 +31,7 @@ import {
 import { emptyTrace } from "./kernel/trace-emitter";
 import { isOutcomeUnknownError, OutcomeUnknownError } from "./outcome-unknown";
 import { enumerateDistributedCoordinationBlockers } from "./coordination/topology";
+import { createRuntimeSignals } from "./kernel/runtime-signals";
 
 const DEFAULT_TURN_SCHEDULING: TurnSchedulingConfig = {
   maxConcurrent: 4,
@@ -137,6 +139,7 @@ function threadOwnerTransition(
 
 export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandle {
   const tokenizer = createTokenizer();
+  const operationalSignals = createRuntimeSignals();
 
   // Wire the memory bus BEFORE constructing other kernel components.
   // This synthesizes context() for memory providers and adds a synthetic
@@ -170,6 +173,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     model,
     tokenizer,
     config: effectiveConfig,
+    operationalSignals,
     onHistoryEvicted: (threadId) => {
       restoredThreads.delete(threadId);
       unmanagedThreadOwners.delete(threadId);
@@ -200,12 +204,32 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
   turnScheduler.registerSource(injectSource);
 
   let started = false;
+  let lifecycleTail: Promise<void> | null = null;
+
+  function serializeLifecycle(operation: () => Promise<void>): Promise<void> {
+    const predecessor = lifecycleTail;
+    // Run synchronously until the first await when idle so stop() closes
+    // admission before it returns its promise. Later lifecycle calls preserve
+    // invocation order and cannot overlap a previous start/stop/rollback.
+    const result = predecessor ? predecessor.then(operation, operation) : operation();
+    const settled = result.then(
+      () => undefined,
+      () => undefined,
+    );
+    lifecycleTail = settled;
+    void settled.then(() => {
+      if (lifecycleTail === settled) lifecycleTail = null;
+    });
+    return result;
+  }
 
   async function rollbackStartup(): Promise<void> {
+    const shutdownObservation = operationalSignals.beginShutdown();
     lifecycle.stopIdleTimer();
     turnScheduler.close();
     await turnScheduler.drain();
-    await lifecycle.shutdown();
+    const shutdown = await lifecycle.shutdown();
+    shutdownObservation.finish(shutdown.hookFailures);
     outboundHandlers.clear();
   }
 
@@ -224,7 +248,18 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       if (!targetAugment || !peer) continue;
       const handler = outboundHandlers.get(targetAugment);
       if (handler) {
-        await handler(peer, msg, { signal });
+        const startedAt = Date.now();
+        const observation = operationalSignals.beginResponseDelivery();
+        try {
+          await handler(peer, msg, { signal });
+          observation.finish("completed", Date.now() - startedAt);
+        } catch (error) {
+          observation.finish(
+            isOutcomeUnknownError(error) ? "outcome-unknown" : "failed",
+            Date.now() - startedAt,
+          );
+          throw error;
+        }
       }
     }
   }
@@ -418,8 +453,12 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
           await a.onTurnEnd(result, { signal });
         } catch (err) {
           if (isOutcomeUnknownError(err)) lease.quarantine();
+          operationalSignals.recordHookFailure(
+            isOutcomeUnknownError(err) ? "outcome-unknown" : "failed",
+          );
           if (signal?.aborted) return;
-          console.warn(`onTurnEnd hook "${a.name}" failed: ${err}`);
+          const category = err instanceof Error ? "error-object" : "non-error-value";
+          console.warn(`onTurnEnd hook "${a.name}" failed category=${category}`);
         }
       }
     }
@@ -434,12 +473,13 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
           inject: (t) => {
             if (!contextActive) {
               const causalThreadId = t.threadId ?? t.turnId;
-              return Promise.resolve(
-                schedulerTerminalResult(t, causalThreadId, {
-                  status: "rejected",
-                  reason: "causal-context-expired",
-                }),
-              );
+              turnScheduler.recordExternalRejection("causal-context-expired");
+              const expired = schedulerTerminalResult(t, causalThreadId, {
+                status: "rejected",
+                reason: "causal-context-expired",
+              });
+              operationalSignals.recordTurn({ outcome: "rejected", durationMs: 0 });
+              return Promise.resolve(expired);
             }
             const injected = scheduleTurn(
               t,
@@ -466,7 +506,11 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
           await a.scheduleAfterTurn(result, ctx);
         } catch (err) {
           if (isOutcomeUnknownError(err)) lease.quarantine();
-          console.warn(`scheduleAfterTurn hook "${a.name}" threw: ${(err as Error).message}`);
+          operationalSignals.recordHookFailure(
+            isOutcomeUnknownError(err) ? "outcome-unknown" : "failed",
+          );
+          const category = err instanceof Error ? "error-object" : "non-error-value";
+          console.warn(`scheduleAfterTurn hook "${a.name}" failed category=${category}`);
         } finally {
           contextActive = false;
         }
@@ -541,14 +585,8 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     sourcePolicy: SchedulerSourcePolicy,
     parentLease?: KeyedTurnLease,
   ): Promise<TurnResult> {
+    const operationalStartedAt = Date.now();
     const threadId = trigger.threadId ?? trigger.turnId;
-    if (parentLease && parentLease.key !== threadId) {
-      return schedulerTerminalResult(trigger, threadId, {
-        status: "rejected",
-        reason: "causal-thread-mismatch",
-      });
-    }
-
     const executeCompleteTurn = async (lease: KeyedTurnLease): Promise<TurnResult> => {
       await options.beforeExecute?.();
       if (options.signal?.aborted) {
@@ -585,157 +623,189 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       }
     };
 
-    const scheduled = parentLease
-      ? await turnScheduler.runCausal(
-          parentLease,
-          {
-            key: threadId,
-            ...(options.signal ? { signal: options.signal } : {}),
-          },
-          executeCompleteTurn,
-        )
-      : await turnScheduler.submit(
-          {
-            key: threadId,
-            source: sourcePolicy,
-            ...(trigger.peer?.id ? { peerId: trigger.peer.id } : {}),
-            ...(options.signal ? { signal: options.signal } : {}),
-          },
-          executeCompleteTurn,
-        );
-    return scheduled.status === "completed"
-      ? scheduled.value
-      : schedulerTerminalResult(trigger, threadId, scheduled);
+    try {
+      const scheduled = parentLease
+        ? await turnScheduler.runCausal(
+            parentLease,
+            {
+              key: threadId,
+              ...(options.signal ? { signal: options.signal } : {}),
+            },
+            executeCompleteTurn,
+          )
+        : await turnScheduler.submit(
+            {
+              key: threadId,
+              source: sourcePolicy,
+              ...(trigger.peer?.id ? { peerId: trigger.peer.id } : {}),
+              ...(options.signal ? { signal: options.signal } : {}),
+            },
+            executeCompleteTurn,
+          );
+      const result =
+        scheduled.status === "completed"
+          ? scheduled.value
+          : schedulerTerminalResult(trigger, threadId, scheduled);
+      operationalSignals.recordTurn({
+        outcome: result.outcomeUnknown
+          ? "outcome-unknown"
+          : result.status === "canceled"
+            ? "canceled"
+            : result.status === "rejected"
+              ? "rejected"
+              : result.success
+                ? "completed"
+                : "failed",
+        durationMs: Date.now() - operationalStartedAt,
+      });
+      return result;
+    } catch (error) {
+      operationalSignals.recordTurn({
+        outcome: isOutcomeUnknownError(error) ? "outcome-unknown" : "failed",
+        durationMs: Date.now() - operationalStartedAt,
+      });
+      throw error;
+    }
   }
 
   const handle: AgentHandle = {
-    async start() {
-      if (started) throw new Error("Agent already started. Call stop() first.");
-      if (effectiveConfig.coordination) {
-        const blockers = enumerateDistributedCoordinationBlockers();
-        if (blockers.length > 0) {
-          throw new Error(
-            `Distributed coordination cannot start until shared fenced stores are available: ${blockers.join(", ")}`,
-          );
-        }
-      }
-      if (turnScheduler.snapshot().state === "stopped") turnScheduler.reopen();
-      const admission = createStartupAdmissionBarrier();
-      try {
-        await lifecycle.boot();
-
-        // Collect routes after boot but before transport registration. No
-        // transport may accept traffic until the later ready phase.
-        const collected = collectAugmentRoutes(effectiveAugments);
-        if (collected.errors.length > 0) {
-          throw new Error(
-            `Cannot start agent — augment HTTP route validation failed:\n  ` +
-              collected.errors.join("\n  "),
-          );
-        }
-        const augmentRoutes: readonly CollectedRoute[] = collected.routes;
-
-        const frozenAugments: readonly Augment[] = Object.freeze(effectiveAugments.slice());
-
-        // Register every transport before any transport is allowed to start
-        // listeners. This closes the startup window where early inbound data
-        // could arrive without a kernel handle.
-        for (const aug of effectiveAugments) {
-          if (aug.transport) {
-            const sourcePolicy: SchedulerSourcePolicy = {
-              id: `transport:${aug.name}`,
-              maxConcurrent: aug.transport.concurrency ?? 1,
-              maxQueued: aug.transport.maxQueueDepth ?? 50,
-              ...(aug.transport.rateLimitPerPeer
-                ? { rateLimitPerPeer: aug.transport.rateLimitPerPeer }
-                : {}),
-            };
-            turnScheduler.registerSource(sourcePolicy);
-
-            const transportKernel: TransportKernel = {
-              async handleInbound(
-                trigger: TurnTrigger,
-                opts?: {
-                  onEvent?: import("./types").KernelEventHandler;
-                  signal?: AbortSignal;
-                  historyPersistence?: ThreadHistoryPersistence;
-                  onExecutionStart?: () => void;
-                },
-              ): Promise<TurnResult> {
-                // A listener may bind before a later transport finishes its
-                // ready hook. Hold all traffic until the entire ready phase
-                // succeeds so failed startup cannot process a partial turn.
-                return scheduleTurn(
-                  trigger,
-                  {
-                    source: "transport",
-                    onEvent: opts?.onEvent,
-                    signal: opts?.signal,
-                    historyPersistence: opts?.historyPersistence,
-                    beforeExecute: () => admission.wait(opts?.signal),
-                    onExecutionStart: opts?.onExecutionStart,
-                  },
-                  sourcePolicy,
-                );
-              },
-              onOutbound(callback) {
-                outboundHandlers.set(aug.name, callback);
-              },
-              getAgentCard() {
-                return agentCard;
-              },
-              getAugmentRoutes() {
-                return augmentRoutes;
-              },
-              getAugments() {
-                return frozenAugments;
-              },
-              forgetThreadHistory(threadId: string) {
-                turnLoop.forgetHistoryManager(threadId);
-              },
-            };
-            await aug.transport.register(transportKernel, aug.name);
+    start() {
+      return serializeLifecycle(async () => {
+        if (started) throw new Error("Agent already started. Call stop() first.");
+        if (effectiveConfig.coordination) {
+          const blockers = enumerateDistributedCoordinationBlockers();
+          if (blockers.length > 0) {
+            throw new Error(
+              `Distributed coordination cannot start until shared fenced stores are available: ${blockers.join(", ")}`,
+            );
           }
         }
+        if (turnScheduler.snapshot().state === "stopped") turnScheduler.reopen();
+        operationalSignals.reset();
+        const admission = createStartupAdmissionBarrier();
+        try {
+          await lifecycle.boot();
 
-        for (const aug of effectiveAugments) {
-          await aug.transport?.ready?.();
-        }
+          // Collect routes after boot but before transport registration. No
+          // transport may accept traffic until the later ready phase.
+          const collected = collectAugmentRoutes(effectiveAugments);
+          if (collected.errors.length > 0) {
+            throw new Error(
+              `Cannot start agent — augment HTTP route validation failed:\n  ` +
+                collected.errors.join("\n  "),
+            );
+          }
+          const augmentRoutes: readonly CollectedRoute[] = collected.routes;
 
-        lifecycle.startIdleTimer(async () => {
+          const frozenAugments: readonly Augment[] = Object.freeze(effectiveAugments.slice());
+
+          // Register every transport before any transport is allowed to start
+          // listeners. This closes the startup window where early inbound data
+          // could arrive without a kernel handle.
           for (const aug of effectiveAugments) {
-            if (aug.onIdle) {
-              try {
-                await aug.onIdle();
-              } catch {
-                // Log and continue
-              }
+            if (aug.transport) {
+              const sourcePolicy: SchedulerSourcePolicy = {
+                id: `transport:${aug.name}`,
+                maxConcurrent: aug.transport.concurrency ?? 1,
+                maxQueued: aug.transport.maxQueueDepth ?? 50,
+                ...(aug.transport.rateLimitPerPeer
+                  ? { rateLimitPerPeer: aug.transport.rateLimitPerPeer }
+                  : {}),
+              };
+              turnScheduler.registerSource(sourcePolicy);
+
+              const transportKernel: TransportKernel = {
+                async handleInbound(
+                  trigger: TurnTrigger,
+                  opts?: {
+                    onEvent?: import("./types").KernelEventHandler;
+                    signal?: AbortSignal;
+                    historyPersistence?: ThreadHistoryPersistence;
+                    onExecutionStart?: () => void;
+                  },
+                ): Promise<TurnResult> {
+                  // A listener may bind before a later transport finishes its
+                  // ready hook. Hold all traffic until the entire ready phase
+                  // succeeds so failed startup cannot process a partial turn.
+                  return scheduleTurn(
+                    trigger,
+                    {
+                      source: "transport",
+                      onEvent: opts?.onEvent,
+                      signal: opts?.signal,
+                      historyPersistence: opts?.historyPersistence,
+                      beforeExecute: () => admission.wait(opts?.signal),
+                      onExecutionStart: opts?.onExecutionStart,
+                    },
+                    sourcePolicy,
+                  );
+                },
+                onOutbound(callback) {
+                  outboundHandlers.set(aug.name, callback);
+                },
+                getAgentCard() {
+                  return agentCard;
+                },
+                getOperationalSnapshot() {
+                  return operationalSnapshot();
+                },
+                getAugmentRoutes() {
+                  return augmentRoutes;
+                },
+                getAugments() {
+                  return frozenAugments;
+                },
+                forgetThreadHistory(threadId: string) {
+                  turnLoop.forgetHistoryManager(threadId);
+                },
+              };
+              await aug.transport.register(transportKernel, aug.name);
             }
           }
-        });
 
-        started = true;
-        admission.open();
-      } catch (err) {
-        admission.close(err instanceof Error ? err : new Error(String(err)));
-        await rollbackStartup();
-        throw err;
-      }
+          for (const aug of effectiveAugments) {
+            await aug.transport?.ready?.();
+          }
+
+          lifecycle.startIdleTimer(async () => {
+            for (const aug of effectiveAugments) {
+              if (aug.onIdle) {
+                try {
+                  await aug.onIdle();
+                } catch {
+                  // Log and continue
+                }
+              }
+            }
+          });
+
+          started = true;
+          admission.open();
+        } catch (err) {
+          admission.close(err instanceof Error ? err : new Error(String(err)));
+          await rollbackStartup();
+          throw err;
+        }
+      });
     },
 
-    async stop() {
-      if (!started) return; // no-op if not started
-      lifecycle.stopIdleTimer();
-      turnScheduler.close();
-      await turnScheduler.drain();
-      await Promise.all([...threadTails.values()].map((tail) => tail.catch(() => {})));
-      await lifecycle.shutdown();
-      outboundHandlers.clear();
-      turnLoop.clearHistoryManagers();
-      restoredThreads.clear();
-      unmanagedThreadOwners.clear();
-      threadTails.clear();
-      started = false;
+    stop() {
+      return serializeLifecycle(async () => {
+        if (!started) return; // no-op if not started
+        const shutdownObservation = operationalSignals.beginShutdown();
+        lifecycle.stopIdleTimer();
+        turnScheduler.close();
+        await turnScheduler.drain();
+        await Promise.all([...threadTails.values()].map((tail) => tail.catch(() => {})));
+        const shutdown = await lifecycle.shutdown();
+        shutdownObservation.finish(shutdown.hookFailures);
+        outboundHandlers.clear();
+        turnLoop.clearHistoryManagers();
+        restoredThreads.clear();
+        unmanagedThreadOwners.clear();
+        threadTails.clear();
+        started = false;
+      });
     },
 
     async ready() {
@@ -748,6 +818,8 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         scheduler: turnScheduler.snapshot(),
       };
     },
+
+    operationalSnapshot,
 
     card(): AgentCard {
       return agentCard;
@@ -768,9 +840,25 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     },
 
     recoverThread(threadId: string): boolean {
-      return turnScheduler.recover(threadId);
+      const recovered = turnScheduler.recover(threadId);
+      operationalSignals.recordThreadRecovery(recovered);
+      return recovered;
     },
   };
 
   return handle;
+
+  function operationalSnapshot(): RuntimeOperationalSnapshot {
+    const signals = operationalSignals.snapshot();
+    const scheduler = turnScheduler.snapshot();
+    const state = !started && scheduler.state === "accepting" ? "not-started" : scheduler.state;
+    return Object.freeze({
+      ...signals,
+      readiness: Object.freeze({
+        accepting: started && scheduler.state === "accepting",
+        state,
+      }),
+      scheduler,
+    });
+  }
 }

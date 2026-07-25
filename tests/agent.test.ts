@@ -97,6 +97,94 @@ describe("defineAgent", () => {
     await agent.stop();
   });
 
+  it("exposes redacted process-local operational signals with honest readiness", async () => {
+    const model = createMockModel({ response: "sentinel-provider-response" });
+    const transport = createMockTransport();
+    const agent = defineAgent(
+      { name: "observed-agent", model: "mock", augments: [transport.augment] },
+      model,
+    );
+
+    expect(agent.operationalSnapshot().readiness).toEqual({
+      accepting: false,
+      state: "not-started",
+    });
+    await agent.start();
+    expect(agent.operationalSnapshot().readiness).toEqual({ accepting: true, state: "accepting" });
+
+    await transport.sendMessage("sentinel-customer-prompt");
+    const active = agent.operationalSnapshot();
+    expect(active.turns).toMatchObject({ total: 1, completed: 1 });
+    expect(active.inference).toMatchObject({ attempts: 1, completed: 1 });
+    expect(active.responseDelivery).toMatchObject({ attempts: 1, completed: 1, inFlight: 0 });
+    const serialized = JSON.stringify(active);
+    expect(serialized).not.toContain("sentinel-customer-prompt");
+    expect(serialized).not.toContain("sentinel-provider-response");
+
+    await agent.stop();
+    expect(agent.operationalSnapshot()).toMatchObject({
+      readiness: { accepting: false, state: "stopped" },
+      shutdown: { attempts: 1, completed: 1 },
+    });
+  });
+
+  it("accounts for inference steps returned by a claimed internal turn", async () => {
+    const internal: Augment = {
+      name: "internal-engine",
+      async handleInternalTurn(trigger) {
+        const trace = emptyTrace({
+          turnId: trigger.turnId,
+          threadId: trigger.threadId ?? trigger.turnId,
+          trigger: { type: trigger.type, sourceAugment: trigger.source },
+        });
+        trace.inferenceSteps.push({
+          model: "sentinel-model-label",
+          outcome: "failed",
+          inputTokens: 8,
+          outputTokens: 3,
+          durationMs: 12,
+          toolCalls: [],
+          cost: { priced: true, costUsd: 0.125 },
+        });
+        return {
+          turnId: trigger.turnId,
+          success: false,
+          status: "failed",
+          toolCalls: [],
+          trace,
+          error: { message: "sentinel-internal-error", source: "internal-engine" },
+        };
+      },
+    };
+    const agent = defineAgent(
+      { name: "internal-observed", model: "mock", augments: [internal] },
+      createMockModel({ response: "unused" }),
+    );
+    await agent.start();
+    try {
+      await agent.inject({
+        type: "internal",
+        turnId: "sentinel-internal-turn",
+        threadId: "sentinel-internal-thread",
+        source: "internal-engine",
+        timestamp: Date.now(),
+        payload: {},
+      });
+      const snapshot = agent.operationalSnapshot();
+      expect(snapshot.inference).toMatchObject({
+        attempts: 1,
+        completed: 0,
+        failed: 1,
+        inputTokens: 8,
+        outputTokens: 3,
+        pricedCostUsd: 0.125,
+      });
+      expect(JSON.stringify(snapshot)).not.toContain("sentinel");
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("supports tool execution end to end", async () => {
     const model = createMockModel();
     model.pushResponse({
