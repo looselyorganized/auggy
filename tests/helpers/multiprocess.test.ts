@@ -25,4 +25,20 @@ describe("JSON-line multi-process barrier", () => {
     expect(await first.process.exited).toBe(0);
     expect(await second.process.exited).toBe(0);
   });
+
+  test("drains noisy child stderr without retaining its contents", async () => {
+    const worker = spawnJsonLineWorker({ script: CHILD, args: ["noisy", "noisy"] });
+    workers.push(worker);
+    const barrier = createJsonLineBarrier([worker]);
+
+    await barrier.waitUntilReady();
+    barrier.release();
+    barrier.close();
+
+    expect(await worker.next()).toEqual({ event: "RELEASED", worker: "noisy" });
+    expect(await worker.process.exited).toBe(0);
+    const stderr = await worker.stderr();
+    expect(stderr).toContain("worker stderr suppressed");
+    expect(stderr).not.toContain("x".repeat(64));
+  });
 });

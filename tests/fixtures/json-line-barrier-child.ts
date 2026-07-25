@@ -17,7 +17,9 @@ async function nextMessage(): Promise<Record<string, unknown> | null> {
   }
 }
 
-console.log(JSON.stringify({ event: "READY", worker: process.argv[2] ?? "child" }));
+const worker = process.argv[2] ?? "child";
+if (process.argv[3] === "noisy") console.error("x".repeat(128 * 1024));
+console.log(JSON.stringify({ event: "READY", worker }));
 const message = await nextMessage();
 if (message?.event !== "GO") throw new Error("expected explicit GO barrier message");
-console.log(JSON.stringify({ event: "RELEASED", worker: process.argv[2] ?? "child" }));
+console.log(JSON.stringify({ event: "RELEASED", worker }));

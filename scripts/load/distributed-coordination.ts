@@ -46,6 +46,9 @@ export interface SyntheticLoadMetrics {
   staleFenceRejects: number;
   namespaceViolations: number;
   namespaceRejects: number;
+  crossNamespaceSameKeyExecutions: number;
+  quarantinedThreads: number;
+  recoveryRejected: number;
   throughputPerSecond: number;
   activePeak: number;
   queuedPeak: number;
@@ -65,6 +68,7 @@ export interface SyntheticLoadThresholds {
   maxSameThreadOverlap: number;
   maxStaleFenceAccepts: number;
   maxNamespaceViolations: number;
+  maxRecoveryRejected: number;
 }
 
 export const DEFAULT_SYNTHETIC_LOAD_THRESHOLDS: Readonly<SyntheticLoadThresholds> = {
@@ -80,6 +84,7 @@ export const DEFAULT_SYNTHETIC_LOAD_THRESHOLDS: Readonly<SyntheticLoadThresholds
   maxSameThreadOverlap: 0,
   maxStaleFenceAccepts: 0,
   maxNamespaceViolations: 0,
+  maxRecoveryRejected: 0,
 };
 
 interface WorkItem {
@@ -130,7 +135,11 @@ function makeWorkload(options: NormalisedSyntheticLoadOptions): WorkItem[] {
   const sessions = Math.max(2, Math.min(80, Math.ceil(options.requests / 8)));
   for (let id = 0; id < options.requests; id++) {
     const session = Math.floor(random() * sessions);
-    const namespace = `tenant-${Math.floor(session % options.namespaceCount)}`;
+    const namespace = `tenant-${
+      options.profile === "order-support"
+        ? id % options.namespaceCount
+        : Math.floor(session % options.namespaceCount)
+    }`;
     const thread = `${options.profile}-session-${session}`;
     const burst = Math.floor(id / 12);
     const arrivalMs =
@@ -139,8 +148,8 @@ function makeWorkload(options: NormalisedSyntheticLoadOptions): WorkItem[] {
     const duplicate = mutation && id > 0 && random() < 0.35;
     const mutationKey = mutation
       ? duplicate
-        ? `order-${Math.max(0, id - (id % 3 || 3))}`
-        : `order-${id}`
+        ? `order-${Math.floor(Math.max(0, id - (id % 3 || 3)) / 6)}`
+        : `order-${Math.floor(id / 6)}`
       : null;
     work.push({
       id,
@@ -215,7 +224,9 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
   const active: ActiveWork[] = [];
   const activeThreads = new Set<string>();
   const completedMutations = new Set<string>();
+  const mutationNamespaces = new Map<string, Set<string>>();
   const fences = new Map<string, number>();
+  const quarantinedThreads = new Set<string>();
   const replicaAssignments = Array.from({ length: options.replicas }, () => 0);
   const waits: number[] = [];
   let activePeak = 0;
@@ -228,6 +239,8 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
   let staleFenceRejects = 0;
   let namespaceViolations = 0;
   let namespaceRejects = 0;
+  let crossNamespaceSameKeyExecutions = 0;
+  let recoveryRejected = 0;
   let unavailable = 0;
   let outcomeUnknown = 0;
   let clock = 0;
@@ -250,12 +263,24 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
     let progressed = true;
     while (progressed && active.length < options.maxActive) {
       progressed = false;
+      const quarantinedIndex = waiting.findIndex((candidate) =>
+        quarantinedThreads.has(`${candidate.namespace}:${candidate.thread}`),
+      );
+      if (quarantinedIndex >= 0) {
+        waiting.splice(quarantinedIndex, 1);
+        recoveryRejected++;
+        progressed = true;
+        continue;
+      }
       const candidateIndex = waiting.findIndex(
         (candidate) => !activeThreads.has(`${candidate.namespace}:${candidate.thread}`),
       );
       if (candidateIndex < 0) return;
       const candidate = waiting.splice(candidateIndex, 1)[0]!;
-      if (candidate.mutationKey && completedMutations.has(candidate.mutationKey)) {
+      const mutationKey = candidate.mutationKey
+        ? `${candidate.namespace}:${candidate.mutationKey}`
+        : null;
+      if (mutationKey && completedMutations.has(mutationKey)) {
         // A duplicate delivery replays the previous result without another mutation.
         progressed = true;
         continue;
@@ -272,10 +297,16 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
         candidate.id % options.faults.outcomeUnknownEvery === 0
       ) {
         outcomeUnknown++;
+        quarantinedThreads.add(threadKey);
       }
       if (candidate.mutationKey) {
-        if (completedMutations.has(candidate.mutationKey)) duplicateMutations++;
-        completedMutations.add(candidate.mutationKey);
+        if (completedMutations.has(mutationKey!)) duplicateMutations++;
+        completedMutations.add(mutationKey!);
+        const namespaces = mutationNamespaces.get(candidate.mutationKey) ?? new Set<string>();
+        const hadDifferentNamespace = namespaces.size > 0 && !namespaces.has(candidate.namespace);
+        namespaces.add(candidate.namespace);
+        mutationNamespaces.set(candidate.mutationKey, namespaces);
+        if (hadDifferentNamespace) crossNamespaceSameKeyExecutions++;
       }
       activePeak = Math.max(activePeak, active.length);
       progressed = true;
@@ -294,7 +325,12 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
     completeUntil(item.arrivalMs);
     clock = Math.max(clock, item.arrivalMs);
     admit();
-    if (waiting.length >= options.maxQueued) {
+    const threadKey = `${item.namespace}:${item.thread}`;
+    const canStartImmediately =
+      active.length < options.maxActive &&
+      !activeThreads.has(threadKey) &&
+      !quarantinedThreads.has(threadKey);
+    if (!canStartImmediately && waiting.length >= options.maxQueued) {
       rejections++;
       continue;
     }
@@ -352,6 +388,9 @@ export function runSyntheticDistributedLoad(input: SyntheticLoadOptions): Synthe
     staleFenceRejects,
     namespaceViolations,
     namespaceRejects,
+    crossNamespaceSameKeyExecutions,
+    quarantinedThreads: quarantinedThreads.size,
+    recoveryRejected,
     throughputPerSecond: Number(((completed * 1_000) / elapsedMs).toFixed(3)),
     activePeak,
     queuedPeak,
@@ -377,6 +416,7 @@ export function evaluateSyntheticLoad(
     ["same-thread overlap", metrics.sameThreadOverlap, thresholds.maxSameThreadOverlap],
     ["stale fence accepts", metrics.staleFenceAccepts, thresholds.maxStaleFenceAccepts],
     ["namespace violations", metrics.namespaceViolations, thresholds.maxNamespaceViolations],
+    ["recovery rejected", metrics.recoveryRejected, thresholds.maxRecoveryRejected],
   ];
   return failures
     .filter(([, actual, maximum]) => actual > maximum)

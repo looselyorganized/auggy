@@ -35,7 +35,39 @@ describe("synthetic distributed coordination load harness", () => {
     expect(metrics.staleFenceRejects).toBe(1);
     expect(metrics.namespaceViolations).toBe(0);
     expect(metrics.namespaceRejects).toBe(1);
+    expect(metrics.crossNamespaceSameKeyExecutions).toBeGreaterThan(0);
     expect(evaluateSyntheticLoad(metrics)).toEqual([]);
+  });
+
+  test("quarantines an outcome-unknown thread and rejects later work without recovery", () => {
+    const metrics = runSyntheticDistributedLoad({
+      profile: "order-support",
+      seed: 4,
+      requests: 72,
+      faults: { outcomeUnknownEvery: 1 },
+    });
+
+    expect(metrics.outcomeUnknown).toBeGreaterThan(0);
+    expect(metrics.quarantinedThreads).toBeGreaterThan(0);
+    expect(metrics.recoveryRejected).toBeGreaterThan(0);
+    expect(evaluateSyntheticLoad(metrics)).toEqual(
+      expect.arrayContaining([
+        expect.stringContaining("outcome unknown"),
+        expect.stringContaining("recovery rejected"),
+      ]),
+    );
+  });
+
+  test("executes immediately when the queue capacity is zero and a slot is available", () => {
+    const metrics = runSyntheticDistributedLoad({
+      profile: "concierge",
+      seed: 8,
+      requests: 1,
+      maxQueued: 0,
+    });
+
+    expect(metrics.rejections).toBe(0);
+    expect(metrics.completed).toBe(1);
   });
 
   test("makes deliberately broken fencing, namespace, and availability seams visible", () => {

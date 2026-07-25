@@ -27,16 +27,19 @@ export interface JsonLineBarrier {
 function boundedText(stream: ReadableStream<Uint8Array> | null): Promise<string> {
   if (!stream) return Promise.resolve("");
   const reader = stream.getReader();
-  const decoder = new TextDecoder();
-  let text = "";
+  let bytes = 0;
   return (async () => {
     while (true) {
       const chunk = await reader.read();
-      if (chunk.done) return text;
-      text += decoder.decode(chunk.value, { stream: true });
-      if (text.length > MAX_STDERR_BYTES) {
-        return `${text.slice(0, MAX_STDERR_BYTES)}\n[stderr truncated]`;
+      if (chunk.done) {
+        return bytes === 0
+          ? ""
+          : `worker stderr suppressed (${Math.min(bytes, MAX_STDERR_BYTES)}+ bytes)`;
       }
+      // Keep consuming after the retained diagnostic budget so a noisy worker
+      // cannot deadlock on a full stderr pipe. Do not surface arbitrary child
+      // diagnostics: future worker output can contain sensitive context.
+      bytes = Math.min(MAX_STDERR_BYTES + 1, bytes + chunk.value.byteLength);
     }
   })();
 }
@@ -83,7 +86,8 @@ export function spawnJsonLineWorker(options: JsonLineWorkerOptions): JsonLineWor
       }
       const chunk = await stdout.read();
       if (chunk.done) {
-        throw new Error(`worker exited before emitting a JSON line: ${await stderr}`);
+        const detail = await stderr;
+        throw new Error(`worker exited before emitting a JSON line${detail ? ` (${detail})` : ""}`);
       }
       buffered += decoder.decode(chunk.value, { stream: true });
       if (buffered.length > MAX_JSON_LINE_BYTES) {
