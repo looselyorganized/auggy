@@ -4,7 +4,9 @@ import { join } from "node:path";
 import { telegramTransport } from "../../src";
 import type {
   TelegramAsyncReplayStore,
+  TelegramReplayClaim,
   TelegramReplayClaimOptions,
+  TelegramReplayConflict,
   TelegramTransportOptions,
 } from "../../src";
 
@@ -28,9 +30,21 @@ describe("public package exports", () => {
 
   test("exports the programmatic Telegram shared-replay boundary", () => {
     const claimOptions: TelegramReplayClaimOptions = { signal: new AbortController().signal };
+    const claim: TelegramReplayClaim = "quarantined";
+    const conflict: TelegramReplayConflict = {
+      id: "incident",
+      updateId: 1,
+      detectedAt: 1,
+    };
     const store: TelegramAsyncReplayStore = {
       async claimAsync() {
         return "claimed";
+      },
+      async getConflictAsync() {
+        return null;
+      },
+      async resolveConflictAsync() {
+        return false;
       },
     };
     const options = {
@@ -42,6 +56,8 @@ describe("public package exports", () => {
 
     expect(typeof telegramTransport).toBe("function");
     expect(claimOptions.signal.aborted).toBe(false);
+    expect(claim).toBe("quarantined");
+    expect(conflict.id).toBe("incident");
     expect(options.replay.store).toBe(store);
   });
 });
