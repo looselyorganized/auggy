@@ -11,6 +11,7 @@ const coordinator = new PostgresDistributedTurnCoordinator({
   instanceId,
   maxConcurrent: 2,
   maxQueued: 4,
+  maxQueuedPerThread: 2,
   leaseMs: 500,
 });
 

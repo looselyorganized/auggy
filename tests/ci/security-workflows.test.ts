@@ -234,7 +234,7 @@ describe("tracked test-surface workflow enforcement", () => {
     expect(
       requireStep(postgres, "Run PostgreSQL coordination integration tests").env
         ?.AUGGY_TEST_POSTGRES_URL,
-    ).toBe("postgresql://postgres:postgres@localhost:5432/postgres");
+    ).toBe("postgresql://postgres@localhost:5432/postgres");
   });
 
   test("release rehearsal executes the same canonical bounded inventory", () => {

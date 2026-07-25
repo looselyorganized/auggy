@@ -249,7 +249,7 @@ jobs:
         image: postgres:17-alpine
         env:
           POSTGRES_DB: postgres
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_HOST_AUTH_METHOD: trust
           POSTGRES_USER: postgres
         ports:
           - 5432:5432
@@ -273,7 +273,7 @@ jobs:
 
       - name: Run PostgreSQL coordination integration tests
         env:
-          AUGGY_TEST_POSTGRES_URL: postgresql://postgres:postgres@localhost:5432/postgres
+          AUGGY_TEST_POSTGRES_URL: postgresql://postgres@localhost:5432/postgres
         run: bun test --max-concurrency=1 tests/coordination/postgres-distributed-turn-coordinator.test.ts
 
   test:

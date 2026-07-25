@@ -22,13 +22,20 @@ function request(requestId: string, threadId = "thread-1", bindingHash = hash) {
   return { requestId, threadId, source, bindingHash };
 }
 
-function coordinator(namespace: string, instanceId: string, leaseMs = 80, maxConcurrent = 2) {
+function coordinator(
+  namespace: string,
+  instanceId: string,
+  leaseMs = 80,
+  maxConcurrent = 2,
+  maxQueued = 4,
+) {
   return new PostgresDistributedTurnCoordinator({
     url: url!,
     namespace,
     instanceId,
     maxConcurrent,
-    maxQueued: 4,
+    maxQueued,
+    maxQueuedPerThread: Math.min(2, maxQueued),
     leaseMs,
   });
 }
@@ -71,8 +78,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
     const first = coordinator(namespace(), "migration-a");
     const second = coordinator(namespace(), "migration-b");
     try {
-      await first.migrate();
-      await second.migrate();
+      await Promise.all([first.migrate(), second.migrate()]);
       const sql = new SQL(url!);
       try {
         const migrations = await sql.unsafe<Array<{ id: string; checksum: string }>>(
@@ -89,7 +95,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
         await sql.close();
       }
       expect(await first.health()).toEqual({
-        status: "unavailable",
+        status: "healthy",
         active: 0,
         queued: 0,
         quarantined: 0,
@@ -109,7 +115,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
       await setup.close();
     }
 
-    const env = { ...process.env, AUGGY_TEST_POSTGRES_URL: url };
+    const env = { AUGGY_TEST_POSTGRES_URL: url };
     const script = resolve("tests/coordination/fixtures/postgres-coordinator-worker.ts");
     const first = spawnJsonLineWorker({ script, args: [value, "process-a"], env });
     const second = spawnJsonLineWorker({ script, args: [value, "process-b"], env });
@@ -142,6 +148,16 @@ describe("PostgreSQL distributed turn coordinator", () => {
       expect(claimed.status).toBe("acquired");
       expect(await second.claim(request("two", "thread-two"))).toEqual({ status: "waiting" });
       expect(await second.admit(request("one", "thread-other"))).toEqual({ status: "conflict" });
+      expect(await second.admit(request("thread-wait-1", "thread-one"))).toEqual({
+        status: "admitted",
+      });
+      expect(await second.admit(request("thread-wait-2", "thread-one"))).toEqual({
+        status: "admitted",
+      });
+      expect(await second.admit(request("thread-wait-3", "thread-one"))).toEqual({
+        status: "rejected",
+        reason: "thread-capacity",
+      });
 
       expect(await isolated.admit(request("one", "thread-one"))).toEqual({ status: "admitted" });
       expect((await isolated.claim(request("one", "thread-one"))).status).toBe("acquired");
@@ -216,6 +232,33 @@ describe("PostgreSQL distributed turn coordinator", () => {
       });
     } finally {
       await draining.close();
+    }
+  });
+
+  postgresTest("health sweeps expired started work and frees zero-queue capacity", async () => {
+    const value = namespace();
+    const instance = coordinator(value, "health-sweeper", 25, 1, 0);
+    try {
+      await instance.migrate();
+      const startedRequest = request("health-started", "quarantined-thread");
+      await instance.admit(startedRequest);
+      const lease = await instance.claim(startedRequest);
+      if (lease.status !== "acquired") throw new Error("expected started lease");
+      expect(await instance.markExecutionStarted(lease.lease)).toEqual({ status: "ok" });
+
+      await waitFor(async () => {
+        const health = await instance.health();
+        return health.quarantined === 1 && health.active === 0 ? health : undefined;
+      }, "health expiry sweep");
+      expect(await instance.admit(request("same-thread", "quarantined-thread"))).toEqual({
+        status: "rejected",
+        reason: "thread-quarantined",
+      });
+      expect(await instance.admit(request("other-thread", "other-thread"))).toEqual({
+        status: "admitted",
+      });
+    } finally {
+      await instance.close();
     }
   });
 });
