@@ -761,4 +761,41 @@ describe("SqliteStore", () => {
     ).rejects.toThrow(/tombstoned/i);
     await namespaced.close();
   });
+
+  it("treats a same-peer migration as a mutation-free no-op", async () => {
+    const sharedPath = `${dbPath}.same-peer-migration`;
+    const namespaced = createSqliteStore({
+      dbPath: sharedPath,
+      retentionDays: 90,
+      namespace: "ep",
+    });
+    await namespaced.write({
+      label: "ep:recognized:before-reverify",
+      content: "must survive same-peer reverification",
+      peerId: "vis-same",
+      trustLevel: "public",
+      createdAt: Date.now(),
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
+    });
+
+    expect(reassignSqliteMemoryPeerId(sharedPath, "ep", "vis-same", "vis-same")).toBe(0);
+    expect(await namespaced.search("survive", "vis-same")).toHaveLength(1);
+    await expect(
+      namespaced.write({
+        label: "ep:recognized:after-reverify",
+        content: "writes remain enabled",
+        peerId: "vis-same",
+        trustLevel: "public",
+        createdAt: Date.now(),
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      }),
+    ).resolves.toBeDefined();
+    await namespaced.close();
+  });
 });

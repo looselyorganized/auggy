@@ -1943,7 +1943,11 @@ describe("webTransport HTTP server", () => {
       port,
       auth: { type: "bearer", token: "test-token" },
       // F2: explicit signingKey required; ephemeral fallback removed.
-      visitorTokens: { enabled: true, signingKey: "test-signing-key" },
+      visitorTokens: {
+        enabled: true,
+        signingKey: "test-signing-key",
+        identityLookup: (visitorId) => ({ visitorId }),
+      },
     });
     const agent = defineAgent(
       {
@@ -2689,6 +2693,82 @@ describe("webTransport HTTP server", () => {
       // A recognized visitor gets no new token (already has a valid one).
       expect(resp.headers.get("x-visitor-token")).toBeNull();
       await resp.text();
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("a signed visitor absent from the configured identity authority stays anonymous", async () => {
+    const model = createMockModel({ response: "anonymous only" });
+    const port = 18963;
+    const key = await deriveSigningKey("test-signing-key");
+    const orphan = await createVisitorToken(key, "test", 3_600, "vis_orphan");
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey: "test-signing-key",
+        identityLookup: () => null,
+      },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [createIdentityAugment("test"), aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const { response } = await bootstrapAnonymousRequest(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-visitor-token": orphan.token,
+        },
+        body: JSON.stringify({ messages: [{ role: "user", content: "do not recognize me" }] }),
+      });
+      expect(response.status).toBe(200);
+      await response.text();
+      expect(model.calls).toHaveLength(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("an unavailable visitor identity authority fails closed to anonymous", async () => {
+    const model = createMockModel({ response: "anonymous only" });
+    const port = 18964;
+    const key = await deriveSigningKey("test-signing-key");
+    const orphan = await createVisitorToken(key, "test", 3_600, "vis_unavailable");
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey: "test-signing-key",
+        identityLookup: () => {
+          throw new Error("identity store unavailable");
+        },
+      },
+    });
+    const agent = defineAgent(
+      { name: "test", model: "mock", augments: [createIdentityAugment("test"), aug] },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const { response } = await bootstrapAnonymousRequest(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-visitor-token": orphan.token,
+        },
+        body: JSON.stringify({ messages: [{ role: "user", content: "stay anonymous" }] }),
+      });
+      expect(response.status).toBe(200);
+      await response.text();
       expect(model.calls).toHaveLength(1);
     } finally {
       await agent.stop();

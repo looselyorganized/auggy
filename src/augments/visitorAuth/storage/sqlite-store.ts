@@ -457,6 +457,18 @@ export function createSqliteVisitorAuthStore(
           | { visitor_id: string; email: string; revoked: number; revoked_at: number | null }
           | undefined;
         if (!oldRow) return;
+        const latestRevocation = db
+          .query<{ revoked_at: number | null }, [string]>(
+            "SELECT MAX(revoked_at) AS revoked_at FROM revoked_visitor_ids WHERE email = ?",
+          )
+          .get(email);
+        if (
+          latestRevocation?.revoked_at !== null &&
+          latestRevocation?.revoked_at !== undefined &&
+          tokenIssuedAt <= latestRevocation.revoked_at
+        ) {
+          return;
+        }
         if (oldRow.revoked === 0) {
           canonicalVisitorId = oldRow.visitor_id;
           return;

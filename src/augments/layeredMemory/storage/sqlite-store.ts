@@ -268,6 +268,7 @@ export function reassignSqliteMemoryPeerId(
   newPeerId: string,
 ): number {
   const owner = canonicalMemoryNamespace(namespace, "layeredMemory store");
+  if (oldPeerId === newPeerId) return 0;
   const database = openLayeredMemoryDatabase(dbPath, false);
   try {
     return database.db

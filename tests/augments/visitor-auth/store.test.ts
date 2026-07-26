@@ -655,6 +655,29 @@ describe("createSqliteVisitorAuthStore", () => {
         visitorId: "vis_epoch_two",
         revoked: true,
       });
+
+      expect(
+        store.unrevokeAndRotate(
+          "epochs@x",
+          "vis_epoch_three",
+          now + 600,
+          now + 86_400_000,
+          now + 500,
+        ),
+      ).toBe("vis_epoch_three");
+      expect(
+        store.unrevokeAndRotate(
+          "epochs@x",
+          "vis_stale_active_winner",
+          now + 700,
+          now + 86_400_000,
+          now + 200,
+        ),
+      ).toBeNull();
+      expect(store.findVerifiedByEmail("epochs@x")).toMatchObject({
+        visitorId: "vis_epoch_three",
+        revoked: false,
+      });
     });
   });
 
