@@ -75,7 +75,7 @@ function writeVisitorAuthAgent(root: string, name: string) {
     stringify({
       type: "webTransport",
       config: {
-        port: 0,
+        port: 18_080,
         auth: { type: "bearer", token: "test-token" },
       },
     }),

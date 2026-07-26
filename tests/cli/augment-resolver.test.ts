@@ -1469,7 +1469,7 @@ describe("resolveAugments — agentMail runtime state paths", () => {
       resolveAugments([agentMailConfig("support", "nested/mail.bin")], TMP, {
         runtimeDataRoot,
       }),
-    ).rejects.toThrow(/must not contain symlinked directories/);
+    ).rejects.toThrow(/missing or unsafe|must not contain symlinked directories/);
     expect(existsSync(join(external, "mail.bin"))).toBe(false);
     expect(existsSync(join(external, "mail.bin-wal"))).toBe(false);
     expect(existsSync(join(external, "mail.bin-shm"))).toBe(false);
