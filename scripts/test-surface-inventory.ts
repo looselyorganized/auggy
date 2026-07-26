@@ -1,7 +1,7 @@
 import { lstatSync, readFileSync } from "node:fs";
 import { dirname, join, resolve, sep } from "node:path";
 
-export type TestSuite = "runtime" | "admin";
+export type TestSuite = "runtime" | "admin" | "external";
 export type TestSelectorKind = "exact" | "children" | "tree";
 
 export interface TestSurfaceSelector {
@@ -38,6 +38,7 @@ export interface TestSurfaceInventory {
   shards: ResolvedTestShard[];
   runtimeFiles: number;
   adminFiles: number;
+  externalFiles: number;
 }
 
 export interface BunTestInvocation {
@@ -54,6 +55,7 @@ const TEST_FILE_PATTERN = /(?:\.test|_test|\.spec|_spec)\.(?:js|jsx|ts|tsx)$/;
 const SAFE_SHARD_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const REGULAR_GIT_MODES = new Set(["100644", "100755"]);
 const DISCOVERY_ROOTS: Record<TestSuite, readonly string[]> = {
+  external: ["examples/temporal-order-support"],
   runtime: ["tests", "examples", "packages"],
   admin: ["admin/src"],
 };
@@ -121,6 +123,9 @@ function isAtOrBelow(path: string, root: string): boolean {
 }
 
 function suiteForPath(path: string): TestSuite | null {
+  // Isolated examples are nested below the broad examples/ runtime root, so
+  // classify their exact dependency boundary before the general roots.
+  if (DISCOVERY_ROOTS.external.some((root) => isAtOrBelow(path, root))) return "external";
   for (const [suite, roots] of Object.entries(DISCOVERY_ROOTS) as Array<
     [TestSuite, readonly string[]]
   >) {
@@ -150,7 +155,11 @@ function parseManifest(value: unknown): TestSurfaceManifest {
     }
     if (ids.has(rawShard.id)) fail(`manifest has duplicate shard id ${rawShard.id}`);
     ids.add(rawShard.id);
-    if (rawShard.suite !== "runtime" && rawShard.suite !== "admin") {
+    if (
+      rawShard.suite !== "runtime" &&
+      rawShard.suite !== "admin" &&
+      rawShard.suite !== "external"
+    ) {
       fail(`manifest shard ${rawShard.id} has an invalid suite`);
     }
     const suite = rawShard.suite;
@@ -368,9 +377,12 @@ export function validateTestSurface(
   const adminFiles = shards
     .filter((shard) => shard.suite === "admin")
     .reduce((sum, shard) => sum + shard.files.length, 0);
+  const externalFiles = shards
+    .filter((shard) => shard.suite === "external")
+    .reduce((sum, shard) => sum + shard.files.length, 0);
   if (runtimeFiles === 0) fail("runtime test inventory is empty");
   if (adminFiles === 0) fail("admin test inventory is empty");
-  return { shards, runtimeFiles, adminFiles };
+  return { shards, runtimeFiles, adminFiles, externalFiles };
 }
 
 export function readGitTreeEntries(root = ROOT): GitTreeEntry[] {
@@ -451,9 +463,18 @@ export function createBunTestInvocation(
   root = ROOT,
   bunExecutable = process.execPath,
 ): BunTestInvocation {
-  const cwd = shard.suite === "admin" ? join(root, "admin") : root;
+  const cwd =
+    shard.suite === "admin"
+      ? join(root, "admin")
+      : shard.suite === "external"
+        ? join(root, "examples", "temporal-order-support")
+        : root;
   const files = shard.files.map((path) =>
-    shard.suite === "admin" ? `./${path.slice("admin/".length)}` : `./${path}`,
+    shard.suite === "admin"
+      ? `./${path.slice("admin/".length)}`
+      : shard.suite === "external"
+        ? `./${path.slice("examples/temporal-order-support/".length)}`
+        : `./${path}`,
   );
   return {
     cwd,
@@ -511,11 +532,14 @@ async function main(args: string[]): Promise<number> {
 
   if (command === "check" && argument === undefined) {
     console.log(
-      `[test-surface] ${inventory.runtimeFiles} runtime + ${inventory.adminFiles} admin tests across ${inventory.shards.length} shards`,
+      `[test-surface] ${inventory.runtimeFiles} runtime + ${inventory.adminFiles} admin + ${inventory.externalFiles} isolated external tests across ${inventory.shards.length} shards`,
     );
     return 0;
   }
-  if (command === "matrix" && (argument === "runtime" || argument === "admin")) {
+  if (
+    command === "matrix" &&
+    (argument === "runtime" || argument === "admin" || argument === "external")
+  ) {
     console.log(
       JSON.stringify(
         inventory.shards.filter((shard) => shard.suite === argument).map((shard) => shard.id),
@@ -543,7 +567,7 @@ async function main(args: string[]): Promise<number> {
     return 0;
   }
   fail(
-    "usage: bun scripts/test-surface-inventory.ts check|matrix <runtime|admin>|run <shard>|run-runtime|run-all",
+    "usage: bun scripts/test-surface-inventory.ts check|matrix <runtime|admin|external>|run <shard>|run-runtime|run-all",
   );
 }
 

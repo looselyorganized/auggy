@@ -40,7 +40,10 @@ describe("tracked CI test-surface inventory", () => {
 
     expect(inventory.runtimeFiles).toBeGreaterThanOrEqual(252);
     expect(inventory.adminFiles).toBeGreaterThanOrEqual(29);
-    expect(allFiles).toHaveLength(inventory.runtimeFiles + inventory.adminFiles);
+    expect(inventory.externalFiles).toBe(3);
+    expect(allFiles).toHaveLength(
+      inventory.runtimeFiles + inventory.adminFiles + inventory.externalFiles,
+    );
     expect(new Set(allFiles).size).toBe(allFiles.length);
     expect(inventory.shards.find((shard) => shard.id === "http")?.files).toEqual([
       "tests/http.test.ts",
@@ -54,6 +57,11 @@ describe("tracked CI test-surface inventory", () => {
     expect(inventory.shards.find((shard) => shard.id === "operator")?.files).not.toContain(
       "tests/cli/commands/doctor.test.ts",
     );
+    expect(inventory.shards.find((shard) => shard.id === "temporal-example")?.files).toEqual([
+      "examples/temporal-order-support/test/activities.test.ts",
+      "examples/temporal-order-support/test/auggy-client.test.ts",
+      "examples/temporal-order-support/test/operator-config.test.ts",
+    ]);
   });
 
   test("automatically assigns additions inside known roots", () => {
@@ -88,6 +96,7 @@ describe("tracked CI test-surface inventory", () => {
     const inventory = validateTestSurface(entries, manifest);
     expect(inventory.runtimeFiles).toBe(4);
     expect(inventory.adminFiles).toBe(1);
+    expect(inventory.externalFiles).toBe(0);
   });
 
   test("fails closed for a new unassigned test area", () => {
@@ -262,6 +271,18 @@ describe("tracked CI test-surface inventory", () => {
     );
     expect(admin.cwd).toBe("/repo/admin");
     expect(admin.argv.at(-1)).toBe("./src/App.test.ts");
+
+    const external = createBunTestInvocation(
+      {
+        id: "temporal-example",
+        suite: "external",
+        files: ["examples/temporal-order-support/test/auggy-client.test.ts"],
+      },
+      "/repo",
+      "/bun",
+    );
+    expect(external.cwd).toBe("/repo/examples/temporal-order-support");
+    expect(external.argv.at(-1)).toBe("./test/auggy-client.test.ts");
   });
 
   test("fails when any supplemental runtime path is stale even if others still exist", () => {

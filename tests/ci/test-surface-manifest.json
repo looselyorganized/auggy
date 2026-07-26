@@ -175,12 +175,27 @@
       "selectors": [
         {
           "kind": "tree",
-          "path": "examples"
+          "path": "examples",
+          "exclude": [
+            "examples/temporal-order-support/test/activities.test.ts",
+            "examples/temporal-order-support/test/auggy-client.test.ts",
+            "examples/temporal-order-support/test/operator-config.test.ts"
+          ]
         },
         {
           "kind": "tree",
           "path": "packages",
           "allowEmpty": true
+        }
+      ]
+    },
+    {
+      "id": "temporal-example",
+      "suite": "external",
+      "selectors": [
+        {
+          "kind": "tree",
+          "path": "examples/temporal-order-support/test"
         }
       ]
     },
