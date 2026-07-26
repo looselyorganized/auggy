@@ -136,6 +136,7 @@ interface CoordinationCatalogCheck {
   constraint_name: string;
   definition: string;
   is_validated: boolean;
+  is_enforced: boolean;
 }
 
 interface CoordinationCatalogConstraint {
@@ -143,8 +144,14 @@ interface CoordinationCatalogConstraint {
   constraint_name: string;
   constraint_type: string;
   is_validated: boolean;
+  is_enforced: boolean;
   is_deferrable: boolean;
   is_initially_deferred: boolean;
+}
+
+interface CoordinationCatalogNotNull {
+  is_validated: boolean;
+  is_enforced: boolean;
 }
 
 interface CoordinationCatalogTable {
@@ -154,6 +161,7 @@ interface CoordinationCatalogTable {
   force_row_security: boolean;
   has_rules: boolean;
   has_triggers: boolean;
+  has_inheritance: boolean;
 }
 
 interface CoordinationCatalogSequence {
@@ -416,6 +424,7 @@ const EXPECTED_COORDINATION_CONSTRAINTS: readonly CoordinationCatalogConstraint[
   constraint_name: constraint_name as string,
   constraint_type: "p",
   is_validated: true,
+  is_enforced: true,
   is_deferrable: false,
   is_initially_deferred: false,
 }));
@@ -435,6 +444,7 @@ const EXPECTED_COORDINATION_TABLES: readonly CoordinationCatalogTable[] = [
   force_row_security: false,
   has_rules: false,
   has_triggers: false,
+  has_inheritance: false,
 }));
 
 function incompatibleSchema(): Error {
@@ -480,7 +490,9 @@ function validCoordinationChecks(rows: readonly CoordinationCatalogCheck[]): boo
   if (
     rows.some(
       (row) =>
-        !row.is_validated || EXPECTED_CHECK_TABLES.get(row.constraint_name) !== row.table_name,
+        !row.is_validated ||
+        !row.is_enforced ||
+        EXPECTED_CHECK_TABLES.get(row.constraint_name) !== row.table_name,
     )
   ) {
     return false;
@@ -524,16 +536,16 @@ async function assertPostgresCoordinationSchema(
            attr.attidentity AS identity,
            attr.attgenerated AS generated,
            CASE WHEN attr.attcollation = 0 THEN NULL
-                ELSE collation_namespace.nspname || '.' || collation.collname
+                ELSE collation_namespace.nspname || '.' || collation_catalog.collname
             END AS collation
       FROM pg_class cls
       JOIN pg_namespace namespace ON namespace.oid = cls.relnamespace
       JOIN pg_attribute attr ON attr.attrelid = cls.oid
       LEFT JOIN pg_attrdef defaults
         ON defaults.adrelid = cls.oid AND defaults.adnum = attr.attnum
-      LEFT JOIN pg_collation collation ON collation.oid = attr.attcollation
+      LEFT JOIN pg_collation collation_catalog ON collation_catalog.oid = attr.attcollation
       LEFT JOIN pg_namespace collation_namespace
-        ON collation_namespace.oid = collation.collnamespace
+        ON collation_namespace.oid = collation_catalog.collnamespace
      WHERE namespace.nspname = current_schema()
        AND cls.relkind = 'r'
        AND cls.relname IN (${tables})
@@ -543,13 +555,25 @@ async function assertPostgresCoordinationSchema(
   `);
   if (!validCoordinationColumns(columns)) throw incompatibleSchema();
 
+  // relhastriggers may remain true after the final trigger is dropped, so
+  // validate the authoritative trigger catalog instead of the cached hint.
   const tableCatalog = await sql.unsafe<CoordinationCatalogTable>(`
     SELECT cls.relname AS table_name,
            cls.relpersistence AS persistence,
            cls.relrowsecurity AS row_security,
            cls.relforcerowsecurity AS force_row_security,
            cls.relhasrules AS has_rules,
-           cls.relhastriggers AS has_triggers
+           EXISTS (
+             SELECT 1
+               FROM pg_trigger trigger_catalog
+              WHERE trigger_catalog.tgrelid = cls.oid
+           ) AS has_triggers,
+           EXISTS (
+             SELECT 1
+               FROM pg_inherits inheritance_catalog
+              WHERE inheritance_catalog.inhparent = cls.oid
+                 OR inheritance_catalog.inhrelid = cls.oid
+           ) AS has_inheritance
       FROM pg_class cls
       JOIN pg_namespace namespace ON namespace.oid = cls.relnamespace
      WHERE namespace.nspname = current_schema()
@@ -575,7 +599,7 @@ async function assertPostgresCoordinationSchema(
            idx.indnkeyatts <> idx.indnatts AS has_included_columns,
            string_agg(opclass_namespace.nspname || '.' || opclass.opcname, ',' ORDER BY key.ordinality) AS opclasses,
            string_agg(CASE WHEN key.collation_oid = 0 THEN '-'
-                           ELSE collation_namespace.nspname || '.' || collation.collname
+                           ELSE collation_namespace.nspname || '.' || collation_catalog.collname
                        END, ',' ORDER BY key.ordinality) AS collations,
            string_agg(key.option_bits::text, ',' ORDER BY key.ordinality) AS options
       FROM pg_index idx
@@ -591,9 +615,9 @@ async function assertPostgresCoordinationSchema(
         ON attribute.attrelid = table_class.oid AND attribute.attnum = key.attnum
       LEFT JOIN pg_opclass opclass ON opclass.oid = key.opclass_oid
       LEFT JOIN pg_namespace opclass_namespace ON opclass_namespace.oid = opclass.opcnamespace
-      LEFT JOIN pg_collation collation ON collation.oid = key.collation_oid
+      LEFT JOIN pg_collation collation_catalog ON collation_catalog.oid = key.collation_oid
       LEFT JOIN pg_namespace collation_namespace
-        ON collation_namespace.oid = collation.collnamespace
+        ON collation_namespace.oid = collation_catalog.collnamespace
      WHERE namespace.nspname = current_schema()
        AND table_class.relname IN (${tables})
      GROUP BY table_class.relname,
@@ -617,7 +641,8 @@ async function assertPostgresCoordinationSchema(
     SELECT table_class.relname AS table_name,
            con.conname AS constraint_name,
            pg_get_constraintdef(con.oid, true) AS definition,
-           con.convalidated AS is_validated
+           con.convalidated AS is_validated,
+           COALESCE((to_jsonb(con)->>'conenforced')::boolean, true) AS is_enforced
       FROM pg_constraint con
       JOIN pg_class table_class ON table_class.oid = con.conrelid
       JOIN pg_namespace namespace ON namespace.oid = table_class.relnamespace
@@ -628,11 +653,29 @@ async function assertPostgresCoordinationSchema(
   `);
   if (!validCoordinationChecks(checks)) throw incompatibleSchema();
 
+  // PostgreSQL 18 exposes NOT NULL constraints here as type `n`. The
+  // pg_attribute flag above can also describe an invalid NOT NULL constraint,
+  // so separately require every catalog constraint to be active.
+  const notNulls = await sql.unsafe<CoordinationCatalogNotNull>(`
+    SELECT con.convalidated AS is_validated,
+           COALESCE((to_jsonb(con)->>'conenforced')::boolean, true) AS is_enforced
+      FROM pg_constraint con
+      JOIN pg_class table_class ON table_class.oid = con.conrelid
+      JOIN pg_namespace namespace ON namespace.oid = table_class.relnamespace
+     WHERE namespace.nspname = current_schema()
+       AND table_class.relname IN (${tables})
+       AND con.contype = 'n'
+  `);
+  if (notNulls.some((constraint) => !constraint.is_validated || !constraint.is_enforced)) {
+    throw incompatibleSchema();
+  }
+
   const constraints = await sql.unsafe<CoordinationCatalogConstraint>(`
     SELECT table_class.relname AS table_name,
            con.conname AS constraint_name,
            con.contype AS constraint_type,
            con.convalidated AS is_validated,
+           COALESCE((to_jsonb(con)->>'conenforced')::boolean, true) AS is_enforced,
            con.condeferrable AS is_deferrable,
            con.condeferred AS is_initially_deferred
       FROM pg_constraint con
@@ -640,7 +683,7 @@ async function assertPostgresCoordinationSchema(
       JOIN pg_namespace namespace ON namespace.oid = table_class.relnamespace
      WHERE namespace.nspname = current_schema()
        AND table_class.relname IN (${tables})
-       AND con.contype <> 'c'
+       AND con.contype NOT IN ('c', 'n')
      ORDER BY table_class.relname, con.conname
   `);
   if (!catalogMatches(constraints, EXPECTED_COORDINATION_CONSTRAINTS)) {
@@ -716,9 +759,10 @@ export async function migratePostgresCoordinator(
     throw new Error("coordination schema must be a lowercase PostgreSQL identifier");
   }
   await sql.begin(async (tx) => {
-    // Omitting pg_catalog keeps its implicit precedence over the owned schema,
-    // so a same-named function cannot redirect migration DDL or validation.
-    await tx.unsafe(`SET LOCAL search_path TO "${schema}"`);
+    // Omitting pg_catalog keeps its implicit precedence over the owned schema.
+    // Explicitly placing pg_temp last prevents a session-local relation from
+    // receiving its usual implicit precedence over the real system catalogs.
+    await tx.unsafe(`SET LOCAL search_path TO "${schema}", pg_temp`);
     await tx.unsafe(
       "SELECT pg_advisory_xact_lock(hashtextextended('auggy_coordination_migrations', 0))",
     );
