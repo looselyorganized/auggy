@@ -77,7 +77,7 @@ type ManagedAgent = Pick<AgentHandle, "start" | "stop">;
 export async function startAgentWithDurableJobs(
   agent: ManagedAgent,
   durableJobs: ConfiguredDurableJobsRuntime | undefined,
-  onCleanupFailure: (code: "stop-failed" | "agent-stop-failed") => void = () => {},
+  onCleanupFailure: (code: "stop-failed" | "agent-stop-failed" | "close-failed") => void = () => {},
 ): Promise<void> {
   try {
     await agent.start();
@@ -93,7 +93,11 @@ export async function startAgentWithDurableJobs(
     } catch {
       onCleanupFailure("agent-stop-failed");
     }
-    durableJobs?.close();
+    try {
+      durableJobs?.close();
+    } catch {
+      onCleanupFailure("close-failed");
+    }
     throw error;
   }
 }

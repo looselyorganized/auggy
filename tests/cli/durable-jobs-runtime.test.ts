@@ -190,6 +190,33 @@ describe("durable jobs runtime lifecycle", () => {
     expect(events).toEqual(["start-agent", "stop-worker", "stop-agent", "close-store"]);
   });
 
+  test("preserves the startup error when durable-state close also fails", async () => {
+    const failures: string[] = [];
+    const startupError = new Error("agent startup failure");
+    const durable: ConfiguredDurableJobsRuntime = {
+      databasePath: "/private/jobs.sqlite",
+      start() {},
+      async stop() {},
+      close() {
+        throw new Error("private close failure");
+      },
+    };
+
+    await expect(
+      startAgentWithDurableJobs(
+        {
+          async start() {
+            throw startupError;
+          },
+          async stop() {},
+        },
+        durable,
+        (code) => failures.push(code),
+      ),
+    ).rejects.toBe(startupError);
+    expect(failures).toEqual(["close-failed"]);
+  });
+
   test("shutdown always stops worker before agent and closes state", async () => {
     const events: string[] = [];
     const durable: ConfiguredDurableJobsRuntime = {
