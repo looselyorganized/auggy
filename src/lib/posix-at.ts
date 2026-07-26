@@ -7,6 +7,7 @@ interface PosixAtSymbols {
   mkdirat(dirfd: number, path: Uint8Array, mode: number): number;
   unlinkat(dirfd: number, path: Uint8Array, flags: number): number;
   renameat(olddirfd: number, oldpath: Uint8Array, newdirfd: number, newpath: Uint8Array): number;
+  flock(fd: number, operation: number): number;
   dup(fd: number): number;
   fdopendir(fd: number): unknown;
   readdir(directory: unknown): unknown;
@@ -53,6 +54,10 @@ function requireSymbols(): PosixAtSymbols {
       args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr],
       returns: FFIType.i32,
     },
+    flock: {
+      args: [FFIType.i32, FFIType.i32],
+      returns: FFIType.i32,
+    },
     dup: {
       args: [FFIType.i32],
       returns: FFIType.i32,
@@ -91,6 +96,7 @@ function requireSymbols(): PosixAtSymbols {
     mkdirat: linked.mkdirat as unknown as PosixAtSymbols["mkdirat"],
     unlinkat: linked.unlinkat as unknown as PosixAtSymbols["unlinkat"],
     renameat: linked.renameat as unknown as PosixAtSymbols["renameat"],
+    flock: linked.flock as unknown as PosixAtSymbols["flock"],
     dup: linked.dup as unknown as PosixAtSymbols["dup"],
     fdopendir: linked.fdopendir as unknown as PosixAtSymbols["fdopendir"],
     readdir: linked.readdir as unknown as PosixAtSymbols["readdir"],
@@ -98,6 +104,18 @@ function requireSymbols(): PosixAtSymbols {
     errno: () => ffiRead.i32(linked[errnoSymbol]!() as never, 0),
   };
   return symbols;
+}
+
+/** Acquire a non-blocking exclusive advisory lock on one open file description. */
+export function tryLockFileExclusive(fd: number): "acquired" | "busy" {
+  const linked = requireSymbols();
+  const lockExclusive = 2;
+  const lockNonBlocking = 4;
+  if (linked.flock(fd, lockExclusive | lockNonBlocking) === 0) return "acquired";
+  const errno = linked.errno();
+  const wouldBlock = process.platform === "darwin" ? 35 : 11;
+  if (errno === wouldBlock) return "busy";
+  throw new Error(`exclusive file lock failed (errno ${errno})`);
 }
 
 function nativeSegment(segment: string): Uint8Array {

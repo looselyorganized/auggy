@@ -78,6 +78,12 @@ describe("runtime state inventory", () => {
     expect(inventory.version).toBe(1);
     expect(inventory.configShapeSha256).toMatch(/^[0-9a-f]{64}$/);
     expect(byId.get("runtime-identity")?.relativePath).toBe(".auggy-state-identity.json");
+    expect(byId.get("runtime-singleton-lock")).toMatchObject({
+      relativePath: ".auggy-runtime-singleton.lock",
+      schema: "posix-flock-anchor/v1",
+      replayCritical: false,
+      required: false,
+    });
     expect(byId.get("file-memory:learned")?.relativePath).toBe("file-memory/learned.md");
     expect(byId.get("filesystem:workspace:workspace")?.relativePath).toBe("workspace");
     expect(byId.get("layered-memory:memory")?.schema).toBe("LMEM/v1");

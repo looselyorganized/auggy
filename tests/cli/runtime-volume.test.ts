@@ -2,6 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import {
   chmodSync,
   existsSync,
+  linkSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
@@ -13,7 +14,11 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prepareRuntimeVolume } from "../../src/cli/runtime-volume";
+import {
+  prepareRuntimeVolume,
+  prepareRuntimeVolumeLease,
+  RUNTIME_SINGLETON_LOCK_FILE,
+} from "../../src/cli/runtime-volume";
 
 const tempRoots: string[] = [];
 
@@ -170,5 +175,58 @@ describe("prepareRuntimeVolume", () => {
     } finally {
       chmodSync(root, 0o700);
     }
+  });
+
+  test("holds one crash-released singleton lease for a runtime volume", async () => {
+    const root = makeRoot();
+    const agentId = "aug1_8a3d7828-1597-4db4-bd0e-adc1a1036211";
+    const child = Bun.spawn(
+      [process.execPath, join(import.meta.dir, "../fixtures/runtime-volume-lease-child.ts"), root, agentId],
+      { stdout: "pipe", stderr: "pipe" },
+    );
+    const reader = child.stdout.getReader();
+    const ready = await reader.read();
+    expect(new TextDecoder().decode(ready.value)).toContain("lease-acquired");
+
+    expect(() =>
+      prepareRuntimeVolumeLease({ advertisedMount: root, runtimeDataRoot: root, agentId }),
+    ).toThrow(/another live replica owns this agent volume/i);
+
+    child.kill("SIGKILL");
+    await child.exited;
+    reader.releaseLock();
+    const replacement = prepareRuntimeVolumeLease({
+      advertisedMount: root,
+      runtimeDataRoot: root,
+      agentId,
+    });
+    replacement.release();
+  });
+
+  test("rejects symlink and hard-linked singleton lock anchors", () => {
+    const agentId = "aug1_8a3d7828-1597-4db4-bd0e-adc1a1036211";
+    const symlinkRoot = makeRoot();
+    const symlinkTarget = join(symlinkRoot, "outside-lock");
+    writeFileSync(symlinkTarget, "");
+    symlinkSync(symlinkTarget, join(symlinkRoot, RUNTIME_SINGLETON_LOCK_FILE));
+    expect(() =>
+      prepareRuntimeVolumeLease({
+        advertisedMount: symlinkRoot,
+        runtimeDataRoot: symlinkRoot,
+        agentId,
+      }),
+    ).toThrow(/regular non-symlink file/i);
+
+    const hardLinkRoot = makeRoot();
+    const hardLinkTarget = join(hardLinkRoot, "shared-lock");
+    writeFileSync(hardLinkTarget, "");
+    linkSync(hardLinkTarget, join(hardLinkRoot, RUNTIME_SINGLETON_LOCK_FILE));
+    expect(() =>
+      prepareRuntimeVolumeLease({
+        advertisedMount: hardLinkRoot,
+        runtimeDataRoot: hardLinkRoot,
+        agentId,
+      }),
+    ).toThrow(/singly linked regular file/i);
   });
 });

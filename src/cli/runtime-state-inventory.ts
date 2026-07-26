@@ -273,6 +273,20 @@ export function buildRuntimeStateInventory(
   });
 
   addStore(stores, {
+    id: "runtime-singleton-lock",
+    owner: "runtime",
+    namespace,
+    kind: "file",
+    backupPlane: runtimeDataRoot ? "runtime-volume" : "disabled",
+    ...(runtimeDataRoot ? { relativePath: ".auggy-runtime-singleton.lock" } : {}),
+    schema: "posix-flock-anchor/v1",
+    retention: "lifetime of the logical agent volume; file contents carry no authority",
+    restoreOrder: 0,
+    replayCritical: false,
+    required: false,
+  });
+
+  addStore(stores, {
     id: "admin-overrides",
     owner: "runtime",
     namespace,

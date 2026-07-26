@@ -183,9 +183,10 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   // Parse and validate config before mutating or admitting any runtime state.
   const config = parseConfig(configPath);
   const requestedRuntimeDataRoot = resolveRuntimeDataRoot(opts.internalMode);
-  const runtimeDataRoot = requestedRuntimeDataRoot
+  const runtimeVolumeLease = requestedRuntimeDataRoot
     ? prepareRailwayRuntimeVolume(process.env.RAILWAY_VOLUME_MOUNT_PATH, config.id)
-    : undefined;
+    : null;
+  const runtimeDataRoot = runtimeVolumeLease?.runtimeDataRoot;
 
   if (name && config.name !== name) {
     console.warn(
@@ -199,6 +200,13 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   const port = extractPort(config);
   let pidManifestClaimed = false;
   let pidManifest: PidManifest | null = null;
+  let runtimeOwnershipReleased = false;
+  const releaseRuntimeOwnership = () => {
+    if (runtimeOwnershipReleased) return;
+    runtimeOwnershipReleased = true;
+    if (pidManifest) releaseRuntimePidManifest(pidManifest, pidManifestClaimed);
+    runtimeVolumeLease?.release();
+  };
   try {
     const processIdentity = getProcessIdentity(process.pid);
     if (!processIdentity) {
@@ -221,6 +229,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
     };
     pidManifestClaimed = claimRuntimePidManifest(pidManifest, { internalMode: opts.internalMode });
   } catch (err) {
+    releaseRuntimeOwnership();
     if ((err as NodeJS.ErrnoException).code === "EEXIST") {
       throw new Error(formatAgentAlreadyRunningMessage(agentName, readPidManifest(config.id)));
     }
@@ -264,7 +273,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
       coordination: config.settings.coordination,
     };
   } catch (err) {
-    if (pidManifest) releaseRuntimePidManifest(pidManifest, pidManifestClaimed);
+    releaseRuntimeOwnership();
     throw err;
   }
 
@@ -282,7 +291,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
     } catch (err) {
       console.error("Error during shutdown:", err);
     }
-    if (pidManifest) releaseRuntimePidManifest(pidManifest, pidManifestClaimed);
+    releaseRuntimeOwnership();
     console.log(`${agentName} stopped.`);
     process.exit(0);
   };
@@ -292,12 +301,17 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
 
   // Also clean up PID on unexpected exit.
   process.on("exit", () => {
-    if (pidManifest) releaseRuntimePidManifest(pidManifest, pidManifestClaimed);
+    releaseRuntimeOwnership();
   });
 
   // Start the agent.
   console.log("Starting services:");
-  await agent.start();
+  try {
+    await agent.start();
+  } catch (error) {
+    releaseRuntimeOwnership();
+    throw error;
+  }
 
   const consoleUrl = port ? `http://localhost:${port}/console` : null;
   console.log(
