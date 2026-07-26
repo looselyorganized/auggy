@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { runStop } from "../../src/cli/commands/stop";
 import {
   activateLaunchdGeneration,
+  claimAgentLifecycle,
   claimRuntimePidManifest,
   readPidManifest,
   removePidManifest,
@@ -64,6 +65,33 @@ afterEach(() => {
 });
 
 describe("stop preserves ownership until the recorded process exits", () => {
+  test("does not lose an immutable-id stop before a concurrent start publishes state", async () => {
+    const owner = manifest("dev", "a");
+    const releaseStart = claimAgentLifecycle(owner.agentId!, owner.name, registryOptions());
+    try {
+      await expect(runStop(owner.agentId!, registryOptions())).rejects.toThrow(
+        /resource.*claimed/i,
+      );
+    } finally {
+      releaseStart();
+    }
+
+    owner.mode = "launchd";
+    owner.launchGeneration = LAUNCH_GENERATION;
+    activateLaunchdGeneration(owner.agentId!, LAUNCH_GENERATION, registryOptions());
+    await runStop(owner.agentId!, {
+      ...registryOptions(),
+      paths: {
+        installPath: join(auggyDir, "post-start.install.plist"),
+        storePath: join(auggyDir, "post-start.store.plist"),
+      },
+      unloadLaunchd: async () => {},
+    });
+    expect(() => claimRuntimePidManifest(owner, registryOptions())).toThrow(
+      /generation.*closed or superseded/i,
+    );
+  });
+
   test("closes and unloads an active launchd generation without a manifest", async () => {
     const owner = manifest("launchd", "a");
     let unloads = 0;

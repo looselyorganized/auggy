@@ -40,6 +40,22 @@ interface StopOptions {
 const AGENT_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export async function runStop(name: string, opts: StopOptions = {}): Promise<void> {
+  // Immutable-id control operations serialize before observing any runtime
+  // state. Otherwise a stop can report "not running" while a concurrent start
+  // owns the lifecycle lease but has not published its generation yet.
+  if (AGENT_ID_RE.test(name) && !opts.lifecycleOwned) {
+    const releaseLifecycle = claimAgentLifecycle(name, "launchd-stop", {
+      auggyDir: opts.auggyDir,
+      processIdentityForPid: opts.processIdentityForPid,
+    });
+    try {
+      await runStop(name, { ...opts, lifecycleOwned: true });
+    } finally {
+      releaseLifecycle();
+    }
+    return;
+  }
+
   const initialManifest = readPidManifest(name, { auggyDir: opts.auggyDir });
 
   if (!initialManifest) {
@@ -84,10 +100,12 @@ async function stopManifestlessLaunchd(
   launchGeneration: string,
   opts: StopOptions,
 ): Promise<void> {
-  const releaseLifecycle = claimAgentLifecycle(agentId, "launchd-recovery", {
-    auggyDir: opts.auggyDir,
-    processIdentityForPid: opts.processIdentityForPid,
-  });
+  const releaseLifecycle = opts.lifecycleOwned
+    ? () => {}
+    : claimAgentLifecycle(agentId, "launchd-recovery", {
+        auggyDir: opts.auggyDir,
+        processIdentityForPid: opts.processIdentityForPid,
+      });
   try {
     const appeared = readPidManifest(agentId, { auggyDir: opts.auggyDir });
     if (appeared) {
