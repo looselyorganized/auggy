@@ -632,6 +632,14 @@ unloads its job and artifacts, and only then completes foreground shutdown.
 The closed generation is covered by a regression that attempts delayed
 launchd publication after the stop result.
 
+The final launchd rollback review found another Medium last-poll race: a child
+could be admitted immediately before timeout handling, survive a nominal
+unload, and remain live after start deleted its control artifacts and reported
+failure. Rollback now reconciles only the exact closed generation, waits
+boundedly for its process to exit, removes a dead owned manifest, and preserves
+all recovery artifacts and claims with an explicit error whenever ownership
+changes or termination remains live/unverifiable.
+
 The final dependency gate also discovered the newly published
 `GHSA-qwww-vcr4-c8h2` against React Router 7.18.1. The console migrated from the
 removed `react-router-dom` compatibility package to patched `react-router`

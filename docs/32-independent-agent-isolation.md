@@ -80,7 +80,9 @@ intended config. The claim-registry schema migrates the exact version-one catalo
 version two to add this bounded one-row-per-agent generation state;
 an unrelated foreground runtime is not accepted as startup success. Failed or
 timed-out starts unload the possibly armed KeepAlive job before removing its
-artifacts. `stop` ignores only missing plist files and preserves manifests and
+artifacts. Rollback also follows the exact admitted generation, waits for its
+process to exit, and preserves its artifacts, manifest, and claims with an
+explicit recovery error if termination is live or unverifiable. `stop` ignores only missing plist files and preserves manifests and
 claims after a failed unload, cleanup error, or unverifiable/non-terminating
 process. `remove` holds lifecycle, agent-ID, canonical-path, and physical-root
 leases across confirmation and cloud cleanup, atomically renames the captured
