@@ -1066,7 +1066,6 @@ export async function resolveAugments(
                 ownedStateRoot,
                 `telegramTransport "${config.name}" replay.dbPath`,
               ),
-              namespace: scopedAgentNamespace(resolverOpts.agentId, replay?.namespace, config.name),
             },
           });
           break;

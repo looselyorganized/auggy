@@ -212,6 +212,38 @@ describe("runtime PID manifest policy", () => {
     releaseRuntimePidManifest(second.agentId!, true, { auggyDir });
   });
 
+  test("rejects overlap with a live pre-upgrade name-keyed runtime", () => {
+    writePidManifest(
+      {
+        pid: process.pid,
+        name: "legacy-worker",
+        port: null,
+        configPath: "/tmp/legacy-worker/agent.yaml",
+        agentDir: "/tmp/legacy-worker",
+        startedAt: new Date().toISOString(),
+        mode: "dev",
+      },
+      { auggyDir },
+    );
+    const modern: PidManifest = {
+      pid: process.pid,
+      name: "legacy-worker",
+      agentId: "aug1_55555555-5555-4555-8555-555555555555",
+      claimNonce: "55555555-5555-4555-8555-555555555555",
+      resourceClaims: ["telegram-bot:654321"],
+      port: null,
+      configPath: "/tmp/legacy-worker/agent.yaml",
+      agentDir: "/tmp/legacy-worker",
+      startedAt: new Date().toISOString(),
+      mode: "dev",
+    };
+
+    expect(() => claimRuntimePidManifest(modern, { auggyDir })).toThrow(
+      /legacy runtime.*still running/i,
+    );
+    expect(readPidManifest(modern.agentId!, { auggyDir })).toBeNull();
+  });
+
   test("resource claims reject a second agent before it starts using the resource", () => {
     const first: PidManifest = {
       pid: process.pid,

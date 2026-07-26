@@ -48,6 +48,7 @@ import {
   TelegramReplayConflictError,
   type TelegramReplayStore as LocalTelegramReplayStore,
 } from "./replay-store";
+import { resolveTelegramReplayNamespace } from "./replay-identity";
 
 // ---------------------------------------------------------------------------
 // Boot-time validation
@@ -472,17 +473,11 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
   }
 
   function replayNamespace(): string {
-    if (opts.replay?.namespace) return opts.replay.namespace;
-    const botId = opts.botToken.match(/^(\d+):/)?.[1];
-    if (internal._clientFactory && !botId) {
-      return `${registeredName ?? "telegram-transport"}:test-client`;
-    }
-    if (!botId) {
-      throw new Error(
-        "[telegram-transport] replay.namespace is required when botToken has no numeric bot id",
-      );
-    }
-    return `telegram:bot-${botId}`;
+    return resolveTelegramReplayNamespace(
+      opts.botToken,
+      opts.replay?.namespace,
+      internal._clientFactory ? (registeredName ?? "telegram-transport") : undefined,
+    );
   }
 
   // ---------------------------------------------------------------------------

@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ParsedConfig } from "./types";
 import { scopedAgentNamespace } from "./agent-isolation";
+import { resolveTelegramReplayNamespace } from "../augments/telegramTransport/replay-identity";
 
 export const RUNTIME_STATE_INVENTORY_VERSION = 1;
 
@@ -560,7 +561,10 @@ export function buildRuntimeStateInventory(
         break;
       }
       case "telegramTransport": {
-        const replay = (opts.replay as { dbPath?: string; retentionMs?: number } | undefined) ?? {};
+        const replay =
+          (opts.replay as
+            | { dbPath?: string; namespace?: string; retentionMs?: number }
+            | undefined) ?? {};
         const path = resolveRuntimeStatePath(
           replay.dbPath ?? "./data/telegram-replay.db",
           agentDir,
@@ -572,11 +576,7 @@ export function buildRuntimeStateInventory(
           sqliteEntry({
             id: `telegram-replay:${augment.name}`,
             owner,
-            namespace: scopedAgentNamespace(
-              config.id,
-              (replay as { namespace?: string }).namespace,
-              augment.name,
-            ),
+            namespace: resolveTelegramReplayNamespace(String(opts.botToken), replay.namespace),
             path,
             runtimeDataRoot,
             schema: "TGRP/v2",

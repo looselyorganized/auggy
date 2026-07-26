@@ -311,6 +311,45 @@ function removeManifestRecord(record: ManifestRecord, opts: PidRegistryOptions):
   if (existsSync(record.path)) unlinkSync(record.path);
 }
 
+/**
+ * Do not let an identity-keyed runtime overlap a pre-upgrade name-keyed
+ * runtime. Legacy manifests did not acquire resource leases, so checking them
+ * before modern claims is the only safe upgrade boundary for non-port
+ * transports such as Telegram polling.
+ */
+function removeStaleOrRejectLiveLegacyManifest(
+  manifest: PidManifest,
+  opts: PidRegistryOptions,
+): void {
+  if (!manifest.agentId) return;
+
+  const records = new Map<string, ManifestRecord>();
+  const exactLegacyPath = manifestPathForKey(manifest.name, opts);
+  if (existsSync(exactLegacyPath)) {
+    records.set(exactLegacyPath, {
+      path: exactLegacyPath,
+      manifest: readManifestPath(exactLegacyPath),
+    });
+  }
+  for (const record of allManifestRecords(opts)) {
+    if (
+      !record.manifest.agentId &&
+      (record.manifest.name === manifest.name || record.manifest.configPath === manifest.configPath)
+    ) {
+      records.set(record.path, record);
+    }
+  }
+
+  for (const record of records.values()) {
+    if (isProcessAlive(record.manifest.pid)) {
+      throw new RuntimeResourceConflictError(
+        `Legacy runtime for agent "${record.manifest.name}" is still running. Stop it before starting the immutable agent identity.`,
+      );
+    }
+    removeManifestRecord(record, opts);
+  }
+}
+
 /** Claim the local registry and every declared exclusive resource atomically. */
 export function claimRuntimePidManifest(
   manifest: PidManifest,
@@ -318,6 +357,7 @@ export function claimRuntimePidManifest(
 ): boolean {
   if (opts.internalMode === "railway") return false;
   parseManifest(manifest, "new runtime manifest");
+  removeStaleOrRejectLiveLegacyManifest(manifest, opts);
   const acquired = acquireResourceClaims(manifest, opts);
   try {
     try {

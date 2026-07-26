@@ -50,7 +50,11 @@ function config(): ParsedConfig {
         type: "webTransport",
         options: { consoleChat: {}, idempotency: {} },
       },
-      { name: "telegram", type: "telegramTransport", options: {} },
+      {
+        name: "telegram",
+        type: "telegramTransport",
+        options: { botToken: "123456:inventory-secret" },
+      },
       { name: "mail-a", type: "agentMail", options: {} },
       {
         name: "notify",
@@ -82,6 +86,7 @@ describe("runtime state inventory", () => {
     expect(byId.get("web-idempotency:web")?.relativePath).toBe("web-idempotency.db");
     expect(byId.get("console-chat:web")?.relativePath).toBe("console-chat.db");
     expect(byId.get("telegram-replay:telegram")?.schema).toBe("TGRP/v2");
+    expect(byId.get("telegram-replay:telegram")?.namespace).toBe("telegram:bot-123456");
     expect(byId.get("agentmail-ledger:mail-a")?.relativePath).toBe(
       "agent-mail/mail-a/agent-mail.db",
     );
@@ -116,6 +121,33 @@ describe("runtime state inventory", () => {
       expect(store.required).toBe(false);
       expect(store.relativePath).toBeUndefined();
     }
+  });
+
+  test("preserves Telegram replay identity across Auggy identity upgrades", () => {
+    const paths = fixture();
+    const first = config();
+    const second = config();
+    second.id = "aug1_11111111-1111-4111-8111-111111111111";
+
+    const firstReplay = buildRuntimeStateInventory(first, paths).stores.find(
+      (entry) => entry.id === "telegram-replay:telegram",
+    );
+    const secondReplay = buildRuntimeStateInventory(second, paths).stores.find(
+      (entry) => entry.id === "telegram-replay:telegram",
+    );
+    expect(firstReplay?.namespace).toBe("telegram:bot-123456");
+    expect(secondReplay?.namespace).toBe(firstReplay?.namespace);
+
+    const telegram = second.augments.find((augment) => augment.type === "telegramTransport")!;
+    telegram.options = {
+      ...telegram.options,
+      replay: { namespace: "operator-stable-bot" },
+    };
+    expect(
+      buildRuntimeStateInventory(second, paths).stores.find(
+        (entry) => entry.id === "telegram-replay:telegram",
+      )?.namespace,
+    ).toBe("operator-stable-bot");
   });
 
   test("fails closed on escaped state paths and unsafe instance namespaces", () => {
