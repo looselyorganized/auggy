@@ -926,6 +926,16 @@ export async function resolveAugments(
           augment = notify({
             destinations: destinations as unknown as NotifyAugmentOptions["destinations"],
             rateLimit: opts.rateLimit as NotifyAugmentOptions["rateLimit"],
+            dbPath: resolveSqlitePath(
+              (opts.dbPath as string | undefined) ??
+                (resolverOpts.runtimeDataRoot
+                  ? `notify-${config.name}.db`
+                  : `./data/notify-${config.name}.db`),
+              agentDir,
+              resolverOpts.runtimeDataRoot,
+              `notify ${config.name} dbPath`,
+            ),
+            agentDir,
             overrideDir,
           });
           break;

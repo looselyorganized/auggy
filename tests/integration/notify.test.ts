@@ -32,6 +32,7 @@ describe("notify integration", () => {
 
     const notifyAugment = notify({
       destinations: [{ name: "creator", transport: "webhook", url: "https://example.com/notify" }],
+      dbPath: join(tmp.path, "notify.db"),
     });
 
     const model = createMockModel({ response: "ok" });

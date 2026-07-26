@@ -1,5 +1,11 @@
 import { describe, it, test, expect } from "bun:test";
-import { notify } from "../../src/augments/notify";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  notify as createNotify,
+  type NotifyAugmentInternalOptions,
+} from "../../src/augments/notify";
 import type {
   NotifyAdapter,
   NotifyAugmentOptions,
@@ -55,6 +61,11 @@ const baseOpts: NotifyAugmentOptions = {
   rateLimit: { cooldownMs: 60_000, dedupThreshold: 0, globalMaxPerHour: 100 },
 };
 
+/** Unit tests opt into volatile state explicitly; runtime callers may not do so accidentally. */
+function notify(opts: NotifyAugmentInternalOptions) {
+  return createNotify({ dbPath: ":memory:", _allowVolatileStore: true, ...opts });
+}
+
 /** Return the notify tool with execute typed as string-returning for test convenience. */
 function getNotifyTool(aug: ReturnType<typeof notify>) {
   const tool = aug.tools!.find((t) => t.name === "notify");
@@ -63,6 +74,13 @@ function getNotifyTool(aug: ReturnType<typeof notify>) {
 }
 
 describe("notify augment", () => {
+  it("rejects direct construction without durable state", () => {
+    expect(() =>
+      createNotify({
+        destinations: [],
+      }),
+    ).toThrow(/dbPath is required.*durable delivery state/i);
+  });
   it("delivers to named destination", async () => {
     const deliveries: Array<{ destination: string; result: "sent" | "failed" }> = [];
     const aug = notify({
@@ -607,5 +625,84 @@ describe("notify augment", () => {
     expect(result).toMatchObject({ isError: true, outcomeUnknown: true });
     if (typeof result === "string") throw new Error("expected structured result");
     expect(result.content).not.toContain("connection reset");
+  });
+
+  test("blocks ambiguous replay across restart until exact operator recovery", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "notify-durable-test-"));
+    const dbPath = join(dir, "notify.sqlite");
+    const destination: NotifyDestination = {
+      name: "creator",
+      transport: "webhook",
+      url: "https://example.com/notify",
+      allowedTrustLevels: ALL_TRUST_LEVELS,
+    };
+    const context = makeContext(makePeer("peer-one", "creator"));
+    let firstAttempts = 0;
+    let first = notify({
+      destinations: [destination],
+      dbPath,
+      _attemptId: () => "attempt_restart",
+      _incidentId: () => "incident_restart",
+      adapters: {
+        webhook: {
+          async deliver() {
+            firstAttempts++;
+            throw new Error("sentinel provider detail");
+          },
+        },
+      },
+    });
+    try {
+      const firstTool = first.tools!.find((candidate) => candidate.name === "notify")!;
+      const ambiguous = await firstTool.execute(
+        { to: "creator", summary: "restart-sensitive" },
+        context,
+      );
+      expect(ambiguous).toMatchObject({ isError: true, outcomeUnknown: true });
+      expect(firstAttempts).toBe(1);
+      await first.onShutdown!();
+
+      let replayAttempts = 0;
+      const restarted = notify({
+        destinations: [destination],
+        dbPath,
+        adapters: {
+          webhook: {
+            async deliver() {
+              replayAttempts++;
+              return { status: "sent" };
+            },
+          },
+        },
+      });
+      first = restarted;
+      const restartedTool = restarted.tools!.find((candidate) => candidate.name === "notify")!;
+      const blocked = await restartedTool.execute(
+        { to: "creator", summary: "restart-sensitive" },
+        context,
+      );
+      expect(blocked).toMatchObject({ isError: true, outcomeUnknown: true });
+      expect(replayAttempts).toBe(0);
+
+      expect(
+        await restarted.adminActions!["notify-delivery-reconcile-no-effect"]!({
+          incidentId: "incident_restart",
+          version: "1",
+          evidence: "provider confirms no request was accepted",
+        }),
+      ).toMatchObject({ ok: true, recoverThreadId: context.threadId });
+      expect(
+        JSON.parse(
+          (await restartedTool.execute(
+            { to: "creator", summary: "restart-sensitive" },
+            context,
+          )) as string,
+        ).status,
+      ).toBe("sent");
+      expect(replayAttempts).toBe(1);
+    } finally {
+      await first.onShutdown?.();
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });

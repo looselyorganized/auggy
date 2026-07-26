@@ -593,7 +593,7 @@ export function buildRuntimeStateInventory(
             namespace,
             path,
             runtimeDataRoot,
-            schema: "AMIL/v1",
+            schema: "AMIL/v2",
             retention: "terminal inbound work retained according to ledger policy",
             restoreOrder: 50,
             replayCritical: true,
@@ -660,6 +660,29 @@ export function buildRuntimeStateInventory(
       case "notify": {
         const destinations =
           (opts.destinations as Array<Record<string, unknown>> | undefined) ?? [];
+        const deliveryPath = resolveRuntimeStatePath(
+          (opts.dbPath as string | undefined) ??
+            (runtimeDataRoot ? `notify-${augment.name}.db` : `./data/notify-${augment.name}.db`),
+          agentDir,
+          runtimeDataRoot,
+          `notify ${augment.name} dbPath`,
+        );
+        addStore(
+          stores,
+          sqliteEntry({
+            id: `notify-delivery:${augment.name}`,
+            owner,
+            namespace,
+            path: deliveryPath,
+            runtimeDataRoot,
+            schema: "NTFY/v1",
+            retention:
+              "up to 30 days and 10000 terminal attempts; unresolved outcome-unknown incidents require operator recovery",
+            restoreOrder: 50,
+            replayCritical: true,
+            required: true,
+          }),
+        );
         for (const destination of destinations) {
           if (destination.transport !== "log-to-file" || typeof destination.path !== "string") {
             continue;
@@ -692,18 +715,6 @@ export function buildRuntimeStateInventory(
             required: false,
           });
         }
-        addStore(stores, {
-          id: `notify-rate-limit:${augment.name}`,
-          owner,
-          namespace,
-          kind: "memory",
-          backupPlane: "volatile",
-          schema: "process-local/v1",
-          retention: "bounded cooldown/dedup windows; resets on restart",
-          restoreOrder: 100,
-          replayCritical: true,
-          required: false,
-        });
         break;
       }
       case "custom":

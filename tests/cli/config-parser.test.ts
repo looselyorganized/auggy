@@ -2075,4 +2075,31 @@ describe("notify augment agentmail transport validation", () => {
     expect(() => parseConfig(path)).toThrow(/allowedTrustLevels\[1\].*creator.*agent.*public/);
     expect(() => parseConfig(path)).toThrow(/publicPolicy: must be "allowed" or "escalation-only"/);
   });
+
+  test("rejects notify quota windows beyond retained evidence", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "notify",
+            type: "notify",
+            options: {
+              destinations: [
+                {
+                  name: "ops",
+                  transport: "webhook",
+                  url: "https://example.com/notify",
+                  rateLimit: { cooldownMs: 30 * 24 * 60 * 60_000 + 1 },
+                },
+              ],
+              rateLimit: { dedupWindowMs: 30 * 24 * 60 * 60_000 + 1 },
+            },
+          },
+        ],
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow(/rateLimit\.cooldownMs: cannot exceed 30 days/);
+    expect(() => parseConfig(path)).toThrow(/rateLimit\.dedupWindowMs: cannot exceed 30 days/);
+  });
 });

@@ -2,6 +2,10 @@ import {
   AGENTMAIL_LEDGER_APPLICATION_ID,
   AGENTMAIL_LEDGER_SCHEMA_VERSION,
 } from "../augments/agentMail/inbound-ledger";
+import {
+  NOTIFY_DELIVERY_APPLICATION_ID,
+  NOTIFY_DELIVERY_SCHEMA_VERSION,
+} from "../augments/notify/delivery-store";
 import { BUDGETS_APPLICATION_ID, BUDGETS_SCHEMA_VERSION } from "../augments/budgets/budget-store";
 import {
   LAYERED_MEMORY_APPLICATION_ID,
@@ -55,8 +59,12 @@ export const RUNTIME_STATE_SQLITE_IDENTITIES: Readonly<Record<string, RuntimeSta
       applicationId: TELEGRAM_REPLAY_APPLICATION_ID,
       userVersion: TELEGRAM_REPLAY_SCHEMA_VERSION,
     },
-    "AMIL/v1": {
+    "AMIL/v2": {
       applicationId: AGENTMAIL_LEDGER_APPLICATION_ID,
       userVersion: AGENTMAIL_LEDGER_SCHEMA_VERSION,
+    },
+    "NTFY/v1": {
+      applicationId: NOTIFY_DELIVERY_APPLICATION_ID,
+      userVersion: NOTIFY_DELIVERY_SCHEMA_VERSION,
     },
   });

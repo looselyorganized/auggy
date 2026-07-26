@@ -91,6 +91,9 @@ describe("runtime state inventory", () => {
     expect(byId.get("agent-mail-reviews/v1:mail-a")?.relativePath).toBe(
       "agent-mail/mail-a/agent-mail-reviews.json",
     );
+    expect(byId.get("notify-delivery:notify")?.relativePath).toBe("notify-notify.db");
+    expect(byId.get("notify-delivery:notify")?.schema).toBe("NTFY/v1");
+    expect(byId.get("notify-delivery:notify")?.replayCritical).toBe(true);
     expect(byId.get("notify-log:notify:creator")?.relativePath).toBe("notifications.jsonl");
     expect(byId.get("admin-overrides")?.restoreOrder).toBeLessThan(
       byId.get("web-idempotency:web")!.restoreOrder,

@@ -1033,6 +1033,13 @@ function validateNotifyOptions(
   prefix: string,
   errors: string[],
 ): void {
+  const maxRetainedWindowMs = 30 * 24 * 60 * 60_000;
+  if (
+    opts.dbPath !== undefined &&
+    (typeof opts.dbPath !== "string" || opts.dbPath.trim().length === 0)
+  ) {
+    errors.push(`${prefix}.dbPath: must be a non-empty string`);
+  }
   if (!Array.isArray(opts.destinations)) {
     errors.push(`${prefix}.destinations: required array`);
     return;
@@ -1066,6 +1073,25 @@ function validateNotifyOptions(
               `${dPrefix}.allowedTrustLevels[${j}]: must be "creator", "agent", or "public"`,
             );
           }
+        }
+      }
+    }
+    if (dest.rateLimit !== undefined) {
+      if (typeof dest.rateLimit !== "object" || dest.rateLimit === null) {
+        errors.push(`${dPrefix}.rateLimit: must be an object`);
+      } else {
+        const destinationRateLimit = dest.rateLimit as Record<string, unknown>;
+        for (const field of ["maxPerHour", "cooldownMs"] as const) {
+          const value = destinationRateLimit[field];
+          if (value !== undefined && (typeof value !== "number" || value < 0)) {
+            errors.push(`${dPrefix}.rateLimit.${field}: must be a non-negative number`);
+          }
+        }
+        if (
+          typeof destinationRateLimit.cooldownMs === "number" &&
+          destinationRateLimit.cooldownMs > maxRetainedWindowMs
+        ) {
+          errors.push(`${dPrefix}.rateLimit.cooldownMs: cannot exceed 30 days`);
         }
       }
     }
@@ -1139,6 +1165,11 @@ function validateNotifyOptions(
     for (const field of numericFields) {
       if (rl[field] !== undefined && (typeof rl[field] !== "number" || (rl[field] as number) < 0)) {
         errors.push(`${prefix}.rateLimit.${field}: must be a non-negative number`);
+      }
+    }
+    for (const field of ["cooldownMs", "dedupWindowMs", "perPeerCooldownMs"] as const) {
+      if (typeof rl[field] === "number" && rl[field] > maxRetainedWindowMs) {
+        errors.push(`${prefix}.rateLimit.${field}: cannot exceed 30 days`);
       }
     }
     if (rl.enabled !== undefined && typeof rl.enabled !== "boolean") {

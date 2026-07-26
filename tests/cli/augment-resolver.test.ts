@@ -1223,6 +1223,7 @@ describe("resolveAugments — budgets", () => {
     expect(readFileSync(join(runtimeDataRoot, "notifications.jsonl"), "utf8")).toContain(
       "durable event",
     );
+    expect(existsSync(join(runtimeDataRoot, "notify-notify.db"))).toBe(true);
     expect(existsSync(join(TMP, "notifications.jsonl"))).toBe(false);
     await augment!.onShutdown?.();
   });

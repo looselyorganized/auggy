@@ -11,6 +11,8 @@
  * (agentmail adapter), or POST directly (webhook adapter).
  */
 
+import { createHash } from "node:crypto";
+import { join } from "node:path";
 import { z } from "zod";
 import type {
   AdminActionResult,
@@ -31,6 +33,7 @@ import {
   writeOverrides,
 } from "../../lib/admin-overrides";
 import { createRingBuffer } from "../../lib/ring-buffer";
+import { createNotifyDeliveryStore, type NotifyDeliveryStore } from "./delivery-store";
 /**
  * Single source of truth for the transports notify ships. The type union
  * `NotifyAdapterKind` (src/types.ts) MUST stay in sync — the drift test
@@ -50,6 +53,16 @@ import { createLogToFileAdapter } from "./adapters/log-to-file";
 export interface NotifyAugmentInternalOptions extends NotifyAugmentOptions {
   /** Canonical shared directory for admin-overrides.json. Defaults to agentDir. */
   overrideDir?: string;
+  /** Deployment-owned durable state path. Production resolution always supplies this. */
+  dbPath?: string;
+  /** Test-only durable delivery store override. */
+  _deliveryStore?: NotifyDeliveryStore;
+  /** Test-only explicit opt-in to a volatile SQLite store. */
+  _allowVolatileStore?: boolean;
+  /** Test-only clock and identifier seams. */
+  _now?: () => number;
+  _attemptId?: () => string;
+  _incidentId?: () => string;
   /**
    * Test-only adapter override. Production code does not pass this.
    * Partial — missing keys fall back to default adapters.
@@ -72,6 +85,26 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     "log-to-file": createLogToFileAdapter(),
   };
   const adapters = { ...defaults, ...(opts.adapters ?? {}) };
+  const now = opts._now ?? Date.now;
+  const ownsDeliveryStore = !opts._deliveryStore;
+  const resolvedDbPath =
+    opts.dbPath ?? (opts.agentDir ? join(opts.agentDir, "notify-delivery.db") : undefined);
+  if (!opts._deliveryStore && !resolvedDbPath) {
+    throw new Error(
+      "notify: dbPath is required when agentDir is not provided; durable delivery state cannot use memory",
+    );
+  }
+  if (!opts._deliveryStore && resolvedDbPath === ":memory:" && !opts._allowVolatileStore) {
+    throw new Error("notify: volatile delivery state is restricted to the explicit test seam");
+  }
+  const deliveryStoreOptions = {
+    dbPath: resolvedDbPath!,
+    now,
+    attemptId: opts._attemptId,
+    incidentId: opts._incidentId,
+  };
+  let deliveryStore = opts._deliveryStore ?? createNotifyDeliveryStore(deliveryStoreOptions);
+  let ownedDeliveryStoreClosed = false;
 
   const destinationsByName = new Map<string, NotifyDestination>();
   for (const d of opts.destinations) destinationsByName.set(d.name, d);
@@ -115,77 +148,15 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     dispatches.push(record);
   }
 
-  const peerLastNotify = new Map<string, number>();
   const recentSummaries: Array<{ summary: string; timestamp: number }> = [];
-  let globalCountThisHour = 0;
-  let globalHourStart = Date.now();
-
-  // Per-destination rate-limit state
-  const destinationCountsThisHour = new Map<string, number[]>();
-  const destinationLastNotify = new Map<string, number>();
-
-  function checkPeerCooldown(peerId: string, destName: string): string | null {
-    const key = `${peerId}:${destName}`;
-    const last = peerLastNotify.get(key);
-    if (!last) return null;
-    const elapsed = Date.now() - last;
-    if (elapsed < perPeerCooldownMs) {
-      const remainingSec = Math.ceil((perPeerCooldownMs - elapsed) / 1000);
-      return `Notification suppressed — per-peer cooldown active. Next available in ${remainingSec} seconds.`;
-    }
-    return null;
-  }
-
-  function checkGlobalLimit(): string | null {
-    const now = Date.now();
-    if (now - globalHourStart > 3_600_000) {
-      globalCountThisHour = 0;
-      globalHourStart = now;
-    }
-    if (globalCountThisHour >= globalMaxPerHour) {
-      return `Notification suppressed — global limit reached (${globalMaxPerHour} per hour).`;
-    }
-    return null;
-  }
-
-  function checkDestinationLimit(destination: NotifyDestination): string | null {
-    const destRl = destination.rateLimit;
-    if (!destRl) return null;
-
-    const destName = destination.name;
-    const now = Date.now();
-
-    // Per-destination cooldown
-    if (destRl.cooldownMs !== undefined) {
-      const last = destinationLastNotify.get(destName);
-      if (last !== undefined) {
-        const elapsed = now - last;
-        if (elapsed < destRl.cooldownMs) {
-          const remainingSec = Math.ceil((destRl.cooldownMs - elapsed) / 1000);
-          return `Notification suppressed — per-destination cooldown active for '${destName}'. Next available in ${remainingSec} seconds.`;
-        }
-      }
-    }
-
-    // Per-destination hourly cap
-    if (destRl.maxPerHour !== undefined) {
-      const windowStart = now - 3_600_000;
-      const timestamps = destinationCountsThisHour.get(destName) ?? [];
-      // Prune timestamps outside the sliding window
-      const recent = timestamps.filter((t) => t > windowStart);
-      destinationCountsThisHour.set(destName, recent);
-      if (recent.length >= destRl.maxPerHour) {
-        return `Notification suppressed — per-destination cap reached for '${destName}' (${destRl.maxPerHour}/hr).`;
-      }
-    }
-
-    return null;
-  }
 
   function checkDedup(summary: string): string | null {
     if (dedupThreshold <= 0) return null;
-    const now = Date.now();
-    while (recentSummaries.length > 0 && now - recentSummaries[0]!.timestamp > dedupWindowMs) {
+    const timestamp = now();
+    while (
+      recentSummaries.length > 0 &&
+      timestamp - recentSummaries[0]!.timestamp > dedupWindowMs
+    ) {
       recentSummaries.shift();
     }
     for (const recent of recentSummaries) {
@@ -242,31 +213,45 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     return null;
   }
 
-  function recordNotification(
-    peerId: string,
-    summary: string,
-    destName: string,
-    destHasExplicitLimit: boolean,
-  ): void {
-    const now = Date.now();
+  function recordNotification(summary: string): void {
+    if (dedupThreshold > 0) recentSummaries.push({ summary, timestamp: now() });
+  }
 
-    if (destHasExplicitLimit) {
-      // Destination governs itself — only update per-destination counters.
-      // Per-peer cooldown and global counter are not used for this destination,
-      // so don't update peerLastNotify or globalCountThisHour (avoids cross-destination pollution).
-      const timestamps = destinationCountsThisHour.get(destName) ?? [];
-      timestamps.push(now);
-      destinationCountsThisHour.set(destName, timestamps);
-      destinationLastNotify.set(destName, now);
-    } else {
-      // No explicit per-destination limit — update per-peer cooldown and global counter.
-      // Key is per (peerId, destName) so activity on one destination doesn't bleed into others.
-      peerLastNotify.set(`${peerId}:${destName}`, now);
-      globalCountThisHour++;
-    }
-    // Deduplication is a separate cross-destination boundary and applies even
-    // when a destination supplies its own cooldown/hourly quota.
-    if (dedupThreshold > 0) recentSummaries.push({ summary, timestamp: now });
+  function hash(value: string): string {
+    return createHash("sha256").update(value, "utf8").digest("hex");
+  }
+
+  function operationHash(input: {
+    peerId: string;
+    threadId: string;
+    destination: string;
+    summary: string;
+    reason?: string;
+    visitor?: string;
+  }): string {
+    return hash(
+      JSON.stringify([
+        input.peerId,
+        input.threadId,
+        input.destination,
+        input.summary,
+        input.reason ?? null,
+        input.visitor ?? null,
+      ]),
+    );
+  }
+
+  function unknownDelivery(incidentId?: string) {
+    return {
+      content: JSON.stringify({
+        status: "failed",
+        message:
+          "Notification dispatch ended without a trustworthy delivery result; outcome is unknown and operator reconciliation is required.",
+        ...(incidentId ? { incidentId } : {}),
+      }),
+      isError: true,
+      outcomeUnknown: true,
+    } as const;
   }
 
   const notifyTool = defineTool({
@@ -308,28 +293,6 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
         destination.rateLimit?.cooldownMs !== undefined
       );
       if (enabled && trustLevel !== "creator" && context.peer) {
-        const peerId = context.peer.id;
-
-        // Per-destination cap checked first — more specific than peer cooldown or global limit.
-        // When a destination has an explicit rateLimit, it governs itself; peer cooldown and
-        // global cap are skipped for that destination.
-        if (destHasExplicitLimit) {
-          const destMsg = checkDestinationLimit(destination);
-          if (destMsg) {
-            return JSON.stringify({ status: "rate_limited", message: destMsg });
-          }
-        } else {
-          // No per-destination limit — apply per-peer cooldown and global cap
-          const peerMsg = checkPeerCooldown(peerId, destination.name);
-          if (peerMsg) {
-            return JSON.stringify({ status: "rate_limited", message: peerMsg });
-          }
-          const globalMsg = checkGlobalLimit();
-          if (globalMsg) {
-            return JSON.stringify({ status: "rate_limited", message: globalMsg });
-          }
-        }
-
         const dedupMsg = checkDedup(summary);
         if (dedupMsg) {
           return JSON.stringify({ status: "rate_limited", message: dedupMsg });
@@ -350,11 +313,52 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
         });
       }
 
-      // Reserve synchronously before the first await. Started attempts retain
-      // quota even on throw/timeout because remote delivery may have occurred.
-      if (enabled && trustLevel !== "creator" && context.peer) {
-        recordNotification(context.peer.id, summary, destination.name, destHasExplicitLimit);
+      const peerId = context.peer?.id ?? "system";
+      const enforceRate = enabled && trustLevel !== "creator" && context.peer !== null;
+      let reservation: ReturnType<NotifyDeliveryStore["reserve"]>;
+      try {
+        reservation = deliveryStore.reserve({
+          operationHash: operationHash({
+            peerId,
+            threadId: context.threadId,
+            destination: destination.name,
+            summary,
+            reason,
+            visitor,
+          }),
+          threadId: context.threadId,
+          peerHash: hash(peerId),
+          destination: destination.name,
+          summaryHash: hash(summary),
+          policy: {
+            enforce: enforceRate,
+            globalMaxPerHour,
+            perPeerCooldownMs,
+            dedupWindowMs,
+            destinationExplicit: destHasExplicitLimit,
+            destinationMaxPerHour: destination.rateLimit?.maxPerHour,
+            destinationCooldownMs: destination.rateLimit?.cooldownMs,
+          },
+        });
+      } catch {
+        return JSON.stringify({
+          status: "failed",
+          message: "Notification was not dispatched because durable delivery state is unavailable.",
+        });
       }
+      if (reservation.status === "rate_limited") {
+        return JSON.stringify({ status: "rate_limited", message: reservation.message });
+      }
+      if (reservation.status === "in_flight") {
+        return JSON.stringify({
+          status: "failed",
+          message: "The same notification is already being dispatched.",
+        });
+      }
+      if (reservation.status === "outcome_unknown") {
+        return unknownDelivery(reservation.incidentId);
+      }
+      if (enforceRate) recordNotification(summary);
 
       let result: NotifyDeliveryResult;
       try {
@@ -364,21 +368,23 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
           { signal: context.signal },
         );
       } catch {
+        let incidentId: string | undefined;
+        try {
+          incidentId = deliveryStore.settle(
+            reservation.attemptId,
+            "outcome_unknown",
+            "adapter-threw",
+          )?.id;
+        } catch {
+          // The pending reservation remains fail-closed and is promoted on restart.
+        }
         recordDispatch({
           timestamp: new Date().toISOString().slice(11, 19),
           destination: destination.name,
           status: "failed",
           summary,
         });
-        return {
-          content: JSON.stringify({
-            status: "failed",
-            message:
-              "Notification dispatch ended without a trustworthy delivery result; outcome is unknown.",
-          }),
-          isError: true,
-          outcomeUnknown: true,
-        };
+        return unknownDelivery(incidentId);
       }
 
       recordDispatch({
@@ -388,18 +394,43 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
         summary,
       });
 
-      const content = JSON.stringify({
+      if (result.status !== "sent" && result.status !== "failed") {
+        try {
+          deliveryStore.settle(reservation.attemptId, "outcome_unknown", "invalid-adapter-result");
+        } catch {
+          // The pending reservation remains fail-closed and is promoted on restart.
+        }
+        return unknownDelivery();
+      }
+
+      let incidentId: string | undefined;
+      try {
+        incidentId = deliveryStore.settle(
+          reservation.attemptId,
+          result.outcomeUnknown ? "outcome_unknown" : result.status,
+          result.outcomeUnknown ? "adapter-reported-unknown" : undefined,
+        )?.id;
+      } catch {
+        return unknownDelivery();
+      }
+
+      if (result.outcomeUnknown) return unknownDelivery(incidentId);
+      return JSON.stringify({
         status: result.status,
         ...(result.detail ? { detail: result.detail } : {}),
       });
-      return result.outcomeUnknown ? { content, isError: true, outcomeUnknown: true } : content;
     },
   });
 
   async function dispatchTest(
     destinationName: string,
     summary: string,
-  ): Promise<{ status: "sent" | "failed"; detail?: string }> {
+  ): Promise<{
+    status: "sent" | "failed";
+    detail?: string;
+    outcomeUnknown?: boolean;
+    incidentId?: string;
+  }> {
     const dest = destinationsByName.get(destinationName);
     if (!dest) {
       return { status: "failed", detail: `unknown destination: ${destinationName}` };
@@ -408,11 +439,80 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     if (!adapter) {
       return { status: "failed", detail: `no adapter for transport: ${dest.transport}` };
     }
+    let reservation: ReturnType<NotifyDeliveryStore["reserve"]> | undefined;
     try {
-      const result = await adapter.deliver(dest, { summary: `[test] ${summary}` });
+      const payloadSummary = `[test] ${summary}`;
+      reservation = deliveryStore.reserve({
+        operationHash: operationHash({
+          peerId: "admin",
+          threadId: "notify-admin",
+          destination: destinationName,
+          summary: payloadSummary,
+        }),
+        threadId: "notify-admin",
+        peerHash: hash("admin"),
+        destination: destinationName,
+        summaryHash: hash(payloadSummary),
+        policy: {
+          enforce: false,
+          globalMaxPerHour,
+          perPeerCooldownMs,
+          dedupWindowMs,
+          destinationExplicit: false,
+        },
+      });
+      if (reservation.status === "outcome_unknown") {
+        return {
+          status: "failed",
+          outcomeUnknown: true,
+          incidentId: reservation.incidentId,
+        };
+      }
+      if (reservation.status !== "reserved") {
+        return { status: "failed", detail: "an equivalent test notification is in progress" };
+      }
+      const result = await adapter.deliver(dest, { summary: payloadSummary });
+      if (result.outcomeUnknown) {
+        const incident = deliveryStore.settle(
+          reservation.attemptId,
+          "outcome_unknown",
+          "admin-test-outcome-unknown",
+        );
+        return {
+          status: "failed",
+          outcomeUnknown: true,
+          incidentId: incident?.id,
+        };
+      }
+      deliveryStore.settle(reservation.attemptId, result.status);
       return result;
-    } catch (err) {
-      return { status: "failed", detail: (err as Error).message };
+    } catch {
+      if (!reservation) {
+        return {
+          status: "failed",
+          detail: "durable delivery state is unavailable; provider was not called",
+        };
+      }
+      if (reservation.status === "reserved") {
+        try {
+          const incident = deliveryStore.settle(
+            reservation.attemptId,
+            "outcome_unknown",
+            "admin-test-threw",
+          );
+          return {
+            status: "failed",
+            outcomeUnknown: true,
+            incidentId: incident?.id,
+          };
+        } catch {
+          // Pending durable state still prevents blind replay and is promoted on restart.
+        }
+      }
+      return {
+        status: "failed",
+        outcomeUnknown: true,
+      };
     }
   }
 
@@ -452,6 +552,7 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
 
   async function adminInfo(): Promise<AdminInfoBlock> {
     const recentEvents = dispatches.snapshot().slice(-50);
+    const incidents = deliveryStore.listIncidents(50);
     const destinationRows = opts.destinations.map((d) => [
       d.name,
       d.transport,
@@ -481,6 +582,7 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
             },
             { label: "Cooldown (ms)", value: String(cooldownMs), source: "yaml" },
             { label: "Destinations", value: String(opts.destinations.length) },
+            { label: "Outcome unknown", value: String(incidents.length) },
           ],
         },
         {
@@ -499,6 +601,19 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
             e.summary.slice(0, 80),
           ]),
           caption: `Recent dispatches (${recentEvents.length})`,
+        },
+        {
+          kind: "table",
+          columns: ["Incident", "Destination", "Reason", "Version", "Detected"],
+          rows: incidents.map((incident) => [
+            incident.id,
+            incident.destination,
+            incident.reasonCode,
+            String(incident.version),
+            new Date(incident.detectedAt).toISOString(),
+          ]),
+          caption:
+            "Outcome-unknown deliveries. Verify the provider before reconciling; payloads are not retained here.",
         },
       ],
       actions: [
@@ -536,7 +651,72 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
             },
           ],
         },
+        {
+          id: "notify-delivery-reconcile-delivered",
+          label: "Confirm ambiguous notification was delivered",
+          confirmRequired: true,
+          inputs: notifyRecoveryInputs(
+            "Use only after confirming the provider accepted the notification.",
+          ),
+        },
+        {
+          id: "notify-delivery-reconcile-no-effect",
+          label: "Confirm ambiguous notification had no effect",
+          confirmRequired: true,
+          inputs: notifyRecoveryInputs(
+            "Use only after confirming the provider did not accept the notification.",
+          ),
+        },
       ],
+    };
+  }
+
+  function notifyRecoveryInputs(helpText: string) {
+    return [
+      { name: "incidentId", label: "Incident ID", type: "text" as const, required: true },
+      { name: "version", label: "Expected version", type: "number" as const, required: true },
+      {
+        name: "evidence",
+        label: "Verification evidence",
+        type: "text" as const,
+        required: true,
+        helpText,
+      },
+    ];
+  }
+
+  function reconcileDelivery(
+    params: Record<string, unknown>,
+    disposition: "confirmed-delivered" | "confirmed-no-effect",
+  ): AdminActionResult {
+    const incidentId = typeof params.incidentId === "string" ? params.incidentId.trim() : "";
+    const version = typeof params.version === "number" ? params.version : Number(params.version);
+    const evidence = typeof params.evidence === "string" ? params.evidence.trim() : "";
+    if (!/^[A-Za-z0-9_-]{1,128}$/.test(incidentId)) {
+      return { ok: false, message: "A valid incident ID is required" };
+    }
+    if (!Number.isSafeInteger(version) || version < 1) {
+      return { ok: false, message: "A valid expected incident version is required" };
+    }
+    if (!evidence || evidence.length > 400) {
+      return { ok: false, message: "Verification evidence must contain 1 to 400 characters" };
+    }
+    const resolved = deliveryStore.reconcile({
+      incidentId,
+      expectedVersion: version,
+      disposition,
+      evidence,
+    });
+    if (!resolved.resolved || !resolved.threadId) {
+      return { ok: false, message: "Incident is stale, resolved, or does not match" };
+    }
+    return {
+      ok: true,
+      message:
+        disposition === "confirmed-delivered"
+          ? "Notification incident reconciled as delivered"
+          : "Notification incident reconciled as having no external effect",
+      recoverThreadId: resolved.releaseThread ? resolved.threadId : undefined,
     };
   }
 
@@ -562,6 +742,12 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
       });
       if (result.status === "sent") {
         return { ok: true, message: `Test notification sent to ${dest}` };
+      }
+      if (result.outcomeUnknown) {
+        return {
+          ok: false,
+          message: `Test delivery outcome is unknown${result.incidentId ? ` (incident ${result.incidentId})` : ""}; operator reconciliation is required`,
+        };
       }
       return { ok: false, message: `Test failed: ${result.detail ?? "unknown error"}` };
     },
@@ -599,6 +785,10 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
       globalMaxSource = "yaml";
       return { ok: true, message: "globalMaxPerHour reset to yaml value" };
     },
+    "notify-delivery-reconcile-delivered": async (params) =>
+      reconcileDelivery(params, "confirmed-delivered"),
+    "notify-delivery-reconcile-no-effect": async (params) =>
+      reconcileDelivery(params, "confirmed-no-effect"),
   };
 
   return {
@@ -608,10 +798,28 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     tools: [notifyTool],
     adminInfo,
     adminActions,
+    durableThreadQuarantine: {
+      listThreadIds: () => deliveryStore.listIncidentThreads(),
+      hasThread: (threadId) => deliveryStore.hasIncidentThread(threadId),
+    },
+    onBoot: async () => {
+      if (ownsDeliveryStore && ownedDeliveryStoreClosed) {
+        deliveryStore = createNotifyDeliveryStore(deliveryStoreOptions);
+        ownedDeliveryStoreClosed = false;
+      }
+      deliveryStore.prepareForRuntime();
+    },
     onShutdown: async () => {
-      if (overrideRootRetained) {
-        releaseAdminOverrideRoot(overrideDir);
-        overrideRootRetained = false;
+      try {
+        if (ownsDeliveryStore) {
+          deliveryStore.close();
+          ownedDeliveryStoreClosed = true;
+        }
+      } finally {
+        if (overrideRootRetained) {
+          releaseAdminOverrideRoot(overrideDir);
+          overrideRootRetained = false;
+        }
       }
     },
   };
