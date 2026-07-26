@@ -723,6 +723,36 @@ function assertRailwayDatabasePaths(config: ReturnType<typeof parseConfig>): voi
     }
   }
 
+  if (config.settings.jobs) {
+    const configuredPath = config.settings.jobs.dbPath;
+    const configuredFromAgent = resolve("/app", configuredPath);
+    const configuredFromAgentRelative = relative(VOLUME_MOUNT_PATH, configuredFromAgent);
+    const alreadyBelowVolume =
+      configuredFromAgentRelative !== "" &&
+      configuredFromAgentRelative !== ".." &&
+      !configuredFromAgentRelative.startsWith(`..${sep}`) &&
+      !isAbsolute(configuredFromAgentRelative);
+    const resolvedPath =
+      isAbsolute(configuredPath) || alreadyBelowVolume
+        ? configuredFromAgent
+        : resolve(VOLUME_MOUNT_PATH, configuredPath);
+    const fromVolume = relative(VOLUME_MOUNT_PATH, resolvedPath);
+    const isDurablePath =
+      fromVolume !== "" &&
+      fromVolume !== ".." &&
+      !fromVolume.startsWith(`..${sep}`) &&
+      !isAbsolute(fromVolume);
+    if (!isDurablePath) {
+      throw new Error(
+        [
+          "Deploy preflight failed:",
+          `settings.jobs.dbPath must resolve below ${VOLUME_MOUNT_PATH} for Railway durability.`,
+          "Use a relative child path or an absolute path within the runtime volume.",
+        ].join("\n"),
+      );
+    }
+  }
+
   for (const webTransport of config.augments.filter((augment) => augment.type === "webTransport")) {
     const consoleChat = asRecord(webTransport.options?.consoleChat);
     const configuredPath = consoleChat?.dbPath;
