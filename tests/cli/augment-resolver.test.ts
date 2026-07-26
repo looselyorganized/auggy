@@ -155,6 +155,40 @@ describe("resolveAugments — fileMemory", () => {
     expect(augments[0]!.memory!.defaults.origin).toBe("operator");
     expect(augments[0]!.memory!.writeTrustLevels).toEqual(["creator"]);
   });
+
+  test("seeds mutable file memory into the Railway runtime volume and resumes from it", async () => {
+    writeFileSync(join(TMP, "learned-behaviors.md"), "image seed");
+    const runtimeDataRoot = join(TMP, "railway-data");
+    mkdirSync(runtimeDataRoot, { recursive: true });
+    const configs: AugmentConfig[] = [
+      {
+        name: "learned-behaviors",
+        type: "fileMemory",
+        options: {
+          label: "learned",
+          source: "./learned-behaviors.md",
+          mutable: true,
+          origin: "operator",
+          priority: "high",
+          placement: "preamble",
+          eviction: "drop",
+        },
+      },
+    ];
+
+    let [augment] = await resolveAugments(configs, TMP, { runtimeDataRoot });
+    await augment!.onBoot?.();
+    expect(await augment!.memory!.read!("learned")).toMatchObject({ content: "image seed" });
+    await augment!.memory!.write?.("learned", "durable update");
+    expect(readFileSync(join(runtimeDataRoot, "file-memory", "learned-behaviors.md"), "utf8")).toBe(
+      "durable update",
+    );
+
+    writeFileSync(join(TMP, "learned-behaviors.md"), "new image seed");
+    [augment] = await resolveAugments(configs, TMP, { runtimeDataRoot });
+    await augment!.onBoot?.();
+    expect(await augment!.memory!.read!("learned")).toMatchObject({ content: "durable update" });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1144,6 +1178,53 @@ describe("resolveAugments — budgets", () => {
     } finally {
       for (const augment of augments) await augment.onShutdown?.();
     }
+  });
+
+  test("routes log-to-file notifications into the Railway runtime volume", async () => {
+    const runtimeDataRoot = join(TMP, "railway-notify");
+    mkdirSync(runtimeDataRoot, { recursive: true });
+    const [augment] = await resolveAugments(
+      [
+        {
+          name: "notify",
+          type: "notify",
+          options: {
+            destinations: [
+              {
+                name: "creator",
+                transport: "log-to-file",
+                path: "./notifications.jsonl",
+                allowedTrustLevels: ["creator"],
+              },
+            ],
+          },
+        },
+      ],
+      TMP,
+      { runtimeDataRoot },
+    );
+    const tool = augment!.tools!.find((candidate) => candidate.name === "notify")!;
+    const result = JSON.parse(
+      await asStringTool(tool).execute(
+        { to: "creator", summary: "durable event" },
+        {
+          turnId: "notify-turn",
+          threadId: "notify-thread",
+          peer: {
+            id: "creator",
+            kind: "human",
+            trustLevel: "creator",
+            sourceAugment: "console",
+          },
+        },
+      ),
+    );
+    expect(result.status).toBe("sent");
+    expect(readFileSync(join(runtimeDataRoot, "notifications.jsonl"), "utf8")).toContain(
+      "durable event",
+    );
+    expect(existsSync(join(TMP, "notifications.jsonl"))).toBe(false);
+    await augment!.onShutdown?.();
   });
 
   test("closes the store on shutdown without error", async () => {

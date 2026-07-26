@@ -66,6 +66,7 @@ import type { AugmentConfig } from "./types";
 import type { BudgetsAugmentOptions } from "../augments/budgets";
 import { validateBundledSkills } from "./skill-validator";
 import { auggySelf, type AuggySelfAgentMetadata } from "./auggy-self-augment";
+import { mutableFileMemoryRuntimePath, resolveRuntimeStatePath } from "./runtime-state-inventory";
 
 // ---------------------------------------------------------------------------
 // Path resolution helper
@@ -186,7 +187,12 @@ function resolveSqlitePath(
 // Built-in resolvers
 // ---------------------------------------------------------------------------
 
-function resolveFileMemory(opts: Record<string, unknown>, agentDir: string): Augment {
+function resolveFileMemory(
+  opts: Record<string, unknown>,
+  agentDir: string,
+  runtimeDataRoot: string | undefined,
+  augmentName: string,
+): Augment {
   const source = opts.source as string;
   const resolvedSource = resolvePath(source, agentDir);
   const isLegacyLearnedBehaviorStore =
@@ -199,9 +205,22 @@ function resolveFileMemory(opts: Record<string, unknown>, agentDir: string): Aug
   const isLearnedBehaviorStore =
     opts.label === "learned" && /(^|\/)learned-behaviors\.md$/.test(resolvedSource);
 
+  const durableSource =
+    opts.mutable === true && runtimeDataRoot
+      ? mutableFileMemoryRuntimePath(runtimeDataRoot, augmentName)
+      : resolvedSource;
+  if (durableSource !== resolvedSource && runtimeDataRoot) {
+    ensureDurableDirectoryChain(
+      runtimeDataRoot,
+      dirname(durableSource),
+      `fileMemory "${augmentName}" state path`,
+    );
+  }
+
   return fileMemory({
     label: opts.label as string,
-    source: resolvedSource,
+    source: durableSource,
+    ...(durableSource !== resolvedSource ? { seedSource: resolvedSource } : {}),
     mutable: opts.mutable as boolean,
     origin: isLearnedBehaviorStore ? "operator" : (opts.origin as ContextOrigin),
     writeTrustLevels: isLearnedBehaviorStore
@@ -815,7 +834,7 @@ export async function resolveAugments(
 
       switch (config.type) {
         case "fileMemory":
-          augment = resolveFileMemory(opts, agentDir);
+          augment = resolveFileMemory(opts, agentDir, resolverOpts.runtimeDataRoot, config.name);
           break;
         case "supabaseMemory":
           augment = await resolveSupabaseMemory(opts);
@@ -888,8 +907,24 @@ export async function resolveAugments(
           break;
         }
         case "notify": {
+          const destinations = (
+            opts.destinations as Array<Record<string, unknown>> | undefined
+          )?.map((destination) => {
+            if (destination.transport !== "log-to-file" || typeof destination.path !== "string") {
+              return destination;
+            }
+            return {
+              ...destination,
+              path: resolveRuntimeStatePath(
+                destination.path,
+                agentDir,
+                resolverOpts.runtimeDataRoot,
+                `notify destination "${String(destination.name)}" path`,
+              ),
+            };
+          });
           augment = notify({
-            destinations: opts.destinations as NotifyAugmentOptions["destinations"],
+            destinations: destinations as unknown as NotifyAugmentOptions["destinations"],
             rateLimit: opts.rateLimit as NotifyAugmentOptions["rateLimit"],
             overrideDir,
           });

@@ -10,8 +10,9 @@
  * NotifyAdapter contract; no throws.
  */
 
-import { appendFileSync, mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { closeSync } from "node:fs";
+import { basename, dirname } from "node:path";
+import { appendPinnedFile, pinDirectory } from "../../../lib/anchored-files";
 import type {
   LogToFileNotifyDestination,
   NotifyAdapter,
@@ -20,7 +21,12 @@ import type {
   NotifyPayload,
 } from "../../../types";
 
-export function createLogToFileAdapter(): NotifyAdapter {
+export function createLogToFileAdapter(
+  adapterOptions: {
+    /** @internal Deterministic boundary hook for regression tests. */
+    __testHooks?: { afterParentPinned?: () => void | Promise<void> };
+  } = {},
+): NotifyAdapter {
   return {
     async deliver(
       destination: NotifyDestination,
@@ -43,19 +49,27 @@ export function createLogToFileAdapter(): NotifyAdapter {
         ...(payload.visitor !== undefined ? { visitor: payload.visitor } : {}),
       };
 
+      let parentFd: number | undefined;
       try {
         options?.signal?.throwIfAborted();
-        // Ensure the directory exists. Relative paths resolve against CWD
-        // — `auggy dev` sets CWD to the agent dir before booting, so the
-        // default `./notifications.jsonl` lands in the agent dir.
-        mkdirSync(dirname(dest.path), { recursive: true });
-        appendFileSync(dest.path, `${JSON.stringify(record)}\n`, { mode: 0o600 });
+        const parent = pinDirectory(dirname(dest.path), "log-to-file parent", { create: true });
+        parentFd = parent.fd;
+        await adapterOptions.__testHooks?.afterParentPinned?.();
+        options?.signal?.throwIfAborted();
+        appendPinnedFile(
+          parentFd,
+          basename(dest.path),
+          `${JSON.stringify(record)}\n`,
+          "log-to-file destination",
+        );
         return { status: "sent" };
       } catch (err) {
         return {
           status: "failed",
           detail: `log-to-file append failed: ${(err as Error).message}`,
         };
+      } finally {
+        if (parentFd !== undefined) closeSync(parentFd);
       }
     },
   };
