@@ -215,4 +215,22 @@ describe("runtime state inventory", () => {
     expect(serialized).not.toContain("runtime-state-secret-sentinel-prompt");
     expect(serialized).not.toContain("example.invalid");
   });
+
+  test("binds durable execution policy and schedule prompts into the recovery fingerprint", () => {
+    const paths = fixture();
+    const baseline = config();
+    const baselineFingerprint = buildRuntimeStateInventory(baseline, paths).configShapeSha256;
+
+    const changedPrompt = config();
+    changedPrompt.settings.jobs!.schedules[0]!.prompt = "a different private schedule prompt";
+    expect(buildRuntimeStateInventory(changedPrompt, paths).configShapeSha256).not.toBe(
+      baselineFingerprint,
+    );
+
+    const changedPolicy = config();
+    changedPolicy.settings.jobs!.leaseDurationMs += 1_000;
+    expect(buildRuntimeStateInventory(changedPolicy, paths).configShapeSha256).not.toBe(
+      baselineFingerprint,
+    );
+  });
 });

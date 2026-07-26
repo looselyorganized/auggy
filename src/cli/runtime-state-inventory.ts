@@ -180,6 +180,11 @@ function stateConfigShape(config: ParsedConfig): unknown {
       ? {
           enabled: true,
           dbPath: config.settings.jobs.dbPath,
+          leaseDurationMs: config.settings.jobs.leaseDurationMs,
+          heartbeatIntervalMs: config.settings.jobs.heartbeatIntervalMs,
+          claimPollMs: config.settings.jobs.claimPollMs,
+          turnTimeoutMs: config.settings.jobs.turnTimeoutMs,
+          maxAttempts: config.settings.jobs.maxAttempts,
           maxTotalRecords: config.settings.jobs.maxTotalRecords,
           maxQueuedRecords: config.settings.jobs.maxQueuedRecords,
           maxPrivateBytes: config.settings.jobs.maxPrivateBytes,
@@ -188,6 +193,10 @@ function stateConfigShape(config: ParsedConfig): unknown {
           schedules: config.settings.jobs.schedules.map((schedule) => ({
             id: schedule.id,
             cron: schedule.cron,
+            promptSha256: createHash("sha256")
+              .update("auggy-durable-schedule-prompt-v1\0")
+              .update(schedule.prompt, "utf8")
+              .digest("hex"),
             threadId: schedule.threadId,
             enabled: schedule.enabled,
             maxAttempts: schedule.maxAttempts,
