@@ -394,16 +394,14 @@ Group verification:
 - `bun run typecheck` passed;
 - `bun run lint` passed with only the repository's existing Biome
   schema-version notice;
-- the test-surface inventory passed with 266 runtime and 29 admin files across
+- the test-surface inventory passed with 274 runtime and 29 admin files across
   12 shards; and
 - `git diff --check` passed.
 
-`bun run smoke:release` reached packed-provider verification but its sandboxed
-consumer installs were denied temporary-file access. The required unsandboxed
-rerun was blocked by the execution policy because that script invokes
-`bun audit --json` against an external advisory service. No alternate command
-was used to bypass that policy; this external verification remains a final PR
-gate.
+The approved final `bun audit --json` returned an empty advisory set, and the
+unsandboxed `bun run smoke:release` passed the packed provider, isolated
+consumer, installed scaffold, console asset, health, local MCP, and cloud
+preflight checks.
 
 ### Group 5 — implemented on branch
 
@@ -518,13 +516,13 @@ Group verification:
   this machine has PostgreSQL client tools but no server, so the PostgreSQL 17
   CI service remains required executable evidence for the 11 integration
   cases;
-- the tracked inventory passed with 268 runtime and 29 console test files
+- the tracked inventory passed with 274 runtime and 29 console test files
   across 12 bounded shards;
 - `bun run typecheck`, `bun run lint`, `bash -n scripts/release-smoke.sh`, and
   `git diff --check` passed; lint emitted only the existing Biome schema-version
   notice; and
-- full release smoke remains a final PR gate because its external
-  `bun audit --json` step could not be approved in the current sandbox policy.
+- final root and packed-consumer dependency audits returned no advisories, and
+  the complete packed-release smoke passed.
 
 ### Group 7 — implemented on branch
 
@@ -645,3 +643,20 @@ The final dependency gate also discovered the newly published
 removed `react-router-dom` compatibility package to patched `react-router`
 8.3.0. All 243 console tests and the production build passed, and the repeated
 `bun audit --json` returned an empty advisory set.
+
+## Final integration gate
+
+- The complete tracked inventory passed 4,280 tests across 274 runtime and 29
+  console files in 12 sequential shards. Eleven PostgreSQL 17 service-backed
+  cases were skipped locally and remain enforced by CI.
+- `bun run typecheck`, `bun run lint`, the console production build,
+  `bash -n scripts/release-smoke.sh`, and `git diff --check` passed. Lint
+  reported only the pre-existing Biome schema-version notice.
+- `bun audit --json` returned `{}`. The packed-agent and each isolated packed
+  provider consumer also passed their dependency audits.
+- `bun run smoke:release` passed against the unpublished local tarballs,
+  including package contents, installed CLI/scaffold, doctor, runtime health,
+  console assets, local MCP behavior, and cloud preflight.
+- Repeated fresh hostile review found no unresolved High or Medium issue in
+  the single-replica production boundary. Horizontal replicas for one logical
+  Auggy remain explicitly unsupported.
