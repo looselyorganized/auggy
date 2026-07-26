@@ -1,4 +1,5 @@
 import type { AgentHandle, ExecutionContextV1, TurnResult, TurnTrigger } from "../types";
+import type { DurableJobErrorCode, DurableJobPayload, DurableJobState } from "./types";
 
 const MAX_PROMPT_UTF16_UNITS = 32 * 1024;
 const MAX_PROMPT_BYTES = 32 * 1024;
@@ -32,19 +33,12 @@ export interface DurableJobRuntimeLease {
     cancelRequested: boolean;
   };
   /** Private bounded job data. Store list APIs must never return this field. */
-  payload: { version: 1; value: unknown };
+  payload: DurableJobPayload;
   token: string;
   expiresAt: number;
 }
 
-export type DurableJobRuntimeState =
-  | "queued"
-  | "leased"
-  | "running"
-  | "completed"
-  | "failed"
-  | "canceled"
-  | "outcome_unknown";
+export type DurableJobRuntimeState = DurableJobState;
 
 export interface DurableJobRuntimeSummary {
   id: string;
@@ -71,13 +65,13 @@ export interface DurableJobRuntimeStore {
   releaseUnstarted(input: {
     jobId: string;
     token: string;
-    errorCode: string;
+    errorCode: DurableJobErrorCode;
     availableAt?: number;
   }): DurableJobRuntimeSummary;
   rejectUnstarted(input: {
     jobId: string;
     token: string;
-    errorCode: string;
+    errorCode: DurableJobErrorCode;
   }): DurableJobRuntimeSummary;
   complete(input: {
     jobId: string;

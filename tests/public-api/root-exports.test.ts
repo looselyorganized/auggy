@@ -60,4 +60,15 @@ describe("public package exports", () => {
     expect(conflict.id).toBe("incident");
     expect(options.replay.store).toBe(store);
   });
+
+  test("exports durable jobs only through its explicit trusted subpath", async () => {
+    const packageJson = JSON.parse(
+      readFileSync(join(process.cwd(), "package.json"), "utf8"),
+    ) as PackageJson;
+    expect(packageJson.exports?.["./jobs"]).toBe("./src/jobs/index.ts");
+
+    const jobs = await import("../../src/jobs");
+    expect(typeof jobs.createSqliteDurableJobStore).toBe("function");
+    expect(typeof jobs.createDurableJobRuntime).toBe("function");
+  });
 });
