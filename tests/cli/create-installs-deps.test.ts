@@ -434,6 +434,7 @@ describe("runCreate scaffolding integration", () => {
 
     const dir = agentDirFor("demo-defaults");
     const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
+      id: string;
       augments: string[];
     };
     expect(config.augments).toEqual([
@@ -468,7 +469,7 @@ describe("runCreate scaffolding integration", () => {
 
     const env = readFileSync(join(dir, ".env"), "utf-8");
     expect(env).toMatch(/AUGGY_WEB_TOKEN=[a-f0-9]{64}/);
-    expect(env).toContain("AUGGY_AGENT_ID=demo-defaults");
+    expect(env).toContain(`AUGGY_AGENT_ID=${config.id}`);
     expect(env).toContain("AUGGY_PUBLIC_URL=http://localhost:8080");
     expect(env).toContain("ANTHROPIC_API_KEY=");
   });

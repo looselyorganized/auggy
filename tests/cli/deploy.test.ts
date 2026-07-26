@@ -256,9 +256,17 @@ describe("runDeploy", () => {
     expect(calls.addVolume).toEqual([{ name: "zip-data", mountPath: "/app/data" }]);
     expect(calls.generateDomain).toBe(1);
 
-    // Three secrets: ANTHROPIC_API_KEY + AUGGY_WEB_TOKEN + AUGGY_PUBLIC_URL.
+    // Two secrets plus the immutable agent id and generated public URL.
     const keys = calls.setVariable.map((v) => v.key).sort();
-    expect(keys).toEqual(["ANTHROPIC_API_KEY", "AUGGY_PUBLIC_URL", "AUGGY_WEB_TOKEN"]);
+    expect(keys).toEqual([
+      "ANTHROPIC_API_KEY",
+      "AUGGY_AGENT_ID",
+      "AUGGY_PUBLIC_URL",
+      "AUGGY_WEB_TOKEN",
+    ]);
+    expect(calls.setVariable.find((v) => v.key === "AUGGY_AGENT_ID")?.value).toBe(
+      "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+    );
     expect(calls.setVariable.find((v) => v.key === "AUGGY_PUBLIC_URL")?.value).toBe(
       "https://zip-production-abcd.up.railway.app",
     );
@@ -1061,7 +1069,7 @@ describe("runDeploy", () => {
     expect(taskMessages).toContain("Creating Railway service zip");
     expect(taskMessages).toContain("Mounting Railway volume");
     expect(taskMessages).toContain("Generating public Railway URL");
-    expect(taskMessages).toContain("Pushing 3 env var(s)");
+    expect(taskMessages).toContain("Pushing 4 env var(s)");
     expect(taskMessages).toContain("Starting Railway build");
     expect(taskMessages).toContain("Waiting for Railway deployment");
     expect(taskMessages).toContain("Verifying deployment health");

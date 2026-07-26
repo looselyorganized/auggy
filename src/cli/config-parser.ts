@@ -2243,6 +2243,14 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         !CANONICAL_UUID_RE.test(coordination.namespace)
       ) {
         errors.push("settings.coordination.namespace: must be a canonical lowercase UUID");
+      } else if (
+        typeof raw.id === "string" &&
+        AUG1_ID_RE.test(raw.id) &&
+        coordination.namespace !== raw.id.slice("aug1_".length)
+      ) {
+        errors.push(
+          "settings.coordination.namespace: must equal the immutable UUID portion of the agent id",
+        );
       }
       const urlEnv = coordination.urlEnv ?? DEFAULT_DISTRIBUTED_COORDINATION.urlEnv;
       if (typeof urlEnv !== "string" || !ENV_VAR_NAME_RE.test(urlEnv)) {

@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { ParsedConfig } from "./types";
+import { scopedAgentNamespace } from "./agent-isolation";
 
 export const RUNTIME_STATE_INVENTORY_VERSION = 1;
 
@@ -65,7 +66,9 @@ export function resolveRuntimeStatePath(
   const root = resolve(runtimeDataRoot);
   if (isAbsolute(configuredPath)) {
     if (!isContained(root, resolvedAgentPath)) {
-      throw new Error(`[runtime-state] ${label} must stay within its runtime data root`);
+      throw new Error(
+        `[runtime-state] ${label} must stay within its state directory/runtime data root`,
+      );
     }
     return resolvedAgentPath;
   }
@@ -73,7 +76,9 @@ export function resolveRuntimeStatePath(
 
   const target = resolve(root, configuredPath);
   if (!isContained(root, target)) {
-    throw new Error(`[runtime-state] ${label} must stay within its runtime data root`);
+    throw new Error(
+      `[runtime-state] ${label} must stay within its state directory/runtime data root`,
+    );
   }
   return target;
 }
@@ -247,6 +252,7 @@ export function buildRuntimeStateInventory(
 ): RuntimeStateInventory {
   const agentDir = resolve(options.agentDir);
   const runtimeDataRoot = options.runtimeDataRoot ? resolve(options.runtimeDataRoot) : undefined;
+  const ownedStateRoot = runtimeDataRoot ?? agentDir;
   const stores: RuntimeStateStoreInventoryEntry[] = [];
   const externalPrerequisites: RuntimeStateExternalPrerequisite[] = [];
   const namespace = config.id;
@@ -287,7 +293,12 @@ export function buildRuntimeStateInventory(
         if (opts.mutable !== true) break;
         const source = runtimeDataRoot
           ? mutableFileMemoryRuntimePath(runtimeDataRoot, augment.name)
-          : resolve(agentDir, opts.source as string);
+          : resolveRuntimeStatePath(
+              String(opts.source),
+              agentDir,
+              ownedStateRoot,
+              `fileMemory ${augment.name} source`,
+            );
         addStore(stores, {
           id: `file-memory:${augment.name}`,
           owner,
@@ -351,7 +362,7 @@ export function buildRuntimeStateInventory(
           addStore(stores, {
             id: `layered-memory:${augment.name}`,
             owner,
-            namespace: String(opts.namespace ?? namespace),
+            namespace: scopedAgentNamespace(config.id, opts.namespace as string | undefined, "ep"),
             kind: "external",
             backupPlane: "external",
             schema: "operator-managed Supabase table",
@@ -365,7 +376,7 @@ export function buildRuntimeStateInventory(
         const path = resolveRuntimeStatePath(
           String(opts.dbPath ?? "./memory.db"),
           agentDir,
-          runtimeDataRoot,
+          ownedStateRoot,
           "layeredMemory dbPath",
         );
         addStore(
@@ -373,7 +384,7 @@ export function buildRuntimeStateInventory(
           sqliteEntry({
             id: `layered-memory:${augment.name}`,
             owner,
-            namespace: String(opts.namespace ?? namespace),
+            namespace: scopedAgentNamespace(config.id, opts.namespace as string | undefined, "ep"),
             path,
             runtimeDataRoot,
             schema: "LMEM/v1",
@@ -386,7 +397,7 @@ export function buildRuntimeStateInventory(
           addStore(stores, {
             id: `layered-memory-extraction-buffer:${augment.name}`,
             owner,
-            namespace: String(opts.namespace ?? namespace),
+            namespace: scopedAgentNamespace(config.id, opts.namespace as string | undefined, "ep"),
             kind: "memory",
             backupPlane: "volatile",
             schema: "process-local/v1",
@@ -407,7 +418,11 @@ export function buildRuntimeStateInventory(
         addStore(stores, {
           id: `supabase-memory:${augment.name}`,
           owner,
-          namespace: String(opts.namespace ?? namespace),
+          namespace: scopedAgentNamespace(
+            config.id,
+            opts.namespace as string | undefined,
+            "memory",
+          ),
           kind: "external",
           backupPlane: "external",
           schema: "operator-managed Supabase table",
@@ -421,7 +436,7 @@ export function buildRuntimeStateInventory(
         const path = resolveRuntimeStatePath(
           String(opts.dbPath ?? "./budgets.db"),
           agentDir,
-          runtimeDataRoot,
+          ownedStateRoot,
           "budgets dbPath",
         );
         addStore(
@@ -446,7 +461,7 @@ export function buildRuntimeStateInventory(
         const path = resolveRuntimeStatePath(
           String(opts.dbPath ?? "./visitor-auth.db"),
           agentDir,
-          runtimeDataRoot,
+          ownedStateRoot,
           "visitorAuth dbPath",
         );
         addStore(
@@ -486,7 +501,7 @@ export function buildRuntimeStateInventory(
             : resolveRuntimeStatePath(
                 idempotencyRaw,
                 agentDir,
-                runtimeDataRoot,
+                ownedStateRoot,
                 "webTransport idempotency.dbPath",
               );
         addStore(
@@ -524,7 +539,7 @@ export function buildRuntimeStateInventory(
               : resolveRuntimeStatePath(
                   consoleChat?.dbPath ?? "./data/console-chat.db",
                   agentDir,
-                  runtimeDataRoot,
+                  ownedStateRoot,
                   "webTransport consoleChat.dbPath",
                 );
           addStore(
@@ -549,7 +564,7 @@ export function buildRuntimeStateInventory(
         const path = resolveRuntimeStatePath(
           replay.dbPath ?? "./data/telegram-replay.db",
           agentDir,
-          runtimeDataRoot,
+          ownedStateRoot,
           `telegramTransport ${augment.name} replay.dbPath`,
         );
         addStore(
@@ -557,7 +572,11 @@ export function buildRuntimeStateInventory(
           sqliteEntry({
             id: `telegram-replay:${augment.name}`,
             owner,
-            namespace,
+            namespace: scopedAgentNamespace(
+              config.id,
+              (replay as { namespace?: string }).namespace,
+              augment.name,
+            ),
             path,
             runtimeDataRoot,
             schema: "TGRP/v2",
@@ -584,7 +603,12 @@ export function buildRuntimeStateInventory(
               stateDir,
               `agentMail ${augment.name} dbPath`,
             )
-          : resolve(agentDir, String(opts.dbPath ?? "./agent-mail.db"));
+          : resolveRuntimeStatePath(
+              String(opts.dbPath ?? "./agent-mail.db"),
+              agentDir,
+              ownedStateRoot,
+              `agentMail ${augment.name} dbPath`,
+            );
         addStore(
           stores,
           sqliteEntry({
@@ -638,7 +662,7 @@ export function buildRuntimeStateInventory(
         const path = resolveRuntimeStatePath(
           String(opts.dbPath ?? "./link.db"),
           agentDir,
-          runtimeDataRoot,
+          ownedStateRoot,
           "link dbPath",
         );
         addStore(
@@ -664,7 +688,7 @@ export function buildRuntimeStateInventory(
           (opts.dbPath as string | undefined) ??
             (runtimeDataRoot ? `notify-${augment.name}.db` : `./data/notify-${augment.name}.db`),
           agentDir,
-          runtimeDataRoot,
+          ownedStateRoot,
           `notify ${augment.name} dbPath`,
         );
         addStore(
@@ -690,7 +714,7 @@ export function buildRuntimeStateInventory(
           const path = resolveRuntimeStatePath(
             destination.path,
             agentDir,
-            runtimeDataRoot,
+            ownedStateRoot,
             `notify ${String(destination.name)} path`,
           );
           addStore(stores, {

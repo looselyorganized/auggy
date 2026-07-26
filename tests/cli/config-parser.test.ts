@@ -250,7 +250,7 @@ describe("parseConfig", () => {
         settings: {
           coordination: {
             mode: "postgres",
-            namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+            namespace: "a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
           },
         },
       }),
@@ -258,7 +258,7 @@ describe("parseConfig", () => {
 
     expect(parseConfig(path).settings.coordination).toEqual({
       mode: "postgres",
-      namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+      namespace: "a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
       urlEnv: "AUGGY_COORDINATION_DATABASE_URL",
       leaseDurationMs: 30_000,
       heartbeatIntervalMs: 5_000,
@@ -272,6 +272,7 @@ describe("parseConfig", () => {
       { mode: "redis", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7" },
       { mode: "postgres", namespace: "not-a-uuid" },
       { mode: "postgres", namespace: "5D9B9796-65BA-43D0-9BA9-57F1A9DB5EF7" },
+      { mode: "postgres", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7" },
       { mode: "postgres", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7", urlEnv: "URL;SECRET" },
       {
         mode: "postgres",

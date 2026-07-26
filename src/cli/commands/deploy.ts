@@ -393,6 +393,19 @@ export async function runDeploy(
     // 6) Load secrets plan and confirm with operator unless --yes.
     const envPath = join(agentDir, ".env");
     const plan = loadSecretsPlan(envPath);
+    const agentIdentityVariable = {
+      key: "AUGGY_AGENT_ID",
+      value: config.id,
+      redactedValue: "<server-minted agent id>",
+    };
+    const configuredIdentityIndex = plan.variables.findIndex(
+      (variable) => variable.key === "AUGGY_AGENT_ID",
+    );
+    if (configuredIdentityIndex >= 0) {
+      plan.variables[configuredIdentityIndex] = agentIdentityVariable;
+    } else {
+      plan.variables.push(agentIdentityVariable);
+    }
     if (plan.warnings.length > 0) {
       for (const w of plan.warnings) opts.logger.warn(w);
     }

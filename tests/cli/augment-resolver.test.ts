@@ -23,6 +23,7 @@ import type { AgentHandle } from "../../src/types";
 import { asStringTool } from "../fixtures/tool-helpers";
 
 const TMP = join(import.meta.dir, ".tmp-resolver-test");
+const AGENT_ID = "aug1_8a3d7828-1597-4db4-bd0e-adc1a1036211";
 
 beforeEach(() => {
   mkdirSync(TMP, { recursive: true });
@@ -501,6 +502,31 @@ describe("resolveAugments — layeredMemory", () => {
     expect(augments[0]!.memory?.owns).toEqual({ kind: "namespace", prefix: "test:" });
     expect(augments[0]!.scheduleAfterTurn).toBeUndefined();
     expect(augments[0]!.handleInternalTurn).toBeUndefined();
+  });
+
+  test("binds the configured namespace to the immutable agent id", async () => {
+    const [augment] = await resolveAugments(
+      [
+        {
+          name: "memory",
+          type: "layeredMemory",
+          options: {
+            backend: "sqlite",
+            dbPath: "./scoped-memory.sqlite",
+            namespace: "episodes",
+            autoSave: { enabled: false },
+          },
+        },
+      ],
+      TMP,
+      { agentId: AGENT_ID },
+    );
+
+    expect(augment!.memory?.owns).toEqual({
+      kind: "namespace",
+      prefix: `${AGENT_ID}:episodes:`,
+    });
+    await augment!.onShutdown?.();
   });
 });
 
@@ -1564,6 +1590,29 @@ describe("resolveAugments — core SQLite runtime state paths", () => {
       ),
     ).rejects.toThrow(/budgets dbPath.*runtime data root/i);
   });
+
+  test("rejects an owned state path outside the local agent directory", async () => {
+    const escapedPath = join(TMP, "..", ".tmp-other-agent-budget.db");
+    try {
+      await expect(
+        resolveAugments(
+          [
+            {
+              name: "budgets",
+              type: "budgets",
+              options: { dbPath: escapedPath },
+            },
+          ],
+          TMP,
+          { agentId: AGENT_ID },
+        ),
+      ).rejects.toThrow(/budgets dbPath.*state directory/i);
+    } finally {
+      rmSync(escapedPath, { force: true });
+      rmSync(`${escapedPath}-shm`, { force: true });
+      rmSync(`${escapedPath}-wal`, { force: true });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -2025,6 +2074,17 @@ describe("resolveAugments — cross-augment agentBinding validation (fix H3)", (
   test("succeeds when both agentBindings are the same value", async () => {
     const augments = await resolveAugments([vaConfig("same-id"), wtConfig("same-id")], TMP);
     expect(augments).toHaveLength(2);
+  });
+
+  test("replaces mutable visitor audiences with the immutable agent id", async () => {
+    const configs = [vaConfig("copied-name"), wtConfig("copied-name")];
+    const augments = await resolveAugments(configs, TMP, { agentId: AGENT_ID });
+
+    expect(augments).toHaveLength(2);
+    expect((configs[0]!.options as Record<string, unknown>).agentBinding).toBe(AGENT_ID);
+    const webOptions = configs[1]!.options as Record<string, unknown>;
+    expect(webOptions.securityNamespace).toBe(AGENT_ID);
+    expect((webOptions.visitorTokens as Record<string, unknown>).agentBinding).toBe(AGENT_ID);
   });
 
   test("injects an explicit visitorAuth binding into webTransport when omitted", async () => {

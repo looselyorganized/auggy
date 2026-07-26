@@ -54,7 +54,7 @@ function fixture(withCoordination = false) {
             settings: {
               coordination: {
                 mode: "postgres",
-                namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+                namespace: "8a3d7828-1597-4db4-bd0e-adc1a1036211",
               },
             },
           }

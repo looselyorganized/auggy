@@ -639,7 +639,7 @@ describe("runAdd no-op cases", () => {
     const env = readFileSync(join(dir, ".env"), "utf-8");
     const signingKey = env.match(/^VISITOR_SIGNING_KEY=([a-f0-9]{64})$/m)?.[1];
     expect(signingKey).toBeTruthy();
-    expect(env).toContain("AUGGY_AGENT_ID=existing-agent");
+    expect(env).toContain("AUGGY_AGENT_ID=aug1_test");
     expect(env).toContain("AUGGY_PUBLIC_URL=http://localhost:18080");
     expect(existsSync(join(dir, "skills", "visitorAuth", "SKILL.md"))).toBe(true);
   });
@@ -684,7 +684,7 @@ describe("runAdd no-op cases", () => {
     });
 
     const env = readFileSync(join(dir, ".env"), "utf-8");
-    expect(env).toContain("AUGGY_AGENT_ID=with-auth-blank");
+    expect(env).toContain("AUGGY_AGENT_ID=aug1_test");
     expect(env).toContain("AUGGY_PUBLIC_URL=http://localhost:8080");
     expect(env).toMatch(/^VISITOR_SIGNING_KEY=[a-f0-9]{64}$/m);
   });

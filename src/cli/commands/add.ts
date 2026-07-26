@@ -652,15 +652,15 @@ function updateEnvForAddedAugments(
 
   for (const key of requiredEnvVars) {
     const current = existing.get(key);
-    if (current && current.value.trim().length > 0) continue;
+    if (current && current.value.trim().length > 0 && key !== "AUGGY_AGENT_ID") continue;
 
     const generatedValue = AUTO_GENERATED_ADD_ENV_VARS.has(key)
       ? generateEnvValueForAdd(key, agentDir, rawConfig)
       : null;
-    if (generatedValue) {
+    if (generatedValue && current?.value !== generatedValue) {
       upsertEnvLine(lines, existing, key, generatedValue);
       generated.push(key);
-    } else {
+    } else if (!current || current.value.trim().length === 0) {
       upsertEnvLine(lines, existing, key, "");
       placeholders.push(key);
     }
@@ -693,9 +693,7 @@ function generateEnvValueForAdd(
 ): string | null {
   switch (key) {
     case "AUGGY_AGENT_ID":
-      return typeof rawConfig.name === "string" && rawConfig.name.trim()
-        ? rawConfig.name.trim()
-        : nameForEnv(agentDir);
+      return typeof rawConfig.id === "string" && rawConfig.id.trim() ? rawConfig.id.trim() : null;
     case "AUGGY_PUBLIC_URL":
       return `http://localhost:${findWebTransportPort(rawConfig, agentDir) ?? 8080}`;
     case "AUGGY_WEB_TOKEN":
