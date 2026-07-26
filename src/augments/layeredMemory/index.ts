@@ -14,6 +14,7 @@ import type {
   TurnResult,
   TurnTrigger,
 } from "../../types";
+import { canonicalMemoryNamespace } from "../memory-namespace";
 import {
   createBuffer,
   type ExtractionBuffer,
@@ -433,7 +434,8 @@ async function runExtractionInsideTurn(args: {
 }
 
 export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment> {
-  const prefix = opts.namespace.endsWith(":") ? opts.namespace : `${opts.namespace}:`;
+  const namespace = canonicalMemoryNamespace(opts.namespace, "layeredMemory");
+  const prefix = namespace.prefix;
   const retentionDays = opts.retentionDays ?? 90;
 
   let store: MemoryStore;
@@ -442,7 +444,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     store = createSqliteStore({
       dbPath: opts.dbPath,
       retentionDays,
-      namespace: opts.namespace,
+      namespace: namespace.namespace,
     });
   } else if (opts.backend === "supabase") {
     if (!opts.client || !opts.table) {
@@ -452,7 +454,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       client: opts.client,
       table: opts.table,
       retentionDays,
-      namespace: opts.namespace,
+      namespace: namespace.namespace,
     });
   } else {
     throw new Error(`layeredMemory: unknown backend "${opts.backend}"`);
@@ -864,7 +866,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     const counts = await store.countByRetentionClass();
     const entries = await store.listEntriesByPeer({ limit: 50 });
     return {
-      augmentName: `layered-memory-${opts.namespace}`,
+      augmentName: `layered-memory-${namespace.namespace}`,
       title: "Memory",
       sections: [
         {
@@ -915,7 +917,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
   };
 
   return {
-    name: `layered-memory-${opts.namespace}`,
+    name: `layered-memory-${namespace.namespace}`,
     type: "layeredMemory",
     category: "memory",
     memory: {

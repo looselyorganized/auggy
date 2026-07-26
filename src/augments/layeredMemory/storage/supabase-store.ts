@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { canonicalMemoryNamespace } from "../../memory-namespace";
 import type {
   MemoryStore,
   OriginValue,
@@ -49,6 +50,7 @@ export interface LayeredSupabaseClient {
 
 interface Row {
   id: string;
+  namespace_key: string;
   label: string;
   content: string;
   peer_id: string | null;
@@ -66,7 +68,8 @@ interface Row {
   origin: string | null;
 }
 
-function rowToEntry(row: Row): StoreEntry {
+function rowToEntry(row: Row, expectedNamespaceKey: string): StoreEntry | null {
+  if (row.namespace_key !== expectedNamespaceKey) return null;
   const entry: StoreEntry = {
     id: row.id,
     label: row.label,
@@ -91,11 +94,8 @@ function rowToEntry(row: Row): StoreEntry {
 export function createSupabaseStore(
   config: Omit<SupabaseStoreConfig, "client"> & { client: LayeredSupabaseClient },
 ): MemoryStore {
-  const namespace = config.namespace.trim();
-  if (!namespace) {
-    throw new Error("layeredMemory Supabase store requires a non-empty namespace");
-  }
-  const prefix = namespace.endsWith(":") ? namespace : `${namespace}:`;
+  const namespace = canonicalMemoryNamespace(config.namespace, "layeredMemory Supabase store");
+  const prefix = namespace.prefix;
   const escapedPrefixPattern = `${prefix.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
   const retentionMs = config.retentionDays * 24 * 60 * 60 * 1000;
 
@@ -112,6 +112,7 @@ export function createSupabaseStore(
 
     const row: Row = {
       id,
+      namespace_key: namespace.key,
       label: input.label,
       content: input.content,
       peer_id: input.peerId,
@@ -149,12 +150,13 @@ export function createSupabaseStore(
     let builder: SearchBuilder = config.client
       .from(config.table)
       .select(
-        "id, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at, subject, predicate, object, source_turn_id, origin",
+        "id, namespace_key, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at, subject, predicate, object, source_turn_id, origin",
       );
 
     if (peerId) {
       builder = builder.eq("peer_id", peerId);
     }
+    builder = builder.eq("namespace_key", namespace.key);
     builder = builder.like("label", escapedPrefixPattern);
     builder = builder.is("superseded_by", null);
     // Postgres "or" handles "expires_at IS NULL OR expires_at >= now" —
@@ -169,7 +171,9 @@ export function createSupabaseStore(
 
     if (error) throw error;
     const rows = (data ?? []) as Row[];
-    return rows.map(rowToEntry);
+    return rows
+      .map((row) => rowToEntry(row, namespace.key))
+      .filter((entry): entry is StoreEntry => entry !== null);
   }
 
   async function read(label: string): Promise<StoreEntry | null> {
@@ -177,14 +181,15 @@ export function createSupabaseStore(
     const { data, error } = await config.client
       .from(config.table)
       .select(
-        "id, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at, subject, predicate, object, source_turn_id, origin",
+        "id, namespace_key, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at, subject, predicate, object, source_turn_id, origin",
       )
       .eq("label", label)
+      .eq("namespace_key", namespace.key)
       .maybeSingle();
 
     if (error) throw error;
     if (!data) return null;
-    return rowToEntry(data as Row);
+    return rowToEntry(data as Row, namespace.key);
   }
 
   async function list(_peerId?: string): Promise<string[]> {
@@ -197,7 +202,7 @@ export function createSupabaseStore(
       .from(config.table)
       .delete()
       .eq("peer_id", peerId)
-      .like("label", escapedPrefixPattern);
+      .eq("namespace_key", namespace.key);
     if (error) throw error;
     return Array.isArray(data) ? data.length : 0;
   }
@@ -207,7 +212,7 @@ export function createSupabaseStore(
       .from(config.table)
       .update({ superseded_by: newEntryId })
       .eq("id", entryId)
-      .like("label", escapedPrefixPattern);
+      .eq("namespace_key", namespace.key);
     if (error) throw error;
   }
 
@@ -232,6 +237,7 @@ export function createSupabaseStore(
     const expiresAt = createdAt + retentionMs;
     const row: Row & { provenance_model: string | null; confidence: number | null } = {
       id,
+      namespace_key: namespace.key,
       label: args.label,
       content: args.content,
       peer_id: args.peerId,

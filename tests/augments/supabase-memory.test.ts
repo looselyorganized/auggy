@@ -1,7 +1,10 @@
 import { describe, it, expect } from "bun:test";
 import { supabaseMemory } from "@/augments/supabaseMemory";
+import { canonicalMemoryNamespace } from "@/augments/memory-namespace";
 import { createMockSupabase } from "@tests/fixtures/mock-supabase";
 import type { NamespaceMemoryProvider } from "@/types";
+
+const EPISODE_KEY = canonicalMemoryNamespace("episode").key;
 
 describe("supabaseMemory", () => {
   it("fails closed when scope is omitted at runtime", () => {
@@ -39,12 +42,14 @@ describe("supabaseMemory", () => {
     const client = createMockSupabase();
     await client.from("agent_memories").insert([
       {
+        namespace_key: EPISODE_KEY,
         label: "episode:victim:secret",
         content: "victim-only memory",
         peer_id: "victim",
         created_at: "2026-04-08T11:00:00Z",
       },
       {
+        namespace_key: EPISODE_KEY,
         label: "episode:attacker:public",
         content: "attacker memory",
         peer_id: "attacker",
@@ -117,12 +122,14 @@ describe("supabaseMemory", () => {
   it("search() returns entries with label matching the query", async () => {
     const client = createMockSupabase();
     await client.from("agent_memories").insert({
+      namespace_key: EPISODE_KEY,
       label: "episode:2026-04-08-001",
       content: "visitor asked about coffee",
       peer_id: "visitor-1",
       created_at: "2026-04-08T10:00:00Z",
     });
     await client.from("agent_memories").insert({
+      namespace_key: EPISODE_KEY,
       label: "episode:2026-04-08-002",
       content: "visitor asked about weather",
       peer_id: "visitor-1",
@@ -151,12 +158,14 @@ describe("supabaseMemory", () => {
     const client = createMockSupabase();
     // Seed rows from two different namespaces, both mentioning "coffee"
     await client.from("agent_memories").insert({
+      namespace_key: EPISODE_KEY,
       label: "episode:2026-04-08-001",
       content: "visitor mentioned coffee",
       peer_id: "visitor-1",
       created_at: "2026-04-08T10:00:00Z",
     });
     await client.from("agent_memories").insert({
+      namespace_key: canonicalMemoryNamespace("other").key,
       label: "other:999",
       content: "different namespace also mentions coffee",
       peer_id: "visitor-1",
@@ -206,6 +215,7 @@ describe("supabaseMemory", () => {
     expect(stored[0]!.label).toBe("episode:visitor-1:test-1");
     expect(stored[0]!.content).toBe("new memory");
     expect(stored[0]!.peer_id).toBe("visitor-1");
+    expect(stored[0]!.namespace_key).toBe(EPISODE_KEY);
   });
 
   it("omits write when mutable: false", () => {
@@ -227,6 +237,7 @@ describe("supabaseMemory", () => {
   it("shared read() returns the newest entry by exact label", async () => {
     const client = createMockSupabase();
     await client.from("agent_memories").insert({
+      namespace_key: EPISODE_KEY,
       label: "episode:abc",
       content: "specific memory",
       created_at: "2026-04-08T10:00:00Z",
@@ -275,12 +286,14 @@ describe("supabaseMemory", () => {
     const client = createMockSupabase();
     await client.from("agent_memories").insert([
       {
+        namespace_key: EPISODE_KEY,
         label: "episode:visitor-a:coffee",
         content: "visitor A likes coffee",
         peer_id: "visitor-a",
         created_at: "2026-04-08T10:00:00Z",
       },
       {
+        namespace_key: EPISODE_KEY,
         label: "episode:visitor-b:coffee",
         content: "visitor B likes coffee",
         peer_id: "visitor-b",
@@ -312,12 +325,14 @@ describe("supabaseMemory", () => {
     const client = createMockSupabase();
     await client.from("agent_memories").insert([
       {
+        namespace_key: canonicalMemoryNamespace("Foo").key,
         label: "Foo:visitor:fact",
         content: "case sentinel upper",
         peer_id: "visitor",
         created_at: "2026-04-08T10:00:00Z",
       },
       {
+        namespace_key: canonicalMemoryNamespace("foo").key,
         label: "foo:visitor:fact",
         content: "case sentinel lower",
         peer_id: "visitor",
@@ -345,6 +360,7 @@ describe("supabaseMemory", () => {
   it("preserves authenticated peer IDs exactly instead of normalizing aliases", async () => {
     const client = createMockSupabase();
     await client.from("agent_memories").insert({
+      namespace_key: EPISODE_KEY,
       label: "episode:victim:coffee",
       content: "victim likes coffee",
       peer_id: "victim",
@@ -369,6 +385,7 @@ describe("supabaseMemory", () => {
   it("denies peer-scoped search without identity and omits unsafe exact reads", async () => {
     const client = createMockSupabase();
     await client.from("agent_memories").insert({
+      namespace_key: EPISODE_KEY,
       label: "episode:visitor-b:secret",
       content: "visitor B secret",
       peer_id: "visitor-b",
@@ -391,9 +408,10 @@ describe("supabaseMemory", () => {
     expect(spec.read).toBeUndefined();
   });
 
-  it("keeps legacy shared stores explicit and unscoped", async () => {
+  it("keeps intentionally shared stores scoped to an exact namespace owner", async () => {
     const client = createMockSupabase();
     await client.from("agent_memories").insert({
+      namespace_key: EPISODE_KEY,
       label: "episode:shared",
       content: "shared operator memory",
       created_at: "2026-04-08T10:00:00Z",
@@ -414,5 +432,62 @@ describe("supabaseMemory", () => {
     const results = await spec.search("operator");
     expect(results).toHaveLength(1);
     expect(results[0]?.label).toBe("episode:shared");
+  });
+
+  it("does not silently adopt legacy rows without an exact namespace owner", async () => {
+    const client = createMockSupabase();
+    await client.from("agent_memories").insert({
+      label: "episode:legacy",
+      content: "legacy row without namespace owner",
+      created_at: "2026-04-08T10:00:00Z",
+    });
+    const aug = supabaseMemory({
+      namespace: "episode",
+      scope: "shared",
+      client,
+      table: "agent_memories",
+      mutable: false,
+      origin: "operator",
+      priority: "normal",
+      placement: "preamble",
+      eviction: "drop",
+    });
+    expect(await (aug.memory as NamespaceMemoryProvider).search("legacy")).toEqual([]);
+    expect(await aug.memory!.read!("episode:legacy")).toBeNull();
+  });
+
+  it("uses exact owner keys when namespaces are nested", async () => {
+    const client = createMockSupabase();
+    await client.from("agent_memories").insert([
+      {
+        namespace_key: canonicalMemoryNamespace("Foo").key,
+        label: "Foo:bar:shared",
+        content: "parent-owned",
+        created_at: "2026-04-08T10:00:00Z",
+      },
+      {
+        namespace_key: canonicalMemoryNamespace("Foo:bar").key,
+        label: "Foo:bar:shared",
+        content: "child-owned",
+        created_at: "2026-04-08T11:00:00Z",
+      },
+    ]);
+    const parent = supabaseMemory({
+      namespace: "Foo",
+      scope: "shared",
+      client,
+      table: "agent_memories",
+      mutable: false,
+      origin: "operator",
+      priority: "normal",
+      placement: "preamble",
+      eviction: "drop",
+    });
+    expect(
+      (await (parent.memory as NamespaceMemoryProvider).search("owned")).map(
+        (entry) => entry.content,
+      ),
+    ).toEqual(["parent-owned"]);
+    expect((await parent.memory!.read!("Foo:bar:shared"))?.content).toBe("parent-owned");
   });
 });

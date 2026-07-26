@@ -615,4 +615,67 @@ describe("SqliteStore", () => {
       await lower.close();
     }
   });
+
+  it("uses exact owner keys for nested namespaces and destructive operations", async () => {
+    const sharedPath = `${dbPath}.nested`;
+    const parent = createSqliteStore({ dbPath: sharedPath, retentionDays: 90, namespace: "Foo" });
+    const child = createSqliteStore({
+      dbPath: sharedPath,
+      retentionDays: 90,
+      namespace: "Foo:bar",
+    });
+    const common = {
+      label: "Foo:bar:peer:fact",
+      peerId: "peer",
+      trustLevel: "public" as const,
+      createdAt: Date.now(),
+      supersededBy: null,
+      retentionClass: "operational" as const,
+      isVerbatim: false,
+      expiresAt: null,
+    };
+    try {
+      await parent.write({ ...common, id: "parent", content: "parent-owned" });
+      await child.write({ ...common, id: "child", content: "child-owned" });
+
+      expect((await parent.search("owned", "peer")).map((row) => row.id)).toEqual(["parent"]);
+      expect((await child.search("owned", "peer")).map((row) => row.id)).toEqual(["child"]);
+      expect((await parent.listEntriesByPeer({ peerId: "peer" })).map((row) => row.id)).toEqual([
+        "parent",
+      ]);
+      expect(await parent.countByRetentionClass()).toEqual({
+        operational: 1,
+        lesson: 0,
+        total: 1,
+      });
+
+      await parent.supersede("child", "forged");
+      expect((await child.read(common.label))?.supersededBy).toBeNull();
+
+      const probe = new Database(sharedPath);
+      probe.run("UPDATE entries SET expires_at = ? WHERE id = ?", [Date.now() - 1, "child"]);
+      probe.close();
+      expect(await parent.cleanup()).toBe(0);
+      const afterCleanup = new Database(sharedPath);
+      expect(
+        afterCleanup
+          .query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM entries WHERE id = ?")
+          .get("child")?.n,
+      ).toBe(1);
+      afterCleanup.run("UPDATE entries SET expires_at = NULL WHERE id = ?", ["child"]);
+      afterCleanup.close();
+
+      expect(await parent.forget("peer")).toBe(1);
+      expect((await child.read(common.label))?.id).toBe("child");
+    } finally {
+      await parent.close();
+      await child.close();
+    }
+  });
+
+  it("rejects a supplied blank namespace instead of opening an unscoped store", () => {
+    expect(() =>
+      createSqliteStore({ dbPath: `${dbPath}.blank`, retentionDays: 90, namespace: "   " }),
+    ).toThrow(/namespace.*1 to 256/i);
+  });
 });

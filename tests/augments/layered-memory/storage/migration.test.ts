@@ -35,6 +35,7 @@ describe("SQLite migration — fact-fields", () => {
     expect(colNames).toContain("origin");
     expect(colNames).toContain("is_verbatim");
     expect(colNames).toContain("retention_class");
+    expect(colNames).toContain("namespace_key");
   });
 
   test("migration is idempotent — running twice is a no-op, existing rows preserved", async () => {
@@ -109,6 +110,10 @@ describe("SQLite migration — fact-fields", () => {
     await store.initialize();
     await store.close();
 
+    const namespaced = createSqliteStore({ dbPath, retentionDays: 90, namespace: "legacy" });
+    expect(await namespaced.search("old data", "p1")).toEqual([]);
+    await namespaced.close();
+
     const db2 = new Database(dbPath);
     const row = db2.prepare("SELECT * FROM entries WHERE label = ?").get("legacy") as Record<
       string,
@@ -121,5 +126,6 @@ describe("SQLite migration — fact-fields", () => {
     expect(row!.subject).toBeNull();
     expect(row!.origin).toBeNull();
     expect(row!.source_turn_id).toBeNull();
+    expect(row!.namespace_key).toBeNull();
   });
 });
