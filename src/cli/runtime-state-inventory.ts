@@ -176,6 +176,25 @@ function stateConfigShape(config: ParsedConfig): unknown {
           namespace: config.settings.coordination.namespace,
         }
       : undefined,
+    jobs: config.settings.jobs
+      ? {
+          enabled: true,
+          dbPath: config.settings.jobs.dbPath,
+          maxTotalRecords: config.settings.jobs.maxTotalRecords,
+          maxQueuedRecords: config.settings.jobs.maxQueuedRecords,
+          maxPrivateBytes: config.settings.jobs.maxPrivateBytes,
+          terminalRetentionMs: config.settings.jobs.terminalRetentionMs,
+          auditRetentionMs: config.settings.jobs.auditRetentionMs,
+          schedules: config.settings.jobs.schedules.map((schedule) => ({
+            id: schedule.id,
+            cron: schedule.cron,
+            threadId: schedule.threadId,
+            enabled: schedule.enabled,
+            maxAttempts: schedule.maxAttempts,
+            timeoutMs: schedule.timeoutMs,
+          })),
+        }
+      : undefined,
   };
 }
 
@@ -299,6 +318,29 @@ export function buildRuntimeStateInventory(
     replayCritical: true,
     required: false,
   });
+
+  if (config.settings.jobs) {
+    const jobsPath = resolveRuntimeStatePath(
+      config.settings.jobs.dbPath,
+      agentDir,
+      runtimeDataRoot,
+      "durable jobs database",
+    );
+    addStore(
+      stores,
+      sqliteEntry({
+        id: "durable-jobs",
+        owner: "runtime:durable-jobs",
+        namespace,
+        path: jobsPath,
+        runtimeDataRoot,
+        schema: "DJOB/v1",
+        retention: `terminal ${config.settings.jobs.terminalRetentionMs}ms; reconciliation evidence ${config.settings.jobs.auditRetentionMs}ms`,
+        restoreOrder: 15,
+        replayCritical: true,
+      }),
+    );
+  }
 
   for (const augment of config.augments) {
     const opts = augment.options ?? {};
