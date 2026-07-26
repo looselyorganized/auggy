@@ -49,6 +49,16 @@ the awaited inference wins inside the kernel. This rule is deliberately not
 shared with dispatched tools, notifications, hooks, or other side effects;
 those retain their scheduler ownership until non-cooperative work settles.
 
+A custom `ModelClient` can ignore cancellation completely. Auggy tracks those
+unresolved attempts after their deadline. One unresolved attempt does not pin
+the only scheduler slot forever, but once the bounded detached-attempt budget
+(`max(2, settings.turnScheduling.maxConcurrent)`) is exhausted, new inference
+fails closed until an earlier attempt settles. Attempts that were already
+running may cross the deadline concurrently, so retained provider work is at
+most that budget plus `maxConcurrent - 1`. A permanently non-cooperative
+adapter requires a process restart; first-party adapters abort their underlying
+request and normally acknowledge cancellation promptly.
+
 The deadline is per inference. A tool-using turn can perform several inferences,
 bounded separately by `settings.maxInferenceLoops`. Select a value appropriate
 for the model and hardware. Local reasoning models may need a larger value, but

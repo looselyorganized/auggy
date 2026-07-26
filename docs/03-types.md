@@ -498,13 +498,22 @@ export interface ModelResponse {
 }
 
 export interface ModelClient {
-  complete(prompt: AssembledPrompt): Promise<ModelResponse>;
+  complete(
+    prompt: AssembledPrompt,
+    opts?: { onDelta?: (delta: ModelDelta) => void; signal?: AbortSignal },
+  ): Promise<ModelResponse>;
   countTokens(text: string): number;
   maxContextTokens: number;
 }
 ```
 
 `ModelClient` is the only thing the kernel needs to know about the LLM. It's a three-method interface: `complete()`, `countTokens()`, and `maxContextTokens` (a number).
+
+Provider adapters and custom clients must stop work promptly when
+`opts.signal` aborts and must not emit more deltas afterward. The kernel fences
+late results, but repeatedly ignoring cancellation opens a bounded fail-closed
+provider circuit and requires process replacement if those promises never
+settle.
 
 This is intentionally not a "chat completions" interface or a "messages API" interface — it's the *kernel's* interface. The adapter for any specific provider (Anthropic, OpenAI, etc.) is responsible for translating between `AssembledPrompt` and the provider's request shape, and between the provider's response shape and `ModelResponse`.
 

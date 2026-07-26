@@ -210,6 +210,16 @@ export function createTurnLoop(opts: {
   const { augments, model, tokenizer, config } = opts;
   const responseLimits = resolveModelResponseLimits(config.responseLimits);
   const providerRequestTimeoutMs = resolveProviderRequestTimeoutMs(config.providerRequestTimeoutMs);
+  const detachedProviderAttemptLimit = Math.max(2, config.turnScheduling?.maxConcurrent ?? 4);
+  const detachedProviderAttempts = new Set<Promise<unknown>>();
+
+  function trackDetachedProviderAttempt(operation: Promise<unknown>): void {
+    detachedProviderAttempts.add(operation);
+    void operation.then(
+      () => detachedProviderAttempts.delete(operation),
+      () => detachedProviderAttempts.delete(operation),
+    );
+  }
 
   const traceEmitter = createTraceEmitter();
   const historyManagers = new Map<string, HistoryManager>();
@@ -932,6 +942,11 @@ export function createTurnLoop(opts: {
         streamed: boolean;
         messageId: string;
       }> {
+        if (detachedProviderAttempts.size >= detachedProviderAttemptLimit) {
+          throw new Error(
+            "Provider inference is unavailable while prior canceled attempts remain unresolved.",
+          );
+        }
         const startedAt = Date.now();
         const streamEmitter = createInferenceStreamEmitter(trigger.turnId, emitEvent);
         try {
@@ -940,6 +955,7 @@ export function createTurnLoop(opts: {
               streamingInference(model, prompt, streamEmitter, responseLimits, deadlineSignal),
             providerRequestTimeoutMs,
             signal,
+            trackDetachedProviderAttempt,
           );
           try {
             validateModelResponse(result.response, responseLimits);

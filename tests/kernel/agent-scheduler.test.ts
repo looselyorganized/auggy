@@ -257,6 +257,50 @@ describe("agent-wide keyed turn scheduling", () => {
     }
   });
 
+  test("fails provider dispatch closed after the bounded detached-attempt budget", async () => {
+    let calls = 0;
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      complete: async () => {
+        calls++;
+        return new Promise<ModelResponse>(() => {});
+      },
+    };
+    const agent = defineAgent(
+      {
+        name: "detached-provider-budget",
+        model: "mock",
+        augments: [],
+        providerRequestTimeoutMs: 5,
+        turnScheduling: {
+          maxConcurrent: 1,
+          maxQueued: 2,
+          maxQueuedPerThread: 1,
+          maxCausalDepth: 1,
+        },
+      },
+      model,
+    );
+    await agent.start();
+
+    try {
+      await expect(agent.inject(trigger("stalled-1", "thread-1", "test"))).rejects.toThrow(
+        "outcome is unknown",
+      );
+      await expect(agent.inject(trigger("stalled-2", "thread-2", "test"))).rejects.toThrow(
+        "outcome is unknown",
+      );
+      await expect(agent.inject(trigger("blocked", "thread-3", "test"))).rejects.toThrow(
+        "Provider inference is unavailable",
+      );
+      expect(calls).toBe(2);
+      expect(agent.health().scheduler).toMatchObject({ activeTurns: 0, queuedTurns: 0 });
+    } finally {
+      await agent.stop();
+    }
+  });
+
   test("keeps a same-thread successor behind outbound delivery", async () => {
     const firstDeliveryStarted = deferred();
     const releaseFirstDelivery = deferred();
