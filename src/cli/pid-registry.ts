@@ -3,8 +3,8 @@
  *
  * Modern manifests are keyed by immutable config id. Display names remain
  * useful aliases, but an ambiguous alias fails closed. Atomic resource claim
- * files prevent two local agents from consuming one exclusive listener or
- * inbound identity before either transport starts.
+ * transactions prevent two local agents from consuming one exclusive
+ * listener or inbound identity before either transport starts.
  */
 
 import { createHash } from "node:crypto";
@@ -15,12 +15,17 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join } from "node:path";
+import {
+  admitOwnedSqliteSchema,
+  canonicalSqliteSchemaSql,
+  openHardenedSqlite,
+  type SqliteSchemaObject,
+} from "../lib/sqlite";
 import { VALID_NAME_RE } from "./config-parser";
 import type { PidManifest } from "./types";
 
@@ -29,8 +34,6 @@ interface PidRegistryOptions {
   auggyDir?: string;
   /** Deterministic process-incarnation inspection for tests. */
   processIdentityForPid?: (pid: number) => string | null;
-  /** Deterministic concurrency barrier used only by registry tests. */
-  onClaimLockAcquired?: (claim: string) => void;
 }
 
 interface RuntimePidRegistryOptions extends PidRegistryOptions {
@@ -54,6 +57,25 @@ interface ResourceClaimRecord {
 
 const AGENT_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const CLAIM_DATABASE_APPLICATION_ID = 0x4155434c; // "AUCL"
+const CLAIM_DATABASE_SCHEMA_VERSION = 1;
+const CLAIM_DATABASE_SCHEMA = `CREATE TABLE IF NOT EXISTS runtime_resource_claims (
+  claim            TEXT PRIMARY KEY,
+  agent_id         TEXT NOT NULL,
+  agent_name       TEXT NOT NULL,
+  pid              INTEGER NOT NULL,
+  claim_nonce      TEXT NOT NULL,
+  process_identity TEXT NOT NULL
+)`;
+
+interface ResourceClaimRow {
+  claim: string;
+  agent_id: string;
+  agent_name: string;
+  pid: number;
+  claim_nonce: string;
+  process_identity: string;
+}
 
 export class RuntimeResourceConflictError extends Error {}
 
@@ -128,6 +150,7 @@ function parseManifest(value: unknown, source: string): PidManifest {
     record.claimNonce,
     record.processIdentity,
     record.resourceClaims,
+    record.resourceClaimStore,
   ];
   const hasModernField = modernFields.some((field) => field !== undefined);
   if (hasModernField) {
@@ -139,7 +162,8 @@ function parseManifest(value: unknown, source: string): PidManifest {
       (record.processIdentity !== undefined && !isSafeClaim(record.processIdentity)) ||
       !Array.isArray(record.resourceClaims) ||
       !record.resourceClaims.every(isSafeClaim) ||
-      new Set(record.resourceClaims).size !== record.resourceClaims.length
+      new Set(record.resourceClaims).size !== record.resourceClaims.length ||
+      (record.resourceClaimStore !== undefined && record.resourceClaimStore !== "sqlite-v1")
     ) {
       throw new Error(`Invalid Auggy runtime manifest at ${source}`);
     }
@@ -295,33 +319,6 @@ function parseClaim(value: unknown, source: string): ResourceClaimRecord {
   return record as unknown as ResourceClaimRecord;
 }
 
-function claimLockPath(claim: string, opts: PidRegistryOptions): string {
-  return `${claimPath(claim, opts)}.lock`;
-}
-
-function withClaimLock<T>(claim: string, opts: PidRegistryOptions, action: () => T): T {
-  const path = claimLockPath(claim, opts);
-  try {
-    mkdirSync(path, { mode: 0o700 });
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new RuntimeResourceConflictError(
-        `Runtime resource "${claim}" has another claim operation in progress.`,
-      );
-    }
-    throw error;
-  }
-  try {
-    opts.onClaimLockAcquired?.(claim);
-    return action();
-  } finally {
-    // If lock release fails, propagate the failure. The retained lock then
-    // blocks every future mutation until an operator inspects it; continuing
-    // would falsely report an exclusive claim as usable.
-    rmdirSync(path);
-  }
-}
-
 function readClaim(path: string): ResourceClaimRecord {
   let value: unknown;
   try {
@@ -332,49 +329,73 @@ function readClaim(path: string): ResourceClaimRecord {
   return parseClaim(value, path);
 }
 
-function unlinkClaimIfOwned(
-  claim: string,
-  agentId: string,
-  claimNonce: string,
-  opts: PidRegistryOptions,
-): void {
-  withClaimLock(claim, opts, () => {
-    const path = claimPath(claim, opts);
-    if (!existsSync(path)) return;
-    const existing = readClaim(path);
-    if (existing.agentId !== agentId || existing.claimNonce !== claimNonce) return;
-    unlinkSync(path);
+function claimDatabasePath(opts: PidRegistryOptions): string {
+  return join(ensureDir(opts), "runtime-claims.sqlite");
+}
+
+function hasExactClaimSchema(objects: readonly SqliteSchemaObject[]): boolean {
+  return (
+    objects.length === 1 &&
+    objects[0]?.type === "table" &&
+    objects[0].name === "runtime_resource_claims" &&
+    canonicalSqliteSchemaSql(objects[0].sql) === canonicalSqliteSchemaSql(CLAIM_DATABASE_SCHEMA)
+  );
+}
+
+function openClaimDatabase(opts: PidRegistryOptions) {
+  return openHardenedSqlite({
+    path: claimDatabasePath(opts),
+    label: "runtime resource claim registry",
+    synchronous: "FULL",
+    prepare(db) {
+      admitOwnedSqliteSchema(db, {
+        label: "runtime resource claim registry",
+        applicationId: CLAIM_DATABASE_APPLICATION_ID,
+        schemaVersion: CLAIM_DATABASE_SCHEMA_VERSION,
+        initialize(target) {
+          target.run(CLAIM_DATABASE_SCHEMA);
+        },
+        isLegacy() {
+          return false;
+        },
+        validate(_target, objects) {
+          if (!hasExactClaimSchema(objects)) {
+            throw new Error(
+              "runtime resource claim registry: database schema is missing, incompatible, or unexpected",
+            );
+          }
+        },
+      });
+    },
   });
 }
 
-function acquireOneClaim(claim: string, manifest: PidManifest, opts: PidRegistryOptions): void {
-  withClaimLock(claim, opts, () => {
-    const path = claimPath(claim, opts);
-    const record: ResourceClaimRecord = {
+function claimRecordFromRow(row: ResourceClaimRow): ResourceClaimRecord {
+  return parseClaim(
+    {
       version: 2,
-      claim,
-      agentId: manifest.agentId!,
-      agentName: manifest.name,
-      pid: manifest.pid,
-      claimNonce: manifest.claimNonce!,
-      processIdentity: manifest.processIdentity!,
-    };
-    try {
-      writeFileSync(path, JSON.stringify(record, null, 2), { flag: "wx", mode: 0o600 });
-      return;
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      const existing = readClaim(path);
-      const status = inspectRuntimeProcess(existing, opts);
-      if (status === "alive" || status === "unverifiable") {
-        throw new RuntimeResourceConflictError(
-          `Runtime resource "${claim}" is already claimed by agent "${existing.agentName}".`,
-        );
-      }
-      unlinkSync(path);
-    }
-    writeFileSync(path, JSON.stringify(record, null, 2), { flag: "wx", mode: 0o600 });
-  });
+      claim: row.claim,
+      agentId: row.agent_id,
+      agentName: row.agent_name,
+      pid: row.pid,
+      claimNonce: row.claim_nonce,
+      processIdentity: row.process_identity,
+    },
+    "runtime resource claim registry",
+  );
+}
+
+function rejectOrRemoveLegacyClaim(claim: string, opts: PidRegistryOptions): void {
+  const path = claimPath(claim, opts);
+  if (!existsSync(path)) return;
+  const existing = readClaim(path);
+  const status = inspectRuntimeProcess(existing, opts);
+  if (status === "alive" || status === "unverifiable") {
+    throw new RuntimeResourceConflictError(
+      `Runtime resource "${claim}" is already claimed by pre-upgrade agent "${existing.agentName}". Stop all pre-upgrade runtimes before retrying.`,
+    );
+  }
+  unlinkSync(path);
 }
 
 function acquireResourceClaims(manifest: PidManifest, opts: PidRegistryOptions): string[] {
@@ -386,26 +407,79 @@ function acquireResourceClaims(manifest: PidManifest, opts: PidRegistryOptions):
   if (!manifest.processIdentity) {
     throw new Error("Modern runtime resource claims require an OS process identity");
   }
+  if (manifest.resourceClaimStore !== "sqlite-v1") {
+    throw new Error("Modern runtime resource claims require the crash-recoverable SQLite store");
+  }
 
-  const acquired: string[] = [];
+  const database = openClaimDatabase(opts);
+  const db = database.db;
   try {
-    for (const claim of claims) {
-      acquireOneClaim(claim, manifest, opts);
-      acquired.push(claim);
-    }
-    return acquired;
-  } catch (error) {
-    for (const claim of acquired.reverse()) {
-      unlinkClaimIfOwned(claim, manifest.agentId, manifest.claimNonce, opts);
-    }
-    throw error;
+    const select = db.query<ResourceClaimRow, [string]>(
+      "SELECT claim, agent_id, agent_name, pid, claim_nonce, process_identity FROM runtime_resource_claims WHERE claim = ?",
+    );
+    const remove = db.query("DELETE FROM runtime_resource_claims WHERE claim = ?");
+    const insert = db.query(
+      `INSERT INTO runtime_resource_claims
+         (claim, agent_id, agent_name, pid, claim_nonce, process_identity)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+    );
+    db.transaction(() => {
+      for (const claim of claims) {
+        rejectOrRemoveLegacyClaim(claim, opts);
+        const row = select.get(claim);
+        if (row) {
+          const existing = claimRecordFromRow(row);
+          const status = inspectRuntimeProcess(existing, opts);
+          if (status === "alive" || status === "unverifiable") {
+            throw new RuntimeResourceConflictError(
+              `Runtime resource "${claim}" is already claimed by agent "${existing.agentName}".`,
+            );
+          }
+          remove.run(claim);
+        }
+        insert.run(
+          claim,
+          manifest.agentId!,
+          manifest.name,
+          manifest.pid,
+          manifest.claimNonce!,
+          manifest.processIdentity!,
+        );
+      }
+    }).immediate();
+    return claims;
+  } finally {
+    database.close();
   }
 }
 
 function releaseResourceClaims(manifest: PidManifest, opts: PidRegistryOptions): void {
   if (!manifest.agentId || !manifest.claimNonce) return;
-  for (const claim of manifest.resourceClaims ?? []) {
-    unlinkClaimIfOwned(claim, manifest.agentId, manifest.claimNonce, opts);
+  const claims = manifest.resourceClaims ?? [];
+  if (manifest.resourceClaimStore !== "sqlite-v1") {
+    for (const claim of claims) {
+      const path = claimPath(claim, opts);
+      if (!existsSync(path)) continue;
+      const existing = readClaim(path);
+      if (existing.agentId === manifest.agentId && existing.claimNonce === manifest.claimNonce) {
+        unlinkSync(path);
+      }
+    }
+    return;
+  }
+  if (claims.length === 0) return;
+  const database = openClaimDatabase(opts);
+  try {
+    const remove = database.db.query(
+      "DELETE FROM runtime_resource_claims WHERE claim = ? AND agent_id = ? AND claim_nonce = ?",
+    );
+    database.db
+      .transaction(() => {
+        for (const claim of claims) remove.run(claim, manifest.agentId!, manifest.claimNonce!);
+      })
+      .immediate();
+  } finally {
+    database.close();
   }
 }
 
@@ -420,7 +494,7 @@ function removeManifestRecord(record: ManifestRecord, opts: PidRegistryOptions):
  * before modern claims is the only safe upgrade boundary for non-port
  * transports such as Telegram polling.
  */
-function removeStaleOrRejectLiveLegacyManifest(
+function removeStaleOrRejectLivePreSqliteManifest(
   manifest: PidManifest,
   opts: PidRegistryOptions,
 ): void {
@@ -435,13 +509,13 @@ function removeStaleOrRejectLiveLegacyManifest(
     });
   }
   for (const record of allManifestRecords(opts)) {
-    if (!record.manifest.agentId) records.set(record.path, record);
+    if (record.manifest.resourceClaimStore !== "sqlite-v1") records.set(record.path, record);
   }
 
   for (const record of records.values()) {
     if (isProcessAlive(record.manifest.pid)) {
       throw new RuntimeResourceConflictError(
-        `Legacy runtime for agent "${record.manifest.name}" may still be running. Stop all pre-upgrade runtimes before starting an immutable agent identity.`,
+        `Pre-upgrade runtime for agent "${record.manifest.name}" may still be running. Stop all pre-upgrade runtimes before starting an agent with the crash-recoverable claim registry.`,
       );
     }
     removeManifestRecord(record, opts);
@@ -458,8 +532,11 @@ export function claimRuntimePidManifest(
   if (manifest.agentId && !manifest.processIdentity) {
     throw new Error("Modern runtime manifests require an OS process identity");
   }
-  removeStaleOrRejectLiveLegacyManifest(manifest, opts);
-  const acquired = acquireResourceClaims(manifest, opts);
+  if (manifest.agentId && manifest.resourceClaimStore !== "sqlite-v1") {
+    throw new Error("Modern runtime manifests require the crash-recoverable SQLite claim store");
+  }
+  removeStaleOrRejectLivePreSqliteManifest(manifest, opts);
+  acquireResourceClaims(manifest, opts);
   try {
     try {
       writePidManifest(manifest, opts);
@@ -475,9 +552,7 @@ export function claimRuntimePidManifest(
     }
   } catch (error) {
     if (manifest.agentId && manifest.claimNonce) {
-      for (const claim of acquired.reverse()) {
-        unlinkClaimIfOwned(claim, manifest.agentId, manifest.claimNonce, opts);
-      }
+      releaseResourceClaims(manifest, opts);
     }
     throw error;
   }

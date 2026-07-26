@@ -46,6 +46,8 @@ interface RemoveOptions {
   cwd?: string;
   /** Inject a RailwayCli for tests (defaults to the real one). */
   railwayCli?: RailwayCli;
+  /** Deterministic process-incarnation inspection for tests. */
+  processIdentityForPid?: (pid: number) => string | null;
 }
 
 export async function runRemove(name: string | undefined, opts: RemoveOptions = {}): Promise<void> {
@@ -83,11 +85,15 @@ export async function runRemove(name: string | undefined, opts: RemoveOptions = 
   // only a legacy fallback and must never allow deletion of a renamed live
   // project.
   const liveById = configIdentity.id
-    ? readLivePidManifest(configIdentity.id, { auggyDir: opts.auggyDir })
+    ? readLivePidManifest(configIdentity.id, {
+        auggyDir: opts.auggyDir,
+        processIdentityForPid: opts.processIdentityForPid,
+      })
     : null;
-  const liveByConfigPath = listPidManifests({ auggyDir: opts.auggyDir }).find(
-    (manifest) => resolve(manifest.configPath) === resolve(configPath),
-  );
+  const liveByConfigPath = listPidManifests({
+    auggyDir: opts.auggyDir,
+    processIdentityForPid: opts.processIdentityForPid,
+  }).find((manifest) => resolve(manifest.configPath) === resolve(configPath));
   const live = liveById ?? liveByConfigPath;
   if (live) {
     const identifier = live.agentId ?? live.name;

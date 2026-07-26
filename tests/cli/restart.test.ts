@@ -33,6 +33,7 @@ function manifest(configPath: string): PidManifest {
     claimNonce: "22222222-2222-4222-8222-222222222222",
     processIdentity: "test-process:agent-b",
     resourceClaims: [],
+    resourceClaimStore: "sqlite-v1",
     port: null,
     configPath,
     agentDir: resolve(configPath, ".."),

@@ -264,6 +264,8 @@ export interface PidManifest {
   processIdentity?: string;
   /** CLI-user-local listener and inbound identity claims. */
   resourceClaims?: string[];
+  /** Crash-recoverable claim-registry generation. Omitted by pre-upgrade manifests. */
+  resourceClaimStore?: "sqlite-v1";
   /** webTransport port if configured, null otherwise. */
   port: number | null;
   /** Absolute path to agent.yaml. */

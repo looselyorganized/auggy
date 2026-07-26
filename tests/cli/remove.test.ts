@@ -18,9 +18,7 @@ mock.module("@inquirer/prompts", () => ({
 
 const { runRemove } = await import("../../src/cli/commands/remove");
 const { getAgent, seedAgentForTest, setCloud } = await import("../../src/cli/agent-index");
-const { writePidManifest, removePidManifest, getProcessIdentity } = await import(
-  "../../src/cli/pid-registry"
-);
+const { writePidManifest, removePidManifest } = await import("../../src/cli/pid-registry");
 
 const IMMUTABLE_ID = "aug1_8a3d7828-1597-4db4-bd0e-adc1a1036211";
 
@@ -163,8 +161,9 @@ describe("runRemove", () => {
         name: "original",
         agentId: IMMUTABLE_ID,
         claimNonce: "8a3d7828-1597-4db4-bd0e-adc1a1036211",
-        processIdentity: getProcessIdentity(process.pid)!,
+        processIdentity: "test-process:running",
         resourceClaims: [],
+        resourceClaimStore: "sqlite-v1",
         port: 8081,
         configPath: join(dir, "agent.yaml"),
         agentDir: dir,
@@ -174,9 +173,14 @@ describe("runRemove", () => {
       { auggyDir },
     );
     try {
-      await expect(runRemove(undefined, { yes: true, auggyDir, cwd: dir })).rejects.toThrow(
-        /running|stop it first/i,
-      );
+      await expect(
+        runRemove(undefined, {
+          yes: true,
+          auggyDir,
+          cwd: dir,
+          processIdentityForPid: () => "test-process:running",
+        }),
+      ).rejects.toThrow(/running|stop it first/i);
       expect(existsSync(dir)).toBe(true);
     } finally {
       removePidManifest(IMMUTABLE_ID, { auggyDir });

@@ -201,6 +201,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
         claimNonce: randomUUID(),
         processIdentity,
         resourceClaims: runtimeResourceClaims(config),
+        resourceClaimStore: "sqlite-v1",
         port,
         configPath: resolve(configPath),
         agentDir: resolve(agentDir),
