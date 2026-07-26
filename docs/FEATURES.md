@@ -32,6 +32,7 @@ When this file disagrees with code, code wins.
 | Runtime-state inventory and fenced recovery | On main | [`27`](./27-runtime-state-recovery.md) | Offline single-replica volume bundles, verification, exact resume, and mandatory downstream reconciliation |
 | Durable delivery and operator recovery | On branch | [`28`](./28-delivery-and-operator-recovery.md) | Transport-specific replay contracts, durable AgentMail/notify incidents, and creator CAS recovery |
 | Provider deadline and brownout isolation | On branch | [`29`](./29-provider-resilience.md) | One bounded model attempt, explicit no-retry policy, cancellation, late-result fencing, and scheduler capacity release |
+| Single-replica runtime load evidence | On branch | [`30`](./30-single-replica-load-evidence.md) | Bounded real-runtime burst, tool, cancellation, fault, drain, restart, and soak evidence; no universal RPS claim |
 | Auggy Builder Skill | On main | [`11`](./11-skills.md) | Portable coding-agent guidance and evals; public installation UX remains roadmap work |
 | Multiple replicas for one logical agent | Unsupported | [coordination report](./plans/distributed-coordination-implementation-report-2026-07-24.md) | Configuration fails closed; PostgreSQL coordinator foundation is not wired into runtime execution |
 

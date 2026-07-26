@@ -404,3 +404,54 @@ rerun was blocked by the execution policy because that script invokes
 `bun audit --json` against an external advisory service. No alternate command
 was used to bypass that policy; this external verification remains a final PR
 gate.
+
+### Group 5 — implemented on branch
+
+The prior distributed load script remains an explicitly synthetic coordinator
+reference model. A separate bounded runner now starts a real single-replica
+`defineAgent` and exercises the keyed scheduler, turn loop, streamed event path,
+validated tool dispatch, delayed outbound delivery, operational snapshots,
+active drain, post-drain rejection, and same-handle restart. Concierge,
+order-support, queue-saturation, cancellation, and non-cooperative-provider
+profiles emit versioned, secret-free JSON with exact machine/runtime/config
+metadata, terminal classifications, latency percentiles, scheduler and delivery
+peaks, memory, optional Linux `/proc/self/fd` counts, and invariant failures.
+
+The harness is capped at 10,000 requests and makes no universal throughput or
+replica claim. Real Bun HTTP/SSE queue limits, disconnect behavior, transport
+idempotency, and replay remain in their existing sequential transport suites;
+the load runner does not relabel direct runtime injection as HTTP evidence.
+
+The first fault run exposed and resolved one additional Medium provider
+availability issue: repeated custom `ModelClient` implementations that ignore
+abort could release scheduler slots while accumulating detached work without a
+bound. The kernel now tracks detached inference promises, tolerates a small
+derived budget so one stall does not pin the only scheduler slot, and then
+fails new inference closed until unresolved work settles. Already-active work
+can cross the deadline concurrently, but the retained attempt count has a
+derived finite upper bound covered by both scheduler and load regressions.
+
+Recorded local evidence on Bun 1.3.14 / Darwin ARM64 / 12 logical CPUs / 32 GiB
+includes 1,000-request concierge and order-support bursts, a 10,000-request
+order-support soak, and a 128-request cancellation/stall fault run. Every run
+had zero same-thread overlap and duplicate effects, respected scheduler and
+detached-work bounds, rejected new work during drain, reached zero scheduler
+and delivery work, restarted successfully, and returned no invariant failure.
+Exact inputs and results are in
+[`docs/30-single-replica-load-evidence.md`](../30-single-replica-load-evidence.md).
+File-descriptor telemetry was unavailable on Darwin and is explicitly `null`.
+
+Independent revalidation classified the missing real-runtime runner as a
+readiness-evidence gap rather than a new source vulnerability. Reviewers also
+identified Low follow-up improvements for supplemental CI file-existence
+validation, one polling-based idempotency test, and fixed-port smoke retries;
+those belong to the CI/contracts checkpoint rather than this runtime harness.
+
+Hostile review found one Medium defect in the first harness implementation: an
+all-stalled provider profile could open the detached-attempt circuit before the
+held drain probe started, leaving the runner waiting forever on a fixture
+barrier. The final harness races probe start against terminal settlement,
+reports circuit-blocked drain/restart probes as controlled invariant failures,
+and releases fixture barriers and stops the runtime in `finally`. The exact
+all-stall regression completes without a hang. Repeat adversarial review found
+no unresolved High or Medium Group 5 issue.
