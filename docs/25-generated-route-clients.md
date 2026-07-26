@@ -372,6 +372,11 @@ await api.get("/health", {
 Regenerate clients when route paths, methods, auth modes, request schemas,
 response schemas, or route policies change.
 
+`auggy routes --json` emits a `schemaVersion: 1` envelope. OpenAPI output uses
+OpenAPI 3.1.0 and records `x-auggy.artifactSchemaVersion: 1`. Consumers must
+reject an artifact schema they do not understand rather than guessing that a
+new route/auth shape is compatible.
+
 Do not edit generated files manually. The generated header includes the client
 generator version and target, and lists routes omitted for the chosen target.
 

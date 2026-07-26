@@ -4,6 +4,8 @@ type JsonObject = Record<string, unknown>;
 const GENERATED_CLIENT_VERSION = "v0";
 
 export interface ClientRoutesReport {
+  /** Schema of the source route-manifest envelope, when serialized by the CLI. */
+  schemaVersion?: 1;
   agent: {
     name: string;
     configPath: string;

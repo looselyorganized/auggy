@@ -3,6 +3,8 @@ import type { RouteManifestEntry, RouteManifestSummary } from "../kernel/route-m
 type JsonObject = Record<string, unknown>;
 
 export interface OpenApiRoutesReport {
+  /** Schema of the source route-manifest envelope, when serialized by the CLI. */
+  schemaVersion?: 1;
   agent: {
     name: string;
     configPath: string;
@@ -79,6 +81,7 @@ export function createOpenApiDocument(report: OpenApiRoutesReport): JsonObject {
         }
       : {}),
     "x-auggy": {
+      artifactSchemaVersion: report.schemaVersion ?? 1,
       agent: report.agent,
       summary: report.summary,
     },

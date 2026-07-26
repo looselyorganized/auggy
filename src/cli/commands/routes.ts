@@ -15,6 +15,8 @@ export interface RoutesOptions {
 }
 
 export interface RoutesReport {
+  /** Present on reports produced by runRoutes; optional for in-process formatter inputs. */
+  schemaVersion?: 1;
   agent: {
     name: string;
     configPath: string;
@@ -52,6 +54,7 @@ export async function runRoutes(
   }
 
   return {
+    schemaVersion: 1,
     agent: {
       name: config.name,
       configPath,
@@ -164,7 +167,7 @@ export function routesCommand(deps: RoutesCommandDeps = {}): Command {
               : opts.openapi
                 ? JSON.stringify(createOpenApiDocument(report), null, 2)
                 : opts.json
-                  ? JSON.stringify(report, null, 2)
+                  ? JSON.stringify({ ...report, schemaVersion: 1 }, null, 2)
                   : formatRoutesReport(report);
 
           if (opts.out) {

@@ -93,6 +93,7 @@ describe("createOpenApiDocument", () => {
       version: "0.1.0",
     });
     expect(doc["x-auggy"]).toEqual({
+      artifactSchemaVersion: 1,
       agent: { name: "zip", configPath: "/tmp/zip/agent.yaml" },
       summary: {
         totalRoutes: 2,
