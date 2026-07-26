@@ -460,6 +460,51 @@ describe("durable job runtime", () => {
     expect(calls.map((call) => call.method)).toContain("markOutcomeUnknown");
   });
 
+  it("quarantines a hung deadline exactly once and ignores late completion", async () => {
+    const timers = timerHarness();
+    const { store, calls } = storeWith(lease());
+    const injected = deferred<TurnResult>();
+    let signal: AbortSignal | undefined;
+    const agent: Pick<AgentHandle, "inject"> = {
+      async inject(_trigger, options) {
+        await options?.onExecutionStart?.();
+        signal = options?.signal;
+        return injected.promise;
+      },
+    };
+    const worker = runtime(agent, store, {
+      deadlineGraceMs: 250,
+      setTimeout: timers.setTimeout,
+      clearTimeout: timers.clearTimeout,
+      setInterval: timers.setInterval,
+      clearInterval: timers.clearInterval,
+    });
+    worker.start();
+    const running = worker.processNext();
+    await Promise.resolve();
+    timers.fireNext(1_000); // The poller joins this already-running claim.
+    timers.fireNext(5_000);
+    expect(signal?.aborted).toBe(true);
+    timers.fireNext(250);
+
+    const unknownCalls = () => calls.filter((call) => call.method === "markOutcomeUnknown");
+    expect(unknownCalls()).toHaveLength(1);
+    expect(unknownCalls()[0]?.input).toMatchObject({
+      reasonCode: "execution-outcome-unknown",
+    });
+    expect(timers.activeCount()).toBe(0);
+    expect(worker.processNext()).toBe(running);
+    expect(calls.filter((call) => call.method === "claim")).toHaveLength(1);
+
+    injected.resolve(successfulResult());
+    await expect(running).resolves.toEqual({ status: "outcome-unknown", jobId: "job-1" });
+    expect(unknownCalls()).toHaveLength(1);
+    expect(calls.find((call) => call.method === "complete")).toBeUndefined();
+    await Promise.resolve();
+    await worker.stop();
+    expect(timers.activeCount()).toBe(0);
+  });
+
   it("bounds shutdown wait, quarantines detached work, and blocks restart until it settles", async () => {
     const timers = timerHarness();
     const { store, calls } = storeWith(lease());
@@ -492,6 +537,7 @@ describe("durable job runtime", () => {
 
     injected.resolve({ ...successfulResult(), success: false, status: "canceled" });
     await expect(running).resolves.toEqual({ status: "outcome-unknown", jobId: "job-1" });
+    expect(calls.filter((call) => call.method === "markOutcomeUnknown")).toHaveLength(1);
     worker.start();
     expect(worker.isStarted()).toBe(true);
   });

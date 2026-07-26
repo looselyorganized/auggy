@@ -53,6 +53,13 @@ export interface DurableJobRuntimeSummary {
   cancelRequested: boolean;
 }
 
+type DurableJobPrestartErrorCode =
+  | "invalid-payload"
+  | "admission-canceled"
+  | "admission-rejected"
+  | "admission-failed"
+  | "shutdown-before-execution";
+
 /**
  * Deliberately narrow adapter over the transactional DurableJobStore. Fenced
  * methods must reject stale tokens rather than applying a best-effort update.
@@ -102,6 +109,7 @@ export interface DurableJobRuntimeOptions {
   heartbeatIntervalMs?: number;
   pollIntervalMs?: number;
   defaultTimeoutMs?: number;
+  deadlineGraceMs?: number;
   shutdownGraceMs?: number;
   maxPollBackoffMs?: number;
   now?: () => number;
@@ -248,6 +256,7 @@ export function createDurableJobRuntime(options: DurableJobRuntimeOptions) {
   const pollIntervalMs = options.pollIntervalMs ?? 1_000;
   const maxPollBackoffMs = options.maxPollBackoffMs ?? 30_000;
   const defaultTimeoutMs = options.defaultTimeoutMs ?? 5 * 60_000;
+  const deadlineGraceMs = options.deadlineGraceMs ?? 5_000;
   const shutdownGraceMs = options.shutdownGraceMs ?? 5_000;
   const setTimeoutFn =
     options.setTimeout ??
@@ -291,6 +300,9 @@ export function createDurableJobRuntime(options: DurableJobRuntimeOptions) {
   ) {
     throw new Error("Invalid durable jobs default timeout");
   }
+  if (!Number.isSafeInteger(deadlineGraceMs) || deadlineGraceMs < 100 || deadlineGraceMs > 60_000) {
+    throw new Error("Invalid durable jobs deadline grace");
+  }
   if (!Number.isSafeInteger(shutdownGraceMs) || shutdownGraceMs < 100 || shutdownGraceMs > 60_000) {
     throw new Error("Invalid durable jobs shutdown grace");
   }
@@ -306,6 +318,8 @@ export function createDurableJobRuntime(options: DurableJobRuntimeOptions) {
         began: boolean;
         maxAttempts: number;
         cleanup: () => void;
+        forcedResult?: DurableJobProcessResult;
+        forcedError?: DurableJobRuntimeError;
       }
     | undefined;
   let current: Promise<DurableJobProcessResult> | undefined;
@@ -364,7 +378,7 @@ export function createDurableJobRuntime(options: DurableJobRuntimeOptions) {
   function settleUnstarted(
     lease: DurableJobRuntimeLease,
     maxAttempts: number,
-    errorCode: string,
+    errorCode: DurableJobPrestartErrorCode,
   ): DurableJobProcessResult {
     if (lease.job.attempt >= maxAttempts) {
       return verifySettlement(
@@ -441,7 +455,7 @@ export function createDurableJobRuntime(options: DurableJobRuntimeOptions) {
     }
 
     const controller = new AbortController();
-    const execution = {
+    const execution: NonNullable<typeof active> = {
       lease,
       controller,
       began: false,
@@ -452,6 +466,8 @@ export function createDurableJobRuntime(options: DurableJobRuntimeOptions) {
     let heartbeatFailed = false;
     let deadlineTimer: unknown;
     let deadlineTimerSet = false;
+    let deadlineWatchdogTimer: unknown;
+    let deadlineWatchdogTimerSet = false;
     const heartbeat = () => {
       try {
         const state = options.store.heartbeat({ jobId: lease.job.id, token: lease.token, leaseMs });
@@ -468,6 +484,7 @@ export function createDurableJobRuntime(options: DurableJobRuntimeOptions) {
       cleanedUp = true;
       clearIntervalFn(heartbeatTimer);
       if (deadlineTimerSet) clearTimeoutFn(deadlineTimer);
+      if (deadlineWatchdogTimerSet) clearTimeoutFn(deadlineWatchdogTimer);
     };
 
     const context: ExecutionContextV1 = {
@@ -497,10 +514,22 @@ export function createDurableJobRuntime(options: DurableJobRuntimeOptions) {
     };
 
     try {
-      deadlineTimer = setTimeoutFn(
-        () => controller.abort("durable-job-deadline"),
-        payload.timeoutMs,
-      );
+      deadlineTimer = setTimeoutFn(() => {
+        deadlineTimerSet = false;
+        controller.abort("durable-job-deadline");
+        deadlineWatchdogTimer = setTimeoutFn(() => {
+          deadlineWatchdogTimerSet = false;
+          if (active !== execution || execution.forcedResult || execution.forcedError) return;
+          execution.cleanup();
+          try {
+            execution.forcedResult = settleUnknown(lease, "execution-outcome-unknown");
+          } catch {
+            execution.forcedError = new DurableJobRuntimeError("settlement-unverified");
+            reportOperationalError("settlement-failed");
+          }
+        }, deadlineGraceMs);
+        deadlineWatchdogTimerSet = true;
+      }, payload.timeoutMs);
       deadlineTimerSet = true;
       const result = await options.agent.inject(trigger, {
         signal: controller.signal,
@@ -515,6 +544,8 @@ export function createDurableJobRuntime(options: DurableJobRuntimeOptions) {
           execution.began = true;
         },
       });
+      if (execution.forcedError) throw execution.forcedError;
+      if (execution.forcedResult) return execution.forcedResult;
       if (!execution.began) {
         return settleUnstarted(
           lease,
@@ -541,6 +572,8 @@ export function createDurableJobRuntime(options: DurableJobRuntimeOptions) {
         new Set(["completed", "canceled", "outcome_unknown"]),
       );
     } catch (error) {
+      if (execution.forcedError) throw execution.forcedError;
+      if (execution.forcedResult) return execution.forcedResult;
       if (!execution.began) {
         if (error instanceof CanceledBeforeExecutionError) {
           return error.result;
@@ -633,13 +666,19 @@ export function createDurableJobRuntime(options: DurableJobRuntimeOptions) {
     // remains forbidden until its finally handler clears that reference.
     if (!execution || active !== execution) return;
     execution.cleanup();
+    if (execution.forcedResult || execution.forcedError) return;
     try {
       if (execution.began) {
-        settleUnknown(execution.lease, "shutdown-interrupted");
+        execution.forcedResult = settleUnknown(execution.lease, "shutdown-interrupted");
       } else {
-        settleUnstarted(execution.lease, execution.maxAttempts, "shutdown-before-execution");
+        execution.forcedResult = settleUnstarted(
+          execution.lease,
+          execution.maxAttempts,
+          "shutdown-before-execution",
+        );
       }
     } catch {
+      execution.forcedError = new DurableJobRuntimeError("settlement-unverified");
       reportOperationalError("settlement-failed");
     }
   }
