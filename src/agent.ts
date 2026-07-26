@@ -2,6 +2,7 @@ import type {
   AgentCard,
   AgentConfig,
   AgentHandle,
+  AgentInjectOptions,
   AgentHealth,
   Augment,
   ModelClient,
@@ -14,6 +15,7 @@ import type {
   TurnSchedulingConfig,
   ThreadHistoryPersistence,
   RuntimeOperationalSnapshot,
+  ExecutionContextV1,
 } from "./types";
 import { createTokenizer } from "./tokenizer";
 import { generateAgentCard } from "./agent-card";
@@ -32,6 +34,10 @@ import { emptyTrace } from "./kernel/trace-emitter";
 import { isOutcomeUnknownError, OutcomeUnknownError } from "./outcome-unknown";
 import { enumerateDistributedCoordinationBlockers } from "./coordination/topology";
 import { createRuntimeSignals } from "./kernel/runtime-signals";
+import {
+  executionContextForTrace,
+  validateTrustedExecutionContext,
+} from "./kernel/execution-context";
 
 const DEFAULT_TURN_SCHEDULING: TurnSchedulingConfig = {
   maxConcurrent: 4,
@@ -105,6 +111,39 @@ function createStartupAdmissionBarrier(): StartupAdmissionBarrier {
         waiter.signal?.removeEventListener("abort", waiter.abortListener!);
         waiter.reject(error);
       }
+    },
+  };
+}
+
+interface ExecutionCancellation {
+  signal?: AbortSignal;
+  cleanup(): void;
+}
+
+function executionCancellation(
+  signal: AbortSignal | undefined,
+  context: ExecutionContextV1 | undefined,
+): ExecutionCancellation {
+  if (!context?.deadlineAt) return { signal, cleanup: () => {} };
+
+  const controller = new AbortController();
+  const abortFromCaller = () => controller.abort(signal?.reason);
+  if (signal?.aborted) {
+    abortFromCaller();
+  } else {
+    signal?.addEventListener("abort", abortFromCaller, { once: true });
+  }
+  const deadlineTimer = setTimeout(
+    () => {
+      controller.abort(new DOMException("Execution deadline exceeded", "TimeoutError"));
+    },
+    Math.max(0, context.deadlineAt - Date.now()),
+  );
+  return {
+    signal: controller.signal,
+    cleanup() {
+      clearTimeout(deadlineTimer);
+      signal?.removeEventListener("abort", abortFromCaller);
     },
   };
 }
@@ -443,6 +482,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       onEvent?: import("./types").KernelEventHandler;
       signal?: AbortSignal;
       historyPersistence?: ThreadHistoryPersistence;
+      executionContext?: ExecutionContextV1;
       source: "transport" | "inject";
       trackDetachedOperation?: (operation: Promise<unknown>) => void;
     },
@@ -459,6 +499,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         result = await turnLoop.executeTurn(trigger, threadId, {
           onEvent: options.onEvent,
           signal: options.signal,
+          executionContext: options.executionContext,
           trackDetachedOperation: options.trackDetachedOperation,
         });
       } catch (error) {
@@ -468,7 +509,9 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         throw error;
       }
       await compactAndCommitHistory(threadId, association);
-      return result;
+      return options.executionContext === undefined
+        ? result
+        : { ...result, executionContext: options.executionContext };
     });
   }
 
@@ -574,6 +617,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     trigger: TurnTrigger,
     threadId: string,
     result: Exclude<ScheduledRunResult<TurnResult>, { status: "completed" }>,
+    executionContext?: ExecutionContextV1,
   ): TurnResult {
     if (result.status === "canceled") {
       return {
@@ -586,7 +630,9 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
           turnId: trigger.turnId,
           threadId,
           trigger: { type: trigger.type, sourceAugment: trigger.source },
+          executionContext: executionContextForTrace(executionContext),
         }),
+        ...(executionContext === undefined ? {} : { executionContext }),
       };
     }
 
@@ -617,7 +663,9 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         turnId: trigger.turnId,
         threadId,
         trigger: { type: trigger.type, sourceAugment: trigger.source },
+        executionContext: executionContextForTrace(executionContext),
       }),
+      ...(executionContext === undefined ? {} : { executionContext }),
     };
   }
 
@@ -630,6 +678,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       historyPersistence?: ThreadHistoryPersistence;
       beforeExecute?: () => Promise<void>;
       onExecutionStart?: () => void;
+      executionContext?: ExecutionContextV1;
     },
     sourcePolicy: SchedulerSourcePolicy,
     parentLease?: KeyedTurnLease,
@@ -639,18 +688,25 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     if (durableThreadStillQuarantined(threadId)) {
       turnScheduler.recordExternalRejection("thread-quarantined");
       operationalSignals.recordTurn({ outcome: "rejected", durationMs: 0 });
-      return schedulerTerminalResult(trigger, threadId, {
-        status: "rejected",
-        reason: "thread-quarantined",
-      });
+      return schedulerTerminalResult(
+        trigger,
+        threadId,
+        { status: "rejected", reason: "thread-quarantined" },
+        options.executionContext,
+      );
     }
     const executeCompleteTurn = async (lease: KeyedTurnLease): Promise<TurnResult> => {
       await options.beforeExecute?.();
       if (options.signal?.aborted) {
-        return schedulerTerminalResult(trigger, threadId, {
-          status: "canceled",
-          reason: options.signal.reason,
-        });
+        return schedulerTerminalResult(
+          trigger,
+          threadId,
+          {
+            status: "canceled",
+            reason: options.signal.reason,
+          },
+          options.executionContext,
+        );
       }
       options.onExecutionStart?.();
       lifecycle.resetIdleTimer();
@@ -666,6 +722,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
           onEvent: options.onEvent,
           signal: options.signal,
           historyPersistence: options.historyPersistence,
+          executionContext: options.executionContext,
           source: options.source,
           trackDetachedOperation: (operation) => lease.track(operation),
         });
@@ -702,7 +759,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       const result =
         scheduled.status === "completed"
           ? scheduled.value
-          : schedulerTerminalResult(trigger, threadId, scheduled);
+          : schedulerTerminalResult(trigger, threadId, scheduled, options.executionContext);
       operationalSignals.recordTurn({
         outcome: result.outcomeUnknown
           ? "outcome-unknown"
@@ -892,18 +949,29 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       return agentCard;
     },
 
-    async inject(trigger: TurnTrigger, options?: { signal?: AbortSignal }): Promise<TurnResult> {
+    async inject(trigger: TurnTrigger, options?: AgentInjectOptions): Promise<TurnResult> {
       if (!started) {
         throw new Error("Agent not started. Call and await start() before inject().");
       }
-      return scheduleTurn(
-        trigger,
-        {
-          source: "inject",
-          signal: options?.signal,
-        },
-        injectSource,
-      );
+      const executionContext =
+        options?.executionContext === undefined
+          ? undefined
+          : validateTrustedExecutionContext(options.executionContext);
+      const cancellation = executionCancellation(options?.signal, executionContext);
+      try {
+        return await scheduleTurn(
+          trigger,
+          {
+            source: "inject",
+            signal: cancellation.signal,
+            onEvent: options?.onEvent,
+            executionContext,
+          },
+          injectSource,
+        );
+      } finally {
+        cancellation.cleanup();
+      }
     },
 
     recoverThread(threadId: string): boolean {
