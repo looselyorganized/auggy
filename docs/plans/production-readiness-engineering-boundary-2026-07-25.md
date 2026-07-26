@@ -537,8 +537,9 @@ services bind to the same immutable id instead of a mutable display name.
 
 Local startup atomically claims the immutable agent id, listener ports,
 Telegram bot identity, and inbound AgentMail inbox before transports start.
-Claims are private, nonce-owned, secret-free, stale-process recoverable, and
-released only by their exact owner. Display-name lifecycle aliases are allowed
+Claims are private, nonce-owned, secret-free, serialized per resource,
+PID-incarnation checked, stale-process recoverable, and released only by their
+exact owner within one OS user's CLI registry. Display-name lifecycle aliases are allowed
 only when unambiguous, named configuration resolution cannot fall through to a
 different current-working-directory agent, and a live legacy name-keyed process
 blocks the identity-keyed replacement until it is stopped.
@@ -554,8 +555,9 @@ identity.
 Compatibility review records two intentional stopped-upgrade boundaries:
 visitor tokens using old display-name audiences must be reissued, and existing
 shared layered-memory labels require an offline operator-reviewed
-export/relabel/import rather than a fail-open fallback. Host claims cannot
-arbitrate across machines. Mutually untrusted agents require different OS or
-container identities because `bash` and configured filesystem mounts are
-capabilities, not a sandbox. Multiple replicas for one logical Auggy remain
-unsupported.
+export/relabel/import rather than a fail-open fallback. CLI claims cannot
+arbitrate across OS users, containers, services, or machines; the deployer must
+enforce exclusive inbound provider identities across those boundaries.
+Mutually untrusted agents require different OS or container identities because
+`bash` and configured filesystem mounts are capabilities, not a sandbox.
+Multiple replicas for one logical Auggy remain unsupported.

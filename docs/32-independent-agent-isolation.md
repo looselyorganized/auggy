@@ -29,7 +29,7 @@ ownership of that Telegram bot before polling or webhook startup.
 
 ## Required separation
 
-| Resource | Same host or network namespace | Separate service/container |
+| Resource | Same OS user / CLI registry | Separate service/container |
 | --- | --- | --- |
 | `agent.yaml` identity | Unique `id`; do not copy one identity to another logical agent | Unique `id` per logical agent |
 | Process | One CLI-managed agent per process | One agent process per service/container |
@@ -43,16 +43,19 @@ ownership of that Telegram bot before polling or webhook startup.
 | Backup/restore/delete | Operate on one identity-bound state root | Operate on one dedicated volume and its matching external recovery points |
 
 Local `auggy dev` acquires atomic, owner-only resource claims before transports
-start. It rejects duplicate immutable IDs, ports, Telegram bots, and inbound
-AgentMail inboxes. Claims use non-secret identifiers; a Telegram token without
-a numeric bot prefix is represented by a domain-separated SHA-256 fingerprint,
-never by the token itself. Dead-process claims are reclaimed. Malformed claims
-and ambiguous display-name lookups fail closed.
+start. Within one OS user's `~/.auggy` registry, it rejects duplicate immutable
+IDs, ports, Telegram bots, and inbound AgentMail inboxes. Claims use non-secret
+identifiers; a Telegram token without a numeric bot prefix is represented by a
+domain-separated SHA-256 fingerprint, never by the token itself. Claim
+takeover and release are serialized, and PID incarnation markers prevent an
+unrelated reused PID from being signaled or treated as the old owner.
+Malformed claims and ambiguous display-name lookups fail closed.
 
-These claims are host-local. Railway, Kubernetes, Nomad, and other schedulers
-must prevent the same exclusive inbound identity from being configured in two
-services. A database, volume, or load balancer does not make duplicate Telegram
-pollers or AgentMail consumers safe.
+These claims are local to one OS user's registry, not the whole host. Separate
+service accounts, containers, hosts, Railway services, Kubernetes, Nomad, and
+other schedulers must prevent the same exclusive inbound identity from being
+configured twice. A database, volume, or load balancer does not make duplicate
+Telegram pollers or AgentMail consumers safe.
 
 ## Load-balancer ownership
 
@@ -85,7 +88,9 @@ tenants. The `bash` augment and operator-configured filesystem mounts are host
 capabilities. An agent granted them can access whatever its OS identity and
 container mounts permit. Run mutually untrusted or differently privileged
 agents under separate OS users or, preferably, separate containers/services
-with distinct credentials and minimal mounts.
+with distinct credentials and minimal mounts. Because separate OS users do not
+share the CLI claim registry, the platform must also enforce unique Telegram
+bots and inbound AgentMail inboxes across those users.
 
 Configuration loading also reads `.env` values into `process.env`. The CLI runs
 one agent per process. Applications embedding `defineAgent` more than once own
