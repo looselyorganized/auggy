@@ -312,6 +312,9 @@ const CLEANUP_BATCH_SIZE = 100;
 export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   const database = openLayeredMemoryDatabase(config.dbPath);
   const db = database.db;
+  const namespace = config.namespace?.trim();
+  const prefix = namespace ? (namespace.endsWith(":") ? namespace : `${namespace}:`) : null;
+  const prefixPattern = prefix ? `${prefix.replace(/[%_\\]/g, (c) => `\\${c}`)}%` : null;
 
   const retentionMs = config.retentionDays * 24 * 60 * 60 * 1000;
 
@@ -355,6 +358,9 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   }
 
   async function write(input: Omit<StoreEntry, "id"> & { id?: string }): Promise<StoreEntry> {
+    if (prefix && !input.label.startsWith(prefix)) {
+      throw new Error(`layeredMemory: label must start with namespace prefix "${prefix}"`);
+    }
     const id = input.id ?? randomUUID();
     const expiresAt = input.expiresAt ?? input.createdAt + retentionMs;
 
@@ -394,6 +400,22 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     const pattern = `%${escaped}%`;
     const now = Date.now();
 
+    if (peerId && prefixPattern) {
+      const rows = db
+        .prepare<Row, [string, string, string, number, number]>(
+          `SELECT * FROM entries
+           WHERE peer_id = ?
+             AND label LIKE ? ESCAPE '\\'
+             AND content LIKE ? ESCAPE '\\'
+             AND superseded_by IS NULL
+             AND (expires_at IS NULL OR expires_at >= ?)
+           ORDER BY created_at DESC
+           LIMIT ?`,
+        )
+        .all(peerId, prefixPattern, pattern, now, limit);
+      return rows.map(rowToEntry);
+    }
+
     if (peerId) {
       const rows = db
         .prepare<Row, [string, string, number, number]>(
@@ -406,6 +428,21 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
            LIMIT ?`,
         )
         .all(peerId, pattern, now, limit);
+      return rows.map(rowToEntry);
+    }
+
+    if (prefixPattern) {
+      const rows = db
+        .prepare<Row, [string, string, number, number]>(
+          `SELECT * FROM entries
+           WHERE label LIKE ? ESCAPE '\\'
+             AND content LIKE ? ESCAPE '\\'
+             AND superseded_by IS NULL
+             AND (expires_at IS NULL OR expires_at >= ?)
+           ORDER BY created_at DESC
+           LIMIT ?`,
+        )
+        .all(prefixPattern, pattern, now, limit);
       return rows.map(rowToEntry);
     }
 
@@ -423,6 +460,7 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   }
 
   async function read(label: string): Promise<StoreEntry | null> {
+    if (prefix && !label.startsWith(prefix)) return null;
     const row = db
       .prepare<Row, [string]>(
         "SELECT * FROM entries WHERE label = ? AND superseded_by IS NULL ORDER BY created_at DESC LIMIT 1",
@@ -432,12 +470,28 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   }
 
   async function list(peerId?: string): Promise<string[]> {
+    if (peerId && prefixPattern) {
+      const rows = db
+        .prepare<{ label: string }, [string, string]>(
+          "SELECT DISTINCT label FROM entries WHERE peer_id = ? AND label LIKE ? ESCAPE '\\' AND superseded_by IS NULL ORDER BY label",
+        )
+        .all(peerId, prefixPattern);
+      return rows.map((r) => r.label);
+    }
     if (peerId) {
       const rows = db
         .prepare<{ label: string }, [string]>(
           "SELECT DISTINCT label FROM entries WHERE peer_id = ? AND superseded_by IS NULL ORDER BY label",
         )
         .all(peerId);
+      return rows.map((r) => r.label);
+    }
+    if (prefixPattern) {
+      const rows = db
+        .prepare<{ label: string }, [string]>(
+          "SELECT DISTINCT label FROM entries WHERE label LIKE ? ESCAPE '\\' AND superseded_by IS NULL ORDER BY label",
+        )
+        .all(prefixPattern);
       return rows.map((r) => r.label);
     }
     const rows = db
@@ -450,7 +504,11 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
 
   async function forget(peerId: string): Promise<number> {
     return db.transaction(() => {
-      const result = db.prepare("DELETE FROM entries WHERE peer_id = ?").run(peerId);
+      const result = prefixPattern
+        ? db
+            .prepare("DELETE FROM entries WHERE peer_id = ? AND label LIKE ? ESCAPE '\\'")
+            .run(peerId, prefixPattern)
+        : db.prepare("DELETE FROM entries WHERE peer_id = ?").run(peerId);
       logEvent("(batch)", "forget", peerId, { deleted: result.changes });
       return result.changes;
     })();
@@ -458,15 +516,27 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
 
   async function supersede(entryId: string, newEntryId: string): Promise<void> {
     db.transaction(() => {
-      db.prepare("UPDATE entries SET superseded_by = ? WHERE id = ?").run(newEntryId, entryId);
+      if (prefixPattern) {
+        db.prepare(
+          "UPDATE entries SET superseded_by = ? WHERE id = ? AND label LIKE ? ESCAPE '\\'",
+        ).run(newEntryId, entryId, prefixPattern);
+      } else {
+        db.prepare("UPDATE entries SET superseded_by = ? WHERE id = ?").run(newEntryId, entryId);
+      }
       logEvent(entryId, "supersede", null, { supersededBy: newEntryId });
     })();
   }
 
   async function cleanup(): Promise<number> {
-    const result = db
-      .prepare("DELETE FROM entries WHERE expires_at IS NOT NULL AND expires_at < ?")
-      .run(Date.now());
+    const result = prefixPattern
+      ? db
+          .prepare(
+            "DELETE FROM entries WHERE expires_at IS NOT NULL AND expires_at < ? AND label LIKE ? ESCAPE '\\'",
+          )
+          .run(Date.now(), prefixPattern)
+      : db
+          .prepare("DELETE FROM entries WHERE expires_at IS NOT NULL AND expires_at < ?")
+          .run(Date.now());
     return result.changes;
   }
 
@@ -479,12 +549,11 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   // when absent, this function refuses entirely (the augment factory
   // must always pass a namespace).
   async function writeAutoSavedEntry(args: WriteAutoSavedArgs): Promise<void> {
-    if (!config.namespace) {
+    if (!prefix) {
       throw new Error(
         "writeAutoSavedEntry: store has no namespace configured; auto-save requires namespace-prefix discipline",
       );
     }
-    const prefix = config.namespace.endsWith(":") ? config.namespace : `${config.namespace}:`;
     if (!args.label.startsWith(prefix)) {
       throw new Error(
         `writeAutoSavedEntry: label "${args.label}" does not start with namespace prefix "${prefix}"`,

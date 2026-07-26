@@ -475,4 +475,60 @@ describe("SqliteStore", () => {
     expect(results.length).toBe(1);
     expect(results[0]!.content).toContain("%");
   });
+
+  it("isolates agents sharing a database before reads, limits, and mutations", async () => {
+    const sharedPath = `${dbPath}.shared`;
+    const agentA = createSqliteStore({
+      dbPath: sharedPath,
+      retentionDays: 90,
+      namespace: "aug1_a",
+    });
+    const agentB = createSqliteStore({
+      dbPath: sharedPath,
+      retentionDays: 90,
+      namespace: "aug1_b",
+    });
+    const now = Date.now();
+
+    try {
+      await agentA.write({
+        id: "a-entry",
+        label: "aug1_a:creator:preference",
+        content: "shared search term from A",
+        peerId: "creator",
+        trustLevel: "creator",
+        createdAt: now,
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      });
+      await agentB.write({
+        id: "b-entry",
+        label: "aug1_b:creator:preference",
+        content: "shared search term from B",
+        peerId: "creator",
+        trustLevel: "creator",
+        createdAt: now + 1,
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      });
+
+      expect(
+        (await agentA.search("shared search term", "creator", 1)).map((entry) => entry.id),
+      ).toEqual(["a-entry"]);
+      expect(await agentA.read("aug1_b:creator:preference")).toBeNull();
+
+      await agentA.supersede("b-entry", "attacker-controlled");
+      expect((await agentB.read("aug1_b:creator:preference"))?.supersededBy).toBeNull();
+
+      expect(await agentA.forget("creator")).toBe(1);
+      expect(await agentB.read("aug1_b:creator:preference")).not.toBeNull();
+    } finally {
+      await agentA.close();
+      await agentB.close();
+    }
+  });
 });

@@ -13,6 +13,7 @@ describe("SupabaseStore", () => {
       client,
       table: "agent_memory",
       retentionDays: 90,
+      namespace: "ep",
     });
     await store.initialize();
   });
@@ -194,5 +195,57 @@ describe("SupabaseStore", () => {
     const results = await store.search("fact", "vis_a");
     expect(results.length).toBe(1);
     expect(results[0]!.content).toBe("fresh fact");
+  });
+
+  it("isolates agents sharing a table before reads, limits, and mutations", async () => {
+    const client = createMockSupabase() as unknown as LayeredSupabaseClient;
+    const agentA = createSupabaseStore({
+      client,
+      table: "shared_memory",
+      retentionDays: 90,
+      namespace: "aug1_a",
+    });
+    const agentB = createSupabaseStore({
+      client,
+      table: "shared_memory",
+      retentionDays: 90,
+      namespace: "aug1_b",
+    });
+    const now = Date.now();
+
+    await agentA.write({
+      id: "a-entry",
+      label: "aug1_a:creator:preference",
+      content: "shared search term from A",
+      peerId: "creator",
+      trustLevel: "creator",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
+    });
+    await agentB.write({
+      id: "b-entry",
+      label: "aug1_b:creator:preference",
+      content: "shared search term from B",
+      peerId: "creator",
+      trustLevel: "creator",
+      createdAt: now + 1,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
+    });
+
+    const results = await agentA.search("shared search term", "creator", 1);
+    expect(results.map((entry) => entry.id)).toEqual(["a-entry"]);
+    expect(await agentA.read("aug1_b:creator:preference")).toBeNull();
+
+    await agentA.supersede("b-entry", "attacker-controlled");
+    expect((await agentB.read("aug1_b:creator:preference"))?.supersededBy).toBeNull();
+
+    expect(await agentA.forget("creator")).toBe(1);
+    expect(await agentB.read("aug1_b:creator:preference")).not.toBeNull();
   });
 });

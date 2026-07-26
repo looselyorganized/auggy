@@ -125,10 +125,24 @@ export function createMockSupabase(): MockSupabaseClient {
         return builder;
       },
       ilike(column, value) {
-        const pattern = value.replace(/%/g, "").toLowerCase();
+        let source = "^";
+        for (let i = 0; i < value.length; i++) {
+          const char = value[i]!;
+          if (char === "\\" && i + 1 < value.length) {
+            i++;
+            source += value[i]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          } else if (char === "%") {
+            source += ".*";
+          } else if (char === "_") {
+            source += ".";
+          } else {
+            source += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+          }
+        }
+        const pattern = new RegExp(`${source}$`, "i");
         filters.push((r) => {
           const v = (r as Record<string, unknown>)[column];
-          return typeof v === "string" && v.toLowerCase().includes(pattern);
+          return typeof v === "string" && pattern.test(v);
         });
         return builder;
       },

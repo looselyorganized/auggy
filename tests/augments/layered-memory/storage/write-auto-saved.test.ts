@@ -145,23 +145,13 @@ describe("writeAutoSavedEntry (supabase)", () => {
 
   test("throws when namespace not configured on the store", async () => {
     const mock = createMockSupabase() as unknown as LayeredSupabaseClient;
-    const noNsStore = createSupabaseStore({
-      client: mock,
-      table: "memory",
-      retentionDays: 90,
-    });
-    await noNsStore.initialize();
-    await expect(
-      noNsStore.writeAutoSavedEntry({
-        peerId: "p1",
-        label: "anything",
-        content: "x",
-        confidence: 1,
-        retentionClass: "operational",
-        isVerbatim: false,
-        sourceTurnId: "t1",
-        model: "m",
+    expect(() =>
+      createSupabaseStore({
+        client: mock,
+        table: "memory",
+        retentionDays: 90,
+        namespace: "",
       }),
-    ).rejects.toThrow(/namespace/);
+    ).toThrow(/namespace/);
   });
 });
