@@ -5,20 +5,30 @@ import { tmpdir } from "node:os";
 
 // Mock @inquirer/prompts so we can drive the confirm() return value per-test.
 let confirmAnswer = true;
+let onConfirm: (() => void) | undefined;
 mock.module("@inquirer/prompts", () => ({
   Separator: class Separator {
     readonly type = "separator";
     constructor(readonly separator = "") {}
   },
   checkbox: async () => [],
-  confirm: async () => confirmAnswer,
+  confirm: async () => {
+    onConfirm?.();
+    return confirmAnswer;
+  },
   input: async () => "",
   select: async (config: { choices?: Array<{ value: unknown }> }) => config.choices?.[0]?.value,
 }));
 
-const { runRemove } = await import("../../src/cli/commands/remove");
+const removeCommands = await import("../../src/cli/commands/remove");
+const runRemove: typeof removeCommands.runRemove = (name, opts = {}) =>
+  removeCommands.runRemove(name, {
+    processIdentityForPid: () => "test-process:remove",
+    ...opts,
+  });
 const { getAgent, seedAgentForTest, setCloud } = await import("../../src/cli/agent-index");
-const { writePidManifest, removePidManifest } = await import("../../src/cli/pid-registry");
+const { claimRuntimePidManifest, releaseRuntimePidManifest, writePidManifest, removePidManifest } =
+  await import("../../src/cli/pid-registry");
 
 const IMMUTABLE_ID = "aug1_8a3d7828-1597-4db4-bd0e-adc1a1036211";
 
@@ -26,6 +36,8 @@ let auggyDir: string;
 
 beforeEach(() => {
   auggyDir = mkdtempSync(join(tmpdir(), "remove-test-auggy-"));
+  confirmAnswer = true;
+  onConfirm = undefined;
 });
 
 afterEach(() => {
@@ -33,7 +45,10 @@ afterEach(() => {
 });
 
 function setupAgent(name: string, yaml?: string): string {
-  return seedAgentForTest(name, { auggyDir, yaml: yaml ?? "id: aug1_test\n" });
+  return seedAgentForTest(name, {
+    auggyDir,
+    yaml: yaml ?? `id: ${IMMUTABLE_ID}\nname: ${name}\n`,
+  });
 }
 
 describe("runRemove", () => {
@@ -120,6 +135,71 @@ describe("runRemove", () => {
     }
   });
 
+  test("holds the immutable agent claim through confirmation and releases it afterward", async () => {
+    const dir = setupAgent("zip");
+    const contender = {
+      pid: process.pid,
+      name: "zip",
+      agentId: IMMUTABLE_ID,
+      claimNonce: "11111111-1111-4111-8111-111111111111",
+      processIdentity: "test-process:remove-race",
+      resourceClaims: [`agent-id:${IMMUTABLE_ID}`],
+      resourceClaimStore: "sqlite-v1" as const,
+      port: null,
+      configPath: join(dir, "agent.yaml"),
+      agentDir: dir,
+      startedAt: new Date().toISOString(),
+      mode: "dev" as const,
+    };
+    let conflict: unknown;
+    confirmAnswer = false;
+    onConfirm = () => {
+      try {
+        claimRuntimePidManifest(contender, {
+          auggyDir,
+          processIdentityForPid: () => "test-process:remove-race",
+        });
+      } catch (error) {
+        conflict = error;
+      }
+    };
+
+    await runRemove("zip", {
+      auggyDir,
+      processIdentityForPid: () => "test-process:remove-race",
+    });
+    expect(String(conflict)).toMatch(/resource.*claimed/i);
+    expect(existsSync(dir)).toBe(true);
+    expect(
+      claimRuntimePidManifest(contender, {
+        auggyDir,
+        processIdentityForPid: () => "test-process:remove-race",
+      }),
+    ).toBe(true);
+    releaseRuntimePidManifest(contender, true, { auggyDir });
+  });
+
+  test("refuses cloud destruction when deployment metadata belongs to another agent", async () => {
+    const dir = setupAgent("zip");
+    writeFileSync(
+      join(dir, ".auggy-cloud.json"),
+      JSON.stringify({
+        version: 1,
+        agentId: "aug1_99999999-9999-4999-8999-999999999999",
+        provider: "railway",
+        projectId: "victim-project",
+        serviceId: "victim-service",
+        url: "https://victim.example",
+        volumeId: "victim-volume",
+        deployedAt: new Date().toISOString(),
+      }),
+    );
+    await expect(runRemove("zip", { yes: true, cloud: true, auggyDir })).rejects.toThrow(
+      /belongs to another immutable agent/i,
+    );
+    expect(existsSync(dir)).toBe(true);
+  });
+
   test("refuses delete when localDir lacks agent.yaml (safety guard)", async () => {
     const dir = setupAgent("zip");
     rmSync(join(dir, "agent.yaml"), { force: true });
@@ -131,7 +211,7 @@ describe("runRemove", () => {
 
   test("refuses delete when agent.yaml's name is alive under different PID manifest key", async () => {
     const dir = setupAgent("zip");
-    writeFileSync(join(dir, "agent.yaml"), "id: aug1_test\nname: zippy\n");
+    writeFileSync(join(dir, "agent.yaml"), `id: ${IMMUTABLE_ID}\nname: zippy\n`);
     writePidManifest(
       {
         pid: process.pid,
@@ -162,7 +242,7 @@ describe("runRemove", () => {
         agentId: IMMUTABLE_ID,
         claimNonce: "8a3d7828-1597-4db4-bd0e-adc1a1036211",
         processIdentity: "test-process:running",
-        resourceClaims: [],
+        resourceClaims: [`agent-id:${IMMUTABLE_ID}`],
         resourceClaimStore: "sqlite-v1",
         port: 8081,
         configPath: join(dir, "agent.yaml"),

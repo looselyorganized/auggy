@@ -25,7 +25,7 @@
 import { copyFileSync, existsSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getAgentFromDir, setCloudForDir } from "../agent-index";
+import { getAgentFromDir, readBoundCloudRecord, setCloudForDir } from "../agent-index";
 import { parseConfig } from "../config-parser";
 import { formatDoctorChecks, hasDoctorFailures, runDoctor } from "./doctor";
 import { readAgentName, resolveConfigPath } from "../resolve-config";
@@ -278,6 +278,7 @@ export async function runDeploy(
     throw new Error(`Deploy preflight failed:\n${formatDoctorChecks(preflight)}`);
   }
   const config = assertRailwayDeploySafeConfig(configPath);
+  const savedCloud = readBoundCloudRecord(agentDir, config.id);
   await acknowledgeBudgetsDeployPosture(config, opts);
   opts.logger.info(`Deploy preflight passed.`);
 
@@ -287,7 +288,7 @@ export async function runDeploy(
   opts.logger.info(`Railway CLI ready.`);
 
   // 3) Determine first-deploy vs redeploy from existing CloudRecord.
-  let existingCloud = entry.cloud;
+  let existingCloud = savedCloud;
   let isRedeploy = existingCloud !== null;
   let savedProjectIdForRecreate: string | null = null;
   let shouldPromptServiceTarget = false;
@@ -606,6 +607,8 @@ export async function runDeploy(
       health,
     };
     setCloudForDir(agentDir, {
+      version: 1,
+      agentId: config.id,
       provider: "railway",
       projectId: result.projectId,
       serviceId: result.serviceId,

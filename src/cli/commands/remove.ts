@@ -10,11 +10,12 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
-import { getAgentFromDir } from "../agent-index";
+import { getAgentFromDir, readBoundCloudRecord } from "../agent-index";
 import { createRailwayCli, type RailwayCli } from "../deploy/railway-cli";
-import { listPidManifests, readLivePidManifest } from "../pid-registry";
+import { claimAgentMaintenance, listPidManifests, readLivePidManifest } from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
 import { parse as parseYaml } from "yaml";
+import { agentStateRootClaim } from "../runtime-resource-claims";
 
 const AGENT_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -80,70 +81,88 @@ export async function runRemove(name: string | undefined, opts: RemoveOptions = 
       `Agent "${displayName}" not found.\n\n  Run from inside an agent project or its parent.`,
     );
   }
-
-  // Immutable identity and canonical config path are authoritative. Names are
-  // only a legacy fallback and must never allow deletion of a renamed live
-  // project.
-  const liveById = configIdentity.id
-    ? readLivePidManifest(configIdentity.id, {
-        auggyDir: opts.auggyDir,
-        processIdentityForPid: opts.processIdentityForPid,
-      })
-    : null;
-  const liveByConfigPath = listPidManifests({
-    auggyDir: opts.auggyDir,
-    processIdentityForPid: opts.processIdentityForPid,
-  }).find((manifest) => resolve(manifest.configPath) === resolve(configPath));
-  const live = liveById ?? liveByConfigPath;
-  if (live) {
-    const identifier = live.agentId ?? live.name;
+  if (!configIdentity.id || !configName) {
     throw new Error(
-      `Agent "${live.name}" is running. Stop it first:\n\n  auggy stop ${identifier}`,
+      `Agent "${displayName}" has no valid immutable identity; refusing destructive removal until agent.yaml is repaired.`,
     );
   }
 
-  if (!opts.yes) {
-    const ok = await confirm({
-      message: `This will permanently delete:\n  ${entry.localDir}\n\nContinue?`,
-      default: false,
-    });
-    if (!ok) {
-      console.log("Aborted.");
-      return;
-    }
-  }
+  const releaseMaintenance = claimAgentMaintenance(
+    configIdentity.id,
+    configName,
+    [agentStateRootClaim(localDir)],
+    {
+      auggyDir: opts.auggyDir,
+      processIdentityForPid: opts.processIdentityForPid,
+    },
+  );
+  try {
+    const cloud = opts.cloud ? readBoundCloudRecord(localDir, configIdentity.id) : null;
 
-  // --cloud: destroy the Railway service BEFORE removing the local dir,
-  // because the cloud record lives inside the dir's .auggy-cloud.json.
-  if (opts.cloud && entry.cloud) {
-    const cli = opts.railwayCli ?? createRailwayCli();
-    const tmp = mkdtempSync(join(tmpdir(), `auggy-remove-${displayName}-`));
-    try {
-      await cli.link({
-        projectId: entry.cloud.projectId,
-        serviceName: entry.cloud.serviceId,
-        cwd: tmp,
+    // Immutable identity and canonical config path are authoritative. Names are
+    // only a legacy fallback and must never allow deletion of a renamed live
+    // project.
+    const liveById = configIdentity.id
+      ? readLivePidManifest(configIdentity.id, {
+          auggyDir: opts.auggyDir,
+          processIdentityForPid: opts.processIdentityForPid,
+        })
+      : null;
+    const liveByConfigPath = listPidManifests({
+      auggyDir: opts.auggyDir,
+      processIdentityForPid: opts.processIdentityForPid,
+    }).find((manifest) => resolve(manifest.configPath) === resolve(configPath));
+    const live = liveById ?? liveByConfigPath;
+    if (live) {
+      const identifier = live.agentId ?? live.name;
+      throw new Error(
+        `Agent "${live.name}" is running. Stop it first:\n\n  auggy stop ${identifier}`,
+      );
+    }
+
+    if (!opts.yes) {
+      const ok = await confirm({
+        message: `This will permanently delete:\n  ${entry.localDir}\n\nContinue?`,
+        default: false,
       });
-      await cli.destroyService({ cwd: tmp });
-      console.log(
-        `Destroyed Railway service "${entry.cloud.serviceId}" (project ${entry.cloud.projectId}).`,
-      );
-    } catch (err) {
-      console.warn(
-        `warn: Railway service destruction failed: ${(err as Error).message}\n` +
-          `  Local cleanup proceeding; remove the Railway service manually if needed.`,
-      );
-    } finally {
-      try {
-        rmSync(tmp, { recursive: true, force: true });
-      } catch {}
+      if (!ok) {
+        console.log("Aborted.");
+        return;
+      }
     }
-  }
 
-  if (!existsSync(join(localDir, "agent.yaml"))) {
-    throw new Error(`Refusing to delete "${localDir}" — it does not contain agent.yaml.`);
-  }
-  rmSync(localDir, { recursive: true, force: true });
+    // --cloud: destroy the Railway service BEFORE removing the local dir,
+    // because the cloud record lives inside the dir's .auggy-cloud.json.
+    if (opts.cloud && cloud) {
+      const cli = opts.railwayCli ?? createRailwayCli();
+      const tmp = mkdtempSync(join(tmpdir(), `auggy-remove-${displayName}-`));
+      try {
+        await cli.link({
+          projectId: cloud.projectId,
+          serviceName: cloud.serviceId,
+          cwd: tmp,
+        });
+        await cli.destroyService({ cwd: tmp });
+        console.log(`Destroyed Railway service "${cloud.serviceId}" (project ${cloud.projectId}).`);
+      } catch (err) {
+        console.warn(
+          `warn: Railway service destruction failed: ${(err as Error).message}\n` +
+            `  Local cleanup proceeding; remove the Railway service manually if needed.`,
+        );
+      } finally {
+        try {
+          rmSync(tmp, { recursive: true, force: true });
+        } catch {}
+      }
+    }
 
-  console.log(`Removed agent "${displayName}" (was at ${entry.localDir}).`);
+    if (!existsSync(join(localDir, "agent.yaml"))) {
+      throw new Error(`Refusing to delete "${localDir}" — it does not contain agent.yaml.`);
+    }
+    rmSync(localDir, { recursive: true, force: true });
+
+    console.log(`Removed agent "${displayName}" (was at ${entry.localDir}).`);
+  } finally {
+    releaseMaintenance();
+  }
 }

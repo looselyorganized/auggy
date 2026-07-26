@@ -60,10 +60,13 @@ describe("runLogs", () => {
   test("can show Railway log handoff from inside a project-local agent without a name", async () => {
     const projectDir = mkdtempSync(join(tmpdir(), "auggy-logs-project-"));
     try {
-      writeFileSync(join(projectDir, "agent.yaml"), "id: aug1_test\nname: local\n");
+      const agentId = "aug1_11111111-1111-4111-8111-111111111111";
+      writeFileSync(join(projectDir, "agent.yaml"), `id: ${agentId}\nname: local\n`);
       writeFileSync(
         join(projectDir, ".auggy-cloud.json"),
         JSON.stringify({
+          version: 1,
+          agentId,
           provider: "railway",
           projectId: "proj_local",
           serviceId: "svc_local",

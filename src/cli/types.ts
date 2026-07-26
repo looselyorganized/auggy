@@ -284,6 +284,10 @@ export interface PidManifest {
  * v0: only `null` is written. Cloud fields populated by `auggy deploy` (separate PR).
  */
 export type CloudRecord = null | {
+  /** Required on disk; optional only so legacy records can be parsed and rejected safely. */
+  version?: 1;
+  /** Required on disk; optional only so legacy records can be parsed and rejected safely. */
+  agentId?: string;
   provider: "railway";
   projectId: string;
   serviceId: string;

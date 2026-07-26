@@ -291,6 +291,29 @@ describe("runDeploy", () => {
     });
   });
 
+  test("rejects deployment metadata bound to another immutable agent before Railway access", async () => {
+    writeFileSync(
+      join(agentDir, ".auggy-cloud.json"),
+      JSON.stringify({
+        version: 1,
+        agentId: "aug1_99999999-9999-4999-8999-999999999999",
+        provider: "railway",
+        projectId: "victim-project",
+        serviceId: "victim-service",
+        url: "https://victim.example",
+        volumeId: "victim-volume",
+        deployedAt: new Date().toISOString(),
+      }),
+    );
+    const { cli, calls } = mockRailwayCli();
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /belongs to another immutable agent/i,
+    );
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.checkAuth).toBe(0);
+    expect(calls.up).toBe(0);
+  });
+
   test("first deploy can create a new Railway project", async () => {
     const { cli, calls } = mockRailwayCli();
     const result = await runDeploy(

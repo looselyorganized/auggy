@@ -14,6 +14,8 @@ import {
 } from "../../src/cli/agent-index";
 
 const CLOUD_FIXTURE = {
+  version: 1 as const,
+  agentId: "aug1_00000000-0000-4000-8000-000000000001",
   provider: "railway" as const,
   projectId: "proj_abc",
   serviceId: "svc_def",
