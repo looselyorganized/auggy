@@ -100,17 +100,38 @@ describe("stop preserves ownership until the recorded process exits", () => {
 
   test("launchd unload failure preserves ownership even when the old PID is gone", async () => {
     const owner = manifest("launchd", "a");
+    owner.pid = 99_999_999;
     expect(claimRuntimePidManifest(owner, registryOptions())).toBe(true);
 
     await expect(
       runStop(owner.agentId!, {
         auggyDir,
-        processIdentityForPid: () => null,
+        processIdentityForPid: (pid) => (pid === process.pid ? PROCESS_IDENTITY : null),
         unloadLaunchd: async () => {
           throw new Error("launchctl refused unload");
         },
       }),
     ).rejects.toThrow(/could not unload.*preserved/i);
+    expect(readPidManifest(owner.agentId!, { auggyDir })?.claimNonce).toBe(owner.claimNonce);
+  });
+
+  test("launchd artifact cleanup failure is surfaced and preserves ownership", async () => {
+    const owner = manifest("launchd", "a");
+    owner.pid = 99_999_999;
+    expect(claimRuntimePidManifest(owner, registryOptions())).toBe(true);
+
+    await expect(
+      runStop(owner.agentId!, {
+        auggyDir,
+        processIdentityForPid: (pid) => (pid === process.pid ? PROCESS_IDENTITY : null),
+        unloadLaunchd: async () => {},
+        unlinkFile: () => {
+          const error = new Error("permission denied") as NodeJS.ErrnoException;
+          error.code = "EPERM";
+          throw error;
+        },
+      }),
+    ).rejects.toThrow(/control artifacts.*manifest and claims were preserved/i);
     expect(readPidManifest(owner.agentId!, { auggyDir })?.claimNonce).toBe(owner.claimNonce);
   });
 });

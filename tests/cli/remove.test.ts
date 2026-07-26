@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach, mock } from "bun:test";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -29,6 +29,7 @@ const runRemove: typeof removeCommands.runRemove = (name, opts = {}) =>
 const { getAgent, seedAgentForTest, setCloud } = await import("../../src/cli/agent-index");
 const { claimRuntimePidManifest, releaseRuntimePidManifest, writePidManifest, removePidManifest } =
   await import("../../src/cli/pid-registry");
+const { agentStateRootClaims } = await import("../../src/cli/runtime-resource-claims");
 
 const IMMUTABLE_ID = "aug1_8a3d7828-1597-4db4-bd0e-adc1a1036211";
 
@@ -177,6 +178,56 @@ describe("runRemove", () => {
       }),
     ).toBe(true);
     releaseRuntimePidManifest(contender, true, { auggyDir });
+  });
+
+  test("refuses to remove a parent state root containing a live child agent", async () => {
+    const parent = setupAgent("zip");
+    const child = join(parent, "child");
+    const childId = "aug1_99999999-9999-4999-8999-999999999999";
+    mkdirSync(child);
+    writeFileSync(join(child, "agent.yaml"), `id: ${childId}\nname: child\n`);
+    const manifest = {
+      pid: process.pid,
+      name: "child",
+      agentId: childId,
+      claimNonce: "22222222-2222-4222-8222-222222222222",
+      processIdentity: "test-process:remove",
+      resourceClaims: [`agent-id:${childId}`, ...agentStateRootClaims(child)].sort(),
+      resourceClaimStore: "sqlite-v1" as const,
+      port: null,
+      configPath: join(child, "agent.yaml"),
+      agentDir: child,
+      startedAt: new Date().toISOString(),
+      mode: "dev" as const,
+    };
+    expect(
+      claimRuntimePidManifest(manifest, {
+        auggyDir,
+        processIdentityForPid: () => "test-process:remove",
+      }),
+    ).toBe(true);
+    try {
+      await expect(runRemove("zip", { yes: true, auggyDir })).rejects.toThrow(
+        /state directory overlaps/i,
+      );
+      expect(existsSync(parent)).toBe(true);
+      expect(existsSync(child)).toBe(true);
+    } finally {
+      releaseRuntimePidManifest(manifest, true, { auggyDir });
+    }
+  });
+
+  test("refuses a same-path replacement that occurs during confirmation", async () => {
+    const original = setupAgent("zip");
+    const moved = `${original}.captured`;
+    onConfirm = () => {
+      renameSync(original, moved);
+      mkdirSync(original);
+      writeFileSync(join(original, "agent.yaml"), `id: ${IMMUTABLE_ID}\nname: zip\n`);
+    };
+    await expect(runRemove("zip", { auggyDir })).rejects.toThrow(/directory generation.*changed/i);
+    expect(existsSync(original)).toBe(true);
+    expect(existsSync(moved)).toBe(true);
   });
 
   test("refuses cloud destruction when deployment metadata belongs to another agent", async () => {

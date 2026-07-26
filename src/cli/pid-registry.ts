@@ -19,7 +19,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import {
   admitOwnedSqliteSchema,
   canonicalSqliteSchemaSql,
@@ -115,12 +115,36 @@ function claimPath(claim: string, opts: PidRegistryOptions = {}): string {
 }
 
 function isSafeClaim(value: unknown): value is string {
-  if (typeof value !== "string" || value.length === 0 || value.length > 300) return false;
+  if (typeof value !== "string" || value.length === 0 || value.length > 8192) return false;
   for (let index = 0; index < value.length; index++) {
     const code = value.charCodeAt(index);
     if (code <= 0x1f || code === 0x7f) return false;
   }
   return true;
+}
+
+const STATE_PATH_CLAIM_PREFIX = "agent-state-path-v1:";
+
+function statePathFromClaim(claim: string): string | null {
+  if (!claim.startsWith(STATE_PATH_CLAIM_PREFIX)) return null;
+  const encoded = claim.slice(STATE_PATH_CLAIM_PREFIX.length);
+  const decoded = Buffer.from(encoded, "base64url").toString("utf8");
+  if (
+    !encoded ||
+    !isAbsolute(decoded) ||
+    Buffer.from(decoded, "utf8").toString("base64url") !== encoded
+  ) {
+    throw new Error("Invalid canonical agent state-path claim in runtime registry");
+  }
+  return decoded;
+}
+
+function pathsOverlap(first: string, second: string): boolean {
+  const fromFirst = relative(first, second);
+  const fromSecond = relative(second, first);
+  const isWithin = (value: string) =>
+    value === "" || (value !== ".." && !value.startsWith(`..${sep}`) && !isAbsolute(value));
+  return isWithin(fromFirst) || isWithin(fromSecond);
 }
 
 function parseManifest(value: unknown, source: string): PidManifest {
@@ -152,6 +176,7 @@ function parseManifest(value: unknown, source: string): PidManifest {
     record.processIdentity,
     record.resourceClaims,
     record.resourceClaimStore,
+    record.launchGeneration,
   ];
   const hasModernField = modernFields.some((field) => field !== undefined);
   if (hasModernField) {
@@ -165,6 +190,10 @@ function parseManifest(value: unknown, source: string): PidManifest {
       !record.resourceClaims.every(isSafeClaim) ||
       new Set(record.resourceClaims).size !== record.resourceClaims.length ||
       (record.resourceClaimStore !== undefined && record.resourceClaimStore !== "sqlite-v1") ||
+      (record.launchGeneration !== undefined &&
+        (typeof record.launchGeneration !== "string" ||
+          !UUID_RE.test(record.launchGeneration) ||
+          record.mode !== "launchd")) ||
       (record.resourceClaimStore === "sqlite-v1" &&
         !(record.resourceClaims as string[]).includes(`agent-id:${String(record.agentId)}`))
     ) {
@@ -420,6 +449,9 @@ function acquireResourceClaims(manifest: PidManifest, opts: PidRegistryOptions):
     const select = db.query<ResourceClaimRow, [string]>(
       "SELECT claim, agent_id, agent_name, pid, claim_nonce, process_identity FROM runtime_resource_claims WHERE claim = ?",
     );
+    const selectStatePaths = db.query<ResourceClaimRow, []>(
+      "SELECT claim, agent_id, agent_name, pid, claim_nonce, process_identity FROM runtime_resource_claims WHERE claim LIKE 'agent-state-path-v1:%'",
+    );
     const remove = db.query("DELETE FROM runtime_resource_claims WHERE claim = ?");
     const insert = db.query(
       `INSERT INTO runtime_resource_claims
@@ -429,6 +461,24 @@ function acquireResourceClaims(manifest: PidManifest, opts: PidRegistryOptions):
     db.transaction(() => {
       for (const claim of claims) {
         rejectOrRemoveLegacyClaim(claim, opts);
+        const requestedStatePath = statePathFromClaim(claim);
+        if (requestedStatePath) {
+          for (const stateRow of selectStatePaths.all()) {
+            if (stateRow.claim === claim) continue;
+            const existingStatePath = statePathFromClaim(stateRow.claim);
+            if (!existingStatePath || !pathsOverlap(requestedStatePath, existingStatePath)) {
+              continue;
+            }
+            const existing = claimRecordFromRow(stateRow);
+            const status = inspectRuntimeProcess(existing, opts);
+            if (status === "alive" || status === "unverifiable") {
+              throw new RuntimeResourceConflictError(
+                `Agent state directory overlaps the live state owned by agent "${existing.agentName}".`,
+              );
+            }
+            remove.run(stateRow.claim);
+          }
+        }
         const row = select.get(claim);
         if (row) {
           const existing = claimRecordFromRow(row);
@@ -654,6 +704,42 @@ export function claimAgentMaintenance(
     mode: "dev",
   };
   removeStaleOrRejectLivePreSqliteManifest(claim, opts);
+  acquireResourceClaims(claim, opts);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    releaseResourceClaims(claim, opts);
+  };
+}
+
+/** Serialize launchd control-plane mutations without conflicting with the runtime itself. */
+export function claimAgentLifecycle(
+  agentId: string,
+  agentName: string,
+  opts: PidRegistryOptions = {},
+): () => void {
+  if (!AGENT_ID_RE.test(agentId) || !VALID_NAME_RE.test(agentName)) {
+    throw new Error("Lifecycle claims require a valid immutable agent identity and name");
+  }
+  const processIdentity = (opts.processIdentityForPid ?? getProcessIdentity)(process.pid);
+  if (!processIdentity) {
+    throw new Error("Cannot establish the operator process incarnation for lifecycle control");
+  }
+  const claim: PidManifest = {
+    pid: process.pid,
+    name: agentName,
+    agentId,
+    claimNonce: randomUUID(),
+    processIdentity,
+    resourceClaims: [`agent-lifecycle:${agentId}`],
+    resourceClaimStore: "sqlite-v1",
+    port: null,
+    configPath: "/lifecycle/agent.yaml",
+    agentDir: "/lifecycle",
+    startedAt: new Date().toISOString(),
+    mode: "dev",
+  };
   acquireResourceClaims(claim, opts);
   let released = false;
   return () => {

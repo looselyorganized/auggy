@@ -10,6 +10,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 
 const AGENT_ID = "aug1_8a3d7828-1597-4db4-bd0e-adc1a1036211";
+const LAUNCH_GENERATION = "11111111-1111-4111-8111-111111111111";
 
 describe("plist naming", () => {
   test("plistLabel produces com.auggy.agent.<immutable-id>", () => {
@@ -37,6 +38,7 @@ describe("generatePlist", () => {
   const plist = generatePlist({
     name: "zip",
     agentId: AGENT_ID,
+    launchGeneration: LAUNCH_GENERATION,
     agentDir: "/Users/test/agents/zip",
     configPath: "/Users/test/agents/zip/agent.yaml",
     bunPath: "/Users/test/.bun/bin/bun",
@@ -88,10 +90,16 @@ describe("generatePlist", () => {
     expect(plist).toContain("/Users/test/.bun/bin:");
   });
 
+  test("passes an installation generation to the launchd child", () => {
+    expect(plist).toContain("<key>AUGGY_LAUNCH_GENERATION</key>");
+    expect(plist).toContain(`<string>${LAUNCH_GENERATION}</string>`);
+  });
+
   test("escapes XML special characters in paths", () => {
     const escaped = generatePlist({
       name: "test&agent",
       agentId: AGENT_ID,
+      launchGeneration: LAUNCH_GENERATION,
       agentDir: "/path/with <angle>/brackets",
       configPath: "/path/with <angle>/agent.yaml",
       bunPath: "/usr/bin/bun",

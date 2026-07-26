@@ -170,6 +170,16 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   const configPath = resolveConfigPath(name, opts.config, { cwd: opts.cwd });
   const agentDir = dirname(configPath);
   const mode = opts.internalMode === "launchd" ? ("launchd" as const) : ("dev" as const);
+  const launchGeneration = mode === "launchd" ? process.env.AUGGY_LAUNCH_GENERATION : undefined;
+  if (
+    mode === "launchd" &&
+    (typeof launchGeneration !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        launchGeneration,
+      ))
+  ) {
+    throw new Error("[runtime] launchd mode requires a valid installation generation");
+  }
   // Parse and validate config before mutating or admitting any runtime state.
   const config = parseConfig(configPath);
   const requestedRuntimeDataRoot = resolveRuntimeDataRoot(opts.internalMode);
@@ -202,6 +212,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
       processIdentity,
       resourceClaims: runtimeResourceClaims(config, agentDir),
       resourceClaimStore: "sqlite-v1",
+      ...(launchGeneration ? { launchGeneration } : {}),
       port,
       configPath: resolve(configPath),
       agentDir: resolve(agentDir),

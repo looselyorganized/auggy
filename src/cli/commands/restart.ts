@@ -7,7 +7,7 @@
 
 import { resolve } from "node:path";
 import { parseConfig } from "../config-parser";
-import { readPidManifest } from "../pid-registry";
+import { claimAgentLifecycle, readPidManifest } from "../pid-registry";
 import type { PidManifest } from "../types";
 import { runStop } from "./stop";
 import { runStart } from "./start";
@@ -25,20 +25,27 @@ export async function runRestart(name: string, opts: { config?: string }): Promi
 
   const mode = manifest.mode;
   const configPath = assertRestartTarget(manifest, opts.config ?? manifest.configPath);
+  const releaseLifecycle = manifest.agentId
+    ? claimAgentLifecycle(manifest.agentId, manifest.name)
+    : () => {};
 
-  console.log(`Restarting "${name}" (${mode} mode)...`);
+  try {
+    console.log(`Restarting "${name}" (${mode} mode)...`);
 
-  // Stop the agent.
-  await runStop(manifest.agentId ?? name);
+    // Stop the agent.
+    await runStop(manifest.agentId ?? name, { lifecycleOwned: true });
 
-  // Brief pause for port release.
-  await Bun.sleep(1000);
+    // Brief pause for port release.
+    await Bun.sleep(1000);
 
-  // Restart in the same mode.
-  if (mode === "launchd") {
-    await runStart(name, { config: configPath });
-  } else {
-    await runDev(name, { config: configPath });
+    // Restart in the same mode.
+    if (mode === "launchd") {
+      await runStart(name, { config: configPath, lifecycleOwned: true });
+    } else {
+      await runDev(name, { config: configPath });
+    }
+  } finally {
+    releaseLifecycle();
   }
 }
 

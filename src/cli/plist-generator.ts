@@ -16,6 +16,8 @@ export interface PlistOptions {
   name: string;
   /** Immutable config identity used for service and log ownership. */
   agentId: string;
+  /** Per-install generation used to authenticate launchd startup acknowledgement. */
+  launchGeneration: string;
   /** Absolute path to the agent directory. */
   agentDir: string;
   /** Absolute path to agent.yaml. */
@@ -112,6 +114,8 @@ export function generatePlist(opts: PlistOptions): string {
     <string>${escapeXml(bunDir)}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
     <string>${escapeXml(home)}</string>
+    <key>AUGGY_LAUNCH_GENERATION</key>
+    <string>${escapeXml(opts.launchGeneration)}</string>
   </dict>
 </dict>
 </plist>

@@ -6,16 +6,22 @@
  * agent entirely.
  */
 
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { existsSync, mkdtempSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import { getAgentFromDir, readBoundCloudRecord } from "../agent-index";
 import { createRailwayCli, type RailwayCli } from "../deploy/railway-cli";
-import { claimAgentMaintenance, listPidManifests, readLivePidManifest } from "../pid-registry";
+import {
+  claimAgentLifecycle,
+  claimAgentMaintenance,
+  listPidManifests,
+  readLivePidManifest,
+} from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
 import { parse as parseYaml } from "yaml";
-import { agentStateRootClaim } from "../runtime-resource-claims";
+import { agentStateRootClaims } from "../runtime-resource-claims";
 
 const AGENT_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -87,15 +93,24 @@ export async function runRemove(name: string | undefined, opts: RemoveOptions = 
     );
   }
 
-  const releaseMaintenance = claimAgentMaintenance(
-    configIdentity.id,
-    configName,
-    [agentStateRootClaim(localDir)],
-    {
-      auggyDir: opts.auggyDir,
-      processIdentityForPid: opts.processIdentityForPid,
-    },
-  );
+  const capturedRootClaims = agentStateRootClaims(localDir);
+  const claimOptions = {
+    auggyDir: opts.auggyDir,
+    processIdentityForPid: opts.processIdentityForPid,
+  };
+  const releaseLifecycle = claimAgentLifecycle(configIdentity.id, configName, claimOptions);
+  let releaseMaintenance = () => {};
+  try {
+    releaseMaintenance = claimAgentMaintenance(
+      configIdentity.id,
+      configName,
+      capturedRootClaims,
+      claimOptions,
+    );
+  } catch (error) {
+    releaseLifecycle();
+    throw error;
+  }
   try {
     const cloud = opts.cloud ? readBoundCloudRecord(localDir, configIdentity.id) : null;
 
@@ -159,10 +174,48 @@ export async function runRemove(name: string | undefined, opts: RemoveOptions = 
     if (!existsSync(join(localDir, "agent.yaml"))) {
       throw new Error(`Refusing to delete "${localDir}" — it does not contain agent.yaml.`);
     }
-    rmSync(localDir, { recursive: true, force: true });
+    const currentIdentity = readConfigIdentity(localDir);
+    if (
+      currentIdentity.id !== configIdentity.id ||
+      currentIdentity.name !== configName ||
+      agentStateRootClaims(localDir).join("\0") !== capturedRootClaims.join("\0")
+    ) {
+      throw new Error(
+        `Refusing to delete "${localDir}" — its directory generation or immutable identity changed during removal.`,
+      );
+    }
+
+    // Atomically detach the captured pathname before recursive deletion. A
+    // final inode/identity check on the detached object prevents a same-path
+    // replacement from turning this command into a confused deputy.
+    const quarantinePath = join(
+      dirname(localDir),
+      `.auggy-remove-${configIdentity.id}-${randomUUID()}`,
+    );
+    renameSync(localDir, quarantinePath);
+    const quarantinedIdentity = readConfigIdentity(quarantinePath);
+    const capturedInodeClaim = capturedRootClaims.find((claim) =>
+      claim.startsWith("agent-state-root-sha256:"),
+    );
+    const quarantinedInodeClaim = agentStateRootClaims(quarantinePath).find((claim) =>
+      claim.startsWith("agent-state-root-sha256:"),
+    );
+    if (
+      quarantinedIdentity.id !== configIdentity.id ||
+      quarantinedIdentity.name !== configName ||
+      !capturedInodeClaim ||
+      quarantinedInodeClaim !== capturedInodeClaim
+    ) {
+      if (!existsSync(localDir)) renameSync(quarantinePath, localDir);
+      throw new Error(
+        `Refusing to delete "${localDir}" — the quarantined directory is not the captured agent generation.`,
+      );
+    }
+    rmSync(quarantinePath, { recursive: true, force: true });
 
     console.log(`Removed agent "${displayName}" (was at ${entry.localDir}).`);
   } finally {
     releaseMaintenance();
+    releaseLifecycle();
   }
 }

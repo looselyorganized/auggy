@@ -1,4 +1,7 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, renameSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { runtimeResourceClaims } from "../../src/cli/runtime-resource-claims";
 import type { ParsedConfig } from "../../src/cli/types";
 
@@ -37,6 +40,7 @@ describe("runtimeResourceClaims", () => {
     expect(claims).toEqual(
       expect.arrayContaining([
         `agent-id:${AGENT_ID}`,
+        expect.stringMatching(/^agent-state-path-v1:[A-Za-z0-9_-]+$/),
         expect.stringMatching(/^agent-state-root-sha256:[0-9a-f]{64}$/),
         "agentmail-inbox:inbox_orders",
         "tcp-port:8080",
@@ -102,5 +106,26 @@ describe("runtimeResourceClaims", () => {
       claim.startsWith("agent-state-root-sha256:"),
     );
     expect(first).toBe(second);
+  });
+
+  test("retains the pathname claim when a root is replaced and changes the inode claim", () => {
+    const temp = mkdtempSync(join(tmpdir(), "auggy-root-claim-"));
+    const root = join(temp, "agent");
+    const moved = join(temp, "moved");
+    mkdirSync(root);
+    try {
+      const before = runtimeResourceClaims(config([]), root);
+      renameSync(root, moved);
+      mkdirSync(root);
+      const after = runtimeResourceClaims(config([]), root);
+      expect(before.find((claim) => claim.startsWith("agent-state-path-v1:"))).toBe(
+        after.find((claim) => claim.startsWith("agent-state-path-v1:")),
+      );
+      expect(before.find((claim) => claim.startsWith("agent-state-root-sha256:"))).not.toBe(
+        after.find((claim) => claim.startsWith("agent-state-root-sha256:")),
+      );
+    } finally {
+      rmSync(temp, { recursive: true, force: true });
+    }
   });
 });

@@ -32,7 +32,9 @@ export function runtimeResourceClaims(config: ParsedConfig, agentDir: string): s
   };
 
   add(`agent-id:${config.id}`, "agent identity");
-  add(agentStateRootClaim(agentDir), "agent state directory");
+  for (const claim of agentStateRootClaims(agentDir)) {
+    add(claim, "agent state directory");
+  }
   for (const augment of config.augments) {
     const opts = augment.options ?? {};
     if (augment.type === "webTransport") {
@@ -78,6 +80,17 @@ export function runtimeResourceClaims(config: ParsedConfig, agentDir: string): s
 
 /** Stable, non-secret lease key for one canonical local state directory. */
 export function agentStateRootClaim(agentDir: string): string {
+  return agentStateRootClaims(agentDir).find((claim) =>
+    claim.startsWith("agent-state-root-sha256:"),
+  )!;
+}
+
+/**
+ * Claim both the canonical pathname and physical directory identity. The path
+ * claim prevents replacement at the same location; the inode claim prevents
+ * aliases and renames from admitting the same directory twice.
+ */
+export function agentStateRootClaims(agentDir: string): string[] {
   const canonicalAgentDir = realpathSync.native(agentDir);
   const stateRoot = statSync(canonicalAgentDir);
   if (!stateRoot.isDirectory()) {
@@ -89,5 +102,9 @@ export function agentStateRootClaim(agentDir: string): string {
     .update(":")
     .update(String(stateRoot.ino))
     .digest("hex");
-  return `agent-state-root-sha256:${rootFingerprint}`;
+  const encodedPath = Buffer.from(canonicalAgentDir, "utf8").toString("base64url");
+  return [
+    `agent-state-path-v1:${encodedPath}`,
+    `agent-state-root-sha256:${rootFingerprint}`,
+  ].sort();
 }

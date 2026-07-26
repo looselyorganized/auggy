@@ -266,6 +266,8 @@ export interface PidManifest {
   resourceClaims?: string[];
   /** Crash-recoverable claim-registry generation. Omitted by pre-upgrade manifests. */
   resourceClaimStore?: "sqlite-v1";
+  /** launchd installation generation that admitted this process. */
+  launchGeneration?: string;
   /** webTransport port if configured, null otherwise. */
   port: number | null;
   /** Absolute path to agent.yaml. */

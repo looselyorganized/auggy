@@ -8,7 +8,12 @@
 
 import { unlinkSync } from "node:fs";
 import { $ } from "bun";
-import { inspectRuntimeProcess, readPidManifest, removePidManifestIfOwned } from "../pid-registry";
+import {
+  claimAgentLifecycle,
+  inspectRuntimeProcess,
+  readPidManifest,
+  removePidManifestIfOwned,
+} from "../pid-registry";
 import { plistStorePath, plistInstallPath } from "../plist-generator";
 
 interface StopOptions {
@@ -22,20 +27,50 @@ interface StopOptions {
   killProcess?: (pid: number, signal: NodeJS.Signals) => void;
   /** Test seam for bounded polling. */
   sleep?: (milliseconds: number) => Promise<void>;
+  /** Internal: restart holds the lifecycle lease across stop and start. */
+  lifecycleOwned?: boolean;
+  /** Test seam for fail-closed artifact cleanup. */
+  unlinkFile?: (path: string) => void;
 }
 
 export async function runStop(name: string, opts: StopOptions = {}): Promise<void> {
-  const manifest = readPidManifest(name, { auggyDir: opts.auggyDir });
+  const initialManifest = readPidManifest(name, { auggyDir: opts.auggyDir });
 
-  if (!manifest) {
+  if (!initialManifest) {
     console.log(`Agent "${name}" is not running.`);
     return;
   }
+  const releaseLifecycle =
+    opts.lifecycleOwned || !initialManifest.agentId
+      ? () => {}
+      : claimAgentLifecycle(initialManifest.agentId, initialManifest.name, {
+          auggyDir: opts.auggyDir,
+          processIdentityForPid: opts.processIdentityForPid,
+        });
+  try {
+    const manifest = readPidManifest(initialManifest.agentId ?? name, {
+      auggyDir: opts.auggyDir,
+    });
+    if (!manifest) {
+      console.log(`Agent "${initialManifest.name}" is not running.`);
+      return;
+    }
 
-  if (manifest.mode === "launchd") {
-    await stopLaunchd(manifest, opts);
-  } else {
-    await stopDev(manifest, opts);
+    if (manifest.mode === "launchd") {
+      await stopLaunchd(manifest, opts);
+    } else {
+      await stopDev(manifest, opts);
+    }
+  } finally {
+    releaseLifecycle();
+  }
+}
+
+function unlinkIfPresent(path: string, unlinkFile: (path: string) => void): void {
+  try {
+    unlinkFile(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
 }
 
@@ -86,11 +121,14 @@ async function stopLaunchd(
 
   // Clean up plist files.
   try {
-    unlinkSync(installPath);
-  } catch {}
-  try {
-    unlinkSync(storePath);
-  } catch {}
+    unlinkIfPresent(installPath, opts.unlinkFile ?? unlinkSync);
+    unlinkIfPresent(storePath, opts.unlinkFile ?? unlinkSync);
+  } catch (error) {
+    throw new Error(
+      `Launchd agent "${manifest.name}" exited, but its control artifacts could not be removed. Its manifest and claims were preserved for recovery.`,
+      { cause: error },
+    );
+  }
 
   // Clean up PID manifest.
   removePidManifestIfOwned(manifest, { auggyDir: opts.auggyDir });
