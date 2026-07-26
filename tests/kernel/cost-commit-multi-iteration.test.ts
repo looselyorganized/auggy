@@ -78,6 +78,70 @@ function captureGate(): {
 }
 
 describe("runCostCommit — multi-iteration sum", () => {
+  it("commits a timed-out provider attempt once as unpriced", async () => {
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      complete: async () => new Promise(() => {}),
+    };
+    const gate = captureGate();
+    const loop = createTurnLoop({
+      augments: [identityAugment(), gate.augment],
+      model,
+      tokenizer: createTokenizer(),
+      config: {
+        name: "test",
+        model: "mock",
+        augments: [],
+        providerRequestTimeoutMs: 5,
+      },
+    });
+
+    await expect(
+      loop.executeTurn(makeTrigger("hi"), "thread-provider-timeout-cost"),
+    ).rejects.toThrow("outcome is unknown");
+
+    expect(gate.committedCosts).toEqual([
+      { priced: false, reason: "Provider request ended without trustworthy accounting." },
+    ]);
+  });
+
+  it("commits a dispatched provider attempt once as unpriced after caller cancellation", async () => {
+    let markStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      markStarted = resolve;
+    });
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      complete: async () => {
+        markStarted();
+        return new Promise(() => {});
+      },
+    };
+    const gate = captureGate();
+    const controller = new AbortController();
+    const loop = createTurnLoop({
+      augments: [identityAugment(), gate.augment],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+
+    const pending = loop.executeTurn(makeTrigger("hi"), "thread-provider-cancel-cost", {
+      signal: controller.signal,
+    });
+    await started;
+    controller.abort(new Error("client disconnected"));
+    await expect(pending).rejects.toThrow("client disconnected");
+    expect(gate.committedCosts).toEqual([
+      {
+        priced: false,
+        reason: "Provider request was canceled after dispatch without trustworthy accounting.",
+      },
+    ]);
+  });
+
   it("commits known cost when a completed provider response violates a limit", async () => {
     const model: ModelClient = {
       maxContextTokens: 100_000,

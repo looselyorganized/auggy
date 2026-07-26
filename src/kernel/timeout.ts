@@ -44,8 +44,10 @@ export async function withTimeout<T>(
     timerId = setTimeout(() => {
       const error = new TimeoutError(ms);
       cancellationTriggered = true;
-      controller.abort(error);
       reject(error);
+      // Queue the terminal timeout before provider/tool abort listeners can
+      // synchronously settle their operation from inside controller.abort().
+      controller.abort(error);
     }, ms);
   });
   const abortFromCaller = () => {
@@ -53,8 +55,8 @@ export async function withTimeout<T>(
       ? abortReason(callerSignal)
       : new DOMException("Aborted", "AbortError");
     cancellationTriggered = true;
-    controller.abort(reason);
     rejectCancellation(reason);
+    controller.abort(reason);
   };
   callerSignal?.addEventListener("abort", abortFromCaller, { once: true });
 

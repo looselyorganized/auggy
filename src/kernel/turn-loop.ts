@@ -3,6 +3,7 @@ import type {
   AgentConfig,
   AssembledPrompt,
   ModelClient,
+  ModelDelta,
   ModelResponse,
   TurnTrigger,
   TurnState,
@@ -50,6 +51,47 @@ function accountingFromResponse(response: ModelResponse): ModelResponseAccountin
 // Streaming inference helper
 // ---------------------------------------------------------------------------
 
+interface InferenceStreamEmitter {
+  readonly messageId: string;
+  readonly streamed: boolean;
+  push(delta: ModelDelta): void;
+  close(): void;
+  deactivate(): void;
+}
+
+function createInferenceStreamEmitter(
+  turnId: string,
+  emitEvent: KernelEventHandler,
+): InferenceStreamEmitter {
+  const messageId = crypto.randomUUID();
+  let streamed = false;
+  let active = true;
+  let ended = false;
+  return {
+    messageId,
+    get streamed() {
+      return streamed;
+    },
+    push(delta) {
+      if (!active || ended || delta.kind !== "text_delta") return;
+      if (!streamed) {
+        emitEvent({ kind: "text_message_start", turnId, messageId, role: "assistant" });
+        streamed = true;
+      }
+      emitEvent({ kind: "text_message_delta", turnId, messageId, delta: delta.text });
+    },
+    close() {
+      if (!streamed || ended) return;
+      ended = true;
+      emitEvent({ kind: "text_message_end", turnId, messageId });
+    },
+    deactivate() {
+      active = false;
+      this.close();
+    },
+  };
+}
+
 /**
  * Run a model inference call with streaming text deltas. Emits
  * text_message_start / text_message_delta / text_message_end KernelEvents
@@ -63,17 +105,19 @@ function accountingFromResponse(response: ModelResponse): ModelResponseAccountin
 async function streamingInference(
   model: ModelClient,
   prompt: AssembledPrompt,
-  turnId: string,
-  emitEvent: KernelEventHandler,
+  streamEmitter: InferenceStreamEmitter,
   responseLimits: ReturnType<typeof resolveModelResponseLimits>,
   signal?: AbortSignal,
 ): Promise<{ response: ModelResponse; streamed: boolean; messageId: string }> {
-  const messageId = crypto.randomUUID();
-  let streamed = false;
   const limitFailure: { error: ModelResponseLimitError | null } = { error: null };
   const limitAbort = new AbortController();
   const inferenceSignal = signal ? AbortSignal.any([signal, limitAbort.signal]) : limitAbort.signal;
   const tracker = new StreamingResponseLimitTracker(responseLimits);
+  // Register before provider code sees this signal. Abort listeners run
+  // synchronously, so this fence must win over an adapter that tries to emit
+  // one final delta from its own abort handler.
+  const fenceStreamOnAbort = () => streamEmitter.deactivate();
+  inferenceSignal.addEventListener("abort", fenceStreamOnAbort, { once: true });
 
   let response: ModelResponse;
   try {
@@ -92,46 +136,35 @@ async function streamingInference(
             limitAbort.abort(limitFailure.error);
             return;
           }
-          if (!streamed) {
-            emitEvent({
-              kind: "text_message_start",
-              turnId,
-              messageId,
-              role: "assistant",
-            });
-            streamed = true;
-          }
-          emitEvent({
-            kind: "text_message_delta",
-            turnId,
-            messageId,
-            delta: delta.text,
-          });
+          streamEmitter.push(delta);
         }
       },
     });
   } catch (err) {
-    if (streamed) {
-      emitEvent({ kind: "text_message_end", turnId, messageId });
-    }
+    streamEmitter.close();
     const providerLimitError = findModelResponseLimitError(err);
     if (limitFailure.error && providerLimitError?.accounting) {
       limitFailure.error.withAccounting(providerLimitError.accounting);
     }
     throw limitFailure.error ?? providerLimitError ?? err;
+  } finally {
+    inferenceSignal.removeEventListener("abort", fenceStreamOnAbort);
   }
 
-  if (streamed) {
-    emitEvent({ kind: "text_message_end", turnId, messageId });
-  }
+  streamEmitter.close();
 
   if (limitFailure.error) {
     throw limitFailure.error.withAccounting(accountingFromResponse(response));
   }
-  return { response, streamed, messageId };
+  return {
+    response,
+    streamed: streamEmitter.streamed,
+    messageId: streamEmitter.messageId,
+  };
 }
 import { isOutcomeUnknownError, OutcomeUnknownError } from "../outcome-unknown";
 import { withTimeout } from "./timeout";
+import { resolveProviderRequestTimeoutMs } from "../engines/_shared/provider-resilience";
 import { createContextAllocator } from "./context-allocator";
 import { createCapabilityTable } from "./capability-table";
 import { selectTools } from "./tool-selector";
@@ -176,6 +209,7 @@ export function createTurnLoop(opts: {
 }): TurnLoop {
   const { augments, model, tokenizer, config } = opts;
   const responseLimits = resolveModelResponseLimits(config.responseLimits);
+  const providerRequestTimeoutMs = resolveProviderRequestTimeoutMs(config.providerRequestTimeoutMs);
 
   const traceEmitter = createTraceEmitter();
   const historyManagers = new Map<string, HistoryManager>();
@@ -899,13 +933,12 @@ export function createTurnLoop(opts: {
         messageId: string;
       }> {
         const startedAt = Date.now();
+        const streamEmitter = createInferenceStreamEmitter(trigger.turnId, emitEvent);
         try {
-          const result = await streamingInference(
-            model,
-            prompt,
-            trigger.turnId,
-            emitEvent,
-            responseLimits,
+          const result = await withTimeout(
+            (deadlineSignal) =>
+              streamingInference(model, prompt, streamEmitter, responseLimits, deadlineSignal),
+            providerRequestTimeoutMs,
             signal,
           );
           try {
@@ -934,6 +967,11 @@ export function createTurnLoop(opts: {
           });
           return result;
         } catch (error) {
+          // A late, non-cooperative provider result is intentionally detached
+          // from the scheduler: generation cannot execute tools or mutate
+          // history until this await wins. Deactivation closes an open stream
+          // and makes every late delta/result locally unobservable.
+          streamEmitter.deactivate();
           if (error instanceof ModelResponseLimitError && error.accounting) {
             const cost = costFromResponse(error.accounting);
             traceEmitter.recordInference(trace, {
@@ -953,10 +991,32 @@ export function createTurnLoop(opts: {
               cost,
             });
           } else {
+            const inferenceOutcome = isOutcomeUnknownError(error)
+              ? "outcome-unknown"
+              : signal?.aborted
+                ? "canceled"
+                : "failed";
             opts.operationalSignals?.recordInference({
-              outcome: signal?.aborted ? "canceled" : "failed",
+              outcome: inferenceOutcome,
               durationMs: Date.now() - startedAt,
             });
+            if (inferenceOutcome === "outcome-unknown" || inferenceOutcome === "canceled") {
+              traceEmitter.recordInference(trace, {
+                model: config.model,
+                outcome: inferenceOutcome,
+                inputTokens: 0,
+                outputTokens: 0,
+                durationMs: Date.now() - startedAt,
+                toolCalls: [],
+                cost: {
+                  priced: false,
+                  reason:
+                    inferenceOutcome === "outcome-unknown"
+                      ? "Provider request ended without trustworthy accounting."
+                      : "Provider request was canceled after dispatch without trustworthy accounting.",
+                },
+              });
+            }
           }
           throw error;
         }

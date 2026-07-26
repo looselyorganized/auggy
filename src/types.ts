@@ -1497,6 +1497,12 @@ export interface AgentConfig {
   maxInferenceLoops?: number;
   /** Mandatory model-output bounds. Omitted fields use finite secure defaults. */
   responseLimits?: Partial<ModelResponseLimits>;
+  /**
+   * Total deadline for one model inference attempt, including connection,
+   * stream setup, streaming, and response materialization. Default 120s;
+   * maximum 10 minutes. Model POSTs are attempted exactly once.
+   */
+  providerRequestTimeoutMs?: number;
   /** Tool-choice policy sent to the model. "auto" (default) lets the model
    *  decide; "any" forces a tool call; { name } forces a specific tool. */
   toolChoice?: "auto" | "any" | { name: string };

@@ -210,6 +210,53 @@ describe("agent-wide keyed turn scheduling", () => {
     }
   });
 
+  test("releases global capacity after a non-cooperative provider deadline", async () => {
+    const firstStarted = deferred<AbortSignal>();
+    let calls = 0;
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      complete: async (_prompt, options) => {
+        calls++;
+        if (calls === 1) {
+          firstStarted.resolve(options?.signal);
+          return new Promise<ModelResponse>(() => {});
+        }
+        return response("recovered-capacity");
+      },
+    };
+    const agent = defineAgent(
+      {
+        name: "provider-deadline-capacity",
+        model: "mock",
+        augments: [],
+        providerRequestTimeoutMs: 5,
+        turnScheduling: {
+          maxConcurrent: 1,
+          maxQueued: 2,
+          maxQueuedPerThread: 1,
+          maxCausalDepth: 1,
+        },
+      },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const stalled = agent.inject(trigger("stalled", "stalled-thread", "test"));
+      const stalledSignal = await firstStarted.promise;
+      const queued = agent.inject(trigger("healthy", "healthy-thread", "test"));
+
+      await expect(stalled).rejects.toThrow("outcome is unknown");
+      expect(stalledSignal?.aborted).toBe(true);
+      expect(await queued).toMatchObject({ status: "completed", success: true });
+      expect(calls).toBe(2);
+      expect(agent.health().scheduler).toMatchObject({ activeTurns: 0, queuedTurns: 0 });
+    } finally {
+      await agent.stop();
+    }
+  });
+
   test("keeps a same-thread successor behind outbound delivery", async () => {
     const firstDeliveryStarted = deferred();
     const releaseFirstDelivery = deferred();
