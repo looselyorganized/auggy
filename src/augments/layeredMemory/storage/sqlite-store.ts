@@ -272,19 +272,25 @@ export function reassignSqliteMemoryPeerId(
   try {
     return database.db
       .transaction(() => {
+        database.db
+          .query(
+            "INSERT INTO peer_tombstones (namespace_key, peer_id, reason, created_at) VALUES (?, ?, 'peer-id-migrated', ?) ON CONFLICT(namespace_key, peer_id) DO NOTHING",
+          )
+          .run(owner.key, oldPeerId, Date.now());
         const destinationTombstone = database.db
           .query<{ present: number }, [string, string]>(
             "SELECT 1 AS present FROM peer_tombstones WHERE namespace_key = ? AND peer_id = ?",
           )
           .get(owner.key, newPeerId);
         if (destinationTombstone) {
-          throw new Error("layeredMemory store: destination peer is permanently tombstoned");
+          // The recognized identity was revoked before migration finished.
+          // Permanently retire the anonymous source and erase its rows rather
+          // than leaving an accessible orphan that can be migrated later.
+          database.db
+            .prepare("DELETE FROM entries WHERE peer_id = ? AND namespace_key = ?")
+            .run(oldPeerId, owner.key);
+          return 0;
         }
-        database.db
-          .query(
-            "INSERT INTO peer_tombstones (namespace_key, peer_id, reason, created_at) VALUES (?, ?, 'peer-id-migrated', ?) ON CONFLICT(namespace_key, peer_id) DO NOTHING",
-          )
-          .run(owner.key, oldPeerId, Date.now());
         return database.db
           .prepare("UPDATE entries SET peer_id = ? WHERE peer_id = ? AND namespace_key = ?")
           .run(newPeerId, oldPeerId, owner.key).changes;

@@ -11,6 +11,7 @@ export interface IssueTokenArgs {
   email: string;
   peerId: string;
   threadId: string;
+  issuedAt?: number; // epoch ms; callers should supply their authoritative clock
   expiresAt: number; // epoch ms
   sourceMessageId: string | null;
 }
@@ -24,6 +25,8 @@ export interface ConsumeTokenResult {
   peerId?: string;
   /** Set when consumed=true. */
   threadId?: string;
+  /** Token issuance time, used to reject links minted before a hard revocation. */
+  issuedAt?: number;
 }
 
 export interface VerifiedVisitorRow {
@@ -145,15 +148,17 @@ export interface VisitorAuthStore {
    * was revoked. A single UPDATE atomically clears revocation state, writes the
    * new vis_<uuid>, and updates verifiedAt / lastSeenAt / reverifyDueAt.
    *
-   * Returns true iff exactly one revoked row was updated. Returns false if the
-   * email is unknown or the row is not revoked (no-op guard).
+   * Returns the canonical active visitor id. A concurrent caller that loses
+   * the rotation race receives the winner's id. Returns null when the email is
+   * unknown or the link predates the latest committed revocation.
    */
   unrevokeAndRotate(
     email: string,
     newVisitorId: string,
     verifiedAt: number,
     reverifyDueAt: number,
-  ): boolean;
+    tokenIssuedAt: number,
+  ): string | null;
   /**
    * Permanently record a visitor_id as revoked. The denylist survives even
    * when the row is rotated by unrevokeAndRotate (which rewrites visitor_id),
@@ -169,6 +174,8 @@ export interface VisitorAuthStore {
    * through to the live row lookup.
    */
   isVisitorIdRevoked(visitorId: string): boolean;
+  /** Every retired identity for an email, used to reconcile memory erasure. */
+  listRevokedVisitorIdsByEmail(email: string): string[];
   /** True iff the augment has emitted notifyOnFirstVerify for this email yet. */
   hasNotifiedFirstVerifyFor(email: string): boolean;
   /** Mark notifyOnFirstVerify as fired for this email. Idempotent. */

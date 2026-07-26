@@ -149,8 +149,14 @@ describe("createSqliteVisitorAuthStore", () => {
 
       store.revokeByEmail("rotate@example.com", "rotate identity", now + 1);
       expect(
-        store.unrevokeAndRotate("rotate@example.com", "vis_new", now + 2, now + 86_400_000),
-      ).toBe(true);
+        store.unrevokeAndRotate(
+          "rotate@example.com",
+          "vis_new",
+          now + 2,
+          now + 86_400_000,
+          now + 2,
+        ),
+      ).toBe("vis_new");
       expect(store.canPromoteAnonymousThread("vis_old", "old-thread")).toBe(false);
       expect(store.canPromoteAnonymousThread("vis_new", "old-thread")).toBe(false);
 
@@ -243,6 +249,7 @@ describe("createSqliteVisitorAuthStore", () => {
         email: "returning@example.com",
         peerId: "anon-returning",
         threadId: "thread-returning",
+        issuedAt: now,
         expiresAt: now + 60_000,
         sourceMessageId: null,
       });
@@ -263,6 +270,7 @@ describe("createSqliteVisitorAuthStore", () => {
         email: "returning@example.com",
         peerId: "anon-returning",
         threadId: "thread-returning",
+        issuedAt: now,
       });
     });
 
@@ -429,6 +437,34 @@ describe("createSqliteVisitorAuthStore", () => {
       expect(store.isVisitorIdRevoked("vis_r")).toBe(true);
     });
 
+    test("hard revoke atomically invalidates outstanding links for the email", () => {
+      const now = 1_700_000_000_000;
+      store.recordVerifiedVisitor({
+        visitorId: "vis_link",
+        email: "link@x",
+        verifiedAt: now,
+        lastSeenAt: null,
+        reverifyDueAt: now + 86_400_000,
+        revoked: false,
+        revokedAt: null,
+        revokedReason: null,
+      });
+      store.issueToken({
+        token: "pre-revoke-link",
+        email: "link@x",
+        peerId: "anon-link",
+        threadId: "thread-link",
+        issuedAt: now + 1,
+        expiresAt: now + 60_000,
+        sourceMessageId: null,
+      });
+
+      store.revokeByEmail("link@x", "operator", now + 2);
+
+      expect(store.consumeToken("pre-revoke-link", now + 3)).toEqual({ consumed: false });
+      expect(store.tokenStatus("pre-revoke-link", now + 3)).toBe("consumed");
+    });
+
     test("revokeByEmail returns null for unknown email", () => {
       expect(store.revokeByEmail("unknown@x", "operator", Date.now())).toBeNull();
     });
@@ -546,8 +582,14 @@ describe("createSqliteVisitorAuthStore", () => {
       store.revokeByEmail("revoked@x", "operator", now + 1000);
       expect(store.findVerifiedByEmail("revoked@x")?.revoked).toBe(true);
 
-      const ok = store.unrevokeAndRotate("revoked@x", "vis_new", now + 2000, now + 90 * 86_400_000);
-      expect(ok).toBe(true);
+      const visitorId = store.unrevokeAndRotate(
+        "revoked@x",
+        "vis_new",
+        now + 2000,
+        now + 90 * 86_400_000,
+        now + 2000,
+      );
+      expect(visitorId).toBe("vis_new");
 
       const row = store.findVerifiedByEmail("revoked@x");
       expect(row?.revoked).toBe(false);
@@ -558,7 +600,7 @@ describe("createSqliteVisitorAuthStore", () => {
       expect(row?.lastSeenAt).toBe(now + 2000);
     });
 
-    test("unrevokeAndRotate is a no-op on a non-revoked row (returns false)", () => {
+    test("unrevokeAndRotate returns the concurrent winner for an active row", () => {
       const now = 1_700_000_000_000;
       store.recordVerifiedVisitor({
         visitorId: "vis_live",
@@ -570,10 +612,49 @@ describe("createSqliteVisitorAuthStore", () => {
         revokedAt: null,
         revokedReason: null,
       });
-      const ok = store.unrevokeAndRotate("live@x", "vis_new2", now + 1000, now + 90 * 86_400_000);
-      expect(ok).toBe(false);
+      const visitorId = store.unrevokeAndRotate(
+        "live@x",
+        "vis_new2",
+        now + 1000,
+        now + 90 * 86_400_000,
+        now + 1000,
+      );
+      expect(visitorId).toBe("vis_live");
       // Row unchanged
       expect(store.findVerifiedByEmail("live@x")?.visitorId).toBe("vis_live");
+    });
+
+    test("a token older than the latest revocation cannot rotate the identity", () => {
+      const now = 1_700_000_000_000;
+      store.recordVerifiedVisitor({
+        visitorId: "vis_epoch_one",
+        email: "epochs@x",
+        verifiedAt: now,
+        lastSeenAt: now,
+        reverifyDueAt: now + 86_400_000,
+        revoked: false,
+        revokedAt: null,
+        revokedReason: null,
+      });
+      store.revokeByEmail("epochs@x", "operator", now + 100);
+      expect(
+        store.unrevokeAndRotate(
+          "epochs@x",
+          "vis_epoch_two",
+          now + 300,
+          now + 86_400_000,
+          now + 200,
+        ),
+      ).toBe("vis_epoch_two");
+      store.revokeByEmail("epochs@x", "operator again", now + 400);
+
+      expect(
+        store.unrevokeAndRotate("epochs@x", "vis_stale", now + 500, now + 86_400_000, now + 200),
+      ).toBeNull();
+      expect(store.findVerifiedByEmail("epochs@x")).toMatchObject({
+        visitorId: "vis_epoch_two",
+        revoked: true,
+      });
     });
   });
 
@@ -596,6 +677,13 @@ describe("createSqliteVisitorAuthStore", () => {
         store.addRevokedVisitorId("vis_idempotent", "dem@x", "operator", now + 1000),
       ).not.toThrow();
       expect(store.isVisitorIdRevoked("vis_idempotent")).toBe(true);
+    });
+
+    test("lists every retired identity for retryable memory erasure", () => {
+      const now = 1_700_000_000_000;
+      store.addRevokedVisitorId("vis_old", "retry@x", "operator", now);
+      store.addRevokedVisitorId("vis_new", "retry@x", "operator", now + 1);
+      expect(store.listRevokedVisitorIdsByEmail("retry@x")).toEqual(["vis_old", "vis_new"]);
     });
   });
 

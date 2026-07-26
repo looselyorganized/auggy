@@ -279,6 +279,33 @@ describe("resolveAugments — supabaseMemory", () => {
     ).rejects.toThrow(/requires explicit scope/);
   });
 
+  test("forwards the configured Supabase ownership column to validation", async () => {
+    await expect(
+      resolveAugments(
+        [
+          {
+            name: "episodes",
+            type: "supabaseMemory",
+            options: {
+              namespace: "episode",
+              namespaceColumn: "invalid-owner-column",
+              scope: "peer",
+              supabaseUrl: "https://example.supabase.co",
+              supabaseKey: "test-key",
+              table: "agent_memories",
+              mutable: true,
+              origin: "peer-derived",
+              priority: "normal",
+              placement: "preamble",
+              eviction: "drop",
+            },
+          },
+        ],
+        TMP,
+      ),
+    ).rejects.toThrow(/namespaceColumn.*SQL identifier/i);
+  });
+
   test("keeps exact reads unavailable for peer-scoped memory", async () => {
     const [augment] = await resolveAugments(
       [

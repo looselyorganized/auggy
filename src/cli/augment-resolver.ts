@@ -59,7 +59,7 @@ import { validateBundledSkills } from "./skill-validator";
 import { auggySelf, type AuggySelfAgentMetadata } from "./auggy-self-augment";
 import { mutableFileMemoryRuntimePath } from "./runtime-state-inventory";
 import { assertImmutableAgentId, scopedAgentNamespace } from "./agent-isolation";
-import { resolveOwnedStatePath } from "./owned-state-path";
+import { compareOwnedStatePaths, resolveOwnedStatePath } from "./owned-state-path";
 
 // ---------------------------------------------------------------------------
 // Path resolution helper
@@ -273,6 +273,7 @@ async function resolveSupabaseMemory(
     client,
     table: rest.table as string,
     peerColumn: rest.peerColumn as string | undefined,
+    namespaceColumn: rest.namespaceColumn as string | undefined,
     mutable: rest.mutable as boolean,
     origin: rest.origin as ContextOrigin,
     priority: rest.priority as "required" | "high" | "normal" | "low" | "evictable",
@@ -571,25 +572,33 @@ function resolveVisitorAuth(
           runtimeDataRoot,
           "visitorAuth layeredMemoryDbPath",
         );
-  const matchingNamespaces = new Set(
-    configs
-      .filter((config) => config.type === "layeredMemory")
-      .filter((config) => (config.options?.backend ?? "sqlite") === "sqlite")
-      .filter((config) => {
-        if (resolvedLayeredMemoryDbPath === null) return false;
-        return (
-          resolveSqlitePath(
-            (config.options?.dbPath as string | undefined) ?? "./memory.db",
-            agentDir,
-            runtimeDataRoot,
-            `layeredMemory "${config.name}" dbPath`,
-          ) === resolvedLayeredMemoryDbPath
-        );
-      })
-      .map((config) =>
+  const matchingNamespaces = new Set<string>();
+  for (const config of configs) {
+    if (
+      config.type !== "layeredMemory" ||
+      (config.options?.backend ?? "sqlite") !== "sqlite" ||
+      resolvedLayeredMemoryDbPath === null
+    ) {
+      continue;
+    }
+    const memoryPath = resolveSqlitePath(
+      (config.options?.dbPath as string | undefined) ?? "./memory.db",
+      agentDir,
+      runtimeDataRoot,
+      `layeredMemory "${config.name}" dbPath`,
+    );
+    const relationship = compareOwnedStatePaths(memoryPath, resolvedLayeredMemoryDbPath);
+    if (relationship === "ambiguous") {
+      throw new Error(
+        `[augment-resolver] visitorAuth memory path may alias layeredMemory "${config.name}" on a case-insensitive volume; use one exact path spelling`,
+      );
+    }
+    if (relationship === "same") {
+      matchingNamespaces.add(
         scopedAgentNamespace(agentId, config.options?.namespace as string | undefined, "ep"),
-      ),
-  );
+      );
+    }
+  }
   if (matchingNamespaces.size > 1) {
     throw new Error(
       "[augment-resolver] visitorAuth layeredMemoryDbPath matches multiple layeredMemory namespaces; use separate database files",

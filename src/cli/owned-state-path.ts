@@ -11,6 +11,35 @@ function isContained(root: string, target: string): boolean {
   );
 }
 
+export type OwnedStatePathRelationship = "same" | "distinct" | "ambiguous";
+
+/** Compare existing state files by physical identity, not path spelling. */
+export function compareOwnedStatePaths(first: string, second: string): OwnedStatePathRelationship {
+  if (first === second) return "same";
+  const firstStat = lstatSync(first, { throwIfNoEntry: false });
+  const secondStat = lstatSync(second, { throwIfNoEntry: false });
+  for (const [path, stat] of [
+    [first, firstStat],
+    [second, secondStat],
+  ] as const) {
+    if (stat?.isSymbolicLink()) {
+      throw new Error(`[owned-state] ${path} must not be a symbolic link`);
+    }
+  }
+  if (firstStat && secondStat) {
+    return firstStat.dev === secondStat.dev && firstStat.ino === secondStat.ino
+      ? "same"
+      : "distinct";
+  }
+  // Before creation, case-only aliases cannot be proven distinct across the
+  // supported filesystems. Reject the ambiguity instead of choosing the wrong
+  // authorization namespace on case-insensitive hosts.
+  if (first.toLocaleLowerCase("en-US") === second.toLocaleLowerCase("en-US")) {
+    return "ambiguous";
+  }
+  return "distinct";
+}
+
 /**
  * Resolve a configured state file beneath an owned root and descriptor-walk
  * every existing parent without following symlinks. The canonical root is

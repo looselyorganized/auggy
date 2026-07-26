@@ -312,6 +312,53 @@ describe("auggy visitors <agent> --revoke <email>", () => {
     expect(c?.c).toBe(0);
   });
 
+  test("memory erasure failure is nonzero and a later revoke retries every retired identity", async () => {
+    seed([{ visitorId: "vis_before", email: "partial@example.test", verifiedAt: 1000 }]);
+    writeFileSync(join(agentDir, "memory.db"), "not sqlite");
+
+    await expect(
+      runVisitorsRevoke("zip", "partial@example.test", {
+        auggyDir,
+        confirm: false,
+        log: () => {},
+      }),
+    ).rejects.toThrow(/revoked.*memory erasure is incomplete.*vis_before/i);
+
+    const store = createSqliteVisitorAuthStore({ dbPath: join(agentDir, "visitor-auth.db") });
+    store.initialize();
+    const revokedAt = store.findVerifiedByEmail("partial@example.test")?.revokedAt;
+    expect(revokedAt).toBeNumber();
+    expect(
+      store.unrevokeAndRotate(
+        "partial@example.test",
+        "vis_after",
+        revokedAt! + 2,
+        revokedAt! + 4_000,
+        revokedAt! + 1,
+      ),
+    ).toBe("vis_after");
+    store.close();
+
+    rmSync(join(agentDir, "memory.db"));
+    await seedMemoryDb(join(agentDir, "memory.db"), "vis_before", 1);
+    await seedMemoryDb(join(agentDir, "memory.db"), "vis_after", 1);
+    await runVisitorsRevoke("zip", "partial@example.test", {
+      auggyDir,
+      confirm: false,
+      log: () => {},
+    });
+
+    const db = new Database(join(agentDir, "memory.db"));
+    expect(
+      db
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM entries WHERE peer_id IN ('vis_before', 'vis_after')",
+        )
+        .get()?.count,
+    ).toBe(0);
+    db.close();
+  });
+
   test("revokes the rotated current identity when reverification races the prompt", async () => {
     seed([{ visitorId: "vis_old", email: "race@example.test", verifiedAt: 1000 }]);
     await seedMemoryDb(join(agentDir, "memory.db"), "vis_new", 2);
@@ -325,7 +372,9 @@ describe("auggy visitors <agent> --revoke <email>", () => {
         });
         concurrent.initialize();
         concurrent.revokeByEmail("race@example.test", "racing verification", 2000);
-        expect(concurrent.unrevokeAndRotate("race@example.test", "vis_new", 3000, 4000)).toBe(true);
+        expect(concurrent.unrevokeAndRotate("race@example.test", "vis_new", 3000, 4000, 3000)).toBe(
+          "vis_new",
+        );
         concurrent.close();
         return true;
       },

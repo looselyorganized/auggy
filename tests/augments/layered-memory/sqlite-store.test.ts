@@ -4,6 +4,7 @@ import { Database } from "bun:sqlite";
 import {
   createSqliteStore,
   deleteSqliteMemoryForPeer,
+  reassignSqliteMemoryPeerId,
 } from "@/augments/layeredMemory/storage/sqlite-store";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 import type { MemoryStore } from "@/augments/layeredMemory/storage/types";
@@ -721,5 +722,43 @@ describe("SqliteStore", () => {
     ).rejects.toThrow(/tombstoned/i);
     await first.close();
     await second.close();
+  });
+
+  it("retires anonymous memory when the migration destination is already revoked", async () => {
+    const sharedPath = `${dbPath}.revoked-migration`;
+    const namespaced = createSqliteStore({
+      dbPath: sharedPath,
+      retentionDays: 90,
+      namespace: "ep",
+    });
+    await namespaced.write({
+      label: "ep:anonymous:before-revoke",
+      content: "must be erased",
+      peerId: "anon-source",
+      trustLevel: "public",
+      createdAt: Date.now(),
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
+    });
+
+    deleteSqliteMemoryForPeer(sharedPath, "ep", "vis-revoked");
+    expect(reassignSqliteMemoryPeerId(sharedPath, "ep", "anon-source", "vis-revoked")).toBe(0);
+    expect(await namespaced.search("must be erased", "anon-source")).toEqual([]);
+    await expect(
+      namespaced.write({
+        label: "ep:anonymous:after-revoke",
+        content: "must fail",
+        peerId: "anon-source",
+        trustLevel: "public",
+        createdAt: Date.now(),
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      }),
+    ).rejects.toThrow(/tombstoned/i);
+    await namespaced.close();
   });
 });

@@ -17,7 +17,7 @@ import { createSqliteVisitorAuthStore } from "../../augments/visitorAuth/storage
 import { scopedAgentNamespace } from "../agent-isolation";
 import { parseAgentIdOnly, parseAugmentConfigOnly, parseAugmentConfigsOnly } from "../yaml-helpers";
 import { resolveConfigPath } from "../resolve-config";
-import { resolveOwnedStatePath } from "../owned-state-path";
+import { compareOwnedStatePaths, resolveOwnedStatePath } from "../owned-state-path";
 
 export interface VisitorsRevokeOptions {
   auggyDir?: string;
@@ -60,23 +60,27 @@ function resolvePaths(agentName: string, opts: VisitorsRevokeOptions): ResolvedP
     memPathRaw === null
       ? null
       : resolveOwnedStatePath(memPathRaw, agentDir, agentDir, "visitorAuth layeredMemoryDbPath");
-  const matchingNamespaces = new Set(
-    parseAugmentConfigsOnly(yamlPath, "layeredMemory")
-      .filter((options) => (options.backend ?? "sqlite") === "sqlite")
-      .filter(
-        (options) =>
-          memoryDb !== null &&
-          resolveOwnedStatePath(
-            (options.dbPath as string | undefined) ?? "./memory.db",
-            agentDir,
-            agentDir,
-            "layeredMemory dbPath",
-          ) === memoryDb,
-      )
-      .map((options) =>
+  const matchingNamespaces = new Set<string>();
+  for (const options of parseAugmentConfigsOnly(yamlPath, "layeredMemory")) {
+    if ((options.backend ?? "sqlite") !== "sqlite" || memoryDb === null) continue;
+    const configuredMemory = resolveOwnedStatePath(
+      (options.dbPath as string | undefined) ?? "./memory.db",
+      agentDir,
+      agentDir,
+      "layeredMemory dbPath",
+    );
+    const relationship = compareOwnedStatePaths(configuredMemory, memoryDb);
+    if (relationship === "ambiguous") {
+      throw new Error(
+        `Agent "${agentName}": visitorAuth memory path may alias layeredMemory on a case-insensitive volume; use one exact path spelling.`,
+      );
+    }
+    if (relationship === "same") {
+      matchingNamespaces.add(
         scopedAgentNamespace(agentId, options.namespace as string | undefined, "ep"),
-      ),
-  );
+      );
+    }
+  }
   if (matchingNamespaces.size > 1) {
     throw new Error(
       `Agent "${agentName}": visitorAuth memory path matches multiple layeredMemory namespaces; use separate database files.`,
@@ -135,15 +139,21 @@ export async function runVisitorsRevoke(
   }
 
   const revoked = store.revokeCurrentByEmail(canonicalEmail, "operator", Date.now());
+  const revokedVisitorIds = store.listRevokedVisitorIdsByEmail(canonicalEmail);
   store.close();
   if (!revoked) throw new Error(`No verified visitor found for "${canonicalEmail}".`);
 
-  const memDeleted = cascadeMemoryDelete(
-    paths.memoryDb,
-    paths.memoryNamespace,
-    revoked.visitorId,
-    log,
-  );
+  let memDeleted = 0;
+  try {
+    for (const visitorId of revokedVisitorIds) {
+      memDeleted += cascadeMemoryDelete(paths.memoryDb, paths.memoryNamespace, visitorId, log);
+    }
+  } catch (error) {
+    throw new Error(
+      `Visitor "${canonicalEmail}" was revoked, but memory erasure is incomplete for retired identity ${revoked.visitorId}. Retry the same revoke command after repairing the memory store.`,
+      { cause: error },
+    );
+  }
   const outcome = revoked.wasRevoked ? "was already revoked; reconciled" : "revoked";
   log(
     `Visitor "${canonicalEmail}" (${revoked.visitorId}) ${outcome}. ${memDeleted} memory row(s) removed.`,
@@ -152,9 +162,8 @@ export async function runVisitorsRevoke(
 
 /**
  * DELETE memory rows for a peer-id from the layeredMemory SQLite file.
- * Best-effort — exceptions are logged and swallowed; the visitor-auth row
- * has already been revoked at the call site, so partial-success state is
- * acceptable. Returns the row count (0 if missing-file/null-path).
+ * Errors propagate after auth revocation so automation observes partial
+ * completion and can retry. Every retired identity for the email is retried.
  */
 function cascadeMemoryDelete(
   memoryDb: string | null,
@@ -167,10 +176,5 @@ function cascadeMemoryDelete(
     log(`memory.db not found at ${memoryDb} — skipping memory cascade.`);
     return 0;
   }
-  try {
-    return deleteSqliteMemoryForPeer(memoryDb, memoryNamespace, visitorId);
-  } catch (err) {
-    log(`Memory cascade failed: ${(err as Error).message}. Operator should retry manually.`);
-    return 0;
-  }
+  return deleteSqliteMemoryForPeer(memoryDb, memoryNamespace, visitorId);
 }

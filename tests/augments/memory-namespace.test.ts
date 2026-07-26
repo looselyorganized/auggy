@@ -16,6 +16,13 @@ describe("canonicalMemoryNamespace", () => {
     }
   });
 
+  test("rejects unpaired UTF-16 surrogates before UTF-8 key encoding", () => {
+    for (const value of ["x\ud800", "x\ud801", "x\udc00", "x\udfff"]) {
+      expect(() => canonicalMemoryNamespace(value)).toThrow(/well-formed Unicode/i);
+    }
+    expect(() => canonicalMemoryNamespace("x\ud83d\ude80")).not.toThrow();
+  });
+
   test("assigns distinct exact keys to parent, child, and case variants", () => {
     const keys = ["Foo", "Foo:bar", "foo"].map(
       (namespace) => canonicalMemoryNamespace(namespace).key,

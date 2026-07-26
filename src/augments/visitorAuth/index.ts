@@ -583,6 +583,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
         email,
         peerId: input.peerId,
         threadId: input.threadId,
+        issuedAt: t,
         expiresAt: t + ttlMs,
         sourceMessageId,
       });
@@ -841,17 +842,20 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
         };
       }
       let deleted = 0;
+      const revokedVisitorIds = store.listRevokedVisitorIdsByEmail(rowKey);
       if (
         typeof opts.layeredMemoryDbPath === "string" &&
         typeof opts.layeredMemoryNamespace === "string" &&
         existsSync(opts.layeredMemoryDbPath)
       ) {
         try {
-          deleted = deleteSqliteMemoryForPeer(
-            opts.layeredMemoryDbPath,
-            opts.layeredMemoryNamespace,
-            revoked.visitorId,
-          );
+          for (const visitorId of revokedVisitorIds) {
+            deleted += deleteSqliteMemoryForPeer(
+              opts.layeredMemoryDbPath,
+              opts.layeredMemoryNamespace,
+              visitorId,
+            );
+          }
         } catch (error) {
           return {
             ok: false,
@@ -1007,6 +1011,20 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           // the UNIQUE-email constraint is not violated by a second INSERT.
           const ttlSec = reverifyDays * 86_400;
           const existing = store.findVerifiedByEmail(consume.email!);
+          // A hard revocation invalidates every link issued before it. This
+          // check also closes the consume-before-revoke interleaving: a token
+          // may already be marked consumed, but it still cannot resurrect the
+          // revoked identity after the operator decision commits.
+          if (
+            existing?.revoked &&
+            existing.revokedAt !== null &&
+            (consume.issuedAt === undefined || consume.issuedAt <= existing.revokedAt)
+          ) {
+            return new Response(buildVerifyFailurePage({ reason: "consumed" }), {
+              status: 410,
+              headers: VERIFY_HTML_HEADERS,
+            });
+          }
           // Revoked rows must NOT reuse the old visitorId — that identity was destroyed.
           const reuseVisitorId = existing && !existing.revoked ? existing.visitorId : undefined;
           // Use `let` so the race-loser path can reassign minted to carry the
@@ -1028,7 +1046,29 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           if (existing && !existing.revoked) {
             store.touchVerifiedVisitor(consume.email!, t);
           } else if (existing?.revoked) {
-            store.unrevokeAndRotate(consume.email!, minted.payload.visitorId, t, t + ttlSec * 1000);
+            const canonicalVisitorId = store.unrevokeAndRotate(
+              consume.email!,
+              minted.payload.visitorId,
+              t,
+              t + ttlSec * 1000,
+              consume.issuedAt!,
+            );
+            if (!canonicalVisitorId) {
+              return new Response(buildVerifyFailurePage({ reason: "consumed" }), {
+                status: 410,
+                headers: VERIFY_HTML_HEADERS,
+              });
+            }
+            if (canonicalVisitorId !== minted.payload.visitorId) {
+              minted = await createVisitorToken(
+                signingCryptoKey,
+                agentBinding,
+                ttlSec,
+                canonicalVisitorId,
+                consume.peerId ?? undefined,
+                consume.peerId ?? undefined,
+              );
+            }
           } else {
             try {
               store.recordVerifiedVisitor({
