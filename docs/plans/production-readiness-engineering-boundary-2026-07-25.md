@@ -455,3 +455,73 @@ reports circuit-blocked drain/restart probes as controlled invariant failures,
 and releases fixture barriers and stops the runtime in `finally`. The exact
 all-stall regression completes without a hang. Repeat adversarial review found
 no unresolved High or Medium Group 5 issue.
+
+### Group 6 — implemented on branch
+
+Configuration and generated artifacts now have explicit fail-closed contract
+edges. `settings` must be an object, unknown top-level agent fields are
+rejected, the obsolete concierge example metadata is removed, route JSON uses
+envelope schema version 1, and generated OpenAPI declares Auggy artifact schema
+version 1. Supplemental deterministic, Linux-boundary, and PostgreSQL CI lists
+are admitted through the tracked test inventory before Bun runs them, so one
+stale selector cannot disappear behind other passing files. Release smoke now
+allocates its port immediately before startup and performs at most three
+observable collision retries with PID-aware cleanup.
+
+The PostgreSQL coordination preview no longer treats migration-ledger presence
+or `CREATE IF NOT EXISTS` as structural proof. Every migration transaction is
+pinned to an explicit validated schema, and the shipped CLI/runtime are pinned
+to `public`; runtime operations qualify owned relations and reset transaction
+function lookup so role- or URL-controlled `search_path` cannot redirect work.
+Provisioning validates the complete security-relevant owned catalog: table
+kind/persistence, columns, nullability, defaults, identity/generated state,
+collations, constraints and deferral, indexes and key semantics, checks,
+row-security/rules/triggers, and the exact event sequence dependency, owner,
+and parameters. Validation occurs before transactional migration success is
+committed and repeats on every invocation.
+
+The compatibility guide records config, public API, generated artifact,
+recovery, SQLite, external-store, PostgreSQL, upgrade, and full-state rollback
+boundaries. This remains a pre-1.0, stopped single-replica upgrade contract; it
+does not claim mixed-version rollout, online migration, universal external
+store migration, or compatibility with an unknown artifact version.
+
+Hostile review found and resolved the following High/Medium defects before the
+checkpoint:
+
+- migration validation initially omitted one event column and queried a weaker
+  legacy catalog shape;
+- a role-controlled `search_path` could validate `public` but redirect runtime
+  operations and built-in function lookup to shadow objects;
+- a foreign same-named sequence could be used as the event default while the
+  original owned sequence still existed;
+- text collation drift could conflate distinct request, thread, source, or
+  namespace identifiers; and
+- index ordering/opclass/collation, constraint deferral, and sequence parameter
+  changes were not initially included in the strict catalog proof.
+
+The corrected PostgreSQL regressions cover incompatible same-named tables,
+ledger revalidation, defaults, collations, partial and descending indexes,
+unvalidated checks, deferred primary keys, row security, foreign sequence
+defaults, sequence parameters/ownership, unsafe schema identifiers, and a
+runtime shadow-schema executor. Repeated hostile review reported no unresolved
+High or Medium Group 6 issue. A removed PostgreSQL rule can leave the
+conservative `relhasrules` flag set until database maintenance; that may cause
+a fail-closed operational rejection but cannot admit a weakened schema.
+
+Group verification:
+
+- the broad configuration, artifact, CI, storage/migration, coordination, and
+  readiness run passed 408 tests, skipped 11 PostgreSQL service-backed cases,
+  and had zero failures;
+- the one database-independent PostgreSQL schema-identifier regression passed;
+  this machine has PostgreSQL client tools but no server, so the PostgreSQL 17
+  CI service remains required executable evidence for the 11 integration
+  cases;
+- the tracked inventory passed with 268 runtime and 29 console test files
+  across 12 bounded shards;
+- `bun run typecheck`, `bun run lint`, `bash -n scripts/release-smoke.sh`, and
+  `git diff --check` passed; lint emitted only the existing Biome schema-version
+  notice; and
+- full release smoke remains a final PR gate because its external
+  `bun audit --json` step could not be approved in the current sandbox policy.
