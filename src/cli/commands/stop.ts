@@ -278,7 +278,7 @@ async function stopDev(
   const processOptions = { processIdentityForPid: opts.processIdentityForPid };
   const initialStatus = inspectRuntimeProcess(manifest, processOptions);
   if (initialStatus === "gone" || initialStatus === "reused") {
-    removePidManifestIfOwned(manifest, { auggyDir: opts.auggyDir });
+    removeStoppedManifestOrRejectReplacement(manifest, opts);
     console.log(`Agent "${manifest.name}" was not running (stale PID ${manifest.pid} cleaned up).`);
     return;
   }
@@ -321,6 +321,21 @@ async function stopDev(
     }
   }
 
-  removePidManifestIfOwned(manifest, { auggyDir: opts.auggyDir });
+  removeStoppedManifestOrRejectReplacement(manifest, opts);
   console.log(`Agent "${manifest.name}" stopped.`);
+}
+
+function removeStoppedManifestOrRejectReplacement(
+  manifest: NonNullable<ReturnType<typeof readPidManifest>>,
+  opts: StopOptions,
+): void {
+  if (removePidManifestIfOwned(manifest, { auggyDir: opts.auggyDir })) return;
+  const current = readPidManifest(manifest.agentId ?? manifest.name, {
+    auggyDir: opts.auggyDir,
+  });
+  if (current) {
+    throw new Error(
+      `Agent "${manifest.name}" changed runtime ownership while stopping. The replacement remains live or recoverable; retry the stop against immutable id ${manifest.agentId ?? manifest.name}.`,
+    );
+  }
 }

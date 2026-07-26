@@ -22,6 +22,7 @@ import { parseConfig } from "../config-parser";
 import { resolveEngine } from "../engine-resolver";
 import { resolveAugments } from "../augment-resolver";
 import {
+  claimAgentLifecycle,
   claimRuntimePidManifest,
   formatAgentAlreadyRunningMessage,
   getProcessIdentity,
@@ -63,6 +64,11 @@ export interface DevOpts {
   /** Test seam: override process.cwd() for project-local resolution. */
   cwd?: string;
   internalMode?: string;
+  /** Internal: restart already holds this agent's lifecycle admission lease. */
+  lifecycleOwned?: boolean;
+  /** Internal/test registry seams. */
+  auggyDir?: string;
+  processIdentityForPid?: (pid: number) => string | null;
   /**
    * When true, auto-launch the operator's default browser to `/console`
    * after the agent starts. No-op when webTransport isn't configured.
@@ -204,11 +210,28 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   const releaseRuntimeOwnership = () => {
     if (runtimeOwnershipReleased) return;
     runtimeOwnershipReleased = true;
-    if (pidManifest) releaseRuntimePidManifest(pidManifest, pidManifestClaimed);
+    if (pidManifest) {
+      releaseRuntimePidManifest(pidManifest, pidManifestClaimed, {
+        auggyDir: opts.auggyDir,
+        processIdentityForPid: opts.processIdentityForPid,
+      });
+    }
     runtimeVolumeLease?.release();
   };
+  let releaseRuntimeAdmission = () => {};
   try {
-    const processIdentity = getProcessIdentity(process.pid);
+    // A foreground runtime briefly owns the same lifecycle fence as operator
+    // controls while it publishes resource claims and its manifest. It must
+    // not slip into the gap after stop removes an old generation but before
+    // stop can report success. A launchd child instead uses its parent's
+    // durable installation-generation fence.
+    if (mode === "dev" && !opts.lifecycleOwned) {
+      releaseRuntimeAdmission = claimAgentLifecycle(config.id, agentName, {
+        auggyDir: opts.auggyDir,
+        processIdentityForPid: opts.processIdentityForPid,
+      });
+    }
+    const processIdentity = (opts.processIdentityForPid ?? getProcessIdentity)(process.pid);
     if (!processIdentity) {
       throw new Error("[runtime] unable to verify the current OS process incarnation");
     }
@@ -227,13 +250,24 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
       startedAt: new Date().toISOString(),
       mode,
     };
-    pidManifestClaimed = claimRuntimePidManifest(pidManifest, { internalMode: opts.internalMode });
+    pidManifestClaimed = claimRuntimePidManifest(pidManifest, {
+      internalMode: opts.internalMode,
+      auggyDir: opts.auggyDir,
+      processIdentityForPid: opts.processIdentityForPid,
+    });
   } catch (err) {
     releaseRuntimeOwnership();
     if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error(formatAgentAlreadyRunningMessage(agentName, readPidManifest(config.id)));
+      throw new Error(
+        formatAgentAlreadyRunningMessage(
+          agentName,
+          readPidManifest(config.id, { auggyDir: opts.auggyDir }),
+        ),
+      );
     }
     throw err;
+  } finally {
+    releaseRuntimeAdmission();
   }
 
   // From here on, clean up the PID manifest on any failure.

@@ -61,7 +61,7 @@ export async function runRestart(name: string, opts: RestartOptions): Promise<vo
     const generation = readLaunchdGenerationState(name, registryOptions);
     if (generation) {
       throw new Error(
-        `Agent "${name}" has an active launchd generation but no runtime manifest. Run "auggy stop ${name}" to recover it before starting again with the intended config.`,
+        `Agent "${name}" has persisted launchd generation state but no runtime manifest. Run "auggy stop ${name}" to recover any installed job before starting again with the intended config.`,
       );
     }
     console.log(
@@ -114,7 +114,12 @@ export async function runRestart(name: string, opts: RestartOptions): Promise<vo
         processIdentityForPid: opts.processIdentityForPid,
       });
     } else {
-      await (opts._runDev ?? runDev)(current.name, { config: configPath });
+      await (opts._runDev ?? runDev)(current.name, {
+        config: configPath,
+        lifecycleOwned: true,
+        auggyDir: opts.auggyDir,
+        processIdentityForPid: opts.processIdentityForPid,
+      });
     }
   } finally {
     releaseLifecycle();

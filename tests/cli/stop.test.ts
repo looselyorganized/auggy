@@ -1,8 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runStop } from "../../src/cli/commands/stop";
+import { runDev } from "../../src/cli/commands/dev";
 import {
   activateLaunchdGeneration,
   claimAgentLifecycle,
@@ -65,6 +66,30 @@ afterEach(() => {
 });
 
 describe("stop preserves ownership until the recorded process exits", () => {
+  test("a foreground runtime cannot publish through an operator lifecycle fence", async () => {
+    const owner = manifest("dev", "a");
+    const agentDir = join(auggyDir, "foreground-admission");
+    mkdirSync(agentDir, { recursive: true });
+    const configPath = join(agentDir, "agent.yaml");
+    writeFileSync(
+      configPath,
+      `id: ${owner.agentId}\nname: ${owner.name}\nengine:\n  provider: anthropic\n  model: claude-sonnet-4-6\naugments:\n  - type: webFetch\n`,
+    );
+    const releaseStop = claimAgentLifecycle(owner.agentId!, owner.name, registryOptions());
+    try {
+      await expect(
+        runDev(owner.name, {
+          config: configPath,
+          auggyDir,
+          processIdentityForPid: () => PROCESS_IDENTITY,
+        }),
+      ).rejects.toThrow(/resource.*claimed/i);
+      expect(readPidManifest(owner.agentId!, { auggyDir })).toBeNull();
+    } finally {
+      releaseStop();
+    }
+  });
+
   test("does not lose a display-name stop before a concurrent start publishes state", async () => {
     const owner = manifest("dev", "a");
     const releaseStart = claimAgentLifecycle(owner.agentId!, owner.name, registryOptions());
@@ -177,6 +202,56 @@ describe("stop preserves ownership until the recorded process exits", () => {
     expect(() => claimRuntimePidManifest(manifest("launchd", "b"), registryOptions())).toThrow(
       /resource.*claimed/i,
     );
+    removePidManifest(owner.agentId!, { auggyDir });
+  });
+
+  test("never reports success after a replacement dev manifest appears", async () => {
+    const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    const owner = manifest("dev", "a");
+    owner.pid = child.pid;
+    expect(claimRuntimePidManifest(owner, registryOptions())).toBe(true);
+    const replacement = {
+      ...owner,
+      pid: process.pid,
+      claimNonce: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+    };
+    let replacementClaimed = false;
+    const processIdentityForPid = (pid: number) => {
+      if (pid === owner.pid) return PROCESS_IDENTITY;
+      if (pid === replacement.pid) return PROCESS_IDENTITY;
+      return null;
+    };
+
+    try {
+      await expect(
+        runStop(owner.agentId!, {
+          auggyDir,
+          processIdentityForPid,
+          killProcess: () => {},
+          sleep: async () => {
+            if (replacementClaimed) return;
+            expect(removePidManifestIfOwned(owner, { auggyDir })).toBe(true);
+            expect(
+              claimRuntimePidManifest(replacement, {
+                auggyDir,
+                processIdentityForPid,
+              }),
+            ).toBe(true);
+            replacementClaimed = true;
+            child.kill("SIGKILL");
+            await child.exited;
+          },
+        }),
+      ).rejects.toThrow(/changed runtime ownership.*replacement remains/i);
+    } finally {
+      child.kill("SIGKILL");
+      await child.exited;
+    }
+
+    expect(readPidManifest(owner.agentId!, { auggyDir })?.claimNonce).toBe(replacement.claimNonce);
     removePidManifest(owner.agentId!, { auggyDir });
   });
 

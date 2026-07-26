@@ -68,7 +68,7 @@ describe("restart target validation", () => {
     expect(reads).toBe(0);
   });
 
-  test("fails closed on an active launchd generation without a manifest", async () => {
+  test("fails closed on persisted launchd generation state without a manifest", async () => {
     const auggyDir = mkdtempSync(join(tmpdir(), "restart-generation-"));
     roots.push(auggyDir);
     const processIdentityForPid = () => "test-process:restart-generation";
@@ -78,7 +78,7 @@ describe("restart target validation", () => {
     });
 
     await expect(runRestart(AGENT_B, { auggyDir, processIdentityForPid })).rejects.toThrow(
-      /active launchd generation.*auggy stop/i,
+      /persisted launchd generation.*auggy stop/i,
     );
   });
 
