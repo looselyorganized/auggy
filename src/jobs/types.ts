@@ -41,6 +41,7 @@ export interface DurableJobRecord extends DurableJobSummary {
 
 export interface DurableJobLease {
   job: DurableJobSummary;
+  payload: DurableJobPayload;
   token: string;
   expiresAt: number;
 }
@@ -63,6 +64,8 @@ export interface DurableJobStore {
     errorCode: string;
     availableAt?: number;
   }): DurableJobSummary;
+  /** Terminally rejects a fenced lease before execution was durably started. */
+  rejectUnstarted(input: { jobId: string; token: string; errorCode: string }): DurableJobSummary;
   complete(input: { jobId: string; token: string; result: unknown }): DurableJobSummary;
   failDefinite(input: {
     jobId: string;
@@ -79,6 +82,8 @@ export interface DurableJobStore {
     status: "canceled" | "cancellation_requested" | "unchanged" | "not_found" | "version_conflict";
     job?: DurableJobSummary;
   };
+  recoverExpiredLeases(): { requeued: number; quarantined: number };
+  /** @deprecated Use recoverExpiredLeases; this method is also expired-only. */
   recoverInterrupted(): { requeued: number; quarantined: number };
   reconcile(input: {
     jobId: string;
@@ -87,8 +92,10 @@ export interface DurableJobStore {
     evidence: string;
   }): { reconciled: boolean; job?: DurableJobSummary };
   get(jobId: string): DurableJobRecord | null;
+  getSummary(jobId: string): DurableJobSummary | null;
   list(input?: { limit?: number; state?: DurableJobState }): DurableJobSummary[];
   prune(input?: { before?: number; limit?: number }): number;
+  pruneAudit(input?: { before?: number; limit?: number }): number;
   close(): void;
 }
 
@@ -98,4 +105,10 @@ export interface SqliteDurableJobStoreOptions {
   jobId?: () => string;
   leaseToken?: () => string;
   incidentId?: () => string;
+  maxTotalRecords?: number;
+  maxQueuedRecords?: number;
+  /** Sum of canonical payload and binding bytes admitted for stored jobs. */
+  maxPrivateBytes?: number;
+  terminalRetentionMs?: number;
+  auditRetentionMs?: number;
 }

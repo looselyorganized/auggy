@@ -23,6 +23,24 @@ const MAX_JSON_BYTES = 64 * 1024;
 const MAX_LIST = 100;
 const MAX_PRUNE = 1_000;
 const MAX_LEASE_MS = 60 * 60_000;
+const MAX_RECOVERY_PER_TRANSITION = 100;
+const DEFAULT_MAX_TOTAL_RECORDS = 10_000;
+const DEFAULT_MAX_QUEUED_RECORDS = 1_000;
+const DEFAULT_MAX_PRIVATE_BYTES = 64 * 1024 * 1024;
+const DEFAULT_TERMINAL_RETENTION_MS = 30 * 24 * 60 * 60_000;
+const DEFAULT_AUDIT_RETENTION_MS = 90 * 24 * 60 * 60_000;
+const MIN_AUDIT_RETENTION_MS = 24 * 60 * 60_000;
+const MAX_SAFE_SQLITE_INTEGER = Number.MAX_SAFE_INTEGER;
+
+const OUTCOME_REASON_CODES = new Set([
+  "cancel-completion-race",
+  "cancel-failure-race",
+  "execution-outcome-unknown",
+  "lease-expired",
+  "process-restarted",
+  "shutdown-interrupted",
+]);
+const CANCEL_REASON_CODES = new Set(["deadline-exceeded", "operator-requested", "shutdown"]);
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS durable_jobs (
@@ -30,6 +48,7 @@ const SCHEMA = [
     idempotency_key_hash   TEXT NOT NULL UNIQUE,
     binding_hash           TEXT NOT NULL,
     payload_json           TEXT NOT NULL,
+    private_bytes          INTEGER NOT NULL CHECK (private_bytes >= 1),
     state                  TEXT NOT NULL CHECK (state IN ('queued','leased','running','completed','failed','canceled','outcome_unknown')),
     attempt                INTEGER NOT NULL DEFAULT 0 CHECK (attempt >= 0),
     version                INTEGER NOT NULL DEFAULT 1 CHECK (version >= 1),
@@ -79,8 +98,7 @@ const SCHEMA = [
     incident_version INTEGER NOT NULL CHECK (incident_version >= 1),
     disposition      TEXT NOT NULL CHECK (disposition IN ('retry','cancel','confirm_completed')),
     evidence_sha256  TEXT NOT NULL,
-    reconciled_at    INTEGER NOT NULL,
-    FOREIGN KEY (job_id) REFERENCES durable_jobs(job_id) ON DELETE CASCADE
+    reconciled_at    INTEGER NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_durable_job_incidents_time
      ON durable_job_incidents(detected_at, incident_id)`,
@@ -99,6 +117,7 @@ interface Row {
   idempotency_key_hash: string;
   binding_hash: string;
   payload_json: string;
+  private_bytes: number;
   state: DurableJobState;
   attempt: number;
   version: number;
@@ -131,6 +150,9 @@ function safeId(value: string, label: string): string {
 }
 
 function safeText(value: string, label: string, max = 256): string {
+  if (typeof value !== "string" || value.length > max) {
+    throw new Error(`${LABEL}: ${label} is invalid`);
+  }
   const normalized = value.trim();
   const hasControlCharacter = [...normalized].some((character) => {
     const codePoint = character.codePointAt(0) ?? 0;
@@ -142,6 +164,19 @@ function safeText(value: string, label: string, max = 256): string {
   return normalized;
 }
 
+function safeCode(value: string, label: string): string {
+  if (typeof value !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(value)) {
+    throw new Error(`${LABEL}: ${label} must be a non-secret fixed code`);
+  }
+  return value;
+}
+
+function allowedReason(value: string, label: string, allowed: ReadonlySet<string>): string {
+  const code = safeCode(value, label);
+  if (!allowed.has(code)) throw new Error(`${LABEL}: ${label} is not allowed`);
+  return code;
+}
+
 function safeTime(value: number, label: string): number {
   if (!Number.isSafeInteger(value) || value < 0) {
     throw new Error(`${LABEL}: ${label} must be a non-negative safe integer`);
@@ -149,35 +184,109 @@ function safeTime(value: number, label: string): number {
   return value;
 }
 
-function canonicalValue(value: unknown, depth = 0, budget = { nodes: 0 }): unknown {
-  if (depth > 16) throw new Error(`${LABEL}: private JSON exceeds maximum nesting`);
-  budget.nodes++;
-  if (budget.nodes > 10_000) throw new Error(`${LABEL}: private JSON exceeds maximum nodes`);
-  if (value === null || typeof value === "string" || typeof value === "boolean") return value;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value))
-      throw new Error(`${LABEL}: private JSON contains a non-finite number`);
-    return value;
+function safeAdd(left: number, right: number, label: string): number {
+  const result = left + right;
+  if (!Number.isSafeInteger(result) || result < 0) {
+    throw new Error(`${LABEL}: ${label} timestamp addition exceeds the safe integer range`);
   }
-  if (Array.isArray(value)) return value.map((item) => canonicalValue(item, depth + 1, budget));
-  if (typeof value === "object" && Object.getPrototypeOf(value) === Object.prototype) {
-    const object = value as Record<string, unknown>;
-    return Object.fromEntries(
-      Object.keys(object)
-        .sort()
-        .map((key) => [key, canonicalValue(object[key], depth + 1, budget)]),
-    );
-  }
-  throw new Error(`${LABEL}: private JSON must contain only JSON values`);
+  return result;
 }
 
-function boundedJson(value: unknown, label: string): string {
-  const json = JSON.stringify(canonicalValue(value));
-  if (json === undefined) throw new Error(`${LABEL}: ${label} is invalid`);
-  if (Buffer.byteLength(json, "utf8") > MAX_JSON_BYTES) {
-    throw new Error(`${LABEL}: ${label} exceeds ${MAX_JSON_BYTES} bytes`);
+function jsonStringBytes(value: string, remaining: number): number {
+  let bytes = 2;
+  for (const character of value) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint <= 0x1f)
+      bytes +=
+        character === "\b" ||
+        character === "\t" ||
+        character === "\n" ||
+        character === "\f" ||
+        character === "\r"
+          ? 2
+          : 6;
+    else if (character === '"' || character === "\\") bytes += 2;
+    else if (codePoint <= 0x7f) bytes += 1;
+    else if (codePoint <= 0x7ff) bytes += 2;
+    else if (codePoint >= 0xd800 && codePoint <= 0xdfff) bytes += 6;
+    else if (codePoint <= 0xffff) bytes += 3;
+    else bytes += 4;
+    if (bytes > remaining) return bytes;
   }
-  return json;
+  return bytes;
+}
+
+function boundedJson(value: unknown, _label: string): string {
+  const chunks: string[] = [];
+  let bytes = 0;
+  let nodes = 0;
+  const append = (chunk: string, chunkBytes = Buffer.byteLength(chunk, "utf8")) => {
+    if (bytes + chunkBytes > MAX_JSON_BYTES) {
+      throw new Error(`${LABEL}: private JSON exceeds ${MAX_JSON_BYTES} bytes`);
+    }
+    bytes += chunkBytes;
+    chunks.push(chunk);
+  };
+  const serialize = (current: unknown, depth: number): void => {
+    if (depth > 16) throw new Error(`${LABEL}: private JSON exceeds maximum nesting`);
+    nodes++;
+    if (nodes > 10_000) throw new Error(`${LABEL}: private JSON exceeds maximum nodes`);
+    if (current === null) {
+      append("null", 4);
+      return;
+    }
+    if (typeof current === "string") {
+      const stringBytes = jsonStringBytes(current, MAX_JSON_BYTES - bytes);
+      if (bytes + stringBytes > MAX_JSON_BYTES) {
+        throw new Error(`${LABEL}: private JSON exceeds ${MAX_JSON_BYTES} bytes`);
+      }
+      append(JSON.stringify(current), stringBytes);
+      return;
+    }
+    if (typeof current === "boolean") {
+      append(current ? "true" : "false", current ? 4 : 5);
+      return;
+    }
+    if (typeof current === "number") {
+      if (!Number.isFinite(current))
+        throw new Error(`${LABEL}: private JSON contains a non-finite number`);
+      append(JSON.stringify(current));
+      return;
+    }
+    if (Array.isArray(current)) {
+      append("[", 1);
+      for (let index = 0; index < current.length; index++) {
+        if (index > 0) append(",", 1);
+        serialize(current[index], depth + 1);
+      }
+      append("]", 1);
+      return;
+    }
+    if (typeof current === "object" && Object.getPrototypeOf(current) === Object.prototype) {
+      const object = current as Record<string, unknown>;
+      const keys = Object.keys(object);
+      if (nodes + keys.length > 10_000)
+        throw new Error(`${LABEL}: private JSON exceeds maximum nodes`);
+      keys.sort();
+      append("{", 1);
+      for (let index = 0; index < keys.length; index++) {
+        if (index > 0) append(",", 1);
+        const key = keys[index]!;
+        const keyBytes = jsonStringBytes(key, MAX_JSON_BYTES - bytes);
+        if (bytes + keyBytes > MAX_JSON_BYTES) {
+          throw new Error(`${LABEL}: private JSON exceeds ${MAX_JSON_BYTES} bytes`);
+        }
+        append(JSON.stringify(key), keyBytes);
+        append(":", 1);
+        serialize(object[key], depth + 1);
+      }
+      append("}", 1);
+      return;
+    }
+    throw new Error(`${LABEL}: private JSON must contain only JSON values`);
+  };
+  serialize(value, 0);
+  return chunks.join("");
 }
 
 function payloadJson(payload: DurableJobPayload): string {
@@ -225,13 +334,30 @@ function hasExactSchema(objects: readonly SqliteSchemaObject[]): boolean {
 }
 
 function validateRows(db: Database): void {
+  if (db.query("PRAGMA foreign_key_check").get()) {
+    throw new Error(`${LABEL}: stored foreign-key graph is inconsistent`);
+  }
   const invalid = db
     .query<Row, []>(
       `SELECT * FROM durable_jobs
-       WHERE attempt < 0 OR version < 1 OR available_at < 0 OR created_at < 0 OR updated_at < created_at
-          OR cancel_requested NOT IN (0,1)
+       WHERE typeof(attempt) <> 'integer' OR attempt < 0 OR attempt > ${MAX_SAFE_SQLITE_INTEGER}
+          OR typeof(version) <> 'integer' OR version < 1 OR version > ${MAX_SAFE_SQLITE_INTEGER}
+          OR typeof(private_bytes) <> 'integer' OR private_bytes < 1 OR private_bytes > ${MAX_SAFE_SQLITE_INTEGER}
+          OR typeof(available_at) <> 'integer' OR available_at < 0 OR available_at > ${MAX_SAFE_SQLITE_INTEGER}
+          OR typeof(created_at) <> 'integer' OR created_at < 0 OR created_at > ${MAX_SAFE_SQLITE_INTEGER}
+          OR typeof(updated_at) <> 'integer' OR updated_at < created_at OR updated_at > ${MAX_SAFE_SQLITE_INTEGER}
+          OR (lease_expires_at IS NOT NULL AND (typeof(lease_expires_at) <> 'integer' OR lease_expires_at < 0 OR lease_expires_at > ${MAX_SAFE_SQLITE_INTEGER}))
+          OR (started_at IS NOT NULL AND (typeof(started_at) <> 'integer' OR started_at < created_at OR started_at > updated_at OR started_at > ${MAX_SAFE_SQLITE_INTEGER}))
+          OR (completed_at IS NOT NULL AND (typeof(completed_at) <> 'integer' OR completed_at < created_at OR completed_at > updated_at OR completed_at > ${MAX_SAFE_SQLITE_INTEGER}))
+          OR (incident_version IS NOT NULL AND (typeof(incident_version) <> 'integer' OR incident_version < 1 OR incident_version > ${MAX_SAFE_SQLITE_INTEGER}))
+          OR typeof(cancel_requested) <> 'integer' OR cancel_requested NOT IN (0,1)
           OR (state IN ('leased','running') AND (lease_owner IS NULL OR lease_token IS NULL OR lease_expires_at IS NULL))
           OR (state NOT IN ('leased','running') AND (lease_owner IS NOT NULL OR lease_token IS NOT NULL OR lease_expires_at IS NOT NULL))
+          OR (state = 'leased' AND (started_at IS NOT NULL OR cancel_requested <> 0))
+          OR (state = 'running' AND started_at IS NULL)
+          OR (state IN ('completed','failed','canceled') AND completed_at IS NULL)
+          OR (state NOT IN ('completed','failed','canceled') AND completed_at IS NOT NULL)
+          OR (state <> 'completed' AND result_json IS NOT NULL)
           OR (state = 'outcome_unknown' AND (incident_id IS NULL OR incident_version IS NULL OR incident_reason_code IS NULL))
           OR (state <> 'outcome_unknown' AND (incident_id IS NOT NULL OR incident_version IS NOT NULL OR incident_reason_code IS NOT NULL))
        LIMIT 1`,
@@ -247,6 +373,18 @@ function validateRows(db: Database): void {
       throw new Error(`${LABEL}: stored binding is invalid`);
     }
     parsePayload(row.payload_json);
+    if (row.private_bytes < Buffer.byteLength(row.payload_json, "utf8") + 1) {
+      throw new Error(`${LABEL}: stored private byte accounting is inconsistent`);
+    }
+    if (row.lease_owner !== null) safeText(row.lease_owner, "stored lease owner", 128);
+    if (row.lease_token !== null) safeId(row.lease_token, "stored lease token");
+    if (row.error_code !== null) safeCode(row.error_code, "stored error code");
+    if (row.cancel_reason !== null) {
+      allowedReason(row.cancel_reason, "stored cancel reason", CANCEL_REASON_CODES);
+    }
+    if (row.incident_reason_code !== null) {
+      allowedReason(row.incident_reason_code, "stored incident reason", OUTCOME_REASON_CODES);
+    }
     if (row.result_json !== null) {
       let result: unknown;
       try {
@@ -262,17 +400,44 @@ function validateRows(db: Database): void {
   const invalidAttempt = db
     .query<{ job_id: string }, []>(
       `SELECT a.job_id FROM durable_job_attempts a JOIN durable_jobs j ON j.job_id = a.job_id
-       WHERE a.attempt > j.attempt OR a.claimed_at < j.created_at
+       WHERE typeof(a.attempt) <> 'integer' OR a.attempt < 1 OR a.attempt > ${MAX_SAFE_SQLITE_INTEGER}
+          OR typeof(a.claimed_at) <> 'integer' OR a.claimed_at < j.created_at OR a.claimed_at > ${MAX_SAFE_SQLITE_INTEGER}
+          OR (a.started_at IS NOT NULL AND (typeof(a.started_at) <> 'integer' OR a.started_at < a.claimed_at OR a.started_at > ${MAX_SAFE_SQLITE_INTEGER}))
+          OR (a.settled_at IS NOT NULL AND (typeof(a.settled_at) <> 'integer' OR a.settled_at < a.claimed_at OR a.settled_at > ${MAX_SAFE_SQLITE_INTEGER}))
+          OR (a.started_at IS NOT NULL AND a.settled_at IS NOT NULL AND a.settled_at < a.started_at)
+          OR a.attempt > j.attempt
+          OR (a.state = 'leased' AND (a.started_at IS NOT NULL OR a.settled_at IS NOT NULL))
+          OR (a.state = 'running' AND (a.started_at IS NULL OR a.settled_at IS NOT NULL))
+          OR (a.state NOT IN ('leased','running') AND a.settled_at IS NULL)
           OR (a.state = 'leased' AND (j.state <> 'leased' OR a.attempt <> j.attempt OR a.lease_token <> j.lease_token))
           OR (a.state = 'running' AND (j.state <> 'running' OR a.attempt <> j.attempt OR a.lease_token <> j.lease_token))
        LIMIT 1`,
     )
     .get();
   if (invalidAttempt) throw new Error(`${LABEL}: stored job attempt is inconsistent`);
+  const invalidAttemptHistory = db
+    .query<{ job_id: string }, []>(
+      `SELECT j.job_id FROM durable_jobs j
+       LEFT JOIN durable_job_attempts a ON a.job_id = j.job_id
+       GROUP BY j.job_id
+       HAVING COUNT(a.attempt) <> j.attempt OR COALESCE(MAX(a.attempt), 0) <> j.attempt
+          OR (j.state = 'leased' AND SUM(CASE WHEN a.attempt = j.attempt AND a.state = 'leased' AND a.lease_token = j.lease_token THEN 1 ELSE 0 END) <> 1)
+          OR (j.state = 'running' AND SUM(CASE WHEN a.attempt = j.attempt AND a.state = 'running' AND a.lease_token = j.lease_token THEN 1 ELSE 0 END) <> 1)
+          OR (j.state = 'completed' AND SUM(CASE WHEN a.attempt = j.attempt AND a.state IN ('completed','outcome_unknown') THEN 1 ELSE 0 END) <> 1)
+          OR (j.state = 'failed' AND SUM(CASE WHEN a.attempt = j.attempt AND a.state = 'failed' THEN 1 ELSE 0 END) <> 1)
+          OR (j.state = 'outcome_unknown' AND SUM(CASE WHEN a.attempt = j.attempt AND a.state = 'outcome_unknown' THEN 1 ELSE 0 END) <> 1)
+          OR (j.state = 'queued' AND j.attempt > 0 AND SUM(CASE WHEN a.attempt = j.attempt AND a.state IN ('requeued','outcome_unknown') THEN 1 ELSE 0 END) <> 1)
+          OR (j.state = 'canceled' AND j.attempt > 0 AND SUM(CASE WHEN a.attempt = j.attempt AND a.state IN ('canceled','outcome_unknown','requeued') THEN 1 ELSE 0 END) <> 1)
+       LIMIT 1`,
+    )
+    .get();
+  if (invalidAttemptHistory) throw new Error(`${LABEL}: stored attempt history is inconsistent`);
   const invalidIncident = db
     .query<{ incident_id: string }, []>(
       `SELECT i.incident_id FROM durable_job_incidents i JOIN durable_jobs j ON j.job_id = i.job_id
-       WHERE j.state <> 'outcome_unknown' OR j.incident_id <> i.incident_id
+       WHERE typeof(i.version) <> 'integer' OR i.version < 1 OR i.version > ${MAX_SAFE_SQLITE_INTEGER}
+          OR typeof(i.detected_at) <> 'integer' OR i.detected_at < j.created_at OR i.detected_at > ${MAX_SAFE_SQLITE_INTEGER}
+          OR i.detected_at > j.updated_at OR j.state <> 'outcome_unknown' OR j.incident_id <> i.incident_id
           OR j.incident_version <> i.version OR j.incident_reason_code <> i.reason_code
           OR i.detected_at < j.created_at
        LIMIT 1`,
@@ -290,12 +455,39 @@ function validateRows(db: Database): void {
   const invalidReconciliation = db
     .query<{ incident_id: string }, []>(
       `SELECT incident_id FROM durable_job_reconciliations
-       WHERE incident_version < 1 OR reconciled_at < 0
+       WHERE typeof(incident_version) <> 'integer' OR incident_version < 1 OR incident_version > ${MAX_SAFE_SQLITE_INTEGER}
+          OR typeof(reconciled_at) <> 'integer' OR reconciled_at < 0 OR reconciled_at > ${MAX_SAFE_SQLITE_INTEGER}
           OR length(evidence_sha256) <> 64 OR evidence_sha256 GLOB '*[^0-9a-f]*'
        LIMIT 1`,
     )
     .get();
   if (invalidReconciliation) throw new Error(`${LABEL}: stored reconciliation is inconsistent`);
+  for (const attempt of db
+    .query<{ job_id: string; lease_token: string; worker_id: string }, []>(
+      "SELECT job_id, lease_token, worker_id FROM durable_job_attempts",
+    )
+    .all()) {
+    safeId(attempt.job_id, "stored attempt job ID");
+    safeId(attempt.lease_token, "stored attempt lease token");
+    safeText(attempt.worker_id, "stored attempt worker ID", 128);
+  }
+  for (const incident of db
+    .query<{ incident_id: string; job_id: string; reason_code: string }, []>(
+      "SELECT incident_id, job_id, reason_code FROM durable_job_incidents",
+    )
+    .all()) {
+    safeId(incident.incident_id, "stored incident ID");
+    safeId(incident.job_id, "stored incident job ID");
+    allowedReason(incident.reason_code, "stored incident reason", OUTCOME_REASON_CODES);
+  }
+  for (const reconciliation of db
+    .query<{ incident_id: string; job_id: string }, []>(
+      "SELECT incident_id, job_id FROM durable_job_reconciliations",
+    )
+    .all()) {
+    safeId(reconciliation.incident_id, "stored reconciliation incident ID");
+    safeId(reconciliation.job_id, "stored reconciliation job ID");
+  }
 }
 
 function summary(row: Row): DurableJobSummary {
@@ -328,9 +520,48 @@ function record(row: Row): DurableJobRecord {
   };
 }
 
+function positiveOption(value: number | undefined, fallback: number, label: string): number {
+  const selected = value ?? fallback;
+  if (!Number.isSafeInteger(selected) || selected < 1) {
+    throw new Error(`${LABEL}: ${label} must be a positive safe integer`);
+  }
+  return selected;
+}
+
 export function createSqliteDurableJobStore(
   options: SqliteDurableJobStoreOptions,
 ): DurableJobStore {
+  const maxTotalRecords = positiveOption(
+    options.maxTotalRecords,
+    DEFAULT_MAX_TOTAL_RECORDS,
+    "maxTotalRecords",
+  );
+  const maxQueuedRecords = positiveOption(
+    options.maxQueuedRecords,
+    DEFAULT_MAX_QUEUED_RECORDS,
+    "maxQueuedRecords",
+  );
+  if (maxQueuedRecords > maxTotalRecords) {
+    throw new Error(`${LABEL}: maxQueuedRecords cannot exceed maxTotalRecords`);
+  }
+  const maxPrivateBytes = positiveOption(
+    options.maxPrivateBytes,
+    DEFAULT_MAX_PRIVATE_BYTES,
+    "maxPrivateBytes",
+  );
+  const terminalRetentionMs = positiveOption(
+    options.terminalRetentionMs,
+    DEFAULT_TERMINAL_RETENTION_MS,
+    "terminalRetentionMs",
+  );
+  const auditRetentionMs = positiveOption(
+    options.auditRetentionMs,
+    DEFAULT_AUDIT_RETENTION_MS,
+    "auditRetentionMs",
+  );
+  if (auditRetentionMs < MIN_AUDIT_RETENTION_MS) {
+    throw new Error(`${LABEL}: auditRetentionMs must be at least ${MIN_AUDIT_RETENTION_MS}`);
+  }
   const database = openHardenedSqlite({
     path: options.dbPath,
     label: LABEL,
@@ -371,40 +602,114 @@ export function createSqliteDurableJobStore(
     "SELECT * FROM durable_jobs WHERE idempotency_key_hash = ?",
   );
 
-  function activeRow(jobId: string, token: string, state?: "leased" | "running"): Row {
+  function activeRow(jobId: string, token: string, at: number, state?: "leased" | "running"): Row {
     const row = select.get(safeId(jobId, "job ID"));
+    const safeToken = safeId(token, "lease token");
     if (
       !row ||
       (state !== undefined && row.state !== state) ||
       !["leased", "running"].includes(row.state) ||
-      row.lease_token !== safeId(token, "lease token") ||
+      row.lease_token !== safeToken ||
       row.lease_expires_at === null ||
-      row.lease_expires_at <= now()
+      row.lease_expires_at <= at
     ) {
       throw new Error(`${LABEL}: lease is no longer active`);
     }
     return row;
   }
 
-  function unknown(dbRow: Row, at: number, reason: string, incidentId = mintIncident()): Row {
+  function assertMutableVersion(row: Row): void {
+    if (row.version >= MAX_SAFE_SQLITE_INTEGER) {
+      throw new Error(`${LABEL}: job version exhausted the safe integer range`);
+    }
+  }
+
+  function quarantine(
+    dbRow: Row,
+    at: number,
+    reason: string,
+    expired: boolean,
+    incidentId = mintIncident(),
+  ): Row {
+    assertMutableVersion(dbRow);
+    const reasonCode = allowedReason(reason, "reasonCode", OUTCOME_REASON_CODES);
+    const expiryPredicate = expired ? "lease_expires_at <= ?" : "lease_expires_at > ?";
     const change = db
       .query(
         `UPDATE durable_jobs SET state = 'outcome_unknown', version = version + 1, updated_at = ?,
           lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
           incident_id = ?, incident_version = 1, incident_reason_code = ?, error_code = ?
-         WHERE job_id = ? AND state IN ('leased','running')`,
+         WHERE job_id = ? AND state = ? AND lease_token = ? AND ${expiryPredicate}`,
       )
-      .run(at, incidentId, reason, reason, dbRow.job_id);
+      .run(
+        at,
+        incidentId,
+        reasonCode,
+        reasonCode,
+        dbRow.job_id,
+        dbRow.state,
+        dbRow.lease_token,
+        at,
+      );
     if (change.changes !== 1) throw new Error(`${LABEL}: lease is no longer active`);
     db.query(
       `INSERT INTO durable_job_incidents (incident_id, job_id, version, reason_code, detected_at)
        VALUES (?, ?, 1, ?, ?)`,
-    ).run(incidentId, dbRow.job_id, reason, at);
+    ).run(incidentId, dbRow.job_id, reasonCode, at);
     db.query(
       `UPDATE durable_job_attempts SET state = 'outcome_unknown', settled_at = ?
-       WHERE job_id = ? AND attempt = ?`,
-    ).run(at, dbRow.job_id, dbRow.attempt);
+       WHERE job_id = ? AND attempt = ? AND lease_token = ? AND state = ?`,
+    ).run(at, dbRow.job_id, dbRow.attempt, dbRow.lease_token, dbRow.state);
     return select.get(dbRow.job_id)!;
+  }
+
+  function recoverExpired(at: number): { requeued: number; quarantined: number } {
+    const expired = db
+      .query<Row, [number]>(
+        `SELECT * FROM durable_jobs
+         WHERE state IN ('leased','running') AND lease_expires_at <= ?
+         ORDER BY lease_expires_at ASC, job_id ASC LIMIT ${MAX_RECOVERY_PER_TRANSITION}`,
+      )
+      .all(at);
+    let requeued = 0;
+    let quarantined = 0;
+    for (const row of expired) {
+      assertMutableVersion(row);
+      if (row.state === "running") {
+        quarantine(row, at, "lease-expired", true);
+        quarantined++;
+        continue;
+      }
+      const nextState = row.cancel_requested === 1 ? "canceled" : "queued";
+      const change = db
+        .query(
+          `UPDATE durable_jobs SET state = ?, version = version + 1, available_at = ?, completed_at = ?, updated_at = ?,
+            lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
+           WHERE job_id = ? AND state = 'leased' AND lease_token = ? AND lease_expires_at <= ?`,
+        )
+        .run(
+          nextState,
+          at,
+          nextState === "canceled" ? at : null,
+          at,
+          row.job_id,
+          row.lease_token,
+          at,
+        );
+      if (change.changes !== 1) continue;
+      db.query(
+        `UPDATE durable_job_attempts SET state = ?, settled_at = ?
+         WHERE job_id = ? AND attempt = ? AND lease_token = ? AND state = 'leased'`,
+      ).run(
+        nextState === "canceled" ? "canceled" : "requeued",
+        at,
+        row.job_id,
+        row.attempt,
+        row.lease_token,
+      );
+      if (nextState === "queued") requeued++;
+    }
+    return { requeued, quarantined };
   }
 
   const submitTx = db.transaction(
@@ -416,9 +721,8 @@ export function createSqliteDurableJobStore(
     }) => {
       const key = safeText(input.idempotencyKey, "idempotency key", 256);
       const storedPayload = payloadJson(input.payload);
-      const bindingHash = sha256(
-        boundedJson({ binding: input.binding, payload: input.payload }, "binding"),
-      );
+      const storedBinding = boundedJson(input.binding, "binding");
+      const bindingHash = sha256(`${storedBinding}\n${storedPayload}`);
       const keyHash = sha256(key);
       const existing = selectByKey.get(keyHash);
       if (existing) {
@@ -426,15 +730,43 @@ export function createSqliteDurableJobStore(
           throw new Error(`${LABEL}: idempotency binding conflicts`);
         return { status: "joined" as const, job: summary(existing) };
       }
+      const privateBytes = safeAdd(
+        Buffer.byteLength(storedBinding, "utf8"),
+        Buffer.byteLength(storedPayload, "utf8"),
+        "private byte accounting",
+      );
+      const counts = db
+        .query<{ total: number; queued: number; private_bytes: number }, []>(
+          `SELECT COUNT(*) AS total,
+             COALESCE(SUM(CASE WHEN state = 'queued' THEN 1 ELSE 0 END), 0) AS queued,
+             COALESCE(SUM(private_bytes), 0) AS private_bytes
+           FROM durable_jobs`,
+        )
+        .get();
+      if (!counts || !Number.isSafeInteger(counts.total) || counts.total >= maxTotalRecords) {
+        throw new Error(`${LABEL}: total record capacity exhausted; prune terminal jobs`);
+      }
+      if (!Number.isSafeInteger(counts.queued) || counts.queued >= maxQueuedRecords) {
+        throw new Error(
+          `${LABEL}: queued record capacity exhausted; process or cancel queued jobs`,
+        );
+      }
+      if (
+        !Number.isSafeInteger(counts.private_bytes) ||
+        counts.private_bytes < 0 ||
+        privateBytes > maxPrivateBytes - counts.private_bytes
+      ) {
+        throw new Error(`${LABEL}: private byte capacity exhausted; prune terminal jobs`);
+      }
       const at = now();
       const availableAt =
         input.availableAt === undefined ? at : safeTime(input.availableAt, "availableAt");
       const jobId = mintJobId();
       db.query(
         `INSERT INTO durable_jobs (
-        job_id,idempotency_key_hash,binding_hash,payload_json,state,attempt,version,available_at,created_at,updated_at
-      ) VALUES (?,?,?,?, 'queued',0,1,?,?,?)`,
-      ).run(jobId, keyHash, bindingHash, storedPayload, availableAt, at, at);
+        job_id,idempotency_key_hash,binding_hash,payload_json,private_bytes,state,attempt,version,available_at,created_at,updated_at
+      ) VALUES (?,?,?,?,?, 'queued',0,1,?,?,?)`,
+      ).run(jobId, keyHash, bindingHash, storedPayload, privateBytes, availableAt, at, at);
       return { status: "created" as const, job: summary(select.get(jobId)!) };
     },
   );
@@ -446,6 +778,7 @@ export function createSqliteDurableJobStore(
       if (leaseMs < 1 || leaseMs > MAX_LEASE_MS)
         throw new Error(`${LABEL}: leaseMs must be from 1 to ${MAX_LEASE_MS}`);
       const at = now();
+      recoverExpired(at);
       const candidate = db
         .query<Row, [number]>(
           `SELECT * FROM durable_jobs WHERE state = 'queued' AND available_at <= ?
@@ -453,13 +786,20 @@ export function createSqliteDurableJobStore(
         )
         .get(at);
       if (!candidate) return null;
+      if (
+        candidate.attempt >= MAX_SAFE_SQLITE_INTEGER ||
+        candidate.version >= MAX_SAFE_SQLITE_INTEGER
+      ) {
+        throw new Error(`${LABEL}: job counters exhausted the safe integer range`);
+      }
       const token = mintToken();
-      const expiresAt = at + leaseMs;
+      const expiresAt = safeAdd(at, leaseMs, "lease expiry");
       const update = db
         .query(
           `UPDATE durable_jobs SET state = 'leased', attempt = attempt + 1, version = version + 1,
           lease_owner = ?, lease_token = ?, lease_expires_at = ?, updated_at = ?
-         WHERE job_id = ? AND state = 'queued' AND available_at <= ?`,
+         WHERE job_id = ? AND state = 'queued' AND available_at <= ?
+           AND attempt < ${MAX_SAFE_SQLITE_INTEGER} AND version < ${MAX_SAFE_SQLITE_INTEGER}`,
         )
         .run(workerId, token, expiresAt, at, candidate.job_id, at);
       if (update.changes !== 1) return null;
@@ -468,7 +808,7 @@ export function createSqliteDurableJobStore(
         `INSERT INTO durable_job_attempts (job_id,attempt,lease_token,worker_id,claimed_at,state)
        VALUES (?,?,?,?,?,'leased')`,
       ).run(leased.job_id, leased.attempt, token, workerId, at);
-      return { job: summary(leased), token, expiresAt };
+      return { job: summary(leased), payload: parsePayload(leased.payload_json), token, expiresAt };
     },
   );
 
@@ -485,30 +825,21 @@ export function createSqliteDurableJobStore(
       assertOpen();
       return db
         .transaction(() => {
-          const row = activeRow(input.jobId, input.token, "leased");
           const at = now();
-          if (row.cancel_requested) {
-            db.query(
-              `UPDATE durable_jobs SET state = 'canceled', version = version + 1, completed_at = ?, updated_at = ?,
-              lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL WHERE job_id = ?`,
-            ).run(at, at, row.job_id);
-            db.query(
-              "UPDATE durable_job_attempts SET state = 'canceled', settled_at = ? WHERE job_id = ? AND attempt = ?",
-            ).run(at, row.job_id, row.attempt);
-            return summary(select.get(row.job_id)!);
-          }
+          const row = activeRow(input.jobId, input.token, at, "leased");
+          assertMutableVersion(row);
           if (
             db
               .query(
-                "UPDATE durable_jobs SET state = 'running', version = version + 1, started_at = ?, updated_at = ? WHERE job_id = ? AND state = 'leased' AND lease_token = ?",
+                "UPDATE durable_jobs SET state = 'running', version = version + 1, started_at = ?, updated_at = ? WHERE job_id = ? AND state = 'leased' AND lease_token = ? AND lease_expires_at > ? AND cancel_requested = 0",
               )
-              .run(at, at, row.job_id, input.token).changes !== 1
+              .run(at, at, row.job_id, input.token, at).changes !== 1
           ) {
             throw new Error(`${LABEL}: lease is no longer active`);
           }
           db.query(
-            "UPDATE durable_job_attempts SET state = 'running', started_at = ? WHERE job_id = ? AND attempt = ?",
-          ).run(at, row.job_id, row.attempt);
+            "UPDATE durable_job_attempts SET state = 'running', started_at = ? WHERE job_id = ? AND attempt = ? AND lease_token = ? AND state = 'leased'",
+          ).run(at, row.job_id, row.attempt, input.token);
           return summary(select.get(row.job_id)!);
         })
         .immediate();
@@ -517,16 +848,17 @@ export function createSqliteDurableJobStore(
       assertOpen();
       return db
         .transaction(() => {
-          const row = activeRow(input.jobId, input.token);
+          const at = now();
+          const row = activeRow(input.jobId, input.token, at);
+          assertMutableVersion(row);
           const leaseMs = safeTime(input.leaseMs, "leaseMs");
           if (leaseMs < 1 || leaseMs > MAX_LEASE_MS)
             throw new Error(`${LABEL}: leaseMs must be from 1 to ${MAX_LEASE_MS}`);
-          const at = now();
-          const expiresAt = at + leaseMs;
+          const expiresAt = safeAdd(at, leaseMs, "lease expiry");
           if (
             db
               .query(
-                "UPDATE durable_jobs SET lease_expires_at = ?, version = version + 1, updated_at = ? WHERE job_id = ? AND lease_token = ? AND lease_expires_at > ?",
+                "UPDATE durable_jobs SET lease_expires_at = ?, version = version + 1, updated_at = ? WHERE job_id = ? AND state IN ('leased','running') AND lease_token = ? AND lease_expires_at > ?",
               )
               .run(expiresAt, at, row.job_id, input.token, at).changes !== 1
           ) {
@@ -540,9 +872,10 @@ export function createSqliteDurableJobStore(
       assertOpen();
       return db
         .transaction(() => {
-          const row = activeRow(input.jobId, input.token, "leased");
           const at = now();
-          const errorCode = safeText(input.errorCode, "errorCode", 64);
+          const row = activeRow(input.jobId, input.token, at, "leased");
+          assertMutableVersion(row);
+          const errorCode = safeCode(input.errorCode, "errorCode");
           const availableAt =
             input.availableAt === undefined ? at : safeTime(input.availableAt, "availableAt");
           if (
@@ -550,15 +883,41 @@ export function createSqliteDurableJobStore(
               .query(
                 `UPDATE durable_jobs SET state = 'queued', version = version + 1, available_at = ?, updated_at = ?, error_code = ?,
                   lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
-                 WHERE job_id = ? AND state = 'leased' AND lease_token = ?`,
+                 WHERE job_id = ? AND state = 'leased' AND lease_token = ? AND lease_expires_at > ?`,
               )
-              .run(availableAt, at, errorCode, row.job_id, input.token).changes !== 1
+              .run(availableAt, at, errorCode, row.job_id, input.token, at).changes !== 1
           ) {
             throw new Error(`${LABEL}: lease is no longer active`);
           }
           db.query(
-            "UPDATE durable_job_attempts SET state = 'requeued', settled_at = ? WHERE job_id = ? AND attempt = ?",
-          ).run(at, row.job_id, row.attempt);
+            "UPDATE durable_job_attempts SET state = 'requeued', settled_at = ? WHERE job_id = ? AND attempt = ? AND lease_token = ? AND state = 'leased'",
+          ).run(at, row.job_id, row.attempt, input.token);
+          return summary(select.get(row.job_id)!);
+        })
+        .immediate();
+    },
+    rejectUnstarted(input) {
+      assertOpen();
+      return db
+        .transaction(() => {
+          const at = now();
+          const row = activeRow(input.jobId, input.token, at, "leased");
+          assertMutableVersion(row);
+          const errorCode = safeCode(input.errorCode, "errorCode");
+          if (
+            db
+              .query(
+                `UPDATE durable_jobs SET state = 'failed', version = version + 1, completed_at = ?, updated_at = ?, error_code = ?,
+                  lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
+                 WHERE job_id = ? AND state = 'leased' AND lease_token = ? AND lease_expires_at > ?`,
+              )
+              .run(at, at, errorCode, row.job_id, input.token, at).changes !== 1
+          ) {
+            throw new Error(`${LABEL}: lease is no longer active`);
+          }
+          db.query(
+            "UPDATE durable_job_attempts SET state = 'failed', settled_at = ? WHERE job_id = ? AND attempt = ? AND lease_token = ? AND state = 'leased'",
+          ).run(at, row.job_id, row.attempt, input.token);
           return summary(select.get(row.job_id)!);
         })
         .immediate();
@@ -567,22 +926,24 @@ export function createSqliteDurableJobStore(
       assertOpen();
       return db
         .transaction(() => {
-          const row = activeRow(input.jobId, input.token, "running");
           const at = now();
-          if (row.cancel_requested) return summary(unknown(row, at, "cancel-completion-race"));
+          const row = activeRow(input.jobId, input.token, at, "running");
+          assertMutableVersion(row);
+          if (row.cancel_requested)
+            return summary(quarantine(row, at, "cancel-completion-race", false));
           const result = boundedJson(input.result, "result");
           if (
             db
               .query(
-                `UPDATE durable_jobs SET state = 'completed', version = version + 1, completed_at = ?, updated_at = ?, result_json = ?, lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL WHERE job_id = ? AND state = 'running' AND lease_token = ?`,
+                `UPDATE durable_jobs SET state = 'completed', version = version + 1, completed_at = ?, updated_at = ?, result_json = ?, lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL WHERE job_id = ? AND state = 'running' AND lease_token = ? AND lease_expires_at > ?`,
               )
-              .run(at, at, result, row.job_id, input.token).changes !== 1
+              .run(at, at, result, row.job_id, input.token, at).changes !== 1
           ) {
             throw new Error(`${LABEL}: lease is no longer active`);
           }
           db.query(
-            "UPDATE durable_job_attempts SET state = 'completed', settled_at = ? WHERE job_id = ? AND attempt = ?",
-          ).run(at, row.job_id, row.attempt);
+            "UPDATE durable_job_attempts SET state = 'completed', settled_at = ? WHERE job_id = ? AND attempt = ? AND lease_token = ? AND state = 'running'",
+          ).run(at, row.job_id, row.attempt, input.token);
           return summary(select.get(row.job_id)!);
         })
         .immediate();
@@ -591,17 +952,19 @@ export function createSqliteDurableJobStore(
       assertOpen();
       return db
         .transaction(() => {
-          const row = activeRow(input.jobId, input.token, "running");
           const at = now();
-          if (row.cancel_requested) return summary(unknown(row, at, "cancel-failure-race"));
-          const errorCode = safeText(input.errorCode, "errorCode", 64);
+          const row = activeRow(input.jobId, input.token, at, "running");
+          assertMutableVersion(row);
+          if (row.cancel_requested)
+            return summary(quarantine(row, at, "cancel-failure-race", false));
+          const errorCode = safeCode(input.errorCode, "errorCode");
           const retryAt =
             input.retryAt === undefined ? undefined : safeTime(input.retryAt, "retryAt");
           const nextState = retryAt === undefined ? "failed" : "queued";
           if (
             db
               .query(
-                `UPDATE durable_jobs SET state = ?, version = version + 1, available_at = ?, completed_at = ?, updated_at = ?, error_code = ?, lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL WHERE job_id = ? AND state = 'running' AND lease_token = ?`,
+                `UPDATE durable_jobs SET state = ?, version = version + 1, available_at = ?, started_at = NULL, completed_at = ?, updated_at = ?, error_code = ?, lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL WHERE job_id = ? AND state = 'running' AND lease_token = ? AND lease_expires_at > ?`,
               )
               .run(
                 nextState,
@@ -611,13 +974,20 @@ export function createSqliteDurableJobStore(
                 errorCode,
                 row.job_id,
                 input.token,
+                at,
               ).changes !== 1
           ) {
             throw new Error(`${LABEL}: lease is no longer active`);
           }
           db.query(
-            "UPDATE durable_job_attempts SET state = ?, settled_at = ? WHERE job_id = ? AND attempt = ?",
-          ).run(retryAt === undefined ? "failed" : "requeued", at, row.job_id, row.attempt);
+            "UPDATE durable_job_attempts SET state = ?, settled_at = ? WHERE job_id = ? AND attempt = ? AND lease_token = ? AND state = 'running'",
+          ).run(
+            retryAt === undefined ? "failed" : "requeued",
+            at,
+            row.job_id,
+            row.attempt,
+            input.token,
+          );
           return summary(select.get(row.job_id)!);
         })
         .immediate();
@@ -626,8 +996,9 @@ export function createSqliteDurableJobStore(
       assertOpen();
       return db
         .transaction(() => {
-          const row = activeRow(input.jobId, input.token);
-          return summary(unknown(row, now(), safeText(input.reasonCode, "reasonCode", 64)));
+          const at = now();
+          const row = activeRow(input.jobId, input.token, at);
+          return summary(quarantine(row, at, input.reasonCode, false));
         })
         .immediate();
     },
@@ -644,59 +1015,53 @@ export function createSqliteDurableJobStore(
             row.version !== input.expectedVersion
           )
             return { status: "version_conflict" as const };
-          const at = now();
           const reason =
-            input.reasonCode === undefined ? null : safeText(input.reasonCode, "reasonCode", 64);
+            input.reasonCode === undefined
+              ? "operator-requested"
+              : allowedReason(input.reasonCode, "reasonCode", CANCEL_REASON_CODES);
           if (row.state === "queued" || row.state === "leased") {
-            db.query(
-              `UPDATE durable_jobs SET state = 'canceled', version = version + 1, completed_at = ?, updated_at = ?, cancel_requested = 1, cancel_reason = ?, lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL WHERE job_id = ?`,
-            ).run(at, at, reason, jobId);
+            const at = now();
+            assertMutableVersion(row);
+            if (
+              db
+                .query(
+                  `UPDATE durable_jobs SET state = 'canceled', version = version + 1, completed_at = ?, updated_at = ?, cancel_requested = 1, cancel_reason = ?, lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL WHERE job_id = ? AND state = ? AND version = ?`,
+                )
+                .run(at, at, reason, jobId, row.state, input.expectedVersion).changes !== 1
+            ) {
+              return { status: "version_conflict" as const };
+            }
             if (row.state === "leased")
               db.query(
-                "UPDATE durable_job_attempts SET state = 'canceled', settled_at = ? WHERE job_id = ? AND attempt = ?",
-              ).run(at, jobId, row.attempt);
+                "UPDATE durable_job_attempts SET state = 'canceled', settled_at = ? WHERE job_id = ? AND attempt = ? AND lease_token = ? AND state = 'leased'",
+              ).run(at, jobId, row.attempt, row.lease_token);
             return { status: "canceled" as const, job: summary(select.get(jobId)!) };
           }
           if (row.state === "running") {
-            db.query(
-              "UPDATE durable_jobs SET cancel_requested = 1, cancel_reason = ?, version = version + 1, updated_at = ? WHERE job_id = ? AND state = 'running'",
-            ).run(reason, at, jobId);
+            const at = now();
+            assertMutableVersion(row);
+            if (
+              db
+                .query(
+                  "UPDATE durable_jobs SET cancel_requested = 1, cancel_reason = ?, version = version + 1, updated_at = ? WHERE job_id = ? AND state = 'running' AND version = ?",
+                )
+                .run(reason, at, jobId, input.expectedVersion).changes !== 1
+            ) {
+              return { status: "version_conflict" as const };
+            }
             return { status: "cancellation_requested" as const, job: summary(select.get(jobId)!) };
           }
           return { status: "unchanged" as const, job: summary(row) };
         })
         .immediate();
     },
+    recoverExpiredLeases() {
+      assertOpen();
+      return db.transaction(() => recoverExpired(now())).immediate();
+    },
     recoverInterrupted() {
       assertOpen();
-      return db
-        .transaction(() => {
-          const at = now();
-          const interrupted = db
-            .query<Row, []>(
-              "SELECT * FROM durable_jobs WHERE state IN ('leased','running') ORDER BY job_id",
-            )
-            .all();
-          let requeued = 0;
-          let quarantined = 0;
-          for (const row of interrupted) {
-            if (row.state === "leased") {
-              db.query(
-                `UPDATE durable_jobs SET state = CASE WHEN cancel_requested = 1 THEN 'canceled' ELSE 'queued' END, version = version + 1, available_at = ?, completed_at = CASE WHEN cancel_requested = 1 THEN ? ELSE NULL END, updated_at = ?, lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL WHERE job_id = ?`,
-              ).run(at, at, at, row.job_id);
-              db.query(
-                "UPDATE durable_job_attempts SET state = CASE WHEN ? = 1 THEN 'canceled' ELSE 'requeued' END, settled_at = ? WHERE job_id = ? AND attempt = ?",
-              ).run(row.cancel_requested, at, row.job_id, row.attempt);
-              if (row.cancel_requested) continue;
-              requeued++;
-            } else {
-              unknown(row, at, "process-restarted");
-              quarantined++;
-            }
-          }
-          return { requeued, quarantined };
-        })
-        .immediate();
+      return db.transaction(() => recoverExpired(now())).immediate();
     },
     reconcile(input) {
       assertOpen();
@@ -717,27 +1082,28 @@ export function createSqliteDurableJobStore(
           )
             return { reconciled: false };
           const at = now();
+          assertMutableVersion(row);
           const state =
             input.disposition === "retry"
               ? "queued"
               : input.disposition === "cancel"
                 ? "canceled"
                 : "completed";
-          db.query(
-            `UPDATE durable_jobs SET state = ?, version = version + 1, available_at = ?, completed_at = ?, updated_at = ?, incident_id = NULL, incident_version = NULL, incident_reason_code = NULL, error_code = NULL, cancel_requested = CASE WHEN ? = 'cancel' THEN 1 ELSE 0 END WHERE job_id = ? AND state = 'outcome_unknown' AND version = ?`,
-          ).run(
-            state,
-            input.disposition === "retry" ? at : row.available_at,
-            input.disposition === "retry" ? null : at,
-            at,
-            input.disposition,
-            jobId,
-            input.expectedVersion,
-          );
-          const changes = db
-            .query<{ changes: number }, []>("SELECT changes() AS changes")
-            .get()?.changes;
-          if (changes !== 1) return { reconciled: false };
+          const change = db
+            .query(
+              `UPDATE durable_jobs SET state = ?, version = version + 1, available_at = ?, started_at = NULL, completed_at = ?, updated_at = ?, incident_id = NULL, incident_version = NULL, incident_reason_code = NULL, error_code = NULL, cancel_requested = CASE WHEN ? = 'cancel' THEN 1 ELSE 0 END, cancel_reason = CASE WHEN ? = 'cancel' THEN 'operator-requested' ELSE NULL END WHERE job_id = ? AND state = 'outcome_unknown' AND version = ?`,
+            )
+            .run(
+              state,
+              input.disposition === "retry" ? at : row.available_at,
+              input.disposition === "retry" ? null : at,
+              at,
+              input.disposition,
+              input.disposition,
+              jobId,
+              input.expectedVersion,
+            );
+          if (change.changes !== 1) return { reconciled: false };
           db.query(
             `INSERT INTO durable_job_reconciliations (incident_id,job_id,incident_version,disposition,evidence_sha256,reconciled_at) VALUES (?,?,?,?,?,?)`,
           ).run(
@@ -757,6 +1123,11 @@ export function createSqliteDurableJobStore(
       assertOpen();
       const row = select.get(safeId(jobId, "job ID"));
       return row ? record(row) : null;
+    },
+    getSummary(jobId) {
+      assertOpen();
+      const row = select.get(safeId(jobId, "job ID"));
+      return row ? summary(row) : null;
     },
     list(input = {}) {
       assertOpen();
@@ -797,13 +1168,48 @@ export function createSqliteDurableJobStore(
       const limit = input.limit ?? 100;
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_PRUNE)
         throw new Error(`${LABEL}: prune limit must be between 1 and ${MAX_PRUNE}`);
-      const before = input.before === undefined ? now() : safeTime(input.before, "before");
+      const at = now();
+      const before =
+        input.before === undefined
+          ? Math.max(0, at - terminalRetentionMs)
+          : safeTime(input.before, "before");
+      return db
+        .transaction(() => {
+          const jobs = db
+            .query<{ job_id: string }, [number, number]>(
+              `SELECT job_id FROM durable_jobs WHERE state IN ('completed','failed','canceled')
+               AND updated_at < ? ORDER BY updated_at ASC, job_id ASC LIMIT ?`,
+            )
+            .all(before, limit);
+          for (const job of jobs) {
+            db.query("DELETE FROM durable_jobs WHERE job_id = ?").run(job.job_id);
+          }
+          return jobs.length;
+        })
+        .immediate();
+    },
+    pruneAudit(input = {}) {
+      assertOpen();
+      const limit = input.limit ?? 100;
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_PRUNE) {
+        throw new Error(`${LABEL}: audit prune limit must be between 1 and ${MAX_PRUNE}`);
+      }
+      const at = now();
+      const latestAllowedCutoff = Math.max(0, at - auditRetentionMs);
+      const before =
+        input.before === undefined ? latestAllowedCutoff : safeTime(input.before, "audit before");
+      if (before > latestAllowedCutoff) {
+        throw new Error(`${LABEL}: audit retention cutoff is too recent`);
+      }
       return db
         .transaction(
           () =>
             db
               .query(
-                `DELETE FROM durable_jobs WHERE job_id IN (SELECT job_id FROM durable_jobs WHERE state IN ('completed','failed','canceled') AND updated_at < ? ORDER BY updated_at ASC, job_id ASC LIMIT ?)`,
+                `DELETE FROM durable_job_reconciliations WHERE incident_id IN (
+                  SELECT incident_id FROM durable_job_reconciliations
+                  WHERE reconciled_at < ? ORDER BY reconciled_at ASC, incident_id ASC LIMIT ?
+                )`,
               )
               .run(before, limit).changes,
         )
