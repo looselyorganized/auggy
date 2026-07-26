@@ -275,7 +275,11 @@ function boundedJson(value: unknown, _label: string): string {
       append("[", 1);
       for (let index = 0; index < current.length; index++) {
         if (index > 0) append(",", 1);
-        serialize(current[index], depth + 1);
+        const descriptor = Object.getOwnPropertyDescriptor(current, String(index));
+        if (!descriptor || !("value" in descriptor)) {
+          throw new Error(`${LABEL}: private JSON arrays must contain dense data properties`);
+        }
+        serialize(descriptor.value, depth + 1);
       }
       append("]", 1);
       return;
@@ -324,10 +328,21 @@ function payloadJson(payload: DurableJobPayload): string {
   if (
     !candidate ||
     typeof candidate !== "object" ||
-    (candidate as { version?: unknown }).version !== 1 ||
-    !("value" in candidate)
+    Array.isArray(candidate) ||
+    Object.getPrototypeOf(candidate) !== Object.prototype
   ) {
     throw new Error(`${LABEL}: payload must use version 1`);
+  }
+  const version = Object.getOwnPropertyDescriptor(candidate, "version");
+  const value = Object.getOwnPropertyDescriptor(candidate, "value");
+  if (
+    !version?.enumerable ||
+    !("value" in version) ||
+    version.value !== 1 ||
+    !value?.enumerable ||
+    !("value" in value)
+  ) {
+    throw new Error(`${LABEL}: payload must use own enumerable data properties for version 1`);
   }
   return boundedJson(payload, "payload");
 }
@@ -339,6 +354,8 @@ function parsePayload(value: string): DurableJobPayload {
   } catch (error) {
     throw new Error(`${LABEL}: stored payload is invalid`, { cause: error });
   }
+  // JSON.parse creates ordinary own data properties; descriptor-only input
+  // validation is required in payloadJson before serialization, not here.
   if (
     !payload ||
     typeof payload !== "object" ||

@@ -823,6 +823,59 @@ describe("SQLite durable job store", () => {
       expect(store.list()).toEqual([]);
 
       let getterCalls = 0;
+      const versionAccessor: Record<string, unknown> = {};
+      Object.defineProperty(versionAccessor, "version", {
+        enumerable: true,
+        get() {
+          getterCalls++;
+          return 1;
+        },
+      });
+      Object.defineProperty(versionAccessor, "value", {
+        enumerable: true,
+        value: "must-not-read",
+      });
+      expect(() =>
+        store.submit({ ...request("version-accessor"), payload: versionAccessor as never }),
+      ).toThrow("payload must use own enumerable data properties");
+      expect(getterCalls).toBe(0);
+
+      const valueAccessor: Record<string, unknown> = { version: 1 };
+      Object.defineProperty(valueAccessor, "value", {
+        enumerable: true,
+        get() {
+          getterCalls++;
+          return "must-not-read";
+        },
+      });
+      expect(() =>
+        store.submit({ ...request("value-accessor"), payload: valueAccessor as never }),
+      ).toThrow("payload must use own enumerable data properties");
+      expect(getterCalls).toBe(0);
+
+      const arrayAccessor: unknown[] = [];
+      Object.defineProperty(arrayAccessor, "0", {
+        enumerable: true,
+        get() {
+          getterCalls++;
+          return "must-not-read";
+        },
+      });
+      expect(() =>
+        store.submit({
+          ...request("array-accessor"),
+          payload: { version: 1, value: arrayAccessor },
+        }),
+      ).toThrow("private JSON arrays must contain dense data properties");
+      expect(getterCalls).toBe(0);
+
+      expect(() =>
+        store.submit({
+          ...request("sparse-array"),
+          payload: { version: 1, value: new Array(1) },
+        }),
+      ).toThrow("private JSON arrays must contain dense data properties");
+
       const accessor: Record<string, unknown> = {};
       Object.defineProperty(accessor, "private", {
         enumerable: true,
