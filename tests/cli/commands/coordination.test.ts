@@ -44,7 +44,7 @@ function writeAgent(withCoordination = true): string {
           settings: {
             coordination: {
               mode: "postgres",
-              namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+              namespace: "a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
             },
           },
         }

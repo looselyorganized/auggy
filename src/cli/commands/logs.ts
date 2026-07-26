@@ -1,6 +1,7 @@
 import { dirname } from "node:path";
-import { getAgentFromDir } from "../agent-index";
+import { getAgentFromDir, readBoundCloudRecord } from "../agent-index";
 import { readAgentName, resolveConfigPath } from "../resolve-config";
+import { parseAgentIdOnly } from "../yaml-helpers";
 import type { CloudRecord } from "../types";
 
 export interface LogsOptions {
@@ -17,13 +18,14 @@ export async function runLogs(name: string | undefined, opts: LogsOptions = {}):
       `Agent "${displayName}" not found.\n\n  Run from inside an agent project or its parent.`,
     );
   }
-  if (!entry.cloud) {
+  const cloud = readBoundCloudRecord(dirname(configPath), parseAgentIdOnly(configPath));
+  if (!cloud) {
     throw new Error(
       `Agent "${displayName}" is not deployed yet.\n\n  Run \`auggy deploy\` from the agent project first, then open Railway to view logs.`,
     );
   }
 
-  const message = formatRailwayLogsMessage(displayName, entry.cloud);
+  const message = formatRailwayLogsMessage(displayName, cloud);
   console.log(message);
   return message;
 }

@@ -237,6 +237,16 @@ describe("tracked test-surface workflow enforcement", () => {
       requireStep(postgres, "Run PostgreSQL coordination integration tests").env
         ?.AUGGY_TEST_POSTGRES_URL,
     ).toBe("postgresql://postgres@localhost:5432/postgres");
+    expect(requireStep(postgres, "Run PostgreSQL coordination integration tests").run).toContain(
+      "test-surface-inventory.ts run-runtime-files",
+    );
+
+    expect(
+      requireStep(requireJob(jobs, "deterministic_tests"), "Run deterministic v1 tests").run,
+    ).toContain("test-surface-inventory.ts run-runtime-files");
+    expect(
+      requireStep(requireJob(jobs, "linux_boundaries"), "Exercise Linux security boundary").run,
+    ).toBe('bun scripts/test-surface-inventory.ts run-runtime-files "$TEST_PATH"');
   });
 
   test("release rehearsal executes the same canonical bounded inventory", () => {

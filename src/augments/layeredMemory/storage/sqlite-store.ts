@@ -6,6 +6,7 @@ import {
   openHardenedSqlite,
   type SqliteSchemaObject,
 } from "../../../lib/sqlite";
+import { canonicalMemoryNamespace } from "../../memory-namespace";
 import type {
   MemoryStore,
   RetentionClass,
@@ -19,6 +20,7 @@ import type { TrustLevel } from "../../../types";
 const SCHEMA_STATEMENTS = [
   `CREATE TABLE IF NOT EXISTS entries (
     id              TEXT PRIMARY KEY,
+    namespace_key   TEXT,
     label           TEXT NOT NULL,
     content         TEXT NOT NULL,
     peer_id         TEXT,
@@ -39,6 +41,7 @@ const SCHEMA_STATEMENTS = [
     origin          TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_entries_peer ON entries(peer_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_entries_namespace_peer ON entries(namespace_key, peer_id)`,
   `CREATE INDEX IF NOT EXISTS idx_entries_label ON entries(label)`,
   `CREATE INDEX IF NOT EXISTS idx_entries_created ON entries(created_at DESC)`,
   `CREATE INDEX IF NOT EXISTS idx_entries_expires ON entries(expires_at) WHERE expires_at IS NOT NULL`,
@@ -51,10 +54,17 @@ const SCHEMA_STATEMENTS = [
     detail    TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_events_entry ON event_log(entry_id)`,
+  `CREATE TABLE IF NOT EXISTS peer_tombstones (
+    namespace_key TEXT NOT NULL,
+    peer_id       TEXT NOT NULL,
+    reason        TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    PRIMARY KEY (namespace_key, peer_id)
+  )`,
 ];
 
-const LAYERED_MEMORY_APPLICATION_ID = 0x4c4d454d; // "LMEM"
-const LAYERED_MEMORY_SCHEMA_VERSION = 1;
+export const LAYERED_MEMORY_APPLICATION_ID = 0x4c4d454d; // "LMEM"
+export const LAYERED_MEMORY_SCHEMA_VERSION = 3;
 const EXPECTED_OBJECT_SQL = new Map(
   SCHEMA_STATEMENTS.slice(1).map((sql) => {
     const match = sql.match(/(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([^\s(]+)/i);
@@ -64,6 +74,7 @@ const EXPECTED_OBJECT_SQL = new Map(
 );
 const ENTRY_COLUMN_NAMES = new Set([
   "id",
+  "namespace_key",
   "label",
   "content",
   "peer_id",
@@ -84,6 +95,7 @@ const ENTRY_COLUMN_NAMES = new Set([
   "origin",
 ]);
 const LEGACY_OPTIONAL_COLUMNS = new Set([
+  "namespace_key",
   "retention_class",
   "is_verbatim",
   "subject",
@@ -106,6 +118,7 @@ const ENTRY_COLUMN_CONTRACT = new Map<
   { type: "TEXT" | "INTEGER" | "REAL"; notnull: number; defaultValue: string | null; pk: number }
 >([
   ["id", { type: "TEXT", notnull: 0, defaultValue: null, pk: 1 }],
+  ["namespace_key", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
   ["label", { type: "TEXT", notnull: 1, defaultValue: null, pk: 0 }],
   ["content", { type: "TEXT", notnull: 1, defaultValue: null, pk: 0 }],
   ["peer_id", { type: "TEXT", notnull: 0, defaultValue: null, pk: 0 }],
@@ -139,6 +152,12 @@ function hasExpectedNonEntryObjects(
     return false;
   }
   if (!objects.some((object) => object.name === "event_log" && object.type === "table")) {
+    return false;
+  }
+  if (
+    !legacy &&
+    !objects.some((object) => object.name === "peer_tombstones" && object.type === "table")
+  ) {
     return false;
   }
   return objects.every((object) => {
@@ -186,9 +205,10 @@ function isRecognizedLayeredMemorySchema(
 }
 
 function migrateLayeredMemorySchema(db: Database): void {
-  for (const statement of SCHEMA_STATEMENTS) db.run(statement);
+  db.run(SCHEMA_STATEMENTS[0]!);
   const colNames = new Set(entryColumns(db).map((column) => column.name));
   const additions: Array<{ name: string; ddl: string }> = [
+    { name: "namespace_key", ddl: "ALTER TABLE entries ADD COLUMN namespace_key TEXT" },
     { name: "subject", ddl: "ALTER TABLE entries ADD COLUMN subject TEXT" },
     { name: "predicate", ddl: "ALTER TABLE entries ADD COLUMN predicate TEXT" },
     { name: "object", ddl: "ALTER TABLE entries ADD COLUMN object TEXT" },
@@ -206,6 +226,7 @@ function migrateLayeredMemorySchema(db: Database): void {
   for (const { name, ddl } of additions) {
     if (!colNames.has(name)) db.run(ddl);
   }
+  for (const statement of SCHEMA_STATEMENTS.slice(1)) db.run(statement);
 }
 
 function openLayeredMemoryDatabase(dbPath: string, create = true) {
@@ -225,6 +246,9 @@ function openLayeredMemoryDatabase(dbPath: string, create = true) {
           return isRecognizedLayeredMemorySchema(db, objects, true);
         },
         migrateLegacy: migrateLayeredMemorySchema,
+        migrateOwned(db) {
+          migrateLayeredMemorySchema(db);
+        },
         validate(db, objects) {
           if (!isRecognizedLayeredMemorySchema(db, objects, false)) {
             throw new Error(
@@ -239,23 +263,65 @@ function openLayeredMemoryDatabase(dbPath: string, create = true) {
 
 export function reassignSqliteMemoryPeerId(
   dbPath: string,
+  namespace: string,
   oldPeerId: string,
   newPeerId: string,
 ): number {
+  const owner = canonicalMemoryNamespace(namespace, "layeredMemory store");
+  if (oldPeerId === newPeerId) return 0;
   const database = openLayeredMemoryDatabase(dbPath, false);
   try {
     return database.db
-      .prepare("UPDATE entries SET peer_id = ? WHERE peer_id = ?")
-      .run(newPeerId, oldPeerId).changes;
+      .transaction(() => {
+        database.db
+          .query(
+            "INSERT INTO peer_tombstones (namespace_key, peer_id, reason, created_at) VALUES (?, ?, 'peer-id-migrated', ?) ON CONFLICT(namespace_key, peer_id) DO NOTHING",
+          )
+          .run(owner.key, oldPeerId, Date.now());
+        const destinationTombstone = database.db
+          .query<{ present: number }, [string, string]>(
+            "SELECT 1 AS present FROM peer_tombstones WHERE namespace_key = ? AND peer_id = ?",
+          )
+          .get(owner.key, newPeerId);
+        if (destinationTombstone) {
+          // The recognized identity was revoked before migration finished.
+          // Permanently retire the anonymous source and erase its rows rather
+          // than leaving an accessible orphan that can be migrated later.
+          database.db
+            .prepare("DELETE FROM entries WHERE peer_id = ? AND namespace_key = ?")
+            .run(oldPeerId, owner.key);
+          return 0;
+        }
+        return database.db
+          .prepare("UPDATE entries SET peer_id = ? WHERE peer_id = ? AND namespace_key = ?")
+          .run(newPeerId, oldPeerId, owner.key).changes;
+      })
+      .immediate();
   } finally {
     database.close();
   }
 }
 
-export function deleteSqliteMemoryForPeer(dbPath: string, peerId: string): number {
+export function deleteSqliteMemoryForPeer(
+  dbPath: string,
+  namespace: string,
+  peerId: string,
+): number {
+  const owner = canonicalMemoryNamespace(namespace, "layeredMemory store");
   const database = openLayeredMemoryDatabase(dbPath, false);
   try {
-    return database.db.prepare("DELETE FROM entries WHERE peer_id = ?").run(peerId).changes;
+    return database.db
+      .transaction(() => {
+        database.db
+          .query(
+            "INSERT INTO peer_tombstones (namespace_key, peer_id, reason, created_at) VALUES (?, ?, 'visitor-revoked', ?) ON CONFLICT(namespace_key, peer_id) DO NOTHING",
+          )
+          .run(owner.key, peerId, Date.now());
+        return database.db
+          .prepare("DELETE FROM entries WHERE peer_id = ? AND namespace_key = ?")
+          .run(peerId, owner.key).changes;
+      })
+      .immediate();
   } finally {
     database.close();
   }
@@ -263,6 +329,7 @@ export function deleteSqliteMemoryForPeer(dbPath: string, peerId: string): numbe
 
 interface Row {
   id: string;
+  namespace_key: string | null;
   label: string;
   content: string;
   peer_id: string | null;
@@ -312,30 +379,54 @@ const CLEANUP_BATCH_SIZE = 100;
 export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   const database = openLayeredMemoryDatabase(config.dbPath);
   const db = database.db;
+  const namespace =
+    config.namespace === undefined
+      ? null
+      : canonicalMemoryNamespace(config.namespace, "layeredMemory store");
+  const prefix = namespace?.prefix ?? null;
+  const namespaceKey = namespace?.key ?? null;
 
   const retentionMs = config.retentionDays * 24 * 60 * 60 * 1000;
 
   // Pre-compiled statements live as long as the connection.
   const insertEntryStmt = db.prepare(
-    `INSERT INTO entries (id, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    `INSERT INTO entries (id, namespace_key, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
   );
   const insertEventStmt = db.prepare(
     "INSERT INTO event_log (id, entry_id, action, peer_id, timestamp, detail) VALUES (?, ?, ?, ?, ?, ?)",
   );
-  const cleanupStmt = db.prepare(
-    "DELETE FROM entries WHERE id IN (SELECT id FROM entries WHERE expires_at IS NOT NULL AND expires_at < ? LIMIT ?)",
+  const isPeerTombstonedStmt = db.query<{ present: number }, [string, string]>(
+    "SELECT 1 AS present FROM peer_tombstones WHERE namespace_key = ? AND peer_id = ?",
   );
+  const cleanupStmt = namespaceKey
+    ? db.prepare(
+        `DELETE FROM entries WHERE id IN (
+           SELECT id FROM entries
+           WHERE expires_at IS NOT NULL
+             AND expires_at < ?
+             AND namespace_key = ?
+           LIMIT ?
+         )`,
+      )
+    : db.prepare(
+        "DELETE FROM entries WHERE id IN (SELECT id FROM entries WHERE namespace_key IS NULL AND expires_at IS NOT NULL AND expires_at < ? LIMIT ?)",
+      );
 
   type SqlBinding = string | number | bigint | boolean | null | Uint8Array;
 
   // writeAndLog runs the entry insert and audit insert atomically. If
   // either fails, both roll back — callers either see a successful
   // write that's fully recorded, or an error and zero side effects.
-  const writeAndLog = db.transaction((entryParams: SqlBinding[], eventParams: SqlBinding[]) => {
-    insertEntryStmt.run(...entryParams);
-    insertEventStmt.run(...eventParams);
-  });
+  const writeAndLog = db.transaction(
+    (entryParams: SqlBinding[], eventParams: SqlBinding[], peerId: string | null) => {
+      if (namespaceKey && peerId && isPeerTombstonedStmt.get(namespaceKey, peerId)) {
+        throw new Error("layeredMemory store: peer identity is permanently tombstoned");
+      }
+      insertEntryStmt.run(...entryParams);
+      insertEventStmt.run(...eventParams);
+    },
+  );
 
   async function initialize(): Promise<void> {
     // Schema is now created at construction time. Kept as a no-op for
@@ -355,12 +446,16 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   }
 
   async function write(input: Omit<StoreEntry, "id"> & { id?: string }): Promise<StoreEntry> {
+    if (prefix && !input.label.startsWith(prefix)) {
+      throw new Error(`layeredMemory: label must start with namespace prefix "${prefix}"`);
+    }
     const id = input.id ?? randomUUID();
     const expiresAt = input.expiresAt ?? input.createdAt + retentionMs;
 
     writeAndLog(
       [
         id,
+        namespaceKey,
         input.label,
         input.content,
         input.peerId,
@@ -372,6 +467,7 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
         expiresAt,
       ],
       [randomUUID(), id, "write", input.peerId, Date.now(), null],
+      input.peerId,
     );
 
     // Sampled, bounded cleanup. Outside the transaction so a partial
@@ -379,7 +475,9 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     // the small constant DELETE cost; 49-in-50 writes pay nothing.
     if (Math.random() * CLEANUP_SAMPLE_RATE < 1) {
       db.transaction(() => {
-        const result = cleanupStmt.run(Date.now(), CLEANUP_BATCH_SIZE);
+        const result = namespaceKey
+          ? cleanupStmt.run(Date.now(), namespaceKey, CLEANUP_BATCH_SIZE)
+          : cleanupStmt.run(Date.now(), CLEANUP_BATCH_SIZE);
         if (result.changes > 0) {
           logEvent("(batch)", "expire-sweep", null, { swept: result.changes });
         }
@@ -394,11 +492,28 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     const pattern = `%${escaped}%`;
     const now = Date.now();
 
+    if (peerId && namespaceKey) {
+      const rows = db
+        .prepare<Row, [string, string, string, number, number]>(
+          `SELECT * FROM entries
+           WHERE peer_id = ?
+             AND namespace_key = ?
+             AND content LIKE ? ESCAPE '\\'
+             AND superseded_by IS NULL
+             AND (expires_at IS NULL OR expires_at >= ?)
+           ORDER BY created_at DESC
+           LIMIT ?`,
+        )
+        .all(peerId, namespaceKey, pattern, now, limit);
+      return rows.map(rowToEntry);
+    }
+
     if (peerId) {
       const rows = db
         .prepare<Row, [string, string, number, number]>(
           `SELECT * FROM entries
            WHERE peer_id = ?
+             AND namespace_key IS NULL
              AND content LIKE ? ESCAPE '\\'
              AND superseded_by IS NULL
              AND (expires_at IS NULL OR expires_at >= ?)
@@ -409,10 +524,26 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
       return rows.map(rowToEntry);
     }
 
+    if (namespaceKey) {
+      const rows = db
+        .prepare<Row, [string, string, number, number]>(
+          `SELECT * FROM entries
+           WHERE namespace_key = ?
+             AND content LIKE ? ESCAPE '\\'
+             AND superseded_by IS NULL
+             AND (expires_at IS NULL OR expires_at >= ?)
+           ORDER BY created_at DESC
+           LIMIT ?`,
+        )
+        .all(namespaceKey, pattern, now, limit);
+      return rows.map(rowToEntry);
+    }
+
     const rows = db
       .prepare<Row, [string, number, number]>(
         `SELECT * FROM entries
-         WHERE content LIKE ? ESCAPE '\\'
+         WHERE namespace_key IS NULL
+           AND content LIKE ? ESCAPE '\\'
            AND superseded_by IS NULL
            AND (expires_at IS NULL OR expires_at >= ?)
          ORDER BY created_at DESC
@@ -423,26 +554,49 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   }
 
   async function read(label: string): Promise<StoreEntry | null> {
-    const row = db
-      .prepare<Row, [string]>(
-        "SELECT * FROM entries WHERE label = ? AND superseded_by IS NULL ORDER BY created_at DESC LIMIT 1",
-      )
-      .get(label);
+    if (prefix && !label.startsWith(prefix)) return null;
+    const row = namespaceKey
+      ? db
+          .prepare<Row, [string, string]>(
+            "SELECT * FROM entries WHERE label = ? AND namespace_key = ? AND superseded_by IS NULL ORDER BY created_at DESC LIMIT 1",
+          )
+          .get(label, namespaceKey)
+      : db
+          .prepare<Row, [string]>(
+            "SELECT * FROM entries WHERE label = ? AND namespace_key IS NULL AND superseded_by IS NULL ORDER BY created_at DESC LIMIT 1",
+          )
+          .get(label);
     return row ? rowToEntry(row) : null;
   }
 
   async function list(peerId?: string): Promise<string[]> {
+    if (peerId && namespaceKey) {
+      const rows = db
+        .prepare<{ label: string }, [string, string]>(
+          "SELECT DISTINCT label FROM entries WHERE peer_id = ? AND namespace_key = ? AND superseded_by IS NULL ORDER BY label",
+        )
+        .all(peerId, namespaceKey);
+      return rows.map((r) => r.label);
+    }
     if (peerId) {
       const rows = db
         .prepare<{ label: string }, [string]>(
-          "SELECT DISTINCT label FROM entries WHERE peer_id = ? AND superseded_by IS NULL ORDER BY label",
+          "SELECT DISTINCT label FROM entries WHERE peer_id = ? AND namespace_key IS NULL AND superseded_by IS NULL ORDER BY label",
         )
         .all(peerId);
       return rows.map((r) => r.label);
     }
+    if (namespaceKey) {
+      const rows = db
+        .prepare<{ label: string }, [string]>(
+          "SELECT DISTINCT label FROM entries WHERE namespace_key = ? AND superseded_by IS NULL ORDER BY label",
+        )
+        .all(namespaceKey);
+      return rows.map((r) => r.label);
+    }
     const rows = db
       .prepare<{ label: string }, []>(
-        "SELECT DISTINCT label FROM entries WHERE superseded_by IS NULL ORDER BY label",
+        "SELECT DISTINCT label FROM entries WHERE namespace_key IS NULL AND superseded_by IS NULL ORDER BY label",
       )
       .all();
     return rows.map((r) => r.label);
@@ -450,7 +604,11 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
 
   async function forget(peerId: string): Promise<number> {
     return db.transaction(() => {
-      const result = db.prepare("DELETE FROM entries WHERE peer_id = ?").run(peerId);
+      const result = namespaceKey
+        ? db
+            .prepare("DELETE FROM entries WHERE peer_id = ? AND namespace_key = ?")
+            .run(peerId, namespaceKey)
+        : db.prepare("DELETE FROM entries WHERE peer_id = ? AND namespace_key IS NULL").run(peerId);
       logEvent("(batch)", "forget", peerId, { deleted: result.changes });
       return result.changes;
     })();
@@ -458,15 +616,33 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
 
   async function supersede(entryId: string, newEntryId: string): Promise<void> {
     db.transaction(() => {
-      db.prepare("UPDATE entries SET superseded_by = ? WHERE id = ?").run(newEntryId, entryId);
+      if (namespaceKey) {
+        db.prepare("UPDATE entries SET superseded_by = ? WHERE id = ? AND namespace_key = ?").run(
+          newEntryId,
+          entryId,
+          namespaceKey,
+        );
+      } else {
+        db.prepare(
+          "UPDATE entries SET superseded_by = ? WHERE id = ? AND namespace_key IS NULL",
+        ).run(newEntryId, entryId);
+      }
       logEvent(entryId, "supersede", null, { supersededBy: newEntryId });
     })();
   }
 
   async function cleanup(): Promise<number> {
-    const result = db
-      .prepare("DELETE FROM entries WHERE expires_at IS NOT NULL AND expires_at < ?")
-      .run(Date.now());
+    const result = namespaceKey
+      ? db
+          .prepare(
+            "DELETE FROM entries WHERE expires_at IS NOT NULL AND expires_at < ? AND namespace_key = ?",
+          )
+          .run(Date.now(), namespaceKey)
+      : db
+          .prepare(
+            "DELETE FROM entries WHERE namespace_key IS NULL AND expires_at IS NOT NULL AND expires_at < ?",
+          )
+          .run(Date.now());
     return result.changes;
   }
 
@@ -479,12 +655,11 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   // when absent, this function refuses entirely (the augment factory
   // must always pass a namespace).
   async function writeAutoSavedEntry(args: WriteAutoSavedArgs): Promise<void> {
-    if (!config.namespace) {
+    if (!prefix) {
       throw new Error(
         "writeAutoSavedEntry: store has no namespace configured; auto-save requires namespace-prefix discipline",
       );
     }
-    const prefix = config.namespace.endsWith(":") ? config.namespace : `${config.namespace}:`;
     if (!args.label.startsWith(prefix)) {
       throw new Error(
         `writeAutoSavedEntry: label "${args.label}" does not start with namespace prefix "${prefix}"`,
@@ -494,15 +669,19 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     const createdAt = Date.now();
     const expiresAt = createdAt + retentionMs;
     db.transaction(() => {
+      if (namespaceKey && isPeerTombstonedStmt.get(namespaceKey, args.peerId)) {
+        throw new Error("layeredMemory store: peer identity is permanently tombstoned");
+      }
       db.prepare(
         `INSERT INTO entries
-        (id, label, content, peer_id, trust_level, created_at, superseded_by,
+        (id, namespace_key, label, content, peer_id, trust_level, created_at, superseded_by,
          retention_class, is_verbatim, expires_at,
          subject, predicate, object, source_turn_id, origin,
          provenance_model, confidence)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'agent-derived', ?, ?)`,
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'agent-derived', ?, ?)`,
       ).run(
         id,
+        namespaceKey,
         args.label,
         args.content,
         args.peerId,
@@ -533,10 +712,25 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     const limit = opts.limit ?? 50;
     const now = Date.now();
     if (opts.peerId) {
+      if (namespaceKey) {
+        const rows = db
+          .prepare<Row, [string, string, number, number]>(
+            `SELECT * FROM entries
+             WHERE peer_id = ?
+               AND namespace_key = ?
+               AND superseded_by IS NULL
+               AND (expires_at IS NULL OR expires_at > ?)
+             ORDER BY created_at DESC
+             LIMIT ?`,
+          )
+          .all(opts.peerId, namespaceKey, now, limit);
+        return rows.map(rowToEntry);
+      }
       const rows = db
         .prepare<Row, [string, number, number]>(
           `SELECT * FROM entries
            WHERE peer_id = ?
+             AND namespace_key IS NULL
              AND superseded_by IS NULL
              AND (expires_at IS NULL OR expires_at > ?)
            ORDER BY created_at DESC
@@ -545,10 +739,24 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
         .all(opts.peerId, now, limit);
       return rows.map(rowToEntry);
     }
+    if (namespaceKey) {
+      const rows = db
+        .prepare<Row, [string, number, number]>(
+          `SELECT * FROM entries
+           WHERE namespace_key = ?
+             AND superseded_by IS NULL
+             AND (expires_at IS NULL OR expires_at > ?)
+           ORDER BY created_at DESC
+           LIMIT ?`,
+        )
+        .all(namespaceKey, now, limit);
+      return rows.map(rowToEntry);
+    }
     const rows = db
       .prepare<Row, [number, number]>(
         `SELECT * FROM entries
-         WHERE superseded_by IS NULL
+         WHERE namespace_key IS NULL
+           AND superseded_by IS NULL
            AND (expires_at IS NULL OR expires_at > ?)
          ORDER BY created_at DESC
          LIMIT ?`,
@@ -562,15 +770,27 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     lesson: number;
     total: number;
   }> {
-    const rows = db
-      .prepare<{ retention_class: string; n: number }, [number]>(
-        `SELECT retention_class, COUNT(*) AS n
-         FROM entries
-         WHERE superseded_by IS NULL
-           AND (expires_at IS NULL OR expires_at > ?)
-         GROUP BY retention_class`,
-      )
-      .all(Date.now());
+    const rows = namespaceKey
+      ? db
+          .prepare<{ retention_class: string; n: number }, [string, number]>(
+            `SELECT retention_class, COUNT(*) AS n
+             FROM entries
+             WHERE namespace_key = ?
+               AND superseded_by IS NULL
+               AND (expires_at IS NULL OR expires_at > ?)
+             GROUP BY retention_class`,
+          )
+          .all(namespaceKey, Date.now())
+      : db
+          .prepare<{ retention_class: string; n: number }, [number]>(
+            `SELECT retention_class, COUNT(*) AS n
+             FROM entries
+             WHERE namespace_key IS NULL
+               AND superseded_by IS NULL
+               AND (expires_at IS NULL OR expires_at > ?)
+             GROUP BY retention_class`,
+          )
+          .all(Date.now());
     let operational = 0;
     let lesson = 0;
     for (const r of rows) {

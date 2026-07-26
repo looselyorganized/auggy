@@ -14,17 +14,8 @@
  *    operator's chosen instance name from the config.
  */
 
-import {
-  closeSync,
-  constants,
-  existsSync,
-  fchmodSync,
-  fstatSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-} from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { existsSync } from "node:fs";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileMemory } from "../augments/fileMemory";
 import { supabaseMemory } from "../augments/supabaseMemory";
 import { filesystem } from "../augments/filesystem";
@@ -66,6 +57,9 @@ import type { AugmentConfig } from "./types";
 import type { BudgetsAugmentOptions } from "../augments/budgets";
 import { validateBundledSkills } from "./skill-validator";
 import { auggySelf, type AuggySelfAgentMetadata } from "./auggy-self-augment";
+import { mutableFileMemoryRuntimePath } from "./runtime-state-inventory";
+import { assertImmutableAgentId, scopedAgentNamespace } from "./agent-isolation";
+import { compareOwnedStatePaths, resolveOwnedStatePath } from "./owned-state-path";
 
 // ---------------------------------------------------------------------------
 // Path resolution helper
@@ -79,7 +73,7 @@ function resolvePath(path: string, agentDir: string): string {
 /** Resolve an operator-controlled relative path without allowing an escape. */
 function resolveContainedPath(path: string, root: string, label: string): string {
   if (isAbsolute(path)) {
-    throw new Error(`[augment-resolver] ${label} must be relative when runtimeDataRoot is set`);
+    throw new Error(`[augment-resolver] ${label} must be relative to its owned state directory`);
   }
 
   const resolvedPath = resolve(root, path);
@@ -91,72 +85,6 @@ function resolveContainedPath(path: string, root: string, label: string): string
   }
 
   return resolvedPath;
-}
-
-function ensureDurableDirectoryChain(root: string, target: string, label: string): void {
-  const relativeTarget = relative(root, target);
-  if (
-    relativeTarget === ".." ||
-    relativeTarget.startsWith(`..${sep}`) ||
-    isAbsolute(relativeTarget)
-  ) {
-    throw new Error(`[augment-resolver] ${label} escaped its runtime data root`);
-  }
-
-  let parentFd: number;
-  try {
-    parentFd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  } catch (error) {
-    throw new Error(`[augment-resolver] ${label} root must be a real directory`, {
-      cause: error,
-    });
-  }
-  if (!fstatSync(parentFd).isDirectory()) {
-    closeSync(parentFd);
-    throw new Error(`[augment-resolver] ${label} root must be a real directory`);
-  }
-
-  let parent = root;
-  try {
-    for (const component of relativeTarget.split(sep).filter(Boolean)) {
-      const candidate = resolve(parent, component);
-      let created = false;
-      try {
-        mkdirSync(candidate, { mode: 0o700 });
-        created = true;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      }
-
-      let candidateFd: number | undefined;
-      try {
-        candidateFd = openSync(
-          candidate,
-          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-        );
-        if (!fstatSync(candidateFd).isDirectory()) {
-          throw new Error(`[augment-resolver] ${label} must not contain non-directories`);
-        }
-        fchmodSync(candidateFd, 0o700);
-        if (created) fsyncSync(parentFd);
-      } catch (error) {
-        if (candidateFd !== undefined) closeSync(candidateFd);
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code === "ELOOP" || code === "ENOTDIR") {
-          throw new Error(`[augment-resolver] ${label} must not contain symlinked directories`, {
-            cause: error,
-          });
-        }
-        throw error;
-      }
-
-      closeSync(parentFd);
-      parentFd = candidateFd;
-      parent = candidate;
-    }
-  } finally {
-    closeSync(parentFd);
-  }
 }
 
 function resolveSqlitePath(
@@ -173,20 +101,29 @@ function resolveSqlitePath(
     !relativeConfiguredPath.startsWith(`..${sep}`) &&
     !isAbsolute(relativeConfiguredPath);
   if (isAbsolute(path) && !alreadyContained) {
-    throw new Error(`[augment-resolver] ${label} must stay within its runtime data root`);
+    throw new Error(
+      `[augment-resolver] ${label} must stay within its state directory/runtime data root`,
+    );
   }
   const dbPath = alreadyContained
     ? configuredPath
     : resolveContainedPath(path, runtimeDataRoot, label);
-  ensureDurableDirectoryChain(runtimeDataRoot, dirname(dbPath), label);
-  return dbPath;
+  return resolveOwnedStatePath(dbPath, agentDir, runtimeDataRoot, label, {
+    createParents: true,
+  });
 }
 
 // ---------------------------------------------------------------------------
 // Built-in resolvers
 // ---------------------------------------------------------------------------
 
-function resolveFileMemory(opts: Record<string, unknown>, agentDir: string): Augment {
+function resolveFileMemory(
+  opts: Record<string, unknown>,
+  agentDir: string,
+  runtimeDataRoot: string | undefined,
+  ownedStateRoot: string | undefined,
+  augmentName: string,
+): Augment {
   const source = opts.source as string;
   const resolvedSource = resolvePath(source, agentDir);
   const isLegacyLearnedBehaviorStore =
@@ -199,9 +136,31 @@ function resolveFileMemory(opts: Record<string, unknown>, agentDir: string): Aug
   const isLearnedBehaviorStore =
     opts.label === "learned" && /(^|\/)learned-behaviors\.md$/.test(resolvedSource);
 
+  const durableSource =
+    opts.mutable === true && runtimeDataRoot
+      ? mutableFileMemoryRuntimePath(runtimeDataRoot, augmentName)
+      : opts.mutable === true && ownedStateRoot
+        ? resolveSqlitePath(
+            source,
+            agentDir,
+            ownedStateRoot,
+            `fileMemory "${augmentName}" state path`,
+          )
+        : resolvedSource;
+  if (durableSource !== resolvedSource && runtimeDataRoot) {
+    resolveOwnedStatePath(
+      durableSource,
+      agentDir,
+      runtimeDataRoot,
+      `fileMemory "${augmentName}" state path`,
+      { createParents: true },
+    );
+  }
+
   return fileMemory({
     label: opts.label as string,
-    source: resolvedSource,
+    source: durableSource,
+    ...(durableSource !== resolvedSource ? { seedSource: resolvedSource } : {}),
     mutable: opts.mutable as boolean,
     origin: isLearnedBehaviorStore ? "operator" : (opts.origin as ContextOrigin),
     writeTrustLevels: isLearnedBehaviorStore
@@ -217,11 +176,12 @@ function resolveFileMemory(opts: Record<string, unknown>, agentDir: string): Aug
 async function resolveLayeredMemory(
   opts: Record<string, unknown>,
   agentDir: string,
-  runtimeDataRoot?: string,
+  ownedStateRoot: string | undefined,
+  agentId: string | undefined,
 ): Promise<Augment> {
   const { layeredMemory } = await import("../augments/layeredMemory");
   const backend = (opts.backend as string | undefined) ?? "sqlite";
-  const namespace = (opts.namespace as string | undefined) ?? "ep";
+  const namespace = scopedAgentNamespace(agentId, opts.namespace as string | undefined, "ep");
   const retentionDays = opts.retentionDays as number | undefined;
   const autoSave =
     opts.autoSave && typeof opts.autoSave === "object" && !Array.isArray(opts.autoSave)
@@ -235,7 +195,7 @@ async function resolveLayeredMemory(
       dbPath: resolveSqlitePath(
         dbPath ?? "./memory.db",
         agentDir,
-        runtimeDataRoot,
+        ownedStateRoot,
         "layeredMemory dbPath",
       ),
       namespace,
@@ -277,7 +237,10 @@ async function resolveLayeredMemory(
   throw new Error(`layeredMemory: unknown backend "${backend}"`);
 }
 
-async function resolveSupabaseMemory(opts: Record<string, unknown>): Promise<Augment> {
+async function resolveSupabaseMemory(
+  opts: Record<string, unknown>,
+  agentId: string | undefined,
+): Promise<Augment> {
   const { supabaseUrl, supabaseKey, ...rest } = opts;
   if (typeof supabaseUrl !== "string" || typeof supabaseKey !== "string") {
     throw new Error(
@@ -305,11 +268,12 @@ async function resolveSupabaseMemory(opts: Record<string, unknown>): Promise<Aug
   }) as unknown as Parameters<typeof supabaseMemory>[0]["client"];
 
   return supabaseMemory({
-    namespace: rest.namespace as string,
+    namespace: scopedAgentNamespace(agentId, rest.namespace as string | undefined, "memory"),
     scope: rest.scope,
     client,
     table: rest.table as string,
     peerColumn: rest.peerColumn as string | undefined,
+    namespaceColumn: rest.namespaceColumn as string | undefined,
     mutable: rest.mutable as boolean,
     origin: rest.origin as ContextOrigin,
     priority: rest.priority as "required" | "high" | "normal" | "low" | "evictable",
@@ -539,7 +503,11 @@ function resolveBash(opts: Record<string, unknown>, agentDir: string): Augment {
   });
 }
 
-async function resolveLink(opts: Record<string, unknown>, agentDir: string): Promise<Augment> {
+async function resolveLink(
+  opts: Record<string, unknown>,
+  agentDir: string,
+  ownedStateRoot: string | undefined,
+): Promise<Augment> {
   const card = opts.agentCard as Record<string, unknown>;
   const agentCard: LinkAugmentAgentCard = {
     id: card.id as string,
@@ -565,7 +533,7 @@ async function resolveLink(opts: Record<string, unknown>, agentDir: string): Pro
 
   const linkOpts: LinkAugmentInternalOptions = {
     port: opts.port as number | undefined,
-    dbPath: resolvePath(opts.dbPath as string, agentDir),
+    dbPath: resolveSqlitePath(opts.dbPath as string, agentDir, ownedStateRoot, "link dbPath"),
     agentCard,
     peers,
     peerSource: opts.peerSource as PeerSourceConfig | undefined,
@@ -585,6 +553,8 @@ function resolveVisitorAuth(
   opts: Record<string, unknown>,
   agentDir: string,
   runtimeDataRoot?: string,
+  agentId?: string,
+  configs: readonly AugmentConfig[] = [],
 ): Augment {
   const dbPath = (opts.dbPath as string | undefined) ?? "./visitor-auth.db";
   // CRITICAL: distinguish `null` (operator opt-out) from `undefined` (defaults to ./memory.db).
@@ -593,6 +563,49 @@ function resolveVisitorAuth(
     opts.layeredMemoryDbPath === null
       ? null
       : ((opts.layeredMemoryDbPath as string | undefined) ?? "./memory.db");
+  const resolvedLayeredMemoryDbPath =
+    layeredMemoryDbPath === null
+      ? null
+      : resolveSqlitePath(
+          layeredMemoryDbPath,
+          agentDir,
+          runtimeDataRoot,
+          "visitorAuth layeredMemoryDbPath",
+        );
+  const matchingNamespaces = new Set<string>();
+  for (const config of configs) {
+    if (
+      config.type !== "layeredMemory" ||
+      (config.options?.backend ?? "sqlite") !== "sqlite" ||
+      resolvedLayeredMemoryDbPath === null
+    ) {
+      continue;
+    }
+    const memoryPath = resolveSqlitePath(
+      (config.options?.dbPath as string | undefined) ?? "./memory.db",
+      agentDir,
+      runtimeDataRoot,
+      `layeredMemory "${config.name}" dbPath`,
+    );
+    const relationship = compareOwnedStatePaths(memoryPath, resolvedLayeredMemoryDbPath);
+    if (relationship === "ambiguous") {
+      throw new Error(
+        `[augment-resolver] visitorAuth memory path may alias layeredMemory "${config.name}" on a case-insensitive volume; use one exact path spelling`,
+      );
+    }
+    if (relationship === "same") {
+      matchingNamespaces.add(
+        scopedAgentNamespace(agentId, config.options?.namespace as string | undefined, "ep"),
+      );
+    }
+  }
+  if (matchingNamespaces.size > 1) {
+    throw new Error(
+      "[augment-resolver] visitorAuth layeredMemoryDbPath matches multiple layeredMemory namespaces; use separate database files",
+    );
+  }
+  const layeredMemoryNamespace =
+    matchingNamespaces.values().next().value ?? scopedAgentNamespace(agentId, undefined, "ep");
 
   const config: VisitorAuthOptions = {
     publicUrl: opts.publicUrl as string,
@@ -604,15 +617,8 @@ function resolveVisitorAuth(
     reverifyAfterDays: opts.reverifyAfterDays as number | undefined,
     tokenTtlMinutes: opts.tokenTtlMinutes as number | undefined,
     notifyOnFirstVerify: opts.notifyOnFirstVerify as VisitorAuthOptions["notifyOnFirstVerify"],
-    layeredMemoryDbPath:
-      layeredMemoryDbPath === null
-        ? null
-        : resolveSqlitePath(
-            layeredMemoryDbPath,
-            agentDir,
-            runtimeDataRoot,
-            "visitorAuth layeredMemoryDbPath",
-          ),
+    layeredMemoryDbPath: resolvedLayeredMemoryDbPath,
+    layeredMemoryNamespace,
     // G34: forward the production-override flag. The `agentMail.transport`
     // discriminator already flows through `opts.agentMail` above; no separate
     // wiring needed for it.
@@ -632,6 +638,8 @@ export async function resolveAugments(
   resolverOpts: {
     creator?: CreatorConfig;
     selfInspection?: AuggySelfAgentMetadata;
+    /** Server-minted identity used for every security and storage namespace. */
+    agentId?: string;
     /** Absolute root for deployment-owned durable state, such as a Railway volume. */
     runtimeDataRoot?: string;
   } = {},
@@ -639,7 +647,35 @@ export async function resolveAugments(
   if (resolverOpts.runtimeDataRoot !== undefined && !isAbsolute(resolverOpts.runtimeDataRoot)) {
     throw new Error("[augment-resolver] runtimeDataRoot must be an absolute path");
   }
+  if (resolverOpts.agentId !== undefined) assertImmutableAgentId(resolverOpts.agentId);
   const overrideDir = resolverOpts.runtimeDataRoot ?? agentDir;
+  const ownedStateRoot =
+    resolverOpts.runtimeDataRoot ?? (resolverOpts.agentId ? resolve(agentDir) : undefined);
+
+  if (resolverOpts.agentId) {
+    for (const config of configs) {
+      const opts = (config.options ?? {}) as Record<string, unknown>;
+      if (config.type === "visitorAuth") {
+        opts.agentBinding = resolverOpts.agentId;
+      } else if (config.type === "webTransport") {
+        opts.securityNamespace = resolverOpts.agentId;
+        const visitorTokens = opts.visitorTokens;
+        if (
+          typeof visitorTokens === "object" &&
+          visitorTokens !== null &&
+          !Array.isArray(visitorTokens)
+        ) {
+          (visitorTokens as Record<string, unknown>).agentBinding = resolverOpts.agentId;
+        }
+      } else if (config.type === "link") {
+        const agentCard = opts.agentCard;
+        if (typeof agentCard === "object" && agentCard !== null && !Array.isArray(agentCard)) {
+          (agentCard as Record<string, unknown>).id = resolverOpts.agentId;
+        }
+      }
+      config.options = opts;
+    }
+  }
 
   const inboundInboxOwners = new Map<string, string>();
   for (const config of configs) {
@@ -815,13 +851,24 @@ export async function resolveAugments(
 
       switch (config.type) {
         case "fileMemory":
-          augment = resolveFileMemory(opts, agentDir);
+          augment = resolveFileMemory(
+            opts,
+            agentDir,
+            resolverOpts.runtimeDataRoot,
+            ownedStateRoot,
+            config.name,
+          );
           break;
         case "supabaseMemory":
-          augment = await resolveSupabaseMemory(opts);
+          augment = await resolveSupabaseMemory(opts, resolverOpts.agentId);
           break;
         case "layeredMemory":
-          augment = await resolveLayeredMemory(opts, agentDir, resolverOpts.runtimeDataRoot);
+          augment = await resolveLayeredMemory(
+            opts,
+            agentDir,
+            ownedStateRoot,
+            resolverOpts.agentId,
+          );
           break;
         case "filesystem":
           augment = resolveFilesystem(opts, agentDir);
@@ -831,7 +878,7 @@ export async function resolveAugments(
             opts,
             agentDir,
             overrideDir,
-            resolverOpts.runtimeDataRoot,
+            ownedStateRoot,
             resolverOpts.creator,
             lateBindings,
           );
@@ -866,12 +913,7 @@ export async function resolveAugments(
             }
           }
           augment = budgets({
-            dbPath: resolveSqlitePath(
-              dbPath,
-              agentDir,
-              resolverOpts.runtimeDataRoot,
-              "budgets dbPath",
-            ),
+            dbPath: resolveSqlitePath(dbPath, agentDir, ownedStateRoot, "budgets dbPath"),
             agentDir,
             overrideDir,
             caps: opts.caps as BudgetsAugmentOptions["caps"],
@@ -888,9 +930,35 @@ export async function resolveAugments(
           break;
         }
         case "notify": {
+          const destinations = (
+            opts.destinations as Array<Record<string, unknown>> | undefined
+          )?.map((destination) => {
+            if (destination.transport !== "log-to-file" || typeof destination.path !== "string") {
+              return destination;
+            }
+            return {
+              ...destination,
+              path: resolveSqlitePath(
+                destination.path,
+                agentDir,
+                ownedStateRoot,
+                `notify destination "${String(destination.name)}" path`,
+              ),
+            };
+          });
           augment = notify({
-            destinations: opts.destinations as NotifyAugmentOptions["destinations"],
+            destinations: destinations as unknown as NotifyAugmentOptions["destinations"],
             rateLimit: opts.rateLimit as NotifyAugmentOptions["rateLimit"],
+            dbPath: resolveSqlitePath(
+              (opts.dbPath as string | undefined) ??
+                (resolverOpts.runtimeDataRoot
+                  ? `notify-${config.name}.db`
+                  : `./data/notify-${config.name}.db`),
+              agentDir,
+              ownedStateRoot,
+              `notify ${config.name} dbPath`,
+            ),
+            agentDir,
             overrideDir,
           });
           break;
@@ -921,15 +989,22 @@ export async function resolveAugments(
             const agentMailRoot = resolve(resolverOpts.runtimeDataRoot, "agent-mail");
             stateDir = resolve(agentMailRoot, config.name);
             dbPath = resolveContainedPath(rawDbPath, stateDir, `agentMail "${config.name}" dbPath`);
-            ensureDurableDirectoryChain(
+            dbPath = resolveOwnedStatePath(
+              dbPath,
+              agentDir,
               resolverOpts.runtimeDataRoot,
-              dirname(dbPath),
               `agentMail "${config.name}" state path`,
+              { createParents: true },
             );
           } else {
             // Locally, keep state beside agent.yaml and root relative database
             // paths at that same agent project directory.
-            dbPath = resolvePath(rawDbPath, agentDir);
+            dbPath = resolveSqlitePath(
+              rawDbPath,
+              agentDir,
+              ownedStateRoot,
+              `agentMail "${config.name}" dbPath`,
+            );
           }
 
           augment = agentMail({
@@ -958,7 +1033,7 @@ export async function resolveAugments(
               dbPath: resolveSqlitePath(
                 replay?.dbPath ?? "./data/telegram-replay.db",
                 agentDir,
-                resolverOpts.runtimeDataRoot,
+                ownedStateRoot,
                 `telegramTransport "${config.name}" replay.dbPath`,
               ),
             },
@@ -969,10 +1044,16 @@ export async function resolveAugments(
           augment = turnControl(opts as TurnControlOptions);
           break;
         case "visitorAuth":
-          augment = resolveVisitorAuth(opts, agentDir, resolverOpts.runtimeDataRoot);
+          augment = resolveVisitorAuth(
+            opts,
+            agentDir,
+            ownedStateRoot,
+            resolverOpts.agentId,
+            configs,
+          );
           break;
         case "link":
-          augment = await resolveLink(opts, agentDir);
+          augment = await resolveLink(opts, agentDir, ownedStateRoot);
           break;
         case "custom":
           augment = await resolveCustom(config, agentDir);

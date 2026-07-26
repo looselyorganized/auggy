@@ -28,6 +28,7 @@ import {
   compileTrustedProxyNetworks,
 } from "../transports/console-request-security";
 import { DEFAULT_EXTRACTION_BUFFER_LIMITS } from "../augments/layeredMemory/extractor/buffer";
+import { MAX_PROVIDER_REQUEST_TIMEOUT_MS } from "../engines/_shared/provider-resilience";
 
 // ---------------------------------------------------------------------------
 // .env loading
@@ -170,6 +171,13 @@ function validateWebTransportOptions(
   optionsPrefix: string,
   errors: string[],
 ): void {
+  if (
+    !Number.isSafeInteger(opts.port) ||
+    (opts.port as number) < 1 ||
+    (opts.port as number) > 65_535
+  ) {
+    errors.push(`${optionsPrefix}.port: required integer from 1 to 65535`);
+  }
   if (opts.rateLimitPerPeer !== undefined) {
     if (
       opts.rateLimitPerPeer === null ||
@@ -776,8 +784,13 @@ function validateLinkOptions(
   optionsPrefix: string,
   errors: string[],
 ): void {
-  if (opts.port !== undefined && (typeof opts.port !== "number" || opts.port < 0)) {
-    errors.push(`${optionsPrefix}.port: must be a non-negative number`);
+  if (
+    opts.port !== undefined &&
+    (!Number.isSafeInteger(opts.port) ||
+      (opts.port as number) < 1 ||
+      (opts.port as number) > 65_535)
+  ) {
+    errors.push(`${optionsPrefix}.port: must be an integer from 1 to 65535`);
   }
   if (typeof opts.dbPath !== "string" || opts.dbPath.length === 0) {
     errors.push(`${optionsPrefix}.dbPath: required non-empty string`);
@@ -1033,6 +1046,13 @@ function validateNotifyOptions(
   prefix: string,
   errors: string[],
 ): void {
+  const maxRetainedWindowMs = 30 * 24 * 60 * 60_000;
+  if (
+    opts.dbPath !== undefined &&
+    (typeof opts.dbPath !== "string" || opts.dbPath.trim().length === 0)
+  ) {
+    errors.push(`${prefix}.dbPath: must be a non-empty string`);
+  }
   if (!Array.isArray(opts.destinations)) {
     errors.push(`${prefix}.destinations: required array`);
     return;
@@ -1066,6 +1086,25 @@ function validateNotifyOptions(
               `${dPrefix}.allowedTrustLevels[${j}]: must be "creator", "agent", or "public"`,
             );
           }
+        }
+      }
+    }
+    if (dest.rateLimit !== undefined) {
+      if (typeof dest.rateLimit !== "object" || dest.rateLimit === null) {
+        errors.push(`${dPrefix}.rateLimit: must be an object`);
+      } else {
+        const destinationRateLimit = dest.rateLimit as Record<string, unknown>;
+        for (const field of ["maxPerHour", "cooldownMs"] as const) {
+          const value = destinationRateLimit[field];
+          if (value !== undefined && (typeof value !== "number" || value < 0)) {
+            errors.push(`${dPrefix}.rateLimit.${field}: must be a non-negative number`);
+          }
+        }
+        if (
+          typeof destinationRateLimit.cooldownMs === "number" &&
+          destinationRateLimit.cooldownMs > maxRetainedWindowMs
+        ) {
+          errors.push(`${dPrefix}.rateLimit.cooldownMs: cannot exceed 30 days`);
         }
       }
     }
@@ -1139,6 +1178,11 @@ function validateNotifyOptions(
     for (const field of numericFields) {
       if (rl[field] !== undefined && (typeof rl[field] !== "number" || (rl[field] as number) < 0)) {
         errors.push(`${prefix}.rateLimit.${field}: must be a non-negative number`);
+      }
+    }
+    for (const field of ["cooldownMs", "dedupWindowMs", "perPeerCooldownMs"] as const) {
+      if (typeof rl[field] === "number" && rl[field] > maxRetainedWindowMs) {
+        errors.push(`${prefix}.rateLimit.${field}: cannot exceed 30 days`);
       }
     }
     if (rl.enabled !== undefined && typeof rl.enabled !== "boolean") {
@@ -1461,9 +1505,11 @@ function validateTelegramTransportOptions(
       }
       if (
         webhook.port !== undefined &&
-        (typeof webhook.port !== "number" || webhook.port <= 0 || webhook.port > 65535)
+        (!Number.isSafeInteger(webhook.port) ||
+          (webhook.port as number) < 1 ||
+          (webhook.port as number) > 65_535)
       ) {
-        errors.push(`${prefix}.inbound.webhook.port: must be a positive number ≤ 65535`);
+        errors.push(`${prefix}.inbound.webhook.port: must be an integer from 1 to 65535`);
       }
       if (
         webhook.maxBodyBytes !== undefined &&
@@ -1672,6 +1718,21 @@ export function expandAugmentFolderEntries(
 
 function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   const errors: string[] = [];
+  const topLevelFields = new Set([
+    "id",
+    "name",
+    "displayName",
+    "creator",
+    "purpose",
+    "identity",
+    "engine",
+    "settings",
+    "augments",
+    "securityEval",
+  ]);
+  for (const key of Object.keys(raw)) {
+    if (!topLevelFields.has(key)) errors.push(`${key}: unknown top-level field`);
+  }
 
   // Required top-level fields.
   if (typeof raw.id !== "string" || !AUG1_ID_RE.test(raw.id)) {
@@ -1894,6 +1955,16 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         }
       }
     }
+    if (
+      engine.requestTimeoutMs !== undefined &&
+      (!Number.isSafeInteger(engine.requestTimeoutMs) ||
+        (engine.requestTimeoutMs as number) < 1 ||
+        (engine.requestTimeoutMs as number) > MAX_PROVIDER_REQUEST_TIMEOUT_MS)
+    ) {
+      errors.push(
+        `engine.requestTimeoutMs: must be a positive integer no greater than ${MAX_PROVIDER_REQUEST_TIMEOUT_MS}`,
+      );
+    }
     if (engine.costOverride !== undefined) {
       if (
         typeof engine.costOverride !== "object" ||
@@ -2100,7 +2171,14 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   }
 
   // Settings.
-  const settings = (raw.settings ?? {}) as Record<string, unknown>;
+  let settings: Record<string, unknown> = {};
+  if (raw.settings !== undefined) {
+    if (typeof raw.settings !== "object" || raw.settings === null || Array.isArray(raw.settings)) {
+      errors.push("settings: must be an object");
+    } else {
+      settings = raw.settings as Record<string, unknown>;
+    }
+  }
   if (settings.compactionStrategy && !VALID_COMPACTION.has(settings.compactionStrategy as string)) {
     errors.push(`settings.compactionStrategy: must be one of ${[...VALID_COMPACTION].join(", ")}`);
   }
@@ -2179,6 +2257,14 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         !CANONICAL_UUID_RE.test(coordination.namespace)
       ) {
         errors.push("settings.coordination.namespace: must be a canonical lowercase UUID");
+      } else if (
+        typeof raw.id === "string" &&
+        AUG1_ID_RE.test(raw.id) &&
+        coordination.namespace !== raw.id.slice("aug1_".length)
+      ) {
+        errors.push(
+          "settings.coordination.namespace: must equal the immutable UUID portion of the agent id",
+        );
       }
       const urlEnv = coordination.urlEnv ?? DEFAULT_DISTRIBUTED_COORDINATION.urlEnv;
       if (typeof urlEnv !== "string" || !ENV_VAR_NAME_RE.test(urlEnv)) {

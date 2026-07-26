@@ -9,6 +9,7 @@ For installation and first-run instructions, start with the root
 
 ## Start Here
 
+- [Product North Star](./01-philosophy.md)
 - [Architecture Overview](./02-architecture-overview.md)
 - [Built-In Augments](./07-built-in-augments.md)
 - [Agent Lifecycle](./08-agent-lifecycle.md)
@@ -16,6 +17,12 @@ For installation and first-run instructions, start with the root
 - [Storage Layout](./16-storage-layout.md)
 - [Deploy](./18-deploy.md)
 - [Console](./21-console.md)
+- [Runtime State Recovery](./27-runtime-state-recovery.md)
+- [Delivery and Operator Recovery](./28-delivery-and-operator-recovery.md)
+- [Provider Resilience](./29-provider-resilience.md)
+- [Single-Replica Runtime Load Evidence](./30-single-replica-load-evidence.md)
+- [Compatibility, Migrations, and Rollback](./31-compatibility-migrations-and-rollback.md)
+- [Independent Agents on One Platform](./32-independent-agent-isolation.md)
 - [Feature Status](./FEATURES.md)
 
 ## Mental Model
@@ -62,7 +69,7 @@ Use this order when documentation disagrees:
 | Doc | What it covers |
 | --- | --- |
 | [Feature Status](./FEATURES.md) | Current core, add-on, and preview capability status |
-| [01 Philosophy](./01-philosophy.md) | Runtime motivation and design principles |
+| [01 Product North Star](./01-philosophy.md) | Product purpose, engineering value, ownership boundaries, and positioning |
 | [02 Architecture Overview](./02-architecture-overview.md) | Module map and turn data flow |
 | [03 Types](./03-types.md) | Shared runtime contracts |
 | [04 Kernel](./04-kernel.md) | Turn loop, context allocation, history, and tool execution |
@@ -86,6 +93,12 @@ Use this order when documentation disagrees:
 | [24 MCP](./24-mcp.md) | Local and remote MCP servers |
 | [25 Generated Route Clients](./25-generated-route-clients.md) | Preview route manifests and clients |
 | [26 Delegated Authorization](./26-delegated-authorization.md) | Preview app-session authorization bridge |
+| [27 Runtime State Recovery](./27-runtime-state-recovery.md) | State inventory, offline volume bundles, restore fencing, and operator boundaries |
+| [28 Delivery and Operator Recovery](./28-delivery-and-operator-recovery.md) | Replay, outcome-unknown, and creator recovery contracts by transport |
+| [29 Provider Resilience](./29-provider-resilience.md) | Model deadlines, cancellation, no-retry policy, and brownout isolation |
+| [30 Single-Replica Runtime Load Evidence](./30-single-replica-load-evidence.md) | Reproducible real-runtime burst, fault, drain, restart, and resource evidence |
+| [31 Compatibility, Migrations, and Rollback](./31-compatibility-migrations-and-rollback.md) | Public artifact boundaries, supported stored-state readers, upgrade rehearsal, and complete rollback |
+| [32 Independent Agents on One Platform](./32-independent-agent-isolation.md) | Immutable identity, shared-host resource fencing, deployment routing, and replica limits |
 
 ## Common Add-Ons
 
@@ -133,5 +146,6 @@ current reference document explicitly promotes a behavior.
 
 ## Operations
 
+- [OSS Production Release Plan](./plans/production-readiness-roadmap-2026-07-24.md)
 - [Releasing](./RELEASING.md)
 - [Todos](./todos.md)

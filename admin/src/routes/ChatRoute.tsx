@@ -1,5 +1,5 @@
 import { lazy, useEffect, useRef, useState } from "react";
-import { Navigate, useLocation, useNavigate } from "react-router-dom";
+import { Navigate, useLocation, useNavigate } from "react-router";
 import { Plus } from "lucide-react";
 import { useChatWorkspace } from "@/components/admin/ChatWorkspaceProvider";
 import { Button } from "@/components/ui/button";

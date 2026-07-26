@@ -15,22 +15,28 @@
  *   8. Wait for signal → agent.stop() → cleanup
  */
 
+import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { defineAgent } from "../../agent";
 import { parseConfig } from "../config-parser";
 import { resolveEngine } from "../engine-resolver";
 import { resolveAugments } from "../augment-resolver";
 import {
+  claimAgentLifecycle,
   claimRuntimePidManifest,
   formatAgentAlreadyRunningMessage,
+  getProcessIdentity,
+  readLaunchdGenerationState,
   readPidManifest,
   releaseRuntimePidManifest,
 } from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
 import { openBrowser } from "../open-browser";
 import type { AgentConfig, Augment, ModelClient } from "../../types";
+import type { PidManifest } from "../types";
 import { displayPath } from "../display-path";
 import { prepareRailwayRuntimeVolume } from "../runtime-volume";
+import { runtimeResourceClaims } from "../runtime-resource-claims";
 
 /**
  * Extract the webTransport port from augment configs (for the PID manifest
@@ -38,8 +44,8 @@ import { prepareRailwayRuntimeVolume } from "../runtime-volume";
  */
 function extractPort(config: ReturnType<typeof parseConfig>): number | null {
   for (const aug of config.augments) {
-    if (aug.type === "webTransport" && aug.options?.port) {
-      return aug.options.port as number;
+    if (aug.type === "webTransport") {
+      return aug.options!.port as number;
     }
   }
   return null;
@@ -59,6 +65,11 @@ export interface DevOpts {
   /** Test seam: override process.cwd() for project-local resolution. */
   cwd?: string;
   internalMode?: string;
+  /** Internal: restart already holds this agent's lifecycle admission lease. */
+  lifecycleOwned?: boolean;
+  /** Internal/test registry seams. */
+  auggyDir?: string;
+  processIdentityForPid?: (pid: number) => string | null;
   /**
    * When true, auto-launch the operator's default browser to `/console`
    * after the agent starts. No-op when webTransport isn't configured.
@@ -166,13 +177,23 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   const configPath = resolveConfigPath(name, opts.config, { cwd: opts.cwd });
   const agentDir = dirname(configPath);
   const mode = opts.internalMode === "launchd" ? ("launchd" as const) : ("dev" as const);
-  const requestedRuntimeDataRoot = resolveRuntimeDataRoot(opts.internalMode);
-  const runtimeDataRoot = requestedRuntimeDataRoot
-    ? prepareRailwayRuntimeVolume(process.env.RAILWAY_VOLUME_MOUNT_PATH)
-    : undefined;
-
-  // Parse and validate config.
+  const launchGeneration = mode === "launchd" ? process.env.AUGGY_LAUNCH_GENERATION : undefined;
+  if (
+    mode === "launchd" &&
+    (typeof launchGeneration !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+        launchGeneration,
+      ))
+  ) {
+    throw new Error("[runtime] launchd mode requires a valid installation generation");
+  }
+  // Parse and validate config before mutating or admitting any runtime state.
   const config = parseConfig(configPath);
+  const requestedRuntimeDataRoot = resolveRuntimeDataRoot(opts.internalMode);
+  const runtimeVolumeLease = requestedRuntimeDataRoot
+    ? prepareRailwayRuntimeVolume(process.env.RAILWAY_VOLUME_MOUNT_PATH, config.id)
+    : null;
+  const runtimeDataRoot = runtimeVolumeLease?.runtimeDataRoot;
 
   if (name && config.name !== name) {
     console.warn(
@@ -182,28 +203,82 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
 
   const agentName = config.name;
 
-  // Claim the name by writing the PID manifest atomically (wx flag).
-  // This prevents TOCTOU races — the filesystem is the lock.
+  // Claim the immutable identity and exclusive runtime resources before boot.
   const port = extractPort(config);
   let pidManifestClaimed = false;
+  let pidManifest: PidManifest | null = null;
+  let runtimeOwnershipReleased = false;
+  const releaseRuntimeOwnership = () => {
+    if (runtimeOwnershipReleased) return;
+    runtimeOwnershipReleased = true;
+    if (pidManifest) {
+      releaseRuntimePidManifest(pidManifest, pidManifestClaimed, {
+        auggyDir: opts.auggyDir,
+        processIdentityForPid: opts.processIdentityForPid,
+      });
+    }
+    runtimeVolumeLease?.release();
+  };
+  let releaseRuntimeAdmission = () => {};
   try {
-    pidManifestClaimed = claimRuntimePidManifest(
-      {
-        pid: process.pid,
-        name: agentName,
-        port,
-        configPath: resolve(configPath),
-        agentDir: resolve(agentDir),
-        startedAt: new Date().toISOString(),
-        mode,
-      },
-      { internalMode: opts.internalMode },
-    );
+    // A foreground runtime briefly owns the same lifecycle fence as operator
+    // controls while it publishes resource claims and its manifest. It must
+    // not slip into the gap after stop removes an old generation but before
+    // stop can report success. A launchd child instead uses its parent's
+    // durable installation-generation fence.
+    if (mode === "dev" && !opts.lifecycleOwned) {
+      releaseRuntimeAdmission = claimAgentLifecycle(config.id, agentName, {
+        auggyDir: opts.auggyDir,
+        processIdentityForPid: opts.processIdentityForPid,
+      });
+    }
+    if (mode === "dev") {
+      const generation = readLaunchdGenerationState(config.id, {
+        auggyDir: opts.auggyDir,
+      });
+      if (generation?.active) {
+        throw new Error(
+          `[runtime] foreground admission is blocked by an active launchd installation. Run "auggy stop ${config.id}" before starting dev mode.`,
+        );
+      }
+    }
+    const processIdentity = (opts.processIdentityForPid ?? getProcessIdentity)(process.pid);
+    if (!processIdentity) {
+      throw new Error("[runtime] unable to verify the current OS process incarnation");
+    }
+    pidManifest = {
+      pid: process.pid,
+      name: agentName,
+      agentId: config.id,
+      claimNonce: randomUUID(),
+      processIdentity,
+      resourceClaims: runtimeResourceClaims(config, agentDir),
+      resourceClaimStore: "sqlite-v1",
+      ...(launchGeneration ? { launchGeneration } : {}),
+      port,
+      configPath: resolve(configPath),
+      agentDir: resolve(agentDir),
+      startedAt: new Date().toISOString(),
+      mode,
+    };
+    pidManifestClaimed = claimRuntimePidManifest(pidManifest, {
+      internalMode: opts.internalMode,
+      auggyDir: opts.auggyDir,
+      processIdentityForPid: opts.processIdentityForPid,
+    });
   } catch (err) {
+    releaseRuntimeOwnership();
     if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error(formatAgentAlreadyRunningMessage(agentName, readPidManifest(agentName)));
+      throw new Error(
+        formatAgentAlreadyRunningMessage(
+          agentName,
+          readPidManifest(config.id, { auggyDir: opts.auggyDir }),
+        ),
+      );
     }
     throw err;
+  } finally {
+    releaseRuntimeAdmission();
   }
 
   // From here on, clean up the PID manifest on any failure.
@@ -214,6 +289,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
     model = await resolveEngine(config.engine, agentDir);
     augments = await resolveAugments(config.augments, agentDir, {
       creator: config.creator,
+      agentId: config.id,
       ...(runtimeDataRoot ? { runtimeDataRoot } : {}),
       selfInspection: {
         name: agentName,
@@ -237,11 +313,12 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
       compactionStrategy: config.settings.compactionStrategy,
       maxInferenceLoops: config.settings.maxInferenceLoops,
       responseLimits: config.engine.responseLimits,
+      providerRequestTimeoutMs: config.engine.requestTimeoutMs,
       turnScheduling: config.settings.turnScheduling,
       coordination: config.settings.coordination,
     };
   } catch (err) {
-    releaseRuntimePidManifest(agentName, pidManifestClaimed);
+    releaseRuntimeOwnership();
     throw err;
   }
 
@@ -259,7 +336,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
     } catch (err) {
       console.error("Error during shutdown:", err);
     }
-    releaseRuntimePidManifest(agentName, pidManifestClaimed);
+    releaseRuntimeOwnership();
     console.log(`${agentName} stopped.`);
     process.exit(0);
   };
@@ -269,12 +346,17 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
 
   // Also clean up PID on unexpected exit.
   process.on("exit", () => {
-    releaseRuntimePidManifest(agentName, pidManifestClaimed);
+    releaseRuntimeOwnership();
   });
 
   // Start the agent.
   console.log("Starting services:");
-  await agent.start();
+  try {
+    await agent.start();
+  } catch (error) {
+    releaseRuntimeOwnership();
+    throw error;
+  }
 
   const consoleUrl = port ? `http://localhost:${port}/console` : null;
   console.log(

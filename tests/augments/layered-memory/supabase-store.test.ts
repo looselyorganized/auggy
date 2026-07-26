@@ -13,6 +13,7 @@ describe("SupabaseStore", () => {
       client,
       table: "agent_memory",
       retentionDays: 90,
+      namespace: "ep",
     });
     await store.initialize();
   });
@@ -194,5 +195,127 @@ describe("SupabaseStore", () => {
     const results = await store.search("fact", "vis_a");
     expect(results.length).toBe(1);
     expect(results[0]!.content).toBe("fresh fact");
+  });
+
+  it("isolates agents sharing a table before reads, limits, and mutations", async () => {
+    const client = createMockSupabase() as unknown as LayeredSupabaseClient;
+    const agentA = createSupabaseStore({
+      client,
+      table: "shared_memory",
+      retentionDays: 90,
+      namespace: "aug1_a",
+    });
+    const agentB = createSupabaseStore({
+      client,
+      table: "shared_memory",
+      retentionDays: 90,
+      namespace: "aug1_b",
+    });
+    const now = Date.now();
+
+    await agentA.write({
+      id: "a-entry",
+      label: "aug1_a:creator:preference",
+      content: "shared search term from A",
+      peerId: "creator",
+      trustLevel: "creator",
+      createdAt: now,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
+    });
+    await agentB.write({
+      id: "b-entry",
+      label: "aug1_b:creator:preference",
+      content: "shared search term from B",
+      peerId: "creator",
+      trustLevel: "creator",
+      createdAt: now + 1,
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
+    });
+
+    const results = await agentA.search("shared search term", "creator", 1);
+    expect(results.map((entry) => entry.id)).toEqual(["a-entry"]);
+    expect(await agentA.read("aug1_b:creator:preference")).toBeNull();
+
+    await agentA.supersede("b-entry", "attacker-controlled");
+    expect((await agentB.read("aug1_b:creator:preference"))?.supersededBy).toBeNull();
+
+    expect(await agentA.forget("creator")).toBe(1);
+    expect(await agentB.read("aug1_b:creator:preference")).not.toBeNull();
+  });
+
+  it("keeps differently-cased namespaces isolated in Postgres predicates", async () => {
+    const client = createMockSupabase() as unknown as LayeredSupabaseClient;
+    const upper = createSupabaseStore({
+      client,
+      table: "case_memory",
+      retentionDays: 90,
+      namespace: "Foo",
+    });
+    const lower = createSupabaseStore({
+      client,
+      table: "case_memory",
+      retentionDays: 90,
+      namespace: "foo",
+    });
+    const base = {
+      content: "case sentinel",
+      peerId: "creator",
+      trustLevel: "creator" as const,
+      createdAt: Date.now(),
+      supersededBy: null,
+      retentionClass: "operational" as const,
+      isVerbatim: false,
+      expiresAt: null,
+    };
+    await upper.write({ ...base, id: "upper", label: "Foo:creator:fact" });
+    await lower.write({ ...base, id: "lower", label: "foo:creator:fact" });
+    expect((await upper.search("case sentinel", "creator")).map((row) => row.id)).toEqual([
+      "upper",
+    ]);
+    await lower.supersede("upper", "cross-case");
+    expect((await upper.read("Foo:creator:fact"))?.supersededBy).toBeNull();
+    expect(await lower.forget("creator")).toBe(1);
+    expect(await upper.read("Foo:creator:fact")).not.toBeNull();
+  });
+
+  it("uses exact owner keys for nested namespaces", async () => {
+    const client = createMockSupabase() as unknown as LayeredSupabaseClient;
+    const parent = createSupabaseStore({
+      client,
+      table: "nested_memory",
+      retentionDays: 90,
+      namespace: "Foo",
+    });
+    const child = createSupabaseStore({
+      client,
+      table: "nested_memory",
+      retentionDays: 90,
+      namespace: "Foo:bar",
+    });
+    const common = {
+      label: "Foo:bar:peer:fact",
+      peerId: "peer",
+      trustLevel: "public" as const,
+      createdAt: Date.now(),
+      supersededBy: null,
+      retentionClass: "operational" as const,
+      isVerbatim: false,
+      expiresAt: null,
+    };
+    await parent.write({ ...common, id: "parent", content: "parent-owned" });
+    await child.write({ ...common, id: "child", content: "child-owned" });
+
+    expect((await parent.search("owned", "peer")).map((row) => row.id)).toEqual(["parent"]);
+    expect((await child.search("owned", "peer")).map((row) => row.id)).toEqual(["child"]);
+    await parent.supersede("child", "forged");
+    expect((await child.read(common.label))?.supersededBy).toBeNull();
+    expect(await parent.forget("peer")).toBe(1);
+    expect((await child.read(common.label))?.id).toBe("child");
   });
 });

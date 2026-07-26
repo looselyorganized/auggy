@@ -1,7 +1,11 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { createSqliteStore } from "@/augments/layeredMemory/storage/sqlite-store";
+import {
+  createSqliteStore,
+  deleteSqliteMemoryForPeer,
+  reassignSqliteMemoryPeerId,
+} from "@/augments/layeredMemory/storage/sqlite-store";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 import type { MemoryStore } from "@/augments/layeredMemory/storage/types";
 
@@ -474,5 +478,324 @@ describe("SqliteStore", () => {
     const results = await store.search("%");
     expect(results.length).toBe(1);
     expect(results[0]!.content).toContain("%");
+  });
+
+  it("isolates agents sharing a database before reads, limits, and mutations", async () => {
+    const sharedPath = `${dbPath}.shared`;
+    const agentA = createSqliteStore({
+      dbPath: sharedPath,
+      retentionDays: 90,
+      namespace: "aug1_a",
+    });
+    const agentB = createSqliteStore({
+      dbPath: sharedPath,
+      retentionDays: 90,
+      namespace: "aug1_b",
+    });
+    const now = Date.now();
+
+    try {
+      await agentA.write({
+        id: "a-entry",
+        label: "aug1_a:creator:preference",
+        content: "shared search term from A",
+        peerId: "creator",
+        trustLevel: "creator",
+        createdAt: now,
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      });
+      await agentB.write({
+        id: "b-entry",
+        label: "aug1_b:creator:preference",
+        content: "shared search term from B",
+        peerId: "creator",
+        trustLevel: "creator",
+        createdAt: now + 1,
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      });
+
+      expect(
+        (await agentA.search("shared search term", "creator", 1)).map((entry) => entry.id),
+      ).toEqual(["a-entry"]);
+      expect(await agentA.read("aug1_b:creator:preference")).toBeNull();
+      expect(
+        (await agentA.listEntriesByPeer?.({ peerId: "creator" }))?.map((entry) => entry.id),
+      ).toEqual(["a-entry"]);
+      expect((await agentA.listEntriesByPeer?.())?.map((entry) => entry.id)).toEqual(["a-entry"]);
+      expect(await agentA.countByRetentionClass?.()).toEqual({
+        operational: 1,
+        lesson: 0,
+        total: 1,
+      });
+
+      await agentA.supersede("b-entry", "attacker-controlled");
+      expect((await agentB.read("aug1_b:creator:preference"))?.supersededBy).toBeNull();
+
+      const probe = new Database(sharedPath);
+      probe.run("UPDATE entries SET expires_at = ? WHERE id = ?", [Date.now() - 1, "b-entry"]);
+      probe.close();
+      const originalRandom = Math.random;
+      Math.random = () => 0;
+      try {
+        await agentA.write({
+          id: "a-sweep-trigger",
+          label: "aug1_a:creator:sweep-trigger",
+          content: "trigger a sampled cleanup",
+          peerId: "creator",
+          trustLevel: "creator",
+          createdAt: now + 2,
+          supersededBy: null,
+          retentionClass: "lesson",
+          isVerbatim: false,
+          expiresAt: null,
+        });
+      } finally {
+        Math.random = originalRandom;
+      }
+      const afterSweep = new Database(sharedPath);
+      expect(
+        afterSweep
+          .query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM entries WHERE id = ?")
+          .get("b-entry")?.n,
+      ).toBe(1);
+      afterSweep.run("UPDATE entries SET expires_at = NULL WHERE id = ?", ["b-entry"]);
+      afterSweep.close();
+
+      expect(await agentA.forget("creator")).toBe(2);
+      expect(await agentB.read("aug1_b:creator:preference")).not.toBeNull();
+    } finally {
+      await agentA.close();
+      await agentB.close();
+    }
+  });
+
+  it("treats differently-cased namespaces as distinct security principals", async () => {
+    const sharedPath = `${dbPath}.case-sensitive`;
+    const upper = createSqliteStore({ dbPath: sharedPath, retentionDays: 90, namespace: "Foo" });
+    const lower = createSqliteStore({ dbPath: sharedPath, retentionDays: 90, namespace: "foo" });
+    const now = Date.now();
+    try {
+      await upper.write({
+        id: "upper",
+        label: "Foo:peer:fact",
+        content: "case sentinel",
+        peerId: "peer",
+        trustLevel: "public",
+        createdAt: now,
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      });
+      await lower.write({
+        id: "lower",
+        label: "foo:peer:fact",
+        content: "case sentinel",
+        peerId: "peer",
+        trustLevel: "public",
+        createdAt: now + 1,
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      });
+
+      expect((await upper.search("case sentinel", "peer")).map((row) => row.id)).toEqual(["upper"]);
+      expect((await lower.listEntriesByPeer?.({ peerId: "peer" }))?.map((row) => row.id)).toEqual([
+        "lower",
+      ]);
+      await lower.supersede("upper", "cross-case");
+      expect((await upper.read("Foo:peer:fact"))?.supersededBy).toBeNull();
+      expect(await lower.forget("peer")).toBe(1);
+      expect(await upper.read("Foo:peer:fact")).not.toBeNull();
+    } finally {
+      await upper.close();
+      await lower.close();
+    }
+  });
+
+  it("uses exact owner keys for nested namespaces and destructive operations", async () => {
+    const sharedPath = `${dbPath}.nested`;
+    const parent = createSqliteStore({ dbPath: sharedPath, retentionDays: 90, namespace: "Foo" });
+    const child = createSqliteStore({
+      dbPath: sharedPath,
+      retentionDays: 90,
+      namespace: "Foo:bar",
+    });
+    const common = {
+      label: "Foo:bar:peer:fact",
+      peerId: "peer",
+      trustLevel: "public" as const,
+      createdAt: Date.now(),
+      supersededBy: null,
+      retentionClass: "operational" as const,
+      isVerbatim: false,
+      expiresAt: null,
+    };
+    try {
+      await parent.write({ ...common, id: "parent", content: "parent-owned" });
+      await child.write({ ...common, id: "child", content: "child-owned" });
+
+      expect((await parent.search("owned", "peer")).map((row) => row.id)).toEqual(["parent"]);
+      expect((await child.search("owned", "peer")).map((row) => row.id)).toEqual(["child"]);
+      expect((await parent.listEntriesByPeer({ peerId: "peer" })).map((row) => row.id)).toEqual([
+        "parent",
+      ]);
+      expect(await parent.countByRetentionClass()).toEqual({
+        operational: 1,
+        lesson: 0,
+        total: 1,
+      });
+
+      await parent.supersede("child", "forged");
+      expect((await child.read(common.label))?.supersededBy).toBeNull();
+
+      const probe = new Database(sharedPath);
+      probe.run("UPDATE entries SET expires_at = ? WHERE id = ?", [Date.now() - 1, "child"]);
+      probe.close();
+      expect(await parent.cleanup()).toBe(0);
+      const afterCleanup = new Database(sharedPath);
+      expect(
+        afterCleanup
+          .query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM entries WHERE id = ?")
+          .get("child")?.n,
+      ).toBe(1);
+      afterCleanup.run("UPDATE entries SET expires_at = NULL WHERE id = ?", ["child"]);
+      afterCleanup.close();
+
+      expect(await parent.forget("peer")).toBe(1);
+      expect((await child.read(common.label))?.id).toBe("child");
+    } finally {
+      await parent.close();
+      await child.close();
+    }
+  });
+
+  it("rejects a supplied blank namespace instead of opening an unscoped store", () => {
+    expect(() =>
+      createSqliteStore({ dbPath: `${dbPath}.blank`, retentionDays: 90, namespace: "   " }),
+    ).toThrow(/namespace.*1 to 256/i);
+  });
+
+  it("atomically tombstones a revoked peer against concurrent and future writes", async () => {
+    const sharedPath = `${dbPath}.tombstone`;
+    const first = createSqliteStore({ dbPath: sharedPath, retentionDays: 90, namespace: "ep" });
+    const second = createSqliteStore({ dbPath: sharedPath, retentionDays: 90, namespace: "ep" });
+    const writes = Array.from({ length: 20 }, (_, index) =>
+      first.write({
+        id: `racy-${index}`,
+        label: `ep:revoked:${index}`,
+        content: "must not survive revocation",
+        peerId: "revoked",
+        trustLevel: "public",
+        createdAt: Date.now(),
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      }),
+    );
+    const deletion = Promise.resolve().then(() =>
+      deleteSqliteMemoryForPeer(sharedPath, "ep", "revoked"),
+    );
+    await Promise.allSettled([...writes, deletion]);
+
+    expect(await second.search("must not survive", "revoked")).toEqual([]);
+    await expect(
+      second.write({
+        label: "ep:revoked:late",
+        content: "late write",
+        peerId: "revoked",
+        trustLevel: "public",
+        createdAt: Date.now(),
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      }),
+    ).rejects.toThrow(/tombstoned/i);
+    await first.close();
+    await second.close();
+  });
+
+  it("retires anonymous memory when the migration destination is already revoked", async () => {
+    const sharedPath = `${dbPath}.revoked-migration`;
+    const namespaced = createSqliteStore({
+      dbPath: sharedPath,
+      retentionDays: 90,
+      namespace: "ep",
+    });
+    await namespaced.write({
+      label: "ep:anonymous:before-revoke",
+      content: "must be erased",
+      peerId: "anon-source",
+      trustLevel: "public",
+      createdAt: Date.now(),
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
+    });
+
+    deleteSqliteMemoryForPeer(sharedPath, "ep", "vis-revoked");
+    expect(reassignSqliteMemoryPeerId(sharedPath, "ep", "anon-source", "vis-revoked")).toBe(0);
+    expect(await namespaced.search("must be erased", "anon-source")).toEqual([]);
+    await expect(
+      namespaced.write({
+        label: "ep:anonymous:after-revoke",
+        content: "must fail",
+        peerId: "anon-source",
+        trustLevel: "public",
+        createdAt: Date.now(),
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      }),
+    ).rejects.toThrow(/tombstoned/i);
+    await namespaced.close();
+  });
+
+  it("treats a same-peer migration as a mutation-free no-op", async () => {
+    const sharedPath = `${dbPath}.same-peer-migration`;
+    const namespaced = createSqliteStore({
+      dbPath: sharedPath,
+      retentionDays: 90,
+      namespace: "ep",
+    });
+    await namespaced.write({
+      label: "ep:recognized:before-reverify",
+      content: "must survive same-peer reverification",
+      peerId: "vis-same",
+      trustLevel: "public",
+      createdAt: Date.now(),
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
+    });
+
+    expect(reassignSqliteMemoryPeerId(sharedPath, "ep", "vis-same", "vis-same")).toBe(0);
+    expect(await namespaced.search("survive", "vis-same")).toHaveLength(1);
+    await expect(
+      namespaced.write({
+        label: "ep:recognized:after-reverify",
+        content: "writes remain enabled",
+        peerId: "vis-same",
+        trustLevel: "public",
+        createdAt: Date.now(),
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      }),
+    ).resolves.toBeDefined();
+    await namespaced.close();
   });
 });

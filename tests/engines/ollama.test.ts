@@ -14,6 +14,8 @@ let nextResponse: ChatResponse | null = null;
 let nextStreamChunks: ChatResponse[] | null = null;
 let throwOnChat: Error | null = null;
 let streamAbortCalls = 0;
+let chatOverride: (() => Promise<ChatResponse | AsyncIterable<ChatResponse>>) | null = null;
+let chatCalls = 0;
 
 const defaultResponse = (): ChatResponse => ({
   model: "llama3.2",
@@ -35,8 +37,10 @@ mock.module("ollama", () => {
       lastConstructorArgs = config ?? null;
     }
     async chat(req: ChatRequest): Promise<ChatResponse | AsyncIterable<ChatResponse>> {
+      chatCalls++;
       lastChatArgs = req;
       if (throwOnChat) throw throwOnChat;
+      if (chatOverride) return chatOverride();
       if (req.stream === true) {
         const chunks = nextStreamChunks ?? [defaultResponse()];
         const stream = {
@@ -65,6 +69,8 @@ beforeEach(() => {
   nextStreamChunks = null;
   throwOnChat = null;
   streamAbortCalls = 0;
+  chatOverride = null;
+  chatCalls = 0;
 });
 
 // ---------------------------------------------------------------------------
@@ -427,6 +433,17 @@ describe("createOllamaEngine — streaming", () => {
     expect(result.content).toBe("buffered");
   });
 
+  test("bounds stream setup and performs one ambiguous attempt", async () => {
+    chatOverride = () => new Promise<ChatResponse>(() => {});
+    const engine = createOllamaEngine({ model: "llama3.2", requestTimeoutMs: 5 });
+
+    await expect(engine.complete(emptyPrompt(), { onDelta: () => {} })).rejects.toMatchObject({
+      name: "ProviderRequestTimeoutError",
+    });
+    expect(chatCalls).toBe(1);
+    expect(lastChatArgs?.stream).toBe(true);
+  });
+
   test("emits text_delta for each chunk + buffers final ModelResponse", async () => {
     const engine = createOllamaEngine({ model: "llama3.2" });
     nextStreamChunks = [
@@ -618,8 +635,9 @@ describe("createOllamaEngine — credential-safe errors", () => {
 });
 
 describe("createOllamaEngine — response limits", () => {
-  test("injects the bounded transport into the SDK", () => {
-    createOllamaEngine({ model: "llama3.2" });
+  test("injects the bounded transport into the SDK", async () => {
+    const engine = createOllamaEngine({ model: "llama3.2" });
+    await engine.complete(emptyPrompt());
     expect(typeof lastConstructorArgs?.fetch).toBe("function");
   });
 

@@ -606,7 +606,7 @@ async function runCreateIntoDir(
     const autoGenLines: string[] = [];
     if (augments.some((e) => e.type === "webTransport")) {
       autoGenLines.push(`AUGGY_WEB_TOKEN=${randomBytes(32).toString("hex")}`);
-      autoGenLines.push(`AUGGY_AGENT_ID=${name}`);
+      autoGenLines.push(`AUGGY_AGENT_ID=${id}`);
       const webTransportEntry = augments.find((e) => e.type === "webTransport");
       const port =
         (webTransportEntry?.defaultOptions as { port?: number } | undefined)?.port ?? 8080;

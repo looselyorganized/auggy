@@ -6,6 +6,10 @@ import { assembleSystemBlocks } from "auggy/internal/prompt-assembly";
 import { assertSecureCredentialTransport } from "auggy/internal/credential-transport";
 import { providerRequestError } from "auggy/internal/provider-error";
 import {
+  resolveProviderRequestTimeoutMs,
+  withProviderRequestDeadline,
+} from "auggy/internal/provider-resilience";
+import {
   createBoundedModelFetch,
   findModelResponseLimitError,
   ModelResponseLimitError,
@@ -70,6 +74,8 @@ export interface AnthropicEngineOptions {
   costOverride?: import("auggy/internal/cost").Pricing;
   /** Finite application-layer response limits. Omitted fields use secure defaults. */
   responseLimits?: Partial<ModelResponseLimits>;
+  /** One-attempt request deadline. Default 120s, maximum 10 minutes. */
+  requestTimeoutMs?: number;
 }
 
 function isProviderRecord(value: unknown): value is Record<string, unknown> {
@@ -78,6 +84,7 @@ function isProviderRecord(value: unknown): value is Record<string, unknown> {
 
 export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient {
   const responseLimits = resolveModelResponseLimits(opts.responseLimits);
+  const requestTimeoutMs = resolveProviderRequestTimeoutMs(opts.requestTimeoutMs);
   const effectiveApiKey = opts.apiKey ?? process.env.ANTHROPIC_API_KEY;
   assertSecureCredentialTransport({
     provider: "Anthropic",
@@ -88,6 +95,8 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
   const client = new Anthropic({
     apiKey: effectiveApiKey,
     baseURL: opts.baseURL,
+    timeout: requestTimeoutMs,
+    maxRetries: 0,
     fetch: createBoundedModelFetch(
       globalThis.fetch.bind(globalThis) as typeof fetch,
       responseLimits,
@@ -137,159 +146,153 @@ export function createAnthropicEngine(opts: AnthropicEngineOptions): ModelClient
       prompt: AssembledPrompt,
       opts2?: { onDelta?: (delta: ModelDelta) => void; signal?: AbortSignal },
     ): Promise<ModelResponse> {
-      const system = assembleSystemBlocks(prompt);
-      const messages = convertMessages(prompt.messages);
-      const tools = convertTools(prompt.tools);
-      const toolChoice =
-        prompt.toolChoice === "any"
-          ? { type: "any" as const }
-          : prompt.toolChoice === "auto" || !prompt.toolChoice
-            ? { type: "auto" as const }
-            : { type: "tool" as const, name: prompt.toolChoice.name };
+      opts2?.signal?.throwIfAborted();
+      return withProviderRequestDeadline(opts2?.signal, requestTimeoutMs, async (requestSignal) => {
+        const system = assembleSystemBlocks(prompt);
+        const messages = convertMessages(prompt.messages);
+        const tools = convertTools(prompt.tools);
+        const toolChoice =
+          prompt.toolChoice === "any"
+            ? { type: "any" as const }
+            : prompt.toolChoice === "auto" || !prompt.toolChoice
+              ? { type: "auto" as const }
+              : { type: "tool" as const, name: prompt.toolChoice.name };
 
-      const params = {
-        model: opts.model,
-        max_tokens: maxOutputTokens,
-        system,
-        messages,
-        ...(tools.length > 0 ? { tools, tool_choice: toolChoice } : {}),
-      };
+        const params = {
+          model: opts.model,
+          max_tokens: maxOutputTokens,
+          system,
+          messages,
+          ...(tools.length > 0 ? { tools, tool_choice: toolChoice } : {}),
+        };
 
-      const accountingForUsage = (rawUsage: Anthropic.Messages.Usage) => {
-        const usage: Record<string, unknown> = isProviderRecord(rawUsage) ? rawUsage : {};
-        const inputTokens = (usage.input_tokens ?? Number.NaN) as number;
-        const outputTokens = (usage.output_tokens ?? Number.NaN) as number;
-        const cacheCreationTokens = usage.cache_creation_input_tokens as number | null | undefined;
-        const cacheReadTokens = usage.cache_read_input_tokens as number | null | undefined;
-        const result = priceAnthropicResponse(opts.model, opts.costOverride, {
-          input_tokens: inputTokens,
-          output_tokens: outputTokens,
-          cache_creation_input_tokens: cacheCreationTokens ?? null,
-          cache_read_input_tokens: cacheReadTokens ?? null,
-          // cache_creation (TTL breakdown) and service_tier are new fields not yet
-          // in the Anthropic SDK type; cast defensively via unknown.
-          cache_creation: usage.cache_creation as
-            | { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number }
+        const accountingForUsage = (rawUsage: Anthropic.Messages.Usage) => {
+          const usage: Record<string, unknown> = isProviderRecord(rawUsage) ? rawUsage : {};
+          const inputTokens = (usage.input_tokens ?? Number.NaN) as number;
+          const outputTokens = (usage.output_tokens ?? Number.NaN) as number;
+          const cacheCreationTokens = usage.cache_creation_input_tokens as
+            | number
             | null
-            | undefined,
-          service_tier: usage.service_tier as
-            | string
-            | null
-            | undefined,
-        });
-        const base = {
-          inputTokens,
-          outputTokens,
-          ...(cacheCreationTokens != null
-            ? { cacheCreationTokens }
-            : {}),
-          ...(cacheReadTokens != null
-            ? { cacheReadTokens }
-            : {}),
-        };
-        return result.priced
-          ? { ...base, costUsd: result.costUsd }
-          : { ...base, unpricedReason: result.reason };
-      };
-      const withAccounting = (
-        response: ModelResponse,
-        accounting: ReturnType<typeof accountingForUsage>,
-      ): ModelResponse => {
-        return {
-          ...response,
-          ...("costUsd" in accounting ? { costUsd: accounting.costUsd } : {}),
-          ...("unpricedReason" in accounting
-            ? { unpricedReason: accounting.unpricedReason }
-            : {}),
-        };
-      };
-      const incompleteAccountingForUsage = (rawUsage: unknown) => {
-        const usage: Record<string, unknown> = isProviderRecord(rawUsage) ? rawUsage : {};
-        return {
-          inputTokens: (usage.input_tokens ?? 0) as number,
-          outputTokens: (usage.output_tokens ?? 0) as number,
-          ...(usage.cache_creation_input_tokens !== undefined
-            ? { cacheCreationTokens: usage.cache_creation_input_tokens as number }
-            : {}),
-          ...(usage.cache_read_input_tokens !== undefined
-            ? { cacheReadTokens: usage.cache_read_input_tokens as number }
-            : {}),
-          unpricedReason:
-            "Anthropic stream ended after a response limit before final billing usage was available.",
-        };
-      };
-
-      try {
-        if (opts2?.onDelta) {
-          // Streaming path: emit text deltas as they arrive from the model.
-          // Tool-use blocks are NOT streamed in v1 — they arrive in the
-          // finalMessage. This is intentional: text streaming is the latency
-          // win; tool args are small.
-          const stream = client.messages.stream(params, { signal: opts2.signal });
-          const tracker = new StreamingResponseLimitTracker(responseLimits);
-          const limitFailure: { error: ModelResponseLimitError | null } = { error: null };
-          stream.on("text", (text) => {
-            if (limitFailure.error) return;
-            try {
-              if (typeof text !== "string") {
-                throw new ModelResponseLimitError("maxTextBytes");
-              }
-              tracker.pushText(text);
-            } catch (error) {
-              limitFailure.error =
-                error instanceof ModelResponseLimitError
-                  ? error
-                  : new ModelResponseLimitError("maxTextBytes");
-              stream.abort();
-              return;
-            }
-            opts2.onDelta!({ kind: "text_delta", text });
+            | undefined;
+          const cacheReadTokens = usage.cache_read_input_tokens as number | null | undefined;
+          const result = priceAnthropicResponse(opts.model, opts.costOverride, {
+            input_tokens: inputTokens,
+            output_tokens: outputTokens,
+            cache_creation_input_tokens: cacheCreationTokens ?? null,
+            cache_read_input_tokens: cacheReadTokens ?? null,
+            // cache_creation (TTL breakdown) and service_tier are new fields not yet
+            // in the Anthropic SDK type; cast defensively via unknown.
+            cache_creation: usage.cache_creation as
+              | { ephemeral_5m_input_tokens?: number; ephemeral_1h_input_tokens?: number }
+              | null
+              | undefined,
+            service_tier: usage.service_tier as string | null | undefined,
           });
-          let finalMessage: Anthropic.Messages.Message;
-          try {
-            finalMessage = await stream.finalMessage();
-          } catch (error) {
-            if (limitFailure.error) {
-              const partialUsage = (
-                stream as unknown as { currentMessage?: { usage?: unknown } }
-              ).currentMessage?.usage;
-              throw limitFailure.error.withAccounting(
-                incompleteAccountingForUsage(partialUsage),
-              );
+          const base = {
+            inputTokens,
+            outputTokens,
+            ...(cacheCreationTokens != null ? { cacheCreationTokens } : {}),
+            ...(cacheReadTokens != null ? { cacheReadTokens } : {}),
+          };
+          return result.priced
+            ? { ...base, costUsd: result.costUsd }
+            : { ...base, unpricedReason: result.reason };
+        };
+        const withAccounting = (
+          response: ModelResponse,
+          accounting: ReturnType<typeof accountingForUsage>,
+        ): ModelResponse => {
+          return {
+            ...response,
+            ...("costUsd" in accounting ? { costUsd: accounting.costUsd } : {}),
+            ...("unpricedReason" in accounting
+              ? { unpricedReason: accounting.unpricedReason }
+              : {}),
+          };
+        };
+        const incompleteAccountingForUsage = (rawUsage: unknown) => {
+          const usage: Record<string, unknown> = isProviderRecord(rawUsage) ? rawUsage : {};
+          return {
+            inputTokens: (usage.input_tokens ?? 0) as number,
+            outputTokens: (usage.output_tokens ?? 0) as number,
+            ...(usage.cache_creation_input_tokens !== undefined
+              ? { cacheCreationTokens: usage.cache_creation_input_tokens as number }
+              : {}),
+            ...(usage.cache_read_input_tokens !== undefined
+              ? { cacheReadTokens: usage.cache_read_input_tokens as number }
+              : {}),
+            unpricedReason:
+              "Anthropic stream ended after a response limit before final billing usage was available.",
+          };
+        };
+
+        try {
+          if (opts2?.onDelta) {
+            // Streaming path: emit text deltas as they arrive from the model.
+            // Tool-use blocks are NOT streamed in v1 — they arrive in the
+            // finalMessage. This is intentional: text streaming is the latency
+            // win; tool args are small.
+            const stream = client.messages.stream(params, { signal: requestSignal });
+            const tracker = new StreamingResponseLimitTracker(responseLimits);
+            const limitFailure: { error: ModelResponseLimitError | null } = { error: null };
+            stream.on("text", (text) => {
+              if (requestSignal.aborted || limitFailure.error) return;
+              try {
+                if (typeof text !== "string") {
+                  throw new ModelResponseLimitError("maxTextBytes");
+                }
+                tracker.pushText(text);
+              } catch (error) {
+                limitFailure.error =
+                  error instanceof ModelResponseLimitError
+                    ? error
+                    : new ModelResponseLimitError("maxTextBytes");
+                stream.abort();
+                return;
+              }
+              if (!requestSignal.aborted) opts2.onDelta!({ kind: "text_delta", text });
+            });
+            let finalMessage: Anthropic.Messages.Message;
+            try {
+              finalMessage = await stream.finalMessage();
+            } catch (error) {
+              if (limitFailure.error) {
+                const partialUsage = (stream as unknown as { currentMessage?: { usage?: unknown } })
+                  .currentMessage?.usage;
+                throw limitFailure.error.withAccounting(incompleteAccountingForUsage(partialUsage));
+              }
+              throw error;
             }
-            throw error;
+            const accounting = accountingForUsage(finalMessage.usage);
+            if (limitFailure.error) throw limitFailure.error.withAccounting(accounting);
+            try {
+              return withAccounting(buildModelResponse(finalMessage, responseLimits), accounting);
+            } catch (error) {
+              if (error instanceof ModelResponseLimitError) {
+                throw error.withAccounting(accounting);
+              }
+              throw error;
+            }
           }
-          const accounting = accountingForUsage(finalMessage.usage);
-          if (limitFailure.error) throw limitFailure.error.withAccounting(accounting);
+
+          // Non-streaming path (backward compat for tests, other consumers)
+          const response = await client.messages.create(params, { signal: requestSignal });
+          const accounting = accountingForUsage(response.usage);
           try {
-            return withAccounting(
-              buildModelResponse(finalMessage, responseLimits),
-              accounting,
-            );
+            return withAccounting(buildModelResponse(response, responseLimits), accounting);
           } catch (error) {
             if (error instanceof ModelResponseLimitError) {
               throw error.withAccounting(accounting);
             }
             throw error;
           }
+        } catch (err) {
+          const responseLimitError = findModelResponseLimitError(err);
+          if (responseLimitError) throw responseLimitError;
+          if (requestSignal.aborted) throw requestSignal.reason;
+          rewrapProviderError(err, opts.model);
         }
-
-        // Non-streaming path (backward compat for tests, other consumers)
-        const response = await client.messages.create(params, { signal: opts2?.signal });
-        const accounting = accountingForUsage(response.usage);
-        try {
-          return withAccounting(buildModelResponse(response, responseLimits), accounting);
-        } catch (error) {
-          if (error instanceof ModelResponseLimitError) {
-            throw error.withAccounting(accounting);
-          }
-          throw error;
-        }
-      } catch (err) {
-        const responseLimitError = findModelResponseLimitError(err);
-        if (responseLimitError) throw responseLimitError;
-        rewrapProviderError(err, opts.model);
-      }
+      });
     },
   };
 }
@@ -514,20 +517,14 @@ function buildModelResponse(
       if (typeof block.text !== "string") {
         throw new ModelResponseLimitError("maxTextBytes");
       }
-      contentBytes += utf8ByteLength(
-        block.text,
-        Math.max(0, limits.maxTextBytes - contentBytes),
-      );
+      contentBytes += utf8ByteLength(block.text, Math.max(0, limits.maxTextBytes - contentBytes));
       if (contentBytes > limits.maxTextBytes) {
         throw new ModelResponseLimitError("maxTextBytes");
       }
       content += block.text;
     } else if (block.type === "tool_use") {
       const input = block.input;
-      if (
-        typeof block.name !== "string" ||
-        !isProviderRecord(input)
-      ) {
+      if (typeof block.name !== "string" || !isProviderRecord(input)) {
         throw new ModelResponseLimitError("maxToolArgumentBytes");
       }
       if (toolCalls.length >= limits.maxToolCalls) {
@@ -550,13 +547,18 @@ function buildModelResponse(
   const cacheCreationTokens = usage.cache_creation_input_tokens ?? undefined;
   const cacheReadTokens = usage.cache_read_input_tokens ?? undefined;
 
-  return validateModelResponse({
-    content,
-    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-    inputTokens: (usage.input_tokens ?? Number.NaN) as number,
-    outputTokens: (usage.output_tokens ?? Number.NaN) as number,
-    ...(cacheCreationTokens !== undefined ? { cacheCreationTokens: cacheCreationTokens as number } : {}),
-    ...(cacheReadTokens !== undefined ? { cacheReadTokens: cacheReadTokens as number } : {}),
-    finishReason,
-  }, limits);
+  return validateModelResponse(
+    {
+      content,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      inputTokens: (usage.input_tokens ?? Number.NaN) as number,
+      outputTokens: (usage.output_tokens ?? Number.NaN) as number,
+      ...(cacheCreationTokens !== undefined
+        ? { cacheCreationTokens: cacheCreationTokens as number }
+        : {}),
+      ...(cacheReadTokens !== undefined ? { cacheReadTokens: cacheReadTokens as number } : {}),
+      finishReason,
+    },
+    limits,
+  );
 }

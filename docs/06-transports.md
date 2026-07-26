@@ -281,9 +281,16 @@ export interface WebTransportOptions {
 | `POST` | `/agent/run` | AG-UI SSE endpoint. Streams events for one turn. |
 | `GET` | `/` | Optional 302 redirect to `publicFrontendUrl`; otherwise a minimal public placeholder. |
 | `GET` | `/agent` | Optional published developer integration page when `publicIntegration: true`. |
-| `GET` | `/health` | Liveness check. Returns `{status: "healthy"}`. |
+| `GET` | `/health` | Liveness check. Returns `{status: "healthy"}`. It is deliberately not a readiness or capacity probe. |
 | `GET` | `/.well-known/agent-card.json` | Legacy Auggy runtime metadata. Published only when `publicIntegration: true`; otherwise bearer-only. Not a current A2A Agent Card. |
 | (anything else) | `404 Not Found` |
+
+`/health` remains a compatibility-stable process/listener liveness endpoint.
+Do not use it to decide whether a turn will be admitted. Authenticated
+operators can inspect the process-local readiness and capacity snapshot in the
+console dashboard; embedders can call `agent.operationalSnapshot()`. The
+snapshot reports `accepting`, `draining`, `stopped`, and `not-started`
+explicitly.
 
 ### `POST /agent/run` — the main path
 

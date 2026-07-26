@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronRight } from "lucide-react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate } from "react-router";
 
 import { ChatComposer } from "@/components/admin/ChatComposer";
 import { useChatWorkspace } from "@/components/admin/ChatWorkspaceProvider";

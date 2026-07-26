@@ -19,7 +19,6 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  renameSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -27,7 +26,9 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { parse as parseYaml } from "yaml";
 import type { CloudRecord, IndexEntry } from "./types";
+import { readDurableJson, writeDurableJson } from "../lib/durable-json";
 
 const CLOUD_FILENAME = ".auggy-cloud.json";
 
@@ -76,19 +77,58 @@ function readCloud(localDir: string): CloudRecord {
   const path = cloudPath(localDir);
   if (!existsSync(path)) return null;
   try {
-    const raw = readFileSync(path, "utf-8");
-    const parsed = JSON.parse(raw) as NonNullable<CloudRecord>;
-    return parsed;
+    return readDurableJson(path, "cloud deployment metadata", 64 * 1024) as CloudRecord;
   } catch {
     return null;
   }
 }
 
+/** Read deployment metadata only when it is well-formed and identity-bound. */
+export function readBoundCloudRecord(localDir: string, agentId: string): CloudRecord {
+  const path = cloudPath(localDir);
+  if (!existsSync(path)) return null;
+  let record: CloudRecord;
+  try {
+    record = readDurableJson(path, "cloud deployment metadata", 64 * 1024) as CloudRecord;
+  } catch (error) {
+    throw new Error(`Invalid cloud deployment metadata at ${path}; refusing cloud mutation.`, {
+      cause: error,
+    });
+  }
+  if (
+    record?.version !== 1 ||
+    record.agentId !== agentId ||
+    record.provider !== "railway" ||
+    !record.projectId ||
+    !record.serviceId ||
+    !record.url ||
+    !record.volumeId ||
+    !Number.isFinite(Date.parse(record.deployedAt))
+  ) {
+    throw new Error(
+      `Cloud deployment metadata at ${path} is legacy, malformed, or belongs to another immutable agent. Remove it explicitly only after verifying the Railway target.`,
+    );
+  }
+  return record;
+}
+
 function writeCloud(localDir: string, record: NonNullable<CloudRecord>): void {
   const path = cloudPath(localDir);
-  const tmp = `${path}.tmp-${process.pid}`;
-  writeFileSync(tmp, `${JSON.stringify(record, null, 2)}\n`);
-  renameSync(tmp, path);
+  const parsed = parseYaml(readFileSync(join(localDir, "agent.yaml"), "utf8")) as Record<
+    string,
+    unknown
+  > | null;
+  const agentId = parsed?.id;
+  if (
+    typeof agentId !== "string" ||
+    !/^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(agentId)
+  ) {
+    throw new Error("Cannot write cloud metadata without a valid immutable agent id");
+  }
+  if (record.agentId !== undefined && record.agentId !== agentId) {
+    throw new Error("Cannot bind cloud metadata to a different immutable agent");
+  }
+  writeDurableJson(path, { ...record, version: 1, agentId }, "cloud deployment metadata");
 }
 
 function deleteCloud(localDir: string): void {
@@ -266,7 +306,10 @@ export function seedAgentForTest(
 ): string {
   const localDir = agentDir(name, opts);
   mkdirSync(localDir, { recursive: true });
-  writeFileSync(join(localDir, "agent.yaml"), opts.yaml ?? `id: aug1_${name}\nname: ${name}\n`);
+  writeFileSync(
+    join(localDir, "agent.yaml"),
+    opts.yaml ?? `id: aug1_00000000-0000-4000-8000-000000000001\nname: ${name}\n`,
+  );
   if (opts.cloud) {
     writeCloud(localDir, opts.cloud);
   }

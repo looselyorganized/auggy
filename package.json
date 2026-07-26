@@ -46,6 +46,7 @@
     "./internal/response-limits": "./src/engines/_shared/response-limits.ts",
     "./internal/credential-transport": "./src/engines/_shared/credential-transport.ts",
     "./internal/provider-error": "./src/engines/_shared/provider-error.ts",
+    "./internal/provider-resilience": "./src/engines/_shared/provider-resilience.ts",
     "./internal/anthropic-pricing": "./src/engines/anthropic/pricing.ts",
     "./internal/openai-pricing": "./src/engines/openai/pricing.ts",
     "./internal/openrouter-pricing": "./src/engines/openrouter/pricing.ts",

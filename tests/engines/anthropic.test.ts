@@ -145,6 +145,11 @@ let lastAnthropicConstructorArgs: Record<string, unknown> | null = null;
 let nextAnthropicStreamTexts: string[] | null = null;
 let anthropicStreamAbortCalls = 0;
 let anthropicAbortRejectsFinal = false;
+let anthropicCreateOverride: (() => Promise<Record<string, unknown>>) | null = null;
+let anthropicFinalMessageOverride: (() => Promise<Record<string, unknown>>) | null = null;
+let anthropicAbortText: string | null = null;
+let anthropicCreateCalls = 0;
+let anthropicStreamCalls = 0;
 
 mock.module("@anthropic-ai/sdk", () => {
   const makeResponse = (overrides?: Record<string, unknown>) =>
@@ -169,6 +174,7 @@ mock.module("@anthropic-ai/sdk", () => {
         _params: Record<string, unknown>,
         requestOptions?: { signal?: AbortSignal },
       ) => {
+        anthropicCreateCalls++;
         lastAnthropicRequestOptions = requestOptions ?? null;
         if (nextAnthropicError !== null) {
           // Mimic the shape of `Anthropic.APIError` (has `status` and `message`).
@@ -176,9 +182,12 @@ mock.module("@anthropic-ai/sdk", () => {
             status: nextAnthropicError.status,
           });
         }
+        if (anthropicCreateOverride) return anthropicCreateOverride();
         return nextAnthropicResponse !== null ? nextAnthropicResponse : makeResponse();
       },
-      stream: (_params: Record<string, unknown>) => {
+      stream: (_params: Record<string, unknown>, requestOptions?: { signal?: AbortSignal }) => {
+        anthropicStreamCalls++;
+        lastAnthropicRequestOptions = requestOptions ?? null;
         let onText: ((text: string) => void) | null = null;
         let aborted = false;
         const currentMessage =
@@ -194,7 +203,7 @@ mock.module("@anthropic-ai/sdk", () => {
                 stop_sequence: null,
                 usage: { input_tokens: 100, output_tokens: 50 },
               });
-        return {
+        const stream = {
           currentMessage,
           on(event: string, handler: (text: string) => void) {
             if (event === "text") onText = handler;
@@ -202,8 +211,10 @@ mock.module("@anthropic-ai/sdk", () => {
           abort() {
             anthropicStreamAbortCalls++;
             aborted = true;
+            if (anthropicAbortText) onText?.(anthropicAbortText);
           },
           async finalMessage() {
+            if (anthropicFinalMessageOverride) return anthropicFinalMessageOverride();
             for (const text of nextAnthropicStreamTexts ?? []) onText?.(text);
             if (aborted && anthropicAbortRejectsFinal) {
               throw new Error("stream aborted");
@@ -211,6 +222,8 @@ mock.module("@anthropic-ai/sdk", () => {
             return currentMessage;
           },
         };
+        requestOptions?.signal?.addEventListener("abort", () => stream.abort(), { once: true });
+        return stream;
       },
     };
   }
@@ -234,11 +247,66 @@ function emptyPrompt(over: Partial<AssembledPrompt> = {}): AssembledPrompt {
 }
 
 describe("createAnthropicEngine — cancellation", () => {
+  it("sets one finite attempt and disables SDK retries", () => {
+    createAnthropicEngine({ model: "claude-sonnet-4-6", requestTimeoutMs: 45_000 });
+    expect(lastAnthropicConstructorArgs?.timeout).toBe(45_000);
+    expect(lastAnthropicConstructorArgs?.maxRetries).toBe(0);
+  });
+
+  it("does not dispatch when the caller is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort(new DOMException("caller left", "AbortError"));
+    const engine = createAnthropicEngine({ model: "claude-sonnet-4-6" });
+    await expect(engine.complete(emptyPrompt(), { signal: controller.signal })).rejects.toThrow();
+    expect(lastAnthropicRequestOptions).toBeNull();
+  });
+
   it("forwards AbortSignal to the SDK request", async () => {
     const controller = new AbortController();
+    anthropicCreateOverride = () => new Promise<Record<string, unknown>>(() => {});
     const engine = createAnthropicEngine({ model: "claude-sonnet-4-6" });
-    await engine.complete(emptyPrompt(), { signal: controller.signal });
-    expect(lastAnthropicRequestOptions?.signal).toBe(controller.signal);
+    const pending = engine.complete(emptyPrompt(), { signal: controller.signal });
+    await Bun.sleep(0);
+    expect(lastAnthropicRequestOptions?.signal).toBeDefined();
+    expect(lastAnthropicRequestOptions?.signal).not.toBe(controller.signal);
+    controller.abort(new Error("caller left"));
+    await expect(pending).rejects.toThrow("caller left");
+    expect(lastAnthropicRequestOptions?.signal?.aborted).toBe(true);
+  });
+
+  it("bounds buffered completion and performs one ambiguous attempt", async () => {
+    anthropicCreateOverride = () => new Promise<Record<string, unknown>>(() => {});
+    const engine = createAnthropicEngine({
+      model: "claude-sonnet-4-6",
+      requestTimeoutMs: 5,
+    });
+
+    await expect(engine.complete(emptyPrompt())).rejects.toMatchObject({
+      name: "ProviderRequestTimeoutError",
+    });
+    expect(anthropicCreateCalls).toBe(1);
+    expect(lastAnthropicRequestOptions?.signal?.aborted).toBe(true);
+  });
+
+  it("bounds streaming completion and fences abort-race deltas", async () => {
+    anthropicFinalMessageOverride = () => new Promise<Record<string, unknown>>(() => {});
+    anthropicAbortText = "abort-race-secret-sentinel";
+    const deltas: string[] = [];
+    const engine = createAnthropicEngine({
+      model: "claude-sonnet-4-6",
+      requestTimeoutMs: 5,
+    });
+
+    await expect(
+      engine.complete(emptyPrompt(), {
+        onDelta: (delta) => {
+          if (delta.kind === "text_delta") deltas.push(delta.text);
+        },
+      }),
+    ).rejects.toMatchObject({ name: "ProviderRequestTimeoutError" });
+    expect(anthropicStreamCalls).toBe(1);
+    expect(anthropicStreamAbortCalls).toBe(1);
+    expect(deltas).toEqual([]);
   });
 });
 
@@ -261,6 +329,11 @@ beforeEach(() => {
   nextAnthropicStreamTexts = null;
   anthropicStreamAbortCalls = 0;
   anthropicAbortRejectsFinal = false;
+  anthropicCreateOverride = null;
+  anthropicFinalMessageOverride = null;
+  anthropicAbortText = null;
+  anthropicCreateCalls = 0;
+  anthropicStreamCalls = 0;
 });
 
 describe("createAnthropicEngine — credential transport", () => {

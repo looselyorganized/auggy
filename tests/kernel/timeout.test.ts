@@ -104,6 +104,42 @@ describe("withTimeout", () => {
     expect(observedSignal?.aborted).toBe(true);
   });
 
+  it("does not let synchronous abort-listener fulfillment beat the timeout", async () => {
+    let observedSignal: AbortSignal | undefined;
+    const pending = withTimeout((signal) => {
+      observedSignal = signal;
+      return new Promise<string>((resolve) => {
+        signal.addEventListener("abort", () => resolve("late success"), { once: true });
+      });
+    }, 5);
+
+    await expect(pending).rejects.toBeInstanceOf(TimeoutError);
+    expect(observedSignal?.aborted).toBe(true);
+  });
+
+  it("does not let synchronous abort-listener fulfillment beat caller cancellation", async () => {
+    const caller = new AbortController();
+    let started!: () => void;
+    const didStart = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    const pending = withTimeout(
+      (signal) => {
+        started();
+        return new Promise<string>((resolve) => {
+          signal.addEventListener("abort", () => resolve("late success"), { once: true });
+        });
+      },
+      1_000,
+      caller.signal,
+    );
+
+    await didStart;
+    const reason = new Error("caller canceled");
+    caller.abort(reason);
+    await expect(pending).rejects.toBe(reason);
+  });
+
   it("reports non-cooperative work that remains detached after caller cancellation", async () => {
     const caller = new AbortController();
     let release!: () => void;

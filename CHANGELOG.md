@@ -50,6 +50,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Fail-closed upgrade and artifact contracts.** `agent.yaml` now rejects
+  malformed `settings` and unknown top-level fields instead of silently using
+  defaults; the obsolete example-only `operators` field is now `creator`.
+  Route JSON and OpenAPI artifacts declare schema version 1, and supplemental
+  CI reruns validate every requested file against the tracked inventory.
+  PostgreSQL coordination provisioning now verifies the exact owned catalog
+  before recording or accepting a migration. Operators upgrading modified
+  configs must remove unknown metadata, regenerate vendored route artifacts,
+  and rehearse state migration/rollback as documented in compatibility guide
+  31.
+
 - **Fail-closed tracked test inventory.** Primary CI, local release tests, and
   release rehearsal now derive exact sequential Bun shards from one validated
   Git-tracked manifest. New tests under existing selectors are included
@@ -86,7 +97,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   inferred structurally. Agent Card capabilities, including Link's
   `agentCard.capabilities`, remain separate discovery metadata.
 
-## [0.5.0] - 2026-07-07
+## [0.5.0] - Unreleased
+
+This candidate has not been published to npm. Before the final release, merge
+the entries in the top-level `[Unreleased]` section into this section and set
+the actual release date.
 
 ### Added
 

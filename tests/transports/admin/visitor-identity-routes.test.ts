@@ -32,6 +32,8 @@ async function context(
   const kernel: TransportKernel = {
     handleInbound: async () => ({}) as TurnResult,
     onOutbound: () => {},
+    quarantineThread: () => true,
+    recoverThread: () => false,
     getAgentCard: () => card,
     getAugmentRoutes: () => [],
     getAugments: () => [],

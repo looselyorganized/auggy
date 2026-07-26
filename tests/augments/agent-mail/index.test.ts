@@ -1550,6 +1550,77 @@ describe("onBoot", () => {
 });
 
 describe("inbound lifecycle", () => {
+  test("restores durable thread quarantines before accepting inbound traffic", async () => {
+    const dbPath = join(makeTmpDir(), "restart-quarantine.sqlite");
+    let ledger = createAgentMailInboundLedger({
+      dbPath,
+      now: () => 1_000,
+      leaseToken: () => "interrupted_lease",
+    });
+    ledger.enqueue(
+      normalizeAgentMailReceivedEvent(receivedWebhookEvent(), "webhook", baseOpts.inboxId),
+    );
+    expect(ledger.claimNext({ workerId: "old-process", leaseMs: 10_000 })).not.toBeNull();
+    ledger.close();
+
+    ledger = createAgentMailInboundLedger({
+      dbPath,
+      now: () => 1_001,
+      incidentId: () => "restart_incident",
+    });
+    const { client } = fakeClient();
+    const aug = agentMail({
+      ...baseOpts,
+      _client: client,
+      _inboundLedger: ledger,
+      _sdkAdapters: emptySdkAdapters(),
+      inbound: {
+        mode: "webhook",
+        allowedSenders: ["customer@example.com"],
+        webhook: {},
+      },
+    });
+    const restored: string[] = [];
+    const kernel = fakeInboundKernel([]);
+    kernel.quarantineThread = (threadId) => {
+      restored.push(threadId);
+      return true;
+    };
+
+    try {
+      await aug.onBoot!();
+      await aug.transport!.register(kernel, aug.name);
+      await aug.transport!.ready!();
+      expect(restored).toHaveLength(1);
+      expect(restored[0]).toMatch(/^am-thread-/);
+
+      const nextEvent = receivedWebhookEvent();
+      const message = nextEvent.message as Record<string, unknown>;
+      message.message_id = "message_same_thread_after_restart";
+      nextEvent.event_id = "event_same_thread_after_restart";
+      ledger.enqueue(normalizeAgentMailReceivedEvent(nextEvent, "webhook", baseOpts.inboxId));
+      expect(ledger.claimNext({ workerId: "new-process", leaseMs: 1_000 })).toBeNull();
+
+      expect(
+        await aug.adminActions!["agentmail-inbound-reconcile-handled"]!({
+          incidentId: "restart_incident",
+          version: "1",
+          evidence: "provider confirms the original operation completed",
+        }),
+      ).toEqual({
+        ok: true,
+        message: "Inbound incident reconciled as already handled",
+        recoverThreadId: restored[0],
+      });
+      expect(
+        ledger.claimNext({ workerId: "new-process", leaseMs: 1_000 })?.envelope.message.messageId,
+      ).toBe("message_same_thread_after_restart");
+    } finally {
+      await aug.onShutdown!();
+      ledger.close();
+    }
+  });
+
   test("boot-populates a verified webhook route and dispatches admitted ledger work", async () => {
     const { client, log } = fakeClient();
     const ledger = createAgentMailInboundLedger({ dbPath: ":memory:" });
@@ -1784,7 +1855,13 @@ describe("onShutdown", () => {
     expect(closeCalls).toBe(1);
 
     const reopened = createAgentMailInboundLedger({ dbPath });
-    expect(reopened.counts()).toEqual({ pending: 0, processing: 0, processed: 0, discarded: 0 });
+    expect(reopened.counts()).toEqual({
+      pending: 0,
+      processing: 0,
+      processed: 0,
+      discarded: 0,
+      outcomeUnknown: 0,
+    });
     reopened.close();
     await expect(aug.onShutdown!()).resolves.toBeUndefined();
     expect(closeCalls).toBe(1);
@@ -1884,7 +1961,13 @@ describe("onShutdown", () => {
 
     await expect(aug.onShutdown!()).rejects.toThrow(/subscription shutdown timed out/i);
     const reopened = createAgentMailInboundLedger({ dbPath });
-    expect(reopened.counts()).toEqual({ pending: 0, processing: 0, processed: 0, discarded: 0 });
+    expect(reopened.counts()).toEqual({
+      pending: 0,
+      processing: 0,
+      processed: 0,
+      discarded: 0,
+      outcomeUnknown: 0,
+    });
     reopened.close();
   });
 });
@@ -2075,6 +2158,8 @@ function fakeInboundKernel(
       return { success: true, status: "completed", turnId: trigger.turnId } as TurnResult;
     },
     onOutbound: () => {},
+    quarantineThread: () => true,
+    recoverThread: () => false,
     getAgentCard: () => ({
       provider: { name: "test" },
       capabilities: { streaming: false, pushNotifications: false, memory: false, transport: true },

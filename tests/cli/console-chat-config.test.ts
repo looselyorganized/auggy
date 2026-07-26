@@ -105,6 +105,8 @@ describe("webTransport consoleChat path resolution", () => {
         agentDir,
         runtimeDataRoot,
       ),
-    ).toThrow(/consoleChat\.dbPath must stay within its runtime data root/);
+    ).toThrow(
+      /webTransport consoleChat\.dbPath must stay within its state directory\/runtime data root/,
+    );
   });
 });

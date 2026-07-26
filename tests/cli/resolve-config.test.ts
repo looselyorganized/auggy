@@ -39,14 +39,16 @@ describe("resolveConfigPath", () => {
     );
   });
 
-  test("project-local agent.yaml wins before child agent lookup", () => {
+  test("a named target never silently resolves to a different cwd agent", () => {
     const childDir = join(agentParent, "zip");
     mkdirSync(childDir);
     writeFileSync(join(childDir, "agent.yaml"), "id: aug1_zip\nname: zip\n");
     const projectDir = mkdtempSync(join(agentParent, "project-"));
     const projectConfig = join(projectDir, "agent.yaml");
     writeFileSync(projectConfig, "id: aug1_project\nname: project\n");
-    expect(resolveConfigPath("zip", undefined, { auggyDir, cwd: projectDir })).toBe(projectConfig);
+    expect(() => resolveConfigPath("zip", undefined, { auggyDir, cwd: projectDir })).toThrow(
+      /names "project".*requested "zip"/i,
+    );
   });
 
   test("project-local agent.yaml can resolve without an agent name", () => {
@@ -76,5 +78,13 @@ describe("resolveConfigPath", () => {
     expect(() => resolveConfigPath(undefined, undefined, { auggyDir, cwd: agentParent })).toThrow(
       /No agent specified/,
     );
+  });
+
+  test("rejects path aliases in the agent name before filesystem lookup", () => {
+    for (const name of ["..", "../zip", "a/b", "a\\b", ".hidden", "zip.json"]) {
+      expect(() => resolveConfigPath(name, undefined, { cwd: agentParent })).toThrow(
+        /invalid agent name/i,
+      );
+    }
   });
 });

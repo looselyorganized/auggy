@@ -65,7 +65,11 @@ import {
 } from "./rate-limit";
 import { loadRateState, saveRateState } from "./persist-state";
 import { createAgentMailInboundLedger, type AgentMailInboundLedger } from "./inbound-ledger";
-import { createAgentMailInboundWorker, type AgentMailInboundWorker } from "./inbound-worker";
+import {
+  agentMailRuntimeThreadId,
+  createAgentMailInboundWorker,
+  type AgentMailInboundWorker,
+} from "./inbound-worker";
 import {
   createAgentMailSdkAdapters,
   runAgentMailCatchUp,
@@ -468,6 +472,12 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             if (inboundReady) return;
             if (!inboundKernel || !inboundLedger || !sdkAdapters) {
               throw new Error("agentMail: inbound transport was not registered or booted");
+            }
+            const incidentThreads = inboundLedger.listIncidentThreads();
+            for (const providerThreadId of incidentThreads) {
+              inboundKernel.quarantineThread(
+                agentMailRuntimeThreadId(opts.inboxId, providerThreadId),
+              );
             }
             inboundWorker = createAgentMailInboundWorker({
               ledger: inboundLedger,
@@ -1490,6 +1500,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         });
         ownsInboundLedger = true;
       }
+      // Runtime startup is the single-replica ownership boundary. A retained
+      // claim may already have caused external effects, so it becomes a
+      // durable incident and is never silently replayed.
+      inboundLedger.fenceInterruptedClaims();
       sdkAdapters ??= createAgentMailSdkAdapters({
         apiKey: opts.apiKey,
         apiBaseUrl: opts.apiBaseUrl,
@@ -1639,11 +1653,19 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     const reviews = reviewQueue.list();
     const pendingReviews = reviews.filter((review) => review.state === "pending");
     const ambiguousReviews = reviews.filter((review) => review.state === "sending");
-    let ledgerCounts = { pending: 0, processing: 0, processed: 0, discarded: 0 };
+    let ledgerCounts = {
+      pending: 0,
+      processing: 0,
+      processed: 0,
+      discarded: 0,
+      outcomeUnknown: 0,
+    };
+    let inboundIncidents: ReturnType<AgentMailInboundLedger["listIncidents"]> = [];
     let checkpoint: string | undefined;
     if (inboundLedger) {
       try {
         ledgerCounts = inboundLedger.counts();
+        inboundIncidents = inboundLedger.listIncidents(50);
         checkpoint = inboundLedger.checkpoint(opts.inboxId);
       } catch (error) {
         recordProviderError(error);
@@ -1719,6 +1741,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             { label: "Inbound processing", value: String(ledgerCounts.processing) },
             { label: "Inbound processed", value: String(ledgerCounts.processed) },
             { label: "Inbound discarded", value: String(ledgerCounts.discarded) },
+            { label: "Inbound outcome unknown", value: String(ledgerCounts.outcomeUnknown) },
             { label: "Catch-up checkpoint", value: checkpoint ?? "(none)" },
             {
               label: "Last catch-up",
@@ -1761,6 +1784,19 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
               `/agentmail/reviews/${encodeURIComponent(review.id)}`,
             ]),
           caption: `Outbound reviews (${reviews.length}) — list is redacted; exact content requires creator auth`,
+        },
+        {
+          kind: "table",
+          columns: ["Incident", "Message", "Reason", "Version", "Detected"],
+          rows: inboundIncidents.map((incident) => [
+            incident.id,
+            incident.messageId,
+            incident.reasonCode,
+            String(incident.version),
+            new Date(incident.quarantinedAt).toISOString(),
+          ]),
+          caption:
+            "Inbound outcome-unknown incidents. Verify downstream effects before reconciliation.",
         },
       ],
       actions: [
@@ -1888,8 +1924,38 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             },
           ],
         },
+        {
+          id: "agentmail-inbound-reconcile-handled",
+          label: "Confirm inbound incident was handled",
+          confirmRequired: true,
+          inputs: inboundRecoveryInputs(
+            "Use after confirming the ambiguous turn's external effects already occurred.",
+          ),
+        },
+        {
+          id: "agentmail-inbound-reconcile-no-effect",
+          label: "Confirm inbound incident had no external effect",
+          confirmRequired: true,
+          inputs: inboundRecoveryInputs(
+            "Use only after confirming no external effect occurred; a later worker may retry.",
+          ),
+        },
       ],
     };
+  }
+
+  function inboundRecoveryInputs(helpText: string) {
+    return [
+      { name: "incidentId", label: "Incident ID", type: "text" as const, required: true },
+      { name: "version", label: "Expected version", type: "number" as const, required: true },
+      {
+        name: "evidence",
+        label: "Verification evidence",
+        type: "text" as const,
+        required: true,
+        helpText,
+      },
+    ];
   }
 
   async function persistCapOverride(value: number): Promise<void> {
@@ -1924,6 +1990,47 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     current.lastModified = new Date().toISOString();
     current.lastModifiedBy = "creator";
     writeOverrides(overrideDir, current);
+  }
+
+  function reconcileInboundIncident(
+    params: Record<string, unknown>,
+    disposition: "confirmed-handled" | "confirmed-no-effect",
+  ): AdminActionResult {
+    if (!inboundLedger) return { ok: false, message: "Inbound ledger is not available" };
+    const incidentId = typeof params.incidentId === "string" ? params.incidentId.trim() : "";
+    const version = typeof params.version === "number" ? params.version : Number(params.version);
+    const evidence = typeof params.evidence === "string" ? params.evidence.trim() : "";
+    if (!incidentId || !/^[A-Za-z0-9_-]{1,128}$/.test(incidentId)) {
+      return { ok: false, message: "A valid incident ID is required" };
+    }
+    if (!Number.isSafeInteger(version) || version < 1) {
+      return { ok: false, message: "A valid expected incident version is required" };
+    }
+    if (!evidence || evidence.length > 400) {
+      return {
+        ok: false,
+        message: "Verification evidence must contain 1 to 400 characters",
+      };
+    }
+    const resolved = inboundLedger.reconcileIncident({
+      incidentId,
+      expectedVersion: version,
+      disposition,
+      evidence,
+    });
+    if (!resolved.resolved || !resolved.threadId) {
+      return { ok: false, message: "Incident is stale, resolved, or does not match" };
+    }
+    return {
+      ok: true,
+      message:
+        disposition === "confirmed-handled"
+          ? "Inbound incident reconciled as already handled"
+          : "Inbound incident reconciled as having no external effect",
+      recoverThreadId: resolved.releaseThread
+        ? agentMailRuntimeThreadId(opts.inboxId, resolved.threadId)
+        : undefined,
+    };
   }
 
   const adminActions: Record<
@@ -2097,6 +2204,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       }
       return reconcileReviewFailed(reviewId, fingerprint, reason);
     },
+    "agentmail-inbound-reconcile-handled": async (params) =>
+      reconcileInboundIncident(params, "confirmed-handled"),
+    "agentmail-inbound-reconcile-no-effect": async (params) =>
+      reconcileInboundIncident(params, "confirmed-no-effect"),
   };
 
   // ---------------------------------------------------------------------------
@@ -2114,6 +2225,21 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     onShutdown,
     adminInfo,
     adminActions,
+    ...(inboundMode !== "none"
+      ? {
+          durableThreadQuarantine: {
+            listThreadIds: () =>
+              (inboundLedger?.listIncidentThreads() ?? []).map((providerThreadId) =>
+                agentMailRuntimeThreadId(opts.inboxId, providerThreadId),
+              ),
+            hasThread: (runtimeThreadId: string) =>
+              (inboundLedger?.listIncidentThreads() ?? []).some(
+                (providerThreadId) =>
+                  agentMailRuntimeThreadId(opts.inboxId, providerThreadId) === runtimeThreadId,
+              ),
+          },
+        }
+      : {}),
     onTurnEnd: async (result) => {
       seenMessagesByTurn.delete(result.turnId);
     },

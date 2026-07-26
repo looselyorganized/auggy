@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { defineAgent } from "../../src/agent";
+import { notify } from "../../src/augments/notify";
 import { emptyTrace } from "../../src/kernel/trace-emitter";
 import { OutcomeUnknownError } from "../../src/outcome-unknown";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import type {
   AssembledPrompt,
@@ -202,6 +206,97 @@ describe("agent-wide keyed turn scheduling", () => {
       });
     } finally {
       for (const release of releases) release.resolve();
+      await agent.stop();
+    }
+  });
+
+  test("releases global capacity after a non-cooperative provider deadline", async () => {
+    const firstStarted = deferred<AbortSignal>();
+    let calls = 0;
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      complete: async (_prompt, options) => {
+        calls++;
+        if (calls === 1) {
+          firstStarted.resolve(options?.signal);
+          return new Promise<ModelResponse>(() => {});
+        }
+        return response("recovered-capacity");
+      },
+    };
+    const agent = defineAgent(
+      {
+        name: "provider-deadline-capacity",
+        model: "mock",
+        augments: [],
+        providerRequestTimeoutMs: 5,
+        turnScheduling: {
+          maxConcurrent: 1,
+          maxQueued: 2,
+          maxQueuedPerThread: 1,
+          maxCausalDepth: 1,
+        },
+      },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const stalled = agent.inject(trigger("stalled", "stalled-thread", "test"));
+      const stalledSignal = await firstStarted.promise;
+      const queued = agent.inject(trigger("healthy", "healthy-thread", "test"));
+
+      await expect(stalled).rejects.toThrow("outcome is unknown");
+      expect(stalledSignal?.aborted).toBe(true);
+      expect(await queued).toMatchObject({ status: "completed", success: true });
+      expect(calls).toBe(2);
+      expect(agent.health().scheduler).toMatchObject({ activeTurns: 0, queuedTurns: 0 });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  test("fails provider dispatch closed after the bounded detached-attempt budget", async () => {
+    let calls = 0;
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      complete: async () => {
+        calls++;
+        return new Promise<ModelResponse>(() => {});
+      },
+    };
+    const agent = defineAgent(
+      {
+        name: "detached-provider-budget",
+        model: "mock",
+        augments: [],
+        providerRequestTimeoutMs: 5,
+        turnScheduling: {
+          maxConcurrent: 1,
+          maxQueued: 2,
+          maxQueuedPerThread: 1,
+          maxCausalDepth: 1,
+        },
+      },
+      model,
+    );
+    await agent.start();
+
+    try {
+      await expect(agent.inject(trigger("stalled-1", "thread-1", "test"))).rejects.toThrow(
+        "outcome is unknown",
+      );
+      await expect(agent.inject(trigger("stalled-2", "thread-2", "test"))).rejects.toThrow(
+        "outcome is unknown",
+      );
+      await expect(agent.inject(trigger("blocked", "thread-3", "test"))).rejects.toThrow(
+        "Provider inference is unavailable",
+      );
+      expect(calls).toBe(2);
+      expect(agent.health().scheduler).toMatchObject({ activeTurns: 0, queuedTurns: 0 });
+    } finally {
       await agent.stop();
     }
   });
@@ -465,6 +560,12 @@ describe("agent-wide keyed turn scheduling", () => {
         status: "rejected",
         rejection: { reason: "causal-context-expired" },
       });
+      expect(agent.operationalSnapshot()).toMatchObject({
+        turns: { rejected: 1 },
+        scheduler: {
+          rejectedByReason: { "causal-context-expired": 1 },
+        },
+      });
     } finally {
       await agent.stop();
     }
@@ -674,6 +775,199 @@ describe("agent-wide keyed turn scheduling", () => {
     }
   });
 
+  test("restores durable fences and releases only after every authority clears", async () => {
+    let firstBlocked = true;
+    let secondBlocked = true;
+    const authority = (name: string, blocked: () => boolean): Augment => ({
+      name,
+      durableThreadQuarantine: {
+        listThreadIds: () => (blocked() ? ["shared-thread"] : []),
+        hasThread: (threadId) => threadId === "shared-thread" && blocked(),
+      },
+    });
+    let modelCalls = 0;
+    const agent = defineAgent(
+      {
+        name: "durable-quarantine-coordinator",
+        model: "mock",
+        augments: [
+          authority("first-store", () => firstBlocked),
+          authority("second-store", () => secondBlocked),
+        ],
+      },
+      {
+        maxContextTokens: 100_000,
+        countTokens: (text) => Math.ceil(text.length / 4),
+        async complete() {
+          modelCalls++;
+          return response();
+        },
+      },
+    );
+    await agent.start();
+    try {
+      expect(await agent.inject(trigger("blocked", "shared-thread", "test"))).toMatchObject({
+        status: "rejected",
+        rejection: { reason: "thread-quarantined" },
+      });
+      firstBlocked = false;
+      expect(agent.recoverThread("shared-thread")).toBe(false);
+      expect(await agent.inject(trigger("still-blocked", "shared-thread", "test"))).toMatchObject({
+        status: "rejected",
+        rejection: { reason: "thread-quarantined" },
+      });
+      secondBlocked = false;
+      expect(agent.recoverThread("shared-thread")).toBe(true);
+      expect((await agent.inject(trigger("released", "shared-thread", "test"))).status).toBe(
+        "completed",
+      );
+      expect(modelCalls).toBe(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  test("checks durable incident authorities again at admission", async () => {
+    let blocked = false;
+    let modelCalls = 0;
+    const agent = defineAgent(
+      {
+        name: "late-durable-quarantine",
+        model: "mock",
+        augments: [
+          {
+            name: "incident-store",
+            durableThreadQuarantine: {
+              listThreadIds: () => [],
+              hasThread: (threadId) => blocked && threadId === "late-thread",
+            },
+          },
+        ],
+      },
+      {
+        maxContextTokens: 100_000,
+        countTokens: (text) => Math.ceil(text.length / 4),
+        async complete() {
+          modelCalls++;
+          return response();
+        },
+      },
+    );
+    await agent.start();
+    try {
+      blocked = true;
+      expect(await agent.inject(trigger("late", "late-thread", "test"))).toMatchObject({
+        status: "rejected",
+        rejection: { reason: "thread-quarantined" },
+      });
+      expect(modelCalls).toBe(0);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  test("restores a Notify ambiguity before a fresh agent can run the thread", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "auggy-notify-restart-"));
+    const dbPath = join(directory, "notify.db");
+    const destination = {
+      name: "ops",
+      transport: "webhook" as const,
+      url: "https://example.com/notify",
+      allowedTrustLevels: ["creator" as const],
+    };
+    let firstModelCalls = 0;
+    const firstNotify = notify({
+      destinations: [destination],
+      dbPath,
+      _incidentId: () => "incident-restart",
+      adapters: {
+        webhook: {
+          async deliver() {
+            throw new Error("provider result lost");
+          },
+        },
+      },
+    });
+    const firstAgent = defineAgent(
+      { name: "notify-first", model: "mock", augments: [firstNotify] },
+      {
+        maxContextTokens: 100_000,
+        countTokens: (text) => Math.ceil(text.length / 4),
+        async complete() {
+          firstModelCalls++;
+          return {
+            content: "",
+            toolCalls: [
+              { name: "notify", arguments: { to: "ops", summary: "first ambiguous send" } },
+            ],
+            finishReason: "tool_use",
+            inputTokens: 1,
+            outputTokens: 1,
+          };
+        },
+      },
+    );
+    await firstAgent.start();
+    try {
+      expect(await firstAgent.inject(trigger("first", "notify-thread", "test"))).toMatchObject({
+        outcomeUnknown: true,
+      });
+      expect(firstModelCalls).toBe(1);
+    } finally {
+      await firstAgent.stop();
+    }
+
+    let restartedModelCalls = 0;
+    const restartedNotify = notify({
+      destinations: [destination],
+      dbPath,
+      adapters: {
+        webhook: {
+          async deliver() {
+            return { status: "sent" };
+          },
+        },
+      },
+    });
+    const restartedAgent = defineAgent(
+      { name: "notify-restarted", model: "mock", augments: [restartedNotify] },
+      {
+        maxContextTokens: 100_000,
+        countTokens: (text) => Math.ceil(text.length / 4),
+        async complete() {
+          restartedModelCalls++;
+          return response();
+        },
+      },
+    );
+    await restartedAgent.start();
+    try {
+      expect(
+        await restartedAgent.inject(trigger("different", "notify-thread", "test")),
+      ).toMatchObject({
+        status: "rejected",
+        rejection: { reason: "thread-quarantined" },
+      });
+      expect(restartedModelCalls).toBe(0);
+      const reconciled = await restartedNotify.adminActions?.[
+        "notify-delivery-reconcile-no-effect"
+      ]?.({
+        incidentId: "incident-restart",
+        version: "1",
+        evidence: "provider confirms no delivery",
+      });
+      expect(reconciled).toMatchObject({ ok: true, recoverThreadId: "notify-thread" });
+      expect(restartedAgent.recoverThread(reconciled!.recoverThreadId!)).toBe(true);
+      expect(
+        (await restartedAgent.inject(trigger("after-recovery", "notify-thread", "test"))).status,
+      ).toBe("completed");
+      expect(restartedModelCalls).toBe(1);
+    } finally {
+      await restartedAgent.stop();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   test("drains active work before augment shutdown and rejects queued work", async () => {
     const release = deferred();
     const started = deferred();
@@ -713,6 +1007,10 @@ describe("agent-wide keyed turn scheduling", () => {
     await started.promise;
     const queued = transport.kernel().handleInbound(trigger("queued", "b", "web"));
     const stopping = agent.stop();
+    expect(agent.operationalSnapshot()).toMatchObject({
+      readiness: { accepting: false, state: "draining" },
+      shutdown: { attempts: 1, completed: 0, inProgress: true },
+    });
     expect(await queued).toMatchObject({
       status: "rejected",
       rejection: { reason: "runtime-stopping" },
@@ -723,5 +1021,62 @@ describe("agent-wide keyed turn scheduling", () => {
     await active;
     await stopping;
     expect(events).toEqual(["model:start", "model:end", "shutdown"]);
+    expect(agent.operationalSnapshot().shutdown).toMatchObject({
+      attempts: 1,
+      completed: 1,
+      inProgress: false,
+    });
+  });
+
+  test("serializes concurrent stops so a late shutdown cannot corrupt a restart", async () => {
+    const shutdownStarted = deferred();
+    const releaseShutdown = deferred();
+    let shutdownCalls = 0;
+    const transport = capturedTransport("web", {
+      onShutdown: async () => {
+        shutdownCalls++;
+        if (shutdownCalls === 1) {
+          shutdownStarted.resolve();
+          await releaseShutdown.promise;
+        }
+      },
+    });
+    const agent = defineAgent(
+      { name: "serialized-lifecycle", model: "mock", augments: [transport.augment] },
+      {
+        maxContextTokens: 100_000,
+        countTokens: (text) => Math.ceil(text.length / 4),
+        async complete() {
+          return response();
+        },
+      },
+    );
+    await agent.start();
+
+    const firstStop = agent.stop();
+    await shutdownStarted.promise;
+    let secondSettled = false;
+    const secondStop = agent.stop().then(() => {
+      secondSettled = true;
+    });
+    await Promise.resolve();
+    expect(secondSettled).toBe(false);
+    expect(agent.operationalSnapshot().shutdown).toMatchObject({
+      attempts: 1,
+      completed: 0,
+      inProgress: true,
+    });
+
+    releaseShutdown.resolve();
+    await Promise.all([firstStop, secondStop]);
+    expect(shutdownCalls).toBe(1);
+    expect(agent.operationalSnapshot().shutdown).toMatchObject({ attempts: 1, completed: 1 });
+
+    await agent.start();
+    expect(
+      (await transport.kernel().handleInbound(trigger("after-restart", "new", "web"))).status,
+    ).toBe("completed");
+    await agent.stop();
+    expect(shutdownCalls).toBe(2);
   });
 });

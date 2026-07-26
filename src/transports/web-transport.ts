@@ -2443,6 +2443,20 @@ export function webTransport(opts: WebTransportOptions): Augment {
             visitorPayload = null;
           }
         }
+        // A signature proves that Auggy minted the credential, but when an
+        // identity authority is configured it remains the source of truth for
+        // whether that visitor still exists. Missing, mismatched, or
+        // unavailable identity state must never mint recognized authority.
+        if (visitorPayload && opts.visitorTokens?.identityLookup) {
+          try {
+            const identity = opts.visitorTokens.identityLookup(visitorPayload.visitorId);
+            if (!identity || identity.visitorId !== visitorPayload.visitorId) {
+              visitorPayload = null;
+            }
+          } catch {
+            visitorPayload = null;
+          }
+        }
       }
       await applyExternalVisitorAuth();
     }

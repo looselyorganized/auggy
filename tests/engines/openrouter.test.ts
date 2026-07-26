@@ -12,6 +12,8 @@ let lastConstructorArgs: Record<string, unknown> | null = null;
 let throwOnCreate: Error | null = null;
 let nextResponse: OpenAI.Chat.ChatCompletion | null = null;
 let providerDirectoryRequests = 0;
+let createOverride: (() => Promise<OpenAI.Chat.ChatCompletion>) | null = null;
+let createCalls = 0;
 
 function providerDirectoryFetch(
   slugs: string[] = ["openai", "anthropic", "deepinfra"],
@@ -52,9 +54,11 @@ mock.module("openai", () => {
           params: Record<string, unknown>,
           options?: { signal?: AbortSignal },
         ): Promise<OpenAI.Chat.ChatCompletion> => {
+          createCalls++;
           lastCreateArgs = params;
           lastCreateOptions = options ?? null;
           if (throwOnCreate) throw throwOnCreate;
+          if (createOverride) return createOverride();
           return nextResponse ?? defaultResponse();
         },
       },
@@ -79,6 +83,8 @@ beforeEach(() => {
   throwOnCreate = null;
   nextResponse = null;
   providerDirectoryRequests = 0;
+  createOverride = null;
+  createCalls = 0;
   // Restore env to original values before each test.
   if (ORIGINAL_OPENROUTER === undefined) delete process.env.OPENROUTER_API_KEY;
   else process.env.OPENROUTER_API_KEY = ORIGINAL_OPENROUTER;
@@ -156,6 +162,16 @@ describe("createOpenRouterEngine — apiKey guard", () => {
 // ---------------------------------------------------------------------------
 
 describe("createOpenRouterEngine — SDK construction", () => {
+  test("sets one finite attempt and disables SDK retries", () => {
+    process.env.OPENROUTER_API_KEY = "sk-test";
+    createOpenRouterEngine({
+      model: "qwen/qwen3.5-397b-a17b",
+      requestTimeoutMs: 45_000,
+    });
+    expect(lastConstructorArgs?.timeout).toBe(45_000);
+    expect(lastConstructorArgs?.maxRetries).toBe(0);
+  });
+
   test("uses OpenRouter baseURL by default", () => {
     process.env.OPENROUTER_API_KEY = "sk-test";
     createOpenRouterEngine({ model: "qwen/qwen3.5-397b-a17b" });
@@ -182,14 +198,49 @@ describe("createOpenRouterEngine — SDK construction", () => {
 // ---------------------------------------------------------------------------
 
 describe("createOpenRouterEngine — SDK call payload", () => {
+  test("does not query routing or dispatch when the caller is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort(new DOMException("caller left", "AbortError"));
+    const engine = createOpenRouterEngine({
+      model: "qwen/qwen3.5-397b-a17b",
+      apiKey: "sk-test",
+      providerRouting: { only: ["openai"] },
+      providerDirectoryFetch: providerDirectoryFetch(),
+    });
+    await expect(engine.complete(emptyPrompt(), { signal: controller.signal })).rejects.toThrow();
+    expect(providerDirectoryRequests).toBe(0);
+    expect(lastCreateArgs).toBeNull();
+  });
+
   test("forwards AbortSignal to the SDK request", async () => {
     const controller = new AbortController();
+    createOverride = () => new Promise<OpenAI.Chat.ChatCompletion>(() => {});
     const engine = createOpenRouterEngine({
       model: "qwen/qwen3.5-397b-a17b",
       apiKey: "sk-test",
     });
-    await engine.complete(emptyPrompt(), { signal: controller.signal });
-    expect(lastCreateOptions?.signal).toBe(controller.signal);
+    const pending = engine.complete(emptyPrompt(), { signal: controller.signal });
+    await Bun.sleep(0);
+    expect(lastCreateOptions?.signal).toBeDefined();
+    expect(lastCreateOptions?.signal).not.toBe(controller.signal);
+    controller.abort(new Error("caller left"));
+    await expect(pending).rejects.toThrow("caller left");
+    expect(lastCreateOptions?.signal?.aborted).toBe(true);
+  });
+
+  test("bounds the whole model completion and performs one ambiguous attempt", async () => {
+    createOverride = () => new Promise<OpenAI.Chat.ChatCompletion>(() => {});
+    const engine = createOpenRouterEngine({
+      model: "qwen/qwen3.5-397b-a17b",
+      apiKey: "sk-test",
+      requestTimeoutMs: 5,
+    });
+
+    await expect(engine.complete(emptyPrompt())).rejects.toMatchObject({
+      name: "ProviderRequestTimeoutError",
+    });
+    expect(createCalls).toBe(1);
+    expect(lastCreateOptions?.signal?.aborted).toBe(true);
   });
 
   beforeEach(() => {
@@ -388,6 +439,26 @@ describe("createOpenRouterEngine — SDK call payload", () => {
     const pending = engine.complete(emptyPrompt(), { signal: controller.signal });
     controller.abort();
     await expect(pending).rejects.toThrow();
+    expect(lastCreateArgs).toBeNull();
+  });
+
+  test("restrictive validation obeys a shorter call-level deadline", async () => {
+    let directorySignal: AbortSignal | undefined;
+    const engine = createOpenRouterEngine({
+      model: "qwen/qwen3.5-397b-a17b",
+      apiKey: "sk-test",
+      requestTimeoutMs: 5,
+      providerRouting: { only: ["openai"] },
+      providerDirectoryFetch: mock((_input: string | URL | Request, init?: RequestInit) => {
+        directorySignal = init?.signal ?? undefined;
+        return new Promise<Response>(() => {});
+      }),
+    });
+
+    await expect(engine.complete(emptyPrompt())).rejects.toMatchObject({
+      name: "ProviderRequestTimeoutError",
+    });
+    expect(directorySignal?.aborted).toBe(true);
     expect(lastCreateArgs).toBeNull();
   });
 

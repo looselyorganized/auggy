@@ -126,7 +126,7 @@ describe("config-parser: agentMail validation", () => {
         configWithAgentMail(
           { apiKey: "am_x", inboxId: "inb_x", inbound },
           inbound.mode === "webhook"
-            ? [{ name: "web", type: "webTransport", options: { port: 0 } }]
+            ? [{ name: "web", type: "webTransport", options: { port: 18_080 } }]
             : [],
         ),
       );
@@ -178,7 +178,7 @@ describe("config-parser: agentMail validation", () => {
             humanReview: { requiredForTrustLevels: ["public"], expiresAfterMs: 60_000 },
           },
         },
-        [{ name: "web", type: "webTransport", options: { port: 0 } }],
+        [{ name: "web", type: "webTransport", options: { port: 18_080 } }],
       ),
     );
     expect(() => parseConfig(path)).not.toThrow();

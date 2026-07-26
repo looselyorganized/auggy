@@ -813,6 +813,7 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
   return new Response(
     JSON.stringify({
       card: ctx.kernel.getAgentCard(),
+      runtime: ctx.kernel.getOperationalSnapshot?.() ?? null,
       auggyVersion: AUGGY_VERSION,
       agentMeta,
       augments,
@@ -994,6 +995,9 @@ async function handleActionPost(
   let result: AdminActionResult;
   try {
     result = await entry.handler(params);
+    if (result.ok && result.recoverThreadId) {
+      ctx.kernel.recoverThread(result.recoverThreadId);
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     console.error(`[admin] action ${actionId} threw: ${message}`);

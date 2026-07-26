@@ -47,8 +47,13 @@ export interface ExtractionInput {
  * because the model already billed for the (malformed) response.
  */
 export type ExtractionResult =
-  | { success: true; facts: ExtractedFact[]; costUsd: number }
-  | { success: false; error: string; costUsd: number };
+  | { success: true; facts: ExtractedFact[]; costUsd: number; inferenceOutcome: "completed" }
+  | {
+      success: false;
+      error: string;
+      costUsd: number;
+      inferenceOutcome: "completed" | "failed";
+    };
 
 /**
  * Run a single extraction turn: render prompt → call engine → parse JSON.
@@ -73,6 +78,7 @@ export async function handleExtractionTurn(input: ExtractionInput): Promise<Extr
       success: false,
       error: (err as Error).message,
       costUsd: 0,
+      inferenceOutcome: "failed",
     };
   }
 
@@ -82,6 +88,7 @@ export async function handleExtractionTurn(input: ExtractionInput): Promise<Extr
       success: false,
       error: parsed.error,
       costUsd: response.costUsd,
+      inferenceOutcome: "completed",
     };
   }
 
@@ -89,6 +96,7 @@ export async function handleExtractionTurn(input: ExtractionInput): Promise<Extr
     success: true,
     facts: parsed.facts,
     costUsd: response.costUsd,
+    inferenceOutcome: "completed",
   };
 }
 

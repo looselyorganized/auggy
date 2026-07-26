@@ -192,7 +192,11 @@ const maxInferenceLoops = 10;
 while (inferenceCount < maxInferenceLoops) {
   if (signal?.aborted) return makeAbortResult();
   inferenceCount++;
-  const response = await model.complete(currentPrompt);
+  const response = await withTimeout(
+    (deadlineSignal) => model.complete(currentPrompt, { signal: deadlineSignal }),
+    providerRequestTimeoutMs ?? 120000,
+    signal,
+  );
   // record inference in trace
   // append model content to history (always, even if tool calls follow)
   
@@ -209,6 +213,16 @@ while (inferenceCount < maxInferenceLoops) {
 ```
 
 The inference loop is capped at **10 iterations**. The cap exists so a stuck model that keeps calling tools without ever producing a final answer doesn't run forever. When the cap is hit, the loop emits a generic "I've completed the available actions" message and returns success.
+
+Each inference also has one total provider deadline (120 seconds by default,
+ten minutes maximum). SDK automatic POST retries are disabled because the
+provider-neutral contract cannot prove that timeout, reset, 429, or 5xx
+failures occurred before generation or billing. When the deadline wins, the
+kernel aborts the provider, closes any open text stream, records an
+outcome-unknown attempt, and rejects late deltas/results before they can reach
+history or tools. A non-cooperative provider promise is detached from local
+scheduler capacity only at this model-only boundary. See
+[29-provider-resilience.md](./29-provider-resilience.md).
 
 ##### Tool call processing — three phases
 
@@ -549,7 +563,28 @@ Builds a `TurnTrace` over the course of a turn. Methods:
 - `recordCapabilityCheck(trace, opts)` — appends to `capabilityChecks`.
 - `finalize(trace)` — sets `duration = now - timestamp`.
 
-The trace is stored on the `TurnResult` and is the main observability output. Future plans add a trace exporter augment.
+The trace is stored on the `TurnResult` for the direct caller. It contains
+turn/thread identifiers and may be adjacent to tool inputs and outputs, so it
+must not be copied wholesale into logs, metric labels, or an operational
+exporter.
+
+Each current inference step carries a fixed terminal `outcome` (`completed`,
+`failed`, `canceled`, or `outcome-unknown`). This is separate from the whole
+turn outcome: a model call may complete and incur cost before later parsing or
+persistence fails. Legacy/custom traces that omit the field are interpreted as
+completed for backward compatibility.
+
+`src/kernel/runtime-signals.ts` separately records cardinality-free,
+process-lifetime counters and timings. Its methods accept only fixed outcome
+enums and non-negative numeric values; they cannot accept prompts, peer or
+thread identifiers, destinations, tool payloads, model names, exception text,
+headers, or provider response bodies. `agent.operationalSnapshot()` combines
+those counters with the scheduler snapshot and instantaneous process memory.
+The authenticated console dashboard includes the same snapshot.
+
+The operational snapshot resets on every start attempt and is neither a
+durable audit log nor a billing ledger. The operator may sample it into their
+monitoring system; Auggy does not call exporter callbacks from the turn path.
 
 ### `src/agent.ts` — `defineAgent`
 

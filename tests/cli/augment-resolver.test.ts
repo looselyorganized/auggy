@@ -23,6 +23,7 @@ import type { AgentHandle } from "../../src/types";
 import { asStringTool } from "../fixtures/tool-helpers";
 
 const TMP = join(import.meta.dir, ".tmp-resolver-test");
+const AGENT_ID = "aug1_8a3d7828-1597-4db4-bd0e-adc1a1036211";
 
 beforeEach(() => {
   mkdirSync(TMP, { recursive: true });
@@ -155,6 +156,40 @@ describe("resolveAugments — fileMemory", () => {
     expect(augments[0]!.memory!.defaults.origin).toBe("operator");
     expect(augments[0]!.memory!.writeTrustLevels).toEqual(["creator"]);
   });
+
+  test("seeds mutable file memory into the Railway runtime volume and resumes from it", async () => {
+    writeFileSync(join(TMP, "learned-behaviors.md"), "image seed");
+    const runtimeDataRoot = join(TMP, "railway-data");
+    mkdirSync(runtimeDataRoot, { recursive: true });
+    const configs: AugmentConfig[] = [
+      {
+        name: "learned-behaviors",
+        type: "fileMemory",
+        options: {
+          label: "learned",
+          source: "./learned-behaviors.md",
+          mutable: true,
+          origin: "operator",
+          priority: "high",
+          placement: "preamble",
+          eviction: "drop",
+        },
+      },
+    ];
+
+    let [augment] = await resolveAugments(configs, TMP, { runtimeDataRoot });
+    await augment!.onBoot?.();
+    expect(await augment!.memory!.read!("learned")).toMatchObject({ content: "image seed" });
+    await augment!.memory!.write?.("learned", "durable update");
+    expect(readFileSync(join(runtimeDataRoot, "file-memory", "learned-behaviors.md"), "utf8")).toBe(
+      "durable update",
+    );
+
+    writeFileSync(join(TMP, "learned-behaviors.md"), "new image seed");
+    [augment] = await resolveAugments(configs, TMP, { runtimeDataRoot });
+    await augment!.onBoot?.();
+    expect(await augment!.memory!.read!("learned")).toMatchObject({ content: "durable update" });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -242,6 +277,33 @@ describe("resolveAugments — supabaseMemory", () => {
         TMP,
       ),
     ).rejects.toThrow(/requires explicit scope/);
+  });
+
+  test("forwards the configured Supabase ownership column to validation", async () => {
+    await expect(
+      resolveAugments(
+        [
+          {
+            name: "episodes",
+            type: "supabaseMemory",
+            options: {
+              namespace: "episode",
+              namespaceColumn: "invalid-owner-column",
+              scope: "peer",
+              supabaseUrl: "https://example.supabase.co",
+              supabaseKey: "test-key",
+              table: "agent_memories",
+              mutable: true,
+              origin: "peer-derived",
+              priority: "normal",
+              placement: "preamble",
+              eviction: "drop",
+            },
+          },
+        ],
+        TMP,
+      ),
+    ).rejects.toThrow(/namespaceColumn.*SQL identifier/i);
   });
 
   test("keeps exact reads unavailable for peer-scoped memory", async () => {
@@ -467,6 +529,31 @@ describe("resolveAugments — layeredMemory", () => {
     expect(augments[0]!.memory?.owns).toEqual({ kind: "namespace", prefix: "test:" });
     expect(augments[0]!.scheduleAfterTurn).toBeUndefined();
     expect(augments[0]!.handleInternalTurn).toBeUndefined();
+  });
+
+  test("binds the configured namespace to the immutable agent id", async () => {
+    const [augment] = await resolveAugments(
+      [
+        {
+          name: "memory",
+          type: "layeredMemory",
+          options: {
+            backend: "sqlite",
+            dbPath: "./scoped-memory.sqlite",
+            namespace: "episodes",
+            autoSave: { enabled: false },
+          },
+        },
+      ],
+      TMP,
+      { agentId: AGENT_ID },
+    );
+
+    expect(augment!.memory?.owns).toEqual({
+      kind: "namespace",
+      prefix: `${AGENT_ID}:episodes:`,
+    });
+    await augment!.onShutdown?.();
   });
 });
 
@@ -1146,6 +1233,54 @@ describe("resolveAugments — budgets", () => {
     }
   });
 
+  test("routes log-to-file notifications into the Railway runtime volume", async () => {
+    const runtimeDataRoot = join(TMP, "railway-notify");
+    mkdirSync(runtimeDataRoot, { recursive: true });
+    const [augment] = await resolveAugments(
+      [
+        {
+          name: "notify",
+          type: "notify",
+          options: {
+            destinations: [
+              {
+                name: "creator",
+                transport: "log-to-file",
+                path: "./notifications.jsonl",
+                allowedTrustLevels: ["creator"],
+              },
+            ],
+          },
+        },
+      ],
+      TMP,
+      { runtimeDataRoot },
+    );
+    const tool = augment!.tools!.find((candidate) => candidate.name === "notify")!;
+    const result = JSON.parse(
+      await asStringTool(tool).execute(
+        { to: "creator", summary: "durable event" },
+        {
+          turnId: "notify-turn",
+          threadId: "notify-thread",
+          peer: {
+            id: "creator",
+            kind: "human",
+            trustLevel: "creator",
+            sourceAugment: "console",
+          },
+        },
+      ),
+    );
+    expect(result.status).toBe("sent");
+    expect(readFileSync(join(runtimeDataRoot, "notifications.jsonl"), "utf8")).toContain(
+      "durable event",
+    );
+    expect(existsSync(join(runtimeDataRoot, "notify-notify.db"))).toBe(true);
+    expect(existsSync(join(TMP, "notifications.jsonl"))).toBe(false);
+    await augment!.onShutdown?.();
+  });
+
   test("closes the store on shutdown without error", async () => {
     const configs: AugmentConfig[] = [
       {
@@ -1361,7 +1496,7 @@ describe("resolveAugments — agentMail runtime state paths", () => {
       resolveAugments([agentMailConfig("support", "nested/mail.bin")], TMP, {
         runtimeDataRoot,
       }),
-    ).rejects.toThrow(/must not contain symlinked directories/);
+    ).rejects.toThrow(/missing or unsafe|must not contain symlinked directories/);
     expect(existsSync(join(external, "mail.bin"))).toBe(false);
     expect(existsSync(join(external, "mail.bin-wal"))).toBe(false);
     expect(existsSync(join(external, "mail.bin-shm"))).toBe(false);
@@ -1481,6 +1616,29 @@ describe("resolveAugments — core SQLite runtime state paths", () => {
         { runtimeDataRoot },
       ),
     ).rejects.toThrow(/budgets dbPath.*runtime data root/i);
+  });
+
+  test("rejects an owned state path outside the local agent directory", async () => {
+    const escapedPath = join(TMP, "..", ".tmp-other-agent-budget.db");
+    try {
+      await expect(
+        resolveAugments(
+          [
+            {
+              name: "budgets",
+              type: "budgets",
+              options: { dbPath: escapedPath },
+            },
+          ],
+          TMP,
+          { agentId: AGENT_ID },
+        ),
+      ).rejects.toThrow(/budgets dbPath.*state directory/i);
+    } finally {
+      rmSync(escapedPath, { force: true });
+      rmSync(`${escapedPath}-shm`, { force: true });
+      rmSync(`${escapedPath}-wal`, { force: true });
+    }
   });
 });
 
@@ -1752,8 +1910,22 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
     };
     expect(typeof va.isVisitorRevoked).toBe("function");
 
-    // The VISITOR_ID is NOT in the va DB yet → isVisitorRevoked returns false.
-    // (No row = unknown visitor = not revoked.)
+    // Signature verification is necessary but not sufficient: seed the
+    // server-side identity record before the token can hold visitor authority.
+    const now = Date.now();
+    const seedStore = createSqliteVisitorAuthStore({ dbPath: join(TMP, "f17-va.db") });
+    seedStore.initialize();
+    seedStore.recordVerifiedVisitor({
+      email: "f17-test@example.com",
+      visitorId: VISITOR_ID,
+      verifiedAt: now,
+      lastSeenAt: now,
+      reverifyDueAt: now + 86_400_000 * 90,
+      revoked: false,
+      revokedAt: null,
+      revokedReason: null,
+    });
+    seedStore.close();
     expect(va.isVisitorRevoked(VISITOR_ID)).toBe(false);
 
     const model = createMockModel({ response: "hello" });
@@ -1785,54 +1957,14 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
       // but we CAN assert va.isVisitorRevoked was NOT returning true at this point.
       await recognizedResp.text();
 
-      // Now spy on isVisitorRevoked to force it to return true for VISITOR_ID.
-      // This simulates the visitor being revoked (e.g., via `auggy visitors --revoke`).
-      // The spy MUST be called by the closure IF F17 wiring is correct.
-      const _originalIsRevoked = va.isVisitorRevoked.bind(va);
-      const _wasCalledWithVisitorId = false;
-      // Temporarily replace isVisitorRevoked on the va object to track calls.
-      // Note: the bound function in lateBindings captures `va.isVisitorRevoked.bind(va)`,
-      // NOT a getter — so we can't spy post-binding. Instead we verify behavior:
-      // with F17's fix, the revocationCheck closure calls the va method via lateBindings.
-      // We test this indirectly: for a REVOKED visitor, an HTTP request must treat
-      // them as anonymous (428 session bootstrap = anonymous path).
-      //
-      // To revoke, we use a second va instance backed by the SAME DB file and call
-      // its isVisitorRevoked to verify the revoking works — but for the HTTP assertion,
-      // we rely on the actual revocation being persisted to the DB. Since VISITOR_ID
-      // was never inserted into the verified_visitors table (we minted the token
-      // directly, bypassing the magic-link flow), visitorAuth's isVisitorRevoked
-      // reads from the DB and finds no row → returns false → visitor is recognized.
-      //
-      // The key assertion for F17: the revocationCheck closure was wired (not null).
-      // We confirm this via the first request above succeeding with recognized path.
-      // If F17 was reverted (lateBindings.revocationCheck is null), the revocation
-      // check would be skipped entirely — same behavior as "not revoked".
-      //
-      // For a definitive gate: insert the visitor into the DB as revoked, then make
-      // a second request, and assert the anonymous-session bootstrap is required.
-      // This requires DB-level access. Use createSqliteVisitorAuthStore from the store.
-      const { createSqliteVisitorAuthStore } = await import(
-        "../../src/augments/visitorAuth/storage/sqlite-store"
-      );
-      const seedStore = createSqliteVisitorAuthStore({
+      // Persist revocation through the real identity store. If the renamed
+      // augment wiring is absent, the transport will ignore this transition.
+      const revocationStore = createSqliteVisitorAuthStore({
         dbPath: join(TMP, "f17-va.db"),
       });
-      seedStore.initialize();
-      // Insert and immediately revoke the visitor row.
-      const now = Date.now();
-      seedStore.recordVerifiedVisitor({
-        email: "f17-test@example.com",
-        visitorId: VISITOR_ID,
-        verifiedAt: now,
-        lastSeenAt: now,
-        reverifyDueAt: now + 86_400_000 * 90,
-        revoked: false,
-        revokedAt: null,
-        revokedReason: null,
-      });
-      seedStore.revokeByEmail("f17-test@example.com", "test", now);
-      seedStore.close();
+      revocationStore.initialize();
+      revocationStore.revokeByEmail("f17-test@example.com", "test", now + 1);
+      revocationStore.close();
 
       // VISITOR_ID is now revoked in the DB. isVisitorRevoked must return true.
       expect(va.isVisitorRevoked(VISITOR_ID)).toBe(true);
@@ -1943,6 +2075,17 @@ describe("resolveAugments — cross-augment agentBinding validation (fix H3)", (
   test("succeeds when both agentBindings are the same value", async () => {
     const augments = await resolveAugments([vaConfig("same-id"), wtConfig("same-id")], TMP);
     expect(augments).toHaveLength(2);
+  });
+
+  test("replaces mutable visitor audiences with the immutable agent id", async () => {
+    const configs = [vaConfig("copied-name"), wtConfig("copied-name")];
+    const augments = await resolveAugments(configs, TMP, { agentId: AGENT_ID });
+
+    expect(augments).toHaveLength(2);
+    expect((configs[0]!.options as Record<string, unknown>).agentBinding).toBe(AGENT_ID);
+    const webOptions = configs[1]!.options as Record<string, unknown>;
+    expect(webOptions.securityNamespace).toBe(AGENT_ID);
+    expect((webOptions.visitorTokens as Record<string, unknown>).agentBinding).toBe(AGENT_ID);
   });
 
   test("injects an explicit visitorAuth binding into webTransport when omitted", async () => {

@@ -70,8 +70,8 @@ const SCHEMA_STATEMENTS = [
   )`,
 ];
 
-const VISITOR_AUTH_APPLICATION_ID = 0x56415554; // "VAUT"
-const VISITOR_AUTH_SCHEMA_VERSION = 1;
+export const VISITOR_AUTH_APPLICATION_ID = 0x56415554; // "VAUT"
+export const VISITOR_AUTH_SCHEMA_VERSION = 1;
 const EXPECTED_SCHEMA = new Map(
   SCHEMA_STATEMENTS.map((sql) => {
     const match = sql.match(/(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([^\s(]+)/i);
@@ -157,12 +157,15 @@ export function createSqliteVisitorAuthStore(
   let findOpenStmt: Statement | null = null;
   let invalidateStmt: Statement | null = null;
   let invalidateOneStmt: Statement | null = null;
+  let invalidateEmailStmt: Statement | null = null;
   let recordVerifiedStmt: Statement | null = null;
   let findVerifiedStmt: Statement | null = null;
   let touchVerifiedStmt: Statement | null = null;
   let listVerifiedStmt: Statement | null = null;
   let revokeStmt: Statement | null = null;
+  let revokeCurrentStmt: Statement | null = null;
   let revokeReadStmt: Statement | null = null;
+  let revokeCurrentReadStmt: Statement | null = null;
   let unrevokeAndRotateStmt: Statement | null = null;
   let findMostRecentStmt: Statement | null = null;
   let hasNotifiedStmt: Statement | null = null;
@@ -170,7 +173,9 @@ export function createSqliteVisitorAuthStore(
   let findByIdStmt: Statement | null = null;
   let canPromoteThreadStmt: Statement | null = null;
   let addRevokedStmt: Statement | null = null;
+  let advanceRevokedStmt: Statement | null = null;
   let isRevokedIdStmt: Statement | null = null;
+  let listRevokedByEmailStmt: Statement | null = null;
 
   function ensurePrepared(): void {
     if (issueStmt) return;
@@ -187,7 +192,7 @@ export function createSqliteVisitorAuthStore(
       `UPDATE visitor_auth_tokens
          SET consumed = 1, consumed_at = ?
        WHERE token = ? AND consumed = 0 AND expires_at > ?
-       RETURNING email, peer_id, thread_id`,
+       RETURNING email, peer_id, thread_id, issued_at`,
     );
     tokenStatusStmt = db.prepare(
       `SELECT consumed, expires_at FROM visitor_auth_tokens WHERE token = ?`,
@@ -212,6 +217,11 @@ export function createSqliteVisitorAuthStore(
          SET consumed = 1, consumed_at = ?
        WHERE token = ? AND consumed = 0`,
     );
+    invalidateEmailStmt = db.prepare(
+      `UPDATE visitor_auth_tokens
+         SET consumed = 1, consumed_at = ?
+       WHERE email = ? AND consumed = 0`,
+    );
     recordVerifiedStmt = db.prepare(
       `INSERT INTO verified_visitors
         (visitor_id, email, verified_at, last_seen_at, reverify_due_at, revoked, revoked_at, revoked_reason)
@@ -227,11 +237,23 @@ export function createSqliteVisitorAuthStore(
          SET revoked = 1, revoked_at = ?, revoked_reason = ?
        WHERE email = ? AND revoked = 0`,
     );
+    revokeCurrentStmt = db.prepare(
+      `UPDATE verified_visitors
+         SET revoked = 1,
+             revoked_reason = CASE
+               WHEN revoked_at IS NULL OR ? >= revoked_at THEN ? ELSE revoked_reason END,
+             revoked_at = CASE
+               WHEN revoked_at IS NULL OR ? > revoked_at THEN ? ELSE revoked_at END
+       WHERE email = ?`,
+    );
     // Filter `revoked = 0` so a second revoke call returns null instead of
     // re-asserting success on an already-revoked row (callers test
     // `revokeByEmail(...) !== null` as the "did this revoke happen?" signal).
     revokeReadStmt = db.prepare(
       `SELECT visitor_id FROM verified_visitors WHERE email = ? AND revoked = 0`,
+    );
+    revokeCurrentReadStmt = db.prepare(
+      `SELECT visitor_id, revoked FROM verified_visitors WHERE email = ?`,
     );
     // Un-revoke + rotate: single UPDATE that only matches revoked rows.
     // Returning false (changes === 0) when the row is not revoked prevents
@@ -271,7 +293,20 @@ export function createSqliteVisitorAuthStore(
     addRevokedStmt = db.prepare(
       `INSERT OR IGNORE INTO revoked_visitor_ids (visitor_id, email, revoked_at, revoked_reason) VALUES (?, ?, ?, ?)`,
     );
+    advanceRevokedStmt = db.prepare(
+      `INSERT INTO revoked_visitor_ids
+        (visitor_id, email, revoked_at, revoked_reason) VALUES (?, ?, ?, ?)
+       ON CONFLICT(visitor_id) DO UPDATE SET
+         revoked_reason = CASE
+           WHEN excluded.revoked_at >= revoked_visitor_ids.revoked_at
+           THEN excluded.revoked_reason ELSE revoked_visitor_ids.revoked_reason END,
+         revoked_at = MAX(revoked_visitor_ids.revoked_at, excluded.revoked_at)
+       WHERE revoked_visitor_ids.email = excluded.email`,
+    );
     isRevokedIdStmt = db.prepare(`SELECT 1 FROM revoked_visitor_ids WHERE visitor_id = ?`);
+    listRevokedByEmailStmt = db.prepare(
+      `SELECT visitor_id FROM revoked_visitor_ids WHERE email = ? ORDER BY revoked_at, visitor_id`,
+    );
   }
 
   return {
@@ -285,7 +320,7 @@ export function createSqliteVisitorAuthStore(
         args.email,
         args.peerId,
         args.threadId,
-        Date.now(),
+        args.issuedAt ?? Date.now(),
         args.expiresAt,
         args.sourceMessageId,
       );
@@ -293,7 +328,7 @@ export function createSqliteVisitorAuthStore(
     consumeToken(token: string, now: number): ConsumeTokenResult {
       ensurePrepared();
       const row = consumeStmt!.get(now, token, now) as
-        | { email: string; peer_id: string; thread_id: string }
+        | { email: string; peer_id: string; thread_id: string; issued_at: number }
         | undefined;
       if (!row) return { consumed: false };
       return {
@@ -301,6 +336,7 @@ export function createSqliteVisitorAuthStore(
         email: row.email,
         peerId: row.peer_id,
         threadId: row.thread_id,
+        issuedAt: row.issued_at,
       };
     },
     tokenStatus(token: string, now: number): TokenStatus {
@@ -383,11 +419,34 @@ export function createSqliteVisitorAuthStore(
         const visRow = revokeReadStmt!.get(email) as { visitor_id: string } | undefined;
         if (!visRow) return;
         revokeStmt!.run(now, reason, email);
+        invalidateEmailStmt!.run(now, email);
         // Permanently record the old visitor_id in the denylist so it stays
         // rejected even after unrevokeAndRotate rewrites the row's visitor_id.
         addRevokedStmt!.run(visRow.visitor_id, email, now, reason);
         result = visRow.visitor_id;
       })();
+      return result;
+    },
+    revokeCurrentByEmail(
+      email: string,
+      reason: string,
+      now: number,
+    ): { visitorId: string; wasRevoked: boolean } | null {
+      ensurePrepared();
+      let result: { visitorId: string; wasRevoked: boolean } | null = null;
+      db.transaction(() => {
+        const row = revokeCurrentReadStmt!.get(email) as
+          | { visitor_id: string; revoked: number }
+          | undefined;
+        if (!row) return;
+        revokeCurrentStmt!.run(now, reason, now, now, email);
+        invalidateEmailStmt!.run(now, email);
+        const denylist = advanceRevokedStmt!.run(row.visitor_id, email, now, reason);
+        if (denylist.changes !== 1) {
+          throw new Error("visitorAuth store: revoked visitor id belongs to another email");
+        }
+        result = { visitorId: row.visitor_id, wasRevoked: row.revoked !== 0 };
+      }).immediate();
       return result;
     },
     findVisitorById(visitorId: string): VerifiedVisitorRow | null {
@@ -404,18 +463,41 @@ export function createSqliteVisitorAuthStore(
       newVisitorId: string,
       verifiedAt: number,
       reverifyDueAt: number,
-    ): boolean {
+      tokenIssuedAt: number,
+    ): string | null {
       ensurePrepared();
-      let rotated = false;
+      let canonicalVisitorId: string | null = null;
       db.transaction(() => {
-        // Capture the current (old) visitor_id BEFORE overwriting it.
+        // The immediate transaction makes the read/rotate decision one
+        // serialized operation across processes. A stale concurrent caller
+        // observes the winner's now-active row and adopts that identity.
         // If the row exists and is revoked, its old id must go into the denylist
         // so that stale tokens carrying the old id remain rejected after rotation.
         const oldRow = db
           .prepare(
-            `SELECT visitor_id, email FROM verified_visitors WHERE email = ? AND revoked = 1`,
+            `SELECT visitor_id, email, revoked, revoked_at FROM verified_visitors WHERE email = ?`,
           )
-          .get(email) as { visitor_id: string; email: string } | undefined;
+          .get(email) as
+          | { visitor_id: string; email: string; revoked: number; revoked_at: number | null }
+          | undefined;
+        if (!oldRow) return;
+        const latestRevocation = db
+          .query<{ revoked_at: number | null }, [string]>(
+            "SELECT MAX(revoked_at) AS revoked_at FROM revoked_visitor_ids WHERE email = ?",
+          )
+          .get(email);
+        if (
+          latestRevocation?.revoked_at !== null &&
+          latestRevocation?.revoked_at !== undefined &&
+          tokenIssuedAt <= latestRevocation.revoked_at
+        ) {
+          return;
+        }
+        if (oldRow.revoked === 0) {
+          canonicalVisitorId = oldRow.visitor_id;
+          return;
+        }
+        if (oldRow.revoked_at === null || tokenIssuedAt <= oldRow.revoked_at) return;
 
         const result = unrevokeAndRotateStmt!.run(
           newVisitorId,
@@ -425,16 +507,14 @@ export function createSqliteVisitorAuthStore(
           email,
         );
 
-        if (result.changes === 1 && oldRow) {
+        if (result.changes === 1) {
           // The old visitor_id is now gone from verified_visitors; persist it in
           // the denylist so isVisitorIdRevoked() catches it forever.
           addRevokedStmt!.run(oldRow.visitor_id, oldRow.email, verifiedAt, "rotated-on-reverify");
-          rotated = true;
-        } else if (result.changes === 1) {
-          rotated = true;
+          canonicalVisitorId = newVisitorId;
         }
-      })();
-      return rotated;
+      }).immediate();
+      return canonicalVisitorId;
     },
     addRevokedVisitorId(visitorId: string, email: string, reason: string, now: number): void {
       ensurePrepared();
@@ -443,6 +523,12 @@ export function createSqliteVisitorAuthStore(
     isVisitorIdRevoked(visitorId: string): boolean {
       ensurePrepared();
       return isRevokedIdStmt!.get(visitorId) !== null;
+    },
+    listRevokedVisitorIdsByEmail(email: string): string[] {
+      ensurePrepared();
+      return (listRevokedByEmailStmt!.all(email) as Array<{ visitor_id: string }>).map(
+        (row) => row.visitor_id,
+      );
     },
     hasNotifiedFirstVerifyFor(email: string): boolean {
       ensurePrepared();

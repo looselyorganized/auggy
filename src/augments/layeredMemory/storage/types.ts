@@ -101,5 +101,5 @@ export interface SupabaseStoreConfig {
    * Namespace prefix the store enforces on `writeAutoSavedEntry`. See
    * `SqliteStoreConfig.namespace`.
    */
-  namespace?: string;
+  namespace: string;
 }

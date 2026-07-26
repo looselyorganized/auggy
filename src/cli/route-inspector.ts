@@ -60,13 +60,14 @@ export function isIntentionalFrameworkPublicRoute(
 export async function inspectAugmentRoutes(
   agentDir: string,
   configs: readonly AugmentConfig[],
+  agentId: string,
 ): Promise<RouteInspectionResult> {
   const routeConfigs = configs.filter(isRouteInspectableConfig);
   if (routeConfigs.length === 0) return emptyInspection([]);
 
   let augments: Augment[];
   try {
-    augments = await resolveAugments(cloneAugmentConfigs(routeConfigs), agentDir);
+    augments = await resolveAugments(cloneAugmentConfigs(routeConfigs), agentDir, { agentId });
   } catch (err) {
     return emptyInspection([
       {

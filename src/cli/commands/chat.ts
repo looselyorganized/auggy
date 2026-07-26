@@ -13,7 +13,7 @@
 
 import { Command } from "commander";
 import { select } from "@inquirer/prompts";
-import { listPidManifests, readPidManifest, isProcessAlive } from "../pid-registry";
+import { inspectRuntimeProcess, listPidManifests, readLivePidManifest } from "../pid-registry";
 import { openBrowser } from "../open-browser";
 import type { PidManifest } from "../types";
 
@@ -65,7 +65,7 @@ export function chatCommand(): Command {
 
 async function pickAgentManifest(name: string | undefined): Promise<PidManifest | null> {
   if (name) {
-    const m = readPidManifest(name);
+    const m = readLivePidManifest(name);
     if (!m) {
       console.error(
         `[auggy chat] No PID manifest for "${name}". Run \`auggy dev ${name}\` first ` +
@@ -73,17 +73,12 @@ async function pickAgentManifest(name: string | undefined): Promise<PidManifest 
       );
       return null;
     }
-    if (!isProcessAlive(m.pid)) {
-      console.error(
-        `[auggy chat] Agent "${name}" has a stale PID manifest. ` +
-          `Run \`auggy dev ${name}\` to boot it.`,
-      );
-      return null;
-    }
     return m;
   }
 
-  const running = listPidManifests();
+  const running = listPidManifests().filter(
+    (manifest) => inspectRuntimeProcess(manifest) === "alive",
+  );
   if (running.length === 0) {
     console.error("[auggy chat] No agents running. Boot one with `auggy dev <name>` first.");
     return null;
@@ -93,7 +88,7 @@ async function pickAgentManifest(name: string | undefined): Promise<PidManifest 
   return await select<PidManifest>({
     message: "Which agent?",
     choices: running.map((m) => ({
-      name: `${m.name} (port ${m.port ?? "—"}, pid ${m.pid})`,
+      name: `${m.name} (${m.agentId ?? "legacy"}, port ${m.port ?? "—"}, pid ${m.pid})`,
       value: m,
     })),
   });

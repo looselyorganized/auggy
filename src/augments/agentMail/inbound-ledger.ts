@@ -7,7 +7,7 @@
  * provider event IDs are an additional replay guard, never the primary key.
  */
 
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { openHardenedSqlite } from "../../lib/sqlite";
 import {
@@ -20,7 +20,7 @@ import {
 } from "./provider";
 
 export const AGENTMAIL_LEDGER_APPLICATION_ID = 0x414d494c; // "AMIL"
-export const AGENTMAIL_LEDGER_SCHEMA_VERSION = 1;
+export const AGENTMAIL_LEDGER_SCHEMA_VERSION = 2;
 const DEFAULT_INITIAL_LOOKBACK_MS = 24 * 60 * 60_000;
 const DEFAULT_CHECKPOINT_OVERLAP_MS = 60_000;
 const MAX_LEASE_MS = 60 * 60_000;
@@ -70,9 +70,43 @@ const SCHEMA_STATEMENTS = [
     after_ts_ms     INTEGER NOT NULL,
     updated_at      INTEGER NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS agentmail_inbound_quarantines (
+    inbox_id          TEXT NOT NULL,
+    message_id        TEXT NOT NULL,
+    incident_id       TEXT NOT NULL UNIQUE,
+    incident_version  INTEGER NOT NULL DEFAULT 1,
+    reason_code       TEXT NOT NULL,
+    quarantined_at    INTEGER NOT NULL,
+    PRIMARY KEY (inbox_id, message_id),
+    FOREIGN KEY (inbox_id, message_id)
+      REFERENCES agentmail_inbound_messages(inbox_id, message_id)
+      ON DELETE CASCADE
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_agentmail_inbound_quarantine_time
+     ON agentmail_inbound_quarantines(quarantined_at, incident_id)`,
+  `CREATE TABLE IF NOT EXISTS agentmail_inbound_recoveries (
+    incident_id       TEXT PRIMARY KEY,
+    inbox_id          TEXT NOT NULL,
+    message_id        TEXT NOT NULL,
+    incident_version  INTEGER NOT NULL,
+    disposition       TEXT NOT NULL CHECK (disposition IN ('confirmed-handled', 'confirmed-no-effect')),
+    evidence_sha256   TEXT NOT NULL,
+    resolved_at       INTEGER NOT NULL
+  )`,
 ];
 
 const EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map([
+  ["agentmail_inbound_meta", SCHEMA_STATEMENTS[0]!],
+  ["agentmail_inbound_messages", SCHEMA_STATEMENTS[1]!],
+  ["idx_agentmail_inbound_claim", SCHEMA_STATEMENTS[2]!],
+  ["idx_agentmail_inbound_thread", SCHEMA_STATEMENTS[3]!],
+  ["agentmail_inbound_checkpoints", SCHEMA_STATEMENTS[4]!],
+  ["agentmail_inbound_quarantines", SCHEMA_STATEMENTS[5]!],
+  ["idx_agentmail_inbound_quarantine_time", SCHEMA_STATEMENTS[6]!],
+  ["agentmail_inbound_recoveries", SCHEMA_STATEMENTS[7]!],
+] as const);
+
+const V1_EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map([
   ["agentmail_inbound_meta", SCHEMA_STATEMENTS[0]!],
   ["agentmail_inbound_messages", SCHEMA_STATEMENTS[1]!],
   ["idx_agentmail_inbound_claim", SCHEMA_STATEMENTS[2]!],
@@ -106,13 +140,17 @@ function schemaObjects(db: Database): Array<{ name: string; sql: string; type: s
     .all();
 }
 
-function validateExactSchema(db: Database): void {
+function validateExactSchema(
+  db: Database,
+  expectedSchema: ReadonlyMap<string, string> = EXPECTED_SCHEMA,
+  expectedVersion = AGENTMAIL_LEDGER_SCHEMA_VERSION,
+): void {
   const objects = schemaObjects(db);
-  if (objects.length !== EXPECTED_SCHEMA.size) {
+  if (objects.length !== expectedSchema.size) {
     throw new Error("agentMail ledger: database schema contains missing or unexpected objects");
   }
   for (const object of objects) {
-    const expected = EXPECTED_SCHEMA.get(object.name);
+    const expected = expectedSchema.get(object.name);
     if (!expected || canonicalSchemaSql(object.sql) !== canonicalSchemaSql(expected)) {
       throw new Error(`agentMail ledger: database schema object is incompatible: ${object.name}`);
     }
@@ -126,7 +164,7 @@ function validateExactSchema(db: Database): void {
   if (
     versions.length !== 1 ||
     versions[0]?.key !== "schema_version" ||
-    versions[0].value !== String(AGENTMAIL_LEDGER_SCHEMA_VERSION)
+    versions[0].value !== String(expectedVersion)
   ) {
     throw new Error("agentMail ledger: database schema version metadata is incompatible");
   }
@@ -252,6 +290,48 @@ function validateStoredRows(db: Database): void {
     }
   }
 
+  const quarantines = db
+    .query<Record<string, unknown>, []>(
+      `SELECT q.*, m.state AS message_state
+       FROM agentmail_inbound_quarantines q
+       JOIN agentmail_inbound_messages m
+         ON m.inbox_id = q.inbox_id AND m.message_id = q.message_id`,
+    )
+    .all();
+  for (const row of quarantines) {
+    storedText(row.inbox_id, "quarantine inbox_id", 256);
+    storedText(row.message_id, "quarantine message_id", 256);
+    storedText(row.incident_id, "quarantine incident_id", 128);
+    if (safeStoredInteger(row.incident_version, "quarantine incident_version") < 1) {
+      throw new Error("agentMail ledger: stored quarantine version is invalid");
+    }
+    storedText(row.reason_code, "quarantine reason_code", 64);
+    safeStoredInteger(row.quarantined_at, "quarantined_at");
+    if (row.message_state !== "processing") {
+      throw new Error("agentMail ledger: quarantined message must remain processing");
+    }
+  }
+
+  const recoveries = db
+    .query<Record<string, unknown>, []>("SELECT * FROM agentmail_inbound_recoveries")
+    .all();
+  for (const row of recoveries) {
+    storedText(row.incident_id, "recovery incident_id", 128);
+    storedText(row.inbox_id, "recovery inbox_id", 256);
+    storedText(row.message_id, "recovery message_id", 256);
+    if (safeStoredInteger(row.incident_version, "recovery incident_version") < 1) {
+      throw new Error("agentMail ledger: stored recovery version is invalid");
+    }
+    if (row.disposition !== "confirmed-handled" && row.disposition !== "confirmed-no-effect") {
+      throw new Error("agentMail ledger: stored recovery disposition is invalid");
+    }
+    const digest = storedText(row.evidence_sha256, "recovery evidence hash", 64);
+    if (!/^[0-9a-f]{64}$/.test(digest)) {
+      throw new Error("agentMail ledger: stored recovery evidence hash is invalid");
+    }
+    safeStoredInteger(row.resolved_at, "recovery resolved_at");
+  }
+
   const checkpoints = db
     .query<Record<string, unknown>, []>("SELECT * FROM agentmail_inbound_checkpoints")
     .all();
@@ -270,6 +350,7 @@ function prepareAgentMailDatabase(db: Database): void {
   const applicationId = pragmaInteger(db, "application_id");
   const userVersion = pragmaInteger(db, "user_version");
   const objects = schemaObjects(db);
+  let metadataVersion: number | undefined;
 
   if (applicationId !== 0 && applicationId !== AGENTMAIL_LEDGER_APPLICATION_ID) {
     throw new Error("agentMail ledger: database belongs to another application");
@@ -288,8 +369,8 @@ function prepareAgentMailDatabase(db: Database): void {
           "SELECT value FROM agentmail_inbound_meta WHERE key = 'schema_version'",
         )
         .get();
-      const metaVersion = row ? Number(row.value) : undefined;
-      if (metaVersion !== undefined && metaVersion > AGENTMAIL_LEDGER_SCHEMA_VERSION) {
+      metadataVersion = row ? Number(row.value) : undefined;
+      if (metadataVersion !== undefined && metadataVersion > AGENTMAIL_LEDGER_SCHEMA_VERSION) {
         throw new Error(
           `agentMail ledger: database schema ${row?.value} is newer than supported version ${AGENTMAIL_LEDGER_SCHEMA_VERSION}`,
         );
@@ -303,6 +384,15 @@ function prepareAgentMailDatabase(db: Database): void {
   if (applicationId === 0 && userVersion === 0 && objects.length === 0) {
     for (const statement of SCHEMA_STATEMENTS) db.run(statement);
     db.prepare("INSERT INTO agentmail_inbound_meta (key, value) VALUES ('schema_version', ?)").run(
+      String(AGENTMAIL_LEDGER_SCHEMA_VERSION),
+    );
+  } else if (
+    (applicationId === AGENTMAIL_LEDGER_APPLICATION_ID && userVersion === 1) ||
+    (applicationId === 0 && userVersion === 0 && metadataVersion === 1)
+  ) {
+    validateExactSchema(db, V1_EXPECTED_SCHEMA, 1);
+    for (const statement of SCHEMA_STATEMENTS.slice(5)) db.run(statement);
+    db.prepare("UPDATE agentmail_inbound_meta SET value = ? WHERE key = 'schema_version'").run(
       String(AGENTMAIL_LEDGER_SCHEMA_VERSION),
     );
   } else {
@@ -321,7 +411,12 @@ function prepareAgentMailDatabase(db: Database): void {
   db.run(`PRAGMA user_version = ${AGENTMAIL_LEDGER_SCHEMA_VERSION}`);
 }
 
-export type AgentMailLedgerState = "pending" | "processing" | "processed" | "discarded";
+export type AgentMailLedgerState =
+  | "pending"
+  | "processing"
+  | "processed"
+  | "discarded"
+  | "outcome_unknown";
 
 export interface AgentMailLedgerRecord {
   envelope: AgentMailInboundEnvelope;
@@ -367,6 +462,17 @@ export interface AgentMailLedgerCounts {
   processing: number;
   processed: number;
   discarded: number;
+  outcomeUnknown: number;
+}
+
+export interface AgentMailInboundIncident {
+  id: string;
+  version: number;
+  inboxId: string;
+  messageId: string;
+  threadId: string;
+  reasonCode: string;
+  quarantinedAt: number;
 }
 
 export interface AgentMailInboundLedger {
@@ -379,11 +485,28 @@ export interface AgentMailInboundLedger {
   /** Returns an overlapped cursor so timestamp ties and page-boundary crashes replay safely. */
   catchUpAfter(inboxId: string): string;
   checkpoint(inboxId: string): string | undefined;
+  /**
+   * Convert abandoned processing claims into durable ambiguity incidents.
+   * Runtime startup fences every retained claim; live workers fence only
+   * expired claims before seeking more work.
+   */
+  fenceInterruptedClaims(input?: { expiredOnly?: boolean }): AgentMailInboundIncident[];
   claimNext(input: { workerId: string; leaseMs: number }): AgentMailLedgerClaim | null;
   renew(claim: AgentMailLedgerClaim, leaseMs: number): boolean;
   complete(claim: AgentMailLedgerClaim): boolean;
   retry(claim: AgentMailLedgerClaim, input: { error: string; availableAt?: number }): boolean;
   discard(claim: AgentMailLedgerClaim, reason: string): boolean;
+  quarantine(claim: AgentMailLedgerClaim, reasonCode: string): AgentMailInboundIncident | null;
+  listIncidents(limit?: number): AgentMailInboundIncident[];
+  /** Every provider thread held by at least one unresolved incident. */
+  listIncidentThreads(): string[];
+  hasIncidentThread(threadId: string): boolean;
+  reconcileIncident(input: {
+    incidentId: string;
+    expectedVersion: number;
+    disposition: "confirmed-handled" | "confirmed-no-effect";
+    evidence: string;
+  }): { resolved: boolean; threadId?: string; releaseThread?: boolean };
   get(inboxId: string, messageId: string): AgentMailLedgerRecord | null;
   counts(): AgentMailLedgerCounts;
   close(): void;
@@ -397,6 +520,8 @@ export interface AgentMailInboundLedgerOptions {
   now?: () => number;
   /** Test-only lease-token seam. */
   leaseToken?: () => string;
+  /** Test-only incident-id seam. */
+  incidentId?: () => string;
 }
 
 export class AgentMailLedgerConflictError extends Error {
@@ -430,6 +555,20 @@ interface LedgerRow {
   processed_at: number | null;
   last_error: string | null;
   discard_reason: string | null;
+  incident_id?: string | null;
+  incident_version?: number | null;
+  reason_code?: string | null;
+  quarantined_at?: number | null;
+}
+
+interface IncidentRow {
+  incident_id: string;
+  incident_version: number;
+  inbox_id: string;
+  message_id: string;
+  thread_id: string;
+  reason_code: string;
+  quarantined_at: number;
 }
 
 interface PreparedEnvelope {
@@ -496,6 +635,7 @@ export function createAgentMailInboundLedger(
   );
   const now = options.now ?? Date.now;
   const nextLeaseToken = options.leaseToken ?? randomUUID;
+  const nextIncidentId = options.incidentId ?? randomUUID;
   const database = openHardenedSqlite({
     path: options.dbPath,
     label: "agentMail ledger",
@@ -507,7 +647,11 @@ export function createAgentMailInboundLedger(
   let closed = false;
 
   const selectMessage = db.prepare<LedgerRow, [string, string]>(
-    `SELECT * FROM agentmail_inbound_messages WHERE inbox_id = ? AND message_id = ?`,
+    `SELECT m.*, q.incident_id, q.incident_version, q.reason_code, q.quarantined_at
+       FROM agentmail_inbound_messages m
+       LEFT JOIN agentmail_inbound_quarantines q
+         ON q.inbox_id = m.inbox_id AND q.message_id = m.message_id
+      WHERE m.inbox_id = ? AND m.message_id = ?`,
   );
   const selectProviderEvent = db.prepare<{ inbox_id: string; message_id: string }, [string]>(
     `SELECT inbox_id, message_id FROM agentmail_inbound_messages WHERE provider_event_id = ?`,
@@ -542,19 +686,33 @@ export function createAgentMailInboundLedger(
   const selectCheckpoint = db.prepare<{ after_timestamp: string; after_ts_ms: number }, [string]>(
     `SELECT after_timestamp, after_ts_ms FROM agentmail_inbound_checkpoints WHERE inbox_id = ?`,
   );
-  const claimMessage = db.prepare<LedgerRow, [string, string, number, number, number, number]>(
+  const claimMessage = db.prepare<LedgerRow, [string, string, number, number, number]>(
     `UPDATE agentmail_inbound_messages
        SET state = 'processing',
            attempt_count = attempt_count + 1,
            lease_owner = ?,
            lease_token = ?,
            lease_expires_at = ?,
-           last_error = CASE WHEN state = 'processing' THEN 'processing lease expired' ELSE last_error END,
            last_seen_at = ?
      WHERE rowid = (
        SELECT rowid FROM agentmail_inbound_messages
-       WHERE (state = 'pending' AND available_at <= ?)
-          OR (state = 'processing' AND lease_expires_at <= ?)
+       WHERE state = 'pending' AND available_at <= ?
+         AND NOT EXISTS (
+           SELECT 1
+             FROM agentmail_inbound_quarantines q
+             JOIN agentmail_inbound_messages quarantined
+               ON quarantined.inbox_id = q.inbox_id
+              AND quarantined.message_id = q.message_id
+            WHERE quarantined.inbox_id = agentmail_inbound_messages.inbox_id
+              AND quarantined.thread_id = agentmail_inbound_messages.thread_id
+         )
+         AND NOT EXISTS (
+           SELECT 1
+             FROM agentmail_inbound_messages active
+            WHERE active.inbox_id = agentmail_inbound_messages.inbox_id
+              AND active.thread_id = agentmail_inbound_messages.thread_id
+              AND active.state = 'processing'
+         )
        ORDER BY message_ts_ms ASC, message_id ASC
        LIMIT 1
      )
@@ -564,7 +722,12 @@ export function createAgentMailInboundLedger(
     `UPDATE agentmail_inbound_messages
        SET lease_expires_at = ?, last_seen_at = ?
      WHERE inbox_id = ? AND message_id = ?
-       AND state = 'processing' AND lease_token = ? AND lease_expires_at > ?`,
+       AND state = 'processing' AND lease_token = ? AND lease_expires_at > ?
+       AND NOT EXISTS (
+         SELECT 1 FROM agentmail_inbound_quarantines q
+          WHERE q.inbox_id = agentmail_inbound_messages.inbox_id
+            AND q.message_id = agentmail_inbound_messages.message_id
+       )`,
   );
   const completeClaim = db.prepare(
     `UPDATE agentmail_inbound_messages
@@ -572,14 +735,24 @@ export function createAgentMailInboundLedger(
            lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
            last_error = NULL, discard_reason = NULL
      WHERE inbox_id = ? AND message_id = ?
-       AND state = 'processing' AND lease_token = ? AND lease_expires_at > ?`,
+       AND state = 'processing' AND lease_token = ? AND lease_expires_at > ?
+       AND NOT EXISTS (
+         SELECT 1 FROM agentmail_inbound_quarantines q
+          WHERE q.inbox_id = agentmail_inbound_messages.inbox_id
+            AND q.message_id = agentmail_inbound_messages.message_id
+       )`,
   );
   const retryClaim = db.prepare(
     `UPDATE agentmail_inbound_messages
        SET state = 'pending', available_at = ?, last_seen_at = ?, last_error = ?,
            lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
      WHERE inbox_id = ? AND message_id = ?
-       AND state = 'processing' AND lease_token = ? AND lease_expires_at > ?`,
+       AND state = 'processing' AND lease_token = ? AND lease_expires_at > ?
+       AND NOT EXISTS (
+         SELECT 1 FROM agentmail_inbound_quarantines q
+          WHERE q.inbox_id = agentmail_inbound_messages.inbox_id
+            AND q.message_id = agentmail_inbound_messages.message_id
+       )`,
   );
   const discardClaim = db.prepare(
     `UPDATE agentmail_inbound_messages
@@ -587,10 +760,129 @@ export function createAgentMailInboundLedger(
            lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
            last_error = NULL
      WHERE inbox_id = ? AND message_id = ?
-       AND state = 'processing' AND lease_token = ? AND lease_expires_at > ?`,
+       AND state = 'processing' AND lease_token = ? AND lease_expires_at > ?
+       AND NOT EXISTS (
+         SELECT 1 FROM agentmail_inbound_quarantines q
+          WHERE q.inbox_id = agentmail_inbound_messages.inbox_id
+            AND q.message_id = agentmail_inbound_messages.message_id
+       )`,
   );
   const countStates = db.prepare<{ state: AgentMailLedgerState; count: number }, []>(
     `SELECT state, COUNT(*) AS count FROM agentmail_inbound_messages GROUP BY state`,
+  );
+  const countQuarantines = db.prepare<{ count: number }, []>(
+    "SELECT COUNT(*) AS count FROM agentmail_inbound_quarantines",
+  );
+  const insertQuarantine = db.prepare<
+    IncidentRow,
+    [string, string, number, string, string, string]
+  >(
+    `INSERT INTO agentmail_inbound_quarantines (
+       inbox_id, message_id, incident_id, incident_version, reason_code, quarantined_at
+     )
+     SELECT inbox_id, message_id, ?, 1, ?, ?
+      FROM agentmail_inbound_messages
+      WHERE inbox_id = ? AND message_id = ?
+        AND state = 'processing' AND lease_token = ?
+     ON CONFLICT(inbox_id, message_id) DO NOTHING
+     RETURNING incident_id, incident_version, inbox_id, message_id,
+       (SELECT thread_id FROM agentmail_inbound_messages m
+         WHERE m.inbox_id = agentmail_inbound_quarantines.inbox_id
+           AND m.message_id = agentmail_inbound_quarantines.message_id) AS thread_id,
+       reason_code, quarantined_at`,
+  );
+  const listQuarantines = db.prepare<IncidentRow, [number]>(
+    `SELECT q.incident_id, q.incident_version, q.inbox_id, q.message_id,
+            m.thread_id, q.reason_code, q.quarantined_at
+       FROM agentmail_inbound_quarantines q
+       JOIN agentmail_inbound_messages m
+         ON m.inbox_id = q.inbox_id AND m.message_id = q.message_id
+      ORDER BY q.quarantined_at ASC, q.incident_id ASC LIMIT ?`,
+  );
+  const listQuarantinedThreads = db.prepare<{ thread_id: string }, []>(
+    `SELECT DISTINCT m.thread_id
+       FROM agentmail_inbound_quarantines q
+       JOIN agentmail_inbound_messages m
+         ON m.inbox_id = q.inbox_id AND m.message_id = q.message_id
+      ORDER BY m.thread_id`,
+  );
+  const countThreadQuarantinesByProviderThread = db.prepare<{ count: number }, [string]>(
+    `SELECT COUNT(*) AS count
+       FROM agentmail_inbound_quarantines q
+       JOIN agentmail_inbound_messages m
+         ON m.inbox_id = q.inbox_id AND m.message_id = q.message_id
+      WHERE m.thread_id = ?`,
+  );
+  const selectQuarantineByIncident = db.prepare<IncidentRow, [string]>(
+    `SELECT q.incident_id, q.incident_version, q.inbox_id, q.message_id,
+            m.thread_id, q.reason_code, q.quarantined_at
+       FROM agentmail_inbound_quarantines q
+       JOIN agentmail_inbound_messages m
+         ON m.inbox_id = q.inbox_id AND m.message_id = q.message_id
+      WHERE q.incident_id = ?`,
+  );
+  const selectInterruptedClaims = db.prepare<
+    { inbox_id: string; message_id: string; thread_id: string },
+    [number, number]
+  >(
+    `SELECT m.inbox_id, m.message_id, m.thread_id
+       FROM agentmail_inbound_messages m
+       LEFT JOIN agentmail_inbound_quarantines q
+         ON q.inbox_id = m.inbox_id AND q.message_id = m.message_id
+      WHERE m.state = 'processing' AND q.incident_id IS NULL
+        AND (? = 0 OR m.lease_expires_at <= ?)
+      ORDER BY m.message_ts_ms, m.message_id
+      LIMIT 1001`,
+  );
+  const promoteInterruptedClaim = db.prepare<IncidentRow, [string, string, string, string, number]>(
+    `INSERT INTO agentmail_inbound_quarantines (
+       inbox_id, message_id, incident_id, incident_version, reason_code, quarantined_at
+     ) VALUES (?, ?, ?, 1, ?, ?)
+     ON CONFLICT(inbox_id, message_id) DO NOTHING
+     RETURNING incident_id, incident_version, inbox_id, message_id,
+       (SELECT thread_id FROM agentmail_inbound_messages m
+         WHERE m.inbox_id = agentmail_inbound_quarantines.inbox_id
+           AND m.message_id = agentmail_inbound_quarantines.message_id) AS thread_id,
+       reason_code, quarantined_at`,
+  );
+  const selectQuarantineByMessage = db.prepare<IncidentRow, [string, string]>(
+    `SELECT q.incident_id, q.incident_version, q.inbox_id, q.message_id,
+            m.thread_id, q.reason_code, q.quarantined_at
+       FROM agentmail_inbound_quarantines q
+       JOIN agentmail_inbound_messages m
+         ON m.inbox_id = q.inbox_id AND m.message_id = q.message_id
+      WHERE q.inbox_id = ? AND q.message_id = ?`,
+  );
+  const resolveHandledMessage = db.prepare(
+    `UPDATE agentmail_inbound_messages
+        SET state = 'processed', processed_at = ?, last_seen_at = ?,
+            lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
+            last_error = NULL, discard_reason = NULL
+      WHERE inbox_id = ? AND message_id = ? AND state = 'processing'`,
+  );
+  const resolveRetryMessage = db.prepare(
+    `UPDATE agentmail_inbound_messages
+        SET state = 'pending', available_at = ?, last_seen_at = ?, processed_at = NULL,
+            lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
+            last_error = 'operator confirmed no external effect', discard_reason = NULL
+      WHERE inbox_id = ? AND message_id = ? AND state = 'processing'`,
+  );
+  const insertRecovery = db.prepare(
+    `INSERT INTO agentmail_inbound_recoveries (
+       incident_id, inbox_id, message_id, incident_version,
+       disposition, evidence_sha256, resolved_at
+     ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  );
+  const deleteQuarantine = db.prepare(
+    `DELETE FROM agentmail_inbound_quarantines
+      WHERE incident_id = ? AND incident_version = ?`,
+  );
+  const countThreadQuarantines = db.prepare<{ count: number }, [string, string]>(
+    `SELECT COUNT(*) AS count
+       FROM agentmail_inbound_quarantines q
+       JOIN agentmail_inbound_messages m
+         ON m.inbox_id = q.inbox_id AND m.message_id = q.message_id
+      WHERE m.inbox_id = ? AND m.thread_id = ?`,
   );
 
   function assertOpen(): void {
@@ -687,7 +979,7 @@ export function createAgentMailInboundLedger(
   function rowRecord(row: LedgerRow): AgentMailLedgerRecord {
     return {
       envelope: rowEnvelope(row),
-      state: row.state,
+      state: row.incident_id ? "outcome_unknown" : row.state,
       attemptCount: row.attempt_count,
       availableAt: row.available_at,
       leaseOwner: optionalString(row.lease_owner),
@@ -697,6 +989,18 @@ export function createAgentMailInboundLedger(
       processedAt: optionalNumber(row.processed_at),
       lastError: optionalString(row.last_error),
       discardReason: optionalString(row.discard_reason),
+    };
+  }
+
+  function incidentRecord(row: IncidentRow): AgentMailInboundIncident {
+    return {
+      id: row.incident_id,
+      version: row.incident_version,
+      inboxId: row.inbox_id,
+      messageId: row.message_id,
+      threadId: row.thread_id,
+      reasonCode: row.reason_code,
+      quarantinedAt: row.quarantined_at,
     };
   }
 
@@ -782,6 +1086,38 @@ export function createAgentMailInboundLedger(
     return leaseMs;
   }
 
+  function validateIncidentId(value: string): string {
+    const id = requireText(value, "incidentId", 128);
+    if (!/^[A-Za-z0-9_-]+$/.test(id)) {
+      throw new Error("agentMail ledger: incidentId contains unsafe characters");
+    }
+    return id;
+  }
+
+  function fenceInterruptedClaims(expiredOnly: boolean): AgentMailInboundIncident[] {
+    const detectedAt = clock();
+    return immediate(() => {
+      const interruptedClaims = selectInterruptedClaims.all(expiredOnly ? 1 : 0, detectedAt);
+      if (interruptedClaims.length > 1_000) {
+        throw new Error(
+          "agentMail ledger: more than 1000 interrupted claims require operator repair",
+        );
+      }
+      const incidents: AgentMailInboundIncident[] = [];
+      for (const claim of interruptedClaims) {
+        const row = promoteInterruptedClaim.get(
+          claim.inbox_id,
+          claim.message_id,
+          validateIncidentId(nextIncidentId()),
+          expiredOnly ? "processing-lease-expired" : "process-restarted",
+          detectedAt,
+        );
+        if (row) incidents.push(incidentRecord(row));
+      }
+      return incidents;
+    });
+  }
+
   return {
     enqueue(envelope) {
       assertOpen();
@@ -857,14 +1193,22 @@ export function createAgentMailInboundLedger(
       return selectCheckpoint.get(inboxId)?.after_timestamp;
     },
 
+    fenceInterruptedClaims(input) {
+      assertOpen();
+      return fenceInterruptedClaims(input?.expiredOnly === true);
+    },
+
     claimNext(input) {
       assertOpen();
+      // A claimed record may already have crossed the model/tool boundary.
+      // Expiry therefore creates an incident; it never grants a new lease.
+      fenceInterruptedClaims(true);
       const workerId = requireText(input.workerId, "workerId", 128);
       const leaseMs = validateLeaseMs(input.leaseMs);
       const claimedAt = clock();
       const token = requireText(nextLeaseToken(), "lease token", 256);
       const expiresAt = checkedTimestampAdd(claimedAt, leaseMs, "lease expiry");
-      const row = claimMessage.get(workerId, token, expiresAt, claimedAt, claimedAt, claimedAt);
+      const row = claimMessage.get(workerId, token, expiresAt, claimedAt, claimedAt);
       if (!row) return null;
       secureAfterWrite();
       return {
@@ -947,6 +1291,110 @@ export function createAgentMailInboundLedger(
       return result.changes === 1;
     },
 
+    quarantine(claim, reasonCode) {
+      assertOpen();
+      validateClaim(claim);
+      const reason = requireText(reasonCode, "quarantine reason", 64);
+      if (!/^[a-z0-9-]+$/.test(reason)) {
+        throw new Error("agentMail ledger: quarantine reason must be a fixed reason code");
+      }
+      const quarantinedAt = clock();
+      const incidentId = validateIncidentId(nextIncidentId());
+      const row = insertQuarantine.get(
+        incidentId,
+        reason,
+        quarantinedAt,
+        claim.envelope.message.inboxId,
+        claim.envelope.message.messageId,
+        claim.leaseToken,
+      );
+      secureAfterWrite();
+      if (row) return incidentRecord(row);
+      const existing = selectQuarantineByMessage.get(
+        claim.envelope.message.inboxId,
+        claim.envelope.message.messageId,
+      );
+      return existing ? incidentRecord(existing) : null;
+    },
+
+    listIncidents(limit = 50) {
+      assertOpen();
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 100) {
+        throw new Error("agentMail ledger: incident limit must be between 1 and 100");
+      }
+      return listQuarantines.all(limit).map(incidentRecord);
+    },
+
+    listIncidentThreads() {
+      assertOpen();
+      return listQuarantinedThreads.all().map((row) => row.thread_id);
+    },
+
+    hasIncidentThread(threadId) {
+      assertOpen();
+      requireText(threadId, "threadId");
+      return (countThreadQuarantinesByProviderThread.get(threadId)?.count ?? 0) > 0;
+    },
+
+    reconcileIncident(input) {
+      assertOpen();
+      const incidentId = validateIncidentId(input.incidentId);
+      if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) {
+        throw new Error("agentMail ledger: expected incident version is invalid");
+      }
+      if (
+        input.disposition !== "confirmed-handled" &&
+        input.disposition !== "confirmed-no-effect"
+      ) {
+        throw new Error("agentMail ledger: recovery disposition is invalid");
+      }
+      const evidence = requireText(input.evidence, "recovery evidence", 400);
+      const evidenceDigest = createHash("sha256").update(evidence, "utf8").digest("hex");
+      const resolvedAt = clock();
+      const result = immediate(() => {
+        const incident = selectQuarantineByIncident.get(incidentId);
+        if (!incident || incident.incident_version !== input.expectedVersion) {
+          return { resolved: false } as const;
+        }
+        const updated =
+          input.disposition === "confirmed-handled"
+            ? resolveHandledMessage.run(
+                resolvedAt,
+                resolvedAt,
+                incident.inbox_id,
+                incident.message_id,
+              )
+            : resolveRetryMessage.run(
+                resolvedAt,
+                resolvedAt,
+                incident.inbox_id,
+                incident.message_id,
+              );
+        if (updated.changes !== 1) return { resolved: false } as const;
+        insertRecovery.run(
+          incident.incident_id,
+          incident.inbox_id,
+          incident.message_id,
+          incident.incident_version,
+          input.disposition,
+          evidenceDigest,
+          resolvedAt,
+        );
+        if (deleteQuarantine.run(incidentId, input.expectedVersion).changes !== 1) {
+          throw new Error("agentMail ledger: incident changed during recovery");
+        }
+        const remaining =
+          countThreadQuarantines.get(incident.inbox_id, incident.thread_id)?.count ?? 0;
+        return {
+          resolved: true,
+          threadId: incident.thread_id,
+          releaseThread: remaining === 0,
+        } as const;
+      });
+      secureAfterWrite();
+      return result;
+    },
+
     get(inboxId, messageId) {
       assertOpen();
       requireText(inboxId, "inboxId");
@@ -962,15 +1410,21 @@ export function createAgentMailInboundLedger(
         processing: 0,
         processed: 0,
         discarded: 0,
+        outcomeUnknown: 0,
       };
-      for (const row of countStates.all()) counts[row.state] = row.count;
+      for (const row of countStates.all()) {
+        if (row.state === "outcome_unknown") continue;
+        counts[row.state] = row.count;
+      }
+      counts.outcomeUnknown = countQuarantines.get()?.count ?? 0;
+      counts.processing = Math.max(0, counts.processing - counts.outcomeUnknown);
       return counts;
     },
 
     close() {
       if (closed) return;
-      closed = true;
       database.close();
+      closed = true;
     },
   };
 }

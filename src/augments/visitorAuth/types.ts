@@ -114,11 +114,18 @@ export interface VisitorAuthOptions {
   notifyOnFirstVerify?: NotifyOnFirstVerifyConfig;
   /**
    * Path to the layeredMemory SQLite database for the anonymous→recognized
-   * peer-id migration on successful verify. Default: `./memory.db` (relative
-   * to agent dir). Set to `null` to disable migration (anonymous history will
-   * be orphaned but still queryable by threadId).
+   * peer-id migration on successful verify. The CLI resolves its default to
+   * `./memory.db` relative to the agent directory. Direct factory callers must
+   * opt in with an explicit path; omitted or `null` disables migration.
    */
   layeredMemoryDbPath?: string | null;
+  /**
+   * Layered-memory namespace whose rows may be reassigned after verification.
+   * The CLI derives and immutable-agent-scopes this from the matching
+   * layeredMemory augment. Programmatic callers must set it explicitly when
+   * migration is enabled so independent agents cannot alias a shared store.
+   */
+  layeredMemoryNamespace?: string;
   /**
    * Permit `agentMail.transport: "console"` when `NODE_ENV === "production"`.
    * Default `false`. Console mode prints magic links to stdout, which on cloud

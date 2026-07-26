@@ -9,6 +9,7 @@ import type {
   MemoryQueryOpts,
   MemoryWriteOpts,
 } from "../../types";
+import { canonicalMemoryNamespace } from "../memory-namespace";
 
 /**
  * Minimal Supabase client interface used by supabaseMemory. Compatible
@@ -28,6 +29,7 @@ export interface SupabaseLikeClient {
 export interface SupabaseQueryBuilder
   extends PromiseLike<{ data: unknown[]; error: Error | null }> {
   eq(column: string, value: unknown): SupabaseQueryBuilder;
+  like(column: string, value: string): SupabaseQueryBuilder;
   ilike(column: string, value: string): SupabaseQueryBuilder;
   order(column: string, opts?: { ascending?: boolean }): SupabaseQueryBuilder;
   limit(n: number): SupabaseQueryBuilder;
@@ -36,6 +38,8 @@ export interface SupabaseQueryBuilder
 
 export interface SupabaseMemoryOptions {
   namespace: string;
+  /** Exact owner-key column. Add it to legacy tables before upgrading. */
+  namespaceColumn?: string;
   /**
    * Explicit storage isolation model.
    *
@@ -73,9 +77,14 @@ export function supabaseMemory(opts: SupabaseMemoryOptions): Augment {
   // Snapshot every value that affects authorization so a later mutation
   // cannot switch an already-mounted peer store into shared mode.
   const scope = opts.scope;
-  const prefix = opts.namespace.endsWith(":") ? opts.namespace : `${opts.namespace}:`;
+  const namespace = canonicalMemoryNamespace(opts.namespace, "supabaseMemory");
+  const prefix = namespace.prefix;
+  const namespaceColumn = opts.namespaceColumn ?? "namespace_key";
   const limit = opts.searchLimit ?? 10;
   const peerColumn = opts.peerColumn ?? "peer_id";
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(namespaceColumn)) {
+    throw new Error("supabaseMemory: namespaceColumn must be a simple SQL identifier");
+  }
   if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(peerColumn)) {
     throw new Error("supabaseMemory: peerColumn must be a simple SQL identifier");
   }
@@ -103,6 +112,7 @@ export function supabaseMemory(opts: SupabaseMemoryOptions): Augment {
     if (typeof row !== "object" || row === null) return null;
     const candidate = row as Record<string, unknown>;
     if (typeof candidate.label !== "string" || typeof candidate.content !== "string") return null;
+    if (candidate[namespaceColumn] !== namespace.key) return null;
     if (!candidate.label.startsWith(prefix)) return null;
     if (expectedLabel !== undefined && candidate.label !== expectedLabel) return null;
     if (expectedPeerId !== undefined && candidate[peerColumn] !== expectedPeerId) return null;
@@ -137,12 +147,14 @@ export function supabaseMemory(opts: SupabaseMemoryOptions): Augment {
       "content",
       "metadata",
       "created_at",
+      namespaceColumn,
       ...(expectedPeerId !== undefined ? [peerColumn] : []),
     ].join(", ");
     let builder = opts.client
       .from(opts.table)
       .select(selectedColumns)
-      .ilike("label", `${escapeIlike(prefix)}%`);
+      .eq(namespaceColumn, namespace.key)
+      .like("label", `${escapeIlike(prefix)}%`);
     if (expectedPeerId !== undefined) {
       builder = builder.eq(peerColumn, expectedPeerId);
     }
@@ -167,8 +179,9 @@ export function supabaseMemory(opts: SupabaseMemoryOptions): Augment {
           if (!label.startsWith(prefix)) return null;
           const { data, error } = await opts.client
             .from(opts.table)
-            .select("label, content, metadata, created_at")
+            .select(`label, content, metadata, created_at, ${namespaceColumn}`)
             .eq("label", label)
+            .eq(namespaceColumn, namespace.key)
             .order("created_at", { ascending: false })
             .limit(1)
             .maybeSingle();
@@ -200,6 +213,7 @@ export function supabaseMemory(opts: SupabaseMemoryOptions): Augment {
           label,
           content,
           created_at: new Date().toISOString(),
+          [namespaceColumn]: namespace.key,
         };
         if (scope === "peer") {
           row[peerColumn] = peerId;
@@ -209,18 +223,19 @@ export function supabaseMemory(opts: SupabaseMemoryOptions): Augment {
       }
     : undefined;
 
-  const augmentName = `supabase-memory-${opts.namespace}`;
+  const augmentName = `supabase-memory-${namespace.namespace}`;
   const adminInfo = async (): Promise<AdminInfoBlock> => ({
     augmentName,
-    title: `Supabase memory — ${opts.namespace}`,
+    title: `Supabase memory — ${namespace.namespace}`,
     sections: [
       {
         kind: "keyValue",
         rows: [
-          { label: "Namespace", value: opts.namespace },
+          { label: "Namespace", value: namespace.namespace },
           { label: "Prefix", value: prefix },
           { label: "Scope", value: scope },
           { label: "Peer column", value: scope === "peer" ? peerColumn : "not used" },
+          { label: "Namespace column", value: namespaceColumn },
           { label: "Table", value: opts.table },
           { label: "Mutable", value: opts.mutable ? "true" : "false" },
           { label: "Search limit", value: String(limit) },

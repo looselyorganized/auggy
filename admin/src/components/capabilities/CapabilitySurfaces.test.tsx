@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test";
 import { act, create } from "react-test-renderer";
-import { MemoryRouter } from "react-router-dom";
+import { MemoryRouter } from "react-router";
 import { buildCapabilityModel } from "@/lib/capability-model";
 import type { DashboardData } from "@/lib/types";
 import { buildConversationSurfaceRows, CapabilityDetail } from "./CapabilitySurfaces";

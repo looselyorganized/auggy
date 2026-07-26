@@ -75,7 +75,7 @@ function writeVisitorAuthAgent(root: string, name: string) {
     stringify({
       type: "webTransport",
       config: {
-        port: 0,
+        port: 18_080,
         auth: { type: "bearer", token: "test-token" },
       },
     }),
@@ -362,6 +362,7 @@ describe("routesCommand", () => {
 
     expect(exit).toHaveBeenCalledWith(0);
     const parsed = JSON.parse(logs.join("\n")) as RoutesReport;
+    expect(parsed.schemaVersion).toBe(1);
     expect(parsed.agent.name).toBe("zip");
     expect(parsed.routes[0]?.path).toBe("/services/:serviceId");
   });

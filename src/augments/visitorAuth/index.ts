@@ -47,9 +47,16 @@ import {
   type SqliteVisitorAuthStoreConfig,
 } from "./storage/sqlite-store";
 import type { VisitorAuthStore } from "./storage/types";
-import { emailAppearsInRecentMessages, isWellFormedEmail } from "./email-validation";
+import {
+  canonicalizeEmail,
+  emailAppearsInRecentMessages,
+  isWellFormedEmail,
+} from "./email-validation";
 import { createVisitorAuthRateLimiter, type VisitorAuthRateLimiter } from "./rate-limiter";
-import { reassignSqliteMemoryPeerId } from "../layeredMemory/storage/sqlite-store";
+import {
+  deleteSqliteMemoryForPeer,
+  reassignSqliteMemoryPeerId,
+} from "../layeredMemory/storage/sqlite-store";
 import {
   buildVerifyConfirmPage,
   buildVerifyFailurePage,
@@ -223,6 +230,19 @@ function validateOptions(opts: VisitorAuthInternalOptions): void {
   }
   if (!opts.dbPath) {
     throw new Error("visitorAuth: dbPath is required");
+  }
+  const migrationPath = opts.layeredMemoryDbPath;
+  if (typeof migrationPath === "string" && migrationPath.trim().length === 0) {
+    throw new Error("visitorAuth: layeredMemoryDbPath must be a non-empty path when configured");
+  }
+  if (
+    typeof migrationPath === "string" &&
+    (typeof opts.layeredMemoryNamespace !== "string" ||
+      opts.layeredMemoryNamespace.trim().length === 0)
+  ) {
+    throw new Error(
+      "visitorAuth: layeredMemoryNamespace is required when peer-id migration is enabled",
+    );
   }
   if (opts.rateLimit) validateRateLimit(opts.rateLimit);
 }
@@ -516,7 +536,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       );
     }
 
-    const email = input.email.trim().toLowerCase();
+    const email = canonicalizeEmail(input.email);
     if (!isWellFormedEmail(email)) {
       return fail("rejected", "malformed_email", "Email address is malformed.");
     }
@@ -563,6 +583,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
         email,
         peerId: input.peerId,
         threadId: input.threadId,
+        issuedAt: t,
         expiresAt: t + ttlMs,
         sourceMessageId,
       });
@@ -809,19 +830,43 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     (params: Record<string, unknown>) => Promise<AdminActionResult>
   > = {
     "visitor-revoke": async (params) => {
-      const rowKey = typeof params.rowKey === "string" ? params.rowKey : "";
+      const rowKey = typeof params.rowKey === "string" ? canonicalizeEmail(params.rowKey) : "";
       if (!rowKey) {
         return { ok: false, message: "visitor-revoke requires a rowKey (email)" };
       }
-      const visitorId = store.revokeByEmail(rowKey, "/console revoke", Date.now());
-      if (!visitorId) {
+      const revoked = store.revokeCurrentByEmail(rowKey, "/console revoke", Date.now());
+      if (!revoked) {
         return {
           ok: false,
-          message: `visitor "${rowKey}" not found or already revoked`,
+          message: `visitor "${rowKey}" not found`,
         };
       }
-      store.addRevokedVisitorId(visitorId, rowKey, "/console revoke", Date.now());
-      return { ok: true, message: `Revoked ${rowKey} (${visitorId})` };
+      let deleted = 0;
+      const revokedVisitorIds = store.listRevokedVisitorIdsByEmail(rowKey);
+      if (
+        typeof opts.layeredMemoryDbPath === "string" &&
+        typeof opts.layeredMemoryNamespace === "string" &&
+        existsSync(opts.layeredMemoryDbPath)
+      ) {
+        try {
+          for (const visitorId of revokedVisitorIds) {
+            deleted += deleteSqliteMemoryForPeer(
+              opts.layeredMemoryDbPath,
+              opts.layeredMemoryNamespace,
+              visitorId,
+            );
+          }
+        } catch (error) {
+          return {
+            ok: false,
+            message: `Visitor ${rowKey} was revoked, but memory erasure failed safely: ${(error as Error).message}`,
+          };
+        }
+      }
+      return {
+        ok: true,
+        message: `${revoked.wasRevoked ? "Already revoked" : "Revoked"} ${rowKey} (${revoked.visitorId}); ${deleted} memory row(s) removed`,
+      };
     },
   };
 
@@ -966,6 +1011,20 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           // the UNIQUE-email constraint is not violated by a second INSERT.
           const ttlSec = reverifyDays * 86_400;
           const existing = store.findVerifiedByEmail(consume.email!);
+          // A hard revocation invalidates every link issued before it. This
+          // check also closes the consume-before-revoke interleaving: a token
+          // may already be marked consumed, but it still cannot resurrect the
+          // revoked identity after the operator decision commits.
+          if (
+            existing?.revoked &&
+            existing.revokedAt !== null &&
+            (consume.issuedAt === undefined || consume.issuedAt <= existing.revokedAt)
+          ) {
+            return new Response(buildVerifyFailurePage({ reason: "consumed" }), {
+              status: 410,
+              headers: VERIFY_HTML_HEADERS,
+            });
+          }
           // Revoked rows must NOT reuse the old visitorId — that identity was destroyed.
           const reuseVisitorId = existing && !existing.revoked ? existing.visitorId : undefined;
           // Use `let` so the race-loser path can reassign minted to carry the
@@ -987,7 +1046,29 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           if (existing && !existing.revoked) {
             store.touchVerifiedVisitor(consume.email!, t);
           } else if (existing?.revoked) {
-            store.unrevokeAndRotate(consume.email!, minted.payload.visitorId, t, t + ttlSec * 1000);
+            const canonicalVisitorId = store.unrevokeAndRotate(
+              consume.email!,
+              minted.payload.visitorId,
+              t,
+              t + ttlSec * 1000,
+              consume.issuedAt!,
+            );
+            if (!canonicalVisitorId) {
+              return new Response(buildVerifyFailurePage({ reason: "consumed" }), {
+                status: 410,
+                headers: VERIFY_HTML_HEADERS,
+              });
+            }
+            if (canonicalVisitorId !== minted.payload.visitorId) {
+              minted = await createVisitorToken(
+                signingCryptoKey,
+                agentBinding,
+                ttlSec,
+                canonicalVisitorId,
+                consume.peerId ?? undefined,
+                consume.peerId ?? undefined,
+              );
+            }
           } else {
             try {
               store.recordVerifiedVisitor({
@@ -1040,9 +1121,15 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           // anonymous memory. The public app request route uses an internal
           // auth:<uuid> peer id and must not let callers claim arbitrary
           // anon-<threadId> memory.
-          if (consume.peerId && !consume.peerId.startsWith(APP_REQUEST_PEER_PREFIX)) {
+          if (
+            consume.peerId &&
+            !consume.peerId.startsWith(APP_REQUEST_PEER_PREFIX) &&
+            opts.layeredMemoryDbPath !== undefined &&
+            opts.layeredMemoryDbPath !== null
+          ) {
             migratePeerIdOnVerify(
-              opts.layeredMemoryDbPath === undefined ? "./memory.db" : opts.layeredMemoryDbPath,
+              opts.layeredMemoryDbPath,
+              opts.layeredMemoryNamespace!,
               consume.peerId,
               minted.payload.visitorId,
             );
@@ -1332,6 +1419,7 @@ function humanRelativeMs(ms: number): string {
  */
 function migratePeerIdOnVerify(
   dbPath: string | null | undefined,
+  namespace: string,
   oldPeerId: string,
   newPeerId: string,
 ): void {
@@ -1346,7 +1434,7 @@ function migratePeerIdOnVerify(
   // already arrives as vis_*; nothing to migrate).
   if (oldPeerId === newPeerId) return;
   try {
-    const changes = reassignSqliteMemoryPeerId(dbPath, oldPeerId, newPeerId);
+    const changes = reassignSqliteMemoryPeerId(dbPath, namespace, oldPeerId, newPeerId);
     if (changes > 0) {
       console.info(`[visitor-auth] migrated ${changes} memory row(s) ${oldPeerId} → ${newPeerId}`);
     }

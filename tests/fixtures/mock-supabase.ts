@@ -25,6 +25,7 @@ export interface MockQueryBuilder {
   is(column: string, value: null): MockQueryBuilder;
   gt(column: string, value: number): MockQueryBuilder;
   or(filterExpr: string): MockQueryBuilder;
+  like(column: string, value: string): MockQueryBuilder;
   ilike(column: string, value: string): MockQueryBuilder;
   order(column: string, opts?: { ascending?: boolean }): MockQueryBuilder;
   limit(n: number): MockQueryBuilder;
@@ -56,6 +57,28 @@ export function createMockSupabase(): MockSupabaseClient {
     let mode: "select" | "delete" | "update" = "select";
     let updatePatch: Record<string, unknown> = {};
     let selectedColumns: string[] | null = null;
+
+    function addLikeFilter(column: string, value: string, insensitive: boolean): void {
+      let source = "^";
+      for (let i = 0; i < value.length; i++) {
+        const char = value[i]!;
+        if (char === "\\" && i + 1 < value.length) {
+          i++;
+          source += value[i]!.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        } else if (char === "%") {
+          source += ".*";
+        } else if (char === "_") {
+          source += ".";
+        } else {
+          source += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        }
+      }
+      const pattern = new RegExp(`${source}$`, insensitive ? "i" : "");
+      filters.push((row) => {
+        const candidate = (row as Record<string, unknown>)[column];
+        return typeof candidate === "string" && pattern.test(candidate);
+      });
+    }
 
     const builder: MockQueryBuilder = {
       async insert(row) {
@@ -124,12 +147,12 @@ export function createMockSupabase(): MockSupabaseClient {
         filters.push((r) => predicates.some((p) => p(r)));
         return builder;
       },
+      like(column, value) {
+        addLikeFilter(column, value, false);
+        return builder;
+      },
       ilike(column, value) {
-        const pattern = value.replace(/%/g, "").toLowerCase();
-        filters.push((r) => {
-          const v = (r as Record<string, unknown>)[column];
-          return typeof v === "string" && v.toLowerCase().includes(pattern);
-        });
+        addLikeFilter(column, value, true);
         return builder;
       },
       order(column, opts) {

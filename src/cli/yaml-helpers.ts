@@ -28,6 +28,48 @@ import { dirname, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { expandAugmentFolderEntries, interpolateEnvVars, loadEnvFile } from "./config-parser";
 
+const AGENT_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function parseExpandedConfig(yamlPath: string): Record<string, unknown> {
+  const absPath = resolve(yamlPath);
+  if (!existsSync(absPath)) {
+    throw new Error(`agent.yaml not found at ${absPath}.`);
+  }
+  const agentDir = dirname(absPath);
+  loadEnvFile(agentDir);
+
+  const raw = readFileSync(absPath, "utf-8");
+  const parsed = parseYaml(raw);
+  if (!parsed || typeof parsed !== "object") {
+    throw new Error(`${yamlPath}: not a valid YAML document`);
+  }
+  return expandAugmentFolderEntries(
+    interpolateEnvVars(parsed) as Record<string, unknown>,
+    agentDir,
+  );
+}
+
+/** Read the immutable identity without requiring unrelated runtime config. */
+export function parseAgentIdOnly(yamlPath: string): string {
+  const id = parseExpandedConfig(yamlPath).id;
+  if (typeof id !== "string" || !AGENT_ID_RE.test(id)) {
+    throw new Error(`${yamlPath}: id must be a valid aug1_ UUID`);
+  }
+  return id;
+}
+
+/** Return every configured instance of an augment type. */
+export function parseAugmentConfigsOnly(
+  yamlPath: string,
+  augmentType: string,
+): Record<string, unknown>[] {
+  const interpolated = parseExpandedConfig(yamlPath);
+  const augments = (interpolated.augments ?? []) as Array<Record<string, unknown>>;
+  return augments
+    .filter((augment) => augment?.type === augmentType)
+    .map((augment) => (augment.options ?? {}) as Record<string, unknown>);
+}
+
 /**
  * Find the first augment of the given `type` in the YAML at `yamlPath` and
  * return its (env-interpolated) options. Returns null if no augment of that
@@ -42,29 +84,5 @@ export function parseAugmentConfigOnly(
   yamlPath: string,
   augmentType: string,
 ): Record<string, unknown> | null {
-  const absPath = resolve(yamlPath);
-  if (!existsSync(absPath)) {
-    throw new Error(`agent.yaml not found at ${absPath}.`);
-  }
-  const agentDir = dirname(absPath);
-
-  // Load .env so env-var interpolation has the operator's secrets.
-  loadEnvFile(agentDir);
-
-  const raw = readFileSync(absPath, "utf-8");
-  const parsed = parseYaml(raw);
-  if (!parsed || typeof parsed !== "object") {
-    throw new Error(`${yamlPath}: not a valid YAML document`);
-  }
-
-  // Interpolate the entire tree first — augment options can reference env
-  // vars at arbitrary depth.
-  const interpolated = expandAugmentFolderEntries(
-    interpolateEnvVars(parsed) as Record<string, unknown>,
-    agentDir,
-  );
-  const augments = (interpolated.augments ?? []) as Array<Record<string, unknown>>;
-  const aug = augments.find((a) => a?.type === augmentType);
-  if (!aug) return null;
-  return (aug.options ?? {}) as Record<string, unknown>;
+  return parseAugmentConfigsOnly(yamlPath, augmentType)[0] ?? null;
 }

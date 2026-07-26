@@ -97,6 +97,8 @@ export type {
   // Turn scheduling
   TurnSchedulingConfig,
   TurnSchedulerSnapshot,
+  RuntimeSignalsSnapshot,
+  RuntimeOperationalSnapshot,
   DistributedCoordinationConfig,
 } from "./types";
 

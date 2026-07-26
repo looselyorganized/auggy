@@ -7,6 +7,10 @@ import { warnCacheRatesIgnored } from "auggy/internal/cost";
 import { assertSecureCredentialTransport } from "auggy/internal/credential-transport";
 import { providerRequestError } from "auggy/internal/provider-error";
 import {
+  resolveProviderRequestTimeoutMs,
+  withProviderRequestDeadline,
+} from "auggy/internal/provider-resilience";
+import {
   createBoundedModelFetch,
   findModelResponseLimitError,
   measureJsonValue,
@@ -35,9 +39,9 @@ import type {
  *  - Run the API call (buffered; no streaming)
  *  - Translate the response back into ModelResponse
  *
- * The engine is stateless beyond the underlying SDK. Retries, timeouts, and
- * rate-limit handling live in the SDK; everything above (queue, history,
- * context budgeting) is the kernel's job.
+ * The engine is stateless beyond the underlying SDK. Auggy enforces one
+ * finite request attempt; queueing, history, and context budgeting remain the
+ * kernel's job.
  *
  * Token counting uses a character/4 approximation, matching the Anthropic
  * engine and Auggy's default tokenizer. The kernel does not call this
@@ -90,10 +94,13 @@ export interface OpenAIEngineOptions {
   costOverride?: import("auggy/internal/cost").Pricing;
   /** Finite application-layer response limits. Omitted fields use secure defaults. */
   responseLimits?: Partial<ModelResponseLimits>;
+  /** One-attempt request deadline. Default 120s, maximum 10 minutes. */
+  requestTimeoutMs?: number;
 }
 
 export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
   const responseLimits = resolveModelResponseLimits(opts.responseLimits);
+  const requestTimeoutMs = resolveProviderRequestTimeoutMs(opts.requestTimeoutMs);
   const effectiveApiKey = opts.apiKey ?? process.env.OPENAI_API_KEY;
   assertSecureCredentialTransport({
     provider: "OpenAI",
@@ -104,6 +111,8 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
   const client = new OpenAI({
     apiKey: effectiveApiKey,
     baseURL: opts.baseURL,
+    timeout: requestTimeoutMs,
+    maxRetries: 0,
     fetch: createBoundedModelFetch(
       globalThis.fetch.bind(globalThis) as typeof fetch,
       responseLimits,
@@ -152,63 +161,71 @@ export function createOpenAIEngine(opts: OpenAIEngineOptions): ModelClient {
       prompt: AssembledPrompt,
       requestOptions?: { onDelta?: (delta: ModelDelta) => void; signal?: AbortSignal },
     ): Promise<ModelResponse> {
-      const systemMessage = assembleOpenAISystemMessage(prompt);
-      const messages = convertOpenAIMessages(prompt.messages);
-      const tools = convertOpenAITools(prompt.tools);
+      requestOptions?.signal?.throwIfAborted();
+      return withProviderRequestDeadline(
+        requestOptions?.signal,
+        requestTimeoutMs,
+        async (requestSignal) => {
+          const systemMessage = assembleOpenAISystemMessage(prompt);
+          const messages = convertOpenAIMessages(prompt.messages);
+          const tools = convertOpenAITools(prompt.tools);
 
-      const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = systemMessage
-        ? [systemMessage, ...messages]
-        : messages;
+          const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = systemMessage
+            ? [systemMessage, ...messages]
+            : messages;
 
-      const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
-        model: opts.model,
-        max_completion_tokens: maxOutputTokens,
-        messages: allMessages,
-        ...(tools.length > 0 ? { tools } : {}),
-        ...(opts.reasoningEffort
-          ? {
-              reasoning_effort:
-                opts.reasoningEffort as OpenAI.Chat.ChatCompletionReasoningEffort,
+          const params: OpenAI.Chat.ChatCompletionCreateParamsNonStreaming = {
+            model: opts.model,
+            max_completion_tokens: maxOutputTokens,
+            messages: allMessages,
+            ...(tools.length > 0 ? { tools } : {}),
+            ...(opts.reasoningEffort
+              ? {
+                  reasoning_effort:
+                    opts.reasoningEffort as OpenAI.Chat.ChatCompletionReasoningEffort,
+                }
+              : {}),
+          };
+
+          let completion: OpenAI.Chat.ChatCompletion;
+          try {
+            completion = await client.chat.completions.create(params, {
+              signal: requestSignal,
+            });
+          } catch (err) {
+            const responseLimitError = findModelResponseLimitError(err);
+            if (responseLimitError) throw responseLimitError;
+            if (requestSignal.aborted) throw requestSignal.reason;
+            throw providerRequestError("OpenAI", opts.model, err);
+          }
+          const usage = parseOpenAIUsage(
+            isProviderRecord(completion) ? completion.usage : undefined,
+          );
+          const { inputTokens, outputTokens } = usage;
+          const result = usage.valid
+            ? priceOpenAIResponse(opts.model, opts.costOverride, {
+                prompt_tokens: inputTokens,
+                completion_tokens: outputTokens,
+                reasoning_tokens: usage.reasoningTokens,
+              })
+            : { priced: false as const, reason: INVALID_USAGE_REASON };
+          const accounting = result.priced
+            ? { inputTokens, outputTokens, costUsd: result.costUsd }
+            : { inputTokens, outputTokens, unpricedReason: result.reason };
+          let response: ModelResponse;
+          try {
+            response = buildOpenAIModelResponse(completion, opts.model, responseLimits);
+          } catch (error) {
+            if (error instanceof ModelResponseLimitError) {
+              throw error.withAccounting(accounting);
             }
-          : {}),
-      };
-
-      let completion: OpenAI.Chat.ChatCompletion;
-      try {
-        completion = await client.chat.completions.create(params, {
-          signal: requestOptions?.signal,
-        });
-      } catch (err) {
-        const responseLimitError = findModelResponseLimitError(err);
-        if (responseLimitError) throw responseLimitError;
-        throw providerRequestError("OpenAI", opts.model, err);
-      }
-      const usage = parseOpenAIUsage(
-        isProviderRecord(completion) ? completion.usage : undefined,
+            throw error;
+          }
+          return result.priced
+            ? { ...response, costUsd: result.costUsd }
+            : { ...response, costUsd: undefined, unpricedReason: result.reason };
+        },
       );
-      const { inputTokens, outputTokens } = usage;
-      const result = usage.valid
-        ? priceOpenAIResponse(opts.model, opts.costOverride, {
-            prompt_tokens: inputTokens,
-            completion_tokens: outputTokens,
-            reasoning_tokens: usage.reasoningTokens,
-          })
-        : { priced: false as const, reason: INVALID_USAGE_REASON };
-      const accounting = result.priced
-        ? { inputTokens, outputTokens, costUsd: result.costUsd }
-        : { inputTokens, outputTokens, unpricedReason: result.reason };
-      let response: ModelResponse;
-      try {
-        response = buildOpenAIModelResponse(completion, opts.model, responseLimits);
-      } catch (error) {
-        if (error instanceof ModelResponseLimitError) {
-          throw error.withAccounting(accounting);
-        }
-        throw error;
-      }
-      return result.priced
-        ? { ...response, costUsd: result.costUsd }
-        : { ...response, costUsd: undefined, unpricedReason: result.reason };
     },
   };
 }
@@ -501,7 +518,11 @@ export function buildOpenAIModelResponse(
   }
 
   const message = choice.message;
-  if (message.content !== null && message.content !== undefined && typeof message.content !== "string") {
+  if (
+    message.content !== null &&
+    message.content !== undefined &&
+    typeof message.content !== "string"
+  ) {
     throw new ModelResponseLimitError("maxTextBytes");
   }
   const content = message.content ?? "";
@@ -539,9 +560,7 @@ export function buildOpenAIModelResponse(
   const finishReasonValue = choice.finish_reason;
   if (
     typeof finishReasonValue !== "string" ||
-    !["stop", "tool_calls", "function_call", "length", "content_filter"].includes(
-      finishReasonValue,
-    )
+    !["stop", "tool_calls", "function_call", "length", "content_filter"].includes(finishReasonValue)
   ) {
     throw new ModelResponseLimitError("maxResponseBytes");
   }
@@ -553,11 +572,14 @@ export function buildOpenAIModelResponse(
         : "end_turn";
 
   const usage = parseOpenAIUsage(rawCompletion.usage);
-  return validateModelResponse({
-    content,
-    toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-    inputTokens: usage.inputTokens,
-    outputTokens: usage.outputTokens,
-    finishReason,
-  }, limits);
+  return validateModelResponse(
+    {
+      content,
+      toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
+      inputTokens: usage.inputTokens,
+      outputTokens: usage.outputTokens,
+      finishReason,
+    },
+    limits,
+  );
 }

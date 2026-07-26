@@ -11,6 +11,10 @@ import { resolveSlug, priceOpenRouterResponse } from "auggy/internal/openrouter-
 import { warnCacheRatesIgnored } from "auggy/internal/cost";
 import { providerRequestError } from "auggy/internal/provider-error";
 import {
+  resolveProviderRequestTimeoutMs,
+  withProviderRequestDeadline,
+} from "auggy/internal/provider-resilience";
+import {
   createBoundedModelFetch,
   findModelResponseLimitError,
   ModelResponseLimitError,
@@ -75,6 +79,8 @@ export interface OpenRouterEngineOptions {
   costOverride?: import("auggy/internal/cost").Pricing;
   /** Finite application-layer response limits. Omitted fields use secure defaults. */
   responseLimits?: Partial<ModelResponseLimits>;
+  /** One-attempt request deadline. Default 120s, maximum 10 minutes. */
+  requestTimeoutMs?: number;
 }
 
 export type OpenRouterProviderDirectoryFetch = (
@@ -275,25 +281,29 @@ async function verifyRestrictiveRouting(
   const configured = [...(routing.only ?? []), ...(routing.ignore ?? [])];
   if (configured.length === 0) return;
 
-  const timeoutSignal = AbortSignal.timeout(PROVIDER_DIRECTORY_TIMEOUT_MS);
-  const signal = callerSignal ? AbortSignal.any([callerSignal, timeoutSignal]) : timeoutSignal;
   try {
-    const response = await directoryFetch(PROVIDER_DIRECTORY_URL, {
-      method: "GET",
-      headers: {
-        Accept: "application/json",
-        Authorization: `Bearer ${apiKey}`,
+    await withProviderRequestDeadline(
+      callerSignal,
+      PROVIDER_DIRECTORY_TIMEOUT_MS,
+      async (signal) => {
+        const response = await directoryFetch(PROVIDER_DIRECTORY_URL, {
+          method: "GET",
+          headers: {
+            Accept: "application/json",
+            Authorization: `Bearer ${apiKey}`,
+          },
+          redirect: "error",
+          signal,
+        });
+        if (!response.ok || response.redirected) {
+          throw new Error("invalid provider directory response");
+        }
+        const available = parseProviderDirectory(await readBoundedJson(response));
+        if (configured.some((slug) => !available.has(slug))) {
+          throw new Error("unknown provider slug");
+        }
       },
-      redirect: "error",
-      signal,
-    });
-    if (!response.ok || response.redirected) {
-      throw new Error("invalid provider directory response");
-    }
-    const available = parseProviderDirectory(await readBoundedJson(response));
-    if (configured.some((slug) => !available.has(slug))) {
-      throw new Error("unknown provider slug");
-    }
+    );
   } catch {
     if (callerSignal?.aborted) {
       throw callerSignal.reason ?? new DOMException("Aborted", "AbortError");
@@ -306,6 +316,7 @@ async function verifyRestrictiveRouting(
 }
 
 export function createOpenRouterEngine(opts: OpenRouterEngineOptions): ModelClient {
+  const requestTimeoutMs = resolveProviderRequestTimeoutMs(opts.requestTimeoutMs);
   const apiKey = opts.apiKey ?? process.env.OPENROUTER_API_KEY;
   if (!apiKey) {
     throw new Error(
@@ -321,6 +332,8 @@ export function createOpenRouterEngine(opts: OpenRouterEngineOptions): ModelClie
     apiKey,
     baseURL: OPENROUTER_BASE_URL,
     defaultHeaders: { "X-Title": "Auggy" },
+    timeout: requestTimeoutMs,
+    maxRetries: 0,
     fetch: createBoundedModelFetch(
       globalThis.fetch.bind(globalThis) as typeof fetch,
       responseLimits,
@@ -367,85 +380,88 @@ export function createOpenRouterEngine(opts: OpenRouterEngineOptions): ModelClie
       prompt: AssembledPrompt,
       requestOptions?: { onDelta?: (delta: ModelDelta) => void; signal?: AbortSignal },
     ): Promise<ModelResponse> {
-      if (providerRouting) {
-        await verifyRestrictiveRouting(
-          providerRouting,
-          apiKey,
-          directoryFetch,
-          requestOptions?.signal,
-        );
-      }
-      const systemMessage = assembleOpenAISystemMessage(prompt);
-      const messages = convertOpenAIMessages(prompt.messages);
-      const tools = convertOpenAITools(prompt.tools);
+      requestOptions?.signal?.throwIfAborted();
+      return withProviderRequestDeadline(
+        requestOptions?.signal,
+        requestTimeoutMs,
+        async (requestSignal) => {
+          if (providerRouting) {
+            await verifyRestrictiveRouting(providerRouting, apiKey, directoryFetch, requestSignal);
+          }
+          const systemMessage = assembleOpenAISystemMessage(prompt);
+          const messages = convertOpenAIMessages(prompt.messages);
+          const tools = convertOpenAITools(prompt.tools);
 
-      const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = systemMessage
-        ? [systemMessage, ...messages]
-        : messages;
+          const allMessages: OpenAI.Chat.ChatCompletionMessageParam[] = systemMessage
+            ? [systemMessage, ...messages]
+            : messages;
 
-      // The TS SDK has no extra_body field; OpenRouter-specific keys
-      // (`reasoning`, `provider`) go directly on the params object via a
-      // typed extension and are forwarded at runtime. The cast at the
-      // boundary is the only place we loosen the SDK's typed contract.
-      const params: OpenRouterChatParams = {
-        model: opts.model,
-        max_completion_tokens: maxOutputTokens,
-        messages: allMessages,
-        ...(tools.length > 0 ? { tools } : {}),
-        ...(opts.reasoningEffort ? { reasoning: { effort: opts.reasoningEffort } } : {}),
-        ...(providerRouting
-          ? {
-              provider: {
-                ...providerRouting,
-                ...(providerRouting.only ? { allow_fallbacks: false as const } : {}),
-              },
-            }
-          : {}),
-      };
-
-      let completion: OpenAI.Chat.ChatCompletion;
-      try {
-        completion = await client.chat.completions.create(
-          params as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
-          { signal: requestOptions?.signal },
-        );
-      } catch (err) {
-        const responseLimitError = findModelResponseLimitError(err);
-        if (responseLimitError) throw responseLimitError;
-        throw providerRequestError("OpenRouter", opts.model, err);
-      }
-      const usage = parseOpenAIUsage(
-        isProviderRecord(completion) ? completion.usage : undefined,
-      );
-      const { inputTokens, outputTokens } = usage;
-      const result = usage.valid
-        ? priceOpenRouterResponse(opts.model, opts.costOverride, {
-            prompt_tokens: inputTokens,
-            completion_tokens: outputTokens,
-          })
-        : {
-            priced: false as const,
-            reason: "Provider returned invalid accounting metadata.",
+          // The TS SDK has no extra_body field; OpenRouter-specific keys
+          // (`reasoning`, `provider`) go directly on the params object via a
+          // typed extension and are forwarded at runtime. The cast at the
+          // boundary is the only place we loosen the SDK's typed contract.
+          const params: OpenRouterChatParams = {
+            model: opts.model,
+            max_completion_tokens: maxOutputTokens,
+            messages: allMessages,
+            ...(tools.length > 0 ? { tools } : {}),
+            ...(opts.reasoningEffort ? { reasoning: { effort: opts.reasoningEffort } } : {}),
+            ...(providerRouting
+              ? {
+                  provider: {
+                    ...providerRouting,
+                    ...(providerRouting.only ? { allow_fallbacks: false as const } : {}),
+                  },
+                }
+              : {}),
           };
-      const accounting = result.priced
-        ? { inputTokens, outputTokens, costUsd: result.costUsd }
-        : { inputTokens, outputTokens, unpricedReason: result.reason };
-      let response: ModelResponse;
-      try {
-        response = buildOpenAIModelResponse(
-          completion,
-          `openrouter:${opts.model}`,
-          responseLimits,
-        );
-      } catch (error) {
-        if (error instanceof ModelResponseLimitError) {
-          throw error.withAccounting(accounting);
-        }
-        throw error;
-      }
-      return result.priced
-        ? { ...response, costUsd: result.costUsd }
-        : { ...response, costUsd: undefined, unpricedReason: result.reason };
+
+          let completion: OpenAI.Chat.ChatCompletion;
+          try {
+            completion = await client.chat.completions.create(
+              params as OpenAI.Chat.ChatCompletionCreateParamsNonStreaming,
+              { signal: requestSignal },
+            );
+          } catch (err) {
+            const responseLimitError = findModelResponseLimitError(err);
+            if (responseLimitError) throw responseLimitError;
+            if (requestSignal.aborted) throw requestSignal.reason;
+            throw providerRequestError("OpenRouter", opts.model, err);
+          }
+          const usage = parseOpenAIUsage(
+            isProviderRecord(completion) ? completion.usage : undefined,
+          );
+          const { inputTokens, outputTokens } = usage;
+          const result = usage.valid
+            ? priceOpenRouterResponse(opts.model, opts.costOverride, {
+                prompt_tokens: inputTokens,
+                completion_tokens: outputTokens,
+              })
+            : {
+                priced: false as const,
+                reason: "Provider returned invalid accounting metadata.",
+              };
+          const accounting = result.priced
+            ? { inputTokens, outputTokens, costUsd: result.costUsd }
+            : { inputTokens, outputTokens, unpricedReason: result.reason };
+          let response: ModelResponse;
+          try {
+            response = buildOpenAIModelResponse(
+              completion,
+              `openrouter:${opts.model}`,
+              responseLimits,
+            );
+          } catch (error) {
+            if (error instanceof ModelResponseLimitError) {
+              throw error.withAccounting(accounting);
+            }
+            throw error;
+          }
+          return result.priced
+            ? { ...response, costUsd: result.costUsd }
+            : { ...response, costUsd: undefined, unpricedReason: result.reason };
+        },
+      );
     },
   };
 }

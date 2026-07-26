@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visitorAuth } from "../../../src/augments/visitorAuth";
+import { createSqliteVisitorAuthStore } from "../../../src/augments/visitorAuth/storage/sqlite-store";
 import { verifyVisitorToken, deriveSigningKey } from "../../../src/transports/visitor-token";
 
 let tmp: string;
@@ -402,11 +403,13 @@ describe("visitorAuth verify route", () => {
   test("re-verify after revoke: un-revokes the row and issues a NEW visitorId", async () => {
     const dbPath = join(tmp, "va-unrevoke.db");
     const sendCalls: { text: string }[] = [];
+    let clock = 1_000;
     const aug = visitorAuth({
       publicUrl: "https://zip.test",
       dbPath,
       agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
       signingKey: "shared-key",
+      _now: () => clock,
       rateLimit: { perHour: 5, perDay: 10 },
       _agentMailClient: {
         send: async (i: { text: string }) => {
@@ -474,8 +477,9 @@ describe("visitorAuth verify route", () => {
     );
     const seedStore = createSqliteVisitorAuthStore({ dbPath });
     seedStore.initialize();
-    seedStore.revokeByEmail("revokeme@example.com", "operator", Date.now());
+    seedStore.revokeByEmail("revokeme@example.com", "operator", 2_000);
     seedStore.close();
+    clock = 2_001;
 
     // Step 3: Visitor re-verifies after revoke — must get a NEW visitorId.
     const peerB = {
@@ -919,6 +923,75 @@ describe("visitorAuth verify route", () => {
     expect(row!.visitorId).toBe(payload1!.visitorId);
     checkStore.close();
 
+    await aug.onShutdown?.();
+  });
+
+  test("concurrent post-revocation verifies converge on one canonical identity", async () => {
+    const dbPath = join(tmp, "va-revoked-race.db");
+    const aug = visitorAuth({
+      publicUrl: "https://zip.test",
+      dbPath,
+      agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+      signingKey: "revoked-race-key",
+      _now: () => 3_000,
+      _agentMailClient: fakeAgentMail() as never,
+    });
+    await aug.onBoot?.();
+    const seed = createSqliteVisitorAuthStore({ dbPath });
+    seed.initialize();
+    seed.recordVerifiedVisitor({
+      visitorId: "vis_retired",
+      email: "revoked-race@example.com",
+      verifiedAt: 500,
+      lastSeenAt: 500,
+      reverifyDueAt: 900,
+      revoked: false,
+      revokedAt: null,
+      revokedReason: null,
+    });
+    seed.revokeByEmail("revoked-race@example.com", "operator", 1_000);
+    for (const [token, peerId] of [
+      ["aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", "anon-race-one"],
+      ["bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", "anon-race-two"],
+    ] as const) {
+      seed.issueToken({
+        token,
+        email: "revoked-race@example.com",
+        peerId,
+        threadId: peerId.slice(5),
+        issuedAt: 2_000,
+        expiresAt: 10_000,
+        sourceMessageId: null,
+      });
+    }
+    seed.close();
+
+    const post = (token: string) =>
+      aug.httpRoutes![1]!.handler(
+        new Request("https://zip.test/visitor-auth/verify", {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: `token=${token}`,
+        }),
+        { signal: new AbortController().signal },
+      );
+    const [first, second] = await Promise.all([
+      post("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"),
+      post("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"),
+    ]);
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+
+    const signingKey = await deriveSigningKey("revoked-race-key");
+    const payloads = await Promise.all(
+      [await first.text(), await second.text()].map(async (html) => {
+        const encoded = html.match(/var token = ("(?:\\.|[^"\\])*");/)?.[1];
+        expect(encoded).toBeTruthy();
+        return verifyVisitorToken(signingKey, JSON.parse(encoded!) as string);
+      }),
+    );
+    expect(payloads[0]?.visitorId).toMatch(/^vis_/);
+    expect(payloads[1]?.visitorId).toBe(payloads[0]?.visitorId);
     await aug.onShutdown?.();
   });
 });

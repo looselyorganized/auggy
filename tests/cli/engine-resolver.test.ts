@@ -174,6 +174,35 @@ describe("resolveEngine", () => {
     });
     expect(engine.maxContextTokens).toBe(99_999);
   });
+
+  test("forwards the provider deadline to adapter factories", async () => {
+    let received: Record<string, unknown> | undefined;
+    const importer = async <T>(): Promise<T> =>
+      ({
+        createAnthropicEngine: (options: Record<string, unknown>) => {
+          received = options;
+          return {
+            maxContextTokens: 1,
+            countTokens: () => 0,
+            complete: async () => {
+              throw new Error("not exercised");
+            },
+          };
+        },
+      }) as unknown as T;
+
+    await resolveEngine(
+      {
+        provider: "anthropic",
+        model: "claude-sonnet-4-6",
+        requestTimeoutMs: 45_000,
+      },
+      "/nonexistent/agent/dir",
+      importer,
+    );
+
+    expect(received?.requestTimeoutMs).toBe(45_000);
+  });
 });
 
 afterAll(() => {

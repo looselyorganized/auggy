@@ -143,13 +143,13 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
 
   async admit(request: DistributedTurnRequest): Promise<AdmitResult> {
     return this.safe<AdmitResult>({ status: "unavailable" }, async () =>
-      this.#sql.begin(async (tx) => {
+      this.transaction(async (tx) => {
         assertRequest(request);
         const limits = await this.#lockNamespace(tx);
         await this.#expire(tx);
         const policy = await this.sourcePolicy(tx, request.source);
         const existing = await tx.unsafe<Row>(
-          "SELECT thread_id, source_id, binding_hash, state FROM auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 FOR UPDATE",
+          "SELECT thread_id, source_id, binding_hash, state FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 FOR UPDATE",
           [this.#config.namespace, request.requestId],
         );
         if (existing[0]) {
@@ -162,20 +162,20 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         }
         if (await this.instanceDraining(tx)) return { status: "rejected", reason: "draining" };
         const threadState = await tx.unsafe<Row>(
-          "SELECT quarantined FROM auggy_coordination_threads WHERE namespace = $1 AND thread_id = $2",
+          "SELECT quarantined FROM public.auggy_coordination_threads WHERE namespace = $1 AND thread_id = $2",
           [this.#config.namespace, request.threadId],
         );
         if (threadState[0] && bool(threadState[0], "quarantined")) {
           return { status: "rejected", reason: "thread-quarantined" };
         }
         const queue = await tx.unsafe<Row>(
-          "SELECT count(*)::integer AS total, count(*) FILTER (WHERE source_id = $2)::integer AS source_total, count(*) FILTER (WHERE thread_id = $3)::integer AS thread_total FROM auggy_coordination_requests WHERE namespace = $1 AND state = 'queued'",
+          "SELECT count(*)::integer AS total, count(*) FILTER (WHERE source_id = $2)::integer AS source_total, count(*) FILTER (WHERE thread_id = $3)::integer AS thread_total FROM public.auggy_coordination_requests WHERE namespace = $1 AND state = 'queued'",
           [this.#config.namespace, request.source.id, request.threadId],
         );
         const count = queue[0];
         if (!count) throw new Error("missing queue count");
         const active = await tx.unsafe<Row>(
-          "SELECT count(*)::integer AS total, count(*) FILTER (WHERE source_id = $2)::integer AS source_total, bool_or(thread_id = $3) AS thread_busy FROM auggy_coordination_requests WHERE namespace = $1 AND state = 'active'",
+          "SELECT count(*)::integer AS total, count(*) FILTER (WHERE source_id = $2)::integer AS source_total, bool_or(thread_id = $3) AS thread_busy FROM public.auggy_coordination_requests WHERE namespace = $1 AND state = 'active'",
           [this.#config.namespace, policy.id, request.threadId],
         );
         const activeCount = active[0];
@@ -198,7 +198,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           return { status: "rejected", reason: "thread-capacity" };
         }
         await tx.unsafe(
-          "INSERT INTO auggy_coordination_requests (namespace, request_id, thread_id, source_id, binding_hash, state) VALUES ($1, $2, $3, $4, $5, 'queued')",
+          "INSERT INTO public.auggy_coordination_requests (namespace, request_id, thread_id, source_id, binding_hash, state) VALUES ($1, $2, $3, $4, $5, 'queued')",
           [
             this.#config.namespace,
             request.requestId,
@@ -214,13 +214,13 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
 
   async claim(request: DistributedTurnRequest): Promise<ClaimResult> {
     return this.safe<ClaimResult>({ status: "unavailable" }, async () =>
-      this.#sql.begin(async (tx) => {
+      this.transaction(async (tx) => {
         assertRequest(request);
         const limits = await this.#lockNamespace(tx);
         await this.#expire(tx);
         const policy = await this.sourcePolicy(tx, request.source);
         const found = await tx.unsafe<Row>(
-          "SELECT state, thread_id, source_id, binding_hash, fence, owner_instance, lease_expires_at FROM auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 FOR UPDATE",
+          "SELECT state, thread_id, source_id, binding_hash, fence, owner_instance, lease_expires_at FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 FOR UPDATE",
           [this.#config.namespace, request.requestId],
         );
         const row = found[0];
@@ -237,18 +237,18 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         if (state === "active") return { status: "waiting" };
         if (await this.instanceDraining(tx)) return { status: "waiting" };
         const thread = await tx.unsafe<Row>(
-          "INSERT INTO auggy_coordination_threads (namespace, thread_id) VALUES ($1, $2) ON CONFLICT (namespace, thread_id) DO UPDATE SET updated_at = clock_timestamp() RETURNING quarantined, next_fence",
+          "INSERT INTO public.auggy_coordination_threads (namespace, thread_id) VALUES ($1, $2) ON CONFLICT (namespace, thread_id) DO UPDATE SET updated_at = clock_timestamp() RETURNING quarantined, next_fence",
           [this.#config.namespace, request.threadId],
         );
         if (!thread[0]) throw new Error("missing thread row");
         if (bool(thread[0], "quarantined")) return { status: "quarantined" };
         const capacity = await tx.unsafe<Row>(
-          "SELECT count(*) FILTER (WHERE state = 'active')::integer AS active, count(*) FILTER (WHERE state = 'active' AND source_id = $2)::integer AS source_active FROM auggy_coordination_requests WHERE namespace = $1",
+          "SELECT count(*) FILTER (WHERE state = 'active')::integer AS active, count(*) FILTER (WHERE state = 'active' AND source_id = $2)::integer AS source_active FROM public.auggy_coordination_requests WHERE namespace = $1",
           [this.#config.namespace, policy.id],
         );
         const current = capacity[0];
         const fairHead = await tx.unsafe<Row>(
-          "WITH thread_heads AS (SELECT DISTINCT ON (thread_id) request_id, thread_id, source_id, queued_at FROM auggy_coordination_requests WHERE namespace = $1 AND state = 'queued' ORDER BY thread_id, queued_at, request_id), eligible AS (SELECT heads.request_id, heads.queued_at FROM thread_heads heads JOIN auggy_coordination_sources source_policy ON source_policy.namespace = $1 AND source_policy.source_id = heads.source_id WHERE NOT EXISTS (SELECT 1 FROM auggy_coordination_requests active_thread WHERE active_thread.namespace = $1 AND active_thread.thread_id = heads.thread_id AND active_thread.state = 'active') AND (SELECT count(*) FROM auggy_coordination_requests active_source WHERE active_source.namespace = $1 AND active_source.source_id = heads.source_id AND active_source.state = 'active') < source_policy.max_concurrent) SELECT request_id FROM eligible ORDER BY queued_at, request_id LIMIT 1",
+          "WITH thread_heads AS (SELECT DISTINCT ON (thread_id) request_id, thread_id, source_id, queued_at FROM public.auggy_coordination_requests WHERE namespace = $1 AND state = 'queued' ORDER BY thread_id, queued_at, request_id), eligible AS (SELECT heads.request_id, heads.queued_at FROM thread_heads heads JOIN public.auggy_coordination_sources source_policy ON source_policy.namespace = $1 AND source_policy.source_id = heads.source_id WHERE NOT EXISTS (SELECT 1 FROM public.auggy_coordination_requests active_thread WHERE active_thread.namespace = $1 AND active_thread.thread_id = heads.thread_id AND active_thread.state = 'active') AND (SELECT count(*) FROM public.auggy_coordination_requests active_source WHERE active_source.namespace = $1 AND active_source.source_id = heads.source_id AND active_source.state = 'active') < source_policy.max_concurrent) SELECT request_id FROM eligible ORDER BY queued_at, request_id LIMIT 1",
           [this.#config.namespace],
         );
         if (!fairHead[0] || text(fairHead[0], "request_id") !== request.requestId)
@@ -260,12 +260,12 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         )
           return { status: "waiting" };
         const fenced = await tx.unsafe<Row>(
-          "UPDATE auggy_coordination_threads SET next_fence = next_fence + 1, updated_at = clock_timestamp() WHERE namespace = $1 AND thread_id = $2 RETURNING next_fence",
+          "UPDATE public.auggy_coordination_threads SET next_fence = next_fence + 1, updated_at = clock_timestamp() WHERE namespace = $1 AND thread_id = $2 RETURNING next_fence",
           [this.#config.namespace, request.threadId],
         );
         const fence = number(fenced[0]!, "next_fence");
         const claimed = await tx.unsafe<Row>(
-          "UPDATE auggy_coordination_requests SET state = 'active', fence = $3, owner_instance = $4, lease_expires_at = clock_timestamp() + ($5 * interval '1 millisecond'), execution_started_at = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 RETURNING lease_expires_at",
+          "UPDATE public.auggy_coordination_requests SET state = 'active', fence = $3, owner_instance = $4, lease_expires_at = clock_timestamp() + ($5 * interval '1 millisecond'), execution_started_at = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 RETURNING lease_expires_at",
           [
             this.#config.namespace,
             request.requestId,
@@ -293,11 +293,11 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   async heartbeat(lease: DistributedTurnLease): Promise<LeaseResult> {
     if (!this.validLease(lease)) return { status: "stale" };
     return this.safe<LeaseResult>({ status: "unavailable" }, async () =>
-      this.#sql.begin(async (tx) => {
+      this.transaction(async (tx) => {
         await this.#lockNamespace(tx);
         await this.#expire(tx);
         const rows = await tx.unsafe<Row>(
-          "UPDATE auggy_coordination_requests SET lease_expires_at = clock_timestamp() + ($1 * interval '1 millisecond'), updated_at = clock_timestamp() WHERE namespace = $2 AND request_id = $3 AND thread_id = $4 AND source_id = $5 AND state = 'active' AND fence = $6 AND owner_instance = $7 AND lease_expires_at > clock_timestamp() RETURNING lease_expires_at",
+          "UPDATE public.auggy_coordination_requests SET lease_expires_at = clock_timestamp() + ($1 * interval '1 millisecond'), updated_at = clock_timestamp() WHERE namespace = $2 AND request_id = $3 AND thread_id = $4 AND source_id = $5 AND state = 'active' AND fence = $6 AND owner_instance = $7 AND lease_expires_at > clock_timestamp() RETURNING lease_expires_at",
           [
             this.#config.leaseMs,
             this.#config.namespace,
@@ -326,13 +326,15 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   async cancel(
     request: Pick<DistributedTurnRequest, "requestId" | "bindingHash">,
   ): Promise<LeaseResult> {
-    return this.safe<LeaseResult>({ status: "unavailable" }, async () => {
-      const rows = await this.#sql.unsafe<Row>(
-        "UPDATE auggy_coordination_requests SET state = 'canceled', terminal_at = clock_timestamp(), updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND binding_hash = $3 AND state = 'queued' RETURNING request_id",
-        [this.#config.namespace, request.requestId, request.bindingHash],
-      );
-      return rows[0] ? { status: "ok" } : { status: "stale" };
-    });
+    return this.safe<LeaseResult>({ status: "unavailable" }, async () =>
+      this.transaction(async (tx) => {
+        const rows = await tx.unsafe<Row>(
+          "UPDATE public.auggy_coordination_requests SET state = 'canceled', terminal_at = clock_timestamp(), updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND binding_hash = $3 AND state = 'queued' RETURNING request_id",
+          [this.#config.namespace, request.requestId, request.bindingHash],
+        );
+        return rows[0] ? { status: "ok" } : { status: "stale" };
+      }),
+    );
   }
 
   async recover(threadId: string, expectedFence: number, reason: string): Promise<LeaseResult> {
@@ -340,16 +342,16 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     if (reason.trim().length < 3 || reason.length > 160)
       throw new Error("recovery reason must be a concise operator audit record");
     return this.safe<LeaseResult>({ status: "unavailable" }, async () =>
-      this.#sql.begin(async (tx) => {
+      this.transaction(async (tx) => {
         await this.#lockNamespace(tx);
         await this.#expire(tx);
         const rows = await tx.unsafe<Row>(
-          "UPDATE auggy_coordination_threads SET quarantined = FALSE, quarantine_fence = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND thread_id = $2 AND quarantined = TRUE AND quarantine_fence = $3 RETURNING thread_id",
+          "UPDATE public.auggy_coordination_threads SET quarantined = FALSE, quarantine_fence = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND thread_id = $2 AND quarantined = TRUE AND quarantine_fence = $3 RETURNING thread_id",
           [this.#config.namespace, threadId, expectedFence],
         );
         if (!rows[0]) return { status: "stale" };
         await tx.unsafe(
-          "INSERT INTO auggy_coordination_events (namespace, thread_id, fence, event_type, reason) VALUES ($1, $2, $3, 'operator_recovery', $4)",
+          "INSERT INTO public.auggy_coordination_events (namespace, thread_id, fence, event_type, reason) VALUES ($1, $2, $3, 'operator_recovery', $4)",
           [this.#config.namespace, threadId, expectedFence, reason],
         );
         return { status: "ok" };
@@ -358,25 +360,27 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   }
 
   async setDraining(draining: boolean): Promise<LeaseResult> {
-    return this.safe<LeaseResult>({ status: "unavailable" }, async () => {
-      await this.#sql.unsafe(
-        "INSERT INTO auggy_coordination_instances (namespace, instance_id, draining) VALUES ($1, $2, $3) ON CONFLICT (namespace, instance_id) DO UPDATE SET draining = EXCLUDED.draining, updated_at = clock_timestamp()",
-        [this.#config.namespace, this.#config.instanceId, draining],
-      );
-      return { status: "ok" };
-    });
+    return this.safe<LeaseResult>({ status: "unavailable" }, async () =>
+      this.transaction(async (tx) => {
+        await tx.unsafe(
+          "INSERT INTO public.auggy_coordination_instances (namespace, instance_id, draining) VALUES ($1, $2, $3) ON CONFLICT (namespace, instance_id) DO UPDATE SET draining = EXCLUDED.draining, updated_at = clock_timestamp()",
+          [this.#config.namespace, this.#config.instanceId, draining],
+        );
+        return { status: "ok" };
+      }),
+    );
   }
 
   async health(): Promise<DistributedCoordinatorHealth> {
     return this.safe<DistributedCoordinatorHealth>(
       { status: "unavailable", active: 0, queued: 0, quarantined: 0 },
       async () =>
-        this.#sql.begin(async (tx) => {
+        this.transaction(async (tx) => {
           await this.#lockNamespace(tx);
           await this.#expire(tx);
           const draining = await this.instanceDraining(tx);
           const rows = await tx.unsafe<Row>(
-            "SELECT count(*) FILTER (WHERE state = 'active')::integer AS active, count(*) FILTER (WHERE state = 'queued')::integer AS queued, (SELECT count(*)::integer FROM auggy_coordination_threads WHERE namespace = $1 AND quarantined) AS quarantined FROM auggy_coordination_requests WHERE namespace = $1",
+            "SELECT count(*) FILTER (WHERE state = 'active')::integer AS active, count(*) FILTER (WHERE state = 'queued')::integer AS queued, (SELECT count(*)::integer FROM public.auggy_coordination_threads WHERE namespace = $1 AND quarantined) AS quarantined FROM public.auggy_coordination_requests WHERE namespace = $1",
             [this.#config.namespace],
           );
           const row = rows[0];
@@ -397,7 +401,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     Pick<DistributedCoordinatorConfig, "maxConcurrent" | "maxQueued" | "maxQueuedPerThread">
   > {
     await tx.unsafe(
-      "INSERT INTO auggy_coordination_namespaces (namespace, max_concurrent, max_queued, max_queued_per_thread) VALUES ($1, $2, $3, $4) ON CONFLICT (namespace) DO NOTHING",
+      "INSERT INTO public.auggy_coordination_namespaces (namespace, max_concurrent, max_queued, max_queued_per_thread) VALUES ($1, $2, $3, $4) ON CONFLICT (namespace) DO NOTHING",
       [
         this.#config.namespace,
         this.#config.maxConcurrent,
@@ -406,7 +410,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       ],
     );
     const policy = await tx.unsafe<Row>(
-      "SELECT max_concurrent, max_queued, max_queued_per_thread FROM auggy_coordination_namespaces WHERE namespace = $1 FOR UPDATE",
+      "SELECT max_concurrent, max_queued, max_queued_per_thread FROM public.auggy_coordination_namespaces WHERE namespace = $1 FOR UPDATE",
       [this.#config.namespace],
     );
     const row = policy[0];
@@ -428,7 +432,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
 
   async instanceDraining(tx: SqlTransaction): Promise<boolean> {
     const instance = await tx.unsafe<Row>(
-      "INSERT INTO auggy_coordination_instances (namespace, instance_id) VALUES ($1, $2) ON CONFLICT (namespace, instance_id) DO UPDATE SET updated_at = clock_timestamp() RETURNING draining",
+      "INSERT INTO public.auggy_coordination_instances (namespace, instance_id) VALUES ($1, $2) ON CONFLICT (namespace, instance_id) DO UPDATE SET updated_at = clock_timestamp() RETURNING draining",
       [this.#config.namespace, this.#config.instanceId],
     );
     return instance[0] !== undefined && bool(instance[0], "draining");
@@ -440,11 +444,11 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     incoming: DistributedTurnRequest["source"],
   ): Promise<DistributedTurnRequest["source"]> {
     await tx.unsafe(
-      "INSERT INTO auggy_coordination_sources (namespace, source_id, max_concurrent, max_queued) VALUES ($1, $2, $3, $4) ON CONFLICT (namespace, source_id) DO NOTHING",
+      "INSERT INTO public.auggy_coordination_sources (namespace, source_id, max_concurrent, max_queued) VALUES ($1, $2, $3, $4) ON CONFLICT (namespace, source_id) DO NOTHING",
       [this.#config.namespace, incoming.id, incoming.maxConcurrent, incoming.maxQueued],
     );
     const rows = await tx.unsafe<Row>(
-      "SELECT source_id, max_concurrent, max_queued FROM auggy_coordination_sources WHERE namespace = $1 AND source_id = $2 FOR UPDATE",
+      "SELECT source_id, max_concurrent, max_queued FROM public.auggy_coordination_sources WHERE namespace = $1 AND source_id = $2 FOR UPDATE",
       [this.#config.namespace, incoming.id],
     );
     const row = rows[0];
@@ -465,13 +469,13 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
 
   async #expire(tx: SqlTransaction): Promise<void> {
     const expired = await tx.unsafe<Row>(
-      "UPDATE auggy_coordination_requests SET state = CASE WHEN execution_started_at IS NULL THEN 'queued' ELSE 'outcome_unknown' END, owner_instance = NULL, lease_expires_at = NULL, terminal_at = CASE WHEN execution_started_at IS NULL THEN NULL ELSE clock_timestamp() END, updated_at = clock_timestamp() WHERE namespace = $1 AND state = 'active' AND lease_expires_at <= clock_timestamp() RETURNING thread_id, fence, execution_started_at",
+      "UPDATE public.auggy_coordination_requests SET state = CASE WHEN execution_started_at IS NULL THEN 'queued' ELSE 'outcome_unknown' END, owner_instance = NULL, lease_expires_at = NULL, terminal_at = CASE WHEN execution_started_at IS NULL THEN NULL ELSE clock_timestamp() END, updated_at = clock_timestamp() WHERE namespace = $1 AND state = 'active' AND lease_expires_at <= clock_timestamp() RETURNING thread_id, fence, execution_started_at",
       [this.#config.namespace],
     );
     for (const row of expired) {
       if (row.execution_started_at === null) continue;
       await tx.unsafe(
-        "UPDATE auggy_coordination_threads SET quarantined = TRUE, quarantine_fence = $3, updated_at = clock_timestamp() WHERE namespace = $1 AND thread_id = $2",
+        "UPDATE public.auggy_coordination_threads SET quarantined = TRUE, quarantine_fence = $3, updated_at = clock_timestamp() WHERE namespace = $1 AND thread_id = $2",
         [this.#config.namespace, text(row, "thread_id"), number(row, "fence")],
       );
     }
@@ -483,21 +487,23 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     values: unknown[],
   ): Promise<LeaseResult> {
     if (!this.validLease(lease)) return { status: "stale" };
-    return this.safe<LeaseResult>({ status: "unavailable" }, async () => {
-      const rows = await this.#sql.unsafe<Row>(
-        `UPDATE auggy_coordination_requests SET ${set} WHERE namespace = $${values.length + 1} AND request_id = $${values.length + 2} AND thread_id = $${values.length + 3} AND source_id = $${values.length + 4} AND state = 'active' AND fence = $${values.length + 5} AND owner_instance = $${values.length + 6} AND lease_expires_at > clock_timestamp() RETURNING request_id`,
-        [
-          ...values,
-          this.#config.namespace,
-          lease.requestId,
-          lease.threadId,
-          lease.sourceId,
-          lease.fence,
-          this.#config.instanceId,
-        ],
-      );
-      return rows[0] ? { status: "ok" } : { status: "stale" };
-    });
+    return this.safe<LeaseResult>({ status: "unavailable" }, async () =>
+      this.transaction(async (tx) => {
+        const rows = await tx.unsafe<Row>(
+          `UPDATE public.auggy_coordination_requests SET ${set} WHERE namespace = $${values.length + 1} AND request_id = $${values.length + 2} AND thread_id = $${values.length + 3} AND source_id = $${values.length + 4} AND state = 'active' AND fence = $${values.length + 5} AND owner_instance = $${values.length + 6} AND lease_expires_at > clock_timestamp() RETURNING request_id`,
+          [
+            ...values,
+            this.#config.namespace,
+            lease.requestId,
+            lease.threadId,
+            lease.sourceId,
+            lease.fence,
+            this.#config.instanceId,
+          ],
+        );
+        return rows[0] ? { status: "ok" } : { status: "stale" };
+      }),
+    );
   }
 
   async terminal(lease: DistributedTurnLease, state: "completed" | "failed"): Promise<LeaseResult> {
@@ -537,6 +543,16 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         }
       })()
     );
+  }
+
+  async transaction<T>(callback: (tx: SqlTransaction) => Promise<T>): Promise<T> {
+    return this.#sql.begin(async (tx) => {
+      // With pg_catalog omitted, PostgreSQL searches it implicitly before the
+      // fixed schema. A role- or URL-supplied search_path cannot shadow either
+      // built-in functions or coordination relations for this transaction.
+      await tx.unsafe("SET LOCAL search_path TO public");
+      return callback(tx);
+    });
   }
 
   async safe<T>(fallback: T, callback: () => Promise<T>): Promise<T> {

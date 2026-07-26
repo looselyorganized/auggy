@@ -361,8 +361,8 @@ The default notification destination writes JSON Lines locally with no secrets.
 Configure a webhook, Telegram, or AgentMail destination when you need real
 delivery.
 
-For model-callable email (outbound ships in `0.5.0`; durable inbound is in the
-current unreleased source):
+For model-callable email and the durable inbound/review foundation implemented
+in the unpublished `0.5.0` candidate:
 
 ```bash
 auggy augment add agentMail
@@ -418,7 +418,11 @@ Keep the service at **one replica** while it uses Auggy's SQLite stores. Console
 chat history lives at `/app/data/console-chat.db` by default; the `/app/data`
 volume is required for that history to survive deploys and restarts. A durable
 volume is not a backup, so snapshot or back it up separately if the history is
-important.
+important. Auggy's supported single-replica recovery path is the offline
+`auggy state backup` / `verify` / `restore` / `restore-resume` / `reconcile`
+workflow; the
+deployer still owns scheduling, encryption, storage, and external-system
+recovery points. See [Runtime State Recovery](./docs/27-runtime-state-recovery.md).
 
 After the first deploy, the selected target is saved locally. Useful follow-up
 commands:
@@ -438,6 +442,7 @@ auggy deploy --yes
 | `auggy dev [name]` | Run in the foreground without opening a browser |
 | `auggy doctor [name]` | Check configuration, environment, dependencies, port, and skills |
 | `auggy list` / `auggy status [name]` | Discover agent projects and inspect local process state |
+| `auggy state inventory/backup/verify/restore/restore-resume/reconcile` | Inventory and rehearse fenced offline single-replica runtime-volume recovery |
 | `auggy chat [name]` | Open a running agent's browser chat |
 | `auggy augment list` | Show core, stable, and preview augments |
 | `auggy augment add [name...]` | Select or add built-in augments |

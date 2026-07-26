@@ -30,6 +30,7 @@
       "auggy/internal/response-limits": ["./src/engines/_shared/response-limits.ts"],
       "auggy/internal/credential-transport": ["./src/engines/_shared/credential-transport.ts"],
       "auggy/internal/provider-error": ["./src/engines/_shared/provider-error.ts"],
+      "auggy/internal/provider-resilience": ["./src/engines/_shared/provider-resilience.ts"],
       "auggy/internal/anthropic-pricing": ["./src/engines/anthropic/pricing.ts"],
       "auggy/internal/openai-pricing": ["./src/engines/openai/pricing.ts"],
       "auggy/internal/openrouter-pricing": ["./src/engines/openrouter/pricing.ts"],

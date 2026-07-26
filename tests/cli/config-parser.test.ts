@@ -53,6 +53,24 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("parseConfig", () => {
+  test("requires one explicit valid webTransport listener port", () => {
+    for (const [index, port] of [undefined, null, "8080", 0, -1, 65_536, 8080.5].entries()) {
+      const path = writeYaml(
+        `web-port-${index}.yaml`,
+        minimalConfig({
+          augments: [
+            {
+              name: "web",
+              type: "webTransport",
+              options: { port, auth: { type: "bearer", token: "test-token" } },
+            },
+          ],
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(/port.*1 to 65535/i);
+    }
+  });
+
   test("accepts hardened anonymous network rate-limit policy", () => {
     const augments = [
       {
@@ -157,6 +175,21 @@ describe("parseConfig", () => {
     expect(config.augments[0]!.type).toBe("fileMemory");
   });
 
+  test("rejects malformed settings instead of silently restoring runtime defaults", () => {
+    for (const settings of ["malformed", 42, true, null, ["maxConcurrent", 1]]) {
+      const path = writeYaml("agent.yaml", minimalConfig({ settings }));
+      expect(() => parseConfig(path)).toThrow("settings: must be an object");
+    }
+  });
+
+  test("rejects unknown top-level fields instead of ignoring configuration typos", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({ setting: { turnScheduling: { maxConcurrent: 1 } } }),
+    );
+    expect(() => parseConfig(path)).toThrow("setting: unknown top-level field");
+  });
+
   test("includes optional fields when present", () => {
     const path = writeYaml(
       "agent.yaml",
@@ -235,7 +268,7 @@ describe("parseConfig", () => {
         settings: {
           coordination: {
             mode: "postgres",
-            namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+            namespace: "a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
           },
         },
       }),
@@ -243,7 +276,7 @@ describe("parseConfig", () => {
 
     expect(parseConfig(path).settings.coordination).toEqual({
       mode: "postgres",
-      namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+      namespace: "a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
       urlEnv: "AUGGY_COORDINATION_DATABASE_URL",
       leaseDurationMs: 30_000,
       heartbeatIntervalMs: 5_000,
@@ -257,6 +290,7 @@ describe("parseConfig", () => {
       { mode: "redis", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7" },
       { mode: "postgres", namespace: "not-a-uuid" },
       { mode: "postgres", namespace: "5D9B9796-65BA-43D0-9BA9-57F1A9DB5EF7" },
+      { mode: "postgres", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7" },
       { mode: "postgres", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7", urlEnv: "URL;SECRET" },
       {
         mode: "postgres",
@@ -817,6 +851,38 @@ describe("engine.reasoningEffort validation", () => {
     );
     expect(() => parseConfig(path)).toThrow("engine.reasoningEffort");
   });
+});
+
+describe("engine.requestTimeoutMs validation", () => {
+  test("accepts a finite provider deadline", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          requestTimeoutMs: 45_000,
+        },
+      }),
+    );
+    expect(parseConfig(path).engine.requestTimeoutMs).toBe(45_000);
+  });
+
+  for (const timeout of [0, -1, 1.5, 600_001, "120000"]) {
+    test(`rejects unsafe timeout ${String(timeout)}`, () => {
+      const path = writeYaml(
+        `agent-${String(timeout).replaceAll(".", "-")}.yaml`,
+        minimalConfig({
+          engine: {
+            provider: "anthropic",
+            model: "claude-sonnet-4-6",
+            requestTimeoutMs: timeout,
+          },
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow("engine.requestTimeoutMs");
+    });
+  }
 });
 
 describe("engine credential transport validation", () => {
@@ -2074,5 +2140,32 @@ describe("notify augment agentmail transport validation", () => {
     );
     expect(() => parseConfig(path)).toThrow(/allowedTrustLevels\[1\].*creator.*agent.*public/);
     expect(() => parseConfig(path)).toThrow(/publicPolicy: must be "allowed" or "escalation-only"/);
+  });
+
+  test("rejects notify quota windows beyond retained evidence", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        augments: [
+          {
+            name: "notify",
+            type: "notify",
+            options: {
+              destinations: [
+                {
+                  name: "ops",
+                  transport: "webhook",
+                  url: "https://example.com/notify",
+                  rateLimit: { cooldownMs: 30 * 24 * 60 * 60_000 + 1 },
+                },
+              ],
+              rateLimit: { dedupWindowMs: 30 * 24 * 60 * 60_000 + 1 },
+            },
+          },
+        ],
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow(/rateLimit\.cooldownMs: cannot exceed 30 days/);
+    expect(() => parseConfig(path)).toThrow(/rateLimit\.dedupWindowMs: cannot exceed 30 days/);
   });
 });

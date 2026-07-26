@@ -11,6 +11,7 @@ import { resolve } from "node:path";
 import { createSqliteVisitorAuthStore } from "../../augments/visitorAuth/storage/sqlite-store";
 import { parseAugmentConfigOnly } from "../yaml-helpers";
 import { resolveConfigPath } from "../resolve-config";
+import { resolveOwnedStatePath } from "../owned-state-path";
 
 export interface VisitorsCommandOptions {
   auggyDir?: string;
@@ -38,7 +39,7 @@ function resolveAgentPaths(agentName: string, opts: VisitorsCommandOptions): Res
   const dbPath = (vaOptions.dbPath as string | undefined) ?? "./visitor-auth.db";
   return {
     agentDir,
-    visitorAuthDb: resolve(agentDir, dbPath),
+    visitorAuthDb: resolveOwnedStatePath(dbPath, agentDir, agentDir, "visitorAuth dbPath"),
   };
 }
 

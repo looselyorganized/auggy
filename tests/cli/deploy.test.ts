@@ -256,9 +256,17 @@ describe("runDeploy", () => {
     expect(calls.addVolume).toEqual([{ name: "zip-data", mountPath: "/app/data" }]);
     expect(calls.generateDomain).toBe(1);
 
-    // Three secrets: ANTHROPIC_API_KEY + AUGGY_WEB_TOKEN + AUGGY_PUBLIC_URL.
+    // Two secrets plus the immutable agent id and generated public URL.
     const keys = calls.setVariable.map((v) => v.key).sort();
-    expect(keys).toEqual(["ANTHROPIC_API_KEY", "AUGGY_PUBLIC_URL", "AUGGY_WEB_TOKEN"]);
+    expect(keys).toEqual([
+      "ANTHROPIC_API_KEY",
+      "AUGGY_AGENT_ID",
+      "AUGGY_PUBLIC_URL",
+      "AUGGY_WEB_TOKEN",
+    ]);
+    expect(calls.setVariable.find((v) => v.key === "AUGGY_AGENT_ID")?.value).toBe(
+      "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+    );
     expect(calls.setVariable.find((v) => v.key === "AUGGY_PUBLIC_URL")?.value).toBe(
       "https://zip-production-abcd.up.railway.app",
     );
@@ -281,6 +289,29 @@ describe("runDeploy", () => {
       url: "https://zip-production-abcd.up.railway.app",
       volumeId: "zip-data",
     });
+  });
+
+  test("rejects deployment metadata bound to another immutable agent before Railway access", async () => {
+    writeFileSync(
+      join(agentDir, ".auggy-cloud.json"),
+      JSON.stringify({
+        version: 1,
+        agentId: "aug1_99999999-9999-4999-8999-999999999999",
+        provider: "railway",
+        projectId: "victim-project",
+        serviceId: "victim-service",
+        url: "https://victim.example",
+        volumeId: "victim-volume",
+        deployedAt: new Date().toISOString(),
+      }),
+    );
+    const { cli, calls } = mockRailwayCli();
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /belongs to another immutable agent/i,
+    );
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.checkAuth).toBe(0);
+    expect(calls.up).toBe(0);
   });
 
   test("first deploy can create a new Railway project", async () => {
@@ -1061,7 +1092,7 @@ describe("runDeploy", () => {
     expect(taskMessages).toContain("Creating Railway service zip");
     expect(taskMessages).toContain("Mounting Railway volume");
     expect(taskMessages).toContain("Generating public Railway URL");
-    expect(taskMessages).toContain("Pushing 3 env var(s)");
+    expect(taskMessages).toContain("Pushing 4 env var(s)");
     expect(taskMessages).toContain("Starting Railway build");
     expect(taskMessages).toContain("Waiting for Railway deployment");
     expect(taskMessages).toContain("Verifying deployment health");

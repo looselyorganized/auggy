@@ -5,8 +5,8 @@ name: concierge
 displayName: Harbor & Pine Concierge
 purpose: Help visitors choose boutique services, capture leads, and escalate
   high-intent requests.
-operators:
-  - Harbor & Pine team
+creator:
+  displayName: Harbor & Pine team
 identity: ./identity.md
 engine:
   provider: anthropic

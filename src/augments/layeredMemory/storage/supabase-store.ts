@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { canonicalMemoryNamespace } from "../../memory-namespace";
 import type {
   MemoryStore,
   OriginValue,
@@ -25,6 +26,7 @@ export interface SearchBuilder {
   eq(column: string, value: unknown): SearchBuilder;
   is(column: string, value: null): SearchBuilder;
   gt(column: string, value: number): SearchBuilder;
+  like(column: string, value: string): SearchBuilder;
   ilike(column: string, value: string): SearchBuilder;
   or(filterExpr: string): SearchBuilder;
   order(column: string, opts?: { ascending?: boolean }): SearchBuilder;
@@ -32,24 +34,23 @@ export interface SearchBuilder {
   maybeSingle(): PromiseLike<{ data: unknown; error: Error | null }>;
 }
 
+interface MutationBuilder extends PromiseLike<{ data: unknown[] | null; error: Error | null }> {
+  eq(column: string, value: unknown): MutationBuilder;
+  like(column: string, value: string): MutationBuilder;
+}
+
 export interface LayeredSupabaseClient {
   from(table: string): {
     insert(row: unknown): PromiseLike<{ error: Error | null }>;
     select(columns?: string): SearchBuilder;
-    delete(): {
-      eq(
-        column: string,
-        value: unknown,
-      ): PromiseLike<{ data: unknown[] | null; error: Error | null }>;
-    };
-    update(patch: Record<string, unknown>): {
-      eq(column: string, value: unknown): PromiseLike<{ error: Error | null }>;
-    };
+    delete(): MutationBuilder;
+    update(patch: Record<string, unknown>): MutationBuilder;
   };
 }
 
 interface Row {
   id: string;
+  namespace_key: string;
   label: string;
   content: string;
   peer_id: string | null;
@@ -67,7 +68,8 @@ interface Row {
   origin: string | null;
 }
 
-function rowToEntry(row: Row): StoreEntry {
+function rowToEntry(row: Row, expectedNamespaceKey: string): StoreEntry | null {
+  if (row.namespace_key !== expectedNamespaceKey) return null;
   const entry: StoreEntry = {
     id: row.id,
     label: row.label,
@@ -92,6 +94,9 @@ function rowToEntry(row: Row): StoreEntry {
 export function createSupabaseStore(
   config: Omit<SupabaseStoreConfig, "client"> & { client: LayeredSupabaseClient },
 ): MemoryStore {
+  const namespace = canonicalMemoryNamespace(config.namespace, "layeredMemory Supabase store");
+  const prefix = namespace.prefix;
+  const escapedPrefixPattern = `${prefix.replace(/[%_\\]/g, (c) => `\\${c}`)}%`;
   const retentionMs = config.retentionDays * 24 * 60 * 60 * 1000;
 
   async function initialize(): Promise<void> {
@@ -99,11 +104,15 @@ export function createSupabaseStore(
   }
 
   async function write(input: Omit<StoreEntry, "id"> & { id?: string }): Promise<StoreEntry> {
+    if (!input.label.startsWith(prefix)) {
+      throw new Error(`layeredMemory: label must start with namespace prefix "${prefix}"`);
+    }
     const id = input.id ?? randomUUID();
     const expiresAt = input.expiresAt ?? input.createdAt + retentionMs;
 
     const row: Row = {
       id,
+      namespace_key: namespace.key,
       label: input.label,
       content: input.content,
       peer_id: input.peerId,
@@ -141,12 +150,14 @@ export function createSupabaseStore(
     let builder: SearchBuilder = config.client
       .from(config.table)
       .select(
-        "id, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at, subject, predicate, object, source_turn_id, origin",
+        "id, namespace_key, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at, subject, predicate, object, source_turn_id, origin",
       );
 
     if (peerId) {
       builder = builder.eq("peer_id", peerId);
     }
+    builder = builder.eq("namespace_key", namespace.key);
+    builder = builder.like("label", escapedPrefixPattern);
     builder = builder.is("superseded_by", null);
     // Postgres "or" handles "expires_at IS NULL OR expires_at >= now" —
     // we send it as a single predicate so PostgREST builds the right
@@ -160,21 +171,25 @@ export function createSupabaseStore(
 
     if (error) throw error;
     const rows = (data ?? []) as Row[];
-    return rows.map(rowToEntry);
+    return rows
+      .map((row) => rowToEntry(row, namespace.key))
+      .filter((entry): entry is StoreEntry => entry !== null);
   }
 
   async function read(label: string): Promise<StoreEntry | null> {
+    if (!label.startsWith(prefix)) return null;
     const { data, error } = await config.client
       .from(config.table)
       .select(
-        "id, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at, subject, predicate, object, source_turn_id, origin",
+        "id, namespace_key, label, content, peer_id, trust_level, created_at, superseded_by, retention_class, is_verbatim, expires_at, subject, predicate, object, source_turn_id, origin",
       )
       .eq("label", label)
+      .eq("namespace_key", namespace.key)
       .maybeSingle();
 
     if (error) throw error;
     if (!data) return null;
-    return rowToEntry(data as Row);
+    return rowToEntry(data as Row, namespace.key);
   }
 
   async function list(_peerId?: string): Promise<string[]> {
@@ -183,7 +198,11 @@ export function createSupabaseStore(
   }
 
   async function forget(peerId: string): Promise<number> {
-    const { data, error } = await config.client.from(config.table).delete().eq("peer_id", peerId);
+    const { data, error } = await config.client
+      .from(config.table)
+      .delete()
+      .eq("peer_id", peerId)
+      .eq("namespace_key", namespace.key);
     if (error) throw error;
     return Array.isArray(data) ? data.length : 0;
   }
@@ -192,7 +211,8 @@ export function createSupabaseStore(
     const { error } = await config.client
       .from(config.table)
       .update({ superseded_by: newEntryId })
-      .eq("id", entryId);
+      .eq("id", entryId)
+      .eq("namespace_key", namespace.key);
     if (error) throw error;
   }
 
@@ -207,12 +227,6 @@ export function createSupabaseStore(
   // hardcode origin='agent-derived', persist the structured-fact +
   // provenance fields. NOT exposed on any augment-public surface.
   async function writeAutoSavedEntry(args: WriteAutoSavedArgs): Promise<void> {
-    if (!config.namespace) {
-      throw new Error(
-        "writeAutoSavedEntry: store has no namespace configured; auto-save requires namespace-prefix discipline",
-      );
-    }
-    const prefix = config.namespace.endsWith(":") ? config.namespace : `${config.namespace}:`;
     if (!args.label.startsWith(prefix)) {
       throw new Error(
         `writeAutoSavedEntry: label "${args.label}" does not start with namespace prefix "${prefix}"`,
@@ -223,6 +237,7 @@ export function createSupabaseStore(
     const expiresAt = createdAt + retentionMs;
     const row: Row & { provenance_model: string | null; confidence: number | null } = {
       id,
+      namespace_key: namespace.key,
       label: args.label,
       content: args.content,
       peer_id: args.peerId,

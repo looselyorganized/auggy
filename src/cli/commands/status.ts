@@ -5,7 +5,7 @@
  * With a name: show detailed status including health check.
  */
 
-import { listPidManifests, readPidManifest, isProcessAlive } from "../pid-registry";
+import { inspectRuntimeProcess, listPidManifests, readPidManifest } from "../pid-registry";
 import { displayPath } from "../display-path";
 
 function formatUptime(startedAt: string): string {
@@ -59,8 +59,8 @@ async function showAll(): Promise<void> {
   console.log("-".repeat(66));
 
   for (const m of manifests) {
-    const alive = isProcessAlive(m.pid);
-    const status = alive ? "running" : "dead";
+    const processStatus = inspectRuntimeProcess(m);
+    const status = processStatus === "alive" ? "running" : processStatus;
     console.log(
       m.name.padEnd(20) +
         status.padEnd(10) +
@@ -80,16 +80,17 @@ async function showDetail(name: string): Promise<void> {
     return;
   }
 
-  const alive = isProcessAlive(manifest.pid);
+  const processStatus = inspectRuntimeProcess(manifest);
   console.log(`Agent: ${manifest.name}`);
-  console.log(`Status: ${alive ? "running" : "dead"}`);
+  if (manifest.agentId) console.log(`ID: ${manifest.agentId}`);
+  console.log(`Status: ${processStatus === "alive" ? "running" : processStatus}`);
   console.log(`PID: ${manifest.pid}`);
   console.log(`Mode: ${manifest.mode}`);
   console.log(`Uptime: ${formatUptime(manifest.startedAt)}`);
   console.log(`Config: ${displayPath(manifest.configPath)}`);
   console.log(`Agent dir: ${displayPath(manifest.agentDir)}`);
 
-  if (manifest.port) {
+  if (manifest.port && processStatus === "alive") {
     console.log(`Port: ${manifest.port}`);
     const health = await fetchHealth(manifest.port);
     if (health) {

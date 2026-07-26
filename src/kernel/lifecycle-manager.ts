@@ -3,7 +3,7 @@ import { withTimeout } from "./timeout";
 
 export interface LifecycleManager {
   boot(): Promise<void>;
-  shutdown(): Promise<void>;
+  shutdown(): Promise<{ hookFailures: number }>;
   startIdleTimer(onIdle: () => Promise<void>, intervalMs?: number): void;
   stopIdleTimer(): void;
   resetIdleTimer(): void;
@@ -51,17 +51,21 @@ export function createLifecycleManager(opts: {
       idleCallback = null;
       const shutdownAugments = [...attemptedAugments].reverse();
       attemptedAugments = [];
+      let hookFailures = 0;
       for (const aug of shutdownAugments) {
         try {
           if (aug.onShutdown) {
             await withTimeout((signal) => aug.onShutdown!(signal), 5000);
           }
         } catch (err) {
+          hookFailures++;
           // Best-effort: surface the failure so operators can see which
           // augment hung or threw, but keep iterating so the rest still shut down.
-          console.warn(`[lifecycle] augment "${aug.name}" onShutdown failed:`, err);
+          const category = err instanceof Error ? "error-object" : "non-error-value";
+          console.warn(`[lifecycle] augment "${aug.name}" onShutdown failed category=${category}`);
         }
       }
+      return { hookFailures };
     },
 
     startIdleTimer(onIdle, intervalMs) {
@@ -85,7 +89,8 @@ export function createLifecycleManager(opts: {
         try {
           await cb();
         } catch (err) {
-          console.warn(`[lifecycle] idle callback failed:`, err);
+          const category = err instanceof Error ? "error-object" : "non-error-value";
+          console.warn(`[lifecycle] idle callback failed category=${category}`);
         }
       }, idleIntervalMs);
     },

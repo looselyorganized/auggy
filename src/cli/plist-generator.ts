@@ -14,6 +14,10 @@ import { dirname, join } from "node:path";
 export interface PlistOptions {
   /** Agent name (used in label and log file names). */
   name: string;
+  /** Immutable config identity used for service and log ownership. */
+  agentId: string;
+  /** Per-install generation used to authenticate launchd startup acknowledgement. */
+  launchGeneration: string;
   /** Absolute path to the agent directory. */
   agentDir: string;
   /** Absolute path to agent.yaml. */
@@ -25,18 +29,18 @@ export interface PlistOptions {
 }
 
 /** The launchd label for an agent. */
-export function plistLabel(name: string): string {
-  return `com.auggy.agent.${name}`;
+export function plistLabel(agentId: string): string {
+  return `com.auggy.agent.${agentId}`;
 }
 
 /** Where generated plists are stored. */
-export function plistStorePath(name: string): string {
-  return join(homedir(), ".auggy", "plists", `${plistLabel(name)}.plist`);
+export function plistStorePath(agentId: string): string {
+  return join(homedir(), ".auggy", "plists", `${plistLabel(agentId)}.plist`);
 }
 
 /** Where the symlink goes in ~/Library/LaunchAgents/. */
-export function plistInstallPath(name: string): string {
-  return join(homedir(), "Library", "LaunchAgents", `${plistLabel(name)}.plist`);
+export function plistInstallPath(agentId: string): string {
+  return join(homedir(), "Library", "LaunchAgents", `${plistLabel(agentId)}.plist`);
 }
 
 /** Log directory for agent stdout/stderr. */
@@ -60,7 +64,7 @@ function escapeXml(s: string): string {
  * with KeepAlive=true so launchd restarts on crash.
  */
 export function generatePlist(opts: PlistOptions): string {
-  const label = plistLabel(opts.name);
+  const label = plistLabel(opts.agentId);
   const bunDir = dirname(opts.bunPath);
   const home = homedir();
   const logs = logDir();
@@ -99,10 +103,10 @@ export function generatePlist(opts: PlistOptions): string {
   <true/>
 
   <key>StandardOutPath</key>
-  <string>${escapeXml(join(logs, `${opts.name}.log`))}</string>
+  <string>${escapeXml(join(logs, `${opts.agentId}.log`))}</string>
 
   <key>StandardErrorPath</key>
-  <string>${escapeXml(join(logs, `${opts.name}.err`))}</string>
+  <string>${escapeXml(join(logs, `${opts.agentId}.err`))}</string>
 
   <key>EnvironmentVariables</key>
   <dict>
@@ -110,6 +114,8 @@ export function generatePlist(opts: PlistOptions): string {
     <string>${escapeXml(bunDir)}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
     <key>HOME</key>
     <string>${escapeXml(home)}</string>
+    <key>AUGGY_LAUNCH_GENERATION</key>
+    <string>${escapeXml(opts.launchGeneration)}</string>
   </dict>
 </dict>
 </plist>

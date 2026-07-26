@@ -356,13 +356,6 @@ grep -Fq 'import "server-only";' "$ADMIN_TEMPLATE" \
 grep -Fq 'createAdminReindexHandler' "$ADMIN_TEMPLATE" \
   || fail "scaffold admin route template lacks the fail-closed authorization boundary"
 
-SMOKE_PORT="$(
-  node -e 'const net=require("net"); const server=net.createServer(); server.listen(0,"127.0.0.1",()=>{console.log(server.address().port); server.close();});'
-)"
-[[ -n "$SMOKE_PORT" ]] || fail "could not allocate smoke port"
-perl -0pi -e "s/AUGGY_PUBLIC_URL=http:\/\/localhost:\d+/AUGGY_PUBLIC_URL=http:\/\/localhost:$SMOKE_PORT/" "$AGENT_DIR/.env"
-perl -0pi -e "s/(^[[:space:]]*port: )[0-9]+/\${1}$SMOKE_PORT/m" "$AGENT_DIR/augments/webTransport/augment.yaml"
-
 info "install agent dependencies"
 (
   cd "$AGENT_DIR"
@@ -383,6 +376,19 @@ info "audit installed agent"
 info "fill smoke env"
 perl -0pi -e 's/ANTHROPIC_API_KEY=\n/ANTHROPIC_API_KEY=sk-ant-smoke-not-real\n/' "$AGENT_DIR/.env"
 
+configure_smoke_port() {
+  SMOKE_PORT="$(
+    node -e 'const net=require("net"); const server=net.createServer(); server.listen(0,"127.0.0.1",()=>{console.log(server.address().port); server.close();});'
+  )"
+  [[ -n "$SMOKE_PORT" ]] || fail "could not allocate smoke port"
+  perl -0pi -e "s/AUGGY_PUBLIC_URL=http:\/\/localhost:\d+/AUGGY_PUBLIC_URL=http:\/\/localhost:$SMOKE_PORT/" "$AGENT_DIR/.env"
+  perl -0pi -e "s/(^[[:space:]]*port: )[0-9]+/\${1}$SMOKE_PORT/m" "$AGENT_DIR/augments/webTransport/augment.yaml"
+}
+
+# Doctor checks listener availability, so isolate it from legitimate services
+# using the scaffold's default port before running any verification command.
+configure_smoke_port
+
 info "doctor"
 (
   cd "$AGENT_DIR"
@@ -390,19 +396,46 @@ info "doctor"
 )
 
 info "run agent and check health"
-(
-  cd "$AGENT_DIR"
-  HOME="$SMOKE_HOME" "$CLI" run --no-open >"$LOG_DIR/run.log" 2>&1
-) &
-SERVER_PID="$!"
+HEALTHY=""
+for attempt in {1..3}; do
+  if (( attempt > 1 )); then
+    configure_smoke_port
+  fi
 
-for _ in {1..40}; do
-  if curl --connect-timeout 1 --max-time 2 -fsS \
-    "http://127.0.0.1:$SMOKE_PORT/health" >/dev/null 2>&1; then
+  (
+    cd "$AGENT_DIR"
+    HOME="$SMOKE_HOME" "$CLI" run --no-open >"$LOG_DIR/run.log" 2>&1
+  ) &
+  SERVER_PID="$!"
+
+  for _ in {1..40}; do
+    if kill -0 "$SERVER_PID" 2>/dev/null \
+      && curl --connect-timeout 1 --max-time 2 -fsS \
+        "http://127.0.0.1:$SMOKE_PORT/health" >/dev/null 2>&1; then
+      HEALTHY=1
+      break
+    fi
+    if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+      break
+    fi
+    sleep 0.25
+  done
+  if [[ -n "$HEALTHY" ]]; then
     break
   fi
-  sleep 0.25
+
+  if kill -0 "$SERVER_PID" 2>/dev/null; then
+    fail "agent health did not become healthy"
+  fi
+  wait "$SERVER_PID" 2>/dev/null || true
+  SERVER_PID=""
+  if grep -Eq 'EADDRINUSE|address already in use' "$LOG_DIR/run.log" && (( attempt < 3 )); then
+    info "retry smoke agent after a port collision"
+    continue
+  fi
+  fail "smoke agent exited before health became ready"
 done
+[[ -n "$HEALTHY" ]] || fail "agent health did not become healthy after port retries"
 curl --connect-timeout 1 --max-time 2 -fsS \
   "http://127.0.0.1:$SMOKE_PORT/health" | grep -q '"status":"healthy"' \
   || fail "agent health did not become healthy"

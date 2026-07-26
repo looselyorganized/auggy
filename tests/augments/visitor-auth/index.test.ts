@@ -2555,11 +2555,13 @@ describe("isVisitorRevoked (fix C1)", () => {
     // return false for the old id (row not found → row?.revoked is undefined → false).
     // The denylist must catch it.
     const sends: { text: string }[] = [];
+    let clock = 1_000;
     const aug = visitorAuth({
       publicUrl: "https://example.com",
       dbPath,
       agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
       signingKey: "sig",
+      _now: () => clock,
       // Open rate limit so both verifications (pre- and post-revoke) can proceed.
       rateLimit: { perHour: 5, perDay: 10 },
       _agentMailClient: {
@@ -2586,8 +2588,9 @@ describe("isVisitorRevoked (fix C1)", () => {
     // Revoke vis_OLD.
     const seedStore = createSqliteVisitorAuthStore({ dbPath });
     seedStore.initialize();
-    seedStore.revokeByEmail("rotate@example.com", "operator", Date.now());
+    seedStore.revokeByEmail("rotate@example.com", "operator", 2_000);
     seedStore.close();
+    clock = 2_001;
 
     // Re-verify: unrevokeAndRotate fires, minting vis_NEW. OLD row is gone.
     sends.length = 0;

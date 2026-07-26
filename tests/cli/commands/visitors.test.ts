@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runVisitorsList, type VisitorsCommandOptions } from "../../../src/cli/commands/visitors";
@@ -10,13 +10,17 @@ import { seedAgentForTest } from "../../../src/cli/agent-index";
 let tmp: string;
 let agentDir: string;
 let auggyDir: string;
+const AGENT_ID = "aug1_12345678-1234-4123-8123-123456789abc";
+const MEMORY_NAMESPACE = `${AGENT_ID}:ep`;
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "visitors-cmd-"));
   auggyDir = join(tmp, "auggy");
   agentDir = seedAgentForTest("zip", {
     auggyDir,
-    yaml: `augments:
+    yaml: `id: ${AGENT_ID}
+name: zip
+augments:
   - visitorAuth
 `,
   });
@@ -101,16 +105,37 @@ describe("auggy visitors <agent> (list)", () => {
       } as VisitorsCommandOptions),
     ).rejects.toThrow();
   });
+
+  test("rejects a symlinked visitor database parent", async () => {
+    const outside = join(tmp, "other-agent");
+    mkdirSync(outside);
+    symlinkSync(outside, join(agentDir, "state"));
+    writeFileSync(
+      join(agentDir, "augments", "visitorAuth", "augment.yaml"),
+      `type: visitorAuth\nconfig:\n  dbPath: ./state/visitor-auth.db\n`,
+    );
+
+    await expect(runVisitorsList("zip", { auggyDir })).rejects.toThrow(
+      /unsafe|symlink|owned-state/i,
+    );
+    await expect(
+      runVisitorsRevoke("zip", "victim@example.com", { auggyDir, confirm: false }),
+    ).rejects.toThrow(/unsafe|symlink|owned-state/i);
+  });
 });
 
 import { runVisitorsRevoke } from "../../../src/cli/commands/visitors-revoke";
 import { Database } from "bun:sqlite";
 
 async function seedMemoryDb(memDbPath: string, peerId: string, n: number): Promise<void> {
-  const store = createSqliteStore({ dbPath: memDbPath, retentionDays: 90 });
+  const store = createSqliteStore({
+    dbPath: memDbPath,
+    namespace: MEMORY_NAMESPACE,
+    retentionDays: 90,
+  });
   for (let i = 0; i < n; i++) {
     await store.write({
-      label: `ep:${peerId}:${i}`,
+      label: `${MEMORY_NAMESPACE}:${peerId}:${i}`,
       content: `c${i}`,
       peerId,
       trustLevel: "public",
@@ -126,10 +151,10 @@ async function seedMemoryDb(memDbPath: string, peerId: string, n: number): Promi
 
 describe("auggy visitors <agent> --revoke <email>", () => {
   test("hard-revokes the row + cascades memory_forget", async () => {
-    seed([{ visitorId: "vis_rev1", email: "revoke@x", verifiedAt: 1000 }]);
+    seed([{ visitorId: "vis_rev1", email: "revoke@example.test", verifiedAt: 1000 }]);
     await seedMemoryDb(join(agentDir, "memory.db"), "vis_rev1", 4);
     const lines: string[] = [];
-    await runVisitorsRevoke("zip", "revoke@x", {
+    await runVisitorsRevoke("zip", "  REVOKE@EXAMPLE.TEST ", {
       auggyDir,
       confirm: false,
       log: (l) => lines.push(l),
@@ -145,12 +170,79 @@ describe("auggy visitors <agent> --revoke <email>", () => {
       | undefined;
     db.close();
     expect(c?.c).toBe(0);
+
+    const postRevoke = createSqliteStore({
+      dbPath: join(agentDir, "memory.db"),
+      namespace: MEMORY_NAMESPACE,
+      retentionDays: 90,
+    });
+    await expect(
+      postRevoke.write({
+        label: `${MEMORY_NAMESPACE}:vis_rev1:late`,
+        content: "late revoked write",
+        peerId: "vis_rev1",
+        trustLevel: "public",
+        createdAt: Date.now(),
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      }),
+    ).rejects.toThrow(/tombstoned/i);
+    await postRevoke.close();
+  });
+
+  test("rejects malformed revoke input before opening state", async () => {
+    await expect(
+      runVisitorsRevoke("zip", "not-an-email", { auggyDir, confirm: false }),
+    ).rejects.toThrow(/email.*malformed/i);
+  });
+
+  test("revoke deletes only this immutable agent namespace in a shared database", async () => {
+    seed([{ visitorId: "vis_shared", email: "shared@example.test", verifiedAt: 1000 }]);
+    await seedMemoryDb(join(agentDir, "memory.db"), "vis_shared", 2);
+    const otherNamespace = "aug1_abcdefab-cdef-4abc-8def-abcdefabcdef:ep";
+    const other = createSqliteStore({
+      dbPath: join(agentDir, "memory.db"),
+      namespace: otherNamespace,
+      retentionDays: 90,
+    });
+    await other.write({
+      label: `${otherNamespace}:vis_shared:keep`,
+      content: "belongs to another agent",
+      peerId: "vis_shared",
+      trustLevel: "public",
+      createdAt: Date.now(),
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
+    });
+    await other.close();
+
+    await runVisitorsRevoke("zip", "shared@example.test", {
+      auggyDir,
+      confirm: false,
+      log: () => {},
+    });
+
+    const db = new Database(join(agentDir, "memory.db"));
+    try {
+      const rows = db
+        .prepare<{ label: string }, [string]>(
+          "SELECT label FROM entries WHERE peer_id = ? ORDER BY label",
+        )
+        .all("vis_shared");
+      expect(rows.map((row) => row.label)).toEqual([`${otherNamespace}:vis_shared:keep`]);
+    } finally {
+      db.close();
+    }
   });
 
   test("errors with clear message when email is not a verified visitor", async () => {
     const lines: string[] = [];
     await expect(
-      runVisitorsRevoke("zip", "unknown@x", {
+      runVisitorsRevoke("zip", "unknown@example.test", {
         auggyDir,
         confirm: false,
         log: (l) => lines.push(l),
@@ -159,9 +251,9 @@ describe("auggy visitors <agent> --revoke <email>", () => {
   });
 
   test("skips memory cascade with a warning when memory.db is missing", async () => {
-    seed([{ visitorId: "vis_no_mem", email: "nomem@x", verifiedAt: 1000 }]);
+    seed([{ visitorId: "vis_no_mem", email: "nomem@example.test", verifiedAt: 1000 }]);
     const lines: string[] = [];
-    await runVisitorsRevoke("zip", "nomem@x", {
+    await runVisitorsRevoke("zip", "nomem@example.test", {
       auggyDir,
       confirm: false,
       log: (l) => lines.push(l),
@@ -172,10 +264,10 @@ describe("auggy visitors <agent> --revoke <email>", () => {
   });
 
   test("with confirm:true and decline, makes no changes", async () => {
-    seed([{ visitorId: "vis_safe", email: "safe@x", verifiedAt: 1000 }]);
+    seed([{ visitorId: "vis_safe", email: "safe@example.test", verifiedAt: 1000 }]);
     await seedMemoryDb(join(agentDir, "memory.db"), "vis_safe", 2);
     const lines: string[] = [];
-    await runVisitorsRevoke("zip", "safe@x", {
+    await runVisitorsRevoke("zip", "safe@example.test", {
       auggyDir,
       confirm: true,
       _confirmAnswer: () => false, // user said "no"
@@ -186,7 +278,7 @@ describe("auggy visitors <agent> --revoke <email>", () => {
     // Verify nothing got revoked:
     const store = createSqliteVisitorAuthStore({ dbPath: join(agentDir, "visitor-auth.db") });
     store.initialize();
-    expect(store.findVerifiedByEmail("safe@x")?.revoked).toBe(false);
+    expect(store.findVerifiedByEmail("safe@example.test")?.revoked).toBe(false);
     store.close();
   });
 
@@ -194,10 +286,17 @@ describe("auggy visitors <agent> --revoke <email>", () => {
     // Simulate an interrupted revoke: visitor-auth row is already revoked, but
     // memory.db still has rows under that visitorId (operator hit Ctrl-C
     // between the two operations, or the cascade threw mid-DELETE).
-    seed([{ visitorId: "vis_orph", email: "orphan@x", verifiedAt: 1000, revoked: true }]);
+    seed([
+      {
+        visitorId: "vis_orph",
+        email: "orphan@example.test",
+        verifiedAt: 1000,
+        revoked: true,
+      },
+    ]);
     await seedMemoryDb(join(agentDir, "memory.db"), "vis_orph", 3);
     const lines: string[] = [];
-    await runVisitorsRevoke("zip", "orphan@x", {
+    await runVisitorsRevoke("zip", "orphan@example.test", {
       auggyDir,
       confirm: false,
       log: (l) => lines.push(l),
@@ -211,5 +310,92 @@ describe("auggy visitors <agent> --revoke <email>", () => {
       | undefined;
     db.close();
     expect(c?.c).toBe(0);
+  });
+
+  test("memory erasure failure is nonzero and a later revoke retries every retired identity", async () => {
+    seed([{ visitorId: "vis_before", email: "partial@example.test", verifiedAt: 1000 }]);
+    writeFileSync(join(agentDir, "memory.db"), "not sqlite");
+
+    await expect(
+      runVisitorsRevoke("zip", "partial@example.test", {
+        auggyDir,
+        confirm: false,
+        log: () => {},
+      }),
+    ).rejects.toThrow(/revoked.*memory erasure is incomplete.*vis_before/i);
+
+    const store = createSqliteVisitorAuthStore({ dbPath: join(agentDir, "visitor-auth.db") });
+    store.initialize();
+    const revokedAt = store.findVerifiedByEmail("partial@example.test")?.revokedAt;
+    expect(revokedAt).toBeNumber();
+    expect(
+      store.unrevokeAndRotate(
+        "partial@example.test",
+        "vis_after",
+        revokedAt! + 2,
+        revokedAt! + 4_000,
+        revokedAt! + 1,
+      ),
+    ).toBe("vis_after");
+    store.close();
+
+    rmSync(join(agentDir, "memory.db"));
+    await seedMemoryDb(join(agentDir, "memory.db"), "vis_before", 1);
+    await seedMemoryDb(join(agentDir, "memory.db"), "vis_after", 1);
+    await runVisitorsRevoke("zip", "partial@example.test", {
+      auggyDir,
+      confirm: false,
+      log: () => {},
+    });
+
+    const db = new Database(join(agentDir, "memory.db"));
+    expect(
+      db
+        .query<{ count: number }, []>(
+          "SELECT COUNT(*) AS count FROM entries WHERE peer_id IN ('vis_before', 'vis_after')",
+        )
+        .get()?.count,
+    ).toBe(0);
+    db.close();
+  });
+
+  test("revokes the rotated current identity when reverification races the prompt", async () => {
+    seed([{ visitorId: "vis_old", email: "race@example.test", verifiedAt: 1000 }]);
+    await seedMemoryDb(join(agentDir, "memory.db"), "vis_new", 2);
+
+    await runVisitorsRevoke("zip", "race@example.test", {
+      auggyDir,
+      confirm: true,
+      _confirmAnswer: () => {
+        const concurrent = createSqliteVisitorAuthStore({
+          dbPath: join(agentDir, "visitor-auth.db"),
+        });
+        concurrent.initialize();
+        concurrent.revokeByEmail("race@example.test", "racing verification", 2000);
+        expect(concurrent.unrevokeAndRotate("race@example.test", "vis_new", 3000, 4000, 3000)).toBe(
+          "vis_new",
+        );
+        concurrent.close();
+        return true;
+      },
+      log: () => {},
+    });
+
+    const store = createSqliteVisitorAuthStore({ dbPath: join(agentDir, "visitor-auth.db") });
+    store.initialize();
+    expect(store.findVerifiedByEmail("race@example.test")).toMatchObject({
+      visitorId: "vis_new",
+      revoked: true,
+    });
+    store.close();
+    const db = new Database(join(agentDir, "memory.db"));
+    expect(
+      db
+        .query<{ count: number }, [string]>(
+          "SELECT COUNT(*) AS count FROM entries WHERE peer_id = ?",
+        )
+        .get("vis_new")?.count,
+    ).toBe(0);
+    db.close();
   });
 });

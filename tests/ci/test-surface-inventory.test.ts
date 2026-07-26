@@ -3,6 +3,7 @@ import {
   createBunTestInvocation,
   readGitTreeEntries,
   readTestSurfaceManifest,
+  selectExplicitRuntimeFiles,
   validateTestSurface,
   type GitTreeEntry,
   type TestSurfaceManifest,
@@ -261,5 +262,25 @@ describe("tracked CI test-surface inventory", () => {
     );
     expect(admin.cwd).toBe("/repo/admin");
     expect(admin.argv.at(-1)).toBe("./src/App.test.ts");
+  });
+
+  test("fails when any supplemental runtime path is stale even if others still exist", () => {
+    const inventory = validateTestSurface(
+      [regular("tests/known/one.test.ts"), regular("admin/src/console.test.ts")],
+      minimalManifest(),
+    );
+
+    expect(() =>
+      selectExplicitRuntimeFiles(inventory, [
+        "tests/known/one.test.ts",
+        "tests/known/removed.test.ts",
+      ]),
+    ).toThrow(/not an inventoried runtime test.*removed\.test\.ts/i);
+    expect(() =>
+      selectExplicitRuntimeFiles(inventory, ["tests/known/one.test.ts", "tests/known/one.test.ts"]),
+    ).toThrow(/duplicate/i);
+    expect(selectExplicitRuntimeFiles(inventory, ["tests/known/one.test.ts"]).files).toEqual([
+      "tests/known/one.test.ts",
+    ]);
   });
 });

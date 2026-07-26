@@ -37,7 +37,12 @@ engine:
   model: gpt-5.4-mini
   maxContextTokens: 200000
   maxTokens: 4096
+  requestTimeoutMs: 120000
 ```
+
+Each model POST has one attempt. The deadline defaults to 120 seconds (maximum
+ten minutes), and SDK automatic retries are disabled to avoid duplicate
+generation or billing after ambiguous failures.
 
 Custom credentialed endpoints must use HTTPS. Loopback HTTP remains supported
 for local development. A non-loopback plaintext endpoint is allowed only when

@@ -13,6 +13,8 @@ import type {
   InboundMessage,
   RouteAuthContext,
   ToolResult,
+  ModelClient,
+  ModelResponse,
 } from "@/types";
 
 function makeTrigger(text: string, auth?: RouteAuthContext): TurnTrigger {
@@ -39,6 +41,100 @@ function makeTrigger(text: string, auth?: RouteAuthContext): TurnTrigger {
 }
 
 describe("TurnLoop", () => {
+  it("fences late provider events and results after the inference deadline", async () => {
+    let observedSignal: AbortSignal | undefined;
+    let emitDelta: ((text: string) => void) | undefined;
+    let settleProvider: ((response: ModelResponse) => void) | undefined;
+    let toolExecutions = 0;
+    let signalObservedResolve!: () => void;
+    const signalObserved = new Promise<void>((resolve) => {
+      signalObservedResolve = resolve;
+    });
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: (text) => Math.ceil(text.length / 4),
+      complete: (_prompt, options) => {
+        observedSignal = options?.signal;
+        emitDelta = (text) => options?.onDelta?.({ kind: "text_delta", text });
+        emitDelta("partial");
+        signalObservedResolve();
+        return new Promise<ModelResponse>((providerResolve) => {
+          settleProvider = providerResolve;
+          options?.signal?.addEventListener(
+            "abort",
+            () => {
+              options?.onDelta?.({ kind: "text_delta", text: "abort-race-secret-sentinel" });
+              providerResolve({
+                content: "abort-race-secret-sentinel",
+                toolCalls: [{ name: "must_not_run", arguments: {} }],
+                finishReason: "tool_use",
+                inputTokens: 1,
+                outputTokens: 1,
+              });
+            },
+            { once: true },
+          );
+        });
+      },
+    };
+    const events: KernelEvent[] = [];
+    const loop = createTurnLoop({
+      augments: [
+        {
+          name: "must-not-run",
+          tools: [
+            {
+              name: "must_not_run",
+              description: "deadline regression",
+              category: "meta",
+              input: z.object({}),
+              execute: async () => {
+                toolExecutions++;
+                return "unsafe";
+              },
+            },
+          ],
+        },
+      ],
+      model,
+      tokenizer: createTokenizer(),
+      config: {
+        name: "provider-deadline",
+        model: "mock",
+        augments: [],
+        providerRequestTimeoutMs: 5,
+      },
+    });
+
+    const execution = loop.executeTurn(makeTrigger("Hi"), "thread-provider-deadline", {
+      onEvent: (event) => events.push(event),
+    });
+
+    await signalObserved;
+    await expect(execution).rejects.toThrow("outcome is unknown");
+    expect(observedSignal?.aborted).toBe(true);
+    expect(events.map((event) => event.kind)).toEqual([
+      "run_started",
+      "text_message_start",
+      "text_message_delta",
+      "text_message_end",
+    ]);
+
+    emitDelta?.("late-secret-sentinel");
+    settleProvider?.({
+      content: "late-secret-sentinel",
+      toolCalls: [{ name: "must_not_run", arguments: {} }],
+      finishReason: "tool_use",
+      inputTokens: 1,
+      outputTokens: 1,
+    });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(toolExecutions).toBe(0);
+    expect(JSON.stringify(events)).not.toContain("late-secret-sentinel");
+    expect(JSON.stringify(events)).not.toContain("abort-race-secret-sentinel");
+  });
+
   it("runs a basic turn with no tools and returns model response", async () => {
     const model = createMockModel({ response: "Hello back!" });
     const loop = createTurnLoop({

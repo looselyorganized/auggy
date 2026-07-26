@@ -40,6 +40,7 @@ describe("handleExtractionTurn", () => {
       expect(result.facts[0]?.object).toBe("Sam");
       expect(result.facts[0]?.predicate).toBe("name");
       expect(result.costUsd).toBe(0.005);
+      expect(result.inferenceOutcome).toBe("completed");
     }
     // Verify prompt template substitution happened with transcript text
     expect(capturedPrompt).toContain("Hi I'm Sam");
@@ -62,6 +63,7 @@ describe("handleExtractionTurn", () => {
     if (!result.success) {
       expect(result.error).toContain("rate-limited");
       expect(result.costUsd).toBe(0);
+      expect(result.inferenceOutcome).toBe("failed");
     }
   });
 
@@ -113,6 +115,7 @@ describe("handleExtractionTurn", () => {
     if (!result.success) {
       // costUsd surfaces even when parse fails — the engine call succeeded
       expect(result.costUsd).toBe(0.002);
+      expect(result.inferenceOutcome).toBe("completed");
     }
   });
 });

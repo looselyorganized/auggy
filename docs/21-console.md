@@ -151,6 +151,13 @@ rejected during deploy preflight and again by the runtime resolver.
 
 ### Restart, scaling, and backup contract
 
+The authenticated dashboard payload includes a `runtime` object containing
+bounded process-local capacity, outcome, timing, kernel response-delivery,
+thread-recovery, shutdown, and memory signals. It is returned with
+`Cache-Control: no-store`. The object contains no
+customer identifiers or content and resets after a runtime restart. The
+console is a viewer for these signals, not a metrics store or alerting system.
+
 - Completed conversations, unread state, titles, and model history survive a
   process restart. A run that was active during a crash or restart is recovered
   as interrupted rather than left permanently streaming.
@@ -165,11 +172,9 @@ rejected during deploy preflight and again by the runtime resolver.
   replicas is unsupported and can produce contention or inconsistent runtime
   ownership. Move chat state to a shared database before horizontal scaling.
 - A Railway volume provides restart durability, not an independent backup.
-  Include `console-chat.db` in the agent's backup and restore plan. Do not copy
-  only the main database while the agent is writing: stop the agent first, then
-  copy the database and any `console-chat.db-wal` / `console-chat.db-shm`
-  siblings together, or use a storage snapshot with an equivalent consistency
-  guarantee. Test restoration before relying on the backup.
+  `auggy state backup` includes `console-chat.db` in the stopped-runtime volume
+  bundle, verifies the copied SQLite state, and restores only behind the
+  reconciliation fence. See [Runtime State Recovery](./27-runtime-state-recovery.md).
 - Deleting a thread removes it from the SQLite database. External backups and
   snapshots are the recovery boundary; the volume itself has no trash, and the
   console has no built-in point-in-time restore.

@@ -16,6 +16,11 @@ import type { RecentVisitorMessage } from "./types";
 const EMAIL_PATTERN = /^[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
 const MAX_EMAIL_LEN = 254; // RFC 5321 §4.5.3.1
 
+/** Canonical storage/lookup form used at every email identity boundary. */
+export function canonicalizeEmail(value: string): string {
+  return value.trim().toLowerCase();
+}
+
 export function isWellFormedEmail(value: string): boolean {
   if (typeof value !== "string") return false;
   if (value.length === 0 || value.length > MAX_EMAIL_LEN) return false;

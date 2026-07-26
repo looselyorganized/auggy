@@ -82,6 +82,8 @@ export interface EngineConfig {
   maxTokens?: number;
   /** Finite model response limits enforced by both adapters and the kernel. */
   responseLimits?: Partial<ModelResponseLimits>;
+  /** One-attempt provider deadline in milliseconds. Default 120s, max 10 minutes. */
+  requestTimeoutMs?: number;
   /** Optional proxy/gateway base URL. Ignored for openrouter (hardcoded). */
   baseURL?: string;
   /**
@@ -254,6 +256,18 @@ export interface PidManifest {
   pid: number;
   /** Agent name (matches config). */
   name: string;
+  /** Immutable config identity. Omitted only by legacy manifests. */
+  agentId?: string;
+  /** Per-start nonce fencing cleanup of exclusive resource claims. */
+  claimNonce?: string;
+  /** OS-verifiable process incarnation; prevents signaling a reused PID. */
+  processIdentity?: string;
+  /** CLI-user-local listener and inbound identity claims. */
+  resourceClaims?: string[];
+  /** Crash-recoverable claim-registry generation. Omitted by pre-upgrade manifests. */
+  resourceClaimStore?: "sqlite-v1";
+  /** launchd installation generation that admitted this process. */
+  launchGeneration?: string;
   /** webTransport port if configured, null otherwise. */
   port: number | null;
   /** Absolute path to agent.yaml. */
@@ -272,6 +286,10 @@ export interface PidManifest {
  * v0: only `null` is written. Cloud fields populated by `auggy deploy` (separate PR).
  */
 export type CloudRecord = null | {
+  /** Required on disk; optional only so legacy records can be parsed and rejected safely. */
+  version?: 1;
+  /** Required on disk; optional only so legacy records can be parsed and rejected safely. */
+  agentId?: string;
   provider: "railway";
   projectId: string;
   serviceId: string;

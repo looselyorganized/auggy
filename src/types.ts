@@ -334,6 +334,8 @@ export interface TurnTrace {
   };
   inferenceSteps: {
     model: string;
+    /** Terminal outcome of this exact inference attempt. Legacy traces omit it and imply completed. */
+    outcome?: "completed" | "failed" | "canceled" | "outcome-unknown";
     inputTokens: number;
     outputTokens: number;
     durationMs: number;
@@ -712,6 +714,16 @@ export interface TransportKernel {
     ) => Promise<void>,
   ): void;
   getAgentCard(): AgentCard;
+  /** Process-local, aggregate operational state for authenticated operator surfaces. */
+  getOperationalSnapshot?(): RuntimeOperationalSnapshot;
+  /** Trusted transport-only restoration of a durable thread quarantine. */
+  quarantineThread(threadId: string): boolean;
+  /**
+   * Trusted console-only handoff after a durable incident was reconciled.
+   * The runtime releases the lane only when every registered durable
+   * quarantine authority reports that the thread is clear.
+   */
+  recoverThread(threadId: string): boolean;
   /**
    * Cross-augment HTTP routes collected at `agent.start()` after
    * `lifecycle.boot()`. Returns a frozen array — transports MUST NOT mutate.
@@ -1301,6 +1313,8 @@ export interface AdminActionResult {
   ok: boolean;
   /** Human-readable message displayed as flash on the redirected admin page. */
   message: string;
+  /** @internal Release only this scheduler lane after the handler durably resolves its incident. */
+  recoverThreadId?: string;
 }
 
 /**
@@ -1323,6 +1337,18 @@ export type AdminActionHandler = (params: Record<string, string>) => Promise<Adm
  *   - `guardrails`  — limits, identity, safety, trust.
  */
 export type AugmentCategory = "transports" | "capabilities" | "memory" | "guardrails";
+
+/**
+ * First-party, runtime-trusted durable thread quarantine authority.
+ *
+ * These methods must be synchronous so checking every authority and changing
+ * scheduler state is one event-loop critical section. They are lifecycle and
+ * operator-recovery plumbing, never model-visible tools or HTTP actions.
+ */
+export interface DurableThreadQuarantine {
+  listThreadIds(): readonly string[];
+  hasThread(threadId: string): boolean;
+}
 
 export interface Augment {
   name: string;
@@ -1369,6 +1395,8 @@ export interface Augment {
    * every declared action id has a matching key here.
    */
   adminActions?: Record<string, AdminActionHandler>;
+  /** First-party durable incidents that fence whole runtime thread lanes. */
+  durableThreadQuarantine?: DurableThreadQuarantine;
   memory?: MemoryProviderSpec;
   constraints?: AugmentConstraints;
   onBoot?: () => Promise<void>;
@@ -1469,6 +1497,12 @@ export interface AgentConfig {
   maxInferenceLoops?: number;
   /** Mandatory model-output bounds. Omitted fields use finite secure defaults. */
   responseLimits?: Partial<ModelResponseLimits>;
+  /**
+   * Total deadline for one model inference attempt, including connection,
+   * stream setup, streaming, and response materialization. Default 120s;
+   * maximum 10 minutes. Model POSTs are attempted exactly once.
+   */
+  providerRequestTimeoutMs?: number;
   /** Tool-choice policy sent to the model. "auto" (default) lets the model
    *  decide; "any" forces a tool call; { name } forces a specific tool. */
   toolChoice?: "auto" | "any" | { name: string };
@@ -1512,11 +1546,88 @@ export interface TurnSchedulerSnapshot {
   queuedThreads: number;
   quarantinedThreads: number;
   oldestQueueWaitMs: number;
+  queueWait: { count: number; totalMs: number; maxMs: number };
   admitted: number;
   settled: number;
   rejected: number;
   canceled: number;
   quarantined: number;
+  rejectedByReason: Record<TurnRejectionReason, number>;
+}
+
+export interface RuntimeSignalsSnapshot {
+  schemaVersion: 1;
+  scope: "process";
+  startedAt: number;
+  collectedAt: number;
+  turns: {
+    total: number;
+    completed: number;
+    failed: number;
+    canceled: number;
+    rejected: number;
+    outcomeUnknown: number;
+    totalDurationMs: number;
+    maxDurationMs: number;
+  };
+  inference: {
+    attempts: number;
+    completed: number;
+    failed: number;
+    canceled: number;
+    outcomeUnknown: number;
+    inputTokens: number;
+    outputTokens: number;
+    pricedCostUsd: number;
+    unpriced: number;
+    totalDurationMs: number;
+    maxDurationMs: number;
+  };
+  tools: {
+    attempts: number;
+    completed: number;
+    failed: number;
+    denied: number;
+    outcomeUnknown: number;
+    totalDurationMs: number;
+    maxDurationMs: number;
+  };
+  responseDelivery: {
+    attempts: number;
+    completed: number;
+    failed: number;
+    outcomeUnknown: number;
+    inFlight: number;
+    totalDurationMs: number;
+    maxDurationMs: number;
+  };
+  hooks: { failed: number; outcomeUnknown: number };
+  threadRecovery: { attempted: number; completed: number; rejected: number };
+  shutdown: {
+    attempts: number;
+    completed: number;
+    inProgress: boolean;
+    startedAt: number;
+    elapsedMs: number;
+    hookFailures: number;
+    lastDurationMs: number;
+    maxDurationMs: number;
+  };
+  memory: {
+    rssBytes: number;
+    heapTotalBytes: number;
+    heapUsedBytes: number;
+    externalBytes: number;
+    arrayBuffersBytes: number;
+  };
+}
+
+export interface RuntimeOperationalSnapshot extends RuntimeSignalsSnapshot {
+  readiness: {
+    accepting: boolean;
+    state: "not-started" | "accepting" | "draining" | "stopped";
+  };
+  scheduler: TurnSchedulerSnapshot;
 }
 
 export interface AgentHealth {
@@ -1533,6 +1644,8 @@ export interface AgentHandle {
   stop(): Promise<void>;
   ready(): Promise<void>;
   health(): AgentHealth;
+  /** Aggregate, process-lifetime operational signals with no customer content or identifiers. */
+  operationalSnapshot(): RuntimeOperationalSnapshot;
   card(): AgentCard;
   inject(trigger: TurnTrigger, options?: { signal?: AbortSignal }): Promise<TurnResult>;
   /**
@@ -1645,6 +1758,12 @@ export interface NotifyRateLimitOptions {
 export interface NotifyAugmentOptions {
   destinations: NotifyDestination[];
   rateLimit?: NotifyRateLimitOptions;
+  /**
+   * Durable quota, attempt, and outcome-unknown ledger. The CLI resolves an
+   * omitted value under the runtime data root. Direct factory callers must
+   * provide this or agentDir; Notify never silently falls back to memory.
+   */
+  dbPath?: string;
   /**
    * G36 — agent project directory. When set,
    * `admin-overrides.json` is read at boot to apply runtime overrides

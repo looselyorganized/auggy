@@ -1,5 +1,5 @@
 import { AlertTriangle, BookOpen, Brain, Info, Network, Route, Shield, Wrench } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link } from "react-router";
 import type {
   AugmentCapabilityModel,
   CapabilityBadge,

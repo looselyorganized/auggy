@@ -1,10 +1,10 @@
-import { describe, it, expect, beforeEach, afterEach, spyOn } from "bun:test";
+import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import * as fsPromises from "node:fs/promises";
 import { join } from "node:path";
 import { fileMemory } from "@/augments/fileMemory";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 
-const { lstat, readFile, readdir, symlink, writeFile } = fsPromises;
+const { chmod, lstat, mkdir, readFile, readdir, rename, stat, symlink, writeFile } = fsPromises;
 
 describe("fileMemory", () => {
   let tmp: { path: string; cleanup: () => Promise<void> };
@@ -114,6 +114,7 @@ describe("fileMemory", () => {
     const filePath = join(tmp.path, "notes.md");
     await writeFile(filePath, "initial", "utf-8");
 
+    let failRename = true;
     const aug = fileMemory({
       label: "notes",
       source: filePath,
@@ -122,35 +123,30 @@ describe("fileMemory", () => {
       priority: "normal",
       placement: "preamble",
       eviction: "drop",
+      __testHooks: {
+        beforeRename: (content) => {
+          if (content === "not persisted" && failRename) {
+            failRename = false;
+            throw new Error("simulated pre-rename failure");
+          }
+        },
+      },
     });
     await aug.onBoot!();
 
-    const writeSpy = spyOn(fsPromises, "writeFile").mockImplementation(
-      async (path, data, options) => {
-        if (String(data) === "not persisted") {
-          await writeFile(path, "partial", options);
-          throw new Error("simulated partial temp write failure");
-        }
-        await writeFile(path, data, options);
-      },
+    await expect(aug.memory!.write!("notes", "not persisted")).rejects.toThrow(
+      "simulated pre-rename failure",
     );
-    try {
-      await expect(aug.memory!.write!("notes", "not persisted")).rejects.toThrow(
-        "simulated partial temp write failure",
-      );
-      expect((await aug.memory!.read!("notes"))?.content).toBe("initial");
-      expect(await readFile(filePath, "utf-8")).toBe("initial");
-      expect((await readdir(tmp.path)).filter((name) => name.includes(".auggy-"))).toEqual([]);
+    expect((await aug.memory!.read!("notes"))?.content).toBe("initial");
+    expect(await readFile(filePath, "utf-8")).toBe("initial");
+    expect((await readdir(tmp.path)).filter((name) => name.includes(".tmp."))).toEqual([]);
 
-      await aug.memory!.write!("notes", "recovered");
-      expect((await aug.memory!.read!("notes"))?.content).toBe("recovered");
-      expect(await readFile(filePath, "utf-8")).toBe("recovered");
-    } finally {
-      writeSpy.mockRestore();
-    }
+    await aug.memory!.write!("notes", "recovered");
+    expect((await aug.memory!.read!("notes"))?.content).toBe("recovered");
+    expect(await readFile(filePath, "utf-8")).toBe("recovered");
   });
 
-  it("writes through a symlink without replacing the symlink path", async () => {
+  it("rejects a mutable source symlink without reading or replacing its target", async () => {
     const targetPath = join(tmp.path, "notes-target.md");
     const linkPath = join(tmp.path, "notes.md");
     await writeFile(targetPath, "initial", "utf-8");
@@ -165,18 +161,67 @@ describe("fileMemory", () => {
       placement: "preamble",
       eviction: "drop",
     });
-    await aug.onBoot!();
-
-    await aug.memory!.write!("notes", "updated safely");
-
+    await expect(aug.onBoot!()).rejects.toThrow("unsafe");
     expect((await lstat(linkPath)).isSymbolicLink()).toBe(true);
-    expect(await readFile(targetPath, "utf-8")).toBe("updated safely");
+    expect(await readFile(targetPath, "utf-8")).toBe("initial");
+  });
+
+  it("normalizes mutable state to owner-only permissions", async () => {
+    const filePath = join(tmp.path, "notes.md");
+    await writeFile(filePath, "initial", "utf-8");
+    await chmod(filePath, 0o644);
+    const aug = fileMemory({
+      label: "notes",
+      source: filePath,
+      mutable: true,
+      origin: "operator",
+      priority: "high",
+      placement: "preamble",
+      eviction: "drop",
+    });
+    await aug.onBoot!();
+    expect((await stat(filePath)).mode & 0o777).toBe(0o600);
+  });
+
+  it("keeps writes anchored when the admitted parent path is replaced", async () => {
+    const state = join(tmp.path, "state");
+    const admitted = join(tmp.path, "admitted");
+    const outside = join(tmp.path, "outside");
+    await mkdir(state);
+    await mkdir(outside);
+    const filePath = join(state, "notes.md");
+    const outsidePath = join(outside, "notes.md");
+    await writeFile(filePath, "initial", "utf8");
+    await writeFile(outsidePath, "outside", "utf8");
+    let swapped = false;
+    const aug = fileMemory({
+      label: "notes",
+      source: filePath,
+      mutable: true,
+      origin: "operator",
+      priority: "high",
+      placement: "preamble",
+      eviction: "drop",
+      __testHooks: {
+        beforeReplace: async () => {
+          if (swapped) return;
+          swapped = true;
+          await rename(state, admitted);
+          await symlink(outside, state, "dir");
+        },
+      },
+    });
+    await aug.onBoot!();
+    await aug.memory!.write!("notes", "anchored");
+    expect(await readFile(join(admitted, "notes.md"), "utf8")).toBe("anchored");
+    expect(await readFile(outsidePath, "utf8")).toBe("outside");
   });
 
   it("serializes concurrent mutable writes and keeps cache consistent with disk", async () => {
     const filePath = join(tmp.path, "notes.md");
     await writeFile(filePath, "initial", "utf-8");
 
+    const persisted: string[] = [];
     const aug = fileMemory({
       label: "notes",
       source: filePath,
@@ -185,6 +230,15 @@ describe("fileMemory", () => {
       priority: "normal",
       placement: "preamble",
       eviction: "drop",
+      __testHooks: {
+        beforeReplace: async (content) => {
+          persisted.push(content);
+          if (content === "first") {
+            markFirstStarted();
+            await firstMayFinish;
+          }
+        },
+      },
     });
     await aug.onBoot!();
 
@@ -196,38 +250,19 @@ describe("fileMemory", () => {
     const firstMayFinish = new Promise<void>((resolve) => {
       releaseFirst = resolve;
     });
-    const persisted: string[] = [];
+    const firstWrite = aug.memory!.write!("notes", "first");
+    await firstStarted;
+    const secondWrite = aug.memory!.write!("notes", "second");
 
-    const writeSpy = spyOn(fsPromises, "writeFile").mockImplementation(
-      async (path, data, options) => {
-        const content = String(data);
-        persisted.push(content);
-        if (content === "first") {
-          markFirstStarted();
-          await firstMayFinish;
-        }
-        await writeFile(path, data, options);
-      },
-    );
+    await Promise.resolve();
+    expect(persisted).toEqual(["first"]);
 
-    try {
-      const firstWrite = aug.memory!.write!("notes", "first");
-      await firstStarted;
-      const secondWrite = aug.memory!.write!("notes", "second");
+    releaseFirst();
+    await Promise.all([firstWrite, secondWrite]);
 
-      await Promise.resolve();
-      expect(persisted).toEqual(["first"]);
-
-      releaseFirst();
-      await Promise.all([firstWrite, secondWrite]);
-
-      expect(persisted).toEqual(["first", "second"]);
-      expect((await aug.memory!.read!("notes"))?.content).toBe("second");
-      expect(await readFile(filePath, "utf-8")).toBe("second");
-    } finally {
-      releaseFirst();
-      writeSpy.mockRestore();
-    }
+    expect(persisted).toEqual(["first", "second"]);
+    expect((await aug.memory!.read!("notes"))?.content).toBe("second");
+    expect(await readFile(filePath, "utf-8")).toBe("second");
   });
 
   it("omits write method when mutable: false", () => {

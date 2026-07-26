@@ -50,6 +50,11 @@ variable names and placeholders and remains normally readable.
 - `agent.yaml` uses the top-level `identity: ./identity.md` shorthand; the runtime loads it through fileMemory with `placement: system`, `origin: operator`, and `mutable: false`. `augments:` lists enabled augment ids in boot order. Per-augment config lives in `augments/<id>/augment.yaml`.
 - `identity.md` is rendered from `src/scaffold-templates/identity.md` and ships with the agent's stable identity, voice, and baked-in security rules. It does **not** contain the skill manifest.
 - `learned-behaviors.md` is the scaffolded mutable `fileMemory` store. It is for creator-approved, agent-global operating guidance, not autonomous policy changes, operator identity, authorization facts, or visitor-specific memory. Default writes require runtime-verified creator trust. The former `learned.md` filename is no longer supported; rename the file and update its `fileMemory` source before upgrading.
+- In a Railway runtime, `learned-behaviors.md` is only the immutable first-boot
+  seed. The mutable copy is isolated at
+  `/app/data/file-memory/<augment-name>.md`; a redeploy never overwrites that
+  durable value. Relative `log-to-file` notification destinations are rooted
+  under `/app/data` for the same reason.
 - `skills/<augment>/` directories hold byte-for-byte copies of each augment's bundled `src/augments/<augment>/skill/` folder — copied automatically at `auggy create`/`auggy augment add` time. `skills/auggy/` is the canonical starter/build-out guide copied at create time. The runtime `skills` augment emits the model-facing skill manifest from these files. `auggy skill add <name>` refreshes either kind, including `auggy skill add auggy` for the general guide and `auggy skill add layeredMemory` for the peer-memory teaching. Refresh overwrites that bundled skill's installed snapshot, so preserve intentional local customizations elsewhere. The boot-time validator warns at startup if a tool-providing augment has no skill folder mounted.
 - `data/` is the project-local durable-data convention. Core create uses
   `data/workspace`; locally, relative SQLite paths resolve from the agent
@@ -58,7 +63,10 @@ variable names and placeholders and remains normally readable.
   `/app/data/web-idempotency.db`, stores console conversations at
   `/app/data/console-chat.db`, and isolates AgentMail beneath
   `/app/data/agent-mail/<augment-name>`. Only Link retains a legacy
-  `/app/link.db` compatibility symlink. See [18-deploy.md](./18-deploy.md).
+  `/app/link.db` compatibility symlink. Railway admission also holds
+  `/app/data/.auggy-runtime-singleton.lock` for the process lifetime; its
+  contents are non-authoritative and it is safe to preserve in a stopped
+  backup. See [18-deploy.md](./18-deploy.md).
 - The filesystem augment catalogs bounded metadata from `data/workspace` on
   creator and agent turns. This makes durable artifacts visible without
   automatically loading their contents; the model still uses `fs_search`,

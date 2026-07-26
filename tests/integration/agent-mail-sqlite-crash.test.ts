@@ -149,7 +149,13 @@ describe("AgentMail SQLite process durability", () => {
 
     expect(results.map((result) => result.status).sort()).toEqual(["duplicate", "enqueued"]);
     const verify = createAgentMailInboundLedger({ dbPath });
-    expect(verify.counts()).toEqual({ pending: 1, processing: 0, processed: 0, discarded: 0 });
+    expect(verify.counts()).toEqual({
+      pending: 1,
+      processing: 0,
+      processed: 0,
+      discarded: 0,
+      outcomeUnknown: 0,
+    });
     verify.close();
   });
 
@@ -193,9 +199,23 @@ describe("AgentMail SQLite process durability", () => {
       dbPath,
       now: () => now,
       leaseToken: () => "recovered_token",
+      incidentId: () => "recovered_incident",
     });
     expect(ledger.claimNext({ workerId: "recovery", leaseMs: 100 })).toBeNull();
     now = 1_100;
+    expect(ledger.claimNext({ workerId: "recovery", leaseMs: 100 })).toBeNull();
+    expect(ledger.listIncidents()[0]).toMatchObject({
+      id: "recovered_incident",
+      reasonCode: "processing-lease-expired",
+    });
+    expect(
+      ledger.reconcileIncident({
+        incidentId: "recovered_incident",
+        expectedVersion: 1,
+        disposition: "confirmed-no-effect",
+        evidence: "the killed worker could not reach a model",
+      }),
+    ).toMatchObject({ resolved: true, releaseThread: true });
     const recovered = ledger.claimNext({ workerId: "recovery", leaseMs: 100 });
     expect(recovered).toMatchObject({ attemptCount: 2, leaseToken: "recovered_token" });
     expect(ledger.complete(recovered!)).toBe(true);

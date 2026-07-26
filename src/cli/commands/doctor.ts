@@ -108,7 +108,7 @@ export async function runDoctor(
   checks.push(...checkModelSnapshot(agentDir, config));
   checks.push(...(await checkWebPorts(config, opts.isPortAvailable ?? isPortAvailable)));
   checks.push(...checkBundledSkills(agentDir, config.augments));
-  checks.push(...(await checkAugmentRoutes(agentDir, config.augments)));
+  checks.push(...(await checkAugmentRoutes(agentDir, config.augments, config.id)));
   checks.push(...checkMcp(agentDir, config, opts.cloud ?? false));
 
   return checks;
@@ -542,8 +542,9 @@ function checkBundledSkills(agentDir: string, augments: AugmentConfig[]): Doctor
 async function checkAugmentRoutes(
   agentDir: string,
   configs: AugmentConfig[],
+  agentId: string,
 ): Promise<DoctorCheck[]> {
-  const inspected = await inspectAugmentRoutes(agentDir, configs);
+  const inspected = await inspectAugmentRoutes(agentDir, configs, agentId);
   if (inspected.issues.length > 0) {
     return inspected.issues.map((issue) => ({
       name: "augment routes",
