@@ -151,10 +151,10 @@ async function seedMemoryDb(memDbPath: string, peerId: string, n: number): Promi
 
 describe("auggy visitors <agent> --revoke <email>", () => {
   test("hard-revokes the row + cascades memory_forget", async () => {
-    seed([{ visitorId: "vis_rev1", email: "revoke@x", verifiedAt: 1000 }]);
+    seed([{ visitorId: "vis_rev1", email: "revoke@example.test", verifiedAt: 1000 }]);
     await seedMemoryDb(join(agentDir, "memory.db"), "vis_rev1", 4);
     const lines: string[] = [];
-    await runVisitorsRevoke("zip", "revoke@x", {
+    await runVisitorsRevoke("zip", "  REVOKE@EXAMPLE.TEST ", {
       auggyDir,
       confirm: false,
       log: (l) => lines.push(l),
@@ -172,8 +172,14 @@ describe("auggy visitors <agent> --revoke <email>", () => {
     expect(c?.c).toBe(0);
   });
 
+  test("rejects malformed revoke input before opening state", async () => {
+    await expect(
+      runVisitorsRevoke("zip", "not-an-email", { auggyDir, confirm: false }),
+    ).rejects.toThrow(/email.*malformed/i);
+  });
+
   test("revoke deletes only this immutable agent namespace in a shared database", async () => {
-    seed([{ visitorId: "vis_shared", email: "shared@x", verifiedAt: 1000 }]);
+    seed([{ visitorId: "vis_shared", email: "shared@example.test", verifiedAt: 1000 }]);
     await seedMemoryDb(join(agentDir, "memory.db"), "vis_shared", 2);
     const otherNamespace = "aug1_abcdefab-cdef-4abc-8def-abcdefabcdef:ep";
     const other = createSqliteStore({
@@ -194,7 +200,7 @@ describe("auggy visitors <agent> --revoke <email>", () => {
     });
     await other.close();
 
-    await runVisitorsRevoke("zip", "shared@x", {
+    await runVisitorsRevoke("zip", "shared@example.test", {
       auggyDir,
       confirm: false,
       log: () => {},
@@ -216,7 +222,7 @@ describe("auggy visitors <agent> --revoke <email>", () => {
   test("errors with clear message when email is not a verified visitor", async () => {
     const lines: string[] = [];
     await expect(
-      runVisitorsRevoke("zip", "unknown@x", {
+      runVisitorsRevoke("zip", "unknown@example.test", {
         auggyDir,
         confirm: false,
         log: (l) => lines.push(l),
@@ -225,9 +231,9 @@ describe("auggy visitors <agent> --revoke <email>", () => {
   });
 
   test("skips memory cascade with a warning when memory.db is missing", async () => {
-    seed([{ visitorId: "vis_no_mem", email: "nomem@x", verifiedAt: 1000 }]);
+    seed([{ visitorId: "vis_no_mem", email: "nomem@example.test", verifiedAt: 1000 }]);
     const lines: string[] = [];
-    await runVisitorsRevoke("zip", "nomem@x", {
+    await runVisitorsRevoke("zip", "nomem@example.test", {
       auggyDir,
       confirm: false,
       log: (l) => lines.push(l),
@@ -238,10 +244,10 @@ describe("auggy visitors <agent> --revoke <email>", () => {
   });
 
   test("with confirm:true and decline, makes no changes", async () => {
-    seed([{ visitorId: "vis_safe", email: "safe@x", verifiedAt: 1000 }]);
+    seed([{ visitorId: "vis_safe", email: "safe@example.test", verifiedAt: 1000 }]);
     await seedMemoryDb(join(agentDir, "memory.db"), "vis_safe", 2);
     const lines: string[] = [];
-    await runVisitorsRevoke("zip", "safe@x", {
+    await runVisitorsRevoke("zip", "safe@example.test", {
       auggyDir,
       confirm: true,
       _confirmAnswer: () => false, // user said "no"
@@ -252,7 +258,7 @@ describe("auggy visitors <agent> --revoke <email>", () => {
     // Verify nothing got revoked:
     const store = createSqliteVisitorAuthStore({ dbPath: join(agentDir, "visitor-auth.db") });
     store.initialize();
-    expect(store.findVerifiedByEmail("safe@x")?.revoked).toBe(false);
+    expect(store.findVerifiedByEmail("safe@example.test")?.revoked).toBe(false);
     store.close();
   });
 
@@ -260,10 +266,17 @@ describe("auggy visitors <agent> --revoke <email>", () => {
     // Simulate an interrupted revoke: visitor-auth row is already revoked, but
     // memory.db still has rows under that visitorId (operator hit Ctrl-C
     // between the two operations, or the cascade threw mid-DELETE).
-    seed([{ visitorId: "vis_orph", email: "orphan@x", verifiedAt: 1000, revoked: true }]);
+    seed([
+      {
+        visitorId: "vis_orph",
+        email: "orphan@example.test",
+        verifiedAt: 1000,
+        revoked: true,
+      },
+    ]);
     await seedMemoryDb(join(agentDir, "memory.db"), "vis_orph", 3);
     const lines: string[] = [];
-    await runVisitorsRevoke("zip", "orphan@x", {
+    await runVisitorsRevoke("zip", "orphan@example.test", {
       auggyDir,
       confirm: false,
       log: (l) => lines.push(l),
@@ -280,10 +293,10 @@ describe("auggy visitors <agent> --revoke <email>", () => {
   });
 
   test("revokes the rotated current identity when reverification races the prompt", async () => {
-    seed([{ visitorId: "vis_old", email: "race@x", verifiedAt: 1000 }]);
+    seed([{ visitorId: "vis_old", email: "race@example.test", verifiedAt: 1000 }]);
     await seedMemoryDb(join(agentDir, "memory.db"), "vis_new", 2);
 
-    await runVisitorsRevoke("zip", "race@x", {
+    await runVisitorsRevoke("zip", "race@example.test", {
       auggyDir,
       confirm: true,
       _confirmAnswer: () => {
@@ -291,8 +304,8 @@ describe("auggy visitors <agent> --revoke <email>", () => {
           dbPath: join(agentDir, "visitor-auth.db"),
         });
         concurrent.initialize();
-        concurrent.revokeByEmail("race@x", "racing verification", 2000);
-        expect(concurrent.unrevokeAndRotate("race@x", "vis_new", 3000, 4000)).toBe(true);
+        concurrent.revokeByEmail("race@example.test", "racing verification", 2000);
+        expect(concurrent.unrevokeAndRotate("race@example.test", "vis_new", 3000, 4000)).toBe(true);
         concurrent.close();
         return true;
       },
@@ -301,7 +314,7 @@ describe("auggy visitors <agent> --revoke <email>", () => {
 
     const store = createSqliteVisitorAuthStore({ dbPath: join(agentDir, "visitor-auth.db") });
     store.initialize();
-    expect(store.findVerifiedByEmail("race@x")).toMatchObject({
+    expect(store.findVerifiedByEmail("race@example.test")).toMatchObject({
       visitorId: "vis_new",
       revoked: true,
     });

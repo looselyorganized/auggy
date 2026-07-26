@@ -47,7 +47,11 @@ import {
   type SqliteVisitorAuthStoreConfig,
 } from "./storage/sqlite-store";
 import type { VisitorAuthStore } from "./storage/types";
-import { emailAppearsInRecentMessages, isWellFormedEmail } from "./email-validation";
+import {
+  canonicalizeEmail,
+  emailAppearsInRecentMessages,
+  isWellFormedEmail,
+} from "./email-validation";
 import { createVisitorAuthRateLimiter, type VisitorAuthRateLimiter } from "./rate-limiter";
 import { reassignSqliteMemoryPeerId } from "../layeredMemory/storage/sqlite-store";
 import {
@@ -225,8 +229,11 @@ function validateOptions(opts: VisitorAuthInternalOptions): void {
     throw new Error("visitorAuth: dbPath is required");
   }
   const migrationPath = opts.layeredMemoryDbPath;
+  if (typeof migrationPath === "string" && migrationPath.trim().length === 0) {
+    throw new Error("visitorAuth: layeredMemoryDbPath must be a non-empty path when configured");
+  }
   if (
-    migrationPath !== null &&
+    typeof migrationPath === "string" &&
     (typeof opts.layeredMemoryNamespace !== "string" ||
       opts.layeredMemoryNamespace.trim().length === 0)
   ) {
@@ -526,7 +533,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       );
     }
 
-    const email = input.email.trim().toLowerCase();
+    const email = canonicalizeEmail(input.email);
     if (!isWellFormedEmail(email)) {
       return fail("rejected", "malformed_email", "Email address is malformed.");
     }

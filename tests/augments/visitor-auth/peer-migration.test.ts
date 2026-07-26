@@ -47,6 +47,20 @@ function countRowsForPeer(memDbPath: string, peerId: string): number {
 }
 
 describe("anonymous → recognized peer-id migration on verify", () => {
+  test("keeps direct API migration disabled when the database path is omitted or null", () => {
+    for (const layeredMemoryDbPath of [undefined, null]) {
+      expect(() =>
+        visitorAuth({
+          publicUrl: "http://127.0.0.1:3000",
+          dbPath: join(tmp, `va-disabled-${String(layeredMemoryDbPath)}.db`),
+          agentMail: { transport: "console" },
+          signingKey: "shared-key",
+          layeredMemoryDbPath,
+        }),
+      ).not.toThrow();
+    }
+  });
+
   test("requires an explicit namespace for direct shared-database migration", () => {
     expect(() =>
       visitorAuth({
@@ -58,6 +72,19 @@ describe("anonymous → recognized peer-id migration on verify", () => {
         _agentMailClient: {} as never,
       }),
     ).toThrow(/layeredMemoryNamespace.*required/i);
+  });
+
+  test("rejects an empty configured migration path", () => {
+    expect(() =>
+      visitorAuth({
+        publicUrl: "https://zip.test",
+        dbPath: join(tmp, "va-empty-path.db"),
+        agentMail: { transport: "console" },
+        signingKey: "shared-key",
+        layeredMemoryDbPath: "   ",
+        layeredMemoryNamespace: "ep",
+      }),
+    ).toThrow(/layeredMemoryDbPath.*non-empty/i);
   });
 
   test("migrates rows from anon-<threadId> to vis_<uuid> after verify", async () => {

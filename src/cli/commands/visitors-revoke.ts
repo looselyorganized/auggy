@@ -12,6 +12,7 @@
 import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { deleteSqliteMemoryForPeer } from "../../augments/layeredMemory/storage/sqlite-store";
+import { canonicalizeEmail, isWellFormedEmail } from "../../augments/visitorAuth/email-validation";
 import { createSqliteVisitorAuthStore } from "../../augments/visitorAuth/storage/sqlite-store";
 import { scopedAgentNamespace } from "../agent-isolation";
 import { parseAgentIdOnly, parseAugmentConfigOnly, parseAugmentConfigsOnly } from "../yaml-helpers";
@@ -104,6 +105,10 @@ export async function runVisitorsRevoke(
   opts: VisitorsRevokeOptions = {},
 ): Promise<void> {
   const log = opts.log ?? ((l: string) => console.log(l));
+  const canonicalEmail = canonicalizeEmail(email);
+  if (!isWellFormedEmail(canonicalEmail)) {
+    throw new Error("Visitor email is malformed.");
+  }
   const paths = resolvePaths(agentName, opts);
 
   if (!existsSync(paths.visitorAuthDb)) {
@@ -112,15 +117,15 @@ export async function runVisitorsRevoke(
 
   const store = createSqliteVisitorAuthStore({ dbPath: paths.visitorAuthDb });
   store.initialize();
-  const existing = store.findVerifiedByEmail(email);
+  const existing = store.findVerifiedByEmail(canonicalEmail);
   if (!existing) {
     store.close();
-    throw new Error(`No verified visitor found for "${email}".`);
+    throw new Error(`No verified visitor found for "${canonicalEmail}".`);
   }
 
   if (opts.confirm) {
     const ok = (opts._confirmAnswer ?? defaultConfirm)(
-      `Revoke verified visitor "${email}" (${existing.visitorId})? This deletes peer-scoped memory rows. [y/N] `,
+      `Revoke verified visitor "${canonicalEmail}" (${existing.visitorId})? This deletes peer-scoped memory rows. [y/N] `,
     );
     if (!ok) {
       log("Cancelled. No changes made.");
@@ -129,9 +134,9 @@ export async function runVisitorsRevoke(
     }
   }
 
-  const revoked = store.revokeCurrentByEmail(email, "operator", Date.now());
+  const revoked = store.revokeCurrentByEmail(canonicalEmail, "operator", Date.now());
   store.close();
-  if (!revoked) throw new Error(`No verified visitor found for "${email}".`);
+  if (!revoked) throw new Error(`No verified visitor found for "${canonicalEmail}".`);
 
   const memDeleted = cascadeMemoryDelete(
     paths.memoryDb,
@@ -140,7 +145,9 @@ export async function runVisitorsRevoke(
     log,
   );
   const outcome = revoked.wasRevoked ? "was already revoked; reconciled" : "revoked";
-  log(`Visitor "${email}" (${revoked.visitorId}) ${outcome}. ${memDeleted} memory row(s) removed.`);
+  log(
+    `Visitor "${canonicalEmail}" (${revoked.visitorId}) ${outcome}. ${memDeleted} memory row(s) removed.`,
+  );
 }
 
 /**
