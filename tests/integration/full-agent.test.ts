@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { defineAgent, fileMemory, supabaseMemory, webTransport } from "@/index";
+import { canonicalMemoryNamespace } from "@/augments/memory-namespace";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createMockSupabase } from "@tests/fixtures/mock-supabase";
 import { createTempDir } from "@tests/fixtures/temp-dir";
@@ -41,6 +42,7 @@ describe("full agent integration", () => {
     // --- episodic memory (namespace) ---
     const supabase = createMockSupabase();
     await supabase.from("agent_memories").insert({
+      namespace_key: canonicalMemoryNamespace("episode").key,
       label: "episode:2026-04-07-001",
       content: "visitor asked about the facility's open hours",
       peer_id: "creator",
@@ -190,6 +192,7 @@ describe("full agent integration", () => {
     //     seed a row whose content contains the exact query phrase. ---
     const supabase = createMockSupabase();
     await supabase.from("agent_memories").insert({
+      namespace_key: canonicalMemoryNamespace("episode").key,
       label: "episode:2026-04-01-001",
       content: "visitor asked about coffee brewing setup in the facility kitchen",
       peer_id: "creator",
