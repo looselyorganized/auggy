@@ -192,9 +192,14 @@ spend surface.
 
 Railway mounts a volume at `/app/data`. Before resolving any augment, the
 runtime requires `RAILWAY_VOLUME_MOUNT_PATH=/app/data`, rejects symlinked state
-roots, creates `/app/data/agent-mail` with mode `0700`, and performs an atomic
-write/fsync/rename/delete probe. Startup fails closed when the advertised mount
-or durability contract is wrong.
+roots, requires the runtime-owned root to have mode `0700`, creates
+`/app/data/agent-mail` with mode `0700`, and performs an atomic
+write/fsync/rename/delete probe through pinned directory descriptors. Startup
+fails closed when the advertised mount or durability contract is wrong.
+Fence checking, agent/volume identity binding, and that probe share one held
+root descriptor. The platform must keep the admitted mountpoint stable for the
+process lifetime; a process identity that can replace `/app/data` or its mount
+namespace is part of the trusted deployment boundary.
 
 The volume is required, not optional container storage. Mount the Railway
 volume at the directory `/app/data`—not at an individual `.db` file and not at
@@ -214,6 +219,12 @@ volume even when an agent's portable config uses a project-relative default:
 - `/app/data/telegram-replay.db` (`telegramTransport` update-claim ledger)
 - `/app/data/agent-mail/<augment-name>/agent-mail.db` (`agentMail`; each
   instance receives an isolated state namespace)
+- `/app/data/file-memory/<augment-name>.md` (mutable `fileMemory`; seeded once
+  from the image-owned source)
+- `/app/data/notifications.jsonl` (the scaffolded relative `log-to-file`
+  notification destination)
+- `/app/data/admin-overrides.json` (authenticated runtime policy overrides)
+- `/app/data/.auggy-state-identity.json` (server-minted agent/volume binding)
 
 `/app/data/console-chat.db` contains the operator console's conversation list,
 messages, unread markers, and resumable model history. Completed turns survive
@@ -249,12 +260,30 @@ replicas to the same volume is not a supported scaling strategy. Use a shared
 database implementation before enabling horizontal replicas.
 
 The volume survives container replacement, but it is not an independent
-backup. Establish a separate volume snapshot or file backup policy for state
-you cannot recreate. For a file-level backup, stop the agent before copying and
-capture each database with any `-wal` and `-shm` siblings as one set; copying a
-live `.db` file alone can omit committed WAL data. Restore and test the complete
-set before starting the agent. The CLI does not currently schedule backups or
-verify restores for you.
+backup. Establish a separate encrypted backup policy for state you cannot
+recreate. Auggy provides an offline inventory, integrity-manifested
+runtime-volume bundle, verification, empty-target restore rehearsal, and a
+fail-closed reconciliation fence:
+
+```bash
+auggy state inventory --config /app/agent.yaml --root /app/data
+auggy state backup --config /app/agent.yaml --root /app/data \
+  --out /secure-backups/agent.auggy-state \
+  --confirm-stopped --runtime-volume-only
+auggy state verify /secure-backups/agent.auggy-state
+```
+
+Stop and drain the only replica before backup. The explicit confirmation is an
+operator assertion, not a live-snapshot mechanism. Restore only into a new or
+empty volume with the current `--config`; resume an interrupted copy with
+`state restore-resume`, the original bundle, and exact restore id. Reconcile
+remote/downstream effects, and clear the exact restore fence before startup.
+An incomplete restore, mismatched server-minted agent id/configuration shape,
+or unresolved fence blocks Railway boot. The bundle contains the complete
+dedicated runtime volume, so do not co-locate secrets or another agent's state
+under `/app/data`. See
+[Runtime State Recovery](./27-runtime-state-recovery.md) for the complete
+inventory, commands, limitations, and restore order.
 
 Security-boundary releases require a drained, all-at-once rollout. Do not run
 old and new bundles concurrently: an old replica does not enforce the durable
@@ -399,7 +428,7 @@ contract connects them to a common bounded signal boundary.
 | visitorAuth refuses to boot — "publicUrl required" | Check that `augments/visitorAuth/augment.yaml` has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy` to refresh. |
 | Deploy preflight fails because visitorAuth uses console mail | Run `auggy augment setup visitorAuth`, or set `allowConsoleInProduction: true` only for smoke tests where log-visible magic links are acceptable. |
 | Deploy preflight fails because MCP has an enabled `stdio` server | Use a remote HTTPS MCP server for cloud, or mark the local server `cloud: "disabled"` in `.mcp.json`. |
-| Runtime refuses to start with a volume-admission error | Confirm Railway mounted a real volume at exactly `/app/data` and exposes `RAILWAY_VOLUME_MOUNT_PATH=/app/data`. Remove symlinked state directories; the startup probe intentionally fails before state can fall back to ephemeral disk. |
+| Runtime refuses to start with a volume-admission error | Confirm Railway mounted a real volume at exactly `/app/data`, exposes `RAILWAY_VOLUME_MOUNT_PATH=/app/data`, and permits the generated entrypoint to set the root to mode `0700`. Remove symlinked state directories; the startup probe intentionally fails before state can fall back to ephemeral disk. |
 | Memory disappears after redeploy | Check Railway dashboard → service → Volumes and confirm the mount is `/app/data`. Core SQLite augments resolve directly to that root; do not repair this by adding an `/app/*.db` symlink. |
 | Console chats disappear after restart | Confirm the database exists at `/app/data/console-chat.db`, the service still has the `/app/data` volume attached, `webTransport.consoleChat.dbPath` is not `null`, and the service is configured for one replica. An explicit custom path must remain below `/app/data`. |
 | Daily budget cap hit unexpectedly | If you enabled autoSave with an extraction engine, extraction calls count against the cap. Run `bun run packages/evals/src/layered-memory/smoke.ts` to measure your per-extraction cost; lower the cadence in `augments/layeredMemory/augment.yaml` if needed. |

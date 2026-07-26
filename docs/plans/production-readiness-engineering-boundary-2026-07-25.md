@@ -240,3 +240,56 @@ Group verification:
 - `bun run lint` passed with only the repository's existing Biome schema
   version notice; and
 - `git diff --check` passed.
+
+### Group 2 — implemented on branch
+
+The CLI now inventories every shipped local state owner and provides an
+offline, whole-runtime-volume `inventory` / `backup` / `verify` / `restore` /
+`restore-resume` / `reconcile` workflow. Bundles are identity- and
+configuration-bound, bounded by entry/file/aggregate limits, preserve empty
+directories and SQLite journal sidecars, hash every payload file, require an
+empty restore target, and leave restored state fenced until an operator
+reconciles non-rollbackable downstream effects. Interrupted restores can resume
+only the exact manifest-bound subset under the same restore ID.
+
+Mutable file memory, relative notification logs, volume admission, restore
+fences, and volume identity now operate through pinned directory descriptors.
+Symlink leaves, parent replacement, hard links, foreign ownership, unsafe
+modes, prefix collisions, and partial temporary writes fail closed. Production
+startup parses configuration first and then performs fence validation,
+agent/volume identity binding, AgentMail directory admission, and the durability
+probe through one held root descriptor. The host must keep the admitted
+mountpoint stable for the process lifetime.
+
+Hostile review found and resolved the following High/Medium candidates before
+the checkpoint:
+
+- mutable file memory and file notification logs could follow replaced parents
+  or symlink leaves;
+- backup and restore initially mixed path checks with later string-path I/O;
+- the first bundle design omitted empty directories, exact config compatibility,
+  robust resume semantics, and strict core SQLite identity;
+- pathname-based WAL normalization reintroduced an intermediate-component race;
+- fence, identity, reconciliation, and volume admission were initially separate
+  path operations; and
+- deferred journaled SQLite metadata initially skipped core application/schema
+  identity enforcement.
+
+The final design preserves stopped SQLite journal artifacts byte-for-byte and
+defers full semantic inspection to core stores at startup, while still checking
+their application ID and schema version before bundle publication. No recovery
+database is opened by pathname. Authenticated/encrypted backup custody, external
+provider recovery points, scheduling, regional replication, and RPO/RTO remain
+operator responsibilities.
+
+Group verification:
+
+- the focused state, runtime-volume, resolver, filesystem, notification,
+  idempotency, replay, deploy-template, and CLI suites passed (146 tests in the
+  broadest checkpoint run, followed by 47 targeted tests after final fixes);
+- three independent final hostile reviews reported no unresolved High or Medium
+  issue within the documented stable-mount trust boundary;
+- `bun run typecheck` passed;
+- `bun run lint` passed with only the repository's existing Biome schema-version
+  notice; and
+- `git diff --check` passed.

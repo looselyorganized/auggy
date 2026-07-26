@@ -172,11 +172,9 @@ console is a viewer for these signals, not a metrics store or alerting system.
   replicas is unsupported and can produce contention or inconsistent runtime
   ownership. Move chat state to a shared database before horizontal scaling.
 - A Railway volume provides restart durability, not an independent backup.
-  Include `console-chat.db` in the agent's backup and restore plan. Do not copy
-  only the main database while the agent is writing: stop the agent first, then
-  copy the database and any `console-chat.db-wal` / `console-chat.db-shm`
-  siblings together, or use a storage snapshot with an equivalent consistency
-  guarantee. Test restoration before relying on the backup.
+  `auggy state backup` includes `console-chat.db` in the stopped-runtime volume
+  bundle, verifies the copied SQLite state, and restores only behind the
+  reconciliation fence. See [Runtime State Recovery](./27-runtime-state-recovery.md).
 - Deleting a thread removes it from the SQLite database. External backups and
   snapshots are the recovery boundary; the volume itself has no trash, and the
   console has no built-in point-in-time restore.

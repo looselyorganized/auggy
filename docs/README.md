@@ -17,6 +17,7 @@ For installation and first-run instructions, start with the root
 - [Storage Layout](./16-storage-layout.md)
 - [Deploy](./18-deploy.md)
 - [Console](./21-console.md)
+- [Runtime State Recovery](./27-runtime-state-recovery.md)
 - [Feature Status](./FEATURES.md)
 
 ## Mental Model
@@ -87,6 +88,7 @@ Use this order when documentation disagrees:
 | [24 MCP](./24-mcp.md) | Local and remote MCP servers |
 | [25 Generated Route Clients](./25-generated-route-clients.md) | Preview route manifests and clients |
 | [26 Delegated Authorization](./26-delegated-authorization.md) | Preview app-session authorization bridge |
+| [27 Runtime State Recovery](./27-runtime-state-recovery.md) | State inventory, offline volume bundles, restore fencing, and operator boundaries |
 
 ## Common Add-Ons
 
