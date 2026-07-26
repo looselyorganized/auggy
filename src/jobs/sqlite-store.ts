@@ -23,7 +23,7 @@ import { DURABLE_JOB_ERROR_CODES } from "./types";
 import { nextUtcCron, parseUtcCron } from "./cron";
 
 export const DURABLE_JOBS_APPLICATION_ID = 0x444a4f42; // "DJOB"
-export const DURABLE_JOBS_SCHEMA_VERSION = 1;
+export const DURABLE_JOBS_SCHEMA_VERSION = 2;
 const LABEL = "durable jobs";
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_LIST = 100;
@@ -36,6 +36,7 @@ const MAX_ATTEMPT_EXHAUSTION_PER_CLAIM = 100;
 const DEFAULT_MAX_TOTAL_RECORDS = 10_000;
 const DEFAULT_MAX_QUEUED_RECORDS = 1_000;
 const DEFAULT_MAX_PRIVATE_BYTES = 64 * 1024 * 1024;
+const DEFAULT_MAX_SCHEDULE_PRIVATE_BYTES = 8 * 1024 * 1024;
 const DEFAULT_MAX_ATTEMPTS_PER_JOB = 20;
 const DEFAULT_MAX_AUDIT_RECORDS = 200_000;
 const DEFAULT_TERMINAL_RETENTION_MS = 30 * 24 * 60 * 60_000;
@@ -60,7 +61,8 @@ const OUTCOME_REASON_CODES = new Set([
 const CANCEL_REASON_CODES = new Set(["deadline-exceeded", "operator-requested", "shutdown"]);
 const ERROR_CODES = new Set<string>(DURABLE_JOB_ERROR_CODES);
 
-const SCHEMA = [
+/** Exact branded schema shipped before schedule persistence. */
+const V1_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS durable_jobs (
     job_id                 TEXT PRIMARY KEY,
     idempotency_key_hash   TEXT NOT NULL UNIQUE,
@@ -120,6 +122,9 @@ const SCHEMA = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_durable_job_incidents_time
      ON durable_job_incidents(detected_at, incident_id)`,
+] as const;
+
+const SCHEDULE_SCHEMA = [
   `CREATE TABLE IF NOT EXISTS durable_job_schedules (
     schedule_id           TEXT PRIMARY KEY,
     cron                  TEXT NOT NULL,
@@ -151,10 +156,19 @@ const SCHEMA = [
      ON durable_job_schedule_occurrences(job_id)`,
 ] as const;
 
+const SCHEMA = [...V1_SCHEMA, ...SCHEDULE_SCHEMA] as const;
+
 const EXPECTED_SCHEMA = new Map(
   SCHEMA.map((sql) => {
     const name = sql.match(/(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([^\s(]+)/i)?.[1];
     if (!name) throw new Error(`${LABEL}: invalid schema declaration`);
+    return [name, canonicalSqliteSchemaSql(sql)] as const;
+  }),
+);
+const EXPECTED_V1_SCHEMA = new Map(
+  V1_SCHEMA.map((sql) => {
+    const name = sql.match(/(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([^\s(]+)/i)?.[1];
+    if (!name) throw new Error(`${LABEL}: invalid v1 schema declaration`);
     return [name, canonicalSqliteSchemaSql(sql)] as const;
   }),
 );
@@ -423,11 +437,20 @@ function parsePayload(value: string): DurableJobPayload {
 }
 
 function hasExactSchema(objects: readonly SqliteSchemaObject[]): boolean {
+  return hasExactSchemaObjects(objects, EXPECTED_SCHEMA);
+}
+
+function hasExactV1Schema(objects: readonly SqliteSchemaObject[]): boolean {
+  return hasExactSchemaObjects(objects, EXPECTED_V1_SCHEMA);
+}
+
+function hasExactSchemaObjects(
+  objects: readonly SqliteSchemaObject[],
+  expected: ReadonlyMap<string, string>,
+): boolean {
   return (
-    objects.length === EXPECTED_SCHEMA.size &&
-    objects.every(
-      (object) => EXPECTED_SCHEMA.get(object.name) === canonicalSqliteSchemaSql(object.sql),
-    )
+    objects.length === expected.size &&
+    objects.every((object) => expected.get(object.name) === canonicalSqliteSchemaSql(object.sql))
   );
 }
 
@@ -436,6 +459,7 @@ function validateRows(
   maxTotalRecords: number,
   maxQueuedRecords: number,
   maxPrivateBytes: number,
+  maxSchedulePrivateBytes: number,
   maxAttemptsPerJob: number,
   maxAuditRecords: number,
 ): void {
@@ -644,6 +668,18 @@ function validateRows(
   ) {
     throw new Error(`${LABEL}: stored schedules exceed configured capacity`);
   }
+  const schedulePrivateBytes = db
+    .query<{ bytes: number }, []>(
+      "SELECT COALESCE(SUM(private_bytes), 0) AS bytes FROM durable_job_schedules",
+    )
+    .get()?.bytes;
+  if (
+    !Number.isSafeInteger(schedulePrivateBytes) ||
+    (schedulePrivateBytes ?? 0) < 0 ||
+    (schedulePrivateBytes ?? 0) > maxSchedulePrivateBytes
+  ) {
+    throw new Error(`${LABEL}: stored schedules exceed configured private byte capacity`);
+  }
   for (const schedule of db.query<ScheduleRow, []>("SELECT * FROM durable_job_schedules").all()) {
     safeId(schedule.schedule_id, "stored schedule ID");
     try {
@@ -799,6 +835,12 @@ export function createSqliteDurableJobStore(
     "maxPrivateBytes",
     MAX_PRIVATE_BYTES,
   );
+  const maxSchedulePrivateBytes = positiveOption(
+    options.maxSchedulePrivateBytes,
+    DEFAULT_MAX_SCHEDULE_PRIVATE_BYTES,
+    "maxSchedulePrivateBytes",
+    MAX_PRIVATE_BYTES,
+  );
   const maxAttemptsPerJob = positiveOption(
     options.maxAttemptsPerJob,
     DEFAULT_MAX_ATTEMPTS_PER_JOB,
@@ -842,6 +884,12 @@ export function createSqliteDurableJobStore(
         initialize(database) {
           for (const sql of SCHEMA) database.run(sql);
         },
+        migrateOwned(database, fromVersion, objects) {
+          if (fromVersion !== 1 || !hasExactV1Schema(objects)) {
+            throw new Error(`${LABEL}: database schema is incompatible`);
+          }
+          for (const sql of SCHEDULE_SCHEMA) database.run(sql);
+        },
         validate(database, objects) {
           if (!hasExactSchema(objects))
             throw new Error(`${LABEL}: database schema is incompatible`);
@@ -850,6 +898,7 @@ export function createSqliteDurableJobStore(
             maxTotalRecords,
             maxQueuedRecords,
             maxPrivateBytes,
+            maxSchedulePrivateBytes,
             maxAttemptsPerJob,
             maxAuditRecords,
           );
@@ -1195,6 +1244,36 @@ export function createSqliteDurableJobStore(
     };
   }
 
+  function materializedSchedulePrivateBytes(
+    definition: ReturnType<typeof scheduleDefinition>,
+    revision: number,
+  ): number {
+    let target: unknown;
+    try {
+      target = JSON.parse(definition.binding);
+    } catch {
+      throw new Error(`${LABEL}: schedule definition is invalid`);
+    }
+    const jobBinding = boundedJson(
+      {
+        durableSchedule: {
+          id: definition.id,
+          revision,
+          // Preflight the greatest safe timestamp so configuration cannot
+          // accept a definition that a later schedule tick can never submit.
+          scheduledFor: MAX_SAFE_SQLITE_INTEGER,
+        },
+        target,
+      },
+      "schedule job binding",
+    );
+    return safeAdd(
+      Buffer.byteLength(jobBinding, "utf8"),
+      Buffer.byteLength(definition.payload, "utf8"),
+      "schedule materialized private byte accounting",
+    );
+  }
+
   const syncSchedulesTx = db.transaction(
     (definitions: readonly DurableJobScheduleDefinition[], explicitNow?: number) => {
       if (!Array.isArray(definitions) || definitions.length > MAX_SCHEDULES) {
@@ -1227,6 +1306,19 @@ export function createSqliteDurableJobStore(
              SELECT 1 FROM durable_job_schedule_occurrences o WHERE o.schedule_id = durable_job_schedules.schedule_id
            )`,
       ).run();
+      const existingSchedulePrivateBytes = db
+        .query<{ bytes: number }, []>(
+          "SELECT COALESCE(SUM(private_bytes), 0) AS bytes FROM durable_job_schedules",
+        )
+        .get()?.bytes;
+      if (
+        !Number.isSafeInteger(existingSchedulePrivateBytes) ||
+        (existingSchedulePrivateBytes ?? 0) < 0 ||
+        (existingSchedulePrivateBytes ?? 0) > maxSchedulePrivateBytes
+      ) {
+        throw new Error(`${LABEL}: stored schedules exceed configured private byte capacity`);
+      }
+      let schedulePrivateBytes = existingSchedulePrivateBytes as number;
       const existingCount = db
         .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM durable_job_schedules")
         .get()?.count;
@@ -1239,6 +1331,12 @@ export function createSqliteDurableJobStore(
         if (!row) {
           if (admittedScheduleCount >= MAX_SCHEDULES) {
             throw new Error(`${LABEL}: schedule capacity exhausted`);
+          }
+          if (materializedSchedulePrivateBytes(definition, 1) > maxPrivateBytes) {
+            throw new Error(`${LABEL}: schedule definition exceeds job private byte capacity`);
+          }
+          if (definition.privateBytes > maxSchedulePrivateBytes - schedulePrivateBytes) {
+            throw new Error(`${LABEL}: schedule private byte capacity exhausted`);
           }
           db.query(
             `INSERT INTO durable_job_schedules (
@@ -1259,6 +1357,7 @@ export function createSqliteDurableJobStore(
             at,
           );
           admittedScheduleCount++;
+          schedulePrivateBytes += definition.privateBytes;
           continue;
         }
         if (row.version >= MAX_SAFE_SQLITE_INTEGER || row.revision >= MAX_SAFE_SQLITE_INTEGER) {
@@ -1266,7 +1365,18 @@ export function createSqliteDurableJobStore(
         }
         const changed = row.definition_hash !== definition.definitionHash;
         const configChanged = row.config_enabled !== (definition.enabled ? 1 : 0);
+        const nextRevision = changed ? row.revision + 1 : row.revision;
+        if (materializedSchedulePrivateBytes(definition, nextRevision) > maxPrivateBytes) {
+          throw new Error(`${LABEL}: schedule definition exceeds job private byte capacity`);
+        }
         if (!changed && !configChanged) continue;
+        const nextPrivateBytes = schedulePrivateBytes - row.private_bytes + definition.privateBytes;
+        if (!Number.isSafeInteger(nextPrivateBytes) || nextPrivateBytes < 0) {
+          throw new Error(`${LABEL}: stored schedule private byte accounting is inconsistent`);
+        }
+        if (nextPrivateBytes > maxSchedulePrivateBytes) {
+          throw new Error(`${LABEL}: schedule private byte capacity exhausted`);
+        }
         db.query(
           `UPDATE durable_job_schedules SET cron = ?, definition_hash = ?, binding_json = ?, payload_json = ?,
              private_bytes = ?, revision = CASE WHEN ? THEN revision + 1 ELSE revision END,
@@ -1287,6 +1397,7 @@ export function createSqliteDurableJobStore(
           definition.id,
           row.version,
         );
+        schedulePrivateBytes = nextPrivateBytes;
       }
       return db
         .query<ScheduleRow, []>("SELECT * FROM durable_job_schedules ORDER BY schedule_id ASC")

@@ -3,7 +3,10 @@ import { Database } from "bun:sqlite";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSqliteDurableJobStore } from "../../src/jobs/sqlite-store";
+import {
+  createSqliteDurableJobStore,
+  DURABLE_JOBS_SCHEMA_VERSION,
+} from "../../src/jobs/sqlite-store";
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -38,7 +41,111 @@ function request(key = "manual") {
   };
 }
 
+function downgradeExactV1(path: string): void {
+  const database = new Database(path);
+  database.run("DROP TABLE durable_job_schedule_occurrences");
+  database.run("DROP TABLE durable_job_schedules");
+  database.run("PRAGMA user_version = 1");
+  database.close();
+}
+
 describe("durable schedule persistence", () => {
+  test("atomically upgrades only the exact branded v1 schema without losing durable state", () => {
+    const path = dbPath();
+    const now = start;
+    const v1 = createSqliteDurableJobStore({
+      dbPath: path,
+      now: () => now,
+      jobId: (() => {
+        let number = 0;
+        return () => `job_${++number}`;
+      })(),
+      leaseToken: (() => {
+        let number = 0;
+        return () => `lease_${++number}`;
+      })(),
+      incidentId: (() => {
+        let number = 0;
+        return () => `incident_${++number}`;
+      })(),
+    });
+    const unknown = v1.submit(request("unknown")).job;
+    const unknownLease = v1.claim({ workerId: "worker", leaseMs: minute })!;
+    v1.markExecutionStarted({ jobId: unknownLease.job.id, token: unknownLease.token });
+    v1.markOutcomeUnknown({
+      jobId: unknownLease.job.id,
+      token: unknownLease.token,
+      reasonCode: "execution-outcome-unknown",
+    });
+    const reconciled = v1.submit(request("reconciled")).job;
+    const reconciledLease = v1.claim({ workerId: "worker", leaseMs: minute })!;
+    v1.markExecutionStarted({ jobId: reconciledLease.job.id, token: reconciledLease.token });
+    const incident = v1.markOutcomeUnknown({
+      jobId: reconciledLease.job.id,
+      token: reconciledLease.token,
+      reasonCode: "execution-outcome-unknown",
+    });
+    v1.reconcile({
+      jobId: incident.id,
+      expectedVersion: incident.version,
+      disposition: "confirm_completed",
+      evidence: "operator-ticket-42",
+    });
+    const queued = v1.submit(request("queued")).job;
+    v1.close();
+    downgradeExactV1(path);
+
+    const migrated = createSqliteDurableJobStore({ dbPath: path, now: () => now });
+    try {
+      expect(migrated.getSummary(queued.id)).toMatchObject({ state: "queued" });
+      expect(migrated.getSummary(unknown.id)).toMatchObject({
+        state: "outcome_unknown",
+        incident: { reasonCode: "execution-outcome-unknown" },
+      });
+      expect(migrated.getSummary(reconciled.id)).toMatchObject({ state: "completed" });
+      expect(migrated.listSchedules()).toEqual([]);
+    } finally {
+      migrated.close();
+    }
+    const database = new Database(path);
+    expect(database.query("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+    expect(DURABLE_JOBS_SCHEMA_VERSION).toBe(2);
+    expect(
+      database.query("SELECT COUNT(*) AS count FROM durable_job_reconciliations").get(),
+    ).toEqual({
+      count: 1,
+    });
+    database.close();
+  });
+
+  test("rejects a malformed branded v1 lookalike before mutating schema or version", () => {
+    const path = dbPath();
+    const store = createSqliteDurableJobStore({ dbPath: path, now: () => start });
+    store.submit(request());
+    store.close();
+    downgradeExactV1(path);
+    const database = new Database(path);
+    database.run("CREATE TABLE durable_jobs_lookalike (value TEXT)");
+    const before = database
+      .query(
+        "SELECT type, name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+      )
+      .all();
+    database.close();
+    expect(() => createSqliteDurableJobStore({ dbPath: path, now: () => start })).toThrow(
+      "database schema is incompatible",
+    );
+    const after = new Database(path);
+    expect(after.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    expect(
+      after
+        .query(
+          "SELECT type, name, sql FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name",
+        )
+        .all(),
+    ).toEqual(before);
+    after.close();
+  });
   test("materializes one deterministic, redacted occurrence and coalesces downtime", () => {
     const path = dbPath();
     let now = start;
@@ -152,6 +259,33 @@ describe("durable schedule persistence", () => {
       expect(store.listSchedules()[0]).toMatchObject({ nextFireAt: start + minute });
     } finally {
       store.close();
+    }
+  });
+
+  test("enforces separate schedule-private and future materialized-job budgets at sync", () => {
+    const aggregate = createSqliteDurableJobStore({
+      dbPath: dbPath(),
+      now: () => start,
+      maxSchedulePrivateBytes: 1,
+    });
+    try {
+      expect(() => aggregate.syncSchedules([schedule()])).toThrow(
+        "schedule private byte capacity exhausted",
+      );
+    } finally {
+      aggregate.close();
+    }
+    const materialized = createSqliteDurableJobStore({
+      dbPath: dbPath(),
+      now: () => start,
+      maxPrivateBytes: 1,
+    });
+    try {
+      expect(() => materialized.syncSchedules([schedule()])).toThrow(
+        "schedule definition exceeds job private byte capacity",
+      );
+    } finally {
+      materialized.close();
     }
   });
 

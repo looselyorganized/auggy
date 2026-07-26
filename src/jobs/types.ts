@@ -191,6 +191,12 @@ export interface SqliteDurableJobStoreOptions {
   /** Sum of canonical payload and binding bytes admitted for stored jobs. */
   maxPrivateBytes?: number;
   /**
+   * Fixed aggregate budget for private schedule definitions (8 MiB by
+   * default). This is separate from job payload capacity because schedules
+   * can exist before they materialize a job.
+   */
+  maxSchedulePrivateBytes?: number;
+  /**
    * Maximum claims for one job. This also bounds per-job attempt and
    * reconciliation history because one reconciliation is possible per claim.
    */
