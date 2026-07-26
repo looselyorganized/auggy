@@ -34,7 +34,8 @@ export function compareOwnedStatePaths(first: string, second: string): OwnedStat
   // Before creation, case-only aliases cannot be proven distinct across the
   // supported filesystems. Reject the ambiguity instead of choosing the wrong
   // authorization namespace on case-insensitive hosts.
-  if (first.toLocaleLowerCase("en-US") === second.toLocaleLowerCase("en-US")) {
+  const portableAliasKey = (path: string) => path.normalize("NFD").toLocaleLowerCase("en-US");
+  if (portableAliasKey(first) === portableAliasKey(second)) {
     return "ambiguous";
   }
   return "distinct";

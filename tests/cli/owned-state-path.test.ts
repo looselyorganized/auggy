@@ -28,4 +28,12 @@ describe("owned state path identity", () => {
       compareOwnedStatePaths(join(root, "Data", "Memory.db"), join(root, "data", "memory.db")),
     ).toBe("ambiguous");
   });
+
+  test("fails closed for uncreated Unicode-normalization aliases", () => {
+    const root = mkdtempSync(join(tmpdir(), "owned-state-unicode-ambiguous-"));
+    roots.push(root);
+    expect(
+      compareOwnedStatePaths(join(root, "m\u00e9moire.db"), join(root, "me\u0301moire.db")),
+    ).toBe("ambiguous");
+  });
 });
