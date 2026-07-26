@@ -90,4 +90,30 @@ describe("UTC cron", () => {
     expect(() => parseUtcCron(`${"1".repeat(MAX_CRON_EXPRESSION_BYTES + 1)} * * * *`)).toThrow();
     expect(() => parseUtcCron("9007199254740992 * * * *")).toThrow();
   });
+
+  test("rejects oversized input before allocating a proportional UTF-8 encoder buffer", () => {
+    const originalTextEncoder = Object.getOwnPropertyDescriptor(globalThis, "TextEncoder");
+    if (!originalTextEncoder) {
+      throw new Error("TextEncoder descriptor is unavailable");
+    }
+    let encoderCalled = false;
+    Object.defineProperty(globalThis, "TextEncoder", {
+      configurable: true,
+      value: class {
+        encode(): Uint8Array {
+          encoderCalled = true;
+          throw new Error("encoder must not be reached");
+        }
+      },
+    });
+
+    try {
+      expect(() => parseUtcCron("1".repeat(1024 * 1024))).toThrow(
+        `Cron expression exceeds ${MAX_CRON_EXPRESSION_BYTES} bytes.`,
+      );
+      expect(encoderCalled).toBeFalse();
+    } finally {
+      Object.defineProperty(globalThis, "TextEncoder", originalTextEncoder);
+    }
+  });
 });

@@ -47,7 +47,13 @@ const FIELD_DEFINITIONS: readonly FieldDefinition[] = [
 
 /** Parse a bounded, numeric, five-field UTC cron expression. */
 export function parseUtcCron(expression: string): UtcCron {
-  if (byteLength(expression) > MAX_CRON_EXPRESSION_BYTES) {
+  // UTF-8 is never shorter than a JavaScript string's UTF-16 code-unit count.
+  // This constant-cost preflight keeps TextEncoder from allocating a buffer
+  // proportional to an already-invalid, attacker-controlled input.
+  if (
+    expression.length > MAX_CRON_EXPRESSION_BYTES ||
+    byteLength(expression) > MAX_CRON_EXPRESSION_BYTES
+  ) {
     throw new Error(`Cron expression exceeds ${MAX_CRON_EXPRESSION_BYTES} bytes.`);
   }
   if (!/^[0-9*,/\- ]+$/.test(expression)) {
