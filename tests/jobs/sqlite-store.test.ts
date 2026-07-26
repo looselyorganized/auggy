@@ -213,7 +213,7 @@ describe("SQLite durable job store", () => {
             store.failDefinite({
               jobId: lease.job.id,
               token: lease.token,
-              errorCode: "provider-failed",
+              errorCode: "execution-failed",
             });
           } else {
             store.markOutcomeUnknown({
@@ -244,7 +244,7 @@ describe("SQLite durable job store", () => {
         store.releaseUnstarted({
           jobId: lease.job.id,
           token: lease.token,
-          errorCode: "runtime-admission-failed",
+          errorCode: "admission-failed",
         }),
       ).toMatchObject({ state: "queued", attempt: 1 });
       expect(store.cancel({ jobId: submitted.job.id } as never)).toEqual({
@@ -279,20 +279,20 @@ describe("SQLite durable job store", () => {
         "Where is my order?",
       );
       const lease = store.claim({ workerId: "worker", leaseMs: 100 })!;
-      const sentinel = "sk_live_SECRET_REJECTION";
+      const sentinel = "sk-live-secret-rejection";
       expect(() =>
         store.rejectUnstarted({
           jobId: lease.job.id,
           token: lease.token,
-          errorCode: sentinel,
+          errorCode: sentinel as never,
         }),
-      ).toThrow("errorCode must be a non-secret fixed code");
+      ).toThrow("errorCode is not allowed");
       expect(JSON.stringify(store.getSummary(lease.job.id))).not.toContain(sentinel);
       expect(
         store.rejectUnstarted({
           jobId: lease.job.id,
           token: lease.token,
-          errorCode: "runtime-admission-failed",
+          errorCode: "admission-failed",
         }),
       ).toMatchObject({ state: "failed" });
       expect(store.getSummary(lease.job.id)).toMatchObject({ state: "failed" });
@@ -375,7 +375,7 @@ describe("SQLite durable job store", () => {
     );
   });
 
-  test("enforces total, queued, and private-byte capacities atomically", () => {
+  test("reserves queue capacity across claims and enforces total and private-byte capacities", () => {
     const store = createSqliteDurableJobStore({
       dbPath: dbPath(),
       maxTotalRecords: 2,
@@ -388,17 +388,49 @@ describe("SQLite durable job store", () => {
       leaseToken: () => "lease_1",
     });
     try {
-      store.submit(request("one"));
+      const first = store.submit(request("one"));
       expect(() => store.submit(request("queued-overflow"))).toThrow(
-        "queued record capacity exhausted",
+        "outstanding job capacity exhausted",
       );
-      store.claim({ workerId: "worker", leaseMs: 100 });
-      store.submit(request("two"));
-      expect(() => store.submit(request("total-overflow"))).toThrow(
-        "total record capacity exhausted",
+      const lease = store.claim({ workerId: "worker", leaseMs: 100 })!;
+      // A claim keeps its queue reservation. This is the former bypass: a new
+      // submission could fill the vacated queue slot, then a release produced
+      // two queued jobs despite maxQueuedRecords: 1.
+      expect(() => store.submit(request("claimed-overflow"))).toThrow(
+        "outstanding job capacity exhausted",
+      );
+      store.releaseUnstarted({
+        jobId: first.job.id,
+        token: lease.token,
+        errorCode: "admission-failed",
+      });
+      expect(store.list({ state: "queued" })).toHaveLength(1);
+      expect(() => store.submit(request("released-overflow"))).toThrow(
+        "outstanding job capacity exhausted",
       );
     } finally {
       store.close();
+    }
+
+    const total = createSqliteDurableJobStore({
+      dbPath: dbPath(),
+      maxTotalRecords: 2,
+      maxQueuedRecords: 2,
+      jobId: (() => {
+        let id = 0;
+        return () => `job_total_${++id}`;
+      })(),
+      leaseToken: () => "lease_total",
+    });
+    try {
+      total.submit(request("total-one"));
+      total.claim({ workerId: "worker", leaseMs: 100 });
+      total.submit(request("total-two"));
+      expect(() => total.submit(request("total-overflow"))).toThrow(
+        "total record capacity exhausted",
+      );
+    } finally {
+      total.close();
     }
 
     const bytes = createSqliteDurableJobStore({
@@ -484,6 +516,135 @@ describe("SQLite durable job store", () => {
       expect(JSON.stringify(reasons.list())).not.toContain(sentinel);
     } finally {
       reasons.close();
+    }
+  });
+
+  test("bounds per-job attempts and global reconciliation audit history", () => {
+    expect(() =>
+      createSqliteDurableJobStore({ dbPath: dbPath(), maxAttemptsPerJob: 1_001 }),
+    ).toThrow("maxAttemptsPerJob must be an integer from 1 to 1000");
+    expect(() =>
+      createSqliteDurableJobStore({ dbPath: dbPath(), maxAuditRecords: 1_000_001 }),
+    ).toThrow("maxAuditRecords must be an integer from 1 to 1000000");
+
+    const path = dbPath();
+    let token = 0;
+    let incident = 0;
+    const store = createSqliteDurableJobStore({
+      dbPath: path,
+      now: () => 10_000,
+      maxAttemptsPerJob: 2,
+      maxAuditRecords: 2,
+      jobId: () => "job_1",
+      leaseToken: () => `lease_${++token}`,
+      incidentId: () => `incident_${++incident}`,
+    });
+    try {
+      const submitted = store.submit(request("bounded-history"));
+      for (let attempt = 0; attempt < 2; attempt++) {
+        const lease = store.claim({ workerId: "worker", leaseMs: 100 })!;
+        store.markExecutionStarted({ jobId: lease.job.id, token: lease.token });
+        const unknown = store.markOutcomeUnknown({
+          jobId: lease.job.id,
+          token: lease.token,
+          reasonCode: "execution-outcome-unknown",
+        });
+        expect(
+          store.reconcile({
+            jobId: lease.job.id,
+            expectedVersion: unknown.version,
+            disposition: "retry",
+            evidence: `operator-evidence-${attempt}`,
+          }),
+        ).toMatchObject({ reconciled: true, job: { state: "queued" } });
+      }
+      // A third claim would previously create a third attempt after the
+      // operator had repeatedly reconciled the same durable job.
+      expect(store.claim({ workerId: "worker", leaseMs: 100 })).toBeNull();
+      expect(store.get(submitted.job.id)).toMatchObject({
+        state: "failed",
+        attempt: 2,
+        errorCode: "attempt-limit-exceeded",
+      });
+      const probe = new Database(path, { readonly: true });
+      expect(
+        probe
+          .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM durable_job_attempts")
+          .get()?.count,
+      ).toBe(2);
+      expect(
+        probe
+          .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM durable_job_reconciliations")
+          .get()?.count,
+      ).toBe(2);
+      probe.close();
+    } finally {
+      store.close();
+    }
+
+    const auditPath = dbPath();
+    let auditToken = 0;
+    let auditIncident = 0;
+    const audit = createSqliteDurableJobStore({
+      dbPath: auditPath,
+      now: () => 20_000,
+      maxAuditRecords: 1,
+      jobId: (() => {
+        let id = 0;
+        return () => `job_audit_${++id}`;
+      })(),
+      leaseToken: () => `lease_audit_${++auditToken}`,
+      incidentId: () => `incident_audit_${++auditIncident}`,
+    });
+    try {
+      const first = audit.submit(request("first-audit"));
+      const second = audit.submit(request("second-audit"));
+      for (const job of [first.job, second.job]) {
+        const lease = audit.claim({ workerId: "worker", leaseMs: 100 })!;
+        expect(lease.job.id).toBe(job.id);
+        audit.markExecutionStarted({ jobId: job.id, token: lease.token });
+        const unknown = audit.markOutcomeUnknown({
+          jobId: job.id,
+          token: lease.token,
+          reasonCode: "execution-outcome-unknown",
+        });
+        if (job.id === first.job.id) {
+          expect(
+            audit.reconcile({
+              jobId: job.id,
+              expectedVersion: unknown.version,
+              disposition: "cancel",
+              evidence: "first operator decision",
+            }),
+          ).toMatchObject({ reconciled: true });
+        } else {
+          expect(() =>
+            audit.reconcile({
+              jobId: job.id,
+              expectedVersion: unknown.version,
+              disposition: "cancel",
+              evidence: "second operator decision",
+            }),
+          ).toThrow("reconciliation audit capacity exhausted");
+          expect(audit.get(job.id)).toMatchObject({ state: "outcome_unknown" });
+        }
+      }
+    } finally {
+      audit.close();
+    }
+  });
+
+  test("rejects oversized object key sets before canonical JSON serialization", () => {
+    const value: Record<string, number> = {};
+    for (let index = 0; index < 10_000; index++) value[`key_${index}`] = index;
+    const store = createSqliteDurableJobStore({ dbPath: dbPath() });
+    try {
+      expect(() =>
+        store.submit({ ...request("many-keys"), payload: { version: 1, value } }),
+      ).toThrow("private JSON exceeds maximum nodes");
+      expect(store.list()).toEqual([]);
+    } finally {
+      store.close();
     }
   });
 

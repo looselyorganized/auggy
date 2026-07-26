@@ -4,6 +4,23 @@
  */
 export const DURABLE_JOB_PAYLOAD_VERSION = 1 as const;
 
+/**
+ * Persisted error codes are deliberately closed. Callers must map private
+ * provider or application failures to one of these stable, non-secret codes
+ * before they reach the durable store.
+ */
+export const DURABLE_JOB_ERROR_CODES = [
+  "admission-canceled",
+  "admission-failed",
+  "admission-rejected",
+  "invalid-payload",
+  "shutdown-before-execution",
+  "execution-failed",
+  "attempt-limit-exceeded",
+] as const;
+
+export type DurableJobErrorCode = (typeof DURABLE_JOB_ERROR_CODES)[number];
+
 export type DurableJobState =
   | "queued"
   | "leased"
@@ -61,16 +78,20 @@ export interface DurableJobStore {
   releaseUnstarted(input: {
     jobId: string;
     token: string;
-    errorCode: string;
+    errorCode: DurableJobErrorCode;
     availableAt?: number;
   }): DurableJobSummary;
   /** Terminally rejects a fenced lease before execution was durably started. */
-  rejectUnstarted(input: { jobId: string; token: string; errorCode: string }): DurableJobSummary;
+  rejectUnstarted(input: {
+    jobId: string;
+    token: string;
+    errorCode: DurableJobErrorCode;
+  }): DurableJobSummary;
   complete(input: { jobId: string; token: string; result: unknown }): DurableJobSummary;
   failDefinite(input: {
     jobId: string;
     token: string;
-    errorCode: string;
+    errorCode: DurableJobErrorCode;
     retryAt?: number;
   }): DurableJobSummary;
   markOutcomeUnknown(input: {
@@ -106,9 +127,20 @@ export interface SqliteDurableJobStoreOptions {
   leaseToken?: () => string;
   incidentId?: () => string;
   maxTotalRecords?: number;
+  /**
+   * Maximum nonterminal jobs. A lease reserves this capacity until the job is
+   * terminal, so requeues and reconciliation cannot overfill the queue.
+   */
   maxQueuedRecords?: number;
   /** Sum of canonical payload and binding bytes admitted for stored jobs. */
   maxPrivateBytes?: number;
+  /**
+   * Maximum claims for one job. This also bounds per-job attempt and
+   * reconciliation history because one reconciliation is possible per claim.
+   */
+  maxAttemptsPerJob?: number;
+  /** Maximum retained reconciliation audit records across all jobs. */
+  maxAuditRecords?: number;
   terminalRetentionMs?: number;
   auditRetentionMs?: number;
 }

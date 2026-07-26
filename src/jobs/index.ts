@@ -4,7 +4,9 @@ export {
   DURABLE_JOBS_SCHEMA_VERSION,
 } from "./sqlite-store";
 export {
+  DURABLE_JOB_ERROR_CODES,
   DURABLE_JOB_PAYLOAD_VERSION,
+  type DurableJobErrorCode,
   type DurableJobLease,
   type DurableJobPayload,
   type DurableJobRecord,

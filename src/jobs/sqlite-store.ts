@@ -7,6 +7,7 @@ import {
   type SqliteSchemaObject,
 } from "../lib/sqlite";
 import type {
+  DurableJobErrorCode,
   DurableJobLease,
   DurableJobPayload,
   DurableJobRecord,
@@ -15,6 +16,7 @@ import type {
   DurableJobSummary,
   SqliteDurableJobStoreOptions,
 } from "./types";
+import { DURABLE_JOB_ERROR_CODES } from "./types";
 
 export const DURABLE_JOBS_APPLICATION_ID = 0x444a4f42; // "DJOB"
 export const DURABLE_JOBS_SCHEMA_VERSION = 1;
@@ -27,10 +29,14 @@ const MAX_RECOVERY_PER_TRANSITION = 100;
 const DEFAULT_MAX_TOTAL_RECORDS = 10_000;
 const DEFAULT_MAX_QUEUED_RECORDS = 1_000;
 const DEFAULT_MAX_PRIVATE_BYTES = 64 * 1024 * 1024;
+const DEFAULT_MAX_ATTEMPTS_PER_JOB = 20;
+const DEFAULT_MAX_AUDIT_RECORDS = 200_000;
 const DEFAULT_TERMINAL_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const DEFAULT_AUDIT_RETENTION_MS = 90 * 24 * 60 * 60_000;
 const MIN_AUDIT_RETENTION_MS = 24 * 60 * 60_000;
 const MAX_SAFE_SQLITE_INTEGER = Number.MAX_SAFE_INTEGER;
+const MAX_ATTEMPTS_PER_JOB = 1_000;
+const MAX_AUDIT_RECORDS = 1_000_000;
 
 const OUTCOME_REASON_CODES = new Set([
   "cancel-completion-race",
@@ -41,6 +47,7 @@ const OUTCOME_REASON_CODES = new Set([
   "shutdown-interrupted",
 ]);
 const CANCEL_REASON_CODES = new Set(["deadline-exceeded", "operator-requested", "shutdown"]);
+const ERROR_CODES = new Set<string>(DURABLE_JOB_ERROR_CODES);
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS durable_jobs (
@@ -164,7 +171,7 @@ function safeText(value: string, label: string, max = 256): string {
   return normalized;
 }
 
-function safeCode(value: string, label: string): string {
+function safeCode(value: unknown, label: string): string {
   if (typeof value !== "string" || !/^[a-z][a-z0-9-]{0,63}$/.test(value)) {
     throw new Error(`${LABEL}: ${label} must be a non-secret fixed code`);
   }
@@ -175,6 +182,12 @@ function allowedReason(value: string, label: string, allowed: ReadonlySet<string
   const code = safeCode(value, label);
   if (!allowed.has(code)) throw new Error(`${LABEL}: ${label} is not allowed`);
   return code;
+}
+
+function allowedErrorCode(value: unknown): DurableJobErrorCode {
+  const code = safeCode(value, "errorCode");
+  if (!ERROR_CODES.has(code)) throw new Error(`${LABEL}: errorCode is not allowed`);
+  return code as DurableJobErrorCode;
 }
 
 function safeTime(value: number, label: string): number {
@@ -264,9 +277,15 @@ function boundedJson(value: unknown, _label: string): string {
     }
     if (typeof current === "object" && Object.getPrototypeOf(current) === Object.prototype) {
       const object = current as Record<string, unknown>;
-      const keys = Object.keys(object);
-      if (nodes + keys.length > 10_000)
-        throw new Error(`${LABEL}: private JSON exceeds maximum nodes`);
+      const keys: string[] = [];
+      const remainingNodes = 10_000 - nodes;
+      for (const key in object) {
+        if (!Object.hasOwn(object, key)) continue;
+        if (keys.length >= remainingNodes) {
+          throw new Error(`${LABEL}: private JSON exceeds maximum nodes`);
+        }
+        keys.push(key);
+      }
       keys.sort();
       append("{", 1);
       for (let index = 0; index < keys.length; index++) {
@@ -333,7 +352,7 @@ function hasExactSchema(objects: readonly SqliteSchemaObject[]): boolean {
   );
 }
 
-function validateRows(db: Database): void {
+function validateRows(db: Database, maxAttemptsPerJob: number, maxAuditRecords: number): void {
   if (db.query("PRAGMA foreign_key_check").get()) {
     throw new Error(`${LABEL}: stored foreign-key graph is inconsistent`);
   }
@@ -378,7 +397,7 @@ function validateRows(db: Database): void {
     }
     if (row.lease_owner !== null) safeText(row.lease_owner, "stored lease owner", 128);
     if (row.lease_token !== null) safeId(row.lease_token, "stored lease token");
-    if (row.error_code !== null) safeCode(row.error_code, "stored error code");
+    if (row.error_code !== null) allowedErrorCode(row.error_code);
     if (row.cancel_reason !== null) {
       allowedReason(row.cancel_reason, "stored cancel reason", CANCEL_REASON_CODES);
     }
@@ -432,6 +451,14 @@ function validateRows(db: Database): void {
     )
     .get();
   if (invalidAttemptHistory) throw new Error(`${LABEL}: stored attempt history is inconsistent`);
+  const overAttemptCapacity = db
+    .query<{ job_id: string }, [number]>(
+      `SELECT job_id FROM durable_job_attempts GROUP BY job_id HAVING COUNT(*) > ? LIMIT 1`,
+    )
+    .get(maxAttemptsPerJob);
+  if (overAttemptCapacity) {
+    throw new Error(`${LABEL}: stored attempt history exceeds configured capacity`);
+  }
   const invalidIncident = db
     .query<{ incident_id: string }, []>(
       `SELECT i.incident_id FROM durable_job_incidents i JOIN durable_jobs j ON j.job_id = i.job_id
@@ -462,6 +489,17 @@ function validateRows(db: Database): void {
     )
     .get();
   if (invalidReconciliation) throw new Error(`${LABEL}: stored reconciliation is inconsistent`);
+  const auditCount = db
+    .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM durable_job_reconciliations")
+    .get()?.count;
+  if (
+    typeof auditCount !== "number" ||
+    !Number.isSafeInteger(auditCount) ||
+    auditCount < 0 ||
+    auditCount > maxAuditRecords
+  ) {
+    throw new Error(`${LABEL}: stored reconciliation audit exceeds configured capacity`);
+  }
   for (const attempt of db
     .query<{ job_id: string; lease_token: string; worker_id: string }, []>(
       "SELECT job_id, lease_token, worker_id FROM durable_job_attempts",
@@ -520,10 +558,15 @@ function record(row: Row): DurableJobRecord {
   };
 }
 
-function positiveOption(value: number | undefined, fallback: number, label: string): number {
+function positiveOption(
+  value: number | undefined,
+  fallback: number,
+  label: string,
+  maximum = MAX_SAFE_SQLITE_INTEGER,
+): number {
   const selected = value ?? fallback;
-  if (!Number.isSafeInteger(selected) || selected < 1) {
-    throw new Error(`${LABEL}: ${label} must be a positive safe integer`);
+  if (!Number.isSafeInteger(selected) || selected < 1 || selected > maximum) {
+    throw new Error(`${LABEL}: ${label} must be an integer from 1 to ${maximum}`);
   }
   return selected;
 }
@@ -548,6 +591,18 @@ export function createSqliteDurableJobStore(
     options.maxPrivateBytes,
     DEFAULT_MAX_PRIVATE_BYTES,
     "maxPrivateBytes",
+  );
+  const maxAttemptsPerJob = positiveOption(
+    options.maxAttemptsPerJob,
+    DEFAULT_MAX_ATTEMPTS_PER_JOB,
+    "maxAttemptsPerJob",
+    MAX_ATTEMPTS_PER_JOB,
+  );
+  const maxAuditRecords = positiveOption(
+    options.maxAuditRecords,
+    DEFAULT_MAX_AUDIT_RECORDS,
+    "maxAuditRecords",
+    MAX_AUDIT_RECORDS,
   );
   const terminalRetentionMs = positiveOption(
     options.terminalRetentionMs,
@@ -578,7 +633,7 @@ export function createSqliteDurableJobStore(
         validate(database, objects) {
           if (!hasExactSchema(objects))
             throw new Error(`${LABEL}: database schema is incompatible`);
-          validateRows(database);
+          validateRows(database, maxAttemptsPerJob, maxAuditRecords);
         },
         isLegacy() {
           return false;
@@ -736,9 +791,9 @@ export function createSqliteDurableJobStore(
         "private byte accounting",
       );
       const counts = db
-        .query<{ total: number; queued: number; private_bytes: number }, []>(
+        .query<{ total: number; outstanding: number; private_bytes: number }, []>(
           `SELECT COUNT(*) AS total,
-             COALESCE(SUM(CASE WHEN state = 'queued' THEN 1 ELSE 0 END), 0) AS queued,
+             COALESCE(SUM(CASE WHEN state IN ('queued','leased','running','outcome_unknown') THEN 1 ELSE 0 END), 0) AS outstanding,
              COALESCE(SUM(private_bytes), 0) AS private_bytes
            FROM durable_jobs`,
         )
@@ -746,9 +801,9 @@ export function createSqliteDurableJobStore(
       if (!counts || !Number.isSafeInteger(counts.total) || counts.total >= maxTotalRecords) {
         throw new Error(`${LABEL}: total record capacity exhausted; prune terminal jobs`);
       }
-      if (!Number.isSafeInteger(counts.queued) || counts.queued >= maxQueuedRecords) {
+      if (!Number.isSafeInteger(counts.outstanding) || counts.outstanding >= maxQueuedRecords) {
         throw new Error(
-          `${LABEL}: queued record capacity exhausted; process or cancel queued jobs`,
+          `${LABEL}: outstanding job capacity exhausted; process, cancel, or reconcile active jobs`,
         );
       }
       if (
@@ -779,36 +834,61 @@ export function createSqliteDurableJobStore(
         throw new Error(`${LABEL}: leaseMs must be from 1 to ${MAX_LEASE_MS}`);
       const at = now();
       recoverExpired(at);
-      const candidate = db
-        .query<Row, [number]>(
-          `SELECT * FROM durable_jobs WHERE state = 'queued' AND available_at <= ?
-         ORDER BY available_at ASC, created_at ASC, job_id ASC LIMIT 1`,
-        )
-        .get(at);
-      if (!candidate) return null;
-      if (
-        candidate.attempt >= MAX_SAFE_SQLITE_INTEGER ||
-        candidate.version >= MAX_SAFE_SQLITE_INTEGER
-      ) {
-        throw new Error(`${LABEL}: job counters exhausted the safe integer range`);
+      while (true) {
+        const candidate = db
+          .query<Row, [number]>(
+            `SELECT * FROM durable_jobs WHERE state = 'queued' AND available_at <= ?
+           ORDER BY available_at ASC, created_at ASC, job_id ASC LIMIT 1`,
+          )
+          .get(at);
+        if (!candidate) return null;
+        if (candidate.attempt >= maxAttemptsPerJob) {
+          assertMutableVersion(candidate);
+          const exhausted = db
+            .query(
+              `UPDATE durable_jobs SET state = 'failed', version = version + 1, completed_at = ?, updated_at = ?,
+                error_code = 'attempt-limit-exceeded'
+               WHERE job_id = ? AND state = 'queued' AND version = ?`,
+            )
+            .run(at, at, candidate.job_id, candidate.version);
+          if (exhausted.changes !== 1) continue;
+          if (candidate.attempt > 0) {
+            db.query(
+              `UPDATE durable_job_attempts SET state = 'failed', settled_at = ?
+               WHERE job_id = ? AND attempt = ? AND state IN ('requeued','outcome_unknown')`,
+            ).run(at, candidate.job_id, candidate.attempt);
+          }
+          continue;
+        }
+        if (candidate.attempt >= MAX_SAFE_SQLITE_INTEGER) {
+          throw new Error(`${LABEL}: job counters exhausted the safe integer range`);
+        }
+        if (candidate.version >= MAX_SAFE_SQLITE_INTEGER) {
+          throw new Error(`${LABEL}: job version exhausted the safe integer range`);
+        }
+        const token = mintToken();
+        const expiresAt = safeAdd(at, leaseMs, "lease expiry");
+        const update = db
+          .query(
+            `UPDATE durable_jobs SET state = 'leased', attempt = attempt + 1, version = version + 1,
+            lease_owner = ?, lease_token = ?, lease_expires_at = ?, updated_at = ?
+           WHERE job_id = ? AND state = 'queued' AND available_at <= ?
+             AND attempt < ${MAX_SAFE_SQLITE_INTEGER} AND version < ${MAX_SAFE_SQLITE_INTEGER}`,
+          )
+          .run(workerId, token, expiresAt, at, candidate.job_id, at);
+        if (update.changes !== 1) continue;
+        const leased = select.get(candidate.job_id)!;
+        db.query(
+          `INSERT INTO durable_job_attempts (job_id,attempt,lease_token,worker_id,claimed_at,state)
+         VALUES (?,?,?,?,?,'leased')`,
+        ).run(leased.job_id, leased.attempt, token, workerId, at);
+        return {
+          job: summary(leased),
+          payload: parsePayload(leased.payload_json),
+          token,
+          expiresAt,
+        };
       }
-      const token = mintToken();
-      const expiresAt = safeAdd(at, leaseMs, "lease expiry");
-      const update = db
-        .query(
-          `UPDATE durable_jobs SET state = 'leased', attempt = attempt + 1, version = version + 1,
-          lease_owner = ?, lease_token = ?, lease_expires_at = ?, updated_at = ?
-         WHERE job_id = ? AND state = 'queued' AND available_at <= ?
-           AND attempt < ${MAX_SAFE_SQLITE_INTEGER} AND version < ${MAX_SAFE_SQLITE_INTEGER}`,
-        )
-        .run(workerId, token, expiresAt, at, candidate.job_id, at);
-      if (update.changes !== 1) return null;
-      const leased = select.get(candidate.job_id)!;
-      db.query(
-        `INSERT INTO durable_job_attempts (job_id,attempt,lease_token,worker_id,claimed_at,state)
-       VALUES (?,?,?,?,?,'leased')`,
-      ).run(leased.job_id, leased.attempt, token, workerId, at);
-      return { job: summary(leased), payload: parsePayload(leased.payload_json), token, expiresAt };
     },
   );
 
@@ -875,7 +955,7 @@ export function createSqliteDurableJobStore(
           const at = now();
           const row = activeRow(input.jobId, input.token, at, "leased");
           assertMutableVersion(row);
-          const errorCode = safeCode(input.errorCode, "errorCode");
+          const errorCode = allowedErrorCode(input.errorCode);
           const availableAt =
             input.availableAt === undefined ? at : safeTime(input.availableAt, "availableAt");
           if (
@@ -903,7 +983,7 @@ export function createSqliteDurableJobStore(
           const at = now();
           const row = activeRow(input.jobId, input.token, at, "leased");
           assertMutableVersion(row);
-          const errorCode = safeCode(input.errorCode, "errorCode");
+          const errorCode = allowedErrorCode(input.errorCode);
           if (
             db
               .query(
@@ -957,7 +1037,7 @@ export function createSqliteDurableJobStore(
           assertMutableVersion(row);
           if (row.cancel_requested)
             return summary(quarantine(row, at, "cancel-failure-race", false));
-          const errorCode = safeCode(input.errorCode, "errorCode");
+          const errorCode = allowedErrorCode(input.errorCode);
           const retryAt =
             input.retryAt === undefined ? undefined : safeTime(input.retryAt, "retryAt");
           const nextState = retryAt === undefined ? "failed" : "queued";
@@ -1081,6 +1161,19 @@ export function createSqliteDurableJobStore(
             !row.incident_version
           )
             return { reconciled: false };
+          const auditCount = db
+            .query<{ count: number }, []>(
+              "SELECT COUNT(*) AS count FROM durable_job_reconciliations",
+            )
+            .get()?.count;
+          if (
+            typeof auditCount !== "number" ||
+            !Number.isSafeInteger(auditCount) ||
+            auditCount < 0 ||
+            auditCount >= maxAuditRecords
+          ) {
+            throw new Error(`${LABEL}: reconciliation audit capacity exhausted`);
+          }
           const at = now();
           assertMutableVersion(row);
           const state =
