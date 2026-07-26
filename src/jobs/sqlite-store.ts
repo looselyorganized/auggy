@@ -11,12 +11,16 @@ import type {
   DurableJobLease,
   DurableJobPayload,
   DurableJobRecord,
+  DurableJobScheduleDefinition,
+  DurableJobScheduleSummary,
   DurableJobState,
   DurableJobStore,
   DurableJobSummary,
+  DurableScheduleMaterializationResult,
   SqliteDurableJobStoreOptions,
 } from "./types";
 import { DURABLE_JOB_ERROR_CODES } from "./types";
+import { nextUtcCron, parseUtcCron } from "./cron";
 
 export const DURABLE_JOBS_APPLICATION_ID = 0x444a4f42; // "DJOB"
 export const DURABLE_JOBS_SCHEMA_VERSION = 1;
@@ -24,6 +28,8 @@ const LABEL = "durable jobs";
 const MAX_JSON_BYTES = 64 * 1024;
 const MAX_LIST = 100;
 const MAX_PRUNE = 1_000;
+const MAX_SCHEDULES = 100;
+const MAX_SCHEDULE_TICK = 100;
 const MAX_LEASE_MS = 60 * 60_000;
 const MAX_RECOVERY_PER_TRANSITION = 100;
 const MAX_ATTEMPT_EXHAUSTION_PER_CLAIM = 100;
@@ -114,6 +120,35 @@ const SCHEMA = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_durable_job_incidents_time
      ON durable_job_incidents(detected_at, incident_id)`,
+  `CREATE TABLE IF NOT EXISTS durable_job_schedules (
+    schedule_id           TEXT PRIMARY KEY,
+    cron                  TEXT NOT NULL,
+    definition_hash       TEXT NOT NULL,
+    binding_json          TEXT NOT NULL,
+    payload_json          TEXT NOT NULL,
+    private_bytes         INTEGER NOT NULL CHECK (private_bytes >= 1),
+    revision              INTEGER NOT NULL CHECK (revision >= 1),
+    version               INTEGER NOT NULL CHECK (version >= 1),
+    config_enabled        INTEGER NOT NULL CHECK (config_enabled IN (0,1)),
+    operator_paused       INTEGER NOT NULL CHECK (operator_paused IN (0,1)),
+    next_fire_at          INTEGER NOT NULL,
+    created_at            INTEGER NOT NULL,
+    updated_at            INTEGER NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_durable_job_schedules_due
+     ON durable_job_schedules(config_enabled, operator_paused, next_fire_at, schedule_id)`,
+  `CREATE TABLE IF NOT EXISTS durable_job_schedule_occurrences (
+    schedule_id           TEXT NOT NULL,
+    revision              INTEGER NOT NULL CHECK (revision >= 1),
+    scheduled_for         INTEGER NOT NULL,
+    job_id                TEXT NOT NULL UNIQUE,
+    created_at            INTEGER NOT NULL,
+    PRIMARY KEY (schedule_id, revision, scheduled_for),
+    FOREIGN KEY (schedule_id) REFERENCES durable_job_schedules(schedule_id),
+    FOREIGN KEY (job_id) REFERENCES durable_jobs(job_id) ON DELETE CASCADE
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_durable_job_schedule_occurrences_job
+     ON durable_job_schedule_occurrences(job_id)`,
 ] as const;
 
 const EXPECTED_SCHEMA = new Map(
@@ -146,6 +181,22 @@ interface Row {
   incident_id: string | null;
   incident_version: number | null;
   incident_reason_code: string | null;
+  created_at: number;
+  updated_at: number;
+}
+
+interface ScheduleRow {
+  schedule_id: string;
+  cron: string;
+  definition_hash: string;
+  binding_json: string;
+  payload_json: string;
+  private_bytes: number;
+  revision: number;
+  version: number;
+  config_enabled: number;
+  operator_paused: number;
+  next_fire_at: number;
   created_at: number;
   updated_at: number;
 }
@@ -582,6 +633,88 @@ function validateRows(
     safeId(reconciliation.incident_id, "stored reconciliation incident ID");
     safeId(reconciliation.job_id, "stored reconciliation job ID");
   }
+  const scheduleCount = db
+    .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM durable_job_schedules")
+    .get()?.count;
+  if (
+    typeof scheduleCount !== "number" ||
+    !Number.isSafeInteger(scheduleCount) ||
+    scheduleCount < 0 ||
+    scheduleCount > MAX_SCHEDULES
+  ) {
+    throw new Error(`${LABEL}: stored schedules exceed configured capacity`);
+  }
+  for (const schedule of db.query<ScheduleRow, []>("SELECT * FROM durable_job_schedules").all()) {
+    safeId(schedule.schedule_id, "stored schedule ID");
+    try {
+      parseUtcCron(schedule.cron);
+    } catch {
+      throw new Error(`${LABEL}: stored schedule cron is invalid`);
+    }
+    if (!/^[a-f0-9]{64}$/.test(schedule.definition_hash)) {
+      throw new Error(`${LABEL}: stored schedule definition is invalid`);
+    }
+    if (
+      !Number.isSafeInteger(schedule.revision) ||
+      schedule.revision < 1 ||
+      !Number.isSafeInteger(schedule.version) ||
+      schedule.version < 1 ||
+      !Number.isSafeInteger(schedule.private_bytes) ||
+      schedule.private_bytes < 1 ||
+      !Number.isSafeInteger(schedule.next_fire_at) ||
+      schedule.next_fire_at < 0 ||
+      !Number.isSafeInteger(schedule.created_at) ||
+      schedule.created_at < 0 ||
+      !Number.isSafeInteger(schedule.updated_at) ||
+      schedule.updated_at < schedule.created_at ||
+      !Number.isSafeInteger(schedule.config_enabled) ||
+      !Number.isSafeInteger(schedule.operator_paused) ||
+      schedule.config_enabled < 0 ||
+      schedule.config_enabled > 1 ||
+      schedule.operator_paused < 0 ||
+      schedule.operator_paused > 1
+    ) {
+      throw new Error(`${LABEL}: stored schedule state is inconsistent`);
+    }
+    let binding: string;
+    let payload: string;
+    try {
+      binding = boundedJson(JSON.parse(schedule.binding_json), "stored schedule binding");
+      payload = payloadJson(JSON.parse(schedule.payload_json) as DurableJobPayload);
+    } catch {
+      throw new Error(`${LABEL}: stored schedule private data is invalid`);
+    }
+    if (binding !== schedule.binding_json || payload !== schedule.payload_json) {
+      throw new Error(`${LABEL}: stored schedule payload is not canonical`);
+    }
+    if (
+      schedule.private_bytes !==
+      safeAdd(
+        Buffer.byteLength(binding, "utf8"),
+        Buffer.byteLength(payload, "utf8"),
+        "schedule bytes",
+      )
+    ) {
+      throw new Error(`${LABEL}: stored schedule byte accounting is inconsistent`);
+    }
+    if (sha256(`${schedule.cron}\n${binding}\n${payload}`) !== schedule.definition_hash) {
+      throw new Error(`${LABEL}: stored schedule definition is inconsistent`);
+    }
+  }
+  const invalidOccurrence = db
+    .query<{ schedule_id: string }, []>(
+      `SELECT o.schedule_id FROM durable_job_schedule_occurrences o
+       JOIN durable_job_schedules s ON s.schedule_id = o.schedule_id
+       JOIN durable_jobs j ON j.job_id = o.job_id
+       WHERE typeof(o.revision) <> 'integer' OR o.revision < 1 OR o.revision > ${MAX_SAFE_SQLITE_INTEGER}
+          OR typeof(o.scheduled_for) <> 'integer' OR o.scheduled_for < 0 OR o.scheduled_for > ${MAX_SAFE_SQLITE_INTEGER}
+          OR typeof(o.created_at) <> 'integer' OR o.created_at < 0 OR o.created_at > ${MAX_SAFE_SQLITE_INTEGER}
+          OR o.revision > s.revision
+          OR o.created_at < s.created_at OR o.created_at < j.created_at
+       LIMIT 1`,
+    )
+    .get();
+  if (invalidOccurrence) throw new Error(`${LABEL}: stored schedule occurrence is inconsistent`);
 }
 
 function summary(row: Row): DurableJobSummary {
@@ -599,6 +732,21 @@ function summary(row: Row): DurableJobSummary {
     availableAt: row.available_at,
     cancelRequested: row.cancel_requested === 1,
     ...(incident ? { incident } : {}),
+  };
+}
+
+function scheduleSummary(row: ScheduleRow): DurableJobScheduleSummary {
+  return {
+    id: row.schedule_id,
+    cron: row.cron,
+    revision: row.revision,
+    version: row.version,
+    configEnabled: row.config_enabled === 1,
+    operatorPaused: row.operator_paused === 1,
+    enabled: row.config_enabled === 1 && row.operator_paused === 0,
+    nextFireAt: row.next_fire_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -727,6 +875,9 @@ export function createSqliteDurableJobStore(
   const selectByKey = db.query<Row, [string]>(
     "SELECT * FROM durable_jobs WHERE idempotency_key_hash = ?",
   );
+  const selectSchedule = db.query<ScheduleRow, [string]>(
+    "SELECT * FROM durable_job_schedules WHERE schedule_id = ?",
+  );
 
   function activeRow(jobId: string, token: string, at: number, state?: "leased" | "running"): Row {
     const row = select.get(safeId(jobId, "job ID"));
@@ -829,63 +980,83 @@ export function createSqliteDurableJobStore(
     return { requeued, quarantined };
   }
 
+  function submitInTransaction(
+    input: {
+      idempotencyKey: string;
+      binding: unknown;
+      payload: DurableJobPayload;
+      availableAt?: number;
+    },
+    transactionTime = now(),
+  ) {
+    const key = safeText(input.idempotencyKey, "idempotency key", 256);
+    const storedPayload = payloadJson(input.payload);
+    const storedBinding = boundedJson(input.binding, "binding");
+    const bindingHash = sha256(`${storedBinding}\n${storedPayload}`);
+    const keyHash = sha256(key);
+    const existing = selectByKey.get(keyHash);
+    if (existing) {
+      if (existing.binding_hash !== bindingHash)
+        throw new Error(`${LABEL}: idempotency binding conflicts`);
+      return { status: "joined" as const, job: summary(existing) };
+    }
+    const privateBytes = safeAdd(
+      Buffer.byteLength(storedBinding, "utf8"),
+      Buffer.byteLength(storedPayload, "utf8"),
+      "private byte accounting",
+    );
+    const counts = db
+      .query<{ total: number; outstanding: number; private_bytes: number }, []>(
+        `SELECT COUNT(*) AS total,
+             COALESCE(SUM(CASE WHEN state IN ('queued','leased','running','outcome_unknown') THEN 1 ELSE 0 END), 0) AS outstanding,
+             COALESCE(SUM(private_bytes), 0) AS private_bytes
+           FROM durable_jobs`,
+      )
+      .get();
+    if (!counts || !Number.isSafeInteger(counts.total) || counts.total >= maxTotalRecords) {
+      throw new Error(`${LABEL}: total record capacity exhausted; prune terminal jobs`);
+    }
+    if (!Number.isSafeInteger(counts.outstanding) || counts.outstanding >= maxQueuedRecords) {
+      throw new Error(
+        `${LABEL}: outstanding job capacity exhausted; process, cancel, or reconcile active jobs`,
+      );
+    }
+    if (
+      !Number.isSafeInteger(counts.private_bytes) ||
+      counts.private_bytes < 0 ||
+      privateBytes > maxPrivateBytes - counts.private_bytes
+    ) {
+      throw new Error(`${LABEL}: private byte capacity exhausted; prune terminal jobs`);
+    }
+    const availableAt =
+      input.availableAt === undefined
+        ? transactionTime
+        : safeTime(input.availableAt, "availableAt");
+    const jobId = mintJobId();
+    db.query(
+      `INSERT INTO durable_jobs (
+        job_id,idempotency_key_hash,binding_hash,payload_json,private_bytes,state,attempt,version,available_at,created_at,updated_at
+      ) VALUES (?,?,?,?,?, 'queued',0,1,?,?,?)`,
+    ).run(
+      jobId,
+      keyHash,
+      bindingHash,
+      storedPayload,
+      privateBytes,
+      availableAt,
+      transactionTime,
+      transactionTime,
+    );
+    return { status: "created" as const, job: summary(select.get(jobId)!) };
+  }
+
   const submitTx = db.transaction(
     (input: {
       idempotencyKey: string;
       binding: unknown;
       payload: DurableJobPayload;
       availableAt?: number;
-    }) => {
-      const key = safeText(input.idempotencyKey, "idempotency key", 256);
-      const storedPayload = payloadJson(input.payload);
-      const storedBinding = boundedJson(input.binding, "binding");
-      const bindingHash = sha256(`${storedBinding}\n${storedPayload}`);
-      const keyHash = sha256(key);
-      const existing = selectByKey.get(keyHash);
-      if (existing) {
-        if (existing.binding_hash !== bindingHash)
-          throw new Error(`${LABEL}: idempotency binding conflicts`);
-        return { status: "joined" as const, job: summary(existing) };
-      }
-      const privateBytes = safeAdd(
-        Buffer.byteLength(storedBinding, "utf8"),
-        Buffer.byteLength(storedPayload, "utf8"),
-        "private byte accounting",
-      );
-      const counts = db
-        .query<{ total: number; outstanding: number; private_bytes: number }, []>(
-          `SELECT COUNT(*) AS total,
-             COALESCE(SUM(CASE WHEN state IN ('queued','leased','running','outcome_unknown') THEN 1 ELSE 0 END), 0) AS outstanding,
-             COALESCE(SUM(private_bytes), 0) AS private_bytes
-           FROM durable_jobs`,
-        )
-        .get();
-      if (!counts || !Number.isSafeInteger(counts.total) || counts.total >= maxTotalRecords) {
-        throw new Error(`${LABEL}: total record capacity exhausted; prune terminal jobs`);
-      }
-      if (!Number.isSafeInteger(counts.outstanding) || counts.outstanding >= maxQueuedRecords) {
-        throw new Error(
-          `${LABEL}: outstanding job capacity exhausted; process, cancel, or reconcile active jobs`,
-        );
-      }
-      if (
-        !Number.isSafeInteger(counts.private_bytes) ||
-        counts.private_bytes < 0 ||
-        privateBytes > maxPrivateBytes - counts.private_bytes
-      ) {
-        throw new Error(`${LABEL}: private byte capacity exhausted; prune terminal jobs`);
-      }
-      const at = now();
-      const availableAt =
-        input.availableAt === undefined ? at : safeTime(input.availableAt, "availableAt");
-      const jobId = mintJobId();
-      db.query(
-        `INSERT INTO durable_jobs (
-        job_id,idempotency_key_hash,binding_hash,payload_json,private_bytes,state,attempt,version,available_at,created_at,updated_at
-      ) VALUES (?,?,?,?,?, 'queued',0,1,?,?,?)`,
-      ).run(jobId, keyHash, bindingHash, storedPayload, privateBytes, availableAt, at, at);
-      return { status: "created" as const, job: summary(select.get(jobId)!) };
-    },
+    }) => submitInTransaction(input),
   );
 
   const claimTx = db.transaction(
@@ -954,6 +1125,255 @@ export function createSqliteDurableJobStore(
           expiresAt,
         };
       }
+    },
+  );
+
+  function scheduleDefinition(input: DurableJobScheduleDefinition, at: number) {
+    if (
+      !input ||
+      typeof input !== "object" ||
+      Array.isArray(input) ||
+      Object.getPrototypeOf(input) !== Object.prototype
+    ) {
+      throw new Error(`${LABEL}: schedule definition is invalid`);
+    }
+    if (Object.getOwnPropertySymbols(input).length > 0) {
+      throw new Error(`${LABEL}: schedule definition is invalid`);
+    }
+    const descriptors = Object.getOwnPropertyDescriptors(input);
+    const names = Object.keys(descriptors).sort();
+    const allowed = new Set(["id", "cron", "binding", "payload", "enabled"]);
+    if (
+      names.some((name) => !allowed.has(name)) ||
+      !["id", "cron", "binding", "payload"].every((name) => names.includes(name))
+    ) {
+      throw new Error(`${LABEL}: schedule definition is invalid`);
+    }
+    for (const name of names) {
+      const descriptor = descriptors[name]!;
+      if (!descriptor.enumerable || !("value" in descriptor)) {
+        throw new Error(`${LABEL}: schedule definition is invalid`);
+      }
+    }
+    const idValue = descriptors.id!.value;
+    if (typeof idValue !== "string") {
+      throw new Error(`${LABEL}: schedule definition is invalid`);
+    }
+    const id = safeId(idValue, "schedule ID");
+    let cron: string;
+    try {
+      if (typeof descriptors.cron!.value !== "string") throw new Error();
+      parseUtcCron(descriptors.cron!.value);
+      cron = descriptors.cron!.value;
+    } catch {
+      throw new Error(`${LABEL}: schedule cron is invalid`);
+    }
+    const enabled = descriptors.enabled?.value;
+    if (enabled !== undefined && typeof enabled !== "boolean") {
+      throw new Error(`${LABEL}: schedule enabled is invalid`);
+    }
+    const binding = boundedJson(descriptors.binding!.value, "schedule binding");
+    const payload = payloadJson(descriptors.payload!.value as DurableJobPayload);
+    const privateBytes = safeAdd(
+      Buffer.byteLength(binding, "utf8"),
+      Buffer.byteLength(payload, "utf8"),
+      "schedule private byte accounting",
+    );
+    const next = nextUtcCron(cron, new Date(at));
+    if (!next || !Number.isSafeInteger(next.getTime()) || next.getTime() <= at) {
+      throw new Error(`${LABEL}: schedule cron has no bounded next occurrence`);
+    }
+    return {
+      id,
+      cron,
+      binding,
+      payload,
+      privateBytes,
+      enabled: enabled ?? true,
+      nextFireAt: next.getTime(),
+      definitionHash: sha256(`${cron}\n${binding}\n${payload}`),
+    };
+  }
+
+  const syncSchedulesTx = db.transaction(
+    (definitions: readonly DurableJobScheduleDefinition[], explicitNow?: number) => {
+      if (!Array.isArray(definitions) || definitions.length > MAX_SCHEDULES) {
+        throw new Error(`${LABEL}: schedules must contain at most ${MAX_SCHEDULES} definitions`);
+      }
+      const at = explicitNow === undefined ? now() : safeTime(explicitNow, "schedule now");
+      const parsed = definitions.map((definition) => scheduleDefinition(definition, at));
+      const ids = new Set<string>();
+      for (const definition of parsed) {
+        if (ids.has(definition.id)) throw new Error(`${LABEL}: schedule IDs must be unique`);
+        ids.add(definition.id);
+      }
+      // A declaration removed from configuration first becomes disabled. If it
+      // never produced an occurrence it has no history to preserve and can be
+      // reclaimed, keeping schedule metadata bounded across config rotations.
+      for (const row of db.query<ScheduleRow, []>("SELECT * FROM durable_job_schedules").all()) {
+        if (ids.has(row.schedule_id) || row.config_enabled === 0) continue;
+        if (row.version >= MAX_SAFE_SQLITE_INTEGER) {
+          throw new Error(`${LABEL}: schedule version exhausted the safe integer range`);
+        }
+        db.query(
+          `UPDATE durable_job_schedules SET config_enabled = 0, version = version + 1, updated_at = ?
+           WHERE schedule_id = ? AND version = ?`,
+        ).run(at, row.schedule_id, row.version);
+      }
+      db.query(
+        `DELETE FROM durable_job_schedules
+         WHERE config_enabled = 0
+           AND NOT EXISTS (
+             SELECT 1 FROM durable_job_schedule_occurrences o WHERE o.schedule_id = durable_job_schedules.schedule_id
+           )`,
+      ).run();
+      const existingCount = db
+        .query<{ count: number }, []>("SELECT COUNT(*) AS count FROM durable_job_schedules")
+        .get()?.count;
+      if (!Number.isSafeInteger(existingCount) || (existingCount ?? 0) > MAX_SCHEDULES) {
+        throw new Error(`${LABEL}: stored schedules exceed configured capacity`);
+      }
+      let admittedScheduleCount = existingCount ?? 0;
+      for (const definition of parsed) {
+        const row = selectSchedule.get(definition.id);
+        if (!row) {
+          if (admittedScheduleCount >= MAX_SCHEDULES) {
+            throw new Error(`${LABEL}: schedule capacity exhausted`);
+          }
+          db.query(
+            `INSERT INTO durable_job_schedules (
+              schedule_id,cron,definition_hash,binding_json,payload_json,private_bytes,revision,version,
+              config_enabled,operator_paused,next_fire_at,created_at,updated_at
+            ) VALUES (?,?,?,?,?,?,1,1,?,?,?, ?,?)`,
+          ).run(
+            definition.id,
+            definition.cron,
+            definition.definitionHash,
+            definition.binding,
+            definition.payload,
+            definition.privateBytes,
+            definition.enabled ? 1 : 0,
+            0,
+            definition.nextFireAt,
+            at,
+            at,
+          );
+          admittedScheduleCount++;
+          continue;
+        }
+        if (row.version >= MAX_SAFE_SQLITE_INTEGER || row.revision >= MAX_SAFE_SQLITE_INTEGER) {
+          throw new Error(`${LABEL}: schedule counters exhausted the safe integer range`);
+        }
+        const changed = row.definition_hash !== definition.definitionHash;
+        const configChanged = row.config_enabled !== (definition.enabled ? 1 : 0);
+        if (!changed && !configChanged) continue;
+        db.query(
+          `UPDATE durable_job_schedules SET cron = ?, definition_hash = ?, binding_json = ?, payload_json = ?,
+             private_bytes = ?, revision = CASE WHEN ? THEN revision + 1 ELSE revision END,
+             config_enabled = ?, next_fire_at = CASE WHEN ? THEN ? ELSE next_fire_at END,
+             version = version + 1, updated_at = ?
+           WHERE schedule_id = ? AND version = ?`,
+        ).run(
+          definition.cron,
+          definition.definitionHash,
+          definition.binding,
+          definition.payload,
+          definition.privateBytes,
+          changed ? 1 : 0,
+          definition.enabled ? 1 : 0,
+          changed ? 1 : 0,
+          definition.nextFireAt,
+          at,
+          definition.id,
+          row.version,
+        );
+      }
+      return db
+        .query<ScheduleRow, []>("SELECT * FROM durable_job_schedules ORDER BY schedule_id ASC")
+        .all()
+        .map(scheduleSummary);
+    },
+  );
+
+  const materializeSchedulesTx = db.transaction(
+    (
+      explicitNow: number | undefined,
+      requestedLimit: number | undefined,
+    ): DurableScheduleMaterializationResult => {
+      const at = explicitNow === undefined ? now() : safeTime(explicitNow, "schedule now");
+      const limit = requestedLimit ?? MAX_SCHEDULE_TICK;
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SCHEDULE_TICK) {
+        throw new Error(`${LABEL}: schedule tick limit must be between 1 and ${MAX_SCHEDULE_TICK}`);
+      }
+      const due = db
+        .query<ScheduleRow, [number, number]>(
+          `SELECT * FROM durable_job_schedules
+           WHERE config_enabled = 1 AND operator_paused = 0 AND next_fire_at <= ?
+           ORDER BY next_fire_at ASC, schedule_id ASC LIMIT ?`,
+        )
+        .all(at, limit);
+      for (const row of due) {
+        const occurrenceAt = safeTime(row.next_fire_at, "stored next fire time");
+        const next = nextUtcCron(parseUtcCron(row.cron), new Date(at));
+        if (!next || !Number.isSafeInteger(next.getTime()) || next.getTime() <= at) {
+          throw new Error(`${LABEL}: stored schedule cron has no bounded next occurrence`);
+        }
+        const occurrenceKey = `schedule-${row.schedule_id}-${row.revision}-${occurrenceAt}`;
+        let target: unknown;
+        let payload: DurableJobPayload;
+        try {
+          target = JSON.parse(row.binding_json);
+          payload = parsePayload(row.payload_json);
+        } catch {
+          throw new Error(`${LABEL}: stored schedule private data is invalid`);
+        }
+        const binding = {
+          durableSchedule: {
+            id: row.schedule_id,
+            revision: row.revision,
+            scheduledFor: occurrenceAt,
+          },
+          target,
+        };
+        const submitted = submitInTransaction(
+          {
+            idempotencyKey: occurrenceKey,
+            binding,
+            payload,
+            availableAt: occurrenceAt,
+          },
+          at,
+        );
+        if (submitted.status !== "created") {
+          throw new Error(`${LABEL}: schedule occurrence binding is inconsistent`);
+        }
+        db.query(
+          `INSERT INTO durable_job_schedule_occurrences (schedule_id,revision,scheduled_for,job_id,created_at)
+           VALUES (?,?,?,?,?)`,
+        ).run(row.schedule_id, row.revision, occurrenceAt, submitted.job.id, at);
+        if (row.version >= MAX_SAFE_SQLITE_INTEGER) {
+          throw new Error(`${LABEL}: schedule version exhausted the safe integer range`);
+        }
+        const update = db
+          .query(
+            `UPDATE durable_job_schedules SET next_fire_at = ?, version = version + 1, updated_at = ?
+             WHERE schedule_id = ? AND revision = ? AND version = ?
+               AND config_enabled = 1 AND operator_paused = 0 AND next_fire_at = ?`,
+          )
+          .run(next.getTime(), at, row.schedule_id, row.revision, row.version, occurrenceAt);
+        if (update.changes !== 1)
+          throw new Error(`${LABEL}: schedule changed during materialization`);
+      }
+      const remaining = db
+        .query<{ count: number }, [number]>(
+          `SELECT COUNT(*) AS count FROM durable_job_schedules
+           WHERE config_enabled = 1 AND operator_paused = 0 AND next_fire_at <= ?`,
+        )
+        .get(at)?.count;
+      if (!Number.isSafeInteger(remaining) || (remaining ?? 0) < 0) {
+        throw new Error(`${LABEL}: schedule due count is invalid`);
+      }
+      return { materialized: due.length, remaining: remaining ?? 0 };
     },
   );
 
@@ -1274,6 +1694,125 @@ export function createSqliteDurableJobStore(
           );
           db.query("DELETE FROM durable_job_incidents WHERE incident_id = ?").run(row.incident_id);
           return { reconciled: true, job: summary(select.get(jobId)!) };
+        })
+        .immediate();
+    },
+    retryFailed(input) {
+      assertOpen();
+      return db
+        .transaction(() => {
+          const jobId = safeId(input.jobId, "job ID");
+          if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) {
+            throw new Error(`${LABEL}: expectedVersion is invalid`);
+          }
+          const row = select.get(jobId);
+          if (row?.state !== "failed" || row.version !== input.expectedVersion) {
+            return { retried: false };
+          }
+          if (row.attempt >= maxAttemptsPerJob || row.version >= MAX_SAFE_SQLITE_INTEGER) {
+            return { retried: false };
+          }
+          const outstanding = db
+            .query<{ count: number }, []>(
+              `SELECT COUNT(*) AS count FROM durable_jobs
+               WHERE state IN ('queued','leased','running','outcome_unknown')`,
+            )
+            .get()?.count;
+          if (
+            !Number.isSafeInteger(outstanding) ||
+            (outstanding ?? 0) < 0 ||
+            (outstanding ?? 0) >= maxQueuedRecords
+          ) {
+            return { retried: false };
+          }
+          const at = now();
+          const availableAt =
+            input.availableAt === undefined ? at : safeTime(input.availableAt, "availableAt");
+          const change = db
+            .query(
+              `UPDATE durable_jobs SET state = 'queued', version = version + 1, available_at = ?,
+                started_at = NULL, completed_at = NULL, result_json = NULL, error_code = NULL,
+                cancel_requested = 0, cancel_reason = NULL, updated_at = ?
+               WHERE job_id = ? AND state = 'failed' AND version = ?`,
+            )
+            .run(availableAt, at, jobId, input.expectedVersion);
+          if (change.changes !== 1) return { retried: false };
+          return { retried: true, job: summary(select.get(jobId)!) };
+        })
+        .immediate();
+    },
+    syncSchedules(definitions, input = {}) {
+      assertOpen();
+      return syncSchedulesTx.immediate(definitions, input.now);
+    },
+    materializeDueSchedules(input = {}) {
+      assertOpen();
+      return materializeSchedulesTx.immediate(input.now, input.limit);
+    },
+    listSchedules(input = {}) {
+      assertOpen();
+      const limit = input.limit ?? MAX_SCHEDULES;
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_SCHEDULES) {
+        throw new Error(`${LABEL}: schedule list limit must be between 1 and ${MAX_SCHEDULES}`);
+      }
+      return db
+        .query<ScheduleRow, [number]>(
+          "SELECT * FROM durable_job_schedules ORDER BY schedule_id ASC LIMIT ?",
+        )
+        .all(limit)
+        .map(scheduleSummary);
+    },
+    pauseSchedule(input) {
+      assertOpen();
+      return db
+        .transaction(() => {
+          const id = safeId(input.scheduleId, "schedule ID");
+          if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) {
+            throw new Error(`${LABEL}: expectedVersion is invalid`);
+          }
+          const row = selectSchedule.get(id);
+          if (!row || row.version !== input.expectedVersion || row.operator_paused === 1) {
+            return { paused: false };
+          }
+          if (row.version >= MAX_SAFE_SQLITE_INTEGER) {
+            throw new Error(`${LABEL}: schedule version exhausted the safe integer range`);
+          }
+          const at = now();
+          const update = db
+            .query(
+              `UPDATE durable_job_schedules SET operator_paused = 1, version = version + 1, updated_at = ?
+               WHERE schedule_id = ? AND version = ? AND operator_paused = 0`,
+            )
+            .run(at, id, input.expectedVersion);
+          if (update.changes !== 1) return { paused: false };
+          return { paused: true, schedule: scheduleSummary(selectSchedule.get(id)!) };
+        })
+        .immediate();
+    },
+    resumeSchedule(input) {
+      assertOpen();
+      return db
+        .transaction(() => {
+          const id = safeId(input.scheduleId, "schedule ID");
+          if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) {
+            throw new Error(`${LABEL}: expectedVersion is invalid`);
+          }
+          const row = selectSchedule.get(id);
+          if (!row || row.version !== input.expectedVersion || row.operator_paused === 0) {
+            return { resumed: false };
+          }
+          if (row.version >= MAX_SAFE_SQLITE_INTEGER) {
+            throw new Error(`${LABEL}: schedule version exhausted the safe integer range`);
+          }
+          const at = now();
+          const update = db
+            .query(
+              `UPDATE durable_job_schedules SET operator_paused = 0, version = version + 1, updated_at = ?
+               WHERE schedule_id = ? AND version = ? AND operator_paused = 1`,
+            )
+            .run(at, id, input.expectedVersion);
+          if (update.changes !== 1) return { resumed: false };
+          return { resumed: true, schedule: scheduleSummary(selectSchedule.get(id)!) };
         })
         .immediate();
     },

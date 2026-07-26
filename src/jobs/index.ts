@@ -22,8 +22,11 @@ export {
   type DurableJobLease,
   type DurableJobPayload,
   type DurableJobRecord,
+  type DurableJobScheduleDefinition,
+  type DurableJobScheduleSummary,
   type DurableJobState,
   type DurableJobStore,
   type DurableJobSummary,
+  type DurableScheduleMaterializationResult,
   type SqliteDurableJobStoreOptions,
 } from "./types";

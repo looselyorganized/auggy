@@ -63,6 +63,38 @@ export interface DurableJobLease {
   expiresAt: number;
 }
 
+/**
+ * Trusted declarative definition for a recurring complete turn. Binding and
+ * payload are deliberately write-only: operator listings never expose them.
+ */
+export interface DurableJobScheduleDefinition {
+  id: string;
+  cron: string;
+  binding: unknown;
+  payload: DurableJobPayload;
+  enabled?: boolean;
+}
+
+/** Redacted schedule state suitable for operator control output. */
+export interface DurableJobScheduleSummary {
+  id: string;
+  cron: string;
+  revision: number;
+  version: number;
+  configEnabled: boolean;
+  operatorPaused: boolean;
+  enabled: boolean;
+  nextFireAt: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface DurableScheduleMaterializationResult {
+  materialized: number;
+  /** Number of due schedules left untouched because the bounded tick ended. */
+  remaining: number;
+}
+
 export interface DurableJobStore {
   submit(input: {
     idempotencyKey: string;
@@ -112,6 +144,30 @@ export interface DurableJobStore {
     disposition: "retry" | "cancel" | "confirm_completed";
     evidence: string;
   }): { reconciled: boolean; job?: DurableJobSummary };
+  /** Operator-only CAS retry of a known definite failure. */
+  retryFailed(input: { jobId: string; expectedVersion: number; availableAt?: number }): {
+    retried: boolean;
+    job?: DurableJobSummary;
+  };
+  /** Reconciles trusted declarative schedules without exposing their private data. */
+  syncSchedules(
+    definitions: readonly DurableJobScheduleDefinition[],
+    input?: { now?: number },
+  ): DurableJobScheduleSummary[];
+  /** Atomically creates at most one coalesced occurrence per due schedule. */
+  materializeDueSchedules(input?: {
+    now?: number;
+    limit?: number;
+  }): DurableScheduleMaterializationResult;
+  listSchedules(input?: { limit?: number }): DurableJobScheduleSummary[];
+  pauseSchedule(input: { scheduleId: string; expectedVersion: number }): {
+    paused: boolean;
+    schedule?: DurableJobScheduleSummary;
+  };
+  resumeSchedule(input: { scheduleId: string; expectedVersion: number }): {
+    resumed: boolean;
+    schedule?: DurableJobScheduleSummary;
+  };
   get(jobId: string): DurableJobRecord | null;
   getSummary(jobId: string): DurableJobSummary | null;
   list(input?: { limit?: number; state?: DurableJobState }): DurableJobSummary[];
