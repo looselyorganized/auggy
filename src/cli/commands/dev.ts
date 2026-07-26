@@ -236,6 +236,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
       compactionStrategy: config.settings.compactionStrategy,
       maxInferenceLoops: config.settings.maxInferenceLoops,
       responseLimits: config.engine.responseLimits,
+      providerRequestTimeoutMs: config.engine.requestTimeoutMs,
       turnScheduling: config.settings.turnScheduling,
       coordination: config.settings.coordination,
     };

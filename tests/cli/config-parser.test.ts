@@ -819,6 +819,38 @@ describe("engine.reasoningEffort validation", () => {
   });
 });
 
+describe("engine.requestTimeoutMs validation", () => {
+  test("accepts a finite provider deadline", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        engine: {
+          provider: "anthropic",
+          model: "claude-sonnet-4-6",
+          requestTimeoutMs: 45_000,
+        },
+      }),
+    );
+    expect(parseConfig(path).engine.requestTimeoutMs).toBe(45_000);
+  });
+
+  for (const timeout of [0, -1, 1.5, 600_001, "120000"]) {
+    test(`rejects unsafe timeout ${String(timeout)}`, () => {
+      const path = writeYaml(
+        `agent-${String(timeout).replaceAll(".", "-")}.yaml`,
+        minimalConfig({
+          engine: {
+            provider: "anthropic",
+            model: "claude-sonnet-4-6",
+            requestTimeoutMs: timeout,
+          },
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow("engine.requestTimeoutMs");
+    });
+  }
+});
+
 describe("engine credential transport validation", () => {
   test("accepts absolute HTTP(S) base URLs and a boolean development override", () => {
     const path = writeYaml(

@@ -82,6 +82,8 @@ export interface EngineConfig {
   maxTokens?: number;
   /** Finite model response limits enforced by both adapters and the kernel. */
   responseLimits?: Partial<ModelResponseLimits>;
+  /** One-attempt provider deadline in milliseconds. Default 120s, max 10 minutes. */
+  requestTimeoutMs?: number;
   /** Optional proxy/gateway base URL. Ignored for openrouter (hardcoded). */
   baseURL?: string;
   /**

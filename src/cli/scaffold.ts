@@ -205,6 +205,7 @@ engine:
   model: claude-sonnet-4-6   # openai: gpt-5.4-mini | openrouter: qwen/qwen3.5-397b-a17b
   maxContextTokens: 200000   # for openrouter, set per-model — defaults vary
   maxTokens: 4096            # sent as max_completion_tokens for openai/openrouter
+  requestTimeoutMs: 120000   # one attempt; covers setup, streaming, and materialization
   # reasoningEffort: medium  # optional: none|minimal|low|medium|high|xhigh
   # providerRouting:         # openrouter only — base slugs verified before inference
   #   only: [openai]         # canonical lowercase slug; variants with "/" are rejected

@@ -28,6 +28,7 @@ import {
   compileTrustedProxyNetworks,
 } from "../transports/console-request-security";
 import { DEFAULT_EXTRACTION_BUFFER_LIMITS } from "../augments/layeredMemory/extractor/buffer";
+import { MAX_PROVIDER_REQUEST_TIMEOUT_MS } from "../engines/_shared/provider-resilience";
 
 // ---------------------------------------------------------------------------
 // .env loading
@@ -1924,6 +1925,16 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
           errors.push("engine.responseLimits.maxTextBytes: cannot exceed maxResponseBytes");
         }
       }
+    }
+    if (
+      engine.requestTimeoutMs !== undefined &&
+      (!Number.isSafeInteger(engine.requestTimeoutMs) ||
+        (engine.requestTimeoutMs as number) < 1 ||
+        (engine.requestTimeoutMs as number) > MAX_PROVIDER_REQUEST_TIMEOUT_MS)
+    ) {
+      errors.push(
+        `engine.requestTimeoutMs: must be a positive integer no greater than ${MAX_PROVIDER_REQUEST_TIMEOUT_MS}`,
+      );
     }
     if (engine.costOverride !== undefined) {
       if (

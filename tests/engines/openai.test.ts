@@ -13,6 +13,8 @@ let lastCreateOptions: { signal?: AbortSignal } | null = null;
 let lastConstructorArgs: Record<string, unknown> | null = null;
 let nextResponse: OpenAI.Chat.ChatCompletion | null = null;
 let throwOnCreate: Error | null = null;
+let createOverride: (() => Promise<OpenAI.Chat.ChatCompletion>) | null = null;
+let createCalls = 0;
 
 const defaultResponse = (): OpenAI.Chat.ChatCompletion => ({
   id: "chatcmpl-test",
@@ -42,9 +44,11 @@ mock.module("openai", () => {
           params: Record<string, unknown>,
           options?: { signal?: AbortSignal },
         ): Promise<OpenAI.Chat.ChatCompletion> => {
+          createCalls++;
           lastCreateArgs = params;
           lastCreateOptions = options ?? null;
           if (throwOnCreate) throw throwOnCreate;
+          if (createOverride) return createOverride();
           return nextResponse ?? defaultResponse();
         },
       },
@@ -73,6 +77,8 @@ beforeEach(() => {
   lastConstructorArgs = null;
   nextResponse = null;
   throwOnCreate = null;
+  createOverride = null;
+  createCalls = 0;
 });
 
 // ---------------------------------------------------------------------------
@@ -589,11 +595,53 @@ describe("buildOpenAIModelResponse", () => {
 // ---------------------------------------------------------------------------
 
 describe("createOpenAIEngine — SDK call payload", () => {
-  test("forwards AbortSignal to the SDK request", async () => {
+  test("sets one finite attempt and disables SDK retries", () => {
+    createOpenAIEngine({ model: "gpt-5", requestTimeoutMs: 45_000 });
+    expect(lastConstructorArgs?.timeout).toBe(45_000);
+    expect(lastConstructorArgs?.maxRetries).toBe(0);
+  });
+
+  test("does not dispatch when the caller is already aborted", async () => {
+    const controller = new AbortController();
+    controller.abort(new DOMException("caller left", "AbortError"));
+    const engine = createOpenAIEngine({ model: "gpt-5" });
+    await expect(engine.complete(emptyPrompt(), { signal: controller.signal })).rejects.toThrow();
+    expect(lastCreateArgs).toBeNull();
+  });
+
+  test("does not dispatch when the caller aborts before the SDK microtask", async () => {
     const controller = new AbortController();
     const engine = createOpenAIEngine({ model: "gpt-5" });
-    await engine.complete(emptyPrompt(), { signal: controller.signal });
-    expect(lastCreateOptions?.signal).toBe(controller.signal);
+    const pending = engine.complete(emptyPrompt(), { signal: controller.signal });
+
+    controller.abort(new Error("caller left before dispatch"));
+    await expect(pending).rejects.toThrow("caller left before dispatch");
+    expect(createCalls).toBe(0);
+    expect(lastCreateArgs).toBeNull();
+  });
+
+  test("forwards AbortSignal to the SDK request", async () => {
+    const controller = new AbortController();
+    createOverride = () => new Promise<OpenAI.Chat.ChatCompletion>(() => {});
+    const engine = createOpenAIEngine({ model: "gpt-5" });
+    const pending = engine.complete(emptyPrompt(), { signal: controller.signal });
+    await Bun.sleep(0);
+    expect(lastCreateOptions?.signal).toBeDefined();
+    expect(lastCreateOptions?.signal).not.toBe(controller.signal);
+    controller.abort(new Error("caller left"));
+    await expect(pending).rejects.toThrow("caller left");
+    expect(lastCreateOptions?.signal?.aborted).toBe(true);
+  });
+
+  test("bounds the whole completion and never retries an ambiguous attempt", async () => {
+    createOverride = () => new Promise<OpenAI.Chat.ChatCompletion>(() => {});
+    const engine = createOpenAIEngine({ model: "gpt-5", requestTimeoutMs: 5 });
+
+    await expect(engine.complete(emptyPrompt())).rejects.toMatchObject({
+      name: "ProviderRequestTimeoutError",
+    });
+    expect(createCalls).toBe(1);
+    expect(lastCreateOptions?.signal?.aborted).toBe(true);
   });
 
   test("sends max_completion_tokens (NOT max_tokens)", async () => {
@@ -648,6 +696,7 @@ describe("createOpenAIEngine — SDK call payload", () => {
     await expect(
       engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] })),
     ).rejects.toThrow("OpenAI engine (gpt-5) request failed.");
+    expect(createCalls).toBe(1);
   });
 
   test("discards the original SDK error cause", async () => {

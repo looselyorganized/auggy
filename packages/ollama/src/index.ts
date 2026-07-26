@@ -1,9 +1,22 @@
-import { Ollama, type AbortableAsyncIterator, type ChatRequest, type ChatResponse, type Message as OllamaMessage, type Tool as OllamaTool, type Options as OllamaOptions } from "ollama";
+import {
+  Ollama,
+  type AbortableAsyncIterator,
+  type ChatRequest,
+  type ChatResponse,
+  type Message as OllamaMessage,
+  type Tool as OllamaTool,
+  type Options as OllamaOptions,
+} from "ollama";
 import { normalizeSchema } from "auggy/internal/schema-normalize";
 import { safeParseToolCall } from "auggy/internal/tool-call";
 import { assembleSystemBlocks } from "auggy/internal/prompt-assembly";
 import { assertSecureCredentialTransport } from "auggy/internal/credential-transport";
 import { providerRequestError } from "auggy/internal/provider-error";
+import {
+  createProviderSignalFetch,
+  resolveProviderRequestTimeoutMs,
+  withProviderRequestDeadline,
+} from "auggy/internal/provider-resilience";
 import {
   createBoundedModelFetch,
   ModelResponseLimitError,
@@ -41,8 +54,8 @@ import type {
  *  - Run the API call (streaming via NDJSON when `onDelta` provided)
  *  - Translate the response back into ModelResponse
  *
- * Stateless beyond the underlying HTTP client. Retries and timeouts live in
- * the SDK; everything above (queue, history, context budgeting) is the
+ * Stateless beyond the underlying HTTP client. Auggy enforces one finite
+ * request attempt; queueing, history, and context budgeting remain the
  * kernel's job.
  *
  * Token counting uses char/4 approximation, matching the Anthropic + OpenAI
@@ -87,6 +100,8 @@ export interface OllamaEngineOptions {
   allowInsecureHttpWithCredentials?: boolean;
   /** Finite application-layer response limits. Omitted fields use secure defaults. */
   responseLimits?: Partial<ModelResponseLimits>;
+  /** One-attempt request deadline. Default 120s, maximum 10 minutes. */
+  requestTimeoutMs?: number;
 }
 
 function isProviderRecord(value: unknown): value is Record<string, unknown> {
@@ -104,6 +119,7 @@ function ollamaAccounting(value: unknown) {
 
 export function createOllamaEngine(opts: OllamaEngineOptions): ModelClient {
   const responseLimits = resolveModelResponseLimits(opts.responseLimits);
+  const requestTimeoutMs = resolveProviderRequestTimeoutMs(opts.requestTimeoutMs);
   const effectiveBaseURL = opts.baseURL ?? "http://localhost:11434";
   assertSecureCredentialTransport({
     provider: "Ollama",
@@ -111,15 +127,6 @@ export function createOllamaEngine(opts: OllamaEngineOptions): ModelClient {
     credential: opts.apiKey,
     allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
   });
-  const client = new Ollama({
-    host: effectiveBaseURL,
-    ...(opts.apiKey ? { headers: { Authorization: `Bearer ${opts.apiKey}` } } : {}),
-    fetch: createBoundedModelFetch(
-      globalThis.fetch.bind(globalThis) as typeof fetch,
-      responseLimits,
-    ),
-  });
-
   const maxContextTokens = opts.maxContextTokens ?? 8_192;
   const maxOutputTokens = opts.maxTokens ?? 2048;
   const keepAlive = opts.keepAlive ?? "5m";
@@ -143,161 +150,176 @@ export function createOllamaEngine(opts: OllamaEngineOptions): ModelClient {
       opts2?: { onDelta?: (delta: ModelDelta) => void; signal?: AbortSignal },
     ): Promise<ModelResponse> {
       opts2?.signal?.throwIfAborted();
-      const messages = convertMessages(prompt);
-      const tools = convertTools(prompt.tools);
+      return withProviderRequestDeadline(opts2?.signal, requestTimeoutMs, async (requestSignal) => {
+        const client = new Ollama({
+          host: effectiveBaseURL,
+          ...(opts.apiKey ? { headers: { Authorization: `Bearer ${opts.apiKey}` } } : {}),
+          fetch: createBoundedModelFetch(
+            createProviderSignalFetch(
+              globalThis.fetch.bind(globalThis) as typeof fetch,
+              requestSignal,
+            ),
+            responseLimits,
+          ),
+        });
+        const messages = convertMessages(prompt);
+        const tools = convertTools(prompt.tools);
 
-      const baseRequest: Omit<ChatRequest, "stream"> = {
-        model: opts.model,
-        messages,
-        keep_alive: keepAlive,
-        options: { num_predict: maxOutputTokens, ...opts.options },
-        ...(tools.length > 0 ? { tools } : {}),
-      };
+        const baseRequest: Omit<ChatRequest, "stream"> = {
+          model: opts.model,
+          messages,
+          keep_alive: keepAlive,
+          options: { num_predict: maxOutputTokens, ...opts.options },
+          ...(tools.length > 0 ? { tools } : {}),
+        };
 
-      if (opts2?.onDelta || opts2?.signal) {
-        // Ollama only exposes request cancellation through its abortable
-        // streaming iterator. Use that path whenever a signal is supplied,
-        // even when the caller wants a buffered response and no deltas.
-        // Ollama streams NDJSON chunks; the SDK exposes them as an
-        // AsyncIterable.
-        //
-        // Tool-call quirk: Ollama emits the entire `tool_calls` array in a
-        // single intermediate chunk (typically the FIRST chunk for a
-        // tool-using turn) with `done: false`, then a final `done: true`
-        // chunk that does NOT repeat tool_calls. We must accumulate
-        // tool_calls across all chunks — relying on the last chunk loses
-        // them entirely (silent empty turn, model output discarded).
-        let stream: AbortableAsyncIterator<ChatResponse>;
-        try {
-          stream = await client.chat({ ...baseRequest, stream: true });
-        } catch (error) {
-          if (opts2.signal?.aborted) {
-            throw opts2.signal.reason ?? new DOMException("Operation aborted", "AbortError");
+        if (opts2?.onDelta || opts2?.signal) {
+          // Ollama only exposes request cancellation through its abortable
+          // streaming iterator. Use that path whenever a signal is supplied,
+          // even when the caller wants a buffered response and no deltas.
+          // Ollama streams NDJSON chunks; the SDK exposes them as an
+          // AsyncIterable.
+          //
+          // Tool-call quirk: Ollama emits the entire `tool_calls` array in a
+          // single intermediate chunk (typically the FIRST chunk for a
+          // tool-using turn) with `done: false`, then a final `done: true`
+          // chunk that does NOT repeat tool_calls. We must accumulate
+          // tool_calls across all chunks — relying on the last chunk loses
+          // them entirely (silent empty turn, model output discarded).
+          let stream: AbortableAsyncIterator<ChatResponse>;
+          try {
+            stream = await client.chat({ ...baseRequest, stream: true });
+          } catch (error) {
+            if (requestSignal.aborted) {
+              throw requestSignal.reason ?? new DOMException("Operation aborted", "AbortError");
+            }
+            throw providerRequestError("Ollama", opts.model, error);
           }
-          throw providerRequestError("Ollama", opts.model, error);
-        }
-        const abortStream = () => stream.abort();
-        opts2.signal?.addEventListener("abort", abortStream, { once: true });
-        if (opts2.signal?.aborted) {
-          stream.abort();
-          opts2.signal.removeEventListener("abort", abortStream);
-          opts2.signal.throwIfAborted();
-        }
-        let accumulated = "";
-        let lastChunk: ChatResponse | null = null;
-        const accumulatedToolCalls: NonNullable<OllamaMessage["tool_calls"]> = [];
-        const tracker = new StreamingResponseLimitTracker(responseLimits);
-        try {
-          for await (const chunk of stream) {
-            if (!isProviderRecord(chunk)) {
-              throw new ModelResponseLimitError("maxResponseBytes");
-            }
-            lastChunk = chunk;
-            const message = chunk.message;
-            if (message !== undefined && !isProviderRecord(message)) {
-              throw new ModelResponseLimitError("maxResponseBytes");
-            }
-            const content = message?.content;
-            if (content !== undefined && content !== null && typeof content !== "string") {
-              throw new ModelResponseLimitError("maxTextBytes");
-            }
-            if (content) {
-              tracker.pushText(content);
-              accumulated += content;
-              opts2.onDelta?.({ kind: "text_delta", text: content });
-            }
-            const chunkToolCalls = message?.tool_calls;
-            if (chunkToolCalls !== undefined && !Array.isArray(chunkToolCalls)) {
-              throw new ModelResponseLimitError("maxToolCalls");
-            }
-            if (chunkToolCalls) {
-              if (
-                accumulatedToolCalls.length + chunkToolCalls.length >
-                responseLimits.maxToolCalls
-              ) {
+          const abortStream = () => stream.abort();
+          requestSignal.addEventListener("abort", abortStream, { once: true });
+          if (requestSignal.aborted) {
+            stream.abort();
+            requestSignal.removeEventListener("abort", abortStream);
+            requestSignal.throwIfAborted();
+          }
+          let accumulated = "";
+          let lastChunk: ChatResponse | null = null;
+          const accumulatedToolCalls: NonNullable<OllamaMessage["tool_calls"]> = [];
+          const tracker = new StreamingResponseLimitTracker(responseLimits);
+          try {
+            for await (const chunk of stream) {
+              if (!isProviderRecord(chunk)) {
+                throw new ModelResponseLimitError("maxResponseBytes");
+              }
+              lastChunk = chunk;
+              const message = chunk.message;
+              if (message !== undefined && !isProviderRecord(message)) {
+                throw new ModelResponseLimitError("maxResponseBytes");
+              }
+              const content = message?.content;
+              if (content !== undefined && content !== null && typeof content !== "string") {
+                throw new ModelResponseLimitError("maxTextBytes");
+              }
+              if (content) {
+                tracker.pushText(content);
+                accumulated += content;
+                if (!requestSignal.aborted) {
+                  opts2.onDelta?.({ kind: "text_delta", text: content });
+                }
+              }
+              const chunkToolCalls = message?.tool_calls;
+              if (chunkToolCalls !== undefined && !Array.isArray(chunkToolCalls)) {
                 throw new ModelResponseLimitError("maxToolCalls");
               }
-              for (const toolCall of chunkToolCalls) {
-                accumulatedToolCalls.push(
-                  toolCall as NonNullable<OllamaMessage["tool_calls"]>[number],
+              if (chunkToolCalls) {
+                if (
+                  accumulatedToolCalls.length + chunkToolCalls.length >
+                  responseLimits.maxToolCalls
+                ) {
+                  throw new ModelResponseLimitError("maxToolCalls");
+                }
+                for (const toolCall of chunkToolCalls) {
+                  accumulatedToolCalls.push(
+                    toolCall as NonNullable<OllamaMessage["tool_calls"]>[number],
+                  );
+                }
+                validateModelResponse(
+                  buildModelResponse(accumulated, chunk, accumulatedToolCalls),
+                  responseLimits,
                 );
               }
-              validateModelResponse(
-                buildModelResponse(accumulated, chunk, accumulatedToolCalls),
-                responseLimits,
-              );
             }
+          } catch (error) {
+            try {
+              stream.abort();
+            } catch {
+              // Cleanup failures must not replace the stable terminal error.
+            }
+            if (error instanceof ModelResponseLimitError && lastChunk) {
+              throw error.withAccounting(ollamaAccounting(lastChunk));
+            }
+            if (error instanceof ModelResponseLimitError) throw error;
+            if (requestSignal.aborted) {
+              throw requestSignal.reason ?? new DOMException("Operation aborted", "AbortError");
+            }
+            throw providerRequestError("Ollama", opts.model, error);
+          } finally {
+            requestSignal.removeEventListener("abort", abortStream);
           }
-        } catch (error) {
+          if (!lastChunk) {
+            throw new Error("Ollama stream returned no chunks");
+          }
           try {
-            stream.abort();
-          } catch {
-            // Cleanup failures must not replace the stable terminal error.
+            return validateModelResponse(
+              buildModelResponse(accumulated, lastChunk, accumulatedToolCalls),
+              responseLimits,
+            );
+          } catch (error) {
+            if (error instanceof ModelResponseLimitError) {
+              throw error.withAccounting(ollamaAccounting(lastChunk));
+            }
+            throw error;
           }
-          if (error instanceof ModelResponseLimitError && lastChunk) {
-            throw error.withAccounting(ollamaAccounting(lastChunk));
-          }
-          if (error instanceof ModelResponseLimitError) throw error;
-          if (opts2.signal?.aborted) {
-            throw opts2.signal.reason ?? new DOMException("Operation aborted", "AbortError");
-          }
-          throw providerRequestError("Ollama", opts.model, error);
-        } finally {
-          opts2.signal?.removeEventListener("abort", abortStream);
         }
-        if (!lastChunk) {
-          throw new Error("Ollama stream returned no chunks");
+
+        // Non-streaming path (buffered; for tests / consumers that don't
+        // need streaming). Tool calls come back in response.message.tool_calls
+        // directly — no accumulation needed.
+        let response: ChatResponse;
+        try {
+          response = await client.chat({ ...baseRequest, stream: false });
+        } catch (error) {
+          throw providerRequestError("Ollama", opts.model, error);
         }
         try {
+          if (!isProviderRecord(response)) {
+            throw new ModelResponseLimitError("maxResponseBytes");
+          }
+          if (response.message !== undefined && !isProviderRecord(response.message)) {
+            throw new ModelResponseLimitError("maxResponseBytes");
+          }
+          const content = response.message?.content;
+          if (content !== undefined && content !== null && typeof content !== "string") {
+            throw new ModelResponseLimitError("maxTextBytes");
+          }
+          const rawToolCalls = response.message?.tool_calls ?? [];
+          if (!Array.isArray(rawToolCalls)) {
+            throw new ModelResponseLimitError("maxToolCalls");
+          }
+          if (rawToolCalls.length > responseLimits.maxToolCalls) {
+            throw new ModelResponseLimitError("maxToolCalls");
+          }
           return validateModelResponse(
-            buildModelResponse(accumulated, lastChunk, accumulatedToolCalls),
+            buildModelResponse(content ?? "", response as unknown as ChatResponse, rawToolCalls),
             responseLimits,
           );
         } catch (error) {
           if (error instanceof ModelResponseLimitError) {
-            throw error.withAccounting(ollamaAccounting(lastChunk));
+            throw error.withAccounting(ollamaAccounting(response));
           }
           throw error;
         }
-      }
-
-      // Non-streaming path (buffered; for tests / consumers that don't
-      // need streaming). Tool calls come back in response.message.tool_calls
-      // directly — no accumulation needed.
-      let response: ChatResponse;
-      try {
-        response = await client.chat({ ...baseRequest, stream: false });
-      } catch (error) {
-        throw providerRequestError("Ollama", opts.model, error);
-      }
-      try {
-        if (!isProviderRecord(response)) {
-          throw new ModelResponseLimitError("maxResponseBytes");
-        }
-        if (response.message !== undefined && !isProviderRecord(response.message)) {
-          throw new ModelResponseLimitError("maxResponseBytes");
-        }
-        const content = response.message?.content;
-        if (content !== undefined && content !== null && typeof content !== "string") {
-          throw new ModelResponseLimitError("maxTextBytes");
-        }
-        const rawToolCalls = response.message?.tool_calls ?? [];
-        if (!Array.isArray(rawToolCalls)) {
-          throw new ModelResponseLimitError("maxToolCalls");
-        }
-        if (rawToolCalls.length > responseLimits.maxToolCalls) {
-          throw new ModelResponseLimitError("maxToolCalls");
-        }
-        return validateModelResponse(
-          buildModelResponse(content ?? "", response as unknown as ChatResponse, rawToolCalls),
-          responseLimits,
-        );
-      } catch (error) {
-        if (error instanceof ModelResponseLimitError) {
-          throw error.withAccounting(ollamaAccounting(response));
-        }
-        throw error;
-      }
+      });
     },
   };
 }
@@ -415,11 +437,7 @@ function buildModelResponse(
   response: ChatResponse,
   rawToolCalls: NonNullable<OllamaMessage["tool_calls"]>,
 ): ModelResponse {
-  if (
-    typeof content !== "string" ||
-    !isProviderRecord(response) ||
-    !Array.isArray(rawToolCalls)
-  ) {
+  if (typeof content !== "string" || !isProviderRecord(response) || !Array.isArray(rawToolCalls)) {
     throw new ModelResponseLimitError("maxResponseBytes");
   }
   const toolCalls: { name: string; arguments: Record<string, unknown> }[] = [];
