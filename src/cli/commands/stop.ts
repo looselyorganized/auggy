@@ -59,12 +59,15 @@ export async function runStop(name: string, opts: StopOptions = {}): Promise<voi
   const initialManifest = readPidManifest(name, { auggyDir: opts.auggyDir });
 
   if (!initialManifest) {
-    if (AGENT_ID_RE.test(name)) {
-      const state = readLaunchdGenerationState(name, { auggyDir: opts.auggyDir });
-      if (state) {
-        await stopManifestlessLaunchd(name, state.launchGeneration, opts);
-        return;
-      }
+    if (!AGENT_ID_RE.test(name)) {
+      throw new Error(
+        `Agent "${name}" has no runtime manifest, so its display name cannot safely identify an in-flight start. Retry with the immutable aug1_... id from agent.yaml.`,
+      );
+    }
+    const state = readLaunchdGenerationState(name, { auggyDir: opts.auggyDir });
+    if (state) {
+      await stopManifestlessLaunchd(name, state.launchGeneration, opts);
+      return;
     }
     console.log(`Agent "${name}" is not running.`);
     return;

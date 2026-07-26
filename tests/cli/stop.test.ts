@@ -65,6 +65,33 @@ afterEach(() => {
 });
 
 describe("stop preserves ownership until the recorded process exits", () => {
+  test("does not lose a display-name stop before a concurrent start publishes state", async () => {
+    const owner = manifest("dev", "a");
+    const releaseStart = claimAgentLifecycle(owner.agentId!, owner.name, registryOptions());
+    try {
+      await expect(runStop(owner.name, registryOptions())).rejects.toThrow(
+        /no runtime manifest.*immutable aug1_/i,
+      );
+    } finally {
+      releaseStart();
+    }
+
+    owner.mode = "launchd";
+    owner.launchGeneration = LAUNCH_GENERATION;
+    activateLaunchdGeneration(owner.agentId!, LAUNCH_GENERATION, registryOptions());
+    await runStop(owner.agentId!, {
+      ...registryOptions(),
+      paths: {
+        installPath: join(auggyDir, "post-named-start.install.plist"),
+        storePath: join(auggyDir, "post-named-start.store.plist"),
+      },
+      unloadLaunchd: async () => {},
+    });
+    expect(() => claimRuntimePidManifest(owner, registryOptions())).toThrow(
+      /generation.*closed or superseded/i,
+    );
+  });
+
   test("does not lose an immutable-id stop before a concurrent start publishes state", async () => {
     const owner = manifest("dev", "a");
     const releaseStart = claimAgentLifecycle(owner.agentId!, owner.name, registryOptions());

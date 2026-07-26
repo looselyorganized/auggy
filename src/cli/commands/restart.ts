@@ -7,7 +7,7 @@
 
 import { resolve } from "node:path";
 import { parseConfig } from "../config-parser";
-import { claimAgentLifecycle, readPidManifest } from "../pid-registry";
+import { claimAgentLifecycle, readLaunchdGenerationState, readPidManifest } from "../pid-registry";
 import type { PidManifest } from "../types";
 import { runStop } from "./stop";
 import { runStart } from "./start";
@@ -15,6 +15,10 @@ import { runDev } from "./dev";
 
 interface RestartOptions {
   config?: string;
+  auggyDir?: string;
+  processIdentityForPid?: (pid: number) => string | null;
+  /** Internal: an outer exact-id restart already owns the lifecycle lease. */
+  lifecycleOwned?: boolean;
   /** Deterministic lifecycle seams for race regression tests. */
   _readPidManifest?: typeof readPidManifest;
   _claimAgentLifecycle?: typeof claimAgentLifecycle;
@@ -24,26 +28,62 @@ interface RestartOptions {
   _sleep?: (milliseconds: number) => Promise<void>;
 }
 
+const AGENT_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 export async function runRestart(name: string, opts: RestartOptions): Promise<void> {
+  const registryOptions = {
+    auggyDir: opts.auggyDir,
+    processIdentityForPid: opts.processIdentityForPid,
+  };
+  if (AGENT_ID_RE.test(name) && !opts.lifecycleOwned) {
+    const releaseLifecycle = (opts._claimAgentLifecycle ?? claimAgentLifecycle)(
+      name,
+      "launchd-restart",
+      registryOptions,
+    );
+    try {
+      await runRestart(name, { ...opts, lifecycleOwned: true });
+    } finally {
+      releaseLifecycle();
+    }
+    return;
+  }
+
   const readManifest = opts._readPidManifest ?? readPidManifest;
-  const manifest = readManifest(name);
+  const manifest = readManifest(name, registryOptions);
 
   if (!manifest) {
+    if (!AGENT_ID_RE.test(name)) {
+      throw new Error(
+        `Agent "${name}" has no runtime manifest, so its display name cannot safely identify an in-flight start. Retry with the immutable aug1_... id from agent.yaml.`,
+      );
+    }
+    const generation = readLaunchdGenerationState(name, registryOptions);
+    if (generation) {
+      throw new Error(
+        `Agent "${name}" has an active launchd generation but no runtime manifest. Run "auggy stop ${name}" to recover it before starting again with the intended config.`,
+      );
+    }
     console.log(
       `Agent "${name}" is not running. Use "auggy dev ${name}" or "auggy start ${name}" to start it.`,
     );
     return;
   }
 
-  const releaseLifecycle = manifest.agentId
-    ? (opts._claimAgentLifecycle ?? claimAgentLifecycle)(manifest.agentId, manifest.name)
-    : () => {};
+  const releaseLifecycle =
+    opts.lifecycleOwned || !manifest.agentId
+      ? () => {}
+      : (opts._claimAgentLifecycle ?? claimAgentLifecycle)(
+          manifest.agentId,
+          manifest.name,
+          registryOptions,
+        );
 
   try {
     // The lease can queue behind another controller. Adopt and validate the
     // current generation only after acquiring it; never stop a replacement
     // and then resurrect the stale pre-lease snapshot.
-    const current = readManifest(manifest.agentId ?? name);
+    const current = readManifest(manifest.agentId ?? name, registryOptions);
     if (!current) {
       console.log(`Agent "${name}" stopped before restart acquired its lifecycle lease.`);
       return;
@@ -56,7 +96,11 @@ export async function runRestart(name: string, opts: RestartOptions): Promise<vo
     console.log(`Restarting "${current.name}" (${mode} mode)...`);
 
     // Stop the agent.
-    await (opts._runStop ?? runStop)(current.agentId ?? name, { lifecycleOwned: true });
+    await (opts._runStop ?? runStop)(current.agentId ?? name, {
+      lifecycleOwned: true,
+      auggyDir: opts.auggyDir,
+      processIdentityForPid: opts.processIdentityForPid,
+    });
 
     // Brief pause for port release.
     await (opts._sleep ?? Bun.sleep)(1000);
@@ -66,6 +110,8 @@ export async function runRestart(name: string, opts: RestartOptions): Promise<vo
       await (opts._runStart ?? runStart)(current.name, {
         config: configPath,
         lifecycleOwned: true,
+        auggyDir: opts.auggyDir,
+        processIdentityForPid: opts.processIdentityForPid,
       });
     } else {
       await (opts._runDev ?? runDev)(current.name, { config: configPath });

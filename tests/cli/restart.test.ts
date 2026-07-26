@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertRestartTarget, runRestart } from "../../src/cli/commands/restart";
+import { activateLaunchdGeneration } from "../../src/cli/pid-registry";
 import type { PidManifest } from "../../src/cli/types";
 
 const roots: string[] = [];
@@ -43,6 +44,44 @@ function manifest(configPath: string): PidManifest {
 }
 
 describe("restart target validation", () => {
+  test("fails closed when a display name has no authoritative runtime identity", async () => {
+    await expect(
+      runRestart("agent-b", {
+        _readPidManifest: () => null,
+      }),
+    ).rejects.toThrow(/no runtime manifest.*immutable aug1_/i);
+  });
+
+  test("claims an immutable-id lifecycle before checking unpublished state", async () => {
+    let reads = 0;
+    await expect(
+      runRestart(AGENT_B, {
+        _readPidManifest: () => {
+          reads++;
+          return null;
+        },
+        _claimAgentLifecycle: () => {
+          throw new Error("lifecycle resource is claimed by concurrent start");
+        },
+      }),
+    ).rejects.toThrow(/claimed by concurrent start/i);
+    expect(reads).toBe(0);
+  });
+
+  test("fails closed on an active launchd generation without a manifest", async () => {
+    const auggyDir = mkdtempSync(join(tmpdir(), "restart-generation-"));
+    roots.push(auggyDir);
+    const processIdentityForPid = () => "test-process:restart-generation";
+    activateLaunchdGeneration(AGENT_B, "44444444-4444-4444-8444-444444444444", {
+      auggyDir,
+      processIdentityForPid,
+    });
+
+    await expect(runRestart(AGENT_B, { auggyDir, processIdentityForPid })).rejects.toThrow(
+      /active launchd generation.*auggy stop/i,
+    );
+  });
+
   test("rejects another agent's config path before restart side effects", () => {
     const configB = config(AGENT_B, "agent-b");
     const configA = config(AGENT_A, "agent-a");
