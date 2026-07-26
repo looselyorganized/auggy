@@ -24,6 +24,7 @@ import { resolveAugments } from "../augment-resolver";
 import {
   claimRuntimePidManifest,
   formatAgentAlreadyRunningMessage,
+  getProcessIdentity,
   readPidManifest,
   releaseRuntimePidManifest,
 } from "../pid-registry";
@@ -188,12 +189,17 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   const port = extractPort(config);
   let pidManifestClaimed = false;
   try {
+    const processIdentity = getProcessIdentity(process.pid);
+    if (!processIdentity) {
+      throw new Error("[runtime] unable to verify the current OS process incarnation");
+    }
     pidManifestClaimed = claimRuntimePidManifest(
       {
         pid: process.pid,
         name: agentName,
         agentId: config.id,
         claimNonce: randomUUID(),
+        processIdentity,
         resourceClaims: runtimeResourceClaims(config),
         port,
         configPath: resolve(configPath),

@@ -8,12 +8,14 @@
  */
 
 import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
   readdirSync,
+  rmdirSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -25,6 +27,10 @@ import type { PidManifest } from "./types";
 interface PidRegistryOptions {
   /** Override `~/.auggy/` for tests. Production callers omit. */
   auggyDir?: string;
+  /** Deterministic process-incarnation inspection for tests. */
+  processIdentityForPid?: (pid: number) => string | null;
+  /** Deterministic concurrency barrier used only by registry tests. */
+  onClaimLockAcquired?: (claim: string) => void;
 }
 
 interface RuntimePidRegistryOptions extends PidRegistryOptions {
@@ -37,12 +43,13 @@ interface ManifestRecord {
 }
 
 interface ResourceClaimRecord {
-  version: 1;
+  version: 1 | 2;
   claim: string;
   agentId: string;
   agentName: string;
   pid: number;
   claimNonce: string;
+  processIdentity?: string;
 }
 
 const AGENT_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -116,7 +123,12 @@ function parseManifest(value: unknown, source: string): PidManifest {
     (record.mode === "dev" || record.mode === "launchd");
   if (!validBase) throw new Error(`Invalid Auggy runtime manifest at ${source}`);
 
-  const modernFields = [record.agentId, record.claimNonce, record.resourceClaims];
+  const modernFields = [
+    record.agentId,
+    record.claimNonce,
+    record.processIdentity,
+    record.resourceClaims,
+  ];
   const hasModernField = modernFields.some((field) => field !== undefined);
   if (hasModernField) {
     if (
@@ -124,6 +136,7 @@ function parseManifest(value: unknown, source: string): PidManifest {
       !AGENT_ID_RE.test(record.agentId) ||
       typeof record.claimNonce !== "string" ||
       !UUID_RE.test(record.claimNonce) ||
+      (record.processIdentity !== undefined && !isSafeClaim(record.processIdentity)) ||
       !Array.isArray(record.resourceClaims) ||
       !record.resourceClaims.every(isSafeClaim) ||
       new Set(record.resourceClaims).size !== record.resourceClaims.length
@@ -194,6 +207,60 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
+/**
+ * Return an OS process-incarnation marker that changes when a PID is reused.
+ * The marker contains no command line or environment data.
+ */
+export function getProcessIdentity(pid: number): string | null {
+  if (!Number.isSafeInteger(pid) || pid < 1) return null;
+  if (process.platform === "linux") {
+    try {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const afterCommand = stat
+        .slice(stat.lastIndexOf(")") + 2)
+        .trim()
+        .split(/\s+/);
+      const startTicks = afterCommand[19];
+      const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      if (startTicks && /^\d+$/.test(startTicks) && UUID_RE.test(bootId)) {
+        return `linux:${bootId}:${startTicks}`;
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+    encoding: "utf8",
+    env: { ...process.env, LC_ALL: "C" },
+    timeout: 1_000,
+    maxBuffer: 4_096,
+  });
+  const started = result.status === 0 ? result.stdout.trim() : "";
+  if (!started) return null;
+  const digest = createHash("sha256")
+    .update("auggy-process-incarnation\0")
+    .update(process.platform)
+    .update("\0")
+    .update(started)
+    .digest("hex");
+  return `ps-sha256:${digest}`;
+}
+
+export type RuntimeProcessStatus = "alive" | "gone" | "reused" | "unverifiable";
+
+/** Inspect both PID existence and its recorded OS process incarnation. */
+export function inspectRuntimeProcess(
+  manifest: Pick<PidManifest, "pid" | "processIdentity">,
+  opts: PidRegistryOptions = {},
+): RuntimeProcessStatus {
+  if (!isProcessAlive(manifest.pid)) return "gone";
+  if (!manifest.processIdentity) return "unverifiable";
+  const current = (opts.processIdentityForPid ?? getProcessIdentity)(manifest.pid);
+  if (!current) return "unverifiable";
+  return current === manifest.processIdentity ? "alive" : "reused";
+}
+
 /** Write a validated PID manifest atomically without acquiring resource claims. */
 export function writePidManifest(manifest: PidManifest, opts: PidRegistryOptions = {}): void {
   ensureDir(opts);
@@ -210,7 +277,7 @@ function parseClaim(value: unknown, source: string): ResourceClaimRecord {
   }
   const record = value as Record<string, unknown>;
   if (
-    record.version !== 1 ||
+    (record.version !== 1 && record.version !== 2) ||
     !isSafeClaim(record.claim) ||
     typeof record.agentId !== "string" ||
     !AGENT_ID_RE.test(record.agentId) ||
@@ -219,11 +286,40 @@ function parseClaim(value: unknown, source: string): ResourceClaimRecord {
     !Number.isSafeInteger(record.pid) ||
     (record.pid as number) < 1 ||
     typeof record.claimNonce !== "string" ||
-    !UUID_RE.test(record.claimNonce)
+    !UUID_RE.test(record.claimNonce) ||
+    (record.version === 2 && !isSafeClaim(record.processIdentity)) ||
+    (record.version === 1 && record.processIdentity !== undefined)
   ) {
     throw new Error(`Invalid Auggy runtime resource claim at ${source}`);
   }
   return record as unknown as ResourceClaimRecord;
+}
+
+function claimLockPath(claim: string, opts: PidRegistryOptions): string {
+  return `${claimPath(claim, opts)}.lock`;
+}
+
+function withClaimLock<T>(claim: string, opts: PidRegistryOptions, action: () => T): T {
+  const path = claimLockPath(claim, opts);
+  try {
+    mkdirSync(path, { mode: 0o700 });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new RuntimeResourceConflictError(
+        `Runtime resource "${claim}" has another claim operation in progress.`,
+      );
+    }
+    throw error;
+  }
+  try {
+    opts.onClaimLockAcquired?.(claim);
+    return action();
+  } finally {
+    // If lock release fails, propagate the failure. The retained lock then
+    // blocks every future mutation until an operator inspects it; continuing
+    // would falsely report an exclusive claim as usable.
+    rmdirSync(path);
+  }
 }
 
 function readClaim(path: string): ResourceClaimRecord {
@@ -242,39 +338,43 @@ function unlinkClaimIfOwned(
   claimNonce: string,
   opts: PidRegistryOptions,
 ): void {
-  const path = claimPath(claim, opts);
-  if (!existsSync(path)) return;
-  const existing = readClaim(path);
-  if (existing.agentId !== agentId || existing.claimNonce !== claimNonce) return;
-  unlinkSync(path);
+  withClaimLock(claim, opts, () => {
+    const path = claimPath(claim, opts);
+    if (!existsSync(path)) return;
+    const existing = readClaim(path);
+    if (existing.agentId !== agentId || existing.claimNonce !== claimNonce) return;
+    unlinkSync(path);
+  });
 }
 
 function acquireOneClaim(claim: string, manifest: PidManifest, opts: PidRegistryOptions): void {
-  const path = claimPath(claim, opts);
-  const record: ResourceClaimRecord = {
-    version: 1,
-    claim,
-    agentId: manifest.agentId!,
-    agentName: manifest.name,
-    pid: manifest.pid,
-    claimNonce: manifest.claimNonce!,
-  };
-  for (let attempt = 0; attempt < 2; attempt++) {
+  withClaimLock(claim, opts, () => {
+    const path = claimPath(claim, opts);
+    const record: ResourceClaimRecord = {
+      version: 2,
+      claim,
+      agentId: manifest.agentId!,
+      agentName: manifest.name,
+      pid: manifest.pid,
+      claimNonce: manifest.claimNonce!,
+      processIdentity: manifest.processIdentity!,
+    };
     try {
       writeFileSync(path, JSON.stringify(record, null, 2), { flag: "wx", mode: 0o600 });
       return;
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const existing = readClaim(path);
-      if (isProcessAlive(existing.pid)) {
+      const status = inspectRuntimeProcess(existing, opts);
+      if (status === "alive" || status === "unverifiable") {
         throw new RuntimeResourceConflictError(
           `Runtime resource "${claim}" is already claimed by agent "${existing.agentName}".`,
         );
       }
       unlinkSync(path);
     }
-  }
-  throw new RuntimeResourceConflictError(`Runtime resource "${claim}" could not be claimed.`);
+    writeFileSync(path, JSON.stringify(record, null, 2), { flag: "wx", mode: 0o600 });
+  });
 }
 
 function acquireResourceClaims(manifest: PidManifest, opts: PidRegistryOptions): string[] {
@@ -282,6 +382,9 @@ function acquireResourceClaims(manifest: PidManifest, opts: PidRegistryOptions):
   if (claims.length === 0) return [];
   if (!manifest.agentId || !manifest.claimNonce) {
     throw new Error("Modern runtime resource claims require immutable agentId and claimNonce");
+  }
+  if (!manifest.processIdentity) {
+    throw new Error("Modern runtime resource claims require an OS process identity");
   }
 
   const acquired: string[] = [];
@@ -332,18 +435,13 @@ function removeStaleOrRejectLiveLegacyManifest(
     });
   }
   for (const record of allManifestRecords(opts)) {
-    if (
-      !record.manifest.agentId &&
-      (record.manifest.name === manifest.name || record.manifest.configPath === manifest.configPath)
-    ) {
-      records.set(record.path, record);
-    }
+    if (!record.manifest.agentId) records.set(record.path, record);
   }
 
   for (const record of records.values()) {
     if (isProcessAlive(record.manifest.pid)) {
       throw new RuntimeResourceConflictError(
-        `Legacy runtime for agent "${record.manifest.name}" is still running. Stop it before starting the immutable agent identity.`,
+        `Legacy runtime for agent "${record.manifest.name}" may still be running. Stop all pre-upgrade runtimes before starting an immutable agent identity.`,
       );
     }
     removeManifestRecord(record, opts);
@@ -357,6 +455,9 @@ export function claimRuntimePidManifest(
 ): boolean {
   if (opts.internalMode === "railway") return false;
   parseManifest(manifest, "new runtime manifest");
+  if (manifest.agentId && !manifest.processIdentity) {
+    throw new Error("Modern runtime manifests require an OS process identity");
+  }
   removeStaleOrRejectLiveLegacyManifest(manifest, opts);
   const acquired = acquireResourceClaims(manifest, opts);
   try {
@@ -366,7 +467,8 @@ export function claimRuntimePidManifest(
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
       const existing = recordForIdentifier(manifestKey(manifest), opts);
-      if (existing && isProcessAlive(existing.manifest.pid)) throw error;
+      const status = existing ? inspectRuntimeProcess(existing.manifest, opts) : "gone";
+      if (status === "alive" || status === "unverifiable") throw error;
       if (existing) removeManifestRecord(existing, opts);
       writePidManifest(manifest, opts);
       return true;
@@ -405,7 +507,13 @@ export function readLivePidManifest(
 ): PidManifest | null {
   const record = recordForIdentifier(identifier, opts);
   if (!record) return null;
-  if (isProcessAlive(record.manifest.pid)) return record.manifest;
+  const status = inspectRuntimeProcess(record.manifest, opts);
+  if (status === "alive") return record.manifest;
+  if (status === "unverifiable") {
+    throw new Error(
+      `Cannot verify the process incarnation for agent "${record.manifest.name}"; refusing to treat PID ${record.manifest.pid} as its runtime.`,
+    );
+  }
   removeManifestRecord(record, opts);
   return null;
 }
@@ -436,7 +544,8 @@ export function removePidManifest(identifier: string, opts: PidRegistryOptions =
 export function listPidManifests(opts: PidRegistryOptions = {}): PidManifest[] {
   const manifests: PidManifest[] = [];
   for (const record of allManifestRecords(opts)) {
-    if (isProcessAlive(record.manifest.pid)) {
+    const status = inspectRuntimeProcess(record.manifest, opts);
+    if (status === "alive" || status === "unverifiable") {
       manifests.push(record.manifest);
     } else {
       removeManifestRecord(record, opts);
@@ -446,7 +555,11 @@ export function listPidManifests(opts: PidRegistryOptions = {}): PidManifest[] {
 }
 
 export function tryClaimName(name: string, opts: PidRegistryOptions = {}): boolean {
-  return readLivePidManifest(name, opts) === null;
+  try {
+    return readLivePidManifest(name, opts) === null;
+  } catch {
+    return false;
+  }
 }
 
 export function getAuggyDir(): string {

@@ -260,7 +260,9 @@ export interface PidManifest {
   agentId?: string;
   /** Per-start nonce fencing cleanup of exclusive resource claims. */
   claimNonce?: string;
-  /** Host-local listener and inbound identity claims. */
+  /** OS-verifiable process incarnation; prevents signaling a reused PID. */
+  processIdentity?: string;
+  /** CLI-user-local listener and inbound identity claims. */
   resourceClaims?: string[];
   /** webTransport port if configured, null otherwise. */
   port: number | null;

@@ -17,10 +17,13 @@ import {
   removePidManifest,
   listPidManifests,
   tryClaimName,
+  getProcessIdentity,
+  inspectRuntimeProcess,
   isProcessAlive,
 } from "../../src/cli/pid-registry";
 
 let auggyDir: string;
+const PROCESS_IDENTITY = getProcessIdentity(process.pid)!;
 
 beforeEach(() => {
   auggyDir = mkdtempSync(join(tmpdir(), "pid-registry-test-"));
@@ -185,6 +188,7 @@ describe("runtime PID manifest policy", () => {
       name: "worker",
       agentId: "aug1_11111111-1111-4111-8111-111111111111",
       claimNonce: "11111111-1111-4111-8111-111111111111",
+      processIdentity: PROCESS_IDENTITY,
       resourceClaims: ["agent-id:aug1_11111111-1111-4111-8111-111111111111"],
       port: 8101,
       configPath: "/tmp/worker-a/agent.yaml",
@@ -196,6 +200,7 @@ describe("runtime PID manifest policy", () => {
       ...first,
       agentId: "aug1_22222222-2222-4222-8222-222222222222",
       claimNonce: "22222222-2222-4222-8222-222222222222",
+      processIdentity: PROCESS_IDENTITY,
       resourceClaims: ["agent-id:aug1_22222222-2222-4222-8222-222222222222"],
       port: 8102,
       configPath: "/tmp/worker-b/agent.yaml",
@@ -212,14 +217,14 @@ describe("runtime PID manifest policy", () => {
     releaseRuntimePidManifest(second.agentId!, true, { auggyDir });
   });
 
-  test("rejects overlap with a live pre-upgrade name-keyed runtime", () => {
+  test("rejects overlap with any live pre-upgrade name-keyed runtime", () => {
     writePidManifest(
       {
         pid: process.pid,
-        name: "legacy-worker",
+        name: "legacy-orders",
         port: null,
-        configPath: "/tmp/legacy-worker/agent.yaml",
-        agentDir: "/tmp/legacy-worker",
+        configPath: "/tmp/legacy-orders/agent.yaml",
+        agentDir: "/tmp/legacy-orders",
         startedAt: new Date().toISOString(),
         mode: "dev",
       },
@@ -230,6 +235,7 @@ describe("runtime PID manifest policy", () => {
       name: "legacy-worker",
       agentId: "aug1_55555555-5555-4555-8555-555555555555",
       claimNonce: "55555555-5555-4555-8555-555555555555",
+      processIdentity: PROCESS_IDENTITY,
       resourceClaims: ["telegram-bot:654321"],
       port: null,
       configPath: "/tmp/legacy-worker/agent.yaml",
@@ -238,9 +244,7 @@ describe("runtime PID manifest policy", () => {
       mode: "dev",
     };
 
-    expect(() => claimRuntimePidManifest(modern, { auggyDir })).toThrow(
-      /legacy runtime.*still running/i,
-    );
+    expect(() => claimRuntimePidManifest(modern, { auggyDir })).toThrow(/legacy runtime.*running/i);
     expect(readPidManifest(modern.agentId!, { auggyDir })).toBeNull();
   });
 
@@ -250,6 +254,7 @@ describe("runtime PID manifest policy", () => {
       name: "orders",
       agentId: "aug1_33333333-3333-4333-8333-333333333333",
       claimNonce: "33333333-3333-4333-8333-333333333333",
+      processIdentity: PROCESS_IDENTITY,
       resourceClaims: ["telegram-bot:123456", "tcp-port:8080"],
       port: 8080,
       configPath: "/tmp/orders/agent.yaml",
@@ -262,6 +267,7 @@ describe("runtime PID manifest policy", () => {
       name: "concierge",
       agentId: "aug1_44444444-4444-4444-8444-444444444444",
       claimNonce: "44444444-4444-4444-8444-444444444444",
+      processIdentity: PROCESS_IDENTITY,
       configPath: "/tmp/concierge/agent.yaml",
       agentDir: "/tmp/concierge",
     };
@@ -271,6 +277,88 @@ describe("runtime PID manifest policy", () => {
     expect(readPidManifest(second.agentId!, { auggyDir })).toBeNull();
 
     releaseRuntimePidManifest(first.agentId!, true, { auggyDir });
+  });
+
+  test("serializes stale takeover so a contender cannot delete a successor claim", () => {
+    const first: PidManifest = {
+      pid: 99999999,
+      name: "crashed",
+      agentId: "aug1_66666666-6666-4666-8666-666666666666",
+      claimNonce: "66666666-6666-4666-8666-666666666666",
+      processIdentity: "test-process:crashed",
+      resourceClaims: ["telegram-bot:777777"],
+      port: null,
+      configPath: "/tmp/crashed/agent.yaml",
+      agentDir: "/tmp/crashed",
+      startedAt: new Date().toISOString(),
+      mode: "dev",
+    };
+    const successor: PidManifest = {
+      ...first,
+      pid: process.pid,
+      name: "successor",
+      agentId: "aug1_77777777-7777-4777-8777-777777777777",
+      claimNonce: "77777777-7777-4777-8777-777777777777",
+      processIdentity: PROCESS_IDENTITY,
+      configPath: "/tmp/successor/agent.yaml",
+      agentDir: "/tmp/successor",
+    };
+    const contender: PidManifest = {
+      ...successor,
+      name: "contender",
+      agentId: "aug1_88888888-8888-4888-8888-888888888888",
+      claimNonce: "88888888-8888-4888-8888-888888888888",
+      configPath: "/tmp/contender/agent.yaml",
+      agentDir: "/tmp/contender",
+    };
+
+    expect(claimRuntimePidManifest(first, { auggyDir })).toBe(true);
+    let blocked = false;
+    expect(
+      claimRuntimePidManifest(successor, {
+        auggyDir,
+        onClaimLockAcquired(claim) {
+          if (claim !== "telegram-bot:777777") return;
+          blocked = true;
+          expect(() => claimRuntimePidManifest(contender, { auggyDir })).toThrow(
+            /claim operation in progress/i,
+          );
+        },
+      }),
+    ).toBe(true);
+    expect(blocked).toBe(true);
+    expect(() => claimRuntimePidManifest(contender, { auggyDir })).toThrow(/resource.*claimed/i);
+    releaseRuntimePidManifest(successor.agentId!, true, { auggyDir });
+  });
+
+  test("distinguishes a reused PID from the recorded runtime incarnation", () => {
+    const manifest: PidManifest = {
+      pid: process.pid,
+      name: "incarnation-a",
+      agentId: "aug1_99999999-9999-4999-8999-999999999999",
+      claimNonce: "99999999-9999-4999-8999-999999999999",
+      processIdentity: "test-process:first",
+      resourceClaims: [],
+      port: null,
+      configPath: "/tmp/incarnation-a/agent.yaml",
+      agentDir: "/tmp/incarnation-a",
+      startedAt: new Date().toISOString(),
+      mode: "dev",
+    };
+    expect(
+      inspectRuntimeProcess(manifest, {
+        processIdentityForPid: () => "test-process:second",
+      }),
+    ).toBe("reused");
+
+    writePidManifest(manifest, { auggyDir });
+    expect(
+      readLivePidManifest(manifest.agentId!, {
+        auggyDir,
+        processIdentityForPid: () => "test-process:second",
+      }),
+    ).toBeNull();
+    expect(readPidManifest(manifest.agentId!, { auggyDir })).toBeNull();
   });
 });
 

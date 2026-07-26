@@ -13,8 +13,8 @@ function telegramIdentity(botToken: string): string {
 }
 
 /**
- * Return non-secret host-local resources that exactly one logical agent may
- * own. Duplicate declarations inside one config are rejected before boot.
+ * Return non-secret CLI-user-local resources that exactly one logical agent
+ * may own. Duplicate declarations inside one config are rejected before boot.
  */
 export function runtimeResourceClaims(config: ParsedConfig): string[] {
   assertImmutableAgentId(config.id);
