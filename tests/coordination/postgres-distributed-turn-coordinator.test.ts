@@ -2,7 +2,11 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { SQL } from "bun";
 import { resolve } from "node:path";
 import { PostgresDistributedTurnCoordinator } from "../../src/coordination";
-import { POSTGRES_COORDINATION_MIGRATIONS } from "../../src/coordination/migrations";
+import {
+  migratePostgresCoordinator,
+  POSTGRES_COORDINATION_MIGRATIONS,
+  type PostgresMigrationExecutor,
+} from "../../src/coordination/migrations";
 import { createJsonLineBarrier, spawnJsonLineWorker } from "../helpers/multiprocess";
 
 const url = process.env.AUGGY_TEST_POSTGRES_URL;
@@ -38,6 +42,25 @@ function coordinator(
     maxQueuedPerThread: Math.min(2, maxQueued),
     leaseMs,
   });
+}
+
+function isolatedMigrationSchema(sql: SQL) {
+  const schema = `coordination_migration_${crypto.randomUUID().replaceAll("-", "")}`;
+  if (!/^coordination_migration_[a-f0-9]{32}$/.test(schema)) {
+    throw new Error("generated an unsafe PostgreSQL test schema");
+  }
+  const executor: PostgresMigrationExecutor = {
+    async begin<T>(callback: (transaction: PostgresMigrationExecutor) => Promise<T>): Promise<T> {
+      return sql.begin(async (transaction) => {
+        return callback({
+          begin: (nested) => nested(executor),
+          unsafe: (query, values) => transaction.unsafe(query, values),
+        });
+      });
+    },
+    unsafe: (query, values) => sql.unsafe(query, values),
+  };
+  return { schema, executor };
 }
 
 async function removeNamespace(value: string): Promise<void> {
@@ -78,6 +101,245 @@ afterEach(async () => {
 });
 
 describe("PostgreSQL distributed turn coordinator", () => {
+  postgresTest(
+    "rejects a same-named incompatible schema without recording migration success",
+    async () => {
+      const sql = new SQL(url!);
+      const { schema, executor } = isolatedMigrationSchema(sql);
+      try {
+        await sql.unsafe(`CREATE SCHEMA ${schema}`);
+        await sql.unsafe(
+          `CREATE TABLE ${schema}.auggy_coordination_namespaces (namespace TEXT PRIMARY KEY)`,
+        );
+
+        await expect(migratePostgresCoordinator(executor, { schema })).rejects.toThrow(
+          "coordination schema is incompatible",
+        );
+        const ledger = await sql.unsafe<Array<{ relation: string | null }>>(
+          "SELECT to_regclass($1)::text AS relation",
+          [`${schema}.auggy_coordination_migrations`],
+        );
+        expect(ledger).toEqual([{ relation: null }]);
+      } finally {
+        await sql.unsafe(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+        await sql.close();
+      }
+    },
+  );
+
+  postgresTest("revalidates an applied migration before accepting it", async () => {
+    const sql = new SQL(url!);
+    const { schema, executor } = isolatedMigrationSchema(sql);
+    try {
+      await sql.unsafe(`CREATE SCHEMA ${schema}`);
+      await migratePostgresCoordinator(executor, { schema });
+      await sql.unsafe(
+        `ALTER TABLE ${schema}.auggy_coordination_namespaces DROP COLUMN max_queued`,
+      );
+
+      await expect(migratePostgresCoordinator(executor, { schema })).rejects.toThrow(
+        "coordination schema is incompatible",
+      );
+      const ledger = await sql.unsafe<Array<{ count: number }>>(
+        `SELECT COUNT(*)::integer AS count FROM ${schema}.auggy_coordination_migrations WHERE id = $1`,
+        [POSTGRES_COORDINATION_MIGRATIONS[0].id],
+      );
+      expect(ledger).toEqual([{ count: 1 }]);
+    } finally {
+      await sql.unsafe(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await sql.close();
+    }
+  });
+
+  postgresTest("rejects catalog objects that weaken migration invariants", async () => {
+    const sql = new SQL(url!);
+    const { schema, executor } = isolatedMigrationSchema(sql);
+    const alternateSchema = `coordination_sequence_${crypto.randomUUID().replaceAll("-", "")}`;
+    if (!/^coordination_sequence_[a-f0-9]{32}$/.test(alternateSchema)) {
+      throw new Error("generated an unsafe PostgreSQL sequence schema");
+    }
+    const migrate = () => migratePostgresCoordinator(executor, { schema });
+    try {
+      await sql.unsafe(`CREATE SCHEMA ${schema}`);
+      await sql.unsafe(`CREATE SCHEMA ${alternateSchema}`);
+      await migrate();
+      await migrate();
+
+      await sql.unsafe(
+        `ALTER TABLE ${schema}.auggy_coordination_threads ALTER COLUMN quarantined SET DEFAULT TRUE`,
+      );
+      await expect(migrate()).rejects.toThrow("coordination schema is incompatible");
+      await sql.unsafe(
+        `ALTER TABLE ${schema}.auggy_coordination_threads ALTER COLUMN quarantined SET DEFAULT FALSE`,
+      );
+      await migrate();
+
+      await sql.unsafe(
+        `ALTER TABLE ${schema}.auggy_coordination_requests ALTER COLUMN request_id TYPE text COLLATE "C"`,
+      );
+      await expect(migrate()).rejects.toThrow("coordination schema is incompatible");
+      await sql.unsafe(
+        `ALTER TABLE ${schema}.auggy_coordination_requests ALTER COLUMN request_id TYPE text COLLATE "default"`,
+      );
+      await migrate();
+
+      await sql.unsafe(`DROP INDEX ${schema}.auggy_coordination_request_queue_idx`);
+      await sql.unsafe(
+        `CREATE INDEX auggy_coordination_request_queue_idx ON ${schema}.auggy_coordination_requests (namespace, state, queued_at, request_id) WHERE state = 'queued'`,
+      );
+      await expect(migrate()).rejects.toThrow("coordination schema is incompatible");
+      await sql.unsafe(`DROP INDEX ${schema}.auggy_coordination_request_queue_idx`);
+      await sql.unsafe(
+        `CREATE INDEX auggy_coordination_request_queue_idx ON ${schema}.auggy_coordination_requests (namespace DESC, state, queued_at, request_id)`,
+      );
+      await expect(migrate()).rejects.toThrow("coordination schema is incompatible");
+      await sql.unsafe(`DROP INDEX ${schema}.auggy_coordination_request_queue_idx`);
+      await sql.unsafe(
+        `CREATE INDEX auggy_coordination_request_queue_idx ON ${schema}.auggy_coordination_requests (namespace, state, queued_at, request_id)`,
+      );
+      await migrate();
+
+      await sql.unsafe(
+        `ALTER TABLE ${schema}.auggy_coordination_namespaces DROP CONSTRAINT auggy_coordination_namespaces_pkey`,
+      );
+      await sql.unsafe(
+        `ALTER TABLE ${schema}.auggy_coordination_namespaces ADD CONSTRAINT auggy_coordination_namespaces_pkey PRIMARY KEY (namespace) DEFERRABLE INITIALLY DEFERRED`,
+      );
+      await expect(migrate()).rejects.toThrow("coordination schema is incompatible");
+      await sql.unsafe(
+        `ALTER TABLE ${schema}.auggy_coordination_namespaces DROP CONSTRAINT auggy_coordination_namespaces_pkey`,
+      );
+      await sql.unsafe(
+        `ALTER TABLE ${schema}.auggy_coordination_namespaces ADD CONSTRAINT auggy_coordination_namespaces_pkey PRIMARY KEY (namespace)`,
+      );
+      await migrate();
+
+      await sql.unsafe(
+        `ALTER TABLE ${schema}.auggy_coordination_requests DROP CONSTRAINT auggy_coordination_requests_state_check`,
+      );
+      await sql.unsafe(
+        `ALTER TABLE ${schema}.auggy_coordination_requests ADD CONSTRAINT auggy_coordination_requests_state_check CHECK (state IN ('queued', 'active', 'completed', 'failed', 'canceled', 'outcome_unknown')) NOT VALID`,
+      );
+      await expect(migrate()).rejects.toThrow("coordination schema is incompatible");
+      await sql.unsafe(
+        `ALTER TABLE ${schema}.auggy_coordination_requests VALIDATE CONSTRAINT auggy_coordination_requests_state_check`,
+      );
+      await migrate();
+
+      await sql.unsafe(
+        `ALTER TABLE ${schema}.auggy_coordination_requests ENABLE ROW LEVEL SECURITY`,
+      );
+      await expect(migrate()).rejects.toThrow("coordination schema is incompatible");
+      await sql.unsafe(
+        `ALTER TABLE ${schema}.auggy_coordination_requests DISABLE ROW LEVEL SECURITY`,
+      );
+      await migrate();
+
+      await sql.unsafe(`ALTER SEQUENCE ${schema}.auggy_coordination_events_event_id_seq CYCLE`);
+      await expect(migrate()).rejects.toThrow("coordination schema is incompatible");
+      await sql.unsafe(`ALTER SEQUENCE ${schema}.auggy_coordination_events_event_id_seq NO CYCLE`);
+      await migrate();
+
+      await sql.unsafe(
+        `CREATE SEQUENCE ${alternateSchema}.auggy_coordination_events_event_id_seq AS BIGINT`,
+      );
+      await sql.unsafe(
+        `ALTER TABLE ${schema}.auggy_coordination_events ALTER COLUMN event_id SET DEFAULT nextval('${alternateSchema}.auggy_coordination_events_event_id_seq'::regclass)`,
+      );
+      await expect(migrate()).rejects.toThrow("coordination schema is incompatible");
+      await sql.unsafe(
+        `ALTER TABLE ${schema}.auggy_coordination_events ALTER COLUMN event_id SET DEFAULT nextval('${schema}.auggy_coordination_events_event_id_seq'::regclass)`,
+      );
+      await migrate();
+
+      await sql.unsafe(
+        `ALTER SEQUENCE ${schema}.auggy_coordination_events_event_id_seq OWNED BY NONE`,
+      );
+      await expect(migrate()).rejects.toThrow("coordination schema is incompatible");
+    } finally {
+      await sql.unsafe(`DROP SCHEMA IF EXISTS ${schema} CASCADE`);
+      await sql.unsafe(`DROP SCHEMA IF EXISTS ${alternateSchema} CASCADE`);
+      await sql.close();
+    }
+  });
+
+  test("rejects unsafe explicit coordination schema identifiers before opening a transaction", async () => {
+    let began = false;
+    const executor: PostgresMigrationExecutor = {
+      async begin<T>(): Promise<T> {
+        began = true;
+        throw new Error("unexpected transaction");
+      },
+      async unsafe<T extends object>(): Promise<T[]> {
+        throw new Error("unexpected query");
+      },
+    };
+
+    await expect(
+      migratePostgresCoordinator(executor, { schema: 'public", attacker' }),
+    ).rejects.toThrow("lowercase PostgreSQL identifier");
+    expect(began).toBeFalse();
+  });
+
+  postgresTest("pins runtime operations away from a role-controlled shadow schema", async () => {
+    const sql = new SQL(url!);
+    const shadow = `coordination_shadow_${crypto.randomUUID().replaceAll("-", "")}`;
+    const value = namespace();
+    if (!/^coordination_shadow_[a-f0-9]{32}$/.test(shadow)) {
+      throw new Error("generated an unsafe PostgreSQL shadow schema");
+    }
+    const shadowedExecutor: PostgresMigrationExecutor = {
+      async begin<T>(callback: (transaction: PostgresMigrationExecutor) => Promise<T>): Promise<T> {
+        return sql.begin(async (transaction) => {
+          await transaction.unsafe(`SET LOCAL search_path TO ${shadow}, public, pg_catalog`);
+          const scoped: PostgresMigrationExecutor = {
+            begin: (nested) => nested(scoped),
+            unsafe: (query, values) => transaction.unsafe(query, values),
+          };
+          return callback(scoped);
+        });
+      },
+      async unsafe<T extends object>(): Promise<T[]> {
+        throw new Error("runtime attempted unscoped direct SQL");
+      },
+    };
+    const instance = new PostgresDistributedTurnCoordinator({
+      namespace: value,
+      instanceId: "shadow-proof",
+      maxConcurrent: 1,
+      maxQueued: 2,
+      maxQueuedPerThread: 1,
+      leaseMs: 1_000,
+      sql: shadowedExecutor,
+    });
+    try {
+      await sql.unsafe(`CREATE SCHEMA ${shadow}`);
+      await sql.unsafe(
+        `CREATE TABLE ${shadow}.auggy_coordination_namespaces (namespace TEXT PRIMARY KEY)`,
+      );
+      await instance.migrate();
+      expect(await instance.setDraining(false)).toEqual({ status: "ok" });
+      expect(await instance.admit(request("shadow-request"))).toEqual({ status: "admitted" });
+      expect(await instance.cancel({ requestId: "shadow-request", bindingHash: hash })).toEqual({
+        status: "ok",
+      });
+
+      const publicRows = await sql.unsafe<Array<{ count: number }>>(
+        "SELECT count(*)::integer AS count FROM public.auggy_coordination_requests WHERE namespace = $1",
+        [value],
+      );
+      const shadowRows = await sql.unsafe<Array<{ count: number }>>(
+        `SELECT count(*)::integer AS count FROM ${shadow}.auggy_coordination_namespaces`,
+      );
+      expect(publicRows).toEqual([{ count: 1 }]);
+      expect(shadowRows).toEqual([{ count: 0 }]);
+    } finally {
+      await instance.close();
+      await sql.unsafe(`DROP SCHEMA IF EXISTS ${shadow} CASCADE`);
+      await sql.close();
+    }
+  });
+
   postgresTest("runs checked migration repeatedly without creating duplicate state", async () => {
     const first = coordinator(namespace(), "migration-a");
     const second = coordinator(namespace(), "migration-b");
