@@ -39,6 +39,8 @@ interface PidRegistryOptions {
 
 interface RuntimePidRegistryOptions extends PidRegistryOptions {
   internalMode?: string;
+  /** @internal Deterministic publication barrier for generation-fence tests. */
+  __testHooks?: { afterManifestPublished?: (manifest: PidManifest) => void };
 }
 
 interface ManifestRecord {
@@ -59,14 +61,19 @@ interface ResourceClaimRecord {
 const AGENT_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const CLAIM_DATABASE_APPLICATION_ID = 0x4155434c; // "AUCL"
-const CLAIM_DATABASE_SCHEMA_VERSION = 1;
-const CLAIM_DATABASE_SCHEMA = `CREATE TABLE IF NOT EXISTS runtime_resource_claims (
+const CLAIM_DATABASE_SCHEMA_VERSION = 2;
+const RESOURCE_CLAIM_SCHEMA = `CREATE TABLE IF NOT EXISTS runtime_resource_claims (
   claim            TEXT PRIMARY KEY,
   agent_id         TEXT NOT NULL,
   agent_name       TEXT NOT NULL,
   pid              INTEGER NOT NULL,
   claim_nonce      TEXT NOT NULL,
   process_identity TEXT NOT NULL
+)`;
+const LAUNCHD_GENERATION_SCHEMA = `CREATE TABLE IF NOT EXISTS launchd_generation_state (
+  agent_id          TEXT PRIMARY KEY,
+  launch_generation TEXT NOT NULL,
+  active            INTEGER NOT NULL CHECK (active IN (0, 1))
 )`;
 
 interface ResourceClaimRow {
@@ -76,6 +83,11 @@ interface ResourceClaimRow {
   pid: number;
   claim_nonce: string;
   process_identity: string;
+}
+
+export interface LaunchdGenerationState {
+  launchGeneration: string;
+  active: boolean;
 }
 
 export class RuntimeResourceConflictError extends Error {}
@@ -194,6 +206,7 @@ function parseManifest(value: unknown, source: string): PidManifest {
         (typeof record.launchGeneration !== "string" ||
           !UUID_RE.test(record.launchGeneration) ||
           record.mode !== "launchd")) ||
+      (record.mode === "launchd" && record.launchGeneration === undefined) ||
       (record.resourceClaimStore === "sqlite-v1" &&
         !(record.resourceClaims as string[]).includes(`agent-id:${String(record.agentId)}`))
     ) {
@@ -365,12 +378,26 @@ function claimDatabasePath(opts: PidRegistryOptions): string {
   return join(ensureDir(opts), "runtime-claims.sqlite");
 }
 
-function hasExactClaimSchema(objects: readonly SqliteSchemaObject[]): boolean {
+function hasExactClaimSchemaV1(objects: readonly SqliteSchemaObject[]): boolean {
   return (
     objects.length === 1 &&
     objects[0]?.type === "table" &&
     objects[0].name === "runtime_resource_claims" &&
-    canonicalSqliteSchemaSql(objects[0].sql) === canonicalSqliteSchemaSql(CLAIM_DATABASE_SCHEMA)
+    canonicalSqliteSchemaSql(objects[0].sql) === canonicalSqliteSchemaSql(RESOURCE_CLAIM_SCHEMA)
+  );
+}
+
+function hasExactClaimSchemaV2(objects: readonly SqliteSchemaObject[]): boolean {
+  const byName = new Map(objects.map((object) => [object.name, object]));
+  const claims = byName.get("runtime_resource_claims");
+  const generations = byName.get("launchd_generation_state");
+  return (
+    objects.length === 2 &&
+    claims?.type === "table" &&
+    generations?.type === "table" &&
+    canonicalSqliteSchemaSql(claims.sql) === canonicalSqliteSchemaSql(RESOURCE_CLAIM_SCHEMA) &&
+    canonicalSqliteSchemaSql(generations.sql) ===
+      canonicalSqliteSchemaSql(LAUNCHD_GENERATION_SCHEMA)
   );
 }
 
@@ -385,13 +412,20 @@ function openClaimDatabase(opts: PidRegistryOptions) {
         applicationId: CLAIM_DATABASE_APPLICATION_ID,
         schemaVersion: CLAIM_DATABASE_SCHEMA_VERSION,
         initialize(target) {
-          target.run(CLAIM_DATABASE_SCHEMA);
+          target.run(RESOURCE_CLAIM_SCHEMA);
+          target.run(LAUNCHD_GENERATION_SCHEMA);
         },
         isLegacy() {
           return false;
         },
+        migrateOwned(target, fromVersion, objects) {
+          if (fromVersion !== 1 || !hasExactClaimSchemaV1(objects)) {
+            throw new Error("runtime resource claim registry: unsupported schema migration");
+          }
+          target.run(LAUNCHD_GENERATION_SCHEMA);
+        },
         validate(_target, objects) {
-          if (!hasExactClaimSchema(objects)) {
+          if (!hasExactClaimSchemaV2(objects)) {
             throw new Error(
               "runtime resource claim registry: database schema is missing, incompatible, or unexpected",
             );
@@ -400,6 +434,163 @@ function openClaimDatabase(opts: PidRegistryOptions) {
       });
     },
   });
+}
+
+function assertLaunchdGenerationFields(agentId: string, launchGeneration: string): void {
+  if (!AGENT_ID_RE.test(agentId) || !UUID_RE.test(launchGeneration)) {
+    throw new Error("Launchd generation state requires a valid agent id and generation");
+  }
+}
+
+function assertLaunchdGenerationActiveInDatabase(
+  db: ReturnType<typeof openClaimDatabase>["db"],
+  manifest: PidManifest,
+): void {
+  if (manifest.mode !== "launchd") return;
+  const agentId = manifest.agentId;
+  const launchGeneration = manifest.launchGeneration;
+  if (!agentId || !launchGeneration) {
+    throw new RuntimeResourceConflictError(
+      "Launchd runtime admission requires an exact generation",
+    );
+  }
+  const state = db
+    .query<{ launch_generation: string; active: number }, [string]>(
+      "SELECT launch_generation, active FROM launchd_generation_state WHERE agent_id = ?",
+    )
+    .get(agentId);
+  if (state?.active !== 1 || state.launch_generation !== launchGeneration) {
+    throw new RuntimeResourceConflictError(
+      `Launchd installation generation ${launchGeneration} is closed or superseded for agent "${manifest.name}".`,
+    );
+  }
+}
+
+function assertLaunchdGenerationActive(manifest: PidManifest, opts: PidRegistryOptions): void {
+  if (manifest.mode !== "launchd") return;
+  const database = openClaimDatabase(opts);
+  try {
+    assertLaunchdGenerationActiveInDatabase(database.db, manifest);
+  } finally {
+    database.close();
+  }
+}
+
+/** Mark one launchd installation generation as the only generation allowed to boot. */
+export function activateLaunchdGeneration(
+  agentId: string,
+  launchGeneration: string,
+  opts: PidRegistryOptions = {},
+): void {
+  assertLaunchdGenerationFields(agentId, launchGeneration);
+  const database = openClaimDatabase(opts);
+  try {
+    database.db
+      .query(
+        `INSERT INTO launchd_generation_state (agent_id, launch_generation, active)
+         VALUES (?, ?, 1)
+         ON CONFLICT(agent_id) DO UPDATE SET
+           launch_generation = excluded.launch_generation,
+           active = 1`,
+      )
+      .run(agentId, launchGeneration);
+  } finally {
+    database.close();
+  }
+}
+
+/** Permanently close an exact launchd generation before its job is unloaded. */
+export function closeLaunchdGeneration(
+  agentId: string,
+  launchGeneration: string,
+  opts: PidRegistryOptions = {},
+): void {
+  assertLaunchdGenerationFields(agentId, launchGeneration);
+  const database = openClaimDatabase(opts);
+  try {
+    database.db
+      .transaction(() => {
+        const state = database.db
+          .query<{ launch_generation: string; active: number }, [string]>(
+            "SELECT launch_generation, active FROM launchd_generation_state WHERE agent_id = ?",
+          )
+          .get(agentId);
+        if (state && state.launch_generation !== launchGeneration) {
+          throw new RuntimeResourceConflictError(
+            `Agent ${agentId} has a different launchd installation generation.`,
+          );
+        }
+        database.db
+          .query(
+            `INSERT INTO launchd_generation_state (agent_id, launch_generation, active)
+             VALUES (?, ?, 0)
+             ON CONFLICT(agent_id) DO UPDATE SET active = 0`,
+          )
+          .run(agentId, launchGeneration);
+      })
+      .immediate();
+  } finally {
+    database.close();
+  }
+}
+
+/** Read the durable launchd installation generation for exact-id recovery. */
+export function readLaunchdGenerationState(
+  agentId: string,
+  opts: PidRegistryOptions = {},
+): LaunchdGenerationState | null {
+  if (!AGENT_ID_RE.test(agentId)) {
+    throw new Error("Launchd generation lookup requires a valid agent id");
+  }
+  const database = openClaimDatabase(opts);
+  try {
+    const state = database.db
+      .query<{ launch_generation: string; active: number }, [string]>(
+        "SELECT launch_generation, active FROM launchd_generation_state WHERE agent_id = ?",
+      )
+      .get(agentId);
+    if (!state) return null;
+    if (!UUID_RE.test(state.launch_generation) || (state.active !== 0 && state.active !== 1)) {
+      throw new Error(`Invalid launchd generation state for agent ${agentId}`);
+    }
+    return { launchGeneration: state.launch_generation, active: state.active === 1 };
+  } finally {
+    database.close();
+  }
+}
+
+/** Close whichever launchd generation is currently recorded for one agent. */
+export function closeActiveLaunchdGeneration(
+  agentId: string,
+  opts: PidRegistryOptions = {},
+): LaunchdGenerationState | null {
+  if (!AGENT_ID_RE.test(agentId)) {
+    throw new Error("Launchd generation closure requires a valid agent id");
+  }
+  const database = openClaimDatabase(opts);
+  try {
+    let result: LaunchdGenerationState | null = null;
+    database.db
+      .transaction(() => {
+        const state = database.db
+          .query<{ launch_generation: string; active: number }, [string]>(
+            "SELECT launch_generation, active FROM launchd_generation_state WHERE agent_id = ?",
+          )
+          .get(agentId);
+        if (!state) return;
+        if (!UUID_RE.test(state.launch_generation) || (state.active !== 0 && state.active !== 1)) {
+          throw new Error(`Invalid launchd generation state for agent ${agentId}`);
+        }
+        database.db
+          .query("UPDATE launchd_generation_state SET active = 0 WHERE agent_id = ?")
+          .run(agentId);
+        result = { launchGeneration: state.launch_generation, active: state.active === 1 };
+      })
+      .immediate();
+    return result;
+  } finally {
+    database.close();
+  }
 }
 
 function claimRecordFromRow(row: ResourceClaimRow): ResourceClaimRecord {
@@ -459,6 +650,7 @@ function acquireResourceClaims(manifest: PidManifest, opts: PidRegistryOptions):
        VALUES (?, ?, ?, ?, ?, ?)`,
     );
     db.transaction(() => {
+      assertLaunchdGenerationActiveInDatabase(db, manifest);
       for (const claim of claims) {
         rejectOrRemoveLegacyClaim(claim, opts);
         const requestedStatePath = statePathFromClaim(claim);
@@ -646,6 +838,13 @@ export function claimRuntimePidManifest(
     try {
       if (existing) removeManifestRecord(existing, opts);
       writeDurableJson(exactPath, manifest, "Auggy runtime manifest");
+      opts.__testHooks?.afterManifestPublished?.(manifest);
+      try {
+        assertLaunchdGenerationActive(manifest, opts);
+      } catch (error) {
+        removeManifestRecord({ path: exactPath, manifest }, opts, manifest);
+        throw error;
+      }
       return true;
     } catch (error) {
       releaseResourceClaims(manifest, opts);

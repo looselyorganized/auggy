@@ -9,6 +9,8 @@ import type { PidManifest } from "../../src/cli/types";
 // temp directories. Production uses ~/.auggy/, but the same code paths
 // support an explicit auggyDir override for tests and embedded callers.
 import {
+  activateLaunchdGeneration,
+  closeLaunchdGeneration,
   writePidManifest,
   claimRuntimePidManifest,
   formatAgentAlreadyRunningMessage,
@@ -508,6 +510,83 @@ describe("runtime PID manifest policy", () => {
       }),
     ).toBeNull();
     expect(readPidManifest(manifest.agentId!, { auggyDir })).toBeNull();
+  });
+
+  test("admits only the active launchd generation across publication races", () => {
+    const agentId = "aug1_77777777-7777-4777-8777-777777777777";
+    const generationOne = "11111111-1111-4111-8111-111111111111";
+    const generationTwo = "22222222-2222-4222-8222-222222222222";
+    const base: PidManifest = {
+      pid: process.pid,
+      name: "generation-fenced",
+      agentId,
+      claimNonce: "77777777-7777-4777-8777-777777777777",
+      processIdentity: PROCESS_IDENTITY,
+      resourceClaims: [`agent-id:${agentId}`],
+      resourceClaimStore: "sqlite-v1",
+      launchGeneration: generationOne,
+      port: null,
+      configPath: "/tmp/generation-fenced/agent.yaml",
+      agentDir: "/tmp/generation-fenced",
+      startedAt: new Date().toISOString(),
+      mode: "launchd",
+    };
+
+    expect(() => claimRuntimePidManifest(base, modernRegistryOptions())).toThrow(
+      /generation.*closed or superseded/i,
+    );
+    activateLaunchdGeneration(agentId, generationOne, { auggyDir });
+    expect(() =>
+      claimRuntimePidManifest(base, {
+        ...modernRegistryOptions(),
+        __testHooks: {
+          afterManifestPublished() {
+            closeLaunchdGeneration(agentId, generationOne, { auggyDir });
+          },
+        },
+      }),
+    ).toThrow(/generation.*closed or superseded/i);
+    expect(readPidManifest(agentId, { auggyDir })).toBeNull();
+
+    activateLaunchdGeneration(agentId, generationTwo, { auggyDir });
+    expect(() => claimRuntimePidManifest(base, modernRegistryOptions())).toThrow(
+      /generation.*closed or superseded/i,
+    );
+    const successor = {
+      ...base,
+      claimNonce: "88888888-8888-4888-8888-888888888888",
+      launchGeneration: generationTwo,
+    };
+    expect(claimRuntimePidManifest(successor, modernRegistryOptions())).toBe(true);
+    releaseRuntimePidManifest(successor, true, { auggyDir });
+  });
+
+  test("migrates the exact version-one claim database before generation activation", () => {
+    const path = join(auggyDir, "runtime-claims.sqlite");
+    const raw = new Database(path);
+    raw.run(`CREATE TABLE runtime_resource_claims (
+      claim            TEXT PRIMARY KEY,
+      agent_id         TEXT NOT NULL,
+      agent_name       TEXT NOT NULL,
+      pid              INTEGER NOT NULL,
+      claim_nonce      TEXT NOT NULL,
+      process_identity TEXT NOT NULL
+    )`);
+    raw.run("PRAGMA application_id = 1096106828");
+    raw.run("PRAGMA user_version = 1");
+    raw.close();
+
+    activateLaunchdGeneration(
+      "aug1_99999999-9999-4999-8999-999999999999",
+      "99999999-9999-4999-8999-999999999999",
+      { auggyDir },
+    );
+    const migrated = new Database(path, { readonly: true });
+    expect(
+      migrated.query("SELECT name FROM sqlite_schema WHERE type = 'table' ORDER BY name").all(),
+    ).toEqual([{ name: "launchd_generation_state" }, { name: "runtime_resource_claims" }]);
+    expect(migrated.query("PRAGMA user_version").get()).toEqual({ user_version: 2 });
+    migrated.close();
   });
 });
 

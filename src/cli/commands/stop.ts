@@ -10,7 +10,9 @@ import { unlinkSync } from "node:fs";
 import { $ } from "bun";
 import {
   claimAgentLifecycle,
+  closeLaunchdGeneration,
   inspectRuntimeProcess,
+  readLaunchdGenerationState,
   readPidManifest,
   removePidManifestIfOwned,
 } from "../pid-registry";
@@ -31,12 +33,23 @@ interface StopOptions {
   lifecycleOwned?: boolean;
   /** Test seam for fail-closed artifact cleanup. */
   unlinkFile?: (path: string) => void;
+  /** Test/recovery seam for immutable-id launchd artifacts. */
+  paths?: { installPath: string; storePath: string };
 }
+
+const AGENT_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 export async function runStop(name: string, opts: StopOptions = {}): Promise<void> {
   const initialManifest = readPidManifest(name, { auggyDir: opts.auggyDir });
 
   if (!initialManifest) {
+    if (AGENT_ID_RE.test(name)) {
+      const state = readLaunchdGenerationState(name, { auggyDir: opts.auggyDir });
+      if (state) {
+        await stopManifestlessLaunchd(name, state.launchGeneration, opts);
+        return;
+      }
+    }
     console.log(`Agent "${name}" is not running.`);
     return;
   }
@@ -66,6 +79,60 @@ export async function runStop(name: string, opts: StopOptions = {}): Promise<voi
   }
 }
 
+async function stopManifestlessLaunchd(
+  agentId: string,
+  launchGeneration: string,
+  opts: StopOptions,
+): Promise<void> {
+  const releaseLifecycle = claimAgentLifecycle(agentId, "launchd-recovery", {
+    auggyDir: opts.auggyDir,
+    processIdentityForPid: opts.processIdentityForPid,
+  });
+  try {
+    const appeared = readPidManifest(agentId, { auggyDir: opts.auggyDir });
+    if (appeared) {
+      if (appeared.mode === "launchd")
+        await stopLaunchd(appeared, { ...opts, lifecycleOwned: true });
+      else await stopDev(appeared, opts);
+      return;
+    }
+
+    closeLaunchdGeneration(agentId, launchGeneration, {
+      auggyDir: opts.auggyDir,
+      processIdentityForPid: opts.processIdentityForPid,
+    });
+    const installPath = opts.paths?.installPath ?? plistInstallPath(agentId);
+    const storePath = opts.paths?.storePath ?? plistStorePath(agentId);
+    try {
+      if (opts.unloadLaunchd) await opts.unloadLaunchd(installPath);
+      else await $`launchctl unload ${installPath}`.quiet();
+    } catch (error) {
+      throw new Error(
+        `Could not unload manifestless launchd agent ${agentId}. Its generation remains closed; inspect launchd before retrying.`,
+        { cause: error },
+      );
+    }
+
+    const delayed = readPidManifest(agentId, { auggyDir: opts.auggyDir });
+    if (delayed) {
+      const status = inspectRuntimeProcess(delayed, {
+        processIdentityForPid: opts.processIdentityForPid,
+      });
+      if (status === "alive" || status === "unverifiable") {
+        throw new Error(
+          `Manifestless launchd recovery found a live or unverifiable process for ${agentId}. Its generation remains closed for manual recovery.`,
+        );
+      }
+      removePidManifestIfOwned(delayed, { auggyDir: opts.auggyDir });
+    }
+    unlinkIfPresent(installPath, opts.unlinkFile ?? unlinkSync);
+    unlinkIfPresent(storePath, opts.unlinkFile ?? unlinkSync);
+    console.log(`Agent "${agentId}" stopped (manifestless launchd recovery).`);
+  } finally {
+    releaseLifecycle();
+  }
+}
+
 function unlinkIfPresent(path: string, unlinkFile: (path: string) => void): void {
   try {
     unlinkFile(path);
@@ -79,8 +146,21 @@ async function stopLaunchd(
   opts: StopOptions,
 ): Promise<void> {
   const key = manifest.agentId ?? manifest.name;
-  const installPath = plistInstallPath(key);
-  const storePath = plistStorePath(key);
+  const installPath = opts.paths?.installPath ?? plistInstallPath(key);
+  const storePath = opts.paths?.storePath ?? plistStorePath(key);
+
+  if (!manifest.agentId || !manifest.launchGeneration) {
+    throw new Error(
+      `Launchd agent "${manifest.name}" has no verifiable installation generation. Refusing unsafe stop; reinstall it before retrying.`,
+    );
+  }
+  // Close the generation before unload. A KeepAlive child that has not yet
+  // published its manifest will fail runtime admission, including after this
+  // command's final manifest read.
+  closeLaunchdGeneration(manifest.agentId, manifest.launchGeneration, {
+    auggyDir: opts.auggyDir,
+    processIdentityForPid: opts.processIdentityForPid,
+  });
 
   // Unload the launchd service.
   try {

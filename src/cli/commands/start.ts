@@ -19,7 +19,10 @@ import {
   plistStorePath,
 } from "../plist-generator";
 import {
+  activateLaunchdGeneration,
   claimAgentLifecycle,
+  closeActiveLaunchdGeneration,
+  closeLaunchdGeneration,
   formatAgentAlreadyRunningMessage,
   readLivePidManifest,
 } from "../pid-registry";
@@ -79,6 +82,11 @@ export async function runStart(name: string | undefined, opts: StartOptions): Pr
       throw new Error(formatAgentAlreadyRunningMessage(agentName, runningManifest));
     }
 
+    // Supersede any previously installed generation before interacting with
+    // launchd. An already-spawned old KeepAlive child must fail admission even
+    // while unload and artifact replacement are still in progress.
+    closeActiveLaunchdGeneration(config.id, processOptions);
+
     const label = plistLabel(config.id);
     const paths =
       opts.paths ??
@@ -115,6 +123,11 @@ export async function runStart(name: string | undefined, opts: StartOptions): Pr
     unlinkIfPresent(paths.installPath, unlinkFile);
     unlinkIfPresent(paths.storePath, unlinkFile);
 
+    const replacementDuringUnload = readLivePidManifest(config.id, processOptions);
+    if (replacementDuringUnload) {
+      throw new Error(formatAgentAlreadyRunningMessage(agentName, replacementDuringUnload));
+    }
+
     const launchGeneration = randomUUID();
     const plist = generatePlist({
       name: agentName,
@@ -132,7 +145,10 @@ export async function runStart(name: string | undefined, opts: StartOptions): Pr
     makeDirectory(paths.logDirectory);
 
     let loadAttempted = false;
+    let generationActivated = false;
     try {
+      activateLaunchdGeneration(config.id, launchGeneration, processOptions);
+      generationActivated = true;
       (opts.writePlist ?? writeFileSync)(paths.storePath, plist);
       (opts.linkPlist ?? symlinkSync)(paths.storePath, paths.installPath);
       loadAttempted = true;
@@ -174,15 +190,35 @@ export async function runStart(name: string | undefined, opts: StartOptions): Pr
         `Agent "${agentName}" did not start within ${maxWaitMs / 1000}s. Check logs at ${paths.logDirectory}/${config.id}.err.`,
       );
     } catch (error) {
+      let closeError: unknown;
+      if (generationActivated) {
+        try {
+          closeLaunchdGeneration(config.id, launchGeneration, processOptions);
+        } catch (failure) {
+          closeError = failure;
+        }
+      }
       if (loadAttempted) {
         try {
           await unloadLaunchd(paths.installPath);
         } catch (rollbackError) {
           throw new Error(
             `Launchd start failed and rollback could not unload the installed job. Its artifacts were preserved for operator recovery.`,
-            { cause: new AggregateError([error, rollbackError]) },
+            {
+              cause: new AggregateError(
+                [error, closeError, rollbackError].filter(
+                  (candidate): candidate is object => candidate !== undefined,
+                ),
+              ),
+            },
           );
         }
+      }
+      if (closeError) {
+        throw new Error(
+          "Launchd start failed and its installation generation could not be closed. The job was unloaded; inspect runtime state before retrying.",
+          { cause: new AggregateError([error, closeError]) },
+        );
       }
       try {
         unlinkIfPresent(paths.installPath, unlinkFile);

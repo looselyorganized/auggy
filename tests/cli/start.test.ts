@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runStart } from "../../src/cli/commands/start";
 import {
+  activateLaunchdGeneration,
   claimAgentLifecycle,
   claimRuntimePidManifest,
   readPidManifest,
@@ -57,15 +58,59 @@ function generationFromPlist(path: string): string {
 }
 
 describe("runStart launchd generation fencing", () => {
+  test("closes the previous generation before unloading an installed job", async () => {
+    const previousGeneration = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    activateLaunchdGeneration(AGENT_ID, previousGeneration, { auggyDir });
+    const delayed: PidManifest = {
+      pid: process.pid,
+      name: "launch-test",
+      agentId: AGENT_ID,
+      claimNonce: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      processIdentity: PROCESS_IDENTITY,
+      resourceClaims: [`agent-id:${AGENT_ID}`],
+      resourceClaimStore: "sqlite-v1",
+      launchGeneration: previousGeneration,
+      port: null,
+      configPath,
+      agentDir: root,
+      startedAt: new Date().toISOString(),
+      mode: "launchd",
+    };
+    let unloads = 0;
+    const opts = options();
+    await expect(
+      runStart("launch-test", {
+        ...opts,
+        listLaunchd: async () => `com.auggy.agent.${AGENT_ID}`,
+        unloadLaunchd: async () => {
+          unloads++;
+          if (unloads === 1) {
+            expect(() =>
+              claimRuntimePidManifest(delayed, {
+                auggyDir,
+                processIdentityForPid: () => PROCESS_IDENTITY,
+              }),
+            ).toThrow(/generation.*closed or superseded/i);
+          }
+        },
+        loadLaunchd: async () => {},
+      }),
+    ).rejects.toThrow(/did not start/i);
+    expect(unloads).toBe(2);
+    expect(readPidManifest(AGENT_ID, { auggyDir })).toBeNull();
+  });
+
   test("unloads and removes an armed KeepAlive job when startup times out", async () => {
     let loads = 0;
     let unloads = 0;
+    let generation: string | undefined;
     const opts = options();
     await expect(
       runStart("launch-test", {
         ...opts,
         loadLaunchd: async () => {
           loads++;
+          generation = generationFromPlist(opts.paths.storePath);
         },
         unloadLaunchd: async () => {
           unloads++;
@@ -75,6 +120,27 @@ describe("runStart launchd generation fencing", () => {
     expect({ loads, unloads }).toEqual({ loads: 1, unloads: 1 });
     expect(existsSync(opts.paths.installPath)).toBe(false);
     expect(existsSync(opts.paths.storePath)).toBe(false);
+    const delayed: PidManifest = {
+      pid: process.pid,
+      name: "launch-test",
+      agentId: AGENT_ID,
+      claimNonce: "11111111-1111-4111-8111-111111111111",
+      processIdentity: PROCESS_IDENTITY,
+      resourceClaims: [`agent-id:${AGENT_ID}`],
+      resourceClaimStore: "sqlite-v1",
+      launchGeneration: generation,
+      port: null,
+      configPath,
+      agentDir: root,
+      startedAt: new Date().toISOString(),
+      mode: "launchd",
+    };
+    expect(() =>
+      claimRuntimePidManifest(delayed, {
+        auggyDir,
+        processIdentityForPid: () => PROCESS_IDENTITY,
+      }),
+    ).toThrow(/generation.*closed or superseded/i);
   });
 
   test("attempts fail-closed unload when launchctl load has an unknown outcome", async () => {
