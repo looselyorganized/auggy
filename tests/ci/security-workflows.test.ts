@@ -223,6 +223,21 @@ describe("tracked test-surface workflow enforcement", () => {
       "bun scripts/test-surface-inventory.ts run console",
     );
 
+    const temporal = requireJob(jobs, "temporal_example");
+    expect(requireStep(temporal, "Install, test, typecheck, and audit Temporal example").run).toBe(
+      "bun run test:temporal-example",
+    );
+    const temporalScript = readFileSync(join(ROOT, "scripts/test-temporal-example.sh"), "utf8");
+    for (const required of [
+      "set -euo pipefail",
+      "bun install --frozen-lockfile",
+      "bun run test",
+      "bun run typecheck",
+      "bun audit --json",
+    ]) {
+      expect(temporalScript).toContain(required);
+    }
+
     const aggregate = requireJob(jobs, "test");
     expect(normalizedNeeds(aggregate)).toContain("inventory");
     expect(normalizedNeeds(aggregate)).toContain("postgres_coordination");
