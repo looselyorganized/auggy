@@ -19,7 +19,6 @@ import {
   mkdirSync,
   readFileSync,
   readdirSync,
-  renameSync,
   rmSync,
   statSync,
   unlinkSync,
@@ -29,6 +28,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import type { CloudRecord, IndexEntry } from "./types";
+import { readDurableJson, writeDurableJson } from "../lib/durable-json";
 
 const CLOUD_FILENAME = ".auggy-cloud.json";
 
@@ -77,9 +77,7 @@ function readCloud(localDir: string): CloudRecord {
   const path = cloudPath(localDir);
   if (!existsSync(path)) return null;
   try {
-    const raw = readFileSync(path, "utf-8");
-    const parsed = JSON.parse(raw) as NonNullable<CloudRecord>;
-    return parsed;
+    return readDurableJson(path, "cloud deployment metadata", 64 * 1024) as CloudRecord;
   } catch {
     return null;
   }
@@ -91,7 +89,7 @@ export function readBoundCloudRecord(localDir: string, agentId: string): CloudRe
   if (!existsSync(path)) return null;
   let record: CloudRecord;
   try {
-    record = JSON.parse(readFileSync(path, "utf-8")) as CloudRecord;
+    record = readDurableJson(path, "cloud deployment metadata", 64 * 1024) as CloudRecord;
   } catch (error) {
     throw new Error(`Invalid cloud deployment metadata at ${path}; refusing cloud mutation.`, {
       cause: error,
@@ -116,7 +114,6 @@ export function readBoundCloudRecord(localDir: string, agentId: string): CloudRe
 
 function writeCloud(localDir: string, record: NonNullable<CloudRecord>): void {
   const path = cloudPath(localDir);
-  const tmp = `${path}.tmp-${process.pid}`;
   const parsed = parseYaml(readFileSync(join(localDir, "agent.yaml"), "utf8")) as Record<
     string,
     unknown
@@ -131,8 +128,7 @@ function writeCloud(localDir: string, record: NonNullable<CloudRecord>): void {
   if (record.agentId !== undefined && record.agentId !== agentId) {
     throw new Error("Cannot bind cloud metadata to a different immutable agent");
   }
-  writeFileSync(tmp, `${JSON.stringify({ ...record, version: 1, agentId }, null, 2)}\n`);
-  renameSync(tmp, path);
+  writeDurableJson(path, { ...record, version: 1, agentId }, "cloud deployment metadata");
 }
 
 function deleteCloud(localDir: string): void {

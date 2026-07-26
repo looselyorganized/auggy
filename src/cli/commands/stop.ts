@@ -93,29 +93,51 @@ async function stopLaunchd(
     );
   }
 
-  // Wait for the process to exit.
+  const readCurrentGeneration = () => {
+    const current = readPidManifest(key, { auggyDir: opts.auggyDir });
+    if (!current) return null;
+    if (
+      current.agentId !== manifest.agentId ||
+      current.mode !== "launchd" ||
+      current.launchGeneration !== manifest.launchGeneration
+    ) {
+      throw new Error(
+        `Agent "${manifest.name}" changed runtime generation while stopping. Its manifest and claims were preserved.`,
+      );
+    }
+    return current;
+  };
+
+  // Follow same-generation KeepAlive replacements rather than checking only
+  // the PID captured before launchctl unload.
   let waited = 0;
+  let current = readCurrentGeneration();
   while (
-    inspectRuntimeProcess(manifest, {
+    current &&
+    inspectRuntimeProcess(current, {
       processIdentityForPid: opts.processIdentityForPid,
     }) === "alive" &&
     waited < 5000
   ) {
     await (opts.sleep ?? Bun.sleep)(250);
     waited += 250;
+    current = readCurrentGeneration();
   }
 
-  const finalStatus = inspectRuntimeProcess(manifest, {
-    processIdentityForPid: opts.processIdentityForPid,
-  });
+  current = readCurrentGeneration();
+  const finalStatus = current
+    ? inspectRuntimeProcess(current, {
+        processIdentityForPid: opts.processIdentityForPid,
+      })
+    : "gone";
   if (finalStatus === "unverifiable") {
     throw new Error(
-      `Cannot verify that PID ${manifest.pid} still belongs to agent "${manifest.name}". Refusing unsafe cleanup.`,
+      `Cannot verify that the current launchd process still belongs to agent "${manifest.name}". Refusing unsafe cleanup.`,
     );
   }
   if (finalStatus === "alive") {
     throw new Error(
-      `Launchd agent "${manifest.name}" did not exit after unload. Its manifest and resource claims were preserved; stop PID ${manifest.pid} before retrying.`,
+      `Launchd agent "${manifest.name}" did not exit after unload. Its manifest and resource claims were preserved; stop PID ${current?.pid ?? manifest.pid} before retrying.`,
     );
   }
 
@@ -130,8 +152,20 @@ async function stopLaunchd(
     );
   }
 
-  // Clean up PID manifest.
-  removePidManifestIfOwned(manifest, { auggyDir: opts.auggyDir });
+  // Re-check after artifact removal so a replacement published during cleanup
+  // cannot be reported as stopped and abandoned.
+  const postCleanup = readCurrentGeneration();
+  if (postCleanup) {
+    const status = inspectRuntimeProcess(postCleanup, {
+      processIdentityForPid: opts.processIdentityForPid,
+    });
+    if (status === "alive" || status === "unverifiable") {
+      throw new Error(
+        `Launchd agent "${manifest.name}" changed process ownership during cleanup. Its manifest and claims were preserved for manual recovery.`,
+      );
+    }
+    removePidManifestIfOwned(postCleanup, { auggyDir: opts.auggyDir });
+  }
 
   console.log(`Agent "${manifest.name}" stopped (was launchd-managed).`);
 }

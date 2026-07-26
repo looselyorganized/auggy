@@ -7,10 +7,12 @@ import {
   claimRuntimePidManifest,
   readPidManifest,
   removePidManifest,
+  removePidManifestIfOwned,
 } from "../../src/cli/pid-registry";
 import type { PidManifest } from "../../src/cli/types";
 
 const PROCESS_IDENTITY = "test-process:stop-owner";
+const LAUNCH_GENERATION = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 let auggyDir: string;
 
 function registryOptions() {
@@ -31,7 +33,7 @@ function manifest(mode: "dev" | "launchd", suffix: "a" | "b"): PidManifest {
     },
   } as const;
   const identity = ids[suffix];
-  return {
+  const result: PidManifest = {
     pid: process.pid,
     name: identity.name,
     agentId: identity.agentId,
@@ -45,6 +47,8 @@ function manifest(mode: "dev" | "launchd", suffix: "a" | "b"): PidManifest {
     startedAt: new Date().toISOString(),
     mode,
   };
+  if (mode === "launchd") result.launchGeneration = LAUNCH_GENERATION;
+  return result;
 }
 
 beforeEach(() => {
@@ -133,5 +137,42 @@ describe("stop preserves ownership until the recorded process exits", () => {
       }),
     ).rejects.toThrow(/control artifacts.*manifest and claims were preserved/i);
     expect(readPidManifest(owner.agentId!, { auggyDir })?.claimNonce).toBe(owner.claimNonce);
+  });
+
+  test("launchd stop follows a same-generation replacement published during unload", async () => {
+    const owner = manifest("launchd", "a");
+    owner.pid = 99_999_999;
+    expect(
+      claimRuntimePidManifest(owner, {
+        auggyDir,
+        processIdentityForPid: () => PROCESS_IDENTITY,
+      }),
+    ).toBe(true);
+    const replacement = {
+      ...owner,
+      pid: process.pid,
+      claimNonce: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      processIdentity: PROCESS_IDENTITY,
+    };
+
+    await expect(
+      runStop(owner.agentId!, {
+        auggyDir,
+        processIdentityForPid: (pid) => (pid === process.pid ? PROCESS_IDENTITY : null),
+        unloadLaunchd: async () => {
+          expect(removePidManifestIfOwned(owner, { auggyDir })).toBe(true);
+          expect(
+            claimRuntimePidManifest(replacement, {
+              auggyDir,
+              processIdentityForPid: () => PROCESS_IDENTITY,
+            }),
+          ).toBe(true);
+        },
+        sleep: async () => {},
+      }),
+    ).rejects.toThrow(/did not exit.*claims were preserved/i);
+
+    expect(readPidManifest(owner.agentId!, { auggyDir })?.claimNonce).toBe(replacement.claimNonce);
+    removePidManifest(owner.agentId!, { auggyDir });
   });
 });

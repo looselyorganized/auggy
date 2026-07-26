@@ -1,11 +1,21 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   clearCloud,
   getAgent,
   listAgents,
+  readBoundCloudRecord,
   removeAgent,
   resolveAgentDir,
   seedAgentForTest,
@@ -132,6 +142,31 @@ describe("setCloud / clearCloud — file-existence semantics", () => {
     setCloud("zip", { ...CLOUD_FIXTURE, url: "https://old.example" }, { auggyDir });
     setCloud("zip", { ...CLOUD_FIXTURE, url: "https://new.example" }, { auggyDir });
     expect(getAgent("zip", { auggyDir })?.cloud?.url).toBe("https://new.example");
+  });
+
+  test("cloud publication cannot follow prepared leaf or legacy temp symlinks", () => {
+    const dir = seedAgentForTest("zip", { auggyDir });
+    const victim = join(auggyDir, "victim.txt");
+    writeFileSync(victim, "sentinel");
+    const cloudFile = join(dir, ".auggy-cloud.json");
+    symlinkSync(victim, cloudFile);
+    symlinkSync(victim, `${cloudFile}.tmp-${process.pid}`);
+
+    setCloud("zip", CLOUD_FIXTURE, { auggyDir });
+
+    expect(readFileSync(victim, "utf8")).toBe("sentinel");
+    expect(lstatSync(cloudFile).isSymbolicLink()).toBe(false);
+    expect(JSON.parse(readFileSync(cloudFile, "utf8"))).toEqual(CLOUD_FIXTURE);
+  });
+
+  test("bound cloud reads reject a symlink leaf", () => {
+    const dir = seedAgentForTest("zip", { auggyDir });
+    const record = join(auggyDir, "record.json");
+    writeFileSync(record, JSON.stringify(CLOUD_FIXTURE));
+    symlinkSync(record, join(dir, ".auggy-cloud.json"));
+    expect(() => readBoundCloudRecord(dir, CLOUD_FIXTURE.agentId)).toThrow(
+      /invalid cloud deployment metadata/i,
+    );
   });
 
   test("clearCloud deletes the file; subsequent reads return null", () => {

@@ -2,7 +2,7 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
-import { assertRestartTarget } from "../../src/cli/commands/restart";
+import { assertRestartTarget, runRestart } from "../../src/cli/commands/restart";
 import type { PidManifest } from "../../src/cli/types";
 
 const roots: string[] = [];
@@ -61,5 +61,36 @@ describe("restart target validation", () => {
   test("admits the exact path and immutable identity", () => {
     const configB = config(AGENT_B, "agent-b");
     expect(assertRestartTarget(manifest(configB), configB)).toBe(resolve(configB));
+  });
+
+  test("adopts the current generation after acquiring the lifecycle lease", async () => {
+    const configA = config(AGENT_B, "agent-a");
+    const configB = config(AGENT_B, "agent-b");
+    const stale = { ...manifest(configA), name: "agent-a" };
+    const replacement = {
+      ...manifest(configB),
+      name: "agent-b",
+      mode: "launchd" as const,
+      claimNonce: "33333333-3333-4333-8333-333333333333",
+      launchGeneration: "44444444-4444-4444-8444-444444444444",
+    };
+    let reads = 0;
+    let stopped: string | undefined;
+    let started: { name: string | undefined; config: string | undefined } | undefined;
+
+    await runRestart("agent-a", {
+      _readPidManifest: () => (reads++ === 0 ? stale : replacement),
+      _claimAgentLifecycle: () => () => {},
+      _runStop: async (identifier) => {
+        stopped = identifier;
+      },
+      _runStart: async (restartName, options) => {
+        started = { name: restartName, config: options.config };
+      },
+      _sleep: async () => {},
+    });
+
+    expect(stopped).toBe(AGENT_B);
+    expect(started).toEqual({ name: "agent-b", config: resolve(configB) });
   });
 });

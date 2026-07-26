@@ -13,8 +13,20 @@ import { runStop } from "./stop";
 import { runStart } from "./start";
 import { runDev } from "./dev";
 
-export async function runRestart(name: string, opts: { config?: string }): Promise<void> {
-  const manifest = readPidManifest(name);
+interface RestartOptions {
+  config?: string;
+  /** Deterministic lifecycle seams for race regression tests. */
+  _readPidManifest?: typeof readPidManifest;
+  _claimAgentLifecycle?: typeof claimAgentLifecycle;
+  _runStop?: typeof runStop;
+  _runStart?: typeof runStart;
+  _runDev?: typeof runDev;
+  _sleep?: (milliseconds: number) => Promise<void>;
+}
+
+export async function runRestart(name: string, opts: RestartOptions): Promise<void> {
+  const readManifest = opts._readPidManifest ?? readPidManifest;
+  const manifest = readManifest(name);
 
   if (!manifest) {
     console.log(
@@ -23,26 +35,40 @@ export async function runRestart(name: string, opts: { config?: string }): Promi
     return;
   }
 
-  const mode = manifest.mode;
-  const configPath = assertRestartTarget(manifest, opts.config ?? manifest.configPath);
   const releaseLifecycle = manifest.agentId
-    ? claimAgentLifecycle(manifest.agentId, manifest.name)
+    ? (opts._claimAgentLifecycle ?? claimAgentLifecycle)(manifest.agentId, manifest.name)
     : () => {};
 
   try {
-    console.log(`Restarting "${name}" (${mode} mode)...`);
+    // The lease can queue behind another controller. Adopt and validate the
+    // current generation only after acquiring it; never stop a replacement
+    // and then resurrect the stale pre-lease snapshot.
+    const current = readManifest(manifest.agentId ?? name);
+    if (!current) {
+      console.log(`Agent "${name}" stopped before restart acquired its lifecycle lease.`);
+      return;
+    }
+    if (manifest.agentId && current.agentId !== manifest.agentId) {
+      throw new Error("Agent identity changed while restart waited for its lifecycle lease");
+    }
+    const mode = current.mode;
+    const configPath = assertRestartTarget(current, opts.config ?? current.configPath);
+    console.log(`Restarting "${current.name}" (${mode} mode)...`);
 
     // Stop the agent.
-    await runStop(manifest.agentId ?? name, { lifecycleOwned: true });
+    await (opts._runStop ?? runStop)(current.agentId ?? name, { lifecycleOwned: true });
 
     // Brief pause for port release.
-    await Bun.sleep(1000);
+    await (opts._sleep ?? Bun.sleep)(1000);
 
     // Restart in the same mode.
     if (mode === "launchd") {
-      await runStart(name, { config: configPath, lifecycleOwned: true });
+      await (opts._runStart ?? runStart)(current.name, {
+        config: configPath,
+        lifecycleOwned: true,
+      });
     } else {
-      await runDev(name, { config: configPath });
+      await (opts._runDev ?? runDev)(current.name, { config: configPath });
     }
   } finally {
     releaseLifecycle();
