@@ -502,20 +502,26 @@ The corrected PostgreSQL regressions cover incompatible same-named tables,
 ledger revalidation, defaults, collations, partial and descending indexes,
 unvalidated checks, deferred primary keys, row security, foreign sequence
 defaults, sequence parameters/ownership, unsafe schema identifiers, and a
-runtime shadow-schema executor. Repeated hostile review reported no unresolved
-High or Medium Group 6 issue. A removed PostgreSQL rule can leave the
-conservative `relhasrules` flag set until database maintenance; that may cause
-a fail-closed operational rejection but cannot admit a weakened schema.
+runtime shadow-schema executor. The final CI pass also corrected a reserved
+catalog alias and added version-neutral PostgreSQL 17/18 proof for invalid or
+unenforced constraints. Catalog lookup now places `pg_temp` last, reads actual
+trigger rows rather than a stale class hint, and rejects table inheritance that
+could inject unconstrained duplicate rows into parent queries. Regressions
+exercise invalid `NOT NULL`, `NOT ENFORCED`, temporary catalog shadows, real
+triggers, and duplicate-key inherited children. Repeated hostile review
+reported no unresolved High or Medium Group 6 issue. A removed PostgreSQL rule
+can leave the conservative `relhasrules` flag set until database maintenance;
+that may cause a fail-closed operational rejection but cannot admit a weakened
+schema.
 
 Group verification:
 
 - the broad configuration, artifact, CI, storage/migration, coordination, and
-  readiness run passed 408 tests, skipped 11 PostgreSQL service-backed cases,
+  readiness run passed 408 tests, skipped 13 PostgreSQL service-backed cases,
   and had zero failures;
-- the one database-independent PostgreSQL schema-identifier regression passed;
-  this machine has PostgreSQL client tools but no server, so the PostgreSQL 17
-  CI service remains required executable evidence for the 11 integration
-  cases;
+- the isolated PostgreSQL 18 suite passed all 14 cases locally, including its
+  version-specific constraint enforcement paths; the PostgreSQL 17 CI service
+  independently passed all 14 cases after one Docker Hub timeout was rerun;
 - the tracked inventory passed with 274 runtime and 29 console test files
   across 12 bounded shards;
 - `bun run typecheck`, `bun run lint`, `bash -n scripts/release-smoke.sh`, and
@@ -647,8 +653,9 @@ removed `react-router-dom` compatibility package to patched `react-router`
 ## Final integration gate
 
 - The complete tracked inventory passed 4,280 tests across 274 runtime and 29
-  console files in 12 sequential shards. Eleven PostgreSQL 17 service-backed
-  cases were skipped locally and remain enforced by CI.
+  console files in 12 sequential shards. Thirteen PostgreSQL service-backed
+  cases were skipped in that inventory run; the expanded isolated suite passed
+  14/14 on PostgreSQL 18 locally and 14/14 on PostgreSQL 17 in CI.
 - `bun run typecheck`, `bun run lint`, the console production build,
   `bash -n scripts/release-smoke.sh`, and `git diff --check` passed. Lint
   reported only the pre-existing Biome schema-version notice.
