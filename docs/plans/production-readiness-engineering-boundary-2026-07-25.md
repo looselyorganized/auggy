@@ -293,3 +293,56 @@ Group verification:
 - `bun run lint` passed with only the repository's existing Biome schema-version
   notice; and
 - `git diff --check` passed.
+
+### Group 3 — implemented on branch
+
+AgentMail inbound work and notification delivery now persist ambiguous effects
+as versioned, bounded, outcome-unknown incidents. Runtime startup restores every
+durable incident into the scheduler before transports begin accepting work, and
+admission rechecks each durable authority fail closed. Recovery is authenticated
+and all-authority gated: resolving one source cannot reopen a thread that remains
+fenced by another source.
+
+AgentMail no longer reclaims expired processing leases. Restarted or expired
+claims are atomically fenced, the old worker cannot settle them after fencing,
+and same-thread pending work remains blocked until explicit operator
+reconciliation. Notify now requires an owned durable SQLite path outside an
+explicit test-only seam, reserves quotas before dispatch, promotes interrupted
+reservations during runtime startup, and retains bounded hashed recovery
+evidence. Configuration limits notification policy windows to 30 days and the
+store bounds retained terminal attempts to 10,000.
+
+Hostile review found and resolved the following High/Medium candidates before
+the checkpoint:
+
+- AgentMail could reclaim an expired processing lease and repeat an ambiguous
+  side effect;
+- Notify incidents were durable but did not restore the scheduler quarantine
+  after process restart;
+- direct `notify()` construction could silently fall back to a volatile
+  in-memory delivery store; and
+- one source-specific recovery action could release a thread still fenced by a
+  different durable authority.
+
+The suspected non-transactional AgentMail schema migration was disproven: the
+migration runs inside the hardened SQLite admission transaction and exact prior
+schemas are covered by branded and unbranded migration tests. Repeated hostile
+review reported no unresolved High or Medium issue for the supported
+single-runtime topology. A second live runtime sharing the same delivery stores
+may conservatively create ambiguity and is explicitly unsupported; horizontal
+scaling remains deferred.
+
+Group verification:
+
+- the broad focused delivery, AgentMail, Notify, scheduler, configuration,
+  resolver, inventory, and admin suites passed (456 tests); independent final
+  reviewers repeated overlapping focused runs of 342, 443, and 171 tests with
+  zero failures;
+- `bun run test:runtime` encountered Bun 1.3.14's known suite-scale
+  `EADDRINUSE` failure before `tests/http.test.ts`; that file passed in isolation
+  (63 tests), so the socket failure was not classified as an application
+  regression;
+- `bun run typecheck` passed;
+- `bun run lint` passed with only the repository's existing Biome schema-version
+  notice; and
+- `git diff --check` passed.

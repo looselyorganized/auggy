@@ -912,7 +912,10 @@ Rate limiting is stateful and in-memory (resets on restart). Checks in order:
 2. **Global hourly cap** — rolling 60-minute window; defaults to 5 notifications per hour.
 3. **Dedup** — word-overlap comparison against summaries sent in the last `dedupWindowMs`; suppresses near-duplicates above `dedupThreshold`.
 
-Creator-class senders (and null peers / scheduled triggers) bypass all rate limits entirely.
+Creator-class senders (and null peers / scheduled triggers) bypass quota checks,
+but not the durable pre-dispatch and outcome-unknown fence. Quota reservations
+and exact dedup state live in the `NTFY/v1` SQLite ledger; fuzzy word-overlap
+dedup remains an additional process-local suppression.
 
 ### Outbound messaging history
 
@@ -928,9 +931,11 @@ This augment ships `src/augments/notify/skill/SKILL.md` with model teaching on t
 
 The console dashboard API exposes a **Notify** block with:
 
-- **KV row** — global cap per hour (with `yaml` or `/console override` source), cooldown ms, configured destination count.
+- **KV row** — global cap per hour (with `yaml` or `/console override` source), cooldown ms, configured destination count, and unresolved outcome count.
 - **Table** — last 50 dispatch attempts from the augment's internal ring buffer (time, destination, status, summary snippet).
-- **Actions** — `notify-test` (sends `[test] <message>` via the named destination, **bypassing rate-limit + dedup** for diagnostic dispatch), `notify-cap-adjust` (overrides `globalMaxPerHour`), `notify-cap-reset` (restores yaml).
+- **Actions** — `notify-test` (bypasses quota checks but remains durably
+  ambiguity-fenced), `notify-cap-adjust`, `notify-cap-reset`, and
+  creator-confirmed CAS reconciliation for ambiguous deliveries.
 
 The override persists across restart when `agentDir` is set in the augment config.
 

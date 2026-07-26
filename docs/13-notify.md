@@ -22,12 +22,16 @@ What it does:
 - **Destination authority** — each destination can restrict which v1 trust
   levels may use it, and can require public peers to provide an escalation
   reason.
-- **Rate limiting** — cooldown, dedup, global hourly cap, per-peer cooldown. Creator-class senders bypass all limits.
+- **Durable delivery safety** — SQLite-backed atomic quota reservations,
+  restart-safe outcome-unknown incidents, and creator-authorized CAS recovery.
+- **Rate limiting** — cooldown, dedup, global hourly cap, per-peer cooldown.
+  Creator-class senders bypass limits, but never the durable delivery fence.
 
 What it does **not** do:
 
 - No inbound handling — `notify` is outbound only. Use `telegramTransport` for bidirectional Telegram.
-- No delivery receipts beyond `sent` / `failed` — no retry queue.
+- No provider delivery receipts beyond `sent` / `failed` — no automatic retry
+  queue. Ambiguous attempts require operator reconciliation.
 - No batching — each `notify` call is a single delivery attempt.
 
 ## 2. Configuration
@@ -42,6 +46,8 @@ augments:
 # augments/notify/augment.yaml
 type: notify
 config:
+  # Optional. Defaults to ./data/notify-<augment-name>.db.
+  dbPath: ./data/notify-notify.db
   destinations:
     - name: creator
       transport: log-to-file
@@ -90,6 +96,9 @@ augments:
 import { notify } from "auggy";
 
 const notifyAugment = notify({
+  // Required for direct library use unless agentDir is supplied. The CLI
+  // assigns a namespaced runtime-volume path automatically.
+  dbPath: "/var/lib/my-auggy/notify.db",
   destinations: [
     {
       name: "creator",
@@ -121,6 +130,8 @@ const notifyAugment = notify({
 |---|---|---|---|---|
 | `destinations` | `NotifyDestination[]` | yes | — | One or more named delivery targets. |
 | `rateLimit` | `NotifyRateLimitOptions` | no | See §5 | Rate limit configuration. |
+| `dbPath` | `string` | direct API: unless `agentDir`; CLI: no | CLI-managed | Durable `NTFY/v1` ledger. Direct construction never silently falls back to memory. |
+| `agentDir` | `string` | no | — | Programmatic project/state root used to derive `notify-delivery.db` when `dbPath` is omitted. |
 
 ### Common destination authority fields
 
@@ -164,6 +175,10 @@ returns `status: "failed"` and does not consume rate-limit quota.
 | `dedupWindowMs` | `number` | `300000` | Window in ms during which similar summaries are considered duplicates (5 minutes). |
 | `dedupThreshold` | `number` | `0.6` | Fraction of word overlap required to suppress as a duplicate. `0` disables dedup. |
 | `perPeerCooldownMs` | `number` | same as `cooldownMs` | Per-peer cooldown in ms. Defaults to the global `cooldownMs` if not set explicitly. |
+
+Cooldown and dedup windows cannot exceed 30 days. This matches the maximum
+retention of the quota evidence that enforces them; an oversized configured
+window fails validation instead of being silently shortened.
 
 ## 3. Tool surface
 
@@ -308,9 +323,21 @@ Optional fields on the destination:
   it owns sender admission, durable polling/WebSocket/Svix ingestion, and email
   turns.
 
-## 5. Rate limiting
+## 5. Durable delivery state and rate limiting
 
-Rate limiting is stateful and in-memory. State resets on agent restart. All checks apply only when `rateLimit.enabled !== false`.
+Every delivery is reserved in the `NTFY/v1` SQLite ledger before the adapter
+is called. Quotas, exact-summary dedup, in-flight attempts, and ambiguous
+outcomes survive restart. A process that stops with a pending attempt promotes
+it to `outcome_unknown` during the next admitted runtime startup; merely
+opening a second database handle does not mutate live work. It is never retried
+automatically. The ledger stores hashes of peer and payload identity plus the
+canonical runtime thread ID needed to rebuild scheduler quarantine. It does
+not store raw summaries, credentials, destination URLs, provider responses, or
+operator evidence.
+
+All quota checks apply only when `rateLimit.enabled !== false`. Creator and
+internal callers bypass quota checks, but their attempts are still durably
+fenced so an ambiguous creator send cannot replay after restart.
 
 After validation and destination authority succeed, the augment synchronously
 reserves every applicable cooldown, cap, and dedup slot before adapter
@@ -319,21 +346,35 @@ check. A started attempt retains its reservation on success, failure, abort, or
 timeout because remote delivery may already have occurred. Only failures before
 dispatch avoid consuming quota.
 
+Resolved attempts and recovery records are retained for up to 30 days. The
+ledger also caps terminal attempts at 10,000 and performs bounded cleanup on
+open and before reservations. When bounded cleanup cannot restore capacity,
+new dispatch fails closed for operator maintenance. Policy changes apply
+prospectively; extending a window cannot recreate already-expired evidence.
+
 ### Rate limit checks (in order)
 
 Before rate limits run, destination authority checks allowed trust levels and
 public escalation policy. Denied sends return `failed`, not `rate_limited`, and
 no rate-limit state is read or written.
 
-1. **Per-peer cooldown** — checked against a `Map<peerId, lastNotifyTimestamp>`. If the peer that triggered the current turn sent a notification within `perPeerCooldownMs`, the tool returns `rate_limited`. The error message includes how many seconds remain.
+1. **Per-peer cooldown** — atomically checked against charged and reserved
+   ledger attempts for the same hashed peer and destination.
 
-2. **Global hourly cap** — a rolling window counter. If `globalCountThisHour >= globalMaxPerHour`, returns `rate_limited`. The window resets 60 minutes after it opened (not at the top of the clock hour).
+2. **Global hourly cap** — a rolling 60-minute SQLite query. Reservations are
+   visible to concurrent runtime handles before provider dispatch.
 
-3. **Dedup** — compares the new `summary` against summaries sent within `dedupWindowMs` using word overlap. If overlap of words longer than two characters between the new summary and any recent summary is ≥ `dedupThreshold`, returns `rate_limited`. Set `dedupThreshold: 0` to disable dedup. Set `dedupWindowMs: 0` to effectively disable by expiring the window immediately.
+3. **Dedup** — exact summary hashes are durable. The existing word-overlap
+   comparison remains an additional process-local suppression layer. Set
+   `dedupThreshold: 0` to disable fuzzy matching; set `dedupWindowMs: 0` to
+   disable the durable exact window.
 
 ### Creator bypass
 
-Peers with `trustLevel === "creator"` and null peers (internal/scheduled triggers) bypass all rate limit checks entirely. No rate limit state is recorded for them. This ensures operator-injected turns can always escalate regardless of what public-tier peers may have triggered recently.
+Peers with `trustLevel === "creator"` and null peers (internal/scheduled
+triggers) bypass quota checks. Their pre-dispatch attempt and any
+outcome-unknown incident are still recorded. This preserves operator access
+without permitting blind replay.
 
 ### Defaults summary
 
@@ -398,7 +439,8 @@ the `notify` skill scaffolded by `auggy augment add notify`.
 **Notifications stop firing without error**
 
 - The agent returns `rate_limited`. Check the `message` field in the tool result — it includes which check triggered and how long to wait.
-- The global hourly cap may have been reached. Rate limit state is in-memory: restart the agent to reset it.
+- The global hourly cap may have been reached. Restarting does not reset the
+  ledger; wait for the rolling window or use an authenticated console override.
 - `dedupThreshold` may be suppressing near-duplicate summaries. Reduce `dedupThreshold` or increase `dedupWindowMs` to make the window shorter.
 
 **Tool returns `status: "failed"` with a destination error**
@@ -422,11 +464,26 @@ the `notify` skill scaffolded by `auggy augment add notify`.
 
 **Notifications work in dev but not in production**
 
-- Rate limit state is in-memory and resets on restart. A restarted agent starts fresh — the first notification after restart always passes rate limits.
-- If running multiple agent instances (not recommended for a single config), each has independent state. Rate limits are not coordinated across instances.
+- Confirm the runtime volume is writable and that `dbPath` points inside the
+  deployment-owned state root. A missing or unavailable ledger fails closed
+  before provider dispatch.
+- A single logical Auggy deployment still supports one runtime replica. SQLite
+  atomically coordinates reservations from handles inside that owner, but
+  runtime-start promotion and lifecycle ownership require one active runtime
+  for the volume. This is not a claim of horizontally scaled safety.
 - Tool/request cancellation is forwarded through webhook, Telegram, and
   AgentMail adapters. A deadline after dispatch remains outcome-unknown and is
   not safe to retry automatically.
+
+**A delivery is outcome-unknown**
+
+- Open the authenticated console and inspect the Notify incident table.
+- Verify the destination/provider independently. Use the confirmation action
+  with the exact server-minted incident ID and version, plus bounded evidence.
+- “Delivered” retains quota; “no external effect” releases its quota. Both are
+  compare-and-set decisions and cannot resolve the same incident twice.
+- Scheduler recovery occurs only when every durable incident authority for the
+  runtime thread—not only Notify—reports that the thread is clear.
 
 ## Cross-references
 

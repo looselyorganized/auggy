@@ -154,9 +154,19 @@ instructions. Ordinary `message.received` events are processed by default;
 spam, blocked, and unauthenticated classifications are discarded unless the
 operator deliberately overrides that posture.
 
-Failed turns are retried. After `maxAttempts` (default 5), the message is
-durably discarded rather than looping forever. `maxPromptBytes` defaults to
+Definitively failed turns are retried. After `maxAttempts` (default 5), the
+message is durably discarded rather than looping forever. A turn whose effects
+are outcome-unknown is never retried: `AMIL/v2` creates a server-minted
+incident, blocks every later message in that provider thread, and restores the
+kernel thread quarantine after process restart. `maxPromptBytes` defaults to
 100 KiB and must be at least 512 bytes.
+
+A processing lease is a liveness heartbeat, not permission to replay after
+expiry. Runtime startup fences every retained processing claim as ambiguous;
+live workers atomically fence expired claims before seeking pending work. An
+old worker cannot complete, retry, discard, or renew a fenced claim. Recovery
+is explicit even when a process stopped before the operator can tell whether
+model or tool execution began.
 
 ## Model-facing tools
 
@@ -238,14 +248,15 @@ visitor-auth state; only Link retains its legacy symlink path.
 The creator-authenticated admin surface reports:
 
 - inbound mode and live state;
-- pending, processing, processed, and discarded ledger counts;
+- pending, processing, processed, discarded, and outcome-unknown ledger counts;
 - catch-up checkpoint, last catch-up summary, last inbound event, and last
   worker outcome;
 - last provider error;
 - outbound sent, blocked, rate-limited, pending-review, and ambiguous attempts;
 - redacted recent dispatches and review rows;
-- test-send, cap adjustment, approve/reject, and ambiguous-send reconciliation
-  actions.
+- test-send, cap adjustment, approve/reject, ambiguous-send reconciliation,
+  and versioned inbound-incident reconciliation actions. Inbound evidence is
+  stored only as SHA-256; raw evidence is never written to the ledger.
 
 ## Common failures
 
@@ -258,6 +269,7 @@ The creator-authenticated admin surface reports:
 | Human review says the admin route is required | Enable `webTransport.adminRoute` or change review/allowed trust levels |
 | A reply says the message was not delivered this turn | Reply only from the turn triggered by that inbound message |
 | A send outcome is ambiguous | Do not retry; verify with AgentMail and use the admin reconciliation action |
+| An inbound turn is outcome-unknown | Verify downstream effects, then reconcile the exact incident/version as handled or no-effect; the runtime thread remains blocked until every AgentMail, Notify, or other durable incident authority is clear |
 | Mail vanishes after Railway redeploy | Confirm the volume is mounted at exactly `/app/data`; admission should fail before boot if it is not durable |
 
 ## Current limits
