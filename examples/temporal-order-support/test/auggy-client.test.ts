@@ -11,7 +11,7 @@ import {
 } from "../src/auggy-client.ts";
 
 const runId = "run_123";
-const threadId = "canonical_thread_123";
+const threadId = "temporal-order-42";
 
 function fakeAuggy(handler: () => Response | Promise<Response>): {
   target: string;
@@ -183,6 +183,20 @@ describe("Auggy Temporal Activity HTTP client", () => {
     ["oversized thread", started({ threadId: "t".repeat(257) })],
   ])("rejects a RUN_STARTED with %s", async (_label, first) => {
     const fake = fakeAuggy(() => sse(first, finished()));
+    await expect(client(fake.target, fake.fetchImplementation).run(request)).rejects.toMatchObject({
+      kind: "invalid-response",
+      retryable: false,
+    });
+  });
+
+  it("rejects a consistently wrong thread even when the execution otherwise completes", async () => {
+    const wrongThread = "different-thread";
+    const fake = fakeAuggy(() =>
+      sse(
+        started({ threadId: wrongThread }),
+        finished("completed", { threadId: wrongThread }),
+      ),
+    );
     await expect(client(fake.target, fake.fetchImplementation).run(request)).rejects.toMatchObject({
       kind: "invalid-response",
       retryable: false,

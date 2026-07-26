@@ -5,7 +5,11 @@ import {
   type OrderSupportActivityDependencies,
   type OrderSupportActivityOutcome,
 } from "../src/activities.ts";
-import { AuggyRunError, type AuggyRunClient } from "../src/auggy-client.ts";
+import {
+  AuggyRunError,
+  createAuggyRunClient,
+  type AuggyRunClient,
+} from "../src/auggy-client.ts";
 import { refundResultForOrderSupportOutcome } from "../src/workflow-result.ts";
 
 const config = {
@@ -99,6 +103,37 @@ describe("Temporal order-support Activity mapping", () => {
     expect(refundResultForOrderSupportOutcome({ state: "completed", runId: "run_123" })).toEqual({
       state: "ready-for-deterministic-refund",
       auggyRunId: "run_123",
+    });
+  });
+
+  it("routes a valid-looking completion for the wrong request thread to manual reconciliation", async () => {
+    const wrongThreadClient = createAuggyRunClient({
+      ...config,
+      fetchImplementation: async () =>
+        new Response(
+          [
+            'data: {"type":"RUN_STARTED","runId":"run_123","threadId":"wrong-thread"}\n\n',
+            'data: {"type":"RUN_FINISHED","runId":"run_123","threadId":"wrong-thread","result":{"status":"completed"}}\n\n',
+          ].join(""),
+          { headers: { "content-type": "text/event-stream" } },
+        ),
+    });
+    const controller = new AbortController();
+    const activities = createOrderSupportActivities(config, {
+      client: wrongThreadClient,
+      currentContext: () => ({
+        cancellationSignal: controller.signal,
+        cancelled: new Promise<never>(() => undefined),
+        heartbeat: () => undefined,
+      }),
+      now: () => 10_000,
+    });
+
+    const outcome = await activities.requestOrderSupportReview(input);
+    expect(outcome).toEqual({ state: "outcome-unknown" });
+    expect(refundResultForOrderSupportOutcome(outcome)).toEqual({
+      state: "manual-reconciliation-required",
+      reason: "auggy-outcome-unknown",
     });
   });
 });

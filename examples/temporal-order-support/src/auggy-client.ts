@@ -132,7 +132,13 @@ export function createAuggyRunClient(config: AuggyRunClientConfig): AuggyRunClie
       }
       if (response.body === null) throw new AuggyRunError("incomplete-stream", true);
 
-      return consumeSse(response.body, config.maxSseBytes, config.maxSseEvents, onProgress);
+      return consumeSse(
+        response.body,
+        request.threadId,
+        config.maxSseBytes,
+        config.maxSseEvents,
+        onProgress,
+      );
     },
   };
 }
@@ -214,6 +220,7 @@ async function boundedErrorCode(response: Response): Promise<string | null> {
 
 async function consumeSse(
   stream: ReadableStream<Uint8Array>,
+  expectedThreadId: string,
   maxBytes: number,
   maxEvents: number,
   onProgress: (() => void) | undefined,
@@ -249,6 +256,7 @@ async function consumeSse(
       if (runId !== null || threadId !== null) throw new AuggyRunError("invalid-response", false);
       runId = executionId(event.runId);
       threadId = executionId(event.threadId);
+      if (threadId !== expectedThreadId) throw new AuggyRunError("invalid-response", false);
       return;
     }
     if (runId === null || threadId === null) throw new AuggyRunError("invalid-response", false);

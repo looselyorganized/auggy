@@ -59,10 +59,11 @@ starting another model turn when the network or worker fails.
 The Activity POSTs JSON to `/agent/run` with a bearer token, refuses redirects,
 and receives AG-UI SSE. It accepts only a bounded stream (default 1 MiB / 10,000
 events; immutable ceilings 4 MiB / 100,000 events) and an 8 KiB bearer-token
-ceiling. It requires exactly one bounded `RUN_STARTED`, matching terminal
-`runId`/`threadId`, and `RUN_FINISHED.result.status === "completed"`. It retains
-only the server-minted `runId`; model text and HTTP bodies are not copied into
-the Activity result or application logs.
+ceiling. It requires exactly one bounded `RUN_STARTED` whose `threadId` matches
+the request, matching terminal `runId`/`threadId`, and
+`RUN_FINISHED.result.status === "completed"`. It retains only the server-minted
+`runId`; model text and HTTP bodies are not copied into the Activity result or
+application logs.
 
 | Auggy result | Example behavior |
 | --- | --- |
