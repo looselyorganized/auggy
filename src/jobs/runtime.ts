@@ -522,7 +522,9 @@ export function createDurableJobRuntime(options: DurableJobRuntimeOptions) {
           if (active !== execution || execution.forcedResult || execution.forcedError) return;
           execution.cleanup();
           try {
-            execution.forcedResult = settleUnknown(lease, "execution-outcome-unknown");
+            execution.forcedResult = execution.began
+              ? settleUnknown(lease, "execution-outcome-unknown")
+              : settleUnstarted(lease, execution.maxAttempts, "admission-canceled");
           } catch {
             execution.forcedError = new DurableJobRuntimeError("settlement-unverified");
             reportOperationalError("settlement-failed");

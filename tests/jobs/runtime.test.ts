@@ -505,6 +505,60 @@ describe("durable job runtime", () => {
     expect(timers.activeCount()).toBe(0);
   });
 
+  it("requeues or fails a hung pre-start admission without creating an unknown incident", async () => {
+    for (const scenario of [
+      { attempt: 1, status: "requeued" as const, settlement: "releaseUnstarted" },
+      { attempt: 2, status: "failed" as const, settlement: "rejectUnstarted" },
+    ]) {
+      const timers = timerHarness();
+      const { store, calls } = storeWith(lease(scenario.attempt));
+      const admit = deferred<void>();
+      let watchdogSettled = false;
+      let modelExecuted = false;
+      store.markExecutionStarted = (input) => {
+        calls.push({ method: "markExecutionStarted", input });
+        if (watchdogSettled) throw new Error("stale lease token");
+        throw new Error("unexpected early start");
+      };
+      const agent: Pick<AgentHandle, "inject"> = {
+        async inject(_trigger, options) {
+          await admit.promise;
+          await options?.onExecutionStart?.();
+          modelExecuted = true;
+          return successfulResult();
+        },
+      };
+      const worker = runtime(agent, store, {
+        deadlineGraceMs: 250,
+        setTimeout: timers.setTimeout,
+        clearTimeout: timers.clearTimeout,
+        setInterval: timers.setInterval,
+        clearInterval: timers.clearInterval,
+      });
+      worker.start();
+      const running = worker.processNext();
+      await Promise.resolve();
+      timers.fireNext(1_000);
+      timers.fireNext(5_000);
+      timers.fireNext(250);
+      watchdogSettled = true;
+
+      expect(calls.filter((call) => call.method === "markOutcomeUnknown")).toHaveLength(0);
+      expect(calls.filter((call) => call.method === scenario.settlement)).toHaveLength(1);
+      expect(timers.activeCount()).toBe(0);
+      expect(worker.processNext()).toBe(running);
+      expect(calls.filter((call) => call.method === "claim")).toHaveLength(1);
+
+      admit.resolve();
+      await expect(running).resolves.toEqual({ status: scenario.status, jobId: "job-1" });
+      expect(modelExecuted).toBe(false);
+      expect(calls.filter((call) => call.method === "markExecutionStarted")).toHaveLength(1);
+      expect(calls.find((call) => call.method === "complete")).toBeUndefined();
+      await Promise.resolve();
+      await worker.stop();
+    }
+  });
+
   it("bounds shutdown wait, quarantines detached work, and blocks restart until it settles", async () => {
     const timers = timerHarness();
     const { store, calls } = storeWith(lease());
