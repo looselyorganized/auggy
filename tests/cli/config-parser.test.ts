@@ -53,6 +53,24 @@ afterEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("parseConfig", () => {
+  test("requires one explicit valid webTransport listener port", () => {
+    for (const [index, port] of [undefined, null, "8080", 0, -1, 65_536, 8080.5].entries()) {
+      const path = writeYaml(
+        `web-port-${index}.yaml`,
+        minimalConfig({
+          augments: [
+            {
+              name: "web",
+              type: "webTransport",
+              options: { port, auth: { type: "bearer", token: "test-token" } },
+            },
+          ],
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(/port.*1 to 65535/i);
+    }
+  });
+
   test("accepts hardened anonymous network rate-limit policy", () => {
     const augments = [
       {

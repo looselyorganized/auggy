@@ -31,14 +31,18 @@ describe("runtimeResourceClaims", () => {
           options: { inboxId: "inbox_orders", inbound: { mode: "polling" } },
         },
       ]),
+      process.cwd(),
     );
 
-    expect(claims).toEqual([
-      `agent-id:${AGENT_ID}`,
-      "agentmail-inbox:inbox_orders",
-      "tcp-port:8080",
-      "telegram-bot:123456",
-    ]);
+    expect(claims).toEqual(
+      expect.arrayContaining([
+        `agent-id:${AGENT_ID}`,
+        expect.stringMatching(/^agent-state-root-sha256:[0-9a-f]{64}$/),
+        "agentmail-inbox:inbox_orders",
+        "tcp-port:8080",
+        "telegram-bot:123456",
+      ]),
+    );
     expect(JSON.stringify(claims)).not.toContain("GROUP7_TELEGRAM_SENTINEL");
   });
 
@@ -49,7 +53,54 @@ describe("runtimeResourceClaims", () => {
           { name: "web", type: "webTransport", options: { port: 8081 } },
           { name: "link", type: "link", options: { port: 8081 } },
         ]),
+        process.cwd(),
       ),
     ).toThrow(/tcp-port:8081.*web.*link/i);
+  });
+
+  test("fails closed when a programmatic webTransport omits or corrupts its port", () => {
+    for (const port of [undefined, null, "8080", 0, 65_536, 8080.5]) {
+      expect(() =>
+        runtimeResourceClaims(
+          config([{ name: "web", type: "webTransport", options: { port } }]),
+          process.cwd(),
+        ),
+      ).toThrow(/webTransport.*port.*1 to 65535/i);
+    }
+  });
+
+  test("rejects noncanonical Link and Telegram webhook listener ports", () => {
+    for (const port of [0, -1, 8080.5, Number.NaN, Number.POSITIVE_INFINITY, 65_536]) {
+      expect(() =>
+        runtimeResourceClaims(
+          config([{ name: "link", type: "link", options: { port } }]),
+          process.cwd(),
+        ),
+      ).toThrow(/link.*port.*1 to 65535/i);
+      expect(() =>
+        runtimeResourceClaims(
+          config([
+            {
+              name: "telegram",
+              type: "telegramTransport",
+              options: { inbound: { mode: "webhook", webhook: { port } } },
+            },
+          ]),
+          process.cwd(),
+        ),
+      ).toThrow(/telegram.*port.*1 to 65535/i);
+    }
+  });
+
+  test("gives different identities the same exclusive claim for one state root", () => {
+    const first = runtimeResourceClaims(config([]), process.cwd()).find((claim) =>
+      claim.startsWith("agent-state-root-sha256:"),
+    );
+    const secondConfig = config([]);
+    secondConfig.id = "aug1_99999999-9999-4999-8999-999999999999";
+    const second = runtimeResourceClaims(secondConfig, process.cwd()).find((claim) =>
+      claim.startsWith("agent-state-root-sha256:"),
+    );
+    expect(first).toBe(second);
   });
 });

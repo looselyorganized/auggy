@@ -171,6 +171,13 @@ function validateWebTransportOptions(
   optionsPrefix: string,
   errors: string[],
 ): void {
+  if (
+    !Number.isSafeInteger(opts.port) ||
+    (opts.port as number) < 1 ||
+    (opts.port as number) > 65_535
+  ) {
+    errors.push(`${optionsPrefix}.port: required integer from 1 to 65535`);
+  }
   if (opts.rateLimitPerPeer !== undefined) {
     if (
       opts.rateLimitPerPeer === null ||
@@ -777,8 +784,13 @@ function validateLinkOptions(
   optionsPrefix: string,
   errors: string[],
 ): void {
-  if (opts.port !== undefined && (typeof opts.port !== "number" || opts.port < 0)) {
-    errors.push(`${optionsPrefix}.port: must be a non-negative number`);
+  if (
+    opts.port !== undefined &&
+    (!Number.isSafeInteger(opts.port) ||
+      (opts.port as number) < 1 ||
+      (opts.port as number) > 65_535)
+  ) {
+    errors.push(`${optionsPrefix}.port: must be an integer from 1 to 65535`);
   }
   if (typeof opts.dbPath !== "string" || opts.dbPath.length === 0) {
     errors.push(`${optionsPrefix}.dbPath: required non-empty string`);
@@ -1493,9 +1505,11 @@ function validateTelegramTransportOptions(
       }
       if (
         webhook.port !== undefined &&
-        (typeof webhook.port !== "number" || webhook.port <= 0 || webhook.port > 65535)
+        (!Number.isSafeInteger(webhook.port) ||
+          (webhook.port as number) < 1 ||
+          (webhook.port as number) > 65_535)
       ) {
-        errors.push(`${prefix}.inbound.webhook.port: must be a positive number ≤ 65535`);
+        errors.push(`${prefix}.inbound.webhook.port: must be an integer from 1 to 65535`);
       }
       if (
         webhook.maxBodyBytes !== undefined &&
