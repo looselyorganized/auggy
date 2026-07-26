@@ -181,7 +181,12 @@ describe("prepareRuntimeVolume", () => {
     const root = makeRoot();
     const agentId = "aug1_8a3d7828-1597-4db4-bd0e-adc1a1036211";
     const child = Bun.spawn(
-      [process.execPath, join(import.meta.dir, "../fixtures/runtime-volume-lease-child.ts"), root, agentId],
+      [
+        process.execPath,
+        join(import.meta.dir, "../fixtures/runtime-volume-lease-child.ts"),
+        root,
+        agentId,
+      ],
       { stdout: "pipe", stderr: "pipe" },
     );
     const reader = child.stdout.getReader();

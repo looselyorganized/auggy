@@ -37,12 +37,10 @@ function closeQuietly(fd: number | undefined): void {
  * Admit a deployment-owned runtime volume and prove its AgentMail state leaf
  * supports the durability operations used by SQLite and atomic JSON files.
  */
-function admitRuntimeVolume({
-  advertisedMount,
-  runtimeDataRoot,
-  agentId,
-  __testHooks,
-}: RuntimeVolumeOptions, holdSingletonLease: boolean): string | RuntimeVolumeLease {
+function admitRuntimeVolume(
+  { advertisedMount, runtimeDataRoot, agentId, __testHooks }: RuntimeVolumeOptions,
+  holdSingletonLease: boolean,
+): string | RuntimeVolumeLease {
   if (advertisedMount !== runtimeDataRoot) {
     throw new Error(
       `[runtime-volume] expected RAILWAY_VOLUME_MOUNT_PATH=${runtimeDataRoot}, got ${advertisedMount ?? "unset"}`,
