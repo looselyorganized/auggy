@@ -143,7 +143,7 @@ jobs:
 
       - name: Run deterministic v1 tests
         run: |
-          bun test --max-concurrency=1 \
+          bun scripts/test-surface-inventory.ts run-runtime-files \
             tests/cli/create-installs-deps.test.ts \
             tests/cli/add-installs-deps.test.ts \
             tests/cli/commands/augment.test.ts \
@@ -211,7 +211,7 @@ jobs:
       - name: Exercise Linux security boundary
         env:
           TEST_PATH: ${{ matrix.test }}
-        run: bun test --max-concurrency=1 "$TEST_PATH"
+        run: bun scripts/test-surface-inventory.ts run-runtime-files "$TEST_PATH"
 
   runtime_shards:
     name: v1 runtime shard (${{ matrix.shard }})
@@ -274,7 +274,7 @@ jobs:
       - name: Run PostgreSQL coordination integration tests
         env:
           AUGGY_TEST_POSTGRES_URL: postgresql://postgres@localhost:5432/postgres
-        run: bun test --max-concurrency=1 tests/coordination/postgres-distributed-turn-coordinator.test.ts
+        run: bun scripts/test-surface-inventory.ts run-runtime-files tests/coordination/postgres-distributed-turn-coordinator.test.ts
 
   test:
     name: v1 release gate

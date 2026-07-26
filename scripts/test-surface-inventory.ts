@@ -461,6 +461,27 @@ export function createBunTestInvocation(
   };
 }
 
+export function selectExplicitRuntimeFiles(
+  inventory: TestSurfaceInventory,
+  requested: readonly string[],
+): ResolvedTestShard {
+  if (requested.length === 0 || requested.length > 512) {
+    fail("explicit runtime test list must contain between 1 and 512 paths");
+  }
+  const inventoried = new Set(
+    inventory.shards.filter((shard) => shard.suite === "runtime").flatMap((shard) => shard.files),
+  );
+  const seen = new Set<string>();
+  for (const path of requested) {
+    if (seen.has(path)) fail(`explicit runtime test list contains duplicate ${describePath(path)}`);
+    seen.add(path);
+    if (!inventoried.has(path)) {
+      fail(`explicit path is not an inventoried runtime test: ${describePath(path)}`);
+    }
+  }
+  return { id: "explicit-runtime", suite: "runtime", files: [...requested] };
+}
+
 async function runShard(shard: ResolvedTestShard, root: string): Promise<number> {
   const invocation = createBunTestInvocation(shard, root);
   const child = Bun.spawn(invocation.argv, {
@@ -481,8 +502,12 @@ function loadInventory(root: string): TestSurfaceInventory {
 
 async function main(args: string[]): Promise<number> {
   const [command, argument, ...extra] = args;
-  if (extra.length > 0) fail("too many arguments");
   const inventory = loadInventory(ROOT);
+
+  if (command === "run-runtime-files" && argument) {
+    return await runShard(selectExplicitRuntimeFiles(inventory, [argument, ...extra]), ROOT);
+  }
+  if (extra.length > 0) fail("too many arguments");
 
   if (command === "check" && argument === undefined) {
     console.log(
