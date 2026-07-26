@@ -192,7 +192,11 @@ const maxInferenceLoops = 10;
 while (inferenceCount < maxInferenceLoops) {
   if (signal?.aborted) return makeAbortResult();
   inferenceCount++;
-  const response = await model.complete(currentPrompt);
+  const response = await withTimeout(
+    (deadlineSignal) => model.complete(currentPrompt, { signal: deadlineSignal }),
+    providerRequestTimeoutMs ?? 120000,
+    signal,
+  );
   // record inference in trace
   // append model content to history (always, even if tool calls follow)
   
@@ -209,6 +213,16 @@ while (inferenceCount < maxInferenceLoops) {
 ```
 
 The inference loop is capped at **10 iterations**. The cap exists so a stuck model that keeps calling tools without ever producing a final answer doesn't run forever. When the cap is hit, the loop emits a generic "I've completed the available actions" message and returns success.
+
+Each inference also has one total provider deadline (120 seconds by default,
+ten minutes maximum). SDK automatic POST retries are disabled because the
+provider-neutral contract cannot prove that timeout, reset, 429, or 5xx
+failures occurred before generation or billing. When the deadline wins, the
+kernel aborts the provider, closes any open text stream, records an
+outcome-unknown attempt, and rejects late deltas/results before they can reach
+history or tools. A non-cooperative provider promise is detached from local
+scheduler capacity only at this model-only boundary. See
+[29-provider-resilience.md](./29-provider-resilience.md).
 
 ##### Tool call processing — three phases
 

@@ -346,3 +346,61 @@ Group verification:
 - `bun run lint` passed with only the repository's existing Biome schema-version
   notice; and
 - `git diff --check` passed.
+
+### Group 4 — implemented on branch
+
+Every first-party model adapter and the kernel now enforce a finite one-attempt
+provider deadline. The default is 120 seconds and the validated maximum is ten
+minutes. OpenAI, Anthropic, and OpenRouter SDK retries are disabled because the
+current provider-neutral contract cannot prove that a failed generation POST
+was unbilled or side-effect free. The deadline covers connection and setup,
+stream consumption, and buffered materialization for both kernel and direct
+adapter callers. OpenRouter's authoritative restrictive-routing lookup shares
+the shorter call deadline.
+
+The kernel closes and deactivates inference streams before provider abort
+listeners can emit, fences all late results from tools/history/follow-up work,
+releases local scheduler capacity after a non-cooperative provider, and commits
+unknown or canceled post-dispatch inference as one unpriced accounting record.
+Clearable call-level deadline leases remove timers and caller listeners at
+settlement, and Ollama composes provider, `Request`, and init cancellation into
+its per-call transport.
+
+Hostile review found and resolved the following High/Medium candidates before
+the checkpoint:
+
+- provider abort listeners could synchronously emit a final delta before the
+  kernel closed the stream;
+- SDK timeouts alone did not bound body or stream consumption for direct
+  adapter consumers;
+- canceled provider work could skip unpriced cost evidence;
+- OpenRouter directory validation could outlive a shorter configured deadline;
+- non-disposable timeout signals retained timers after fast calls;
+- Ollama setup and request-input signals were not consistently composed; and
+- a caller abort between wrapper construction and the dispatch microtask could
+  still invoke provider code.
+
+The final regressions cover whole-call hangs in all four adapters, one-attempt
+behavior, the synchronous abort/delta race, pre-dispatch cancellation, signal
+composition, timer disposal, OpenRouter policy lookup, detached provider work,
+and exact cost commitment. Repeated hostile review reported no other unresolved
+High or Medium issue.
+
+Group verification:
+
+- the final focused provider, kernel, scheduler, configuration, resolver,
+  package-manifest, and public-export reviews passed up to 433 tests with zero
+  failures; the post-review immediate-abort suite passed 275 tests;
+- `bun run typecheck` passed;
+- `bun run lint` passed with only the repository's existing Biome
+  schema-version notice;
+- the test-surface inventory passed with 266 runtime and 29 admin files across
+  12 shards; and
+- `git diff --check` passed.
+
+`bun run smoke:release` reached packed-provider verification but its sandboxed
+consumer installs were denied temporary-file access. The required unsandboxed
+rerun was blocked by the execution policy because that script invokes
+`bun audit --json` against an external advisory service. No alternate command
+was used to bypass that policy; this external verification remains a final PR
+gate.

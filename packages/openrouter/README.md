@@ -37,9 +37,14 @@ engine:
   model: anthropic/claude-sonnet-4-6
   maxContextTokens: 200000
   maxTokens: 4096
+  requestTimeoutMs: 120000
   providerRouting:
     only: [anthropic]
 ```
+
+Each model POST has one attempt. The deadline defaults to 120 seconds (maximum
+ten minutes), and SDK automatic retries are disabled to avoid duplicate
+generation or billing after ambiguous failures.
 
 `only` and `ignore` accept canonical lowercase base-provider slugs. When either
 is configured, the adapter checks every slug against OpenRouter's authenticated

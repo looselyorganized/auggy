@@ -729,6 +729,7 @@ export interface AgentConfig {
   };
   compactionStrategy?: CompactionStrategy;  // default "truncate"
   responseLimits?: Partial<ModelResponseLimits>;
+  providerRequestTimeoutMs?: number; // default 120000, maximum 600000
   turnScheduling?: Partial<{
     maxConcurrent: number;       // default 4
     maxQueued: number;           // default 100
@@ -769,6 +770,14 @@ Streaming adapters also apply the cumulative text/event checks before
 forwarding deltas where their transport permits early cancellation. A
 violation rejects the whole model response with a stable sanitized error;
 Auggy never executes a valid-looking prefix of an oversized response.
+
+`providerRequestTimeoutMs` bounds one model inference across connection,
+stream setup, streaming, and response materialization. It defaults to 120
+seconds and cannot exceed ten minutes. Model POSTs have one attempt: Auggy does
+not retry ambiguous connection, timeout, 408/409/429, or 5xx failures without a
+provider idempotency contract. A deadline is outcome-unknown, fences every late
+provider event/result, and releases process capacity without allowing late
+tool execution. See [29-provider-resilience.md](./29-provider-resilience.md).
 
 `AgentHandle` is what `defineAgent` returns. The methods are explained in [08-agent-lifecycle.md](./08-agent-lifecycle.md).
 

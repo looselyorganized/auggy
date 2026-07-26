@@ -44,11 +44,16 @@ engine:
   # baseURL: http://localhost:11434         # default
   # maxContextTokens: 8192                  # default (Llama 3.2 supports up to 128k)
   # maxTokens: 2048                         # default; per-turn output cap
+  # requestTimeoutMs: 120000                # one attempt; maximum 600000
   # keepAlive: "5m"                         # default; how long to keep the model loaded
   # options:                                # native Ollama generation options
   #   temperature: 0.7
   #   seed: 42
 ```
+
+Every request has one finite attempt. The deadline covers both buffered and
+streaming SDK fetches, including local model stalls; automatic retries are not
+performed.
 
 Remote Ollama endpoints that receive `OLLAMA_API_KEY` must use HTTPS. Plain
 HTTP with a credential is allowed for loopback only. The explicit

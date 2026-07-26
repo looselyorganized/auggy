@@ -19,6 +19,7 @@ For installation and first-run instructions, start with the root
 - [Console](./21-console.md)
 - [Runtime State Recovery](./27-runtime-state-recovery.md)
 - [Delivery and Operator Recovery](./28-delivery-and-operator-recovery.md)
+- [Provider Resilience](./29-provider-resilience.md)
 - [Feature Status](./FEATURES.md)
 
 ## Mental Model
@@ -91,6 +92,7 @@ Use this order when documentation disagrees:
 | [26 Delegated Authorization](./26-delegated-authorization.md) | Preview app-session authorization bridge |
 | [27 Runtime State Recovery](./27-runtime-state-recovery.md) | State inventory, offline volume bundles, restore fencing, and operator boundaries |
 | [28 Delivery and Operator Recovery](./28-delivery-and-operator-recovery.md) | Replay, outcome-unknown, and creator recovery contracts by transport |
+| [29 Provider Resilience](./29-provider-resilience.md) | Model deadlines, cancellation, no-retry policy, and brownout isolation |
 
 ## Common Add-Ons
 
