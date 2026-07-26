@@ -87,6 +87,14 @@ leases across confirmation and cloud cleanup, atomically renames the captured
 root to a private quarantine name, verifies its immutable ID and inode there,
 and only then recursively deletes it.
 
+Foreground runtime admission takes the same lifecycle lease transiently while
+it publishes resource claims and its manifest. It cannot replace a dev process
+between an operator stop's final process check and successful return. Restart
+passes its already-owned lease into the successor admission path, and stop
+rejects any unexpected replacement manifest rather than reporting success.
+The runtime does not hold this lease after admission; normal operator controls
+remain available for the process lifetime.
+
 These claims are local to one OS user's registry, not the whole host. Separate
 service accounts, containers, hosts, Railway services, Kubernetes, Nomad, and
 other schedulers must prevent the same exclusive inbound identity from being

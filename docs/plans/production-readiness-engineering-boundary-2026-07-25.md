@@ -615,6 +615,14 @@ start is therefore either acted on from observed state or causes the control
 operation to fail visibly for retry; it can no longer complete after a false
 "not running" result.
 
+The last foreground-lifecycle pass found and resolved one further Medium race:
+a second `auggy dev` could publish after the stopped process released its
+claims but before the operator command returned success. Foreground admission
+now transiently participates in the per-agent lifecycle fence through durable
+manifest publication, restart explicitly passes its owned fence to the
+successor, and stop rejects an unexpected replacement generation instead of
+discarding the owner-check result.
+
 The final dependency gate also discovered the newly published
 `GHSA-qwww-vcr4-c8h2` against React Router 7.18.1. The console migrated from the
 removed `react-router-dom` compatibility package to patched `react-router`
