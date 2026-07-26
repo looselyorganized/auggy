@@ -8,7 +8,7 @@ import {
   type RouterState,
   useLocation,
   useNavigate,
-} from "react-router-dom";
+} from "react-router";
 
 import { ChatComposer } from "@/components/admin/ChatComposer";
 import { DashboardProvider } from "@/components/admin/DashboardContext";
