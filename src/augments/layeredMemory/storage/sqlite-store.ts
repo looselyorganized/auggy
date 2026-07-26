@@ -53,8 +53,8 @@ const SCHEMA_STATEMENTS = [
   `CREATE INDEX IF NOT EXISTS idx_events_entry ON event_log(entry_id)`,
 ];
 
-const LAYERED_MEMORY_APPLICATION_ID = 0x4c4d454d; // "LMEM"
-const LAYERED_MEMORY_SCHEMA_VERSION = 1;
+export const LAYERED_MEMORY_APPLICATION_ID = 0x4c4d454d; // "LMEM"
+export const LAYERED_MEMORY_SCHEMA_VERSION = 1;
 const EXPECTED_OBJECT_SQL = new Map(
   SCHEMA_STATEMENTS.slice(1).map((sql) => {
     const match = sql.match(/(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([^\s(]+)/i);

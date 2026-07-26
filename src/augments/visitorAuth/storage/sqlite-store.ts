@@ -70,8 +70,8 @@ const SCHEMA_STATEMENTS = [
   )`,
 ];
 
-const VISITOR_AUTH_APPLICATION_ID = 0x56415554; // "VAUT"
-const VISITOR_AUTH_SCHEMA_VERSION = 1;
+export const VISITOR_AUTH_APPLICATION_ID = 0x56415554; // "VAUT"
+export const VISITOR_AUTH_SCHEMA_VERSION = 1;
 const EXPECTED_SCHEMA = new Map(
   SCHEMA_STATEMENTS.map((sql) => {
     const match = sql.match(/(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([^\s(]+)/i);

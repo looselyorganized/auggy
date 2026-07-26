@@ -61,8 +61,8 @@ const SCHEMA_STATEMENTS = [
      ON anonymous_requests(timestamp)`,
 ];
 
-const BUDGETS_APPLICATION_ID = 0x42554447; // "BUDG"
-const BUDGETS_SCHEMA_VERSION = 1;
+export const BUDGETS_APPLICATION_ID = 0x42554447; // "BUDG"
+export const BUDGETS_SCHEMA_VERSION = 1;
 const EXPECTED_SCHEMA = new Map(
   SCHEMA_STATEMENTS.map((sql) => {
     const match = sql.match(/(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([^\s(]+)/i);

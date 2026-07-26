@@ -166,13 +166,12 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   const configPath = resolveConfigPath(name, opts.config, { cwd: opts.cwd });
   const agentDir = dirname(configPath);
   const mode = opts.internalMode === "launchd" ? ("launchd" as const) : ("dev" as const);
+  // Parse and validate config before mutating or admitting any runtime state.
+  const config = parseConfig(configPath);
   const requestedRuntimeDataRoot = resolveRuntimeDataRoot(opts.internalMode);
   const runtimeDataRoot = requestedRuntimeDataRoot
-    ? prepareRailwayRuntimeVolume(process.env.RAILWAY_VOLUME_MOUNT_PATH)
+    ? prepareRailwayRuntimeVolume(process.env.RAILWAY_VOLUME_MOUNT_PATH, config.id)
     : undefined;
-
-  // Parse and validate config.
-  const config = parseConfig(configPath);
 
   if (name && config.name !== name) {
     console.warn(

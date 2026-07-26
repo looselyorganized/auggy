@@ -81,8 +81,10 @@ const CONFLICT_SCHEMA = [
      ON telegram_replay_discards(resolved_at)`,
 ];
 const SCHEMA = [...CLAIM_SCHEMA, ...CONFLICT_SCHEMA];
-const APPLICATION_ID = 0x54475250;
-const SCHEMA_VERSION = 2;
+export const TELEGRAM_REPLAY_APPLICATION_ID = 0x54475250;
+export const TELEGRAM_REPLAY_SCHEMA_VERSION = 2;
+const APPLICATION_ID = TELEGRAM_REPLAY_APPLICATION_ID;
+const SCHEMA_VERSION = TELEGRAM_REPLAY_SCHEMA_VERSION;
 
 function expectedSchema(statements: readonly string[]): Map<string, string> {
   return new Map(

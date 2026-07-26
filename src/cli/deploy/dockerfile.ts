@@ -94,6 +94,7 @@ if [ ! -d /app/data ] || [ -L /app/data ]; then
 fi
 
 umask 077
+chmod 0700 /app/data
 if [ -L /app/data/agent-mail ]; then
   echo "Auggy Railway startup refused: /app/data/agent-mail must not be a symlink." >&2
   exit 1
