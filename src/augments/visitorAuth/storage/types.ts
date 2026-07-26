@@ -120,6 +120,12 @@ export interface VisitorAuthStore {
    * if the email was unknown. Used by `auggy visitors --revoke`.
    */
   revokeByEmail(email: string, reason: string, now: number): string | null;
+  /** Atomically revoke and return the identity currently bound to an email. */
+  revokeCurrentByEmail(
+    email: string,
+    reason: string,
+    now: number,
+  ): { visitorId: string; wasRevoked: boolean } | null;
   /**
    * Lookup a verified-visitor row by visitorId. Returns null if no row with
    * that id exists. Used by `isVisitorRevoked` to enable real-time revocation

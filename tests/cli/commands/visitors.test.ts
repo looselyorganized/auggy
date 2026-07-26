@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runVisitorsList, type VisitorsCommandOptions } from "../../../src/cli/commands/visitors";
@@ -104,6 +104,23 @@ describe("auggy visitors <agent> (list)", () => {
         log: () => {},
       } as VisitorsCommandOptions),
     ).rejects.toThrow();
+  });
+
+  test("rejects a symlinked visitor database parent", async () => {
+    const outside = join(tmp, "other-agent");
+    mkdirSync(outside);
+    symlinkSync(outside, join(agentDir, "state"));
+    writeFileSync(
+      join(agentDir, "augments", "visitorAuth", "augment.yaml"),
+      `type: visitorAuth\nconfig:\n  dbPath: ./state/visitor-auth.db\n`,
+    );
+
+    await expect(runVisitorsList("zip", { auggyDir })).rejects.toThrow(
+      /unsafe|symlink|owned-state/i,
+    );
+    await expect(
+      runVisitorsRevoke("zip", "victim@example.com", { auggyDir, confirm: false }),
+    ).rejects.toThrow(/unsafe|symlink|owned-state/i);
   });
 });
 
@@ -260,5 +277,43 @@ describe("auggy visitors <agent> --revoke <email>", () => {
       | undefined;
     db.close();
     expect(c?.c).toBe(0);
+  });
+
+  test("revokes the rotated current identity when reverification races the prompt", async () => {
+    seed([{ visitorId: "vis_old", email: "race@x", verifiedAt: 1000 }]);
+    await seedMemoryDb(join(agentDir, "memory.db"), "vis_new", 2);
+
+    await runVisitorsRevoke("zip", "race@x", {
+      auggyDir,
+      confirm: true,
+      _confirmAnswer: () => {
+        const concurrent = createSqliteVisitorAuthStore({
+          dbPath: join(agentDir, "visitor-auth.db"),
+        });
+        concurrent.initialize();
+        concurrent.revokeByEmail("race@x", "racing verification", 2000);
+        expect(concurrent.unrevokeAndRotate("race@x", "vis_new", 3000, 4000)).toBe(true);
+        concurrent.close();
+        return true;
+      },
+      log: () => {},
+    });
+
+    const store = createSqliteVisitorAuthStore({ dbPath: join(agentDir, "visitor-auth.db") });
+    store.initialize();
+    expect(store.findVerifiedByEmail("race@x")).toMatchObject({
+      visitorId: "vis_new",
+      revoked: true,
+    });
+    store.close();
+    const db = new Database(join(agentDir, "memory.db"));
+    expect(
+      db
+        .query<{ count: number }, [string]>(
+          "SELECT COUNT(*) AS count FROM entries WHERE peer_id = ?",
+        )
+        .get("vis_new")?.count,
+    ).toBe(0);
+    db.close();
   });
 });

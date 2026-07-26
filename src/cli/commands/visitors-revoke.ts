@@ -16,6 +16,7 @@ import { createSqliteVisitorAuthStore } from "../../augments/visitorAuth/storage
 import { scopedAgentNamespace } from "../agent-isolation";
 import { parseAgentIdOnly, parseAugmentConfigOnly, parseAugmentConfigsOnly } from "../yaml-helpers";
 import { resolveConfigPath } from "../resolve-config";
+import { resolveOwnedStatePath } from "../owned-state-path";
 
 export interface VisitorsRevokeOptions {
   auggyDir?: string;
@@ -54,14 +55,22 @@ function resolvePaths(agentName: string, opts: VisitorsRevokeOptions): ResolvedP
     vaOptions.layeredMemoryDbPath === null
       ? null
       : ((vaOptions.layeredMemoryDbPath as string | undefined) ?? "./memory.db");
-  const memoryDb = memPathRaw === null ? null : resolve(agentDir, memPathRaw);
+  const memoryDb =
+    memPathRaw === null
+      ? null
+      : resolveOwnedStatePath(memPathRaw, agentDir, agentDir, "visitorAuth layeredMemoryDbPath");
   const matchingNamespaces = new Set(
     parseAugmentConfigsOnly(yamlPath, "layeredMemory")
       .filter((options) => (options.backend ?? "sqlite") === "sqlite")
       .filter(
         (options) =>
           memoryDb !== null &&
-          resolve(agentDir, (options.dbPath as string | undefined) ?? "./memory.db") === memoryDb,
+          resolveOwnedStatePath(
+            (options.dbPath as string | undefined) ?? "./memory.db",
+            agentDir,
+            agentDir,
+            "layeredMemory dbPath",
+          ) === memoryDb,
       )
       .map((options) =>
         scopedAgentNamespace(agentId, options.namespace as string | undefined, "ep"),
@@ -74,7 +83,7 @@ function resolvePaths(agentName: string, opts: VisitorsRevokeOptions): ResolvedP
   }
   return {
     agentDir,
-    visitorAuthDb: resolve(agentDir, dbPath),
+    visitorAuthDb: resolveOwnedStatePath(dbPath, agentDir, agentDir, "visitorAuth dbPath"),
     memoryDb,
     memoryNamespace:
       matchingNamespaces.values().next().value ?? scopedAgentNamespace(agentId, undefined, "ep"),
@@ -109,24 +118,6 @@ export async function runVisitorsRevoke(
     throw new Error(`No verified visitor found for "${email}".`);
   }
 
-  // Already-revoked branch: re-run the memory cascade to recover from a
-  // previously-interrupted revoke (e.g. operator hit Ctrl-C between the
-  // visitor-auth UPDATE and the memory.db DELETE). DELETE is idempotent —
-  // a no-op when there are no orphan rows.
-  if (existing.revoked) {
-    store.close();
-    const memDeleted = cascadeMemoryDelete(
-      paths.memoryDb,
-      paths.memoryNamespace,
-      existing.visitorId,
-      log,
-    );
-    log(
-      `Visitor "${email}" was already revoked (${existing.revokedReason ?? "unspecified"}). ${memDeleted} stale memory row(s) cleaned up.`,
-    );
-    return;
-  }
-
   if (opts.confirm) {
     const ok = (opts._confirmAnswer ?? defaultConfirm)(
       `Revoke verified visitor "${email}" (${existing.visitorId})? This deletes peer-scoped memory rows. [y/N] `,
@@ -138,11 +129,18 @@ export async function runVisitorsRevoke(
     }
   }
 
-  const visitorId = store.revokeByEmail(email, "operator", Date.now())!;
+  const revoked = store.revokeCurrentByEmail(email, "operator", Date.now());
   store.close();
+  if (!revoked) throw new Error(`No verified visitor found for "${email}".`);
 
-  const memDeleted = cascadeMemoryDelete(paths.memoryDb, paths.memoryNamespace, visitorId, log);
-  log(`Revoked "${email}" (${visitorId}). ${memDeleted} memory row(s) removed.`);
+  const memDeleted = cascadeMemoryDelete(
+    paths.memoryDb,
+    paths.memoryNamespace,
+    revoked.visitorId,
+    log,
+  );
+  const outcome = revoked.wasRevoked ? "was already revoked; reconciled" : "revoked";
+  log(`Visitor "${email}" (${revoked.visitorId}) ${outcome}. ${memDeleted} memory row(s) removed.`);
 }
 
 /**

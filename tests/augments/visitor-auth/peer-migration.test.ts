@@ -47,6 +47,19 @@ function countRowsForPeer(memDbPath: string, peerId: string): number {
 }
 
 describe("anonymous → recognized peer-id migration on verify", () => {
+  test("requires an explicit namespace for direct shared-database migration", () => {
+    expect(() =>
+      visitorAuth({
+        publicUrl: "https://zip.test",
+        dbPath: join(tmp, "va-no-namespace.db"),
+        agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
+        signingKey: "shared-key",
+        layeredMemoryDbPath: join(tmp, "memory.db"),
+        _agentMailClient: {} as never,
+      }),
+    ).toThrow(/layeredMemoryNamespace.*required/i);
+  });
+
   test("migrates rows from anon-<threadId> to vis_<uuid> after verify", async () => {
     const dbPath = join(tmp, "va.db");
     const memPath = join(tmp, "memory.db");
@@ -59,6 +72,7 @@ describe("anonymous → recognized peer-id migration on verify", () => {
       agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
       signingKey: "shared-key",
       layeredMemoryDbPath: memPath,
+      layeredMemoryNamespace: "ep",
       _agentMailClient: {
         send: async (i: { text: string }) => {
           sendCalls.push({ text: i.text });
@@ -277,6 +291,7 @@ describe("anonymous → recognized peer-id migration on verify", () => {
       agentMail: { apiKey: "am_x", inboxId: "ibx_x" },
       signingKey: "shared-key",
       layeredMemoryDbPath: join(tmp, "nonexistent-memory.db"),
+      layeredMemoryNamespace: "ep",
       _agentMailClient: {
         send: async (i: { text: string }) => {
           sendCalls.push({ text: i.text });

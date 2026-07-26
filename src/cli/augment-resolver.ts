@@ -14,17 +14,8 @@
  *    operator's chosen instance name from the config.
  */
 
-import {
-  closeSync,
-  constants,
-  existsSync,
-  fchmodSync,
-  fstatSync,
-  fsyncSync,
-  mkdirSync,
-  openSync,
-} from "node:fs";
-import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { existsSync } from "node:fs";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileMemory } from "../augments/fileMemory";
 import { supabaseMemory } from "../augments/supabaseMemory";
 import { filesystem } from "../augments/filesystem";
@@ -68,6 +59,7 @@ import { validateBundledSkills } from "./skill-validator";
 import { auggySelf, type AuggySelfAgentMetadata } from "./auggy-self-augment";
 import { mutableFileMemoryRuntimePath } from "./runtime-state-inventory";
 import { assertImmutableAgentId, scopedAgentNamespace } from "./agent-isolation";
+import { resolveOwnedStatePath } from "./owned-state-path";
 
 // ---------------------------------------------------------------------------
 // Path resolution helper
@@ -95,72 +87,6 @@ function resolveContainedPath(path: string, root: string, label: string): string
   return resolvedPath;
 }
 
-function ensureDurableDirectoryChain(root: string, target: string, label: string): void {
-  const relativeTarget = relative(root, target);
-  if (
-    relativeTarget === ".." ||
-    relativeTarget.startsWith(`..${sep}`) ||
-    isAbsolute(relativeTarget)
-  ) {
-    throw new Error(`[augment-resolver] ${label} escaped its runtime data root`);
-  }
-
-  let parentFd: number;
-  try {
-    parentFd = openSync(root, constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW);
-  } catch (error) {
-    throw new Error(`[augment-resolver] ${label} root must be a real directory`, {
-      cause: error,
-    });
-  }
-  if (!fstatSync(parentFd).isDirectory()) {
-    closeSync(parentFd);
-    throw new Error(`[augment-resolver] ${label} root must be a real directory`);
-  }
-
-  let parent = root;
-  try {
-    for (const component of relativeTarget.split(sep).filter(Boolean)) {
-      const candidate = resolve(parent, component);
-      let created = false;
-      try {
-        mkdirSync(candidate, { mode: 0o700 });
-        created = true;
-      } catch (error) {
-        if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-      }
-
-      let candidateFd: number | undefined;
-      try {
-        candidateFd = openSync(
-          candidate,
-          constants.O_RDONLY | constants.O_DIRECTORY | constants.O_NOFOLLOW,
-        );
-        if (!fstatSync(candidateFd).isDirectory()) {
-          throw new Error(`[augment-resolver] ${label} must not contain non-directories`);
-        }
-        fchmodSync(candidateFd, 0o700);
-        if (created) fsyncSync(parentFd);
-      } catch (error) {
-        if (candidateFd !== undefined) closeSync(candidateFd);
-        const code = (error as NodeJS.ErrnoException).code;
-        if (code === "ELOOP" || code === "ENOTDIR") {
-          throw new Error(`[augment-resolver] ${label} must not contain symlinked directories`, {
-            cause: error,
-          });
-        }
-        throw error;
-      }
-
-      closeSync(parentFd);
-      parentFd = candidateFd;
-      parent = candidate;
-    }
-  } finally {
-    closeSync(parentFd);
-  }
-}
-
 function resolveSqlitePath(
   path: string,
   agentDir: string,
@@ -182,8 +108,9 @@ function resolveSqlitePath(
   const dbPath = alreadyContained
     ? configuredPath
     : resolveContainedPath(path, runtimeDataRoot, label);
-  ensureDurableDirectoryChain(runtimeDataRoot, dirname(dbPath), label);
-  return dbPath;
+  return resolveOwnedStatePath(dbPath, agentDir, runtimeDataRoot, label, {
+    createParents: true,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -221,10 +148,12 @@ function resolveFileMemory(
           )
         : resolvedSource;
   if (durableSource !== resolvedSource && runtimeDataRoot) {
-    ensureDurableDirectoryChain(
+    resolveOwnedStatePath(
+      durableSource,
+      agentDir,
       runtimeDataRoot,
-      dirname(durableSource),
       `fileMemory "${augmentName}" state path`,
+      { createParents: true },
     );
   }
 
@@ -1051,10 +980,12 @@ export async function resolveAugments(
             const agentMailRoot = resolve(resolverOpts.runtimeDataRoot, "agent-mail");
             stateDir = resolve(agentMailRoot, config.name);
             dbPath = resolveContainedPath(rawDbPath, stateDir, `agentMail "${config.name}" dbPath`);
-            ensureDurableDirectoryChain(
+            dbPath = resolveOwnedStatePath(
+              dbPath,
+              agentDir,
               resolverOpts.runtimeDataRoot,
-              dirname(dbPath),
               `agentMail "${config.name}" state path`,
+              { createParents: true },
             );
           } else {
             // Locally, keep state beside agent.yaml and root relative database

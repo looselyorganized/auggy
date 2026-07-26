@@ -163,6 +163,7 @@ export function createSqliteVisitorAuthStore(
   let listVerifiedStmt: Statement | null = null;
   let revokeStmt: Statement | null = null;
   let revokeReadStmt: Statement | null = null;
+  let revokeCurrentReadStmt: Statement | null = null;
   let unrevokeAndRotateStmt: Statement | null = null;
   let findMostRecentStmt: Statement | null = null;
   let hasNotifiedStmt: Statement | null = null;
@@ -232,6 +233,9 @@ export function createSqliteVisitorAuthStore(
     // `revokeByEmail(...) !== null` as the "did this revoke happen?" signal).
     revokeReadStmt = db.prepare(
       `SELECT visitor_id FROM verified_visitors WHERE email = ? AND revoked = 0`,
+    );
+    revokeCurrentReadStmt = db.prepare(
+      `SELECT visitor_id, revoked FROM verified_visitors WHERE email = ?`,
     );
     // Un-revoke + rotate: single UPDATE that only matches revoked rows.
     // Returning false (changes === 0) when the row is not revoked prevents
@@ -388,6 +392,24 @@ export function createSqliteVisitorAuthStore(
         addRevokedStmt!.run(visRow.visitor_id, email, now, reason);
         result = visRow.visitor_id;
       })();
+      return result;
+    },
+    revokeCurrentByEmail(
+      email: string,
+      reason: string,
+      now: number,
+    ): { visitorId: string; wasRevoked: boolean } | null {
+      ensurePrepared();
+      let result: { visitorId: string; wasRevoked: boolean } | null = null;
+      db.transaction(() => {
+        const row = revokeCurrentReadStmt!.get(email) as
+          | { visitor_id: string; revoked: number }
+          | undefined;
+        if (!row) return;
+        revokeStmt!.run(now, reason, email);
+        addRevokedStmt!.run(row.visitor_id, email, now, reason);
+        result = { visitorId: row.visitor_id, wasRevoked: row.revoked !== 0 };
+      }).immediate();
       return result;
     },
     findVisitorById(visitorId: string): VerifiedVisitorRow | null {

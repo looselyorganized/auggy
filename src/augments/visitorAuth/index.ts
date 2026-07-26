@@ -224,6 +224,16 @@ function validateOptions(opts: VisitorAuthInternalOptions): void {
   if (!opts.dbPath) {
     throw new Error("visitorAuth: dbPath is required");
   }
+  const migrationPath = opts.layeredMemoryDbPath;
+  if (
+    migrationPath !== null &&
+    (typeof opts.layeredMemoryNamespace !== "string" ||
+      opts.layeredMemoryNamespace.trim().length === 0)
+  ) {
+    throw new Error(
+      "visitorAuth: layeredMemoryNamespace is required when peer-id migration is enabled",
+    );
+  }
   if (opts.rateLimit) validateRateLimit(opts.rateLimit);
 }
 
@@ -813,15 +823,17 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
       if (!rowKey) {
         return { ok: false, message: "visitor-revoke requires a rowKey (email)" };
       }
-      const visitorId = store.revokeByEmail(rowKey, "/console revoke", Date.now());
-      if (!visitorId) {
+      const revoked = store.revokeCurrentByEmail(rowKey, "/console revoke", Date.now());
+      if (!revoked) {
         return {
           ok: false,
-          message: `visitor "${rowKey}" not found or already revoked`,
+          message: `visitor "${rowKey}" not found`,
         };
       }
-      store.addRevokedVisitorId(visitorId, rowKey, "/console revoke", Date.now());
-      return { ok: true, message: `Revoked ${rowKey} (${visitorId})` };
+      return {
+        ok: true,
+        message: `${revoked.wasRevoked ? "Already revoked" : "Revoked"} ${rowKey} (${revoked.visitorId})`,
+      };
     },
   };
 
@@ -1040,10 +1052,15 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           // anonymous memory. The public app request route uses an internal
           // auth:<uuid> peer id and must not let callers claim arbitrary
           // anon-<threadId> memory.
-          if (consume.peerId && !consume.peerId.startsWith(APP_REQUEST_PEER_PREFIX)) {
+          if (
+            consume.peerId &&
+            !consume.peerId.startsWith(APP_REQUEST_PEER_PREFIX) &&
+            opts.layeredMemoryDbPath !== undefined &&
+            opts.layeredMemoryDbPath !== null
+          ) {
             migratePeerIdOnVerify(
-              opts.layeredMemoryDbPath === undefined ? "./memory.db" : opts.layeredMemoryDbPath,
-              opts.layeredMemoryNamespace ?? "ep",
+              opts.layeredMemoryDbPath,
+              opts.layeredMemoryNamespace!,
               consume.peerId,
               minted.payload.visitorId,
             );

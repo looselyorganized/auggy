@@ -9,13 +9,25 @@ import {
   openSync,
   realpathSync,
 } from "node:fs";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { constants, Database } from "bun:sqlite";
 
 const DEFAULT_BUSY_TIMEOUT_MS = 5_000;
 const DEFAULT_WAL_AUTOCHECKPOINT_PAGES = 1_000;
 const DEFAULT_JOURNAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024;
 const SQLITE_ARTIFACT_SUFFIXES = ["", "-wal", "-shm", "-journal"] as const;
+const ownedPathRoots = new Map<string, string>();
+
+/** Register the containment root expected by a later CLI-resolved SQLite open. */
+export function registerOwnedSqlitePath(path: string, root: string): void {
+  const normalizedPath = resolve(path);
+  const canonicalRoot = realpathSync.native(resolve(root));
+  const existing = ownedPathRoots.get(normalizedPath);
+  if (existing && existing !== canonicalRoot) {
+    throw new Error(`SQLite path ${normalizedPath} was registered under conflicting state roots`);
+  }
+  ownedPathRoots.set(normalizedPath, canonicalRoot);
+}
 
 export interface HardenedSqliteOptions {
   path: string;
@@ -145,6 +157,16 @@ function canonicalPersistentPath(configuredPath: string, create: boolean, label:
       label,
       `database parent must not be group- or world-writable: ${canonicalParent}`,
     );
+  }
+  const expectedRoot = ownedPathRoots.get(lexicalPath);
+  if (expectedRoot) {
+    const fromRoot = relative(expectedRoot, canonicalParent);
+    if (fromRoot === ".." || fromRoot.startsWith(`..${sep}`) || isAbsolute(fromRoot)) {
+      throw contextualError(
+        label,
+        `database parent escaped its registered state root: ${canonicalParent}`,
+      );
+    }
   }
   return join(canonicalParent, basename(lexicalPath));
 }
