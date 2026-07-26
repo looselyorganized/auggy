@@ -360,6 +360,87 @@ describe("defineAgent", () => {
     expect(initial).not.toContain(base.idempotencyKeyHash);
   });
 
+  it("assigns distinct stable operation identities across inference rounds and execution retries", async () => {
+    const model = createMockModel();
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      model.pushResponse({
+        toolCalls: [{ name: "charge", arguments: { amount: 10 } }],
+        finishReason: "tool_use",
+      });
+      model.pushResponse({
+        toolCalls: [{ name: "charge", arguments: { amount: 20 } }],
+        finishReason: "tool_use",
+      });
+      model.pushResponse({ content: "done" });
+    }
+    const operationIds: string[] = [];
+    const agent = defineAgent(
+      {
+        name: "multi-round-operation-agent",
+        model: "mock",
+        augments: [
+          {
+            name: "charge-augment",
+            tools: [
+              {
+                name: "charge",
+                description: "charges an order",
+                category: "meta",
+                input: z.object({ amount: z.number() }),
+                execute: async (_input, context) => {
+                  operationIds.push(context?.operationId ?? "missing");
+                  return "charged";
+                },
+              },
+            ],
+          },
+        ],
+      },
+      model,
+    );
+    const bindingHash = "d".repeat(64);
+
+    await agent.start();
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      await agent.inject(
+        {
+          type: "message",
+          turnId: `multi-round-turn-${attempt}`,
+          threadId: "multi-round-thread",
+          timestamp: Date.now(),
+          source: "trusted-test",
+          peer: null,
+          payload: { sourceAugment: "trusted-test", peer: null, timestamp: Date.now(), parts: [] },
+        },
+        {
+          executionContext: {
+            version: 1,
+            executionId: "multi-round-job",
+            attempt,
+            bindingHash,
+          },
+        },
+      );
+    }
+
+    expect(operationIds).toHaveLength(4);
+    expect(operationIds[0]).not.toBe(operationIds[1]);
+    expect(operationIds.slice(0, 2)).toEqual(operationIds.slice(2));
+    expect(operationIds.slice(0, 2)).toEqual([
+      deriveToolOperationId(
+        { version: 1, executionId: "multi-round-job", attempt: 1, bindingHash },
+        "charge",
+        0,
+      )!,
+      deriveToolOperationId(
+        { version: 1, executionId: "multi-round-job", attempt: 1, bindingHash },
+        "charge",
+        1,
+      )!,
+    ]);
+    await agent.stop();
+  });
+
   it("cancels a trusted execution when its deadline expires", async () => {
     const model = createMockModel();
     model.pushResponse({

@@ -1051,6 +1051,7 @@ export function createTurnLoop(opts: {
         capabilityTable.resetTurn();
         const consecutiveFailures = new Map<string, number>();
         let inferenceCount = 0;
+        let nextToolOperationOrdinal = 0;
         const maxInferenceLoops = config.maxInferenceLoops ?? 10;
 
         while (inferenceCount < maxInferenceLoops) {
@@ -1142,6 +1143,7 @@ export function createTurnLoop(opts: {
                 call: { name: string; arguments: Record<string, unknown> };
                 reg: { tool: Tool; augment: string };
                 validatedInput: unknown;
+                operationOrdinal: number;
               };
 
           const entries: ToolCallEntry[] = [];
@@ -1249,12 +1251,18 @@ export function createTurnLoop(opts: {
               break;
             }
             turnState.toolCallsSoFar++;
-            entries.push({ type: "execute", call, reg, validatedInput: validation.data });
+            entries.push({
+              type: "execute",
+              call,
+              reg,
+              validatedInput: validation.data,
+              operationOrdinal: nextToolOperationOrdinal++,
+            });
           }
 
           // Phase 2: Execute validated tools in parallel (with event emission)
           const execResults = await Promise.all(
-            entries.map(async (entry, toolOrdinal) => {
+            entries.map(async (entry) => {
               if (entry.type === "error") {
                 opts.operationalSignals?.recordTool({ outcome: "denied", durationMs: 0 });
                 return {
@@ -1307,7 +1315,7 @@ export function createTurnLoop(opts: {
                             operationId: deriveToolOperationId(
                               executionContext,
                               entry.reg.tool.name,
-                              toolOrdinal,
+                              entry.operationOrdinal,
                             ),
                           }),
                     }),
