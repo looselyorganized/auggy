@@ -570,4 +570,49 @@ describe("SqliteStore", () => {
       await agentB.close();
     }
   });
+
+  it("treats differently-cased namespaces as distinct security principals", async () => {
+    const sharedPath = `${dbPath}.case-sensitive`;
+    const upper = createSqliteStore({ dbPath: sharedPath, retentionDays: 90, namespace: "Foo" });
+    const lower = createSqliteStore({ dbPath: sharedPath, retentionDays: 90, namespace: "foo" });
+    const now = Date.now();
+    try {
+      await upper.write({
+        id: "upper",
+        label: "Foo:peer:fact",
+        content: "case sentinel",
+        peerId: "peer",
+        trustLevel: "public",
+        createdAt: now,
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      });
+      await lower.write({
+        id: "lower",
+        label: "foo:peer:fact",
+        content: "case sentinel",
+        peerId: "peer",
+        trustLevel: "public",
+        createdAt: now + 1,
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      });
+
+      expect((await upper.search("case sentinel", "peer")).map((row) => row.id)).toEqual(["upper"]);
+      expect((await lower.listEntriesByPeer?.({ peerId: "peer" }))?.map((row) => row.id)).toEqual([
+        "lower",
+      ]);
+      await lower.supersede("upper", "cross-case");
+      expect((await upper.read("Foo:peer:fact"))?.supersededBy).toBeNull();
+      expect(await lower.forget("peer")).toBe(1);
+      expect(await upper.read("Foo:peer:fact")).not.toBeNull();
+    } finally {
+      await upper.close();
+      await lower.close();
+    }
+  });
 });

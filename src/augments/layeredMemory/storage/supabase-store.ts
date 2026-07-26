@@ -25,6 +25,7 @@ export interface SearchBuilder {
   eq(column: string, value: unknown): SearchBuilder;
   is(column: string, value: null): SearchBuilder;
   gt(column: string, value: number): SearchBuilder;
+  like(column: string, value: string): SearchBuilder;
   ilike(column: string, value: string): SearchBuilder;
   or(filterExpr: string): SearchBuilder;
   order(column: string, opts?: { ascending?: boolean }): SearchBuilder;
@@ -34,7 +35,7 @@ export interface SearchBuilder {
 
 interface MutationBuilder extends PromiseLike<{ data: unknown[] | null; error: Error | null }> {
   eq(column: string, value: unknown): MutationBuilder;
-  ilike(column: string, value: string): MutationBuilder;
+  like(column: string, value: string): MutationBuilder;
 }
 
 export interface LayeredSupabaseClient {
@@ -154,7 +155,7 @@ export function createSupabaseStore(
     if (peerId) {
       builder = builder.eq("peer_id", peerId);
     }
-    builder = builder.ilike("label", escapedPrefixPattern);
+    builder = builder.like("label", escapedPrefixPattern);
     builder = builder.is("superseded_by", null);
     // Postgres "or" handles "expires_at IS NULL OR expires_at >= now" —
     // we send it as a single predicate so PostgREST builds the right
@@ -196,7 +197,7 @@ export function createSupabaseStore(
       .from(config.table)
       .delete()
       .eq("peer_id", peerId)
-      .ilike("label", escapedPrefixPattern);
+      .like("label", escapedPrefixPattern);
     if (error) throw error;
     return Array.isArray(data) ? data.length : 0;
   }
@@ -206,7 +207,7 @@ export function createSupabaseStore(
       .from(config.table)
       .update({ superseded_by: newEntryId })
       .eq("id", entryId)
-      .ilike("label", escapedPrefixPattern);
+      .like("label", escapedPrefixPattern);
     if (error) throw error;
   }
 

@@ -248,4 +248,39 @@ describe("SupabaseStore", () => {
     expect(await agentA.forget("creator")).toBe(1);
     expect(await agentB.read("aug1_b:creator:preference")).not.toBeNull();
   });
+
+  it("keeps differently-cased namespaces isolated in Postgres predicates", async () => {
+    const client = createMockSupabase() as unknown as LayeredSupabaseClient;
+    const upper = createSupabaseStore({
+      client,
+      table: "case_memory",
+      retentionDays: 90,
+      namespace: "Foo",
+    });
+    const lower = createSupabaseStore({
+      client,
+      table: "case_memory",
+      retentionDays: 90,
+      namespace: "foo",
+    });
+    const base = {
+      content: "case sentinel",
+      peerId: "creator",
+      trustLevel: "creator" as const,
+      createdAt: Date.now(),
+      supersededBy: null,
+      retentionClass: "operational" as const,
+      isVerbatim: false,
+      expiresAt: null,
+    };
+    await upper.write({ ...base, id: "upper", label: "Foo:creator:fact" });
+    await lower.write({ ...base, id: "lower", label: "foo:creator:fact" });
+    expect((await upper.search("case sentinel", "creator")).map((row) => row.id)).toEqual([
+      "upper",
+    ]);
+    await lower.supersede("upper", "cross-case");
+    expect((await upper.read("Foo:creator:fact"))?.supersededBy).toBeNull();
+    expect(await lower.forget("creator")).toBe(1);
+    expect(await upper.read("Foo:creator:fact")).not.toBeNull();
+  });
 });

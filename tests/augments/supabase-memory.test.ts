@@ -308,6 +308,40 @@ describe("supabaseMemory", () => {
     expect(results[0]?.content).toContain("visitor A");
   });
 
+  it("filters namespace case exactly before applying the search limit", async () => {
+    const client = createMockSupabase();
+    await client.from("agent_memories").insert([
+      {
+        label: "Foo:visitor:fact",
+        content: "case sentinel upper",
+        peer_id: "visitor",
+        created_at: "2026-04-08T10:00:00Z",
+      },
+      {
+        label: "foo:visitor:fact",
+        content: "case sentinel lower",
+        peer_id: "visitor",
+        created_at: "2026-04-08T11:00:00Z",
+      },
+    ]);
+    const aug = supabaseMemory({
+      namespace: "Foo",
+      scope: "peer",
+      client,
+      table: "agent_memories",
+      mutable: false,
+      origin: "peer-derived",
+      priority: "normal",
+      placement: "preamble",
+      eviction: "drop",
+      searchLimit: 1,
+    });
+    const results = await (aug.memory as NamespaceMemoryProvider).search("case sentinel", {
+      peerId: "visitor",
+    });
+    expect(results.map((entry) => entry.label)).toEqual(["Foo:visitor:fact"]);
+  });
+
   it("preserves authenticated peer IDs exactly instead of normalizing aliases", async () => {
     const client = createMockSupabase();
     await client.from("agent_memories").insert({

@@ -28,6 +28,7 @@ export interface SupabaseLikeClient {
 export interface SupabaseQueryBuilder
   extends PromiseLike<{ data: unknown[]; error: Error | null }> {
   eq(column: string, value: unknown): SupabaseQueryBuilder;
+  like(column: string, value: string): SupabaseQueryBuilder;
   ilike(column: string, value: string): SupabaseQueryBuilder;
   order(column: string, opts?: { ascending?: boolean }): SupabaseQueryBuilder;
   limit(n: number): SupabaseQueryBuilder;
@@ -142,7 +143,7 @@ export function supabaseMemory(opts: SupabaseMemoryOptions): Augment {
     let builder = opts.client
       .from(opts.table)
       .select(selectedColumns)
-      .ilike("label", `${escapeIlike(prefix)}%`);
+      .like("label", `${escapeIlike(prefix)}%`);
     if (expectedPeerId !== undefined) {
       builder = builder.eq(peerColumn, expectedPeerId);
     }

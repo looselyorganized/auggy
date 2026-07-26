@@ -243,12 +243,12 @@ export function reassignSqliteMemoryPeerId(
   oldPeerId: string,
   newPeerId: string,
 ): number {
-  const prefixPattern = namespacePrefixPattern(namespace);
+  const prefix = namespacePrefix(namespace);
   const database = openLayeredMemoryDatabase(dbPath, false);
   try {
     return database.db
-      .prepare("UPDATE entries SET peer_id = ? WHERE peer_id = ? AND label LIKE ? ESCAPE '\\'")
-      .run(newPeerId, oldPeerId, prefixPattern).changes;
+      .prepare("UPDATE entries SET peer_id = ? WHERE peer_id = ? AND instr(label, ?) = 1")
+      .run(newPeerId, oldPeerId, prefix).changes;
   } finally {
     database.close();
   }
@@ -259,24 +259,23 @@ export function deleteSqliteMemoryForPeer(
   namespace: string,
   peerId: string,
 ): number {
-  const prefixPattern = namespacePrefixPattern(namespace);
+  const prefix = namespacePrefix(namespace);
   const database = openLayeredMemoryDatabase(dbPath, false);
   try {
     return database.db
-      .prepare("DELETE FROM entries WHERE peer_id = ? AND label LIKE ? ESCAPE '\\'")
-      .run(peerId, prefixPattern).changes;
+      .prepare("DELETE FROM entries WHERE peer_id = ? AND instr(label, ?) = 1")
+      .run(peerId, prefix).changes;
   } finally {
     database.close();
   }
 }
 
-function namespacePrefixPattern(namespace: string): string {
+function namespacePrefix(namespace: string): string {
   const trimmed = namespace.trim();
   if (!trimmed || trimmed.includes("\0")) {
     throw new Error("layeredMemory store: namespace must be a non-empty string");
   }
-  const prefix = trimmed.endsWith(":") ? trimmed : `${trimmed}:`;
-  return `${prefix.replace(/[%_\\]/g, (character) => `\\${character}`)}%`;
+  return trimmed.endsWith(":") ? trimmed : `${trimmed}:`;
 }
 
 interface Row {
@@ -332,7 +331,7 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   const db = database.db;
   const namespace = config.namespace?.trim();
   const prefix = namespace ? (namespace.endsWith(":") ? namespace : `${namespace}:`) : null;
-  const prefixPattern = namespace ? namespacePrefixPattern(namespace) : null;
+  const prefixFilter = namespace ? namespacePrefix(namespace) : null;
 
   const retentionMs = config.retentionDays * 24 * 60 * 60 * 1000;
 
@@ -344,13 +343,13 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   const insertEventStmt = db.prepare(
     "INSERT INTO event_log (id, entry_id, action, peer_id, timestamp, detail) VALUES (?, ?, ?, ?, ?, ?)",
   );
-  const cleanupStmt = prefixPattern
+  const cleanupStmt = prefixFilter
     ? db.prepare(
         `DELETE FROM entries WHERE id IN (
            SELECT id FROM entries
            WHERE expires_at IS NOT NULL
              AND expires_at < ?
-             AND label LIKE ? ESCAPE '\\'
+             AND instr(label, ?) = 1
            LIMIT ?
          )`,
       )
@@ -413,8 +412,8 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     // the small constant DELETE cost; 49-in-50 writes pay nothing.
     if (Math.random() * CLEANUP_SAMPLE_RATE < 1) {
       db.transaction(() => {
-        const result = prefixPattern
-          ? cleanupStmt.run(Date.now(), prefixPattern, CLEANUP_BATCH_SIZE)
+        const result = prefixFilter
+          ? cleanupStmt.run(Date.now(), prefixFilter, CLEANUP_BATCH_SIZE)
           : cleanupStmt.run(Date.now(), CLEANUP_BATCH_SIZE);
         if (result.changes > 0) {
           logEvent("(batch)", "expire-sweep", null, { swept: result.changes });
@@ -430,19 +429,19 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     const pattern = `%${escaped}%`;
     const now = Date.now();
 
-    if (peerId && prefixPattern) {
+    if (peerId && prefixFilter) {
       const rows = db
         .prepare<Row, [string, string, string, number, number]>(
           `SELECT * FROM entries
            WHERE peer_id = ?
-             AND label LIKE ? ESCAPE '\\'
+             AND instr(label, ?) = 1
              AND content LIKE ? ESCAPE '\\'
              AND superseded_by IS NULL
              AND (expires_at IS NULL OR expires_at >= ?)
            ORDER BY created_at DESC
            LIMIT ?`,
         )
-        .all(peerId, prefixPattern, pattern, now, limit);
+        .all(peerId, prefixFilter, pattern, now, limit);
       return rows.map(rowToEntry);
     }
 
@@ -461,18 +460,18 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
       return rows.map(rowToEntry);
     }
 
-    if (prefixPattern) {
+    if (prefixFilter) {
       const rows = db
         .prepare<Row, [string, string, number, number]>(
           `SELECT * FROM entries
-           WHERE label LIKE ? ESCAPE '\\'
+           WHERE instr(label, ?) = 1
              AND content LIKE ? ESCAPE '\\'
              AND superseded_by IS NULL
              AND (expires_at IS NULL OR expires_at >= ?)
            ORDER BY created_at DESC
            LIMIT ?`,
         )
-        .all(prefixPattern, pattern, now, limit);
+        .all(prefixFilter, pattern, now, limit);
       return rows.map(rowToEntry);
     }
 
@@ -500,12 +499,12 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   }
 
   async function list(peerId?: string): Promise<string[]> {
-    if (peerId && prefixPattern) {
+    if (peerId && prefixFilter) {
       const rows = db
         .prepare<{ label: string }, [string, string]>(
-          "SELECT DISTINCT label FROM entries WHERE peer_id = ? AND label LIKE ? ESCAPE '\\' AND superseded_by IS NULL ORDER BY label",
+          "SELECT DISTINCT label FROM entries WHERE peer_id = ? AND instr(label, ?) = 1 AND superseded_by IS NULL ORDER BY label",
         )
-        .all(peerId, prefixPattern);
+        .all(peerId, prefixFilter);
       return rows.map((r) => r.label);
     }
     if (peerId) {
@@ -516,12 +515,12 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
         .all(peerId);
       return rows.map((r) => r.label);
     }
-    if (prefixPattern) {
+    if (prefixFilter) {
       const rows = db
         .prepare<{ label: string }, [string]>(
-          "SELECT DISTINCT label FROM entries WHERE label LIKE ? ESCAPE '\\' AND superseded_by IS NULL ORDER BY label",
+          "SELECT DISTINCT label FROM entries WHERE instr(label, ?) = 1 AND superseded_by IS NULL ORDER BY label",
         )
-        .all(prefixPattern);
+        .all(prefixFilter);
       return rows.map((r) => r.label);
     }
     const rows = db
@@ -534,10 +533,10 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
 
   async function forget(peerId: string): Promise<number> {
     return db.transaction(() => {
-      const result = prefixPattern
+      const result = prefixFilter
         ? db
-            .prepare("DELETE FROM entries WHERE peer_id = ? AND label LIKE ? ESCAPE '\\'")
-            .run(peerId, prefixPattern)
+            .prepare("DELETE FROM entries WHERE peer_id = ? AND instr(label, ?) = 1")
+            .run(peerId, prefixFilter)
         : db.prepare("DELETE FROM entries WHERE peer_id = ?").run(peerId);
       logEvent("(batch)", "forget", peerId, { deleted: result.changes });
       return result.changes;
@@ -546,10 +545,12 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
 
   async function supersede(entryId: string, newEntryId: string): Promise<void> {
     db.transaction(() => {
-      if (prefixPattern) {
-        db.prepare(
-          "UPDATE entries SET superseded_by = ? WHERE id = ? AND label LIKE ? ESCAPE '\\'",
-        ).run(newEntryId, entryId, prefixPattern);
+      if (prefixFilter) {
+        db.prepare("UPDATE entries SET superseded_by = ? WHERE id = ? AND instr(label, ?) = 1").run(
+          newEntryId,
+          entryId,
+          prefixFilter,
+        );
       } else {
         db.prepare("UPDATE entries SET superseded_by = ? WHERE id = ?").run(newEntryId, entryId);
       }
@@ -558,12 +559,12 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   }
 
   async function cleanup(): Promise<number> {
-    const result = prefixPattern
+    const result = prefixFilter
       ? db
           .prepare(
-            "DELETE FROM entries WHERE expires_at IS NOT NULL AND expires_at < ? AND label LIKE ? ESCAPE '\\'",
+            "DELETE FROM entries WHERE expires_at IS NOT NULL AND expires_at < ? AND instr(label, ?) = 1",
           )
-          .run(Date.now(), prefixPattern)
+          .run(Date.now(), prefixFilter)
       : db
           .prepare("DELETE FROM entries WHERE expires_at IS NOT NULL AND expires_at < ?")
           .run(Date.now());
@@ -632,18 +633,18 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     const limit = opts.limit ?? 50;
     const now = Date.now();
     if (opts.peerId) {
-      if (prefixPattern) {
+      if (prefixFilter) {
         const rows = db
           .prepare<Row, [string, string, number, number]>(
             `SELECT * FROM entries
              WHERE peer_id = ?
-               AND label LIKE ? ESCAPE '\\'
+               AND instr(label, ?) = 1
                AND superseded_by IS NULL
                AND (expires_at IS NULL OR expires_at > ?)
              ORDER BY created_at DESC
              LIMIT ?`,
           )
-          .all(opts.peerId, prefixPattern, now, limit);
+          .all(opts.peerId, prefixFilter, now, limit);
         return rows.map(rowToEntry);
       }
       const rows = db
@@ -658,17 +659,17 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
         .all(opts.peerId, now, limit);
       return rows.map(rowToEntry);
     }
-    if (prefixPattern) {
+    if (prefixFilter) {
       const rows = db
         .prepare<Row, [string, number, number]>(
           `SELECT * FROM entries
-           WHERE label LIKE ? ESCAPE '\\'
+           WHERE instr(label, ?) = 1
              AND superseded_by IS NULL
              AND (expires_at IS NULL OR expires_at > ?)
            ORDER BY created_at DESC
            LIMIT ?`,
         )
-        .all(prefixPattern, now, limit);
+        .all(prefixFilter, now, limit);
       return rows.map(rowToEntry);
     }
     const rows = db
@@ -688,17 +689,17 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     lesson: number;
     total: number;
   }> {
-    const rows = prefixPattern
+    const rows = prefixFilter
       ? db
           .prepare<{ retention_class: string; n: number }, [string, number]>(
             `SELECT retention_class, COUNT(*) AS n
              FROM entries
-             WHERE label LIKE ? ESCAPE '\\'
+             WHERE instr(label, ?) = 1
                AND superseded_by IS NULL
                AND (expires_at IS NULL OR expires_at > ?)
              GROUP BY retention_class`,
           )
-          .all(prefixPattern, Date.now())
+          .all(prefixFilter, Date.now())
       : db
           .prepare<{ retention_class: string; n: number }, [number]>(
             `SELECT retention_class, COUNT(*) AS n
