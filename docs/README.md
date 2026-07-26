@@ -22,6 +22,7 @@ For installation and first-run instructions, start with the root
 - [Provider Resilience](./29-provider-resilience.md)
 - [Single-Replica Runtime Load Evidence](./30-single-replica-load-evidence.md)
 - [Compatibility, Migrations, and Rollback](./31-compatibility-migrations-and-rollback.md)
+- [Independent Agents on One Platform](./32-independent-agent-isolation.md)
 - [Feature Status](./FEATURES.md)
 
 ## Mental Model
@@ -97,6 +98,7 @@ Use this order when documentation disagrees:
 | [29 Provider Resilience](./29-provider-resilience.md) | Model deadlines, cancellation, no-retry policy, and brownout isolation |
 | [30 Single-Replica Runtime Load Evidence](./30-single-replica-load-evidence.md) | Reproducible real-runtime burst, fault, drain, restart, and resource evidence |
 | [31 Compatibility, Migrations, and Rollback](./31-compatibility-migrations-and-rollback.md) | Public artifact boundaries, supported stored-state readers, upgrade rehearsal, and complete rollback |
+| [32 Independent Agents on One Platform](./32-independent-agent-isolation.md) | Immutable identity, shared-host resource fencing, deployment routing, and replica limits |
 
 ## Common Add-Ons
 

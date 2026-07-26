@@ -22,6 +22,7 @@ reinterpreted, or accepted merely because an object has a familiar name.
 | Scheduler recovery | Package API plus store-owned incident versions | Process-local `recoverThread()` is valid only after every durable incident authority has been reconciled. AgentMail, Telegram, notify, and console recovery use their own versioned, compare-and-set records. |
 | Runtime inventory and bundle | Inventory v1, bundle v1, volume identity v1, restore fence v1 | Readers require exact supported versions, configuration shape, agent identity, replay-critical mapping, paths, modes, and hashes. Unknown/newer formats fail before restore or startup. |
 | PostgreSQL coordination preview | Checksum ledger plus exact catalog validation in the `public` schema | Provisioning is explicit. Every run revalidates owned tables, columns, types, nullability, defaults, sequence ownership, indexes, and checks, including when the ledger already says the migration ran. The runtime still refuses replica mode. |
+| Logical-agent identity and local lifecycle | Immutable `agent.yaml` `aug1_` id | State and authority namespaces, local process manifests, launchd labels, and owned runtime paths bind to the immutable id. Display names are non-authoritative aliases and ambiguous aliases fail closed. |
 
 Adding a field to an operational or route artifact is not permission for a
 consumer to accept an unknown schema version. Conversely, the unversioned
@@ -111,6 +112,22 @@ Before changing the runtime package or image:
 
 Keep the original bundle immutable. Migration tests demonstrate format
 compatibility; they do not replace a backup or downstream reconciliation.
+
+### Identity-isolation upgrade
+
+The immutable-agent isolation release is a stopped boundary change. Stop old
+name-keyed local processes before upgrading; the new runtime refuses to overlap
+one because the old process has no resource leases. Confirm `AUGGY_AGENT_ID`
+equals `agent.yaml` `id` and issue new visitor tokens after startup because old
+mutable-name audiences are not accepted.
+
+Layered-memory namespaces are now prefixed by the immutable agent id. Existing
+shared labels are intentionally not read through a fallback because doing so
+would restore cross-agent access. Retaining old memory requires an offline,
+reviewed export/relabel/import with a complete backup. Telegram is different:
+its durable replay namespace remains the stable provider bot id so an identity
+upgrade does not hide deduplication history. See
+[Independent Agents on One Platform](./32-independent-agent-isolation.md).
 
 ## Rollback
 

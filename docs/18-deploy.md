@@ -256,8 +256,16 @@ grader in the layered-memory eval suite catches data loss empirically.
 
 Keep each deployed Auggy service at **one Railway replica** while it uses these
 SQLite stores. They assume one process and one writer; attaching multiple
-replicas to the same volume is not a supported scaling strategy. Use a shared
-database implementation before enabling horizontal replicas.
+replicas to the same volume is not a supported scaling strategy. A shared
+database alone is also insufficient: horizontal replicas need shared fencing,
+replay, budget, history, session, delivery, drain, and migration contracts.
+
+Several different logical Auggys may run as separate Railway services. Give
+each service its own `agent.yaml` identity, secrets, volume, public route, and
+exclusive inbound provider identities. Each service remains at one replica;
+using port 8080 in every service is safe because their network namespaces are
+separate. See [Independent Agents on One Platform](./32-independent-agent-isolation.md)
+for the load-balancer and isolation boundary.
 
 The volume survives container replacement, but it is not an independent
 backup. Establish a separate encrypted backup policy for state you cannot

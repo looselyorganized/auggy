@@ -525,3 +525,37 @@ Group verification:
   notice; and
 - full release smoke remains a final PR gate because its external
   `bun audit --json` step could not be approved in the current sandbox policy.
+
+### Group 7 — implemented on branch
+
+The CLI now treats the server-minted `agent.yaml` id as the logical-agent
+isolation root. Shared Layered Memory and Supabase stores apply the immutable
+agent namespace in the store query itself before result limits and enforce it
+on exact reads, writes, supersession, cleanup, and deletion. Visitor audiences,
+Link cards, runtime volumes, local mutable paths, PID manifests, and launchd
+services bind to the same immutable id instead of a mutable display name.
+
+Local startup atomically claims the immutable agent id, listener ports,
+Telegram bot identity, and inbound AgentMail inbox before transports start.
+Claims are private, nonce-owned, secret-free, stale-process recoverable, and
+released only by their exact owner. Display-name lifecycle aliases are allowed
+only when unambiguous, named configuration resolution cannot fall through to a
+different current-working-directory agent, and a live legacy name-keyed process
+blocks the identity-keyed replacement until it is stopped.
+
+All Auggy-owned local state is contained below the selected agent directory or
+the admitted Railway runtime root. Telegram replay keeps its provider-bot
+namespace so upgrade cannot hide prior deduplication claims; the agent id owns
+the replay database path and the local bot lease instead. Independent agents on
+separate services may share an internal port number, but each requires a
+dedicated config id, process, secrets, volume, route, and external provider
+identity.
+
+Compatibility review records two intentional stopped-upgrade boundaries:
+visitor tokens using old display-name audiences must be reissued, and existing
+shared layered-memory labels require an offline operator-reviewed
+export/relabel/import rather than a fail-open fallback. Host claims cannot
+arbitrate across machines. Mutually untrusted agents require different OS or
+container identities because `bash` and configured filesystem mounts are
+capabilities, not a sandbox. Multiple replicas for one logical Auggy remain
+unsupported.
