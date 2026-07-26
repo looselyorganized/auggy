@@ -36,4 +36,15 @@ describe("owned state path identity", () => {
       compareOwnedStatePaths(join(root, "m\u00e9moire.db"), join(root, "me\u0301moire.db")),
     ).toBe("ambiguous");
   });
+
+  test("fails closed for uncreated full-Unicode case-fold aliases", () => {
+    const root = mkdtempSync(join(tmpdir(), "owned-state-casefold-ambiguous-"));
+    roots.push(root);
+    expect(
+      compareOwnedStatePaths(join(root, "memory-\u03c3.db"), join(root, "memory-\u03c2.db")),
+    ).toBe("ambiguous");
+    expect(compareOwnedStatePaths(join(root, "memory-\u00df.db"), join(root, "memory-SS.db"))).toBe(
+      "ambiguous",
+    );
+  });
 });

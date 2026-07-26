@@ -3,6 +3,13 @@ import { isAbsolute, join, relative, resolve, sep } from "node:path";
 import { openPinnedChildDirectory, pinDirectory } from "../lib/anchored-files";
 import { registerOwnedSqlitePath } from "../lib/sqlite";
 
+const PORTABLE_PATH_COLLATOR = new Intl.Collator("und", {
+  usage: "search",
+  sensitivity: "base",
+  ignorePunctuation: false,
+  numeric: false,
+});
+
 function isContained(root: string, target: string): boolean {
   const fromRoot = relative(root, target);
   return (
@@ -34,8 +41,7 @@ export function compareOwnedStatePaths(first: string, second: string): OwnedStat
   // Before creation, case-only aliases cannot be proven distinct across the
   // supported filesystems. Reject the ambiguity instead of choosing the wrong
   // authorization namespace on case-insensitive hosts.
-  const portableAliasKey = (path: string) => path.normalize("NFD").toLocaleLowerCase("en-US");
-  if (portableAliasKey(first) === portableAliasKey(second)) {
+  if (PORTABLE_PATH_COLLATOR.compare(first.normalize("NFD"), second.normalize("NFD")) === 0) {
     return "ambiguous";
   }
   return "distinct";

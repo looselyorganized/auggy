@@ -163,6 +163,7 @@ export function createSqliteVisitorAuthStore(
   let touchVerifiedStmt: Statement | null = null;
   let listVerifiedStmt: Statement | null = null;
   let revokeStmt: Statement | null = null;
+  let revokeCurrentStmt: Statement | null = null;
   let revokeReadStmt: Statement | null = null;
   let revokeCurrentReadStmt: Statement | null = null;
   let unrevokeAndRotateStmt: Statement | null = null;
@@ -172,6 +173,7 @@ export function createSqliteVisitorAuthStore(
   let findByIdStmt: Statement | null = null;
   let canPromoteThreadStmt: Statement | null = null;
   let addRevokedStmt: Statement | null = null;
+  let advanceRevokedStmt: Statement | null = null;
   let isRevokedIdStmt: Statement | null = null;
   let listRevokedByEmailStmt: Statement | null = null;
 
@@ -235,6 +237,15 @@ export function createSqliteVisitorAuthStore(
          SET revoked = 1, revoked_at = ?, revoked_reason = ?
        WHERE email = ? AND revoked = 0`,
     );
+    revokeCurrentStmt = db.prepare(
+      `UPDATE verified_visitors
+         SET revoked = 1,
+             revoked_reason = CASE
+               WHEN revoked_at IS NULL OR ? >= revoked_at THEN ? ELSE revoked_reason END,
+             revoked_at = CASE
+               WHEN revoked_at IS NULL OR ? > revoked_at THEN ? ELSE revoked_at END
+       WHERE email = ?`,
+    );
     // Filter `revoked = 0` so a second revoke call returns null instead of
     // re-asserting success on an already-revoked row (callers test
     // `revokeByEmail(...) !== null` as the "did this revoke happen?" signal).
@@ -281,6 +292,16 @@ export function createSqliteVisitorAuthStore(
     );
     addRevokedStmt = db.prepare(
       `INSERT OR IGNORE INTO revoked_visitor_ids (visitor_id, email, revoked_at, revoked_reason) VALUES (?, ?, ?, ?)`,
+    );
+    advanceRevokedStmt = db.prepare(
+      `INSERT INTO revoked_visitor_ids
+        (visitor_id, email, revoked_at, revoked_reason) VALUES (?, ?, ?, ?)
+       ON CONFLICT(visitor_id) DO UPDATE SET
+         revoked_reason = CASE
+           WHEN excluded.revoked_at >= revoked_visitor_ids.revoked_at
+           THEN excluded.revoked_reason ELSE revoked_visitor_ids.revoked_reason END,
+         revoked_at = MAX(revoked_visitor_ids.revoked_at, excluded.revoked_at)
+       WHERE revoked_visitor_ids.email = excluded.email`,
     );
     isRevokedIdStmt = db.prepare(`SELECT 1 FROM revoked_visitor_ids WHERE visitor_id = ?`);
     listRevokedByEmailStmt = db.prepare(
@@ -418,9 +439,12 @@ export function createSqliteVisitorAuthStore(
           | { visitor_id: string; revoked: number }
           | undefined;
         if (!row) return;
-        revokeStmt!.run(now, reason, email);
+        revokeCurrentStmt!.run(now, reason, now, now, email);
         invalidateEmailStmt!.run(now, email);
-        addRevokedStmt!.run(row.visitor_id, email, now, reason);
+        const denylist = advanceRevokedStmt!.run(row.visitor_id, email, now, reason);
+        if (denylist.changes !== 1) {
+          throw new Error("visitorAuth store: revoked visitor id belongs to another email");
+        }
         result = { visitorId: row.visitor_id, wasRevoked: row.revoked !== 0 };
       }).immediate();
       return result;

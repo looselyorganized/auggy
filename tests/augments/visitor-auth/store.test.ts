@@ -485,6 +485,38 @@ describe("createSqliteVisitorAuthStore", () => {
       // Second call: row already revoked → null, not a false-positive visitorId.
       expect(store.revokeByEmail("double@x", "operator", now + 2000)).toBeNull();
     });
+
+    test("an operator revocation retry advances the identity epoch", () => {
+      const now = 1_700_000_000_000;
+      store.recordVerifiedVisitor({
+        visitorId: "vis_retry_epoch",
+        email: "retry-epoch@x",
+        verifiedAt: now,
+        lastSeenAt: now,
+        reverifyDueAt: now + 86_400_000,
+        revoked: false,
+        revokedAt: null,
+        revokedReason: null,
+      });
+      expect(store.revokeCurrentByEmail("retry-epoch@x", "first", now + 100)).toEqual({
+        visitorId: "vis_retry_epoch",
+        wasRevoked: false,
+      });
+      expect(store.revokeCurrentByEmail("retry-epoch@x", "retry", now + 300)).toEqual({
+        visitorId: "vis_retry_epoch",
+        wasRevoked: true,
+      });
+      expect(store.findVerifiedByEmail("retry-epoch@x")?.revokedAt).toBe(now + 300);
+      expect(
+        store.unrevokeAndRotate(
+          "retry-epoch@x",
+          "vis_must_not_rotate",
+          now + 400,
+          now + 86_400_000,
+          now + 200,
+        ),
+      ).toBeNull();
+    });
   });
 
   describe("first-verify notification ledger", () => {
