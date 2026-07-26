@@ -24,7 +24,10 @@ import {
   closeActiveLaunchdGeneration,
   closeLaunchdGeneration,
   formatAgentAlreadyRunningMessage,
+  inspectRuntimeProcess,
+  readPidManifest,
   readLivePidManifest,
+  removePidManifestIfOwned,
 } from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
 
@@ -221,6 +224,14 @@ export async function runStart(name: string | undefined, opts: StartOptions): Pr
         );
       }
       try {
+        await reconcileFailedLaunchdRuntime(config.id, launchGeneration, processOptions, opts);
+      } catch (reconciliationError) {
+        throw new Error(
+          `Launchd start failed and rollback could not verify that the admitted runtime exited. Its artifacts, manifest, and claims were preserved for operator recovery.`,
+          { cause: new AggregateError([error, reconciliationError]) },
+        );
+      }
+      try {
         unlinkIfPresent(paths.installPath, unlinkFile);
         unlinkIfPresent(paths.storePath, unlinkFile);
       } catch (cleanupError) {
@@ -233,4 +244,44 @@ export async function runStart(name: string | undefined, opts: StartOptions): Pr
   } finally {
     releaseLifecycle();
   }
+}
+
+async function reconcileFailedLaunchdRuntime(
+  agentId: string,
+  launchGeneration: string,
+  processOptions: {
+    auggyDir?: string;
+    processIdentityForPid?: (pid: number) => string | null;
+  },
+  opts: StartOptions,
+): Promise<void> {
+  const readCurrent = () => {
+    const current = readPidManifest(agentId, processOptions);
+    if (!current) return null;
+    if (
+      current.agentId !== agentId ||
+      current.mode !== "launchd" ||
+      current.launchGeneration !== launchGeneration
+    ) {
+      throw new Error("Runtime ownership changed during launchd start rollback");
+    }
+    return current;
+  };
+
+  let waited = 0;
+  let current = readCurrent();
+  while (current && inspectRuntimeProcess(current, processOptions) === "alive" && waited < 5000) {
+    await (opts.sleep ?? Bun.sleep)(250);
+    waited += 250;
+    current = readCurrent();
+  }
+
+  current = readCurrent();
+  const status = current ? inspectRuntimeProcess(current, processOptions) : "gone";
+  if (status === "alive" || status === "unverifiable") {
+    throw new Error(
+      `Launchd generation ${launchGeneration} remains ${status} after rollback unload`,
+    );
+  }
+  if (current) removePidManifestIfOwned(current, processOptions);
 }

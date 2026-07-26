@@ -162,6 +162,50 @@ describe("runStart launchd generation fencing", () => {
     expect(existsSync(opts.paths.storePath)).toBe(false);
   });
 
+  test("preserves recovery state when rollback cannot stop an admitted child", async () => {
+    const child = Bun.spawn([process.execPath, "-e", "setInterval(() => {}, 1000)"], {
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    const opts = options();
+    let admitted: PidManifest | undefined;
+    try {
+      await expect(
+        runStart("launch-test", {
+          ...opts,
+          maxWaitMs: 0,
+          loadLaunchd: async () => {
+            admitted = {
+              pid: child.pid,
+              name: "launch-test",
+              agentId: AGENT_ID,
+              claimNonce: "55555555-5555-4555-8555-555555555555",
+              processIdentity: PROCESS_IDENTITY,
+              resourceClaims: [`agent-id:${AGENT_ID}`],
+              resourceClaimStore: "sqlite-v1",
+              launchGeneration: generationFromPlist(opts.paths.storePath),
+              port: null,
+              configPath,
+              agentDir: root,
+              startedAt: new Date().toISOString(),
+              mode: "launchd",
+            };
+            expect(claimRuntimePidManifest(admitted, options())).toBe(true);
+          },
+          unloadLaunchd: async () => {},
+        }),
+      ).rejects.toThrow(/could not verify.*runtime exited.*artifacts.*preserved/i);
+
+      expect(existsSync(opts.paths.installPath)).toBe(true);
+      expect(existsSync(opts.paths.storePath)).toBe(true);
+      expect(readPidManifest(AGENT_ID, { auggyDir })?.claimNonce).toBe(admitted?.claimNonce);
+    } finally {
+      child.kill("SIGKILL");
+      await child.exited;
+      if (admitted) releaseRuntimePidManifest(admitted, true, { auggyDir });
+    }
+  });
+
   test("does not admit an unrelated foreground runtime during launchd installation", async () => {
     const opts = options();
     let wrongManifest: PidManifest | undefined;
