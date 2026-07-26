@@ -1696,6 +1696,12 @@ export interface AgentInjectOptions {
   signal?: AbortSignal;
   executionContext?: ExecutionContextV1;
   onEvent?: KernelEventHandler;
+  /**
+   * Trusted pre-execution hook. It runs after scheduler admission and before
+   * model or tool execution. A rejected hook prevents the turn from starting.
+   * Public transports do not receive this embedding surface.
+   */
+  onExecutionStart?: () => void | Promise<void>;
 }
 
 // === Notify augment ===

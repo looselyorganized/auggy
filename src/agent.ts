@@ -677,7 +677,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       signal?: AbortSignal;
       historyPersistence?: ThreadHistoryPersistence;
       beforeExecute?: () => Promise<void>;
-      onExecutionStart?: () => void;
+      onExecutionStart?: () => void | Promise<void>;
       executionContext?: ExecutionContextV1;
     },
     sourcePolicy: SchedulerSourcePolicy,
@@ -708,7 +708,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
           options.executionContext,
         );
       }
-      options.onExecutionStart?.();
+      await options.onExecutionStart?.();
       lifecycle.resetIdleTimer();
       // Repair a stale persistence memo before pinning creates a replacement
       // manager for this ID. The pin then protects the exact manager through
@@ -965,6 +965,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
             source: "inject",
             signal: cancellation.signal,
             onEvent: options?.onEvent,
+            onExecutionStart: options?.onExecutionStart,
             executionContext,
           },
           injectSource,

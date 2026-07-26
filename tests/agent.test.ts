@@ -342,6 +342,81 @@ describe("defineAgent", () => {
     await agent.stop();
   });
 
+  it("awaits trusted execution-start persistence before model admission", async () => {
+    let persistenceCommitted = false;
+    let contextObservedCommit = false;
+    const agent = defineAgent(
+      {
+        name: "execution-start-hook-agent",
+        model: "mock",
+        augments: [
+          {
+            name: "execution-start-probe",
+            context: async () => {
+              contextObservedCommit = persistenceCommitted;
+              return [];
+            },
+          },
+        ],
+      },
+      createMockModel({ response: "ok" }),
+    );
+    await agent.start();
+    try {
+      await agent.inject(
+        {
+          type: "internal",
+          turnId: "execution-start-turn",
+          threadId: "execution-start-thread",
+          timestamp: Date.now(),
+          source: "trusted-test",
+          payload: { sourceAugment: "trusted-test", peer: null, timestamp: Date.now(), parts: [] },
+        },
+        {
+          onExecutionStart: async () => {
+            await Promise.resolve();
+            persistenceCommitted = true;
+          },
+        },
+      );
+      expect(contextObservedCommit).toBe(true);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("does not admit model execution when the trusted execution-start hook rejects", async () => {
+    const model = createMockModel({ response: "must-not-run" });
+    const agent = defineAgent(
+      { name: "execution-start-rejection-agent", model: "mock", augments: [] },
+      model,
+    );
+    await agent.start();
+    try {
+      await expect(
+        agent.inject(
+          {
+            type: "internal",
+            turnId: "execution-start-rejection-turn",
+            threadId: "execution-start-rejection-thread",
+            timestamp: Date.now(),
+            source: "trusted-test",
+            payload: {
+              sourceAugment: "trusted-test",
+              peer: null,
+              timestamp: Date.now(),
+              parts: [],
+            },
+          },
+          { onExecutionStart: async () => Promise.reject(new Error("durable-start-fenced")) },
+        ),
+      ).rejects.toThrow("durable-start-fenced");
+      expect(model.calls).toHaveLength(0);
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("derives stable downstream operation identities without exposing trusted hashes", () => {
     const base = {
       version: 1 as const,
