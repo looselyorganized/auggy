@@ -146,7 +146,9 @@ function parseDurableJobsSettings(value: unknown, errors: string[]): DurableJobs
   const numericConstraints = {
     leaseDurationMs: { minimum: 1_000, maximum: 60 * 60_000 },
     heartbeatIntervalMs: { minimum: 100, maximum: 20 * 60_000 },
-    claimPollMs: { minimum: 10, maximum: 60_000 },
+    // The durable worker refuses sub-100ms polling to prevent an invalid but
+    // accepted config from creating a tight SQLite polling loop at startup.
+    claimPollMs: { minimum: 100, maximum: 60_000 },
     turnTimeoutMs: { minimum: 1_000, maximum: 15 * 60_000 },
     maxAttempts: { minimum: 1, maximum: 10 },
     maxTotalRecords: { minimum: 1, maximum: 1_000_000 },

@@ -318,6 +318,7 @@ describe("parseConfig", () => {
       { enabled: true, dbPath: ":memory:" },
       { enabled: true, unknown: 1 },
       { enabled: true, heartbeatIntervalMs: 20_000, leaseDurationMs: 30_000 },
+      { enabled: true, claimPollMs: 99 },
       { enabled: true, maxTotalRecords: 10, maxQueuedRecords: 11 },
       { enabled: true, turnTimeoutMs: 900_001 },
       { enabled: true, terminalRetentionMs: 172_800_000, auditRetentionMs: 86_400_000 },
