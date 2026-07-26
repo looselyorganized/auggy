@@ -623,6 +623,15 @@ manifest publication, restart explicitly passes its owned fence to the
 successor, and stop rejects an unexpected replacement generation instead of
 discarding the owner-check result.
 
+One mixed-mode follow-up reproduction then proved an armed launchd generation
+could survive a foreground stop and republish after the successful result.
+Foreground admission now rejects active launchd state both under the lifecycle
+lease and inside its atomic claim transaction. Stop detects pre-existing mixed
+state, closes the generation before the dev process can release its claims,
+unloads its job and artifacts, and only then completes foreground shutdown.
+The closed generation is covered by a regression that attempts delayed
+launchd publication after the stop result.
+
 The final dependency gate also discovered the newly published
 `GHSA-qwww-vcr4-c8h2` against React Router 7.18.1. The console migrated from the
 removed `react-router-dom` compatibility package to patched `react-router`

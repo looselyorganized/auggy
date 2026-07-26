@@ -95,6 +95,14 @@ rejects any unexpected replacement manifest rather than reporting success.
 The runtime does not hold this lease after admission; normal operator controls
 remain available for the process lifetime.
 
+Foreground admission also rejects an active launchd installation under that
+lease and again inside the atomic resource-claim transaction. This prevents a
+manual dev process from coexisting with an armed KeepAlive generation during a
+launchd throttle gap. If an upgrade encounters pre-existing mixed state,
+`stop <id>` closes the launchd generation, unloads and removes its control
+artifacts, and only then stops the foreground manifest. Failure to unload is
+visible and the generation remains closed for recovery.
+
 These claims are local to one OS user's registry, not the whole host. Separate
 service accounts, containers, hosts, Railway services, Kubernetes, Nomad, and
 other schedulers must prevent the same exclusive inbound identity from being
