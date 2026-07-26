@@ -54,10 +54,17 @@ const SCHEMA_STATEMENTS = [
     detail    TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS idx_events_entry ON event_log(entry_id)`,
+  `CREATE TABLE IF NOT EXISTS peer_tombstones (
+    namespace_key TEXT NOT NULL,
+    peer_id       TEXT NOT NULL,
+    reason        TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    PRIMARY KEY (namespace_key, peer_id)
+  )`,
 ];
 
 export const LAYERED_MEMORY_APPLICATION_ID = 0x4c4d454d; // "LMEM"
-export const LAYERED_MEMORY_SCHEMA_VERSION = 2;
+export const LAYERED_MEMORY_SCHEMA_VERSION = 3;
 const EXPECTED_OBJECT_SQL = new Map(
   SCHEMA_STATEMENTS.slice(1).map((sql) => {
     const match = sql.match(/(?:TABLE|INDEX)\s+IF\s+NOT\s+EXISTS\s+([^\s(]+)/i);
@@ -145,6 +152,12 @@ function hasExpectedNonEntryObjects(
     return false;
   }
   if (!objects.some((object) => object.name === "event_log" && object.type === "table")) {
+    return false;
+  }
+  if (
+    !legacy &&
+    !objects.some((object) => object.name === "peer_tombstones" && object.type === "table")
+  ) {
     return false;
   }
   return objects.every((object) => {
@@ -258,8 +271,25 @@ export function reassignSqliteMemoryPeerId(
   const database = openLayeredMemoryDatabase(dbPath, false);
   try {
     return database.db
-      .prepare("UPDATE entries SET peer_id = ? WHERE peer_id = ? AND namespace_key = ?")
-      .run(newPeerId, oldPeerId, owner.key).changes;
+      .transaction(() => {
+        const destinationTombstone = database.db
+          .query<{ present: number }, [string, string]>(
+            "SELECT 1 AS present FROM peer_tombstones WHERE namespace_key = ? AND peer_id = ?",
+          )
+          .get(owner.key, newPeerId);
+        if (destinationTombstone) {
+          throw new Error("layeredMemory store: destination peer is permanently tombstoned");
+        }
+        database.db
+          .query(
+            "INSERT INTO peer_tombstones (namespace_key, peer_id, reason, created_at) VALUES (?, ?, 'peer-id-migrated', ?) ON CONFLICT(namespace_key, peer_id) DO NOTHING",
+          )
+          .run(owner.key, oldPeerId, Date.now());
+        return database.db
+          .prepare("UPDATE entries SET peer_id = ? WHERE peer_id = ? AND namespace_key = ?")
+          .run(newPeerId, oldPeerId, owner.key).changes;
+      })
+      .immediate();
   } finally {
     database.close();
   }
@@ -274,8 +304,17 @@ export function deleteSqliteMemoryForPeer(
   const database = openLayeredMemoryDatabase(dbPath, false);
   try {
     return database.db
-      .prepare("DELETE FROM entries WHERE peer_id = ? AND namespace_key = ?")
-      .run(peerId, owner.key).changes;
+      .transaction(() => {
+        database.db
+          .query(
+            "INSERT INTO peer_tombstones (namespace_key, peer_id, reason, created_at) VALUES (?, ?, 'visitor-revoked', ?) ON CONFLICT(namespace_key, peer_id) DO NOTHING",
+          )
+          .run(owner.key, peerId, Date.now());
+        return database.db
+          .prepare("DELETE FROM entries WHERE peer_id = ? AND namespace_key = ?")
+          .run(peerId, owner.key).changes;
+      })
+      .immediate();
   } finally {
     database.close();
   }
@@ -350,6 +389,9 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   const insertEventStmt = db.prepare(
     "INSERT INTO event_log (id, entry_id, action, peer_id, timestamp, detail) VALUES (?, ?, ?, ?, ?, ?)",
   );
+  const isPeerTombstonedStmt = db.query<{ present: number }, [string, string]>(
+    "SELECT 1 AS present FROM peer_tombstones WHERE namespace_key = ? AND peer_id = ?",
+  );
   const cleanupStmt = namespaceKey
     ? db.prepare(
         `DELETE FROM entries WHERE id IN (
@@ -369,10 +411,15 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   // writeAndLog runs the entry insert and audit insert atomically. If
   // either fails, both roll back — callers either see a successful
   // write that's fully recorded, or an error and zero side effects.
-  const writeAndLog = db.transaction((entryParams: SqlBinding[], eventParams: SqlBinding[]) => {
-    insertEntryStmt.run(...entryParams);
-    insertEventStmt.run(...eventParams);
-  });
+  const writeAndLog = db.transaction(
+    (entryParams: SqlBinding[], eventParams: SqlBinding[], peerId: string | null) => {
+      if (namespaceKey && peerId && isPeerTombstonedStmt.get(namespaceKey, peerId)) {
+        throw new Error("layeredMemory store: peer identity is permanently tombstoned");
+      }
+      insertEntryStmt.run(...entryParams);
+      insertEventStmt.run(...eventParams);
+    },
+  );
 
   async function initialize(): Promise<void> {
     // Schema is now created at construction time. Kept as a no-op for
@@ -413,6 +460,7 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
         expiresAt,
       ],
       [randomUUID(), id, "write", input.peerId, Date.now(), null],
+      input.peerId,
     );
 
     // Sampled, bounded cleanup. Outside the transaction so a partial
@@ -614,6 +662,9 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     const createdAt = Date.now();
     const expiresAt = createdAt + retentionMs;
     db.transaction(() => {
+      if (namespaceKey && isPeerTombstonedStmt.get(namespaceKey, args.peerId)) {
+        throw new Error("layeredMemory store: peer identity is permanently tombstoned");
+      }
       db.prepare(
         `INSERT INTO entries
         (id, namespace_key, label, content, peer_id, trust_level, created_at, superseded_by,

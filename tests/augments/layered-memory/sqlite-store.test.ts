@@ -1,7 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from "bun:test";
 import { join } from "node:path";
 import { Database } from "bun:sqlite";
-import { createSqliteStore } from "@/augments/layeredMemory/storage/sqlite-store";
+import {
+  createSqliteStore,
+  deleteSqliteMemoryForPeer,
+} from "@/augments/layeredMemory/storage/sqlite-store";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 import type { MemoryStore } from "@/augments/layeredMemory/storage/types";
 
@@ -677,5 +680,46 @@ describe("SqliteStore", () => {
     expect(() =>
       createSqliteStore({ dbPath: `${dbPath}.blank`, retentionDays: 90, namespace: "   " }),
     ).toThrow(/namespace.*1 to 256/i);
+  });
+
+  it("atomically tombstones a revoked peer against concurrent and future writes", async () => {
+    const sharedPath = `${dbPath}.tombstone`;
+    const first = createSqliteStore({ dbPath: sharedPath, retentionDays: 90, namespace: "ep" });
+    const second = createSqliteStore({ dbPath: sharedPath, retentionDays: 90, namespace: "ep" });
+    const writes = Array.from({ length: 20 }, (_, index) =>
+      first.write({
+        id: `racy-${index}`,
+        label: `ep:revoked:${index}`,
+        content: "must not survive revocation",
+        peerId: "revoked",
+        trustLevel: "public",
+        createdAt: Date.now(),
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      }),
+    );
+    const deletion = Promise.resolve().then(() =>
+      deleteSqliteMemoryForPeer(sharedPath, "ep", "revoked"),
+    );
+    await Promise.allSettled([...writes, deletion]);
+
+    expect(await second.search("must not survive", "revoked")).toEqual([]);
+    await expect(
+      second.write({
+        label: "ep:revoked:late",
+        content: "late write",
+        peerId: "revoked",
+        trustLevel: "public",
+        createdAt: Date.now(),
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      }),
+    ).rejects.toThrow(/tombstoned/i);
+    await first.close();
+    await second.close();
   });
 });

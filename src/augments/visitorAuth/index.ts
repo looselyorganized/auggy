@@ -53,7 +53,10 @@ import {
   isWellFormedEmail,
 } from "./email-validation";
 import { createVisitorAuthRateLimiter, type VisitorAuthRateLimiter } from "./rate-limiter";
-import { reassignSqliteMemoryPeerId } from "../layeredMemory/storage/sqlite-store";
+import {
+  deleteSqliteMemoryForPeer,
+  reassignSqliteMemoryPeerId,
+} from "../layeredMemory/storage/sqlite-store";
 import {
   buildVerifyConfirmPage,
   buildVerifyFailurePage,
@@ -826,7 +829,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
     (params: Record<string, unknown>) => Promise<AdminActionResult>
   > = {
     "visitor-revoke": async (params) => {
-      const rowKey = typeof params.rowKey === "string" ? params.rowKey : "";
+      const rowKey = typeof params.rowKey === "string" ? canonicalizeEmail(params.rowKey) : "";
       if (!rowKey) {
         return { ok: false, message: "visitor-revoke requires a rowKey (email)" };
       }
@@ -837,9 +840,28 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           message: `visitor "${rowKey}" not found`,
         };
       }
+      let deleted = 0;
+      if (
+        typeof opts.layeredMemoryDbPath === "string" &&
+        typeof opts.layeredMemoryNamespace === "string" &&
+        existsSync(opts.layeredMemoryDbPath)
+      ) {
+        try {
+          deleted = deleteSqliteMemoryForPeer(
+            opts.layeredMemoryDbPath,
+            opts.layeredMemoryNamespace,
+            revoked.visitorId,
+          );
+        } catch (error) {
+          return {
+            ok: false,
+            message: `Visitor ${rowKey} was revoked, but memory erasure failed safely: ${(error as Error).message}`,
+          };
+        }
+      }
       return {
         ok: true,
-        message: `${revoked.wasRevoked ? "Already revoked" : "Revoked"} ${rowKey} (${revoked.visitorId})`,
+        message: `${revoked.wasRevoked ? "Already revoked" : "Revoked"} ${rowKey} (${revoked.visitorId}); ${deleted} memory row(s) removed`,
       };
     },
   };

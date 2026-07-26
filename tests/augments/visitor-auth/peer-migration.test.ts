@@ -163,6 +163,25 @@ describe("anonymous → recognized peer-id migration on verify", () => {
       return r.c;
     })();
     expect(newVisRows).toBe(5);
+    const postMigrationStore = createSqliteStore({
+      dbPath: memPath,
+      namespace: "ep",
+      retentionDays: 90,
+    });
+    await expect(
+      postMigrationStore.write({
+        label: "ep:anon-th-mig:late",
+        content: "late old-identity write",
+        peerId: "anon-th-mig",
+        trustLevel: "public",
+        createdAt: Date.now(),
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      }),
+    ).rejects.toThrow(/tombstoned/i);
+    await postMigrationStore.close();
     await aug.onShutdown?.();
   });
 

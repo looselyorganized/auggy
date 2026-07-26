@@ -26,6 +26,9 @@ describe("SQLite migration — fact-fields", () => {
     const db = new Database(dbPath);
     const cols = db.prepare("PRAGMA table_info(entries)").all() as { name: string }[];
     const colNames = cols.map((c) => c.name);
+    const objects = db.prepare("SELECT name FROM sqlite_schema WHERE type = 'table'").all() as {
+      name: string;
+    }[];
     db.close();
 
     expect(colNames).toContain("subject");
@@ -36,6 +39,7 @@ describe("SQLite migration — fact-fields", () => {
     expect(colNames).toContain("is_verbatim");
     expect(colNames).toContain("retention_class");
     expect(colNames).toContain("namespace_key");
+    expect(objects.map((object) => object.name)).toContain("peer_tombstones");
   });
 
   test("migration is idempotent — running twice is a no-op, existing rows preserved", async () => {

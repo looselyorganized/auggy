@@ -170,6 +170,26 @@ describe("auggy visitors <agent> --revoke <email>", () => {
       | undefined;
     db.close();
     expect(c?.c).toBe(0);
+
+    const postRevoke = createSqliteStore({
+      dbPath: join(agentDir, "memory.db"),
+      namespace: MEMORY_NAMESPACE,
+      retentionDays: 90,
+    });
+    await expect(
+      postRevoke.write({
+        label: `${MEMORY_NAMESPACE}:vis_rev1:late`,
+        content: "late revoked write",
+        peerId: "vis_rev1",
+        trustLevel: "public",
+        createdAt: Date.now(),
+        supersededBy: null,
+        retentionClass: "operational",
+        isVerbatim: false,
+        expiresAt: null,
+      }),
+    ).rejects.toThrow(/tombstoned/i);
+    await postRevoke.close();
   });
 
   test("rejects malformed revoke input before opening state", async () => {
