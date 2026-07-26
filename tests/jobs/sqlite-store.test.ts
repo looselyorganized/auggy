@@ -349,6 +349,49 @@ describe("SQLite durable job store", () => {
     }
   });
 
+  test("reopens every outcome-unknown reason without treating it as a generic error code", () => {
+    const reasons = [
+      "cancel-completion-race",
+      "cancel-failure-race",
+      "execution-outcome-unknown",
+      "lease-expired",
+      "process-restarted",
+      "shutdown-interrupted",
+    ] as const;
+    for (const [index, reasonCode] of reasons.entries()) {
+      const path = dbPath();
+      let store = createSqliteDurableJobStore({
+        dbPath: path,
+        now: () => 5_000,
+        jobId: () => `job_reason_${index}`,
+        leaseToken: () => `lease_reason_${index}`,
+        incidentId: () => `incident_reason_${index}`,
+      });
+      const submitted = store.submit(request(`reason-${index}`));
+      const lease = store.claim({ workerId: "worker", leaseMs: 100 })!;
+      store.markExecutionStarted({ jobId: lease.job.id, token: lease.token });
+      expect(
+        store.markOutcomeUnknown({ jobId: lease.job.id, token: lease.token, reasonCode }),
+      ).toMatchObject({
+        state: "outcome_unknown",
+        incident: { reasonCode },
+      });
+      expect(store.get(submitted.job.id)?.errorCode).toBeUndefined();
+      store.close();
+
+      store = createSqliteDurableJobStore({ dbPath: path, now: () => 5_000 });
+      try {
+        expect(store.get(submitted.job.id)).toMatchObject({
+          state: "outcome_unknown",
+          incident: { reasonCode },
+        });
+        expect(store.get(submitted.job.id)?.errorCode).toBeUndefined();
+      } finally {
+        store.close();
+      }
+    }
+  });
+
   test("persists cancellation, bounds private payloads, and rejects foreign schemas", () => {
     const path = dbPath();
     const store = createSqliteDurableJobStore({ dbPath: path, jobId: () => "job_1" });
@@ -470,6 +513,48 @@ describe("SQLite durable job store", () => {
     }
   });
 
+  test("rejects stored state that exceeds lowered configured capacities on reopen", () => {
+    const path = dbPath();
+    const store = createSqliteDurableJobStore({
+      dbPath: path,
+      maxTotalRecords: 2,
+      maxQueuedRecords: 2,
+      maxPrivateBytes: 1_000,
+      jobId: (() => {
+        let id = 0;
+        return () => `job_capacity_${++id}`;
+      })(),
+    });
+    store.submit(request("capacity-one"));
+    store.submit(request("capacity-two"));
+    store.close();
+
+    expect(() =>
+      createSqliteDurableJobStore({
+        dbPath: path,
+        maxTotalRecords: 1,
+        maxQueuedRecords: 1,
+        maxPrivateBytes: 1_000,
+      }),
+    ).toThrow("stored jobs exceed configured total record capacity");
+    expect(() =>
+      createSqliteDurableJobStore({
+        dbPath: path,
+        maxTotalRecords: 2,
+        maxQueuedRecords: 1,
+        maxPrivateBytes: 1_000,
+      }),
+    ).toThrow("stored jobs exceed configured outstanding capacity");
+    expect(() =>
+      createSqliteDurableJobStore({
+        dbPath: path,
+        maxTotalRecords: 2,
+        maxQueuedRecords: 2,
+        maxPrivateBytes: 1,
+      }),
+    ).toThrow("stored jobs exceed configured private byte capacity");
+  });
+
   test("preflights large strings, safe timestamp addition, and secret-like reason codes", () => {
     const path = dbPath();
     let at = Number.MAX_SAFE_INTEGER - 5;
@@ -520,6 +605,29 @@ describe("SQLite durable job store", () => {
   });
 
   test("bounds per-job attempts and global reconciliation audit history", () => {
+    const maxRetentionMs = 3_650 * 24 * 60 * 60_000;
+    expect(() =>
+      createSqliteDurableJobStore({ dbPath: dbPath(), maxTotalRecords: 1_000_001 }),
+    ).toThrow("maxTotalRecords must be an integer from 1 to 1000000");
+    expect(() =>
+      createSqliteDurableJobStore({ dbPath: dbPath(), maxQueuedRecords: 1_000_001 }),
+    ).toThrow("maxQueuedRecords must be an integer from 1 to 1000000");
+    expect(() =>
+      createSqliteDurableJobStore({ dbPath: dbPath(), maxPrivateBytes: 2_147_483_649 }),
+    ).toThrow("maxPrivateBytes must be an integer from 1 to 2147483648");
+    expect(() =>
+      createSqliteDurableJobStore({ dbPath: dbPath(), terminalRetentionMs: maxRetentionMs + 1 }),
+    ).toThrow(`terminalRetentionMs must be an integer from 1 to ${maxRetentionMs}`);
+    expect(() =>
+      createSqliteDurableJobStore({ dbPath: dbPath(), auditRetentionMs: maxRetentionMs + 1 }),
+    ).toThrow(`auditRetentionMs must be an integer from 1 to ${maxRetentionMs}`);
+    expect(() =>
+      createSqliteDurableJobStore({
+        dbPath: dbPath(),
+        terminalRetentionMs: 2 * 24 * 60 * 60_000,
+        auditRetentionMs: 24 * 60 * 60_000,
+      }),
+    ).toThrow("auditRetentionMs cannot be shorter than terminalRetentionMs");
     expect(() =>
       createSqliteDurableJobStore({ dbPath: dbPath(), maxAttemptsPerJob: 1_001 }),
     ).toThrow("maxAttemptsPerJob must be an integer from 1 to 1000");
@@ -634,7 +742,77 @@ describe("SQLite durable job store", () => {
     }
   });
 
-  test("rejects oversized object key sets before canonical JSON serialization", () => {
+  test("bounds attempt-exhaustion cleanup work per claim", () => {
+    const path = dbPath();
+    let at = 1_000;
+    let job = 0;
+    let token = 0;
+    let store = createSqliteDurableJobStore({
+      dbPath: path,
+      now: () => at,
+      maxTotalRecords: 101,
+      maxQueuedRecords: 101,
+      maxAttemptsPerJob: 2,
+      jobId: () => `job_exhausted_${++job}`,
+      leaseToken: () => `lease_exhausted_${++token}`,
+    });
+    for (let index = 0; index < 101; index++) {
+      store.submit(request(`exhausted-${index}`));
+    }
+    for (let index = 0; index < 101; index++) {
+      const lease = store.claim({ workerId: "worker", leaseMs: 100 })!;
+      store.releaseUnstarted({
+        jobId: lease.job.id,
+        token: lease.token,
+        errorCode: "admission-failed",
+        availableAt: 2_000,
+      });
+    }
+    store.close();
+
+    at = 2_000;
+    store = createSqliteDurableJobStore({
+      dbPath: path,
+      now: () => at,
+      maxTotalRecords: 101,
+      maxQueuedRecords: 101,
+      maxAttemptsPerJob: 1,
+    });
+    try {
+      expect(store.claim({ workerId: "worker", leaseMs: 100 })).toBeNull();
+      let probe = new Database(path, { readonly: true });
+      expect(
+        probe
+          .query<{ count: number }, []>(
+            "SELECT COUNT(*) AS count FROM durable_jobs WHERE state = 'failed'",
+          )
+          .get()?.count,
+      ).toBe(100);
+      expect(
+        probe
+          .query<{ count: number }, []>(
+            "SELECT COUNT(*) AS count FROM durable_jobs WHERE state = 'queued'",
+          )
+          .get()?.count,
+      ).toBe(1);
+      probe.close();
+
+      expect(store.claim({ workerId: "worker", leaseMs: 100 })).toBeNull();
+      probe = new Database(path, { readonly: true });
+      expect(
+        probe
+          .query<{ count: number }, []>(
+            "SELECT COUNT(*) AS count FROM durable_jobs WHERE state = 'failed'",
+          )
+          .get()?.count,
+      ).toBe(101);
+      probe.close();
+    } finally {
+      store.close();
+    }
+  });
+
+  test("rejects oversized object key sets and accessors before canonical JSON serialization", () => {
     const value: Record<string, number> = {};
     for (let index = 0; index < 10_000; index++) value[`key_${index}`] = index;
     const store = createSqliteDurableJobStore({ dbPath: dbPath() });
@@ -642,6 +820,21 @@ describe("SQLite durable job store", () => {
       expect(() =>
         store.submit({ ...request("many-keys"), payload: { version: 1, value } }),
       ).toThrow("private JSON exceeds maximum nodes");
+      expect(store.list()).toEqual([]);
+
+      let getterCalls = 0;
+      const accessor: Record<string, unknown> = {};
+      Object.defineProperty(accessor, "private", {
+        enumerable: true,
+        get() {
+          getterCalls++;
+          return "must-not-run";
+        },
+      });
+      expect(() =>
+        store.submit({ ...request("accessor"), payload: { version: 1, value: accessor } }),
+      ).toThrow("private JSON cannot contain enumerable accessors");
+      expect(getterCalls).toBe(0);
       expect(store.list()).toEqual([]);
     } finally {
       store.close();

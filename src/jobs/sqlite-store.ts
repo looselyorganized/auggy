@@ -26,6 +26,7 @@ const MAX_LIST = 100;
 const MAX_PRUNE = 1_000;
 const MAX_LEASE_MS = 60 * 60_000;
 const MAX_RECOVERY_PER_TRANSITION = 100;
+const MAX_ATTEMPT_EXHAUSTION_PER_CLAIM = 100;
 const DEFAULT_MAX_TOTAL_RECORDS = 10_000;
 const DEFAULT_MAX_QUEUED_RECORDS = 1_000;
 const DEFAULT_MAX_PRIVATE_BYTES = 64 * 1024 * 1024;
@@ -35,6 +36,10 @@ const DEFAULT_TERMINAL_RETENTION_MS = 30 * 24 * 60 * 60_000;
 const DEFAULT_AUDIT_RETENTION_MS = 90 * 24 * 60 * 60_000;
 const MIN_AUDIT_RETENTION_MS = 24 * 60 * 60_000;
 const MAX_SAFE_SQLITE_INTEGER = Number.MAX_SAFE_INTEGER;
+const MAX_TOTAL_RECORDS = 1_000_000;
+const MAX_QUEUED_RECORDS = 1_000_000;
+const MAX_PRIVATE_BYTES = 2 * 1024 * 1024 * 1024;
+const MAX_RETENTION_MS = 3_650 * 24 * 60 * 60_000;
 const MAX_ATTEMPTS_PER_JOB = 1_000;
 const MAX_AUDIT_RECORDS = 1_000_000;
 
@@ -279,6 +284,8 @@ function boundedJson(value: unknown, _label: string): string {
       const object = current as Record<string, unknown>;
       const keys: string[] = [];
       const remainingNodes = 10_000 - nodes;
+      // Descriptor reads reject ordinary accessors without invoking them.
+      // Proxies remain part of the trusted programmatic submission boundary.
       for (const key in object) {
         if (!Object.hasOwn(object, key)) continue;
         if (keys.length >= remainingNodes) {
@@ -297,7 +304,11 @@ function boundedJson(value: unknown, _label: string): string {
         }
         append(JSON.stringify(key), keyBytes);
         append(":", 1);
-        serialize(object[key], depth + 1);
+        const descriptor = Object.getOwnPropertyDescriptor(object, key);
+        if (!descriptor || !("value" in descriptor)) {
+          throw new Error(`${LABEL}: private JSON cannot contain enumerable accessors`);
+        }
+        serialize(descriptor.value, depth + 1);
       }
       append("}", 1);
       return;
@@ -352,9 +363,37 @@ function hasExactSchema(objects: readonly SqliteSchemaObject[]): boolean {
   );
 }
 
-function validateRows(db: Database, maxAttemptsPerJob: number, maxAuditRecords: number): void {
+function validateRows(
+  db: Database,
+  maxTotalRecords: number,
+  maxQueuedRecords: number,
+  maxPrivateBytes: number,
+  maxAttemptsPerJob: number,
+  maxAuditRecords: number,
+): void {
   if (db.query("PRAGMA foreign_key_check").get()) {
     throw new Error(`${LABEL}: stored foreign-key graph is inconsistent`);
+  }
+  const capacity = db
+    .query<{ total: number; outstanding: number; private_bytes: number }, []>(
+      `SELECT COUNT(*) AS total,
+         COALESCE(SUM(CASE WHEN state IN ('queued','leased','running','outcome_unknown') THEN 1 ELSE 0 END), 0) AS outstanding,
+         COALESCE(SUM(private_bytes), 0) AS private_bytes
+       FROM durable_jobs`,
+    )
+    .get();
+  if (!capacity || !Number.isSafeInteger(capacity.total) || capacity.total > maxTotalRecords) {
+    throw new Error(`${LABEL}: stored jobs exceed configured total record capacity`);
+  }
+  if (!Number.isSafeInteger(capacity.outstanding) || capacity.outstanding > maxQueuedRecords) {
+    throw new Error(`${LABEL}: stored jobs exceed configured outstanding capacity`);
+  }
+  if (
+    !Number.isSafeInteger(capacity.private_bytes) ||
+    capacity.private_bytes < 0 ||
+    capacity.private_bytes > maxPrivateBytes
+  ) {
+    throw new Error(`${LABEL}: stored jobs exceed configured private byte capacity`);
   }
   const invalid = db
     .query<Row, []>(
@@ -578,11 +617,13 @@ export function createSqliteDurableJobStore(
     options.maxTotalRecords,
     DEFAULT_MAX_TOTAL_RECORDS,
     "maxTotalRecords",
+    MAX_TOTAL_RECORDS,
   );
   const maxQueuedRecords = positiveOption(
     options.maxQueuedRecords,
     DEFAULT_MAX_QUEUED_RECORDS,
     "maxQueuedRecords",
+    MAX_QUEUED_RECORDS,
   );
   if (maxQueuedRecords > maxTotalRecords) {
     throw new Error(`${LABEL}: maxQueuedRecords cannot exceed maxTotalRecords`);
@@ -591,6 +632,7 @@ export function createSqliteDurableJobStore(
     options.maxPrivateBytes,
     DEFAULT_MAX_PRIVATE_BYTES,
     "maxPrivateBytes",
+    MAX_PRIVATE_BYTES,
   );
   const maxAttemptsPerJob = positiveOption(
     options.maxAttemptsPerJob,
@@ -608,14 +650,19 @@ export function createSqliteDurableJobStore(
     options.terminalRetentionMs,
     DEFAULT_TERMINAL_RETENTION_MS,
     "terminalRetentionMs",
+    MAX_RETENTION_MS,
   );
   const auditRetentionMs = positiveOption(
     options.auditRetentionMs,
     DEFAULT_AUDIT_RETENTION_MS,
     "auditRetentionMs",
+    MAX_RETENTION_MS,
   );
   if (auditRetentionMs < MIN_AUDIT_RETENTION_MS) {
     throw new Error(`${LABEL}: auditRetentionMs must be at least ${MIN_AUDIT_RETENTION_MS}`);
+  }
+  if (auditRetentionMs < terminalRetentionMs) {
+    throw new Error(`${LABEL}: auditRetentionMs cannot be shorter than terminalRetentionMs`);
   }
   const database = openHardenedSqlite({
     path: options.dbPath,
@@ -633,7 +680,14 @@ export function createSqliteDurableJobStore(
         validate(database, objects) {
           if (!hasExactSchema(objects))
             throw new Error(`${LABEL}: database schema is incompatible`);
-          validateRows(database, maxAttemptsPerJob, maxAuditRecords);
+          validateRows(
+            database,
+            maxTotalRecords,
+            maxQueuedRecords,
+            maxPrivateBytes,
+            maxAttemptsPerJob,
+            maxAuditRecords,
+          );
         },
         isLegacy() {
           return false;
@@ -693,19 +747,10 @@ export function createSqliteDurableJobStore(
       .query(
         `UPDATE durable_jobs SET state = 'outcome_unknown', version = version + 1, updated_at = ?,
           lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL,
-          incident_id = ?, incident_version = 1, incident_reason_code = ?, error_code = ?
+          incident_id = ?, incident_version = 1, incident_reason_code = ?, error_code = NULL
          WHERE job_id = ? AND state = ? AND lease_token = ? AND ${expiryPredicate}`,
       )
-      .run(
-        at,
-        incidentId,
-        reasonCode,
-        reasonCode,
-        dbRow.job_id,
-        dbRow.state,
-        dbRow.lease_token,
-        at,
-      );
+      .run(at, incidentId, reasonCode, dbRow.job_id, dbRow.state, dbRow.lease_token, at);
     if (change.changes !== 1) throw new Error(`${LABEL}: lease is no longer active`);
     db.query(
       `INSERT INTO durable_job_incidents (incident_id, job_id, version, reason_code, detected_at)
@@ -834,6 +879,7 @@ export function createSqliteDurableJobStore(
         throw new Error(`${LABEL}: leaseMs must be from 1 to ${MAX_LEASE_MS}`);
       const at = now();
       recoverExpired(at);
+      let exhaustedTransitions = 0;
       while (true) {
         const candidate = db
           .query<Row, [number]>(
@@ -858,6 +904,8 @@ export function createSqliteDurableJobStore(
                WHERE job_id = ? AND attempt = ? AND state IN ('requeued','outcome_unknown')`,
             ).run(at, candidate.job_id, candidate.attempt);
           }
+          exhaustedTransitions++;
+          if (exhaustedTransitions >= MAX_ATTEMPT_EXHAUSTION_PER_CLAIM) return null;
           continue;
         }
         if (candidate.attempt >= MAX_SAFE_SQLITE_INTEGER) {
