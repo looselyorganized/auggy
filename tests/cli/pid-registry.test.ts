@@ -549,6 +549,17 @@ describe("runtime PID manifest policy", () => {
     expect(readPidManifest(agentId, { auggyDir })).toBeNull();
 
     activateLaunchdGeneration(agentId, generationTwo, { auggyDir });
+    expect(() =>
+      claimRuntimePidManifest(
+        {
+          ...base,
+          mode: "dev",
+          launchGeneration: undefined,
+          claimNonce: "99999999-9999-4999-8999-999999999999",
+        },
+        modernRegistryOptions(),
+      ),
+    ).toThrow(/foreground.*active launchd installation/i);
     expect(() => claimRuntimePidManifest(base, modernRegistryOptions())).toThrow(
       /generation.*closed or superseded/i,
     );

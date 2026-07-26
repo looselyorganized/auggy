@@ -91,6 +91,19 @@ export async function runStop(name: string, opts: StopOptions = {}): Promise<voi
     if (manifest.mode === "launchd") {
       await stopLaunchd(manifest, opts);
     } else {
+      if (manifest.agentId) {
+        const generation = readLaunchdGenerationState(manifest.agentId, {
+          auggyDir: opts.auggyDir,
+        });
+        if (generation?.active) {
+          await neutralizeLaunchdJob(
+            manifest.agentId,
+            generation.launchGeneration,
+            manifest.name,
+            opts,
+          );
+        }
+      }
       await stopDev(manifest, opts);
     }
   } finally {
@@ -114,7 +127,10 @@ async function stopManifestlessLaunchd(
     if (appeared) {
       if (appeared.mode === "launchd")
         await stopLaunchd(appeared, { ...opts, lifecycleOwned: true });
-      else await stopDev(appeared, opts);
+      else {
+        await neutralizeLaunchdJob(agentId, launchGeneration, appeared.name, opts);
+        await stopDev(appeared, opts);
+      }
       return;
     }
 
@@ -152,6 +168,31 @@ async function stopManifestlessLaunchd(
   } finally {
     releaseLifecycle();
   }
+}
+
+async function neutralizeLaunchdJob(
+  agentId: string,
+  launchGeneration: string,
+  agentName: string,
+  opts: StopOptions,
+): Promise<void> {
+  closeLaunchdGeneration(agentId, launchGeneration, {
+    auggyDir: opts.auggyDir,
+    processIdentityForPid: opts.processIdentityForPid,
+  });
+  const installPath = opts.paths?.installPath ?? plistInstallPath(agentId);
+  const storePath = opts.paths?.storePath ?? plistStorePath(agentId);
+  try {
+    if (opts.unloadLaunchd) await opts.unloadLaunchd(installPath);
+    else await $`launchctl unload ${installPath}`.quiet();
+  } catch (error) {
+    throw new Error(
+      `Could not unload conflicting launchd state for "${agentName}". Its generation remains closed; inspect launchd before retrying.`,
+      { cause: error },
+    );
+  }
+  unlinkIfPresent(installPath, opts.unlinkFile ?? unlinkSync);
+  unlinkIfPresent(storePath, opts.unlinkFile ?? unlinkSync);
 }
 
 function unlinkIfPresent(path: string, unlinkFile: (path: string) => void): void {

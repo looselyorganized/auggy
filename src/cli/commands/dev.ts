@@ -26,6 +26,7 @@ import {
   claimRuntimePidManifest,
   formatAgentAlreadyRunningMessage,
   getProcessIdentity,
+  readLaunchdGenerationState,
   readPidManifest,
   releaseRuntimePidManifest,
 } from "../pid-registry";
@@ -230,6 +231,16 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
         auggyDir: opts.auggyDir,
         processIdentityForPid: opts.processIdentityForPid,
       });
+    }
+    if (mode === "dev") {
+      const generation = readLaunchdGenerationState(config.id, {
+        auggyDir: opts.auggyDir,
+      });
+      if (generation?.active) {
+        throw new Error(
+          `[runtime] foreground admission is blocked by an active launchd installation. Run "auggy stop ${config.id}" before starting dev mode.`,
+        );
+      }
     }
     const processIdentity = (opts.processIdentityForPid ?? getProcessIdentity)(process.pid);
     if (!processIdentity) {

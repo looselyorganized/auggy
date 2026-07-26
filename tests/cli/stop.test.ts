@@ -11,6 +11,7 @@ import {
   readPidManifest,
   removePidManifest,
   removePidManifestIfOwned,
+  writePidManifest,
 } from "../../src/cli/pid-registry";
 import type { PidManifest } from "../../src/cli/types";
 
@@ -88,6 +89,57 @@ describe("stop preserves ownership until the recorded process exits", () => {
     } finally {
       releaseStop();
     }
+  });
+
+  test("foreground admission rejects an active launchd installation", async () => {
+    const owner = manifest("launchd", "a");
+    const agentDir = join(auggyDir, "mixed-mode-admission");
+    mkdirSync(agentDir, { recursive: true });
+    const configPath = join(agentDir, "agent.yaml");
+    writeFileSync(
+      configPath,
+      `id: ${owner.agentId}\nname: ${owner.name}\nengine:\n  provider: anthropic\n  model: claude-sonnet-4-6\naugments:\n  - type: webFetch\n`,
+    );
+
+    await expect(
+      runDev(owner.name, {
+        config: configPath,
+        auggyDir,
+        processIdentityForPid: () => PROCESS_IDENTITY,
+      }),
+    ).rejects.toThrow(/foreground admission.*active launchd installation/i);
+    expect(readPidManifest(owner.agentId!, { auggyDir })).toBeNull();
+  });
+
+  test("a mixed-mode stop closes launchd authority before reporting success", async () => {
+    const owner = manifest("dev", "a");
+    owner.pid = 99_999_999;
+    writePidManifest(owner, { auggyDir });
+    activateLaunchdGeneration(owner.agentId!, LAUNCH_GENERATION, registryOptions());
+    let unloads = 0;
+
+    await runStop(owner.agentId!, {
+      ...registryOptions(),
+      paths: {
+        installPath: join(auggyDir, "mixed.install.plist"),
+        storePath: join(auggyDir, "mixed.store.plist"),
+      },
+      unloadLaunchd: async () => {
+        unloads++;
+      },
+    });
+    expect(unloads).toBe(1);
+
+    const delayed = {
+      ...owner,
+      pid: process.pid,
+      mode: "launchd" as const,
+      launchGeneration: LAUNCH_GENERATION,
+      claimNonce: "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee",
+    };
+    expect(() => claimRuntimePidManifest(delayed, registryOptions())).toThrow(
+      /generation.*closed or superseded/i,
+    );
   });
 
   test("does not lose a display-name stop before a concurrent start publishes state", async () => {

@@ -446,10 +446,9 @@ function assertLaunchdGenerationActiveInDatabase(
   db: ReturnType<typeof openClaimDatabase>["db"],
   manifest: PidManifest,
 ): void {
-  if (manifest.mode !== "launchd") return;
   const agentId = manifest.agentId;
-  const launchGeneration = manifest.launchGeneration;
-  if (!agentId || !launchGeneration) {
+  if (!agentId) {
+    if (manifest.mode !== "launchd") return;
     throw new RuntimeResourceConflictError(
       "Launchd runtime admission requires an exact generation",
     );
@@ -459,6 +458,20 @@ function assertLaunchdGenerationActiveInDatabase(
       "SELECT launch_generation, active FROM launchd_generation_state WHERE agent_id = ?",
     )
     .get(agentId);
+  if (manifest.mode !== "launchd") {
+    if (state?.active === 1) {
+      throw new RuntimeResourceConflictError(
+        `Foreground runtime admission is blocked by an active launchd installation for agent "${manifest.name}". Stop the immutable agent id before running it in dev mode.`,
+      );
+    }
+    return;
+  }
+  const launchGeneration = manifest.launchGeneration;
+  if (!launchGeneration) {
+    throw new RuntimeResourceConflictError(
+      "Launchd runtime admission requires an exact generation",
+    );
+  }
   if (state?.active !== 1 || state.launch_generation !== launchGeneration) {
     throw new RuntimeResourceConflictError(
       `Launchd installation generation ${launchGeneration} is closed or superseded for agent "${manifest.name}".`,
@@ -621,7 +634,11 @@ function rejectOrRemoveLegacyClaim(claim: string, opts: PidRegistryOptions): voi
   unlinkSync(path);
 }
 
-function acquireResourceClaims(manifest: PidManifest, opts: PidRegistryOptions): string[] {
+function acquireResourceClaims(
+  manifest: PidManifest,
+  opts: PidRegistryOptions,
+  enforceRuntimeAdmission = false,
+): string[] {
   const claims = [...(manifest.resourceClaims ?? [])].sort();
   if (claims.length === 0) return [];
   if (!manifest.agentId || !manifest.claimNonce) {
@@ -650,7 +667,7 @@ function acquireResourceClaims(manifest: PidManifest, opts: PidRegistryOptions):
        VALUES (?, ?, ?, ?, ?, ?)`,
     );
     db.transaction(() => {
-      assertLaunchdGenerationActiveInDatabase(db, manifest);
+      if (enforceRuntimeAdmission) assertLaunchdGenerationActiveInDatabase(db, manifest);
       for (const claim of claims) {
         rejectOrRemoveLegacyClaim(claim, opts);
         const requestedStatePath = statePathFromClaim(claim);
@@ -834,7 +851,7 @@ export function claimRuntimePidManifest(
       );
     }
 
-    acquireResourceClaims(manifest, opts);
+    acquireResourceClaims(manifest, opts, true);
     try {
       if (existing) removeManifestRecord(existing, opts);
       writeDurableJson(exactPath, manifest, "Auggy runtime manifest");
@@ -852,7 +869,7 @@ export function claimRuntimePidManifest(
     }
   }
 
-  acquireResourceClaims(manifest, opts);
+  acquireResourceClaims(manifest, opts, true);
   try {
     try {
       writePidManifest(manifest, opts);

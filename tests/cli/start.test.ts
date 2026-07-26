@@ -162,7 +162,7 @@ describe("runStart launchd generation fencing", () => {
     expect(existsSync(opts.paths.storePath)).toBe(false);
   });
 
-  test("does not accept an unrelated foreground runtime as launchd acknowledgement", async () => {
+  test("does not admit an unrelated foreground runtime during launchd installation", async () => {
     const opts = options();
     let wrongManifest: PidManifest | undefined;
     await expect(
@@ -190,8 +190,8 @@ describe("runStart launchd generation fencing", () => {
         },
         unloadLaunchd: async () => {},
       }),
-    ).rejects.toThrow(/does not acknowledge.*generation/i);
-    expect(readPidManifest(AGENT_ID, { auggyDir })?.mode).toBe("dev");
+    ).rejects.toThrow(/foreground.*active launchd installation/i);
+    expect(readPidManifest(AGENT_ID, { auggyDir })).toBeNull();
     if (wrongManifest) releaseRuntimePidManifest(wrongManifest, true, { auggyDir });
   });
 
