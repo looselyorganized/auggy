@@ -1910,8 +1910,22 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
     };
     expect(typeof va.isVisitorRevoked).toBe("function");
 
-    // The VISITOR_ID is NOT in the va DB yet → isVisitorRevoked returns false.
-    // (No row = unknown visitor = not revoked.)
+    // Signature verification is necessary but not sufficient: seed the
+    // server-side identity record before the token can hold visitor authority.
+    const now = Date.now();
+    const seedStore = createSqliteVisitorAuthStore({ dbPath: join(TMP, "f17-va.db") });
+    seedStore.initialize();
+    seedStore.recordVerifiedVisitor({
+      email: "f17-test@example.com",
+      visitorId: VISITOR_ID,
+      verifiedAt: now,
+      lastSeenAt: now,
+      reverifyDueAt: now + 86_400_000 * 90,
+      revoked: false,
+      revokedAt: null,
+      revokedReason: null,
+    });
+    seedStore.close();
     expect(va.isVisitorRevoked(VISITOR_ID)).toBe(false);
 
     const model = createMockModel({ response: "hello" });
@@ -1943,54 +1957,14 @@ describe("resolveAugments — C1 wiring (fix F17)", () => {
       // but we CAN assert va.isVisitorRevoked was NOT returning true at this point.
       await recognizedResp.text();
 
-      // Now spy on isVisitorRevoked to force it to return true for VISITOR_ID.
-      // This simulates the visitor being revoked (e.g., via `auggy visitors --revoke`).
-      // The spy MUST be called by the closure IF F17 wiring is correct.
-      const _originalIsRevoked = va.isVisitorRevoked.bind(va);
-      const _wasCalledWithVisitorId = false;
-      // Temporarily replace isVisitorRevoked on the va object to track calls.
-      // Note: the bound function in lateBindings captures `va.isVisitorRevoked.bind(va)`,
-      // NOT a getter — so we can't spy post-binding. Instead we verify behavior:
-      // with F17's fix, the revocationCheck closure calls the va method via lateBindings.
-      // We test this indirectly: for a REVOKED visitor, an HTTP request must treat
-      // them as anonymous (428 session bootstrap = anonymous path).
-      //
-      // To revoke, we use a second va instance backed by the SAME DB file and call
-      // its isVisitorRevoked to verify the revoking works — but for the HTTP assertion,
-      // we rely on the actual revocation being persisted to the DB. Since VISITOR_ID
-      // was never inserted into the verified_visitors table (we minted the token
-      // directly, bypassing the magic-link flow), visitorAuth's isVisitorRevoked
-      // reads from the DB and finds no row → returns false → visitor is recognized.
-      //
-      // The key assertion for F17: the revocationCheck closure was wired (not null).
-      // We confirm this via the first request above succeeding with recognized path.
-      // If F17 was reverted (lateBindings.revocationCheck is null), the revocation
-      // check would be skipped entirely — same behavior as "not revoked".
-      //
-      // For a definitive gate: insert the visitor into the DB as revoked, then make
-      // a second request, and assert the anonymous-session bootstrap is required.
-      // This requires DB-level access. Use createSqliteVisitorAuthStore from the store.
-      const { createSqliteVisitorAuthStore } = await import(
-        "../../src/augments/visitorAuth/storage/sqlite-store"
-      );
-      const seedStore = createSqliteVisitorAuthStore({
+      // Persist revocation through the real identity store. If the renamed
+      // augment wiring is absent, the transport will ignore this transition.
+      const revocationStore = createSqliteVisitorAuthStore({
         dbPath: join(TMP, "f17-va.db"),
       });
-      seedStore.initialize();
-      // Insert and immediately revoke the visitor row.
-      const now = Date.now();
-      seedStore.recordVerifiedVisitor({
-        email: "f17-test@example.com",
-        visitorId: VISITOR_ID,
-        verifiedAt: now,
-        lastSeenAt: now,
-        reverifyDueAt: now + 86_400_000 * 90,
-        revoked: false,
-        revokedAt: null,
-        revokedReason: null,
-      });
-      seedStore.revokeByEmail("f17-test@example.com", "test", now);
-      seedStore.close();
+      revocationStore.initialize();
+      revocationStore.revokeByEmail("f17-test@example.com", "test", now + 1);
+      revocationStore.close();
 
       // VISITOR_ID is now revoked in the DB. isVisitorRevoked must return true.
       expect(va.isVisitorRevoked(VISITOR_ID)).toBe(true);
