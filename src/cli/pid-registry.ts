@@ -7,7 +7,7 @@
  * listener or inbound identity before either transport starts.
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import {
   chmodSync,
@@ -26,6 +26,7 @@ import {
   openHardenedSqlite,
   type SqliteSchemaObject,
 } from "../lib/sqlite";
+import { writeDurableJson } from "../lib/durable-json";
 import { VALID_NAME_RE } from "./config-parser";
 import type { PidManifest } from "./types";
 
@@ -163,7 +164,9 @@ function parseManifest(value: unknown, source: string): PidManifest {
       !Array.isArray(record.resourceClaims) ||
       !record.resourceClaims.every(isSafeClaim) ||
       new Set(record.resourceClaims).size !== record.resourceClaims.length ||
-      (record.resourceClaimStore !== undefined && record.resourceClaimStore !== "sqlite-v1")
+      (record.resourceClaimStore !== undefined && record.resourceClaimStore !== "sqlite-v1") ||
+      (record.resourceClaimStore === "sqlite-v1" &&
+        !(record.resourceClaims as string[]).includes(`agent-id:${String(record.agentId)}`))
     ) {
       throw new Error(`Invalid Auggy runtime manifest at ${source}`);
     }
@@ -254,9 +257,9 @@ export function getProcessIdentity(pid: number): string | null {
     }
   }
 
-  const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+  const result = spawnSync("/bin/ps", ["-o", "lstart=", "-p", String(pid)], {
     encoding: "utf8",
-    env: { ...process.env, LC_ALL: "C" },
+    env: { LC_ALL: "C", TZ: "UTC", PATH: "/usr/bin:/bin" },
     timeout: 1_000,
     maxBuffer: 4_096,
   });
@@ -483,9 +486,49 @@ function releaseResourceClaims(manifest: PidManifest, opts: PidRegistryOptions):
   }
 }
 
-function removeManifestRecord(record: ManifestRecord, opts: PidRegistryOptions): void {
-  releaseResourceClaims(record.manifest, opts);
-  if (existsSync(record.path)) unlinkSync(record.path);
+function sameManifestOwner(current: PidManifest, expected: PidManifest): boolean {
+  if (expected.agentId && expected.claimNonce) {
+    return current.agentId === expected.agentId && current.claimNonce === expected.claimNonce;
+  }
+  return (
+    !current.agentId &&
+    current.name === expected.name &&
+    current.pid === expected.pid &&
+    current.startedAt === expected.startedAt
+  );
+}
+
+function removeManifestRecord(
+  record: ManifestRecord,
+  opts: PidRegistryOptions,
+  expected: PidManifest = record.manifest,
+): boolean {
+  if (expected.resourceClaimStore === "sqlite-v1" && expected.agentId && expected.claimNonce) {
+    const database = openClaimDatabase(opts);
+    try {
+      return database.db
+        .transaction(() => {
+          if (!existsSync(record.path)) return false;
+          const current = readManifestPath(record.path);
+          if (!sameManifestOwner(current, expected)) return false;
+          database.db
+            .query("DELETE FROM runtime_resource_claims WHERE agent_id = ? AND claim_nonce = ?")
+            .run(expected.agentId!, expected.claimNonce!);
+          unlinkSync(record.path);
+          return true;
+        })
+        .immediate();
+    } finally {
+      database.close();
+    }
+  }
+
+  if (!existsSync(record.path)) return false;
+  const current = readManifestPath(record.path);
+  if (!sameManifestOwner(current, expected)) return false;
+  releaseResourceClaims(expected, opts);
+  unlinkSync(record.path);
+  return true;
 }
 
 /**
@@ -536,6 +579,30 @@ export function claimRuntimePidManifest(
     throw new Error("Modern runtime manifests require the crash-recoverable SQLite claim store");
   }
   removeStaleOrRejectLivePreSqliteManifest(manifest, opts);
+
+  if (manifest.agentId) {
+    const exactPath = manifestPathForKey(manifestKey(manifest), opts);
+    const existing = existsSync(exactPath)
+      ? { path: exactPath, manifest: readManifestPath(exactPath) }
+      : null;
+    const status = existing ? inspectRuntimeProcess(existing.manifest, opts) : "gone";
+    if (status === "alive" || status === "unverifiable") {
+      throw new RuntimeResourceConflictError(
+        `Agent "${manifest.name}" already has a live or unverifiable runtime manifest.`,
+      );
+    }
+
+    acquireResourceClaims(manifest, opts);
+    try {
+      if (existing) removeManifestRecord(existing, opts);
+      writeDurableJson(exactPath, manifest, "Auggy runtime manifest");
+      return true;
+    } catch (error) {
+      releaseResourceClaims(manifest, opts);
+      throw error;
+    }
+  }
+
   acquireResourceClaims(manifest, opts);
   try {
     try {
@@ -558,13 +625,53 @@ export function claimRuntimePidManifest(
   }
 }
 
+/** Reserve one immutable agent identity while an operator mutates its project. */
+export function claimAgentMaintenance(
+  agentId: string,
+  agentName: string,
+  additionalClaims: readonly string[] = [],
+  opts: PidRegistryOptions = {},
+): () => void {
+  if (!AGENT_ID_RE.test(agentId) || !VALID_NAME_RE.test(agentName)) {
+    throw new Error("Maintenance claims require a valid immutable agent identity and name");
+  }
+  const processIdentity = (opts.processIdentityForPid ?? getProcessIdentity)(process.pid);
+  if (!processIdentity) {
+    throw new Error("Cannot establish the operator process incarnation for maintenance");
+  }
+  const claim: PidManifest = {
+    pid: process.pid,
+    name: agentName,
+    agentId,
+    claimNonce: randomUUID(),
+    processIdentity,
+    resourceClaims: [...new Set([`agent-id:${agentId}`, ...additionalClaims])].sort(),
+    resourceClaimStore: "sqlite-v1",
+    port: null,
+    configPath: "/maintenance/agent.yaml",
+    agentDir: "/maintenance",
+    startedAt: new Date().toISOString(),
+    mode: "dev",
+  };
+  removeStaleOrRejectLivePreSqliteManifest(claim, opts);
+  acquireResourceClaims(claim, opts);
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    releaseResourceClaims(claim, opts);
+  };
+}
+
 /** Release a manifest only when claimRuntimePidManifest actually wrote it. */
 export function releaseRuntimePidManifest(
-  identifier: string,
+  manifest: PidManifest,
   claimed: boolean,
   opts: PidRegistryOptions = {},
 ): void {
-  if (claimed) removePidManifest(identifier, opts);
+  if (!claimed) return;
+  const record = recordForIdentifier(manifestKey(manifest), opts);
+  if (record) removeManifestRecord(record, opts, manifest);
 }
 
 /** Read by immutable id or by an unambiguous display-name alias. */
@@ -613,6 +720,15 @@ export function formatAgentAlreadyRunningMessage(
 export function removePidManifest(identifier: string, opts: PidRegistryOptions = {}): void {
   const record = recordForIdentifier(identifier, opts);
   if (record) removeManifestRecord(record, opts);
+}
+
+/** Remove only the exact PID-manifest generation captured by the caller. */
+export function removePidManifestIfOwned(
+  manifest: PidManifest,
+  opts: PidRegistryOptions = {},
+): boolean {
+  const record = recordForIdentifier(manifestKey(manifest), opts);
+  return record ? removeManifestRecord(record, opts, manifest) : false;
 }
 
 /** List live manifests. Malformed files are preserved and never signaled. */

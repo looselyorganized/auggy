@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "bun:sqlite";
@@ -20,6 +20,7 @@ import {
   tryClaimName,
   inspectRuntimeProcess,
   isProcessAlive,
+  getProcessIdentity,
 } from "../../src/cli/pid-registry";
 
 let auggyDir: string;
@@ -45,6 +46,37 @@ describe("isProcessAlive", () => {
   test("returns false for a non-existent PID", () => {
     // PID 99999999 is extremely unlikely to exist.
     expect(isProcessAlive(99999999)).toBe(false);
+  });
+});
+
+describe("getProcessIdentity", () => {
+  test("is stable across caller timezones and never resolves ps through inherited PATH", () => {
+    const shimDir = mkdtempSync(join(tmpdir(), "pid-identity-shim-"));
+    const marker = join(shimDir, "invoked");
+    const shim = join(shimDir, "ps");
+    writeFileSync(shim, `#!/bin/sh\ntouch ${JSON.stringify(marker)}\nexit 1\n`);
+    chmodSync(shim, 0o700);
+    const oldPath = process.env.PATH;
+    const oldTz = process.env.TZ;
+    const oldSecret = process.env.AUGGY_IDENTITY_SENTINEL;
+    try {
+      process.env.PATH = shimDir;
+      process.env.AUGGY_IDENTITY_SENTINEL = "must-not-reach-child";
+      process.env.TZ = "America/Vancouver";
+      const first = getProcessIdentity(process.pid);
+      process.env.TZ = "UTC";
+      const second = getProcessIdentity(process.pid);
+      expect(second).toBe(first);
+      expect(existsSync(marker)).toBe(false);
+    } finally {
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+      if (oldTz === undefined) delete process.env.TZ;
+      else process.env.TZ = oldTz;
+      if (oldSecret === undefined) delete process.env.AUGGY_IDENTITY_SENTINEL;
+      else process.env.AUGGY_IDENTITY_SENTINEL = oldSecret;
+      rmSync(shimDir, { recursive: true, force: true });
+    }
   });
 });
 
@@ -135,7 +167,7 @@ describe("runtime PID manifest policy", () => {
       internalMode: "railway",
     });
     expect(claimed).toBe(false);
-    releaseRuntimePidManifest(name, claimed, { auggyDir });
+    releaseRuntimePidManifest(manifest, claimed, { auggyDir });
     expect(readPidManifest(name, { auggyDir })).toEqual(manifest);
   });
 
@@ -153,7 +185,7 @@ describe("runtime PID manifest policy", () => {
     expect(() =>
       claimRuntimePidManifest(manifest, { auggyDir, internalMode: "launchd" }),
     ).toThrow();
-    releaseRuntimePidManifest(manifest.name, true, { auggyDir });
+    releaseRuntimePidManifest(manifest, true, { auggyDir });
     expect(readPidManifest(manifest.name, { auggyDir })).toBeNull();
   });
 
@@ -219,8 +251,8 @@ describe("runtime PID manifest policy", () => {
     expect(readPidManifest(second.agentId!, { auggyDir })?.configPath).toBe(second.configPath);
     expect(() => readPidManifest("worker", { auggyDir })).toThrow(/ambiguous/i);
 
-    releaseRuntimePidManifest(first.agentId!, true, { auggyDir });
-    releaseRuntimePidManifest(second.agentId!, true, { auggyDir });
+    releaseRuntimePidManifest(first, true, { auggyDir });
+    releaseRuntimePidManifest(second, true, { auggyDir });
   });
 
   test("rejects overlap with any live pre-upgrade name-keyed runtime", () => {
@@ -242,7 +274,7 @@ describe("runtime PID manifest policy", () => {
       agentId: "aug1_55555555-5555-4555-8555-555555555555",
       claimNonce: "55555555-5555-4555-8555-555555555555",
       processIdentity: PROCESS_IDENTITY,
-      resourceClaims: ["telegram-bot:654321"],
+      resourceClaims: ["agent-id:aug1_55555555-5555-4555-8555-555555555555", "telegram-bot:654321"],
       resourceClaimStore: "sqlite-v1" as const,
       port: null,
       configPath: "/tmp/legacy-worker/agent.yaml",
@@ -264,7 +296,11 @@ describe("runtime PID manifest policy", () => {
       agentId: "aug1_33333333-3333-4333-8333-333333333333",
       claimNonce: "33333333-3333-4333-8333-333333333333",
       processIdentity: PROCESS_IDENTITY,
-      resourceClaims: ["telegram-bot:123456", "tcp-port:8080"],
+      resourceClaims: [
+        "agent-id:aug1_33333333-3333-4333-8333-333333333333",
+        "telegram-bot:123456",
+        "tcp-port:8080",
+      ],
       resourceClaimStore: "sqlite-v1" as const,
       port: 8080,
       configPath: "/tmp/orders/agent.yaml",
@@ -278,6 +314,11 @@ describe("runtime PID manifest policy", () => {
       agentId: "aug1_44444444-4444-4444-8444-444444444444",
       claimNonce: "44444444-4444-4444-8444-444444444444",
       processIdentity: PROCESS_IDENTITY,
+      resourceClaims: [
+        "agent-id:aug1_44444444-4444-4444-8444-444444444444",
+        "telegram-bot:123456",
+        "tcp-port:8080",
+      ],
       configPath: "/tmp/concierge/agent.yaml",
       agentDir: "/tmp/concierge",
     };
@@ -288,7 +329,7 @@ describe("runtime PID manifest policy", () => {
     );
     expect(readPidManifest(second.agentId!, { auggyDir })).toBeNull();
 
-    releaseRuntimePidManifest(first.agentId!, true, { auggyDir });
+    releaseRuntimePidManifest(first, true, { auggyDir });
   });
 
   test("transactionally replaces a stale claim without exposing a lock-file crash state", () => {
@@ -298,7 +339,7 @@ describe("runtime PID manifest policy", () => {
       agentId: "aug1_66666666-6666-4666-8666-666666666666",
       claimNonce: "66666666-6666-4666-8666-666666666666",
       processIdentity: "test-process:crashed",
-      resourceClaims: ["telegram-bot:777777"],
+      resourceClaims: ["agent-id:aug1_66666666-6666-4666-8666-666666666666", "telegram-bot:777777"],
       resourceClaimStore: "sqlite-v1" as const,
       port: null,
       configPath: "/tmp/crashed/agent.yaml",
@@ -313,6 +354,7 @@ describe("runtime PID manifest policy", () => {
       agentId: "aug1_77777777-7777-4777-8777-777777777777",
       claimNonce: "77777777-7777-4777-8777-777777777777",
       processIdentity: PROCESS_IDENTITY,
+      resourceClaims: ["agent-id:aug1_77777777-7777-4777-8777-777777777777", "telegram-bot:777777"],
       configPath: "/tmp/successor/agent.yaml",
       agentDir: "/tmp/successor",
     };
@@ -321,6 +363,7 @@ describe("runtime PID manifest policy", () => {
       name: "contender",
       agentId: "aug1_88888888-8888-4888-8888-888888888888",
       claimNonce: "88888888-8888-4888-8888-888888888888",
+      resourceClaims: ["agent-id:aug1_88888888-8888-4888-8888-888888888888", "telegram-bot:777777"],
       configPath: "/tmp/contender/agent.yaml",
       agentDir: "/tmp/contender",
     };
@@ -335,7 +378,7 @@ describe("runtime PID manifest policy", () => {
         entry.name.endsWith(".lock"),
       ),
     ).toBe(false);
-    releaseRuntimePidManifest(successor.agentId!, true, { auggyDir });
+    releaseRuntimePidManifest(successor, true, { auggyDir });
   });
 
   test("SQLite rolls back an interrupted claim transaction before restart", () => {
@@ -345,7 +388,10 @@ describe("runtime PID manifest policy", () => {
       agentId: "aug1_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       claimNonce: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
       processIdentity: PROCESS_IDENTITY,
-      resourceClaims: ["telegram-bot:rollback"],
+      resourceClaims: [
+        "agent-id:aug1_aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        "telegram-bot:rollback",
+      ],
       resourceClaimStore: "sqlite-v1",
       port: null,
       configPath: "/tmp/rollback-successor/agent.yaml",
@@ -355,7 +401,7 @@ describe("runtime PID manifest policy", () => {
     };
 
     expect(claimRuntimePidManifest(manifest, modernRegistryOptions())).toBe(true);
-    releaseRuntimePidManifest(manifest.agentId!, true, modernRegistryOptions());
+    releaseRuntimePidManifest(manifest, true, modernRegistryOptions());
 
     const raw = new Database(join(auggyDir, "runtime-claims.sqlite"));
     raw.run("BEGIN IMMEDIATE");
@@ -379,7 +425,58 @@ describe("runtime PID manifest policy", () => {
       claimNonce: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
     };
     expect(claimRuntimePidManifest(restarted, modernRegistryOptions())).toBe(true);
-    releaseRuntimePidManifest(restarted.agentId!, true, modernRegistryOptions());
+    releaseRuntimePidManifest(restarted, true, modernRegistryOptions());
+  });
+
+  test("a stale shutdown cannot delete a replacement manifest or its claims", () => {
+    const original: PidManifest = {
+      pid: process.pid,
+      name: "restart-generation",
+      agentId: "aug1_cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+      claimNonce: "11111111-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      processIdentity: PROCESS_IDENTITY,
+      resourceClaims: [
+        "agent-id:aug1_cccccccc-cccc-4ccc-8ccc-cccccccccccc",
+        "telegram-bot:generation",
+      ],
+      resourceClaimStore: "sqlite-v1",
+      port: null,
+      configPath: "/tmp/restart-generation/agent.yaml",
+      agentDir: "/tmp/restart-generation",
+      startedAt: new Date().toISOString(),
+      mode: "dev",
+    };
+    const replacement: PidManifest = {
+      ...original,
+      claimNonce: "22222222-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+      startedAt: new Date(Date.now() + 1).toISOString(),
+    };
+    const contender: PidManifest = {
+      ...replacement,
+      name: "third-process",
+      agentId: "aug1_dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+      claimNonce: "33333333-cccc-4ccc-8ccc-cccccccccccc",
+      resourceClaims: [
+        "agent-id:aug1_dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        "telegram-bot:generation",
+      ],
+      configPath: "/tmp/third-process/agent.yaml",
+      agentDir: "/tmp/third-process",
+    };
+
+    expect(claimRuntimePidManifest(original, modernRegistryOptions())).toBe(true);
+    releaseRuntimePidManifest(original, true, modernRegistryOptions());
+    expect(claimRuntimePidManifest(replacement, modernRegistryOptions())).toBe(true);
+
+    releaseRuntimePidManifest(original, true, modernRegistryOptions());
+
+    expect(readPidManifest(replacement.agentId!, { auggyDir })?.claimNonce).toBe(
+      replacement.claimNonce,
+    );
+    expect(() => claimRuntimePidManifest(contender, modernRegistryOptions())).toThrow(
+      /resource.*claimed/i,
+    );
+    releaseRuntimePidManifest(replacement, true, modernRegistryOptions());
   });
 
   test("distinguishes a reused PID from the recorded runtime incarnation", () => {
@@ -389,7 +486,7 @@ describe("runtime PID manifest policy", () => {
       agentId: "aug1_99999999-9999-4999-8999-999999999999",
       claimNonce: "99999999-9999-4999-8999-999999999999",
       processIdentity: "test-process:first",
-      resourceClaims: [],
+      resourceClaims: ["agent-id:aug1_99999999-9999-4999-8999-999999999999"],
       resourceClaimStore: "sqlite-v1" as const,
       port: null,
       configPath: "/tmp/incarnation-a/agent.yaml",

@@ -31,6 +31,7 @@ import {
 import { resolveConfigPath } from "../resolve-config";
 import { openBrowser } from "../open-browser";
 import type { AgentConfig, Augment, ModelClient } from "../../types";
+import type { PidManifest } from "../types";
 import { displayPath } from "../display-path";
 import { prepareRailwayRuntimeVolume } from "../runtime-volume";
 import { runtimeResourceClaims } from "../runtime-resource-claims";
@@ -41,8 +42,8 @@ import { runtimeResourceClaims } from "../runtime-resource-claims";
  */
 function extractPort(config: ReturnType<typeof parseConfig>): number | null {
   for (const aug of config.augments) {
-    if (aug.type === "webTransport" && aug.options?.port) {
-      return aug.options.port as number;
+    if (aug.type === "webTransport") {
+      return aug.options!.port as number;
     }
   }
   return null;
@@ -184,32 +185,30 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
 
   const agentName = config.name;
 
-  // Claim the name by writing the PID manifest atomically (wx flag).
-  // This prevents TOCTOU races — the filesystem is the lock.
+  // Claim the immutable identity and exclusive runtime resources before boot.
   const port = extractPort(config);
   let pidManifestClaimed = false;
+  let pidManifest: PidManifest | null = null;
   try {
     const processIdentity = getProcessIdentity(process.pid);
     if (!processIdentity) {
       throw new Error("[runtime] unable to verify the current OS process incarnation");
     }
-    pidManifestClaimed = claimRuntimePidManifest(
-      {
-        pid: process.pid,
-        name: agentName,
-        agentId: config.id,
-        claimNonce: randomUUID(),
-        processIdentity,
-        resourceClaims: runtimeResourceClaims(config),
-        resourceClaimStore: "sqlite-v1",
-        port,
-        configPath: resolve(configPath),
-        agentDir: resolve(agentDir),
-        startedAt: new Date().toISOString(),
-        mode,
-      },
-      { internalMode: opts.internalMode },
-    );
+    pidManifest = {
+      pid: process.pid,
+      name: agentName,
+      agentId: config.id,
+      claimNonce: randomUUID(),
+      processIdentity,
+      resourceClaims: runtimeResourceClaims(config, agentDir),
+      resourceClaimStore: "sqlite-v1",
+      port,
+      configPath: resolve(configPath),
+      agentDir: resolve(agentDir),
+      startedAt: new Date().toISOString(),
+      mode,
+    };
+    pidManifestClaimed = claimRuntimePidManifest(pidManifest, { internalMode: opts.internalMode });
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "EEXIST") {
       throw new Error(formatAgentAlreadyRunningMessage(agentName, readPidManifest(config.id)));
@@ -254,7 +253,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
       coordination: config.settings.coordination,
     };
   } catch (err) {
-    releaseRuntimePidManifest(config.id, pidManifestClaimed);
+    if (pidManifest) releaseRuntimePidManifest(pidManifest, pidManifestClaimed);
     throw err;
   }
 
@@ -272,7 +271,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
     } catch (err) {
       console.error("Error during shutdown:", err);
     }
-    releaseRuntimePidManifest(config.id, pidManifestClaimed);
+    if (pidManifest) releaseRuntimePidManifest(pidManifest, pidManifestClaimed);
     console.log(`${agentName} stopped.`);
     process.exit(0);
   };
@@ -282,7 +281,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
 
   // Also clean up PID on unexpected exit.
   process.on("exit", () => {
-    releaseRuntimePidManifest(config.id, pidManifestClaimed);
+    if (pidManifest) releaseRuntimePidManifest(pidManifest, pidManifestClaimed);
   });
 
   // Start the agent.

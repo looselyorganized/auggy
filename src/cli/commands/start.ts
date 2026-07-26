@@ -48,12 +48,17 @@ export async function runStart(
   // Unload existing plist if present.
   const label = plistLabel(config.id);
   const installPath = plistInstallPath(config.id);
-  try {
-    const result = await $`launchctl list`.quiet();
-    if (result.stdout.toString().includes(label)) {
+  const listed = await $`launchctl list`.quiet();
+  if (listed.stdout.toString().includes(label)) {
+    try {
       await $`launchctl unload ${installPath}`.quiet();
+    } catch (error) {
+      throw new Error(
+        `Could not unload the existing launchd job for immutable agent ${config.id}; its configuration was preserved.`,
+        { cause: error },
+      );
     }
-  } catch {}
+  }
 
   // Clean up old plist files.
   const storePath = plistStorePath(config.id);
@@ -88,9 +93,7 @@ export async function runStart(
     await $`launchctl load ${installPath}`.quiet();
   } catch (err: unknown) {
     const stderr = (err as { stderr?: { toString(): string } }).stderr?.toString() ?? "";
-    if (!stderr.includes("service already loaded")) {
-      throw new Error(`launchctl load failed: ${stderr.trim() || (err as Error).message}`);
-    }
+    throw new Error(`launchctl load failed: ${stderr.trim() || (err as Error).message}`);
   }
 
   // Poll for the agent to start.
