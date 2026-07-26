@@ -63,7 +63,10 @@ variable names and placeholders and remains normally readable.
   `/app/data/web-idempotency.db`, stores console conversations at
   `/app/data/console-chat.db`, and isolates AgentMail beneath
   `/app/data/agent-mail/<augment-name>`. Only Link retains a legacy
-  `/app/link.db` compatibility symlink. See [18-deploy.md](./18-deploy.md).
+  `/app/link.db` compatibility symlink. Railway admission also holds
+  `/app/data/.auggy-runtime-singleton.lock` for the process lifetime; its
+  contents are non-authoritative and it is safe to preserve in a stopped
+  backup. See [18-deploy.md](./18-deploy.md).
 - The filesystem augment catalogs bounded metadata from `data/workspace` on
   creator and agent turns. This makes durable artifacts visible without
   automatically loading their contents; the model still uses `fs_search`,

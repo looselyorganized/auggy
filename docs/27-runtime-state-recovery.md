@@ -41,6 +41,7 @@ The initial catalog covers:
 | State | Schema/version | Default retention | Recovery significance |
 | --- | --- | --- | --- |
 | Runtime identity | `runtime-state-identity/v1` | Lifetime of the logical agent volume | Binds the bundle to one server-minted agent id |
+| Runtime singleton anchor | `posix-flock-anchor/v1` | Lifetime of the logical agent volume | Content-free lock inode; authority exists only while a live process holds the kernel lock |
 | Admin overrides | `admin-overrides/v1` | Until operator replacement | Runtime security and budget policy |
 | Mutable file memory | `utf8-text/v1` | Until creator replacement | Creator-approved learned behavior |
 | Layered memory SQLite | `LMEM/v1` | Configured expiry, 30 days by default | Peer memory and erasure state |
@@ -73,6 +74,11 @@ file.
 The volume contains `.auggy-state-identity.json`, which binds it to the
 server-minted `aug1_...` agent id. Startup creates this identity on first
 admission and rejects a volume belonging to another agent.
+
+The volume may also contain `.auggy-runtime-singleton.lock`. Backing up or
+restoring this regular owner-only file while the sole replica is stopped is
+safe because its bytes carry no authority. A restored copy begins unlocked;
+the next supported runtime acquires a new kernel lease during admission.
 
 ## Offline backup
 

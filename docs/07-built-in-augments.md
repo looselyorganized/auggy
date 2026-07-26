@@ -250,6 +250,7 @@ const episodic = supabaseMemory({
   scope: "peer",
   client: supabase,
   table: "agent_memories",
+  namespaceColumn: "namespace_key", // exact namespace owner; this is the default
   mutable: true,
   origin: "peer-derived",
   priority: "normal",
@@ -294,6 +295,7 @@ export interface SupabaseMemoryOptions {
   scope: "peer" | "shared";           // required authorization boundary
   client: SupabaseLikeClient;
   table: string;                      // the table to read/write
+  namespaceColumn?: string;           // default "namespace_key"; exact owner key
   peerColumn?: string;                // default "peer_id"
   mutable: boolean;                   // whether write() is exposed
   origin: ContextOrigin;
@@ -304,7 +306,18 @@ export interface SupabaseMemoryOptions {
 }
 ```
 
-The `namespace` becomes the prefix — `"episode"` is normalized to `"episode:"`. All labels in this provider must start with that prefix or the post-filter (see below) drops them.
+The `namespace` becomes the public label prefix — `"episode"` is normalized
+to `"episode:"`. Storage authorization does not trust that prefix. Every row
+must also carry the canonical exact owner in `namespace_key` (or the explicitly
+configured `namespaceColumn`), and every query filters on it before ordering or
+limiting. Existing rows with a null owner remain invisible until an operator
+performs an authoritative offline backfill.
+
+At minimum the table needs `label text`, `content text`, `metadata jsonb`,
+`created_at timestamptz`, `namespace_key text`, and, for `scope: "peer"`,
+`peer_id text`. Include both `namespace_key` and `peer_id` in database RLS
+policies and indexes; application filters are not a substitute for RLS when
+untrusted clients can reach Supabase directly.
 
 ### `SupabaseLikeClient` — the structural type
 

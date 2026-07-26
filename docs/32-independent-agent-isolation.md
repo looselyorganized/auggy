@@ -44,21 +44,63 @@ ownership of that Telegram bot before polling or webhook startup.
 
 Local `auggy dev` acquires atomic, owner-only resource claims before transports
 start. Within one OS user's `~/.auggy` registry, it rejects duplicate immutable
-IDs, ports, Telegram bots, and inbound AgentMail inboxes. Claims use non-secret
+IDs, canonical agent state roots, ports, Telegram bots, and inbound AgentMail
+inboxes. A state root holds both a canonical-path claim and a physical
+device/inode claim. Equal, ancestor, descendant, replacement, symlink-alias,
+and rename collisions are rejected while either owner is live. Claims use non-secret
 identifiers; a Telegram token without a numeric bot prefix is represented by a
 domain-separated SHA-256 fingerprint, never by the token itself. Claim
 takeover and release are serialized by an owner-only, schema-validated SQLite
 registry. Transactions roll back automatically if a claimant crashes during a
 mutation, so restart does not depend on deleting an abandoned lock directory.
-PID incarnation markers prevent an unrelated reused PID from being signaled or
-treated as the old owner. Malformed claims and ambiguous display-name lookups
-fail closed.
+PID incarnation markers detect ordinary PID reuse before lifecycle commands
+signal or clean up an owner. POSIX does not expose a portable pidfd equivalent
+on every supported host, so a same-UID exit/reuse exactly between the final
+identity check and signal remains an operational race; lifecycle cleanup is
+generation-fenced and fails closed whenever reuse is observable. Malformed
+claims and ambiguous display-name lookups fail closed.
+
+Runtime manifests are published by durable atomic replacement and their claims
+are released only when the captured immutable ID and claim nonce still match.
+`start`, `stop`, `restart`, and `remove` serialize fixed launchd and state-root
+mutations with a crash-recoverable per-agent lifecycle lease. A launchd child
+must acknowledge the random installation generation embedded in its plist and
+the local registry's durable active-generation allowlist before resource
+claims and again after manifest publication. `start` closes the preceding
+generation before unloading or replacing its job. `stop` closes the captured
+generation before unload, and an exact-id stop can close and unload an active
+generation even when its KeepAlive child has not published a manifest. Thus a
+late or manifestless child cannot become active after a successful lifecycle
+operation. A display-name stop or restart with no manifest fails explicitly
+and requires the immutable ID: mutable project configuration cannot prove
+which identity an unpublished start already parsed. An exact-ID restart also
+refuses to report "not running" while a manifestless launchd generation is
+active; the operator must recover it with `stop <id>` before starting the
+intended config. The claim-registry schema migrates the exact version-one catalog to
+version two to add this bounded one-row-per-agent generation state;
+an unrelated foreground runtime is not accepted as startup success. Failed or
+timed-out starts unload the possibly armed KeepAlive job before removing its
+artifacts. `stop` ignores only missing plist files and preserves manifests and
+claims after a failed unload, cleanup error, or unverifiable/non-terminating
+process. `remove` holds lifecycle, agent-ID, canonical-path, and physical-root
+leases across confirmation and cloud cleanup, atomically renames the captured
+root to a private quarantine name, verifies its immutable ID and inode there,
+and only then recursively deletes it.
 
 These claims are local to one OS user's registry, not the whole host. Separate
 service accounts, containers, hosts, Railway services, Kubernetes, Nomad, and
 other schedulers must prevent the same exclusive inbound identity from being
 configured twice. A database, volume, or load balancer does not make duplicate
 Telegram pollers or AgentMail consumers safe.
+
+On an admitted Railway volume, Auggy additionally holds an owner-only,
+descriptor-relative `flock(2)` anchor for the entire live process. A second
+runtime on the same lock inode fails before providers, augments, or transports
+start, and a crash releases the lease in the kernel. This protects the
+supported one-replica contract; it is not distributed coordination. The
+platform must keep the service at one replica, attach one dedicated volume,
+and provide coherent file locking. Distinct or cloned volumes cannot detect
+one another.
 
 ## Load-balancer ownership
 
@@ -130,6 +172,16 @@ plan. Never configure the old shared namespace as a compatibility escape.
 Telegram's default `telegram:bot-<botId>` replay namespace is unchanged, so its
 deduplication and conflict history remains visible after upgrade. An explicitly
 configured replay namespace also remains unchanged.
+
+Cloud deployment metadata is now `version: 1` and binds the Railway target to
+the immutable agent ID. Legacy, malformed, symlinked, or identity-mismatched
+`.auggy-cloud.json` files fail before redeploy, log lookup, or `remove --cloud`
+can target Railway, and publication uses exclusive random temporary files.
+Copying both `agent.yaml` and its cloud record copies the same logical agent;
+it is not a way to create an independent agent. Mint a new agent identity and
+reset deployment metadata for a clone intended to operate independently.
+Verify the remote project/service manually before deleting legacy metadata and
+creating a fresh binding.
 
 ## What remains unsupported
 

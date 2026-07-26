@@ -176,9 +176,16 @@ When `visitorAuth` and a SQLite `layeredMemory` augment point at the same
 database, the CLI derives the exact layered-memory namespace and prefixes it
 with the immutable agent ID. Verification migration and `auggy visitors
 --revoke` update/delete only rows in that namespace, even if another agent was
-misconfigured to share the file. Multiple layered-memory namespaces must use
-separate database files when visitor migration is enabled so ownership is not
-ambiguous.
+misconfigured to share the file. The store persists an exact `namespace_key`;
+label prefixes are display/routing metadata and are never authorization
+evidence. Nested namespaces such as `Foo` and `Foo:bar` therefore remain
+isolated even in one database.
+
+Programmatic `visitorAuth(...)` construction is deliberately more explicit:
+peer migration is disabled when `layeredMemoryDbPath` is omitted or `null`. If
+a direct caller supplies a migration path, it must also supply the exact
+non-empty `layeredMemoryNamespace`. This prevents two embedded agents sharing a
+database from silently falling back to the same `ep` namespace.
 
 ## AgentMail setup
 
@@ -315,12 +322,29 @@ The `notifyOnFirstVerify` option (operator-alert email on each new visitor) cann
 # List verified visitors
 auggy visitors zip
 
-# Hard-revoke a verified visitor (deletes verified_visitors row + cascades memory_forget)
+# Hard-revoke a verified visitor (deny identity + cascade memory erasure)
 auggy visitors zip --revoke alice@example.com
 auggy visitors zip --revoke alice@example.com --yes      # non-interactive
 ```
 
-If a revoke is interrupted (e.g., Ctrl-C between the visitor-auth UPDATE and the memory.db DELETE), simply re-run `auggy visitors <agent> --revoke <email>` — the command detects the already-revoked row and finishes the memory cascade idempotently.
+Revocation atomically invalidates every outstanding magic link for the email;
+a link issued before `revoked_at` cannot reactivate the identity even if its
+consume raced the operator action. Concurrent links issued after revocation
+converge on one canonical replacement identity.
+
+If the authentication decision commits but memory erasure fails, the command
+exits nonzero and names the retired identity whose erasure is incomplete. Fix
+the store and re-run the same revoke command. The denylist retains every prior
+identity for the email, so retries erase all retired IDs even if the visitor
+reverified and rotated between attempts. Successful retries are idempotent.
+
+Revocation and anonymous-to-recognized migration also write a durable
+per-namespace peer tombstone in `memory.db`. Every explicit and auto-save write
+checks that tombstone inside its SQLite transaction. A turn already in flight
+therefore cannot recreate revoked memory or write under the retired anonymous
+identity after the migration completes. Reverification rotates to a new
+`vis_` identity; it does not clear the retired identity's tombstone. CLI email
+lookups trim and lowercase operator input just like enrollment.
 
 ## How verification works (operational view)
 

@@ -529,20 +529,28 @@ Group verification:
 ### Group 7 — implemented on branch
 
 The CLI now treats the server-minted `agent.yaml` id as the logical-agent
-isolation root. Shared Layered Memory and Supabase stores apply the immutable
-agent namespace in the store query itself before result limits and enforce it
-on exact reads, writes, supersession, cleanup, and deletion. Visitor audiences,
+isolation root. Shared Layered Memory and Supabase stores persist a canonical,
+collation-independent exact namespace owner and apply it in the store query
+before result limits and on exact reads, writes, supersession, cleanup, and
+deletion. Label prefixes are no longer authorization evidence. Durable peer
+tombstones serialize verification migration/revocation against concurrent and
+future memory writes. Visitor audiences,
 Link cards, runtime volumes, local mutable paths, PID manifests, and launchd
 services bind to the same immutable id instead of a mutable display name.
 
 Local startup atomically claims the immutable agent id, listener ports,
-Telegram bot identity, and inbound AgentMail inbox before transports start.
+canonical state pathname plus physical root, Telegram bot identity, and inbound AgentMail inbox before
+transports start.
 Claims are private, nonce-owned, secret-free, serialized per resource,
 PID-incarnation checked, stale-process recoverable, and released only by their
-exact owner within one OS user's CLI registry. Display-name lifecycle aliases are allowed
-only when unambiguous, named configuration resolution cannot fall through to a
-different current-working-directory agent, and a live legacy name-keyed process
-blocks the identity-keyed replacement until it is stopped.
+exact owner within one OS user's CLI registry. Manifests are durably published,
+cleanup compares the captured claim generation, launchd control is serialized
+and authenticated by an installation generation, launchd failures roll back or
+preserve recoverable ownership, and destructive removal quarantines and
+revalidates the captured root before deletion. Display-name lifecycle aliases are allowed only when unambiguous, named
+configuration resolution cannot fall through to a different
+current-working-directory agent, and a live legacy name-keyed process blocks
+the identity-keyed replacement until it is stopped.
 
 All Auggy-owned local state is contained below the selected agent directory or
 the admitted Railway runtime root. Telegram replay keeps its provider-bot
@@ -561,3 +569,54 @@ enforce exclusive inbound provider identities across those boundaries.
 Mutually untrusted agents require different OS or container identities because
 `bash` and configured filesystem mounts are capabilities, not a sandbox.
 Multiple replicas for one logical Auggy remain unsupported.
+
+The final Group 7 hostile passes also closed blank, malformed-Unicode, case,
+and nested namespace aliasing; fail-open legacy memory adoption; standalone
+visitor migration defaults; revoke/reverification/write races and retryable
+partial erasure; symlinked operator and cloud-metadata paths; noncanonical listener ports; equal,
+hierarchical, replaced, and aliased state-root collisions; launchd
+start/stop/restart races and partial failures; timezone-dependent process
+identities; and secret-bearing environment inheritance by the macOS `ps`
+fallback. A byte-for-byte clone of both the immutable identity and cloud record
+remains the same logical agent, not an independent deployment. Verification
+covered the complete tracked runtime and admin inventory in 12 sequential
+shards; final counts are recorded in the pull request. The
+portable POSIX check-to-signal PID-reuse window remains a documented Low
+same-UID operational residual rather than an absolute process-handle guarantee.
+
+The final cross-group hostile gate then found and resolved six additional
+Medium boundaries before PR publication: Railway had bypassed every local
+singleton claim; launchd stop had a late manifest-publication window; a signed
+visitor absent from the configured identity authority could still be treated
+as recognized; active-winner reverification skipped the latest revocation
+epoch; the exported same-peer memory migration primitive could self-tombstone;
+and unresolved Unicode-normalization aliases could select the wrong memory
+namespace. The corrected runtime holds a crash-released same-volume `flock`,
+uses a durable launchd active-generation allowlist checked before claims and
+after manifest publication, requires configured visitor identity authority,
+checks the maximum email revocation epoch, makes same-peer migration a pure
+no-op, and conservatively rejects normalization/case-fold aliases.
+
+Repeat hostile review found and resolved four follow-up Medium gaps: exact-id
+`stop` now recovers an active launchd generation without a manifest; `start`
+closes the previous generation before unload; operator revocation retries
+advance both row and denylist epochs monotonically; and unresolved path
+comparison covers full Unicode case-fold equivalence. The supported Railway
+guarantee remains one runtime per coherently locked dedicated volume. Separate
+or cloned volumes remain a deployment boundary and do not make horizontal
+replicas supported.
+
+A final launchd re-review found lost stop/restart interleavings before state
+publication. Exact immutable-ID controls now acquire the lifecycle lease before
+their first manifest or generation lookup. Display-name controls with no
+manifest fail explicitly and require the immutable ID because mutable project
+configuration cannot prove the identity of an unpublished start. A concurrent
+start is therefore either acted on from observed state or causes the control
+operation to fail visibly for retry; it can no longer complete after a false
+"not running" result.
+
+The final dependency gate also discovered the newly published
+`GHSA-qwww-vcr4-c8h2` against React Router 7.18.1. The console migrated from the
+removed `react-router-dom` compatibility package to patched `react-router`
+8.3.0. All 243 console tests and the production build passed, and the repeated
+`bun audit --json` returned an empty advisory set.

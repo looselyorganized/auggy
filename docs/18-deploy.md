@@ -201,6 +201,13 @@ root descriptor. The platform must keep the admitted mountpoint stable for the
 process lifetime; a process identity that can replace `/app/data` or its mount
 namespace is part of the trusted deployment boundary.
 
+Railway startup also opens `/app/data/.auggy-runtime-singleton.lock` through
+that pinned root and holds a non-blocking exclusive `flock(2)` until shutdown
+has drained and stopped the agent. A second process seeing the same lock inode
+fails before provider or augment startup. The persistent file contains no PID,
+timestamp, credential, or ownership authority; the kernel releases the lease
+when the process exits or crashes.
+
 The volume is required, not optional container storage. Mount the Railway
 volume at the directory `/app/data`—not at an individual `.db` file and not at
 a neighboring directory. The generated entrypoint deliberately refuses to
@@ -225,6 +232,8 @@ volume even when an agent's portable config uses a project-relative default:
   notification destination)
 - `/app/data/admin-overrides.json` (authenticated runtime policy overrides)
 - `/app/data/.auggy-state-identity.json` (server-minted agent/volume binding)
+- `/app/data/.auggy-runtime-singleton.lock` (content-free process-lifetime
+  singleton anchor)
 
 `/app/data/console-chat.db` contains the operator console's conversation list,
 messages, unread markers, and resumable model history. Completed turns survive
@@ -259,6 +268,11 @@ SQLite stores. They assume one process and one writer; attaching multiple
 replicas to the same volume is not a supported scaling strategy. A shared
 database alone is also insufficient: horizontal replicas need shared fencing,
 replay, budget, history, session, delivery, drain, and migration contracts.
+The volume lock makes accidental same-volume overlap fail closed; it does not
+make replicas supported. Every contender must see the same underlying inode on
+a filesystem with coherent cross-process/cross-host `flock`. Separate or cloned
+volumes cannot observe one another, so the Railway service configuration must
+still enforce one replica and one dedicated volume.
 
 Several different logical Auggys may run as separate Railway services. Give
 each service its own `agent.yaml` identity, secrets, volume, public route, and

@@ -78,6 +78,13 @@ default, with an optional Supabase backend for manual/programmatic configs.
 Every read, write, search, recent-entry listing, and forget operation is scoped
 to the current peer.
 
+The registry uses label prefixes to route calls to a provider; the stores do
+not use those prefixes as authorization evidence. SQLite and Supabase persist a
+canonical, exact `namespace_key` and include it in every read and mutation
+predicate before limits. Parent, child, case-variant, and malformed Unicode
+namespaces cannot alias one another. Legacy rows without an exact owner are
+invisible to namespaced runtimes until an offline, operator-reviewed backfill.
+
 Resolver-created Supabase clients attach an API key and therefore require an
 HTTPS `supabaseUrl` (loopback HTTP remains available for local development).
 The explicit `allowInsecureHttpWithCredentials: true` override works only when

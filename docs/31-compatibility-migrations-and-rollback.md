@@ -23,6 +23,8 @@ reinterpreted, or accepted merely because an object has a familiar name.
 | Runtime inventory and bundle | Inventory v1, bundle v1, volume identity v1, restore fence v1 | Readers require exact supported versions, configuration shape, agent identity, replay-critical mapping, paths, modes, and hashes. Unknown/newer formats fail before restore or startup. |
 | PostgreSQL coordination preview | Checksum ledger plus exact catalog validation in the `public` schema | Provisioning is explicit. Every run revalidates owned tables, columns, types, nullability, defaults, sequence ownership, indexes, and checks, including when the ledger already says the migration ran. The runtime still refuses replica mode. |
 | Logical-agent identity and local lifecycle | Immutable `agent.yaml` `aug1_` id | State and authority namespaces, local process manifests, launchd labels, and owned runtime paths bind to the immutable id. Display names are non-authoritative aliases and ambiguous aliases fail closed. |
+| Local runtime-claim registry | `AUCL/v2` in `~/.auggy/runtime-claims.sqlite` | Exact branded v1 migrates transactionally to v2, which adds the one-row-per-agent launchd generation allowlist. Unknown or lookalike catalogs fail before lifecycle admission. Stop/unload all old launchd jobs before upgrade; rollback requires the matching pre-upgrade local registry or an operator-proven fully stopped rebuild. |
+| Railway deployment metadata | `.auggy-cloud.json` version 1 plus immutable agent id | Legacy, malformed, or mismatched records are never adopted automatically. Verify the remote target, remove the local record explicitly, and deploy again to mint a bound record. |
 
 Adding a field to an operational or route artifact is not permission for a
 consumer to accept an unknown schema version. Conversely, the unversioned
@@ -45,6 +47,7 @@ tampered, or newer database fails without stamping or mutating it.
 | Telegram replay/conflicts | `TGRP/v2` | Exact prior replay fixture | Restore bundle and reconcile provider offsets/conflicts before ingress |
 | AgentMail inbound ledger | `AMIL/v2` | Exact v1 and recognized legacy fixtures | Restore bundle and reconcile mailbox/downstream delivery state |
 | Notify delivery incidents/quotas | `NTFY/v1` | Exact recognized legacy shape only | Restore bundle and reconcile outcome-unknown notifications |
+| Local runtime claims and launchd generations | `AUCL/v2` | Exact branded v1 claim table migrates to v2 | Local CLI control state, not runtime-volume state; stop and unload every local agent before restoring the matching registry |
 
 Admin overrides (`admin-overrides/v1`), thread-history snapshots (`version: 1`),
 anonymous-session proofs (`version: 1`), Link provenance (`version: 1`), and
@@ -128,6 +131,34 @@ reviewed export/relabel/import with a complete backup. Telegram is different:
 its durable replay namespace remains the stable provider bot id so an identity
 upgrade does not hide deduplication history. See
 [Independent Agents on One Platform](./32-independent-agent-isolation.md).
+
+Namespace authorization now uses a collation-independent exact
+`namespace_key` (`v1.` plus base64url-encoded canonical UTF-8), not a label
+prefix. `Foo`, `foo`, and `Foo:bar` are different principals even when they
+share a database or table. Direct `visitorAuth(...)` callers
+must now pass both `layeredMemoryDbPath` and `layeredMemoryNamespace` to enable
+anonymous-to-recognized migration. Omitting the path disables migration for
+direct callers. The CLI continues to resolve its documented `./memory.db`
+default and derives the immutable-ID-scoped namespace from the matching
+layered-memory augment.
+
+SQLite layered-memory schema version 3 adds nullable `entries.namespace_key`,
+an exact-owner index, and the durable `peer_tombstones` table. New writes set
+the owner key internally. Existing rows remain `NULL` and are intentionally
+invisible to configured namespaced stores; the runtime never guesses ownership
+from `label LIKE 'prefix%'`. Adopt legacy rows only while every writer is
+stopped, from a complete backup, and from an authoritative row-ID-to-namespace
+mapping. Parent/child prefixes are ambiguous and must never be bulk-backfilled
+by prefix.
+
+Supabase-backed memory requires the same `namespace_key` column before the new
+runtime starts. The bundled layered-memory migration adds the nullable column
+and `(namespace_key, peer_id)` index; `supabaseMemory` uses
+`namespaceColumn: "namespace_key"` by default for operator-managed tables.
+Backfill only proven rows, include the exact key in RLS, and leave unproven rows
+quarantined/`NULL`. A missing column fails through PostgREST; there is no
+prefix-only compatibility fallback. Rolling back to a binary that ignores
+`namespace_key` can reopen cross-namespace access and is unsafe.
 
 ## Rollback
 
