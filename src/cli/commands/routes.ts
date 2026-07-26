@@ -42,7 +42,7 @@ export async function runRoutes(
     cwd: opts.cwd,
   });
   const config = parseConfig(configPath);
-  const inspected = await inspectAugmentRoutes(dirname(configPath), config.augments);
+  const inspected = await inspectAugmentRoutes(dirname(configPath), config.augments, config.id);
 
   if (inspected.issues.length > 0) {
     throw new Error(
