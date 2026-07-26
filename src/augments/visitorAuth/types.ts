@@ -120,6 +120,12 @@ export interface VisitorAuthOptions {
    */
   layeredMemoryDbPath?: string | null;
   /**
+   * Layered-memory namespace whose rows may be reassigned after verification.
+   * The CLI derives and immutable-agent-scopes this from the matching
+   * layeredMemory augment. Programmatic callers default to `ep`.
+   */
+  layeredMemoryNamespace?: string;
+  /**
    * Permit `agentMail.transport: "console"` when `NODE_ENV === "production"`.
    * Default `false`. Console mode prints magic links to stdout, which on cloud
    * platforms (Railway/Fly/etc.) end up in runtime logs — anyone with log

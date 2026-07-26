@@ -10,13 +10,17 @@ import { seedAgentForTest } from "../../../src/cli/agent-index";
 let tmp: string;
 let agentDir: string;
 let auggyDir: string;
+const AGENT_ID = "aug1_12345678-1234-4123-8123-123456789abc";
+const MEMORY_NAMESPACE = `${AGENT_ID}:ep`;
 
 beforeEach(() => {
   tmp = mkdtempSync(join(tmpdir(), "visitors-cmd-"));
   auggyDir = join(tmp, "auggy");
   agentDir = seedAgentForTest("zip", {
     auggyDir,
-    yaml: `augments:
+    yaml: `id: ${AGENT_ID}
+name: zip
+augments:
   - visitorAuth
 `,
   });
@@ -107,10 +111,14 @@ import { runVisitorsRevoke } from "../../../src/cli/commands/visitors-revoke";
 import { Database } from "bun:sqlite";
 
 async function seedMemoryDb(memDbPath: string, peerId: string, n: number): Promise<void> {
-  const store = createSqliteStore({ dbPath: memDbPath, retentionDays: 90 });
+  const store = createSqliteStore({
+    dbPath: memDbPath,
+    namespace: MEMORY_NAMESPACE,
+    retentionDays: 90,
+  });
   for (let i = 0; i < n; i++) {
     await store.write({
-      label: `ep:${peerId}:${i}`,
+      label: `${MEMORY_NAMESPACE}:${peerId}:${i}`,
       content: `c${i}`,
       peerId,
       trustLevel: "public",
@@ -145,6 +153,47 @@ describe("auggy visitors <agent> --revoke <email>", () => {
       | undefined;
     db.close();
     expect(c?.c).toBe(0);
+  });
+
+  test("revoke deletes only this immutable agent namespace in a shared database", async () => {
+    seed([{ visitorId: "vis_shared", email: "shared@x", verifiedAt: 1000 }]);
+    await seedMemoryDb(join(agentDir, "memory.db"), "vis_shared", 2);
+    const otherNamespace = "aug1_abcdefab-cdef-4abc-8def-abcdefabcdef:ep";
+    const other = createSqliteStore({
+      dbPath: join(agentDir, "memory.db"),
+      namespace: otherNamespace,
+      retentionDays: 90,
+    });
+    await other.write({
+      label: `${otherNamespace}:vis_shared:keep`,
+      content: "belongs to another agent",
+      peerId: "vis_shared",
+      trustLevel: "public",
+      createdAt: Date.now(),
+      supersededBy: null,
+      retentionClass: "operational",
+      isVerbatim: false,
+      expiresAt: null,
+    });
+    await other.close();
+
+    await runVisitorsRevoke("zip", "shared@x", {
+      auggyDir,
+      confirm: false,
+      log: () => {},
+    });
+
+    const db = new Database(join(agentDir, "memory.db"));
+    try {
+      const rows = db
+        .prepare<{ label: string }, [string]>(
+          "SELECT label FROM entries WHERE peer_id = ? ORDER BY label",
+        )
+        .all("vis_shared");
+      expect(rows.map((row) => row.label)).toEqual([`${otherNamespace}:vis_shared:keep`]);
+    } finally {
+      db.close();
+    }
   });
 
   test("errors with clear message when email is not a verified visitor", async () => {

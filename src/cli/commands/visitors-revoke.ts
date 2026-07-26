@@ -13,7 +13,8 @@ import { existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { deleteSqliteMemoryForPeer } from "../../augments/layeredMemory/storage/sqlite-store";
 import { createSqliteVisitorAuthStore } from "../../augments/visitorAuth/storage/sqlite-store";
-import { parseAugmentConfigOnly } from "../yaml-helpers";
+import { scopedAgentNamespace } from "../agent-isolation";
+import { parseAgentIdOnly, parseAugmentConfigOnly, parseAugmentConfigsOnly } from "../yaml-helpers";
 import { resolveConfigPath } from "../resolve-config";
 
 export interface VisitorsRevokeOptions {
@@ -30,6 +31,7 @@ interface ResolvedPaths {
   agentDir: string;
   visitorAuthDb: string;
   memoryDb: string | null;
+  memoryNamespace: string;
 }
 
 function resolvePaths(agentName: string, opts: VisitorsRevokeOptions): ResolvedPaths {
@@ -38,6 +40,7 @@ function resolvePaths(agentName: string, opts: VisitorsRevokeOptions): ResolvedP
     cwd: opts.cwd,
   });
   const agentDir = resolve(yamlPath, "..");
+  const agentId = parseAgentIdOnly(yamlPath);
   // parseAugmentConfigOnly handles env-var interpolation (F15) so that
   // `dbPath: ${MY_DB_PATH}` / `layeredMemoryDbPath: ${MEMORY_DB}` in
   // agent.yaml resolves correctly here.
@@ -51,10 +54,30 @@ function resolvePaths(agentName: string, opts: VisitorsRevokeOptions): ResolvedP
     vaOptions.layeredMemoryDbPath === null
       ? null
       : ((vaOptions.layeredMemoryDbPath as string | undefined) ?? "./memory.db");
+  const memoryDb = memPathRaw === null ? null : resolve(agentDir, memPathRaw);
+  const matchingNamespaces = new Set(
+    parseAugmentConfigsOnly(yamlPath, "layeredMemory")
+      .filter((options) => (options.backend ?? "sqlite") === "sqlite")
+      .filter(
+        (options) =>
+          memoryDb !== null &&
+          resolve(agentDir, (options.dbPath as string | undefined) ?? "./memory.db") === memoryDb,
+      )
+      .map((options) =>
+        scopedAgentNamespace(agentId, options.namespace as string | undefined, "ep"),
+      ),
+  );
+  if (matchingNamespaces.size > 1) {
+    throw new Error(
+      `Agent "${agentName}": visitorAuth memory path matches multiple layeredMemory namespaces; use separate database files.`,
+    );
+  }
   return {
     agentDir,
     visitorAuthDb: resolve(agentDir, dbPath),
-    memoryDb: memPathRaw === null ? null : resolve(agentDir, memPathRaw),
+    memoryDb,
+    memoryNamespace:
+      matchingNamespaces.values().next().value ?? scopedAgentNamespace(agentId, undefined, "ep"),
   };
 }
 
@@ -92,7 +115,12 @@ export async function runVisitorsRevoke(
   // a no-op when there are no orphan rows.
   if (existing.revoked) {
     store.close();
-    const memDeleted = cascadeMemoryDelete(paths.memoryDb, existing.visitorId, log);
+    const memDeleted = cascadeMemoryDelete(
+      paths.memoryDb,
+      paths.memoryNamespace,
+      existing.visitorId,
+      log,
+    );
     log(
       `Visitor "${email}" was already revoked (${existing.revokedReason ?? "unspecified"}). ${memDeleted} stale memory row(s) cleaned up.`,
     );
@@ -113,7 +141,7 @@ export async function runVisitorsRevoke(
   const visitorId = store.revokeByEmail(email, "operator", Date.now())!;
   store.close();
 
-  const memDeleted = cascadeMemoryDelete(paths.memoryDb, visitorId, log);
+  const memDeleted = cascadeMemoryDelete(paths.memoryDb, paths.memoryNamespace, visitorId, log);
   log(`Revoked "${email}" (${visitorId}). ${memDeleted} memory row(s) removed.`);
 }
 
@@ -125,6 +153,7 @@ export async function runVisitorsRevoke(
  */
 function cascadeMemoryDelete(
   memoryDb: string | null,
+  memoryNamespace: string,
   visitorId: string,
   log: (line: string) => void,
 ): number {
@@ -134,7 +163,7 @@ function cascadeMemoryDelete(
     return 0;
   }
   try {
-    return deleteSqliteMemoryForPeer(memoryDb, visitorId);
+    return deleteSqliteMemoryForPeer(memoryDb, memoryNamespace, visitorId);
   } catch (err) {
     log(`Memory cascade failed: ${(err as Error).message}. Operator should retry manually.`);
     return 0;

@@ -623,6 +623,8 @@ function resolveVisitorAuth(
   opts: Record<string, unknown>,
   agentDir: string,
   runtimeDataRoot?: string,
+  agentId?: string,
+  configs: readonly AugmentConfig[] = [],
 ): Augment {
   const dbPath = (opts.dbPath as string | undefined) ?? "./visitor-auth.db";
   // CRITICAL: distinguish `null` (operator opt-out) from `undefined` (defaults to ./memory.db).
@@ -631,6 +633,41 @@ function resolveVisitorAuth(
     opts.layeredMemoryDbPath === null
       ? null
       : ((opts.layeredMemoryDbPath as string | undefined) ?? "./memory.db");
+  const resolvedLayeredMemoryDbPath =
+    layeredMemoryDbPath === null
+      ? null
+      : resolveSqlitePath(
+          layeredMemoryDbPath,
+          agentDir,
+          runtimeDataRoot,
+          "visitorAuth layeredMemoryDbPath",
+        );
+  const matchingNamespaces = new Set(
+    configs
+      .filter((config) => config.type === "layeredMemory")
+      .filter((config) => (config.options?.backend ?? "sqlite") === "sqlite")
+      .filter((config) => {
+        if (resolvedLayeredMemoryDbPath === null) return false;
+        return (
+          resolveSqlitePath(
+            (config.options?.dbPath as string | undefined) ?? "./memory.db",
+            agentDir,
+            runtimeDataRoot,
+            `layeredMemory "${config.name}" dbPath`,
+          ) === resolvedLayeredMemoryDbPath
+        );
+      })
+      .map((config) =>
+        scopedAgentNamespace(agentId, config.options?.namespace as string | undefined, "ep"),
+      ),
+  );
+  if (matchingNamespaces.size > 1) {
+    throw new Error(
+      "[augment-resolver] visitorAuth layeredMemoryDbPath matches multiple layeredMemory namespaces; use separate database files",
+    );
+  }
+  const layeredMemoryNamespace =
+    matchingNamespaces.values().next().value ?? scopedAgentNamespace(agentId, undefined, "ep");
 
   const config: VisitorAuthOptions = {
     publicUrl: opts.publicUrl as string,
@@ -642,15 +679,8 @@ function resolveVisitorAuth(
     reverifyAfterDays: opts.reverifyAfterDays as number | undefined,
     tokenTtlMinutes: opts.tokenTtlMinutes as number | undefined,
     notifyOnFirstVerify: opts.notifyOnFirstVerify as VisitorAuthOptions["notifyOnFirstVerify"],
-    layeredMemoryDbPath:
-      layeredMemoryDbPath === null
-        ? null
-        : resolveSqlitePath(
-            layeredMemoryDbPath,
-            agentDir,
-            runtimeDataRoot,
-            "visitorAuth layeredMemoryDbPath",
-          ),
+    layeredMemoryDbPath: resolvedLayeredMemoryDbPath,
+    layeredMemoryNamespace,
     // G34: forward the production-override flag. The `agentMail.transport`
     // discriminator already flows through `opts.agentMail` above; no separate
     // wiring needed for it.
@@ -1074,7 +1104,13 @@ export async function resolveAugments(
           augment = turnControl(opts as TurnControlOptions);
           break;
         case "visitorAuth":
-          augment = resolveVisitorAuth(opts, agentDir, ownedStateRoot);
+          augment = resolveVisitorAuth(
+            opts,
+            agentDir,
+            ownedStateRoot,
+            resolverOpts.agentId,
+            configs,
+          );
           break;
         case "link":
           augment = await resolveLink(opts, agentDir, ownedStateRoot);

@@ -239,26 +239,44 @@ function openLayeredMemoryDatabase(dbPath: string, create = true) {
 
 export function reassignSqliteMemoryPeerId(
   dbPath: string,
+  namespace: string,
   oldPeerId: string,
   newPeerId: string,
 ): number {
+  const prefixPattern = namespacePrefixPattern(namespace);
   const database = openLayeredMemoryDatabase(dbPath, false);
   try {
     return database.db
-      .prepare("UPDATE entries SET peer_id = ? WHERE peer_id = ?")
-      .run(newPeerId, oldPeerId).changes;
+      .prepare("UPDATE entries SET peer_id = ? WHERE peer_id = ? AND label LIKE ? ESCAPE '\\'")
+      .run(newPeerId, oldPeerId, prefixPattern).changes;
   } finally {
     database.close();
   }
 }
 
-export function deleteSqliteMemoryForPeer(dbPath: string, peerId: string): number {
+export function deleteSqliteMemoryForPeer(
+  dbPath: string,
+  namespace: string,
+  peerId: string,
+): number {
+  const prefixPattern = namespacePrefixPattern(namespace);
   const database = openLayeredMemoryDatabase(dbPath, false);
   try {
-    return database.db.prepare("DELETE FROM entries WHERE peer_id = ?").run(peerId).changes;
+    return database.db
+      .prepare("DELETE FROM entries WHERE peer_id = ? AND label LIKE ? ESCAPE '\\'")
+      .run(peerId, prefixPattern).changes;
   } finally {
     database.close();
   }
+}
+
+function namespacePrefixPattern(namespace: string): string {
+  const trimmed = namespace.trim();
+  if (!trimmed || trimmed.includes("\0")) {
+    throw new Error("layeredMemory store: namespace must be a non-empty string");
+  }
+  const prefix = trimmed.endsWith(":") ? trimmed : `${trimmed}:`;
+  return `${prefix.replace(/[%_\\]/g, (character) => `\\${character}`)}%`;
 }
 
 interface Row {
@@ -314,7 +332,7 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   const db = database.db;
   const namespace = config.namespace?.trim();
   const prefix = namespace ? (namespace.endsWith(":") ? namespace : `${namespace}:`) : null;
-  const prefixPattern = prefix ? `${prefix.replace(/[%_\\]/g, (c) => `\\${c}`)}%` : null;
+  const prefixPattern = namespace ? namespacePrefixPattern(namespace) : null;
 
   const retentionMs = config.retentionDays * 24 * 60 * 60 * 1000;
 

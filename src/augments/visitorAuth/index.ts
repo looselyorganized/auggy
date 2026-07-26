@@ -1043,6 +1043,7 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
           if (consume.peerId && !consume.peerId.startsWith(APP_REQUEST_PEER_PREFIX)) {
             migratePeerIdOnVerify(
               opts.layeredMemoryDbPath === undefined ? "./memory.db" : opts.layeredMemoryDbPath,
+              opts.layeredMemoryNamespace ?? "ep",
               consume.peerId,
               minted.payload.visitorId,
             );
@@ -1332,6 +1333,7 @@ function humanRelativeMs(ms: number): string {
  */
 function migratePeerIdOnVerify(
   dbPath: string | null | undefined,
+  namespace: string,
   oldPeerId: string,
   newPeerId: string,
 ): void {
@@ -1346,7 +1348,7 @@ function migratePeerIdOnVerify(
   // already arrives as vis_*; nothing to migrate).
   if (oldPeerId === newPeerId) return;
   try {
-    const changes = reassignSqliteMemoryPeerId(dbPath, oldPeerId, newPeerId);
+    const changes = reassignSqliteMemoryPeerId(dbPath, namespace, oldPeerId, newPeerId);
     if (changes > 0) {
       console.info(`[visitor-auth] migrated ${changes} memory row(s) ${oldPeerId} → ${newPeerId}`);
     }
