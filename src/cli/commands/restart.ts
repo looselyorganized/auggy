@@ -26,7 +26,7 @@ export async function runRestart(name: string, opts: { config?: string }): Promi
   console.log(`Restarting "${name}" (${mode} mode)...`);
 
   // Stop the agent.
-  await runStop(name);
+  await runStop(manifest.agentId ?? name);
 
   // Brief pause for port release.
   await Bun.sleep(1000);

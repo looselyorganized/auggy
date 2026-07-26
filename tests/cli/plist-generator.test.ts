@@ -9,20 +9,22 @@ import {
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+const AGENT_ID = "aug1_8a3d7828-1597-4db4-bd0e-adc1a1036211";
+
 describe("plist naming", () => {
-  test("plistLabel produces com.auggy.agent.<name>", () => {
-    expect(plistLabel("zip")).toBe("com.auggy.agent.zip");
+  test("plistLabel produces com.auggy.agent.<immutable-id>", () => {
+    expect(plistLabel(AGENT_ID)).toBe(`com.auggy.agent.${AGENT_ID}`);
   });
 
   test("plistStorePath is in ~/.auggy/plists/", () => {
-    expect(plistStorePath("zip")).toBe(
-      join(homedir(), ".auggy", "plists", "com.auggy.agent.zip.plist"),
+    expect(plistStorePath(AGENT_ID)).toBe(
+      join(homedir(), ".auggy", "plists", `com.auggy.agent.${AGENT_ID}.plist`),
     );
   });
 
   test("plistInstallPath is in ~/Library/LaunchAgents/", () => {
-    expect(plistInstallPath("zip")).toBe(
-      join(homedir(), "Library", "LaunchAgents", "com.auggy.agent.zip.plist"),
+    expect(plistInstallPath(AGENT_ID)).toBe(
+      join(homedir(), "Library", "LaunchAgents", `com.auggy.agent.${AGENT_ID}.plist`),
     );
   });
 
@@ -34,6 +36,7 @@ describe("plist naming", () => {
 describe("generatePlist", () => {
   const plist = generatePlist({
     name: "zip",
+    agentId: AGENT_ID,
     agentDir: "/Users/test/agents/zip",
     configPath: "/Users/test/agents/zip/agent.yaml",
     bunPath: "/Users/test/.bun/bin/bun",
@@ -47,7 +50,7 @@ describe("generatePlist", () => {
   });
 
   test("sets the correct label", () => {
-    expect(plist).toContain("<string>com.auggy.agent.zip</string>");
+    expect(plist).toContain(`<string>com.auggy.agent.${AGENT_ID}</string>`);
   });
 
   test("invokes auggy dev with --config flag", () => {
@@ -71,10 +74,10 @@ describe("generatePlist", () => {
     expect(plist).toContain("<key>RunAtLoad</key>");
   });
 
-  test("routes logs to ~/.auggy/logs/<name>.{log,err}", () => {
+  test("routes logs to ~/.auggy/logs/<immutable-id>.{log,err}", () => {
     const home = homedir();
-    expect(plist).toContain(`${home}/.auggy/logs/zip.log`);
-    expect(plist).toContain(`${home}/.auggy/logs/zip.err`);
+    expect(plist).toContain(`${home}/.auggy/logs/${AGENT_ID}.log`);
+    expect(plist).toContain(`${home}/.auggy/logs/${AGENT_ID}.err`);
   });
 
   test("sets working directory to agent dir", () => {
@@ -88,6 +91,7 @@ describe("generatePlist", () => {
   test("escapes XML special characters in paths", () => {
     const escaped = generatePlist({
       name: "test&agent",
+      agentId: AGENT_ID,
       agentDir: "/path/with <angle>/brackets",
       configPath: "/path/with <angle>/agent.yaml",
       bunPath: "/usr/bin/bun",

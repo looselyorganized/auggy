@@ -44,14 +44,14 @@ export async function runStart(
   const agentName = config.name;
 
   // Check if already running.
-  const runningManifest = readLivePidManifest(agentName);
+  const runningManifest = readLivePidManifest(config.id);
   if (runningManifest) {
     throw new Error(formatAgentAlreadyRunningMessage(agentName, runningManifest));
   }
 
   // Unload existing plist if present.
-  const label = plistLabel(agentName);
-  const installPath = plistInstallPath(agentName);
+  const label = plistLabel(config.id);
+  const installPath = plistInstallPath(config.id);
   try {
     const result = await $`launchctl list`.quiet();
     if (result.stdout.toString().includes(label)) {
@@ -60,7 +60,7 @@ export async function runStart(
   } catch {}
 
   // Clean up old plist files.
-  const storePath = plistStorePath(agentName);
+  const storePath = plistStorePath(config.id);
   try {
     unlinkSync(installPath);
   } catch {}
@@ -71,6 +71,7 @@ export async function runStart(
   // Generate plist.
   const plist = generatePlist({
     name: agentName,
+    agentId: config.id,
     agentDir: resolve(agentDir),
     configPath: resolve(configPath),
     bunPath: resolveBunPath(),
@@ -105,7 +106,7 @@ export async function runStart(
     await Bun.sleep(POLL_INTERVAL);
     waited += POLL_INTERVAL;
 
-    const manifest = readPidManifest(agentName);
+    const manifest = readPidManifest(config.id);
     if (manifest) {
       console.log(`Agent "${agentName}" installed and running (PID ${manifest.pid})`);
       console.log();
@@ -114,16 +115,16 @@ export async function runStart(
       if (manifest.port) {
         console.log(`  URL:     http://localhost:${manifest.port}`);
       }
-      console.log(`  Logs:    ${logDir()}/${agentName}.{log,err}`);
+      console.log(`  Logs:    ${logDir()}/${config.id}.{log,err}`);
       console.log();
       console.log(`  To stop:   auggy stop ${agentName}`);
       console.log(`  To status: auggy status ${agentName}`);
-      console.log(`  To logs:   tail -f ${logDir()}/${agentName}.log`);
+      console.log(`  To logs:   tail -f ${logDir()}/${config.id}.log`);
       return;
     }
   }
 
   console.error(`Agent "${agentName}" did not start within ${MAX_WAIT / 1000}s.`);
-  console.error(`Check logs: tail -20 ${logDir()}/${agentName}.err`);
+  console.error(`Check logs: tail -20 ${logDir()}/${config.id}.err`);
   process.exit(1);
 }

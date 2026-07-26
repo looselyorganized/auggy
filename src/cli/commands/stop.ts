@@ -20,15 +20,18 @@ export async function runStop(name: string): Promise<void> {
   }
 
   if (manifest.mode === "launchd") {
-    await stopLaunchd(name, manifest.pid);
+    await stopLaunchd(manifest);
   } else {
-    await stopDev(name, manifest.pid);
+    await stopDev(manifest);
   }
 }
 
-async function stopLaunchd(name: string, pid: number): Promise<void> {
-  const installPath = plistInstallPath(name);
-  const storePath = plistStorePath(name);
+async function stopLaunchd(
+  manifest: NonNullable<ReturnType<typeof readPidManifest>>,
+): Promise<void> {
+  const key = manifest.agentId ?? manifest.name;
+  const installPath = plistInstallPath(key);
+  const storePath = plistStorePath(key);
 
   // Unload the launchd service.
   try {
@@ -37,7 +40,7 @@ async function stopLaunchd(name: string, pid: number): Promise<void> {
 
   // Wait for the process to exit.
   let waited = 0;
-  while (isProcessAlive(pid) && waited < 5000) {
+  while (isProcessAlive(manifest.pid) && waited < 5000) {
     await Bun.sleep(250);
     waited += 250;
   }
@@ -51,34 +54,35 @@ async function stopLaunchd(name: string, pid: number): Promise<void> {
   } catch {}
 
   // Clean up PID manifest.
-  removePidManifest(name);
+  removePidManifest(key);
 
-  console.log(`Agent "${name}" stopped (was launchd-managed).`);
+  console.log(`Agent "${manifest.name}" stopped (was launchd-managed).`);
 }
 
-async function stopDev(name: string, pid: number): Promise<void> {
-  if (!isProcessAlive(pid)) {
-    removePidManifest(name);
-    console.log(`Agent "${name}" was not running (stale PID ${pid} cleaned up).`);
+async function stopDev(manifest: NonNullable<ReturnType<typeof readPidManifest>>): Promise<void> {
+  const key = manifest.agentId ?? manifest.name;
+  if (!isProcessAlive(manifest.pid)) {
+    removePidManifest(key);
+    console.log(`Agent "${manifest.name}" was not running (stale PID ${manifest.pid} cleaned up).`);
     return;
   }
 
   // Send SIGTERM for graceful shutdown.
-  process.kill(pid, "SIGTERM");
+  process.kill(manifest.pid, "SIGTERM");
 
   // Wait up to 5s for graceful shutdown.
   let waited = 0;
-  while (isProcessAlive(pid) && waited < 5000) {
+  while (isProcessAlive(manifest.pid) && waited < 5000) {
     await Bun.sleep(250);
     waited += 250;
   }
 
   // Force kill if still alive.
-  if (isProcessAlive(pid)) {
-    process.kill(pid, "SIGKILL");
+  if (isProcessAlive(manifest.pid)) {
+    process.kill(manifest.pid, "SIGKILL");
     await Bun.sleep(500);
   }
 
-  removePidManifest(name);
-  console.log(`Agent "${name}" stopped.`);
+  removePidManifest(key);
+  console.log(`Agent "${manifest.name}" stopped.`);
 }

@@ -1,14 +1,15 @@
 /**
- * PID registry — tracks running Auggy agents via JSON manifests.
+ * Local runtime registry for independently operated Auggy agents.
  *
- * Each running agent gets a manifest at ~/.auggy/<name>.json containing
- * pid, port, config path, start time, and mode. Atomic writes via the
- * "wx" flag prevent concurrent starts of the same agent name.
- *
- * Replicates the PID guard pattern from telemetry-exporter/bin/daemon.ts.
+ * Modern manifests are keyed by immutable config id. Display names remain
+ * useful aliases, but an ambiguous alias fails closed. Atomic resource claim
+ * files prevent two local agents from consuming one exclusive listener or
+ * inbound identity before either transport starts.
  */
 
+import { createHash } from "node:crypto";
 import {
+  chmodSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -17,7 +18,8 @@ import {
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join } from "node:path";
+import { VALID_NAME_RE } from "./config-parser";
 import type { PidManifest } from "./types";
 
 interface PidRegistryOptions {
@@ -29,26 +31,158 @@ interface RuntimePidRegistryOptions extends PidRegistryOptions {
   internalMode?: string;
 }
 
-// No time-based staleness heuristic — always-on agents can run for weeks.
-// Liveness is determined solely by whether the PID is alive.
+interface ManifestRecord {
+  path: string;
+  manifest: PidManifest;
+}
+
+interface ResourceClaimRecord {
+  version: 1;
+  claim: string;
+  agentId: string;
+  agentName: string;
+  pid: number;
+  claimNonce: string;
+}
+
+const AGENT_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export class RuntimeResourceConflictError extends Error {}
 
 function registryDir(opts: PidRegistryOptions = {}): string {
   return opts.auggyDir ?? join(homedir(), ".auggy");
 }
 
+function ensurePrivateDir(path: string): string {
+  mkdirSync(path, { recursive: true, mode: 0o700 });
+  chmodSync(path, 0o700);
+  return path;
+}
+
 function ensureDir(opts: PidRegistryOptions = {}): string {
+  return ensurePrivateDir(registryDir(opts));
+}
+
+function claimsDir(opts: PidRegistryOptions = {}): string {
+  return ensurePrivateDir(join(ensureDir(opts), "runtime-claims"));
+}
+
+function manifestKey(manifest: PidManifest): string {
+  return manifest.agentId ?? manifest.name;
+}
+
+function manifestPathForKey(key: string, opts: PidRegistryOptions = {}): string {
+  return join(registryDir(opts), `${key}.json`);
+}
+
+function claimPath(claim: string, opts: PidRegistryOptions = {}): string {
+  const digest = createHash("sha256")
+    .update("auggy-runtime-resource\0")
+    .update(claim)
+    .digest("hex");
+  return join(claimsDir(opts), `${digest}.json`);
+}
+
+function isSafeClaim(value: unknown): value is string {
+  if (typeof value !== "string" || value.length === 0 || value.length > 300) return false;
+  for (let index = 0; index < value.length; index++) {
+    const code = value.charCodeAt(index);
+    if (code <= 0x1f || code === 0x7f) return false;
+  }
+  return true;
+}
+
+function parseManifest(value: unknown, source: string): PidManifest {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`Invalid Auggy runtime manifest at ${source}`);
+  }
+  const record = value as Record<string, unknown>;
+  const validBase =
+    Number.isSafeInteger(record.pid) &&
+    (record.pid as number) > 0 &&
+    typeof record.name === "string" &&
+    VALID_NAME_RE.test(record.name) &&
+    (record.port === null ||
+      (Number.isSafeInteger(record.port) &&
+        (record.port as number) > 0 &&
+        (record.port as number) <= 65_535)) &&
+    typeof record.configPath === "string" &&
+    isAbsolute(record.configPath) &&
+    typeof record.agentDir === "string" &&
+    isAbsolute(record.agentDir) &&
+    typeof record.startedAt === "string" &&
+    Number.isFinite(Date.parse(record.startedAt)) &&
+    (record.mode === "dev" || record.mode === "launchd");
+  if (!validBase) throw new Error(`Invalid Auggy runtime manifest at ${source}`);
+
+  const modernFields = [record.agentId, record.claimNonce, record.resourceClaims];
+  const hasModernField = modernFields.some((field) => field !== undefined);
+  if (hasModernField) {
+    if (
+      typeof record.agentId !== "string" ||
+      !AGENT_ID_RE.test(record.agentId) ||
+      typeof record.claimNonce !== "string" ||
+      !UUID_RE.test(record.claimNonce) ||
+      !Array.isArray(record.resourceClaims) ||
+      !record.resourceClaims.every(isSafeClaim) ||
+      new Set(record.resourceClaims).size !== record.resourceClaims.length
+    ) {
+      throw new Error(`Invalid Auggy runtime manifest at ${source}`);
+    }
+  }
+  return record as unknown as PidManifest;
+}
+
+function readManifestPath(path: string): PidManifest {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(`Invalid Auggy runtime manifest at ${path}`, { cause: error });
+  }
+  return parseManifest(parsed, path);
+}
+
+function allManifestRecords(opts: PidRegistryOptions = {}): ManifestRecord[] {
   const dir = registryDir(opts);
-  mkdirSync(dir, { recursive: true });
-  return dir;
+  if (!existsSync(dir)) return [];
+  const records: ManifestRecord[] = [];
+  for (const file of readdirSync(dir)) {
+    if (!file.endsWith(".json")) continue;
+    const path = join(dir, file);
+    try {
+      records.push({ path, manifest: readManifestPath(path) });
+    } catch {
+      // Preserve malformed or unrelated JSON for operator inspection. It must
+      // never become a signal target and is never deleted implicitly.
+    }
+  }
+  return records;
 }
 
-function manifestPath(name: string, opts: PidRegistryOptions = {}): string {
-  return join(registryDir(opts), `${name}.json`);
-}
+function recordForIdentifier(
+  identifier: string,
+  opts: PidRegistryOptions = {},
+): ManifestRecord | null {
+  if (!AGENT_ID_RE.test(identifier) && !VALID_NAME_RE.test(identifier)) {
+    throw new Error(`Invalid agent runtime identifier "${identifier}"`);
+  }
 
-// ---------------------------------------------------------------------------
-// Process liveness check
-// ---------------------------------------------------------------------------
+  const exactPath = manifestPathForKey(identifier, opts);
+  if (existsSync(exactPath)) {
+    return { path: exactPath, manifest: readManifestPath(exactPath) };
+  }
+  if (AGENT_ID_RE.test(identifier)) return null;
+
+  const matches = allManifestRecords(opts).filter((record) => record.manifest.name === identifier);
+  if (matches.length > 1) {
+    throw new Error(
+      `Agent name "${identifier}" is ambiguous across ${matches.length} running identities. Use the immutable aug1_ id.`,
+    );
+  }
+  return matches[0] ?? null;
+}
 
 /** Check if a process with the given PID is alive. */
 export function isProcessAlive(pid: number): boolean {
@@ -60,87 +194,179 @@ export function isProcessAlive(pid: number): boolean {
   }
 }
 
-// ---------------------------------------------------------------------------
-// CRUD operations
-// ---------------------------------------------------------------------------
-
-/**
- * Write a PID manifest atomically. Throws EEXIST if the manifest
- * already exists (another instance is running or stale).
- *
- * Call `cleanupStaleManifest` first if you want to recover from a
- * stale PID file before writing.
- */
+/** Write a validated PID manifest atomically without acquiring resource claims. */
 export function writePidManifest(manifest: PidManifest, opts: PidRegistryOptions = {}): void {
   ensureDir(opts);
-  const path = manifestPath(manifest.name, opts);
-  writeFileSync(path, JSON.stringify(manifest, null, 2), { flag: "wx" });
+  const key = manifestKey(parseManifest(manifest, "new runtime manifest"));
+  writeFileSync(manifestPathForKey(key, opts), JSON.stringify(manifest, null, 2), {
+    flag: "wx",
+    mode: 0o600,
+  });
 }
 
-/**
- * Claim the local PID registry only for runtimes where it is authoritative.
- *
- * Railway already enforces one process per volume-backed service, while its
- * container may be restarted after SIGKILL/OOM with an old writable layer.
- * A persisted PID (commonly PID 1 again) cannot identify the previous boot,
- * so Railway deliberately does not participate in the local daemon registry.
- *
- * Returns whether a manifest was written; callers must release only a claim
- * that returned true so a Railway process never removes unrelated local state.
- */
+function parseClaim(value: unknown, source: string): ResourceClaimRecord {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error(`Invalid Auggy runtime resource claim at ${source}`);
+  }
+  const record = value as Record<string, unknown>;
+  if (
+    record.version !== 1 ||
+    !isSafeClaim(record.claim) ||
+    typeof record.agentId !== "string" ||
+    !AGENT_ID_RE.test(record.agentId) ||
+    typeof record.agentName !== "string" ||
+    !VALID_NAME_RE.test(record.agentName) ||
+    !Number.isSafeInteger(record.pid) ||
+    (record.pid as number) < 1 ||
+    typeof record.claimNonce !== "string" ||
+    !UUID_RE.test(record.claimNonce)
+  ) {
+    throw new Error(`Invalid Auggy runtime resource claim at ${source}`);
+  }
+  return record as unknown as ResourceClaimRecord;
+}
+
+function readClaim(path: string): ResourceClaimRecord {
+  let value: unknown;
+  try {
+    value = JSON.parse(readFileSync(path, "utf8"));
+  } catch (error) {
+    throw new Error(`Invalid Auggy runtime resource claim at ${path}`, { cause: error });
+  }
+  return parseClaim(value, path);
+}
+
+function unlinkClaimIfOwned(
+  claim: string,
+  agentId: string,
+  claimNonce: string,
+  opts: PidRegistryOptions,
+): void {
+  const path = claimPath(claim, opts);
+  if (!existsSync(path)) return;
+  const existing = readClaim(path);
+  if (existing.agentId !== agentId || existing.claimNonce !== claimNonce) return;
+  unlinkSync(path);
+}
+
+function acquireOneClaim(claim: string, manifest: PidManifest, opts: PidRegistryOptions): void {
+  const path = claimPath(claim, opts);
+  const record: ResourceClaimRecord = {
+    version: 1,
+    claim,
+    agentId: manifest.agentId!,
+    agentName: manifest.name,
+    pid: manifest.pid,
+    claimNonce: manifest.claimNonce!,
+  };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      writeFileSync(path, JSON.stringify(record, null, 2), { flag: "wx", mode: 0o600 });
+      return;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const existing = readClaim(path);
+      if (isProcessAlive(existing.pid)) {
+        throw new RuntimeResourceConflictError(
+          `Runtime resource "${claim}" is already claimed by agent "${existing.agentName}".`,
+        );
+      }
+      unlinkSync(path);
+    }
+  }
+  throw new RuntimeResourceConflictError(`Runtime resource "${claim}" could not be claimed.`);
+}
+
+function acquireResourceClaims(manifest: PidManifest, opts: PidRegistryOptions): string[] {
+  const claims = [...(manifest.resourceClaims ?? [])].sort();
+  if (claims.length === 0) return [];
+  if (!manifest.agentId || !manifest.claimNonce) {
+    throw new Error("Modern runtime resource claims require immutable agentId and claimNonce");
+  }
+
+  const acquired: string[] = [];
+  try {
+    for (const claim of claims) {
+      acquireOneClaim(claim, manifest, opts);
+      acquired.push(claim);
+    }
+    return acquired;
+  } catch (error) {
+    for (const claim of acquired.reverse()) {
+      unlinkClaimIfOwned(claim, manifest.agentId, manifest.claimNonce, opts);
+    }
+    throw error;
+  }
+}
+
+function releaseResourceClaims(manifest: PidManifest, opts: PidRegistryOptions): void {
+  if (!manifest.agentId || !manifest.claimNonce) return;
+  for (const claim of manifest.resourceClaims ?? []) {
+    unlinkClaimIfOwned(claim, manifest.agentId, manifest.claimNonce, opts);
+  }
+}
+
+function removeManifestRecord(record: ManifestRecord, opts: PidRegistryOptions): void {
+  releaseResourceClaims(record.manifest, opts);
+  if (existsSync(record.path)) unlinkSync(record.path);
+}
+
+/** Claim the local registry and every declared exclusive resource atomically. */
 export function claimRuntimePidManifest(
   manifest: PidManifest,
   opts: RuntimePidRegistryOptions = {},
 ): boolean {
   if (opts.internalMode === "railway") return false;
-
+  parseManifest(manifest, "new runtime manifest");
+  const acquired = acquireResourceClaims(manifest, opts);
   try {
-    writePidManifest(manifest, opts);
-    return true;
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-
-    // A previous runtime may have exited without releasing its manifest.
-    // Clean that record and retry the same atomic write once. If the process
-    // is still alive, preserve the original EEXIST conflict for the caller.
-    if (readLivePidManifest(manifest.name, opts)) throw err;
-    writePidManifest(manifest, opts);
-    return true;
+    try {
+      writePidManifest(manifest, opts);
+      return true;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      const existing = recordForIdentifier(manifestKey(manifest), opts);
+      if (existing && isProcessAlive(existing.manifest.pid)) throw error;
+      if (existing) removeManifestRecord(existing, opts);
+      writePidManifest(manifest, opts);
+      return true;
+    }
+  } catch (error) {
+    if (manifest.agentId && manifest.claimNonce) {
+      for (const claim of acquired.reverse()) {
+        unlinkClaimIfOwned(claim, manifest.agentId, manifest.claimNonce, opts);
+      }
+    }
+    throw error;
   }
 }
 
 /** Release a manifest only when claimRuntimePidManifest actually wrote it. */
 export function releaseRuntimePidManifest(
-  name: string,
+  identifier: string,
   claimed: boolean,
   opts: PidRegistryOptions = {},
 ): void {
-  if (claimed) removePidManifest(name, opts);
+  if (claimed) removePidManifest(identifier, opts);
 }
 
-/** Read a PID manifest. Returns null if not found. */
-export function readPidManifest(name: string, opts: PidRegistryOptions = {}): PidManifest | null {
-  const path = manifestPath(name, opts);
-  if (!existsSync(path)) return null;
-  try {
-    return JSON.parse(readFileSync(path, "utf-8")) as PidManifest;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Read a manifest only when its process is still alive.
- * Dead or corrupt records are removed so they cannot block a future start.
- */
-export function readLivePidManifest(
-  name: string,
+/** Read by immutable id or by an unambiguous display-name alias. */
+export function readPidManifest(
+  identifier: string,
   opts: PidRegistryOptions = {},
 ): PidManifest | null {
-  const manifest = readPidManifest(name, opts);
-  if (manifest && isProcessAlive(manifest.pid)) return manifest;
+  return recordForIdentifier(identifier, opts)?.manifest ?? null;
+}
 
-  removePidManifest(name, opts);
+/** Read a manifest only when its process is still alive. */
+export function readLivePidManifest(
+  identifier: string,
+  opts: PidRegistryOptions = {},
+): PidManifest | null {
+  const record = recordForIdentifier(identifier, opts);
+  if (!record) return null;
+  if (isProcessAlive(record.manifest.pid)) return record.manifest;
+  removeManifestRecord(record, opts);
   return null;
 }
 
@@ -160,61 +386,29 @@ export function formatAgentAlreadyRunningMessage(
   return `Agent "${name}" is already running${details}.${consoleUrl}\nStop it with: auggy stop ${name}`;
 }
 
-/** Remove a PID manifest (called on clean shutdown). */
-export function removePidManifest(name: string, opts: PidRegistryOptions = {}): void {
-  const path = manifestPath(name, opts);
-  try {
-    unlinkSync(path);
-  } catch {
-    // Already gone — fine.
-  }
+/** Remove a manifest and only the resource claims owned by its claim nonce. */
+export function removePidManifest(identifier: string, opts: PidRegistryOptions = {}): void {
+  const record = recordForIdentifier(identifier, opts);
+  if (record) removeManifestRecord(record, opts);
 }
 
-/**
- * List all PID manifests. Dead processes are cleaned up automatically.
- * Returns only manifests whose processes are still alive.
- */
+/** List live manifests. Malformed files are preserved and never signaled. */
 export function listPidManifests(opts: PidRegistryOptions = {}): PidManifest[] {
-  const dir = ensureDir(opts);
   const manifests: PidManifest[] = [];
-
-  for (const file of readdirSync(dir)) {
-    if (!file.endsWith(".json")) continue;
-    const path = join(dir, file);
-    try {
-      const manifest = JSON.parse(readFileSync(path, "utf-8")) as PidManifest;
-      if (isProcessAlive(manifest.pid)) {
-        manifests.push(manifest);
-      } else {
-        // Dead process — clean up the stale manifest.
-        try {
-          unlinkSync(path);
-        } catch {}
-      }
-    } catch {
-      // Corrupt manifest — remove it.
-      try {
-        unlinkSync(path);
-      } catch {}
+  for (const record of allManifestRecords(opts)) {
+    if (isProcessAlive(record.manifest.pid)) {
+      manifests.push(record.manifest);
+    } else {
+      removeManifestRecord(record, opts);
     }
   }
-
   return manifests;
 }
 
-/**
- * Try to claim a name for a new agent. If a manifest exists:
- *  - If the process is dead, remove the stale manifest and return true.
- *  - If the process is alive, return false (name is taken).
- */
 export function tryClaimName(name: string, opts: PidRegistryOptions = {}): boolean {
   return readLivePidManifest(name, opts) === null;
 }
 
-/**
- * Return the path to the auggy directory (~/.auggy/).
- * Used by the plist generator for log paths.
- */
 export function getAuggyDir(): string {
   return ensureDir();
 }

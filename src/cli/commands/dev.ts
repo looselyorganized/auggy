@@ -15,6 +15,7 @@
  *   8. Wait for signal → agent.stop() → cleanup
  */
 
+import { randomUUID } from "node:crypto";
 import { dirname, resolve } from "node:path";
 import { defineAgent } from "../../agent";
 import { parseConfig } from "../config-parser";
@@ -31,6 +32,7 @@ import { openBrowser } from "../open-browser";
 import type { AgentConfig, Augment, ModelClient } from "../../types";
 import { displayPath } from "../display-path";
 import { prepareRailwayRuntimeVolume } from "../runtime-volume";
+import { runtimeResourceClaims } from "../runtime-resource-claims";
 
 /**
  * Extract the webTransport port from augment configs (for the PID manifest
@@ -190,6 +192,9 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
       {
         pid: process.pid,
         name: agentName,
+        agentId: config.id,
+        claimNonce: randomUUID(),
+        resourceClaims: runtimeResourceClaims(config),
         port,
         configPath: resolve(configPath),
         agentDir: resolve(agentDir),
@@ -200,7 +205,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
     );
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code === "EEXIST") {
-      throw new Error(formatAgentAlreadyRunningMessage(agentName, readPidManifest(agentName)));
+      throw new Error(formatAgentAlreadyRunningMessage(agentName, readPidManifest(config.id)));
     }
     throw err;
   }
@@ -213,6 +218,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
     model = await resolveEngine(config.engine, agentDir);
     augments = await resolveAugments(config.augments, agentDir, {
       creator: config.creator,
+      agentId: config.id,
       ...(runtimeDataRoot ? { runtimeDataRoot } : {}),
       selfInspection: {
         name: agentName,
@@ -241,7 +247,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
       coordination: config.settings.coordination,
     };
   } catch (err) {
-    releaseRuntimePidManifest(agentName, pidManifestClaimed);
+    releaseRuntimePidManifest(config.id, pidManifestClaimed);
     throw err;
   }
 
@@ -259,7 +265,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
     } catch (err) {
       console.error("Error during shutdown:", err);
     }
-    releaseRuntimePidManifest(agentName, pidManifestClaimed);
+    releaseRuntimePidManifest(config.id, pidManifestClaimed);
     console.log(`${agentName} stopped.`);
     process.exit(0);
   };
@@ -269,7 +275,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
 
   // Also clean up PID on unexpected exit.
   process.on("exit", () => {
-    releaseRuntimePidManifest(agentName, pidManifestClaimed);
+    releaseRuntimePidManifest(config.id, pidManifestClaimed);
   });
 
   // Start the agent.

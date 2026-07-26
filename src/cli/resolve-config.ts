@@ -10,6 +10,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { VALID_NAME_RE } from "./config-parser";
 
 interface ResolveOptions {
   /** Deprecated compatibility seam; project resolution ignores ~/.auggy. */
@@ -36,8 +37,20 @@ export function resolveConfigPath(
     return absPath;
   }
 
+  if (name !== undefined && !VALID_NAME_RE.test(name)) {
+    throw new Error(
+      `Invalid agent name "${name}". Use letters, numbers, hyphens, and underscores only.`,
+    );
+  }
+
   const localConfig = resolve(baseDir, "agent.yaml");
   if (existsSync(localConfig)) {
+    if (name && readAgentName(localConfig) !== name) {
+      throw new Error(
+        `The current agent.yaml names "${readAgentName(localConfig)}", but the command requested "${name}". ` +
+          "Run from the requested agent directory or pass --config explicitly.",
+      );
+    }
     return localConfig;
   }
 

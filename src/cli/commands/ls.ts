@@ -10,12 +10,13 @@
  * to find the workbench. Agents without webTransport show `—`.
  */
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { getAgentFromDir } from "../agent-index";
 import { readPidManifest, isProcessAlive } from "../pid-registry";
 import { parseAugmentConfigOnly } from "../yaml-helpers";
+import { parse as parseYaml } from "yaml";
 
 interface LsOptions {
   auggyDir?: string;
@@ -37,8 +38,15 @@ function tildify(path: string): string {
   return path;
 }
 
-function statusFor(name: string): string {
-  const pid = readPidManifest(name);
+function statusFor(localDir: string, name: string, auggyDir?: string): string {
+  let identifier = name;
+  try {
+    const raw = parseYaml(readFileSync(join(localDir, "agent.yaml"), "utf8")) as {
+      id?: unknown;
+    } | null;
+    if (typeof raw?.id === "string") identifier = raw.id;
+  } catch {}
+  const pid = readPidManifest(identifier, { auggyDir });
   if (pid && isProcessAlive(pid.pid)) {
     return `running (${pid.mode}, :${pid.port})`;
   }
@@ -64,7 +72,7 @@ function consoleUrlFor(localDir: string): string {
 
 export async function runLs(opts: LsOptions = {}): Promise<void> {
   const cwd = opts.cwd ?? (opts.auggyDir ? join(opts.auggyDir, "agents") : process.cwd());
-  const agents = listProjectAgents(cwd);
+  const agents = listProjectAgents(cwd, opts.auggyDir);
 
   if (agents.length === 0) {
     console.log("No agent projects found in this directory.");
@@ -76,7 +84,7 @@ export async function runLs(opts: LsOptions = {}): Promise<void> {
   const rows: AgentRow[] = agents.map((a) => ({
     name: a.name,
     location: tildify(a.localDir),
-    status: statusFor(a.name),
+    status: statusFor(a.localDir, a.name, opts.auggyDir),
     url: consoleUrlFor(a.localDir),
   }));
 
@@ -94,7 +102,7 @@ export async function runLs(opts: LsOptions = {}): Promise<void> {
   }
 }
 
-function listProjectAgents(cwd: string): Array<AgentRow & { localDir: string }> {
+function listProjectAgents(cwd: string, auggyDir?: string): Array<AgentRow & { localDir: string }> {
   const out: Array<AgentRow & { localDir: string }> = [];
   if (!existsSync(cwd)) return out;
   if (existsSync(join(cwd, "agent.yaml"))) {
@@ -104,7 +112,7 @@ function listProjectAgents(cwd: string): Array<AgentRow & { localDir: string }> 
       name,
       localDir,
       location: tildify(localDir),
-      status: statusFor(name),
+      status: statusFor(localDir, name, auggyDir),
       url: consoleUrlFor(localDir),
     });
   }
@@ -117,7 +125,7 @@ function listProjectAgents(cwd: string): Array<AgentRow & { localDir: string }> 
       name: entry.name,
       localDir,
       location: tildify(localDir),
-      status: statusFor(entry.name),
+      status: statusFor(localDir, entry.name, auggyDir),
       url: consoleUrlFor(localDir),
     });
   }

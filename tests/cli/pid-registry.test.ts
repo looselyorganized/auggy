@@ -178,6 +178,68 @@ describe("runtime PID manifest policy", () => {
     expect(claimRuntimePidManifest(replacement, { auggyDir })).toBe(true);
     expect(readPidManifest(name, { auggyDir })).toEqual(replacement);
   });
+
+  test("distinct immutable identities may use the same display name without aliasing", () => {
+    const first: PidManifest = {
+      pid: process.pid,
+      name: "worker",
+      agentId: "aug1_11111111-1111-4111-8111-111111111111",
+      claimNonce: "11111111-1111-4111-8111-111111111111",
+      resourceClaims: ["agent-id:aug1_11111111-1111-4111-8111-111111111111"],
+      port: 8101,
+      configPath: "/tmp/worker-a/agent.yaml",
+      agentDir: "/tmp/worker-a",
+      startedAt: new Date().toISOString(),
+      mode: "dev",
+    };
+    const second: PidManifest = {
+      ...first,
+      agentId: "aug1_22222222-2222-4222-8222-222222222222",
+      claimNonce: "22222222-2222-4222-8222-222222222222",
+      resourceClaims: ["agent-id:aug1_22222222-2222-4222-8222-222222222222"],
+      port: 8102,
+      configPath: "/tmp/worker-b/agent.yaml",
+      agentDir: "/tmp/worker-b",
+    };
+
+    expect(claimRuntimePidManifest(first, { auggyDir })).toBe(true);
+    expect(claimRuntimePidManifest(second, { auggyDir })).toBe(true);
+    expect(readPidManifest(first.agentId!, { auggyDir })?.configPath).toBe(first.configPath);
+    expect(readPidManifest(second.agentId!, { auggyDir })?.configPath).toBe(second.configPath);
+    expect(() => readPidManifest("worker", { auggyDir })).toThrow(/ambiguous/i);
+
+    releaseRuntimePidManifest(first.agentId!, true, { auggyDir });
+    releaseRuntimePidManifest(second.agentId!, true, { auggyDir });
+  });
+
+  test("resource claims reject a second agent before it starts using the resource", () => {
+    const first: PidManifest = {
+      pid: process.pid,
+      name: "orders",
+      agentId: "aug1_33333333-3333-4333-8333-333333333333",
+      claimNonce: "33333333-3333-4333-8333-333333333333",
+      resourceClaims: ["telegram-bot:123456", "tcp-port:8080"],
+      port: 8080,
+      configPath: "/tmp/orders/agent.yaml",
+      agentDir: "/tmp/orders",
+      startedAt: new Date().toISOString(),
+      mode: "dev",
+    };
+    const second: PidManifest = {
+      ...first,
+      name: "concierge",
+      agentId: "aug1_44444444-4444-4444-8444-444444444444",
+      claimNonce: "44444444-4444-4444-8444-444444444444",
+      configPath: "/tmp/concierge/agent.yaml",
+      agentDir: "/tmp/concierge",
+    };
+
+    expect(claimRuntimePidManifest(first, { auggyDir })).toBe(true);
+    expect(() => claimRuntimePidManifest(second, { auggyDir })).toThrow(/resource.*claimed/i);
+    expect(readPidManifest(second.agentId!, { auggyDir })).toBeNull();
+
+    releaseRuntimePidManifest(first.agentId!, true, { auggyDir });
+  });
 });
 
 describe("running agent diagnostics", () => {
@@ -216,12 +278,12 @@ describe("running agent diagnostics", () => {
     expect(message).not.toContain("Console:");
   });
 
-  test("readLivePidManifest removes corrupt records", () => {
+  test("readLivePidManifest preserves corrupt records and fails closed", () => {
     const name = "corrupt-runtime";
     writeFileSync(join(auggyDir, `${name}.json`), "not json");
 
-    expect(readLivePidManifest(name, { auggyDir })).toBeNull();
-    expect(existsSync(join(auggyDir, `${name}.json`))).toBe(false);
+    expect(() => readLivePidManifest(name, { auggyDir })).toThrow(/Invalid Auggy runtime manifest/);
+    expect(existsSync(join(auggyDir, `${name}.json`))).toBe(true);
   });
 });
 

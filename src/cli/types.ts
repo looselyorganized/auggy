@@ -256,6 +256,12 @@ export interface PidManifest {
   pid: number;
   /** Agent name (matches config). */
   name: string;
+  /** Immutable config identity. Omitted only by legacy manifests. */
+  agentId?: string;
+  /** Per-start nonce fencing cleanup of exclusive resource claims. */
+  claimNonce?: string;
+  /** Host-local listener and inbound identity claims. */
+  resourceClaims?: string[];
   /** webTransport port if configured, null otherwise. */
   port: number | null;
   /** Absolute path to agent.yaml. */

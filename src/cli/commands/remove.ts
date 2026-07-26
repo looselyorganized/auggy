@@ -40,12 +40,21 @@ interface RemoveOptions {
 }
 
 export async function runRemove(name: string | undefined, opts: RemoveOptions = {}): Promise<void> {
+  const cwd = opts.cwd ?? process.cwd();
+  const cwdAgentDir = existsSync(join(cwd, "agent.yaml")) ? cwd : null;
+  const cwdConfigName = cwdAgentDir ? readConfigName(cwdAgentDir) : null;
+  if (name && cwdAgentDir && name !== cwdConfigName) {
+    throw new Error(
+      `Refusing to remove the current agent project for argument "${name}".\n\n` +
+        `If you meant to remove an augment, run:\n` +
+        `  auggy augment remove ${name}`,
+    );
+  }
   const configPath = resolveConfigPath(name, undefined, { auggyDir: opts.auggyDir, cwd: opts.cwd });
   const localDir = dirname(configPath);
   const entry = getAgentFromDir(localDir);
   const configName = readConfigName(localDir);
   const displayName = configName ?? name ?? "this agent";
-  const cwd = opts.cwd ?? process.cwd();
   const localConfig = resolve(cwd, "agent.yaml");
   if (name && localConfig === resolve(configPath) && name !== configName) {
     throw new Error(
