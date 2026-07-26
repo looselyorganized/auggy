@@ -197,6 +197,52 @@ describe("durable schedule persistence", () => {
     }
   });
 
+  test("commits the deterministic capacity prefix and leaves the remaining schedule due", () => {
+    const path = dbPath();
+    let now = start;
+    const left = createSqliteDurableJobStore({
+      dbPath: path,
+      now: () => now,
+      maxTotalRecords: 2,
+      maxQueuedRecords: 1,
+      jobId: () => "job_a",
+    });
+    const right = createSqliteDurableJobStore({
+      dbPath: path,
+      now: () => now,
+      maxTotalRecords: 2,
+      maxQueuedRecords: 1,
+      jobId: () => "job_b",
+    });
+    try {
+      left.syncSchedules([schedule({ id: "a" }), schedule({ id: "b" })]);
+      now += minute;
+      expect(left.materializeDueSchedules()).toEqual({ materialized: 1, remaining: 1 });
+      expect(left.list()).toEqual([expect.objectContaining({ id: "job_a", state: "queued" })]);
+      expect(right.materializeDueSchedules()).toEqual({ materialized: 0, remaining: 1 });
+      const schedules = right.listSchedules();
+      expect(schedules.find((entry) => entry.id === "a")).toMatchObject({
+        nextFireAt: start + 2 * minute,
+      });
+      expect(schedules.find((entry) => entry.id === "b")).toMatchObject({
+        nextFireAt: start + minute,
+      });
+      const lease = left.claim({ workerId: "worker", leaseMs: minute })!;
+      left.markExecutionStarted({ jobId: lease.job.id, token: lease.token });
+      left.complete({ jobId: lease.job.id, token: lease.token, result: { ok: true } });
+      expect(right.materializeDueSchedules()).toEqual({ materialized: 1, remaining: 0 });
+      expect(right.list()).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: "job_a", state: "completed" }),
+          expect.objectContaining({ id: "job_b", state: "queued" }),
+        ]),
+      );
+    } finally {
+      left.close();
+      right.close();
+    }
+  });
+
   test("revision, declarative disable, and operator pause remain separate", () => {
     let now = start;
     const store = createSqliteDurableJobStore({ dbPath: dbPath(), now: () => now });
@@ -254,7 +300,7 @@ describe("durable schedule persistence", () => {
       store.syncSchedules([schedule()]);
       store.submit(request());
       now += minute;
-      expect(() => store.materializeDueSchedules()).toThrow("total record capacity exhausted");
+      expect(store.materializeDueSchedules()).toEqual({ materialized: 0, remaining: 1 });
       expect(store.list()).toHaveLength(1);
       expect(store.listSchedules()[0]).toMatchObject({ nextFireAt: start + minute });
     } finally {
@@ -385,6 +431,36 @@ describe("durable schedule persistence", () => {
       });
     } finally {
       store.close();
+    }
+  });
+
+  test("persists a retried definite failure with a coherent attempt history", () => {
+    const path = dbPath();
+    const now = start;
+    const first = createSqliteDurableJobStore({ dbPath: path, now: () => now });
+    const job = first.submit(request()).job;
+    const lease = first.claim({ workerId: "worker", leaseMs: minute })!;
+    first.markExecutionStarted({ jobId: lease.job.id, token: lease.token });
+    const failed = first.failDefinite({
+      jobId: lease.job.id,
+      token: lease.token,
+      errorCode: "execution-failed",
+    });
+    const retried = first.retryFailed({ jobId: job.id, expectedVersion: failed.version });
+    expect(retried).toMatchObject({ retried: true, job: { state: "queued", attempt: 1 } });
+    first.close();
+
+    const reopened = createSqliteDurableJobStore({ dbPath: path, now: () => now });
+    try {
+      expect(reopened.getSummary(job.id)).toMatchObject({ state: "queued", attempt: 1 });
+      expect(reopened.retryFailed({ jobId: job.id, expectedVersion: failed.version })).toEqual({
+        retried: false,
+      });
+      expect(reopened.claim({ workerId: "worker", leaseMs: minute })).toMatchObject({
+        job: { id: job.id, attempt: 2, state: "leased" },
+      });
+    } finally {
+      reopened.close();
     }
   });
 

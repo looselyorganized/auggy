@@ -1029,6 +1029,44 @@ export function createSqliteDurableJobStore(
     return { requeued, quarantined };
   }
 
+  function jobCapacity(): { total: number; outstanding: number; privateBytes: number } {
+    const counts = db
+      .query<{ total: number; outstanding: number; private_bytes: number }, []>(
+        `SELECT COUNT(*) AS total,
+             COALESCE(SUM(CASE WHEN state IN ('queued','leased','running','outcome_unknown') THEN 1 ELSE 0 END), 0) AS outstanding,
+             COALESCE(SUM(private_bytes), 0) AS private_bytes
+           FROM durable_jobs`,
+      )
+      .get();
+    if (
+      !counts ||
+      !Number.isSafeInteger(counts.total) ||
+      counts.total < 0 ||
+      !Number.isSafeInteger(counts.outstanding) ||
+      counts.outstanding < 0 ||
+      !Number.isSafeInteger(counts.private_bytes) ||
+      counts.private_bytes < 0
+    ) {
+      throw new Error(`${LABEL}: stored job capacity accounting is inconsistent`);
+    }
+    return {
+      total: counts.total,
+      outstanding: counts.outstanding,
+      privateBytes: counts.private_bytes,
+    };
+  }
+
+  function hasJobCapacity(
+    capacity: { total: number; outstanding: number; privateBytes: number },
+    privateBytes: number,
+  ): boolean {
+    return (
+      capacity.total < maxTotalRecords &&
+      capacity.outstanding < maxQueuedRecords &&
+      privateBytes <= maxPrivateBytes - capacity.privateBytes
+    );
+  }
+
   function submitInTransaction(
     input: {
       idempotencyKey: string;
@@ -1054,27 +1092,16 @@ export function createSqliteDurableJobStore(
       Buffer.byteLength(storedPayload, "utf8"),
       "private byte accounting",
     );
-    const counts = db
-      .query<{ total: number; outstanding: number; private_bytes: number }, []>(
-        `SELECT COUNT(*) AS total,
-             COALESCE(SUM(CASE WHEN state IN ('queued','leased','running','outcome_unknown') THEN 1 ELSE 0 END), 0) AS outstanding,
-             COALESCE(SUM(private_bytes), 0) AS private_bytes
-           FROM durable_jobs`,
-      )
-      .get();
-    if (!counts || !Number.isSafeInteger(counts.total) || counts.total >= maxTotalRecords) {
+    const capacity = jobCapacity();
+    if (capacity.total >= maxTotalRecords) {
       throw new Error(`${LABEL}: total record capacity exhausted; prune terminal jobs`);
     }
-    if (!Number.isSafeInteger(counts.outstanding) || counts.outstanding >= maxQueuedRecords) {
+    if (capacity.outstanding >= maxQueuedRecords) {
       throw new Error(
         `${LABEL}: outstanding job capacity exhausted; process, cancel, or reconcile active jobs`,
       );
     }
-    if (
-      !Number.isSafeInteger(counts.private_bytes) ||
-      counts.private_bytes < 0 ||
-      privateBytes > maxPrivateBytes - counts.private_bytes
-    ) {
+    if (privateBytes > maxPrivateBytes - capacity.privateBytes) {
       throw new Error(`${LABEL}: private byte capacity exhausted; prune terminal jobs`);
     }
     const availableAt =
@@ -1423,6 +1450,8 @@ export function createSqliteDurableJobStore(
            ORDER BY next_fire_at ASC, schedule_id ASC LIMIT ?`,
         )
         .all(at, limit);
+      const capacity = jobCapacity();
+      let materialized = 0;
       for (const row of due) {
         const occurrenceAt = safeTime(row.next_fire_at, "stored next fire time");
         const next = nextUtcCron(parseUtcCron(row.cron), new Date(at));
@@ -1446,6 +1475,15 @@ export function createSqliteDurableJobStore(
           },
           target,
         };
+        const jobPrivateBytes = safeAdd(
+          Buffer.byteLength(boundedJson(binding, "schedule job binding"), "utf8"),
+          Buffer.byteLength(payloadJson(payload), "utf8"),
+          "schedule materialized private byte accounting",
+        );
+        // This is a deterministic, transaction-local preflight. Capacity is
+        // the only expected reason to stop a tick early; any other store error
+        // aborts the whole transaction rather than leaving partial state.
+        if (!hasJobCapacity(capacity, jobPrivateBytes)) break;
         const submitted = submitInTransaction(
           {
             idempotencyKey: occurrenceKey,
@@ -1474,6 +1512,10 @@ export function createSqliteDurableJobStore(
           .run(next.getTime(), at, row.schedule_id, row.revision, row.version, occurrenceAt);
         if (update.changes !== 1)
           throw new Error(`${LABEL}: schedule changed during materialization`);
+        capacity.total++;
+        capacity.outstanding++;
+        capacity.privateBytes += jobPrivateBytes;
+        materialized++;
       }
       const remaining = db
         .query<{ count: number }, [number]>(
@@ -1484,7 +1526,7 @@ export function createSqliteDurableJobStore(
       if (!Number.isSafeInteger(remaining) || (remaining ?? 0) < 0) {
         throw new Error(`${LABEL}: schedule due count is invalid`);
       }
-      return { materialized: due.length, remaining: remaining ?? 0 };
+      return { materialized, remaining: remaining ?? 0 };
     },
   );
 
@@ -1848,6 +1890,15 @@ export function createSqliteDurableJobStore(
             )
             .run(availableAt, at, jobId, input.expectedVersion);
           if (change.changes !== 1) return { retried: false };
+          const attempt = db
+            .query(
+              `UPDATE durable_job_attempts SET state = 'requeued'
+               WHERE job_id = ? AND attempt = ? AND state = 'failed'`,
+            )
+            .run(jobId, row.attempt);
+          if (attempt.changes !== 1) {
+            throw new Error(`${LABEL}: stored job attempt is inconsistent`);
+          }
           return { retried: true, job: summary(select.get(jobId)!) };
         })
         .immediate();
