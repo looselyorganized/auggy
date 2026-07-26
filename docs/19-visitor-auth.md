@@ -172,6 +172,14 @@ config:
     subjectPrefix: "[New verified visitor] "
 ```
 
+When `visitorAuth` and a SQLite `layeredMemory` augment point at the same
+database, the CLI derives the exact layered-memory namespace and prefixes it
+with the immutable agent ID. Verification migration and `auggy visitors
+--revoke` update/delete only rows in that namespace, even if another agent was
+misconfigured to share the file. Multiple layered-memory namespaces must use
+separate database files when visitor migration is enabled so ownership is not
+ambiguous.
+
 ## AgentMail setup
 
 For production email delivery, prefer the setup command over hand-editing secrets:
@@ -323,7 +331,7 @@ If a revoke is interrupted (e.g., Ctrl-C between the visitor-auth UPDATE and the
 5. Visitor clicks link in email. GET hits `/visitor-auth/verify?token=<uuid>`.
 6. One atomic `UPDATE ... RETURNING` both consumes the unexpired token and
    returns the row needed for verification. Concurrent clicks cannot both win.
-7. On consumed=1: mints HMAC-signed `vis_<uuid>` (same key webTransport uses; reuses an existing visitorId on re-verify so memory continuity survives), writes verified_visitors row, runs anonymous→recognized peer-id migration on memory.db, returns success HTML.
+7. On consumed=1: mints HMAC-signed `vis_<uuid>` (same key webTransport uses; reuses an existing visitorId on re-verify so memory continuity survives), writes verified_visitors row, runs anonymous→recognized peer-id migration only inside the matching immutable-agent layered-memory namespace, and returns success HTML.
 8. Success HTML stashes the token in localStorage + replaces URL via `history.replaceState`.
 9. Chat tab listens for `storage` events, picks up new token, includes it as `x-visitor-token` on next request.
 10. webTransport's identity Path 3 verifies the token, peer.id is now `vis_<uuid>`, peer.publicSubstate is `recognized`.

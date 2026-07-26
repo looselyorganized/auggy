@@ -47,9 +47,12 @@ start. Within one OS user's `~/.auggy` registry, it rejects duplicate immutable
 IDs, ports, Telegram bots, and inbound AgentMail inboxes. Claims use non-secret
 identifiers; a Telegram token without a numeric bot prefix is represented by a
 domain-separated SHA-256 fingerprint, never by the token itself. Claim
-takeover and release are serialized, and PID incarnation markers prevent an
-unrelated reused PID from being signaled or treated as the old owner.
-Malformed claims and ambiguous display-name lookups fail closed.
+takeover and release are serialized by an owner-only, schema-validated SQLite
+registry. Transactions roll back automatically if a claimant crashes during a
+mutation, so restart does not depend on deleting an abandoned lock directory.
+PID incarnation markers prevent an unrelated reused PID from being signaled or
+treated as the old owner. Malformed claims and ambiguous display-name lookups
+fail closed.
 
 These claims are local to one OS user's registry, not the whole host. Separate
 service accounts, containers, hosts, Railway services, Kubernetes, Nomad, and
@@ -111,8 +114,11 @@ This isolation release changes several boundaries. Perform a stopped upgrade:
 6. remove legacy launchd services only after the identity-keyed service is
    healthy.
 
-Startup rejects a live pre-upgrade name-keyed process. Do not delete its PID
-manifest to bypass this check; stop that process first.
+Startup rejects every live process whose manifest predates the transactional
+claim registry, including identity-keyed prerelease manifests. Do not delete a
+PID manifest or legacy claim file to bypass this check; stop all old processes
+first. Committed stale claims are reclaimed only after the recorded PID and
+process incarnation are gone or reused.
 
 Existing visitor tokens whose audience used a mutable display name are
 invalidated and must be reissued. Existing layered-memory rows use the previous
