@@ -110,6 +110,16 @@
       ]
     },
     {
+      "id": "jobs",
+      "suite": "runtime",
+      "selectors": [
+        {
+          "kind": "tree",
+          "path": "tests/jobs"
+        }
+      ]
+    },
+    {
       "id": "load",
       "suite": "runtime",
       "selectors": [
