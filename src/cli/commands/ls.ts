@@ -14,7 +14,7 @@ import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { getAgentFromDir } from "../agent-index";
-import { readPidManifest, isProcessAlive } from "../pid-registry";
+import { inspectRuntimeProcess, readPidManifest } from "../pid-registry";
 import { parseAugmentConfigOnly } from "../yaml-helpers";
 import { parse as parseYaml } from "yaml";
 
@@ -47,7 +47,7 @@ function statusFor(localDir: string, name: string, auggyDir?: string): string {
     if (typeof raw?.id === "string") identifier = raw.id;
   } catch {}
   const pid = readPidManifest(identifier, { auggyDir });
-  if (pid && isProcessAlive(pid.pid)) {
+  if (pid && inspectRuntimeProcess(pid) === "alive") {
     return `running (${pid.mode}, :${pid.port})`;
   }
   return "stopped";

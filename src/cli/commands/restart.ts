@@ -5,7 +5,10 @@
  * stops the agent, then restarts it in the same mode.
  */
 
+import { resolve } from "node:path";
+import { parseConfig } from "../config-parser";
 import { readPidManifest } from "../pid-registry";
+import type { PidManifest } from "../types";
 import { runStop } from "./stop";
 import { runStart } from "./start";
 import { runDev } from "./dev";
@@ -21,7 +24,7 @@ export async function runRestart(name: string, opts: { config?: string }): Promi
   }
 
   const mode = manifest.mode;
-  const configPath = opts.config ?? manifest.configPath;
+  const configPath = assertRestartTarget(manifest, opts.config ?? manifest.configPath);
 
   console.log(`Restarting "${name}" (${mode} mode)...`);
 
@@ -37,4 +40,21 @@ export async function runRestart(name: string, opts: { config?: string }): Promi
   } else {
     await runDev(name, { config: configPath });
   }
+}
+
+/** Validate a restart target completely before the running process is touched. */
+export function assertRestartTarget(manifest: PidManifest, candidatePath: string): string {
+  const configPath = resolve(candidatePath);
+  const manifestPath = resolve(manifest.configPath);
+  if (configPath !== manifestPath) {
+    throw new Error("Restart config path does not match the running agent manifest");
+  }
+  const config = parseConfig(configPath);
+  if (manifest.agentId && config.id !== manifest.agentId) {
+    throw new Error("Restart config identity does not match the running agent manifest");
+  }
+  if (!manifest.agentId && config.name !== manifest.name) {
+    throw new Error("Restart config name does not match the legacy running agent manifest");
+  }
+  return configPath;
 }

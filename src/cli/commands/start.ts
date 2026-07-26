@@ -17,11 +17,7 @@ import {
   plistInstallPath,
   logDir,
 } from "../plist-generator";
-import {
-  formatAgentAlreadyRunningMessage,
-  readLivePidManifest,
-  readPidManifest,
-} from "../pid-registry";
+import { formatAgentAlreadyRunningMessage, readLivePidManifest } from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
 
 function resolveBunPath(): string {
@@ -106,7 +102,7 @@ export async function runStart(
     await Bun.sleep(POLL_INTERVAL);
     waited += POLL_INTERVAL;
 
-    const manifest = readPidManifest(config.id);
+    const manifest = readLivePidManifest(config.id);
     if (manifest) {
       console.log(`Agent "${agentName}" installed and running (PID ${manifest.pid})`);
       console.log();
@@ -117,8 +113,8 @@ export async function runStart(
       }
       console.log(`  Logs:    ${logDir()}/${config.id}.{log,err}`);
       console.log();
-      console.log(`  To stop:   auggy stop ${agentName}`);
-      console.log(`  To status: auggy status ${agentName}`);
+      console.log(`  To stop:   auggy stop ${config.id}`);
+      console.log(`  To status: auggy status ${config.id}`);
       console.log(`  To logs:   tail -f ${logDir()}/${config.id}.log`);
       return;
     }

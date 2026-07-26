@@ -12,18 +12,27 @@ import { dirname, join, resolve } from "node:path";
 import { confirm } from "@inquirer/prompts";
 import { getAgentFromDir } from "../agent-index";
 import { createRailwayCli, type RailwayCli } from "../deploy/railway-cli";
-import { readPidManifest, isProcessAlive, removePidManifest } from "../pid-registry";
+import { listPidManifests, readLivePidManifest } from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
+import { parse as parseYaml } from "yaml";
 
-function readConfigName(localDir: string): string | null {
+const AGENT_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function readConfigIdentity(localDir: string): { id: string | null; name: string | null } {
   try {
     const yamlPath = join(localDir, "agent.yaml");
-    if (!existsSync(yamlPath)) return null;
-    const content = readFileSync(yamlPath, "utf-8");
-    const match = content.match(/^name:\s*(.+)$/m);
-    return match?.[1]?.trim() ?? null;
+    if (!existsSync(yamlPath)) return { id: null, name: null };
+    const value = parseYaml(readFileSync(yamlPath, "utf-8"));
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      return { id: null, name: null };
+    }
+    const record = value as Record<string, unknown>;
+    return {
+      id: typeof record.id === "string" && AGENT_ID_RE.test(record.id) ? record.id : null,
+      name: typeof record.name === "string" ? record.name.trim() || null : null,
+    };
   } catch {
-    return null;
+    return { id: null, name: null };
   }
 }
 
@@ -42,7 +51,7 @@ interface RemoveOptions {
 export async function runRemove(name: string | undefined, opts: RemoveOptions = {}): Promise<void> {
   const cwd = opts.cwd ?? process.cwd();
   const cwdAgentDir = existsSync(join(cwd, "agent.yaml")) ? cwd : null;
-  const cwdConfigName = cwdAgentDir ? readConfigName(cwdAgentDir) : null;
+  const cwdConfigName = cwdAgentDir ? readConfigIdentity(cwdAgentDir).name : null;
   if (name && cwdAgentDir && name !== cwdConfigName) {
     throw new Error(
       `Refusing to remove the current agent project for argument "${name}".\n\n` +
@@ -53,7 +62,8 @@ export async function runRemove(name: string | undefined, opts: RemoveOptions = 
   const configPath = resolveConfigPath(name, undefined, { auggyDir: opts.auggyDir, cwd: opts.cwd });
   const localDir = dirname(configPath);
   const entry = getAgentFromDir(localDir);
-  const configName = readConfigName(localDir);
+  const configIdentity = readConfigIdentity(localDir);
+  const configName = configIdentity.name;
   const displayName = configName ?? name ?? "this agent";
   const localConfig = resolve(cwd, "agent.yaml");
   if (name && localConfig === resolve(configPath) && name !== configName) {
@@ -69,22 +79,21 @@ export async function runRemove(name: string | undefined, opts: RemoveOptions = 
     );
   }
 
-  // Refuse if the agent is running. Stale manifests (dead PID) are tolerated
-  // — we clean them up below. Check under both the CLI-arg name AND the
-  // agent.yaml's config.name (operator may have edited the yaml after create,
-  // in which case `auggy dev` writes the manifest under config.name).
-  const pidByCli = name ? readPidManifest(name, { auggyDir: opts.auggyDir }) : null;
-  const pidByConfig =
-    configName && configName !== name
-      ? readPidManifest(configName, { auggyDir: opts.auggyDir })
-      : null;
-
-  const aliveCli = pidByCli && isProcessAlive(pidByCli.pid);
-  const aliveConfig = pidByConfig && isProcessAlive(pidByConfig.pid);
-
-  if (aliveCli || aliveConfig) {
-    const liveName = aliveCli ? name! : configName!;
-    throw new Error(`Agent "${liveName}" is running. Stop it first:\n\n  auggy stop ${liveName}`);
+  // Immutable identity and canonical config path are authoritative. Names are
+  // only a legacy fallback and must never allow deletion of a renamed live
+  // project.
+  const liveById = configIdentity.id
+    ? readLivePidManifest(configIdentity.id, { auggyDir: opts.auggyDir })
+    : null;
+  const liveByConfigPath = listPidManifests({ auggyDir: opts.auggyDir }).find(
+    (manifest) => resolve(manifest.configPath) === resolve(configPath),
+  );
+  const live = liveById ?? liveByConfigPath;
+  if (live) {
+    const identifier = live.agentId ?? live.name;
+    throw new Error(
+      `Agent "${live.name}" is running. Stop it first:\n\n  auggy stop ${identifier}`,
+    );
   }
 
   if (!opts.yes) {
@@ -124,10 +133,6 @@ export async function runRemove(name: string | undefined, opts: RemoveOptions = 
       } catch {}
     }
   }
-
-  // Clean up stale PID manifest(s) if any.
-  if (pidByCli && name) removePidManifest(name, { auggyDir: opts.auggyDir });
-  if (pidByConfig && configName) removePidManifest(configName, { auggyDir: opts.auggyDir });
 
   if (!existsSync(join(localDir, "agent.yaml"))) {
     throw new Error(`Refusing to delete "${localDir}" — it does not contain agent.yaml.`);

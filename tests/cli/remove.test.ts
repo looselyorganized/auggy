@@ -18,7 +18,11 @@ mock.module("@inquirer/prompts", () => ({
 
 const { runRemove } = await import("../../src/cli/commands/remove");
 const { getAgent, seedAgentForTest, setCloud } = await import("../../src/cli/agent-index");
-const { writePidManifest, removePidManifest } = await import("../../src/cli/pid-registry");
+const { writePidManifest, removePidManifest, getProcessIdentity } = await import(
+  "../../src/cli/pid-registry"
+);
+
+const IMMUTABLE_ID = "aug1_8a3d7828-1597-4db4-bd0e-adc1a1036211";
 
 let auggyDir: string;
 
@@ -148,6 +152,34 @@ describe("runRemove", () => {
       );
     } finally {
       removePidManifest("zippy", { auggyDir });
+    }
+  });
+
+  test("refuses to delete a running immutable agent after its display name changes", async () => {
+    const dir = setupAgent("zip", `id: ${IMMUTABLE_ID}\nname: renamed\n`);
+    writePidManifest(
+      {
+        pid: process.pid,
+        name: "original",
+        agentId: IMMUTABLE_ID,
+        claimNonce: "8a3d7828-1597-4db4-bd0e-adc1a1036211",
+        processIdentity: getProcessIdentity(process.pid)!,
+        resourceClaims: [],
+        port: 8081,
+        configPath: join(dir, "agent.yaml"),
+        agentDir: dir,
+        startedAt: new Date().toISOString(),
+        mode: "dev",
+      },
+      { auggyDir },
+    );
+    try {
+      await expect(runRemove(undefined, { yes: true, auggyDir, cwd: dir })).rejects.toThrow(
+        /running|stop it first/i,
+      );
+      expect(existsSync(dir)).toBe(true);
+    } finally {
+      removePidManifest(IMMUTABLE_ID, { auggyDir });
     }
   });
 
