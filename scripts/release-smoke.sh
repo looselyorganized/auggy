@@ -376,6 +376,19 @@ info "audit installed agent"
 info "fill smoke env"
 perl -0pi -e 's/ANTHROPIC_API_KEY=\n/ANTHROPIC_API_KEY=sk-ant-smoke-not-real\n/' "$AGENT_DIR/.env"
 
+configure_smoke_port() {
+  SMOKE_PORT="$(
+    node -e 'const net=require("net"); const server=net.createServer(); server.listen(0,"127.0.0.1",()=>{console.log(server.address().port); server.close();});'
+  )"
+  [[ -n "$SMOKE_PORT" ]] || fail "could not allocate smoke port"
+  perl -0pi -e "s/AUGGY_PUBLIC_URL=http:\/\/localhost:\d+/AUGGY_PUBLIC_URL=http:\/\/localhost:$SMOKE_PORT/" "$AGENT_DIR/.env"
+  perl -0pi -e "s/(^[[:space:]]*port: )[0-9]+/\${1}$SMOKE_PORT/m" "$AGENT_DIR/augments/webTransport/augment.yaml"
+}
+
+# Doctor checks listener availability, so isolate it from legitimate services
+# using the scaffold's default port before running any verification command.
+configure_smoke_port
+
 info "doctor"
 (
   cd "$AGENT_DIR"
@@ -385,12 +398,9 @@ info "doctor"
 info "run agent and check health"
 HEALTHY=""
 for attempt in {1..3}; do
-  SMOKE_PORT="$(
-    node -e 'const net=require("net"); const server=net.createServer(); server.listen(0,"127.0.0.1",()=>{console.log(server.address().port); server.close();});'
-  )"
-  [[ -n "$SMOKE_PORT" ]] || fail "could not allocate smoke port"
-  perl -0pi -e "s/AUGGY_PUBLIC_URL=http:\/\/localhost:\d+/AUGGY_PUBLIC_URL=http:\/\/localhost:$SMOKE_PORT/" "$AGENT_DIR/.env"
-  perl -0pi -e "s/(^[[:space:]]*port: )[0-9]+/\${1}$SMOKE_PORT/m" "$AGENT_DIR/augments/webTransport/augment.yaml"
+  if (( attempt > 1 )); then
+    configure_smoke_port
+  fi
 
   (
     cd "$AGENT_DIR"
