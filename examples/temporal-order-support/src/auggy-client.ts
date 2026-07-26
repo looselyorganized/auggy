@@ -1,17 +1,38 @@
 const MAX_ERROR_BYTES = 4 * 1024;
+export const MAX_SSE_BYTES = 4 * 1024 * 1024;
+export const MAX_SSE_EVENTS = 100_000;
+export const MAX_BEARER_TOKEN_BYTES = 8 * 1024;
+const MAX_EXECUTION_ID_LENGTH = 256;
+
+const TASK_STATES = [
+  "working",
+  "input-required",
+  "auth-required",
+  "completed",
+  "failed",
+  "canceled",
+  "rejected",
+] as const;
+type TaskState = (typeof TASK_STATES)[number];
 
 export type FetchImplementation = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
 export type AuggyRunErrorKind =
   | "admission-failed"
+  | "auth-required"
   | "binding-conflict"
-  | "canceled"
   | "incomplete-stream"
+  | "input-required"
   | "invalid-response"
+  | "local-canceled"
   | "outcome-unknown"
   | "rejected"
+  | "remote-canceled"
   | "run-error"
-  | "sse-limit";
+  | "sse-limit"
+  | "task-failed"
+  | "task-status-unknown"
+  | "task-working";
 
 /**
  * Contains only a classification; it deliberately excludes request, response,
@@ -50,7 +71,8 @@ export interface AuggyRunRequest {
 }
 
 export interface AuggyRunCompleted {
-  runId: string | null;
+  runId: string;
+  threadId: string;
   text: string;
 }
 
@@ -58,7 +80,9 @@ interface AuggySseEvent {
   type?: unknown;
   code?: unknown;
   runId?: unknown;
+  threadId?: unknown;
   delta?: unknown;
+  result?: unknown;
 }
 
 export interface AuggyRunClient {
@@ -68,13 +92,12 @@ export interface AuggyRunClient {
 export function createAuggyRunClient(config: AuggyRunClientConfig): AuggyRunClient {
   const endpoint = agentRunEndpoint(config.target, config.allowInsecureLocalhost === true);
   const fetchImplementation = config.fetchImplementation ?? fetch;
-  if (config.bearerToken.length === 0) throw new Error("AUGGY_BEARER_TOKEN must not be empty");
-  if (!Number.isSafeInteger(config.maxSseBytes) || config.maxSseBytes < 1) {
-    throw new Error("maxSseBytes must be a positive integer");
+  const tokenBytes = new TextEncoder().encode(config.bearerToken).byteLength;
+  if (tokenBytes === 0 || tokenBytes > MAX_BEARER_TOKEN_BYTES || !/^[\x21-\x7e]+$/.test(config.bearerToken)) {
+    throw new Error(`AUGGY_BEARER_TOKEN must be 1-${MAX_BEARER_TOKEN_BYTES} visible ASCII bytes`);
   }
-  if (!Number.isSafeInteger(config.maxSseEvents) || config.maxSseEvents < 1) {
-    throw new Error("maxSseEvents must be a positive integer");
-  }
+  validateBoundedPositiveInteger(config.maxSseBytes, MAX_SSE_BYTES, "maxSseBytes");
+  validateBoundedPositiveInteger(config.maxSseEvents, MAX_SSE_EVENTS, "maxSseEvents");
 
   return {
     async run(request, signal, onProgress) {
@@ -93,10 +116,11 @@ export function createAuggyRunClient(config: AuggyRunClientConfig): AuggyRunClie
             messages: [{ role: "user", content: request.message }],
             threadId: request.threadId,
           }),
+          redirect: "error",
           signal,
         });
-      } catch (error) {
-        if (signal?.aborted || isAbortError(error)) throw new AuggyRunError("canceled", false);
+      } catch {
+        if (signal?.aborted) throw new AuggyRunError("local-canceled", false);
         // The only retry mechanism is Temporal Activity retrying the same key.
         // The server will join, replay, or fail closed rather than start a new run.
         throw new AuggyRunError("admission-failed", true);
@@ -148,6 +172,7 @@ async function httpError(response: Response): Promise<AuggyRunError> {
   if ([408, 425, 429, 500, 502, 503, 504].includes(response.status)) {
     return new AuggyRunError("admission-failed", true);
   }
+  if (response.status >= 300 && response.status < 400) return new AuggyRunError("invalid-response", false);
   return new AuggyRunError("rejected", false);
 }
 
@@ -200,6 +225,7 @@ async function consumeSse(
   let buffered = "";
   let dataLines: string[] = [];
   let runId: string | null = null;
+  let threadId: string | null = null;
   let text = "";
   let runError: AuggyRunError | null = null;
   let finished = false;
@@ -217,10 +243,33 @@ async function consumeSse(
       throw new AuggyRunError("invalid-response", false);
     }
     if (typeof event.type !== "string") throw new AuggyRunError("invalid-response", false);
-    if (event.type === "RUN_STARTED" && typeof event.runId === "string" && event.runId.length <= 256) runId = event.runId;
-    if (event.type === "TEXT_MESSAGE_CONTENT" && typeof event.delta === "string") text += event.delta;
-    if (event.type === "RUN_ERROR") runError = streamError(event.code);
-    if (event.type === "RUN_FINISHED") finished = true;
+    if (finished) throw new AuggyRunError("invalid-response", false);
+
+    if (event.type === "RUN_STARTED") {
+      if (runId !== null || threadId !== null) throw new AuggyRunError("invalid-response", false);
+      runId = executionId(event.runId);
+      threadId = executionId(event.threadId);
+      return;
+    }
+    if (runId === null || threadId === null) throw new AuggyRunError("invalid-response", false);
+    enforceEventIdentity(event, runId, threadId);
+
+    if (event.type === "TEXT_MESSAGE_CONTENT") {
+      if (typeof event.delta !== "string") throw new AuggyRunError("invalid-response", false);
+      text += event.delta;
+    }
+    if (event.type === "RUN_ERROR") {
+      if (runError !== null) throw new AuggyRunError("invalid-response", false);
+      runError = streamError(event.code);
+    }
+    if (event.type === "RUN_FINISHED") {
+      if (executionId(event.runId) !== runId || executionId(event.threadId) !== threadId) {
+        throw new AuggyRunError("invalid-response", false);
+      }
+      finished = true;
+      const status = finishedStatus(event.result);
+      if (status !== "completed" && runError === null) runError = taskStateError(status);
+    }
   };
 
   try {
@@ -250,16 +299,69 @@ async function consumeSse(
     reader.releaseLock();
   }
 
-  if (!finished) throw new AuggyRunError("incomplete-stream", true);
+  if (runId === null || threadId === null || !finished) throw new AuggyRunError("incomplete-stream", true);
   if (runError !== null) throw runError;
-  return { runId, text };
+  return { runId, threadId, text };
 }
 
 function streamError(code: unknown): AuggyRunError {
-  if (code === "ADMISSION_FAILED") return new AuggyRunError("admission-failed", true);
-  if (code === "CANCELED" || code === "CANCELLED") return new AuggyRunError("canceled", false);
-  if (code === "REJECTED") return new AuggyRunError("rejected", false);
+  if (
+    code === "ADMISSION_FAILED" ||
+    code === "SCHEDULER_RATE_LIMITED" ||
+    code === "SCHEDULER_UNAVAILABLE"
+  ) {
+    return new AuggyRunError("admission-failed", true);
+  }
+  if (code === "CANCELED" || code === "CANCELLED" || code === "ABORTED") {
+    return new AuggyRunError("remote-canceled", false);
+  }
+  if (code === "THREAD_QUARANTINED") return new AuggyRunError("outcome-unknown", false);
+  if (code === "CAP_DENIED" || code === "REJECTED") return new AuggyRunError("rejected", false);
   return new AuggyRunError("run-error", false);
+}
+
+function executionId(value: unknown): string {
+  if (typeof value !== "string" || value.length < 1 || value.length > MAX_EXECUTION_ID_LENGTH) {
+    throw new AuggyRunError("invalid-response", false);
+  }
+  return value;
+}
+
+function enforceEventIdentity(event: AuggySseEvent, runId: string, threadId: string): void {
+  if (event.runId !== undefined && executionId(event.runId) !== runId) {
+    throw new AuggyRunError("invalid-response", false);
+  }
+  if (event.threadId !== undefined && executionId(event.threadId) !== threadId) {
+    throw new AuggyRunError("invalid-response", false);
+  }
+}
+
+function finishedStatus(result: unknown): TaskState | "unknown" {
+  if (typeof result !== "object" || result === null || !("status" in result)) {
+    throw new AuggyRunError("invalid-response", false);
+  }
+  const status = result.status;
+  if (typeof status !== "string") throw new AuggyRunError("invalid-response", false);
+  return TASK_STATES.includes(status as TaskState) ? (status as TaskState) : "unknown";
+}
+
+function taskStateError(status: Exclude<TaskState, "completed"> | "unknown"): AuggyRunError {
+  switch (status) {
+    case "working":
+      return new AuggyRunError("task-working", false);
+    case "input-required":
+      return new AuggyRunError("input-required", false);
+    case "auth-required":
+      return new AuggyRunError("auth-required", false);
+    case "failed":
+      return new AuggyRunError("task-failed", false);
+    case "canceled":
+      return new AuggyRunError("remote-canceled", false);
+    case "rejected":
+      return new AuggyRunError("rejected", false);
+    case "unknown":
+      return new AuggyRunError("task-status-unknown", false);
+  }
 }
 
 function concat(chunks: Uint8Array[], total: number): Uint8Array {
@@ -272,6 +374,8 @@ function concat(chunks: Uint8Array[], total: number): Uint8Array {
   return result;
 }
 
-function isAbortError(error: unknown): boolean {
-  return error instanceof DOMException && error.name === "AbortError";
+function validateBoundedPositiveInteger(value: number, maximum: number, name: string): void {
+  if (!Number.isSafeInteger(value) || value < 1 || value > maximum) {
+    throw new Error(`${name} must be a positive integer no greater than ${maximum}`);
+  }
 }

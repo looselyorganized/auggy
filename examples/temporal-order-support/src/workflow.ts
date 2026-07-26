@@ -2,6 +2,12 @@ import { proxyActivities, workflowInfo } from "@temporalio/workflow";
 
 import type { OrderSupportActivities } from "./activities.js";
 import { orderSupportActivityPolicy } from "./workflow-policy.js";
+import {
+  refundResultForOrderSupportOutcome,
+  type OrderRefundWorkflowResult,
+} from "./workflow-result.js";
+
+export type { OrderRefundWorkflowResult } from "./workflow-result.js";
 
 const { requestOrderSupportReview } = proxyActivities<OrderSupportActivities>(orderSupportActivityPolicy);
 
@@ -12,13 +18,6 @@ export interface OrderRefundWorkflowInput {
   amountCents: number;
   reasonCode: "duplicate" | "damaged" | "not_received";
 }
-
-export type OrderRefundWorkflowResult =
-  | { state: "ready-for-deterministic-refund"; auggyRunId: string | null }
-  | {
-      state: "manual-reconciliation-required";
-      reason: "auggy-binding-conflict" | "auggy-outcome-unknown" | "auggy-rejected";
-    };
 
 /**
  * Temporal owns the durable business sequence. Auggy is one authenticated,
@@ -38,18 +37,9 @@ export async function orderRefundWorkflow(input: OrderRefundWorkflowInput): Prom
     message: orderSupportMessage(input),
   });
 
-  if (outcome.state === "completed") {
-    // A real payment/refund Activity belongs after this point. It receives this
-    // deterministic decision from the Workflow, never free-form model text.
-    return { state: "ready-for-deterministic-refund", auggyRunId: outcome.runId };
-  }
-  if (outcome.state === "binding-conflict") {
-    return { state: "manual-reconciliation-required", reason: "auggy-binding-conflict" };
-  }
-  if (outcome.state === "rejected") {
-    return { state: "manual-reconciliation-required", reason: "auggy-rejected" };
-  }
-  return { state: "manual-reconciliation-required", reason: "auggy-outcome-unknown" };
+  // A real payment/refund Activity belongs after this point. It receives this
+  // deterministic decision from the Workflow, never free-form model text.
+  return refundResultForOrderSupportOutcome(outcome);
 }
 
 function validateInput(input: OrderRefundWorkflowInput): void {

@@ -87,6 +87,7 @@
     "test:inventory": "bun scripts/test-surface-inventory.ts check",
     "test:runtime": "bun scripts/test-surface-inventory.ts run-runtime",
     "test:admin": "bun scripts/test-surface-inventory.ts run console",
+    "test:temporal-example": "bash scripts/test-temporal-example.sh",
     "test:watch": "bun test --watch ./tests ./examples ./packages",
     "dx:agent": "bash scripts/dx-lab-agent.sh",
     "smoke:release": "bash scripts/release-smoke.sh",

@@ -1,4 +1,9 @@
-import type { AuggyRunClientConfig } from "./auggy-client.js";
+import {
+  MAX_BEARER_TOKEN_BYTES,
+  MAX_SSE_BYTES,
+  MAX_SSE_EVENTS,
+  type AuggyRunClientConfig,
+} from "./auggy-client.js";
 
 export interface OperatorConfig {
   temporal: {
@@ -22,9 +27,9 @@ export function readOperatorConfig(env: NodeJS.ProcessEnv = process.env): Operat
     },
     auggy: {
       target: required(env, "AUGGY_TARGET"),
-      bearerToken: required(env, "AUGGY_BEARER_TOKEN"),
-      maxSseBytes: positiveInteger(env.AUGGY_MAX_SSE_BYTES, 1_048_576, "AUGGY_MAX_SSE_BYTES"),
-      maxSseEvents: positiveInteger(env.AUGGY_MAX_SSE_EVENTS, 10_000, "AUGGY_MAX_SSE_EVENTS"),
+      bearerToken: boundedSecret(env, "AUGGY_BEARER_TOKEN", MAX_BEARER_TOKEN_BYTES),
+      maxSseBytes: boundedPositiveInteger(env.AUGGY_MAX_SSE_BYTES, 1_048_576, MAX_SSE_BYTES, "AUGGY_MAX_SSE_BYTES"),
+      maxSseEvents: boundedPositiveInteger(env.AUGGY_MAX_SSE_EVENTS, 10_000, MAX_SSE_EVENTS, "AUGGY_MAX_SSE_EVENTS"),
     },
   };
 }
@@ -40,10 +45,20 @@ function optional(env: NodeJS.ProcessEnv, name: string): string | undefined {
   return value || undefined;
 }
 
-function positiveInteger(value: string | undefined, fallback: number, name: string): number {
+function boundedSecret(env: NodeJS.ProcessEnv, name: string, maximumBytes: number): string {
+  const value = env[name];
+  if (!value) throw new Error(`${name} is required`);
+  const bytes = new TextEncoder().encode(value).byteLength;
+  if (bytes > maximumBytes || !/^[\x21-\x7e]+$/.test(value)) throw new Error(`${name} exceeds its safe bound`);
+  return value;
+}
+
+function boundedPositiveInteger(value: string | undefined, fallback: number, maximum: number, name: string): number {
   if (value === undefined || value.trim() === "") return fallback;
   if (!/^\d+$/.test(value)) throw new Error(`${name} must be a positive integer`);
   const parsed = Number(value);
-  if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error(`${name} must be a positive integer`);
+  if (!Number.isSafeInteger(parsed) || parsed < 1 || parsed > maximum) {
+    throw new Error(`${name} must be a positive integer no greater than ${maximum}`);
+  }
   return parsed;
 }

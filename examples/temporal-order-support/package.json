@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "bun test test/auggy-client.test.ts",
+    "test": "bun test test",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "start": "bun run src/start.ts",
     "worker": "bun run src/worker.ts"

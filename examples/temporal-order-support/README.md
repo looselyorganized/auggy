@@ -56,18 +56,28 @@ stable Temporal Workflow ID. Every Temporal Activity attempt carries that exact
 same key. Auggy therefore joins/replays the intended operation rather than
 starting another model turn when the network or worker fails.
 
-The Activity POSTs JSON to `/agent/run` with a bearer token, receives AG-UI SSE,
-and accepts only a bounded stream (default 1 MiB / 10,000 events). It retains
+The Activity POSTs JSON to `/agent/run` with a bearer token, refuses redirects,
+and receives AG-UI SSE. It accepts only a bounded stream (default 1 MiB / 10,000
+events; immutable ceilings 4 MiB / 100,000 events) and an 8 KiB bearer-token
+ceiling. It requires exactly one bounded `RUN_STARTED`, matching terminal
+`runId`/`threadId`, and `RUN_FINISHED.result.status === "completed"`. It retains
 only the server-minted `runId`; model text and HTTP bodies are not copied into
 the Activity result or application logs.
 
 | Auggy result | Example behavior |
 | --- | --- |
-| Completed `RUN_FINISHED` | Returns `ready-for-deterministic-refund`; a real payment Activity may follow. |
-| `RUN_ERROR` with `ADMISSION_FAILED`, transient HTTP failure, 429, or 5xx | Temporal retries the same Activity input and same idempotency key, within the configured budget. |
+| One matching `RUN_STARTED` then `RUN_FINISHED.result.status === "completed"`, with no `RUN_ERROR` | Returns `ready-for-deterministic-refund`; a real payment Activity may follow. |
+| `RUN_ERROR` `ADMISSION_FAILED`, `SCHEDULER_RATE_LIMITED`, or `SCHEDULER_UNAVAILABLE`; transient HTTP failure; HTTP 408/425/429/500/502/503/504 | Temporal retries the same Activity input and same idempotency key, within the configured budget. |
 | HTTP 409 `idempotency_key_conflict` | Never retries as a fresh run; returns `manual-reconciliation-required`. |
-| HTTP 409 `idempotency_outcome_unknown`, a parser/stream limit, or malformed terminal stream | Fails closed into `manual-reconciliation-required`; investigate or reconcile using the same key. |
-| Authentication/validation rejection or `RUN_ERROR` `REJECTED` | Does not retry automatically; returns `manual-reconciliation-required`. |
+| HTTP 409 `idempotency_outcome_unknown`, `RUN_ERROR` `INTERNAL`/`THREAD_QUARANTINED`/unknown, a parser/stream limit, or malformed execution sequence | Fails closed into `manual-reconciliation-required`; investigate or reconcile using the same key. |
+| `RUN_FINISHED.result.status` `failed`, `canceled`, `input-required`, `auth-required`, `working`, or unknown | Never counts as completion; returns the applicable manual-reconciliation reason. |
+| `RUN_FINISHED.result.status === "rejected"`, HTTP authentication/validation rejection, or `RUN_ERROR` `CAP_DENIED`/`REJECTED` | Does not retry automatically; returns `manual-reconciliation-required`. |
+
+Every SSE classification above is subordinate to the execution-sequence gate.
+If the server emits a rejection before `RUN_STARTED`, the client does not infer
+that an execution existed: the missing start makes the stream invalid and the
+Workflow routes it to manual reconciliation. It never relaxes the one-start,
+one-matching-terminal requirement to recover a more convenient error code.
 
 The key is an execution binding, not a business authorization token. Keep it
 out of user-visible logs and do not manufacture a new key to escape a conflict
@@ -86,7 +96,9 @@ key can join or replay it. Cancellation here stops the Temporal Activity's
 wait; it does not claim that the model/tools stopped. A later retry or business
 reconciliation must use the same idempotency key. Do not promise end-to-end
 remote cancellation until Auggy exposes an authenticated execution-control
-endpoint.
+endpoint. Conversely, a remote `RUN_ERROR` `CANCELED`/`CANCELLED`/`ABORTED`
+does not enter Temporal's local cancellation path; it fails closed into manual
+reconciliation.
 
 ## Temporal data retention and privacy
 
@@ -110,14 +122,19 @@ and reconciliation controls.
 
 ## Verify
 
+From the repository root, run the same frozen-install, test, typecheck, and
+dependency-audit gate used by CI:
+
 ```bash
-bun test test/auggy-client.test.ts
-bunx tsc --noEmit -p tsconfig.json
+bun run test:temporal-example
 ```
 
-The dependency-free Bun contract test injects a fake Auggy HTTP transport. It
-verifies auth/key propagation, conservative status mapping, and SSE parser
-limits; it does not contact a real agent or Temporal service.
+The dependency-free Bun contract tests inject a fake Auggy HTTP transport. They
+verify auth/key propagation, every terminal task state, execution cardinality
+and identity, cancellation mapping, operator bounds, and SSE parser limits;
+they do not contact a real agent or Temporal service. `bun audit --json` does
+use the package registry and therefore runs in the dedicated online CI gate,
+not the packed runtime smoke.
 
 ## Temporal references
 
