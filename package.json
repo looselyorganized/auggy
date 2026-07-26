@@ -85,6 +85,7 @@
   "private": false,
   "scripts": {
     "test": "bun run test:runtime && bun run test:admin",
+    "test:full": "bun run test && bun run test:temporal-example",
     "test:inventory": "bun scripts/test-surface-inventory.ts check",
     "test:runtime": "bun scripts/test-surface-inventory.ts run-runtime",
     "test:admin": "bun scripts/test-surface-inventory.ts run console",
