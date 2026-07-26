@@ -323,6 +323,8 @@ function makeMockKernel(opts: { handleInbound?: TransportKernel["handleInbound"]
     onOutbound: (cb) => {
       outboundCallbacks.push(cb);
     },
+    quarantineThread: () => true,
+    recoverThread: () => false,
     getAgentCard: () => ({}) as AgentCard,
     getAugmentRoutes: () => [],
     getAugments: () => [],

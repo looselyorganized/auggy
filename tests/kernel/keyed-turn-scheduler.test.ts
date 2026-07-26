@@ -613,6 +613,30 @@ describe("keyed turn scheduler", () => {
     expect(expectValue(recovered)).toBe("recovered");
   });
 
+  test("restores a durable quarantine before work is admitted", async () => {
+    const scheduler = createKeyedTurnScheduler({
+      maxConcurrent: 1,
+      maxQueued: 1,
+      maxQueuedPerKey: 1,
+      maxCausalDepth: 2,
+    });
+    expect(scheduler.quarantine("restored-thread")).toBe(true);
+    expect(scheduler.quarantine("restored-thread")).toBe(false);
+    let executed = false;
+    expect(
+      await scheduler.submit({ key: "restored-thread", source }, async () => {
+        executed = true;
+      }),
+    ).toMatchObject({ status: "rejected", reason: "thread-quarantined" });
+    expect(executed).toBe(false);
+    expect(scheduler.recover("restored-thread")).toBe(true);
+    expect(
+      expectValue(
+        await scheduler.submit({ key: "restored-thread", source }, async () => "allowed"),
+      ),
+    ).toBe("allowed");
+  });
+
   test("closes admission, settles queued callers, and drains active work", async () => {
     const scheduler = createKeyedTurnScheduler({
       maxConcurrent: 1,

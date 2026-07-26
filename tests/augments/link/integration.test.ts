@@ -40,6 +40,8 @@ function makeStubKernel(handler: (t: TurnTrigger) => TurnResult): {
       return handler(trigger);
     },
     onOutbound: () => {},
+    quarantineThread: () => true,
+    recoverThread: () => false,
     getAgentCard: () => ({}) as AgentCard,
     getAugmentRoutes: () => [],
     getAugments: () => [],
@@ -193,6 +195,8 @@ describe("link augment — construction", () => {
     const kernel: TransportKernel = {
       handleInbound: async (trigger) => completedResult(trigger, "ok"),
       onOutbound: () => {},
+      quarantineThread: () => true,
+      recoverThread: () => false,
       getAgentCard: () => ({}) as AgentCard,
       getAugmentRoutes: () => [],
       getAugments: () => [],
@@ -232,6 +236,8 @@ describe("link augment — inbound flow", () => {
         return completedResult(trigger, "pong");
       },
       onOutbound: () => {},
+      quarantineThread: () => true,
+      recoverThread: () => false,
       getAgentCard: () => ({}) as AgentCard,
       getAugmentRoutes: () => [],
       getAugments: () => [],
@@ -293,6 +299,8 @@ describe("link augment — inbound flow", () => {
         throw new Error(sentinel);
       },
       onOutbound: () => {},
+      quarantineThread: () => true,
+      recoverThread: () => false,
       getAgentCard: () => ({}) as AgentCard,
       getAugmentRoutes: () => [],
       getAugments: () => [],
@@ -316,6 +324,8 @@ describe("link augment — inbound flow", () => {
         return completedResult(t, "ok");
       },
       onOutbound: () => {},
+      quarantineThread: () => true,
+      recoverThread: () => false,
       getAgentCard: () => ({}) as AgentCard,
       getAugmentRoutes: () => [],
       getAugments: () => [],
@@ -342,6 +352,8 @@ describe("link augment — trust gate", () => {
         return completedResult(t, "ok");
       },
       onOutbound: () => {},
+      quarantineThread: () => true,
+      recoverThread: () => false,
       getAgentCard: () => ({}) as AgentCard,
       getAugmentRoutes: () => [],
       getAugments: () => [],
@@ -363,6 +375,8 @@ describe("link augment — trust gate", () => {
         return completedResult(t, "ok");
       },
       onOutbound: () => {},
+      quarantineThread: () => true,
+      recoverThread: () => false,
       getAgentCard: () => ({}) as AgentCard,
       getAugmentRoutes: () => [],
       getAugments: () => [],

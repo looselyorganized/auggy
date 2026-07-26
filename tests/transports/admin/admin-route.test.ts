@@ -102,6 +102,8 @@ async function makeCtx(
   const kernel: TransportKernel = {
     handleInbound: async () => ({}) as unknown as TurnResult,
     onOutbound: () => {},
+    quarantineThread: () => true,
+    recoverThread: () => false,
     getAgentCard: () => card,
     getAugmentRoutes: () => routes as KernelRoutes,
     getAugments: () => augments,
@@ -880,6 +882,88 @@ describe("handleAdminRoute — POST action dispatch", () => {
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toContain("/console?msg=");
     expect(res.headers.get("location")).toContain(encodeURIComponent("fired"));
+  });
+
+  it("releases a scheduler lane only after a successful durable recovery action", async () => {
+    const recovered: string[] = [];
+    const aug: Augment = {
+      name: "test",
+      adminInfo: async () => ({
+        augmentName: "test",
+        title: "Test",
+        sections: [],
+        actions: [{ id: "recover-action", label: "Recover", confirmRequired: true }],
+      }),
+      adminActions: {
+        "recover-action": async () => ({
+          ok: true,
+          message: "durably reconciled",
+          recoverThreadId: "opaque-thread-id",
+        }),
+      },
+    };
+    const csrf = await generateCsrfToken({
+      bearer: "test-bearer",
+      agentName: "zip",
+      actionId: "recover-action",
+    });
+    const ctx = await makeCtx({ augments: [aug] });
+    ctx.kernel.recoverThread = (threadId) => {
+      recovered.push(threadId);
+      return true;
+    };
+    const req = new Request("http://127.0.0.1:8080/console/action/recover-action", {
+      method: "POST",
+      headers: {
+        authorization: basicHeader("test-bearer"),
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ _csrf: csrf }).toString(),
+    });
+
+    expect((await handleAdminRoute(req, ctx)).status).toBe(303);
+    expect(recovered).toEqual(["opaque-thread-id"]);
+  });
+
+  it("does not release a scheduler lane when durable recovery is rejected", async () => {
+    const recovered: string[] = [];
+    const aug: Augment = {
+      name: "test",
+      adminInfo: async () => ({
+        augmentName: "test",
+        title: "Test",
+        sections: [],
+        actions: [{ id: "stale-recovery", label: "Recover", confirmRequired: true }],
+      }),
+      adminActions: {
+        "stale-recovery": async () => ({
+          ok: false,
+          message: "stale incident",
+          recoverThreadId: "must-not-release",
+        }),
+      },
+    };
+    const csrf = await generateCsrfToken({
+      bearer: "test-bearer",
+      agentName: "zip",
+      actionId: "stale-recovery",
+    });
+    const ctx = await makeCtx({ augments: [aug] });
+    ctx.kernel.recoverThread = (threadId) => {
+      recovered.push(threadId);
+      return true;
+    };
+    const req = new Request("http://127.0.0.1:8080/console/action/stale-recovery", {
+      method: "POST",
+      headers: {
+        authorization: basicHeader("test-bearer"),
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({ _csrf: csrf }).toString(),
+    });
+
+    expect((await handleAdminRoute(req, ctx)).status).toBe(303);
+    expect(recovered).toEqual([]);
   });
 
   it("POST /console/action/<unknown-id> → 404", async () => {

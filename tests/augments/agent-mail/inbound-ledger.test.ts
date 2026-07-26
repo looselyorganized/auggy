@@ -89,6 +89,16 @@ function ledgerAt(
   });
 }
 
+function downgradeToV1(dbPath: string, unbranded = false): void {
+  const db = new Database(dbPath, { readwrite: true });
+  db.run("DROP TABLE agentmail_inbound_recoveries");
+  db.run("DROP TABLE agentmail_inbound_quarantines");
+  db.run("UPDATE agentmail_inbound_meta SET value = '1' WHERE key = 'schema_version'");
+  db.run(`PRAGMA application_id = ${unbranded ? 0 : AGENTMAIL_LEDGER_APPLICATION_ID}`);
+  db.run(`PRAGMA user_version = ${unbranded ? 0 : 1}`);
+  db.close();
+}
+
 describe("AgentMail inbound ledger", () => {
   test("creates sensitive SQLite files with owner-only permissions", () => {
     const dbPath = tempDb();
@@ -227,18 +237,79 @@ describe("AgentMail inbound ledger", () => {
     probe.close();
   });
 
+  test("migrates exact branded and unbranded v1 ledgers without losing rows", () => {
+    for (const unbranded of [false, true]) {
+      const dbPath = tempDb();
+      const clock = { now: 9_000 };
+      let ledger = createAgentMailInboundLedger({
+        dbPath,
+        now: () => clock.now,
+        leaseToken: () => "legacy_processing_lease",
+      });
+      ledger.enqueue(restEnvelope("legacy_pending", { timestamp: "2026-07-14T10:20:32.000Z" }));
+      ledger.enqueue(restEnvelope("legacy_processed"));
+      ledger.enqueue(restEnvelope("legacy_processing", { timestamp: "2026-07-14T10:20:31.000Z" }));
+      const processed = ledger.claimNext({ workerId: "worker", leaseMs: 1_000 })!;
+      expect(ledger.complete(processed)).toBe(true);
+      expect(ledger.claimNext({ workerId: "worker", leaseMs: 1_000 })).not.toBeNull();
+      ledger.close();
+      downgradeToV1(dbPath, unbranded);
+
+      clock.now++;
+      ledger = createAgentMailInboundLedger({
+        dbPath,
+        now: () => clock.now,
+        incidentId: () => `migrated_${unbranded ? "unbranded" : "branded"}`,
+      });
+      ledger.fenceInterruptedClaims();
+      expect(ledger.get("support@agentmail.to", "legacy_processed")?.state).toBe("processed");
+      expect(ledger.get("support@agentmail.to", "legacy_pending")?.state).toBe("pending");
+      expect(ledger.get("support@agentmail.to", "legacy_processing")?.state).toBe(
+        "outcome_unknown",
+      );
+      expect(ledger.listIncidents()).toHaveLength(1);
+      ledger.close();
+
+      const probe = new Database(dbPath, { readonly: true });
+      expect(
+        probe.query<{ application_id: number }, []>("PRAGMA application_id").get()?.application_id,
+      ).toBe(AGENTMAIL_LEDGER_APPLICATION_ID);
+      expect(
+        probe.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version,
+      ).toBe(AGENTMAIL_LEDGER_SCHEMA_VERSION);
+      probe.close();
+    }
+  });
+
   test("rejects an otherwise exact legacy ledger with an unexpected object", () => {
-    const dbPath = tempDb();
-    const ledger = createAgentMailInboundLedger({ dbPath });
+    const templatePath = tempDb();
+    const ledger = createAgentMailInboundLedger({ dbPath: templatePath });
     ledger.close();
-    const legacy = new Database(dbPath, { readwrite: true });
-    legacy.run("PRAGMA journal_mode = DELETE");
-    legacy.run("PRAGMA application_id = 0");
-    legacy.run("PRAGMA user_version = 0");
+    const template = new Database(templatePath, { readwrite: true });
+    const objects = template
+      .query<{ name: string; sql: string; type: string }, []>(
+        "SELECT type, name, sql FROM sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%'",
+      )
+      .all();
+    template.close();
+
+    // Build the lookalike directly in SQLite's default DELETE mode. Switching
+    // an object that still owns prepared Bun statements out of WAL mode can
+    // report SQLITE_BUSY even after its database handle has closed.
+    const dbPath = tempDb();
+    const legacy = new Database(dbPath, { create: true });
+    for (const object of objects.filter((item) => item.type === "table")) {
+      legacy.run(object.sql);
+    }
+    for (const object of objects.filter((item) => item.type === "index")) {
+      legacy.run(object.sql);
+    }
+    legacy.run(
+      `INSERT INTO agentmail_inbound_meta (key, value) VALUES ('schema_version', '${AGENTMAIL_LEDGER_SCHEMA_VERSION}')`,
+    );
     legacy.run("CREATE TABLE unexpected_owner (value TEXT)");
     legacy.close();
-    rmSync(`${dbPath}-wal`, { force: true });
-    rmSync(`${dbPath}-shm`, { force: true });
+    chmodSync(dbPath, 0o600);
     const bytes = readFileSync(dbPath);
 
     expect(() => createAgentMailInboundLedger({ dbPath })).toThrow(/unexpected objects/i);
@@ -261,14 +332,25 @@ describe("AgentMail inbound ledger", () => {
 
     const dbPath = tempDb();
     const lookalike = new Database(dbPath, { create: true });
-    for (const object of objects.filter((item) => item.type === "table")) {
+    const v1Objects = new Set([
+      "agentmail_inbound_meta",
+      "agentmail_inbound_messages",
+      "idx_agentmail_inbound_claim",
+      "idx_agentmail_inbound_thread",
+      "agentmail_inbound_checkpoints",
+    ]);
+    for (const object of objects.filter(
+      (item) => item.type === "table" && v1Objects.has(item.name),
+    )) {
       lookalike.run(
         object.name === "agentmail_inbound_messages"
           ? object.sql.replace("'rest'", "'REST'")
           : object.sql,
       );
     }
-    for (const object of objects.filter((item) => item.type === "index")) {
+    for (const object of objects.filter(
+      (item) => item.type === "index" && v1Objects.has(item.name),
+    )) {
       lookalike.run(object.sql);
     }
     lookalike.run("INSERT INTO agentmail_inbound_meta (key, value) VALUES ('schema_version', '1')");
@@ -401,7 +483,8 @@ describe("AgentMail inbound ledger", () => {
     ledger.close();
 
     ledger = ledgerAt(dbPath, clock);
-    expect(ledger.get("support@agentmail.to", "renew_overflow")?.state).toBe("processing");
+    ledger.fenceInterruptedClaims();
+    expect(ledger.get("support@agentmail.to", "renew_overflow")?.state).toBe("outcome_unknown");
     ledger.close();
   });
 
@@ -424,7 +507,13 @@ describe("AgentMail inbound ledger", () => {
     expect(row?.envelope.providerEventId).toBe("event_message_1");
     expect(row?.firstSeenAt).toBe(1_000);
     expect(row?.lastSeenAt).toBe(1_001);
-    expect(ledger.counts()).toEqual({ pending: 1, processing: 0, processed: 0, discarded: 0 });
+    expect(ledger.counts()).toEqual({
+      pending: 1,
+      processing: 0,
+      processed: 0,
+      discarded: 0,
+      outcomeUnknown: 0,
+    });
     ledger.close();
   });
 
@@ -494,7 +583,7 @@ describe("AgentMail inbound ledger", () => {
     ledger.close();
   });
 
-  test("an expired claim is recoverable and its stale token cannot acknowledge new work", () => {
+  test("an expired claim is durably fenced and never leased again", () => {
     const clock = { now: 30_000 };
     let token = 0;
     const ledger = createAgentMailInboundLedger({
@@ -507,11 +596,11 @@ describe("AgentMail inbound ledger", () => {
 
     clock.now = 30_100;
     expect(ledger.renew(first, 100)).toBe(false);
-    const second = ledger.claimNext({ workerId: "worker-b", leaseMs: 100 })!;
-    expect(second.attemptCount).toBe(2);
-    expect(second.leaseToken).not.toBe(first.leaseToken);
+    const second = ledger.claimNext({ workerId: "worker-b", leaseMs: 100 });
+    expect(second).toBeNull();
     expect(ledger.complete(first)).toBe(false);
-    expect(ledger.complete(second)).toBe(true);
+    expect(ledger.listIncidents()).toHaveLength(1);
+    expect(ledger.listIncidents()[0]?.reasonCode).toBe("processing-lease-expired");
     ledger.close();
   });
 
@@ -546,13 +635,199 @@ describe("AgentMail inbound ledger", () => {
     ledger.close();
   });
 
+  test("persists outcome-unknown quarantine across restart and excludes it from claims", () => {
+    const dbPath = tempDb();
+    const clock = { now: 55_000 };
+    let ledger = createAgentMailInboundLedger({
+      dbPath,
+      now: () => clock.now,
+      leaseToken: () => "lease_unknown",
+      incidentId: () => "incident_unknown",
+    });
+    ledger.enqueue(restEnvelope("message_unknown"));
+    const claim = ledger.claimNext({ workerId: "worker", leaseMs: 1_000 })!;
+    expect(ledger.quarantine(claim, "turn-outcome-unknown")).toMatchObject({
+      id: "incident_unknown",
+      version: 1,
+      messageId: "message_unknown",
+      threadId: "thread_1",
+    });
+    expect(ledger.counts()).toEqual({
+      pending: 0,
+      processing: 0,
+      processed: 0,
+      discarded: 0,
+      outcomeUnknown: 1,
+    });
+    ledger.close();
+
+    ledger = createAgentMailInboundLedger({ dbPath, now: () => clock.now });
+    ledger.enqueue(restEnvelope("message_same_thread", { timestamp: "2026-07-14T10:20:31.000Z" }));
+    expect(ledger.get("support@agentmail.to", "message_unknown")?.state).toBe("outcome_unknown");
+    expect(ledger.claimNext({ workerId: "restart", leaseMs: 1_000 })).toBeNull();
+    expect(ledger.listIncidents()).toEqual([
+      expect.objectContaining({ id: "incident_unknown", reasonCode: "turn-outcome-unknown" }),
+    ]);
+    expect(
+      ledger.reconcileIncident({
+        incidentId: "incident_unknown",
+        expectedVersion: 1,
+        disposition: "confirmed-handled",
+        evidence: "provider confirms original effects completed",
+      }),
+    ).toMatchObject({ resolved: true });
+    expect(
+      ledger.claimNext({ workerId: "restart", leaseMs: 1_000 })?.envelope.message.messageId,
+    ).toBe("message_same_thread");
+    ledger.close();
+  });
+
+  test("promotes an interrupted processing claim to outcome unknown on restart", () => {
+    const dbPath = tempDb();
+    const clock = { now: 56_000 };
+    let ledger = createAgentMailInboundLedger({
+      dbPath,
+      now: () => clock.now,
+      leaseToken: () => "lease_interrupted",
+    });
+    ledger.enqueue(restEnvelope("message_interrupted"));
+    expect(ledger.claimNext({ workerId: "worker", leaseMs: 10_000 })).not.toBeNull();
+    ledger.close();
+
+    clock.now++;
+    ledger = createAgentMailInboundLedger({
+      dbPath,
+      now: () => clock.now,
+      incidentId: () => "incident_restart",
+    });
+    expect(ledger.listIncidents()).toEqual([]);
+    ledger.fenceInterruptedClaims();
+    expect(ledger.get("support@agentmail.to", "message_interrupted")?.state).toBe(
+      "outcome_unknown",
+    );
+    expect(ledger.listIncidents()[0]).toMatchObject({
+      id: "incident_restart",
+      reasonCode: "process-restarted",
+    });
+    expect(ledger.claimNext({ workerId: "restart", leaseMs: 1_000 })).toBeNull();
+    ledger.close();
+  });
+
+  test("reconciles incidents once with compare-and-swap and stores only evidence hashes", () => {
+    const dbPath = tempDb();
+    const clock = { now: 57_000 };
+    const sentinel = "RAW-OPERATOR-EVIDENCE-DO-NOT-PERSIST";
+    const ledger = createAgentMailInboundLedger({
+      dbPath,
+      now: () => clock.now,
+      leaseToken: () => "lease_recovery",
+      incidentId: () => "incident_recovery",
+    });
+    ledger.enqueue(restEnvelope("message_recovery"));
+    const claim = ledger.claimNext({ workerId: "worker", leaseMs: 1_000 })!;
+    ledger.quarantine(claim, "turn-outcome-unknown");
+
+    expect(
+      ledger.reconcileIncident({
+        incidentId: "incident_recovery",
+        expectedVersion: 2,
+        disposition: "confirmed-handled",
+        evidence: sentinel,
+      }),
+    ).toEqual({ resolved: false });
+    expect(
+      ledger.reconcileIncident({
+        incidentId: "incident_recovery",
+        expectedVersion: 1,
+        disposition: "confirmed-handled",
+        evidence: sentinel,
+      }),
+    ).toEqual({ resolved: true, threadId: "thread_1", releaseThread: true });
+    expect(
+      ledger.reconcileIncident({
+        incidentId: "incident_recovery",
+        expectedVersion: 1,
+        disposition: "confirmed-handled",
+        evidence: sentinel,
+      }),
+    ).toEqual({ resolved: false });
+    expect(ledger.get("support@agentmail.to", "message_recovery")?.state).toBe("processed");
+    ledger.close();
+
+    for (const suffix of ["", "-wal", "-shm"]) {
+      const path = `${dbPath}${suffix}`;
+      if (existsSync(path)) expect(readFileSync(path).includes(Buffer.from(sentinel))).toBe(false);
+    }
+  });
+
+  test("confirmed-no-effect recovery returns a quarantined message to pending", () => {
+    const clock = { now: 58_000 };
+    const ledger = createAgentMailInboundLedger({
+      dbPath: tempDb(),
+      now: () => clock.now,
+      leaseToken: () => "lease_retry",
+      incidentId: () => "incident_retry",
+    });
+    ledger.enqueue(restEnvelope("message_retry_after_recovery"));
+    const claim = ledger.claimNext({ workerId: "worker", leaseMs: 1_000 })!;
+    ledger.quarantine(claim, "turn-outcome-unknown");
+    expect(
+      ledger.reconcileIncident({
+        incidentId: "incident_retry",
+        expectedVersion: 1,
+        disposition: "confirmed-no-effect",
+        evidence: "provider confirms no mutation was accepted",
+      }),
+    ).toMatchObject({ resolved: true });
+    expect(ledger.get("support@agentmail.to", "message_retry_after_recovery")?.state).toBe(
+      "pending",
+    );
+    expect(ledger.claimNext({ workerId: "worker-2", leaseMs: 1_000 })?.attemptCount).toBe(2);
+    ledger.close();
+  });
+
+  test("does not claim a second message while its thread has active or ambiguous work", () => {
+    const clock = { now: 59_000 };
+    let token = 0;
+    let incident = 0;
+    const ledger = createAgentMailInboundLedger({
+      dbPath: tempDb(),
+      now: () => clock.now,
+      leaseToken: () => `lease_${++token}`,
+      incidentId: () => `incident_${++incident}`,
+    });
+    ledger.enqueue(restEnvelope("message_concurrent_a"));
+    ledger.enqueue(restEnvelope("message_concurrent_b", { timestamp: "2026-07-14T10:20:31.000Z" }));
+    const first = ledger.claimNext({ workerId: "worker-a", leaseMs: 1_000 })!;
+    expect(ledger.claimNext({ workerId: "worker-b", leaseMs: 1_000 })).toBeNull();
+    ledger.quarantine(first, "turn-outcome-unknown");
+    expect(ledger.claimNext({ workerId: "worker-b", leaseMs: 1_000 })).toBeNull();
+
+    expect(
+      ledger.reconcileIncident({
+        incidentId: "incident_1",
+        expectedVersion: 1,
+        disposition: "confirmed-handled",
+        evidence: "first attempt confirmed handled",
+      }),
+    ).toEqual({ resolved: true, threadId: "thread_1", releaseThread: true });
+    expect(ledger.listIncidentThreads()).toEqual([]);
+    expect(ledger.claimNext({ workerId: "worker-b", leaseMs: 1_000 })).not.toBeNull();
+    ledger.close();
+  });
+
   test("two connections atomically claim different messages", () => {
     const dbPath = tempDb();
     const clock = { now: 60_000 };
     const firstLedger = ledgerAt(dbPath, clock, "first");
     const secondLedger = ledgerAt(dbPath, clock, "second");
     firstLedger.enqueue(restEnvelope("message_a"));
-    firstLedger.enqueue(restEnvelope("message_b", { timestamp: "2026-07-14T10:20:31.000Z" }));
+    firstLedger.enqueue(
+      restEnvelope("message_b", {
+        thread_id: "thread_2",
+        timestamp: "2026-07-14T10:20:31.000Z",
+      }),
+    );
 
     const first = firstLedger.claimNext({ workerId: "worker-a", leaseMs: 1_000 });
     const second = secondLedger.claimNext({ workerId: "worker-b", leaseMs: 1_000 });

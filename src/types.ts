@@ -716,6 +716,14 @@ export interface TransportKernel {
   getAgentCard(): AgentCard;
   /** Process-local, aggregate operational state for authenticated operator surfaces. */
   getOperationalSnapshot?(): RuntimeOperationalSnapshot;
+  /** Trusted transport-only restoration of a durable thread quarantine. */
+  quarantineThread(threadId: string): boolean;
+  /**
+   * Trusted console-only handoff after a durable incident was reconciled.
+   * The runtime releases the lane only when every registered durable
+   * quarantine authority reports that the thread is clear.
+   */
+  recoverThread(threadId: string): boolean;
   /**
    * Cross-augment HTTP routes collected at `agent.start()` after
    * `lifecycle.boot()`. Returns a frozen array — transports MUST NOT mutate.
@@ -1305,6 +1313,8 @@ export interface AdminActionResult {
   ok: boolean;
   /** Human-readable message displayed as flash on the redirected admin page. */
   message: string;
+  /** @internal Release only this scheduler lane after the handler durably resolves its incident. */
+  recoverThreadId?: string;
 }
 
 /**
@@ -1327,6 +1337,18 @@ export type AdminActionHandler = (params: Record<string, string>) => Promise<Adm
  *   - `guardrails`  — limits, identity, safety, trust.
  */
 export type AugmentCategory = "transports" | "capabilities" | "memory" | "guardrails";
+
+/**
+ * First-party, runtime-trusted durable thread quarantine authority.
+ *
+ * These methods must be synchronous so checking every authority and changing
+ * scheduler state is one event-loop critical section. They are lifecycle and
+ * operator-recovery plumbing, never model-visible tools or HTTP actions.
+ */
+export interface DurableThreadQuarantine {
+  listThreadIds(): readonly string[];
+  hasThread(threadId: string): boolean;
+}
 
 export interface Augment {
   name: string;
@@ -1373,6 +1395,8 @@ export interface Augment {
    * every declared action id has a matching key here.
    */
   adminActions?: Record<string, AdminActionHandler>;
+  /** First-party durable incidents that fence whole runtime thread lanes. */
+  durableThreadQuarantine?: DurableThreadQuarantine;
   memory?: MemoryProviderSpec;
   constraints?: AugmentConstraints;
   onBoot?: () => Promise<void>;
@@ -1728,6 +1752,12 @@ export interface NotifyRateLimitOptions {
 export interface NotifyAugmentOptions {
   destinations: NotifyDestination[];
   rateLimit?: NotifyRateLimitOptions;
+  /**
+   * Durable quota, attempt, and outcome-unknown ledger. The CLI resolves an
+   * omitted value under the runtime data root. Direct factory callers must
+   * provide this or agentDir; Notify never silently falls back to memory.
+   */
+  dbPath?: string;
   /**
    * G36 — agent project directory. When set,
    * `admin-overrides.json` is read at boot to apply runtime overrides

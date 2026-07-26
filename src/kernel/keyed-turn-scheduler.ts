@@ -99,6 +99,8 @@ export interface KeyedTurnScheduler {
   close(): void;
   drain(): Promise<void>;
   reopen(): void;
+  /** Restore a durable fail-closed quarantine before accepting work for this key. */
+  quarantine(key: string): boolean;
   recover(key: string): boolean;
   /** Count a kernel-owned rejection that occurs before a causal task can be submitted. */
   recordExternalRejection(reason: SchedulerRejectionReason): void;
@@ -297,14 +299,16 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
     for (const resolve of drainWaiters.splice(0)) resolve();
   }
 
-  function quarantineKey(key: string): void {
-    if (!quarantinedKeys.has(key)) {
+  function quarantineKey(key: string): boolean {
+    const added = !quarantinedKeys.has(key);
+    if (added) {
       quarantinedKeys.add(key);
       quarantined++;
     }
     const queue = queues.get(key);
-    if (!queue) return;
+    if (!queue) return added;
     for (const item of [...queue]) rejectItem(item, "thread-quarantined");
+    return added;
   }
 
   function makeLease(key: string, depth: number, root: RootLeaseState): InternalLease {
@@ -656,6 +660,10 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
 
     recover(key: string): boolean {
       return quarantinedKeys.delete(key);
+    },
+
+    quarantine(key: string): boolean {
+      return quarantineKey(key);
     },
 
     recordExternalRejection(reason: SchedulerRejectionReason): void {

@@ -22,6 +22,8 @@ function mockKernel(augments: Augment[]): TransportKernel {
     // handleInbound isn't exercised by collector tests; minimal stub.
     handleInbound: async () => ({}) as unknown as TurnResult,
     onOutbound: () => {},
+    quarantineThread: () => true,
+    recoverThread: () => false,
     getAgentCard: () => card,
     getAugmentRoutes: () => [],
     getAugments: () => augments,

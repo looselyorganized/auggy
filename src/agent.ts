@@ -203,6 +203,55 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
   };
   turnScheduler.registerSource(injectSource);
 
+  function durableThreadStillQuarantined(threadId: string): boolean {
+    for (const aug of effectiveAugments) {
+      const authority = aug.durableThreadQuarantine;
+      if (!authority) continue;
+      try {
+        if (authority.hasThread(threadId)) return true;
+      } catch {
+        // A failed durable-state read can never authorize scheduler recovery.
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function restoreDurableThreadQuarantines(): void {
+    const restored = new Set<string>();
+    for (const aug of effectiveAugments) {
+      const authority = aug.durableThreadQuarantine;
+      if (!authority) continue;
+      const threadIds = authority.listThreadIds();
+      if (threadIds.length > 1_000) {
+        throw new Error(
+          `Augment "${aug.name}" has too many unresolved thread incidents; operator recovery is required`,
+        );
+      }
+      for (const threadId of threadIds) {
+        const hasControlCharacter = [...threadId].some((character) => {
+          const codePoint = character.codePointAt(0) ?? 0;
+          return codePoint <= 31 || codePoint === 127;
+        });
+        if (!threadId || threadId.length > 256 || hasControlCharacter) {
+          throw new Error(`Augment "${aug.name}" returned an invalid quarantined thread id`);
+        }
+        restored.add(threadId);
+      }
+    }
+    for (const threadId of restored) turnScheduler.quarantine(threadId);
+  }
+
+  function recoverThreadLane(threadId: string): boolean {
+    if (durableThreadStillQuarantined(threadId)) {
+      operationalSignals.recordThreadRecovery(false);
+      return false;
+    }
+    const recovered = turnScheduler.recover(threadId);
+    operationalSignals.recordThreadRecovery(recovered);
+    return recovered;
+  }
+
   let started = false;
   let lifecycleTail: Promise<void> | null = null;
 
@@ -587,6 +636,14 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
   ): Promise<TurnResult> {
     const operationalStartedAt = Date.now();
     const threadId = trigger.threadId ?? trigger.turnId;
+    if (durableThreadStillQuarantined(threadId)) {
+      turnScheduler.recordExternalRejection("thread-quarantined");
+      operationalSignals.recordTurn({ outcome: "rejected", durationMs: 0 });
+      return schedulerTerminalResult(trigger, threadId, {
+        status: "rejected",
+        reason: "thread-quarantined",
+      });
+    }
     const executeCompleteTurn = async (lease: KeyedTurnLease): Promise<TurnResult> => {
       await options.beforeExecute?.();
       if (options.signal?.aborted) {
@@ -686,6 +743,10 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         try {
           await lifecycle.boot();
 
+          // Rebuild scheduler fences from every durable incident authority
+          // before routes are collected or any listener can be registered.
+          restoreDurableThreadQuarantines();
+
           // Collect routes after boot but before transport registration. No
           // transport may accept traffic until the later ready phase.
           const collected = collectAugmentRoutes(effectiveAugments);
@@ -748,6 +809,12 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
                 },
                 getOperationalSnapshot() {
                   return operationalSnapshot();
+                },
+                quarantineThread(threadId: string) {
+                  return turnScheduler.quarantine(threadId);
+                },
+                recoverThread(threadId: string) {
+                  return recoverThreadLane(threadId);
                 },
                 getAugmentRoutes() {
                   return augmentRoutes;
@@ -840,9 +907,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     },
 
     recoverThread(threadId: string): boolean {
-      const recovered = turnScheduler.recover(threadId);
-      operationalSignals.recordThreadRecovery(recovered);
-      return recovered;
+      return recoverThreadLane(threadId);
     },
   };
 

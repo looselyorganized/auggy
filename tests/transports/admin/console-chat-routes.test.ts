@@ -40,6 +40,8 @@ async function makeContext(
     handleInbound: async () => ({}) as TurnResult,
     forgetThreadHistory: onForget,
     onOutbound: () => {},
+    quarantineThread: () => true,
+    recoverThread: () => false,
     getAgentCard: () => card,
     getAugmentRoutes: () => [],
     getAugments: () => [],

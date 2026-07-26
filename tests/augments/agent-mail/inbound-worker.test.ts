@@ -1,14 +1,26 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createAgentMailInboundLedger } from "../../../src/augments/agentMail/inbound-ledger";
 import {
   agentMailEnvelopeToTrigger,
   createAgentMailInboundWorker,
 } from "../../../src/augments/agentMail/inbound-worker";
+import { OutcomeUnknownError } from "../../../src/outcome-unknown";
 import type {
   AgentMailInboundEnvelope,
   AgentMailReceivedEventType,
 } from "../../../src/augments/agentMail/provider";
 import type { TransportKernel, TurnResult, TurnTrigger } from "../../../src/types";
+
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
 
 describe("AgentMail inbound turn worker", () => {
   test("default-denies senders and discards without invoking the kernel", async () => {
@@ -186,6 +198,221 @@ describe("AgentMail inbound turn worker", () => {
     }
   });
 
+  test("quarantines an explicit outcome-unknown turn without replaying it", async () => {
+    const ledger = createAgentMailInboundLedger({
+      dbPath: ":memory:",
+      now: () => 1_000,
+      incidentId: () => "incident_explicit",
+    });
+    const calls: TurnTrigger[] = [];
+    try {
+      ledger.enqueue(envelope());
+      const worker = createAgentMailInboundWorker({
+        ledger,
+        kernel: fakeKernel(calls, {
+          success: false,
+          status: "failed",
+          outcomeUnknown: true,
+        } as TurnResult),
+        inboxId,
+        sourceAugment: "agent-mail",
+        policy: { allowedSenders: ["customer@example.com"] },
+        now: () => 1_000,
+      });
+
+      expect(await worker.processNext()).toEqual({
+        status: "quarantined",
+        messageId: "message_1",
+        incidentId: "incident_explicit",
+      });
+      expect(await worker.processNext()).toEqual({ status: "idle" });
+      expect(calls).toHaveLength(1);
+      expect(ledger.get(inboxId, "message_1")?.state).toBe("outcome_unknown");
+    } finally {
+      ledger.close();
+    }
+  });
+
+  test("quarantines a thrown outcome-unknown error instead of retrying", async () => {
+    const ledger = createAgentMailInboundLedger({
+      dbPath: ":memory:",
+      now: () => 1_000,
+      incidentId: () => "incident_thrown",
+    });
+    try {
+      ledger.enqueue(envelope());
+      const kernel = fakeKernel([]);
+      kernel.handleInbound = async () => {
+        throw new OutcomeUnknownError("ambiguous downstream result");
+      };
+      const worker = createAgentMailInboundWorker({
+        ledger,
+        kernel,
+        inboxId,
+        sourceAugment: "agent-mail",
+        policy: { allowedSenders: ["customer@example.com"] },
+        now: () => 1_000,
+      });
+
+      expect(await worker.processNext()).toMatchObject({
+        status: "quarantined",
+        incidentId: "incident_thrown",
+      });
+      expect(ledger.get(inboxId, "message_1")?.attemptCount).toBe(1);
+      expect(await worker.processNext()).toEqual({ status: "idle" });
+    } finally {
+      ledger.close();
+    }
+  });
+
+  test("quarantines an ambiguous turn after its lease expires", async () => {
+    let now = 1_000;
+    const ledger = createAgentMailInboundLedger({
+      dbPath: ":memory:",
+      now: () => now,
+      incidentId: () => "incident_expired",
+    });
+    const quarantinedThreads: string[] = [];
+    try {
+      ledger.enqueue(envelope());
+      const kernel = fakeKernel([], {
+        success: false,
+        status: "failed",
+        outcomeUnknown: true,
+      } as TurnResult);
+      kernel.handleInbound = async () => {
+        now = 2_001;
+        return { success: false, status: "failed", outcomeUnknown: true } as TurnResult;
+      };
+      kernel.quarantineThread = (threadId) => {
+        quarantinedThreads.push(threadId);
+        return true;
+      };
+      const worker = createAgentMailInboundWorker({
+        ledger,
+        kernel,
+        inboxId,
+        sourceAugment: "agent-mail",
+        policy: { allowedSenders: ["customer@example.com"], leaseMs: 1_000 },
+        now: () => now,
+      });
+
+      expect(await worker.processNext()).toMatchObject({
+        status: "quarantined",
+        incidentId: "incident_expired",
+      });
+      expect(ledger.get(inboxId, "message_1")?.state).toBe("outcome_unknown");
+      expect(quarantinedThreads).toHaveLength(1);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  test("fences an expired dispatched claim before a second worker can replay it", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "agentmail-worker-race-"));
+    const dbPath = join(directory, "inbound.db");
+    let now = 1_000;
+    const firstLedger = createAgentMailInboundLedger({
+      dbPath,
+      now: () => now,
+      leaseToken: () => "lease-a",
+      incidentId: () => "incident-a",
+    });
+    const secondLedger = createAgentMailInboundLedger({
+      dbPath,
+      now: () => now,
+      leaseToken: () => "lease-b",
+      incidentId: () => "incident-b",
+    });
+    const entered = deferred();
+    const release = deferred();
+    let secondDispatches = 0;
+    try {
+      firstLedger.enqueue(envelope());
+      const firstKernel = fakeKernel([]);
+      firstKernel.handleInbound = async () => {
+        entered.resolve();
+        await release.promise;
+        return { success: true, status: "completed" } as TurnResult;
+      };
+      const secondKernel = fakeKernel([]);
+      secondKernel.handleInbound = async () => {
+        secondDispatches++;
+        return { success: true, status: "completed" } as TurnResult;
+      };
+      const firstWorker = createAgentMailInboundWorker({
+        ledger: firstLedger,
+        kernel: firstKernel,
+        inboxId,
+        sourceAugment: "agent-mail",
+        policy: { allowedSenders: ["customer@example.com"], leaseMs: 1_000 },
+        now: () => now,
+      });
+      const secondWorker = createAgentMailInboundWorker({
+        ledger: secondLedger,
+        kernel: secondKernel,
+        inboxId,
+        sourceAugment: "agent-mail",
+        policy: { allowedSenders: ["customer@example.com"], leaseMs: 1_000 },
+        now: () => now,
+      });
+
+      const first = firstWorker.processNext();
+      await entered.promise;
+      now = 2_001;
+      expect(await secondWorker.processNext()).toEqual({ status: "idle" });
+      expect(secondDispatches).toBe(0);
+      release.resolve();
+      expect(await first).toMatchObject({
+        status: "quarantined",
+        incidentId: "incident-b",
+      });
+      expect(firstLedger.listIncidents()).toHaveLength(1);
+      expect(firstLedger.get(inboxId, "message_1")?.state).toBe("outcome_unknown");
+    } finally {
+      release.resolve();
+      firstLedger.close();
+      secondLedger.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  test("halts fail-closed when durable ambiguity quarantine cannot be recorded", async () => {
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:", now: () => 1_000 });
+    const calls: TurnTrigger[] = [];
+    const quarantinedThreads: string[] = [];
+    try {
+      ledger.enqueue(envelope());
+      ledger.quarantine = () => {
+        throw new Error("storage unavailable");
+      };
+      const kernel = fakeKernel(calls, {
+        success: false,
+        status: "failed",
+        outcomeUnknown: true,
+      } as TurnResult);
+      kernel.quarantineThread = (threadId) => {
+        quarantinedThreads.push(threadId);
+        return true;
+      };
+      const worker = createAgentMailInboundWorker({
+        ledger,
+        kernel,
+        inboxId,
+        sourceAugment: "agent-mail",
+        policy: { allowedSenders: ["customer@example.com"] },
+        now: () => 1_000,
+      });
+
+      await expect(worker.processNext()).rejects.toThrow(/worker halted/i);
+      await expect(worker.processNext()).rejects.toThrow(/worker halted/i);
+      expect(calls).toHaveLength(1);
+      expect(quarantinedThreads).toHaveLength(1);
+    } finally {
+      ledger.close();
+    }
+  });
+
   test("bounds the rendered prompt by UTF-8 bytes", () => {
     const trigger = agentMailEnvelopeToTrigger(
       envelope("message.received", { text: "🦆".repeat(10_000) }),
@@ -247,6 +474,8 @@ function fakeKernel(calls: TurnTrigger[], result: TurnResult = successfulTurn())
       return result;
     },
     onOutbound: () => {},
+    quarantineThread: () => true,
+    recoverThread: () => false,
     getAgentCard: () => ({
       provider: { name: "test" },
       capabilities: { streaming: false, pushNotifications: false, memory: false, transport: true },

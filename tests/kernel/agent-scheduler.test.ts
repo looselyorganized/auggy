@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { defineAgent } from "../../src/agent";
+import { notify } from "../../src/augments/notify";
 import { emptyTrace } from "../../src/kernel/trace-emitter";
 import { OutcomeUnknownError } from "../../src/outcome-unknown";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { z } from "zod";
 import type {
   AssembledPrompt,
@@ -677,6 +681,199 @@ describe("agent-wide keyed turn scheduling", () => {
       expect(recovered.status).toBe("completed");
     } finally {
       await agent.stop();
+    }
+  });
+
+  test("restores durable fences and releases only after every authority clears", async () => {
+    let firstBlocked = true;
+    let secondBlocked = true;
+    const authority = (name: string, blocked: () => boolean): Augment => ({
+      name,
+      durableThreadQuarantine: {
+        listThreadIds: () => (blocked() ? ["shared-thread"] : []),
+        hasThread: (threadId) => threadId === "shared-thread" && blocked(),
+      },
+    });
+    let modelCalls = 0;
+    const agent = defineAgent(
+      {
+        name: "durable-quarantine-coordinator",
+        model: "mock",
+        augments: [
+          authority("first-store", () => firstBlocked),
+          authority("second-store", () => secondBlocked),
+        ],
+      },
+      {
+        maxContextTokens: 100_000,
+        countTokens: (text) => Math.ceil(text.length / 4),
+        async complete() {
+          modelCalls++;
+          return response();
+        },
+      },
+    );
+    await agent.start();
+    try {
+      expect(await agent.inject(trigger("blocked", "shared-thread", "test"))).toMatchObject({
+        status: "rejected",
+        rejection: { reason: "thread-quarantined" },
+      });
+      firstBlocked = false;
+      expect(agent.recoverThread("shared-thread")).toBe(false);
+      expect(await agent.inject(trigger("still-blocked", "shared-thread", "test"))).toMatchObject({
+        status: "rejected",
+        rejection: { reason: "thread-quarantined" },
+      });
+      secondBlocked = false;
+      expect(agent.recoverThread("shared-thread")).toBe(true);
+      expect((await agent.inject(trigger("released", "shared-thread", "test"))).status).toBe(
+        "completed",
+      );
+      expect(modelCalls).toBe(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  test("checks durable incident authorities again at admission", async () => {
+    let blocked = false;
+    let modelCalls = 0;
+    const agent = defineAgent(
+      {
+        name: "late-durable-quarantine",
+        model: "mock",
+        augments: [
+          {
+            name: "incident-store",
+            durableThreadQuarantine: {
+              listThreadIds: () => [],
+              hasThread: (threadId) => blocked && threadId === "late-thread",
+            },
+          },
+        ],
+      },
+      {
+        maxContextTokens: 100_000,
+        countTokens: (text) => Math.ceil(text.length / 4),
+        async complete() {
+          modelCalls++;
+          return response();
+        },
+      },
+    );
+    await agent.start();
+    try {
+      blocked = true;
+      expect(await agent.inject(trigger("late", "late-thread", "test"))).toMatchObject({
+        status: "rejected",
+        rejection: { reason: "thread-quarantined" },
+      });
+      expect(modelCalls).toBe(0);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  test("restores a Notify ambiguity before a fresh agent can run the thread", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "auggy-notify-restart-"));
+    const dbPath = join(directory, "notify.db");
+    const destination = {
+      name: "ops",
+      transport: "webhook" as const,
+      url: "https://example.com/notify",
+      allowedTrustLevels: ["creator" as const],
+    };
+    let firstModelCalls = 0;
+    const firstNotify = notify({
+      destinations: [destination],
+      dbPath,
+      _incidentId: () => "incident-restart",
+      adapters: {
+        webhook: {
+          async deliver() {
+            throw new Error("provider result lost");
+          },
+        },
+      },
+    });
+    const firstAgent = defineAgent(
+      { name: "notify-first", model: "mock", augments: [firstNotify] },
+      {
+        maxContextTokens: 100_000,
+        countTokens: (text) => Math.ceil(text.length / 4),
+        async complete() {
+          firstModelCalls++;
+          return {
+            content: "",
+            toolCalls: [
+              { name: "notify", arguments: { to: "ops", summary: "first ambiguous send" } },
+            ],
+            finishReason: "tool_use",
+            inputTokens: 1,
+            outputTokens: 1,
+          };
+        },
+      },
+    );
+    await firstAgent.start();
+    try {
+      expect(await firstAgent.inject(trigger("first", "notify-thread", "test"))).toMatchObject({
+        outcomeUnknown: true,
+      });
+      expect(firstModelCalls).toBe(1);
+    } finally {
+      await firstAgent.stop();
+    }
+
+    let restartedModelCalls = 0;
+    const restartedNotify = notify({
+      destinations: [destination],
+      dbPath,
+      adapters: {
+        webhook: {
+          async deliver() {
+            return { status: "sent" };
+          },
+        },
+      },
+    });
+    const restartedAgent = defineAgent(
+      { name: "notify-restarted", model: "mock", augments: [restartedNotify] },
+      {
+        maxContextTokens: 100_000,
+        countTokens: (text) => Math.ceil(text.length / 4),
+        async complete() {
+          restartedModelCalls++;
+          return response();
+        },
+      },
+    );
+    await restartedAgent.start();
+    try {
+      expect(
+        await restartedAgent.inject(trigger("different", "notify-thread", "test")),
+      ).toMatchObject({
+        status: "rejected",
+        rejection: { reason: "thread-quarantined" },
+      });
+      expect(restartedModelCalls).toBe(0);
+      const reconciled = await restartedNotify.adminActions?.[
+        "notify-delivery-reconcile-no-effect"
+      ]?.({
+        incidentId: "incident-restart",
+        version: "1",
+        evidence: "provider confirms no delivery",
+      });
+      expect(reconciled).toMatchObject({ ok: true, recoverThreadId: "notify-thread" });
+      expect(restartedAgent.recoverThread(reconciled!.recoverThreadId!)).toBe(true);
+      expect(
+        (await restartedAgent.inject(trigger("after-recovery", "notify-thread", "test"))).status,
+      ).toBe("completed");
+      expect(restartedModelCalls).toBe(1);
+    } finally {
+      await restartedAgent.stop();
+      rmSync(directory, { recursive: true, force: true });
     }
   });
 

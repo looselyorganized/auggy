@@ -9,6 +9,7 @@ import type {
   TurnTrigger,
 } from "../../types";
 import type { AgentMailInboundLedger, AgentMailLedgerClaim } from "./inbound-ledger";
+import { isOutcomeUnknownError, OutcomeUnknownError } from "../../outcome-unknown";
 import type {
   AgentMailInboundEnvelope,
   AgentMailInboundMessage,
@@ -57,6 +58,7 @@ export type AgentMailInboundWorkerResult =
   | { status: "processed"; messageId: string; turn: TurnResult }
   | { status: "discarded"; messageId: string; reason: string }
   | { status: "retried"; messageId: string; availableAt: number }
+  | { status: "quarantined"; messageId: string; incidentId: string }
   | { status: "lease-lost"; messageId: string };
 
 export interface AgentMailInboundWorker {
@@ -72,9 +74,34 @@ export function createAgentMailInboundWorker(
   const now = options.now ?? Date.now;
   const nextTurnId: () => string = options.nextTurnId ?? randomUUID;
   const policy = normalizePolicy(options.policy);
+  let halted: OutcomeUnknownError | undefined;
+
+  function quarantineOrHalt(claim: AgentMailLedgerClaim, reasonCode: string, threadId: string) {
+    try {
+      const incident = options.ledger.quarantine(claim, reasonCode);
+      if (!incident) {
+        throw new Error("the claimed message changed before quarantine was recorded");
+      }
+      options.kernel.quarantineThread(threadId);
+      return incident;
+    } catch (error) {
+      options.kernel.quarantineThread(threadId);
+      halted = new OutcomeUnknownError(
+        "agentMail inbound worker halted because durable ambiguity state could not be recorded",
+        { cause: error },
+      );
+      throw halted;
+    }
+  }
 
   return {
     async processNext() {
+      if (halted) throw halted;
+      for (const incident of options.ledger.fenceInterruptedClaims({ expiredOnly: true })) {
+        options.kernel.quarantineThread(
+          agentMailRuntimeThreadId(incident.inboxId, incident.threadId),
+        );
+      }
       const claim = options.ledger.claimNext({ workerId, leaseMs: policy.leaseMs });
       if (!claim) return { status: "idle" };
 
@@ -119,16 +146,38 @@ export function createAgentMailInboundWorker(
       heartbeat.unref?.();
 
       try {
-        const turn = await options.kernel.handleInbound(trigger);
-        if (leaseLost) return { status: "lease-lost", messageId };
+        let turn: TurnResult;
+        try {
+          turn = await options.kernel.handleInbound(trigger);
+        } catch (error) {
+          if (isOutcomeUnknownError(error)) {
+            const incident = quarantineOrHalt(
+              claim,
+              "turn-dispatch-outcome-unknown",
+              trigger.threadId!,
+            );
+            return { status: "quarantined", messageId, incidentId: incident.id };
+          }
+          if (leaseLost) return { status: "lease-lost", messageId };
+          return retryOrDiscard(options.ledger, claim, policy, now(), "turn-dispatch-failed");
+        }
         if (turn.success) {
-          if (!options.ledger.complete(claim)) return { status: "lease-lost", messageId };
+          if (!options.ledger.complete(claim)) {
+            const incident = quarantineOrHalt(
+              claim,
+              "turn-completion-not-recorded",
+              trigger.threadId!,
+            );
+            return { status: "quarantined", messageId, incidentId: incident.id };
+          }
           return { status: "processed", messageId, turn };
         }
-        return retryOrDiscard(options.ledger, claim, policy, now(), `turn-${turn.status}`);
-      } catch {
+        if (turn.outcomeUnknown) {
+          const incident = quarantineOrHalt(claim, "turn-outcome-unknown", trigger.threadId!);
+          return { status: "quarantined", messageId, incidentId: incident.id };
+        }
         if (leaseLost) return { status: "lease-lost", messageId };
-        return retryOrDiscard(options.ledger, claim, policy, now(), "turn-dispatch-failed");
+        return retryOrDiscard(options.ledger, claim, policy, now(), `turn-${turn.status}`);
       } finally {
         clearInterval(heartbeat);
         try {
@@ -149,7 +198,7 @@ export function agentMailEnvelopeToTrigger(
   turnId: string = randomUUID(),
 ): TurnTrigger {
   const { message } = envelope;
-  const threadId = opaqueId("am-thread", `${message.inboxId}\0${message.threadId}`);
+  const threadId = agentMailRuntimeThreadId(message.inboxId, message.threadId);
   const peer = senderPeer(message, sourceAugment, threadId);
   const inbound: InboundMessage = {
     parts: [{ kind: "text", text: renderUntrustedEmail(envelope, maxPromptBytes) }],
@@ -177,6 +226,10 @@ export function agentMailEnvelopeToTrigger(
     peer,
     payload: inbound,
   };
+}
+
+export function agentMailRuntimeThreadId(inboxId: string, providerThreadId: string): string {
+  return opaqueId("am-thread", `${inboxId}\0${providerThreadId}`);
 }
 
 function decideInbound(
