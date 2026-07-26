@@ -1704,6 +1704,21 @@ export function expandAugmentFolderEntries(
 
 function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   const errors: string[] = [];
+  const topLevelFields = new Set([
+    "id",
+    "name",
+    "displayName",
+    "creator",
+    "purpose",
+    "identity",
+    "engine",
+    "settings",
+    "augments",
+    "securityEval",
+  ]);
+  for (const key of Object.keys(raw)) {
+    if (!topLevelFields.has(key)) errors.push(`${key}: unknown top-level field`);
+  }
 
   // Required top-level fields.
   if (typeof raw.id !== "string" || !AUG1_ID_RE.test(raw.id)) {
@@ -2142,7 +2157,14 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   }
 
   // Settings.
-  const settings = (raw.settings ?? {}) as Record<string, unknown>;
+  let settings: Record<string, unknown> = {};
+  if (raw.settings !== undefined) {
+    if (typeof raw.settings !== "object" || raw.settings === null || Array.isArray(raw.settings)) {
+      errors.push("settings: must be an object");
+    } else {
+      settings = raw.settings as Record<string, unknown>;
+    }
+  }
   if (settings.compactionStrategy && !VALID_COMPACTION.has(settings.compactionStrategy as string)) {
     errors.push(`settings.compactionStrategy: must be one of ${[...VALID_COMPACTION].join(", ")}`);
   }

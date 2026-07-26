@@ -157,6 +157,21 @@ describe("parseConfig", () => {
     expect(config.augments[0]!.type).toBe("fileMemory");
   });
 
+  test("rejects malformed settings instead of silently restoring runtime defaults", () => {
+    for (const settings of ["malformed", 42, true, null, ["maxConcurrent", 1]]) {
+      const path = writeYaml("agent.yaml", minimalConfig({ settings }));
+      expect(() => parseConfig(path)).toThrow("settings: must be an object");
+    }
+  });
+
+  test("rejects unknown top-level fields instead of ignoring configuration typos", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({ setting: { turnScheduling: { maxConcurrent: 1 } } }),
+    );
+    expect(() => parseConfig(path)).toThrow("setting: unknown top-level field");
+  });
+
   test("includes optional fields when present", () => {
     const path = writeYaml(
       "agent.yaml",
