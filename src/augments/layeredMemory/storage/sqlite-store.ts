@@ -326,9 +326,19 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
   const insertEventStmt = db.prepare(
     "INSERT INTO event_log (id, entry_id, action, peer_id, timestamp, detail) VALUES (?, ?, ?, ?, ?, ?)",
   );
-  const cleanupStmt = db.prepare(
-    "DELETE FROM entries WHERE id IN (SELECT id FROM entries WHERE expires_at IS NOT NULL AND expires_at < ? LIMIT ?)",
-  );
+  const cleanupStmt = prefixPattern
+    ? db.prepare(
+        `DELETE FROM entries WHERE id IN (
+           SELECT id FROM entries
+           WHERE expires_at IS NOT NULL
+             AND expires_at < ?
+             AND label LIKE ? ESCAPE '\\'
+           LIMIT ?
+         )`,
+      )
+    : db.prepare(
+        "DELETE FROM entries WHERE id IN (SELECT id FROM entries WHERE expires_at IS NOT NULL AND expires_at < ? LIMIT ?)",
+      );
 
   type SqlBinding = string | number | bigint | boolean | null | Uint8Array;
 
@@ -385,7 +395,9 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     // the small constant DELETE cost; 49-in-50 writes pay nothing.
     if (Math.random() * CLEANUP_SAMPLE_RATE < 1) {
       db.transaction(() => {
-        const result = cleanupStmt.run(Date.now(), CLEANUP_BATCH_SIZE);
+        const result = prefixPattern
+          ? cleanupStmt.run(Date.now(), prefixPattern, CLEANUP_BATCH_SIZE)
+          : cleanupStmt.run(Date.now(), CLEANUP_BATCH_SIZE);
         if (result.changes > 0) {
           logEvent("(batch)", "expire-sweep", null, { swept: result.changes });
         }
@@ -602,6 +614,20 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     const limit = opts.limit ?? 50;
     const now = Date.now();
     if (opts.peerId) {
+      if (prefixPattern) {
+        const rows = db
+          .prepare<Row, [string, string, number, number]>(
+            `SELECT * FROM entries
+             WHERE peer_id = ?
+               AND label LIKE ? ESCAPE '\\'
+               AND superseded_by IS NULL
+               AND (expires_at IS NULL OR expires_at > ?)
+             ORDER BY created_at DESC
+             LIMIT ?`,
+          )
+          .all(opts.peerId, prefixPattern, now, limit);
+        return rows.map(rowToEntry);
+      }
       const rows = db
         .prepare<Row, [string, number, number]>(
           `SELECT * FROM entries
@@ -612,6 +638,19 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
            LIMIT ?`,
         )
         .all(opts.peerId, now, limit);
+      return rows.map(rowToEntry);
+    }
+    if (prefixPattern) {
+      const rows = db
+        .prepare<Row, [string, number, number]>(
+          `SELECT * FROM entries
+           WHERE label LIKE ? ESCAPE '\\'
+             AND superseded_by IS NULL
+             AND (expires_at IS NULL OR expires_at > ?)
+           ORDER BY created_at DESC
+           LIMIT ?`,
+        )
+        .all(prefixPattern, now, limit);
       return rows.map(rowToEntry);
     }
     const rows = db
@@ -631,15 +670,26 @@ export function createSqliteStore(config: SqliteStoreConfig): MemoryStore {
     lesson: number;
     total: number;
   }> {
-    const rows = db
-      .prepare<{ retention_class: string; n: number }, [number]>(
-        `SELECT retention_class, COUNT(*) AS n
-         FROM entries
-         WHERE superseded_by IS NULL
-           AND (expires_at IS NULL OR expires_at > ?)
-         GROUP BY retention_class`,
-      )
-      .all(Date.now());
+    const rows = prefixPattern
+      ? db
+          .prepare<{ retention_class: string; n: number }, [string, number]>(
+            `SELECT retention_class, COUNT(*) AS n
+             FROM entries
+             WHERE label LIKE ? ESCAPE '\\'
+               AND superseded_by IS NULL
+               AND (expires_at IS NULL OR expires_at > ?)
+             GROUP BY retention_class`,
+          )
+          .all(prefixPattern, Date.now())
+      : db
+          .prepare<{ retention_class: string; n: number }, [number]>(
+            `SELECT retention_class, COUNT(*) AS n
+             FROM entries
+             WHERE superseded_by IS NULL
+               AND (expires_at IS NULL OR expires_at > ?)
+             GROUP BY retention_class`,
+          )
+          .all(Date.now());
     let operational = 0;
     let lesson = 0;
     for (const r of rows) {

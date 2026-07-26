@@ -520,11 +520,50 @@ describe("SqliteStore", () => {
         (await agentA.search("shared search term", "creator", 1)).map((entry) => entry.id),
       ).toEqual(["a-entry"]);
       expect(await agentA.read("aug1_b:creator:preference")).toBeNull();
+      expect(
+        (await agentA.listEntriesByPeer?.({ peerId: "creator" }))?.map((entry) => entry.id),
+      ).toEqual(["a-entry"]);
+      expect((await agentA.listEntriesByPeer?.())?.map((entry) => entry.id)).toEqual(["a-entry"]);
+      expect(await agentA.countByRetentionClass?.()).toEqual({
+        operational: 1,
+        lesson: 0,
+        total: 1,
+      });
 
       await agentA.supersede("b-entry", "attacker-controlled");
       expect((await agentB.read("aug1_b:creator:preference"))?.supersededBy).toBeNull();
 
-      expect(await agentA.forget("creator")).toBe(1);
+      const probe = new Database(sharedPath);
+      probe.run("UPDATE entries SET expires_at = ? WHERE id = ?", [Date.now() - 1, "b-entry"]);
+      probe.close();
+      const originalRandom = Math.random;
+      Math.random = () => 0;
+      try {
+        await agentA.write({
+          id: "a-sweep-trigger",
+          label: "aug1_a:creator:sweep-trigger",
+          content: "trigger a sampled cleanup",
+          peerId: "creator",
+          trustLevel: "creator",
+          createdAt: now + 2,
+          supersededBy: null,
+          retentionClass: "lesson",
+          isVerbatim: false,
+          expiresAt: null,
+        });
+      } finally {
+        Math.random = originalRandom;
+      }
+      const afterSweep = new Database(sharedPath);
+      expect(
+        afterSweep
+          .query<{ n: number }, [string]>("SELECT COUNT(*) AS n FROM entries WHERE id = ?")
+          .get("b-entry")?.n,
+      ).toBe(1);
+      afterSweep.run("UPDATE entries SET expires_at = NULL WHERE id = ?", ["b-entry"]);
+      afterSweep.close();
+
+      expect(await agentA.forget("creator")).toBe(2);
       expect(await agentB.read("aug1_b:creator:preference")).not.toBeNull();
     } finally {
       await agentA.close();
