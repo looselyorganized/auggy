@@ -125,12 +125,20 @@ function parseDurableJobsSettings(value: unknown, errors: string[]): DurableJobs
   }
 
   const dbPath = jobs.dbPath ?? DEFAULT_DURABLE_JOBS.dbPath;
+  const dbPathHasControl =
+    typeof dbPath === "string" &&
+    [...dbPath].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 31 || codePoint === 127;
+    });
   if (
     typeof dbPath !== "string" ||
     dbPath.length < 1 ||
     dbPath.length > 4_096 ||
+    dbPath !== dbPath.trim() ||
+    dbPath !== dbPath.normalize("NFC") ||
     dbPath === ":memory:" ||
-    dbPath.includes("\0")
+    dbPathHasControl
   ) {
     errors.push("settings.jobs.dbPath: must be a bounded durable filesystem path");
   }
@@ -139,7 +147,7 @@ function parseDurableJobsSettings(value: unknown, errors: string[]): DurableJobs
     leaseDurationMs: { minimum: 1_000, maximum: 60 * 60_000 },
     heartbeatIntervalMs: { minimum: 100, maximum: 20 * 60_000 },
     claimPollMs: { minimum: 10, maximum: 60_000 },
-    turnTimeoutMs: { minimum: 1_000, maximum: 24 * 60 * 60_000 },
+    turnTimeoutMs: { minimum: 1_000, maximum: 15 * 60_000 },
     maxAttempts: { minimum: 1, maximum: 10 },
     maxTotalRecords: { minimum: 1, maximum: 1_000_000 },
     maxQueuedRecords: { minimum: 1, maximum: 1_000_000 },
@@ -250,9 +258,9 @@ function parseDurableJobsSettings(value: unknown, errors: string[]): DurableJobs
       if (
         !Number.isSafeInteger(timeoutMs) ||
         (timeoutMs as number) < 1_000 ||
-        (timeoutMs as number) > 24 * 60 * 60_000
+        (timeoutMs as number) > 15 * 60_000
       ) {
-        errors.push(`${prefix}.timeoutMs: must be between 1000 and 86400000`);
+        errors.push(`${prefix}.timeoutMs: must be between 1000 and 900000`);
       }
       if (
         typeof id === "string" &&
