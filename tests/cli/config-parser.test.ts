@@ -261,6 +261,93 @@ describe("parseConfig", () => {
     expect(() => parseConfig(inconsistentWithDefault)).toThrow(/cannot exceed maxQueued/);
   });
 
+  test("parses an explicitly enabled bounded durable-jobs policy", () => {
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        settings: {
+          jobs: {
+            enabled: true,
+            maxTotalRecords: 500,
+            maxQueuedRecords: 100,
+            schedules: [
+              {
+                id: "daily-order-review",
+                cron: "15 9 * * 1-5",
+                prompt: "Review yesterday's order exceptions.",
+                threadId: "ops:daily-orders",
+              },
+            ],
+          },
+        },
+      }),
+    );
+
+    expect(parseConfig(path).settings.jobs).toEqual({
+      enabled: true,
+      dbPath: "./data/durable-jobs.sqlite",
+      leaseDurationMs: 30_000,
+      heartbeatIntervalMs: 5_000,
+      claimPollMs: 250,
+      turnTimeoutMs: 300_000,
+      maxAttempts: 3,
+      maxTotalRecords: 500,
+      maxQueuedRecords: 100,
+      maxPrivateBytes: 134_217_728,
+      terminalRetentionMs: 2_592_000_000,
+      auditRetentionMs: 7_776_000_000,
+      schedules: [
+        {
+          id: "daily-order-review",
+          cron: "15 9 * * 1-5",
+          prompt: "Review yesterday's order exceptions.",
+          threadId: "ops:daily-orders",
+          enabled: true,
+          maxAttempts: 3,
+          timeoutMs: 300_000,
+        },
+      ],
+    });
+  });
+
+  test("rejects fail-open or unbounded durable-jobs configuration", () => {
+    const invalidJobs: unknown[] = [
+      true,
+      {},
+      { enabled: false },
+      { enabled: true, dbPath: ":memory:" },
+      { enabled: true, unknown: 1 },
+      { enabled: true, heartbeatIntervalMs: 20_000, leaseDurationMs: 30_000 },
+      { enabled: true, maxTotalRecords: 10, maxQueuedRecords: 11 },
+      { enabled: true, terminalRetentionMs: 172_800_000, auditRetentionMs: 86_400_000 },
+      { enabled: true, schedules: new Array(101).fill({}) },
+      {
+        enabled: true,
+        schedules: [{ id: "daily", cron: "@daily", prompt: "review" }],
+      },
+      {
+        enabled: true,
+        schedules: [
+          { id: "daily", cron: "0 9 * * *", prompt: "review" },
+          { id: "daily", cron: "0 10 * * *", prompt: "review again" },
+        ],
+      },
+      {
+        enabled: true,
+        schedules: [{ id: "daily", cron: "0 9 * * *", prompt: "x".repeat(32_769) }],
+      },
+      {
+        enabled: true,
+        schedules: [{ id: "daily", cron: "0 9 * * *", prompt: "review", threadId: "../escape" }],
+      },
+    ];
+
+    for (const [index, jobs] of invalidJobs.entries()) {
+      const path = writeYaml(`invalid-jobs-${index}.yaml`, minimalConfig({ settings: { jobs } }));
+      expect(() => parseConfig(path)).toThrow(/settings\.jobs/);
+    }
+  });
+
   test("parses a secret-free distributed coordination contract with secure defaults", () => {
     const path = writeYaml(
       "agent.yaml",

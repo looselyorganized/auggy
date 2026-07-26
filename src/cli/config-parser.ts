@@ -19,6 +19,7 @@ import type {
   AugmentConfig,
   EngineConfig,
   AgentSettings,
+  DurableJobsConfig,
   SecurityEvalOverride,
 } from "./types";
 import { KNOWN_PROVIDERS, isKnownProvider } from "./types";
@@ -29,6 +30,7 @@ import {
 } from "../transports/console-request-security";
 import { DEFAULT_EXTRACTION_BUFFER_LIMITS } from "../augments/layeredMemory/extractor/buffer";
 import { MAX_PROVIDER_REQUEST_TIMEOUT_MS } from "../engines/_shared/provider-resilience";
+import { parseUtcCron } from "../jobs/cron";
 
 // ---------------------------------------------------------------------------
 // .env loading
@@ -73,6 +75,214 @@ const DEFAULT_DISTRIBUTED_COORDINATION = {
   claimPollMs: 100,
   maxWaitMs: 30_000,
 } as const;
+
+export const DEFAULT_DURABLE_JOBS = {
+  dbPath: "./data/durable-jobs.sqlite",
+  leaseDurationMs: 30_000,
+  heartbeatIntervalMs: 5_000,
+  claimPollMs: 250,
+  turnTimeoutMs: 5 * 60_000,
+  maxAttempts: 3,
+  maxTotalRecords: 10_000,
+  maxQueuedRecords: 1_000,
+  maxPrivateBytes: 128 * 1024 * 1024,
+  terminalRetentionMs: 30 * 24 * 60 * 60_000,
+  auditRetentionMs: 90 * 24 * 60 * 60_000,
+} as const;
+
+const MAX_DURABLE_SCHEDULES = 100;
+const MAX_DURABLE_PROMPT_BYTES = 32 * 1024;
+const SAFE_DURABLE_SCHEDULE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+const SAFE_DURABLE_THREAD_ID = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
+
+function parseDurableJobsSettings(value: unknown, errors: string[]): DurableJobsConfig | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    errors.push("settings.jobs: must be an object");
+    return undefined;
+  }
+
+  const jobs = value as Record<string, unknown>;
+  const allowed = new Set([
+    "enabled",
+    "dbPath",
+    "leaseDurationMs",
+    "heartbeatIntervalMs",
+    "claimPollMs",
+    "turnTimeoutMs",
+    "maxAttempts",
+    "maxTotalRecords",
+    "maxQueuedRecords",
+    "maxPrivateBytes",
+    "terminalRetentionMs",
+    "auditRetentionMs",
+    "schedules",
+  ]);
+  for (const key of Object.keys(jobs)) {
+    if (!allowed.has(key)) errors.push(`settings.jobs.${key}: unknown durable-jobs setting`);
+  }
+  if (jobs.enabled !== true) {
+    errors.push("settings.jobs.enabled: must be true; omit settings.jobs to disable durable jobs");
+  }
+
+  const dbPath = jobs.dbPath ?? DEFAULT_DURABLE_JOBS.dbPath;
+  if (
+    typeof dbPath !== "string" ||
+    dbPath.length < 1 ||
+    dbPath.length > 4_096 ||
+    dbPath === ":memory:" ||
+    dbPath.includes("\0")
+  ) {
+    errors.push("settings.jobs.dbPath: must be a bounded durable filesystem path");
+  }
+
+  const numericConstraints = {
+    leaseDurationMs: { minimum: 1_000, maximum: 60 * 60_000 },
+    heartbeatIntervalMs: { minimum: 100, maximum: 20 * 60_000 },
+    claimPollMs: { minimum: 10, maximum: 60_000 },
+    turnTimeoutMs: { minimum: 1_000, maximum: 24 * 60 * 60_000 },
+    maxAttempts: { minimum: 1, maximum: 10 },
+    maxTotalRecords: { minimum: 1, maximum: 1_000_000 },
+    maxQueuedRecords: { minimum: 1, maximum: 1_000_000 },
+    maxPrivateBytes: { minimum: 64 * 1024, maximum: 2 * 1024 * 1024 * 1024 },
+    terminalRetentionMs: { minimum: 60 * 60_000, maximum: 3650 * 24 * 60 * 60_000 },
+    auditRetentionMs: { minimum: 24 * 60 * 60_000, maximum: 3650 * 24 * 60 * 60_000 },
+  } as const;
+  const normalizedNumbers = {} as Record<keyof typeof numericConstraints, number>;
+  for (const key of Object.keys(numericConstraints) as Array<keyof typeof numericConstraints>) {
+    const constraint = numericConstraints[key];
+    const candidate = jobs[key] ?? DEFAULT_DURABLE_JOBS[key];
+    if (
+      !Number.isSafeInteger(candidate) ||
+      (candidate as number) < constraint.minimum ||
+      (candidate as number) > constraint.maximum
+    ) {
+      errors.push(
+        `settings.jobs.${key}: must be a safe integer between ${constraint.minimum} and ${constraint.maximum}`,
+      );
+      normalizedNumbers[key] = DEFAULT_DURABLE_JOBS[key];
+    } else {
+      normalizedNumbers[key] = candidate as number;
+    }
+  }
+  if (normalizedNumbers.heartbeatIntervalMs * 3 > normalizedNumbers.leaseDurationMs) {
+    errors.push(
+      "settings.jobs.heartbeatIntervalMs: three heartbeats must fit within leaseDurationMs",
+    );
+  }
+  if (normalizedNumbers.maxQueuedRecords > normalizedNumbers.maxTotalRecords) {
+    errors.push("settings.jobs.maxQueuedRecords: cannot exceed maxTotalRecords");
+  }
+  if (normalizedNumbers.auditRetentionMs < normalizedNumbers.terminalRetentionMs) {
+    errors.push("settings.jobs.auditRetentionMs: cannot be shorter than terminalRetentionMs");
+  }
+
+  const schedulesValue = jobs.schedules ?? [];
+  const schedules: DurableJobsConfig["schedules"] = [];
+  if (!Array.isArray(schedulesValue) || schedulesValue.length > MAX_DURABLE_SCHEDULES) {
+    errors.push(`settings.jobs.schedules: must contain at most ${MAX_DURABLE_SCHEDULES} entries`);
+  } else {
+    const scheduleIds = new Set<string>();
+    for (const [index, candidate] of schedulesValue.entries()) {
+      const prefix = `settings.jobs.schedules[${index}]`;
+      if (typeof candidate !== "object" || candidate === null || Array.isArray(candidate)) {
+        errors.push(`${prefix}: must be an object`);
+        continue;
+      }
+      const schedule = candidate as Record<string, unknown>;
+      const scheduleAllowed = new Set([
+        "id",
+        "cron",
+        "prompt",
+        "threadId",
+        "enabled",
+        "maxAttempts",
+        "timeoutMs",
+      ]);
+      for (const key of Object.keys(schedule)) {
+        if (!scheduleAllowed.has(key)) errors.push(`${prefix}.${key}: unknown schedule setting`);
+      }
+      const id = schedule.id;
+      if (typeof id !== "string" || !SAFE_DURABLE_SCHEDULE_ID.test(id)) {
+        errors.push(`${prefix}.id: must be a safe identifier of 1 to 64 characters`);
+      } else if (scheduleIds.has(id)) {
+        errors.push(`${prefix}.id: duplicate schedule identifier`);
+      } else {
+        scheduleIds.add(id);
+      }
+      const cron = schedule.cron;
+      if (typeof cron !== "string") {
+        errors.push(`${prefix}.cron: must be a five-field UTC cron string`);
+      } else {
+        try {
+          parseUtcCron(cron);
+        } catch {
+          errors.push(`${prefix}.cron: must be a bounded five-field UTC cron expression`);
+        }
+      }
+      const prompt = schedule.prompt;
+      if (
+        typeof prompt !== "string" ||
+        prompt.length < 1 ||
+        prompt.length > MAX_DURABLE_PROMPT_BYTES ||
+        Buffer.byteLength(prompt, "utf8") > MAX_DURABLE_PROMPT_BYTES ||
+        prompt.includes("\0")
+      ) {
+        errors.push(`${prefix}.prompt: must contain 1 to ${MAX_DURABLE_PROMPT_BYTES} UTF-8 bytes`);
+      }
+      const threadId = schedule.threadId;
+      if (
+        threadId !== undefined &&
+        (typeof threadId !== "string" || !SAFE_DURABLE_THREAD_ID.test(threadId))
+      ) {
+        errors.push(`${prefix}.threadId: must be a safe identifier of 1 to 128 characters`);
+      }
+      const enabled = schedule.enabled ?? true;
+      if (typeof enabled !== "boolean") errors.push(`${prefix}.enabled: must be a boolean`);
+      const maxAttempts = schedule.maxAttempts ?? normalizedNumbers.maxAttempts;
+      if (
+        !Number.isSafeInteger(maxAttempts) ||
+        (maxAttempts as number) < 1 ||
+        (maxAttempts as number) > 10
+      ) {
+        errors.push(`${prefix}.maxAttempts: must be a safe integer between 1 and 10`);
+      }
+      const timeoutMs = schedule.timeoutMs ?? normalizedNumbers.turnTimeoutMs;
+      if (
+        !Number.isSafeInteger(timeoutMs) ||
+        (timeoutMs as number) < 1_000 ||
+        (timeoutMs as number) > 24 * 60 * 60_000
+      ) {
+        errors.push(`${prefix}.timeoutMs: must be between 1000 and 86400000`);
+      }
+      if (
+        typeof id === "string" &&
+        SAFE_DURABLE_SCHEDULE_ID.test(id) &&
+        typeof cron === "string" &&
+        typeof prompt === "string" &&
+        typeof enabled === "boolean" &&
+        Number.isSafeInteger(maxAttempts) &&
+        Number.isSafeInteger(timeoutMs)
+      ) {
+        schedules.push({
+          id,
+          cron,
+          prompt,
+          ...(typeof threadId === "string" ? { threadId } : {}),
+          enabled,
+          maxAttempts: maxAttempts as number,
+          timeoutMs: timeoutMs as number,
+        });
+      }
+    }
+  }
+
+  return {
+    enabled: true,
+    dbPath: typeof dbPath === "string" ? dbPath : DEFAULT_DURABLE_JOBS.dbPath,
+    ...normalizedNumbers,
+    schedules,
+  };
+}
 
 /**
  * Recursively walk all string values in an object tree and replace
@@ -2227,6 +2437,8 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       }
     }
   }
+  const parsedJobs =
+    settings.jobs === undefined ? undefined : parseDurableJobsSettings(settings.jobs, errors);
   if (settings.coordination !== undefined) {
     if (
       typeof settings.coordination !== "object" ||
@@ -2364,6 +2576,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       : parsedAugments;
 
   const parsedSettings = { ...settings } as AgentSettings;
+  if (parsedJobs) parsedSettings.jobs = parsedJobs;
   if (settings.coordination !== undefined && typeof settings.coordination === "object") {
     const coordination = settings.coordination as Record<string, unknown>;
     parsedSettings.coordination = {
