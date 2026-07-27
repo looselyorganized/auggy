@@ -1,10 +1,9 @@
-import type { AgentConfig, TurnResult } from "../types";
 import type {
-  DistributedReplayResult,
-  DistributedRootTurnRuntime,
-  DistributedTurnLease,
-  LeaseResult,
-} from "./index";
+  AgentConfig,
+  DistributedCoordinationResultConfig,
+  DistributedCoordinationTurnStateConfig,
+} from "../types";
+import type { DistributedRootTurnRuntime, DistributedTurnCoordinator } from "./index";
 
 /**
  * Test-only checkpoint adapter. This module is intentionally absent from the
@@ -12,8 +11,10 @@ import type {
  */
 export interface DistributedAgentRuntimeTestAdapter {
   runtime: DistributedRootTurnRuntime;
-  commit(lease: DistributedTurnLease, result: TurnResult): Promise<LeaseResult>;
-  replay(result: DistributedReplayResult): TurnResult;
+  /** Must be the same coordinator authority owned by runtime. */
+  coordinator: DistributedTurnCoordinator;
+  turnState: DistributedCoordinationTurnStateConfig;
+  result: DistributedCoordinationResultConfig;
   /** Bounded cooperative cleanup before non-responsive work is detached. */
   authorityLossGraceMs?: number;
   /** Maximum graceful wait before shutdown revokes distributed authority. */

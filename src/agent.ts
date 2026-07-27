@@ -18,6 +18,8 @@ import type {
   ExecutionContextV1,
   ExecutionAuthorityV1,
   OutboundDeliveryContext,
+  CostResult,
+  ThreadHistorySnapshot,
 } from "./types";
 import { createTokenizer } from "./tokenizer";
 import { generateAgentCard } from "./agent-card";
@@ -51,6 +53,19 @@ import {
   consumeDistributedRuntimeForTest,
   type DistributedAgentRuntimeTestAdapter,
 } from "./coordination/testing-agent-runtime";
+import {
+  createDistributedPeerBinding,
+  decodeDistributedHistory,
+  decodeDistributedReplay,
+  encodeDistributedHistory,
+  encodeDistributedOutboxBody,
+  encodeDistributedReplay,
+} from "./coordination/agent-turn-state";
+import type {
+  DistributedCostMarkerV1,
+  DistributedOutboxIntentV1,
+  DistributedPeerBindingV1,
+} from "./coordination/types";
 
 const DEFAULT_TURN_SCHEDULING: TurnSchedulingConfig = {
   maxConcurrent: 4,
@@ -58,6 +73,17 @@ const DEFAULT_TURN_SCHEDULING: TurnSchedulingConfig = {
   maxQueuedPerThread: 20,
   maxCausalDepth: 8,
 };
+
+interface DistributedTurnStateAccumulator {
+  threadId: string;
+  loaded: boolean;
+  control?: DistributedRootExecutionControl;
+  peerBinding?: DistributedPeerBindingV1;
+  expectedHistoryRevision?: number;
+  history?: ThreadHistorySnapshot;
+  costMarkers: DistributedCostMarkerV1[];
+  outboxIntents: DistributedOutboxIntentV1[];
+}
 
 function resolveTurnScheduling(configured: AgentConfig["turnScheduling"]): TurnSchedulingConfig {
   const maxQueued = configured?.maxQueued ?? DEFAULT_TURN_SCHEDULING.maxQueued;
@@ -390,6 +416,7 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
     signal?: AbortSignal,
     executionContext?: ExecutionContextV1,
     executionAuthority?: ExecutionAuthorityV1,
+    distributedState?: DistributedTurnStateAccumulator,
   ) {
     if (signal?.aborted) return;
     // Collect all messages to dispatch: single response + multi-destination responses
@@ -405,6 +432,36 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
       if (!targetAugment || !peer) continue;
       const handler = outboundHandlers.get(targetAugment);
       if (handler) {
+        if (distributedState) {
+          if (
+            distributedState.outboxIntents.length >= distributed!.turnState.outbox.maxIntentsPerTurn
+          ) {
+            throw new Error("distributed outbox intent count exceeds limits");
+          }
+          const operationId = effectContext(
+            `outbound:${messageIndex}:${targetAugment}`,
+            signal,
+            executionContext,
+            executionAuthority,
+          ).operationId;
+          if (!operationId) throw new Error("distributed outbox identity is unavailable");
+          if (distributedState.outboxIntents.some((intent) => intent.operationId === operationId)) {
+            throw new Error("distributed outbox identity was reused");
+          }
+          distributedState.outboxIntents.push({
+            version: 1,
+            ordinal: distributedState.outboxIntents.length,
+            operationId,
+            contentType: "application/json",
+            body: encodeDistributedOutboxBody(
+              targetAugment,
+              peer,
+              msg,
+              distributed!.turnState.outbox,
+            ),
+          });
+          continue;
+        }
         const startedAt = Date.now();
         const observation = operationalSignals.beginResponseDelivery();
         try {
@@ -533,12 +590,14 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
   async function compactAndCommitHistory(
     threadId: string,
     association: { persistence: ThreadHistoryPersistence; peer: PeerIdentity } | null,
+    distributedState?: DistributedTurnStateAccumulator,
   ): Promise<void> {
     const historyBudget = Math.floor(
       model.maxContextTokens * ((config.contextBudget?.historyPercent ?? 40) / 100),
     );
     const history = turnLoop.getHistoryManager(threadId);
     history.compact(historyBudget, config.compactionStrategy ?? "truncate");
+    if (distributedState) distributedState.history = history.snapshot();
     if (association) {
       try {
         await association.persistence.commit(threadId, association.peer, history.snapshot());
@@ -567,15 +626,43 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
       markExecutionUncertain?: () => void;
       source: "transport" | "inject";
       trackDetachedOperation?: (operation: Promise<unknown>) => void;
+      distributedControl?: DistributedRootExecutionControl;
+      distributedState?: DistributedTurnStateAccumulator;
     },
   ): Promise<TurnResult> {
     return withThreadLock(threadId, async () => {
-      const association = await preparePersistentHistory(
-        threadId,
-        trigger.peer ?? null,
-        options.historyPersistence,
-        options.source,
-      );
+      let association: { persistence: ThreadHistoryPersistence; peer: PeerIdentity } | null = null;
+      if (options.distributedState) {
+        const distributedHistoryControl =
+          options.distributedControl ?? options.distributedState.control;
+        if (!distributedHistoryControl || options.distributedState.threadId !== threadId) {
+          throw new Error("distributed history authority is unavailable");
+        }
+        const binding = createDistributedPeerBinding(trigger.peer ?? null);
+        if (!options.distributedState.loaded) {
+          const loaded = await distributed!.coordinator.loadHistory(
+            distributedHistoryControl.lease(),
+            binding,
+          );
+          if (loaded.status !== "ok") {
+            throw new Error(`distributed history load failed: ${loaded.status}`);
+          }
+          turnLoop.getHistoryManager(threadId).replace(decodeDistributedHistory(loaded.body));
+          options.distributedState.loaded = true;
+          options.distributedState.peerBinding = binding;
+          options.distributedState.expectedHistoryRevision = loaded.revision;
+          options.distributedState.history = turnLoop.getHistoryManager(threadId).snapshot();
+        } else if (options.distributedState.peerBinding?.bindingHash !== binding.bindingHash) {
+          throw new Error("distributed causal history peer changed");
+        }
+      } else {
+        association = await preparePersistentHistory(
+          threadId,
+          trigger.peer ?? null,
+          options.historyPersistence,
+          options.source,
+        );
+      }
       let result: TurnResult;
       try {
         result = await turnLoop.executeTurn(trigger, threadId, {
@@ -586,14 +673,45 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
           ensureExecutionStarted: options.ensureExecutionStarted,
           markExecutionUncertain: options.markExecutionUncertain,
           trackDetachedOperation: options.trackDetachedOperation,
+          ...(options.distributedState
+            ? {
+                stageCost: (cost: CostResult, operationId: string) => {
+                  if (
+                    options.distributedState!.costMarkers.length >=
+                    distributed!.turnState.maxCostMarkersPerTurn
+                  ) {
+                    throw new Error("distributed cost marker count exceeds limits");
+                  }
+                  if (
+                    options.distributedState!.costMarkers.some(
+                      (marker) => marker.operationId === operationId,
+                    )
+                  ) {
+                    throw new Error("distributed cost identity was reused");
+                  }
+                  options.distributedState!.costMarkers.push(
+                    cost.priced
+                      ? { version: 1, operationId, priced: true, costUsd: cost.costUsd }
+                      : {
+                          version: 1,
+                          operationId,
+                          priced: false,
+                          reason: cost.reason.toLowerCase().includes("usage")
+                            ? "missing-usage"
+                            : "missing-pricing",
+                        },
+                  );
+                },
+              }
+            : {}),
         });
       } catch (error) {
         // Model/tool failures can happen after history was mutated. Persist a
         // compact terminal snapshot before surfacing the original failure.
-        await compactAndCommitHistory(threadId, association);
+        await compactAndCommitHistory(threadId, association, options.distributedState);
         throw error;
       }
-      await compactAndCommitHistory(threadId, association);
+      await compactAndCommitHistory(threadId, association, options.distributedState);
       return options.executionContext === undefined || !options.includeExecutionContextInResult
         ? result
         : { ...result, executionContext: options.executionContext };
@@ -623,8 +741,16 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
     executionAuthority?: ExecutionAuthorityV1,
     markExecutionUncertain?: () => void,
     includeExecutionContextInResult = false,
+    distributedState?: DistributedTurnStateAccumulator,
   ): Promise<void> {
-    await dispatchOutbound(result, trigger, signal, executionContext, executionAuthority);
+    await dispatchOutbound(
+      result,
+      trigger,
+      signal,
+      executionContext,
+      executionAuthority,
+      distributedState,
+    );
     const { executionContext: _trustedExecutionContext, ...hookResult } = result;
 
     if (signal?.aborted) return;
@@ -686,6 +812,7 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
                 executionAuthority,
                 markExecutionUncertain,
                 includeExecutionContextInResult,
+                distributedState,
               },
               injectSource,
               lease,
@@ -835,6 +962,7 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
       executionAuthority?: ExecutionAuthorityV1;
       markExecutionUncertain?: () => void;
       includeExecutionContextInResult?: boolean;
+      distributedState?: DistributedTurnStateAccumulator;
     },
     sourcePolicy: SchedulerSourcePolicy,
     parentLease?: KeyedTurnLease,
@@ -860,25 +988,56 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
         },
         executionContext: options.executionContext,
       });
+      const distributedState: DistributedTurnStateAccumulator = {
+        threadId,
+        loaded: false,
+        costMarkers: [],
+        outboxIntents: [],
+      };
       const coordinated = await distributed.runtime.run<TurnResult>({
         request,
         signal: options.signal,
         local: async (control) => {
-          const value = await scheduleTurn(trigger, options, sourcePolicy, undefined, {
-            control,
-            request,
-          });
+          distributedState.control = control;
+          const value = await scheduleTurn(
+            trigger,
+            { ...options, distributedState },
+            sourcePolicy,
+            undefined,
+            { control, request },
+          );
           if (value.status === "rejected") return { status: "rejected" };
           if (value.status === "canceled") return { status: "canceled" };
           return { status: "completed", value };
         },
         isSuccessful: (value) => value.success && !value.outcomeUnknown,
-        commit: (lease, value) => distributed.commit(lease, value),
+        commit: (lease, value) => {
+          if (
+            !distributedState.loaded ||
+            !distributedState.peerBinding ||
+            distributedState.expectedHistoryRevision === undefined ||
+            !distributedState.history
+          ) {
+            throw new Error("distributed turn state is incomplete");
+          }
+          return distributed.coordinator.commitTurn(lease, {
+            peerBinding: distributedState.peerBinding,
+            expectedHistoryRevision: distributedState.expectedHistoryRevision,
+            history: encodeDistributedHistory(
+              distributedState.history,
+              distributed.turnState.history,
+            ),
+            replay: encodeDistributedReplay(value, threadId, distributed.result),
+            costMarkers: distributedState.costMarkers,
+            outboxIntents: distributedState.outboxIntents,
+          });
+        },
       });
+      turnLoop.forgetHistoryManager(threadId);
       if (coordinated.status === "completed") return coordinated.value;
       if (coordinated.status === "replay") {
         try {
-          return distributed.replay(coordinated.result);
+          return decodeDistributedReplay(coordinated.result, threadId);
         } catch {
           return distributedTerminalResult(trigger, threadId, "outcome-unknown");
         }
@@ -981,6 +1140,8 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
               lease.quarantine();
               void operation.catch(() => {});
             },
+            distributedControl: distributedControl?.control,
+            distributedState: options.distributedState,
           });
           if (result.outcomeUnknown) lease.quarantine();
           await runPostTurn(
@@ -993,6 +1154,7 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
             executionAuthority,
             markExecutionUncertain,
             options.includeExecutionContextInResult ?? options.executionContext !== undefined,
+            options.distributedState,
           );
           return result;
         } catch (error) {

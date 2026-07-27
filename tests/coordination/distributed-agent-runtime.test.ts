@@ -11,11 +11,8 @@ import {
   createInMemoryDistributedTurnCoordinator,
   resetInMemoryDistributedCoordination,
 } from "../../src/coordination";
-import type {
-  DistributedReplayResult,
-  DistributedTurnCoordinator,
-  DistributedTurnLease,
-} from "../../src/coordination/types";
+import { decodeDistributedReplay } from "../../src/coordination/agent-turn-state";
+import type { DistributedTurnCoordinator } from "../../src/coordination/types";
 import {
   attachDistributedRuntimeForTest,
   type DistributedAgentRuntimeTestAdapter,
@@ -33,6 +30,12 @@ import { createTempDir } from "../fixtures/temp-dir";
 import { join } from "node:path";
 
 const source = { id: "kernel:inject", maxConcurrent: 2, maxQueued: 10 } as const;
+const resultPolicy = { maxReplayBytes: 65_536 } as const;
+const turnStatePolicy = {
+  history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+  maxCostMarkersPerTurn: 32,
+  outbox: { maxIntentsPerTurn: 32, maxIntentBytes: 65_536, maxPendingIntents: 1_000 },
+} as const;
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -58,20 +61,14 @@ function coordinator(instanceId: string, leaseMs = 1_000): DistributedTurnCoordi
       eventRetentionMs: 60_000,
       maxEvents: 100,
     },
-    result: { maxReplayBytes: 65_536 },
+    result: resultPolicy,
+    turnState: turnStatePolicy,
     compatibility: {
-      protocolVersion: 4,
+      protocolVersion: 5,
       protocolFingerprint: "a".repeat(64),
       configurationFingerprint: "b".repeat(64),
     },
   });
-}
-
-function replay(result: TurnResult): DistributedReplayResult {
-  return {
-    body: new TextEncoder().encode(JSON.stringify(result)),
-    contentType: "application/json",
-  };
 }
 
 function adapter(
@@ -79,6 +76,9 @@ function adapter(
   options: { leaseMs?: number; heartbeatMs?: number; graceMs?: number } = {},
 ): DistributedAgentRuntimeTestAdapter {
   return {
+    coordinator: owner,
+    result: resultPolicy,
+    turnState: turnStatePolicy,
     runtime: createDistributedRootTurnRuntime({
       coordinator: owner,
       leaseDurationMs: options.leaseMs ?? 1_000,
@@ -86,9 +86,6 @@ function adapter(
       claimPollMs: 10,
       maxWaitMs: 1_000,
     }),
-    commit: (lease: DistributedTurnLease, result: TurnResult) =>
-      owner.complete(lease, replay(result)),
-    replay: (stored) => JSON.parse(new TextDecoder().decode(stored.body)) as TurnResult,
     ...(options.graceMs === undefined ? {} : { authorityLossGraceMs: options.graceMs }),
     drainTimeoutMs: 100,
   };
@@ -130,6 +127,38 @@ const executionContext = {
 afterEach(resetInMemoryDistributedCoordination);
 
 describe("distributed agent runtime wiring", () => {
+  test("rejects malformed durable replay message and part shapes", () => {
+    const encoded = (value: unknown) => ({
+      body: new TextEncoder().encode(JSON.stringify(value)),
+      contentType: "application/json" as const,
+    });
+    const envelope = (part: unknown) => ({
+      version: 1,
+      turnId: "turn-1",
+      threadId: "thread-1",
+      status: "completed",
+      response: { parts: [part] },
+    });
+
+    expect(() => decodeDistributedReplay(encoded(envelope({ kind: "data", data: [] })))).toThrow(
+      "invalid distributed data part",
+    );
+    expect(() =>
+      decodeDistributedReplay(encoded(envelope({ kind: "unknown", text: "unsafe" }))),
+    ).toThrow("invalid distributed message part kind");
+    expect(() =>
+      decodeDistributedReplay(
+        encoded({ ...envelope({ kind: "text", text: "ok" }), response: { parts: [], taskId: 7 } }),
+      ),
+    ).toThrow("invalid distributed message field");
+    expect(() =>
+      decodeDistributedReplay(
+        encoded(envelope({ kind: "text", text: "wrong thread" })),
+        "thread-2",
+      ),
+    ).toThrow("invalid distributed replay");
+  });
+
   test("keeps the incomplete runtime seam outside every published export", async () => {
     const manifest = JSON.parse(
       readFileSync(resolve(import.meta.dir, "../../package.json"), "utf8"),
@@ -193,9 +222,131 @@ describe("distributed agent runtime wiring", () => {
     release.resolve();
 
     expect((await ownerResult).success).toBe(true);
-    expect(await joinedResult).toEqual(await ownerResult);
+    expect(await joinedResult).toMatchObject({
+      turnId: "turn-1",
+      success: true,
+      status: "completed",
+      response: { parts: [{ kind: "text", text: "done" }] },
+      toolCalls: [],
+    });
     expect(firstCalls).toBe(1);
     expect(secondCalls).toBe(0);
+    await first.stop();
+    await second.stop();
+  });
+
+  test("reloads the latest committed history on every arbitrarily routed root turn", async () => {
+    const firstOwner = coordinator("history-replica-a");
+    const secondOwner = coordinator("history-replica-b");
+    const firstPrompts: string[] = [];
+    const secondPrompts: string[] = [];
+    const firstModel: ModelClient = {
+      maxContextTokens: 10_000,
+      countTokens: () => 1,
+      complete: async (prompt) => {
+        firstPrompts.push(JSON.stringify(prompt));
+        return {
+          content: firstPrompts.length === 1 ? "first-committed" : "third-committed",
+          inputTokens: 10,
+          outputTokens: 2,
+          finishReason: "end_turn",
+        };
+      },
+    };
+    const secondModel: ModelClient = {
+      maxContextTokens: 10_000,
+      countTokens: () => 1,
+      complete: async (prompt) => {
+        secondPrompts.push(JSON.stringify(prompt));
+        return {
+          content: "second-committed",
+          inputTokens: 10,
+          outputTokens: 2,
+          finishReason: "end_turn",
+        };
+      },
+    };
+    const config = {
+      name: "shared-history-agent",
+      model: "mock",
+      augments: [],
+      turnScheduling: { maxConcurrent: 2, maxQueued: 10, maxQueuedPerThread: 10 },
+    };
+    const first = defineDistributedTestAgent(config, firstModel, adapter(firstOwner));
+    const second = defineDistributedTestAgent(config, secondModel, adapter(secondOwner));
+    await first.start();
+    await second.start();
+
+    expect((await first.inject(trigger(), { executionContext })).success).toBeTrue();
+    expect(
+      (
+        await second.inject(trigger(), {
+          executionContext: {
+            ...executionContext,
+            executionId: "execution-2",
+            idempotencyKeyHash: "e".repeat(64),
+          },
+        })
+      ).success,
+    ).toBeTrue();
+    expect(secondPrompts[0]).toContain("first-committed");
+    expect(
+      (
+        await first.inject(trigger(), {
+          executionContext: {
+            ...executionContext,
+            executionId: "execution-3",
+            idempotencyKeyHash: "f".repeat(64),
+          },
+        })
+      ).success,
+    ).toBeTrue();
+    expect(firstPrompts[1]).toContain("second-committed");
+    await first.stop();
+    await second.stop();
+  });
+
+  test("denies a changed resolved peer before exposing history or invoking the model", async () => {
+    const firstOwner = coordinator("peer-history-a");
+    const secondOwner = coordinator("peer-history-b");
+    const firstModel = createMockModel({ response: "owner-history" });
+    const secondModel = createMockModel({ response: "must-not-run" });
+    const config = {
+      name: "peer-bound-history-agent",
+      model: "mock",
+      augments: [],
+      turnScheduling: { maxConcurrent: 2, maxQueued: 10, maxQueuedPerThread: 10 },
+    };
+    const first = defineDistributedTestAgent(config, firstModel, adapter(firstOwner));
+    const second = defineDistributedTestAgent(config, secondModel, adapter(secondOwner));
+    await first.start();
+    await second.start();
+    const ownerTrigger: TurnTrigger = {
+      ...trigger(),
+      peer: {
+        id: "peer-owner",
+        kind: "human",
+        trustLevel: "public" as const,
+        publicSubstate: "recognized" as const,
+        sourceAugment: "trusted-test",
+      },
+    };
+    expect((await first.inject(ownerTrigger, { executionContext })).success).toBeTrue();
+    const denied = await second.inject(
+      {
+        ...ownerTrigger,
+        peer: { ...ownerTrigger.peer!, id: "peer-impostor" },
+      },
+      {
+        executionContext: {
+          ...executionContext,
+          executionId: "peer-impostor-execution",
+          idempotencyKeyHash: "0".repeat(64),
+        },
+      },
+    );
+    expect(denied).toMatchObject({ success: false, status: "rejected" });
+    expect(secondModel.calls).toHaveLength(0);
     await first.stop();
     await second.stop();
   });
@@ -229,7 +380,7 @@ describe("distributed agent runtime wiring", () => {
                     fence: context?.executionAuthority?.fence,
                     operationId: context?.operationId,
                   });
-                  return "effect-complete";
+                  return "SENTINEL_PRIVATE_TOOL_OUTPUT";
                 },
               },
             ],
@@ -246,7 +397,16 @@ describe("distributed agent runtime wiring", () => {
     const conflict = await agent.inject(trigger("changed"), { executionContext });
 
     expect(first.success).toBe(true);
-    expect(duplicate).toEqual(first);
+    expect(duplicate).toMatchObject({
+      turnId: first.turnId,
+      success: true,
+      status: "completed",
+      response: { parts: first.response?.parts },
+      toolCalls: [],
+    });
+    expect(JSON.stringify(duplicate)).not.toContain("SENTINEL_PRIVATE_TOOL_OUTPUT");
+    expect(JSON.stringify(duplicate)).not.toContain(executionContext.idempotencyKeyHash);
+    expect(duplicate.trace.inferenceSteps).toEqual([]);
     expect(conflict).toMatchObject({ status: "rejected", success: false });
     expect(model.calls).toHaveLength(2);
     expect(observed).toHaveLength(1);
@@ -255,8 +415,26 @@ describe("distributed agent runtime wiring", () => {
     await agent.stop();
   });
 
-  test("propagates distinct fenced identities to every augment and delivery effect boundary", async () => {
+  test("stages cost and delivery while propagating fenced identities to local boundaries", async () => {
     const owner = coordinator("instance-a");
+    let committedCheckpoint: Parameters<DistributedTurnCoordinator["commitTurn"]>[1] | undefined;
+    let committedLease: Parameters<DistributedTurnCoordinator["commitTurn"]>[0] | undefined;
+    const coordinatedOwner = new Proxy(owner, {
+      get(target, property, receiver) {
+        if (property === "commitTurn") {
+          return async (
+            lease: Parameters<DistributedTurnCoordinator["commitTurn"]>[0],
+            turnCheckpoint: Parameters<DistributedTurnCoordinator["commitTurn"]>[1],
+          ) => {
+            committedLease = lease;
+            committedCheckpoint = turnCheckpoint;
+            return target.commitTurn(lease, turnCheckpoint);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as DistributedTurnCoordinator;
     const observed: Array<{
       surface: string;
       authority?: { version?: number; attempt: number; fence: number };
@@ -335,7 +513,7 @@ describe("distributed agent runtime wiring", () => {
         ],
       },
       effectModel,
-      adapter(owner),
+      adapter(coordinatedOwner),
     );
     await agent.start();
     const result = await agent.inject(
@@ -354,10 +532,8 @@ describe("distributed agent runtime wiring", () => {
     expect(result.success).toBeTrue();
     expect(observed.map((entry) => entry.surface).sort()).toEqual([
       "context",
-      "cost-commit",
       "gate",
       "model",
-      "outbound",
       "schedule",
       "turn-end",
       "turn-start",
@@ -367,6 +543,16 @@ describe("distributed agent runtime wiring", () => {
       expect(entry.operationId).toMatch(/^auggy-op-v1-[a-f0-9]{64}$/);
     }
     expect(new Set(observed.map((entry) => entry.operationId)).size).toBe(observed.length);
+    expect(committedLease).toMatchObject({ attempt: 1, fence: 1 });
+    expect(committedCheckpoint?.costMarkers).toHaveLength(1);
+    expect(committedCheckpoint?.outboxIntents).toHaveLength(1);
+    expect(committedCheckpoint?.costMarkers[0]?.operationId).toMatch(/^auggy-op-v1-[a-f0-9]{64}$/);
+    expect(committedCheckpoint?.outboxIntents[0]?.operationId).toMatch(
+      /^auggy-op-v1-[a-f0-9]{64}$/,
+    );
+    expect(committedCheckpoint?.costMarkers[0]?.operationId).not.toBe(
+      committedCheckpoint?.outboxIntents[0]?.operationId,
+    );
     for (const entry of observed) {
       expect(entry.bindingHash).toBeUndefined();
     }

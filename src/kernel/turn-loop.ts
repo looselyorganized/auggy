@@ -197,6 +197,8 @@ export interface TurnLoopOptions {
   markExecutionUncertain?: () => void;
   executionAuthority?: ExecutionAuthorityV1;
   trackDetachedOperation?: (operation: Promise<unknown>) => void;
+  /** Internal distributed seam: stage one known cost marker instead of committing local gates. */
+  stageCost?: (cost: CostResult, operationId: string) => void;
 }
 
 export interface TurnLoop {
@@ -990,6 +992,13 @@ export function createTurnLoop(opts: {
                 unpricedReason !== null
                   ? { priced: false, reason: unpricedReason }
                   : { priced: true, costUsd: totalCostUsd };
+            }
+            if (options?.stageCost) {
+              if (steps.length === 0) return;
+              const operationId = effectBoundary("coordination:cost").operationId;
+              if (!operationId) throw new Error("distributed cost identity is unavailable");
+              options.stageCost(cost, operationId);
+              return;
             }
             for (const gate of turnGates) {
               if (!gate.turnGate.commit) continue;
