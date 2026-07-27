@@ -3,6 +3,7 @@ import type {
   AgentConfig,
   AssembledPrompt,
   ModelClient,
+  ModelCompleteOptions,
   ModelDelta,
   ModelResponse,
   TurnTrigger,
@@ -19,6 +20,7 @@ import type {
   ToolResult,
   Part,
   ExecutionContextV1,
+  ExecutionAuthorityV1,
 } from "../types";
 import type { Tokenizer } from "../tokenizer";
 import { extractText } from "../parts";
@@ -109,6 +111,7 @@ async function streamingInference(
   streamEmitter: InferenceStreamEmitter,
   responseLimits: ReturnType<typeof resolveModelResponseLimits>,
   signal?: AbortSignal,
+  execution?: Pick<ModelCompleteOptions, "executionContext" | "executionAuthority" | "operationId">,
 ): Promise<{ response: ModelResponse; streamed: boolean; messageId: string }> {
   const limitFailure: { error: ModelResponseLimitError | null } = { error: null };
   const limitAbort = new AbortController();
@@ -124,6 +127,7 @@ async function streamingInference(
   try {
     response = await model.complete(prompt, {
       signal: inferenceSignal,
+      ...execution,
       onDelta: (delta) => {
         if (delta.kind === "text_delta") {
           if (limitFailure.error) return;
@@ -170,7 +174,11 @@ import { createContextAllocator } from "./context-allocator";
 import { createCapabilityTable } from "./capability-table";
 import { selectTools } from "./tool-selector";
 import { createTraceEmitter } from "./trace-emitter";
-import { deriveToolOperationId, executionContextForTrace } from "./execution-context";
+import {
+  deriveEffectOperationId,
+  deriveToolOperationId,
+  executionContextForTrace,
+} from "./execution-context";
 import { buildPreamble } from "./preamble";
 import { validateOutput } from "./output-validator";
 import { createHistoryManager, type HistoryManager } from "./history-manager";
@@ -185,6 +193,9 @@ export interface TurnLoopOptions {
   signal?: AbortSignal;
   onEvent?: KernelEventHandler;
   executionContext?: ExecutionContextV1;
+  ensureExecutionStarted?: () => Promise<void>;
+  markExecutionUncertain?: () => void;
+  executionAuthority?: ExecutionAuthorityV1;
   trackDetachedOperation?: (operation: Promise<unknown>) => void;
 }
 
@@ -328,6 +339,14 @@ export function createTurnLoop(opts: {
       const emitEvent: KernelEventHandler = options?.onEvent ?? (() => {});
       const executionContext = options?.executionContext;
       const executionTrace = executionContextForTrace(executionContext);
+      const markExecutionUncertain = () => options?.markExecutionUncertain?.();
+      const effectBoundary = (name: string) => ({
+        ...(executionTrace ? { executionContext: executionTrace } : {}),
+        ...(options?.executionAuthority ? { executionAuthority: options.executionAuthority } : {}),
+        ...(executionContext
+          ? { operationId: deriveEffectOperationId(executionContext, name, 0) }
+          : {}),
+      });
       const peer = trigger.peer ?? null;
       const turnState: TurnState = {
         turnId: trigger.turnId,
@@ -338,7 +357,8 @@ export function createTurnLoop(opts: {
         turnStartedAt: Date.now(),
         metadata: {},
         ...(signal ? { signal } : {}),
-        ...(executionContext ? { executionContext } : {}),
+        ...(executionTrace ? { executionContext: executionTrace } : {}),
+        ...(options?.executionAuthority ? { executionAuthority: options.executionAuthority } : {}),
       };
 
       const toolCallRecords: ToolCallRecord[] = [];
@@ -394,6 +414,14 @@ export function createTurnLoop(opts: {
       // I/O, matching the existing semantics at every refactored site.
       let admissionConfirmed = false;
       let costCommitPromise: Promise<void> | null = null;
+      let executionStartPromise: Promise<void> | null = null;
+
+      function ensureExecutionStarted(): Promise<void> {
+        executionStartPromise ??= Promise.resolve().then(
+          () => options?.ensureExecutionStarted?.() ?? undefined,
+        );
+        return executionStartPromise;
+      }
 
       async function finalizeReturn(_opts?: { withCostCommit?: boolean }): Promise<void> {
         traceEmitter.finalize(trace);
@@ -448,6 +476,7 @@ export function createTurnLoop(opts: {
             peer: trigger.peer ?? null,
             threadId,
             trigger,
+            ...effectBoundary(`augment:${augments.indexOf(gate)}:${gate.name}:gate`),
           });
         } catch {
           // prepare itself threw — treat as admission-state-failed.
@@ -501,6 +530,23 @@ export function createTurnLoop(opts: {
         };
       }
 
+      // Preparation and a denied decision remain pre-effect. Gate confirmation
+      // and every later augment/model callback may mutate durable or external
+      // state, so the once-only marker is awaited at this exact boundary.
+      try {
+        await ensureExecutionStarted();
+      } catch (error) {
+        for (const ticket of tickets) {
+          try {
+            await ticket.rollback();
+          } catch {
+            // Preserve the original effect-start failure.
+          }
+        }
+        throw error;
+      }
+      if (signal?.aborted) return makeAbortResult();
+
       // Phase 3: Confirm — fail-closed. If any confirm throws, roll back all tickets.
       let confirmError: unknown = null;
       let confirmErrorGateName = "turn-gate";
@@ -514,6 +560,7 @@ export function createTurnLoop(opts: {
         }
       }
       if (confirmError !== null) {
+        markExecutionUncertain();
         for (const t of tickets) {
           try {
             await t.rollback();
@@ -558,12 +605,16 @@ export function createTurnLoop(opts: {
       }
 
       // onTurnStart hooks — fire before context assembly
-      for (const aug of augments) {
+      for (const [augmentIndex, aug] of augments.entries()) {
         if (signal?.aborted) return makeAbortResult();
         if (aug.onTurnStart) {
           try {
-            await aug.onTurnStart(turnState);
+            await aug.onTurnStart({
+              ...turnState,
+              ...effectBoundary(`augment:${augmentIndex}:${aug.name}:turn-start`),
+            });
           } catch {
+            markExecutionUncertain();
             if (signal?.aborted) return makeAbortResult();
             if (aug.required) {
               emitEvent({
@@ -621,7 +672,7 @@ export function createTurnLoop(opts: {
       // path — useful for kernel-driven internal events that need
       // lifecycle/budgets but no augment-specific execution.
       if (trigger.type === "internal") {
-        for (const aug of augments) {
+        for (const [augmentIndex, aug] of augments.entries()) {
           if (!aug.handleInternalTurn) continue;
           let handlerResult: TurnResult | null;
           try {
@@ -629,8 +680,22 @@ export function createTurnLoop(opts: {
               threadId,
               peer,
               ...(signal ? { signal } : {}),
+              ...(executionTrace ? { executionContext: executionTrace } : {}),
+              ...(options?.executionAuthority
+                ? { executionAuthority: options.executionAuthority }
+                : {}),
+              ...(executionContext
+                ? {
+                    operationId: deriveToolOperationId(
+                      executionContext,
+                      `internal:${augmentIndex}:${aug.name}`,
+                      0,
+                    ),
+                  }
+                : {}),
             });
           } catch (error) {
+            markExecutionUncertain();
             // Handler threw — surface as a failed turn so the augment
             // author can debug, and so cost-commit still fires.
             //
@@ -737,7 +802,7 @@ export function createTurnLoop(opts: {
 
       // Run augment context pipeline
       const contextBlocks: ContextBlock[] = [];
-      for (const aug of augments) {
+      for (const [augmentIndex, aug] of augments.entries()) {
         if (!aug.context) continue;
         try {
           const timeout = aug.constraints?.contextTimeoutMs ?? 5000;
@@ -747,6 +812,7 @@ export function createTurnLoop(opts: {
               aug.context!(
                 {
                   ...turnState,
+                  ...effectBoundary(`augment:${augmentIndex}:${aug.name}:context`),
                   signal: deadlineSignal,
                 },
                 priorContext,
@@ -769,6 +835,7 @@ export function createTurnLoop(opts: {
             contextBlocks.push(...result);
           }
         } catch {
+          markExecutionUncertain();
           if (aug.required) {
             emitEvent({
               kind: "run_error",
@@ -932,6 +999,7 @@ export function createTurnLoop(opts: {
                   peer: trigger.peer ?? null,
                   threadId,
                   cost,
+                  ...effectBoundary(`augment:${augments.indexOf(gate)}:${gate.name}:cost-commit`),
                 });
               } catch {
                 console.error(`[turn-gate ${gate.name}] cost commit failed after inference`);
@@ -945,7 +1013,10 @@ export function createTurnLoop(opts: {
         await costCommitPromise;
       }
 
-      async function runRecordedInference(prompt: AssembledPrompt): Promise<{
+      async function runRecordedInference(
+        prompt: AssembledPrompt,
+        inferenceOrdinal: number,
+      ): Promise<{
         response: ModelResponse;
         streamed: boolean;
         messageId: string;
@@ -960,7 +1031,14 @@ export function createTurnLoop(opts: {
         try {
           const result = await withTimeout(
             (deadlineSignal) =>
-              streamingInference(model, prompt, streamEmitter, responseLimits, deadlineSignal),
+              streamingInference(
+                model,
+                prompt,
+                streamEmitter,
+                responseLimits,
+                deadlineSignal,
+                effectBoundary(`model:${inferenceOrdinal}`),
+              ),
             providerRequestTimeoutMs,
             signal,
             trackDetachedProviderAttempt,
@@ -1051,6 +1129,7 @@ export function createTurnLoop(opts: {
         capabilityTable.resetTurn();
         const consecutiveFailures = new Map<string, number>();
         let inferenceCount = 0;
+        let nextModelOperationOrdinal = 0;
         let nextToolOperationOrdinal = 0;
         const maxInferenceLoops = config.maxInferenceLoops ?? 10;
 
@@ -1061,7 +1140,7 @@ export function createTurnLoop(opts: {
             response,
             streamed: streamedText,
             messageId: streamMessageId,
-          } = await runRecordedInference(currentPrompt);
+          } = await runRecordedInference(currentPrompt, nextModelOperationOrdinal++);
           if (signal?.aborted) return makeAbortResult();
 
           // Always append model content to history (even on tool_use turns)
@@ -1318,6 +1397,9 @@ export function createTurnLoop(opts: {
                               entry.operationOrdinal,
                             ),
                           }),
+                      ...(options?.executionAuthority === undefined
+                        ? {}
+                        : { executionAuthority: options.executionAuthority }),
                     }),
                   timeout,
                   signal,
@@ -1335,6 +1417,7 @@ export function createTurnLoop(opts: {
                   terminate = raw.terminate;
                 }
               } catch (err) {
+                markExecutionUncertain();
                 outcomeUnknown = detachedOperation || isOutcomeUnknownError(err);
                 const failureCategory = err instanceof Error ? "error-object" : "non-error-value";
                 console.warn(
@@ -1505,7 +1588,7 @@ export function createTurnLoop(opts: {
               response: finalResponse,
               streamed: termStreamed,
               messageId: termMessageId,
-            } = await runRecordedInference(currentPrompt);
+            } = await runRecordedInference(currentPrompt, nextModelOperationOrdinal++);
 
             if (finalResponse.content) {
               history.append({

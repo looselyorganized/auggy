@@ -4,6 +4,19 @@ export {
 } from "./in-memory";
 export { POSTGRES_COORDINATION_MIGRATIONS, migratePostgresCoordinator } from "./migrations";
 export { PostgresDistributedTurnCoordinator } from "./postgres";
+export {
+  createCanonicalDistributedTurnRequest,
+  createDistributedRootTurnRuntime,
+} from "./root-runtime";
+export type {
+  CoordinationTimers,
+  DistributedExecutionAuthorityV1,
+  DistributedLocalRunResult,
+  DistributedRootExecutionControl,
+  DistributedRootRunResult,
+  DistributedRootRuntimeOptions,
+  DistributedRootTurnRuntime,
+} from "./root-runtime";
 export type {
   AdmitResult,
   ClaimResult,
@@ -12,6 +25,7 @@ export type {
   CoordinationRequestState,
   DistributedCoordinatorConfig,
   DistributedCoordinatorCompatibility,
+  DistributedCoordinatorCompatibilityTuple,
   DistributedCoordinatorHealth,
   DistributedEventPage,
   DistributedPruneResult,

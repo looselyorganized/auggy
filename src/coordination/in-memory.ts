@@ -5,6 +5,7 @@ import type {
   CoordinationRequestState,
   DistributedCoordinationEvent,
   DistributedCoordinatorConfig,
+  DistributedCoordinatorCompatibilityTuple,
   DistributedCoordinatorHealth,
   DistributedEventPage,
   DistributedPruneResult,
@@ -55,6 +56,7 @@ interface StoredEvent extends DistributedCoordinationEvent {
 }
 
 interface LocalOwnedOperation {
+  attempt: number;
   bindingHash: string;
   controller: AbortController;
   phase: "queued" | "active";
@@ -73,7 +75,7 @@ interface NamespaceState {
   nextFence: number;
   retention: DistributedCoordinatorConfig["retention"];
   result: DistributedCoordinatorConfig["result"];
-  compatibility: DistributedCoordinatorConfig["compatibility"];
+  compatibility: DistributedCoordinatorCompatibilityTuple;
   requests: Map<string, StoredRequest>;
   threads: Map<string, StoredThread>;
   sources: Map<string, DistributedSourcePolicy>;
@@ -140,6 +142,21 @@ function assertConfig(config: DistributedCoordinatorConfig): void {
   ) {
     throw new Error("coordinator compatibility fingerprints are invalid");
   }
+  if (config.compatibility.upgradeFrom) {
+    assertLimit(
+      "compatibility.upgradeFrom.protocolVersion",
+      config.compatibility.upgradeFrom.protocolVersion,
+      1,
+    );
+    if (
+      config.compatibility.upgradeFrom.protocolVersion + 1 !==
+        config.compatibility.protocolVersion ||
+      !/^[0-9a-f]{64}$/.test(config.compatibility.upgradeFrom.protocolFingerprint) ||
+      !/^[0-9a-f]{64}$/.test(config.compatibility.upgradeFrom.configurationFingerprint)
+    ) {
+      throw new Error("coordinator compatibility upgrade contract is invalid");
+    }
+  }
   if (!Array.isArray(config.sources) || config.sources.length > 256) {
     throw new Error("coordinator sources exceed supported bounds");
   }
@@ -202,8 +219,14 @@ export function createInMemoryDistributedTurnCoordinator(
   const now = options.now ?? Date.now;
   const sessionId = crypto.randomUUID();
   const owned = new Map<string, LocalOwnedOperation>();
+  let invalidated = false;
 
-  function trackOwned(request: DistributedTurnRequest, phase: "queued" | "active"): void {
+  function trackOwned(
+    request: DistributedTurnRequest,
+    phase: "queued" | "active",
+    attempt: number,
+  ): void {
+    if (invalidated) return;
     const existing = owned.get(request.requestId);
     if (
       existing &&
@@ -213,10 +236,12 @@ export function createInMemoryDistributedTurnCoordinator(
       existing.sourceId === request.source.id
     ) {
       existing.phase = phase;
+      existing.attempt = attempt;
       return;
     }
     existing?.controller.abort("ownership-replaced");
     owned.set(request.requestId, {
+      attempt,
       bindingHash: request.bindingHash,
       controller: new AbortController(),
       phase,
@@ -235,6 +260,13 @@ export function createInMemoryDistributedTurnCoordinator(
   function abortOwnedPhase(phase: LocalOwnedOperation["phase"], reason: string): void {
     for (const [requestId, operation] of owned) {
       if (operation.phase === phase) abortOwned(requestId, reason);
+    }
+  }
+
+  function abortOwnedAttempt(requestId: string, attempt: number, reason: string): void {
+    const operation = owned.get(requestId);
+    if (operation?.attempt === attempt) {
+      abortOwned(requestId, reason);
     }
   }
 
@@ -280,7 +312,26 @@ export function createInMemoryDistributedTurnCoordinator(
     });
   }
 
-  function state(create = false): NamespaceState | undefined {
+  function compatibilityTuple(): DistributedCoordinatorCompatibilityTuple {
+    return {
+      protocolVersion: config.compatibility.protocolVersion,
+      protocolFingerprint: config.compatibility.protocolFingerprint,
+      configurationFingerprint: config.compatibility.configurationFingerprint,
+    };
+  }
+
+  function sameCompatibility(
+    left: DistributedCoordinatorCompatibilityTuple,
+    right: DistributedCoordinatorCompatibilityTuple,
+  ): boolean {
+    return (
+      left.protocolVersion === right.protocolVersion &&
+      left.protocolFingerprint === right.protocolFingerprint &&
+      left.configurationFingerprint === right.configurationFingerprint
+    );
+  }
+
+  function state(create = false, enforcePolicy = true): NamespaceState | undefined {
     let value = namespaces.get(config.namespace);
     if (!value && create) {
       value = {
@@ -294,13 +345,13 @@ export function createInMemoryDistributedTurnCoordinator(
         nextFence: 0,
         retention: { ...config.retention },
         result: { ...config.result },
-        compatibility: { ...config.compatibility },
+        compatibility: compatibilityTuple(),
         requests: new Map(),
         threads: new Map(),
         sources: new Map(config.sources.map((source) => [source.id, { ...source }])),
       };
       namespaces.set(config.namespace, value);
-    } else if (value) {
+    } else if (value && enforcePolicy) {
       namespacePolicy(value);
     }
     return value;
@@ -329,10 +380,7 @@ export function createInMemoryDistributedTurnCoordinator(
       current.retention.eventRetentionMs !== config.retention.eventRetentionMs ||
       current.retention.maxEvents !== config.retention.maxEvents ||
       current.result.maxReplayBytes !== config.result.maxReplayBytes ||
-      current.compatibility.protocolVersion !== config.compatibility.protocolVersion ||
-      current.compatibility.protocolFingerprint !== config.compatibility.protocolFingerprint ||
-      current.compatibility.configurationFingerprint !==
-        config.compatibility.configurationFingerprint ||
+      !sameCompatibility(current.compatibility, compatibilityTuple()) ||
       !sourcesMatch
     ) {
       throw new Error("coordinator namespace policy mismatch");
@@ -340,7 +388,34 @@ export function createInMemoryDistributedTurnCoordinator(
     return current;
   }
 
-  async function exclusive<T>(operation: () => T): Promise<T> {
+  function upgradeQuiescentCompatibility(current: NamespaceState, timestamp: number): boolean {
+    const predecessor = config.compatibility.upgradeFrom;
+    if (!predecessor || !sameCompatibility(current.compatibility, predecessor)) return false;
+    if ([...current.instances.values()].some((instance) => instance.expiresAt > timestamp)) {
+      return false;
+    }
+    if (
+      [...current.requests.values()].some(
+        (request) => request.state === "queued" || request.state === "active",
+      )
+    ) {
+      return false;
+    }
+    const prior = current.compatibility;
+    current.compatibility = compatibilityTuple();
+    try {
+      namespacePolicy(current);
+    } catch {
+      current.compatibility = prior;
+      return false;
+    }
+    for (const [instanceId, instance] of current.instances) {
+      if (instance.expiresAt <= timestamp) current.instances.delete(instanceId);
+    }
+    return true;
+  }
+
+  async function exclusive<T>(operation: () => T, allowAfterInvalidation = false): Promise<T> {
     const previous = transaction;
     let release!: () => void;
     transaction = new Promise<void>((resolve) => {
@@ -348,7 +423,9 @@ export function createInMemoryDistributedTurnCoordinator(
     });
     await previous;
     try {
-      if (options.failClosed?.()) throw new Error("coordinator unavailable");
+      if ((!allowAfterInvalidation && invalidated) || options.failClosed?.()) {
+        throw new Error("coordinator unavailable");
+      }
       return operation();
     } finally {
       release();
@@ -474,6 +551,7 @@ export function createInMemoryDistributedTurnCoordinator(
       threadId: request.threadId,
       sourceId: request.source.id,
       instanceId: request.ownerInstance,
+      attempt: request.queueGeneration,
       fence: request.fence,
       expiresAt: request.expiresAt,
     };
@@ -491,6 +569,7 @@ export function createInMemoryDistributedTurnCoordinator(
       request?.state !== "active" ||
       request.threadId !== lease.threadId ||
       request.source.id !== lease.sourceId ||
+      request.queueGeneration !== lease.attempt ||
       request.fence !== lease.fence ||
       request.ownerInstance !== lease.instanceId ||
       request.ownerSession !== sessionId ||
@@ -556,7 +635,12 @@ export function createInMemoryDistributedTurnCoordinator(
     operation: () => Promise<T>,
     unavailableResult: T,
     observe?: (result: T) => void,
+    allowAfterInvalidation = false,
   ): Promise<T> {
+    if (invalidated && !allowAfterInvalidation) {
+      observe?.(unavailableResult);
+      return unavailableResult;
+    }
     try {
       const result = await operation();
       observe?.(result);
@@ -573,7 +657,14 @@ export function createInMemoryDistributedTurnCoordinator(
         () =>
           exclusive(() => {
             const timestamp = now();
-            const current = state(true)!;
+            const current = state(true, false)!;
+            if (
+              !sameCompatibility(current.compatibility, compatibilityTuple()) &&
+              !upgradeQuiescentCompatibility(current, timestamp)
+            ) {
+              throw new Error("coordinator namespace policy mismatch");
+            }
+            namespacePolicy(current);
             const existing = current.instances.get(config.instanceId);
             if (existing) {
               if (
@@ -633,8 +724,8 @@ export function createInMemoryDistributedTurnCoordinator(
                 existing.queueOwnerSession = sessionId;
                 existing.queueGeneration++;
                 existing.queueExpiresAt = timestamp + config.leaseMs;
-                trackOwned(request, "queued");
-                return { status: "adopted" };
+                trackOwned(request, "queued", existing.queueGeneration);
+                return { status: "adopted", attempt: existing.queueGeneration };
               }
               return { status: "joined", state: existing.state };
             }
@@ -687,12 +778,12 @@ export function createInMemoryDistributedTurnCoordinator(
               queueGeneration: 1,
               queueExpiresAt: timestamp + config.leaseMs,
             });
-            trackOwned(request, "queued");
-            return { status: "admitted" };
+            trackOwned(request, "queued", 1);
+            return { status: "admitted", attempt: 1 };
           }),
         { status: "unavailable" } as AdmitResult,
       ),
-    heartbeatQueued: (request) =>
+    heartbeatQueued: (request, attempt = 1) =>
       safe<LeaseResult>(
         () =>
           exclusive(() => {
@@ -704,6 +795,7 @@ export function createInMemoryDistributedTurnCoordinator(
             if (
               !stored ||
               !sameBinding(stored, request) ||
+              stored.queueGeneration !== attempt ||
               stored.state !== "queued" ||
               !sameQueueOwner(stored) ||
               (stored.queueExpiresAt ?? 0) <= timestamp
@@ -715,10 +807,12 @@ export function createInMemoryDistributedTurnCoordinator(
           }),
         { status: "unavailable" },
         (result) => {
-          if (result.status !== "ok") abortOwned(request.requestId, "queue-ownership-lost");
+          if (result.status !== "ok") {
+            abortOwnedAttempt(request.requestId, attempt, "queue-ownership-lost");
+          }
         },
       ),
-    abandon: (request) =>
+    abandon: (request, attempt = 1) =>
       safe<LeaseResult>(
         () =>
           exclusive(() => {
@@ -727,12 +821,21 @@ export function createInMemoryDistributedTurnCoordinator(
             const current = state();
             if (!current || !liveInstance(current, timestamp)) return { status: "stale" };
             const stored = current.requests.get(request.requestId);
+            const ownsQueued =
+              stored?.state === "queued" &&
+              sameQueueOwner(stored) &&
+              (stored.queueExpiresAt ?? 0) > timestamp;
+            const ownsUnstartedActive =
+              stored?.state === "active" &&
+              stored.ownerInstance === config.instanceId &&
+              stored.ownerSession === sessionId &&
+              (stored.expiresAt ?? 0) > timestamp &&
+              stored.executionStarted === false;
             if (
               !stored ||
               !sameBinding(stored, request) ||
-              stored.state !== "queued" ||
-              !sameQueueOwner(stored) ||
-              (stored.queueExpiresAt ?? 0) <= timestamp
+              stored.queueGeneration !== attempt ||
+              (!ownsQueued && !ownsUnstartedActive)
             ) {
               return { status: "stale" };
             }
@@ -741,12 +844,20 @@ export function createInMemoryDistributedTurnCoordinator(
             stored.queueOwnerInstance = undefined;
             stored.queueOwnerSession = undefined;
             stored.queueExpiresAt = undefined;
+            stored.ownerInstance = undefined;
+            stored.ownerSession = undefined;
+            stored.expiresAt = undefined;
             return { status: "ok" };
-          }),
+          }, true),
         { status: "unavailable" },
-        () => abortOwned(request.requestId, "queue-abandoned"),
+        (result) => {
+          if (result.status === "ok") {
+            abortOwnedAttempt(request.requestId, attempt, "pre-start-abandoned");
+          }
+        },
+        true,
       ),
-    claim: (request) =>
+    claim: (request, attempt = 1) =>
       safe(
         () =>
           exclusive(() => {
@@ -762,16 +873,20 @@ export function createInMemoryDistributedTurnCoordinator(
                 ? { status: "quarantined" }
                 : { status: "terminal", state: stored.state };
             if (stored.state === "active") return { status: "waiting" };
-            if (!sameQueueOwner(stored) || (stored.queueExpiresAt ?? 0) <= timestamp) {
-              if (!sameQueueOwner(stored) && (stored.queueExpiresAt ?? 0) > timestamp) {
-                return { status: "waiting" };
-              }
-              if (!liveInstance(current, timestamp, true)) return { status: "waiting" };
-              stored.queueOwnerInstance = config.instanceId;
-              stored.queueOwnerSession = sessionId;
-              stored.queueGeneration++;
-              stored.queueExpiresAt = timestamp + config.leaseMs;
+            if (
+              !Number.isSafeInteger(attempt) ||
+              attempt <= 0 ||
+              stored.queueGeneration !== attempt
+            ) {
+              return { status: "stale" };
             }
+            if (!sameQueueOwner(stored)) {
+              return (stored.queueExpiresAt ?? 0) > timestamp
+                ? { status: "waiting" }
+                : { status: "stale" };
+            }
+            if ((stored.queueExpiresAt ?? 0) <= timestamp) return { status: "stale" };
+            if (!liveInstance(current, timestamp, true)) return { status: "waiting" };
             abandonExpiredQueued(current, timestamp, stored.requestId);
             const thread = current.threads.get(stored.threadId) ?? {
               nextFence: 0,
@@ -806,12 +921,13 @@ export function createInMemoryDistributedTurnCoordinator(
             stored.queueOwnerInstance = undefined;
             stored.queueOwnerSession = undefined;
             stored.queueExpiresAt = undefined;
-            trackOwned(request, "active");
+            trackOwned(request, "active", stored.queueGeneration);
             return { status: "acquired", lease: leaseFrom(stored) };
           }),
         { status: "unavailable" } as ClaimResult,
       ),
     ownedSignal: (request) => {
+      if (invalidated) return unavailableSignal();
       try {
         assertRequest(request);
       } catch {
@@ -824,6 +940,11 @@ export function createInMemoryDistributedTurnCoordinator(
         operation.sourceId === request.source.id
         ? operation.controller.signal
         : unavailableSignal();
+    },
+    invalidateLocalAuthority: () => {
+      if (invalidated) return;
+      invalidated = true;
+      abortAllOwned("coordinator-authority-lost");
     },
     markExecutionStarted: (lease) =>
       safe<LeaseResult>(

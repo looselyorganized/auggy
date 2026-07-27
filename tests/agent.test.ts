@@ -5,7 +5,12 @@ import { extractText } from "@/parts";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createMockTransport, createIdentityAugment } from "@tests/fixtures/mock-augment";
 import { emptyTrace } from "@/kernel/trace-emitter";
-import { deriveToolOperationId } from "@/kernel/execution-context";
+import {
+  deriveCausalExecutionContext,
+  deriveEffectOperationId,
+  deriveNestedOperationId,
+  deriveToolOperationId,
+} from "@/kernel/execution-context";
 import type { Augment, TransportKernel } from "@/types";
 
 describe("defineAgent", () => {
@@ -334,7 +339,7 @@ describe("defineAgent", () => {
     );
 
     expect(result.executionContext).toEqual(executionContext);
-    expect(observedTurn?.executionContext).toEqual(executionContext);
+    expect(observedTurn?.executionContext).toEqual(result.trace.executionContext);
     expect(result.trace.executionContext).toEqual({
       version: 1,
       executionId: "job-8cba58e1",
@@ -354,9 +359,11 @@ describe("defineAgent", () => {
     await agent.stop();
   });
 
-  it("awaits trusted execution-start persistence before model admission", async () => {
+  it("awaits trusted execution-start persistence after history authorization and before model admission", async () => {
+    const order: string[] = [];
     let persistenceCommitted = false;
     let contextObservedCommit = false;
+    let kernel: TransportKernel | undefined;
     const agent = defineAgent(
       {
         name: "execution-start-hook-agent",
@@ -365,8 +372,18 @@ describe("defineAgent", () => {
           {
             name: "execution-start-probe",
             context: async () => {
+              order.push("context");
               contextObservedCommit = persistenceCommitted;
               return [];
+            },
+          },
+          {
+            name: "execution-start-transport",
+            transport: {
+              identify: () => null,
+              register: async (registered) => {
+                kernel = registered;
+              },
             },
           },
         ],
@@ -375,23 +392,110 @@ describe("defineAgent", () => {
     );
     await agent.start();
     try {
-      await agent.inject(
+      if (!kernel) throw new Error("transport kernel was not registered");
+      await kernel.handleInbound(
         {
-          type: "internal",
+          type: "message",
           turnId: "execution-start-turn",
           threadId: "execution-start-thread",
           timestamp: Date.now(),
-          source: "trusted-test",
-          payload: { sourceAugment: "trusted-test", peer: null, timestamp: Date.now(), parts: [] },
+          source: "execution-start-transport",
+          peer: {
+            id: "peer-a",
+            kind: "human",
+            trustLevel: "creator",
+            sourceAugment: "execution-start-transport",
+          },
+          payload: {
+            sourceAugment: "execution-start-transport",
+            peer: null,
+            timestamp: Date.now(),
+            parts: [],
+          },
         },
         {
           onExecutionStart: async () => {
+            order.push("execution-start");
             await Promise.resolve();
             persistenceCommitted = true;
+          },
+          historyPersistence: {
+            load: async () => {
+              order.push("history-load");
+              return { version: 1, messages: [] };
+            },
+            assertAccess: async () => {},
+            commit: async () => {},
           },
         },
       );
       expect(contextObservedCommit).toBe(true);
+      expect(order.slice(0, 3)).toEqual(["history-load", "execution-start", "context"]);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("does not mark execution started when history authorization fails", async () => {
+    let executionStarted = false;
+    let kernel: TransportKernel | undefined;
+    const model = createMockModel({ response: "must-not-run" });
+    const agent = defineAgent(
+      {
+        name: "history-before-effect-marker",
+        model: "mock",
+        augments: [
+          {
+            name: "history-marker-transport",
+            transport: {
+              identify: () => null,
+              register: async (registered) => {
+                kernel = registered;
+              },
+            },
+          },
+        ],
+      },
+      model,
+    );
+    await agent.start();
+    try {
+      if (!kernel) throw new Error("transport kernel was not registered");
+      await expect(
+        kernel.handleInbound(
+          {
+            type: "message",
+            turnId: "history-rejected-turn",
+            threadId: "history-rejected-thread",
+            timestamp: Date.now(),
+            source: "history-marker-transport",
+            peer: {
+              id: "peer-a",
+              kind: "human",
+              trustLevel: "creator",
+              sourceAugment: "history-marker-transport",
+            },
+            payload: {
+              sourceAugment: "trusted-test",
+              peer: null,
+              timestamp: Date.now(),
+              parts: [],
+            },
+          },
+          {
+            onExecutionStart: () => {
+              executionStarted = true;
+            },
+            historyPersistence: {
+              load: async () => Promise.reject(new Error("history-access-denied")),
+              assertAccess: async () => {},
+              commit: async () => {},
+            },
+          },
+        ),
+      ).rejects.toThrow("history-access-denied");
+      expect(executionStarted).toBe(false);
+      expect(model.calls).toHaveLength(0);
     } finally {
       await agent.stop();
     }
@@ -447,8 +551,53 @@ describe("defineAgent", () => {
     expect(initial).not.toContain(base.idempotencyKeyHash);
   });
 
+  it("separates causal child operations while keeping each identity stable across retries", () => {
+    const root = {
+      version: 1 as const,
+      executionId: "job-causal",
+      attempt: 1,
+      bindingHash: "b".repeat(64),
+      operationScope: "root",
+    };
+    const firstChild = deriveCausalExecutionContext(root, "follow-up", 0)!;
+    const secondChild = deriveCausalExecutionContext(root, "follow-up", 1)!;
+    const retriedFirst = { ...firstChild, attempt: 2 };
+
+    const rootOperation = deriveToolOperationId(root, "charge", 0);
+    const firstOperation = deriveToolOperationId(firstChild, "charge", 0);
+    const secondOperation = deriveToolOperationId(secondChild, "charge", 0);
+    expect(firstOperation).not.toBe(rootOperation);
+    expect(secondOperation).not.toBe(firstOperation);
+    expect(deriveToolOperationId(retriedFirst, "charge", 0)).toBe(firstOperation);
+  });
+
+  it("domain-separates tools, runtime effects, and nested downstream operations", () => {
+    const context = {
+      version: 1 as const,
+      executionId: "job-domain",
+      attempt: 1,
+      bindingHash: "b".repeat(64),
+    };
+    const tool = deriveToolOperationId(context, "model:0", 0)!;
+    const effect = deriveEffectOperationId(context, "model:0", 0)!;
+    const nested = deriveNestedOperationId(effect, "model:0", 0)!;
+
+    expect(new Set([tool, effect, nested]).size).toBe(3);
+    expect(deriveNestedOperationId(effect, "model:0", 0)).toBe(nested);
+  });
+
   it("assigns distinct stable operation identities across inference rounds and execution retries", async () => {
     const model = createMockModel();
+    const modelOperationIds: string[] = [];
+    const modelExecutionBindings: Array<string | undefined> = [];
+    const complete = model.complete.bind(model);
+    model.complete = async (prompt, options) => {
+      modelOperationIds.push(options?.operationId ?? "missing");
+      modelExecutionBindings.push(
+        (options?.executionContext as { bindingHash?: string } | undefined)?.bindingHash,
+      );
+      return complete(prompt, options);
+    };
     for (let attempt = 1; attempt <= 2; attempt++) {
       model.pushResponse({
         toolCalls: [{ name: "charge", arguments: { amount: 10 } }],
@@ -525,6 +674,10 @@ describe("defineAgent", () => {
         1,
       )!,
     ]);
+    expect(modelOperationIds).toHaveLength(6);
+    expect(new Set(modelOperationIds.slice(0, 3)).size).toBe(3);
+    expect(modelOperationIds.slice(0, 3)).toEqual(modelOperationIds.slice(3));
+    expect(modelExecutionBindings).toEqual(Array(6).fill(undefined));
     await agent.stop();
   });
 

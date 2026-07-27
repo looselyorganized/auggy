@@ -62,14 +62,19 @@ describe("distributed coordination compatibility fingerprints", () => {
 
     expect(DISTRIBUTED_COORDINATION_PROTOCOL).toEqual({
       name: "auggy-postgres-coordination",
-      protocolVersion: 3,
+      protocolVersion: 4,
       schemaVersion: 4,
       fingerprintVersion: 2,
     });
     expect(first).toEqual(second);
-    expect(first.protocolVersion).toBe(3);
+    expect(first.protocolVersion).toBe(4);
     expect(first.protocolFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(first.configurationFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(first.upgradeFrom).toMatchObject({ protocolVersion: 3 });
+    expect(first.upgradeFrom.protocolFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(first.upgradeFrom.configurationFingerprint).toMatch(/^[0-9a-f]{64}$/);
+    expect(first.upgradeFrom.protocolFingerprint).not.toBe(first.protocolFingerprint);
+    expect(first.upgradeFrom.configurationFingerprint).not.toBe(first.configurationFingerprint);
   });
 
   test("binds authoritative fleet policy and preserves augment order", () => {

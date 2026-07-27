@@ -2,6 +2,8 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { SQL } from "bun";
 import { resolve } from "node:path";
 import { PostgresDistributedTurnCoordinator } from "../../src/coordination";
+import type { DistributedCoordinatorCompatibility } from "../../src/coordination/types";
+import type { PostgresCoordinatorOptions } from "../../src/coordination/postgres";
 import {
   migratePostgresCoordinator,
   POSTGRES_COORDINATION_MIGRATIONS,
@@ -24,7 +26,7 @@ const coordinatorPolicy = {
   },
   result: { maxReplayBytes: 65_536 },
   compatibility: {
-    protocolVersion: 3,
+    protocolVersion: 4,
     protocolFingerprint: "a".repeat(64),
     configurationFingerprint: "b".repeat(64),
   },
@@ -55,7 +57,7 @@ function coordinator(
   leaseMs = 5_000,
   maxConcurrent = 2,
   maxQueued = 4,
-  compatibility: Partial<(typeof coordinatorPolicy)["compatibility"]> = {},
+  compatibility: Partial<DistributedCoordinatorCompatibility> = {},
   retention: (typeof coordinatorPolicy)["retention"] = coordinatorPolicy.retention,
 ) {
   return new PostgresDistributedTurnCoordinator({
@@ -130,6 +132,18 @@ async function expireQueuedLease(namespace: string, requestId: string): Promise<
       [namespace, requestId],
     );
     if (rows.length !== 1) throw new Error("expected one queued lease to expire");
+  } finally {
+    await sql.close();
+  }
+}
+
+async function expireInstanceLeases(namespace: string): Promise<void> {
+  const sql = new SQL(url!);
+  try {
+    await sql.unsafe(
+      "UPDATE auggy_coordination_instances SET lease_expires_at = clock_timestamp() - interval '1 millisecond' WHERE namespace = $1",
+      [namespace],
+    );
   } finally {
     await sql.close();
   }
@@ -406,7 +420,10 @@ describe("PostgreSQL distributed turn coordinator", () => {
       );
       await instance.migrate();
       expect(await instance.register()).toEqual({ status: "registered" });
-      expect(await instance.admit(request("shadow-request"))).toEqual({ status: "admitted" });
+      expect(await instance.admit(request("shadow-request"))).toEqual({
+        status: "admitted",
+        attempt: 1,
+      });
       expect(await instance.abandon(request("shadow-request"))).toEqual({ status: "ok" });
 
       const publicRows = await sql.unsafe<Array<{ count: number }>>(
@@ -650,13 +667,13 @@ describe("PostgreSQL distributed turn coordinator", () => {
         expect(await first.register()).toEqual({ status: "registered" });
         expect(await second.register()).toEqual({ status: "registered" });
         const owned = request("owned-request", "owned-thread");
-        expect(await first.admit(owned)).toEqual({ status: "admitted" });
+        expect(await first.admit(owned)).toEqual({ status: "admitted", attempt: 1 });
         expect(await second.claim(owned)).toEqual({ status: "waiting" });
         expect(await first.heartbeatQueued(owned)).toEqual({ status: "ok" });
 
         await expireQueuedLease(value, owned.requestId);
         expect(await first.heartbeatInstance()).toEqual({ status: "ok" });
-        expect(await second.admit(owned)).toEqual({ status: "adopted" });
+        expect(await second.admit(owned)).toEqual({ status: "adopted", attempt: 2 });
         expect(await first.heartbeatQueued(owned)).toEqual({ status: "stale" });
         expect(await first.abandon(owned)).toEqual({ status: "stale" });
         expect(await second.admit({ ...owned, threadId: "changed-thread" })).toEqual({
@@ -668,7 +685,21 @@ describe("PostgreSQL distributed turn coordinator", () => {
             source: { id: "untrusted-source", maxConcurrent: 999, maxQueued: 999 },
           }),
         ).toEqual({ status: "conflict" });
-        expect((await second.claim(owned)).status).toBe("acquired");
+        expect((await second.claim(owned, 2)).status).toBe("acquired");
+
+        const sameSession = request("same-session-adoption", "same-session-thread");
+        expect(await second.admit(sameSession)).toEqual({ status: "admitted", attempt: 1 });
+        await expireQueuedLease(value, sameSession.requestId);
+        expect(await second.admit(sameSession)).toEqual({ status: "adopted", attempt: 2 });
+        const currentSignal = second.ownedSignal(sameSession);
+        expect(await second.heartbeatQueued(sameSession, 1)).toEqual({ status: "stale" });
+        expect(await second.abandon(sameSession, 1)).toEqual({ status: "stale" });
+        expect(currentSignal.aborted).toBeFalse();
+        const sameSessionLease = await second.claim(sameSession, 2);
+        if (sameSessionLease.status !== "acquired") {
+          throw new Error("expected same-session adopted lease");
+        }
+        expect(await second.complete(sameSessionLease.lease, replay())).toEqual({ status: "ok" });
 
         const sources = await sql.unsafe<Array<{ source_id: string }>>(
           "SELECT source_id FROM auggy_coordination_sources WHERE namespace = $1 ORDER BY source_id",
@@ -683,6 +714,36 @@ describe("PostgreSQL distributed turn coordinator", () => {
     },
   );
 
+  postgresTest("abandons only an owned active attempt before execution starts", async () => {
+    const value = namespace();
+    const instance = coordinator(value, "pre-start-owner", 500);
+    try {
+      await instance.migrate();
+      expect(await instance.register()).toEqual({ status: "registered" });
+
+      const canceled = request("pre-start-cancel", "pre-start-thread");
+      expect(await instance.admit(canceled)).toEqual({ status: "admitted", attempt: 1 });
+      expect((await instance.claim(canceled, 1)).status).toBe("acquired");
+      const canceledSignal = instance.ownedSignal(canceled);
+      expect(await instance.abandon(canceled, 1)).toEqual({ status: "ok" });
+      expect(canceledSignal.aborted).toBeTrue();
+      expect(await instance.status(canceled)).toEqual({
+        status: "terminal",
+        state: "canceled",
+      });
+
+      const started = request("started-cancel", "started-thread");
+      expect(await instance.admit(started)).toEqual({ status: "admitted", attempt: 1 });
+      const lease = await instance.claim(started, 1);
+      if (lease.status !== "acquired") throw new Error("expected active lease");
+      expect(await instance.markExecutionStarted(lease.lease)).toEqual({ status: "ok" });
+      expect(await instance.abandon(started, 1)).toEqual({ status: "stale" });
+      expect(await instance.status(started)).toMatchObject({ status: "pending", state: "active" });
+    } finally {
+      await instance.close();
+    }
+  });
+
   postgresTest("commits and replays byte-bounded results only for an exact binding", async () => {
     const value = namespace();
     const first = coordinator(value, "result-owner", 500);
@@ -692,7 +753,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
       expect(await first.register()).toEqual({ status: "registered" });
       expect(await second.register()).toEqual({ status: "registered" });
       const completed = request("result-request", "result-thread");
-      expect(await first.admit(completed)).toEqual({ status: "admitted" });
+      expect(await first.admit(completed)).toEqual({ status: "admitted", attempt: 1 });
       const claimed = await first.claim(completed);
       if (claimed.status !== "acquired") throw new Error("expected result lease");
       const exact = replay("a".repeat(coordinatorPolicy.result.maxReplayBytes - 2));
@@ -708,7 +769,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
       });
 
       const oversized = request("oversized-result", "oversized-thread");
-      expect(await first.admit(oversized)).toEqual({ status: "admitted" });
+      expect(await first.admit(oversized)).toEqual({ status: "admitted", attempt: 1 });
       const oversizedLease = await first.claim(oversized);
       if (oversizedLease.status !== "acquired") throw new Error("expected oversized lease");
       expect(
@@ -723,7 +784,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
       });
 
       const pending = request("pending-wait", "pending-thread");
-      expect(await first.admit(pending)).toEqual({ status: "admitted" });
+      expect(await first.admit(pending)).toEqual({ status: "admitted", attempt: 1 });
       const abort = new AbortController();
       abort.abort();
       expect(
@@ -762,7 +823,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
           ] as const
         ).entries()) {
           const item = request(requestId, threadId);
-          expect(await instance.admit(item)).toEqual({ status: "admitted" });
+          expect(await instance.admit(item)).toEqual({ status: "admitted", attempt: 1 });
           const claimed = await instance.claim(item);
           if (claimed.status !== "acquired") throw new Error("expected retained lease");
           if (index === 0) firstFence = claimed.lease.fence;
@@ -772,7 +833,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
         }
 
         const unknown = request("retained-unknown", "retained-unknown-thread");
-        expect(await instance.admit(unknown)).toEqual({ status: "admitted" });
+        expect(await instance.admit(unknown)).toEqual({ status: "admitted", attempt: 1 });
         const incident = await instance.claim(unknown);
         if (incident.status !== "acquired") throw new Error("expected incident lease");
         expect(await instance.markExecutionStarted(incident.lease)).toEqual({ status: "ok" });
@@ -808,7 +869,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
         });
 
         const reused = request("retained-reused", "reused-thread");
-        expect(await instance.admit(reused)).toEqual({ status: "admitted" });
+        expect(await instance.admit(reused)).toEqual({ status: "admitted", attempt: 1 });
         const reusedLease = await instance.claim(reused);
         if (reusedLease.status !== "acquired") throw new Error("expected reused thread lease");
         expect(reusedLease.lease.fence).toBeGreaterThan(firstFence);
@@ -863,16 +924,21 @@ describe("PostgreSQL distributed turn coordinator", () => {
       expect(await second.admit(request("one", "thread-other"))).toEqual({ status: "conflict" });
       expect(await second.admit(request("thread-wait-1", "thread-one"))).toEqual({
         status: "admitted",
+        attempt: 1,
       });
       expect(await second.admit(request("thread-wait-2", "thread-one"))).toEqual({
         status: "admitted",
+        attempt: 1,
       });
       expect(await second.admit(request("thread-wait-3", "thread-one"))).toEqual({
         status: "rejected",
         reason: "thread-capacity",
       });
 
-      expect(await isolated.admit(request("one", "thread-one"))).toEqual({ status: "admitted" });
+      expect(await isolated.admit(request("one", "thread-one"))).toEqual({
+        status: "admitted",
+        attempt: 1,
+      });
       expect((await isolated.claim(request("one", "thread-one"))).status).toBe("acquired");
     } finally {
       await first.close();
@@ -885,7 +951,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
     const value = namespace();
     const first = coordinator(value, "compatible-instance");
     const changedProtocol = coordinator(value, "protocol-drift", 5_000, 2, 4, {
-      protocolVersion: 4,
+      protocolVersion: 5,
     });
     const changedConfiguration = coordinator(value, "configuration-drift", 5_000, 2, 4, {
       configurationFingerprint: "c".repeat(64),
@@ -895,7 +961,10 @@ describe("PostgreSQL distributed turn coordinator", () => {
     try {
       await first.migrate();
       expect(await first.register()).toEqual({ status: "registered" });
-      expect(await first.admit(request("compatibility-first"))).toEqual({ status: "admitted" });
+      expect(await first.admit(request("compatibility-first"))).toEqual({
+        status: "admitted",
+        attempt: 1,
+      });
 
       expect(await changedProtocol.register()).toEqual({ status: "unavailable" });
       expect(await changedProtocol.admit(request("protocol-request"))).toEqual({
@@ -928,13 +997,88 @@ describe("PostgreSQL distributed turn coordinator", () => {
           incompatible_instance_count: 0,
         },
       ]);
-      expect(await first.admit(request("compatible-second"))).toEqual({ status: "admitted" });
+      expect(await first.admit(request("compatible-second"))).toEqual({
+        status: "admitted",
+        attempt: 1,
+      });
     } finally {
       await sql.close();
       await changedLease.close();
       await changedConfiguration.close();
       await changedProtocol.close();
       await first.close();
+    }
+  });
+
+  postgresTest("atomically upgrades an exact quiescent predecessor protocol", async () => {
+    const value = namespace();
+    const predecessor = {
+      protocolVersion: 3,
+      protocolFingerprint: "c".repeat(64),
+      configurationFingerprint: "d".repeat(64),
+    };
+    const old = coordinator(value, "old-protocol", 5_000, 2, 4, predecessor);
+    const current = coordinator(value, "current-protocol", 5_000, 2, 4, {
+      upgradeFrom: predecessor,
+    });
+    const sql = new SQL(url!);
+    try {
+      await old.migrate();
+      expect(await old.register()).toEqual({ status: "registered" });
+      const terminal = request("upgrade-terminal", "upgrade-thread");
+      expect(await old.admit(terminal)).toEqual({ status: "admitted", attempt: 1 });
+      expect(await old.abandon(terminal, 1)).toEqual({ status: "ok" });
+      expect(await current.register()).toEqual({ status: "unavailable" });
+
+      await expireInstanceLeases(value);
+      expect(await current.register()).toEqual({ status: "registered" });
+      expect(await old.register()).toEqual({ status: "unavailable" });
+      expect(await current.status(terminal)).toEqual({
+        status: "terminal",
+        state: "canceled",
+      });
+      const rows = await sql.unsafe<
+        Array<{ protocol_version: number; protocol_fingerprint: string }>
+      >(
+        "SELECT protocol_version, protocol_fingerprint FROM auggy_coordination_namespaces WHERE namespace = $1",
+        [value],
+      );
+      expect(rows).toEqual([
+        {
+          protocol_version: coordinatorPolicy.compatibility.protocolVersion,
+          protocol_fingerprint: coordinatorPolicy.compatibility.protocolFingerprint,
+        },
+      ]);
+    } finally {
+      await sql.close();
+      await current.close();
+      await old.close();
+    }
+  });
+
+  postgresTest("refuses a predecessor upgrade while queued work remains", async () => {
+    const value = namespace();
+    const predecessor = {
+      protocolVersion: 3,
+      protocolFingerprint: "c".repeat(64),
+      configurationFingerprint: "d".repeat(64),
+    };
+    const old = coordinator(value, "old-protocol", 5_000, 2, 4, predecessor);
+    const current = coordinator(value, "current-protocol", 5_000, 2, 4, {
+      upgradeFrom: predecessor,
+    });
+    try {
+      await old.migrate();
+      expect(await old.register()).toEqual({ status: "registered" });
+      expect(await old.admit(request("upgrade-pending", "pending-thread"))).toEqual({
+        status: "admitted",
+        attempt: 1,
+      });
+      await expireInstanceLeases(value);
+      expect(await current.register()).toEqual({ status: "unavailable" });
+    } finally {
+      await current.close();
+      await old.close();
     }
   });
 
@@ -958,7 +1102,10 @@ describe("PostgreSQL distributed turn coordinator", () => {
           outcomes[0]?.status === "registered"
             ? "registration-request-a"
             : "registration-request-b";
-        expect(await winner.admit(request(winnerRequest))).toEqual({ status: "admitted" });
+        expect(await winner.admit(request(winnerRequest))).toEqual({
+          status: "admitted",
+          attempt: 1,
+        });
 
         const rows = await sql.unsafe<
           Array<{ configuration_fingerprint: string; request_id: string }>
@@ -995,10 +1142,27 @@ describe("PostgreSQL distributed turn coordinator", () => {
         const old = await first.claim(request("unstarted", "reclaimable-thread"));
         if (old.status !== "acquired") throw new Error("expected initial lease");
         await expireActiveLease(value, "unstarted");
-        const fresh = await second.claim(request("unstarted", "reclaimable-thread"));
+        expect(
+          await first.abandon(request("unstarted", "reclaimable-thread"), old.lease.attempt),
+        ).toEqual({ status: "stale" });
+        expect(await second.claim(request("unstarted", "reclaimable-thread"), 2)).toEqual({
+          status: "stale",
+        });
+        expect(await second.admit(request("unstarted", "reclaimable-thread"))).toEqual({
+          status: "adopted",
+          attempt: 3,
+        });
+        const fresh = await second.claim(request("unstarted", "reclaimable-thread"), 3);
         if (fresh.status !== "acquired") throw new Error("expected reclaimed lease");
+        expect(fresh.lease.attempt).toBe(3);
         expect(fresh.lease.fence).toBeGreaterThan(old.lease.fence);
+        expect(await first.markExecutionStarted(old.lease)).toEqual({ status: "stale" });
+        expect(await first.heartbeat(old.lease)).toEqual({ status: "stale" });
         expect(await first.complete(old.lease, replay())).toEqual({ status: "stale" });
+        expect(await first.fail(old.lease)).toEqual({ status: "stale" });
+        expect(await first.markOutcomeUnknown(old.lease, "lease-lost")).toEqual({
+          status: "stale",
+        });
         expect(await second.complete(fresh.lease, replay())).toEqual({ status: "ok" });
 
         await first.admit(request("started", "quarantined-thread"));
@@ -1043,7 +1207,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
       expect(await first.register()).toEqual({ status: "registered" });
       expect(await second.register()).toEqual({ status: "registered" });
       const effecting = request("failed-effect", "failed-effect-thread");
-      expect(await first.admit(effecting)).toEqual({ status: "admitted" });
+      expect(await first.admit(effecting)).toEqual({ status: "admitted", attempt: 1 });
       const claimed = await first.claim(effecting);
       if (claimed.status !== "acquired") throw new Error("expected effect lease");
       expect(await first.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
@@ -1099,7 +1263,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
           await recovery.recover("multiprocess-thread", 1, "terminated-child-reconciled"),
         ).toEqual({ status: "ok" });
         const resumed = request("after-recovery", "multiprocess-thread");
-        expect(await recovery.admit(resumed)).toEqual({ status: "admitted" });
+        expect(await recovery.admit(resumed)).toEqual({ status: "admitted", attempt: 1 });
         const fresh = await recovery.claim(resumed);
         expect(fresh.status).toBe("acquired");
         if (fresh.status !== "acquired") throw new Error("expected recovery lease");
@@ -1118,7 +1282,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
       await draining.migrate();
       expect(await draining.register()).toEqual({ status: "registered" });
       const queued = request("draining-queued", "draining-queued-thread");
-      expect(await draining.admit(queued)).toEqual({ status: "admitted" });
+      expect(await draining.admit(queued)).toEqual({ status: "admitted", attempt: 1 });
       const signal = draining.ownedSignal(queued);
       expect(signal.aborted).toBeFalse();
       expect(await draining.beginDrain()).toEqual({ status: "ok" });
@@ -1140,7 +1304,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
       await instance.migrate();
       expect(await instance.register()).toEqual({ status: "registered" });
       const active = request("closing-active", "closing-active-thread");
-      expect(await instance.admit(active)).toEqual({ status: "admitted" });
+      expect(await instance.admit(active)).toEqual({ status: "admitted", attempt: 1 });
       const claimed = await instance.claim(active);
       if (claimed.status !== "acquired") throw new Error("expected closing lease");
       const signal = instance.ownedSignal(active);
@@ -1152,6 +1316,105 @@ describe("PostgreSQL distributed turn coordinator", () => {
       await instance.close();
     }
   });
+
+  postgresTest(
+    "invalidates local authority synchronously and fails later mutations closed",
+    async () => {
+      const value = namespace();
+      const instance = coordinator(value, "invalidated-replica", 500);
+      try {
+        await instance.migrate();
+        expect(await instance.register()).toEqual({ status: "registered" });
+        const queued = request("invalidated-queued", "invalidated-thread");
+        expect(await instance.admit(queued)).toEqual({ status: "admitted", attempt: 1 });
+        const signal = instance.ownedSignal(queued);
+        expect(signal.aborted).toBeFalse();
+
+        instance.invalidateLocalAuthority();
+
+        expect(signal.aborted).toBeTrue();
+        expect(signal.reason).toBe("coordinator-authority-lost");
+        expect(await instance.heartbeatQueued(queued, 1)).toEqual({ status: "unavailable" });
+        expect(await instance.claim(queued, 1)).toEqual({ status: "unavailable" });
+        expect(await instance.admit(request("after-invalidation", "other-thread"))).toEqual({
+          status: "unavailable",
+        });
+      } finally {
+        await instance.close();
+      }
+    },
+  );
+
+  postgresTest(
+    "reports the committed result of an operation started before invalidation",
+    async () => {
+      const value = namespace();
+      const sql = new SQL(url!);
+      let pauseNextTransaction = false;
+      let entered!: () => void;
+      const transactionEntered = new Promise<void>((resolve) => {
+        entered = resolve;
+      });
+      let release!: () => void;
+      const transactionRelease = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const delayedSql = {
+        async begin<T>(
+          callback: (transaction: PostgresMigrationExecutor) => Promise<T>,
+        ): Promise<T> {
+          if (pauseNextTransaction) {
+            pauseNextTransaction = false;
+            entered();
+            await transactionRelease;
+          }
+          return sql.begin(async (transaction) => {
+            const wrapped: PostgresMigrationExecutor = {
+              begin: (nested) => nested(wrapped),
+              unsafe: (query, values) => transaction.unsafe(query, values),
+            };
+            return callback(wrapped);
+          });
+        },
+        unsafe: <T extends object = Record<string, unknown>>(query: string, values?: unknown[]) =>
+          sql.unsafe<T>(query, values),
+      } as NonNullable<PostgresCoordinatorOptions["sql"]>;
+      const instance = new PostgresDistributedTurnCoordinator({
+        sql: delayedSql,
+        namespace: value,
+        instanceId: "invalidation-race",
+        maxConcurrent: 2,
+        maxQueued: 4,
+        maxQueuedPerThread: 2,
+        leaseMs: 500,
+        ...coordinatorPolicy,
+      });
+      try {
+        await instance.migrate();
+        expect(await instance.register()).toEqual({ status: "registered" });
+        const active = request("invalidation-active", "invalidation-active-thread");
+        expect(await instance.admit(active)).toEqual({ status: "admitted", attempt: 1 });
+        const activeLease = await instance.claim(active);
+        if (activeLease.status !== "acquired") throw new Error("expected active cleanup lease");
+        const queued = request("invalidation-race", "invalidation-race-thread");
+        expect(await instance.admit(queued)).toEqual({ status: "admitted", attempt: 1 });
+
+        pauseNextTransaction = true;
+        const heartbeat = instance.heartbeatQueued(queued, 1);
+        await transactionEntered;
+        instance.invalidateLocalAuthority();
+        release();
+
+        expect(await heartbeat).toEqual({ status: "ok" });
+        expect(await instance.heartbeatQueued(queued, 1)).toEqual({ status: "unavailable" });
+        expect(await instance.abandon(queued, 1)).toEqual({ status: "ok" });
+        expect(await instance.abandon(active, activeLease.lease.attempt)).toEqual({ status: "ok" });
+      } finally {
+        await instance.close();
+        await sql.close();
+      }
+    },
+  );
 
   postgresTest("health sweeps expired started work and frees zero-queue capacity", async () => {
     const value = namespace();
@@ -1172,6 +1435,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
       });
       expect(await instance.admit(request("other-thread", "other-thread"))).toEqual({
         status: "admitted",
+        attempt: 1,
       });
     } finally {
       await instance.close();

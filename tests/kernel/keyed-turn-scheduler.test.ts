@@ -30,6 +30,247 @@ function expectValue<T>(result: ScheduledRunResult<T>): T {
 }
 
 describe("keyed turn scheduler", () => {
+  test("releases a local slot while distributed admission is deferred", async () => {
+    const scheduler = createKeyedTurnScheduler({
+      maxConcurrent: 1,
+      maxQueued: 10,
+      maxQueuedPerKey: 10,
+      maxCausalDepth: 4,
+    });
+    const resumeBlocked = deferred();
+    const blockedProbe = deferred();
+    const runnableStarted = deferred();
+    let blockedAttempts = 0;
+
+    const blocked = scheduler.submit(
+      {
+        key: "blocked-thread",
+        source,
+        beforeStart: async () => {
+          blockedAttempts++;
+          blockedProbe.resolve();
+          return blockedAttempts === 1
+            ? { status: "defer" as const, resume: resumeBlocked.promise }
+            : { status: "ready" as const };
+        },
+      },
+      async () => "blocked",
+    );
+    await blockedProbe.promise;
+
+    const runnable = scheduler.submit({ key: "runnable-thread", source }, async () => {
+      runnableStarted.resolve();
+      return "runnable";
+    });
+
+    await runnableStarted.promise;
+    expect(expectValue(await runnable)).toBe("runnable");
+    expect(blockedAttempts).toBe(1);
+    expect(scheduler.snapshot()).toMatchObject({
+      activeTurns: 0,
+      queuedTurns: 1,
+    });
+
+    resumeBlocked.resolve();
+    expect(expectValue(await blocked)).toBe("blocked");
+    expect(blockedAttempts).toBe(2);
+  });
+
+  test("never starts work when cancellation crosses an asynchronous admission probe", async () => {
+    const scheduler = createKeyedTurnScheduler({
+      maxConcurrent: 1,
+      maxQueued: 1,
+      maxQueuedPerKey: 1,
+      maxCausalDepth: 4,
+    });
+    const controller = new AbortController();
+    const probeStarted = deferred();
+    const probe = deferred<{ status: "ready" }>();
+    let ran = false;
+    const pending = scheduler.submit(
+      {
+        key: "thread",
+        source,
+        signal: controller.signal,
+        beforeStart: async () => {
+          probeStarted.resolve();
+          return probe.promise;
+        },
+      },
+      async () => {
+        ran = true;
+      },
+    );
+    await probeStarted.promise;
+
+    controller.abort(new DOMException("caller left", "AbortError"));
+    expect(await pending).toMatchObject({ status: "canceled" });
+    probe.resolve({ status: "ready" });
+    await Promise.resolve();
+
+    expect(ran).toBe(false);
+    expect(scheduler.snapshot()).toMatchObject({ activeTurns: 0, queuedTurns: 0 });
+  });
+
+  test("fails closed when quarantine or shutdown crosses an admission probe", async () => {
+    for (const action of ["quarantine", "close"] as const) {
+      const scheduler = createKeyedTurnScheduler({
+        maxConcurrent: 1,
+        maxQueued: 1,
+        maxQueuedPerKey: 1,
+        maxCausalDepth: 4,
+      });
+      const probeStarted = deferred();
+      const probe = deferred<{ status: "defer"; resume: Promise<void> }>();
+      const resume = deferred();
+      let ran = false;
+      const pending = scheduler.submit(
+        {
+          key: "thread",
+          source,
+          beforeStart: async () => {
+            probeStarted.resolve();
+            return probe.promise;
+          },
+        },
+        async () => {
+          ran = true;
+        },
+      );
+      await probeStarted.promise;
+
+      if (action === "quarantine") scheduler.quarantine("thread");
+      else scheduler.close();
+      expect(await pending).toMatchObject({
+        status: "rejected",
+        reason: action === "quarantine" ? "thread-quarantined" : "runtime-stopping",
+      });
+      probe.resolve({ status: "defer", resume: resume.promise });
+      resume.resolve();
+      await Promise.resolve();
+
+      expect(ran).toBe(false);
+      expect(scheduler.snapshot()).toMatchObject({ activeTurns: 0, queuedTurns: 0 });
+      if (action === "close") await scheduler.drain();
+    }
+  });
+
+  test("dispatches unrelated queued work after quarantining a pending probe", async () => {
+    const scheduler = createKeyedTurnScheduler({
+      maxConcurrent: 1,
+      maxQueued: 2,
+      maxQueuedPerKey: 2,
+      maxCausalDepth: 4,
+    });
+    const probeStarted = deferred();
+    const probe = deferred<{ status: "ready" }>();
+    const blocked = scheduler.submit(
+      {
+        key: "blocked",
+        source,
+        beforeStart: async () => {
+          probeStarted.resolve();
+          return probe.promise;
+        },
+      },
+      async () => "must-not-run",
+    );
+    await probeStarted.promise;
+    const unrelated = scheduler.submit({ key: "unrelated", source }, async () => "ran");
+
+    scheduler.quarantine("blocked");
+    expect(await blocked).toMatchObject({ status: "rejected", reason: "thread-quarantined" });
+    expect(expectValue(await unrelated)).toBe("ran");
+    probe.resolve({ status: "ready" });
+  });
+
+  test("wakes a same-thread successor when a deferred head is canceled or its resume rejects", async () => {
+    for (const outcome of ["cancel", "reject"] as const) {
+      const scheduler = createKeyedTurnScheduler({
+        maxConcurrent: 1,
+        maxQueued: 2,
+        maxQueuedPerKey: 2,
+        maxCausalDepth: 4,
+      });
+      const controller = new AbortController();
+      const deferredOnce = deferred();
+      const resume = deferred();
+      let probes = 0;
+      const head = scheduler.submit(
+        {
+          key: "thread",
+          source,
+          signal: controller.signal,
+          beforeStart: async () => {
+            probes++;
+            if (probes === 1) {
+              deferredOnce.resolve();
+              return { status: "defer" as const, resume: resume.promise };
+            }
+            return { status: "ready" as const };
+          },
+        },
+        async () => "head",
+      );
+      await deferredOnce.promise;
+      for (let index = 0; index < 10 && scheduler.snapshot().queuedTurns !== 1; index++) {
+        await Promise.resolve();
+      }
+      expect(scheduler.snapshot().queuedTurns).toBe(1);
+      const tail = scheduler.submit({ key: "thread", source }, async () => "tail");
+
+      if (outcome === "cancel") controller.abort(new DOMException("canceled", "AbortError"));
+      else resume.reject(new Error("claim poll failed"));
+      if (outcome === "cancel") expect(await head).toMatchObject({ status: "canceled" });
+      else await expect(head).rejects.toThrow("claim poll failed");
+      expect(expectValue(await tail)).toBe("tail");
+
+      if (outcome === "cancel") resume.reject(new Error("late rejection"));
+      await Promise.resolve();
+      expect(scheduler.snapshot()).toMatchObject({ activeTurns: 0, queuedTurns: 0 });
+    }
+  });
+
+  test("reserves a deferred probe position ahead of newer work", async () => {
+    const scheduler = createKeyedTurnScheduler({
+      maxConcurrent: 1,
+      maxQueued: 1,
+      maxQueuedPerKey: 1,
+      maxCausalDepth: 4,
+    });
+    const probeStarted = deferred();
+    const probe = deferred<{ status: "defer"; resume: Promise<void> }>();
+    const resume = deferred();
+    let attempts = 0;
+    const oldest = scheduler.submit(
+      {
+        key: "thread",
+        source: { ...source, maxQueued: 1 },
+        beforeStart: async () => {
+          attempts++;
+          if (attempts === 1) {
+            probeStarted.resolve();
+            return probe.promise;
+          }
+          return { status: "ready" as const };
+        },
+      },
+      async () => "oldest",
+    );
+    await probeStarted.promise;
+
+    expect(
+      await scheduler.submit(
+        { key: "thread", source: { ...source, maxQueued: 1 } },
+        async () => "newer",
+      ),
+    ).toMatchObject({ status: "rejected", reason: "thread-capacity" });
+    probe.resolve({ status: "defer", resume: resume.promise });
+    await Promise.resolve();
+    resume.resolve();
+    expect(expectValue(await oldest)).toBe("oldest");
+  });
+
   test("serializes one thread while unrelated threads use global capacity", async () => {
     const scheduler = createKeyedTurnScheduler({
       maxConcurrent: 2,
@@ -396,6 +637,38 @@ describe("keyed turn scheduler", () => {
     release.resolve();
     expect(expectValue(await first)).toBe("first");
     expect(expectValue(await second)).toBe("second");
+  });
+
+  test("detaches causal work only after an active root is quarantined", async () => {
+    const scheduler = createKeyedTurnScheduler({
+      maxConcurrent: 1,
+      maxQueued: 1,
+      maxQueuedPerKey: 1,
+      maxCausalDepth: 2,
+    });
+    const childStarted = deferred();
+    const never = new Promise<never>(() => {});
+
+    const root = scheduler.submit({ key: "authority-lost", source }, async (lease) => {
+      expect(() => lease.detachOwnedWorkAfterAuthorityLoss()).toThrow(
+        "active quarantined root lease",
+      );
+      void scheduler.runCausal(lease, { key: "authority-lost" }, async () => {
+        childStarted.resolve();
+        return never;
+      });
+      await childStarted.promise;
+      lease.quarantine();
+      lease.detachOwnedWorkAfterAuthorityLoss();
+      return "unknown";
+    });
+
+    expect(expectValue(await root)).toBe("unknown");
+    expect(scheduler.snapshot()).toMatchObject({
+      activeTurns: 0,
+      queuedTurns: 0,
+      quarantinedThreads: 1,
+    });
   });
 
   test("supports bounded causal same-thread work under the active lease", async () => {

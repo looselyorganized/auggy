@@ -45,10 +45,16 @@ export interface DistributedCoordinatorConfig {
   compatibility: DistributedCoordinatorCompatibility;
 }
 
-export interface DistributedCoordinatorCompatibility {
+export interface DistributedCoordinatorCompatibilityTuple {
   protocolVersion: number;
   protocolFingerprint: string;
   configurationFingerprint: string;
+}
+
+export interface DistributedCoordinatorCompatibility
+  extends DistributedCoordinatorCompatibilityTuple {
+  /** One code-owned predecessor accepted only for a quiescent atomic upgrade. */
+  upgradeFrom?: DistributedCoordinatorCompatibilityTuple;
 }
 
 export interface DistributedTurnRequest {
@@ -65,6 +71,8 @@ export interface DistributedTurnLease {
   threadId: string;
   sourceId: string;
   instanceId: string;
+  /** Monotonic queue-owner generation. Adoption always creates a new attempt. */
+  attempt: number;
   /** Monotonically increasing per-thread fencing token. */
   fence: number;
   expiresAt: number;
@@ -76,8 +84,8 @@ export interface DistributedReplayResult {
 }
 
 export type AdmitResult =
-  | { status: "admitted" }
-  | { status: "adopted" }
+  | { status: "admitted"; attempt: number }
+  | { status: "adopted"; attempt: number }
   | { status: "joined"; state: CoordinationRequestState }
   | {
       status: "rejected";
@@ -98,6 +106,7 @@ export type ClaimResult =
   | { status: "terminal"; state: Exclude<CoordinationRequestState, "queued" | "active"> }
   | { status: "quarantined" }
   | { status: "conflict" }
+  | { status: "stale" }
   | { status: "unavailable" };
 
 export type LeaseResult =
@@ -173,11 +182,19 @@ export interface DistributedTurnCoordinator {
   admit(request: DistributedTurnRequest): Promise<AdmitResult>;
   heartbeatQueued(
     request: Pick<DistributedTurnRequest, "requestId" | "threadId" | "source" | "bindingHash">,
+    /** Omission is compatible only with the initial generation (attempt 1). */
+    attempt?: number,
   ): Promise<LeaseResult>;
   abandon(
     request: Pick<DistributedTurnRequest, "requestId" | "threadId" | "source" | "bindingHash">,
+    /**
+     * Terminalize the matching locally owned attempt while it is queued or
+     * active but has not crossed the execution-start marker. Omission is
+     * compatible only with the initial generation (attempt 1).
+     */
+    attempt?: number,
   ): Promise<LeaseResult>;
-  claim(request: DistributedTurnRequest): Promise<ClaimResult>;
+  claim(request: DistributedTurnRequest, attempt?: number): Promise<ClaimResult>;
   /**
    * Cooperative local cancellation for the currently owned queue/lease.
    * Database ownership and fencing remain authoritative.
@@ -185,6 +202,11 @@ export interface DistributedTurnCoordinator {
   ownedSignal(
     request: Pick<DistributedTurnRequest, "requestId" | "threadId" | "source" | "bindingHash">,
   ): AbortSignal;
+  /**
+   * Synchronously revoke this process incarnation after an authority watchdog
+   * expires. This performs no database I/O and cannot be reversed.
+   */
+  invalidateLocalAuthority(reason: "heartbeat-deadline" | "runtime-stopping"): void;
   /** Must be called immediately before work that could cause an external effect. */
   markExecutionStarted(lease: DistributedTurnLease): Promise<LeaseResult>;
   heartbeat(lease: DistributedTurnLease): Promise<LeaseResult>;

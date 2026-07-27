@@ -18,7 +18,7 @@ const coordinatorPolicy = {
   },
   result: { maxReplayBytes: 65_536 },
   compatibility: {
-    protocolVersion: 3,
+    protocolVersion: 4,
     protocolFingerprint: "a".repeat(64),
     configurationFingerprint: "b".repeat(64),
   },
@@ -33,7 +33,13 @@ function replica(
     leaseMs: number;
     failClosed: () => boolean;
     protocolVersion: number;
+    protocolFingerprint: string;
     configurationFingerprint: string;
+    upgradeFrom: {
+      protocolVersion: number;
+      protocolFingerprint: string;
+      configurationFingerprint: string;
+    };
     sources: readonly (typeof source)[];
   }> = {},
 ) {
@@ -48,9 +54,10 @@ function replica(
       ...coordinatorPolicy,
       sources: extra.sources ?? coordinatorPolicy.sources,
       compatibility: {
-        protocolVersion: extra.protocolVersion ?? 3,
-        protocolFingerprint: "a".repeat(64),
+        protocolVersion: extra.protocolVersion ?? 4,
+        protocolFingerprint: extra.protocolFingerprint ?? "a".repeat(64),
         configurationFingerprint: extra.configurationFingerprint ?? "b".repeat(64),
+        ...(extra.upgradeFrom ? { upgradeFrom: extra.upgradeFrom } : {}),
       },
     },
     { now, failClosed: extra.failClosed },
@@ -112,19 +119,19 @@ describe("distributed turn coordinator", () => {
     expect(await second.register()).toEqual({ status: "registered" });
 
     const live = request("live-owner", "live-thread");
-    expect(await first.admit(live)).toEqual({ status: "admitted" });
+    expect(await first.admit(live)).toEqual({ status: "admitted", attempt: 1 });
     expect(await second.claim(live)).toEqual({ status: "waiting" });
     expect((await first.claim(live)).status).toBe("acquired");
 
     const adoptable = request("adoptable", "adoptable-thread");
-    expect(await first.admit(adoptable)).toEqual({ status: "admitted" });
+    expect(await first.admit(adoptable)).toEqual({ status: "admitted", attempt: 1 });
     now = 50;
     expect(await second.heartbeatInstance()).toEqual({ status: "ok" });
     now = 101;
-    expect(await second.admit(adoptable)).toEqual({ status: "adopted" });
+    expect(await second.admit(adoptable)).toEqual({ status: "adopted", attempt: 2 });
     expect(await first.heartbeatQueued(adoptable)).toEqual({ status: "stale" });
     expect(await first.abandon(adoptable)).toEqual({ status: "stale" });
-    expect((await second.claim(adoptable)).status).toBe("acquired");
+    expect((await second.claim(adoptable, 2)).status).toBe("acquired");
 
     expect(await second.admit(request("adoptable", "changed-thread"))).toEqual({
       status: "conflict",
@@ -134,7 +141,10 @@ describe("distributed turn coordinator", () => {
   test("joins an exact duplicate but rejects a changed canonical binding", async () => {
     const coordinator = replica("instance-a", () => 1);
     await register(coordinator);
-    expect(await coordinator.admit(request("request-1"))).toEqual({ status: "admitted" });
+    expect(await coordinator.admit(request("request-1"))).toEqual({
+      status: "admitted",
+      attempt: 1,
+    });
     expect(await coordinator.admit(request("request-1"))).toEqual({
       status: "joined",
       state: "queued",
@@ -147,12 +157,51 @@ describe("distributed turn coordinator", () => {
     });
   });
 
+  test("fences delayed queued mutations after same-session adoption", async () => {
+    let now = 0;
+    const coordinator = replica("instance-a", () => now);
+    await register(coordinator);
+    const queued = request("same-session-adoption", "thread-adoption");
+    expect(await coordinator.admit(queued)).toEqual({ status: "admitted", attempt: 1 });
+    now = 50;
+    expect(await coordinator.heartbeatInstance()).toEqual({ status: "ok" });
+    now = 101;
+    expect(await coordinator.admit(queued)).toEqual({ status: "adopted", attempt: 2 });
+
+    expect(await coordinator.heartbeatQueued(queued, 1)).toEqual({ status: "stale" });
+    expect(await coordinator.abandon(queued, 1)).toEqual({ status: "stale" });
+    expect(await coordinator.heartbeatQueued(queued, 2)).toEqual({ status: "ok" });
+    expect((await coordinator.claim(queued, 2)).status).toBe("acquired");
+  });
+
+  test("abandons only the matching owned attempt before execution starts", async () => {
+    const coordinator = replica("instance-a", () => 1);
+    await register(coordinator);
+
+    const canceled = request("pre-start-cancel", "pre-start-thread");
+    expect(await coordinator.admit(canceled)).toEqual({ status: "admitted", attempt: 1 });
+    expect((await coordinator.claim(canceled, 1)).status).toBe("acquired");
+    const canceledSignal = coordinator.ownedSignal(canceled);
+    expect(await coordinator.abandon(canceled, 1)).toEqual({ status: "ok" });
+    expect(canceledSignal.aborted).toBeTrue();
+    expect(await coordinator.status(canceled)).toEqual({ status: "terminal", state: "canceled" });
+
+    const started = request("started-cancel", "started-thread");
+    expect(await coordinator.admit(started)).toEqual({ status: "admitted", attempt: 1 });
+    const claimed = await coordinator.claim(started, 1);
+    if (claimed.status !== "acquired") throw new Error("expected active lease");
+    expect(await coordinator.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+    expect(await coordinator.abandon(started, 1)).toEqual({ status: "stale" });
+    expect(await coordinator.status(started)).toMatchObject({ status: "pending", state: "active" });
+  });
+
   test("rejects mixed protocol or configuration before mutating namespace state", async () => {
     const first = replica("instance-a", () => 1);
     await register(first);
-    expect(await first.admit(request("request-1"))).toEqual({ status: "admitted" });
+    const drainingRequest = request("request-1");
+    expect(await first.admit(drainingRequest)).toEqual({ status: "admitted", attempt: 1 });
 
-    const changedProtocol = replica("instance-b", () => 1, { protocolVersion: 4 });
+    const changedProtocol = replica("instance-b", () => 1, { protocolVersion: 5 });
     expect(await changedProtocol.register()).toEqual({ status: "unavailable" });
 
     const changedConfiguration = replica("instance-c", () => 1, {
@@ -164,7 +213,47 @@ describe("distributed turn coordinator", () => {
     const changedLease = replica("instance-d", () => 1, { leaseMs: 200 });
     expect(await changedLease.register()).toEqual({ status: "unavailable" });
 
-    expect(await first.admit(request("request-2"))).toEqual({ status: "admitted" });
+    expect(await first.admit(request("request-2"))).toEqual({ status: "admitted", attempt: 1 });
+  });
+
+  test("upgrades an exact predecessor only after every replica and request is quiescent", async () => {
+    let now = 0;
+    const predecessor = {
+      protocolVersion: 3,
+      protocolFingerprint: "c".repeat(64),
+      configurationFingerprint: "d".repeat(64),
+    };
+    const old = replica("old-instance", () => now, predecessor);
+    const current = replica("current-instance", () => now, { upgradeFrom: predecessor });
+    expect(await old.register()).toEqual({ status: "registered" });
+    const terminal = request("upgrade-terminal", "upgrade-thread");
+    expect(await old.admit(terminal)).toEqual({ status: "admitted", attempt: 1 });
+    expect(await old.abandon(terminal, 1)).toEqual({ status: "ok" });
+    expect(await current.register()).toEqual({ status: "unavailable" });
+
+    now = 101;
+    expect(await current.register()).toEqual({ status: "registered" });
+    expect(await old.register()).toEqual({ status: "unavailable" });
+    expect(await current.status(terminal)).toEqual({ status: "terminal", state: "canceled" });
+  });
+
+  test("refuses a predecessor upgrade while queued or active work remains", async () => {
+    let now = 0;
+    const predecessor = {
+      protocolVersion: 3,
+      protocolFingerprint: "c".repeat(64),
+      configurationFingerprint: "d".repeat(64),
+    };
+    const old = replica("old-instance", () => now, predecessor);
+    const current = replica("current-instance", () => now, { upgradeFrom: predecessor });
+    expect(await old.register()).toEqual({ status: "registered" });
+    expect(await old.admit(request("upgrade-pending", "pending-thread"))).toEqual({
+      status: "admitted",
+      attempt: 1,
+    });
+
+    now = 101;
+    expect(await current.register()).toEqual({ status: "unavailable" });
   });
 
   test("enforces one active turn per thread across replicas and fences later attempts", async () => {
@@ -201,7 +290,10 @@ describe("distributed turn coordinator", () => {
   test("bounds global and source queues without a process-local bypass", async () => {
     const coordinator = replica("instance-a", () => 1, { maxQueued: 1 });
     await register(coordinator);
-    expect(await coordinator.admit(request("request-1"))).toEqual({ status: "admitted" });
+    expect(await coordinator.admit(request("request-1"))).toEqual({
+      status: "admitted",
+      attempt: 1,
+    });
     expect(await coordinator.admit(request("request-2", "thread-2"))).toEqual({
       status: "rejected",
       reason: "global-capacity",
@@ -236,7 +328,10 @@ describe("distributed turn coordinator", () => {
   test("allows one direct admission when waiting capacity is zero, then rejects a waiter", async () => {
     const coordinator = replica("instance-a", () => 1, { maxQueued: 0 });
     await register(coordinator);
-    expect(await coordinator.admit(request("request-1"))).toEqual({ status: "admitted" });
+    expect(await coordinator.admit(request("request-1"))).toEqual({
+      status: "admitted",
+      attempt: 1,
+    });
     expect(await coordinator.admit(request("request-2", "thread-2"))).toEqual({
       status: "rejected",
       reason: "global-capacity",
@@ -256,6 +351,7 @@ describe("distributed turn coordinator", () => {
     });
     expect(await restrictive.admit(request("request-3", "thread-3"))).toEqual({
       status: "admitted",
+      attempt: 1,
     });
   });
 
@@ -316,13 +412,17 @@ describe("distributed turn coordinator", () => {
       { now: () => 1 },
     );
     await register(coordinator);
-    expect(await coordinator.admit(request("thread-first"))).toEqual({ status: "admitted" });
+    expect(await coordinator.admit(request("thread-first"))).toEqual({
+      status: "admitted",
+      attempt: 1,
+    });
     expect(await coordinator.admit(request("thread-second"))).toEqual({
       status: "rejected",
       reason: "thread-capacity",
     });
     expect(await coordinator.admit(request("other-thread", "thread-2"))).toEqual({
       status: "admitted",
+      attempt: 1,
     });
   });
 
@@ -352,7 +452,7 @@ describe("distributed turn coordinator", () => {
       }),
     ).toEqual({ status: "unavailable" });
     const waiting = { ...request("request-2", "thread-2"), source: fixedSource };
-    expect(await second.admit(waiting)).toEqual({ status: "admitted" });
+    expect(await second.admit(waiting)).toEqual({ status: "admitted", attempt: 1 });
     expect(await second.claim(waiting)).toEqual({ status: "waiting" });
     expect(await first.complete({ ...active.lease, sourceId: "other-source" }, replay())).toEqual({
       status: "stale",
@@ -370,12 +470,22 @@ describe("distributed turn coordinator", () => {
     const acquired = await first.claim(request("before-start"));
     if (acquired.status !== "acquired") throw new Error("expected acquisition");
     now = 50;
+    expect(await first.heartbeatInstance()).toEqual({ status: "ok" });
     expect(await second.heartbeatInstance()).toEqual({ status: "ok" });
     now = 101;
-    const reacquired = await second.claim(request("before-start"));
+    expect(await first.abandon(request("before-start"), acquired.lease.attempt)).toEqual({
+      status: "stale",
+    });
+    expect(await second.claim(request("before-start"))).toEqual({ status: "stale" });
+    const adopted = await second.admit(request("before-start"));
+    expect(adopted).toEqual({ status: "adopted", attempt: 3 });
+    if (adopted.status !== "adopted") throw new Error("expected adoption");
+    const reacquired = await second.claim(request("before-start"), adopted.attempt);
     expect(reacquired.status).toBe("acquired");
     if (reacquired.status !== "acquired") throw new Error("expected reacquisition");
     expect(reacquired.lease.fence).toBeGreaterThan(acquired.lease.fence);
+    expect(reacquired.lease.attempt).toBeGreaterThan(acquired.lease.attempt);
+    expect(await first.heartbeat(acquired.lease)).toEqual({ status: "stale" });
 
     await second.admit(request("after-start"));
     await second.complete(reacquired.lease, replay());
@@ -391,12 +501,59 @@ describe("distributed turn coordinator", () => {
     ).toEqual({ status: "ok" });
   });
 
+  test("invalidates local authority synchronously without waiting for coordinator I/O", async () => {
+    const coordinator = replica("instance-a", () => 1);
+    await register(coordinator);
+    const owned = request("owned-request");
+    await coordinator.admit(owned);
+    const claimed = await coordinator.claim(owned);
+    if (claimed.status !== "acquired") throw new Error("expected acquisition");
+    const signal = coordinator.ownedSignal(owned);
+    const lateRequest = request("late-mutation", "later-thread");
+    const pendingMutation = coordinator.admit(lateRequest);
+
+    coordinator.invalidateLocalAuthority("heartbeat-deadline");
+
+    expect(signal.aborted).toBe(true);
+    expect(signal.reason).toBe("coordinator-authority-lost");
+    expect(await pendingMutation).toEqual({ status: "unavailable" });
+    expect(await coordinator.heartbeat(claimed.lease)).toEqual({ status: "unavailable" });
+    expect(await coordinator.admit(request("later", "later-thread"))).toEqual({
+      status: "unavailable",
+    });
+    const observer = replica("instance-b", () => 1);
+    await register(observer);
+    expect(await observer.status(lateRequest)).toEqual({ status: "missing" });
+  });
+
+  test("permits only fenced pre-start cleanup after local invalidation", async () => {
+    const coordinator = replica("instance-a", () => 1);
+    await register(coordinator);
+    const active = request("invalidated-active", "active-thread");
+    const queued = request("invalidated-queued", "queued-thread");
+    expect(await coordinator.admit(active)).toEqual({ status: "admitted", attempt: 1 });
+    expect((await coordinator.claim(active, 1)).status).toBe("acquired");
+    expect(await coordinator.admit(queued)).toEqual({ status: "admitted", attempt: 1 });
+
+    coordinator.invalidateLocalAuthority("heartbeat-deadline");
+
+    expect(await coordinator.abandon(active, 1)).toEqual({ status: "ok" });
+    expect(await coordinator.abandon(queued, 1)).toEqual({ status: "ok" });
+    expect(await coordinator.admit(request("not-cleanup", "other-thread"))).toEqual({
+      status: "unavailable",
+    });
+    const observer = replica("instance-b", () => 1);
+    await register(observer);
+    expect(await observer.status(active)).toEqual({ status: "terminal", state: "canceled" });
+    expect(await observer.status(queued)).toEqual({ status: "terminal", state: "canceled" });
+  });
+
   test("turns post-start failure into outcome-unknown quarantine before releasing a thread", async () => {
     const first = replica("instance-a", () => 1);
     const second = replica("instance-b", () => 1);
     await register(first, second);
     const effecting = request("effecting", "effect-thread");
-    expect(await first.admit(effecting)).toEqual({ status: "admitted" });
+    expect(await first.admit(effecting)).toEqual({ status: "admitted", attempt: 1 });
     const claimed = await first.claim(effecting);
     if (claimed.status !== "acquired") throw new Error("expected acquisition");
     expect(await first.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
@@ -472,7 +629,7 @@ describe("distributed turn coordinator", () => {
     await register(coordinator);
 
     const queued = request("queued-signal", "queued-signal-thread");
-    expect(await coordinator.admit(queued)).toEqual({ status: "admitted" });
+    expect(await coordinator.admit(queued)).toEqual({ status: "admitted", attempt: 1 });
     const queuedSignal = coordinator.ownedSignal(queued);
     expect(queuedSignal.aborted).toBeFalse();
     expect(await coordinator.beginDrain()).toEqual({ status: "ok" });
@@ -550,6 +707,7 @@ describe("distributed turn coordinator", () => {
     });
     expect(await coordinator.admit(request("other-thread", "thread-2"))).toEqual({
       status: "admitted",
+      attempt: 1,
     });
   });
 
@@ -585,7 +743,7 @@ describe("distributed turn coordinator", () => {
     ).entries()) {
       now = index;
       const item = request(requestId, threadId);
-      expect(await coordinator.admit(item)).toEqual({ status: "admitted" });
+      expect(await coordinator.admit(item)).toEqual({ status: "admitted", attempt: 1 });
       const claimed = await coordinator.claim(item);
       if (claimed.status !== "acquired") throw new Error("expected retention lease");
       if (index === 0) firstFence = claimed.lease.fence;
@@ -596,7 +754,7 @@ describe("distributed turn coordinator", () => {
 
     now = 3;
     const unknown = request("unknown-incident", "unknown-thread");
-    expect(await coordinator.admit(unknown)).toEqual({ status: "admitted" });
+    expect(await coordinator.admit(unknown)).toEqual({ status: "admitted", attempt: 1 });
     const unknownLease = await coordinator.claim(unknown);
     if (unknownLease.status !== "acquired") throw new Error("expected incident lease");
     expect(await coordinator.markExecutionStarted(unknownLease.lease)).toEqual({ status: "ok" });
@@ -642,7 +800,7 @@ describe("distributed turn coordinator", () => {
     });
 
     const reused = request("reused-after-prune", "reused-thread");
-    expect(await coordinator.admit(reused)).toEqual({ status: "admitted" });
+    expect(await coordinator.admit(reused)).toEqual({ status: "admitted", attempt: 1 });
     const reusedLease = await coordinator.claim(reused);
     if (reusedLease.status !== "acquired") throw new Error("expected reused thread lease");
     expect(reusedLease.lease.fence).toBeGreaterThan(firstFence);
@@ -674,16 +832,20 @@ describe("distributed turn coordinator", () => {
       },
       { now: () => 1 },
     );
-    await register(first, other);
-    expect(await first.admit(request("request-1"))).toEqual({ status: "admitted" });
-    expect(await other.admit(request("request-1"))).toEqual({ status: "admitted" });
+    const drainingStandby = replica("instance-c", () => 1);
+    await register(first, other, drainingStandby);
+    const drainingRequest = request("request-1");
+    expect(await first.admit(drainingRequest)).toEqual({ status: "admitted", attempt: 1 });
+    expect(await other.admit(request("request-1"))).toEqual({ status: "admitted", attempt: 1 });
+    expect(await drainingStandby.beginDrain()).toEqual({ status: "ok" });
+    expect(await drainingStandby.claim(drainingRequest, 1)).toEqual({ status: "waiting" });
     expect(await first.beginDrain()).toEqual({ status: "ok" });
     expect(await first.admit(request("request-2", "thread-2"))).toEqual({
       status: "rejected",
       reason: "draining",
     });
     expect(await first.health()).toMatchObject({ status: "draining" });
-    const unavailable = replica("instance-c", () => 1, { failClosed: () => true });
+    const unavailable = replica("instance-d", () => 1, { failClosed: () => true });
     expect(await unavailable.admit(request("request-3", "thread-3"))).toEqual({
       status: "unavailable",
     });

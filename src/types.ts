@@ -141,6 +141,15 @@ export interface ExecutionContextV1 {
   correlationId?: string;
   idempotencyKeyHash?: string;
   bindingHash?: string;
+  /** Kernel-derived causal scope for stable child-operation separation. */
+  operationScope?: string;
+}
+
+/** Fenced coordinator authority exposed only to trusted execution boundaries. */
+export interface ExecutionAuthorityV1 {
+  version: 1;
+  attempt: number;
+  fence: number;
 }
 
 /** Safe projection permitted in traces and kernel events. */
@@ -163,6 +172,8 @@ export interface ToolExecuteContext {
   executionContext?: ExecutionTraceContextV1;
   /** Opaque downstream idempotency identity derived from the execution and tool position. */
   operationId?: string;
+  /** Current distributed ownership; never accepted from a public transport. */
+  executionAuthority?: ExecutionAuthorityV1;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Tool is covariant over arbitrary model-facing schemas.
@@ -311,8 +322,12 @@ export interface TurnState {
   metadata: Record<string, unknown>;
   /** Caller cancellation for turn-scoped context and lifecycle work. */
   signal?: AbortSignal;
-  /** Trusted embedding metadata; never read from a public trigger. */
-  executionContext?: ExecutionContextV1;
+  /** Safe execution projection; binding and idempotency hashes remain kernel-private. */
+  executionContext?: ExecutionTraceContextV1;
+  /** Current distributed ownership for this trusted effect boundary. */
+  executionAuthority?: ExecutionAuthorityV1;
+  /** Stable downstream idempotency identity for this exact effect boundary. */
+  operationId?: string;
 }
 
 export interface OutboundMessage {
@@ -489,11 +504,28 @@ export interface SchedulerContext {
   getCompletedTranscript(): Promise<Transcript | null>;
   /** Caller cancellation; background hooks must not begin new work after abort. */
   signal?: AbortSignal;
+  /** Safe projection of the trusted root execution identity. */
+  executionContext?: ExecutionTraceContextV1;
+  /** Current distributed ownership for this terminal hook. */
+  executionAuthority?: ExecutionAuthorityV1;
+  /** Stable downstream idempotency identity for this exact hook. */
+  operationId?: string;
 }
 
-/** Cancellation context shared by terminal turn hooks. */
+/** Trusted effect context shared by terminal turn hooks. */
 export interface TurnLifecycleContext {
   signal?: AbortSignal;
+  executionContext?: ExecutionTraceContextV1;
+  executionAuthority?: ExecutionAuthorityV1;
+  operationId?: string;
+}
+
+/** Trusted effect context for a transport-owned outbound delivery. */
+export interface OutboundDeliveryContext {
+  signal?: AbortSignal;
+  executionContext?: ExecutionTraceContextV1;
+  executionAuthority?: ExecutionAuthorityV1;
+  operationId?: string;
 }
 
 /**
@@ -506,6 +538,12 @@ export interface InternalTurnContext {
   threadId: string;
   peer: PeerIdentity | null;
   signal?: AbortSignal;
+  /** Safe projection of the trusted root execution identity. */
+  executionContext?: ExecutionTraceContextV1;
+  /** Current distributed ownership; never accepted from a public payload. */
+  executionAuthority?: ExecutionAuthorityV1;
+  /** Stable downstream idempotency identity for this internal handler. */
+  operationId?: string;
 }
 
 // === Kernel Events (internal — emitted by turn loop, consumed by transports) ===
@@ -654,11 +692,19 @@ export interface ModelResponseLimits {
 
 export type ModelDelta = { kind: "text_delta"; text: string };
 
+export interface ModelCompleteOptions {
+  onDelta?: (delta: ModelDelta) => void;
+  signal?: AbortSignal;
+  /** Safe projection of the trusted root execution identity. */
+  executionContext?: ExecutionTraceContextV1;
+  /** Current distributed ownership for this inference dispatch. */
+  executionAuthority?: ExecutionAuthorityV1;
+  /** Stable retry identity for this exact inference round. */
+  operationId?: string;
+}
+
 export interface ModelClient {
-  complete(
-    prompt: AssembledPrompt,
-    opts?: { onDelta?: (delta: ModelDelta) => void; signal?: AbortSignal },
-  ): Promise<ModelResponse>;
+  complete(prompt: AssembledPrompt, opts?: ModelCompleteOptions): Promise<ModelResponse>;
   countTokens(text: string): number;
   maxContextTokens: number;
 }
@@ -736,8 +782,12 @@ export interface TransportKernel {
       onEvent?: KernelEventHandler;
       signal?: AbortSignal;
       historyPersistence?: ThreadHistoryPersistence;
-      /** Runtime-owned proof that scheduler admission reached task execution. */
-      onExecutionStart?: () => void;
+      /**
+       * Runtime-owned effect-start observer. It runs after history
+       * authorization and turn-gate preparation, before confirming writes or
+       * arbitrary augment/model work.
+       */
+      onExecutionStart?: () => void | Promise<void>;
     },
   ): Promise<TurnResult>;
   /** Evict an in-memory thread so a later request restores durable state. */
@@ -746,7 +796,7 @@ export interface TransportKernel {
     callback: (
       peer: PeerIdentity,
       message: OutboundMessage,
-      context?: { signal?: AbortSignal },
+      context?: OutboundDeliveryContext,
     ) => Promise<void>,
   ): void;
   getAgentCard(): AgentCard;
@@ -1210,6 +1260,9 @@ export interface TurnGateProvider {
     peer: PeerIdentity | null;
     threadId: string;
     trigger: TurnTrigger;
+    executionContext?: ExecutionTraceContextV1;
+    executionAuthority?: ExecutionAuthorityV1;
+    operationId?: string;
   }): Promise<TurnGateTicket>;
 
   /**
@@ -1225,6 +1278,9 @@ export interface TurnGateProvider {
     peer: PeerIdentity | null;
     threadId: string;
     cost: CostResult;
+    executionContext?: ExecutionTraceContextV1;
+    executionAuthority?: ExecutionAuthorityV1;
+    operationId?: string;
   }): Promise<void>;
 }
 
@@ -1728,8 +1784,10 @@ export interface AgentInjectOptions {
   executionContext?: ExecutionContextV1;
   onEvent?: KernelEventHandler;
   /**
-   * Trusted pre-execution hook. It runs after scheduler admission and before
-   * model or tool execution. A rejected hook prevents the turn from starting.
+   * Trusted effect-start hook. It runs after history authorization and
+   * turn-gate preparation, before confirming writes or arbitrary
+   * augment/model work. A rejected hook prevents the turn from crossing that
+   * boundary.
    * Public transports do not receive this embedding surface.
    */
   onExecutionStart?: () => void | Promise<void>;

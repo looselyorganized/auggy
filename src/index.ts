@@ -39,6 +39,7 @@ export type {
   ToolDefinition,
   ToolResult,
   ExecutionContextV1,
+  ExecutionAuthorityV1,
   ExecutionTraceContextV1,
   // Peers
   PeerIdentity,
@@ -59,11 +60,14 @@ export type {
   // ADR-027 — post-turn background work
   Transcript,
   SchedulerContext,
+  TurnLifecycleContext,
+  OutboundDeliveryContext,
   // Kernel events
   KernelEvent,
   KernelEventHandler,
   // Model
   ModelClient,
+  ModelCompleteOptions,
   ModelResponse,
   ModelResponseLimits,
   ModelDelta,

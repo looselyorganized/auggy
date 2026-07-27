@@ -55,6 +55,49 @@ describe("layeredMemory", () => {
     expect(transcriptReads).toBe(0);
   });
 
+  it("rejects distributed auto-save before reading or retaining a transcript", async () => {
+    const dir = await createTempDir();
+    const distributed = await layeredMemory({
+      backend: "sqlite",
+      dbPath: join(dir.path, "distributed-memory.db"),
+      namespace: "distributed",
+      retentionDays: 90,
+      autoSave: {
+        enabled: true,
+        extractionFrequency: { agent: "every-turn" },
+        engine: {
+          complete: async () => {
+            throw new Error("must not invoke extraction");
+          },
+        },
+      },
+    });
+    try {
+      await distributed.scheduleAfterTurn?.(
+        {
+          turnId: "turn-distributed",
+          success: true,
+          status: "completed",
+          toolCalls: [],
+          trace: { trigger: { type: "message" } } as TurnResult["trace"],
+        },
+        {
+          inject: async () => {
+            throw new Error("must not inject");
+          },
+          getCompletedTranscript: async () => {
+            throw new Error("must not read transcript");
+          },
+          executionAuthority: { version: 1, attempt: 1, fence: 1 },
+          operationId: `auggy-op-v1-${"a".repeat(64)}`,
+        },
+      );
+    } finally {
+      await distributed.onShutdown?.();
+      await dir.cleanup();
+    }
+  });
+
   it("write tags entries with peerId from opts", async () => {
     const spec = aug.memory as NamespaceMemoryProvider;
     await spec.write!("ep:vis_a:1", "loved espresso", {

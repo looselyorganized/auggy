@@ -15,9 +15,14 @@ const CANONICAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 
 export const DISTRIBUTED_COORDINATION_PROTOCOL = Object.freeze({
   name: "auggy-postgres-coordination" as const,
-  protocolVersion: 3 as const,
+  protocolVersion: 4 as const,
   schemaVersion: 4 as const,
   fingerprintVersion: 2 as const,
+});
+
+const PREVIOUS_DISTRIBUTED_COORDINATION_PROTOCOL = Object.freeze({
+  ...DISTRIBUTED_COORDINATION_PROTOCOL,
+  protocolVersion: 3 as const,
 });
 
 export interface DistributedCompatibilitySourcePolicy {
@@ -38,6 +43,11 @@ export interface DistributedCoordinationCompatibility {
   protocolVersion: number;
   protocolFingerprint: string;
   configurationFingerprint: string;
+  upgradeFrom: {
+    protocolVersion: number;
+    protocolFingerprint: string;
+    configurationFingerprint: string;
+  };
 }
 
 function fingerprint(domain: string, value: unknown): string {
@@ -49,8 +59,12 @@ function fingerprint(domain: string, value: unknown): string {
 }
 
 const PROTOCOL_FINGERPRINT = fingerprint(
-  "auggy-distributed-coordination-protocol-v3",
+  "auggy-distributed-coordination-protocol-v4",
   DISTRIBUTED_COORDINATION_PROTOCOL,
+);
+const PREVIOUS_PROTOCOL_FINGERPRINT = fingerprint(
+  "auggy-distributed-coordination-protocol-v3",
+  PREVIOUS_DISTRIBUTED_COORDINATION_PROTOCOL,
 );
 
 function integer(value: unknown, minimum: number, maximum: number): number {
@@ -148,23 +162,38 @@ export function buildDistributedCoordinationCompatibility(
       };
     });
 
+    const semanticConfiguration = {
+      namespace: coordination.namespace,
+      fleetCapacity,
+      leaseDurationMs,
+      retention,
+      result,
+      sources,
+      augments,
+    };
     const configurationFingerprint = fingerprint(
-      "auggy-distributed-coordination-configuration-v3",
+      "auggy-distributed-coordination-configuration-v4",
       {
         protocolFingerprint: PROTOCOL_FINGERPRINT,
-        namespace: coordination.namespace,
-        fleetCapacity,
-        leaseDurationMs,
-        retention,
-        result,
-        sources,
-        augments,
+        ...semanticConfiguration,
+      },
+    );
+    const previousConfigurationFingerprint = fingerprint(
+      "auggy-distributed-coordination-configuration-v3",
+      {
+        protocolFingerprint: PREVIOUS_PROTOCOL_FINGERPRINT,
+        ...semanticConfiguration,
       },
     );
     return Object.freeze({
       protocolVersion: DISTRIBUTED_COORDINATION_PROTOCOL.protocolVersion,
       protocolFingerprint: PROTOCOL_FINGERPRINT,
       configurationFingerprint,
+      upgradeFrom: Object.freeze({
+        protocolVersion: PREVIOUS_DISTRIBUTED_COORDINATION_PROTOCOL.protocolVersion,
+        protocolFingerprint: PREVIOUS_PROTOCOL_FINGERPRINT,
+        configurationFingerprint: previousConfigurationFingerprint,
+      }),
     });
   } catch {
     throw new Error("invalid distributed compatibility input");

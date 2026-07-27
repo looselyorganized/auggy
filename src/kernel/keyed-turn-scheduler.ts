@@ -37,7 +37,16 @@ export interface SchedulerSubmitOptions {
   source: SchedulerSourcePolicy;
   peerId?: string;
   signal?: AbortSignal;
+  /**
+   * Optional two-resource admission probe. A deferred probe releases the
+   * local executor slot and retains this bounded queue position until resume.
+   */
+  beforeStart?: () => Promise<SchedulerStartDecision>;
 }
+
+export type SchedulerStartDecision =
+  | { status: "ready" }
+  | { status: "defer"; resume: Promise<void> };
 
 export interface SchedulerCausalOptions {
   key: string;
@@ -83,6 +92,11 @@ export interface KeyedTurnLease {
   track(work: Promise<unknown>): void;
   /** Wait for work causally owned by this exact lease. */
   join(): Promise<void>;
+  /**
+   * Stop retaining quarantined work after external authority is irreversibly
+   * lost. This is valid only for the active root lease after quarantine.
+   */
+  detachOwnedWorkAfterAuthorityLoss(): void;
 }
 
 export interface KeyedTurnScheduler {
@@ -111,6 +125,7 @@ interface InternalLease extends KeyedTurnLease {
   readonly schedulerToken: symbol;
   readonly root: RootLeaseState;
   readonly ownedWork: Set<Promise<unknown>>;
+  ownedWorkDetached: boolean;
   active: boolean;
   childActive: boolean;
 }
@@ -120,10 +135,17 @@ interface PendingItem {
   readonly source: SchedulerSourcePolicy;
   readonly signal?: AbortSignal;
   readonly task: (lease: KeyedTurnLease) => Promise<unknown>;
+  readonly beforeStart?: () => Promise<SchedulerStartDecision>;
   readonly enqueuedAt: number;
   readonly resolve: (result: ScheduledRunResult<unknown>) => void;
   readonly reject: (error: unknown) => void;
   abortListener?: () => void;
+  cancelProbe?: (outcome: ProbeCancellation) => void;
+  deferReserved?: boolean;
+  deferReservationFailure?: SchedulerRejectionReason;
+  probing?: boolean;
+  resumePending?: boolean;
+  waitRecorded?: boolean;
   state: "queued" | "active" | "settled";
 }
 
@@ -135,7 +157,12 @@ interface SourceState {
   lastPeerSweepAt: number;
   active: number;
   queued: number;
+  reserved: number;
 }
+
+type ProbeCancellation =
+  | { status: "canceled"; reason: unknown }
+  | { status: "rejected"; reason: SchedulerRejectionReason };
 
 function assertSafeInteger(name: string, value: number, minimum: number): void {
   if (!Number.isSafeInteger(value) || value < minimum) {
@@ -170,6 +197,7 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
   const readyKeys: string[] = [];
   const readySet = new Set<string>();
   const activeKeys = new Set<string>();
+  const probingItems = new Set<PendingItem>();
   const quarantinedKeys = new Set<string>();
   const sources = new Map<string, SourceState>();
   const drainWaiters: Array<() => void> = [];
@@ -177,6 +205,8 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
   let state: SchedulerState = "accepting";
   let activeTurns = 0;
   let queuedTurns = 0;
+  let reservedTurns = 0;
+  const reservedByKey = new Map<string, number>();
   let admitted = 0;
   let settled = 0;
   let rejected = 0;
@@ -237,13 +267,15 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
       lastPeerSweepAt: now(),
       active: 0,
       queued: 0,
+      reserved: 0,
     };
     sources.set(policy.id, created);
     return created;
   }
 
   function enqueueReadyKey(key: string): void {
-    if (activeKeys.has(key) || readySet.has(key) || (queues.get(key)?.length ?? 0) === 0) return;
+    const head = queues.get(key)?.[0];
+    if (activeKeys.has(key) || readySet.has(key) || !head || head.resumePending) return;
     readySet.add(key);
     readyKeys.push(key);
   }
@@ -291,6 +323,9 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
     if (!removeQueuedItem(item)) return;
     canceled++;
     item.resolve({ status: "canceled", reason });
+    enqueueReadyKey(item.key);
+    dispatch();
+    finishDrainIfIdle();
   }
 
   function finishDrainIfIdle(): void {
@@ -306,9 +341,48 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
       quarantined++;
     }
     const queue = queues.get(key);
-    if (!queue) return added;
-    for (const item of [...queue]) rejectItem(item, "thread-quarantined");
+    for (const item of [...probingItems]) {
+      if (item.key === key)
+        item.cancelProbe?.({ status: "rejected", reason: "thread-quarantined" });
+    }
+    if (queue) {
+      for (const item of [...queue]) rejectItem(item, "thread-quarantined");
+    }
+    dispatch();
+    finishDrainIfIdle();
     return added;
+  }
+
+  function reserveDeferredPosition(item: PendingItem, source: SourceState): void {
+    if (!item.beforeStart) return;
+    const keyReserved = reservedByKey.get(item.key) ?? 0;
+    const keyQueued = queues.get(item.key)?.length ?? 0;
+    const failure =
+      keyQueued + keyReserved >= config.maxQueuedPerKey
+        ? "thread-capacity"
+        : source.queued + source.reserved >= source.maxQueued
+          ? "source-capacity"
+          : queuedTurns + reservedTurns >= config.maxQueued
+            ? "agent-capacity"
+            : undefined;
+    if (failure) {
+      item.deferReservationFailure = failure;
+      return;
+    }
+    item.deferReserved = true;
+    reservedTurns++;
+    source.reserved++;
+    reservedByKey.set(item.key, keyReserved + 1);
+  }
+
+  function releaseDeferredPosition(item: PendingItem, source: SourceState): void {
+    if (!item.deferReserved) return;
+    item.deferReserved = false;
+    reservedTurns--;
+    source.reserved--;
+    const remaining = (reservedByKey.get(item.key) ?? 1) - 1;
+    if (remaining === 0) reservedByKey.delete(item.key);
+    else reservedByKey.set(item.key, remaining);
   }
 
   function makeLease(key: string, depth: number, root: RootLeaseState): InternalLease {
@@ -318,6 +392,7 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
       schedulerToken,
       root,
       ownedWork: new Set(),
+      ownedWorkDetached: false,
       active: true,
       childActive: false,
       quarantine() {
@@ -327,6 +402,10 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
       track(work) {
         if (!root.active || !lease.active) return;
         const observed = Promise.resolve(work);
+        if (lease.ownedWorkDetached) {
+          void observed.catch(() => {});
+          return;
+        }
         lease.ownedWork.add(observed);
         observed.then(
           () => lease.ownedWork.delete(observed),
@@ -336,22 +415,32 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
       join() {
         return waitForOwnedWork(lease);
       },
+      detachOwnedWorkAfterAuthorityLoss() {
+        if (depth !== 0 || !root.active || !lease.active || !root.quarantined) {
+          throw new Error("owned work can detach only from an active quarantined root lease");
+        }
+        lease.ownedWorkDetached = true;
+        lease.ownedWork.clear();
+      },
     };
     return lease;
   }
 
   async function waitForOwnedWork(lease: InternalLease): Promise<void> {
-    while (lease.ownedWork.size > 0) {
+    while (!lease.ownedWorkDetached && lease.ownedWork.size > 0) {
       await Promise.allSettled([...lease.ownedWork]);
     }
   }
 
   function startItem(item: PendingItem): void {
     if (item.state === "queued") {
-      const waitedMs = safeElapsedMs(now() - item.enqueuedAt);
-      queueWaitCount = addOperationalCounter(queueWaitCount);
-      queueWaitTotalMs = addOperationalCounter(queueWaitTotalMs, waitedMs);
-      queueWaitMaxMs = Math.max(queueWaitMaxMs, waitedMs);
+      if (!item.waitRecorded) {
+        const waitedMs = safeElapsedMs(now() - item.enqueuedAt);
+        queueWaitCount = addOperationalCounter(queueWaitCount);
+        queueWaitTotalMs = addOperationalCounter(queueWaitTotalMs, waitedMs);
+        queueWaitMaxMs = Math.max(queueWaitMaxMs, waitedMs);
+        item.waitRecorded = true;
+      }
       const queue = queues.get(item.key);
       if (!queue || queue[0] !== item) {
         throw new Error(`scheduler invariant violated for thread "${item.key}"`);
@@ -369,43 +458,163 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
     activeKeys.add(item.key);
     const source = sourceState(item.source);
     source.active++;
-    admitted++;
-    const root: RootLeaseState = { active: true, quarantined: false };
-    const lease = makeLease(item.key, 0, root);
+    reserveDeferredPosition(item, source);
 
-    const finish = () => {
-      root.active = false;
-      item.state = "settled";
+    const releaseActive = (dispatchWork = true) => {
       activeTurns--;
       activeKeys.delete(item.key);
       source.active--;
-      settled++;
-      if (root.quarantined) quarantineKey(item.key);
+      if (!dispatchWork) return;
       enqueueReadyKey(item.key);
       dispatch();
       finishDrainIfIdle();
     };
 
+    const startReadyTask = () => {
+      admitted++;
+      const root: RootLeaseState = { active: true, quarantined: false };
+      const lease = makeLease(item.key, 0, root);
+      const finish = () => {
+        root.active = false;
+        item.state = "settled";
+        releaseActive(false);
+        settled++;
+        if (root.quarantined) quarantineKey(item.key);
+        enqueueReadyKey(item.key);
+        dispatch();
+        finishDrainIfIdle();
+      };
+      Promise.resolve()
+        .then(() => item.task(lease))
+        .then(
+          async (value) => {
+            await waitForOwnedWork(lease);
+            lease.active = false;
+            finish();
+            item.resolve({ status: "completed", value });
+          },
+          async (error) => {
+            await waitForOwnedWork(lease);
+            lease.active = false;
+            finish();
+            item.reject(error);
+          },
+        );
+    };
+
+    if (!item.beforeStart) {
+      startReadyTask();
+      return;
+    }
+
+    const finishProbe = () => {
+      if (!item.probing) return false;
+      item.probing = false;
+      probingItems.delete(item);
+      item.signal?.removeEventListener("abort", item.abortListener!);
+      item.abortListener = undefined;
+      item.cancelProbe = undefined;
+      releaseDeferredPosition(item, source);
+      return true;
+    };
+
+    const cancelProbe = (outcome: ProbeCancellation) => {
+      if (item.state !== "active" || !finishProbe()) return;
+      item.state = "settled";
+      releaseActive(
+        outcome.status === "canceled" ||
+          outcome.reason === "thread-capacity" ||
+          outcome.reason === "source-capacity" ||
+          outcome.reason === "agent-capacity",
+      );
+      if (outcome.status === "canceled") {
+        canceled++;
+        item.resolve(outcome);
+      } else {
+        recordRejection(outcome.reason);
+        item.resolve(outcome);
+      }
+    };
+    item.probing = true;
+    probingItems.add(item);
+    item.cancelProbe = cancelProbe;
+    item.abortListener = () =>
+      cancelProbe({ status: "canceled", reason: abortReason(item.signal!) });
+    item.signal?.addEventListener("abort", item.abortListener, { once: true });
+    if (item.signal?.aborted) {
+      cancelProbe({ status: "canceled", reason: abortReason(item.signal) });
+      return;
+    }
+
     Promise.resolve()
-      .then(() => item.task(lease))
+      .then(() => item.beforeStart?.() ?? ({ status: "ready" } as const))
       .then(
-        async (value) => {
-          await waitForOwnedWork(lease);
-          lease.active = false;
-          finish();
-          item.resolve({ status: "completed", value });
+        (decision) => {
+          if (item.state !== "active" || !item.probing) return;
+          if (item.signal?.aborted) {
+            cancelProbe({ status: "canceled", reason: abortReason(item.signal) });
+            return;
+          }
+          if (state !== "accepting") {
+            cancelProbe({ status: "rejected", reason: "runtime-stopping" });
+            return;
+          }
+          if (quarantinedKeys.has(item.key)) {
+            cancelProbe({ status: "rejected", reason: "thread-quarantined" });
+            return;
+          }
+          if (decision.status === "defer") {
+            const queue = queues.get(item.key) ?? [];
+            if (!item.deferReserved) {
+              cancelProbe({
+                status: "rejected",
+                reason: item.deferReservationFailure ?? "agent-capacity",
+              });
+              return;
+            }
+            finishProbe();
+            item.state = "queued";
+            item.resumePending = true;
+            queue.unshift(item);
+            queues.set(item.key, queue);
+            queuedTurns++;
+            source.queued++;
+            item.abortListener = () => cancelItem(item, abortReason(item.signal!));
+            item.signal?.addEventListener("abort", item.abortListener, { once: true });
+            releaseActive();
+            if (item.signal?.aborted) cancelItem(item, abortReason(item.signal));
+            void Promise.resolve(decision.resume).then(
+              () => {
+                if (item.state !== "queued" || !item.resumePending) return;
+                item.resumePending = false;
+                enqueueReadyKey(item.key);
+                dispatch();
+              },
+              (error) => {
+                if (!removeQueuedItem(item)) return;
+                item.reject(error);
+                enqueueReadyKey(item.key);
+                dispatch();
+                finishDrainIfIdle();
+              },
+            );
+            return;
+          }
+
+          finishProbe();
+          startReadyTask();
         },
-        async (error) => {
-          await waitForOwnedWork(lease);
-          lease.active = false;
-          finish();
+        (error) => {
+          if (item.state !== "active" || !finishProbe()) return;
+          item.state = "settled";
+          releaseActive();
           item.reject(error);
         },
       );
   }
 
   function dispatch(): void {
-    if (state === "stopped" || activeTurns >= config.maxConcurrent || readyKeys.length === 0) {
+    if (state !== "accepting" || activeTurns >= config.maxConcurrent || readyKeys.length === 0) {
       return;
     }
 
@@ -415,6 +624,11 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
       readySet.delete(key);
       const queue = queues.get(key);
       if (!queue || queue.length === 0 || activeKeys.has(key)) {
+        scansRemaining--;
+        continue;
+      }
+      if (quarantinedKeys.has(key)) {
+        for (const item of [...queue]) rejectItem(item, "thread-quarantined");
         scansRemaining--;
         continue;
       }
@@ -519,6 +733,7 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
           key: options.key,
           source: options.source,
           ...(options.signal ? { signal: options.signal } : {}),
+          ...(options.beforeStart ? { beforeStart: options.beforeStart } : {}),
           task,
           enqueuedAt: now(),
           resolve: (result) => resolve(result as ScheduledRunResult<T>),
@@ -532,18 +747,19 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
           startItem(item);
           return;
         }
-        const keyQueued = queues.get(options.key)?.length ?? 0;
+        const keyQueued =
+          (queues.get(options.key)?.length ?? 0) + (reservedByKey.get(options.key) ?? 0);
         if (keyQueued >= config.maxQueuedPerKey) {
           recordRejection("thread-capacity");
           resolve({ status: "rejected", reason: "thread-capacity" });
           return;
         }
-        if (source.queued >= source.maxQueued) {
+        if (source.queued + source.reserved >= source.maxQueued) {
           recordRejection("source-capacity");
           resolve({ status: "rejected", reason: "source-capacity" });
           return;
         }
-        if (queuedTurns >= config.maxQueued) {
+        if (queuedTurns + reservedTurns >= config.maxQueued) {
           recordRejection("agent-capacity");
           resolve({ status: "rejected", reason: "agent-capacity" });
           return;
@@ -624,6 +840,9 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
     close(): void {
       if (state !== "accepting") return;
       state = "draining";
+      for (const item of [...probingItems]) {
+        item.cancelProbe?.({ status: "rejected", reason: "runtime-stopping" });
+      }
       for (const queue of [...queues.values()]) {
         for (const item of [...queue]) rejectItem(item, "runtime-stopping");
       }
@@ -643,6 +862,7 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
       for (const source of sources.values()) {
         source.active = 0;
         source.queued = 0;
+        source.reserved = 0;
         source.peerTimestamps.clear();
         source.lastPeerSweepAt = now();
       }
@@ -655,6 +875,8 @@ export function createKeyedTurnScheduler(config: KeyedTurnSchedulerConfig): Keye
       queueWaitTotalMs = 0;
       queueWaitMaxMs = 0;
       rejectedByReason = emptyRejectedByReason();
+      reservedTurns = 0;
+      reservedByKey.clear();
       state = "accepting";
     },
 

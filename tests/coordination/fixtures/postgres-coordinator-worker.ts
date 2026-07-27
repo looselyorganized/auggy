@@ -23,7 +23,7 @@ const coordinator = new PostgresDistributedTurnCoordinator({
   },
   result: { maxReplayBytes: 65_536 },
   compatibility: {
-    protocolVersion: 3,
+    protocolVersion: 4,
     protocolFingerprint: "a".repeat(64),
     configurationFingerprint: "b".repeat(64),
   },

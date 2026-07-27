@@ -37,6 +37,7 @@ interface SqlTransaction extends PostgresMigrationExecutor {
 }
 
 interface LocalOwnedOperation {
+  attempt: number;
   bindingHash: string;
   controller: AbortController;
   phase: "queued" | "active";
@@ -165,6 +166,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   readonly #ownsSql: boolean;
   readonly #sessionId: string;
   readonly #owned = new Map<string, LocalOwnedOperation>();
+  #invalidated = false;
 
   constructor(options: PostgresCoordinatorOptions) {
     if (!options.sql && !options.url) throw new Error("Postgres coordination requires url or sql");
@@ -224,6 +226,16 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     ) {
       throw new Error("coordinator compatibility contract is invalid");
     }
+    if (
+      options.compatibility.upgradeFrom &&
+      (!Number.isSafeInteger(options.compatibility.upgradeFrom.protocolVersion) ||
+        options.compatibility.upgradeFrom.protocolVersion + 1 !==
+          options.compatibility.protocolVersion ||
+        !/^[0-9a-f]{64}$/.test(options.compatibility.upgradeFrom.protocolFingerprint) ||
+        !/^[0-9a-f]{64}$/.test(options.compatibility.upgradeFrom.configurationFingerprint))
+    ) {
+      throw new Error("coordinator compatibility upgrade contract is invalid");
+    }
     assertIdentifier("namespace", options.namespace);
     assertIdentifier("instanceId", options.instanceId);
     if (!/^[0-9a-f]{64}$/.test(options.buildFingerprint)) {
@@ -267,7 +279,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   async register(): Promise<RegistrationResult> {
     return this.safe<RegistrationResult>({ status: "unavailable" }, async () =>
       this.transaction(async (tx) => {
-        await this.#lockNamespace(tx, true);
+        await this.#lockNamespace(tx, true, true);
         const inserted = await tx.unsafe<Row>(
           "INSERT INTO public.auggy_coordination_instances (namespace, instance_id, session_id, build_fingerprint, accepting, draining, lease_expires_at) VALUES ($1, $2, $3, $4, TRUE, FALSE, clock_timestamp() + ($5 * interval '1 millisecond')) ON CONFLICT (namespace, instance_id) DO NOTHING RETURNING session_id",
           [
@@ -342,7 +354,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         if (!instance) throw new Error("coordinator instance is not registered");
         await this.#expireActive(tx);
         const existing = await tx.unsafe<Row>(
-          "SELECT thread_id, source_id, binding_hash, state, queue_expires_at <= clock_timestamp() AS queue_expired FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 FOR UPDATE",
+          "SELECT thread_id, source_id, binding_hash, state, queue_generation, queue_expires_at <= clock_timestamp() AS queue_expired FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 FOR UPDATE",
           [this.#config.namespace, request.requestId],
         );
         if (existing[0]) {
@@ -369,7 +381,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
               ],
             );
             if (!adopted[0]) return { status: "joined", state: "queued" };
-            return { status: "adopted" };
+            return { status: "adopted", attempt: number(row, "queue_generation") + 1 };
           }
           return {
             status: "joined",
@@ -437,17 +449,18 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
             this.#config.leaseMs,
           ],
         );
-        return { status: "admitted" };
+        return { status: "admitted", attempt: 1 };
       }),
     );
     if (result.status === "admitted" || result.status === "adopted") {
-      this.trackOwned(request, "queued");
+      this.trackOwned(request, "queued", result.attempt);
     }
     return result;
   }
 
   async heartbeatQueued(
     request: Pick<DistributedTurnRequest, "requestId" | "threadId" | "source" | "bindingHash">,
+    attempt = 1,
   ): Promise<LeaseResult> {
     const result = await this.safe<LeaseResult>({ status: "unavailable" }, async () =>
       this.transaction(async (tx) => {
@@ -455,7 +468,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         await this.#lockNamespace(tx);
         if (!(await this.registeredInstance(tx))) return { status: "stale" };
         const rows = await tx.unsafe<Row>(
-          "UPDATE public.auggy_coordination_requests SET queue_expires_at = clock_timestamp() + ($8 * interval '1 millisecond'), updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND binding_hash = $5 AND state = 'queued' AND queue_owner_instance = $6 AND queue_owner_session = $7 AND queue_expires_at > clock_timestamp() RETURNING request_id",
+          "UPDATE public.auggy_coordination_requests SET queue_expires_at = clock_timestamp() + ($9 * interval '1 millisecond'), updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND binding_hash = $5 AND state = 'queued' AND queue_owner_instance = $6 AND queue_owner_session = $7 AND queue_generation = $8 AND queue_expires_at > clock_timestamp() RETURNING request_id",
           [
             this.#config.namespace,
             request.requestId,
@@ -464,44 +477,55 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
             request.bindingHash,
             this.#config.instanceId,
             this.#sessionId,
+            attempt,
             this.#config.leaseMs,
           ],
         );
         return rows[0] ? { status: "ok" } : { status: "stale" };
       }),
     );
-    if (result.status !== "ok") this.abortOwned(request.requestId, "queue-ownership-lost");
+    if (result.status !== "ok") {
+      this.abortOwnedAttempt(request.requestId, attempt, "queue-ownership-lost");
+    }
     return result;
   }
 
   async abandon(
     request: Pick<DistributedTurnRequest, "requestId" | "threadId" | "source" | "bindingHash">,
+    attempt = 1,
   ): Promise<LeaseResult> {
-    const result = await this.safe<LeaseResult>({ status: "unavailable" }, async () =>
-      this.transaction(async (tx) => {
-        assertRequest(request);
-        await this.#lockNamespace(tx);
-        if (!(await this.registeredInstance(tx))) return { status: "stale" };
-        const rows = await tx.unsafe<Row>(
-          "UPDATE public.auggy_coordination_requests SET state = 'canceled', queue_owner_instance = NULL, queue_owner_session = NULL, queue_expires_at = NULL, terminal_at = clock_timestamp(), updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND binding_hash = $5 AND state = 'queued' AND queue_owner_instance = $6 AND queue_owner_session = $7 AND queue_expires_at > clock_timestamp() RETURNING request_id",
-          [
-            this.#config.namespace,
-            request.requestId,
-            request.threadId,
-            request.source.id,
-            request.bindingHash,
-            this.#config.instanceId,
-            this.#sessionId,
-          ],
-        );
-        return rows[0] ? { status: "ok" } : { status: "stale" };
-      }),
+    const result = await this.safe<LeaseResult>(
+      { status: "unavailable" },
+      async () =>
+        this.transaction(async (tx) => {
+          assertRequest(request);
+          await this.#lockNamespace(tx);
+          if (!(await this.registeredInstance(tx))) return { status: "stale" };
+          const rows = await tx.unsafe<Row>(
+            "UPDATE public.auggy_coordination_requests SET state = 'canceled', queue_owner_instance = NULL, queue_owner_session = NULL, queue_expires_at = NULL, owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, terminal_at = clock_timestamp(), updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND binding_hash = $5 AND queue_generation = $8 AND ((state = 'queued' AND queue_owner_instance = $6 AND queue_owner_session = $7 AND queue_expires_at > clock_timestamp()) OR (state = 'active' AND owner_instance = $6 AND owner_session = $7 AND execution_started_at IS NULL AND lease_expires_at > clock_timestamp())) RETURNING request_id",
+            [
+              this.#config.namespace,
+              request.requestId,
+              request.threadId,
+              request.source.id,
+              request.bindingHash,
+              this.#config.instanceId,
+              this.#sessionId,
+              attempt,
+            ],
+          );
+          return rows[0] ? { status: "ok" } : { status: "stale" };
+        }),
+      undefined,
+      true,
     );
-    this.abortOwned(request.requestId, "queue-abandoned");
+    if (result.status === "ok") {
+      this.abortOwnedAttempt(request.requestId, attempt, "pre-start-abandoned");
+    }
     return result;
   }
 
-  async claim(request: DistributedTurnRequest): Promise<ClaimResult> {
+  async claim(request: DistributedTurnRequest, attempt = 1): Promise<ClaimResult> {
     const result = await this.safe<ClaimResult>({ status: "unavailable" }, async () =>
       this.transaction(async (tx) => {
         assertRequest(request);
@@ -510,7 +534,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         if (!instance) throw new Error("coordinator instance is not registered");
         await this.#expireActive(tx);
         const found = await tx.unsafe<Row>(
-          "SELECT state, thread_id, source_id, binding_hash, fence, owner_instance, owner_session, lease_expires_at, queue_owner_instance, queue_owner_session, queue_expires_at <= clock_timestamp() AS queue_expired FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 FOR UPDATE",
+          "SELECT state, thread_id, source_id, binding_hash, fence, owner_instance, owner_session, lease_expires_at, queue_owner_instance, queue_owner_session, queue_generation, queue_expires_at <= clock_timestamp() AS queue_expired FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 FOR UPDATE",
           [this.#config.namespace, request.requestId],
         );
         const row = found[0];
@@ -528,21 +552,16 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         const sameQueueOwner =
           row.queue_owner_instance === this.#config.instanceId &&
           row.queue_owner_session === this.#sessionId;
-        if (!sameQueueOwner && row.queue_expired !== true) return { status: "waiting" };
-        if (row.queue_expired === true) {
-          if (!instance.accepting || instance.draining) return { status: "waiting" };
-          const adopted = await tx.unsafe<Row>(
-            "UPDATE public.auggy_coordination_requests SET queue_owner_instance = $3, queue_owner_session = $4, queue_generation = queue_generation + 1, queue_expires_at = clock_timestamp() + ($5 * interval '1 millisecond'), updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND state = 'queued' AND queue_expires_at <= clock_timestamp() RETURNING request_id",
-            [
-              this.#config.namespace,
-              request.requestId,
-              this.#config.instanceId,
-              this.#sessionId,
-              this.#config.leaseMs,
-            ],
-          );
-          if (!adopted[0]) return { status: "waiting" };
+        if (
+          !Number.isSafeInteger(attempt) ||
+          attempt <= 0 ||
+          number(row, "queue_generation") !== attempt
+        ) {
+          return { status: "stale" };
         }
+        if (!sameQueueOwner)
+          return row.queue_expired === true ? { status: "stale" } : { status: "waiting" };
+        if (row.queue_expired === true) return { status: "stale" };
         if (!instance.accepting || instance.draining) return { status: "waiting" };
         await this.#cancelExpiredQueued(tx, request.requestId);
         const policy = await this.sourcePolicy(tx, request.source);
@@ -579,7 +598,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           [this.#config.namespace, request.threadId, fence],
         );
         const claimed = await tx.unsafe<Row>(
-          "UPDATE public.auggy_coordination_requests SET state = 'active', fence = $3, owner_instance = $4, owner_session = $5, lease_expires_at = clock_timestamp() + ($6 * interval '1 millisecond'), execution_started_at = NULL, queue_owner_instance = NULL, queue_owner_session = NULL, queue_expires_at = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND state = 'queued' RETURNING lease_expires_at",
+          "UPDATE public.auggy_coordination_requests SET state = 'active', fence = $3, owner_instance = $4, owner_session = $5, lease_expires_at = clock_timestamp() + ($6 * interval '1 millisecond'), execution_started_at = NULL, queue_owner_instance = NULL, queue_owner_session = NULL, queue_expires_at = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND state = 'queued' AND queue_generation = $7 AND queue_owner_instance = $4 AND queue_owner_session = $5 RETURNING lease_expires_at, queue_generation",
           [
             this.#config.namespace,
             request.requestId,
@@ -587,22 +606,29 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
             this.#config.instanceId,
             this.#sessionId,
             this.#config.leaseMs,
+            attempt,
           ],
         );
         if (!claimed[0]) return { status: "waiting" };
         return {
           status: "acquired",
-          lease: this.lease(request, fence, date(claimed[0]!, "lease_expires_at")),
+          lease: this.lease(
+            request,
+            number(claimed[0]!, "queue_generation"),
+            fence,
+            date(claimed[0]!, "lease_expires_at"),
+          ),
         };
       }),
     );
-    if (result.status === "acquired") this.trackOwned(request, "active");
+    if (result.status === "acquired") this.trackOwned(request, "active", result.lease.attempt);
     return result;
   }
 
   ownedSignal(
     request: Pick<DistributedTurnRequest, "requestId" | "threadId" | "source" | "bindingHash">,
   ): AbortSignal {
+    if (this.#invalidated) return this.unavailableSignal();
     try {
       assertRequest(request);
     } catch {
@@ -615,6 +641,12 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       operation.sourceId === request.source.id
       ? operation.controller.signal
       : this.unavailableSignal();
+  }
+
+  invalidateLocalAuthority(): void {
+    if (this.#invalidated) return;
+    this.#invalidated = true;
+    this.abortAllOwned("coordinator-authority-lost");
   }
 
   async markExecutionStarted(lease: DistributedTurnLease): Promise<LeaseResult> {
@@ -635,13 +667,14 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         if (!(await this.registeredInstance(tx))) return { status: "stale" };
         await this.#expireActive(tx);
         const rows = await tx.unsafe<Row>(
-          "UPDATE public.auggy_coordination_requests SET lease_expires_at = clock_timestamp() + ($1 * interval '1 millisecond'), updated_at = clock_timestamp() WHERE namespace = $2 AND request_id = $3 AND thread_id = $4 AND source_id = $5 AND state = 'active' AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() RETURNING lease_expires_at",
+          "UPDATE public.auggy_coordination_requests SET lease_expires_at = clock_timestamp() + ($1 * interval '1 millisecond'), updated_at = clock_timestamp() WHERE namespace = $2 AND request_id = $3 AND thread_id = $4 AND source_id = $5 AND state = 'active' AND queue_generation = $6 AND fence = $7 AND owner_instance = $8 AND owner_session = $9 AND lease_expires_at > clock_timestamp() RETURNING lease_expires_at",
           [
             this.#config.leaseMs,
             this.#config.namespace,
             lease.requestId,
             lease.threadId,
             lease.sourceId,
+            lease.attempt,
             lease.fence,
             this.#config.instanceId,
             this.#sessionId,
@@ -688,12 +721,13 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         if (!(await this.registeredInstance(tx))) return { status: "stale" };
         await this.#expireActive(tx);
         const rows = await tx.unsafe<Row>(
-          "UPDATE public.auggy_coordination_requests SET state = CASE WHEN execution_started_at IS NULL THEN 'failed' ELSE 'outcome_unknown' END, terminal_at = clock_timestamp(), owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND fence = $5 AND owner_instance = $6 AND owner_session = $7 AND lease_expires_at > clock_timestamp() RETURNING thread_id, fence, execution_started_at IS NOT NULL AS ambiguous",
+          "UPDATE public.auggy_coordination_requests SET state = CASE WHEN execution_started_at IS NULL THEN 'failed' ELSE 'outcome_unknown' END, terminal_at = clock_timestamp(), owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() RETURNING thread_id, fence, execution_started_at IS NOT NULL AS ambiguous",
           [
             this.#config.namespace,
             lease.requestId,
             lease.threadId,
             lease.sourceId,
+            lease.attempt,
             lease.fence,
             this.#config.instanceId,
             this.#sessionId,
@@ -738,12 +772,13 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         if (!(await this.registeredInstance(tx))) return { status: "stale" };
         await this.#expireActive(tx);
         const rows = await tx.unsafe<Row>(
-          "UPDATE public.auggy_coordination_requests SET state = 'outcome_unknown', terminal_at = clock_timestamp(), owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND fence = $5 AND owner_instance = $6 AND owner_session = $7 AND lease_expires_at > clock_timestamp() RETURNING request_id",
+          "UPDATE public.auggy_coordination_requests SET state = 'outcome_unknown', terminal_at = clock_timestamp(), owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() RETURNING request_id",
           [
             this.#config.namespace,
             lease.requestId,
             lease.threadId,
             lease.sourceId,
+            lease.attempt,
             lease.fence,
             this.#config.instanceId,
             this.#sessionId,
@@ -1045,6 +1080,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   async #lockNamespace(
     tx: SqlTransaction,
     create = false,
+    allowQuiescentUpgrade = false,
   ): Promise<
     Pick<DistributedCoordinatorConfig, "maxConcurrent" | "maxQueued" | "maxQueuedPerThread">
   > {
@@ -1092,20 +1128,61 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       maxEvents: number(row, "max_events"),
       maxReplayBytes: number(row, "max_replay_bytes"),
     };
+    const basePolicyMatches =
+      stored.maxConcurrent === this.#config.maxConcurrent &&
+      stored.maxQueued === this.#config.maxQueued &&
+      stored.maxQueuedPerThread === this.#config.maxQueuedPerThread &&
+      stored.leaseMs === this.#config.leaseMs &&
+      stored.terminalRequestRetentionMs === this.#config.retention.terminalRequestRetentionMs &&
+      stored.maxTerminalRequests === this.#config.retention.maxTerminalRequests &&
+      stored.eventRetentionMs === this.#config.retention.eventRetentionMs &&
+      stored.maxEvents === this.#config.retention.maxEvents &&
+      stored.maxReplayBytes === this.#config.result.maxReplayBytes;
+    let compatibilityMatches =
+      stored.protocolVersion === this.#config.compatibility.protocolVersion &&
+      stored.protocolFingerprint === this.#config.compatibility.protocolFingerprint &&
+      stored.configurationFingerprint === this.#config.compatibility.configurationFingerprint;
+    const predecessor = this.#config.compatibility.upgradeFrom;
     if (
-      stored.maxConcurrent !== this.#config.maxConcurrent ||
-      stored.maxQueued !== this.#config.maxQueued ||
-      stored.maxQueuedPerThread !== this.#config.maxQueuedPerThread ||
-      stored.leaseMs !== this.#config.leaseMs ||
-      stored.protocolVersion !== this.#config.compatibility.protocolVersion ||
-      stored.protocolFingerprint !== this.#config.compatibility.protocolFingerprint ||
-      stored.configurationFingerprint !== this.#config.compatibility.configurationFingerprint ||
-      stored.terminalRequestRetentionMs !== this.#config.retention.terminalRequestRetentionMs ||
-      stored.maxTerminalRequests !== this.#config.retention.maxTerminalRequests ||
-      stored.eventRetentionMs !== this.#config.retention.eventRetentionMs ||
-      stored.maxEvents !== this.#config.retention.maxEvents ||
-      stored.maxReplayBytes !== this.#config.result.maxReplayBytes
+      !compatibilityMatches &&
+      allowQuiescentUpgrade &&
+      basePolicyMatches &&
+      predecessor &&
+      stored.protocolVersion === predecessor.protocolVersion &&
+      stored.protocolFingerprint === predecessor.protocolFingerprint &&
+      stored.configurationFingerprint === predecessor.configurationFingerprint
     ) {
+      const activity = await tx.unsafe<Row>(
+        "SELECT count(*) FILTER (WHERE lease_expires_at > clock_timestamp())::integer AS live_instances, (SELECT count(*)::integer FROM public.auggy_coordination_requests WHERE namespace = $1 AND state IN ('queued', 'active')) AS pending_requests FROM public.auggy_coordination_instances WHERE namespace = $1",
+        [this.#config.namespace],
+      );
+      const quiescent =
+        activity[0] &&
+        number(activity[0], "live_instances") === 0 &&
+        number(activity[0], "pending_requests") === 0;
+      if (quiescent) {
+        const upgraded = await tx.unsafe<Row>(
+          "UPDATE public.auggy_coordination_namespaces SET protocol_version = $5, protocol_fingerprint = $6, configuration_fingerprint = $7, updated_at = clock_timestamp() WHERE namespace = $1 AND protocol_version = $2 AND protocol_fingerprint = $3 AND configuration_fingerprint = $4 RETURNING namespace",
+          [
+            this.#config.namespace,
+            predecessor.protocolVersion,
+            predecessor.protocolFingerprint,
+            predecessor.configurationFingerprint,
+            this.#config.compatibility.protocolVersion,
+            this.#config.compatibility.protocolFingerprint,
+            this.#config.compatibility.configurationFingerprint,
+          ],
+        );
+        if (upgraded[0]) {
+          await tx.unsafe(
+            "DELETE FROM public.auggy_coordination_instances WHERE namespace = $1 AND lease_expires_at <= clock_timestamp()",
+            [this.#config.namespace],
+          );
+          compatibilityMatches = true;
+        }
+      }
+    }
+    if (!basePolicyMatches || !compatibilityMatches) {
       throw new Error("coordinator namespace policy mismatch");
     }
     return stored;
@@ -1235,13 +1312,14 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         if (!(await this.registeredInstance(tx))) return { status: "stale" };
         await this.#expireActive(tx);
         const rows = await tx.unsafe<Row>(
-          `UPDATE public.auggy_coordination_requests SET ${set} WHERE namespace = $${values.length + 1} AND request_id = $${values.length + 2} AND thread_id = $${values.length + 3} AND source_id = $${values.length + 4} AND state = 'active' AND fence = $${values.length + 5} AND owner_instance = $${values.length + 6} AND owner_session = $${values.length + 7} AND lease_expires_at > clock_timestamp() RETURNING request_id`,
+          `UPDATE public.auggy_coordination_requests SET ${set} WHERE namespace = $${values.length + 1} AND request_id = $${values.length + 2} AND thread_id = $${values.length + 3} AND source_id = $${values.length + 4} AND state = 'active' AND queue_generation = $${values.length + 5} AND fence = $${values.length + 6} AND owner_instance = $${values.length + 7} AND owner_session = $${values.length + 8} AND lease_expires_at > clock_timestamp() RETURNING request_id`,
           [
             ...values,
             this.#config.namespace,
             lease.requestId,
             lease.threadId,
             lease.sourceId,
+            lease.attempt,
             lease.fence,
             this.#config.instanceId,
             this.#sessionId,
@@ -1252,13 +1330,19 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     );
   }
 
-  lease(request: DistributedTurnRequest, fence: number, expiresAt: number): DistributedTurnLease {
+  lease(
+    request: DistributedTurnRequest,
+    attempt: number,
+    fence: number,
+    expiresAt: number,
+  ): DistributedTurnLease {
     return {
       namespace: this.#config.namespace,
       requestId: request.requestId,
       threadId: request.threadId,
       sourceId: request.source.id,
       instanceId: this.#config.instanceId,
+      attempt,
       fence,
       expiresAt,
     };
@@ -1268,6 +1352,8 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     return (
       lease.namespace === this.#config.namespace &&
       lease.instanceId === this.#config.instanceId &&
+      Number.isSafeInteger(lease.attempt) &&
+      lease.attempt > 0 &&
       Number.isSafeInteger(lease.fence) &&
       lease.fence > 0 &&
       (() => {
@@ -1283,7 +1369,12 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     );
   }
 
-  trackOwned(request: DistributedTurnRequest, phase: LocalOwnedOperation["phase"]): void {
+  trackOwned(
+    request: DistributedTurnRequest,
+    phase: LocalOwnedOperation["phase"],
+    attempt: number,
+  ): void {
+    if (this.#invalidated) return;
     const existing = this.#owned.get(request.requestId);
     if (
       existing &&
@@ -1293,10 +1384,12 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       existing.sourceId === request.source.id
     ) {
       existing.phase = phase;
+      existing.attempt = attempt;
       return;
     }
     existing?.controller.abort("ownership-replaced");
     this.#owned.set(request.requestId, {
+      attempt,
       bindingHash: request.bindingHash,
       controller: new AbortController(),
       phase,
@@ -1315,6 +1408,13 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   abortOwnedPhase(phase: LocalOwnedOperation["phase"], reason: string): void {
     for (const [requestId, operation] of this.#owned) {
       if (operation.phase === phase) this.abortOwned(requestId, reason);
+    }
+  }
+
+  abortOwnedAttempt(requestId: string, attempt: number, reason: string): void {
+    const operation = this.#owned.get(requestId);
+    if (operation?.attempt === attempt) {
+      this.abortOwned(requestId, reason);
     }
   }
 
@@ -1342,7 +1442,12 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     fallback: T,
     callback: () => Promise<T>,
     observe?: (result: T) => void,
+    allowAfterInvalidation = false,
   ): Promise<T> {
+    if (this.#invalidated && !allowAfterInvalidation) {
+      observe?.(fallback);
+      return fallback;
+    }
     try {
       const result = await callback();
       observe?.(result);

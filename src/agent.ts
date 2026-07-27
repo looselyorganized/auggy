@@ -16,6 +16,8 @@ import type {
   ThreadHistoryPersistence,
   RuntimeOperationalSnapshot,
   ExecutionContextV1,
+  ExecutionAuthorityV1,
+  OutboundDeliveryContext,
 } from "./types";
 import { createTokenizer } from "./tokenizer";
 import { generateAgentCard } from "./agent-card";
@@ -35,9 +37,20 @@ import { isOutcomeUnknownError, OutcomeUnknownError } from "./outcome-unknown";
 import { assertDistributedCoordinationStartupAllowed } from "./coordination/topology";
 import { createRuntimeSignals } from "./kernel/runtime-signals";
 import {
+  bindDistributedExecutionContext,
+  deriveCausalExecutionContext,
+  deriveEffectOperationId,
   executionContextForTrace,
   validateTrustedExecutionContext,
 } from "./kernel/execution-context";
+import {
+  createCanonicalDistributedTurnRequest,
+  type DistributedRootExecutionControl,
+} from "./coordination";
+import {
+  consumeDistributedRuntimeForTest,
+  type DistributedAgentRuntimeTestAdapter,
+} from "./coordination/testing-agent-runtime";
 
 const DEFAULT_TURN_SCHEDULING: TurnSchedulingConfig = {
   maxConcurrent: 4,
@@ -148,6 +161,15 @@ function executionCancellation(
   };
 }
 
+function combineAbortSignals(
+  first: AbortSignal | undefined,
+  second: AbortSignal | undefined,
+): AbortSignal | undefined {
+  if (!first) return second;
+  if (!second || first === second) return first;
+  return AbortSignal.any([first, second]);
+}
+
 function threadOwnerTransition(
   owner: PeerIdentity | null,
   incoming: PeerIdentity | null,
@@ -177,6 +199,28 @@ function threadOwnerTransition(
 }
 
 export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandle {
+  return defineAgentRuntime(config, model);
+}
+
+function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandle {
+  const distributed: DistributedAgentRuntimeTestAdapter | undefined =
+    consumeDistributedRuntimeForTest(config);
+  if (
+    distributed?.authorityLossGraceMs !== undefined &&
+    (!Number.isSafeInteger(distributed.authorityLossGraceMs) ||
+      distributed.authorityLossGraceMs < 0 ||
+      distributed.authorityLossGraceMs > 30_000)
+  ) {
+    throw new Error("authorityLossGraceMs must be a safe integer between 0 and 30000");
+  }
+  if (
+    distributed?.drainTimeoutMs !== undefined &&
+    (!Number.isSafeInteger(distributed.drainTimeoutMs) ||
+      distributed.drainTimeoutMs < 100 ||
+      distributed.drainTimeoutMs > 300_000)
+  ) {
+    throw new Error("drainTimeoutMs must be a safe integer between 100 and 300000");
+  }
   const tokenizer = createTokenizer();
   const operationalSignals = createRuntimeSignals();
 
@@ -224,7 +268,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     (
       peer: PeerIdentity,
       message: OutboundMessage,
-      context?: { signal?: AbortSignal },
+      context?: OutboundDeliveryContext,
     ) => Promise<void>
   >();
   const threadTails = new Map<string, Promise<void>>();
@@ -315,13 +359,38 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     const shutdownObservation = operationalSignals.beginShutdown();
     lifecycle.stopIdleTimer();
     turnScheduler.close();
+    await distributed?.runtime.beginDrain().catch(() => {});
     await turnScheduler.drain();
     const shutdown = await lifecycle.shutdown();
+    await distributed?.runtime.close().catch(() => {});
     shutdownObservation.finish(shutdown.hookFailures);
     outboundHandlers.clear();
   }
 
-  async function dispatchOutbound(result: TurnResult, trigger: TurnTrigger, signal?: AbortSignal) {
+  function effectContext(
+    operationName: string,
+    signal?: AbortSignal,
+    executionContext?: ExecutionContextV1,
+    executionAuthority?: ExecutionAuthorityV1,
+  ): OutboundDeliveryContext {
+    const trace = executionContextForTrace(executionContext);
+    return {
+      ...(signal ? { signal } : {}),
+      ...(trace ? { executionContext: trace } : {}),
+      ...(executionAuthority ? { executionAuthority } : {}),
+      ...(executionContext
+        ? { operationId: deriveEffectOperationId(executionContext, operationName, 0) }
+        : {}),
+    };
+  }
+
+  async function dispatchOutbound(
+    result: TurnResult,
+    trigger: TurnTrigger,
+    signal?: AbortSignal,
+    executionContext?: ExecutionContextV1,
+    executionAuthority?: ExecutionAuthorityV1,
+  ) {
     if (signal?.aborted) return;
     // Collect all messages to dispatch: single response + multi-destination responses
     const messages: OutboundMessage[] = [];
@@ -329,7 +398,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     if (result.responses) messages.push(...result.responses);
     if (messages.length === 0) return;
 
-    for (const msg of messages) {
+    for (const [messageIndex, msg] of messages.entries()) {
       if (signal?.aborted) return;
       const targetAugment = msg.targetAugment ?? trigger.source;
       const peer = trigger.peer;
@@ -339,7 +408,16 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         const startedAt = Date.now();
         const observation = operationalSignals.beginResponseDelivery();
         try {
-          await handler(peer, msg, { signal });
+          await handler(
+            peer,
+            msg,
+            effectContext(
+              `outbound:${messageIndex}:${targetAugment}`,
+              signal,
+              executionContext,
+              executionAuthority,
+            ),
+          );
           observation.finish("completed", Date.now() - startedAt);
         } catch (error) {
           observation.finish(
@@ -483,6 +561,10 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       signal?: AbortSignal;
       historyPersistence?: ThreadHistoryPersistence;
       executionContext?: ExecutionContextV1;
+      includeExecutionContextInResult?: boolean;
+      executionAuthority?: ExecutionAuthorityV1;
+      ensureExecutionStarted?: () => Promise<void>;
+      markExecutionUncertain?: () => void;
       source: "transport" | "inject";
       trackDetachedOperation?: (operation: Promise<unknown>) => void;
     },
@@ -500,6 +582,9 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
           onEvent: options.onEvent,
           signal: options.signal,
           executionContext: options.executionContext,
+          executionAuthority: options.executionAuthority,
+          ensureExecutionStarted: options.ensureExecutionStarted,
+          markExecutionUncertain: options.markExecutionUncertain,
           trackDetachedOperation: options.trackDetachedOperation,
         });
       } catch (error) {
@@ -509,7 +594,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         throw error;
       }
       await compactAndCommitHistory(threadId, association);
-      return options.executionContext === undefined
+      return options.executionContext === undefined || !options.includeExecutionContextInResult
         ? result
         : { ...result, executionContext: options.executionContext };
     });
@@ -534,16 +619,30 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     threadId: string,
     lease: KeyedTurnLease,
     signal?: AbortSignal,
+    executionContext?: ExecutionContextV1,
+    executionAuthority?: ExecutionAuthorityV1,
+    markExecutionUncertain?: () => void,
+    includeExecutionContextInResult = false,
   ): Promise<void> {
-    await dispatchOutbound(result, trigger, signal);
+    await dispatchOutbound(result, trigger, signal, executionContext, executionAuthority);
+    const { executionContext: _trustedExecutionContext, ...hookResult } = result;
 
     if (signal?.aborted) return;
-    for (const a of effectiveAugments) {
+    for (const [augmentIndex, a] of effectiveAugments.entries()) {
       if (signal?.aborted) return;
       if (a.onTurnEnd) {
         try {
-          await a.onTurnEnd(result, { signal });
+          await a.onTurnEnd(
+            hookResult,
+            effectContext(
+              `augment:${augmentIndex}:${a.name}:turn-end`,
+              signal,
+              executionContext,
+              executionAuthority,
+            ),
+          );
         } catch (err) {
+          markExecutionUncertain?.();
           if (isOutcomeUnknownError(err)) lease.quarantine();
           operationalSignals.recordHookFailure(
             isOutcomeUnknownError(err) ? "outcome-unknown" : "failed",
@@ -557,10 +656,11 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
 
     const completedTurnId = result.turnId;
     if (signal?.aborted) return;
-    for (const a of effectiveAugments) {
+    for (const [augmentIndex, a] of effectiveAugments.entries()) {
       if (signal?.aborted) return;
       if (a.scheduleAfterTurn) {
         let contextActive = true;
+        let childOrdinal = 0;
         const ctx: SchedulerContext = {
           inject: (t) => {
             if (!contextActive) {
@@ -578,6 +678,14 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
               {
                 source: "inject",
                 signal,
+                executionContext: deriveCausalExecutionContext(
+                  executionContext,
+                  `${augmentIndex}:${a.name}`,
+                  childOrdinal++,
+                ),
+                executionAuthority,
+                markExecutionUncertain,
+                includeExecutionContextInResult,
               },
               injectSource,
               lease,
@@ -585,18 +693,34 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
             // The scheduler owns and joins the underlying causal task even
             // when a hook intentionally detaches this public promise. Attach
             // a rejection observer so a discarded promise cannot be unhandled.
-            void injected.catch((error) => {
-              if (isOutcomeUnknownError(error)) lease.quarantine();
-            });
+            void injected.then(
+              (childResult) => {
+                if (childResult.status === "failed" || childResult.outcomeUnknown) {
+                  markExecutionUncertain?.();
+                }
+                if (childResult.outcomeUnknown) lease.quarantine();
+              },
+              (error) => {
+                markExecutionUncertain?.();
+                if (isOutcomeUnknownError(error)) lease.quarantine();
+              },
+            );
             return injected;
           },
           getCompletedTranscript: async () =>
             turnLoop.getHistoryManager(threadId).getTranscript(completedTurnId),
           ...(signal ? { signal } : {}),
+          ...effectContext(
+            `augment:${augmentIndex}:${a.name}:schedule-after-turn`,
+            signal,
+            executionContext,
+            executionAuthority,
+          ),
         };
         try {
-          await a.scheduleAfterTurn(result, ctx);
+          await a.scheduleAfterTurn(hookResult, ctx);
         } catch (err) {
+          markExecutionUncertain?.();
           if (isOutcomeUnknownError(err)) lease.quarantine();
           operationalSignals.recordHookFailure(
             isOutcomeUnknownError(err) ? "outcome-unknown" : "failed",
@@ -669,6 +793,35 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     };
   }
 
+  function distributedTerminalResult(
+    trigger: TurnTrigger,
+    threadId: string,
+    reason: "conflict" | "unavailable" | "outcome-unknown",
+    executionContext?: ExecutionContextV1,
+  ): TurnResult {
+    const outcomeUnknown = reason === "outcome-unknown";
+    const message = outcomeUnknown
+      ? "The turn ended without a trustworthy distributed outcome. Operator recovery is required."
+      : reason === "conflict"
+        ? "The retry identity conflicts with the original request."
+        : "Distributed turn coordination is unavailable. Please retry later.";
+    return {
+      turnId: trigger.turnId,
+      success: false,
+      status: outcomeUnknown ? "failed" : "rejected",
+      errorResponse: message,
+      toolCalls: [],
+      trace: emptyTrace({
+        turnId: trigger.turnId,
+        threadId,
+        trigger: { type: trigger.type, sourceAugment: trigger.source },
+        executionContext: executionContextForTrace(executionContext),
+      }),
+      ...(outcomeUnknown ? { outcomeUnknown: true } : {}),
+      ...(executionContext === undefined ? {} : { executionContext }),
+    };
+  }
+
   async function scheduleTurn(
     trigger: TurnTrigger,
     options: {
@@ -679,12 +832,80 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       beforeExecute?: () => Promise<void>;
       onExecutionStart?: () => void | Promise<void>;
       executionContext?: ExecutionContextV1;
+      executionAuthority?: ExecutionAuthorityV1;
+      markExecutionUncertain?: () => void;
+      includeExecutionContextInResult?: boolean;
     },
     sourcePolicy: SchedulerSourcePolicy,
     parentLease?: KeyedTurnLease,
+    distributedControl?: {
+      control: DistributedRootExecutionControl;
+      request: ReturnType<typeof createCanonicalDistributedTurnRequest>;
+    },
   ): Promise<TurnResult> {
-    const operationalStartedAt = Date.now();
     const threadId = trigger.threadId ?? trigger.turnId;
+    if (distributed && options.historyPersistence) {
+      throw new Error(
+        "distributed checkpoint runtime rejects legacy unfenced thread history persistence",
+      );
+    }
+    if (distributed && !parentLease && !distributedControl) {
+      const request = createCanonicalDistributedTurnRequest({
+        trigger,
+        threadId,
+        source: {
+          id: sourcePolicy.id,
+          maxConcurrent: sourcePolicy.maxConcurrent,
+          maxQueued: sourcePolicy.maxQueued,
+        },
+        executionContext: options.executionContext,
+      });
+      const coordinated = await distributed.runtime.run<TurnResult>({
+        request,
+        signal: options.signal,
+        local: async (control) => {
+          const value = await scheduleTurn(trigger, options, sourcePolicy, undefined, {
+            control,
+            request,
+          });
+          if (value.status === "rejected") return { status: "rejected" };
+          if (value.status === "canceled") return { status: "canceled" };
+          return { status: "completed", value };
+        },
+        isSuccessful: (value) => value.success && !value.outcomeUnknown,
+        commit: (lease, value) => distributed.commit(lease, value),
+      });
+      if (coordinated.status === "completed") return coordinated.value;
+      if (coordinated.status === "replay") {
+        try {
+          return distributed.replay(coordinated.result);
+        } catch {
+          return distributedTerminalResult(trigger, threadId, "outcome-unknown");
+        }
+      }
+      if (coordinated.status === "outcome-unknown") {
+        turnScheduler.quarantine(threadId);
+        return distributedTerminalResult(trigger, threadId, "outcome-unknown");
+      }
+      if (coordinated.status === "terminal" && coordinated.state === "canceled") {
+        return schedulerTerminalResult(
+          trigger,
+          threadId,
+          { status: "canceled", reason: "distributed-request-canceled" },
+          options.executionContext,
+        );
+      }
+      return distributedTerminalResult(
+        trigger,
+        threadId,
+        coordinated.status === "conflict" ? "conflict" : "unavailable",
+      );
+    }
+    const operationalStartedAt = Date.now();
+    const schedulingSignal = combineAbortSignals(
+      options.signal,
+      distributedControl?.control.signal,
+    );
     if (durableThreadStillQuarantined(threadId)) {
       turnScheduler.recordExternalRejection("thread-quarantined");
       operationalSignals.recordTurn({ outcome: "rejected", durationMs: 0 });
@@ -696,45 +917,133 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       );
     }
     const executeCompleteTurn = async (lease: KeyedTurnLease): Promise<TurnResult> => {
-      await options.beforeExecute?.();
-      if (options.signal?.aborted) {
-        return schedulerTerminalResult(
-          trigger,
-          threadId,
-          {
-            status: "canceled",
-            reason: options.signal.reason,
-          },
-          options.executionContext,
+      const distributedAuthority = distributedControl?.control.executionAuthority();
+      const executionAuthority = distributedAuthority ?? options.executionAuthority;
+      const executionContext = distributedControl
+        ? bindDistributedExecutionContext(
+            options.executionContext,
+            distributedControl.request.requestId,
+            distributedControl.request.bindingHash,
+            distributedAuthority!,
+          )
+        : options.executionContext;
+      const markExecutionUncertain = () => {
+        distributedControl?.control.markUncertain();
+        options.markExecutionUncertain?.();
+      };
+      const executePipeline = async (): Promise<TurnResult> => {
+        await options.beforeExecute?.();
+        if (schedulingSignal?.aborted) {
+          return schedulerTerminalResult(
+            trigger,
+            threadId,
+            {
+              status: "canceled",
+              reason: schedulingSignal.reason,
+            },
+            executionContext,
+          );
+        }
+        lifecycle.resetIdleTimer();
+        // Repair a stale persistence memo before pinning creates a replacement
+        // manager for this ID. The pin then protects the exact manager through
+        // transcript-consuming hooks and any causal same-thread child.
+        if (restoredThreads.has(threadId) && !turnLoop.hasHistoryManager(threadId)) {
+          restoredThreads.delete(threadId);
+        }
+        const unpinHistory = turnLoop.pinHistoryManager(threadId);
+        try {
+          const result = await executeThreadTurn(trigger, threadId, {
+            onEvent: options.onEvent,
+            signal: schedulingSignal,
+            historyPersistence: options.historyPersistence,
+            executionContext,
+            executionAuthority,
+            markExecutionUncertain,
+            includeExecutionContextInResult:
+              options.includeExecutionContextInResult ?? options.executionContext !== undefined,
+            ensureExecutionStarted: async () => {
+              await distributedControl?.control.ensureExecutionStarted();
+              try {
+                await options.onExecutionStart?.();
+              } catch (error) {
+                markExecutionUncertain();
+                throw error;
+              }
+            },
+            source: options.source,
+            trackDetachedOperation: (operation) => {
+              if (!distributedControl) {
+                lease.track(operation);
+                return;
+              }
+              markExecutionUncertain();
+              lease.quarantine();
+              void operation.catch(() => {});
+            },
+          });
+          if (result.outcomeUnknown) lease.quarantine();
+          await runPostTurn(
+            result,
+            trigger,
+            threadId,
+            lease,
+            schedulingSignal,
+            executionContext,
+            executionAuthority,
+            markExecutionUncertain,
+            options.includeExecutionContextInResult ?? options.executionContext !== undefined,
+          );
+          return result;
+        } catch (error) {
+          if (isOutcomeUnknownError(error)) lease.quarantine();
+          throw error;
+        } finally {
+          unpinHistory();
+        }
+      };
+
+      if (!distributedControl) return executePipeline();
+      const execution = executePipeline();
+      const observed = execution.then(
+        (value) => ({ status: "completed" as const, value }),
+        (error) => ({ status: "failed" as const, error }),
+      );
+      const authorityLost = new Promise<{ status: "authority-lost" }>((resolve) => {
+        if (distributedControl.control.signal.aborted) {
+          resolve({ status: "authority-lost" });
+          return;
+        }
+        distributedControl.control.signal.addEventListener(
+          "abort",
+          () => resolve({ status: "authority-lost" }),
+          { once: true },
         );
-      }
-      await options.onExecutionStart?.();
-      lifecycle.resetIdleTimer();
-      // Repair a stale persistence memo before pinning creates a replacement
-      // manager for this ID. The pin then protects the exact manager through
-      // transcript-consuming hooks and any causal same-thread child.
-      if (restoredThreads.has(threadId) && !turnLoop.hasHistoryManager(threadId)) {
-        restoredThreads.delete(threadId);
-      }
-      const unpinHistory = turnLoop.pinHistoryManager(threadId);
-      try {
-        const result = await executeThreadTurn(trigger, threadId, {
-          onEvent: options.onEvent,
-          signal: options.signal,
-          historyPersistence: options.historyPersistence,
-          executionContext: options.executionContext,
-          source: options.source,
-          trackDetachedOperation: (operation) => lease.track(operation),
-        });
-        if (result.outcomeUnknown) lease.quarantine();
-        await runPostTurn(result, trigger, threadId, lease, options.signal);
-        return result;
-      } catch (error) {
-        if (isOutcomeUnknownError(error)) lease.quarantine();
-        throw error;
-      } finally {
-        unpinHistory();
-      }
+      });
+      const first = await Promise.race([observed, authorityLost]);
+      if (first.status === "completed") return first.value;
+      if (first.status === "failed") throw first.error;
+
+      markExecutionUncertain();
+      lease.quarantine();
+      const graceMs = distributed?.authorityLossGraceMs ?? 1_000;
+      let graceTimer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        observed,
+        new Promise<void>((resolve) => {
+          graceTimer = setTimeout(resolve, graceMs);
+        }),
+      ]);
+      if (graceTimer !== undefined) clearTimeout(graceTimer);
+      lease.detachOwnedWorkAfterAuthorityLoss();
+      return distributedTerminalResult(
+        trigger,
+        threadId,
+        "outcome-unknown",
+        (options.includeExecutionContextInResult ?? options.executionContext !== undefined)
+          ? executionContext
+          : undefined,
+      );
     };
 
     try {
@@ -743,7 +1052,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
             parentLease,
             {
               key: threadId,
-              ...(options.signal ? { signal: options.signal } : {}),
+              ...(schedulingSignal ? { signal: schedulingSignal } : {}),
             },
             executeCompleteTurn,
           )
@@ -752,7 +1061,10 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
               key: threadId,
               source: sourcePolicy,
               ...(trigger.peer?.id ? { peerId: trigger.peer.id } : {}),
-              ...(options.signal ? { signal: options.signal } : {}),
+              ...(schedulingSignal ? { signal: schedulingSignal } : {}),
+              ...(distributedControl
+                ? { beforeStart: distributedControl.control.beforeStart }
+                : {}),
             },
             executeCompleteTurn,
           );
@@ -786,11 +1098,12 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     start() {
       return serializeLifecycle(async () => {
         if (started) throw new Error("Agent already started. Call stop() first.");
-        assertDistributedCoordinationStartupAllowed(effectiveConfig.coordination);
+        if (!distributed) assertDistributedCoordinationStartupAllowed(effectiveConfig.coordination);
         if (turnScheduler.snapshot().state === "stopped") turnScheduler.reopen();
         operationalSignals.reset();
         const admission = createStartupAdmissionBarrier();
         try {
+          await distributed?.runtime.start();
           await lifecycle.boot();
 
           // Rebuild scheduler fences from every durable incident authority
@@ -832,7 +1145,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
                     onEvent?: import("./types").KernelEventHandler;
                     signal?: AbortSignal;
                     historyPersistence?: ThreadHistoryPersistence;
-                    onExecutionStart?: () => void;
+                    onExecutionStart?: () => void | Promise<void>;
                   },
                 ): Promise<TurnResult> {
                   // A listener may bind before a later transport finishes its
@@ -911,10 +1224,46 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         if (!started) return; // no-op if not started
         const shutdownObservation = operationalSignals.beginShutdown();
         lifecycle.stopIdleTimer();
+        // Admission must close synchronously when stop() is invoked. In
+        // distributed mode beginDrain() performs coordinator I/O and may
+        // suspend; leaving the local scheduler open across that await admits
+        // work after shutdown has begun.
         turnScheduler.close();
-        await turnScheduler.drain();
-        await Promise.all([...threadTails.values()].map((tail) => tail.catch(() => {})));
+        let coordinationDrainError: unknown;
+        try {
+          await distributed?.runtime.beginDrain();
+        } catch (error) {
+          coordinationDrainError = error;
+        }
+        const schedulerDrain = turnScheduler.drain();
+        let forcedDistributedDrain = false;
+        if (distributed) {
+          let drainTimer: ReturnType<typeof setTimeout> | undefined;
+          const drainOutcome = await Promise.race([
+            schedulerDrain.then(() => "drained" as const),
+            new Promise<"deadline">((resolve) => {
+              drainTimer = setTimeout(
+                () => resolve("deadline"),
+                distributed.drainTimeoutMs ?? 30_000,
+              );
+            }),
+          ]);
+          if (drainTimer !== undefined) clearTimeout(drainTimer);
+          if (drainOutcome === "deadline") {
+            forcedDistributedDrain = true;
+            await distributed.runtime.close();
+            await schedulerDrain;
+          }
+        } else {
+          await schedulerDrain;
+        }
+        if (forcedDistributedDrain) {
+          for (const tail of threadTails.values()) void tail.catch(() => {});
+        } else {
+          await Promise.all([...threadTails.values()].map((tail) => tail.catch(() => {})));
+        }
         const shutdown = await lifecycle.shutdown();
+        await distributed?.runtime.close();
         shutdownObservation.finish(shutdown.hookFailures);
         outboundHandlers.clear();
         turnLoop.clearHistoryManagers();
@@ -922,6 +1271,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         unmanagedThreadOwners.clear();
         threadTails.clear();
         started = false;
+        if (coordinationDrainError !== undefined) throw coordinationDrainError;
       });
     },
 
