@@ -5,6 +5,8 @@ import type {
   AdminInfoBlock,
   Augment,
   CostResult,
+  ExecutionAuthorityV1,
+  ExecutionTraceContextV1,
   InternalTurnContext,
   MemoryEntry,
   MemoryQueryOpts,
@@ -30,6 +32,7 @@ import { createSqliteStore } from "./storage/sqlite-store";
 import { createSupabaseStore, type LayeredSupabaseClient } from "./storage/supabase-store";
 import type { MemoryStore, StoreEntry } from "./storage/types";
 import { emptyTrace } from "../../kernel/trace-emitter";
+import { deriveNestedOperationId } from "../../kernel/execution-context";
 import { isOutcomeUnknownError } from "../../outcome-unknown";
 
 /**
@@ -231,7 +234,7 @@ function isAutoSaveTriggerPayload(
  */
 function buildExtractionTurnResult(args: {
   trigger: TurnTrigger;
-  status: "completed" | "failed";
+  status: "completed" | "failed" | "rejected";
   cost: CostResult;
   inferenceDurationMs: number;
   inferenceOutcome?: "completed" | "failed" | "canceled" | "outcome-unknown";
@@ -299,6 +302,9 @@ async function runExtractionInsideTurn(args: {
   confidenceThreshold: number;
   sourceTurnId: string;
   signal?: AbortSignal;
+  executionContext?: ExecutionTraceContextV1;
+  executionAuthority?: ExecutionAuthorityV1;
+  operationId?: string;
 }): Promise<TurnResult> {
   args.signal?.throwIfAborted();
   const inferenceStart = Date.now();
@@ -309,6 +315,9 @@ async function runExtractionInsideTurn(args: {
       engine: args.engine,
       promptTemplate: args.promptTemplate,
       signal: args.signal,
+      executionContext: args.executionContext,
+      executionAuthority: args.executionAuthority,
+      operationId: deriveNestedOperationId(args.operationId, "extraction-model", 0),
     });
   } catch (error) {
     if (!isOutcomeUnknownError(error)) throw error;
@@ -684,6 +693,11 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
    */
   async function scheduleAfterTurn(result: TurnResult, ctx: SchedulerContext): Promise<void> {
     ctx.signal?.throwIfAborted();
+    // Local extraction buffers and the bundled stores are not part of the
+    // coordinator transaction yet. Reject the complete distributed hook
+    // before reading a transcript or mutating promotion/frequency/buffer
+    // state; the internal-handler check remains defense in depth.
+    if (ctx.executionAuthority) return;
     if (!autoSaveEnabled) return;
     if (!promptTemplate) return;
     // No consumer exists without an extraction engine. Do not retrieve or
@@ -826,6 +840,20 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
         errorMessage: "auto-save trigger missing required payload fields",
       });
     }
+    if (ctx.executionAuthority) {
+      // The bundled SQLite and Supabase memory stores do not yet share the
+      // coordinator transaction/fence. Starting extraction here would permit
+      // a stale replica to bill or persist after authority loss. Checkpoint 5
+      // introduces the supported shared/fenced memory adapter; until then the
+      // distributed path is explicitly unavailable before either effect.
+      return buildExtractionTurnResult({
+        trigger,
+        status: "rejected",
+        cost: { priced: false, reason: "distributed auto-save storage is not configured" },
+        inferenceDurationMs: 0,
+        errorMessage: "distributed auto-save requires a shared fenced memory adapter",
+      });
+    }
     if (!extractionEngine) {
       // Configuration drifted between scheduleAfterTurn-time and here
       // (e.g. operator hot-reloaded the engine to undefined). Best-effort
@@ -849,6 +877,9 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       confidenceThreshold: trigger.payload.confidenceThreshold,
       sourceTurnId: trigger.payload.sourceTurnId,
       signal: ctx.signal,
+      executionContext: ctx.executionContext,
+      executionAuthority: ctx.executionAuthority,
+      operationId: ctx.operationId,
     });
   }
 

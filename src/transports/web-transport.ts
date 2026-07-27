@@ -4,6 +4,7 @@ import type {
   AugmentHttpRouteAuth,
   CreatorConfig,
   DelegatedAuthorizationDeniedAuditEvent,
+  DistributedVisitorIdentityResultV1,
   PeerIdentity,
   RouteAuthContext,
   RouteAgentAuthContext,
@@ -21,6 +22,9 @@ import {
   serializeSSE,
   runFinished,
   runError,
+  textMessageContent,
+  textMessageEnd,
+  textMessageStart,
   type AGUIEvent,
 } from "./ag-ui-events";
 import { deriveSigningKey, verifyVisitorToken, type VisitorTokenPayload } from "./visitor-token";
@@ -29,6 +33,7 @@ import {
   createWebIdempotencyStore,
   hashIdempotencyBinding,
   hashIdempotencyKey,
+  resolveWebIdempotencyCapacityPolicy,
   type IdempotencyClaim,
   type RateLimitPolicy,
   type WebIdempotencyStore,
@@ -99,6 +104,10 @@ const DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER = "x-auggy-auth-assertion";
 const CONSOLE_INTERNAL_RUN_HEADER = "x-auggy-console-internal";
 const ANONYMOUS_SESSION_HEADER = "x-auggy-anonymous-session";
 const ANONYMOUS_SESSION_STATUS_HEADER = "x-auggy-anonymous-session-status";
+const DISTRIBUTED_ANONYMOUS_GLOBAL_POLICY_ID = "web.anonymous-global.v1";
+const DISTRIBUTED_ANONYMOUS_NETWORK_POLICY_ID = "web.anonymous-network.v1";
+const DISTRIBUTED_PEER_POLICY_ID = "web.peer.v1";
+const DISTRIBUTED_CONSOLE_POLICY_ID = "web.console.v1";
 const HTTP_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
   "authorization",
@@ -120,6 +129,42 @@ const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
   "x-forwarded-proto",
   "x-real-ip",
 ]);
+
+class VisitorIdentityAuthorityUnavailableError extends Error {
+  constructor() {
+    super("distributed identity authority is unavailable");
+    this.name = "VisitorIdentityAuthorityUnavailableError";
+  }
+}
+
+class DistributedExternalAuthUnavailableError extends Error {
+  constructor() {
+    super("distributed external-auth authority is unavailable");
+    this.name = "DistributedExternalAuthUnavailableError";
+  }
+}
+
+function distributedWebRunId(keyHash: string): string {
+  if (!/^[0-9a-f]{64}$/.test(keyHash)) throw new Error("invalid distributed web key hash");
+  const bytes = createHash("sha256")
+    .update("auggy-distributed-web-run-v1\0")
+    .update(keyHash)
+    .digest();
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+export function distributedWebRoutePolicyId(method: string, path: string): string {
+  const digest = createHash("sha256")
+    .update("auggy-distributed-web-route-policy-v1\0")
+    .update(method)
+    .update("\0")
+    .update(path)
+    .digest("hex");
+  return `web.route.v1:${digest}`;
+}
 
 function withConsoleBoundaryHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
@@ -358,7 +403,7 @@ export interface WebTransportOptions {
      * the token is treated as anonymous — rendering revoked tokens inert
      * without waiting for their HMAC TTL to expire.
      */
-    revocationCheck?: (visitorId: string) => boolean;
+    revocationCheck?: (visitorId: string, identityVersion?: number) => boolean | Promise<boolean>;
     /**
      * Optional visitor-auth metadata lookup. The signed token intentionally
      * carries only a stable visitor id; this hook lets route handlers receive
@@ -367,12 +412,21 @@ export interface WebTransportOptions {
      */
     identityLookup?: (
       visitorId: string,
-    ) => Omit<RouteVisitorIdentity, "agentId" | "issuedAt" | "expiresAt"> | null;
+      identityVersion?: number,
+    ) =>
+      | Omit<RouteVisitorIdentity, "agentId" | "issuedAt" | "expiresAt">
+      | null
+      | Promise<Omit<RouteVisitorIdentity, "agentId" | "issuedAt" | "expiresAt"> | null>;
     /**
      * Authorize an anonymous console thread's one-way promotion after the
      * visitor consumed a magic link issued from that exact thread.
      */
-    threadPromotionCheck?: (visitorId: string, threadId: string) => boolean;
+    threadPromotionCheck?: (
+      visitorId: string,
+      threadId: string,
+      identityVersion?: number,
+      priorPeerId?: string,
+    ) => boolean | Promise<boolean>;
     /**
      * Stable identifier for this agent used to scope visitor tokens (fix C2).
      * MUST match visitorAuth's `agentBinding` option. Defaults to
@@ -1044,6 +1098,7 @@ function parseConsoleRunMetadata(
  * opening the stream.
  */
 export function webTransport(opts: WebTransportOptions): Augment {
+  let webIdempotencyCapacity: ReturnType<typeof resolveWebIdempotencyCapacityPolicy> | null = null;
   const overrideDir = opts.overrideDir ?? opts.agentDir;
   const configuredExternalAuthHeader =
     typeof opts.externalAuth?.header === "string" ? opts.externalAuth.header : undefined;
@@ -1212,21 +1267,55 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return { allowed: true };
   }
 
-  function checkRouteRateLimit(
+  async function checkRouteRateLimit(
     routeKey: string,
     ip: string,
     max: number,
-  ): { allowed: true } | { allowed: false; retryAfterSec: number } {
-    return checkLocalRateLimits([{ key: `${routeKey}|${ip}`, max, windowMs: 60_000 }]);
+    policyId: string,
+  ): Promise<{ allowed: true } | { allowed: false; retryAfterSec: number; status: 429 | 503 }> {
+    if (kernel?.getRuntimeTopology?.() !== "distributed-preview") {
+      const local = checkLocalRateLimits([{ key: `${routeKey}|${ip}`, max, windowMs: 60_000 }]);
+      return local.allowed ? local : { ...local, status: 429 };
+    }
+    const network = rateLimitNetworkIdentity(ip, anonymousIpv6PrefixBits);
+    const reserve = kernel.reserveDistributedRateLimits;
+    if (!network || !reserve) return { allowed: false, retryAfterSec: 1, status: 503 };
+    const result = await reserve({
+      reservationId: `rate:web:${crypto.randomUUID()}`,
+      admission: [
+        {
+          policyId,
+          subjectHash: hashIdempotencyBinding({
+            audience: requireSecurityAudience(),
+            kind: "distributed-route-rate",
+            policyId,
+            network,
+          }),
+        },
+      ],
+    });
+    if (result.status === "reserved" || result.status === "replayed") {
+      return { allowed: true };
+    }
+    return result.status === "rejected" && result.reason === "rate-limited"
+      ? {
+          allowed: false,
+          retryAfterSec: Math.max(1, Math.ceil((result.retryAfterMs ?? 1_000) / 1_000)),
+          status: 429,
+        }
+      : { allowed: false, retryAfterSec: 1, status: 503 };
   }
 
-  function anonymousRateLimitPolicies(callerIp: string): RateLimitPolicy[] {
+  function anonymousRateLimitPolicies(
+    callerIp: string,
+  ): Array<RateLimitPolicy & { policyId: string }> {
     if (peerRateLimit === undefined || globalAnonymousLimit === undefined) return [];
     const network = rateLimitNetworkIdentity(callerIp, anonymousIpv6PrefixBits);
     if (!network) throw new Error("anonymous caller network is unavailable");
     const audience = requireSecurityAudience();
     return [
       {
+        policyId: DISTRIBUTED_ANONYMOUS_GLOBAL_POLICY_ID,
         bucketHash: hashIdempotencyBinding({
           audience,
           kind: "anonymous-global",
@@ -1235,6 +1324,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         windowMs: 60_000,
       },
       {
+        policyId: DISTRIBUTED_ANONYMOUS_NETWORK_POLICY_ID,
         bucketHash: hashIdempotencyBinding({
           audience,
           kind: "anonymous-network",
@@ -1397,6 +1487,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         ? "single-process-development anonymous rate limiting is unavailable in production or public deployments"
         : null;
     }
+    if (kernel?.getRuntimeTopology?.() === "distributed-preview") return null;
     const dbPath = resolveIdempotencyDbPath(opts);
     if (dbPath === null || dbPath === ":memory:") {
       return "anonymous rate limiting requires a durable shared idempotency.dbPath or an explicit trusted-edge mode";
@@ -1917,6 +2008,95 @@ export function webTransport(opts: WebTransportOptions): Augment {
         throw new Error("[web-transport] cannot become ready before kernel registration");
       }
       if (server) return;
+      const anonymousBoundaryError = anonymousRateLimitConfigurationError(allowAnonymous);
+      if (anonymousBoundaryError) {
+        throw new Error(`[web-transport] ${anonymousBoundaryError}.`);
+      }
+      if (kernel.getRuntimeTopology?.() === "distributed-preview") {
+        if (opts.adminRoute !== false) {
+          throw new Error(
+            "[web-transport] distributed preview requires adminRoute: false until console state has shared fenced authority",
+          );
+        }
+        if (idempotencyStore !== null) {
+          throw new Error(
+            "[web-transport] distributed preview requires idempotency.dbPath: null; PostgreSQL coordination is the only execution authority",
+          );
+        }
+        const capacityPolicy = webIdempotencyCapacity;
+        if (!capacityPolicy) {
+          throw new Error("[web-transport] distributed web capacity policy is unavailable");
+        }
+        const rateLimits = [
+          ...(opts.adminRoute === false
+            ? []
+            : [
+                {
+                  id: DISTRIBUTED_CONSOLE_POLICY_ID,
+                  max: 60,
+                  minRetainedEvents: 1,
+                  windowMs: 60_000,
+                },
+              ]),
+          ...augmentRoutes.flatMap((route) =>
+            route.rateLimit
+              ? [
+                  {
+                    id: distributedWebRoutePolicyId(route.method, route.path),
+                    max: route.rateLimit.maxPerMinute,
+                    minRetainedEvents: 1,
+                    windowMs: 60_000,
+                  },
+                ]
+              : [],
+          ),
+          ...(peerRateLimit === undefined
+            ? []
+            : [
+                {
+                  id: DISTRIBUTED_PEER_POLICY_ID,
+                  max: peerRateLimit,
+                  minRetainedEvents: 1,
+                  windowMs: 60_000,
+                },
+              ]),
+          ...(allowAnonymous &&
+          peerRateLimit !== undefined &&
+          globalAnonymousLimit !== undefined &&
+          anonymousNetworkMode !== "trusted-edge"
+            ? [
+                {
+                  id: DISTRIBUTED_ANONYMOUS_GLOBAL_POLICY_ID,
+                  max: globalAnonymousLimit,
+                  minRetainedEvents: 1,
+                  windowMs: 60_000,
+                },
+                {
+                  id: DISTRIBUTED_ANONYMOUS_NETWORK_POLICY_ID,
+                  max: peerRateLimit,
+                  minRetainedEvents: 1,
+                  windowMs: 60_000,
+                },
+              ]
+            : []),
+        ];
+        const requirements = {
+          capacityClasses: (["public", "agent", "creator"] as const).map((id) => ({
+            id,
+            maxRetainedRequests: capacityPolicy.classLimits[id],
+            maxRetainedRequestsPerPartition: Math.min(
+              capacityPolicy.classLimits[id],
+              capacityPolicy.maxRecordsPerPartition,
+            ),
+          })),
+          rateLimits,
+        };
+        if (!kernel.validateDistributedAdmissionPolicy?.(requirements)) {
+          throw new Error(
+            "[web-transport] distributed coordinator policy does not satisfy web admission requirements",
+          );
+        }
+      }
       startServer();
     },
     identify,
@@ -1991,6 +2171,55 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return opts.externalAuth?.audience ?? requireSecurityAudience();
   }
 
+  function usesDistributedIdentityAuthority(): boolean {
+    return kernel?.getRuntimeTopology?.() === "distributed-preview";
+  }
+
+  async function resolveVisitorIdentityPayload(
+    payload: VisitorTokenPayload,
+  ): Promise<Omit<RouteVisitorIdentity, "agentId" | "issuedAt" | "expiresAt"> | null> {
+    if (usesDistributedIdentityAuthority()) {
+      if (payload.identityVersion === undefined || !kernel?.resolveDistributedVisitorIdentity) {
+        throw new VisitorIdentityAuthorityUnavailableError();
+      }
+      let result: DistributedVisitorIdentityResultV1;
+      try {
+        result = await kernel.resolveDistributedVisitorIdentity(
+          payload.visitorId,
+          payload.identityVersion,
+          payload.expiresAt,
+        );
+      } catch {
+        throw new VisitorIdentityAuthorityUnavailableError();
+      }
+      if (result.status === "unavailable") {
+        throw new VisitorIdentityAuthorityUnavailableError();
+      }
+      if (result.status !== "active") return null;
+      return {
+        visitorId: result.visitorId,
+        email: result.email,
+        verifiedAt: result.verifiedAt,
+        reverifyDueAt: result.reverifyDueAt,
+      };
+    }
+
+    try {
+      if (await opts.visitorTokens?.revocationCheck?.(payload.visitorId, payload.identityVersion)) {
+        return null;
+      }
+      if (!opts.visitorTokens?.identityLookup) {
+        return { visitorId: payload.visitorId };
+      }
+      return (
+        (await opts.visitorTokens.identityLookup(payload.visitorId, payload.identityVersion)) ??
+        null
+      );
+    } catch {
+      throw new VisitorIdentityAuthorityUnavailableError();
+    }
+  }
+
   async function resolveExternalVisitorAuth(
     req: Request,
     replayMode: "consume" | "defer" = "consume",
@@ -2010,7 +2239,41 @@ export function webTransport(opts: WebTransportOptions): Augment {
       maxTtlSeconds: config.maxTtlSeconds,
     });
     if (!verified.ok) return null;
-    if (externalAuthReplayStore) {
+    if (usesDistributedIdentityAuthority()) {
+      if (!externalAuthReplayProtectionEnabled || !verified.claims.jti) {
+        throw new DistributedExternalAuthUnavailableError();
+      }
+      if (replayMode === "consume") {
+        if (!kernel?.claimDistributedExternalAssertion) {
+          throw new DistributedExternalAuthUnavailableError();
+        }
+        const requestId = `route:${crypto.randomUUID()}`;
+        let claim: Awaited<
+          ReturnType<NonNullable<TransportKernel["claimDistributedExternalAssertion"]>>
+        >;
+        try {
+          claim = await kernel.claimDistributedExternalAssertion({
+            provider: verified.claims.provider,
+            keyId: verified.claims.keyId ?? null,
+            jti: verified.claims.jti,
+            requestId,
+            bindingHash: hashIdempotencyBinding({
+              audience: resolveExternalAuthAudience(),
+              method: req.method,
+              pathname: new URL(req.url).pathname,
+              requestId,
+            }),
+            expiresAt: verified.claims.expiresAt,
+          });
+        } catch {
+          throw new DistributedExternalAuthUnavailableError();
+        }
+        if (claim.status === "unavailable" || claim.status === "capacity") {
+          throw new DistributedExternalAuthUnavailableError();
+        }
+        if (claim.status !== "claimed") return null;
+      }
+    } else if (externalAuthReplayStore) {
       if (!verified.claims.jti) return null;
       if (replayMode === "consume") {
         const now = Date.now();
@@ -2051,29 +2314,13 @@ export function webTransport(opts: WebTransportOptions): Augment {
     const payload = await verifyVisitorToken(signingKey, tokenHeader);
     if (!payload) return anonymous;
 
-    try {
-      if (opts.visitorTokens?.revocationCheck?.(payload.visitorId)) {
-        return anonymous;
-      }
-    } catch {
-      return anonymous;
-    }
-
     const expectedBinding = requireSecurityAudience();
     if (payload.agentId !== expectedBinding) {
       return anonymous;
     }
 
-    let identity: Omit<RouteVisitorIdentity, "agentId" | "issuedAt" | "expiresAt"> | null = null;
-    try {
-      identity = opts.visitorTokens?.identityLookup?.(payload.visitorId) ?? null;
-    } catch {
-      return anonymous;
-    }
-    if (opts.visitorTokens?.identityLookup && !identity) {
-      return anonymous;
-    }
-    if (identity && identity.visitorId !== payload.visitorId) {
+    const identity = await resolveVisitorIdentityPayload(payload);
+    if (!identity || identity.visitorId !== payload.visitorId) {
       return anonymous;
     }
     const orgCandidates = [payload.orgId, identity?.orgId, identity?.externalAuth?.orgId].filter(
@@ -2135,7 +2382,13 @@ export function webTransport(opts: WebTransportOptions): Augment {
     email: string;
     expiresAt: number;
   } | null> {
-    if (!visitorTokensEnabled || !signingKey || !opts.visitorTokens?.identityLookup) return null;
+    if (
+      !visitorTokensEnabled ||
+      !signingKey ||
+      (!usesDistributedIdentityAuthority() && !opts.visitorTokens?.identityLookup)
+    ) {
+      return null;
+    }
     let payload: VisitorTokenPayload | null;
     try {
       payload = await verifyVisitorToken(signingKey, visitorToken);
@@ -2155,9 +2408,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     }
     const expectedBinding = requireSecurityAudience();
     if (payload.agentId !== expectedBinding) return null;
-    if (opts.visitorTokens.revocationCheck?.(payload.visitorId)) return null;
-
-    const identity = opts.visitorTokens.identityLookup(payload.visitorId);
+    const identity = await resolveVisitorIdentityPayload(payload);
     if (
       !identity ||
       identity.visitorId !== payload.visitorId ||
@@ -2211,7 +2462,24 @@ export function webTransport(opts: WebTransportOptions): Augment {
     }
 
     if (auth === "visitor.optional" || auth === "visitor.required") {
-      const visitorAuth = await resolveVisitorRouteAuth(req);
+      let visitorAuth: RouteVisitorAuthContext;
+      try {
+        visitorAuth = await resolveVisitorRouteAuth(req);
+      } catch (error) {
+        if (error instanceof VisitorIdentityAuthorityUnavailableError) {
+          return {
+            ok: false,
+            response: json({ error: "identity_authority_unavailable" }, 503),
+          };
+        }
+        if (error instanceof DistributedExternalAuthUnavailableError) {
+          return {
+            ok: false,
+            response: json({ error: "external_auth_distributed_unavailable" }, 503),
+          };
+        }
+        throw error;
+      }
       if (auth === "visitor.required" && visitorAuth.state !== "recognized") {
         return { ok: false, response: json(visitorAuthRequiredErrorBody(), 401) };
       }
@@ -2381,7 +2649,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
       // therefore join the one authorized execution.
       externalVisitorAuth = await resolveExternalVisitorAuth(
         req,
-        idempotencyKey !== null && !isConsoleRun ? "defer" : "consume",
+        (idempotencyKey !== null && !isConsoleRun) ||
+          kernel?.getRuntimeTopology?.() === "distributed-preview"
+          ? "defer"
+          : "consume",
       );
       return externalVisitorAuth;
     }
@@ -2409,6 +2680,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
     let publicRunId: string = crypto.randomUUID();
     // --- Visitor token handling ---
     let visitorPayload: VisitorTokenPayload | null = null;
+    let distributedVisitorAuthorityDenied = false;
     async function applyExternalVisitorAuth(): Promise<void> {
       const externalAuth = await readExternalVisitorAuth();
       if (externalAuth?.state === "recognized") {
@@ -2426,14 +2698,6 @@ export function webTransport(opts: WebTransportOptions): Augment {
       const tokenHeader = req.headers.get("x-visitor-token");
       if (tokenHeader) {
         visitorPayload = await verifyVisitorToken(signingKey, tokenHeader);
-        // Fix C1: reject tokens whose visitor has since been revoked.
-        // Called after HMAC verification succeeds so revoked identities cannot
-        // continue to authenticate with old tokens until the HMAC TTL expires.
-        if (visitorPayload) {
-          if (opts.visitorTokens?.revocationCheck?.(visitorPayload.visitorId)) {
-            visitorPayload = null;
-          }
-        }
         // Fix C2: reject tokens minted for a different security audience even
         // when agentBinding is omitted. Shared signing keys must never make a
         // visitor credential portable across logical agents.
@@ -2447,20 +2711,34 @@ export function webTransport(opts: WebTransportOptions): Augment {
         // identity authority is configured it remains the source of truth for
         // whether that visitor still exists. Missing, mismatched, or
         // unavailable identity state must never mint recognized authority.
-        if (visitorPayload && opts.visitorTokens?.identityLookup) {
+        if (visitorPayload) {
           try {
-            const identity = opts.visitorTokens.identityLookup(visitorPayload.visitorId);
+            const identity = await resolveVisitorIdentityPayload(visitorPayload);
             if (!identity || identity.visitorId !== visitorPayload.visitorId) {
+              if (usesDistributedIdentityAuthority()) distributedVisitorAuthorityDenied = true;
               visitorPayload = null;
             }
-          } catch {
-            visitorPayload = null;
+          } catch (error) {
+            if (error instanceof VisitorIdentityAuthorityUnavailableError) {
+              visitorPayload = null;
+              if (usesDistributedIdentityAuthority()) {
+                await applyExternalVisitorAuth();
+                if (visitorPayload === null) {
+                  return json({ error: "identity_authority_unavailable" }, 503);
+                }
+              }
+            } else {
+              visitorPayload = null;
+            }
           }
         }
       }
       await applyExternalVisitorAuth();
     }
     await applyExternalVisitorAuth();
+    if (distributedVisitorAuthorityDenied && visitorPayload === null) {
+      return json(visitorAuthRequiredErrorBody(), 401);
+    }
 
     // --- Build headers map ---
     const headers: Record<string, string> = {};
@@ -2558,6 +2836,8 @@ export function webTransport(opts: WebTransportOptions): Augment {
       }
       publicRunId = consoleMetadata.runId;
     }
+    const distributedRuntime =
+      !isConsoleRun && kernel?.getRuntimeTopology?.() === "distributed-preview";
 
     // Build the trusted identify argument. The HTTP handler adds a verified
     // anonymous-session ID below when this request takes the anonymous path.
@@ -2591,9 +2871,20 @@ export function webTransport(opts: WebTransportOptions): Augment {
         });
       }
     }
-    let authenticatedPriorPeerId = visitorPayload?.priorPeerId;
-    let authenticatedThreadScopeId =
-      visitorPayload?.priorThreadScopeId ?? visitorPayload?.visitorId;
+    const promotionCandidateThreadId = visitorPayload?.priorThreadScopeId
+      ? canonicalPublicThreadId(
+          requestedThreadId,
+          idempotencyKey,
+          visitorPayload.priorThreadScopeId,
+        )
+      : requestedThreadId;
+    const exactPromotionRequest =
+      visitorPayload?.priorThreadId !== undefined &&
+      promotionCandidateThreadId === visitorPayload.priorThreadId;
+    let authenticatedPriorPeerId = exactPromotionRequest ? visitorPayload?.priorPeerId : undefined;
+    let authenticatedThreadScopeId = exactPromotionRequest
+      ? (visitorPayload?.priorThreadScopeId ?? visitorPayload?.visitorId)
+      : visitorPayload?.visitorId;
     if (authenticatedAnonymousSession) {
       if (
         authenticatedPriorPeerId !== undefined &&
@@ -2601,8 +2892,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
       ) {
         return json({ error: "visitor promotion proof mismatch" }, 403);
       }
-      authenticatedPriorPeerId ??= authenticatedAnonymousSession.peerId;
-      authenticatedThreadScopeId ??= authenticatedAnonymousSession.threadScopeId;
+      if (exactPromotionRequest) {
+        authenticatedPriorPeerId ??= authenticatedAnonymousSession.peerId;
+        authenticatedThreadScopeId ??= authenticatedAnonymousSession.threadScopeId;
+      }
     }
     if (!hasBearerAttempt && !visitorPayload && !isAgentAttempt) {
       if (isConsoleRun && consoleMetadata?.previewMode === "anonymous") {
@@ -2659,6 +2952,31 @@ export function webTransport(opts: WebTransportOptions): Augment {
         .digest("hex")}`;
     }
 
+    if (distributedRuntime && authenticatedPriorPeerId !== undefined) {
+      if (!visitorPayload?.identityVersion || !kernel?.authorizeDistributedVisitorPromotion) {
+        return json({ error: "identity_authority_unavailable" }, 503);
+      }
+      let promotion: Awaited<
+        ReturnType<NonNullable<TransportKernel["authorizeDistributedVisitorPromotion"]>>
+      >;
+      try {
+        promotion = await kernel.authorizeDistributedVisitorPromotion({
+          visitorId: visitorPayload.visitorId,
+          identityVersion: visitorPayload.identityVersion,
+          peerId: authenticatedPriorPeerId,
+          threadId,
+        });
+      } catch {
+        return json({ error: "identity_authority_unavailable" }, 503);
+      }
+      if (promotion.status === "unavailable") {
+        return json({ error: "identity_authority_unavailable" }, 503);
+      }
+      if (promotion.status !== "allowed") {
+        return json({ error: "visitor promotion proof mismatch" }, 403);
+      }
+    }
+
     if (
       consoleMetadata?.previewMode === "visitor" &&
       previewModeForPeer(peer) === "visitor" &&
@@ -2669,7 +2987,12 @@ export function webTransport(opts: WebTransportOptions): Augment {
         if (existing?.previewMode === "anonymous") {
           const promotionAllowed =
             visitorPayload !== null &&
-            opts.visitorTokens?.threadPromotionCheck?.(visitorPayload.visitorId, threadId) === true;
+            (await opts.visitorTokens?.threadPromotionCheck?.(
+              visitorPayload.visitorId,
+              threadId,
+              visitorPayload.identityVersion,
+              visitorPayload.priorPeerId,
+            )) === true;
           if (!promotionAllowed) {
             return json({ error: "console thread verification does not match" }, 403);
           }
@@ -2704,7 +3027,15 @@ export function webTransport(opts: WebTransportOptions): Augment {
       peer.trustLevel === "public" &&
       peer.publicSubstate === "anonymous" &&
       peerRateLimit !== undefined;
-    if (requiresAnonymousAdmission && idempotencyKey === null) {
+    let anonymousAdmissionPolicies: Array<RateLimitPolicy & { policyId: string }> = [];
+    if (requiresAnonymousAdmission && anonymousNetworkMode !== "trusted-edge") {
+      try {
+        anonymousAdmissionPolicies = anonymousRateLimitPolicies(callerIp);
+      } catch {
+        return json({ error: "rate_limit_unavailable" }, 503);
+      }
+    }
+    if (requiresAnonymousAdmission && idempotencyKey === null && !distributedRuntime) {
       let networkLimit: { allowed: true } | { allowed: false; retryAfterSec: number };
       try {
         networkLimit = reserveAnonymousExecution(callerIp);
@@ -2719,49 +3050,136 @@ export function webTransport(opts: WebTransportOptions): Augment {
     }
 
     let internalTurnId = idempotencyKey === null ? publicRunId : crypto.randomUUID();
+    const audience = isConsoleRun ? null : requireSecurityAudience();
+    const executionBindingHash =
+      audience === null
+        ? null
+        : hashIdempotencyBinding({
+            audience,
+            peer: {
+              id: peer.id,
+              kind: peer.kind,
+              trustLevel: peer.trustLevel,
+              publicSubstate: peer.publicSubstate,
+              sourceAugment: peer.sourceAugment,
+              displayName: peer.displayName,
+              orgId: peer.orgId,
+            },
+            threadId,
+            contextId: body.contextId,
+            taskId: body.taskId,
+            messages: body.messages,
+            auth: idempotencyAuthorizationBinding(turnAuth),
+          });
+    const distributedKeyHash =
+      distributedRuntime && idempotencyKey !== null && audience !== null
+        ? hashIdempotencyKey(audience, idempotencyKey)
+        : null;
+    if (distributedKeyHash !== null) {
+      internalTurnId = distributedWebRunId(distributedKeyHash);
+      publicRunId = internalTurnId;
+    }
+    if (
+      distributedRuntime &&
+      turnAuth?.state === "recognized" &&
+      turnAuth.externalAuth !== undefined
+    ) {
+      const assertion = turnAuth.externalAuth;
+      if (
+        !externalAuthReplayProtectionEnabled ||
+        !assertion.jti ||
+        !executionBindingHash ||
+        !kernel?.claimDistributedExternalAssertion
+      ) {
+        return json({ error: "external_auth_distributed_unavailable" }, 503);
+      }
+      let claim: Awaited<
+        ReturnType<NonNullable<TransportKernel["claimDistributedExternalAssertion"]>>
+      >;
+      try {
+        claim = await kernel.claimDistributedExternalAssertion({
+          provider: assertion.provider,
+          keyId: assertion.keyId ?? null,
+          jti: assertion.jti,
+          requestId: internalTurnId,
+          bindingHash: executionBindingHash,
+          expiresAt: turnAuth.expiresAt,
+        });
+      } catch {
+        return json({ error: "external_auth_distributed_unavailable" }, 503);
+      }
+      if (claim.status === "unavailable" || claim.status === "capacity") {
+        return json({ error: "external_auth_distributed_unavailable" }, 503);
+      }
+      if (claim.status !== "claimed" && claim.status !== "replayed") {
+        return json({ error: "unauthorized" }, 401);
+      }
+    }
+    const distributedExecutionContext =
+      distributedRuntime && executionBindingHash !== null
+        ? {
+            version: 1 as const,
+            executionId: internalTurnId,
+            attempt: 1,
+            bindingHash: executionBindingHash,
+            ...(distributedKeyHash === null ? {} : { idempotencyKeyHash: distributedKeyHash }),
+          }
+        : undefined;
+    const capacityClass =
+      peer.trustLevel === "creator" ? "creator" : peer.trustLevel === "agent" ? "agent" : "public";
+    const partitionHash =
+      audience === null
+        ? null
+        : hashIdempotencyBinding({
+            audience,
+            capacityClass,
+            subject:
+              capacityClass === "public" && peer.publicSubstate === "anonymous"
+                ? "all-anonymous"
+                : peer.id,
+          });
+    const distributedCapacity =
+      distributedRuntime && partitionHash !== null
+        ? { classId: capacityClass, partitionHash }
+        : undefined;
+    const distributedPeerAdmission =
+      distributedRuntime && peerRateLimit !== undefined && audience !== null
+        ? [
+            {
+              policyId: DISTRIBUTED_PEER_POLICY_ID,
+              subjectHash: hashIdempotencyBinding({
+                audience,
+                kind: "web-peer",
+                peerId: peer.id,
+                trustLevel: peer.trustLevel,
+                publicSubstate: peer.publicSubstate,
+              }),
+            },
+          ]
+        : [];
+    const distributedAdmission =
+      distributedRuntime &&
+      (distributedPeerAdmission.length > 0 || anonymousAdmissionPolicies.length > 0)
+        ? [
+            ...distributedPeerAdmission,
+            ...anonymousAdmissionPolicies.map((policy) => ({
+              policyId: policy.policyId,
+              subjectHash: policy.bucketHash,
+            })),
+          ]
+        : undefined;
     let durableIdempotency: {
       store: WebIdempotencyStore;
       keyHash: string;
       ownerToken: string;
     } | null = null;
-    if (idempotencyKey !== null && !isConsoleRun) {
+    if (idempotencyKey !== null && !isConsoleRun && !distributedRuntime) {
       const store = idempotencyStore;
       if (!store) {
         return json({ error: "idempotency_unavailable" }, 503);
       }
-      const audience = requireSecurityAudience();
-      const keyHash = hashIdempotencyKey(audience, idempotencyKey);
-      const capacityClass =
-        peer.trustLevel === "creator"
-          ? "creator"
-          : peer.trustLevel === "agent"
-            ? "agent"
-            : "public";
-      const partitionHash = hashIdempotencyBinding({
-        audience,
-        capacityClass,
-        subject:
-          capacityClass === "public" && peer.publicSubstate === "anonymous"
-            ? "all-anonymous"
-            : peer.id,
-      });
-      const bindingHash = hashIdempotencyBinding({
-        audience,
-        peer: {
-          id: peer.id,
-          kind: peer.kind,
-          trustLevel: peer.trustLevel,
-          publicSubstate: peer.publicSubstate,
-          sourceAugment: peer.sourceAugment,
-          displayName: peer.displayName,
-          orgId: peer.orgId,
-        },
-        threadId,
-        contextId: body.contextId,
-        taskId: body.taskId,
-        messages: body.messages,
-        auth: idempotencyAuthorizationBinding(turnAuth),
-      });
+      const keyHash = hashIdempotencyKey(audience!, idempotencyKey);
+      const bindingHash = executionBindingHash!;
       let claim: IdempotencyClaim;
       try {
         claim = store.claim(
@@ -2769,10 +3187,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
           bindingHash,
           {
             class: capacityClass,
-            partitionHash,
+            partitionHash: partitionHash!,
           },
           requiresAnonymousAdmission && anonymousNetworkMode !== "trusted-edge"
-            ? anonymousRateLimitPolicies(callerIp)
+            ? anonymousAdmissionPolicies
             : undefined,
         );
         if (claim.status === "running") {
@@ -2851,6 +3269,38 @@ export function webTransport(opts: WebTransportOptions): Augment {
       };
     }
 
+    const distributedVisitorPayload =
+      distributedRuntime && visitorPayload?.identityVersion !== undefined ? visitorPayload : null;
+    const distributedVisitorRequiresFence = distributedVisitorPayload !== null;
+    const revalidateDistributedVisitor = async (): Promise<"active" | "denied" | "unavailable"> => {
+      if (!distributedVisitorRequiresFence) return "active";
+      try {
+        const identity = await resolveVisitorIdentityPayload(distributedVisitorPayload);
+        return identity?.visitorId === distributedVisitorPayload.visitorId ? "active" : "denied";
+      } catch {
+        return "unavailable";
+      }
+    };
+
+    // Reject stale credentials before opening an SSE response. The same
+    // authority is checked again on the claimed execution path below because
+    // distributed queueing can outlive this HTTP-stage decision.
+    if (distributedVisitorRequiresFence) {
+      const initialVisitorAuthority = await revalidateDistributedVisitor();
+      if (initialVisitorAuthority === "denied") {
+        return json(visitorAuthRequiredErrorBody(), 401);
+      }
+      if (initialVisitorAuthority === "unavailable") {
+        return json({ error: "identity_authority_unavailable" }, 503);
+      }
+    }
+    let executionVisitorAuthority:
+      | "not-required"
+      | "pending"
+      | "active"
+      | "denied"
+      | "unavailable" = distributedVisitorRequiresFence ? "pending" : "not-required";
+
     const runStartedAt = Date.now();
     if (consoleMetadata && consoleChatStore) {
       try {
@@ -2916,9 +3366,11 @@ export function webTransport(opts: WebTransportOptions): Augment {
     // identity, so every run must receive this stable transport-level adapter.
     const runHistoryPersistence = consoleMetadata ? consoleHistoryPersistence : null;
     const deliveryAbort = new AbortController();
-    const executionSignal = durableIdempotency
-      ? deliveryAbort.signal
-      : AbortSignal.any([req.signal, deliveryAbort.signal]);
+    const disconnectDurableExecution = durableIdempotency !== null || distributedKeyHash !== null;
+    const executionSignal =
+      durableIdempotency || distributedKeyHash !== null
+        ? deliveryAbort.signal
+        : AbortSignal.any([req.signal, deliveryAbort.signal]);
 
     let pullPendingSse: ((controller: ReadableStreamDefaultController<Uint8Array>) => void) | null =
       null;
@@ -2998,7 +3450,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
           // Keyed durable runs intentionally survive a client disconnect so
           // an exact retry can replay the canonical result. Resource-limit
           // overflow still aborts both durable and non-durable execution.
-          if (!durableIdempotency) deliveryAbort.abort();
+          if (!disconnectDurableExecution) deliveryAbort.abort();
         };
 
         const patchRunIdentity = (e: AGUIEvent): AGUIEvent => {
@@ -3039,7 +3491,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
               streamClosed = true;
               pendingChunks.length = 0;
               pendingBytes = 0;
-              if (!durableIdempotency) deliveryAbort.abort();
+              if (!disconnectDurableExecution) deliveryAbort.abort();
               return;
             }
           }
@@ -3263,11 +3715,57 @@ export function webTransport(opts: WebTransportOptions): Augment {
             const result = await k.handleInbound(trigger, {
               onEvent,
               signal: executionSignal,
+              ...(distributedVisitorRequiresFence
+                ? {
+                    beforeExecute: async () => {
+                      executionVisitorAuthority = await revalidateDistributedVisitor();
+                      if (executionVisitorAuthority !== "active") {
+                        throw new Error("distributed visitor execution authority denied");
+                      }
+                    },
+                  }
+                : {}),
               onExecutionStart: () => {
                 schedulerExecutionStarted = true;
               },
+              executionContext: distributedExecutionContext,
+              distributedCapacity,
+              distributedAdmission,
               ...(runHistoryPersistence ? { historyPersistence: runHistoryPersistence } : {}),
             });
+            if (result.distributedReplay) {
+              executionVisitorAuthority = await revalidateDistributedVisitor();
+              if (executionVisitorAuthority !== "active") {
+                const unavailable = executionVisitorAuthority === "unavailable";
+                const errorEvent = runError({
+                  message: unavailable
+                    ? "Identity authority is unavailable."
+                    : "Visitor authorization changed before replay.",
+                  code: unavailable
+                    ? "IDENTITY_AUTHORITY_UNAVAILABLE"
+                    : "VISITOR_AUTHORIZATION_REVOKED",
+                });
+                observeEvent(errorEvent);
+                writeEvent(errorEvent);
+                finishPersistedRun(
+                  "error",
+                  runFinished({ threadId, runId: publicRunId, status: "rejected" }),
+                );
+                return;
+              }
+              const responses = result.responses ?? (result.response ? [result.response] : []);
+              for (const [responseIndex, response] of responses.entries()) {
+                const replayText = response.parts
+                  .filter((part): part is Extract<Part, { kind: "text" }> => part.kind === "text")
+                  .map((part) => part.text)
+                  .join("");
+                if (replayText.length === 0) continue;
+                const messageId = `distributed-replay-${publicRunId}-${responseIndex}`;
+                emitTranslatedEvent(textMessageStart({ messageId, role: "assistant" }));
+                emitTranslatedEvent(textMessageContent({ messageId, delta: replayText }));
+                emitTranslatedEvent(textMessageEnd({ messageId }));
+              }
+            }
             if (result.status === "rejected") {
               if (!schedulerExecutionStarted && result.rejection && durableIdempotency) {
                 // Scheduler rejection happens before persistence, inference,
@@ -3279,7 +3777,14 @@ export function webTransport(opts: WebTransportOptions): Augment {
               // A future synchronous reservation API could return 429/503
               // before opening the stream.
               let code: string;
-              if (result.errorClass === "cap-denied") {
+              let message = result.errorResponse ?? "request rejected by transport";
+              if (executionVisitorAuthority === "denied") {
+                code = "VISITOR_AUTHORIZATION_REVOKED";
+                message = "Visitor authorization changed before execution.";
+              } else if (executionVisitorAuthority === "unavailable") {
+                code = "IDENTITY_AUTHORITY_UNAVAILABLE";
+                message = "Identity authority is unavailable.";
+              } else if (result.errorClass === "cap-denied") {
                 code = "CAP_DENIED";
               } else if (result.errorClass === "admission-state-failed") {
                 code = "ADMISSION_FAILED";
@@ -3300,7 +3805,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 code = "REJECTED";
               }
               const errorEvent = runError({
-                message: result.errorResponse ?? "request rejected by transport",
+                message,
                 code,
               });
               observeEvent(errorEvent);
@@ -3509,10 +4014,6 @@ export function webTransport(opts: WebTransportOptions): Augment {
     adminActions,
     async onBoot() {
       validateExternalAuthRuntimeOptions(opts.externalAuth as unknown);
-      const anonymousBoundaryError = anonymousRateLimitConfigurationError(allowAnonymous);
-      if (anonymousBoundaryError) {
-        throw new Error(`[web-transport] ${anonymousBoundaryError}.`);
-      }
       if (allowAnonymous && peerRateLimit !== undefined) {
         if (anonymousNetworkMode === "trusted-edge") {
           console.warn(
@@ -3554,6 +4055,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         signingKey = await deriveSigningKey(keySource);
       }
       const idempotencyDbPath = resolveIdempotencyDbPath(opts);
+      webIdempotencyCapacity = resolveWebIdempotencyCapacityPolicy(opts.idempotency ?? {});
       if (idempotencyDbPath !== null) {
         idempotencyStore = createWebIdempotencyStore({
           dbPath: idempotencyDbPath,
@@ -3647,11 +4149,16 @@ export function webTransport(opts: WebTransportOptions): Augment {
               // route-key "admin" for compatibility. Defeats brute-force against
               // HTTP Basic.
               const adminIp = consoleRequest.callerIp;
-              const adminRl = checkRouteRateLimit("admin", adminIp, 60);
+              const adminRl = await checkRouteRateLimit(
+                "admin",
+                adminIp,
+                60,
+                DISTRIBUTED_CONSOLE_POLICY_ID,
+              );
               if (!adminRl.allowed) {
                 return withConsoleBoundaryHeaders(
                   new Response(null, {
-                    status: 429,
+                    status: adminRl.status,
                     headers: { "retry-after": String(adminRl.retryAfterSec) },
                   }),
                 );
@@ -3715,10 +4222,20 @@ export function webTransport(opts: WebTransportOptions): Augment {
             }
 
             if (req.method === "POST" && url.pathname === "/agent/run") {
-              return handleAgentRun(
-                req,
-                resolveCallerIp(req, server, trustedProxies, xffOnUntrusted),
-              );
+              try {
+                return await handleAgentRun(
+                  req,
+                  resolveCallerIp(req, server, trustedProxies, xffOnUntrusted),
+                );
+              } catch (error) {
+                if (error instanceof VisitorIdentityAuthorityUnavailableError) {
+                  return json({ error: "identity_authority_unavailable" }, 503);
+                }
+                if (error instanceof DistributedExternalAuthUnavailableError) {
+                  return json({ error: "external_auth_distributed_unavailable" }, 503);
+                }
+                throw error;
+              }
             }
             if ((req.method === "GET" || req.method === "HEAD") && url.pathname === "/agent/") {
               if (!publicIntegration) return new Response(null, { status: 404 });
@@ -3782,11 +4299,20 @@ export function webTransport(opts: WebTransportOptions): Augment {
               if (augmentRoute.rateLimit) {
                 const routeKey = `${augmentRoute.method} ${augmentRoute.path}`;
                 const ip = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
-                const rl = checkRouteRateLimit(routeKey, ip, augmentRoute.rateLimit.maxPerMinute);
+                const rl = await checkRouteRateLimit(
+                  routeKey,
+                  ip,
+                  augmentRoute.rateLimit.maxPerMinute,
+                  distributedWebRoutePolicyId(augmentRoute.method, augmentRoute.path),
+                );
                 if (!rl.allowed) {
-                  return json({ error: "rate-limited" }, 429, {
-                    "retry-after": String(rl.retryAfterSec),
-                  });
+                  return json(
+                    { error: rl.status === 429 ? "rate-limited" : "rate-limit-unavailable" },
+                    rl.status,
+                    {
+                      "retry-after": String(rl.retryAfterSec),
+                    },
+                  );
                 }
               }
 

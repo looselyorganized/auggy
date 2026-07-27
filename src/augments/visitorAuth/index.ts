@@ -1036,6 +1036,8 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
             reuseVisitorId,
             consume.peerId ?? undefined,
             consume.peerId ?? undefined,
+            consume.threadId ?? undefined,
+            1,
           );
 
           // Record / touch the verified-visitor row:
@@ -1067,6 +1069,8 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
                 canonicalVisitorId,
                 consume.peerId ?? undefined,
                 consume.peerId ?? undefined,
+                consume.threadId ?? undefined,
+                1,
               );
             }
           } else {
@@ -1106,6 +1110,8 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
                   winner.visitorId,
                   consume.peerId ?? undefined,
                   consume.peerId ?? undefined,
+                  consume.threadId ?? undefined,
+                  1,
                 );
               } else {
                 // Defensive: winner row vanished or is revoked between INSERT failure

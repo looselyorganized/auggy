@@ -80,9 +80,722 @@ CREATE TABLE IF NOT EXISTS auggy_coordination_events (
 );
 `;
 
+const COORDINATION_COMPATIBILITY_MIGRATION_SQL = `
+ALTER TABLE auggy_coordination_namespaces
+  ADD COLUMN protocol_version INTEGER NOT NULL
+    CONSTRAINT auggy_coord_ns_protocol_version_check CHECK (protocol_version > 0),
+  ADD COLUMN protocol_fingerprint TEXT NOT NULL
+    CONSTRAINT auggy_coord_ns_protocol_fingerprint_check CHECK (protocol_fingerprint ~ '^[0-9a-f]{64}$'),
+  ADD COLUMN configuration_fingerprint TEXT NOT NULL
+    CONSTRAINT auggy_coord_ns_config_fingerprint_check CHECK (configuration_fingerprint ~ '^[0-9a-f]{64}$'),
+  ADD COLUMN terminal_request_retention_ms BIGINT NOT NULL
+    CONSTRAINT auggy_coord_ns_terminal_retention_check CHECK (terminal_request_retention_ms >= 60000 AND terminal_request_retention_ms <= 31536000000),
+  ADD COLUMN max_terminal_requests INTEGER NOT NULL
+    CONSTRAINT auggy_coord_ns_max_terminal_check CHECK (max_terminal_requests >= 1 AND max_terminal_requests <= 1000000),
+  ADD COLUMN event_retention_ms BIGINT NOT NULL
+    CONSTRAINT auggy_coord_ns_event_retention_check CHECK (event_retention_ms >= 60000 AND event_retention_ms <= 31536000000),
+  ADD COLUMN max_events INTEGER NOT NULL
+    CONSTRAINT auggy_coord_ns_max_events_check CHECK (max_events >= 1 AND max_events <= 1000000),
+  ADD COLUMN max_replay_bytes INTEGER NOT NULL
+    CONSTRAINT auggy_coord_ns_replay_bytes_check CHECK (max_replay_bytes >= 1024 AND max_replay_bytes <= 1048576);
+`;
+
+const COORDINATION_LIFECYCLE_MIGRATION_SQL = `
+UPDATE auggy_coordination_threads AS thread
+   SET quarantined = TRUE,
+       quarantine_fence = request.fence,
+       updated_at = clock_timestamp()
+  FROM auggy_coordination_requests AS request
+ WHERE request.namespace = thread.namespace
+   AND request.thread_id = thread.thread_id
+   AND request.state = 'active'
+   AND request.execution_started_at IS NOT NULL;
+
+UPDATE auggy_coordination_requests
+   SET state = CASE
+         WHEN state = 'active' AND execution_started_at IS NOT NULL THEN 'outcome_unknown'
+         WHEN state IN ('queued', 'active') THEN 'canceled'
+         ELSE state
+       END,
+       owner_instance = NULL,
+       lease_expires_at = NULL,
+       terminal_at = CASE
+         WHEN state IN ('queued', 'active', 'completed', 'failed', 'canceled', 'outcome_unknown')
+           THEN COALESCE(terminal_at, clock_timestamp())
+         ELSE terminal_at
+       END,
+       updated_at = clock_timestamp();
+
+DELETE FROM auggy_coordination_instances;
+
+ALTER TABLE auggy_coordination_instances
+  ADD COLUMN session_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_instance_session_check CHECK (session_id ~ '^[0-9a-f]{64}$'),
+  ADD COLUMN build_fingerprint TEXT NOT NULL
+    CONSTRAINT auggy_coord_instance_build_check CHECK (build_fingerprint ~ '^[0-9a-f]{64}$'),
+  ADD COLUMN accepting BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN lease_expires_at TIMESTAMPTZ NOT NULL,
+  ADD COLUMN registered_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  ADD CONSTRAINT auggy_coord_instance_lifecycle_check
+    CHECK ((accepting AND NOT draining) OR (NOT accepting AND draining));
+
+ALTER TABLE auggy_coordination_requests
+  ADD COLUMN owner_session TEXT,
+  ADD COLUMN queue_owner_instance TEXT,
+  ADD COLUMN queue_owner_session TEXT,
+  ADD COLUMN queue_generation BIGINT NOT NULL DEFAULT 0
+    CONSTRAINT auggy_coord_request_queue_generation_check CHECK (queue_generation >= 0),
+  ADD COLUMN queue_expires_at TIMESTAMPTZ,
+  ADD CONSTRAINT auggy_coord_request_lifecycle_check CHECK (
+    (state = 'queued'
+      AND queue_owner_instance IS NOT NULL
+      AND queue_owner_session IS NOT NULL
+      AND queue_generation > 0
+      AND queue_expires_at IS NOT NULL
+      AND fence IS NULL
+      AND owner_instance IS NULL
+      AND owner_session IS NULL
+      AND lease_expires_at IS NULL
+      AND terminal_at IS NULL)
+    OR
+    (state = 'active'
+      AND fence IS NOT NULL
+      AND owner_instance IS NOT NULL
+      AND owner_session IS NOT NULL
+      AND lease_expires_at IS NOT NULL
+      AND queue_owner_instance IS NULL
+      AND queue_owner_session IS NULL
+      AND queue_expires_at IS NULL
+      AND terminal_at IS NULL)
+    OR
+    (state IN ('completed', 'failed', 'canceled', 'outcome_unknown')
+      AND terminal_at IS NOT NULL
+      AND owner_instance IS NULL
+      AND owner_session IS NULL
+      AND lease_expires_at IS NULL
+      AND queue_owner_instance IS NULL
+      AND queue_owner_session IS NULL
+      AND queue_expires_at IS NULL)
+  );
+
+CREATE INDEX auggy_coordination_instance_lease_idx
+  ON auggy_coordination_instances (namespace, lease_expires_at, instance_id);
+CREATE INDEX auggy_coordination_request_queue_lease_idx
+  ON auggy_coordination_requests (namespace, state, queue_expires_at, request_id);
+CREATE INDEX auggy_coordination_request_terminal_idx
+  ON auggy_coordination_requests (namespace, state, terminal_at, request_id);
+`;
+
+const COORDINATION_RESULT_MIGRATION_SQL = `
+UPDATE auggy_coordination_events
+   SET reason = 'legacy-redacted'
+ WHERE reason IS NOT NULL
+   AND reason !~ '^[a-z0-9][a-z0-9._:-]{0,63}$';
+
+ALTER TABLE auggy_coordination_events
+  ADD CONSTRAINT auggy_coord_event_type_check
+    CHECK (event_type ~ '^[a-z0-9][a-z0-9._:-]{0,63}$'),
+  ADD CONSTRAINT auggy_coord_event_reason_check
+    CHECK (reason IS NULL OR reason ~ '^[a-z0-9][a-z0-9._:-]{0,63}$');
+
+ALTER TABLE auggy_coordination_namespaces
+  ADD COLUMN lease_ms BIGINT,
+  ADD COLUMN next_fence BIGINT NOT NULL DEFAULT 0;
+
+UPDATE auggy_coordination_namespaces AS namespace_row
+   SET next_fence = COALESCE((
+     SELECT max(thread.next_fence)
+       FROM auggy_coordination_threads AS thread
+      WHERE thread.namespace = namespace_row.namespace
+   ), 0);
+
+ALTER TABLE auggy_coordination_namespaces
+  ADD CONSTRAINT auggy_coord_ns_lease_ms_check
+    CHECK (lease_ms IS NULL OR (lease_ms >= 1 AND lease_ms <= 3600000)),
+  ADD CONSTRAINT auggy_coord_ns_next_fence_check CHECK (next_fence >= 0);
+
+ALTER TABLE auggy_coordination_requests
+  ADD COLUMN result_body BYTEA,
+  ADD COLUMN result_content_type TEXT,
+  ADD COLUMN result_version SMALLINT,
+  ADD CONSTRAINT auggy_coord_request_result_version_check
+    CHECK (result_version IS NULL OR result_version = 1),
+  ADD CONSTRAINT auggy_coord_request_result_check CHECK (
+    (result_body IS NULL AND result_content_type IS NULL AND result_version IS NULL)
+    OR
+    (state = 'completed'
+      AND result_body IS NOT NULL
+      AND result_content_type = 'application/json'
+      AND result_version = 1
+      AND octet_length(result_body) <= 1048576)
+  );
+`;
+
+const COORDINATION_TURN_STATE_MIGRATION_SQL = `
+ALTER TABLE auggy_coordination_namespaces
+  ADD COLUMN max_history_snapshot_bytes INTEGER
+    CONSTRAINT auggy_coord_ns_history_bytes_check
+      CHECK (max_history_snapshot_bytes IS NULL OR (max_history_snapshot_bytes >= 1024 AND max_history_snapshot_bytes <= 1048576)),
+  ADD COLUMN max_history_messages INTEGER
+    CONSTRAINT auggy_coord_ns_history_messages_check
+      CHECK (max_history_messages IS NULL OR (max_history_messages >= 1 AND max_history_messages <= 10000)),
+  ADD COLUMN max_history_threads INTEGER
+    CONSTRAINT auggy_coord_ns_history_threads_check
+      CHECK (max_history_threads IS NULL OR (max_history_threads >= 1 AND max_history_threads <= 1000000)),
+  ADD COLUMN max_cost_markers_per_turn INTEGER
+    CONSTRAINT auggy_coord_ns_cost_markers_check
+      CHECK (max_cost_markers_per_turn IS NULL OR (max_cost_markers_per_turn >= 1 AND max_cost_markers_per_turn <= 1000)),
+  ADD COLUMN max_outbox_intents_per_turn INTEGER
+    CONSTRAINT auggy_coord_ns_outbox_intents_check
+      CHECK (max_outbox_intents_per_turn IS NULL OR (max_outbox_intents_per_turn >= 0 AND max_outbox_intents_per_turn <= 1000)),
+  ADD COLUMN max_outbox_intent_bytes INTEGER
+    CONSTRAINT auggy_coord_ns_outbox_bytes_check
+      CHECK (max_outbox_intent_bytes IS NULL OR (max_outbox_intent_bytes >= 1024 AND max_outbox_intent_bytes <= 1048576)),
+  ADD COLUMN max_pending_outbox_intents INTEGER
+    CONSTRAINT auggy_coord_ns_pending_outbox_check
+      CHECK (max_pending_outbox_intents IS NULL OR (max_pending_outbox_intents >= 0 AND max_pending_outbox_intents <= 1000000));
+
+ALTER TABLE auggy_coordination_requests
+  ADD COLUMN history_binding_hash TEXT,
+  ADD COLUMN history_revision BIGINT,
+  ADD CONSTRAINT auggy_coord_request_history_claim_check CHECK (
+    (history_binding_hash IS NULL AND history_revision IS NULL)
+    OR
+    (history_binding_hash ~ '^[0-9a-f]{64}$' AND history_revision >= 0)
+  );
+
+CREATE TABLE auggy_coordination_history (
+  namespace TEXT NOT NULL,
+  thread_id TEXT NOT NULL,
+  peer_binding_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_history_binding_check CHECK (peer_binding_hash ~ '^[0-9a-f]{64}$'),
+  peer_id_hash TEXT
+    CONSTRAINT auggy_coord_history_peer_check CHECK (peer_id_hash IS NULL OR peer_id_hash ~ '^[0-9a-f]{64}$'),
+  promotion_scope_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_history_scope_check CHECK (promotion_scope_hash ~ '^[0-9a-f]{64}$'),
+  trust_level TEXT NOT NULL
+    CONSTRAINT auggy_coord_history_trust_check CHECK (trust_level IN ('creator', 'agent', 'public')),
+  public_substate TEXT
+    CONSTRAINT auggy_coord_history_public_check CHECK (
+      (trust_level = 'public' AND public_substate IN ('anonymous', 'recognized') AND peer_id_hash IS NOT NULL)
+      OR
+      (trust_level <> 'public' AND public_substate IS NULL)
+    ),
+  revision BIGINT NOT NULL DEFAULT 0
+    CONSTRAINT auggy_coord_history_revision_check CHECK (revision >= 0),
+  snapshot_version SMALLINT NOT NULL
+    CONSTRAINT auggy_coord_history_version_check CHECK (snapshot_version = 1),
+  snapshot_body BYTEA NOT NULL
+    CONSTRAINT auggy_coord_history_body_check CHECK (octet_length(snapshot_body) <= 1048576),
+  message_count INTEGER NOT NULL
+    CONSTRAINT auggy_coord_history_messages_check CHECK (message_count >= 0 AND message_count <= 10000),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (namespace, thread_id)
+);
+
+CREATE TABLE auggy_coordination_cost_markers (
+  namespace TEXT NOT NULL,
+  operation_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_cost_operation_check CHECK (operation_id ~ '^auggy-op-v1-[0-9a-f]{64}$'),
+  request_id TEXT NOT NULL,
+  fence BIGINT NOT NULL
+    CONSTRAINT auggy_coord_cost_fence_check CHECK (fence > 0),
+  marker_version SMALLINT NOT NULL
+    CONSTRAINT auggy_coord_cost_version_check CHECK (marker_version = 1),
+  priced BOOLEAN NOT NULL,
+  cost_usd NUMERIC,
+  unpriced_reason TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT auggy_coord_cost_value_check CHECK (
+    (priced AND cost_usd IS NOT NULL AND cost_usd >= 0 AND unpriced_reason IS NULL)
+    OR
+    (NOT priced AND cost_usd IS NULL AND unpriced_reason IN ('missing-usage', 'missing-pricing'))
+  ),
+  PRIMARY KEY (namespace, operation_id)
+);
+
+CREATE INDEX auggy_coordination_cost_marker_request_idx
+  ON auggy_coordination_cost_markers (namespace, request_id);
+
+CREATE TABLE auggy_coordination_outbox (
+  namespace TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  intent_ordinal INTEGER NOT NULL
+    CONSTRAINT auggy_coord_outbox_ordinal_check CHECK (intent_ordinal >= 0),
+  operation_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_outbox_operation_check CHECK (operation_id ~ '^auggy-op-v1-[0-9a-f]{64}$'),
+  fence BIGINT NOT NULL
+    CONSTRAINT auggy_coord_outbox_fence_check CHECK (fence > 0),
+  intent_version SMALLINT NOT NULL
+    CONSTRAINT auggy_coord_outbox_version_check CHECK (intent_version = 1),
+  intent_body BYTEA NOT NULL
+    CONSTRAINT auggy_coord_outbox_body_check CHECK (octet_length(intent_body) <= 1048576),
+  intent_content_type TEXT NOT NULL
+    CONSTRAINT auggy_coord_outbox_content_type_check CHECK (intent_content_type = 'application/json'),
+  state TEXT NOT NULL DEFAULT 'pending'
+    CONSTRAINT auggy_coord_outbox_state_check CHECK (state = 'pending'),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (namespace, request_id, intent_ordinal)
+);
+
+CREATE UNIQUE INDEX auggy_coordination_outbox_operation_idx
+  ON auggy_coordination_outbox (namespace, operation_id);
+CREATE INDEX auggy_coordination_outbox_pending_idx
+  ON auggy_coordination_outbox (namespace, state, created_at, request_id, intent_ordinal);
+`;
+
+const COORDINATION_ADMISSION_MIGRATION_SQL = `
+ALTER TABLE auggy_coordination_namespaces
+  ADD COLUMN max_rate_limit_events INTEGER,
+  ADD COLUMN rate_policy_fingerprint TEXT,
+  ADD CONSTRAINT auggy_coord_ns_admission_policy_check CHECK (
+    (max_rate_limit_events IS NULL AND rate_policy_fingerprint IS NULL)
+    OR
+    (max_rate_limit_events >= 0
+      AND max_rate_limit_events <= 1000000
+      AND rate_policy_fingerprint ~ '^[0-9a-f]{64}$')
+  );
+
+ALTER TABLE auggy_coordination_requests
+  ADD COLUMN admission_hash TEXT NOT NULL
+    DEFAULT 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    CONSTRAINT auggy_coord_request_admission_hash_check
+      CHECK (admission_hash ~ '^[0-9a-f]{64}$'),
+  ADD COLUMN capacity_class TEXT,
+  ADD COLUMN capacity_partition_hash TEXT,
+  ADD CONSTRAINT auggy_coord_request_capacity_check CHECK (
+    (capacity_class IS NULL AND capacity_partition_hash IS NULL)
+    OR
+    (capacity_class ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'
+      AND capacity_partition_hash ~ '^[0-9a-f]{64}$')
+  );
+
+CREATE INDEX auggy_coordination_request_capacity_class_idx
+  ON auggy_coordination_requests (namespace, capacity_class, request_id);
+CREATE INDEX auggy_coordination_request_capacity_partition_idx
+  ON auggy_coordination_requests
+    (namespace, capacity_class, capacity_partition_hash, request_id);
+
+CREATE TABLE auggy_coordination_request_class_counters (
+  namespace TEXT NOT NULL,
+  capacity_class TEXT NOT NULL
+    CONSTRAINT auggy_coord_request_class_counter_id_check
+      CHECK (capacity_class ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  max_retained_requests INTEGER NOT NULL
+    CONSTRAINT auggy_coord_request_class_counter_max_check
+      CHECK (max_retained_requests >= 1 AND max_retained_requests <= 1000000),
+  max_retained_per_partition INTEGER NOT NULL
+    CONSTRAINT auggy_coord_request_class_counter_partition_max_check
+      CHECK (max_retained_per_partition >= 1 AND max_retained_per_partition <= max_retained_requests),
+  retained_count INTEGER NOT NULL DEFAULT 0
+    CONSTRAINT auggy_coord_request_class_counter_count_check
+      CHECK (retained_count >= 0 AND retained_count <= max_retained_requests),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (namespace, capacity_class)
+);
+
+CREATE TABLE auggy_coordination_request_partition_counters (
+  namespace TEXT NOT NULL,
+  capacity_class TEXT NOT NULL
+    CONSTRAINT auggy_coord_request_partition_counter_id_check
+      CHECK (capacity_class ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  partition_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_request_partition_counter_hash_check
+      CHECK (partition_hash ~ '^[0-9a-f]{64}$'),
+  retained_count INTEGER NOT NULL
+    CONSTRAINT auggy_coord_request_partition_counter_count_check
+      CHECK (retained_count >= 0 AND retained_count <= 1000000),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (namespace, capacity_class, partition_hash)
+);
+
+CREATE TABLE auggy_coordination_rate_counters (
+  namespace TEXT NOT NULL,
+  policy_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_rate_counter_policy_check
+      CHECK (policy_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  max_events INTEGER NOT NULL
+    CONSTRAINT auggy_coord_rate_counter_max_check
+      CHECK (max_events >= 1 AND max_events <= 1000000),
+  event_count INTEGER NOT NULL DEFAULT 0
+    CONSTRAINT auggy_coord_rate_counter_count_check
+      CHECK (event_count >= 0 AND event_count <= max_events),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (namespace, policy_id)
+);
+
+CREATE TABLE auggy_coordination_rate_events (
+  namespace TEXT NOT NULL,
+  policy_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_rate_policy_check
+      CHECK (policy_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  subject_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_rate_subject_check CHECK (subject_hash ~ '^[0-9a-f]{64}$'),
+  request_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_rate_request_check
+      CHECK (request_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  occurred_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  CONSTRAINT auggy_coord_rate_expiry_check CHECK (expires_at > occurred_at),
+  PRIMARY KEY (namespace, policy_id, subject_hash, request_id)
+);
+
+CREATE INDEX auggy_coordination_rate_event_bucket_idx
+  ON auggy_coordination_rate_events
+    (namespace, policy_id, subject_hash, occurred_at, request_id);
+CREATE INDEX auggy_coordination_rate_event_expiry_idx
+  ON auggy_coordination_rate_events (namespace, expires_at, request_id);
+CREATE INDEX auggy_coordination_rate_event_policy_expiry_idx
+  ON auggy_coordination_rate_events
+    (namespace, policy_id, expires_at, subject_hash, request_id);
+CREATE INDEX auggy_coordination_rate_event_request_idx
+  ON auggy_coordination_rate_events
+    (namespace, request_id, policy_id, subject_hash, expires_at);
+`;
+
+const COORDINATION_VISITOR_AUTHORITY_MIGRATION_SQL = `
+CREATE TABLE auggy_coordination_visitor_authorities (
+  namespace TEXT NOT NULL,
+  audience TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_audience_check
+      CHECK (length(audience) BETWEEN 1 AND 256),
+  policy_fingerprint TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_policy_check
+      CHECK (policy_fingerprint ~ '^[0-9a-f]{64}$'),
+  max_verification_requests INTEGER NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_request_max_check
+      CHECK (max_verification_requests BETWEEN 1 AND 1000000),
+  max_visitors INTEGER NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_visitor_max_check
+      CHECK (max_visitors BETWEEN 1 AND 1000000),
+  max_external_assertions INTEGER NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_assertion_max_check
+      CHECK (max_external_assertions BETWEEN 1 AND 1000000),
+  verification_token_ttl_ms BIGINT NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_token_ttl_check
+      CHECK (verification_token_ttl_ms BETWEEN 1 AND 31536000000),
+  verification_request_retention_ms BIGINT NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_request_retention_check
+      CHECK (verification_request_retention_ms BETWEEN 60000 AND 31536000000),
+  reverify_after_ms BIGINT NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_reverify_check
+      CHECK (reverify_after_ms BETWEEN 1 AND 31536000000),
+  max_external_assertion_ttl_ms BIGINT NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_assertion_ttl_check
+      CHECK (max_external_assertion_ttl_ms BETWEEN 1 AND 31536000000),
+  rate_per_hour INTEGER NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_hour_rate_check
+      CHECK (rate_per_hour BETWEEN 1 AND 1000000),
+  rate_per_day INTEGER NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_day_rate_check
+      CHECK (rate_per_day BETWEEN rate_per_hour AND 1000000),
+  rate_min_interval_ms BIGINT NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_interval_check
+      CHECK (rate_min_interval_ms BETWEEN 0 AND 86400000),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (namespace, audience)
+);
+
+CREATE TABLE auggy_coordination_visitor_requests (
+  namespace TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  request_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_id_check
+      CHECK (request_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  binding_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_binding_check
+      CHECK (binding_hash ~ '^[0-9a-f]{64}$'),
+  token_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_token_check
+      CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+  email TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_email_check
+      CHECK (length(email) BETWEEN 3 AND 320),
+  email_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_email_hash_check
+      CHECK (email_hash ~ '^[0-9a-f]{64}$'),
+  peer_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_peer_check
+      CHECK (length(peer_id) BETWEEN 1 AND 256),
+  peer_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_peer_hash_check
+      CHECK (peer_hash ~ '^[0-9a-f]{64}$'),
+  thread_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_thread_check
+      CHECK (length(thread_id) BETWEEN 1 AND 256),
+  thread_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_thread_hash_check
+      CHECK (thread_hash ~ '^[0-9a-f]{64}$'),
+  issued_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open'
+    CONSTRAINT auggy_coord_visitor_request_status_value_check
+      CHECK (status IN ('open', 'verified', 'revoked')),
+  terminal_at TIMESTAMPTZ,
+  visitor_id TEXT,
+  identity_version BIGINT,
+  CONSTRAINT auggy_coord_visitor_request_expiry_check CHECK (expires_at > issued_at),
+  CONSTRAINT auggy_coord_visitor_request_terminal_check CHECK (
+    (status = 'open' AND terminal_at IS NULL AND visitor_id IS NULL AND identity_version IS NULL)
+    OR
+    (status = 'verified' AND terminal_at IS NOT NULL AND visitor_id IS NOT NULL AND identity_version > 0)
+    OR
+    (status = 'revoked' AND terminal_at IS NOT NULL AND visitor_id IS NULL AND identity_version IS NULL)
+  ),
+  PRIMARY KEY (namespace, audience, request_id)
+);
+
+CREATE UNIQUE INDEX auggy_coordination_visitor_request_token_idx
+  ON auggy_coordination_visitor_requests (namespace, audience, token_hash);
+CREATE INDEX auggy_coordination_visitor_request_email_idx
+  ON auggy_coordination_visitor_requests (namespace, audience, email_hash, issued_at, request_id);
+CREATE INDEX auggy_coordination_visitor_request_expiry_idx
+  ON auggy_coordination_visitor_requests (namespace, audience, expires_at, request_id);
+
+CREATE TABLE auggy_coordination_visitors (
+  namespace TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  visitor_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_id_check
+      CHECK (visitor_id ~ '^vis_[A-Za-z0-9._:-]{1,200}$'),
+  email TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_email_check
+      CHECK (length(email) BETWEEN 3 AND 320),
+  email_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_email_hash_check
+      CHECK (email_hash ~ '^[0-9a-f]{64}$'),
+  identity_version BIGINT NOT NULL
+    CONSTRAINT auggy_coord_visitor_version_check CHECK (identity_version > 0),
+  verified_at TIMESTAMPTZ NOT NULL,
+  last_seen_at TIMESTAMPTZ NOT NULL,
+  reverify_due_at TIMESTAMPTZ NOT NULL,
+  revoked_at TIMESTAMPTZ,
+  revoked_reason TEXT,
+  CONSTRAINT auggy_coord_visitor_reverify_check CHECK (reverify_due_at > verified_at),
+  CONSTRAINT auggy_coord_visitor_revocation_check CHECK (
+    (revoked_at IS NULL AND revoked_reason IS NULL)
+    OR
+    (revoked_at IS NOT NULL AND revoked_reason ~ '^[a-z0-9][a-z0-9._:-]{0,63}$')
+  ),
+  PRIMARY KEY (namespace, audience, visitor_id)
+);
+
+CREATE UNIQUE INDEX auggy_coordination_visitor_email_version_idx
+  ON auggy_coordination_visitors (namespace, audience, email_hash, identity_version);
+CREATE INDEX auggy_coordination_visitor_email_idx
+  ON auggy_coordination_visitors (namespace, audience, email_hash, identity_version, visitor_id);
+
+CREATE TABLE auggy_coordination_external_assertions (
+  namespace TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  claim_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_external_assertion_claim_check
+      CHECK (claim_hash ~ '^[0-9a-f]{64}$'),
+  request_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_external_assertion_request_check
+      CHECK (request_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  binding_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_external_assertion_binding_check
+      CHECK (binding_hash ~ '^[0-9a-f]{64}$'),
+  claimed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  CONSTRAINT auggy_coord_external_assertion_expiry_check CHECK (expires_at > claimed_at),
+  PRIMARY KEY (namespace, audience, claim_hash)
+);
+
+CREATE INDEX auggy_coordination_external_assertion_expiry_idx
+  ON auggy_coordination_external_assertions (namespace, audience, expires_at, claim_hash);
+`;
+
+const COORDINATION_BUDGET_AUTHORITY_MIGRATION_SQL = `
+ALTER TABLE auggy_coordination_namespaces
+  ADD COLUMN max_budget_reservations INTEGER,
+  ADD COLUMN max_budget_anonymous_events INTEGER,
+  ADD COLUMN max_budget_peer_days INTEGER,
+  ADD COLUMN max_budget_threshold_intents INTEGER,
+  ADD COLUMN budget_policy_fingerprint TEXT,
+  ADD CONSTRAINT auggy_coord_ns_budget_policy_check CHECK (
+    (max_budget_reservations IS NULL
+      AND max_budget_anonymous_events IS NULL
+      AND max_budget_peer_days IS NULL
+      AND max_budget_threshold_intents IS NULL
+      AND budget_policy_fingerprint IS NULL)
+    OR
+    (max_budget_reservations BETWEEN 0 AND 1000000
+      AND max_budget_anonymous_events BETWEEN 0 AND 1000000
+      AND max_budget_peer_days BETWEEN 0 AND 1000000
+      AND max_budget_threshold_intents BETWEEN 0 AND 1000000
+      AND budget_policy_fingerprint ~ '^[0-9a-f]{64}$')
+  );
+
+CREATE TABLE auggy_coordination_budget_reservations (
+  namespace TEXT NOT NULL,
+  policy_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_reservation_policy_check
+      CHECK (policy_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  request_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_reservation_request_check
+      CHECK (request_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  request_binding_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_reservation_binding_check
+      CHECK (request_binding_hash ~ '^[A-Za-z0-9_-]{16,160}$'),
+  peer_id_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_reservation_peer_check
+      CHECK (peer_id_hash ~ '^[0-9a-f]{64}$'),
+  thread_id_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_reservation_thread_check
+      CHECK (thread_id_hash ~ '^[0-9a-f]{64}$'),
+  trust_level TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_reservation_trust_check
+      CHECK (trust_level IN ('agent', 'public')),
+  public_substate TEXT,
+  attempt BIGINT NOT NULL
+    CONSTRAINT auggy_coord_budget_reservation_attempt_check CHECK (attempt > 0),
+  fence BIGINT NOT NULL
+    CONSTRAINT auggy_coord_budget_reservation_fence_check CHECK (fence > 0),
+  admission_day DATE NOT NULL,
+  state TEXT NOT NULL DEFAULT 'reserved'
+    CONSTRAINT auggy_coord_budget_reservation_state_check
+      CHECK (state IN ('reserved', 'committed', 'outcome_unknown')),
+  reserved_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  settled_at TIMESTAMPTZ,
+  CONSTRAINT auggy_coord_budget_reservation_public_check CHECK (
+    (trust_level = 'public' AND public_substate IN ('anonymous', 'recognized'))
+    OR (trust_level = 'agent' AND public_substate IS NULL)
+  ),
+  CONSTRAINT auggy_coord_budget_reservation_settled_check CHECK (
+    (state = 'reserved' AND settled_at IS NULL)
+    OR (state IN ('committed', 'outcome_unknown') AND settled_at IS NOT NULL)
+  ),
+  PRIMARY KEY (namespace, policy_id, request_id)
+);
+
+CREATE INDEX auggy_coordination_budget_reservation_cap_idx
+  ON auggy_coordination_budget_reservations
+    (namespace, policy_id, admission_day, peer_id_hash, thread_id_hash, state);
+CREATE INDEX auggy_coordination_budget_reservation_settled_idx
+  ON auggy_coordination_budget_reservations
+    (namespace, policy_id, settled_at, request_id);
+
+CREATE TABLE auggy_coordination_budget_anonymous_events (
+  namespace TEXT NOT NULL,
+  policy_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_anon_policy_check
+      CHECK (policy_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  request_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_anon_request_check
+      CHECK (request_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  subject_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_anon_subject_check
+      CHECK (subject_hash ~ '^[0-9a-f]{64}$'),
+  occurred_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  CONSTRAINT auggy_coord_budget_anon_expiry_check CHECK (expires_at > occurred_at),
+  PRIMARY KEY (namespace, policy_id, request_id)
+);
+
+CREATE INDEX auggy_coordination_budget_anon_expiry_idx
+  ON auggy_coordination_budget_anonymous_events
+    (namespace, policy_id, expires_at, request_id);
+CREATE INDEX auggy_coordination_budget_anon_subject_idx
+  ON auggy_coordination_budget_anonymous_events
+    (namespace, policy_id, subject_hash, occurred_at, request_id);
+
+CREATE TABLE auggy_coordination_budget_daily (
+  namespace TEXT NOT NULL,
+  policy_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_daily_policy_check
+      CHECK (policy_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  admission_day DATE NOT NULL,
+  subject_kind TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_daily_kind_check CHECK (subject_kind IN ('global', 'peer')),
+  subject_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_daily_subject_check
+      CHECK (subject_hash ~ '^[0-9a-f]{64}$'),
+  turns_reserved INTEGER NOT NULL DEFAULT 0
+    CONSTRAINT auggy_coord_budget_daily_turns_check CHECK (turns_reserved >= 0),
+  cost_usd NUMERIC(30, 12) NOT NULL DEFAULT 0
+    CONSTRAINT auggy_coord_budget_daily_cost_check CHECK (cost_usd >= 0),
+  unpriced_turns INTEGER NOT NULL DEFAULT 0
+    CONSTRAINT auggy_coord_budget_daily_unpriced_check CHECK (unpriced_turns >= 0),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (namespace, policy_id, admission_day, subject_kind, subject_hash)
+);
+
+CREATE INDEX auggy_coordination_budget_daily_policy_idx
+  ON auggy_coordination_budget_daily (namespace, policy_id, admission_day, subject_kind);
+
+CREATE TABLE auggy_coordination_budget_threshold_intents (
+  namespace TEXT NOT NULL,
+  policy_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_threshold_policy_check
+      CHECK (policy_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  admission_day DATE NOT NULL,
+  threshold_ppm INTEGER NOT NULL
+    CONSTRAINT auggy_coord_budget_threshold_value_check
+      CHECK (threshold_ppm BETWEEN 1 AND 1000000),
+  destination TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_threshold_destination_check
+      CHECK (destination ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  request_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_threshold_request_check
+      CHECK (request_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  operation_id TEXT
+    CONSTRAINT auggy_coord_budget_threshold_operation_check
+      CHECK (operation_id IS NULL OR operation_id ~ '^auggy-op-v1-[0-9a-f]{64}$'),
+  intent_body BYTEA,
+  state TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_threshold_state_check
+      CHECK (state IN ('pending', 'suppressed')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT auggy_coord_budget_threshold_body_check CHECK (
+    (state = 'pending' AND operation_id IS NOT NULL AND intent_body IS NOT NULL
+      AND octet_length(intent_body) BETWEEN 2 AND 65536)
+    OR
+    (state = 'suppressed' AND operation_id IS NULL AND intent_body IS NULL)
+  ),
+  PRIMARY KEY (namespace, policy_id, admission_day, threshold_ppm)
+);
+
+CREATE UNIQUE INDEX auggy_coordination_budget_threshold_operation_idx
+  ON auggy_coordination_budget_threshold_intents (namespace, operation_id);
+CREATE INDEX auggy_coordination_budget_threshold_pending_idx
+  ON auggy_coordination_budget_threshold_intents
+    (namespace, state, created_at, policy_id, admission_day, threshold_ppm);
+`;
+
 /** Recomputed from immutable migration SQL; migration rejects any mismatch. */
 export const postgresCoordinationMigrationChecksum = new Bun.CryptoHasher("sha256")
   .update(INITIAL_COORDINATION_MIGRATION_SQL)
+  .digest("hex");
+
+export const postgresCoordinationCompatibilityMigrationChecksum = new Bun.CryptoHasher("sha256")
+  .update(COORDINATION_COMPATIBILITY_MIGRATION_SQL)
+  .digest("hex");
+
+export const postgresCoordinationLifecycleMigrationChecksum = new Bun.CryptoHasher("sha256")
+  .update(COORDINATION_LIFECYCLE_MIGRATION_SQL)
+  .digest("hex");
+
+export const postgresCoordinationResultMigrationChecksum = new Bun.CryptoHasher("sha256")
+  .update(COORDINATION_RESULT_MIGRATION_SQL)
+  .digest("hex");
+
+export const postgresCoordinationTurnStateMigrationChecksum = new Bun.CryptoHasher("sha256")
+  .update(COORDINATION_TURN_STATE_MIGRATION_SQL)
+  .digest("hex");
+
+export const postgresCoordinationAdmissionMigrationChecksum = new Bun.CryptoHasher("sha256")
+  .update(COORDINATION_ADMISSION_MIGRATION_SQL)
+  .digest("hex");
+
+export const postgresCoordinationVisitorAuthorityMigrationChecksum = new Bun.CryptoHasher("sha256")
+  .update(COORDINATION_VISITOR_AUTHORITY_MIGRATION_SQL)
+  .digest("hex");
+
+export const postgresCoordinationBudgetAuthorityMigrationChecksum = new Bun.CryptoHasher("sha256")
+  .update(COORDINATION_BUDGET_AUTHORITY_MIGRATION_SQL)
   .digest("hex");
 
 export const POSTGRES_COORDINATION_MIGRATIONS = [
@@ -90,6 +803,41 @@ export const POSTGRES_COORDINATION_MIGRATIONS = [
     id: "20260724_01_distributed_turn_coordination",
     checksum: postgresCoordinationMigrationChecksum,
     sql: INITIAL_COORDINATION_MIGRATION_SQL,
+  },
+  {
+    id: "20260726_02_coordination_compatibility_contract",
+    checksum: postgresCoordinationCompatibilityMigrationChecksum,
+    sql: COORDINATION_COMPATIBILITY_MIGRATION_SQL,
+  },
+  {
+    id: "20260726_03_coordination_instance_lifecycle",
+    checksum: postgresCoordinationLifecycleMigrationChecksum,
+    sql: COORDINATION_LIFECYCLE_MIGRATION_SQL,
+  },
+  {
+    id: "20260726_04_coordination_bounded_results",
+    checksum: postgresCoordinationResultMigrationChecksum,
+    sql: COORDINATION_RESULT_MIGRATION_SQL,
+  },
+  {
+    id: "20260726_05_coordination_atomic_turn_state",
+    checksum: postgresCoordinationTurnStateMigrationChecksum,
+    sql: COORDINATION_TURN_STATE_MIGRATION_SQL,
+  },
+  {
+    id: "20260726_06_coordination_atomic_admission",
+    checksum: postgresCoordinationAdmissionMigrationChecksum,
+    sql: COORDINATION_ADMISSION_MIGRATION_SQL,
+  },
+  {
+    id: "20260727_07_coordination_visitor_authority",
+    checksum: postgresCoordinationVisitorAuthorityMigrationChecksum,
+    sql: COORDINATION_VISITOR_AUTHORITY_MIGRATION_SQL,
+  },
+  {
+    id: "20260727_08_coordination_budget_authority",
+    checksum: postgresCoordinationBudgetAuthorityMigrationChecksum,
+    sql: COORDINATION_BUDGET_AUTHORITY_MIGRATION_SQL,
   },
 ] as const;
 
@@ -187,6 +935,90 @@ const EVENT_ID_SEQUENCE_DEFAULT = "event-id-owned-sequence";
 
 const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
   [
+    "auggy_coordination_budget_anonymous_events",
+    "expires_at",
+    "timestamp with time zone",
+    true,
+    null,
+  ],
+  ["auggy_coordination_budget_anonymous_events", "namespace", "text", true, null],
+  [
+    "auggy_coordination_budget_anonymous_events",
+    "occurred_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_budget_anonymous_events", "policy_id", "text", true, null],
+  ["auggy_coordination_budget_anonymous_events", "request_id", "text", true, null],
+  ["auggy_coordination_budget_anonymous_events", "subject_hash", "text", true, null],
+  ["auggy_coordination_budget_daily", "admission_day", "date", true, null],
+  ["auggy_coordination_budget_daily", "cost_usd", "numeric(30,12)", true, "0"],
+  ["auggy_coordination_budget_daily", "namespace", "text", true, null],
+  ["auggy_coordination_budget_daily", "policy_id", "text", true, null],
+  ["auggy_coordination_budget_daily", "subject_hash", "text", true, null],
+  ["auggy_coordination_budget_daily", "subject_kind", "text", true, null],
+  ["auggy_coordination_budget_daily", "turns_reserved", "integer", true, "0"],
+  ["auggy_coordination_budget_daily", "unpriced_turns", "integer", true, "0"],
+  [
+    "auggy_coordination_budget_daily",
+    "updated_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_budget_reservations", "admission_day", "date", true, null],
+  ["auggy_coordination_budget_reservations", "attempt", "bigint", true, null],
+  ["auggy_coordination_budget_reservations", "fence", "bigint", true, null],
+  ["auggy_coordination_budget_reservations", "namespace", "text", true, null],
+  ["auggy_coordination_budget_reservations", "peer_id_hash", "text", true, null],
+  ["auggy_coordination_budget_reservations", "policy_id", "text", true, null],
+  ["auggy_coordination_budget_reservations", "public_substate", "text", false, null],
+  ["auggy_coordination_budget_reservations", "request_binding_hash", "text", true, null],
+  ["auggy_coordination_budget_reservations", "request_id", "text", true, null],
+  [
+    "auggy_coordination_budget_reservations",
+    "reserved_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_budget_reservations", "settled_at", "timestamp with time zone", false, null],
+  ["auggy_coordination_budget_reservations", "state", "text", true, "'reserved'::text"],
+  ["auggy_coordination_budget_reservations", "thread_id_hash", "text", true, null],
+  ["auggy_coordination_budget_reservations", "trust_level", "text", true, null],
+  ["auggy_coordination_budget_threshold_intents", "admission_day", "date", true, null],
+  [
+    "auggy_coordination_budget_threshold_intents",
+    "created_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_budget_threshold_intents", "destination", "text", true, null],
+  ["auggy_coordination_budget_threshold_intents", "intent_body", "bytea", false, null],
+  ["auggy_coordination_budget_threshold_intents", "namespace", "text", true, null],
+  ["auggy_coordination_budget_threshold_intents", "operation_id", "text", false, null],
+  ["auggy_coordination_budget_threshold_intents", "policy_id", "text", true, null],
+  ["auggy_coordination_budget_threshold_intents", "request_id", "text", true, null],
+  ["auggy_coordination_budget_threshold_intents", "state", "text", true, null],
+  ["auggy_coordination_budget_threshold_intents", "threshold_ppm", "integer", true, null],
+  ["auggy_coordination_cost_markers", "cost_usd", "numeric", false, null],
+  [
+    "auggy_coordination_cost_markers",
+    "created_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_cost_markers", "fence", "bigint", true, null],
+  ["auggy_coordination_cost_markers", "marker_version", "smallint", true, null],
+  ["auggy_coordination_cost_markers", "namespace", "text", true, null],
+  ["auggy_coordination_cost_markers", "operation_id", "text", true, null],
+  ["auggy_coordination_cost_markers", "priced", "boolean", true, null],
+  ["auggy_coordination_cost_markers", "request_id", "text", true, null],
+  ["auggy_coordination_cost_markers", "unpriced_reason", "text", false, null],
+  [
     "auggy_coordination_events",
     "created_at",
     "timestamp with time zone",
@@ -200,9 +1032,51 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
   ["auggy_coordination_events", "reason", "text", false, null],
   ["auggy_coordination_events", "request_id", "text", false, null],
   ["auggy_coordination_events", "thread_id", "text", true, null],
+  ["auggy_coordination_external_assertions", "audience", "text", true, null],
+  ["auggy_coordination_external_assertions", "binding_hash", "text", true, null],
+  ["auggy_coordination_external_assertions", "claim_hash", "text", true, null],
+  [
+    "auggy_coordination_external_assertions",
+    "claimed_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_external_assertions", "expires_at", "timestamp with time zone", true, null],
+  ["auggy_coordination_external_assertions", "namespace", "text", true, null],
+  ["auggy_coordination_external_assertions", "request_id", "text", true, null],
+  ["auggy_coordination_history", "message_count", "integer", true, null],
+  ["auggy_coordination_history", "namespace", "text", true, null],
+  ["auggy_coordination_history", "peer_binding_hash", "text", true, null],
+  ["auggy_coordination_history", "peer_id_hash", "text", false, null],
+  ["auggy_coordination_history", "promotion_scope_hash", "text", true, null],
+  ["auggy_coordination_history", "public_substate", "text", false, null],
+  ["auggy_coordination_history", "revision", "bigint", true, "0"],
+  ["auggy_coordination_history", "snapshot_body", "bytea", true, null],
+  ["auggy_coordination_history", "snapshot_version", "smallint", true, null],
+  ["auggy_coordination_history", "thread_id", "text", true, null],
+  ["auggy_coordination_history", "trust_level", "text", true, null],
+  [
+    "auggy_coordination_history",
+    "updated_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_instances", "accepting", "boolean", true, "true"],
+  ["auggy_coordination_instances", "build_fingerprint", "text", true, null],
   ["auggy_coordination_instances", "draining", "boolean", true, "false"],
   ["auggy_coordination_instances", "instance_id", "text", true, null],
+  ["auggy_coordination_instances", "lease_expires_at", "timestamp with time zone", true, null],
   ["auggy_coordination_instances", "namespace", "text", true, null],
+  [
+    "auggy_coordination_instances",
+    "registered_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_instances", "session_id", "text", true, null],
   [
     "auggy_coordination_instances",
     "updated_at",
@@ -219,10 +1093,34 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
   ],
   ["auggy_coordination_migrations", "checksum", "text", true, null],
   ["auggy_coordination_migrations", "id", "text", true, null],
+  ["auggy_coordination_namespaces", "budget_policy_fingerprint", "text", false, null],
+  ["auggy_coordination_namespaces", "configuration_fingerprint", "text", true, null],
+  ["auggy_coordination_namespaces", "event_retention_ms", "bigint", true, null],
+  ["auggy_coordination_namespaces", "lease_ms", "bigint", false, null],
+  ["auggy_coordination_namespaces", "max_budget_anonymous_events", "integer", false, null],
+  ["auggy_coordination_namespaces", "max_budget_peer_days", "integer", false, null],
+  ["auggy_coordination_namespaces", "max_budget_reservations", "integer", false, null],
+  ["auggy_coordination_namespaces", "max_budget_threshold_intents", "integer", false, null],
   ["auggy_coordination_namespaces", "max_concurrent", "integer", true, null],
+  ["auggy_coordination_namespaces", "max_cost_markers_per_turn", "integer", false, null],
+  ["auggy_coordination_namespaces", "max_events", "integer", true, null],
+  ["auggy_coordination_namespaces", "max_history_messages", "integer", false, null],
+  ["auggy_coordination_namespaces", "max_history_snapshot_bytes", "integer", false, null],
+  ["auggy_coordination_namespaces", "max_history_threads", "integer", false, null],
+  ["auggy_coordination_namespaces", "max_outbox_intent_bytes", "integer", false, null],
+  ["auggy_coordination_namespaces", "max_outbox_intents_per_turn", "integer", false, null],
+  ["auggy_coordination_namespaces", "max_pending_outbox_intents", "integer", false, null],
   ["auggy_coordination_namespaces", "max_queued", "integer", true, null],
   ["auggy_coordination_namespaces", "max_queued_per_thread", "integer", true, null],
+  ["auggy_coordination_namespaces", "max_rate_limit_events", "integer", false, null],
+  ["auggy_coordination_namespaces", "max_replay_bytes", "integer", true, null],
+  ["auggy_coordination_namespaces", "max_terminal_requests", "integer", true, null],
   ["auggy_coordination_namespaces", "namespace", "text", true, null],
+  ["auggy_coordination_namespaces", "next_fence", "bigint", true, "0"],
+  ["auggy_coordination_namespaces", "protocol_fingerprint", "text", true, null],
+  ["auggy_coordination_namespaces", "protocol_version", "integer", true, null],
+  ["auggy_coordination_namespaces", "rate_policy_fingerprint", "text", false, null],
+  ["auggy_coordination_namespaces", "terminal_request_retention_ms", "bigint", true, null],
   [
     "auggy_coordination_namespaces",
     "updated_at",
@@ -230,12 +1128,103 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
     true,
     "clock_timestamp()",
   ],
+  [
+    "auggy_coordination_outbox",
+    "created_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_outbox", "fence", "bigint", true, null],
+  ["auggy_coordination_outbox", "intent_body", "bytea", true, null],
+  ["auggy_coordination_outbox", "intent_content_type", "text", true, null],
+  ["auggy_coordination_outbox", "intent_ordinal", "integer", true, null],
+  ["auggy_coordination_outbox", "intent_version", "smallint", true, null],
+  ["auggy_coordination_outbox", "namespace", "text", true, null],
+  ["auggy_coordination_outbox", "operation_id", "text", true, null],
+  ["auggy_coordination_outbox", "request_id", "text", true, null],
+  ["auggy_coordination_outbox", "state", "text", true, "'pending'::text"],
+  [
+    "auggy_coordination_outbox",
+    "updated_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_rate_counters", "event_count", "integer", true, "0"],
+  ["auggy_coordination_rate_counters", "max_events", "integer", true, null],
+  ["auggy_coordination_rate_counters", "namespace", "text", true, null],
+  ["auggy_coordination_rate_counters", "policy_id", "text", true, null],
+  [
+    "auggy_coordination_rate_counters",
+    "updated_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_rate_events", "expires_at", "timestamp with time zone", true, null],
+  ["auggy_coordination_rate_events", "namespace", "text", true, null],
+  [
+    "auggy_coordination_rate_events",
+    "occurred_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_rate_events", "policy_id", "text", true, null],
+  ["auggy_coordination_rate_events", "request_id", "text", true, null],
+  ["auggy_coordination_rate_events", "subject_hash", "text", true, null],
+  ["auggy_coordination_request_class_counters", "capacity_class", "text", true, null],
+  [
+    "auggy_coordination_request_class_counters",
+    "max_retained_per_partition",
+    "integer",
+    true,
+    null,
+  ],
+  ["auggy_coordination_request_class_counters", "max_retained_requests", "integer", true, null],
+  ["auggy_coordination_request_class_counters", "namespace", "text", true, null],
+  ["auggy_coordination_request_class_counters", "retained_count", "integer", true, "0"],
+  [
+    "auggy_coordination_request_class_counters",
+    "updated_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_request_partition_counters", "capacity_class", "text", true, null],
+  ["auggy_coordination_request_partition_counters", "namespace", "text", true, null],
+  ["auggy_coordination_request_partition_counters", "partition_hash", "text", true, null],
+  ["auggy_coordination_request_partition_counters", "retained_count", "integer", true, null],
+  [
+    "auggy_coordination_request_partition_counters",
+    "updated_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  [
+    "auggy_coordination_requests",
+    "admission_hash",
+    "text",
+    true,
+    "'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'::text",
+  ],
   ["auggy_coordination_requests", "binding_hash", "text", true, null],
+  ["auggy_coordination_requests", "capacity_class", "text", false, null],
+  ["auggy_coordination_requests", "capacity_partition_hash", "text", false, null],
   ["auggy_coordination_requests", "execution_started_at", "timestamp with time zone", false, null],
   ["auggy_coordination_requests", "fence", "bigint", false, null],
+  ["auggy_coordination_requests", "history_binding_hash", "text", false, null],
+  ["auggy_coordination_requests", "history_revision", "bigint", false, null],
   ["auggy_coordination_requests", "lease_expires_at", "timestamp with time zone", false, null],
   ["auggy_coordination_requests", "namespace", "text", true, null],
   ["auggy_coordination_requests", "owner_instance", "text", false, null],
+  ["auggy_coordination_requests", "owner_session", "text", false, null],
+  ["auggy_coordination_requests", "queue_expires_at", "timestamp with time zone", false, null],
+  ["auggy_coordination_requests", "queue_generation", "bigint", true, "0"],
+  ["auggy_coordination_requests", "queue_owner_instance", "text", false, null],
+  ["auggy_coordination_requests", "queue_owner_session", "text", false, null],
   [
     "auggy_coordination_requests",
     "queued_at",
@@ -244,6 +1233,9 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
     "clock_timestamp()",
   ],
   ["auggy_coordination_requests", "request_id", "text", true, null],
+  ["auggy_coordination_requests", "result_body", "bytea", false, null],
+  ["auggy_coordination_requests", "result_content_type", "text", false, null],
+  ["auggy_coordination_requests", "result_version", "smallint", false, null],
   ["auggy_coordination_requests", "source_id", "text", true, null],
   ["auggy_coordination_requests", "state", "text", true, null],
   ["auggy_coordination_requests", "terminal_at", "timestamp with time zone", false, null],
@@ -278,6 +1270,66 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
     true,
     "clock_timestamp()",
   ],
+  ["auggy_coordination_visitor_authorities", "audience", "text", true, null],
+  ["auggy_coordination_visitor_authorities", "max_external_assertion_ttl_ms", "bigint", true, null],
+  ["auggy_coordination_visitor_authorities", "max_external_assertions", "integer", true, null],
+  ["auggy_coordination_visitor_authorities", "max_verification_requests", "integer", true, null],
+  ["auggy_coordination_visitor_authorities", "max_visitors", "integer", true, null],
+  ["auggy_coordination_visitor_authorities", "namespace", "text", true, null],
+  ["auggy_coordination_visitor_authorities", "policy_fingerprint", "text", true, null],
+  ["auggy_coordination_visitor_authorities", "rate_min_interval_ms", "bigint", true, null],
+  ["auggy_coordination_visitor_authorities", "rate_per_day", "integer", true, null],
+  ["auggy_coordination_visitor_authorities", "rate_per_hour", "integer", true, null],
+  ["auggy_coordination_visitor_authorities", "reverify_after_ms", "bigint", true, null],
+  [
+    "auggy_coordination_visitor_authorities",
+    "updated_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  [
+    "auggy_coordination_visitor_authorities",
+    "verification_request_retention_ms",
+    "bigint",
+    true,
+    null,
+  ],
+  ["auggy_coordination_visitor_authorities", "verification_token_ttl_ms", "bigint", true, null],
+  ["auggy_coordination_visitor_requests", "audience", "text", true, null],
+  ["auggy_coordination_visitor_requests", "binding_hash", "text", true, null],
+  ["auggy_coordination_visitor_requests", "email", "text", true, null],
+  ["auggy_coordination_visitor_requests", "email_hash", "text", true, null],
+  ["auggy_coordination_visitor_requests", "expires_at", "timestamp with time zone", true, null],
+  ["auggy_coordination_visitor_requests", "identity_version", "bigint", false, null],
+  [
+    "auggy_coordination_visitor_requests",
+    "issued_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_visitor_requests", "namespace", "text", true, null],
+  ["auggy_coordination_visitor_requests", "peer_hash", "text", true, null],
+  ["auggy_coordination_visitor_requests", "peer_id", "text", true, null],
+  ["auggy_coordination_visitor_requests", "request_id", "text", true, null],
+  ["auggy_coordination_visitor_requests", "status", "text", true, "'open'::text"],
+  ["auggy_coordination_visitor_requests", "terminal_at", "timestamp with time zone", false, null],
+  ["auggy_coordination_visitor_requests", "thread_hash", "text", true, null],
+  ["auggy_coordination_visitor_requests", "thread_id", "text", true, null],
+  ["auggy_coordination_visitor_requests", "token_hash", "text", true, null],
+  ["auggy_coordination_visitor_requests", "visitor_id", "text", false, null],
+  ["auggy_coordination_visitors", "audience", "text", true, null],
+  ["auggy_coordination_visitors", "email", "text", true, null],
+  ["auggy_coordination_visitors", "email_hash", "text", true, null],
+  ["auggy_coordination_visitors", "identity_version", "bigint", true, null],
+  ["auggy_coordination_visitors", "last_seen_at", "timestamp with time zone", true, null],
+  ["auggy_coordination_visitors", "namespace", "text", true, null],
+  ["auggy_coordination_visitors", "reverify_due_at", "timestamp with time zone", true, null],
+  ["auggy_coordination_visitors", "revoked_at", "timestamp with time zone", false, null],
+  ["auggy_coordination_visitors", "revoked_reason", "text", false, null],
+  ["auggy_coordination_visitors", "verified_at", "timestamp with time zone", true, null],
+  ["auggy_coordination_visitors", "visitor_id", "text", true, null],
 ].map(([table_name, column_name, data_type, not_null, default_expression]) => ({
   table_name: table_name as string,
   column_name: column_name as string,
@@ -291,6 +1343,123 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
 
 const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
   [
+    "auggy_coordination_budget_anonymous_events",
+    "auggy_coordination_budget_anon_expiry_idx",
+    false,
+    false,
+    "namespace,policy_id,expires_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_anonymous_events",
+    "auggy_coordination_budget_anon_subject_idx",
+    false,
+    false,
+    "namespace,policy_id,subject_hash,occurred_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_anonymous_events",
+    "auggy_coordination_budget_anonymous_events_pkey",
+    true,
+    true,
+    "namespace,policy_id,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_daily",
+    "auggy_coordination_budget_daily_pkey",
+    true,
+    true,
+    "namespace,policy_id,admission_day,subject_kind,subject_hash",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.date_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_daily",
+    "auggy_coordination_budget_daily_policy_idx",
+    false,
+    false,
+    "namespace,policy_id,admission_day,subject_kind",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.date_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_reservations",
+    "auggy_coordination_budget_reservation_cap_idx",
+    false,
+    false,
+    "namespace,policy_id,admission_day,peer_id_hash,thread_id_hash,state",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.date_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_reservations",
+    "auggy_coordination_budget_reservation_settled_idx",
+    false,
+    false,
+    "namespace,policy_id,settled_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_reservations",
+    "auggy_coordination_budget_reservations_pkey",
+    true,
+    true,
+    "namespace,policy_id,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_threshold_intents",
+    "auggy_coordination_budget_threshold_intents_pkey",
+    true,
+    true,
+    "namespace,policy_id,admission_day,threshold_ppm",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.date_ops,pg_catalog.int4_ops",
+    "pg_catalog.default,pg_catalog.default,-,-",
+  ],
+  [
+    "auggy_coordination_budget_threshold_intents",
+    "auggy_coordination_budget_threshold_operation_idx",
+    true,
+    false,
+    "namespace,operation_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_threshold_intents",
+    "auggy_coordination_budget_threshold_pending_idx",
+    false,
+    false,
+    "namespace,state,created_at,policy_id,admission_day,threshold_ppm",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops,pg_catalog.date_ops,pg_catalog.int4_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default,-,-",
+  ],
+  [
+    "auggy_coordination_cost_markers",
+    "auggy_coordination_cost_marker_request_idx",
+    false,
+    false,
+    "namespace,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_cost_markers",
+    "auggy_coordination_cost_markers_pkey",
+    true,
+    true,
+    "namespace,operation_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default",
+  ],
+  [
     "auggy_coordination_events",
     "auggy_coordination_events_pkey",
     true,
@@ -298,6 +1467,42 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
     "event_id",
     "pg_catalog.int8_ops",
     "-",
+  ],
+  [
+    "auggy_coordination_external_assertions",
+    "auggy_coordination_external_assertion_expiry_idx",
+    false,
+    false,
+    "namespace,audience,expires_at,claim_hash",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_external_assertions",
+    "auggy_coordination_external_assertions_pkey",
+    true,
+    true,
+    "namespace,audience,claim_hash",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_history",
+    "auggy_coordination_history_pkey",
+    true,
+    true,
+    "namespace,thread_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_instances",
+    "auggy_coordination_instance_lease_idx",
+    false,
+    false,
+    "namespace,lease_expires_at,instance_id",
+    "pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,-,pg_catalog.default",
   ],
   [
     "auggy_coordination_instances",
@@ -327,11 +1532,137 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
     "pg_catalog.default",
   ],
   [
+    "auggy_coordination_outbox",
+    "auggy_coordination_outbox_operation_idx",
+    true,
+    false,
+    "namespace,operation_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_outbox",
+    "auggy_coordination_outbox_pending_idx",
+    false,
+    false,
+    "namespace,state,created_at,request_id,intent_ordinal",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops,pg_catalog.int4_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default,-",
+  ],
+  [
+    "auggy_coordination_outbox",
+    "auggy_coordination_outbox_pkey",
+    true,
+    true,
+    "namespace,request_id,intent_ordinal",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.int4_ops",
+    "pg_catalog.default,pg_catalog.default,-",
+  ],
+  [
+    "auggy_coordination_rate_counters",
+    "auggy_coordination_rate_counters_pkey",
+    true,
+    true,
+    "namespace,policy_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_rate_events",
+    "auggy_coordination_rate_event_bucket_idx",
+    false,
+    false,
+    "namespace,policy_id,subject_hash,occurred_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_rate_events",
+    "auggy_coordination_rate_event_expiry_idx",
+    false,
+    false,
+    "namespace,expires_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_rate_events",
+    "auggy_coordination_rate_event_policy_expiry_idx",
+    false,
+    false,
+    "namespace,policy_id,expires_at,subject_hash,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_rate_events",
+    "auggy_coordination_rate_event_request_idx",
+    false,
+    false,
+    "namespace,request_id,policy_id,subject_hash,expires_at",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,pg_catalog.default,-",
+  ],
+  [
+    "auggy_coordination_rate_events",
+    "auggy_coordination_rate_events_pkey",
+    true,
+    true,
+    "namespace,policy_id,subject_hash,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_request_class_counters",
+    "auggy_coordination_request_class_counters_pkey",
+    true,
+    true,
+    "namespace,capacity_class",
+    "pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_request_partition_counters",
+    "auggy_coordination_request_partition_counters_pkey",
+    true,
+    true,
+    "namespace,capacity_class,partition_hash",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_requests",
+    "auggy_coordination_request_capacity_class_idx",
+    false,
+    false,
+    "namespace,capacity_class,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_requests",
+    "auggy_coordination_request_capacity_partition_idx",
+    false,
+    false,
+    "namespace,capacity_class,capacity_partition_hash,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
     "auggy_coordination_requests",
     "auggy_coordination_request_queue_idx",
     false,
     false,
     "namespace,state,queued_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_requests",
+    "auggy_coordination_request_queue_lease_idx",
+    false,
+    false,
+    "namespace,state,queue_expires_at,request_id",
     "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
     "pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
   ],
@@ -343,6 +1674,15 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
     "namespace,source_id,state",
     "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
     "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_requests",
+    "auggy_coordination_request_terminal_idx",
+    false,
+    false,
+    "namespace,state,terminal_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
   ],
   [
     "auggy_coordination_requests",
@@ -380,6 +1720,78 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
     "pg_catalog.text_ops,pg_catalog.text_ops",
     "pg_catalog.default,pg_catalog.default",
   ],
+  [
+    "auggy_coordination_visitor_authorities",
+    "auggy_coordination_visitor_authorities_pkey",
+    true,
+    true,
+    "namespace,audience",
+    "pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_visitor_requests",
+    "auggy_coordination_visitor_request_email_idx",
+    false,
+    false,
+    "namespace,audience,email_hash,issued_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_visitor_requests",
+    "auggy_coordination_visitor_request_expiry_idx",
+    false,
+    false,
+    "namespace,audience,expires_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_visitor_requests",
+    "auggy_coordination_visitor_request_token_idx",
+    true,
+    false,
+    "namespace,audience,token_hash",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_visitor_requests",
+    "auggy_coordination_visitor_requests_pkey",
+    true,
+    true,
+    "namespace,audience,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_visitors",
+    "auggy_coordination_visitor_email_idx",
+    false,
+    false,
+    "namespace,audience,email_hash,identity_version,visitor_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.int8_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_visitors",
+    "auggy_coordination_visitor_email_version_idx",
+    true,
+    false,
+    "namespace,audience,email_hash,identity_version",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.int8_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,-",
+  ],
+  [
+    "auggy_coordination_visitors",
+    "auggy_coordination_visitors_pkey",
+    true,
+    true,
+    "namespace,audience,visitor_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
 ].map(([table_name, index_name, is_unique, is_primary, columns, opclasses, collations]) => ({
   table_name: table_name as string,
   index_name: index_name as string,
@@ -402,23 +1814,925 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
     .join(","),
 }));
 
-const EXPECTED_CHECK_TABLES = new Map([
-  ["auggy_coordination_namespaces_max_concurrent_check", "auggy_coordination_namespaces"],
-  ["auggy_coordination_namespaces_max_queued_check", "auggy_coordination_namespaces"],
-  ["auggy_coordination_namespaces_max_queued_per_thread_check", "auggy_coordination_namespaces"],
-  ["auggy_coordination_requests_state_check", "auggy_coordination_requests"],
-  ["auggy_coordination_sources_max_concurrent_check", "auggy_coordination_sources"],
-  ["auggy_coordination_sources_max_queued_check", "auggy_coordination_sources"],
+const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition: string }>([
+  [
+    "auggy_coord_budget_anon_expiry_check",
+    {
+      table: "auggy_coordination_budget_anonymous_events",
+      definition: "checkexpires_at>occurred_at",
+    },
+  ],
+  [
+    "auggy_coord_budget_anon_policy_check",
+    {
+      table: "auggy_coordination_budget_anonymous_events",
+      definition: "checkpolicy_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_anon_request_check",
+    {
+      table: "auggy_coordination_budget_anonymous_events",
+      definition: "checkrequest_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_anon_subject_check",
+    {
+      table: "auggy_coordination_budget_anonymous_events",
+      definition: "checksubject_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_daily_cost_check",
+    { table: "auggy_coordination_budget_daily", definition: "checkcost_usd>=0::numeric" },
+  ],
+  [
+    "auggy_coord_budget_daily_kind_check",
+    {
+      table: "auggy_coordination_budget_daily",
+      definition: "checksubject_kind=anyarray['global','peer']",
+    },
+  ],
+  [
+    "auggy_coord_budget_daily_policy_check",
+    {
+      table: "auggy_coordination_budget_daily",
+      definition: "checkpolicy_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_daily_subject_check",
+    {
+      table: "auggy_coordination_budget_daily",
+      definition: "checksubject_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_daily_turns_check",
+    { table: "auggy_coordination_budget_daily", definition: "checkturns_reserved>=0" },
+  ],
+  [
+    "auggy_coord_budget_daily_unpriced_check",
+    { table: "auggy_coordination_budget_daily", definition: "checkunpriced_turns>=0" },
+  ],
+  [
+    "auggy_coord_budget_reservation_attempt_check",
+    { table: "auggy_coordination_budget_reservations", definition: "checkattempt>0" },
+  ],
+  [
+    "auggy_coord_budget_reservation_binding_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition: "checkrequest_binding_hash~'^[a-za-z0-9_-]{16,160}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_reservation_fence_check",
+    { table: "auggy_coordination_budget_reservations", definition: "checkfence>0" },
+  ],
+  [
+    "auggy_coord_budget_reservation_peer_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition: "checkpeer_id_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_reservation_policy_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition: "checkpolicy_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_reservation_public_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition:
+        "checktrust_level='public'andpublic_substate=anyarray['anonymous','recognized']ortrust_level='agent'andpublic_substateisnull",
+    },
+  ],
+  [
+    "auggy_coord_budget_reservation_request_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition: "checkrequest_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_reservation_settled_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition:
+        "checkstate='reserved'andsettled_atisnullorstate=anyarray['committed','outcome_unknown']andsettled_atisnotnull",
+    },
+  ],
+  [
+    "auggy_coord_budget_reservation_state_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition: "checkstate=anyarray['reserved','committed','outcome_unknown']",
+    },
+  ],
+  [
+    "auggy_coord_budget_reservation_thread_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition: "checkthread_id_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_reservation_trust_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition: "checktrust_level=anyarray['agent','public']",
+    },
+  ],
+  [
+    "auggy_coord_budget_threshold_body_check",
+    {
+      table: "auggy_coordination_budget_threshold_intents",
+      definition:
+        "checkstate='pending'andoperation_idisnotnullandintent_bodyisnotnullandoctet_lengthintent_body>=2andoctet_lengthintent_body<=65536orstate='suppressed'andoperation_idisnullandintent_bodyisnull",
+    },
+  ],
+  [
+    "auggy_coord_budget_threshold_destination_check",
+    {
+      table: "auggy_coordination_budget_threshold_intents",
+      definition: "checkdestination~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_threshold_operation_check",
+    {
+      table: "auggy_coordination_budget_threshold_intents",
+      definition: "checkoperation_idisnulloroperation_id~'^auggy-op-v1-[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_threshold_policy_check",
+    {
+      table: "auggy_coordination_budget_threshold_intents",
+      definition: "checkpolicy_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_threshold_request_check",
+    {
+      table: "auggy_coordination_budget_threshold_intents",
+      definition: "checkrequest_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_threshold_state_check",
+    {
+      table: "auggy_coordination_budget_threshold_intents",
+      definition: "checkstate=anyarray['pending','suppressed']",
+    },
+  ],
+  [
+    "auggy_coord_budget_threshold_value_check",
+    {
+      table: "auggy_coordination_budget_threshold_intents",
+      definition: "checkthreshold_ppm>=1andthreshold_ppm<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_ns_budget_policy_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition:
+        "checkmax_budget_reservationsisnullandmax_budget_anonymous_eventsisnullandmax_budget_peer_daysisnullandmax_budget_threshold_intentsisnullandbudget_policy_fingerprintisnullormax_budget_reservations>=0andmax_budget_reservations<=1000000andmax_budget_anonymous_events>=0andmax_budget_anonymous_events<=1000000andmax_budget_peer_days>=0andmax_budget_peer_days<=1000000andmax_budget_threshold_intents>=0andmax_budget_threshold_intents<=1000000andbudget_policy_fingerprint~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_external_assertion_binding_check",
+    {
+      table: "auggy_coordination_external_assertions",
+      definition: "checkbinding_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_external_assertion_claim_check",
+    {
+      table: "auggy_coordination_external_assertions",
+      definition: "checkclaim_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_external_assertion_expiry_check",
+    { table: "auggy_coordination_external_assertions", definition: "checkexpires_at>claimed_at" },
+  ],
+  [
+    "auggy_coord_external_assertion_request_check",
+    {
+      table: "auggy_coordination_external_assertions",
+      definition: "checkrequest_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_assertion_max_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkmax_external_assertions>=1andmax_external_assertions<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_assertion_ttl_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition:
+        "checkmax_external_assertion_ttl_ms>=1andmax_external_assertion_ttl_ms<=31536000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_audience_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checklengthaudience>=1andlengthaudience<=256",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_day_rate_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkrate_per_day>=rate_per_hourandrate_per_day<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_hour_rate_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkrate_per_hour>=1andrate_per_hour<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_interval_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkrate_min_interval_ms>=0andrate_min_interval_ms<=86400000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_policy_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkpolicy_fingerprint~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_request_max_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkmax_verification_requests>=1andmax_verification_requests<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_request_retention_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition:
+        "checkverification_request_retention_ms>=60000andverification_request_retention_ms<=31536000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_reverify_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkreverify_after_ms>=1andreverify_after_ms<=31536000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_token_ttl_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkverification_token_ttl_ms>=1andverification_token_ttl_ms<=31536000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_visitor_max_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkmax_visitors>=1andmax_visitors<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_binding_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checkbinding_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_email_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checklengthemail>=3andlengthemail<=320",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_email_hash_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checkemail_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_expiry_check",
+    { table: "auggy_coordination_visitor_requests", definition: "checkexpires_at>issued_at" },
+  ],
+  [
+    "auggy_coord_visitor_request_id_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checkrequest_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_peer_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checklengthpeer_id>=1andlengthpeer_id<=256",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_peer_hash_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checkpeer_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_status_value_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checkstatus=anyarray['open','verified','revoked']",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_terminal_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition:
+        "checkstatus='open'andterminal_atisnullandvisitor_idisnullandidentity_versionisnullorstatus='verified'andterminal_atisnotnullandvisitor_idisnotnullandidentity_version>0orstatus='revoked'andterminal_atisnotnullandvisitor_idisnullandidentity_versionisnull",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_thread_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checklengththread_id>=1andlengththread_id<=256",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_thread_hash_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checkthread_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_token_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checktoken_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_email_check",
+    {
+      table: "auggy_coordination_visitors",
+      definition: "checklengthemail>=3andlengthemail<=320",
+    },
+  ],
+  [
+    "auggy_coord_visitor_email_hash_check",
+    {
+      table: "auggy_coordination_visitors",
+      definition: "checkemail_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_id_check",
+    {
+      table: "auggy_coordination_visitors",
+      definition: "checkvisitor_id~'^vis_[a-za-z0-9._:-]{1,200}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_reverify_check",
+    { table: "auggy_coordination_visitors", definition: "checkreverify_due_at>verified_at" },
+  ],
+  [
+    "auggy_coord_visitor_revocation_check",
+    {
+      table: "auggy_coordination_visitors",
+      definition:
+        "checkrevoked_atisnullandrevoked_reasonisnullorrevoked_atisnotnullandrevoked_reason~'^[a-z0-9][a-z0-9._:-]{0,63}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_version_check",
+    { table: "auggy_coordination_visitors", definition: "checkidentity_version>0" },
+  ],
+  [
+    "auggy_coord_cost_fence_check",
+    { table: "auggy_coordination_cost_markers", definition: "checkfence>0" },
+  ],
+  [
+    "auggy_coord_cost_operation_check",
+    {
+      table: "auggy_coordination_cost_markers",
+      definition: "checkoperation_id~'^auggy-op-v1-[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_cost_value_check",
+    {
+      table: "auggy_coordination_cost_markers",
+      definition:
+        "checkpricedandcost_usdisnotnullandcost_usd>=0::numericandunpriced_reasonisnullornotpricedandcost_usdisnullandunpriced_reason=anyarray['missing-usage','missing-pricing']",
+    },
+  ],
+  [
+    "auggy_coord_cost_version_check",
+    { table: "auggy_coordination_cost_markers", definition: "checkmarker_version=1" },
+  ],
+  [
+    "auggy_coord_event_reason_check",
+    {
+      table: "auggy_coordination_events",
+      definition: "checkreasonisnullorreason~'^[a-z0-9][a-z0-9._:-]{0,63}$'",
+    },
+  ],
+  [
+    "auggy_coord_event_type_check",
+    {
+      table: "auggy_coordination_events",
+      definition: "checkevent_type~'^[a-z0-9][a-z0-9._:-]{0,63}$'",
+    },
+  ],
+  [
+    "auggy_coord_instance_build_check",
+    {
+      table: "auggy_coordination_instances",
+      definition: "checkbuild_fingerprint~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_instance_lifecycle_check",
+    {
+      table: "auggy_coordination_instances",
+      definition: "checkacceptingandnotdrainingornotacceptinganddraining",
+    },
+  ],
+  [
+    "auggy_coord_instance_session_check",
+    {
+      table: "auggy_coordination_instances",
+      definition: "checksession_id~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_history_binding_check",
+    {
+      table: "auggy_coordination_history",
+      definition: "checkpeer_binding_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_history_body_check",
+    {
+      table: "auggy_coordination_history",
+      definition: "checkoctet_lengthsnapshot_body<=1048576",
+    },
+  ],
+  [
+    "auggy_coord_history_messages_check",
+    {
+      table: "auggy_coordination_history",
+      definition: "checkmessage_count>=0andmessage_count<=10000",
+    },
+  ],
+  [
+    "auggy_coord_history_peer_check",
+    {
+      table: "auggy_coordination_history",
+      definition: "checkpeer_id_hashisnullorpeer_id_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_history_public_check",
+    {
+      table: "auggy_coordination_history",
+      definition:
+        "checktrust_level='public'andpublic_substate=anyarray['anonymous','recognized']andpeer_id_hashisnotnullortrust_level<>'public'andpublic_substateisnull",
+    },
+  ],
+  [
+    "auggy_coord_history_revision_check",
+    { table: "auggy_coordination_history", definition: "checkrevision>=0" },
+  ],
+  [
+    "auggy_coord_history_scope_check",
+    {
+      table: "auggy_coordination_history",
+      definition: "checkpromotion_scope_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_history_trust_check",
+    {
+      table: "auggy_coordination_history",
+      definition: "checktrust_level=anyarray['creator','agent','public']",
+    },
+  ],
+  [
+    "auggy_coord_history_version_check",
+    { table: "auggy_coordination_history", definition: "checksnapshot_version=1" },
+  ],
+  [
+    "auggy_coord_ns_admission_policy_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition:
+        "checkmax_rate_limit_eventsisnullandrate_policy_fingerprintisnullormax_rate_limit_events>=0andmax_rate_limit_events<=1000000andrate_policy_fingerprint~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_ns_config_fingerprint_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition: "checkconfiguration_fingerprint~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_ns_event_retention_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition: "checkevent_retention_ms>=60000andevent_retention_ms<=31536000000",
+    },
+  ],
+  [
+    "auggy_coord_ns_cost_markers_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition:
+        "checkmax_cost_markers_per_turnisnullormax_cost_markers_per_turn>=1andmax_cost_markers_per_turn<=1000",
+    },
+  ],
+  [
+    "auggy_coord_ns_history_bytes_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition:
+        "checkmax_history_snapshot_bytesisnullormax_history_snapshot_bytes>=1024andmax_history_snapshot_bytes<=1048576",
+    },
+  ],
+  [
+    "auggy_coord_ns_history_messages_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition:
+        "checkmax_history_messagesisnullormax_history_messages>=1andmax_history_messages<=10000",
+    },
+  ],
+  [
+    "auggy_coord_ns_history_threads_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition:
+        "checkmax_history_threadsisnullormax_history_threads>=1andmax_history_threads<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_ns_lease_ms_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition: "checklease_msisnullorlease_ms>=1andlease_ms<=3600000",
+    },
+  ],
+  [
+    "auggy_coord_ns_max_events_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition: "checkmax_events>=1andmax_events<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_ns_max_terminal_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition: "checkmax_terminal_requests>=1andmax_terminal_requests<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_ns_next_fence_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition: "checknext_fence>=0",
+    },
+  ],
+  [
+    "auggy_coord_ns_outbox_bytes_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition:
+        "checkmax_outbox_intent_bytesisnullormax_outbox_intent_bytes>=1024andmax_outbox_intent_bytes<=1048576",
+    },
+  ],
+  [
+    "auggy_coord_ns_outbox_intents_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition:
+        "checkmax_outbox_intents_per_turnisnullormax_outbox_intents_per_turn>=0andmax_outbox_intents_per_turn<=1000",
+    },
+  ],
+  [
+    "auggy_coord_ns_pending_outbox_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition:
+        "checkmax_pending_outbox_intentsisnullormax_pending_outbox_intents>=0andmax_pending_outbox_intents<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_ns_protocol_fingerprint_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition: "checkprotocol_fingerprint~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_ns_protocol_version_check",
+    { table: "auggy_coordination_namespaces", definition: "checkprotocol_version>0" },
+  ],
+  [
+    "auggy_coord_ns_replay_bytes_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition: "checkmax_replay_bytes>=1024andmax_replay_bytes<=1048576",
+    },
+  ],
+  [
+    "auggy_coord_ns_terminal_retention_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition:
+        "checkterminal_request_retention_ms>=60000andterminal_request_retention_ms<=31536000000",
+    },
+  ],
+  [
+    "auggy_coordination_namespaces_max_concurrent_check",
+    { table: "auggy_coordination_namespaces", definition: "checkmax_concurrent>0" },
+  ],
+  [
+    "auggy_coordination_namespaces_max_queued_check",
+    { table: "auggy_coordination_namespaces", definition: "checkmax_queued>=0" },
+  ],
+  [
+    "auggy_coordination_namespaces_max_queued_per_thread_check",
+    { table: "auggy_coordination_namespaces", definition: "checkmax_queued_per_thread>=0" },
+  ],
+  [
+    "auggy_coord_rate_counter_count_check",
+    {
+      table: "auggy_coordination_rate_counters",
+      definition: "checkevent_count>=0andevent_count<=max_events",
+    },
+  ],
+  [
+    "auggy_coord_rate_counter_max_check",
+    {
+      table: "auggy_coordination_rate_counters",
+      definition: "checkmax_events>=1andmax_events<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_rate_counter_policy_check",
+    {
+      table: "auggy_coordination_rate_counters",
+      definition: "checkpolicy_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_rate_expiry_check",
+    {
+      table: "auggy_coordination_rate_events",
+      definition: "checkexpires_at>occurred_at",
+    },
+  ],
+  [
+    "auggy_coord_rate_policy_check",
+    {
+      table: "auggy_coordination_rate_events",
+      definition: "checkpolicy_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_rate_request_check",
+    {
+      table: "auggy_coordination_rate_events",
+      definition: "checkrequest_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_rate_subject_check",
+    {
+      table: "auggy_coordination_rate_events",
+      definition: "checksubject_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_request_class_counter_count_check",
+    {
+      table: "auggy_coordination_request_class_counters",
+      definition: "checkretained_count>=0andretained_count<=max_retained_requests",
+    },
+  ],
+  [
+    "auggy_coord_request_class_counter_id_check",
+    {
+      table: "auggy_coordination_request_class_counters",
+      definition: "checkcapacity_class~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_request_class_counter_max_check",
+    {
+      table: "auggy_coordination_request_class_counters",
+      definition: "checkmax_retained_requests>=1andmax_retained_requests<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_request_class_counter_partition_max_check",
+    {
+      table: "auggy_coordination_request_class_counters",
+      definition:
+        "checkmax_retained_per_partition>=1andmax_retained_per_partition<=max_retained_requests",
+    },
+  ],
+  [
+    "auggy_coord_request_partition_counter_count_check",
+    {
+      table: "auggy_coordination_request_partition_counters",
+      definition: "checkretained_count>=0andretained_count<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_request_partition_counter_hash_check",
+    {
+      table: "auggy_coordination_request_partition_counters",
+      definition: "checkpartition_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_request_partition_counter_id_check",
+    {
+      table: "auggy_coordination_request_partition_counters",
+      definition: "checkcapacity_class~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_request_admission_hash_check",
+    {
+      table: "auggy_coordination_requests",
+      definition: "checkadmission_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_request_capacity_check",
+    {
+      table: "auggy_coordination_requests",
+      definition:
+        "checkcapacity_classisnullandcapacity_partition_hashisnullorcapacity_class~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'andcapacity_partition_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_request_lifecycle_check",
+    {
+      table: "auggy_coordination_requests",
+      definition:
+        "checkstate='queued'andqueue_owner_instanceisnotnullandqueue_owner_sessionisnotnullandqueue_generation>0andqueue_expires_atisnotnullandfenceisnullandowner_instanceisnullandowner_sessionisnullandlease_expires_atisnullandterminal_atisnullorstate='active'andfenceisnotnullandowner_instanceisnotnullandowner_sessionisnotnullandlease_expires_atisnotnullandqueue_owner_instanceisnullandqueue_owner_sessionisnullandqueue_expires_atisnullandterminal_atisnullorstate=anyarray['completed','failed','canceled','outcome_unknown']andterminal_atisnotnullandowner_instanceisnullandowner_sessionisnullandlease_expires_atisnullandqueue_owner_instanceisnullandqueue_owner_sessionisnullandqueue_expires_atisnull",
+    },
+  ],
+  [
+    "auggy_coord_request_history_claim_check",
+    {
+      table: "auggy_coordination_requests",
+      definition:
+        "checkhistory_binding_hashisnullandhistory_revisionisnullorhistory_binding_hash~'^[0-9a-f]{64}$'andhistory_revision>=0",
+    },
+  ],
+  [
+    "auggy_coord_request_queue_generation_check",
+    {
+      table: "auggy_coordination_requests",
+      definition: "checkqueue_generation>=0",
+    },
+  ],
+  [
+    "auggy_coord_request_result_check",
+    {
+      table: "auggy_coordination_requests",
+      definition:
+        "checkresult_bodyisnullandresult_content_typeisnullandresult_versionisnullorstate='completed'andresult_bodyisnotnullandresult_content_type='application/json'andresult_version=1andoctet_lengthresult_body<=1048576",
+    },
+  ],
+  [
+    "auggy_coord_request_result_version_check",
+    {
+      table: "auggy_coordination_requests",
+      definition: "checkresult_versionisnullorresult_version=1",
+    },
+  ],
+  [
+    "auggy_coordination_requests_state_check",
+    {
+      table: "auggy_coordination_requests",
+      definition:
+        "checkstate=anyarray['queued','active','completed','failed','canceled','outcome_unknown']",
+    },
+  ],
+  [
+    "auggy_coord_outbox_body_check",
+    {
+      table: "auggy_coordination_outbox",
+      definition: "checkoctet_lengthintent_body<=1048576",
+    },
+  ],
+  [
+    "auggy_coord_outbox_content_type_check",
+    {
+      table: "auggy_coordination_outbox",
+      definition: "checkintent_content_type='application/json'",
+    },
+  ],
+  [
+    "auggy_coord_outbox_fence_check",
+    { table: "auggy_coordination_outbox", definition: "checkfence>0" },
+  ],
+  [
+    "auggy_coord_outbox_operation_check",
+    {
+      table: "auggy_coordination_outbox",
+      definition: "checkoperation_id~'^auggy-op-v1-[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_outbox_ordinal_check",
+    { table: "auggy_coordination_outbox", definition: "checkintent_ordinal>=0" },
+  ],
+  [
+    "auggy_coord_outbox_state_check",
+    { table: "auggy_coordination_outbox", definition: "checkstate='pending'" },
+  ],
+  [
+    "auggy_coord_outbox_version_check",
+    { table: "auggy_coordination_outbox", definition: "checkintent_version=1" },
+  ],
+  [
+    "auggy_coordination_sources_max_concurrent_check",
+    { table: "auggy_coordination_sources", definition: "checkmax_concurrent>0" },
+  ],
+  [
+    "auggy_coordination_sources_max_queued_check",
+    { table: "auggy_coordination_sources", definition: "checkmax_queued>=0" },
+  ],
 ]);
 
 const EXPECTED_COORDINATION_CONSTRAINTS: readonly CoordinationCatalogConstraint[] = [
+  ["auggy_coordination_budget_anonymous_events", "auggy_coordination_budget_anonymous_events_pkey"],
+  ["auggy_coordination_budget_daily", "auggy_coordination_budget_daily_pkey"],
+  ["auggy_coordination_budget_reservations", "auggy_coordination_budget_reservations_pkey"],
+  [
+    "auggy_coordination_budget_threshold_intents",
+    "auggy_coordination_budget_threshold_intents_pkey",
+  ],
+  ["auggy_coordination_cost_markers", "auggy_coordination_cost_markers_pkey"],
   ["auggy_coordination_events", "auggy_coordination_events_pkey"],
+  ["auggy_coordination_external_assertions", "auggy_coordination_external_assertions_pkey"],
+  ["auggy_coordination_history", "auggy_coordination_history_pkey"],
   ["auggy_coordination_instances", "auggy_coordination_instances_pkey"],
   ["auggy_coordination_migrations", "auggy_coordination_migrations_pkey"],
   ["auggy_coordination_namespaces", "auggy_coordination_namespaces_pkey"],
+  ["auggy_coordination_outbox", "auggy_coordination_outbox_pkey"],
+  ["auggy_coordination_rate_counters", "auggy_coordination_rate_counters_pkey"],
+  ["auggy_coordination_rate_events", "auggy_coordination_rate_events_pkey"],
+  ["auggy_coordination_request_class_counters", "auggy_coordination_request_class_counters_pkey"],
+  [
+    "auggy_coordination_request_partition_counters",
+    "auggy_coordination_request_partition_counters_pkey",
+  ],
   ["auggy_coordination_requests", "auggy_coordination_requests_pkey"],
   ["auggy_coordination_sources", "auggy_coordination_sources_pkey"],
   ["auggy_coordination_threads", "auggy_coordination_threads_pkey"],
+  ["auggy_coordination_visitor_authorities", "auggy_coordination_visitor_authorities_pkey"],
+  ["auggy_coordination_visitor_requests", "auggy_coordination_visitor_requests_pkey"],
+  ["auggy_coordination_visitors", "auggy_coordination_visitors_pkey"],
 ].map(([table_name, constraint_name]) => ({
   table_name: table_name as string,
   constraint_name: constraint_name as string,
@@ -430,13 +2744,28 @@ const EXPECTED_COORDINATION_CONSTRAINTS: readonly CoordinationCatalogConstraint[
 }));
 
 const EXPECTED_COORDINATION_TABLES: readonly CoordinationCatalogTable[] = [
+  "auggy_coordination_budget_anonymous_events",
+  "auggy_coordination_budget_daily",
+  "auggy_coordination_budget_reservations",
+  "auggy_coordination_budget_threshold_intents",
+  "auggy_coordination_cost_markers",
   "auggy_coordination_events",
+  "auggy_coordination_external_assertions",
+  "auggy_coordination_history",
   "auggy_coordination_instances",
   "auggy_coordination_migrations",
   "auggy_coordination_namespaces",
+  "auggy_coordination_outbox",
+  "auggy_coordination_rate_counters",
+  "auggy_coordination_rate_events",
+  "auggy_coordination_request_class_counters",
+  "auggy_coordination_request_partition_counters",
   "auggy_coordination_requests",
   "auggy_coordination_sources",
   "auggy_coordination_threads",
+  "auggy_coordination_visitor_authorities",
+  "auggy_coordination_visitor_requests",
+  "auggy_coordination_visitors",
 ].map((table_name) => ({
   table_name,
   persistence: "p",
@@ -462,6 +2791,7 @@ function normalizedCheck(value: string): string {
 function compactCheck(value: string): string {
   return normalizedCheck(value)
     .replaceAll("::text", "")
+    .replace(/'([0-9]+)'::bigint/g, "$1")
     .replace(/[()\s]/g, "");
 }
 
@@ -486,36 +2816,16 @@ function validCoordinationColumns(rows: readonly CoordinationCatalogColumn[]): b
 }
 
 function validCoordinationChecks(rows: readonly CoordinationCatalogCheck[]): boolean {
-  if (rows.length !== EXPECTED_CHECK_TABLES.size) return false;
-  if (
-    rows.some(
-      (row) =>
-        !row.is_validated ||
-        !row.is_enforced ||
-        EXPECTED_CHECK_TABLES.get(row.constraint_name) !== row.table_name,
-    )
-  ) {
-    return false;
-  }
-  const definitions = new Map(
-    rows.map((row) => [row.constraint_name, compactCheck(row.definition)]),
-  );
-  const numeric = [
-    ["auggy_coordination_namespaces_max_concurrent_check", "max_concurrent", "> 0"],
-    ["auggy_coordination_namespaces_max_queued_check", "max_queued", ">= 0"],
-    ["auggy_coordination_namespaces_max_queued_per_thread_check", "max_queued_per_thread", ">= 0"],
-    ["auggy_coordination_sources_max_concurrent_check", "max_concurrent", "> 0"],
-    ["auggy_coordination_sources_max_queued_check", "max_queued", ">= 0"],
-  ] as const;
-  for (const [name, field, comparison] of numeric) {
-    const definition = definitions.get(name);
-    if (definition !== `check${field}${comparison.replaceAll(" ", "")}`) return false;
-  }
-  const state = definitions.get("auggy_coordination_requests_state_check");
-  return (
-    state ===
-    "checkstate=anyarray['queued','active','completed','failed','canceled','outcome_unknown']"
-  );
+  if (rows.length !== EXPECTED_COORDINATION_CHECKS.size) return false;
+  return rows.every((row) => {
+    const expected = EXPECTED_COORDINATION_CHECKS.get(row.constraint_name);
+    return (
+      row.is_validated &&
+      row.is_enforced &&
+      expected?.table === row.table_name &&
+      expected.definition === compactCheck(row.definition)
+    );
+  });
 }
 
 async function assertPostgresCoordinationSchema(
@@ -523,10 +2833,24 @@ async function assertPostgresCoordinationSchema(
   expectedSchema: string,
 ): Promise<void> {
   const tables =
-    "'auggy_coordination_events', 'auggy_coordination_instances', " +
+    "'auggy_coordination_budget_anonymous_events', " +
+    "'auggy_coordination_budget_daily', " +
+    "'auggy_coordination_budget_reservations', " +
+    "'auggy_coordination_budget_threshold_intents', " +
+    "'auggy_coordination_cost_markers', 'auggy_coordination_events', " +
+    "'auggy_coordination_external_assertions', " +
+    "'auggy_coordination_history', 'auggy_coordination_instances', " +
     "'auggy_coordination_migrations', 'auggy_coordination_namespaces', " +
-    "'auggy_coordination_requests', 'auggy_coordination_sources', " +
-    "'auggy_coordination_threads'";
+    "'auggy_coordination_outbox', 'auggy_coordination_rate_counters', " +
+    "'auggy_coordination_rate_events', " +
+    "'auggy_coordination_request_class_counters', " +
+    "'auggy_coordination_request_partition_counters', " +
+    "'auggy_coordination_requests', " +
+    "'auggy_coordination_sources', " +
+    "'auggy_coordination_threads', " +
+    "'auggy_coordination_visitor_authorities', " +
+    "'auggy_coordination_visitor_requests', " +
+    "'auggy_coordination_visitors'";
   const columns = await sql.unsafe<CoordinationCatalogColumn>(`
     SELECT cls.relname AS table_name,
            attr.attname AS column_name,

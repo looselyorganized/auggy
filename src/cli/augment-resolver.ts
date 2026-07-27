@@ -383,7 +383,7 @@ function resolveWebTransport(
   runtimeDataRoot: string | undefined,
   creator: CreatorConfig | undefined,
   lateBindings: {
-    revocationCheck: ((id: string) => boolean) | null;
+    revocationCheck: VisitorAuthAugmentExtras["isVisitorRevoked"] | null;
     identityLookup: VisitorAuthAugmentExtras["resolveVisitorIdentity"] | null;
     threadPromotionCheck: VisitorAuthAugmentExtras["canPromoteAnonymousThread"] | null;
   },
@@ -408,10 +408,18 @@ function resolveWebTransport(
     visitorTokens: vtBase
       ? {
           ...vtBase,
-          revocationCheck: (id: string) => lateBindings.revocationCheck?.(id) ?? false,
-          identityLookup: (id: string) => lateBindings.identityLookup?.(id) ?? null,
-          threadPromotionCheck: (id: string, threadId: string) =>
-            lateBindings.threadPromotionCheck?.(id, threadId) ?? false,
+          revocationCheck: (id: string, identityVersion?: number) =>
+            lateBindings.revocationCheck?.(id, identityVersion) ?? false,
+          identityLookup: (id: string, identityVersion?: number) =>
+            lateBindings.identityLookup?.(id, identityVersion) ?? null,
+          threadPromotionCheck: (
+            id: string,
+            threadId: string,
+            identityVersion?: number,
+            priorPeerId?: string,
+          ) =>
+            lateBindings.threadPromotionCheck?.(id, threadId, identityVersion, priorPeerId) ??
+            false,
         }
       : undefined,
     // G3: explicit yaml value must reach webTransport so the yaml > env >
@@ -747,7 +755,7 @@ export async function resolveAugments(
   // before visitorAuth is resolved; the callback reads lateBindings.revocationCheck
   // which is populated after the loop completes.
   const lateBindings: {
-    revocationCheck: ((id: string) => boolean) | null;
+    revocationCheck: VisitorAuthAugmentExtras["isVisitorRevoked"] | null;
     identityLookup: VisitorAuthAugmentExtras["resolveVisitorIdentity"] | null;
     threadPromotionCheck: VisitorAuthAugmentExtras["canPromoteAnonymousThread"] | null;
   } = {

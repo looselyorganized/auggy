@@ -66,17 +66,21 @@ const MAX_TURN_SNAPSHOTS = 32;
 
 const MESSAGE_ROLES = new Set(["user", "assistant", "tool_use", "tool_result"]);
 
-function parseSnapshot(snapshot: unknown): Message[] {
+export function parseThreadHistoryMessages(
+  snapshot: unknown,
+  options: { allowLegacyArray?: boolean } = {},
+): Message[] {
   // Accept the legacy bare-array shape written by HistoryManager.save() in
   // older releases, but validate it with the same strict rules. New writes
   // always use the versioned envelope.
-  const candidate = Array.isArray(snapshot)
-    ? snapshot
-    : typeof snapshot === "object" &&
-        snapshot !== null &&
-        (snapshot as { version?: unknown }).version === 1
-      ? (snapshot as { messages?: unknown }).messages
-      : undefined;
+  const candidate =
+    options.allowLegacyArray !== false && Array.isArray(snapshot)
+      ? snapshot
+      : typeof snapshot === "object" &&
+          snapshot !== null &&
+          (snapshot as { version?: unknown }).version === 1
+        ? (snapshot as { messages?: unknown }).messages
+        : undefined;
 
   if (!Array.isArray(candidate)) {
     throw new Error("Invalid thread history snapshot: expected version 1 messages");
@@ -286,7 +290,7 @@ export function createHistoryManager(opts: { threadId: string }): HistoryManager
         } catch {
           throw new Error("Invalid thread history snapshot: malformed JSON");
         }
-        const validated = parseSnapshot(parsed);
+        const validated = parseThreadHistoryMessages(parsed);
         messages = validated;
         runningTokens = validated.reduce((sum, message) => sum + message.tokenCount, 0);
       }
@@ -300,7 +304,7 @@ export function createHistoryManager(opts: { threadId: string }): HistoryManager
     },
 
     replace(snapshot: unknown) {
-      const validated = parseSnapshot(snapshot);
+      const validated = parseThreadHistoryMessages(snapshot);
       messages = validated;
       runningTokens = validated.reduce((sum, message) => sum + message.tokenCount, 0);
     },

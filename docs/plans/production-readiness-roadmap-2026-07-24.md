@@ -2,7 +2,7 @@
 
 **Originally recorded:** 2026-07-24
 
-**Reconciled:** 2026-07-25
+**Reconciled:** 2026-07-26
 
 **Status:** engineering hardening, then release preparation
 
@@ -31,6 +31,14 @@ provenance, packaging, installation, and deployment path without consuming the
 final version.
 
 ## Supported production contract for 0.5
+
+> **2026-07-26 scope update:** horizontal replicas have been promoted from a
+> deferred product decision to an active pre-release engineering program. The
+> current source remains single-replica until the fail-closed implementation
+> and certification gates in
+> [`horizontal-replica-readiness-2026-07-26.md`](./horizontal-replica-readiness-2026-07-26.md)
+> pass. The contract below describes current behavior, not the newly approved
+> release target.
 
 The production claim is topology-specific.
 
@@ -102,9 +110,10 @@ candidate, complete the seven engineering gates in
 7. independent-agent isolation on a shared host.
 
 These gates are Auggy runtime obligations, not managed-platform work.
-Horizontal scaling for one logical Auggy remains a separate, deferred product
-decision. Release preparation starts after the seven engineering checkpoints
-pass; the OSS/supply-chain, packaging, clean-install, public-repository, and
+The seven single-replica checkpoints passed through PR #164 and Durable Jobs
+production readiness passed through PR #165. Horizontal scaling for one
+logical Auggy is now the active engineering program before release preparation.
+The OSS/supply-chain, packaging, clean-install, public-repository, and
 deployment gates below still apply afterward.
 
 ## Current release blockers
@@ -340,6 +349,10 @@ Before 1.0:
 - demonstrate that the release and provenance pipeline has already succeeded
   on the public repository.
 
-Multi-replica support is valuable for high-traffic deployments, but it is not a
-prerequisite for Auggy to be a useful OSS runtime or for `1.0.0` unless the
-project chooses to advertise replicas as part of the 1.0 support contract.
+Multi-replica support is valuable for high-traffic and high-availability
+deployments without making Auggy a managed platform. The project has now chosen
+to make a bounded, PostgreSQL-backed replica-safe topology part of the release
+line. Auggy owns correctness under arbitrary routing; the deployer continues to
+own the load balancer, database service, network, backups, autoscaling, and
+SLOs. The complete boundary and enablement gates are recorded in
+[`horizontal-replica-readiness-2026-07-26.md`](./horizontal-replica-readiness-2026-07-26.md).

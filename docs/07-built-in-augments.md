@@ -1322,9 +1322,12 @@ Pre-call cost estimation (a third architectural layer that gates the engine
 call before any spend) is explicitly deferred — provider caps are exact where
 pre-call estimation would only approximate.
 
-SQLite-backed budgets are single-process and single-replica. The store has no
-built-in retention or purge policy yet; reservation and anonymous-request rows
-accumulate until the operator removes or archives them.
+SQLite-backed budgets are single-process and single-replica. Configure
+`retentionDays` when old local accounting rows may be discarded. A fenced
+PostgreSQL budget authority now exists only inside the disabled distributed
+integration boundary: it reserves fleet-wide caps with database time and
+settles known costs atomically, but it is not yet an `agent.yaml` deployment
+mode and does not enable replicas.
 
 ### 2PC semantics
 
@@ -1376,6 +1379,9 @@ deferred until budget enforcement needs a stronger pre-turn guarantee.
 ### v0 limitations
 
 - **Single-instance topology.** The SQLite store is not safe for concurrent processes. Run one agent instance per `dbPath`.
+- **Distributed backend remains private.** Shared threshold rows are staged but
+  cannot be delivered until transactional outbound delivery is implemented and
+  the final multi-process profile is certified.
 - **One-turn dollar overshoot.** See post-hoc note above.
 - **No rebuild path.** If the database is deleted, usage history is lost. The budgets store does not reconstruct from external state.
 

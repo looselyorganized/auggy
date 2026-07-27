@@ -58,6 +58,30 @@ function generationFromPlist(path: string): string {
 }
 
 describe("runStart launchd generation fencing", () => {
+  test("rejects disabled coordination before lifecycle or launchd mutation", async () => {
+    writeFileSync(
+      configPath,
+      `${readFileSync(configPath, "utf8")}settings:\n  coordination:\n    mode: postgres\n    namespace: 12345678-1234-4123-8123-123456789abc\n    fleetCapacity:\n      maxConcurrent: 4\n      maxQueued: 100\n      maxQueuedPerThread: 20\n    retention:\n      terminalRequestRetentionMs: 604800000\n      maxTerminalRequests: 10000\n      eventRetentionMs: 2592000000\n      maxEvents: 50000\n    result:\n      maxReplayBytes: 65536\n    turnState:\n      history:\n        maxSnapshotBytes: 65536\n        maxMessages: 100\n        maxThreads: 1000\n      maxCostMarkersPerTurn: 32\n      outbox:\n        maxIntentsPerTurn: 32\n        maxIntentBytes: 65536\n        maxPendingIntents: 1000\n`,
+    );
+    let listed = false;
+    const opts = options();
+
+    await expect(
+      runStart("launch-test", {
+        ...opts,
+        listLaunchd: async () => {
+          listed = true;
+          return "";
+        },
+      }),
+    ).rejects.toThrow(/runtime-not-enabled/);
+
+    expect(listed).toBe(false);
+    expect(existsSync(opts.paths.installPath)).toBe(false);
+    expect(existsSync(opts.paths.storePath)).toBe(false);
+    expect(existsSync(auggyDir)).toBe(false);
+  });
+
   test("closes the previous generation before unloading an installed job", async () => {
     const previousGeneration = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     activateLaunchdGeneration(AGENT_ID, previousGeneration, { auggyDir });

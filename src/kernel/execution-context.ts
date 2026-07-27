@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import type { ExecutionContextV1, ExecutionTraceContextV1 } from "../types";
+import type { ExecutionAuthorityV1, ExecutionContextV1, ExecutionTraceContextV1 } from "../types";
 
 const MAX_EXECUTION_ID_LENGTH = 128;
 const MAX_CORRELATION_ID_LENGTH = 256;
@@ -33,8 +33,8 @@ function readHash(value: unknown, name: string): string {
 }
 
 /**
- * Validate metadata accepted only by AgentHandle.inject(), Auggy's trusted
- * embedding boundary. Public transports cannot supply this context.
+ * Validate metadata minted by Auggy's trusted embedding or first-party
+ * transport boundary. Raw client fields cannot supply this context directly.
  */
 export function validateTrustedExecutionContext(value: unknown): ExecutionContextV1 {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -49,6 +49,7 @@ export function validateTrustedExecutionContext(value: unknown): ExecutionContex
     "correlationId",
     "idempotencyKeyHash",
     "bindingHash",
+    "operationScope",
   ]);
   const unexpected = Object.keys(raw).filter((key) => !allowed.has(key));
   if (unexpected.length > 0)
@@ -87,6 +88,10 @@ export function validateTrustedExecutionContext(value: unknown): ExecutionContex
       : readHash(raw.idempotencyKeyHash, "idempotencyKeyHash");
   const bindingHash =
     raw.bindingHash === undefined ? undefined : readHash(raw.bindingHash, "bindingHash");
+  const operationScope =
+    raw.operationScope === undefined
+      ? undefined
+      : readIdentifier(raw.operationScope, "operationScope", MAX_EXECUTION_ID_LENGTH);
 
   return Object.freeze({
     version: 1,
@@ -96,6 +101,7 @@ export function validateTrustedExecutionContext(value: unknown): ExecutionContex
     ...(correlationId === undefined ? {} : { correlationId }),
     ...(idempotencyKeyHash === undefined ? {} : { idempotencyKeyHash }),
     ...(bindingHash === undefined ? {} : { bindingHash }),
+    ...(operationScope === undefined ? {} : { operationScope }),
   });
 }
 
@@ -128,8 +134,82 @@ export function deriveToolOperationId(
     "auggy-tool-operation-v1",
     context.executionId,
     context.bindingHash ?? "",
+    context.operationScope ?? "root",
     toolName,
     String(ordinal),
   ].join("\u0000");
   return `auggy-op-v1-${createHash("sha256").update(input).digest("hex")}`;
+}
+
+/** Stable operation identity for a non-tool runtime effect boundary. */
+export function deriveEffectOperationId(
+  context: ExecutionContextV1 | undefined,
+  effectName: string,
+  ordinal: number,
+): string | undefined {
+  if (!context) return undefined;
+  const input = [
+    "auggy-effect-operation-v1",
+    context.executionId,
+    context.bindingHash ?? "",
+    context.operationScope ?? "root",
+    effectName,
+    String(ordinal),
+  ].join("\u0000");
+  return `auggy-op-v1-${createHash("sha256").update(input).digest("hex")}`;
+}
+
+/**
+ * Derive a stable child identity without exposing the trusted root binding to
+ * an augment. The parent is already an opaque kernel-minted operation ID.
+ */
+export function deriveNestedOperationId(
+  parentOperationId: string | undefined,
+  effectName: string,
+  ordinal: number,
+): string | undefined {
+  if (!parentOperationId) return undefined;
+  const input = ["auggy-nested-operation-v1", parentOperationId, effectName, String(ordinal)].join(
+    "\u0000",
+  );
+  return `auggy-op-v1-${createHash("sha256").update(input).digest("hex")}`;
+}
+
+export function bindDistributedExecutionContext(
+  context: ExecutionContextV1 | undefined,
+  requestId: string,
+  bindingHash: string,
+  authority: ExecutionAuthorityV1,
+): ExecutionContextV1 {
+  return Object.freeze({
+    version: 1,
+    executionId: context?.executionId ?? requestId,
+    attempt: authority.attempt,
+    ...(context?.deadlineAt === undefined ? {} : { deadlineAt: context.deadlineAt }),
+    ...(context?.correlationId === undefined ? {} : { correlationId: context.correlationId }),
+    ...(context?.idempotencyKeyHash === undefined
+      ? {}
+      : { idempotencyKeyHash: context.idempotencyKeyHash }),
+    bindingHash,
+    operationScope: context?.operationScope ?? "root",
+  });
+}
+
+export function deriveCausalExecutionContext(
+  context: ExecutionContextV1 | undefined,
+  augmentName: string,
+  ordinal: number,
+): ExecutionContextV1 | undefined {
+  if (!context) return undefined;
+  const operationScope = createHash("sha256")
+    .update(
+      [
+        "auggy-causal-scope-v1",
+        context.operationScope ?? "root",
+        augmentName,
+        String(ordinal),
+      ].join("\u0000"),
+    )
+    .digest("hex");
+  return Object.freeze({ ...context, operationScope });
 }

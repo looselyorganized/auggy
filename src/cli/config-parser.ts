@@ -22,7 +22,7 @@ import type {
   DurableJobsConfig,
   SecurityEvalOverride,
 } from "./types";
-import { KNOWN_PROVIDERS, isKnownProvider } from "./types";
+import { BUILTIN_AUGMENT_TYPES, KNOWN_PROVIDERS, isKnownProvider } from "./types";
 import { parseEnvFile } from "./env-parse";
 import {
   buildConsoleAllowedOrigins,
@@ -92,6 +92,7 @@ export const DEFAULT_DURABLE_JOBS = {
 
 const MAX_DURABLE_SCHEDULES = 100;
 const MAX_DURABLE_PROMPT_BYTES = 32 * 1024;
+const MAX_EFFECTIVE_AUGMENTS = 256;
 const SAFE_DURABLE_SCHEDULE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const SAFE_DURABLE_THREAD_ID = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
 
@@ -358,25 +359,7 @@ const AUG1_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 export const VALID_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const VALID_COMPACTION = new Set(["truncate", "summarize", "sliding-window"]);
 const AUGMENT_SOURCE_LABEL_FIELD = "__auggySourceLabel";
-const BUILTIN_TYPES = new Set([
-  "fileMemory",
-  "supabaseMemory",
-  "layeredMemory",
-  "filesystem",
-  "webTransport",
-  "webFetch",
-  "knowledge",
-  "skills",
-  "bash",
-  "budgets",
-  "notify",
-  "mcp",
-  "agentMail",
-  "telegramTransport",
-  "turnControl",
-  "visitorAuth",
-  "link",
-]);
+const BUILTIN_TYPES = new Set<string>(BUILTIN_AUGMENT_TYPES);
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const VALID_ROUTING_SORTS = new Set(["price", "throughput", "latency"]);
 const VALID_ROUTING_KEYS = new Set(["only", "ignore", "sort", "max_price"]);
@@ -1925,6 +1908,7 @@ export function expandAugmentFolderEntries(
 ): Record<string, unknown> {
   const augments = raw.augments;
   if (!Array.isArray(augments)) return raw;
+  assertEffectiveAugmentBounds(raw);
 
   const expanded = augments.map((entry, index) => {
     if (typeof entry === "string") {
@@ -1934,6 +1918,18 @@ export function expandAugmentFolderEntries(
   });
 
   return { ...raw, augments: expanded };
+}
+
+function assertEffectiveAugmentBounds(raw: Record<string, unknown>): void {
+  const augments = raw.augments;
+  if (
+    Array.isArray(augments) &&
+    augments.length + (raw.identity === undefined ? 0 : 1) > MAX_EFFECTIVE_AUGMENTS
+  ) {
+    throw new Error(
+      "Invalid agent.yaml:\n  - augments: at most 256 effective augments are supported",
+    );
+  }
 }
 
 function validateConfig(raw: Record<string, unknown>): ParsedConfig {
@@ -2262,12 +2258,21 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
 
   // Augments.
   const augments = raw.augments;
+  const validatedAugments = Array.isArray(augments)
+    ? augments.slice(0, MAX_EFFECTIVE_AUGMENTS)
+    : [];
+  if (
+    Array.isArray(augments) &&
+    augments.length + (identityShorthand === undefined ? 0 : 1) > MAX_EFFECTIVE_AUGMENTS
+  ) {
+    errors.push("augments: at most 256 effective augments are supported");
+  }
   if (!Array.isArray(augments) || augments.length === 0) {
     errors.push("augments: required non-empty array");
   } else {
     const names = new Set<string>();
-    for (let i = 0; i < augments.length; i++) {
-      const aug = augments[i] as Record<string, unknown>;
+    for (let i = 0; i < validatedAugments.length; i++) {
+      const aug = validatedAugments[i] as Record<string, unknown>;
       const prefix = `augments[${i}]`;
       const sourceLabel =
         typeof aug[AUGMENT_SOURCE_LABEL_FIELD] === "string"
@@ -2341,7 +2346,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       }
     }
 
-    const agentMailWebhookConfigured = augments.some((entry) => {
+    const agentMailWebhookConfigured = validatedAugments.some((entry) => {
       if (typeof entry !== "object" || entry === null) return false;
       const augment = entry as Record<string, unknown>;
       if (augment.type !== "agentMail") return false;
@@ -2349,7 +2354,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       const inbound = options?.inbound as Record<string, unknown> | undefined;
       return inbound?.mode === "webhook";
     });
-    const agentMailReviewConfigured = augments.some((entry) => {
+    const agentMailReviewConfigured = validatedAugments.some((entry) => {
       if (typeof entry !== "object" || entry === null) return false;
       const augment = entry as Record<string, unknown>;
       if (augment.type !== "agentMail") return false;
@@ -2365,13 +2370,13 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       const executableTrustLevels = new Set(["creator", ...allowed]);
       return reviewed.some((level) => executableTrustLevels.has(level));
     });
-    const hasWebTransport = augments.some(
+    const hasWebTransport = validatedAugments.some(
       (entry) =>
         typeof entry === "object" &&
         entry !== null &&
         (entry as Record<string, unknown>).type === "webTransport",
     );
-    const hasAdminWebTransport = augments.some((entry) => {
+    const hasAdminWebTransport = validatedAugments.some((entry) => {
       if (typeof entry !== "object" || entry === null) return false;
       const augment = entry as Record<string, unknown>;
       if (augment.type !== "webTransport") return false;
@@ -2461,15 +2466,18 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       const allowed = new Set([
         "mode",
         "namespace",
+        "fleetCapacity",
+        "retention",
+        "result",
+        "turnState",
         "urlEnv",
         "leaseDurationMs",
         "heartbeatIntervalMs",
         "claimPollMs",
         "maxWaitMs",
       ]);
-      for (const key of Object.keys(coordination)) {
-        if (!allowed.has(key))
-          errors.push(`settings.coordination.${key}: unknown coordination setting`);
+      if (Object.keys(coordination).some((key) => !allowed.has(key))) {
+        errors.push("settings.coordination: contains unknown coordination settings");
       }
       if (coordination.mode !== "postgres") {
         errors.push('settings.coordination.mode: must be "postgres"');
@@ -2487,6 +2495,170 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         errors.push(
           "settings.coordination.namespace: must equal the immutable UUID portion of the agent id",
         );
+      }
+      const fleetCapacity = coordination.fleetCapacity;
+      if (
+        typeof fleetCapacity !== "object" ||
+        fleetCapacity === null ||
+        Array.isArray(fleetCapacity)
+      ) {
+        errors.push("settings.coordination.fleetCapacity: must be an object");
+      } else {
+        const capacity = fleetCapacity as Record<string, unknown>;
+        const capacityLimits = {
+          maxConcurrent: { minimum: 1, maximum: 1_000_000 },
+          maxQueued: { minimum: 0, maximum: 1_000_000 },
+          maxQueuedPerThread: { minimum: 0, maximum: 1_000_000 },
+        } as const;
+        if (Object.keys(capacity).some((key) => !Object.hasOwn(capacityLimits, key))) {
+          errors.push("settings.coordination.fleetCapacity: contains unknown capacity settings");
+        }
+        for (const key of Object.keys(capacityLimits) as Array<keyof typeof capacityLimits>) {
+          const limits = capacityLimits[key];
+          const value = capacity[key];
+          if (
+            !Number.isSafeInteger(value) ||
+            (value as number) < limits.minimum ||
+            (value as number) > limits.maximum
+          ) {
+            errors.push(
+              `settings.coordination.fleetCapacity.${key}: must be a safe integer between ${limits.minimum} and ${limits.maximum}`,
+            );
+          }
+        }
+        if (
+          Number.isSafeInteger(capacity.maxQueued) &&
+          Number.isSafeInteger(capacity.maxQueuedPerThread) &&
+          (capacity.maxQueuedPerThread as number) > (capacity.maxQueued as number)
+        ) {
+          errors.push(
+            "settings.coordination.fleetCapacity.maxQueuedPerThread: cannot exceed maxQueued",
+          );
+        }
+      }
+      const retention = coordination.retention;
+      if (typeof retention !== "object" || retention === null || Array.isArray(retention)) {
+        errors.push("settings.coordination.retention: must be an object");
+      } else {
+        const policy = retention as Record<string, unknown>;
+        const retentionLimits = {
+          terminalRequestRetentionMs: { minimum: 60_000, maximum: 31_536_000_000 },
+          maxTerminalRequests: { minimum: 1, maximum: 1_000_000 },
+          eventRetentionMs: { minimum: 60_000, maximum: 31_536_000_000 },
+          maxEvents: { minimum: 1, maximum: 1_000_000 },
+        } as const;
+        if (Object.keys(policy).some((key) => !Object.hasOwn(retentionLimits, key))) {
+          errors.push("settings.coordination.retention: contains unknown retention settings");
+        }
+        for (const key of Object.keys(retentionLimits) as Array<keyof typeof retentionLimits>) {
+          const limits = retentionLimits[key];
+          const value = policy[key];
+          if (
+            !Number.isSafeInteger(value) ||
+            (value as number) < limits.minimum ||
+            (value as number) > limits.maximum
+          ) {
+            errors.push(
+              `settings.coordination.retention.${key}: must be a safe integer between ${limits.minimum} and ${limits.maximum}`,
+            );
+          }
+        }
+      }
+      const result = coordination.result;
+      if (typeof result !== "object" || result === null || Array.isArray(result)) {
+        errors.push("settings.coordination.result: must be an object");
+      } else {
+        const policy = result as Record<string, unknown>;
+        if (Object.keys(policy).some((key) => key !== "maxReplayBytes")) {
+          errors.push("settings.coordination.result: contains unknown result settings");
+        }
+        if (
+          !Number.isSafeInteger(policy.maxReplayBytes) ||
+          (policy.maxReplayBytes as number) < 1_024 ||
+          (policy.maxReplayBytes as number) > 1_048_576
+        ) {
+          errors.push(
+            "settings.coordination.result.maxReplayBytes: must be a safe integer between 1024 and 1048576",
+          );
+        }
+      }
+      const turnState = coordination.turnState;
+      if (typeof turnState !== "object" || turnState === null || Array.isArray(turnState)) {
+        errors.push("settings.coordination.turnState: must be an object");
+      } else {
+        const policy = turnState as Record<string, unknown>;
+        if (
+          Object.keys(policy).some(
+            (key) => key !== "history" && key !== "maxCostMarkersPerTurn" && key !== "outbox",
+          )
+        ) {
+          errors.push("settings.coordination.turnState: contains unknown turn-state settings");
+        }
+        const history = policy.history;
+        if (typeof history !== "object" || history === null || Array.isArray(history)) {
+          errors.push("settings.coordination.turnState.history: must be an object");
+        } else {
+          const values = history as Record<string, unknown>;
+          const limits = {
+            maxSnapshotBytes: { minimum: 1_024, maximum: 1_048_576 },
+            maxMessages: { minimum: 1, maximum: 10_000 },
+            maxThreads: { minimum: 1, maximum: 1_000_000 },
+          } as const;
+          if (Object.keys(values).some((key) => !Object.hasOwn(limits, key))) {
+            errors.push(
+              "settings.coordination.turnState.history: contains unknown history settings",
+            );
+          }
+          for (const key of Object.keys(limits) as Array<keyof typeof limits>) {
+            const value = values[key];
+            const limit = limits[key];
+            if (
+              !Number.isSafeInteger(value) ||
+              (value as number) < limit.minimum ||
+              (value as number) > limit.maximum
+            ) {
+              errors.push(
+                `settings.coordination.turnState.history.${key}: must be a safe integer between ${limit.minimum} and ${limit.maximum}`,
+              );
+            }
+          }
+        }
+        if (
+          !Number.isSafeInteger(policy.maxCostMarkersPerTurn) ||
+          (policy.maxCostMarkersPerTurn as number) < 1 ||
+          (policy.maxCostMarkersPerTurn as number) > 1_000
+        ) {
+          errors.push(
+            "settings.coordination.turnState.maxCostMarkersPerTurn: must be a safe integer between 1 and 1000",
+          );
+        }
+        const outbox = policy.outbox;
+        if (typeof outbox !== "object" || outbox === null || Array.isArray(outbox)) {
+          errors.push("settings.coordination.turnState.outbox: must be an object");
+        } else {
+          const values = outbox as Record<string, unknown>;
+          const limits = {
+            maxIntentsPerTurn: { minimum: 0, maximum: 1_000 },
+            maxIntentBytes: { minimum: 1_024, maximum: 1_048_576 },
+            maxPendingIntents: { minimum: 0, maximum: 1_000_000 },
+          } as const;
+          if (Object.keys(values).some((key) => !Object.hasOwn(limits, key))) {
+            errors.push("settings.coordination.turnState.outbox: contains unknown outbox settings");
+          }
+          for (const key of Object.keys(limits) as Array<keyof typeof limits>) {
+            const value = values[key];
+            const limit = limits[key];
+            if (
+              !Number.isSafeInteger(value) ||
+              (value as number) < limit.minimum ||
+              (value as number) > limit.maximum
+            ) {
+              errors.push(
+                `settings.coordination.turnState.outbox.${key}: must be a safe integer between ${limit.minimum} and ${limit.maximum}`,
+              );
+            }
+          }
+        }
       }
       const urlEnv = coordination.urlEnv ?? DEFAULT_DISTRIBUTED_COORDINATION.urlEnv;
       if (typeof urlEnv !== "string" || !ENV_VAR_NAME_RE.test(urlEnv)) {
@@ -2541,7 +2713,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   // shorthand also reserves that name — an explicit augment also named
   // "identity" would produce a duplicate after expansion.
   if (identityShorthand !== undefined && Array.isArray(augments)) {
-    const hasExplicitSystemFileMemory = (augments as unknown[]).some((a) => {
+    const hasExplicitSystemFileMemory = validatedAugments.some((a) => {
       if (typeof a !== "object" || a === null) return false;
       const aug = a as Record<string, unknown>;
       if (aug.type !== "fileMemory") return false;
@@ -2555,7 +2727,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
     } else {
       // Only check the name collision when there's no placement:system
       // conflict, to avoid stacking errors for the same operator mistake.
-      const hasExplicitIdentityName = (augments as unknown[]).some((a) => {
+      const hasExplicitIdentityName = validatedAugments.some((a) => {
         if (typeof a !== "object" || a === null) return false;
         const aug = a as Record<string, unknown>;
         return aug.name === "identity";
@@ -2592,6 +2764,51 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
     parsedSettings.coordination = {
       mode: "postgres",
       namespace: coordination.namespace as string,
+      fleetCapacity: {
+        maxConcurrent: (coordination.fleetCapacity as Record<string, unknown>)
+          .maxConcurrent as number,
+        maxQueued: (coordination.fleetCapacity as Record<string, unknown>).maxQueued as number,
+        maxQueuedPerThread: (coordination.fleetCapacity as Record<string, unknown>)
+          .maxQueuedPerThread as number,
+      },
+      retention: {
+        terminalRequestRetentionMs: (coordination.retention as Record<string, unknown>)
+          .terminalRequestRetentionMs as number,
+        maxTerminalRequests: (coordination.retention as Record<string, unknown>)
+          .maxTerminalRequests as number,
+        eventRetentionMs: (coordination.retention as Record<string, unknown>)
+          .eventRetentionMs as number,
+        maxEvents: (coordination.retention as Record<string, unknown>).maxEvents as number,
+      },
+      result: {
+        maxReplayBytes: (coordination.result as Record<string, unknown>).maxReplayBytes as number,
+      },
+      turnState: {
+        history: {
+          maxSnapshotBytes: (
+            (coordination.turnState as Record<string, unknown>).history as Record<string, unknown>
+          ).maxSnapshotBytes as number,
+          maxMessages: (
+            (coordination.turnState as Record<string, unknown>).history as Record<string, unknown>
+          ).maxMessages as number,
+          maxThreads: (
+            (coordination.turnState as Record<string, unknown>).history as Record<string, unknown>
+          ).maxThreads as number,
+        },
+        maxCostMarkersPerTurn: (coordination.turnState as Record<string, unknown>)
+          .maxCostMarkersPerTurn as number,
+        outbox: {
+          maxIntentsPerTurn: (
+            (coordination.turnState as Record<string, unknown>).outbox as Record<string, unknown>
+          ).maxIntentsPerTurn as number,
+          maxIntentBytes: (
+            (coordination.turnState as Record<string, unknown>).outbox as Record<string, unknown>
+          ).maxIntentBytes as number,
+          maxPendingIntents: (
+            (coordination.turnState as Record<string, unknown>).outbox as Record<string, unknown>
+          ).maxPendingIntents as number,
+        },
+      },
       urlEnv:
         (coordination.urlEnv as string | undefined) ?? DEFAULT_DISTRIBUTED_COORDINATION.urlEnv,
       leaseDurationMs:
@@ -2701,6 +2918,7 @@ export function parseConfig(yamlPath: string): ParsedConfig {
   if (!parsed || typeof parsed !== "object") {
     throw new Error(`${yamlPath}: not a valid YAML document`);
   }
+  assertEffectiveAugmentBounds(parsed as Record<string, unknown>);
 
   let interpolated: Record<string, unknown>;
   try {

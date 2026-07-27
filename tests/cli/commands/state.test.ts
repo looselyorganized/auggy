@@ -55,6 +55,27 @@ function fixture(withCoordination = false) {
               coordination: {
                 mode: "postgres",
                 namespace: "8a3d7828-1597-4db4-bd0e-adc1a1036211",
+                fleetCapacity: {
+                  maxConcurrent: 4,
+                  maxQueued: 100,
+                  maxQueuedPerThread: 20,
+                },
+                retention: {
+                  terminalRequestRetentionMs: 604_800_000,
+                  maxTerminalRequests: 10_000,
+                  eventRetentionMs: 2_592_000_000,
+                  maxEvents: 50_000,
+                },
+                result: { maxReplayBytes: 65_536 },
+                turnState: {
+                  history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+                  maxCostMarkersPerTurn: 32,
+                  outbox: {
+                    maxIntentsPerTurn: 32,
+                    maxIntentBytes: 65_536,
+                    maxPendingIntents: 1_000,
+                  },
+                },
               },
             },
           }

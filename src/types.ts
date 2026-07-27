@@ -129,9 +129,9 @@ export type MemoryProviderSpec = StaticMemoryProvider | NamespaceMemoryProvider;
 export type ToolCategory = "memory" | "search" | "communication" | "meta" | (string & {});
 
 /**
- * Versioned, trusted metadata for one embedded execution. It is accepted only
- * through AgentHandle.inject(); public transports never control these fields.
- * Idempotency material is represented solely by one-way hashes.
+ * Versioned metadata minted by trusted embedding APIs or first-party transport
+ * server code. Raw transport clients never control these fields directly;
+ * idempotency material is represented solely by one-way hashes.
  */
 export interface ExecutionContextV1 {
   version: 1;
@@ -141,6 +141,67 @@ export interface ExecutionContextV1 {
   correlationId?: string;
   idempotencyKeyHash?: string;
   bindingHash?: string;
+  /** Kernel-derived causal scope for stable child-operation separation. */
+  operationScope?: string;
+}
+
+/** Trusted transport-selected quota subject for one distributed root request. */
+export interface DistributedAdmissionReservationV1 {
+  policyId: string;
+  /** One-way hash of the canonical fleet quota subject; never a raw IP or identity. */
+  subjectHash: string;
+}
+
+/** Trusted retained-request partition selected by a first-party transport. */
+export interface DistributedAdmissionCapacityV1 {
+  classId: string;
+  /** One-way hash of the canonical caller partition; never a raw identity. */
+  partitionHash: string;
+}
+
+/** Trusted startup requirements contributed by one distributed source. */
+export interface DistributedAdmissionPolicyRequirementsV1 {
+  capacityClasses?: readonly {
+    id: string;
+    maxRetainedRequests: number;
+    maxRetainedRequestsPerPartition: number;
+  }[];
+  rateLimits?: readonly {
+    id: string;
+    max: number;
+    /** Minimum isolated evidence slots required for this policy at startup. */
+    minRetainedEvents?: number;
+    windowMs: number;
+  }[];
+}
+
+/** Shared visitor identity decision returned by the distributed authority. */
+export type DistributedVisitorIdentityResultV1 =
+  | {
+      status: "active";
+      visitorId: string;
+      identityVersion: number;
+      email: string;
+      verifiedAt: number;
+      reverifyDueAt: number;
+    }
+  | { status: "unknown" | "expired" | "revoked" | "unavailable" };
+
+/** Shared external-assertion replay claim, bound to one canonical execution. */
+export interface DistributedExternalAssertionClaimV1 {
+  provider: string;
+  keyId: string | null;
+  jti: string;
+  requestId: string;
+  bindingHash: string;
+  expiresAt: number;
+}
+
+/** Fenced coordinator authority exposed only to trusted execution boundaries. */
+export interface ExecutionAuthorityV1 {
+  version: 1;
+  attempt: number;
+  fence: number;
 }
 
 /** Safe projection permitted in traces and kernel events. */
@@ -163,6 +224,8 @@ export interface ToolExecuteContext {
   executionContext?: ExecutionTraceContextV1;
   /** Opaque downstream idempotency identity derived from the execution and tool position. */
   operationId?: string;
+  /** Current distributed ownership; never accepted from a public transport. */
+  executionAuthority?: ExecutionAuthorityV1;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Tool is covariant over arbitrary model-facing schemas.
@@ -311,8 +374,12 @@ export interface TurnState {
   metadata: Record<string, unknown>;
   /** Caller cancellation for turn-scoped context and lifecycle work. */
   signal?: AbortSignal;
-  /** Trusted embedding metadata; never read from a public trigger. */
-  executionContext?: ExecutionContextV1;
+  /** Safe execution projection; binding and idempotency hashes remain kernel-private. */
+  executionContext?: ExecutionTraceContextV1;
+  /** Current distributed ownership for this trusted effect boundary. */
+  executionAuthority?: ExecutionAuthorityV1;
+  /** Stable downstream idempotency identity for this exact effect boundary. */
+  operationId?: string;
 }
 
 export interface OutboundMessage {
@@ -425,6 +492,8 @@ export interface TurnResult {
    * unset; the transport's default 5xx fallback handles absence.
    */
   errorClass?: TurnRejectionClass;
+  /** Exact terminal result was loaded from the distributed coordinator. */
+  distributedReplay?: true;
 }
 
 export type TurnRejectionClass = "cap-denied" | "admission-state-failed" | "engine-error";
@@ -489,11 +558,28 @@ export interface SchedulerContext {
   getCompletedTranscript(): Promise<Transcript | null>;
   /** Caller cancellation; background hooks must not begin new work after abort. */
   signal?: AbortSignal;
+  /** Safe projection of the trusted root execution identity. */
+  executionContext?: ExecutionTraceContextV1;
+  /** Current distributed ownership for this terminal hook. */
+  executionAuthority?: ExecutionAuthorityV1;
+  /** Stable downstream idempotency identity for this exact hook. */
+  operationId?: string;
 }
 
-/** Cancellation context shared by terminal turn hooks. */
+/** Trusted effect context shared by terminal turn hooks. */
 export interface TurnLifecycleContext {
   signal?: AbortSignal;
+  executionContext?: ExecutionTraceContextV1;
+  executionAuthority?: ExecutionAuthorityV1;
+  operationId?: string;
+}
+
+/** Trusted effect context for a transport-owned outbound delivery. */
+export interface OutboundDeliveryContext {
+  signal?: AbortSignal;
+  executionContext?: ExecutionTraceContextV1;
+  executionAuthority?: ExecutionAuthorityV1;
+  operationId?: string;
 }
 
 /**
@@ -506,6 +592,12 @@ export interface InternalTurnContext {
   threadId: string;
   peer: PeerIdentity | null;
   signal?: AbortSignal;
+  /** Safe projection of the trusted root execution identity. */
+  executionContext?: ExecutionTraceContextV1;
+  /** Current distributed ownership; never accepted from a public payload. */
+  executionAuthority?: ExecutionAuthorityV1;
+  /** Stable downstream idempotency identity for this internal handler. */
+  operationId?: string;
 }
 
 // === Kernel Events (internal — emitted by turn loop, consumed by transports) ===
@@ -654,11 +746,19 @@ export interface ModelResponseLimits {
 
 export type ModelDelta = { kind: "text_delta"; text: string };
 
+export interface ModelCompleteOptions {
+  onDelta?: (delta: ModelDelta) => void;
+  signal?: AbortSignal;
+  /** Safe projection of the trusted root execution identity. */
+  executionContext?: ExecutionTraceContextV1;
+  /** Current distributed ownership for this inference dispatch. */
+  executionAuthority?: ExecutionAuthorityV1;
+  /** Stable retry identity for this exact inference round. */
+  operationId?: string;
+}
+
 export interface ModelClient {
-  complete(
-    prompt: AssembledPrompt,
-    opts?: { onDelta?: (delta: ModelDelta) => void; signal?: AbortSignal },
-  ): Promise<ModelResponse>;
+  complete(prompt: AssembledPrompt, opts?: ModelCompleteOptions): Promise<ModelResponse>;
   countTokens(text: string): number;
   maxContextTokens: number;
 }
@@ -736,8 +836,28 @@ export interface TransportKernel {
       onEvent?: KernelEventHandler;
       signal?: AbortSignal;
       historyPersistence?: ThreadHistoryPersistence;
-      /** Runtime-owned proof that scheduler admission reached task execution. */
-      onExecutionStart?: () => void;
+      /**
+       * Trusted pre-execution authorization fence. It runs after scheduling
+       * and distributed claim acquisition, but before history restoration or
+       * any turn work. A rejection abandons an unstarted distributed attempt.
+       */
+      beforeExecute?: () => void | Promise<void>;
+      /**
+       * Runtime-owned effect-start observer. It runs after history
+       * authorization and turn-gate preparation, before confirming writes or
+       * arbitrary augment/model work.
+       */
+      onExecutionStart?: () => void | Promise<void>;
+      /**
+       * Server-minted execution identity constructed by trusted transport code.
+       * Raw request fields must never be copied into this context without
+       * canonical hashing and validation.
+       */
+      executionContext?: ExecutionContextV1;
+      /** Trusted retained-request class and partition selected by the transport. */
+      distributedCapacity?: DistributedAdmissionCapacityV1;
+      /** Trusted, bounded fleet-quota subjects selected by the transport. */
+      distributedAdmission?: readonly DistributedAdmissionReservationV1[];
     },
   ): Promise<TurnResult>;
   /** Evict an in-memory thread so a later request restores durable state. */
@@ -746,12 +866,54 @@ export interface TransportKernel {
     callback: (
       peer: PeerIdentity,
       message: OutboundMessage,
-      context?: { signal?: AbortSignal },
+      context?: OutboundDeliveryContext,
     ) => Promise<void>,
   ): void;
   getAgentCard(): AgentCard;
   /** Process-local, aggregate operational state for authenticated operator surfaces. */
   getOperationalSnapshot?(): RuntimeOperationalSnapshot;
+  /** Private runtime topology signal; it grants no coordinator authority. */
+  getRuntimeTopology?(): "single-replica" | "distributed-preview";
+  /** Trusted non-turn fleet quota reservation; raw clients cannot call this boundary. */
+  reserveDistributedRateLimits?(request: {
+    reservationId: string;
+    admission: readonly DistributedAdmissionReservationV1[];
+  }): Promise<
+    | { status: "reserved" | "replayed" | "conflict" | "unavailable" }
+    | {
+        status: "rejected";
+        reason: "admission-capacity" | "invalid-admission" | "rate-limited" | "draining";
+        retryAfterMs?: number;
+      }
+  >;
+  /** Fail-closed startup check against the immutable coordinator policy. */
+  validateDistributedAdmissionPolicy?(
+    requirements: DistributedAdmissionPolicyRequirementsV1,
+  ): boolean;
+  /** Resolve a versioned visitor identity through the shared authority. */
+  resolveDistributedVisitorIdentity?(
+    visitorId: string,
+    identityVersion: number,
+    credentialExpiresAt: number,
+  ): Promise<DistributedVisitorIdentityResultV1>;
+  /** Authorize one exact anonymous-thread promotion through shared evidence. */
+  authorizeDistributedVisitorPromotion?(request: {
+    visitorId: string;
+    identityVersion: number;
+    peerId: string;
+    threadId: string;
+  }): Promise<{ status: "allowed" | "denied" | "unavailable" }>;
+  /** Atomically claim a verified external assertion for one canonical execution. */
+  claimDistributedExternalAssertion?(request: DistributedExternalAssertionClaimV1): Promise<{
+    status:
+      | "claimed"
+      | "replayed"
+      | "conflict"
+      | "invalid"
+      | "expired"
+      | "capacity"
+      | "unavailable";
+  }>;
   /** Trusted transport-only restoration of a durable thread quarantine. */
   quarantineThread(threadId: string): boolean;
   /**
@@ -1210,6 +1372,9 @@ export interface TurnGateProvider {
     peer: PeerIdentity | null;
     threadId: string;
     trigger: TurnTrigger;
+    executionContext?: ExecutionTraceContextV1;
+    executionAuthority?: ExecutionAuthorityV1;
+    operationId?: string;
   }): Promise<TurnGateTicket>;
 
   /**
@@ -1225,6 +1390,9 @@ export interface TurnGateProvider {
     peer: PeerIdentity | null;
     threadId: string;
     cost: CostResult;
+    executionContext?: ExecutionTraceContextV1;
+    executionAuthority?: ExecutionAuthorityV1;
+    operationId?: string;
   }): Promise<void>;
 }
 
@@ -1557,18 +1725,146 @@ export interface DistributedCoordinationConfig {
   mode: "postgres";
   namespace: string;
   urlEnv: string;
+  /** Immutable fleet-wide capacity, never multiplied by replica count. */
+  fleetCapacity: DistributedFleetCapacityConfig;
+  /** Explicit age and count bounds for coordinator-owned terminal/audit records. */
+  retention: DistributedCoordinationRetentionConfig;
+  /** Explicit replay storage bound, measured in serialized UTF-8 bytes. */
+  result: DistributedCoordinationResultConfig;
+  /** Bounded, coordinator-owned state committed with one fenced turn. */
+  turnState: DistributedCoordinationTurnStateConfig;
+  /** Immutable database-time rate policies used by trusted distributed sources. */
+  admission?: DistributedCoordinationAdmissionConfig;
+  /** Immutable coordinator-owned turn/spend guardrails for distributed budget augments. */
+  budgets?: DistributedCoordinationBudgetConfig;
   leaseDurationMs: number;
   heartbeatIntervalMs: number;
   claimPollMs: number;
   maxWaitMs: number;
 }
 
-export interface TurnSchedulingConfig {
-  /** Maximum active complete-turn pipelines across this agent. Default 4. */
+export interface DistributedBudgetCapsV1 {
+  maxUsdPerDay?: number;
+  maxTurnsPerThread?: number;
+  maxTurnsPerDay?: number;
+}
+
+export interface DistributedBudgetPolicyV1 {
+  /** Stable source-owned augment identity, never selected by a request. */
+  id: string;
+  caps?: {
+    agent?: DistributedBudgetCapsV1;
+    public?: {
+      anonymous?: DistributedBudgetCapsV1;
+      recognized?: DistributedBudgetCapsV1;
+    };
+  };
+  anonymousGlobalLimit?: number;
+  /** Post-hoc facility-wide daily USD ceiling. */
+  dailyBudgetUsd?: number;
+  notifications?: {
+    destination: string;
+    thresholds: readonly number[];
+  };
+  /** Isolated retained reservation capacity for this policy. */
+  maxReservations: number;
+  /** Reservation evidence lasts at least one UTC day and outlives terminal replay evidence. */
+  reservationRetentionMs: number;
+  /** Isolated rolling anonymous-event evidence capacity. */
+  maxAnonymousEvents: number;
+  /** Isolated peer/day aggregate capacity. */
+  maxPeerDays: number;
+  /** Isolated durable threshold-intent capacity. */
+  maxThresholdIntents: number;
+  /** UTC-day retention for settled aggregates. */
+  aggregateRetentionDays: number;
+}
+
+export interface DistributedCoordinationBudgetConfig {
+  policies: readonly DistributedBudgetPolicyV1[];
+}
+
+export interface DistributedBudgetUsageV1 {
+  admissionDay: string;
+  threadTurns: number;
+  peerTurns: number;
+  peerCostUsd: number;
+  peerUnpricedTurns: number;
+  globalCostUsd: number;
+  globalUnpricedTurns: number;
+}
+
+export interface DistributedCoordinationAdmissionConfig {
+  /** Hard bound for live rate-reservation evidence across all policy partitions. */
+  maxRateLimitEvents: number;
+  /** Immutable retained-request reservations that prevent trust-class starvation. */
+  capacityClasses?: readonly {
+    id: string;
+    maxRetainedRequests: number;
+    maxRetainedRequestsPerPartition: number;
+  }[];
+  /** Trusted policy identifiers and limits; request code supplies only subject hashes. */
+  rateLimits: readonly {
+    id: string;
+    max: number;
+    /** Isolated evidence capacity; the sum across policies may not exceed the namespace bound. */
+    maxEvents: number;
+    windowMs: number;
+  }[];
+}
+
+export interface DistributedFleetCapacityConfig {
+  /** Maximum active turns across the logical fleet. */
   maxConcurrent: number;
-  /** Maximum waiting turns across this agent. Default 100. */
+  /** Maximum waiting turns across the logical fleet. */
   maxQueued: number;
-  /** Maximum waiting turns for one resolved thread. Default 20. */
+  /** Maximum waiting turns for one resolved thread across the logical fleet. */
+  maxQueuedPerThread: number;
+}
+
+export interface DistributedCoordinationRetentionConfig {
+  /** Age bound for terminal requests; queued, active, and ambiguous work is excluded. */
+  terminalRequestRetentionMs: number;
+  /** Count bound for terminal request records within one namespace. */
+  maxTerminalRequests: number;
+  /** Age bound for bounded coordinator audit events. */
+  eventRetentionMs: number;
+  /** Count bound for coordinator audit events within one namespace. */
+  maxEvents: number;
+}
+
+export interface DistributedCoordinationResultConfig {
+  /** Maximum serialized UTF-8 bytes retained for one sanitized replay result. */
+  maxReplayBytes: number;
+}
+
+export interface DistributedCoordinationTurnStateConfig {
+  history: {
+    /** Maximum serialized UTF-8 bytes retained for one thread snapshot. */
+    maxSnapshotBytes: number;
+    /** Maximum messages retained in one thread snapshot. */
+    maxMessages: number;
+    /** Maximum peer-bound thread snapshots retained in one namespace. */
+    maxThreads: number;
+  };
+  /** Maximum exact-known inference-cost markers committed by one root turn. */
+  maxCostMarkersPerTurn: number;
+  outbox: {
+    /** Maximum outbound intents staged by one root turn. */
+    maxIntentsPerTurn: number;
+    /** Maximum serialized UTF-8 bytes retained for one outbound intent. */
+    maxIntentBytes: number;
+    /** Maximum pending outbound intents retained in one namespace. */
+    maxPendingIntents: number;
+  };
+}
+
+export interface TurnSchedulingConfig {
+  /** Maximum active complete-turn pipelines in this process. Default 4. */
+  maxConcurrent: number;
+  /** Maximum waiting turns in this process. Default 100. */
+  maxQueued: number;
+  /** Maximum waiting turns for one resolved thread in this process. Default 20. */
   maxQueuedPerThread: number;
   /** Maximum nested same-thread SchedulerContext.inject depth. Default 8. */
   maxCausalDepth: number;
@@ -1697,8 +1993,10 @@ export interface AgentInjectOptions {
   executionContext?: ExecutionContextV1;
   onEvent?: KernelEventHandler;
   /**
-   * Trusted pre-execution hook. It runs after scheduler admission and before
-   * model or tool execution. A rejected hook prevents the turn from starting.
+   * Trusted effect-start hook. It runs after history authorization and
+   * turn-gate preparation, before confirming writes or arbitrary
+   * augment/model work. A rejected hook prevents the turn from crossing that
+   * boundary.
    * Public transports do not receive this embedding surface.
    */
   onExecutionStart?: () => void | Promise<void>;

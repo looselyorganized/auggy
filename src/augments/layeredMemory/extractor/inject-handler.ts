@@ -1,4 +1,4 @@
-import type { Transcript } from "../../../types";
+import type { ExecutionAuthorityV1, ExecutionTraceContextV1, Transcript } from "../../../types";
 import { isOutcomeUnknownError } from "../../../outcome-unknown";
 import { type ExtractedFact, parseExtractionResponse } from "./parse";
 
@@ -20,8 +20,15 @@ import { type ExtractedFact, parseExtractionResponse } from "./parse";
 export interface ExtractionEngine {
   complete(
     prompt: string,
-    options?: { signal?: AbortSignal },
+    options?: ExtractionCompleteOptions,
   ): Promise<{ text: string; costUsd: number }>;
+}
+
+export interface ExtractionCompleteOptions {
+  signal?: AbortSignal;
+  executionContext?: ExecutionTraceContextV1;
+  executionAuthority?: ExecutionAuthorityV1;
+  operationId?: string;
 }
 
 export interface ExtractionInput {
@@ -35,6 +42,9 @@ export interface ExtractionInput {
    */
   promptTemplate: string;
   signal?: AbortSignal;
+  executionContext?: ExecutionTraceContextV1;
+  executionAuthority?: ExecutionAuthorityV1;
+  operationId?: string;
 }
 
 /**
@@ -71,7 +81,12 @@ export async function handleExtractionTurn(input: ExtractionInput): Promise<Extr
 
   let response: { text: string; costUsd: number };
   try {
-    response = await input.engine.complete(prompt, { signal: input.signal });
+    response = await input.engine.complete(prompt, {
+      ...(input.signal ? { signal: input.signal } : {}),
+      ...(input.executionContext ? { executionContext: input.executionContext } : {}),
+      ...(input.executionAuthority ? { executionAuthority: input.executionAuthority } : {}),
+      ...(input.operationId ? { operationId: input.operationId } : {}),
+    });
   } catch (err) {
     if (input.signal?.aborted || isOutcomeUnknownError(err)) throw err;
     return {

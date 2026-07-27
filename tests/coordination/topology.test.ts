@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import {
-  PROCESS_LOCAL_COORDINATION_TOPOLOGY,
+  assertDistributedCoordinationStartupAllowed,
+  distributedCoordinationPreflightReport,
   enumerateDistributedCoordinationBlockers,
 } from "../../src/coordination/topology";
 
@@ -17,10 +18,44 @@ describe("distributed coordination topology preflight contract", () => {
     ]);
   });
 
-  test("reports no blockers only for a fully shared, fenced topology", () => {
+  test("reports the disabled profile without reading configuration values", () => {
+    expect(distributedCoordinationPreflightReport()).toEqual({
+      profile: "disabled",
+      ready: false,
+      blockers: [
+        "runtime-not-enabled",
+        "process-local-fleet-admission",
+        "process-local-thread-serialization",
+        "unfenced-thread-history",
+        "process-local-idempotency-store",
+        "process-local-quarantine-and-health",
+        "process-local-mutable-stores",
+        "unfenced-delivery-outbox",
+        "configured-augment-state-unverified",
+      ],
+    });
+  });
+
+  test("ignores caller-supplied evidence instead of treating it as authority", () => {
+    const hostileCall = distributedCoordinationPreflightReport as unknown as (
+      claims: Record<string, unknown>,
+    ) => ReturnType<typeof distributedCoordinationPreflightReport>;
     expect(
-      enumerateDistributedCoordinationBlockers({
-        ...PROCESS_LOCAL_COORDINATION_TOPOLOGY,
+      hostileCall({
+        ready: true,
+        blockers: [],
+        augmentEvidence: [{ topologyClass: "stateless", requirements: [] }],
+      }),
+    ).toEqual(distributedCoordinationPreflightReport());
+  });
+
+  test("does not let caller-supplied topology claims erase runtime blockers", () => {
+    const hostileCall = enumerateDistributedCoordinationBlockers as unknown as (
+      topology: Record<string, string>,
+    ) => string[];
+
+    expect(
+      hostileCall({
         fleetAdmission: "shared-fenced",
         threadSerialization: "shared-fenced",
         threadHistory: "fenced",
@@ -29,6 +64,32 @@ describe("distributed coordination topology preflight contract", () => {
         mutableStores: "shared-fenced",
         delivery: "shared-outbox",
       }),
-    ).toEqual([]);
+    ).toEqual([
+      "process-local-fleet-admission",
+      "process-local-thread-serialization",
+      "unfenced-thread-history",
+      "process-local-idempotency-store",
+      "process-local-quarantine-and-health",
+      "process-local-mutable-stores",
+      "unfenced-delivery-outbox",
+    ]);
+  });
+
+  test("allows local startup and emits secret-free distributed errors", () => {
+    expect(() => assertDistributedCoordinationStartupAllowed(undefined)).not.toThrow();
+
+    const hostileConfig = {
+      urlEnv: "SENTINEL_COORDINATION_SECRET_ENV",
+      url: "postgres://sentinel-secret@example.invalid/database",
+    };
+    expect(() => assertDistributedCoordinationStartupAllowed(hostileConfig)).toThrow(
+      "runtime-not-enabled",
+    );
+    try {
+      assertDistributedCoordinationStartupAllowed(hostileConfig);
+    } catch (error) {
+      expect(String(error)).not.toContain("SENTINEL_COORDINATION_SECRET_ENV");
+      expect(String(error)).not.toContain("sentinel-secret");
+    }
   });
 });

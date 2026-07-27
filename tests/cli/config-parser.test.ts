@@ -175,6 +175,36 @@ describe("parseConfig", () => {
     expect(config.augments[0]!.type).toBe("fileMemory");
   });
 
+  test("bounds effective augment topology before validation or expansion", () => {
+    const boundedAugments = Array.from({ length: 256 }, (_, index) => ({
+      name: `fetch-${index}`,
+      type: "webFetch",
+    }));
+    const boundedPath = writeYaml(
+      "bounded-augment-topology.yaml",
+      minimalConfig({ augments: boundedAugments }),
+    );
+    expect(parseConfig(boundedPath).augments).toHaveLength(256);
+
+    const oversizedPath = writeYaml(
+      "oversized-augment-topology.yaml",
+      minimalConfig({
+        augments: [...boundedAugments, { name: "unsafe-tail", type: "webFetch" }],
+      }),
+    );
+    expect(() => parseConfig(oversizedPath)).toThrow(
+      "augments: at most 256 effective augments are supported",
+    );
+
+    const shorthandPath = writeYaml(
+      "identity-expanded-augment-topology.yaml",
+      minimalConfig({ identity: "./identity.md", augments: boundedAugments }),
+    );
+    expect(() => parseConfig(shorthandPath)).toThrow(
+      "augments: at most 256 effective augments are supported",
+    );
+  });
+
   test("rejects malformed settings instead of silently restoring runtime defaults", () => {
     for (const settings of ["malformed", 42, true, null, ["maxConcurrent", 1]]) {
       const path = writeYaml("agent.yaml", minimalConfig({ settings }));
@@ -350,14 +380,40 @@ describe("parseConfig", () => {
     }
   });
 
-  test("parses a secret-free distributed coordination contract with secure defaults", () => {
+  test("keeps explicit fleet capacity separate from process-local scheduling", () => {
     const path = writeYaml(
       "agent.yaml",
       minimalConfig({
         settings: {
+          turnScheduling: {
+            maxConcurrent: 1,
+            maxQueued: 2,
+            maxQueuedPerThread: 1,
+          },
           coordination: {
             mode: "postgres",
             namespace: "a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+            fleetCapacity: {
+              maxConcurrent: 8,
+              maxQueued: 200,
+              maxQueuedPerThread: 25,
+            },
+            retention: {
+              terminalRequestRetentionMs: 604_800_000,
+              maxTerminalRequests: 10_000,
+              eventRetentionMs: 2_592_000_000,
+              maxEvents: 50_000,
+            },
+            result: { maxReplayBytes: 65_536 },
+            turnState: {
+              history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+              maxCostMarkersPerTurn: 32,
+              outbox: {
+                maxIntentsPerTurn: 32,
+                maxIntentBytes: 65_536,
+                maxPendingIntents: 1_000,
+              },
+            },
           },
         },
       }),
@@ -366,32 +422,187 @@ describe("parseConfig", () => {
     expect(parseConfig(path).settings.coordination).toEqual({
       mode: "postgres",
       namespace: "a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+      fleetCapacity: {
+        maxConcurrent: 8,
+        maxQueued: 200,
+        maxQueuedPerThread: 25,
+      },
+      retention: {
+        terminalRequestRetentionMs: 604_800_000,
+        maxTerminalRequests: 10_000,
+        eventRetentionMs: 2_592_000_000,
+        maxEvents: 50_000,
+      },
+      result: { maxReplayBytes: 65_536 },
+      turnState: {
+        history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+        maxCostMarkersPerTurn: 32,
+        outbox: { maxIntentsPerTurn: 32, maxIntentBytes: 65_536, maxPendingIntents: 1_000 },
+      },
       urlEnv: "AUGGY_COORDINATION_DATABASE_URL",
       leaseDurationMs: 30_000,
       heartbeatIntervalMs: 5_000,
       claimPollMs: 100,
       maxWaitMs: 30_000,
     });
+    expect(parseConfig(path).settings.turnScheduling).toEqual({
+      maxConcurrent: 1,
+      maxQueued: 2,
+      maxQueuedPerThread: 1,
+    });
   });
 
   test("rejects unsafe or ambiguous distributed coordination settings", () => {
+    const fleetCapacity = {
+      maxConcurrent: 4,
+      maxQueued: 100,
+      maxQueuedPerThread: 20,
+    };
+    const retention = {
+      terminalRequestRetentionMs: 604_800_000,
+      maxTerminalRequests: 10_000,
+      eventRetentionMs: 2_592_000_000,
+      maxEvents: 50_000,
+    };
+    const result = { maxReplayBytes: 65_536 };
+    const turnState = {
+      history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+      maxCostMarkersPerTurn: 32,
+      outbox: { maxIntentsPerTurn: 32, maxIntentBytes: 65_536, maxPendingIntents: 1_000 },
+    };
+    const validCoordination = {
+      mode: "postgres",
+      namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+      fleetCapacity,
+      retention,
+      result,
+      turnState,
+    };
     const invalid = [
-      { mode: "redis", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7" },
-      { mode: "postgres", namespace: "not-a-uuid" },
-      { mode: "postgres", namespace: "5D9B9796-65BA-43D0-9BA9-57F1A9DB5EF7" },
-      { mode: "postgres", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7" },
-      { mode: "postgres", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7", urlEnv: "URL;SECRET" },
+      { ...validCoordination, mode: "redis" },
+      { ...validCoordination, namespace: "not-a-uuid" },
+      { ...validCoordination, namespace: "5D9B9796-65BA-43D0-9BA9-57F1A9DB5EF7" },
+      { mode: "postgres", namespace: validCoordination.namespace, retention, result, turnState },
       {
-        mode: "postgres",
-        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        ...validCoordination,
+        urlEnv: "URL;SECRET",
+      },
+      {
+        ...validCoordination,
         leaseDurationMs: 10_000,
         heartbeatIntervalMs: 4_000,
       },
-      { mode: "postgres", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7", unknown: true },
+      {
+        ...validCoordination,
+        unknown: true,
+      },
+      {
+        ...validCoordination,
+        fleetCapacity: true,
+      },
+      {
+        ...validCoordination,
+        fleetCapacity: { ...fleetCapacity, maxConcurrent: 0 },
+      },
+      {
+        ...validCoordination,
+        fleetCapacity: { ...fleetCapacity, maxQueued: -1 },
+      },
+      {
+        ...validCoordination,
+        fleetCapacity: { ...fleetCapacity, maxConcurrent: 1.5 },
+      },
+      {
+        ...validCoordination,
+        fleetCapacity: { ...fleetCapacity, maxQueued: 1_000_001 },
+      },
+      {
+        ...validCoordination,
+        fleetCapacity: { ...fleetCapacity, maxQueued: 2, maxQueuedPerThread: 3 },
+      },
+      {
+        ...validCoordination,
+        fleetCapacity: { ...fleetCapacity, unknown: 1 },
+      },
+      {
+        ...validCoordination,
+        fleetCapacity: { ...fleetCapacity, constructor: 1 },
+      },
+      { ...validCoordination, retention: undefined },
+      { ...validCoordination, retention: true },
+      {
+        ...validCoordination,
+        retention: { ...retention, terminalRequestRetentionMs: 0 },
+      },
+      { ...validCoordination, retention: { ...retention, maxEvents: 1.5 } },
+      { ...validCoordination, retention: { ...retention, maxEvents: 1_000_001 } },
+      { ...validCoordination, retention: { ...retention, constructor: 1 } },
+      { ...validCoordination, result: undefined },
+      { ...validCoordination, result: true },
+      { ...validCoordination, result: { maxReplayBytes: 0 } },
+      { ...validCoordination, result: { maxReplayBytes: 1.5 } },
+      { ...validCoordination, result: { maxReplayBytes: 1_048_577 } },
+      { ...validCoordination, result: { maxReplayBytes: 65_536, constructor: 1 } },
+      { ...validCoordination, turnState: undefined },
+      { ...validCoordination, turnState: true },
+      {
+        ...validCoordination,
+        turnState: { ...turnState, history: { ...turnState.history, maxThreads: 0 } },
+      },
+      {
+        ...validCoordination,
+        turnState: { ...turnState, outbox: { ...turnState.outbox, maxIntentBytes: 1 } },
+      },
+      { ...validCoordination, turnState: { ...turnState, constructor: 1 } },
     ];
     for (const coordination of invalid) {
       const path = writeYaml("agent.yaml", minimalConfig({ settings: { coordination } }));
       expect(() => parseConfig(path)).toThrow(/settings\.coordination/);
+    }
+  });
+
+  test("does not echo unknown coordination policy keys in validation errors", () => {
+    const sentinel = "SENTINEL_COORDINATION_POLICY_SECRET";
+    const fleetCapacity = { maxConcurrent: 4, maxQueued: 100, maxQueuedPerThread: 20 };
+    const retention = {
+      terminalRequestRetentionMs: 604_800_000,
+      maxTerminalRequests: 10_000,
+      eventRetentionMs: 2_592_000_000,
+      maxEvents: 50_000,
+    };
+    const result = { maxReplayBytes: 65_536 };
+    const turnState = {
+      history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+      maxCostMarkersPerTurn: 32,
+      outbox: { maxIntentsPerTurn: 32, maxIntentBytes: 65_536, maxPendingIntents: 1_000 },
+    };
+    const variants = [
+      { fleetCapacity: { ...fleetCapacity, [sentinel]: true }, retention, result, turnState },
+      { fleetCapacity, retention: { ...retention, [sentinel]: true }, result, turnState },
+      { fleetCapacity, retention, result: { ...result, [sentinel]: true }, turnState },
+      { fleetCapacity, retention, result, turnState: { ...turnState, [sentinel]: true } },
+      { fleetCapacity, retention, result, turnState, [sentinel]: true },
+    ];
+
+    for (const [index, variant] of variants.entries()) {
+      const path = writeYaml(
+        `coordination-policy-${index}.yaml`,
+        minimalConfig({
+          settings: {
+            coordination: {
+              mode: "postgres",
+              namespace: "a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+              ...variant,
+            },
+          },
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(/contains unknown/);
+      try {
+        parseConfig(path);
+      } catch (error) {
+        expect(String(error)).not.toContain(sentinel);
+      }
     }
   });
 

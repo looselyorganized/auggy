@@ -30,6 +30,7 @@ import {
   removePidManifestIfOwned,
 } from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
+import { assertDistributedCoordinationStartupAllowed } from "../../coordination/topology";
 
 interface StartOptions {
   config?: string;
@@ -70,6 +71,7 @@ export async function runStart(name: string | undefined, opts: StartOptions): Pr
   const configPath = resolveConfigPath(name, opts.config, { cwd: opts.cwd });
   const agentDir = dirname(configPath);
   const config = parseConfig(configPath);
+  assertDistributedCoordinationStartupAllowed(config.settings.coordination);
   const agentName = config.name;
   const processOptions = {
     auggyDir: opts.auggyDir,

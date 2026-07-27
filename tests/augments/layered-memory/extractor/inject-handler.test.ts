@@ -1,6 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import { handleExtractionTurn } from "@/augments/layeredMemory/extractor/inject-handler";
-import type { Transcript } from "@/types";
+import type {
+  ExecutionAuthorityV1,
+  ExecutionTraceContextV1,
+  ModelCompleteOptions,
+  Transcript,
+} from "@/types";
 
 const sampleTranscript: Transcript = {
   turnId: "user-turn-1",
@@ -100,6 +105,44 @@ describe("handleExtractionTurn", () => {
 
     expect(observedSignal).toBe(controller.signal);
     expect(pending).rejects.toThrow("caller left");
+  });
+
+  test("forwards safe fenced operation metadata to the extraction engine", async () => {
+    let observed: ModelCompleteOptions | undefined;
+    const executionContext: ExecutionTraceContextV1 = {
+      version: 1,
+      executionId: "execution-1",
+      attempt: 2,
+      correlationId: "correlation-1",
+    };
+    const executionAuthority: ExecutionAuthorityV1 = {
+      version: 1,
+      attempt: 2,
+      fence: 7,
+    };
+    const engine = {
+      complete: async (_prompt: string, options?: ModelCompleteOptions) => {
+        observed = options;
+        return { text: "[]", costUsd: 0.001 };
+      },
+    };
+
+    await handleExtractionTurn({
+      transcript: sampleTranscript,
+      engine,
+      promptTemplate: "{{TRANSCRIPT}}",
+      executionContext,
+      executionAuthority,
+      operationId: `auggy-op-v1-${"a".repeat(64)}`,
+    });
+
+    expect(observed).toEqual({
+      executionContext,
+      executionAuthority,
+      operationId: `auggy-op-v1-${"a".repeat(64)}`,
+    });
+    expect(JSON.stringify(observed)).not.toContain("bindingHash");
+    expect(JSON.stringify(observed)).not.toContain("idempotencyKeyHash");
   });
 
   test("returns failure on malformed JSON response", async () => {

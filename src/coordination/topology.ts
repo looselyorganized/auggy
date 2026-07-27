@@ -16,6 +16,72 @@ export type DistributedCoordinationBlocker =
   | "process-local-mutable-stores"
   | "unfenced-delivery-outbox";
 
+export type DistributedCoordinationPreflightBlocker =
+  | "runtime-not-enabled"
+  | DistributedCoordinationBlocker
+  | "configured-augment-state-unverified";
+
+export const DISTRIBUTED_AUGMENT_REQUIREMENT_CODES = Object.freeze([
+  "local-mutable-state",
+  "shared-store-unverified",
+  "local-filesystem-unverified",
+  "shared-web-state-missing",
+  "stateless-verifier-missing",
+  "immutable-assets-unverified",
+  "local-effects-unverified",
+  "shared-budget-store-missing",
+  "shared-delivery-store-missing",
+  "mcp-topology-unverified",
+  "shared-inbound-store-missing",
+  "shared-replay-store-missing",
+  "shared-session-store-missing",
+  "shared-link-store-missing",
+  "custom-augment-unverified",
+  "runtime-augment-unverified",
+  "unknown-augment-type",
+] as const);
+
+export type DistributedAugmentRequirementCode =
+  (typeof DISTRIBUTED_AUGMENT_REQUIREMENT_CODES)[number];
+
+export const DISTRIBUTED_REPLICA_TOPOLOGY_CLASSES = Object.freeze([
+  "stateless",
+  "shared",
+  "fence-aware",
+  "leader-owned",
+  "unsupported",
+] as const);
+
+export type DistributedReplicaTopologyClass = (typeof DISTRIBUTED_REPLICA_TOPOLOGY_CLASSES)[number];
+
+export interface DistributedAugmentPreflightEvidence {
+  augmentIndex: number;
+  /** Code-owned built-in identifier or a fixed unsupported category. */
+  componentType: string;
+  topologyClass: DistributedReplicaTopologyClass;
+  compatibilityVersion: number;
+  /** SHA-256 of a source-owned, secret-free replica-semantic identity. */
+  semanticFingerprint: string;
+  requirements: readonly DistributedAugmentRequirementCode[];
+}
+
+export interface DistributedCoordinationPreflightReport {
+  profile: "disabled";
+  ready: false;
+  blockers: readonly DistributedCoordinationPreflightBlocker[];
+}
+
+export class DistributedCoordinationStartupError extends Error {
+  readonly code = "distributed-coordination-runtime-disabled" as const;
+  readonly report: DistributedCoordinationPreflightReport;
+
+  constructor(report: DistributedCoordinationPreflightReport) {
+    super(`Distributed coordination cannot start: ${report.blockers.join(", ")}`);
+    this.name = "DistributedCoordinationStartupError";
+    this.report = report;
+  }
+}
+
 export interface DistributedCoordinationTopology {
   /** Fleet-wide admission; the local keyed scheduler remains a per-process executor. */
   fleetAdmission: "process-local" | "shared-fenced";
@@ -29,20 +95,20 @@ export interface DistributedCoordinationTopology {
 }
 
 /** Conservative representation of the current single-process runtime. */
-export const PROCESS_LOCAL_COORDINATION_TOPOLOGY: DistributedCoordinationTopology = {
-  fleetAdmission: "process-local",
-  threadSerialization: "process-local",
-  threadHistory: "unfenced",
-  idempotency: "process-local",
-  quarantineAndHealth: "process-local",
-  mutableStores: "process-local",
-  delivery: "process-local",
-};
+export const PROCESS_LOCAL_COORDINATION_TOPOLOGY: Readonly<DistributedCoordinationTopology> =
+  Object.freeze({
+    fleetAdmission: "process-local",
+    threadSerialization: "process-local",
+    threadHistory: "unfenced",
+    idempotency: "process-local",
+    quarantineAndHealth: "process-local",
+    mutableStores: "process-local",
+    delivery: "process-local",
+  });
 
 /** Enumerate the fail-closed prerequisites that remain for replica safety. */
-export function enumerateDistributedCoordinationBlockers(
-  topology: DistributedCoordinationTopology = PROCESS_LOCAL_COORDINATION_TOPOLOGY,
-): DistributedCoordinationBlocker[] {
+export function enumerateDistributedCoordinationBlockers(): DistributedCoordinationBlocker[] {
+  const topology = PROCESS_LOCAL_COORDINATION_TOPOLOGY;
   const blockers: DistributedCoordinationBlocker[] = [];
   if (topology.fleetAdmission !== "shared-fenced") blockers.push("process-local-fleet-admission");
   if (topology.threadSerialization !== "shared-fenced") {
@@ -56,4 +122,27 @@ export function enumerateDistributedCoordinationBlockers(
   if (topology.mutableStores !== "shared-fenced") blockers.push("process-local-mutable-stores");
   if (topology.delivery !== "shared-outbox") blockers.push("unfenced-delivery-outbox");
   return blockers;
+}
+
+/** Build fixed, secret-free evidence for the deliberately disabled profile. */
+export function distributedCoordinationPreflightReport(): DistributedCoordinationPreflightReport {
+  return Object.freeze({
+    profile: "disabled" as const,
+    ready: false as const,
+    blockers: Object.freeze([
+      "runtime-not-enabled" as const,
+      ...enumerateDistributedCoordinationBlockers(),
+      "configured-augment-state-unverified" as const,
+    ]),
+  });
+}
+
+/**
+ * Fail before any runtime-owned mutation whenever coordination is declared.
+ * Keep this at CLI admission and inside defineAgent for embedding callers.
+ */
+export function assertDistributedCoordinationStartupAllowed(coordination: unknown): void {
+  if (coordination === undefined) return;
+  const report = distributedCoordinationPreflightReport();
+  throw new DistributedCoordinationStartupError(report);
 }

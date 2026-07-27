@@ -13,6 +13,25 @@ const coordinator = new PostgresDistributedTurnCoordinator({
   maxQueued: 4,
   maxQueuedPerThread: 2,
   leaseMs: 500,
+  buildFingerprint: "c".repeat(64),
+  sources: [{ id: "web", maxConcurrent: 2, maxQueued: 4 }],
+  retention: {
+    terminalRequestRetentionMs: 604_800_000,
+    maxTerminalRequests: 10_000,
+    eventRetentionMs: 2_592_000_000,
+    maxEvents: 50_000,
+  },
+  result: { maxReplayBytes: 65_536 },
+  turnState: {
+    history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+    maxCostMarkersPerTurn: 32,
+    outbox: { maxIntentsPerTurn: 32, maxIntentBytes: 65_536, maxPendingIntents: 1_000 },
+  },
+  compatibility: {
+    protocolVersion: 5,
+    protocolFingerprint: "a".repeat(64),
+    configurationFingerprint: "b".repeat(64),
+  },
 });
 
 function emit(value: Record<string, unknown>): void {
@@ -20,7 +39,9 @@ function emit(value: Record<string, unknown>): void {
 }
 
 try {
-  await coordinator.migrate();
+  if ((await coordinator.register()).status !== "registered") {
+    throw new Error("failed to register child coordinator");
+  }
   emit({ event: "READY" });
 
   const reader = Bun.stdin.stream().getReader();

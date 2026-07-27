@@ -45,6 +45,27 @@ function writeAgent(withCoordination = true): string {
             coordination: {
               mode: "postgres",
               namespace: "a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+              fleetCapacity: {
+                maxConcurrent: 4,
+                maxQueued: 100,
+                maxQueuedPerThread: 20,
+              },
+              retention: {
+                terminalRequestRetentionMs: 604_800_000,
+                maxTerminalRequests: 10_000,
+                eventRetentionMs: 2_592_000_000,
+                maxEvents: 50_000,
+              },
+              result: { maxReplayBytes: 65_536 },
+              turnState: {
+                history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+                maxCostMarkersPerTurn: 32,
+                outbox: {
+                  maxIntentsPerTurn: 32,
+                  maxIntentBytes: 65_536,
+                  maxPendingIntents: 1_000,
+                },
+              },
             },
           },
         }
@@ -88,7 +109,16 @@ describe("runCoordinationMigrate", () => {
     expect(receivedUrl).toBe(SENTINEL_URL);
     expect(migrated).toBe(true);
     expect(closed).toBe(true);
-    expect(result).toEqual(["20260724_01_distributed_turn_coordination"]);
+    expect(result).toEqual([
+      "20260724_01_distributed_turn_coordination",
+      "20260726_02_coordination_compatibility_contract",
+      "20260726_03_coordination_instance_lifecycle",
+      "20260726_04_coordination_bounded_results",
+      "20260726_05_coordination_atomic_turn_state",
+      "20260726_06_coordination_atomic_admission",
+      "20260727_07_coordination_visitor_authority",
+      "20260727_08_coordination_budget_authority",
+    ]);
     expect(JSON.stringify(result)).not.toContain(SENTINEL_URL);
   });
 

@@ -8,6 +8,7 @@
 
 import { describe, it, expect } from "bun:test";
 import { createTurnLoop } from "@/kernel/turn-loop";
+import { registerCoordinatorBudgetTurnGate } from "@/kernel/turn-gate-authority";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTokenizer } from "@/tokenizer";
 import type { Augment, TurnTrigger, PeerIdentity, InboundMessage, TurnGateTicket } from "@/types";
@@ -47,6 +48,17 @@ function makeLoop(augments: Augment[], modelOpts?: { response?: string }) {
     config: { name: "test", model: "mock", augments: [] },
   });
 }
+
+const distributedBudgetPolicy = {
+  id: "support",
+  caps: { public: { anonymous: { maxTurnsPerThread: 5 } } },
+  maxReservations: 100,
+  reservationRetentionMs: 86_400_000,
+  maxAnonymousEvents: 100,
+  maxPeerDays: 100,
+  maxThresholdIntents: 0,
+  aggregateRetentionDays: 7,
+} as const;
 
 // ---------------------------------------------------------------------------
 // Fixture: fakeTurnGate
@@ -115,6 +127,128 @@ describe("Turn-gate 2PC dispatch", () => {
     const result = await loop.executeTurn(makeTrigger(), "t-0");
     expect(result.success).toBe(true);
     expect(result.status).toBe("completed");
+  });
+
+  it("uses coordinator budget authority without invoking local gate storage", async () => {
+    let localPrepares = 0;
+    let localCommits = 0;
+    const reservations: string[] = [];
+    const stagedCosts: string[] = [];
+    let contextUsage: unknown;
+    const gate: Augment = {
+      name: "budgets",
+      turnGate: {
+        async prepare() {
+          localPrepares++;
+          throw new Error("local storage must not run");
+        },
+        async commit() {
+          localCommits++;
+          throw new Error("local storage must not run");
+        },
+      },
+      context: async (turn) => {
+        contextUsage = turn.metadata["auggy.distributedBudget.support"];
+        return [];
+      },
+    };
+    registerCoordinatorBudgetTurnGate(gate.turnGate!, distributedBudgetPolicy);
+    const loop = makeLoop([gate]);
+    const result = await loop.executeTurn(makeTrigger(), "distributed-budget-thread", {
+      ensureExecutionStarted: async () => {},
+      executionContext: { version: 1, executionId: "distributed-budget-turn", attempt: 1 },
+      distributedBudget: {
+        reserve: async (policy, peer, threadId) => {
+          reservations.push(`${policy.id}:${peer.id}:${threadId}`);
+          return {
+            status: "reserved",
+            admissionDay: "2026-07-27",
+            threadTurns: 1,
+            peerTurns: 2,
+            peerCostUsd: 0.25,
+            peerUnpricedTurns: 0,
+            globalCostUsd: 1,
+            globalUnpricedTurns: 0,
+          };
+        },
+        release: async () => ({ status: "ok" }),
+      },
+      stageCost: (_cost, operationId) => stagedCosts.push(operationId),
+    });
+
+    expect(result.status).toBe("completed");
+    expect(localPrepares).toBe(0);
+    expect(localCommits).toBe(0);
+    expect(reservations).toEqual(["support:p1:distributed-budget-thread"]);
+    expect(contextUsage).toMatchObject({ threadTurns: 1, peerTurns: 2, peerCostUsd: 0.25 });
+    expect(stagedCosts).toHaveLength(1);
+  });
+
+  it("rolls back a distributed reservation when cancellation follows the start marker", async () => {
+    const controller = new AbortController();
+    let releases = 0;
+    const model = createMockModel({ response: "SHOULD NOT APPEAR" });
+    const gate: Augment = {
+      name: "budgets",
+      turnGate: {
+        async prepare() {
+          throw new Error("local storage must not run");
+        },
+      },
+    };
+    registerCoordinatorBudgetTurnGate(gate.turnGate!, distributedBudgetPolicy);
+    const loop = createTurnLoop({
+      augments: [gate],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+    const result = await loop.executeTurn(makeTrigger(), "distributed-abort-thread", {
+      signal: controller.signal,
+      ensureExecutionStarted: async () => controller.abort("test-boundary"),
+      distributedBudget: {
+        reserve: async () => ({
+          status: "reserved",
+          admissionDay: "2026-07-27",
+          threadTurns: 1,
+          peerTurns: 1,
+          peerCostUsd: 0,
+          peerUnpricedTurns: 0,
+          globalCostUsd: 0,
+          globalUnpricedTurns: 0,
+        }),
+        release: async () => {
+          releases++;
+          return { status: "stale" };
+        },
+      },
+    });
+
+    expect(result.status).toBe("canceled");
+    expect(releases).toBe(1);
+    expect(model.calls).toHaveLength(0);
+  });
+
+  it("rejects an unregistered gate even when it copies a coordinator policy property", async () => {
+    const model = createMockModel({ response: "SHOULD NOT APPEAR" });
+    const untrusted = fakeTurnGate({ name: "unprovisioned-gate" });
+    Object.assign(untrusted.turnGate!, { distributedBudgetPolicy });
+    const loop = createTurnLoop({
+      augments: [untrusted],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "test", model: "mock", augments: [] },
+    });
+    const result = await loop.executeTurn(makeTrigger(), "unprovisioned-thread", {
+      distributedBudget: {
+        reserve: async () => ({ status: "unavailable" }),
+        release: async () => ({ status: "unavailable" }),
+      },
+    });
+
+    expect(result.status).toBe("rejected");
+    expect(result.errorClass).toBe("admission-state-failed");
+    expect(model.calls).toHaveLength(0);
   });
 
   // -------------------------------------------------------------------------

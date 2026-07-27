@@ -171,6 +171,27 @@ settings:
     mode: postgres
     namespace: 4a11eb09-6576-4f37-a96f-c2fc7eb0e067
     urlEnv: AUGGY_COORDINATION_DATABASE_URL
+    fleetCapacity:
+      maxConcurrent: 8
+      maxQueued: 200
+      maxQueuedPerThread: 25
+    retention:
+      terminalRequestRetentionMs: 604800000
+      maxTerminalRequests: 10000
+      eventRetentionMs: 2592000000
+      maxEvents: 50000
+    result:
+      maxReplayBytes: 65536
+    turnState:
+      history:
+        maxSnapshotBytes: 65536
+        maxMessages: 100
+        maxThreads: 1000
+      maxCostMarkersPerTurn: 32
+      outbox:
+        maxIntentsPerTurn: 32
+        maxIntentBytes: 65536
+        maxPendingIntents: 1000
     leaseDurationMs: 30000
     heartbeatIntervalMs: 5000
     claimPollMs: 100
@@ -179,7 +200,30 @@ settings:
 
 The URL is read from the named environment variable and is never printed.
 `namespace` must be a canonical UUID. `heartbeatIntervalMs * 3` must not exceed
-`leaseDurationMs`. Unknown fields and unsafe bounds are rejected.
+`leaseDurationMs`. `fleetCapacity` is required, applies once to the logical
+fleet, and is never multiplied by replica count or inferred from the local
+`turnScheduling` boundary. Required retention and replay policies bound
+terminal records, audit events, and sanitized UTF-8 replay bytes. Unknown
+fields and unsafe bounds are rejected. The required `turnState` policy bounds
+peer-bound history snapshots and namespace cardinality, exact-known inference
+cost markers, and staged outbox intents. It is part of the immutable namespace
+configuration fingerprint.
+
+Auggy computes the protocol and configuration fingerprints from an exact,
+versioned, secret-free projection. YAML cannot supply either fingerprint.
+Authoritative inputs include namespace, fleet capacity, lease, retention,
+replay, turn state, source policy, and trusted augment compatibility evidence. Database
+environment names and values, instance identity, local polling/wait settings,
+and `turnScheduling` are excluded. Namespace policy is immutable: mixed
+protocol or configuration values fail before admission or instance mutation.
+
+Preview migrations are append-only and checksum-bound. Protocol/schema v5 adds
+peer-bound history, exact cost markers, a durable outbox, and the atomic turn
+checkpoint. An exact v4 namespace can upgrade only while quiescent: all old
+instance leases must be expired and no queued or active request may remain.
+The catalog remains exact-versioned, so an older binary intentionally rejects
+the expanded preview schema. Rollback requires a matching database snapshot or
+a fresh preview database; v5 state must not be silently reopened by v4 code.
 
 The CLI must refuse distributed mode when:
 

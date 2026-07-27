@@ -94,8 +94,14 @@ describe("webTransport structure", () => {
     const first = webTransport(options);
     const second = webTransport(options);
 
-    await expect(first.onBoot?.()).rejects.toThrow(/durable shared idempotency\.dbPath/);
-    await expect(second.onBoot?.()).rejects.toThrow(/durable shared idempotency\.dbPath/);
+    for (const [index, augment] of [first, second].entries()) {
+      const agent = defineAgent(
+        { name: `no-ledger-${index}`, model: "test", augments: [augment] },
+        createMockModel(),
+      );
+      await expect(agent.start()).rejects.toThrow(/durable shared idempotency\.dbPath/);
+      await agent.stop();
+    }
   });
 
   it("fails closed on malformed external auth replay configuration", async () => {
@@ -503,6 +509,111 @@ describe("webTransport HTTP server", () => {
       expect(takeoverBody).not.toContain(`"threadId":"${firstThreadId}"`);
       expect(model.calls).toHaveLength(3);
       expect(model.calls[2]?.messages.filter((message) => message.role === "user")).toHaveLength(1);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("binds visitor promotion evidence to the exact anonymous thread", async () => {
+    const bearer = "exact-thread-promotion-bearer";
+    const signingSecret = "exact-thread-promotion-signing-secret";
+    const audience = "exact-thread-promotion-agent";
+    const visitorId = "vis_exact_thread_owner";
+    const model = createMockModel({ response: "hello" });
+    const port = 19483;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: bearer },
+      allowAnonymous: true,
+      visitorTokens: {
+        enabled: true,
+        signingKey: signingSecret,
+        agentBinding: audience,
+        revocationCheck: () => false,
+        identityLookup: (id) =>
+          id === visitorId
+            ? {
+                visitorId,
+                email: "visitor@example.test",
+                verifiedAt: Date.now(),
+                reverifyDueAt: Date.now() + 86_400_000,
+              }
+            : null,
+      },
+    });
+    const agent = defineAgent({ name: audience, model: "mock", augments: [aug] }, model);
+    await agent.start();
+
+    const run = (threadId: string, options: { session?: string; visitorToken?: string } = {}) =>
+      fetch(`http://localhost:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...(options.session ? { "x-auggy-anonymous-session": options.session } : {}),
+          ...(options.visitorToken ? { "x-visitor-token": options.visitorToken } : {}),
+        },
+        body: JSON.stringify({
+          threadId,
+          messages: [{ role: "user", content: `message for ${threadId}` }],
+        }),
+      });
+
+    try {
+      const bootstrap = await run("thread-a");
+      const session = bootstrap.headers.get("x-auggy-anonymous-session");
+      expect(bootstrap.status).toBe(428);
+      expect(session).toBeTruthy();
+      await bootstrap.text();
+
+      const anonymousA = await run("thread-a", { session: session ?? undefined });
+      const bodyA = await anonymousA.text();
+      const canonicalA = bodyA.match(/"threadId":"([^"]+)"/)?.[1];
+      expect(canonicalA).toMatch(/^web_thread_/);
+
+      const anonymousB = await run("thread-b", { session: session ?? undefined });
+      const bodyB = await anonymousB.text();
+      const canonicalB = bodyB.match(/"threadId":"([^"]+)"/)?.[1];
+      expect(canonicalB).toMatch(/^web_thread_/);
+      expect(canonicalB).not.toBe(canonicalA);
+
+      const [encodedSession] = (session ?? "").split(".");
+      const sessionPayload = JSON.parse(
+        Buffer.from(encodedSession!, "base64url").toString("utf8"),
+      ) as {
+        peerId: string;
+        threadScopeId: string;
+      };
+      const signingKey = await deriveSigningKey(signingSecret);
+      const recognized = await createVisitorToken(
+        signingKey,
+        audience,
+        86_400,
+        visitorId,
+        sessionPayload.peerId,
+        sessionPayload.threadScopeId,
+        canonicalA,
+        1,
+      );
+
+      const promoteA = await run(canonicalA!, {
+        session: session ?? undefined,
+        visitorToken: recognized.token,
+      });
+      const promotedBody = await promoteA.text();
+      expect(promoteA.status).toBe(200);
+      expect(promotedBody).toContain(`"threadId":"${canonicalA}"`);
+
+      const siblingAttempt = await run(canonicalB!, {
+        session: session ?? undefined,
+        visitorToken: recognized.token,
+      });
+      const siblingBody = await siblingAttempt.text();
+      expect(siblingAttempt.status).toBe(200);
+      expect(siblingBody).not.toContain(`"threadId":"${canonicalB}"`);
+      expect(model.calls).toHaveLength(4);
+      expect(model.calls[3]?.messages.some((message) => message.content.includes("thread-b"))).toBe(
+        false,
+      );
     } finally {
       await agent.stop();
     }
@@ -4314,6 +4425,57 @@ describe("webTransport augment-registered routes", () => {
       });
       expect(bearerOnly.status).toBe(401);
       expect(await bearerOnly.json()).toEqual({ error: "agent-auth-required" });
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("auth: visitor.required fails closed when a revocation-only authority throws", async () => {
+    const model = createMockModel();
+    const port = 19484;
+    const signingKey = "visitor-revocation-unavailable-secret";
+    const agentBinding = "visitor-revocation-unavailable-agent";
+    const key = await deriveSigningKey(signingKey);
+    const issued = await createVisitorToken(key, agentBinding, 3_600, "vis_revocation_unavailable");
+    let handlerCalls = 0;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      visitorTokens: {
+        enabled: true,
+        signingKey,
+        agentBinding,
+        revocationCheck: async () => {
+          throw new Error("revocation authority unavailable");
+        },
+      },
+    });
+    const fixture: Augment = {
+      name: "visitor-revocation-unavailable-route",
+      httpRoutes: [
+        {
+          method: "GET",
+          path: "/account",
+          auth: "visitor.required",
+          handler: async () => {
+            handlerCalls += 1;
+            return new Response("must not run");
+          },
+        },
+      ],
+    };
+    const agent = defineAgent(
+      { name: agentBinding, model: "mock", augments: [fixture, aug] },
+      model,
+    );
+    await agent.start();
+    try {
+      const response = await fetch(`http://localhost:${port}/account`, {
+        headers: { "x-visitor-token": issued.token },
+      });
+      expect(response.status).toBe(503);
+      expect(await response.json()).toEqual({ error: "identity_authority_unavailable" });
+      expect(handlerCalls).toBe(0);
     } finally {
       await agent.stop();
     }

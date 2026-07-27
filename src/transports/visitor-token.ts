@@ -6,6 +6,8 @@ export interface VisitorTokenPayload {
   orgId?: string;
   priorPeerId?: string;
   priorThreadScopeId?: string;
+  priorThreadId?: string;
+  identityVersion?: number;
 }
 
 const PURPOSE = "auggy-visitor-signing";
@@ -45,14 +47,20 @@ export async function createVisitorToken(
    */
   priorPeerId?: string,
   priorThreadScopeId?: string,
+  priorThreadId?: string,
+  identityVersion?: number,
+  authoritativeNow?: number,
 ): Promise<{ token: string; payload: VisitorTokenPayload }> {
+  const issuedAt = authoritativeNow ?? Date.now();
   const payload: VisitorTokenPayload = {
     visitorId: existingVisitorId ?? `vis_${crypto.randomUUID()}`,
     agentId,
-    issuedAt: Date.now(),
-    expiresAt: Date.now() + ttlSeconds * 1000,
+    issuedAt,
+    expiresAt: issuedAt + ttlSeconds * 1000,
     ...(priorPeerId ? { priorPeerId } : {}),
     ...(priorThreadScopeId ? { priorThreadScopeId } : {}),
+    ...(priorThreadId ? { priorThreadId } : {}),
+    ...(identityVersion !== undefined ? { identityVersion } : {}),
   };
   const payloadB64 = btoa(JSON.stringify(payload));
   const signature = await crypto.subtle.sign("HMAC", key, encoder.encode(payloadB64));
@@ -105,7 +113,9 @@ function isVisitorTokenPayload(value: unknown): value is VisitorTokenPayload {
       4 +
         (payload.orgId === undefined ? 0 : 1) +
         (payload.priorPeerId === undefined ? 0 : 1) +
-        (payload.priorThreadScopeId === undefined ? 0 : 1) ||
+        (payload.priorThreadScopeId === undefined ? 0 : 1) +
+        (payload.priorThreadId === undefined ? 0 : 1) +
+        (payload.identityVersion === undefined ? 0 : 1) ||
     !keys.every((key) =>
       [
         "visitorId",
@@ -115,6 +125,8 @@ function isVisitorTokenPayload(value: unknown): value is VisitorTokenPayload {
         "orgId",
         "priorPeerId",
         "priorThreadScopeId",
+        "priorThreadId",
+        "identityVersion",
       ].includes(key),
     )
   ) {
@@ -143,7 +155,15 @@ function isVisitorTokenPayload(value: unknown): value is VisitorTokenPayload {
     (payload.priorThreadScopeId === undefined ||
       (typeof payload.priorThreadScopeId === "string" &&
         payload.priorThreadScopeId.length > 0 &&
-        payload.priorThreadScopeId.length <= 256))
+        payload.priorThreadScopeId.length <= 256)) &&
+    (payload.priorThreadId === undefined ||
+      (typeof payload.priorThreadId === "string" &&
+        payload.priorThreadId.length > 0 &&
+        payload.priorThreadId.length <= 256)) &&
+    (payload.identityVersion === undefined ||
+      (typeof payload.identityVersion === "number" &&
+        Number.isSafeInteger(payload.identityVersion) &&
+        payload.identityVersion >= 1))
   );
 }
 

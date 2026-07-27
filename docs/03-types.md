@@ -740,11 +740,47 @@ export interface AgentConfig {
   responseLimits?: Partial<ModelResponseLimits>;
   providerRequestTimeoutMs?: number; // default 120000, maximum 600000
   turnScheduling?: Partial<{
-    maxConcurrent: number;       // default 4
-    maxQueued: number;           // default 100
-    maxQueuedPerThread: number;  // default 20
+    maxConcurrent: number;       // process-local, default 4
+    maxQueued: number;           // process-local, default 100
+    maxQueuedPerThread: number;  // process-local, default 20
     maxCausalDepth: number;      // default 8
   }>;
+  coordination?: {
+    mode: "postgres";
+    namespace: string;
+    urlEnv: string;
+    fleetCapacity: {
+      maxConcurrent: number;
+      maxQueued: number;
+      maxQueuedPerThread: number;
+    };
+    retention: {
+      terminalRequestRetentionMs: number;
+      maxTerminalRequests: number;
+      eventRetentionMs: number;
+      maxEvents: number;
+    };
+    result: {
+      maxReplayBytes: number;
+    };
+    turnState: {
+      history: {
+        maxSnapshotBytes: number;
+        maxMessages: number;
+        maxThreads: number;
+      };
+      maxCostMarkersPerTurn: number;
+      outbox: {
+        maxIntentsPerTurn: number;
+        maxIntentBytes: number;
+        maxPendingIntents: number;
+      };
+    };
+    leaseDurationMs: number;
+    heartbeatIntervalMs: number;
+    claimPollMs: number;
+    maxWaitMs: number;
+  };
 }
 
 export interface AgentHealth {
@@ -796,6 +832,35 @@ complete active turn pipelines across every transport and injection path.
 conversation from consuming it. `maxCausalDepth` bounds nested same-thread
 `SchedulerContext.inject()` work. Queue settings may be zero; active and causal
 limits must be positive safe integers.
+
+`coordination.fleetCapacity` is a separate, required declaration for the
+preview distributed coordinator. Its limits apply once to the logical agent fleet and
+must never be multiplied by replica count or derived from `turnScheduling`.
+Declaring coordination remains fail-closed until the shared-store and fencing
+preflight is complete; it does not enable replicas by itself.
+The required `retention` policy bounds terminal requests and audit events by
+both age and count. It never authorizes pruning queued, active, or
+outcome-unknown work. `result.maxReplayBytes` bounds one sanitized serialized
+replay result by UTF-8 bytes; a result outside that envelope must remain a
+terminal non-replayable outcome and must never authorize duplicate execution.
+The required `turnState` policy bounds the coordinator-owned history snapshot,
+messages and thread count, exact-known inference cost markers, and staged
+outbox intents. These values are immutable namespace compatibility inputs.
+Checkpoint commits apply history, sanitized replay, cost markers, outbox
+intents, and the terminal request state atomically under the current attempt
+and fence. Staged outbox rows are not delivered until the transactional
+delivery checkpoint is implemented, and public replica startup remains
+disabled.
+
+Optional `coordination.budgets` policies are immutable namespace inputs for the
+private distributed integration boundary. They bound reservations, peer/day
+aggregates, anonymous rolling evidence, and threshold intents. Reservations
+use database UTC time and the active turn fence; completed or ambiguous known
+inference costs are conservatively rounded up to canonical nano-USD precision
+and settle in the same terminal transaction exactly once. Dollar limits remain
+post-hoc soft caps, and threshold intents are not delivered until the
+outbound-delivery checkpoint. The CLI does not yet accept this preview shape
+and distributed startup remains fail closed.
 
 `inject()` lets trusted non-transport code feed a trigger into the same
 agent-wide scheduler used by transports. It no longer bypasses concurrency or

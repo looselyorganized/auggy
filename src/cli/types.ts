@@ -5,31 +5,39 @@
  * registry, and CLI commands. They are internal to the CLI — not part
  * of the Auggy public API surface.
  */
-import type { ModelResponseLimits, TurnSchedulingConfig } from "../types";
+import type {
+  DistributedCoordinationConfig as CoreDistributedCoordinationConfig,
+  ModelResponseLimits,
+  TurnSchedulingConfig,
+} from "../types";
 
 // ---------------------------------------------------------------------------
 // Config types — the output of parsing agent.yaml
 // ---------------------------------------------------------------------------
 
+/** Runtime source of truth for the built-in augment type identifiers. */
+export const BUILTIN_AUGMENT_TYPES = Object.freeze([
+  "fileMemory",
+  "supabaseMemory",
+  "layeredMemory",
+  "filesystem",
+  "webTransport",
+  "webFetch",
+  "knowledge",
+  "skills",
+  "bash",
+  "budgets",
+  "notify",
+  "mcp",
+  "agentMail",
+  "telegramTransport",
+  "turnControl",
+  "visitorAuth",
+  "link",
+] as const);
+
 /** The built-in augment type identifiers. */
-export type BuiltinAugmentType =
-  | "fileMemory"
-  | "supabaseMemory"
-  | "layeredMemory"
-  | "filesystem"
-  | "webTransport"
-  | "webFetch"
-  | "knowledge"
-  | "skills"
-  | "bash"
-  | "budgets"
-  | "notify"
-  | "mcp"
-  | "agentMail"
-  | "telegramTransport"
-  | "turnControl"
-  | "visitorAuth"
-  | "link";
+export type BuiltinAugmentType = (typeof BUILTIN_AUGMENT_TYPES)[number];
 
 /** A single augment entry from the `augments:` array in agent.yaml. */
 export interface AugmentConfig {
@@ -202,17 +210,7 @@ export interface DurableJobsConfig {
 }
 
 /** Configuration for a fail-closed PostgreSQL distributed coordinator. */
-export interface DistributedCoordinationConfig {
-  mode: "postgres";
-  /** Stable UUID namespace shared only by replicas of this logical agent. */
-  namespace: string;
-  /** Name of the environment variable containing the PostgreSQL URL. */
-  urlEnv: string;
-  leaseDurationMs: number;
-  heartbeatIntervalMs: number;
-  claimPollMs: number;
-  maxWaitMs: number;
-}
+export type DistributedCoordinationConfig = CoreDistributedCoordinationConfig;
 
 /**
  * Optional per-agent overrides for the portable security eval suite.

@@ -58,6 +58,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Preview coordination protocol v5.** Distributed coordination declarations
+  now require explicit bounded `turnState` policy for peer-bound history,
+  exact-known inference cost markers, and staged outbound intents. One fenced
+  transaction commits those records with sanitized replay and the terminal
+  request state. An exact v4 namespace upgrades only while all prior instances
+  and pending work are quiescent; v4 code cannot reopen v5 state. Public
+  replica startup remains disabled until the remaining readiness checkpoints
+  pass.
 - **Fail-closed upgrade and artifact contracts.** `agent.yaml` now rejects
   malformed `settings` and unknown top-level fields instead of silently using
   defaults; the obsolete example-only `operators` field is now `creator`.

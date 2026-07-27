@@ -7,6 +7,8 @@ import type {
   TurnGateProvider,
   TurnGateTicket,
   TurnState,
+  DistributedBudgetPolicyV1,
+  DistributedBudgetUsageV1,
 } from "../../types";
 import {
   readOverrides,
@@ -14,6 +16,7 @@ import {
   retainAdminOverrideRoot,
   writeOverrides,
 } from "../../lib/admin-overrides";
+import { registerCoordinatorBudgetTurnGate } from "../../kernel/turn-gate-authority";
 import { createBudgetStore, type BudgetStore } from "./budget-store";
 import type {
   BudgetsConfig,
@@ -23,12 +26,24 @@ import type {
 } from "./types";
 import { buildBudgetPreamble } from "./preamble";
 
-export interface BudgetsAugmentOptions extends BudgetsConfig {
-  /** Storage backend. Only "sqlite" is supported in v0. */
-  backend?: "sqlite";
+interface SqliteBudgetsAugmentOptions extends BudgetsConfig {
+  backend: "sqlite";
   /** Resolver/test hook for sending configured threshold notifications. */
   notificationDispatcher?: BudgetThresholdNotificationDispatcher;
 }
+
+interface CoordinatorBudgetsAugmentOptions {
+  backend: "coordinator";
+  /** Complete immutable fleet policy, also provisioned into the coordinator namespace. */
+  policy: DistributedBudgetPolicyV1;
+}
+
+export type BudgetsAugmentOptions = Omit<BudgetsConfig, "dbPath"> & {
+  dbPath?: string;
+  backend?: "sqlite" | "coordinator";
+  policy?: DistributedBudgetPolicyV1;
+  notificationDispatcher?: BudgetThresholdNotificationDispatcher;
+};
 
 /**
  * Resolve the BudgetCaps for a peer based on their trust level and, for
@@ -41,7 +56,10 @@ export interface BudgetsAugmentOptions extends BudgetsConfig {
  *
  * A null peer (internal/scheduled trigger) also bypasses.
  */
-function resolveCaps(peer: PeerIdentity | null, config: BudgetsConfig): BudgetCaps | null {
+function resolveCaps(
+  peer: PeerIdentity | null,
+  config: Pick<BudgetsConfig, "caps">,
+): BudgetCaps | null {
   if (!peer) return null;
   switch (peer.trustLevel) {
     case "creator":
@@ -73,7 +91,97 @@ function formatPercent(threshold: number): string {
   return `${Math.round(threshold * 100)}%`;
 }
 
+function validDistributedUsage(value: unknown): value is DistributedBudgetUsageV1 {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const usage = value as Partial<DistributedBudgetUsageV1>;
+  return (
+    typeof usage.admissionDay === "string" &&
+    /^\d{4}-\d{2}-\d{2}$/.test(usage.admissionDay) &&
+    [
+      usage.threadTurns,
+      usage.peerTurns,
+      usage.peerCostUsd,
+      usage.peerUnpricedTurns,
+      usage.globalCostUsd,
+      usage.globalUnpricedTurns,
+    ].every((entry) => typeof entry === "number" && Number.isFinite(entry) && entry >= 0)
+  );
+}
+
+function coordinatorBudgets(opts: CoordinatorBudgetsAugmentOptions): Augment {
+  const turnGate: TurnGateProvider = {
+    async prepare(): Promise<TurnGateTicket> {
+      throw new Error("coordinator budgets require distributed turn authority");
+    },
+    async commit(): Promise<void> {
+      throw new Error("coordinator budgets require atomic distributed cost settlement");
+    },
+  };
+  registerCoordinatorBudgetTurnGate(turnGate, opts.policy);
+
+  return {
+    name: "budgets",
+    type: "budgets",
+    category: "guardrails",
+    turnGate,
+    adminInfo: async (): Promise<AdminInfoBlock> => ({
+      augmentName: "budgets",
+      title: "Budgets",
+      sections: [
+        {
+          kind: "keyValue",
+          rows: [
+            { label: "Status", value: "preview" },
+            { label: "Storage", value: "shared distributed coordinator" },
+            { label: "Policy", value: opts.policy.id, source: "immutable fleet config" },
+            {
+              label: "USD enforcement",
+              value: "post-hoc soft cap; provider-side hard caps still required",
+            },
+            {
+              label: "Threshold notifications",
+              value: opts.policy.notifications
+                ? `durable intents to ${opts.policy.notifications.destination}`
+                : "off",
+            },
+          ],
+        },
+      ],
+    }),
+    context: async (turn: TurnState): Promise<ContextBlock[]> => {
+      const peer = turn.peer;
+      if (!peer || peer.trustLevel === "creator") return [];
+      const caps = resolveCaps(peer, opts.policy);
+      if (caps === null) return [];
+      const usage = turn.metadata[`auggy.distributedBudget.${opts.policy.id}`];
+      if (!validDistributedUsage(usage)) {
+        throw new Error("distributed budget usage is unavailable");
+      }
+      const block = buildBudgetPreamble({
+        caps,
+        used: {
+          thread: usage.threadTurns,
+          day: usage.peerTurns,
+          costUsd: usage.peerCostUsd,
+          unpricedTurns: usage.peerUnpricedTurns,
+        },
+      });
+      return block ? [block] : [];
+    },
+    onShutdown: async () => {},
+  };
+}
+
 export function budgets(opts: BudgetsAugmentOptions): Augment {
+  if (opts.backend === "coordinator") {
+    if (!opts.policy) throw new Error("coordinator budgets require an immutable policy");
+    return coordinatorBudgets({ backend: "coordinator", policy: opts.policy });
+  }
+  if (!opts.dbPath) throw new Error("sqlite budgets require dbPath");
+  return sqliteBudgets({ ...opts, backend: "sqlite", dbPath: opts.dbPath });
+}
+
+function sqliteBudgets(opts: SqliteBudgetsAugmentOptions): Augment {
   const overrideDir = opts.overrideDir ?? opts.agentDir;
   let overrideRootRetained = false;
   const notificationThresholds = normalizeThresholds(opts.notifications);
