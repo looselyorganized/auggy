@@ -1346,14 +1346,55 @@ events are bounded by age and count; queued, active, and outcome-unknown work
 is never eligible for terminal pruning. `maxReplayBytes` is measured over
 sanitized serialized UTF-8 bytes.
 
+Built-in replica topology is classified by source-owned verifiers. Configuration
+cannot assert or override a class, verifier result, backend, or readiness. A
+class describes the intended future coordination shape; it is not authorization
+to run. Every built-in currently returns at least one blocker, and startup still
+adds the generic `configured-augment-state-unverified` blocker regardless of
+caller input.
+
+| Built-in augment | Reviewed class | Current source-owned blocker |
+| --- | --- | --- |
+| `fileMemory` | unsupported | `local-mutable-state` |
+| `supabaseMemory` | shared | `shared-store-unverified` |
+| `layeredMemory` | shared | `shared-store-unverified` |
+| `filesystem` | unsupported | `local-filesystem-unverified` |
+| `webTransport` | shared | `shared-web-state-missing` |
+| `webFetch` | stateless | `stateless-verifier-missing` |
+| `knowledge` | stateless | `immutable-assets-unverified` |
+| `skills` | stateless | `immutable-assets-unverified` |
+| `bash` | unsupported | `local-effects-unverified` |
+| `budgets` | fence-aware | `shared-budget-store-missing` |
+| `notify` | fence-aware | `shared-delivery-store-missing` |
+| `mcp` | unsupported | `mcp-topology-unverified` |
+| `agentMail` | leader-owned | `shared-inbound-store-missing` |
+| `telegramTransport` | leader-owned | `shared-replay-store-missing` |
+| `turnControl` | stateless | `stateless-verifier-missing` |
+| `visitorAuth` | shared | `shared-session-store-missing` |
+| `link` | shared | `shared-link-store-missing` |
+
+Custom and unknown augments are classified unsupported. Direct embedding APIs
+remain runtime-unverified. Topology projections are capped at 256 effective
+augments and fail closed rather than truncating an unverified tail. Each
+projection binds the code-owned component type and a source-owned, secret-free
+replica-semantic fingerprint. A verifier may not remove its last blocker until
+that semantic identity includes every store/backend choice that must agree
+across replicas; raw options and credentials never enter the fingerprint.
+
 Protocol and configuration fingerprints are computed by Auggy from a
 versioned, secret-free semantic projection; they are never accepted from YAML.
 The preview schema binds those fingerprints and the fleet policies immutably
-to a namespace. A mismatched process receives a fixed unavailable outcome
-before it can admit work or register drain state. The compatibility-contract
-migration is expand-only but makes the preview schema unreadable to older
-binaries; while replica startup remains disabled, rollback requires restoring
-the matching database snapshot or provisioning a fresh preview database.
+to a namespace. A current client with a mismatched tuple receives a fixed
+unavailable outcome before it can admit work or register drain state. This
+preview does not yet provide a database-side protocol fence against a client
+that was already running older coordinator code. All preview coordinator
+clients must therefore be quiesced before migration and remain stopped until
+the schema upgrade completes; older binaries must not be restarted against the
+upgraded schema. Rolling mixed-version safety is a required later checkpoint,
+not a current claim. The compatibility-contract migration is
+expand-only but makes the preview schema unreadable to older binaries; rollback
+requires restoring the matching database snapshot or provisioning a fresh
+preview database.
 
 Provision the dedicated coordination database explicitly; the command reads
 only the environment variable named by `urlEnv`, never a URL in `agent.yaml`:

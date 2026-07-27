@@ -44,7 +44,6 @@ import {
   type ConfiguredDurableJobsRuntime,
 } from "../durable-jobs-runtime";
 import { assertDistributedCoordinationStartupAllowed } from "../../coordination/topology";
-import { configuredAugmentReplicaEvidence } from "../distributed-coordination-preflight";
 
 /**
  * Extract the webTransport port from augment configs (for the PID manifest
@@ -197,9 +196,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
   }
   // Parse and validate config before mutating or admitting any runtime state.
   const config = parseConfig(configPath);
-  assertDistributedCoordinationStartupAllowed(config.settings.coordination, {
-    augmentEvidence: configuredAugmentReplicaEvidence(config.augments),
-  });
+  assertDistributedCoordinationStartupAllowed(config.settings.coordination);
   const requestedRuntimeDataRoot = resolveRuntimeDataRoot(opts.internalMode);
   const runtimeVolumeLease = requestedRuntimeDataRoot
     ? prepareRailwayRuntimeVolume(process.env.RAILWAY_VOLUME_MOUNT_PATH, config.id)

@@ -35,14 +35,18 @@ function input() {
     augments: [
       {
         augmentIndex: 0,
+        componentType: "fileMemory",
         topologyClass: "unsupported" as const,
         compatibilityVersion: 1,
+        semanticFingerprint: "a".repeat(64),
         requirements: ["local-mutable-state" as const],
       },
       {
         augmentIndex: 1,
+        componentType: "budgets",
         topologyClass: "unsupported" as const,
         compatibilityVersion: 1,
+        semanticFingerprint: "b".repeat(64),
         requirements: ["shared-budget-store-missing" as const],
       },
     ],
@@ -60,7 +64,7 @@ describe("distributed coordination compatibility fingerprints", () => {
       name: "auggy-postgres-coordination",
       protocolVersion: 1,
       schemaVersion: 2,
-      fingerprintVersion: 1,
+      fingerprintVersion: 2,
     });
     expect(first).toEqual(second);
     expect(first.protocolVersion).toBe(1);
@@ -83,6 +87,9 @@ describe("distributed coordination compatibility fingerprints", () => {
         });
       },
       (value: ReturnType<typeof input>) => (value.augments[0]!.compatibilityVersion += 1),
+      (value: ReturnType<typeof input>) => (value.augments[0]!.componentType = "supabaseMemory"),
+      (value: ReturnType<typeof input>) =>
+        (value.augments[0]!.semanticFingerprint = "c".repeat(64)),
     ];
 
     for (const mutate of mutations) {
@@ -137,6 +144,11 @@ describe("distributed coordination compatibility fingerprints", () => {
       () => {
         const value = input();
         value.augments[0]!.requirements = ["local-mutable-state", "local-mutable-state"];
+        return value;
+      },
+      () => {
+        const value = input();
+        value.augments[0]!.semanticFingerprint = "forged-safe-claim";
         return value;
       },
       () => {

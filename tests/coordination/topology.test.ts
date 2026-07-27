@@ -19,11 +19,7 @@ describe("distributed coordination topology preflight contract", () => {
   });
 
   test("reports the disabled profile without reading configuration values", () => {
-    expect(
-      distributedCoordinationPreflightReport({
-        augmentEvidence: [{ augmentIndex: 0, requirement: "shared-budget-store-missing" }],
-      }),
-    ).toEqual({
+    expect(distributedCoordinationPreflightReport()).toEqual({
       profile: "disabled",
       ready: false,
       blockers: [
@@ -37,24 +33,20 @@ describe("distributed coordination topology preflight contract", () => {
         "unfenced-delivery-outbox",
         "configured-augment-state-unverified",
       ],
-      components: [{ augmentIndex: 0, requirement: "shared-budget-store-missing" }],
     });
   });
 
-  test("sanitizes malformed caller evidence to bounded code-owned vocabulary", () => {
-    const report = distributedCoordinationPreflightReport({
-      augmentEvidence: [
-        {
-          augmentIndex: -1,
-          requirement: "postgres://sentinel-secret@example.invalid" as never,
-        },
-      ],
-    });
-
-    expect(report.components).toEqual([
-      { augmentIndex: 0, requirement: "runtime-augment-unverified" },
-    ]);
-    expect(JSON.stringify(report)).not.toContain("sentinel-secret");
+  test("ignores caller-supplied evidence instead of treating it as authority", () => {
+    const hostileCall = distributedCoordinationPreflightReport as unknown as (
+      claims: Record<string, unknown>,
+    ) => ReturnType<typeof distributedCoordinationPreflightReport>;
+    expect(
+      hostileCall({
+        ready: true,
+        blockers: [],
+        augmentEvidence: [{ topologyClass: "stateless", requirements: [] }],
+      }),
+    ).toEqual(distributedCoordinationPreflightReport());
   });
 
   test("does not let caller-supplied topology claims erase runtime blockers", () => {

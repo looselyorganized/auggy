@@ -45,7 +45,6 @@ import {
   assertDistributedCoordinationStartupAllowed,
   DistributedCoordinationStartupError,
 } from "../../coordination/topology";
-import { configuredAugmentReplicaEvidence } from "../distributed-coordination-preflight";
 
 export interface DeployLogger {
   info(msg: string): void;
@@ -264,9 +263,7 @@ export async function runDeploy(
   // stop before Doctor can import custom route code or any Railway call.
   try {
     const startupConfig = parseConfig(configPath);
-    assertDistributedCoordinationStartupAllowed(startupConfig.settings.coordination, {
-      augmentEvidence: configuredAugmentReplicaEvidence(startupConfig.augments),
-    });
+    assertDistributedCoordinationStartupAllowed(startupConfig.settings.coordination);
   } catch (error) {
     if (error instanceof DistributedCoordinationStartupError) throw error;
   }

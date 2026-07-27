@@ -21,7 +21,7 @@ export type DistributedCoordinationPreflightBlocker =
   | DistributedCoordinationBlocker
   | "configured-augment-state-unverified";
 
-export const DISTRIBUTED_AUGMENT_REQUIREMENT_CODES = [
+export const DISTRIBUTED_AUGMENT_REQUIREMENT_CODES = Object.freeze([
   "local-mutable-state",
   "shared-store-unverified",
   "local-filesystem-unverified",
@@ -39,31 +39,36 @@ export const DISTRIBUTED_AUGMENT_REQUIREMENT_CODES = [
   "custom-augment-unverified",
   "runtime-augment-unverified",
   "unknown-augment-type",
-] as const;
+] as const);
 
 export type DistributedAugmentRequirementCode =
   (typeof DISTRIBUTED_AUGMENT_REQUIREMENT_CODES)[number];
 
-export const DISTRIBUTED_REPLICA_TOPOLOGY_CLASSES = [
+export const DISTRIBUTED_REPLICA_TOPOLOGY_CLASSES = Object.freeze([
   "stateless",
   "shared",
   "fence-aware",
   "leader-owned",
   "unsupported",
-] as const;
+] as const);
 
 export type DistributedReplicaTopologyClass = (typeof DISTRIBUTED_REPLICA_TOPOLOGY_CLASSES)[number];
 
 export interface DistributedAugmentPreflightEvidence {
   augmentIndex: number;
-  requirement: DistributedAugmentRequirementCode;
+  /** Code-owned built-in identifier or a fixed unsupported category. */
+  componentType: string;
+  topologyClass: DistributedReplicaTopologyClass;
+  compatibilityVersion: number;
+  /** SHA-256 of a source-owned, secret-free replica-semantic identity. */
+  semanticFingerprint: string;
+  requirements: readonly DistributedAugmentRequirementCode[];
 }
 
 export interface DistributedCoordinationPreflightReport {
   profile: "disabled";
   ready: false;
   blockers: readonly DistributedCoordinationPreflightBlocker[];
-  components: readonly DistributedAugmentPreflightEvidence[];
 }
 
 export class DistributedCoordinationStartupError extends Error {
@@ -120,43 +125,15 @@ export function enumerateDistributedCoordinationBlockers(): DistributedCoordinat
 }
 
 /** Build fixed, secret-free evidence for the deliberately disabled profile. */
-const DISTRIBUTED_AUGMENT_REQUIREMENT_CODE_SET = new Set<string>(
-  DISTRIBUTED_AUGMENT_REQUIREMENT_CODES,
-);
-
-function safeAugmentEvidence(
-  evidence: readonly DistributedAugmentPreflightEvidence[] | undefined,
-): readonly DistributedAugmentPreflightEvidence[] {
-  return Object.freeze(
-    (evidence ?? []).slice(0, 1_000).map((entry, position) =>
-      Object.freeze({
-        augmentIndex:
-          Number.isSafeInteger(entry?.augmentIndex) &&
-          entry.augmentIndex >= 0 &&
-          entry.augmentIndex <= 999
-            ? entry.augmentIndex
-            : position,
-        requirement: DISTRIBUTED_AUGMENT_REQUIREMENT_CODE_SET.has(entry?.requirement)
-          ? entry.requirement
-          : "runtime-augment-unverified",
-      }),
-    ),
-  );
-}
-
-export function distributedCoordinationPreflightReport(options?: {
-  augmentEvidence?: readonly DistributedAugmentPreflightEvidence[];
-}): DistributedCoordinationPreflightReport {
-  const components = safeAugmentEvidence(options?.augmentEvidence);
+export function distributedCoordinationPreflightReport(): DistributedCoordinationPreflightReport {
   return Object.freeze({
     profile: "disabled" as const,
     ready: false as const,
     blockers: Object.freeze([
       "runtime-not-enabled" as const,
       ...enumerateDistributedCoordinationBlockers(),
-      ...(components.length > 0 ? (["configured-augment-state-unverified"] as const) : []),
+      "configured-augment-state-unverified" as const,
     ]),
-    components,
   });
 }
 
@@ -164,11 +141,8 @@ export function distributedCoordinationPreflightReport(options?: {
  * Fail before any runtime-owned mutation whenever coordination is declared.
  * Keep this at CLI admission and inside defineAgent for embedding callers.
  */
-export function assertDistributedCoordinationStartupAllowed(
-  coordination: unknown,
-  options?: { augmentEvidence?: readonly DistributedAugmentPreflightEvidence[] },
-): void {
+export function assertDistributedCoordinationStartupAllowed(coordination: unknown): void {
   if (coordination === undefined) return;
-  const report = distributedCoordinationPreflightReport(options);
+  const report = distributedCoordinationPreflightReport();
   throw new DistributedCoordinationStartupError(report);
 }

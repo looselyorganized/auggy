@@ -3,7 +3,7 @@ import {
   DISTRIBUTED_AUGMENT_REQUIREMENT_CODES,
   DISTRIBUTED_REPLICA_TOPOLOGY_CLASSES,
   type DistributedAugmentRequirementCode,
-  type DistributedReplicaTopologyClass,
+  type DistributedAugmentPreflightEvidence,
 } from "./topology";
 
 const MAX_CAPACITY = 1_000_000;
@@ -17,7 +17,7 @@ export const DISTRIBUTED_COORDINATION_PROTOCOL = Object.freeze({
   name: "auggy-postgres-coordination" as const,
   protocolVersion: 1 as const,
   schemaVersion: 2 as const,
-  fingerprintVersion: 1 as const,
+  fingerprintVersion: 2 as const,
 });
 
 export interface DistributedCompatibilitySourcePolicy {
@@ -26,12 +26,7 @@ export interface DistributedCompatibilitySourcePolicy {
   maxQueued: number;
 }
 
-export interface DistributedAugmentCompatibilityProjection {
-  augmentIndex: number;
-  topologyClass: DistributedReplicaTopologyClass;
-  compatibilityVersion: number;
-  requirements: readonly DistributedAugmentRequirementCode[];
-}
+export type DistributedAugmentCompatibilityProjection = DistributedAugmentPreflightEvidence;
 
 export interface DistributedCompatibilityInput {
   coordination: DistributedCoordinationConfig;
@@ -75,7 +70,8 @@ function identifier(value: unknown): string {
 /**
  * Derive the immutable compatibility tuple from a reviewed semantic projection.
  * Raw YAML, environment names/values, local polling, and augment options never
- * enter either digest.
+ * enter either digest. This low-level constructor is internal to coordination;
+ * startup code must obtain augment projections from source-owned verifiers.
  */
 export function buildDistributedCoordinationCompatibility(
   input: DistributedCompatibilityInput,
@@ -126,6 +122,9 @@ export function buildDistributedCoordinationCompatibility(
     const augments = input.augments.map((augment, augmentIndex) => {
       if (
         augment.augmentIndex !== augmentIndex ||
+        typeof augment.componentType !== "string" ||
+        typeof augment.semanticFingerprint !== "string" ||
+        !/^[0-9a-f]{64}$/.test(augment.semanticFingerprint) ||
         !TOPOLOGY_CLASS_SET.has(augment.topologyClass) ||
         !Array.isArray(augment.requirements) ||
         augment.requirements.length > 32
@@ -141,8 +140,10 @@ export function buildDistributedCoordinationCompatibility(
       if (new Set(requirements).size !== requirements.length) throw new Error("invalid");
       return {
         augmentIndex,
+        componentType: identifier(augment.componentType),
         topologyClass: augment.topologyClass,
         compatibilityVersion: integer(augment.compatibilityVersion, 1, MAX_CAPACITY),
+        semanticFingerprint: augment.semanticFingerprint,
         requirements,
       };
     });

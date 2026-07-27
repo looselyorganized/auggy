@@ -175,6 +175,36 @@ describe("parseConfig", () => {
     expect(config.augments[0]!.type).toBe("fileMemory");
   });
 
+  test("bounds effective augment topology before validation or expansion", () => {
+    const boundedAugments = Array.from({ length: 256 }, (_, index) => ({
+      name: `fetch-${index}`,
+      type: "webFetch",
+    }));
+    const boundedPath = writeYaml(
+      "bounded-augment-topology.yaml",
+      minimalConfig({ augments: boundedAugments }),
+    );
+    expect(parseConfig(boundedPath).augments).toHaveLength(256);
+
+    const oversizedPath = writeYaml(
+      "oversized-augment-topology.yaml",
+      minimalConfig({
+        augments: [...boundedAugments, { name: "unsafe-tail", type: "webFetch" }],
+      }),
+    );
+    expect(() => parseConfig(oversizedPath)).toThrow(
+      "augments: at most 256 effective augments are supported",
+    );
+
+    const shorthandPath = writeYaml(
+      "identity-expanded-augment-topology.yaml",
+      minimalConfig({ identity: "./identity.md", augments: boundedAugments }),
+    );
+    expect(() => parseConfig(shorthandPath)).toThrow(
+      "augments: at most 256 effective augments are supported",
+    );
+  });
+
   test("rejects malformed settings instead of silently restoring runtime defaults", () => {
     for (const settings of ["malformed", 42, true, null, ["maxConcurrent", 1]]) {
       const path = writeYaml("agent.yaml", minimalConfig({ settings }));

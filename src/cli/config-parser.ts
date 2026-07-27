@@ -92,6 +92,7 @@ export const DEFAULT_DURABLE_JOBS = {
 
 const MAX_DURABLE_SCHEDULES = 100;
 const MAX_DURABLE_PROMPT_BYTES = 32 * 1024;
+const MAX_EFFECTIVE_AUGMENTS = 256;
 const SAFE_DURABLE_SCHEDULE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const SAFE_DURABLE_THREAD_ID = /^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/;
 
@@ -1907,6 +1908,7 @@ export function expandAugmentFolderEntries(
 ): Record<string, unknown> {
   const augments = raw.augments;
   if (!Array.isArray(augments)) return raw;
+  assertEffectiveAugmentBounds(raw);
 
   const expanded = augments.map((entry, index) => {
     if (typeof entry === "string") {
@@ -1916,6 +1918,18 @@ export function expandAugmentFolderEntries(
   });
 
   return { ...raw, augments: expanded };
+}
+
+function assertEffectiveAugmentBounds(raw: Record<string, unknown>): void {
+  const augments = raw.augments;
+  if (
+    Array.isArray(augments) &&
+    augments.length + (raw.identity === undefined ? 0 : 1) > MAX_EFFECTIVE_AUGMENTS
+  ) {
+    throw new Error(
+      "Invalid agent.yaml:\n  - augments: at most 256 effective augments are supported",
+    );
+  }
 }
 
 function validateConfig(raw: Record<string, unknown>): ParsedConfig {
@@ -2244,12 +2258,21 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
 
   // Augments.
   const augments = raw.augments;
+  const validatedAugments = Array.isArray(augments)
+    ? augments.slice(0, MAX_EFFECTIVE_AUGMENTS)
+    : [];
+  if (
+    Array.isArray(augments) &&
+    augments.length + (identityShorthand === undefined ? 0 : 1) > MAX_EFFECTIVE_AUGMENTS
+  ) {
+    errors.push("augments: at most 256 effective augments are supported");
+  }
   if (!Array.isArray(augments) || augments.length === 0) {
     errors.push("augments: required non-empty array");
   } else {
     const names = new Set<string>();
-    for (let i = 0; i < augments.length; i++) {
-      const aug = augments[i] as Record<string, unknown>;
+    for (let i = 0; i < validatedAugments.length; i++) {
+      const aug = validatedAugments[i] as Record<string, unknown>;
       const prefix = `augments[${i}]`;
       const sourceLabel =
         typeof aug[AUGMENT_SOURCE_LABEL_FIELD] === "string"
@@ -2323,7 +2346,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       }
     }
 
-    const agentMailWebhookConfigured = augments.some((entry) => {
+    const agentMailWebhookConfigured = validatedAugments.some((entry) => {
       if (typeof entry !== "object" || entry === null) return false;
       const augment = entry as Record<string, unknown>;
       if (augment.type !== "agentMail") return false;
@@ -2331,7 +2354,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       const inbound = options?.inbound as Record<string, unknown> | undefined;
       return inbound?.mode === "webhook";
     });
-    const agentMailReviewConfigured = augments.some((entry) => {
+    const agentMailReviewConfigured = validatedAugments.some((entry) => {
       if (typeof entry !== "object" || entry === null) return false;
       const augment = entry as Record<string, unknown>;
       if (augment.type !== "agentMail") return false;
@@ -2347,13 +2370,13 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       const executableTrustLevels = new Set(["creator", ...allowed]);
       return reviewed.some((level) => executableTrustLevels.has(level));
     });
-    const hasWebTransport = augments.some(
+    const hasWebTransport = validatedAugments.some(
       (entry) =>
         typeof entry === "object" &&
         entry !== null &&
         (entry as Record<string, unknown>).type === "webTransport",
     );
-    const hasAdminWebTransport = augments.some((entry) => {
+    const hasAdminWebTransport = validatedAugments.some((entry) => {
       if (typeof entry !== "object" || entry === null) return false;
       const augment = entry as Record<string, unknown>;
       if (augment.type !== "webTransport") return false;
@@ -2611,7 +2634,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   // shorthand also reserves that name — an explicit augment also named
   // "identity" would produce a duplicate after expansion.
   if (identityShorthand !== undefined && Array.isArray(augments)) {
-    const hasExplicitSystemFileMemory = (augments as unknown[]).some((a) => {
+    const hasExplicitSystemFileMemory = validatedAugments.some((a) => {
       if (typeof a !== "object" || a === null) return false;
       const aug = a as Record<string, unknown>;
       if (aug.type !== "fileMemory") return false;
@@ -2625,7 +2648,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
     } else {
       // Only check the name collision when there's no placement:system
       // conflict, to avoid stacking errors for the same operator mistake.
-      const hasExplicitIdentityName = (augments as unknown[]).some((a) => {
+      const hasExplicitIdentityName = validatedAugments.some((a) => {
         if (typeof a !== "object" || a === null) return false;
         const aug = a as Record<string, unknown>;
         return aug.name === "identity";
@@ -2790,6 +2813,7 @@ export function parseConfig(yamlPath: string): ParsedConfig {
   if (!parsed || typeof parsed !== "object") {
     throw new Error(`${yamlPath}: not a valid YAML document`);
   }
+  assertEffectiveAugmentBounds(parsed as Record<string, unknown>);
 
   let interpolated: Record<string, unknown>;
   try {

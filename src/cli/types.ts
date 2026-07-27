@@ -16,7 +16,7 @@ import type {
 // ---------------------------------------------------------------------------
 
 /** Runtime source of truth for the built-in augment type identifiers. */
-export const BUILTIN_AUGMENT_TYPES = [
+export const BUILTIN_AUGMENT_TYPES = Object.freeze([
   "fileMemory",
   "supabaseMemory",
   "layeredMemory",
@@ -34,7 +34,7 @@ export const BUILTIN_AUGMENT_TYPES = [
   "turnControl",
   "visitorAuth",
   "link",
-] as const;
+] as const);
 
 /** The built-in augment type identifiers. */
 export type BuiltinAugmentType = (typeof BUILTIN_AUGMENT_TYPES)[number];

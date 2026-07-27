@@ -2,7 +2,7 @@
 
 **Date:** 2026-07-26
 
-**Status:** approved scope; implementation pending
+**Status:** approved scope; implementation in progress; runtime remains disabled
 
 **Branch:** `production/horizontal-replica-readiness`
 
@@ -310,6 +310,12 @@ start successfully.
 - Replace the coarse blocker list with evidence-producing component preflight.
 - Keep distributed startup rejected and test every unsupported combination.
 
+The compatibility projection must bind a code-owned component identifier and a
+source-owned, secret-free semantic identity. Removing a component's final
+blocker requires an option-sensitive verifier for every backend/store choice
+that must be homogeneous across replicas. Operator-authored evidence is never
+startup authority.
+
 ### 2. Coordinator lifecycle and request ownership
 
 - Register fresh instances and enforce compatible fleet/configuration state.
@@ -393,6 +399,9 @@ start successfully.
   controls with authenticated/audited mutations.
 - Support expand/deploy/backfill/contract migrations and declare runtime/schema
   compatibility ranges.
+- Add a database-enforced protocol/session fence before permitting rolling
+  mixed-version coordinator operation. Until then, preview schema migrations
+  require every older coordinator client to be quiesced first.
 - Document fresh PostgreSQL deployment, single-to-distributed cutover, rollback,
   backup/restore ordering, and global restore fencing.
 - Provide load-balancer examples without coupling correctness to a vendor.
