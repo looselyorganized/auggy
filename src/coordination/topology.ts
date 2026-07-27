@@ -44,6 +44,16 @@ export const DISTRIBUTED_AUGMENT_REQUIREMENT_CODES = [
 export type DistributedAugmentRequirementCode =
   (typeof DISTRIBUTED_AUGMENT_REQUIREMENT_CODES)[number];
 
+export const DISTRIBUTED_REPLICA_TOPOLOGY_CLASSES = [
+  "stateless",
+  "shared",
+  "fence-aware",
+  "leader-owned",
+  "unsupported",
+] as const;
+
+export type DistributedReplicaTopologyClass = (typeof DISTRIBUTED_REPLICA_TOPOLOGY_CLASSES)[number];
+
 export interface DistributedAugmentPreflightEvidence {
   augmentIndex: number;
   requirement: DistributedAugmentRequirementCode;

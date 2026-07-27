@@ -13,6 +13,20 @@ const url = process.env.AUGGY_TEST_POSTGRES_URL;
 const postgresTest = url ? test : test.skip;
 const hash = "S7l_qm3W92Yd4JbKzV1LQYdKebJ4Q-4C3m3VnuDhxQY";
 const source = { id: "web", maxConcurrent: 2, maxQueued: 4 };
+const coordinatorPolicy = {
+  retention: {
+    terminalRequestRetentionMs: 604_800_000,
+    maxTerminalRequests: 10_000,
+    eventRetentionMs: 2_592_000_000,
+    maxEvents: 50_000,
+  },
+  result: { maxReplayBytes: 65_536 },
+  compatibility: {
+    protocolVersion: 1,
+    protocolFingerprint: "a".repeat(64),
+    configurationFingerprint: "b".repeat(64),
+  },
+};
 const namespaces = new Set<string>();
 const workers = new Set<ReturnType<typeof spawnJsonLineWorker>>();
 
@@ -32,6 +46,7 @@ function coordinator(
   leaseMs = 80,
   maxConcurrent = 2,
   maxQueued = 4,
+  compatibility: Partial<(typeof coordinatorPolicy)["compatibility"]> = {},
 ) {
   return new PostgresDistributedTurnCoordinator({
     url: url!,
@@ -41,6 +56,8 @@ function coordinator(
     maxQueued,
     maxQueuedPerThread: Math.min(2, maxQueued),
     leaseMs,
+    ...coordinatorPolicy,
+    compatibility: { ...coordinatorPolicy.compatibility, ...compatibility },
   });
 }
 
@@ -354,6 +371,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
       maxQueued: 2,
       maxQueuedPerThread: 1,
       leaseMs: 1_000,
+      ...coordinatorPolicy,
       sql: shadowedExecutor,
     });
     try {
@@ -547,6 +565,95 @@ describe("PostgreSQL distributed turn coordinator", () => {
       await isolated.close();
     }
   });
+
+  postgresTest("rejects mixed compatibility before mutating namespace state", async () => {
+    const value = namespace();
+    const first = coordinator(value, "compatible-instance");
+    const changedProtocol = coordinator(value, "protocol-drift", 80, 2, 4, {
+      protocolVersion: 2,
+    });
+    const changedConfiguration = coordinator(value, "configuration-drift", 80, 2, 4, {
+      configurationFingerprint: "c".repeat(64),
+    });
+    const sql = new SQL(url!);
+    try {
+      await first.migrate();
+      expect(await first.admit(request("compatibility-first"))).toEqual({ status: "admitted" });
+
+      expect(await changedProtocol.setDraining(true)).toEqual({ status: "unavailable" });
+      expect(await changedProtocol.admit(request("protocol-request"))).toEqual({
+        status: "unavailable",
+      });
+      expect(await changedConfiguration.admit(request("configuration-request"))).toEqual({
+        status: "unavailable",
+      });
+
+      const rows = await sql.unsafe<
+        Array<{
+          configuration_fingerprint: string;
+          protocol_version: number;
+          request_count: number;
+          incompatible_instance_count: number;
+        }>
+      >(
+        "SELECT namespace.configuration_fingerprint, namespace.protocol_version, (SELECT count(*)::integer FROM auggy_coordination_requests request WHERE request.namespace = namespace.namespace AND request.request_id IN ('protocol-request', 'configuration-request')) AS request_count, (SELECT count(*)::integer FROM auggy_coordination_instances instance WHERE instance.namespace = namespace.namespace AND instance.instance_id IN ('protocol-drift', 'configuration-drift')) AS incompatible_instance_count FROM auggy_coordination_namespaces namespace WHERE namespace.namespace = $1",
+        [value],
+      );
+      expect(rows).toEqual([
+        {
+          configuration_fingerprint: coordinatorPolicy.compatibility.configurationFingerprint,
+          protocol_version: coordinatorPolicy.compatibility.protocolVersion,
+          request_count: 0,
+          incompatible_instance_count: 0,
+        },
+      ]);
+      expect(await first.admit(request("compatible-second"))).toEqual({ status: "admitted" });
+    } finally {
+      await sql.close();
+      await changedConfiguration.close();
+      await changedProtocol.close();
+      await first.close();
+    }
+  });
+
+  postgresTest(
+    "atomically establishes one compatibility tuple during first-registration race",
+    async () => {
+      const value = namespace();
+      const first = coordinator(value, "registration-a");
+      const second = coordinator(value, "registration-b", 80, 2, 4, {
+        configurationFingerprint: "c".repeat(64),
+      });
+      const sql = new SQL(url!);
+      try {
+        await first.migrate();
+        const outcomes = await Promise.all([
+          first.admit(request("registration-request-a")),
+          second.admit(request("registration-request-b")),
+        ]);
+        expect(outcomes.filter((outcome) => outcome.status === "admitted")).toHaveLength(1);
+        expect(outcomes.filter((outcome) => outcome.status === "unavailable")).toHaveLength(1);
+
+        const rows = await sql.unsafe<
+          Array<{ configuration_fingerprint: string; request_id: string }>
+        >(
+          "SELECT namespace.configuration_fingerprint, request.request_id FROM auggy_coordination_namespaces namespace JOIN auggy_coordination_requests request ON request.namespace = namespace.namespace WHERE namespace.namespace = $1",
+          [value],
+        );
+        expect(rows).toHaveLength(1);
+        expect(rows[0]?.request_id).toBe(
+          rows[0]?.configuration_fingerprint ===
+            coordinatorPolicy.compatibility.configurationFingerprint
+            ? "registration-request-a"
+            : "registration-request-b",
+        );
+      } finally {
+        await sql.close();
+        await second.close();
+        await first.close();
+      }
+    },
+  );
 
   postgresTest(
     "uses forced database lease expiry to quarantine started work and reject stale fences",

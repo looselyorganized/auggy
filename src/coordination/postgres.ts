@@ -125,6 +125,38 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       options.leaseMs > MAX_LEASE_MS
     )
       throw new Error("leaseMs must be positive");
+    if (
+      !Number.isSafeInteger(options.retention?.terminalRequestRetentionMs) ||
+      options.retention.terminalRequestRetentionMs < 60_000 ||
+      options.retention.terminalRequestRetentionMs > 31_536_000_000 ||
+      !Number.isSafeInteger(options.retention.maxTerminalRequests) ||
+      options.retention.maxTerminalRequests < 1 ||
+      options.retention.maxTerminalRequests > MAX_CAPACITY ||
+      !Number.isSafeInteger(options.retention.eventRetentionMs) ||
+      options.retention.eventRetentionMs < 60_000 ||
+      options.retention.eventRetentionMs > 31_536_000_000 ||
+      !Number.isSafeInteger(options.retention.maxEvents) ||
+      options.retention.maxEvents < 1 ||
+      options.retention.maxEvents > MAX_CAPACITY
+    ) {
+      throw new Error("coordination retention policy is invalid");
+    }
+    if (
+      !Number.isSafeInteger(options.result?.maxReplayBytes) ||
+      options.result.maxReplayBytes < 1_024 ||
+      options.result.maxReplayBytes > 1_048_576
+    ) {
+      throw new Error("coordination replay policy is invalid");
+    }
+    if (
+      !Number.isSafeInteger(options.compatibility?.protocolVersion) ||
+      options.compatibility.protocolVersion < 1 ||
+      options.compatibility.protocolVersion > MAX_CAPACITY ||
+      !/^[0-9a-f]{64}$/.test(options.compatibility.protocolFingerprint) ||
+      !/^[0-9a-f]{64}$/.test(options.compatibility.configurationFingerprint)
+    ) {
+      throw new Error("coordinator compatibility contract is invalid");
+    }
     assertIdentifier("namespace", options.namespace);
     assertIdentifier("instanceId", options.instanceId);
     this.#config = options;
@@ -328,6 +360,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   ): Promise<LeaseResult> {
     return this.safe<LeaseResult>({ status: "unavailable" }, async () =>
       this.transaction(async (tx) => {
+        await this.#lockNamespace(tx);
         const rows = await tx.unsafe<Row>(
           "UPDATE public.auggy_coordination_requests SET state = 'canceled', terminal_at = clock_timestamp(), updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND binding_hash = $3 AND state = 'queued' RETURNING request_id",
           [this.#config.namespace, request.requestId, request.bindingHash],
@@ -362,6 +395,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   async setDraining(draining: boolean): Promise<LeaseResult> {
     return this.safe<LeaseResult>({ status: "unavailable" }, async () =>
       this.transaction(async (tx) => {
+        await this.#lockNamespace(tx);
         await tx.unsafe(
           "INSERT INTO public.auggy_coordination_instances (namespace, instance_id, draining) VALUES ($1, $2, $3) ON CONFLICT (namespace, instance_id) DO UPDATE SET draining = EXCLUDED.draining, updated_at = clock_timestamp()",
           [this.#config.namespace, this.#config.instanceId, draining],
@@ -401,16 +435,24 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     Pick<DistributedCoordinatorConfig, "maxConcurrent" | "maxQueued" | "maxQueuedPerThread">
   > {
     await tx.unsafe(
-      "INSERT INTO public.auggy_coordination_namespaces (namespace, max_concurrent, max_queued, max_queued_per_thread) VALUES ($1, $2, $3, $4) ON CONFLICT (namespace) DO NOTHING",
+      "INSERT INTO public.auggy_coordination_namespaces (namespace, max_concurrent, max_queued, max_queued_per_thread, protocol_version, protocol_fingerprint, configuration_fingerprint, terminal_request_retention_ms, max_terminal_requests, event_retention_ms, max_events, max_replay_bytes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) ON CONFLICT (namespace) DO NOTHING",
       [
         this.#config.namespace,
         this.#config.maxConcurrent,
         this.#config.maxQueued,
         this.#config.maxQueuedPerThread,
+        this.#config.compatibility.protocolVersion,
+        this.#config.compatibility.protocolFingerprint,
+        this.#config.compatibility.configurationFingerprint,
+        this.#config.retention.terminalRequestRetentionMs,
+        this.#config.retention.maxTerminalRequests,
+        this.#config.retention.eventRetentionMs,
+        this.#config.retention.maxEvents,
+        this.#config.result.maxReplayBytes,
       ],
     );
     const policy = await tx.unsafe<Row>(
-      "SELECT max_concurrent, max_queued, max_queued_per_thread FROM public.auggy_coordination_namespaces WHERE namespace = $1 FOR UPDATE",
+      "SELECT max_concurrent, max_queued, max_queued_per_thread, protocol_version, protocol_fingerprint, configuration_fingerprint, terminal_request_retention_ms, max_terminal_requests, event_retention_ms, max_events, max_replay_bytes FROM public.auggy_coordination_namespaces WHERE namespace = $1 FOR UPDATE",
       [this.#config.namespace],
     );
     const row = policy[0];
@@ -419,11 +461,27 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       maxConcurrent: number(row, "max_concurrent"),
       maxQueued: number(row, "max_queued"),
       maxQueuedPerThread: number(row, "max_queued_per_thread"),
+      protocolVersion: number(row, "protocol_version"),
+      protocolFingerprint: text(row, "protocol_fingerprint"),
+      configurationFingerprint: text(row, "configuration_fingerprint"),
+      terminalRequestRetentionMs: number(row, "terminal_request_retention_ms"),
+      maxTerminalRequests: number(row, "max_terminal_requests"),
+      eventRetentionMs: number(row, "event_retention_ms"),
+      maxEvents: number(row, "max_events"),
+      maxReplayBytes: number(row, "max_replay_bytes"),
     };
     if (
       stored.maxConcurrent !== this.#config.maxConcurrent ||
       stored.maxQueued !== this.#config.maxQueued ||
-      stored.maxQueuedPerThread !== this.#config.maxQueuedPerThread
+      stored.maxQueuedPerThread !== this.#config.maxQueuedPerThread ||
+      stored.protocolVersion !== this.#config.compatibility.protocolVersion ||
+      stored.protocolFingerprint !== this.#config.compatibility.protocolFingerprint ||
+      stored.configurationFingerprint !== this.#config.compatibility.configurationFingerprint ||
+      stored.terminalRequestRetentionMs !== this.#config.retention.terminalRequestRetentionMs ||
+      stored.maxTerminalRequests !== this.#config.retention.maxTerminalRequests ||
+      stored.eventRetentionMs !== this.#config.retention.eventRetentionMs ||
+      stored.maxEvents !== this.#config.retention.maxEvents ||
+      stored.maxReplayBytes !== this.#config.result.maxReplayBytes
     ) {
       throw new Error("coordinator namespace policy mismatch");
     }
@@ -489,6 +547,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     if (!this.validLease(lease)) return { status: "stale" };
     return this.safe<LeaseResult>({ status: "unavailable" }, async () =>
       this.transaction(async (tx) => {
+        await this.#lockNamespace(tx);
         const rows = await tx.unsafe<Row>(
           `UPDATE public.auggy_coordination_requests SET ${set} WHERE namespace = $${values.length + 1} AND request_id = $${values.length + 2} AND thread_id = $${values.length + 3} AND source_id = $${values.length + 4} AND state = 'active' AND fence = $${values.length + 5} AND owner_instance = $${values.length + 6} AND lease_expires_at > clock_timestamp() RETURNING request_id`,
           [

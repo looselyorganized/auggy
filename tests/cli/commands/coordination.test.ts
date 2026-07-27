@@ -100,7 +100,10 @@ describe("runCoordinationMigrate", () => {
     expect(receivedUrl).toBe(SENTINEL_URL);
     expect(migrated).toBe(true);
     expect(closed).toBe(true);
-    expect(result).toEqual(["20260724_01_distributed_turn_coordination"]);
+    expect(result).toEqual([
+      "20260724_01_distributed_turn_coordination",
+      "20260726_02_coordination_compatibility_contract",
+    ]);
     expect(JSON.stringify(result)).not.toContain(SENTINEL_URL);
   });
 

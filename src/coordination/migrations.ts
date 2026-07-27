@@ -80,9 +80,33 @@ CREATE TABLE IF NOT EXISTS auggy_coordination_events (
 );
 `;
 
+const COORDINATION_COMPATIBILITY_MIGRATION_SQL = `
+ALTER TABLE auggy_coordination_namespaces
+  ADD COLUMN protocol_version INTEGER NOT NULL
+    CONSTRAINT auggy_coord_ns_protocol_version_check CHECK (protocol_version > 0),
+  ADD COLUMN protocol_fingerprint TEXT NOT NULL
+    CONSTRAINT auggy_coord_ns_protocol_fingerprint_check CHECK (protocol_fingerprint ~ '^[0-9a-f]{64}$'),
+  ADD COLUMN configuration_fingerprint TEXT NOT NULL
+    CONSTRAINT auggy_coord_ns_config_fingerprint_check CHECK (configuration_fingerprint ~ '^[0-9a-f]{64}$'),
+  ADD COLUMN terminal_request_retention_ms BIGINT NOT NULL
+    CONSTRAINT auggy_coord_ns_terminal_retention_check CHECK (terminal_request_retention_ms >= 60000 AND terminal_request_retention_ms <= 31536000000),
+  ADD COLUMN max_terminal_requests INTEGER NOT NULL
+    CONSTRAINT auggy_coord_ns_max_terminal_check CHECK (max_terminal_requests >= 1 AND max_terminal_requests <= 1000000),
+  ADD COLUMN event_retention_ms BIGINT NOT NULL
+    CONSTRAINT auggy_coord_ns_event_retention_check CHECK (event_retention_ms >= 60000 AND event_retention_ms <= 31536000000),
+  ADD COLUMN max_events INTEGER NOT NULL
+    CONSTRAINT auggy_coord_ns_max_events_check CHECK (max_events >= 1 AND max_events <= 1000000),
+  ADD COLUMN max_replay_bytes INTEGER NOT NULL
+    CONSTRAINT auggy_coord_ns_replay_bytes_check CHECK (max_replay_bytes >= 1024 AND max_replay_bytes <= 1048576);
+`;
+
 /** Recomputed from immutable migration SQL; migration rejects any mismatch. */
 export const postgresCoordinationMigrationChecksum = new Bun.CryptoHasher("sha256")
   .update(INITIAL_COORDINATION_MIGRATION_SQL)
+  .digest("hex");
+
+export const postgresCoordinationCompatibilityMigrationChecksum = new Bun.CryptoHasher("sha256")
+  .update(COORDINATION_COMPATIBILITY_MIGRATION_SQL)
   .digest("hex");
 
 export const POSTGRES_COORDINATION_MIGRATIONS = [
@@ -90,6 +114,11 @@ export const POSTGRES_COORDINATION_MIGRATIONS = [
     id: "20260724_01_distributed_turn_coordination",
     checksum: postgresCoordinationMigrationChecksum,
     sql: INITIAL_COORDINATION_MIGRATION_SQL,
+  },
+  {
+    id: "20260726_02_coordination_compatibility_contract",
+    checksum: postgresCoordinationCompatibilityMigrationChecksum,
+    sql: COORDINATION_COMPATIBILITY_MIGRATION_SQL,
   },
 ] as const;
 
@@ -219,10 +248,18 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
   ],
   ["auggy_coordination_migrations", "checksum", "text", true, null],
   ["auggy_coordination_migrations", "id", "text", true, null],
+  ["auggy_coordination_namespaces", "configuration_fingerprint", "text", true, null],
+  ["auggy_coordination_namespaces", "event_retention_ms", "bigint", true, null],
   ["auggy_coordination_namespaces", "max_concurrent", "integer", true, null],
+  ["auggy_coordination_namespaces", "max_events", "integer", true, null],
   ["auggy_coordination_namespaces", "max_queued", "integer", true, null],
   ["auggy_coordination_namespaces", "max_queued_per_thread", "integer", true, null],
+  ["auggy_coordination_namespaces", "max_replay_bytes", "integer", true, null],
+  ["auggy_coordination_namespaces", "max_terminal_requests", "integer", true, null],
   ["auggy_coordination_namespaces", "namespace", "text", true, null],
+  ["auggy_coordination_namespaces", "protocol_fingerprint", "text", true, null],
+  ["auggy_coordination_namespaces", "protocol_version", "integer", true, null],
+  ["auggy_coordination_namespaces", "terminal_request_retention_ms", "bigint", true, null],
   [
     "auggy_coordination_namespaces",
     "updated_at",
@@ -402,13 +439,89 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
     .join(","),
 }));
 
-const EXPECTED_CHECK_TABLES = new Map([
-  ["auggy_coordination_namespaces_max_concurrent_check", "auggy_coordination_namespaces"],
-  ["auggy_coordination_namespaces_max_queued_check", "auggy_coordination_namespaces"],
-  ["auggy_coordination_namespaces_max_queued_per_thread_check", "auggy_coordination_namespaces"],
-  ["auggy_coordination_requests_state_check", "auggy_coordination_requests"],
-  ["auggy_coordination_sources_max_concurrent_check", "auggy_coordination_sources"],
-  ["auggy_coordination_sources_max_queued_check", "auggy_coordination_sources"],
+const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition: string }>([
+  [
+    "auggy_coord_ns_config_fingerprint_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition: "checkconfiguration_fingerprint~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_ns_event_retention_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition: "checkevent_retention_ms>=60000andevent_retention_ms<=31536000000",
+    },
+  ],
+  [
+    "auggy_coord_ns_max_events_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition: "checkmax_events>=1andmax_events<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_ns_max_terminal_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition: "checkmax_terminal_requests>=1andmax_terminal_requests<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_ns_protocol_fingerprint_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition: "checkprotocol_fingerprint~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_ns_protocol_version_check",
+    { table: "auggy_coordination_namespaces", definition: "checkprotocol_version>0" },
+  ],
+  [
+    "auggy_coord_ns_replay_bytes_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition: "checkmax_replay_bytes>=1024andmax_replay_bytes<=1048576",
+    },
+  ],
+  [
+    "auggy_coord_ns_terminal_retention_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition:
+        "checkterminal_request_retention_ms>=60000andterminal_request_retention_ms<=31536000000",
+    },
+  ],
+  [
+    "auggy_coordination_namespaces_max_concurrent_check",
+    { table: "auggy_coordination_namespaces", definition: "checkmax_concurrent>0" },
+  ],
+  [
+    "auggy_coordination_namespaces_max_queued_check",
+    { table: "auggy_coordination_namespaces", definition: "checkmax_queued>=0" },
+  ],
+  [
+    "auggy_coordination_namespaces_max_queued_per_thread_check",
+    { table: "auggy_coordination_namespaces", definition: "checkmax_queued_per_thread>=0" },
+  ],
+  [
+    "auggy_coordination_requests_state_check",
+    {
+      table: "auggy_coordination_requests",
+      definition:
+        "checkstate=anyarray['queued','active','completed','failed','canceled','outcome_unknown']",
+    },
+  ],
+  [
+    "auggy_coordination_sources_max_concurrent_check",
+    { table: "auggy_coordination_sources", definition: "checkmax_concurrent>0" },
+  ],
+  [
+    "auggy_coordination_sources_max_queued_check",
+    { table: "auggy_coordination_sources", definition: "checkmax_queued>=0" },
+  ],
 ]);
 
 const EXPECTED_COORDINATION_CONSTRAINTS: readonly CoordinationCatalogConstraint[] = [
@@ -462,6 +575,7 @@ function normalizedCheck(value: string): string {
 function compactCheck(value: string): string {
   return normalizedCheck(value)
     .replaceAll("::text", "")
+    .replace(/'([0-9]+)'::bigint/g, "$1")
     .replace(/[()\s]/g, "");
 }
 
@@ -486,36 +600,16 @@ function validCoordinationColumns(rows: readonly CoordinationCatalogColumn[]): b
 }
 
 function validCoordinationChecks(rows: readonly CoordinationCatalogCheck[]): boolean {
-  if (rows.length !== EXPECTED_CHECK_TABLES.size) return false;
-  if (
-    rows.some(
-      (row) =>
-        !row.is_validated ||
-        !row.is_enforced ||
-        EXPECTED_CHECK_TABLES.get(row.constraint_name) !== row.table_name,
-    )
-  ) {
-    return false;
-  }
-  const definitions = new Map(
-    rows.map((row) => [row.constraint_name, compactCheck(row.definition)]),
-  );
-  const numeric = [
-    ["auggy_coordination_namespaces_max_concurrent_check", "max_concurrent", "> 0"],
-    ["auggy_coordination_namespaces_max_queued_check", "max_queued", ">= 0"],
-    ["auggy_coordination_namespaces_max_queued_per_thread_check", "max_queued_per_thread", ">= 0"],
-    ["auggy_coordination_sources_max_concurrent_check", "max_concurrent", "> 0"],
-    ["auggy_coordination_sources_max_queued_check", "max_queued", ">= 0"],
-  ] as const;
-  for (const [name, field, comparison] of numeric) {
-    const definition = definitions.get(name);
-    if (definition !== `check${field}${comparison.replaceAll(" ", "")}`) return false;
-  }
-  const state = definitions.get("auggy_coordination_requests_state_check");
-  return (
-    state ===
-    "checkstate=anyarray['queued','active','completed','failed','canceled','outcome_unknown']"
-  );
+  if (rows.length !== EXPECTED_COORDINATION_CHECKS.size) return false;
+  return rows.every((row) => {
+    const expected = EXPECTED_COORDINATION_CHECKS.get(row.constraint_name);
+    return (
+      row.is_validated &&
+      row.is_enforced &&
+      expected?.table === row.table_name &&
+      expected.definition === compactCheck(row.definition)
+    );
+  });
 }
 
 async function assertPostgresCoordinationSchema(

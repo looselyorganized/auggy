@@ -13,6 +13,18 @@ const coordinator = new PostgresDistributedTurnCoordinator({
   maxQueued: 4,
   maxQueuedPerThread: 2,
   leaseMs: 500,
+  retention: {
+    terminalRequestRetentionMs: 604_800_000,
+    maxTerminalRequests: 10_000,
+    eventRetentionMs: 2_592_000_000,
+    maxEvents: 50_000,
+  },
+  result: { maxReplayBytes: 65_536 },
+  compatibility: {
+    protocolVersion: 1,
+    protocolFingerprint: "a".repeat(64),
+    configurationFingerprint: "b".repeat(64),
+  },
 });
 
 function emit(value: Record<string, unknown>): void {

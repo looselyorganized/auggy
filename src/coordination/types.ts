@@ -3,6 +3,11 @@
  * identifiers and a one-way request binding hash only; callers must never put
  * prompt, peer, credential, or result content in these records.
  */
+import type {
+  DistributedCoordinationResultConfig,
+  DistributedCoordinationRetentionConfig,
+} from "../types";
+
 export type CoordinationRequestState =
   | "queued"
   | "active"
@@ -27,6 +32,15 @@ export interface DistributedCoordinatorConfig {
   /** Maximum waiting requests for one canonical thread. */
   maxQueuedPerThread: number;
   leaseMs: number;
+  retention: DistributedCoordinationRetentionConfig;
+  result: DistributedCoordinationResultConfig;
+  compatibility: DistributedCoordinatorCompatibility;
+}
+
+export interface DistributedCoordinatorCompatibility {
+  protocolVersion: number;
+  protocolFingerprint: string;
+  configurationFingerprint: string;
 }
 
 export interface DistributedTurnRequest {

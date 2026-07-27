@@ -196,6 +196,20 @@ fleet, and is never multiplied by replica count or inferred from the local
 terminal records, audit events, and sanitized UTF-8 replay bytes. Unknown
 fields and unsafe bounds are rejected.
 
+Auggy computes the protocol and configuration fingerprints from an exact,
+versioned, secret-free projection. YAML cannot supply either fingerprint.
+Authoritative inputs include namespace, fleet capacity, lease, retention,
+replay, source policy, and trusted augment compatibility evidence. Database
+environment names and values, instance identity, local polling/wait settings,
+and `turnScheduling` are excluded. Namespace policy is immutable: mixed
+protocol or configuration values fail before admission or instance mutation.
+
+The second preview migration adds this compatibility contract without changing
+the checksum-bound initial migration. The catalog remains exact-versioned, so
+an older binary intentionally rejects the expanded preview schema. Until the
+rolling-upgrade compatibility window is implemented, rollback requires a
+matching database snapshot or a fresh preview database.
+
 The CLI must refuse distributed mode when:
 
 - the coordinator schema is missing or incompatible;

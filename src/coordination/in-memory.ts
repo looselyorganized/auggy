@@ -31,6 +31,9 @@ interface NamespaceState {
   maxConcurrent: number;
   maxQueued: number;
   maxQueuedPerThread: number;
+  retention: DistributedCoordinatorConfig["retention"];
+  result: DistributedCoordinatorConfig["result"];
+  compatibility: DistributedCoordinatorConfig["compatibility"];
   requests: Map<string, StoredRequest>;
   threads: Map<string, StoredThread>;
   sources: Map<string, DistributedSourcePolicy>;
@@ -63,6 +66,28 @@ function assertConfig(config: DistributedCoordinatorConfig): void {
     throw new Error("maxQueuedPerThread cannot exceed maxQueued");
   }
   assertLimit("leaseMs", config.leaseMs, 1, MAX_LEASE_MS);
+  assertLimit(
+    "retention.terminalRequestRetentionMs",
+    config.retention.terminalRequestRetentionMs,
+    60_000,
+    31_536_000_000,
+  );
+  assertLimit("retention.maxTerminalRequests", config.retention.maxTerminalRequests, 1);
+  assertLimit(
+    "retention.eventRetentionMs",
+    config.retention.eventRetentionMs,
+    60_000,
+    31_536_000_000,
+  );
+  assertLimit("retention.maxEvents", config.retention.maxEvents, 1);
+  assertLimit("result.maxReplayBytes", config.result.maxReplayBytes, 1_024, 1_048_576);
+  assertLimit("compatibility.protocolVersion", config.compatibility.protocolVersion, 1);
+  if (
+    !/^[0-9a-f]{64}$/.test(config.compatibility.protocolFingerprint) ||
+    !/^[0-9a-f]{64}$/.test(config.compatibility.configurationFingerprint)
+  ) {
+    throw new Error("coordinator compatibility fingerprints are invalid");
+  }
 }
 
 function assertRequest(request: DistributedTurnRequest): void {
@@ -121,11 +146,16 @@ export function createInMemoryDistributedTurnCoordinator(
         maxConcurrent: config.maxConcurrent,
         maxQueued: config.maxQueued,
         maxQueuedPerThread: config.maxQueuedPerThread,
+        retention: { ...config.retention },
+        result: { ...config.result },
+        compatibility: { ...config.compatibility },
         requests: new Map(),
         threads: new Map(),
         sources: new Map(),
       };
       namespaces.set(config.namespace, value);
+    } else {
+      namespacePolicy(value);
     }
     return value;
   }
@@ -137,7 +167,17 @@ export function createInMemoryDistributedTurnCoordinator(
     if (
       current.maxConcurrent !== config.maxConcurrent ||
       current.maxQueued !== config.maxQueued ||
-      current.maxQueuedPerThread !== config.maxQueuedPerThread
+      current.maxQueuedPerThread !== config.maxQueuedPerThread ||
+      current.retention.terminalRequestRetentionMs !==
+        config.retention.terminalRequestRetentionMs ||
+      current.retention.maxTerminalRequests !== config.retention.maxTerminalRequests ||
+      current.retention.eventRetentionMs !== config.retention.eventRetentionMs ||
+      current.retention.maxEvents !== config.retention.maxEvents ||
+      current.result.maxReplayBytes !== config.result.maxReplayBytes ||
+      current.compatibility.protocolVersion !== config.compatibility.protocolVersion ||
+      current.compatibility.protocolFingerprint !== config.compatibility.protocolFingerprint ||
+      current.compatibility.configurationFingerprint !==
+        config.compatibility.configurationFingerprint
     ) {
       throw new Error("coordinator namespace policy mismatch");
     }

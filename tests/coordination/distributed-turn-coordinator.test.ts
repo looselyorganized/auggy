@@ -7,11 +7,31 @@ import { POSTGRES_COORDINATION_MIGRATIONS } from "../../src/coordination/migrati
 
 const hash = "S7l_qm3W92Yd4JbKzV1LQYdKebJ4Q-4C3m3VnuDhxQY";
 const source = { id: "web", maxConcurrent: 1, maxQueued: 2 };
+const coordinatorPolicy = {
+  retention: {
+    terminalRequestRetentionMs: 604_800_000,
+    maxTerminalRequests: 10_000,
+    eventRetentionMs: 2_592_000_000,
+    maxEvents: 50_000,
+  },
+  result: { maxReplayBytes: 65_536 },
+  compatibility: {
+    protocolVersion: 1,
+    protocolFingerprint: "a".repeat(64),
+    configurationFingerprint: "b".repeat(64),
+  },
+};
 
 function replica(
   instanceId: string,
   now: () => number,
-  extra: Partial<{ maxConcurrent: number; maxQueued: number; failClosed: () => boolean }> = {},
+  extra: Partial<{
+    maxConcurrent: number;
+    maxQueued: number;
+    failClosed: () => boolean;
+    protocolVersion: number;
+    configurationFingerprint: string;
+  }> = {},
 ) {
   return createInMemoryDistributedTurnCoordinator(
     {
@@ -21,6 +41,12 @@ function replica(
       maxQueued: extra.maxQueued ?? 2,
       maxQueuedPerThread: extra.maxQueued ?? 2,
       leaseMs: 100,
+      ...coordinatorPolicy,
+      compatibility: {
+        protocolVersion: extra.protocolVersion ?? 1,
+        protocolFingerprint: "a".repeat(64),
+        configurationFingerprint: extra.configurationFingerprint ?? "b".repeat(64),
+      },
     },
     { now, failClosed: extra.failClosed },
   );
@@ -54,6 +80,23 @@ describe("distributed turn coordinator", () => {
     expect(await coordinator.admit(request("request-1", "thread-1", "a".repeat(32)))).toEqual({
       status: "conflict",
     });
+  });
+
+  test("rejects mixed protocol or configuration before mutating namespace state", async () => {
+    const first = replica("instance-a", () => 1);
+    expect(await first.admit(request("request-1"))).toEqual({ status: "admitted" });
+
+    const changedProtocol = replica("instance-b", () => 1, { protocolVersion: 2 });
+    expect(await changedProtocol.admit(request("request-2"))).toEqual({ status: "unavailable" });
+
+    const changedConfiguration = replica("instance-c", () => 1, {
+      configurationFingerprint: "c".repeat(64),
+    });
+    expect(await changedConfiguration.admit(request("request-2"))).toEqual({
+      status: "unavailable",
+    });
+
+    expect(await first.admit(request("request-2"))).toEqual({ status: "admitted" });
   });
 
   test("enforces one active turn per thread across replicas and fences later attempts", async () => {
@@ -100,6 +143,7 @@ describe("distributed turn coordinator", () => {
         maxQueued: 4,
         maxQueuedPerThread: 2,
         leaseMs: 100,
+        ...coordinatorPolicy,
       },
       { now: () => 1 },
     );
@@ -180,6 +224,7 @@ describe("distributed turn coordinator", () => {
         maxQueued: 3,
         maxQueuedPerThread: 1,
         leaseMs: 100,
+        ...coordinatorPolicy,
       },
       { now: () => 1 },
     );
@@ -285,6 +330,7 @@ describe("distributed turn coordinator", () => {
         maxQueued: 1,
         maxQueuedPerThread: 1,
         leaseMs: 100,
+        ...coordinatorPolicy,
       },
       { now: () => 1 },
     );

@@ -1346,6 +1346,15 @@ events are bounded by age and count; queued, active, and outcome-unknown work
 is never eligible for terminal pruning. `maxReplayBytes` is measured over
 sanitized serialized UTF-8 bytes.
 
+Protocol and configuration fingerprints are computed by Auggy from a
+versioned, secret-free semantic projection; they are never accepted from YAML.
+The preview schema binds those fingerprints and the fleet policies immutably
+to a namespace. A mismatched process receives a fixed unavailable outcome
+before it can admit work or register drain state. The compatibility-contract
+migration is expand-only but makes the preview schema unreadable to older
+binaries; while replica startup remains disabled, rollback requires restoring
+the matching database snapshot or provisioning a fresh preview database.
+
 Provision the dedicated coordination database explicitly; the command reads
 only the environment variable named by `urlEnv`, never a URL in `agent.yaml`:
 
