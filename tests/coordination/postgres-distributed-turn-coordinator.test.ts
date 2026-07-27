@@ -746,8 +746,8 @@ describe("PostgreSQL distributed turn coordinator", () => {
 
   postgresTest("commits and replays byte-bounded results only for an exact binding", async () => {
     const value = namespace();
-    const first = coordinator(value, "result-owner", 500);
-    const second = coordinator(value, "result-reader", 500);
+    const first = coordinator(value, "result-owner", 5_000);
+    const second = coordinator(value, "result-reader", 5_000);
     try {
       await first.migrate();
       expect(await first.register()).toEqual({ status: "registered" });

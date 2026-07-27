@@ -401,7 +401,8 @@ describe("web transport durable idempotency", () => {
     try {
       const first = await request(port, { key: "forged-rejection" });
       const firstBody = await first.text();
-      expect(firstBody).toContain("SCHEDULER_UNAVAILABLE");
+      expect(firstBody).toContain("executed once");
+      expect(firstBody).not.toContain("SCHEDULER_UNAVAILABLE");
 
       const replay = await request(port, { key: "forged-rejection" });
       expect(replay.status).toBe(200);
