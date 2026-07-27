@@ -180,6 +180,121 @@ describe("auggy jobs", () => {
     expect(unsafeEvidence.err).toEqual(["Error: durable jobs command input is invalid"]);
   });
 
+  test("retries only definite failures and controls schedules without exposing private definitions", () => {
+    const store = createSqliteDurableJobStore({ dbPath: fixture.db });
+    const failedJob = store.submit({
+      idempotencyKey: "definite-failure",
+      binding: { private: SENTINEL },
+      payload: { version: 1, value: { prompt: SENTINEL } },
+    }).job;
+    const failedLease = store.claim({ workerId: "worker", leaseMs: 60_000 })!;
+    store.markExecutionStarted({ jobId: failedLease.job.id, token: failedLease.token });
+    const failed = store.failDefinite({
+      jobId: failedJob.id,
+      token: failedLease.token,
+      errorCode: "execution-failed",
+    });
+    const unknownJob = store.submit({
+      idempotencyKey: "ambiguous-failure",
+      binding: { private: SENTINEL },
+      payload: { version: 1, value: { prompt: SENTINEL } },
+    }).job;
+    const unknownLease = store.claim({ workerId: "worker", leaseMs: 60_000 })!;
+    store.markExecutionStarted({ jobId: unknownJob.id, token: unknownLease.token });
+    const unknown = store.markOutcomeUnknown({
+      jobId: unknownJob.id,
+      token: unknownLease.token,
+      reasonCode: "execution-outcome-unknown",
+    });
+    const schedule = store.syncSchedules([
+      {
+        id: "daily_review",
+        cron: "0 9 * * *",
+        binding: { private: SENTINEL },
+        payload: { version: 1, value: { prompt: SENTINEL } },
+      },
+    ])[0]!;
+    store.close();
+
+    const retried = invoke([
+      "retry",
+      failedJob.id,
+      "--version",
+      String(failed.version),
+      "--config",
+      fixture.config,
+      "--root",
+      fixture.root,
+    ]);
+    expect(retried.exits).toEqual([]);
+    expect(retried.out[0]).toContain('"retried":true');
+    const refusedUnknown = invoke([
+      "retry",
+      unknownJob.id,
+      "--version",
+      String(unknown.version),
+      "--config",
+      fixture.config,
+      "--root",
+      fixture.root,
+    ]);
+    expect(refusedUnknown.out[0]).toContain('"retried":false');
+
+    const listed = invoke([
+      "schedules",
+      "list",
+      "--config",
+      fixture.config,
+      "--root",
+      fixture.root,
+    ]);
+    expect(listed.out[0]).toContain("daily_review");
+    expect(listed.out.join("\n")).not.toContain(SENTINEL);
+    expect(listed.out.join("\n")).not.toContain("payload");
+    const paused = invoke([
+      "schedules",
+      "pause",
+      schedule.id,
+      "--version",
+      String(schedule.version),
+      "--config",
+      fixture.config,
+      "--root",
+      fixture.root,
+    ]);
+    expect(paused.out[0]).toContain('"paused":true');
+    const pausedOutput = JSON.parse(paused.out[0]!) as { schedule: { version: number } };
+    const staleResume = invoke([
+      "schedules",
+      "resume",
+      schedule.id,
+      "--version",
+      String(schedule.version),
+      "--config",
+      fixture.config,
+      "--root",
+      fixture.root,
+    ]);
+    expect(staleResume.out[0]).toContain('"resumed":false');
+    const resumed = invoke([
+      "schedules",
+      "resume",
+      schedule.id,
+      "--version",
+      String(pausedOutput.schedule.version),
+      "--config",
+      fixture.config,
+      "--root",
+      fixture.root,
+    ]);
+    expect(resumed.out[0]).toContain('"resumed":true');
+    expect(
+      [...retried.out, ...refusedUnknown.out, ...listed.out, ...paused.out, ...resumed.out].join(
+        "\n",
+      ),
+    ).not.toContain(SENTINEL);
+  });
+
   test("requires strict bounded input and explicit confirmation for destructive pruning", () => {
     submitFixtureJob();
     expect(() =>

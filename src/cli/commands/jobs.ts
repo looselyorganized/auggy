@@ -10,7 +10,12 @@ import { lstatSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
 import { Command } from "commander";
 import { createSqliteDurableJobStore } from "../../jobs/sqlite-store";
-import type { DurableJobState, DurableJobStore, DurableJobSummary } from "../../jobs/types";
+import type {
+  DurableJobScheduleSummary,
+  DurableJobState,
+  DurableJobStore,
+  DurableJobSummary,
+} from "../../jobs/types";
 import { parseConfig } from "../config-parser";
 import { resolveOwnedStatePath } from "../owned-state-path";
 import { resolveConfigPath } from "../resolve-config";
@@ -18,6 +23,7 @@ import { resolveRuntimeStatePath } from "../runtime-state-inventory";
 import type { DurableJobsConfig } from "../types";
 
 const JOB_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+const SCHEDULE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const STRICT_ISO_RE = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/;
 const EVIDENCE_RE = /^[A-Za-z0-9][A-Za-z0-9._:/@-]{0,255}$/;
 const JOB_STATES = new Set<DurableJobState>([
@@ -85,6 +91,11 @@ function operationError(): DurableJobsCommandError {
 
 function assertJobId(value: string): string {
   if (!JOB_ID_RE.test(value)) throw inputError();
+  return value;
+}
+
+function assertScheduleId(value: string): string {
+  if (!SCHEDULE_ID_RE.test(value)) throw inputError();
   return value;
 }
 
@@ -249,6 +260,24 @@ export function durableJobSummaryOutput(summary: DurableJobSummary): Record<stri
   };
 }
 
+/** Explicit redacted projection: schedule prompts and bindings are never listed. */
+export function durableJobScheduleSummaryOutput(
+  summary: DurableJobScheduleSummary,
+): Record<string, unknown> {
+  return {
+    id: summary.id,
+    cron: summary.cron,
+    revision: summary.revision,
+    version: summary.version,
+    configEnabled: summary.configEnabled,
+    operatorPaused: summary.operatorPaused,
+    enabled: summary.enabled,
+    nextFireAt: summary.nextFireAt,
+    createdAt: summary.createdAt,
+    updatedAt: summary.updatedAt,
+  };
+}
+
 export function runDurableJobsList(
   name: string | undefined,
   options: DurableJobsListOptions = {},
@@ -274,6 +303,47 @@ export function runDurableJobsCancel(
   const expectedVersion = parsePositiveVersion(options.version);
   return withDurableJobStore(name, options, (store) =>
     store.cancel({ jobId: assertJobId(jobId), expectedVersion, reasonCode: "operator-requested" }),
+  );
+}
+
+export function runDurableJobsRetry(
+  jobId: string,
+  name: string | undefined,
+  options: DurableJobsMutationOptions,
+) {
+  const expectedVersion = parsePositiveVersion(options.version);
+  return withDurableJobStore(name, options, (store) =>
+    store.retryFailed({ jobId: assertJobId(jobId), expectedVersion }),
+  );
+}
+
+export function runDurableJobSchedulesList(
+  name: string | undefined,
+  options: DurableJobsListOptions = {},
+): DurableJobScheduleSummary[] {
+  const limit = parseBoundedLimit(options.limit, 100);
+  return withDurableJobStore(name, options, (store) => store.listSchedules({ limit }));
+}
+
+export function runDurableJobSchedulePause(
+  scheduleId: string,
+  name: string | undefined,
+  options: DurableJobsMutationOptions,
+) {
+  const expectedVersion = parsePositiveVersion(options.version);
+  return withDurableJobStore(name, options, (store) =>
+    store.pauseSchedule({ scheduleId: assertScheduleId(scheduleId), expectedVersion }),
+  );
+}
+
+export function runDurableJobScheduleResume(
+  scheduleId: string,
+  name: string | undefined,
+  options: DurableJobsMutationOptions,
+) {
+  const expectedVersion = parsePositiveVersion(options.version);
+  return withDurableJobStore(name, options, (store) =>
+    store.resumeSchedule({ scheduleId: assertScheduleId(scheduleId), expectedVersion }),
   );
 }
 
@@ -399,6 +469,26 @@ export function jobsCommand(deps: DurableJobsCommandDeps = {}): Command {
 
   commandOptions(
     command
+      .command("retry <job-id> [name]")
+      .description("Compare-and-set retry one definite failed job"),
+  )
+    .requiredOption("--version <version>", "current failed job version")
+    .action((jobId: string, name: string | undefined, options: DurableJobsMutationOptions) =>
+      runAction(
+        () => {
+          const result = runDurableJobsRetry(jobId, name, options);
+          printJson(log, {
+            retried: result.retried,
+            job: result.job ? durableJobSummaryOutput(result.job) : null,
+          });
+        },
+        error,
+        exit,
+      ),
+    );
+
+  commandOptions(
+    command
       .command("reconcile <job-id> [name]")
       .description("Record an evidence-backed outcome-unknown job reconciliation"),
   )
@@ -412,6 +502,65 @@ export function jobsCommand(deps: DurableJobsCommandDeps = {}): Command {
           printJson(log, {
             reconciled: result.reconciled,
             job: result.job ? durableJobSummaryOutput(result.job) : null,
+          });
+        },
+        error,
+        exit,
+      ),
+    );
+
+  const schedules = command
+    .command("schedules")
+    .description("Inspect and control configured durable UTC schedules");
+
+  commandOptions(schedules.command("list [name]").description("List redacted schedule state"))
+    .option("--limit <count>", "maximum schedules (1-100)")
+    .action((name: string | undefined, options: DurableJobsListOptions) =>
+      runAction(
+        () =>
+          printJson(log, {
+            schedules: runDurableJobSchedulesList(name, options).map(
+              durableJobScheduleSummaryOutput,
+            ),
+          }),
+        error,
+        exit,
+      ),
+    );
+
+  commandOptions(
+    schedules
+      .command("pause <schedule-id> [name]")
+      .description("Compare-and-set pause one configured schedule"),
+  )
+    .requiredOption("--version <version>", "current schedule version")
+    .action((scheduleId: string, name: string | undefined, options: DurableJobsMutationOptions) =>
+      runAction(
+        () => {
+          const result = runDurableJobSchedulePause(scheduleId, name, options);
+          printJson(log, {
+            paused: result.paused,
+            schedule: result.schedule ? durableJobScheduleSummaryOutput(result.schedule) : null,
+          });
+        },
+        error,
+        exit,
+      ),
+    );
+
+  commandOptions(
+    schedules
+      .command("resume <schedule-id> [name]")
+      .description("Compare-and-set resume one configured schedule"),
+  )
+    .requiredOption("--version <version>", "current schedule version")
+    .action((scheduleId: string, name: string | undefined, options: DurableJobsMutationOptions) =>
+      runAction(
+        () => {
+          const result = runDurableJobScheduleResume(scheduleId, name, options);
+          printJson(log, {
+            resumed: result.resumed,
+            schedule: result.schedule ? durableJobScheduleSummaryOutput(result.schedule) : null,
           });
         },
         error,
