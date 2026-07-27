@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { closeSync, existsSync, mkdtempSync, openSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -173,7 +173,7 @@ describe("durable schedule persistence", () => {
     );
     expect(existsSync(missing)).toBe(false);
 
-    writeFileSync(missing, "", { mode: 0o600 });
+    closeSync(openSync(missing, "wx", 0o600));
     expect(() => createSqliteDurableJobStore({ dbPath: missing, allowMigrations: false })).toThrow(
       "database schema initialization is disabled",
     );
