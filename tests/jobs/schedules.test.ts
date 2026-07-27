@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { closeSync, existsSync, mkdtempSync, openSync, rmSync } from "node:fs";
+import { closeSync, mkdtempSync, openSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -171,8 +171,8 @@ describe("durable schedule persistence", () => {
     expect(() => createSqliteDurableJobStore({ dbPath: missing, allowMigrations: false })).toThrow(
       "database does not exist",
     );
-    expect(existsSync(missing)).toBe(false);
-
+    // Exclusive creation is also the atomic proof that the refused open did
+    // not create the database leaf.
     closeSync(openSync(missing, "wx", 0o600));
     expect(() => createSqliteDurableJobStore({ dbPath: missing, allowMigrations: false })).toThrow(
       "database schema initialization is disabled",
