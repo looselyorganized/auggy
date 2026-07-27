@@ -1267,8 +1267,10 @@ describe("PostgreSQL distributed turn coordinator", () => {
     "uses forced database lease expiry to quarantine started work and reject stale fences",
     async () => {
       const value = namespace();
-      const first = coordinator(value, "replica-a", 500);
-      const second = coordinator(value, "replica-b", 500);
+      // Expiry is forced in SQL below; keep ordinary instance/lease liveness
+      // independent of slow or contended CI hosts.
+      const first = coordinator(value, "replica-a", 30_000);
+      const second = coordinator(value, "replica-b", 30_000);
       try {
         await first.migrate();
         expect(await first.register()).toEqual({ status: "registered" });
