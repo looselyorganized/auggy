@@ -47,6 +47,8 @@ export interface DurableJobsCommandOptions {
   cwd?: string;
   /** Test seam. Production reads the Railway mount from process.env. */
   env?: Record<string, string | undefined>;
+  /** Test seam for proving the store-level path replacement backstop. */
+  afterIdentityPreflight?: (dbPath: string) => void;
 }
 
 export interface DurableJobsListOptions extends DurableJobsCommandOptions {
@@ -235,6 +237,7 @@ export function resolveDurableJobsDatabase(
     } finally {
       probe.close();
     }
+    options.afterIdentityPreflight?.(dbPath);
     return { dbPath, jobs };
   } catch (error) {
     if (error instanceof DurableJobsCommandError) throw error;

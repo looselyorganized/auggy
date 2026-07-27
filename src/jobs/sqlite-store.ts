@@ -877,6 +877,7 @@ export function createSqliteDurableJobStore(
   }
   const database = openHardenedSqlite({
     path: options.dbPath,
+    create: allowMigrations,
     label: LABEL,
     foreignKeys: true,
     synchronous: "FULL",
@@ -886,6 +887,9 @@ export function createSqliteDurableJobStore(
         applicationId: DURABLE_JOBS_APPLICATION_ID,
         schemaVersion: DURABLE_JOBS_SCHEMA_VERSION,
         initialize(database) {
+          if (!allowMigrations) {
+            throw new Error(`${LABEL}: database schema initialization is disabled`);
+          }
           for (const sql of SCHEMA) database.run(sql);
         },
         migrateOwned(database, fromVersion, objects) {

@@ -384,4 +384,21 @@ describe("auggy jobs", () => {
     ).toBeNull();
     unchanged.close();
   });
+
+  test("does not initialize a database leaf replaced after identity preflight", () => {
+    submitFixtureJob();
+    expect(() =>
+      runDurableJobsList(undefined, {
+        config: fixture.config,
+        root: fixture.root,
+        afterIdentityPreflight(dbPath) {
+          rmSync(`${dbPath}-wal`, { force: true });
+          rmSync(`${dbPath}-shm`, { force: true });
+          rmSync(dbPath);
+          writeFileSync(dbPath, "", { mode: 0o600 });
+        },
+      }),
+    ).toThrow("durable jobs operation could not be completed");
+    expect(lstatSync(fixture.db).size).toBe(0);
+  });
 });

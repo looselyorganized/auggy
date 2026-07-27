@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { Database } from "bun:sqlite";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -163,6 +163,21 @@ describe("durable schedule persistence", () => {
       unchanged.query("SELECT name FROM sqlite_schema WHERE name = 'durable_job_schedules'").get(),
     ).toBeNull();
     unchanged.close();
+  });
+
+  test("non-migrating clients cannot create or initialize a database", () => {
+    const missing = dbPath();
+    rmSync(missing, { force: true });
+    expect(() => createSqliteDurableJobStore({ dbPath: missing, allowMigrations: false })).toThrow(
+      "database does not exist",
+    );
+    expect(existsSync(missing)).toBe(false);
+
+    writeFileSync(missing, "", { mode: 0o600 });
+    expect(() => createSqliteDurableJobStore({ dbPath: missing, allowMigrations: false })).toThrow(
+      "database schema initialization is disabled",
+    );
+    expect(Bun.file(missing).size).toBe(0);
   });
   test("materializes one deterministic, redacted occurrence and coalesces downtime", () => {
     const path = dbPath();
