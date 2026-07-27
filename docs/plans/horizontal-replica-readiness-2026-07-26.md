@@ -74,10 +74,11 @@ process-local state.
 ## Current-state revalidation
 
 The PostgreSQL coordinator in `src/coordination/` is a tested but disabled
-foundation. It already provides bounded admission, immutable source policies,
-database-time leases, monotonic per-thread fences, pre-execution requeue,
-post-execution outcome-unknown quarantine, compare-and-set recovery, instance
-drain, and namespace isolation.
+foundation. Checkpoints 1 and 2 provide bounded admission, immutable source
+policies, one-use process sessions, process-owned queues, database-time leases,
+namespace-wide monotonic fences, pre-execution adoption, bounded terminal
+replay and events, post-execution outcome-unknown quarantine, compare-and-set
+recovery, cooperative cancellation, instance drain, and namespace isolation.
 
 It is intentionally not connected to `defineAgent`. Current startup enumerates
 the missing shared boundaries and rejects `settings.coordination` before boot.
@@ -99,8 +100,8 @@ The remaining risks are confirmed in current source:
   single fenced durable transition;
 - a queued coordinator row does not durably own the request payload, so an
   abandoned HTTP queue entry needs explicit expiry/adoption semantics;
-- the coordinator does not yet retain bounded replayable terminal results;
-  and
+- the coordinator contracts are not yet wired around the real root-turn
+  pipeline or its history/commit boundary; and
 - the generated Railway deployment deliberately enforces one live volume
   owner and one replica.
 
@@ -323,6 +324,97 @@ startup authority.
 - Add bounded request status, waiter, terminal-result, event, and retention APIs.
 - Make drain and coordinator loss propagate to owned cancellation signals.
 - Preserve database-time leases and monotonic fences.
+
+**Implementation status:** complete on the disabled coordinator boundary;
+runtime integration remains blocked on checkpoints 3 and 4.
+
+The implemented lifecycle contract has these consequences:
+
+- `instanceId` names a fresh process start and a private session token fences
+  every mutation. Reusing an instance ID after a crash is an operator/config
+  error; a different live instance can prune its expired record.
+- `buildFingerprint` is secret-free diagnostic evidence. Exact build equality
+  is deliberately not compatibility authority because compatible rolling
+  builds may differ. The code-owned protocol fingerprint and source-owned
+  configuration fingerprint are the fail-closed semantic authority.
+- Fleet capacity, source limits, retention, replay size, protocol/configuration
+  fingerprints, and lease duration are independently persisted and compared;
+  a caller cannot pair a valid fingerprint with drifted operational policy.
+- A queued HTTP request remains attached to its accepting process while that
+  queue lease is live. An exact retry may adopt it after expiry. Cleanup or
+  drain may instead terminalize an abandoned queue row as `canceled`; later
+  retries then observe that retained terminal state rather than silently
+  executing it.
+- Started work that loses its owner becomes `outcome_unknown`, retains its
+  incident event, and blocks that thread until an operator reconciles the exact
+  fence. Recovery transitions the incident to ordinary `failed`, emits a
+  fixed-code audit event, and only then permits bounded cleanup.
+- Unresolved incidents are never pruned. New admission fails with
+  `incident-capacity` once the configured incident bound is reached; already
+  active turns can add at most the configured fleet concurrency beyond that
+  threshold before admission closes.
+- Terminal request/result retention is also the idempotency replay horizon.
+  Inside the horizon, an exact duplicate replays and a changed binding
+  conflicts. After pruning, the request ID is missing and must not be reused;
+  trusted integrations must mint globally unique request IDs and choose a
+  retention window longer than their maximum retry horizon.
+- Event cursors are canonical non-negative PostgreSQL bigint strings. Pages are
+  bounded, event fields and reasons are fixed secret-free codes, and event
+  pruning cannot remove the evidence for an unresolved incident.
+- Fences are allocated monotonically for the namespace, not reset with an idle
+  thread row. This permits bounded thread cleanup without making an old fence
+  valid again when the same thread ID later returns.
+- Local abort signals are cooperative cancellation only. Database sessions,
+  owner tokens, and fences remain authoritative when work ignores an abort.
+
+The v3 lifecycle and v4 replay/fence migrations reject mutation shapes from
+older coordinator clients. Until checkpoint 10 supplies an explicit
+mixed-version protocol/session gate, all older preview clients must be drained
+and quiesced before applying these migrations. A rollback likewise drains the
+fleet and preserves the database; it does not run an older client against the
+new schema. The v4 migration temporarily permits a null lease policy only for
+an existing quiesced preview namespace; the first registered v4 process fills
+it under the namespace row lock, and every ordinary operation fails closed
+while it is absent.
+
+Checkpoint 3 must still prove that every real execution crosses
+`markExecutionStarted` immediately before inference or an effect and that the
+returned ownership signal reaches every cancellable runtime boundary. The
+runtime integration must also run an authority heartbeat on an independent
+deadline: cancellation cannot depend on a potentially hung PostgreSQL query
+eventually returning. A never-resolving database-operation test is required.
+
+Checkpoint 10 must make bounded `prune` maintenance mandatory, observable, and
+restart-safe, with a documented cadence and maximum cleanup lag. The low-level
+API intentionally does not start a hidden timer, and no production caller
+exists while distributed startup is disabled. The startup rejection remains
+the enforcement preventing this low-level contract from being mistaken for
+supported horizontal operation.
+
+**Checkpoint 2 record:** implementation commit `d409861`.
+
+- Focused in-memory/compatibility verification: 26 tests, 188 assertions.
+- Clean PostgreSQL 16 verification: 23 tests, 156 assertions, including real
+  multiprocess registration/claiming and parent-owned migration setup.
+- Adjacent topology, configured-augment, secure-URL, coordination CLI, startup,
+  and deployment contracts passed. The enforced test inventory covered 282
+  runtime, 29 console, and 3 isolated external test files across 14 shards.
+- `bun run test:runtime` passed through the canonical sequential shard runner;
+  `bun run typecheck`, `bun run lint`, and `bun run smoke:release` passed. Lint
+  reported only the pre-existing informational Biome schema/CLI patch mismatch.
+- The completed diff received a fresh hostile review plus delta reviews. No
+  High or Medium issue remains in checkpoint 2 scope. The reviewers'
+  structural execution-start/cancellation-watchdog and mandatory-maintenance
+  findings are recorded above as checkpoints 3 and 10 enablement blockers.
+- A wall-clock-sensitive 80 ms PostgreSQL test exposed that lease duration was
+  not independently persisted. The final fix stores and compares it as fleet
+  policy, uses deterministic forced expiry, and passed a fresh-schema rerun.
+- Dependencies did not change, so a repository dependency audit was not
+  required. Release smoke audited the isolated packed consumer successfully.
+- Rollback requires draining all preview clients and preserving the database.
+  Migration `20260726_04` is new on this unmerged branch and must now remain
+  immutable; an environment that applied an earlier experimental checksum will
+  correctly refuse startup and must be reprovisioned or explicitly migrated.
 
 ### 3. Runtime pipeline wiring
 
