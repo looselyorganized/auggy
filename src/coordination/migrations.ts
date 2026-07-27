@@ -345,6 +345,115 @@ CREATE INDEX auggy_coordination_outbox_pending_idx
   ON auggy_coordination_outbox (namespace, state, created_at, request_id, intent_ordinal);
 `;
 
+const COORDINATION_ADMISSION_MIGRATION_SQL = `
+ALTER TABLE auggy_coordination_namespaces
+  ADD COLUMN max_rate_limit_events INTEGER,
+  ADD COLUMN rate_policy_fingerprint TEXT,
+  ADD CONSTRAINT auggy_coord_ns_admission_policy_check CHECK (
+    (max_rate_limit_events IS NULL AND rate_policy_fingerprint IS NULL)
+    OR
+    (max_rate_limit_events >= 0
+      AND max_rate_limit_events <= 1000000
+      AND rate_policy_fingerprint ~ '^[0-9a-f]{64}$')
+  );
+
+ALTER TABLE auggy_coordination_requests
+  ADD COLUMN admission_hash TEXT NOT NULL
+    DEFAULT 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'
+    CONSTRAINT auggy_coord_request_admission_hash_check
+      CHECK (admission_hash ~ '^[0-9a-f]{64}$'),
+  ADD COLUMN capacity_class TEXT,
+  ADD COLUMN capacity_partition_hash TEXT,
+  ADD CONSTRAINT auggy_coord_request_capacity_check CHECK (
+    (capacity_class IS NULL AND capacity_partition_hash IS NULL)
+    OR
+    (capacity_class ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'
+      AND capacity_partition_hash ~ '^[0-9a-f]{64}$')
+  );
+
+CREATE INDEX auggy_coordination_request_capacity_class_idx
+  ON auggy_coordination_requests (namespace, capacity_class, request_id);
+CREATE INDEX auggy_coordination_request_capacity_partition_idx
+  ON auggy_coordination_requests
+    (namespace, capacity_class, capacity_partition_hash, request_id);
+
+CREATE TABLE auggy_coordination_request_class_counters (
+  namespace TEXT NOT NULL,
+  capacity_class TEXT NOT NULL
+    CONSTRAINT auggy_coord_request_class_counter_id_check
+      CHECK (capacity_class ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  max_retained_requests INTEGER NOT NULL
+    CONSTRAINT auggy_coord_request_class_counter_max_check
+      CHECK (max_retained_requests >= 1 AND max_retained_requests <= 1000000),
+  max_retained_per_partition INTEGER NOT NULL
+    CONSTRAINT auggy_coord_request_class_counter_partition_max_check
+      CHECK (max_retained_per_partition >= 1 AND max_retained_per_partition <= max_retained_requests),
+  retained_count INTEGER NOT NULL DEFAULT 0
+    CONSTRAINT auggy_coord_request_class_counter_count_check
+      CHECK (retained_count >= 0 AND retained_count <= max_retained_requests),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (namespace, capacity_class)
+);
+
+CREATE TABLE auggy_coordination_request_partition_counters (
+  namespace TEXT NOT NULL,
+  capacity_class TEXT NOT NULL
+    CONSTRAINT auggy_coord_request_partition_counter_id_check
+      CHECK (capacity_class ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  partition_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_request_partition_counter_hash_check
+      CHECK (partition_hash ~ '^[0-9a-f]{64}$'),
+  retained_count INTEGER NOT NULL
+    CONSTRAINT auggy_coord_request_partition_counter_count_check
+      CHECK (retained_count >= 0 AND retained_count <= 1000000),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (namespace, capacity_class, partition_hash)
+);
+
+CREATE TABLE auggy_coordination_rate_counters (
+  namespace TEXT NOT NULL,
+  policy_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_rate_counter_policy_check
+      CHECK (policy_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  max_events INTEGER NOT NULL
+    CONSTRAINT auggy_coord_rate_counter_max_check
+      CHECK (max_events >= 1 AND max_events <= 1000000),
+  event_count INTEGER NOT NULL DEFAULT 0
+    CONSTRAINT auggy_coord_rate_counter_count_check
+      CHECK (event_count >= 0 AND event_count <= max_events),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (namespace, policy_id)
+);
+
+CREATE TABLE auggy_coordination_rate_events (
+  namespace TEXT NOT NULL,
+  policy_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_rate_policy_check
+      CHECK (policy_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  subject_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_rate_subject_check CHECK (subject_hash ~ '^[0-9a-f]{64}$'),
+  request_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_rate_request_check
+      CHECK (request_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  occurred_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  CONSTRAINT auggy_coord_rate_expiry_check CHECK (expires_at > occurred_at),
+  PRIMARY KEY (namespace, policy_id, subject_hash, request_id)
+);
+
+CREATE INDEX auggy_coordination_rate_event_bucket_idx
+  ON auggy_coordination_rate_events
+    (namespace, policy_id, subject_hash, occurred_at, request_id);
+CREATE INDEX auggy_coordination_rate_event_expiry_idx
+  ON auggy_coordination_rate_events (namespace, expires_at, request_id);
+CREATE INDEX auggy_coordination_rate_event_policy_expiry_idx
+  ON auggy_coordination_rate_events
+    (namespace, policy_id, expires_at, subject_hash, request_id);
+CREATE INDEX auggy_coordination_rate_event_request_idx
+  ON auggy_coordination_rate_events
+    (namespace, request_id, policy_id, subject_hash, expires_at);
+`;
+
 /** Recomputed from immutable migration SQL; migration rejects any mismatch. */
 export const postgresCoordinationMigrationChecksum = new Bun.CryptoHasher("sha256")
   .update(INITIAL_COORDINATION_MIGRATION_SQL)
@@ -364,6 +473,10 @@ export const postgresCoordinationResultMigrationChecksum = new Bun.CryptoHasher(
 
 export const postgresCoordinationTurnStateMigrationChecksum = new Bun.CryptoHasher("sha256")
   .update(COORDINATION_TURN_STATE_MIGRATION_SQL)
+  .digest("hex");
+
+export const postgresCoordinationAdmissionMigrationChecksum = new Bun.CryptoHasher("sha256")
+  .update(COORDINATION_ADMISSION_MIGRATION_SQL)
   .digest("hex");
 
 export const POSTGRES_COORDINATION_MIGRATIONS = [
@@ -391,6 +504,11 @@ export const POSTGRES_COORDINATION_MIGRATIONS = [
     id: "20260726_05_coordination_atomic_turn_state",
     checksum: postgresCoordinationTurnStateMigrationChecksum,
     sql: COORDINATION_TURN_STATE_MIGRATION_SQL,
+  },
+  {
+    id: "20260726_06_coordination_atomic_admission",
+    checksum: postgresCoordinationAdmissionMigrationChecksum,
+    sql: COORDINATION_ADMISSION_MIGRATION_SQL,
   },
 ] as const;
 
@@ -578,12 +696,14 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
   ["auggy_coordination_namespaces", "max_pending_outbox_intents", "integer", false, null],
   ["auggy_coordination_namespaces", "max_queued", "integer", true, null],
   ["auggy_coordination_namespaces", "max_queued_per_thread", "integer", true, null],
+  ["auggy_coordination_namespaces", "max_rate_limit_events", "integer", false, null],
   ["auggy_coordination_namespaces", "max_replay_bytes", "integer", true, null],
   ["auggy_coordination_namespaces", "max_terminal_requests", "integer", true, null],
   ["auggy_coordination_namespaces", "namespace", "text", true, null],
   ["auggy_coordination_namespaces", "next_fence", "bigint", true, "0"],
   ["auggy_coordination_namespaces", "protocol_fingerprint", "text", true, null],
   ["auggy_coordination_namespaces", "protocol_version", "integer", true, null],
+  ["auggy_coordination_namespaces", "rate_policy_fingerprint", "text", false, null],
   ["auggy_coordination_namespaces", "terminal_request_retention_ms", "bigint", true, null],
   [
     "auggy_coordination_namespaces",
@@ -615,7 +735,68 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
     true,
     "clock_timestamp()",
   ],
+  ["auggy_coordination_rate_counters", "event_count", "integer", true, "0"],
+  ["auggy_coordination_rate_counters", "max_events", "integer", true, null],
+  ["auggy_coordination_rate_counters", "namespace", "text", true, null],
+  ["auggy_coordination_rate_counters", "policy_id", "text", true, null],
+  [
+    "auggy_coordination_rate_counters",
+    "updated_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_rate_events", "expires_at", "timestamp with time zone", true, null],
+  ["auggy_coordination_rate_events", "namespace", "text", true, null],
+  [
+    "auggy_coordination_rate_events",
+    "occurred_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_rate_events", "policy_id", "text", true, null],
+  ["auggy_coordination_rate_events", "request_id", "text", true, null],
+  ["auggy_coordination_rate_events", "subject_hash", "text", true, null],
+  ["auggy_coordination_request_class_counters", "capacity_class", "text", true, null],
+  [
+    "auggy_coordination_request_class_counters",
+    "max_retained_per_partition",
+    "integer",
+    true,
+    null,
+  ],
+  ["auggy_coordination_request_class_counters", "max_retained_requests", "integer", true, null],
+  ["auggy_coordination_request_class_counters", "namespace", "text", true, null],
+  ["auggy_coordination_request_class_counters", "retained_count", "integer", true, "0"],
+  [
+    "auggy_coordination_request_class_counters",
+    "updated_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_request_partition_counters", "capacity_class", "text", true, null],
+  ["auggy_coordination_request_partition_counters", "namespace", "text", true, null],
+  ["auggy_coordination_request_partition_counters", "partition_hash", "text", true, null],
+  ["auggy_coordination_request_partition_counters", "retained_count", "integer", true, null],
+  [
+    "auggy_coordination_request_partition_counters",
+    "updated_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  [
+    "auggy_coordination_requests",
+    "admission_hash",
+    "text",
+    true,
+    "'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855'::text",
+  ],
   ["auggy_coordination_requests", "binding_hash", "text", true, null],
+  ["auggy_coordination_requests", "capacity_class", "text", false, null],
+  ["auggy_coordination_requests", "capacity_partition_hash", "text", false, null],
   ["auggy_coordination_requests", "execution_started_at", "timestamp with time zone", false, null],
   ["auggy_coordination_requests", "fence", "bigint", false, null],
   ["auggy_coordination_requests", "history_binding_hash", "text", false, null],
@@ -783,6 +964,96 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
     "namespace,request_id,intent_ordinal",
     "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.int4_ops",
     "pg_catalog.default,pg_catalog.default,-",
+  ],
+  [
+    "auggy_coordination_rate_counters",
+    "auggy_coordination_rate_counters_pkey",
+    true,
+    true,
+    "namespace,policy_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_rate_events",
+    "auggy_coordination_rate_event_bucket_idx",
+    false,
+    false,
+    "namespace,policy_id,subject_hash,occurred_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_rate_events",
+    "auggy_coordination_rate_event_expiry_idx",
+    false,
+    false,
+    "namespace,expires_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_rate_events",
+    "auggy_coordination_rate_event_policy_expiry_idx",
+    false,
+    false,
+    "namespace,policy_id,expires_at,subject_hash,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_rate_events",
+    "auggy_coordination_rate_event_request_idx",
+    false,
+    false,
+    "namespace,request_id,policy_id,subject_hash,expires_at",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,pg_catalog.default,-",
+  ],
+  [
+    "auggy_coordination_rate_events",
+    "auggy_coordination_rate_events_pkey",
+    true,
+    true,
+    "namespace,policy_id,subject_hash,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_request_class_counters",
+    "auggy_coordination_request_class_counters_pkey",
+    true,
+    true,
+    "namespace,capacity_class",
+    "pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_request_partition_counters",
+    "auggy_coordination_request_partition_counters_pkey",
+    true,
+    true,
+    "namespace,capacity_class,partition_hash",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_requests",
+    "auggy_coordination_request_capacity_class_idx",
+    false,
+    false,
+    "namespace,capacity_class,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_requests",
+    "auggy_coordination_request_capacity_partition_idx",
+    false,
+    false,
+    "namespace,capacity_class,capacity_partition_hash,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,pg_catalog.default",
   ],
   [
     "auggy_coordination_requests",
@@ -996,6 +1267,14 @@ const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition
     { table: "auggy_coordination_history", definition: "checksnapshot_version=1" },
   ],
   [
+    "auggy_coord_ns_admission_policy_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition:
+        "checkmax_rate_limit_eventsisnullandrate_policy_fingerprintisnullormax_rate_limit_events>=0andmax_rate_limit_events<=1000000andrate_policy_fingerprint~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
     "auggy_coord_ns_config_fingerprint_check",
     {
       table: "auggy_coordination_namespaces",
@@ -1132,6 +1411,120 @@ const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition
     { table: "auggy_coordination_namespaces", definition: "checkmax_queued_per_thread>=0" },
   ],
   [
+    "auggy_coord_rate_counter_count_check",
+    {
+      table: "auggy_coordination_rate_counters",
+      definition: "checkevent_count>=0andevent_count<=max_events",
+    },
+  ],
+  [
+    "auggy_coord_rate_counter_max_check",
+    {
+      table: "auggy_coordination_rate_counters",
+      definition: "checkmax_events>=1andmax_events<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_rate_counter_policy_check",
+    {
+      table: "auggy_coordination_rate_counters",
+      definition: "checkpolicy_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_rate_expiry_check",
+    {
+      table: "auggy_coordination_rate_events",
+      definition: "checkexpires_at>occurred_at",
+    },
+  ],
+  [
+    "auggy_coord_rate_policy_check",
+    {
+      table: "auggy_coordination_rate_events",
+      definition: "checkpolicy_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_rate_request_check",
+    {
+      table: "auggy_coordination_rate_events",
+      definition: "checkrequest_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_rate_subject_check",
+    {
+      table: "auggy_coordination_rate_events",
+      definition: "checksubject_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_request_class_counter_count_check",
+    {
+      table: "auggy_coordination_request_class_counters",
+      definition: "checkretained_count>=0andretained_count<=max_retained_requests",
+    },
+  ],
+  [
+    "auggy_coord_request_class_counter_id_check",
+    {
+      table: "auggy_coordination_request_class_counters",
+      definition: "checkcapacity_class~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_request_class_counter_max_check",
+    {
+      table: "auggy_coordination_request_class_counters",
+      definition: "checkmax_retained_requests>=1andmax_retained_requests<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_request_class_counter_partition_max_check",
+    {
+      table: "auggy_coordination_request_class_counters",
+      definition:
+        "checkmax_retained_per_partition>=1andmax_retained_per_partition<=max_retained_requests",
+    },
+  ],
+  [
+    "auggy_coord_request_partition_counter_count_check",
+    {
+      table: "auggy_coordination_request_partition_counters",
+      definition: "checkretained_count>=0andretained_count<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_request_partition_counter_hash_check",
+    {
+      table: "auggy_coordination_request_partition_counters",
+      definition: "checkpartition_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_request_partition_counter_id_check",
+    {
+      table: "auggy_coordination_request_partition_counters",
+      definition: "checkcapacity_class~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_request_admission_hash_check",
+    {
+      table: "auggy_coordination_requests",
+      definition: "checkadmission_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_request_capacity_check",
+    {
+      table: "auggy_coordination_requests",
+      definition:
+        "checkcapacity_classisnullandcapacity_partition_hashisnullorcapacity_class~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'andcapacity_partition_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
     "auggy_coord_request_lifecycle_check",
     {
       table: "auggy_coordination_requests",
@@ -1232,6 +1625,13 @@ const EXPECTED_COORDINATION_CONSTRAINTS: readonly CoordinationCatalogConstraint[
   ["auggy_coordination_migrations", "auggy_coordination_migrations_pkey"],
   ["auggy_coordination_namespaces", "auggy_coordination_namespaces_pkey"],
   ["auggy_coordination_outbox", "auggy_coordination_outbox_pkey"],
+  ["auggy_coordination_rate_counters", "auggy_coordination_rate_counters_pkey"],
+  ["auggy_coordination_rate_events", "auggy_coordination_rate_events_pkey"],
+  ["auggy_coordination_request_class_counters", "auggy_coordination_request_class_counters_pkey"],
+  [
+    "auggy_coordination_request_partition_counters",
+    "auggy_coordination_request_partition_counters_pkey",
+  ],
   ["auggy_coordination_requests", "auggy_coordination_requests_pkey"],
   ["auggy_coordination_sources", "auggy_coordination_sources_pkey"],
   ["auggy_coordination_threads", "auggy_coordination_threads_pkey"],
@@ -1253,6 +1653,10 @@ const EXPECTED_COORDINATION_TABLES: readonly CoordinationCatalogTable[] = [
   "auggy_coordination_migrations",
   "auggy_coordination_namespaces",
   "auggy_coordination_outbox",
+  "auggy_coordination_rate_counters",
+  "auggy_coordination_rate_events",
+  "auggy_coordination_request_class_counters",
+  "auggy_coordination_request_partition_counters",
   "auggy_coordination_requests",
   "auggy_coordination_sources",
   "auggy_coordination_threads",
@@ -1326,7 +1730,11 @@ async function assertPostgresCoordinationSchema(
     "'auggy_coordination_cost_markers', 'auggy_coordination_events', " +
     "'auggy_coordination_history', 'auggy_coordination_instances', " +
     "'auggy_coordination_migrations', 'auggy_coordination_namespaces', " +
-    "'auggy_coordination_outbox', 'auggy_coordination_requests', " +
+    "'auggy_coordination_outbox', 'auggy_coordination_rate_counters', " +
+    "'auggy_coordination_rate_events', " +
+    "'auggy_coordination_request_class_counters', " +
+    "'auggy_coordination_request_partition_counters', " +
+    "'auggy_coordination_requests', " +
     "'auggy_coordination_sources', " +
     "'auggy_coordination_threads'";
   const columns = await sql.unsafe<CoordinationCatalogColumn>(`

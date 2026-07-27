@@ -4,6 +4,8 @@ import type {
   CoordinationOutcomeUnknownReason,
   CoordinationRequestState,
   DistributedCoordinationEvent,
+  DistributedAdmissionConfig,
+  DistributedAdmissionReservation,
   DistributedCoordinatorConfig,
   DistributedCoordinatorCompatibilityTuple,
   DistributedCoordinatorHealth,
@@ -15,11 +17,13 @@ import type {
   DistributedPeerBindingV1,
   DistributedPruneResult,
   DistributedReplayResult,
+  DistributedRateReservationResult,
   DistributedRequestStatus,
   DistributedSourcePolicy,
   DistributedTurnCoordinator,
   DistributedTurnLease,
   DistributedTurnRequest,
+  DistributedTurnRequestIdentity,
   LeaseResult,
   RegistrationResult,
 } from "./types";
@@ -83,6 +87,7 @@ interface StoredOutboxIntent extends DistributedOutboxIntentV1 {
 }
 
 interface LocalOwnedOperation {
+  admissionHash: string;
   attempt: number;
   bindingHash: string;
   controller: AbortController;
@@ -92,6 +97,15 @@ interface LocalOwnedOperation {
 }
 
 interface NamespaceState {
+  admission: DistributedAdmissionConfig;
+  admissionEvents: Array<{
+    policyId: string;
+    subjectHash: string;
+    requestId: string;
+    occurredAt: number;
+    expiresAt: number;
+  }>;
+  rateReservations: Map<string, { bindingHash: string; expiresAt: number }>;
   costMarkers: Map<string, StoredCostMarker>;
   events: StoredEvent[];
   histories: Map<string, StoredHistory>;
@@ -125,6 +139,14 @@ const OUTCOME_UNKNOWN_REASONS = new Set<CoordinationOutcomeUnknownReason>([
   "execution-failed-after-start",
   "lease-lost",
 ]);
+const MAX_RATE_POLICIES = 64;
+const MAX_CAPACITY_CLASSES = 64;
+const MAX_RATE_RESERVATIONS = 16;
+const MAX_RATE_WINDOW_MS = 86_400_000;
+
+function normalizedAdmission(config: DistributedCoordinatorConfig): DistributedAdmissionConfig {
+  return config.admission ?? { maxRateLimitEvents: 0, capacityClasses: [], rateLimits: [] };
+}
 
 function assertIdentifier(name: string, value: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value)) {
@@ -188,6 +210,52 @@ function assertConfig(config: DistributedCoordinatorConfig): void {
     1_048_576,
   );
   assertLimit("turnState.outbox.maxPendingIntents", config.turnState.outbox.maxPendingIntents, 0);
+  const admission = normalizedAdmission(config);
+  assertLimit("admission.maxRateLimitEvents", admission.maxRateLimitEvents, 0);
+  if (!Array.isArray(admission.rateLimits) || admission.rateLimits.length > MAX_RATE_POLICIES) {
+    throw new Error("admission rate policies exceed supported bounds");
+  }
+  const ratePolicyIds = new Set<string>();
+  for (const policy of admission.rateLimits) {
+    assertIdentifier("admission.rateLimits.id", policy.id);
+    assertLimit("admission.rateLimits.max", policy.max, 1);
+    assertLimit("admission.rateLimits.maxEvents", policy.maxEvents, 1);
+    assertLimit("admission.rateLimits.windowMs", policy.windowMs, 1_000, MAX_RATE_WINDOW_MS);
+    if (ratePolicyIds.has(policy.id)) throw new Error("admission rate policy ids must be unique");
+    ratePolicyIds.add(policy.id);
+  }
+  if (
+    admission.rateLimits.reduce((sum, policy) => sum + policy.maxEvents, 0) >
+    admission.maxRateLimitEvents
+  ) {
+    throw new Error("admission rate policy partitions exceed the namespace event capacity");
+  }
+  const capacityClasses = admission.capacityClasses ?? [];
+  if (!Array.isArray(capacityClasses) || capacityClasses.length > MAX_CAPACITY_CLASSES) {
+    throw new Error("admission capacity classes exceed supported bounds");
+  }
+  const capacityClassIds = new Set<string>();
+  let reservedRequestCapacity = 0;
+  for (const policy of capacityClasses) {
+    assertIdentifier("admission.capacityClasses.id", policy.id);
+    assertLimit("admission.capacityClasses.maxRetainedRequests", policy.maxRetainedRequests, 1);
+    assertLimit(
+      "admission.capacityClasses.maxRetainedRequestsPerPartition",
+      policy.maxRetainedRequestsPerPartition,
+      1,
+    );
+    if (policy.maxRetainedRequestsPerPartition > policy.maxRetainedRequests) {
+      throw new Error("admission partition capacity cannot exceed its class capacity");
+    }
+    if (capacityClassIds.has(policy.id)) {
+      throw new Error("admission capacity class ids must be unique");
+    }
+    capacityClassIds.add(policy.id);
+    reservedRequestCapacity += policy.maxRetainedRequests;
+  }
+  if (reservedRequestCapacity > config.retention.maxTerminalRequests) {
+    throw new Error("admission capacity classes exceed retained-request capacity");
+  }
   assertLimit("compatibility.protocolVersion", config.compatibility.protocolVersion, 1);
   if (
     !/^[0-9a-f]{64}$/.test(config.compatibility.protocolFingerprint) ||
@@ -232,13 +300,49 @@ function assertRequest(request: DistributedTurnRequest): void {
   if (!/^[A-Za-z0-9_-]{16,160}$/.test(request.bindingHash)) {
     throw new Error("bindingHash must be a one-way canonical request hash");
   }
+  if (request.capacity !== undefined) {
+    assertIdentifier("capacity.classId", request.capacity.classId);
+    if (!/^[0-9a-f]{64}$/.test(request.capacity.partitionHash)) {
+      throw new Error("capacity.partitionHash must be a SHA-256 digest");
+    }
+  }
+  if (
+    !Array.isArray(request.admission ?? []) ||
+    (request.admission?.length ?? 0) > MAX_RATE_RESERVATIONS
+  ) {
+    throw new Error("distributed admission reservations exceed supported bounds");
+  }
+  for (const reservation of request.admission ?? []) {
+    assertIdentifier("admission.policyId", reservation.policyId);
+    if (!/^[0-9a-f]{64}$/.test(reservation.subjectHash)) {
+      throw new Error("admission.subjectHash must be a SHA-256 digest");
+    }
+  }
+}
+
+function canonicalAdmission(
+  reservations: readonly DistributedAdmissionReservation[] | undefined,
+): string {
+  return [...(reservations ?? [])]
+    .map((reservation) => `${reservation.policyId}\0${reservation.subjectHash}`)
+    .sort()
+    .join("\n");
+}
+
+function canonicalCapacity(capacity: DistributedTurnRequest["capacity"]): string {
+  return capacity ? `${capacity.classId}\0${capacity.partitionHash}` : "";
+}
+
+function canonicalRequestAdmission(request: DistributedTurnRequestIdentity): string {
+  return `${canonicalCapacity(request.capacity)}\n${canonicalAdmission(request.admission)}`;
 }
 
 function sameBinding(left: StoredRequest, right: DistributedTurnRequest): boolean {
   return (
     left.threadId === right.threadId &&
     left.source.id === right.source.id &&
-    left.bindingHash === right.bindingHash
+    left.bindingHash === right.bindingHash &&
+    canonicalRequestAdmission(left) === canonicalRequestAdmission(right)
   );
 }
 
@@ -271,6 +375,7 @@ export function createInMemoryDistributedTurnCoordinator(
   assertConfig(config);
   const now = options.now ?? Date.now;
   const sessionId = crypto.randomUUID();
+  const admission = normalizedAdmission(config);
   const owned = new Map<string, LocalOwnedOperation>();
   let invalidated = false;
 
@@ -285,6 +390,7 @@ export function createInMemoryDistributedTurnCoordinator(
       existing &&
       !existing.controller.signal.aborted &&
       existing.bindingHash === request.bindingHash &&
+      existing.admissionHash === canonicalRequestAdmission(request) &&
       existing.threadId === request.threadId &&
       existing.sourceId === request.source.id
     ) {
@@ -294,6 +400,7 @@ export function createInMemoryDistributedTurnCoordinator(
     }
     existing?.controller.abort("ownership-replaced");
     owned.set(request.requestId, {
+      admissionHash: canonicalRequestAdmission(request),
       attempt,
       bindingHash: request.bindingHash,
       controller: new AbortController(),
@@ -533,6 +640,13 @@ export function createInMemoryDistributedTurnCoordinator(
     let value = namespaces.get(config.namespace);
     if (!value && create) {
       value = {
+        admission: {
+          maxRateLimitEvents: admission.maxRateLimitEvents,
+          capacityClasses: (admission.capacityClasses ?? []).map((policy) => ({ ...policy })),
+          rateLimits: admission.rateLimits.map((policy) => ({ ...policy })),
+        },
+        admissionEvents: [],
+        rateReservations: new Map(),
         costMarkers: new Map(),
         events: [],
         histories: new Map(),
@@ -575,6 +689,28 @@ export function createInMemoryDistributedTurnCoordinator(
           stored?.maxConcurrent === source.maxConcurrent && stored.maxQueued === source.maxQueued
         );
       });
+    const admissionMatches =
+      current.admission.maxRateLimitEvents === admission.maxRateLimitEvents &&
+      (current.admission.capacityClasses ?? []).length ===
+        (admission.capacityClasses ?? []).length &&
+      (admission.capacityClasses ?? []).every((policy) => {
+        const stored = (current.admission.capacityClasses ?? []).find(
+          (candidate) => candidate.id === policy.id,
+        );
+        return (
+          stored?.maxRetainedRequests === policy.maxRetainedRequests &&
+          stored.maxRetainedRequestsPerPartition === policy.maxRetainedRequestsPerPartition
+        );
+      }) &&
+      current.admission.rateLimits.length === admission.rateLimits.length &&
+      admission.rateLimits.every((policy) => {
+        const stored = current.admission.rateLimits.find((candidate) => candidate.id === policy.id);
+        return (
+          stored?.max === policy.max &&
+          stored.maxEvents === policy.maxEvents &&
+          stored.windowMs === policy.windowMs
+        );
+      });
     if (
       current.maxConcurrent !== config.maxConcurrent ||
       current.leaseMs !== config.leaseMs ||
@@ -594,7 +730,8 @@ export function createInMemoryDistributedTurnCoordinator(
       current.turnState.outbox.maxIntentBytes !== config.turnState.outbox.maxIntentBytes ||
       current.turnState.outbox.maxPendingIntents !== config.turnState.outbox.maxPendingIntents ||
       !sameCompatibility(current.compatibility, compatibilityTuple()) ||
-      !sourcesMatch
+      !sourcesMatch ||
+      !admissionMatches
     ) {
       throw new Error("coordinator namespace policy mismatch");
     }
@@ -614,12 +751,42 @@ export function createInMemoryDistributedTurnCoordinator(
     ) {
       return false;
     }
+    const admissionChanges =
+      current.admission.maxRateLimitEvents !== admission.maxRateLimitEvents ||
+      (current.admission.capacityClasses ?? []).length !==
+        (admission.capacityClasses ?? []).length ||
+      current.admission.rateLimits.length !== admission.rateLimits.length ||
+      admission.rateLimits.some((policy) => {
+        const stored = current.admission.rateLimits.find((candidate) => candidate.id === policy.id);
+        return (
+          stored?.max !== policy.max ||
+          stored.maxEvents !== policy.maxEvents ||
+          stored.windowMs !== policy.windowMs
+        );
+      });
+    if (
+      admissionChanges &&
+      (current.requests.size > 0 ||
+        current.admissionEvents.length > 0 ||
+        current.rateReservations.size > 0)
+    ) {
+      return false;
+    }
     const prior = current.compatibility;
+    const priorAdmission = current.admission;
     current.compatibility = compatibilityTuple();
+    if (admissionChanges) {
+      current.admission = {
+        maxRateLimitEvents: admission.maxRateLimitEvents,
+        capacityClasses: (admission.capacityClasses ?? []).map((policy) => ({ ...policy })),
+        rateLimits: admission.rateLimits.map((policy) => ({ ...policy })),
+      };
+    }
     try {
       namespacePolicy(current);
     } catch {
       current.compatibility = prior;
+      current.admission = priorAdmission;
       return false;
     }
     for (const [instanceId, instance] of current.instances) {
@@ -678,6 +845,114 @@ export function createInMemoryDistributedTurnCoordinator(
       throw new Error("coordinator source policy mismatch");
     }
     return existing;
+  }
+
+  function reserveAdmission(
+    current: NamespaceState,
+    requestId: string,
+    reservations: readonly DistributedAdmissionReservation[],
+    timestamp: number,
+  ):
+    | { status: "ok"; expiresAt: number }
+    | {
+        status: "rejected";
+        reason: "admission-capacity" | "invalid-admission" | "rate-limited";
+        retryAfterMs?: number;
+      } {
+    const seen = new Set<string>();
+    const resolved: Array<{
+      policyId: string;
+      subjectHash: string;
+      max: number;
+      maxEvents: number;
+      windowMs: number;
+    }> = [];
+    for (const reservation of reservations) {
+      if (seen.has(reservation.policyId)) {
+        return { status: "rejected", reason: "invalid-admission" };
+      }
+      seen.add(reservation.policyId);
+      const policy = current.admission.rateLimits.find(
+        (candidate) => candidate.id === reservation.policyId,
+      );
+      if (!policy) return { status: "rejected", reason: "invalid-admission" };
+      resolved.push({
+        ...reservation,
+        max: policy.max,
+        maxEvents: policy.maxEvents,
+        windowMs: policy.windowMs,
+      });
+    }
+    current.admissionEvents = current.admissionEvents.filter(
+      (event) => event.expiresAt > timestamp,
+    );
+    for (const item of resolved) {
+      const policyEvidence = current.admissionEvents.filter(
+        (event) => event.policyId === item.policyId,
+      ).length;
+      if (policyEvidence >= item.maxEvents) {
+        return { status: "rejected", reason: "admission-capacity" };
+      }
+    }
+    let retryAfterMs = 0;
+    for (const item of resolved) {
+      const matching = current.admissionEvents
+        .filter(
+          (event) => event.policyId === item.policyId && event.subjectHash === item.subjectHash,
+        )
+        .sort((left, right) => left.occurredAt - right.occurredAt);
+      if (matching.length >= item.max) {
+        retryAfterMs = Math.max(retryAfterMs, matching[0]!.expiresAt - timestamp);
+      }
+    }
+    if (retryAfterMs > 0) {
+      return { status: "rejected", reason: "rate-limited", retryAfterMs };
+    }
+    for (const item of resolved) {
+      current.admissionEvents.push({
+        policyId: item.policyId,
+        subjectHash: item.subjectHash,
+        requestId,
+        occurredAt: timestamp,
+        expiresAt: timestamp + item.windowMs,
+      });
+    }
+    return {
+      status: "ok",
+      expiresAt: resolved.reduce(
+        (maximum, item) => Math.max(maximum, timestamp + item.windowMs),
+        timestamp,
+      ),
+    };
+  }
+
+  function reserveRequestCapacity(
+    current: NamespaceState,
+    request: DistributedTurnRequest,
+  ): { status: "ok" } | { status: "rejected"; reason: "invalid-admission" | "request-capacity" } {
+    const policies = current.admission.capacityClasses ?? [];
+    if (policies.length === 0) {
+      return request.capacity === undefined
+        ? { status: "ok" }
+        : { status: "rejected", reason: "invalid-admission" };
+    }
+    if (request.capacity === undefined) {
+      return { status: "rejected", reason: "invalid-admission" };
+    }
+    const policy = policies.find((candidate) => candidate.id === request.capacity!.classId);
+    if (!policy) return { status: "rejected", reason: "invalid-admission" };
+    const retained = [...current.requests.values()].filter(
+      (candidate) => candidate.capacity?.classId === request.capacity!.classId,
+    );
+    if (retained.length >= policy.maxRetainedRequests) {
+      return { status: "rejected", reason: "request-capacity" };
+    }
+    const partitionRetained = retained.filter(
+      (candidate) => candidate.capacity?.partitionHash === request.capacity!.partitionHash,
+    );
+    return partitionRetained.length >= policy.maxRetainedRequestsPerPartition
+      ? { status: "rejected", reason: "request-capacity" }
+      : { status: "ok" };
   }
 
   function liveInstance(
@@ -865,6 +1140,36 @@ export function createInMemoryDistributedTurnCoordinator(
   }
 
   return {
+    supportsAdmissionPolicy(requirements) {
+      try {
+        const expectedCapacity = requirements.capacityClasses ?? [];
+        const expectedRates = requirements.rateLimits ?? [];
+        if (!Array.isArray(expectedCapacity) || !Array.isArray(expectedRates)) return false;
+        return (
+          expectedCapacity.every((expected) => {
+            const stored = (admission.capacityClasses ?? []).find(
+              (candidate) => candidate.id === expected.id,
+            );
+            return (
+              stored?.maxRetainedRequests === expected.maxRetainedRequests &&
+              stored?.maxRetainedRequestsPerPartition === expected.maxRetainedRequestsPerPartition
+            );
+          }) &&
+          expectedRates.every((expected) => {
+            const stored = admission.rateLimits.find((candidate) => candidate.id === expected.id);
+            return (
+              stored !== undefined &&
+              stored.max === expected.max &&
+              stored.windowMs === expected.windowMs &&
+              (expected.minRetainedEvents === undefined ||
+                stored.maxEvents >= expected.minRetainedEvents)
+            );
+          })
+        );
+      } catch {
+        return false;
+      }
+    },
     register: () =>
       safe<RegistrationResult>(
         () =>
@@ -920,7 +1225,7 @@ export function createInMemoryDistributedTurnCoordinator(
         },
       ),
     admit: (request) =>
-      safe(
+      safe<AdmitResult>(
         () =>
           exclusive(() => {
             assertRequest(request);
@@ -980,9 +1285,20 @@ export function createInMemoryDistributedTurnCoordinator(
             ) {
               return { status: "rejected", reason: "thread-capacity" };
             }
+            const capacityResult = reserveRequestCapacity(current, request);
+            if (capacityResult.status === "rejected") return capacityResult;
+            const admissionResult = reserveAdmission(
+              current,
+              request.requestId,
+              request.admission ?? [],
+              timestamp,
+            );
+            if (admissionResult.status === "rejected") return admissionResult;
             current.requests.set(request.requestId, {
               ...request,
               source: { ...policy },
+              ...(request.capacity ? { capacity: { ...request.capacity } } : {}),
+              admission: request.admission?.map((reservation) => ({ ...reservation })),
               state: "queued",
               queuedAt: timestamp,
               executionStarted: false,
@@ -995,6 +1311,53 @@ export function createInMemoryDistributedTurnCoordinator(
             return { status: "admitted", attempt: 1 };
           }),
         { status: "unavailable" } as AdmitResult,
+      ),
+    reserveRateLimits: (request) =>
+      safe<DistributedRateReservationResult>(
+        () =>
+          exclusive(() => {
+            if (
+              !/^rate:[A-Za-z0-9][A-Za-z0-9._:-]{0,154}$/.test(request.reservationId) ||
+              !Array.isArray(request.admission) ||
+              request.admission.length !== 1
+            ) {
+              return { status: "rejected", reason: "invalid-admission" };
+            }
+            for (const reservation of request.admission) {
+              assertIdentifier("admission.policyId", reservation.policyId);
+              if (!/^[0-9a-f]{64}$/.test(reservation.subjectHash)) {
+                return { status: "rejected", reason: "invalid-admission" };
+              }
+            }
+            const timestamp = now();
+            const current = operationalState(timestamp);
+            if (!liveInstance(current, timestamp, true)) {
+              return { status: "rejected", reason: "draining" };
+            }
+            for (const [reservationId, stored] of current.rateReservations) {
+              if (stored.expiresAt <= timestamp) current.rateReservations.delete(reservationId);
+            }
+            const bindingHash = canonicalAdmission(request.admission);
+            const existing = current.rateReservations.get(request.reservationId);
+            if (existing) {
+              return existing.bindingHash === bindingHash
+                ? { status: "replayed" }
+                : { status: "conflict" };
+            }
+            const result = reserveAdmission(
+              current,
+              request.reservationId,
+              request.admission,
+              timestamp,
+            );
+            if (result.status === "rejected") return result;
+            current.rateReservations.set(request.reservationId, {
+              bindingHash,
+              expiresAt: result.expiresAt,
+            });
+            return { status: "reserved" };
+          }),
+        { status: "unavailable" },
       ),
     heartbeatQueued: (request, attempt = 1) =>
       safe<LeaseResult>(
@@ -1149,6 +1512,7 @@ export function createInMemoryDistributedTurnCoordinator(
       const operation = owned.get(request.requestId);
       return operation &&
         operation.bindingHash === request.bindingHash &&
+        operation.admissionHash === canonicalRequestAdmission(request) &&
         operation.threadId === request.threadId &&
         operation.sourceId === request.source.id
         ? operation.controller.signal

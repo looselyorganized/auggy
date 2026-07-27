@@ -115,6 +115,7 @@ describe("runCoordinationMigrate", () => {
       "20260726_03_coordination_instance_lifecycle",
       "20260726_04_coordination_bounded_results",
       "20260726_05_coordination_atomic_turn_state",
+      "20260726_06_coordination_atomic_admission",
     ]);
     expect(JSON.stringify(result)).not.toContain(SENTINEL_URL);
   });

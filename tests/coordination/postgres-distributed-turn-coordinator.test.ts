@@ -3,6 +3,7 @@ import { SQL } from "bun";
 import { resolve } from "node:path";
 import { PostgresDistributedTurnCoordinator } from "../../src/coordination";
 import type {
+  DistributedAdmissionConfig,
   DistributedCoordinatorCompatibility,
   DistributedHistorySnapshotV1,
   DistributedPeerBindingV1,
@@ -164,6 +165,7 @@ function coordinator(
   compatibility: Partial<DistributedCoordinatorCompatibility> = {},
   retention: (typeof coordinatorPolicy)["retention"] = coordinatorPolicy.retention,
   turnState: (typeof coordinatorPolicy)["turnState"] = coordinatorPolicy.turnState,
+  admission?: DistributedAdmissionConfig,
 ) {
   return new PostgresDistributedTurnCoordinator({
     url: url!,
@@ -176,6 +178,7 @@ function coordinator(
     ...coordinatorPolicy,
     retention,
     turnState,
+    ...(admission ? { admission } : {}),
     compatibility: { ...coordinatorPolicy.compatibility, ...compatibility },
   });
 }
@@ -204,6 +207,16 @@ async function removeNamespace(value: string): Promise<void> {
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("DELETE FROM auggy_coordination_events WHERE namespace = $1", [value]);
+      await tx.unsafe("DELETE FROM auggy_coordination_rate_events WHERE namespace = $1", [value]);
+      await tx.unsafe("DELETE FROM auggy_coordination_rate_counters WHERE namespace = $1", [value]);
+      await tx.unsafe(
+        "DELETE FROM auggy_coordination_request_partition_counters WHERE namespace = $1",
+        [value],
+      );
+      await tx.unsafe(
+        "DELETE FROM auggy_coordination_request_class_counters WHERE namespace = $1",
+        [value],
+      );
       await tx.unsafe("DELETE FROM auggy_coordination_outbox WHERE namespace = $1", [value]);
       await tx.unsafe("DELETE FROM auggy_coordination_cost_markers WHERE namespace = $1", [value]);
       await tx.unsafe("DELETE FROM auggy_coordination_history WHERE namespace = $1", [value]);
@@ -251,6 +264,18 @@ async function expireInstanceLeases(namespace: string): Promise<void> {
   try {
     await sql.unsafe(
       "UPDATE auggy_coordination_instances SET lease_expires_at = clock_timestamp() - interval '1 millisecond' WHERE namespace = $1",
+      [namespace],
+    );
+  } finally {
+    await sql.close();
+  }
+}
+
+async function expireRateEvents(namespace: string): Promise<void> {
+  const sql = new SQL(url!);
+  try {
+    await sql.unsafe(
+      "UPDATE auggy_coordination_rate_events SET occurred_at = clock_timestamp() - interval '2 seconds', expires_at = clock_timestamp() - interval '1 second' WHERE namespace = $1",
       [namespace],
     );
   } finally {
@@ -2050,4 +2075,727 @@ describe("PostgreSQL distributed turn coordinator", () => {
       await instance.close();
     }
   });
+
+  postgresTest(
+    "atomically binds distributed rate reservations to one canonical request",
+    async () => {
+      const value = namespace();
+      const admission: DistributedAdmissionConfig = {
+        maxRateLimitEvents: 10,
+        rateLimits: [{ id: "web.anonymous-network.v1", max: 1, maxEvents: 10, windowMs: 60_000 }],
+      };
+      const first = coordinator(
+        value,
+        "admission-owner",
+        5_000,
+        2,
+        4,
+        { protocolVersion: 6 },
+        coordinatorPolicy.retention,
+        coordinatorPolicy.turnState,
+        admission,
+      );
+      const second = coordinator(
+        value,
+        "admission-follower",
+        5_000,
+        2,
+        4,
+        { protocolVersion: 6 },
+        coordinatorPolicy.retention,
+        coordinatorPolicy.turnState,
+        admission,
+      );
+      try {
+        await first.migrate();
+        expect(await first.register()).toEqual({ status: "registered" });
+        expect(await second.register()).toEqual({ status: "registered" });
+        const reserved = {
+          ...request("rate-request-one", "rate-thread-one"),
+          admission: [
+            {
+              policyId: "web.anonymous-network.v1",
+              subjectHash: "d".repeat(64),
+            },
+          ],
+        };
+        expect(await first.admit(reserved)).toEqual({ status: "admitted", attempt: 1 });
+        expect(await second.admit(reserved)).toEqual({ status: "joined", state: "queued" });
+        expect(
+          await second.admit({
+            ...request("rate-request-two", "rate-thread-two"),
+            admission: reserved.admission,
+          }),
+        ).toMatchObject({ status: "rejected", reason: "rate-limited" });
+        expect(
+          await second.admit({
+            ...reserved,
+            admission: [
+              {
+                policyId: "web.anonymous-network.v1",
+                subjectHash: "e".repeat(64),
+              },
+            ],
+          }),
+        ).toEqual({ status: "conflict" });
+      } finally {
+        await first.close();
+        await second.close();
+      }
+    },
+  );
+
+  postgresTest("serializes competing fleet quota reservations with database time", async () => {
+    const value = namespace();
+    const admission: DistributedAdmissionConfig = {
+      maxRateLimitEvents: 10,
+      rateLimits: [{ id: "web.global.v1", max: 1, maxEvents: 10, windowMs: 60_000 }],
+    };
+    const first = coordinator(
+      value,
+      "rate-race-a",
+      5_000,
+      2,
+      4,
+      { protocolVersion: 6 },
+      coordinatorPolicy.retention,
+      coordinatorPolicy.turnState,
+      admission,
+    );
+    const second = coordinator(
+      value,
+      "rate-race-b",
+      5_000,
+      2,
+      4,
+      { protocolVersion: 6 },
+      coordinatorPolicy.retention,
+      coordinatorPolicy.turnState,
+      admission,
+    );
+    try {
+      await first.migrate();
+      expect(await first.register()).toEqual({ status: "registered" });
+      expect(await second.register()).toEqual({ status: "registered" });
+      const subjectHash = "f".repeat(64);
+      const [left, right] = await Promise.all([
+        first.admit({
+          ...request("rate-race-one", "rate-race-thread-one"),
+          admission: [{ policyId: "web.global.v1", subjectHash }],
+        }),
+        second.admit({
+          ...request("rate-race-two", "rate-race-thread-two"),
+          admission: [{ policyId: "web.global.v1", subjectHash }],
+        }),
+      ]);
+      expect([left.status, right.status].sort()).toEqual(["admitted", "rejected"]);
+      expect([left, right].find((result) => result.status === "rejected")).toMatchObject({
+        status: "rejected",
+        reason: "rate-limited",
+      });
+      const sql = new SQL(url!);
+      try {
+        const rows = await sql.unsafe<{ count: number; rate_event_count: number }[]>(
+          "SELECT (SELECT count(*)::integer FROM auggy_coordination_rate_events WHERE namespace = $1) AS count, event_count AS rate_event_count FROM auggy_coordination_rate_counters WHERE namespace = $1 AND policy_id = 'web.global.v1'",
+          [value],
+        );
+        expect(rows[0]?.count).toBe(1);
+        expect(rows[0]?.rate_event_count).toBe(1);
+      } finally {
+        await sql.close();
+      }
+    } finally {
+      await first.close();
+      await second.close();
+    }
+  });
+
+  postgresTest("atomically isolates retained requests by trust class and partition", async () => {
+    const value = namespace();
+    const admission: DistributedAdmissionConfig = {
+      maxRateLimitEvents: 0,
+      capacityClasses: [
+        { id: "public", maxRetainedRequests: 1, maxRetainedRequestsPerPartition: 1 },
+        { id: "agent", maxRetainedRequests: 1, maxRetainedRequestsPerPartition: 1 },
+        { id: "creator", maxRetainedRequests: 1, maxRetainedRequestsPerPartition: 1 },
+      ],
+      rateLimits: [],
+    };
+    const first = coordinator(
+      value,
+      "capacity-race-a",
+      5_000,
+      2,
+      4,
+      { protocolVersion: 6 },
+      coordinatorPolicy.retention,
+      coordinatorPolicy.turnState,
+      admission,
+    );
+    const second = coordinator(
+      value,
+      "capacity-race-b",
+      5_000,
+      2,
+      4,
+      { protocolVersion: 6 },
+      coordinatorPolicy.retention,
+      coordinatorPolicy.turnState,
+      admission,
+    );
+    try {
+      await first.migrate();
+      expect(await first.register()).toEqual({ status: "registered" });
+      expect(await second.register()).toEqual({ status: "registered" });
+      const publicCapacity = { classId: "public", partitionHash: "1".repeat(64) };
+      const agentRequest = {
+        ...request("capacity-agent-one", "capacity-thread-agent"),
+        capacity: { classId: "agent", partitionHash: "3".repeat(64) },
+      };
+      const [left, right] = await Promise.all([
+        first.admit({
+          ...request("capacity-public-one", "capacity-thread-one"),
+          capacity: publicCapacity,
+        }),
+        second.admit({
+          ...request("capacity-public-two", "capacity-thread-two"),
+          capacity: { classId: "public", partitionHash: "2".repeat(64) },
+        }),
+      ]);
+      expect([left.status, right.status].sort()).toEqual(["admitted", "rejected"]);
+      expect([left, right].find((result) => result.status === "rejected")).toEqual({
+        status: "rejected",
+        reason: "request-capacity",
+      });
+      expect(await second.admit(agentRequest)).toEqual({ status: "admitted", attempt: 1 });
+      expect(
+        await second.admit({
+          ...request("capacity-missing", "capacity-thread-missing"),
+        }),
+      ).toEqual({ status: "rejected", reason: "invalid-admission" });
+
+      const admittedRequest =
+        left.status === "admitted"
+          ? {
+              ...request("capacity-public-one", "capacity-thread-one"),
+              capacity: publicCapacity,
+            }
+          : {
+              ...request("capacity-public-two", "capacity-thread-two"),
+              capacity: { classId: "public", partitionHash: "2".repeat(64) },
+            };
+      const admittedOwner = left.status === "admitted" ? first : second;
+      expect(
+        await first.admit({
+          ...admittedRequest,
+          capacity: { classId: "creator", partitionHash: "4".repeat(64) },
+        }),
+      ).toEqual({ status: "conflict" });
+
+      const sql = new SQL(url!);
+      try {
+        const counters = await sql.unsafe<{ capacity_class: string; retained_count: number }[]>(
+          "SELECT capacity_class, retained_count FROM auggy_coordination_request_class_counters WHERE namespace = $1 ORDER BY capacity_class",
+          [value],
+        );
+        expect(counters).toEqual([
+          { capacity_class: "agent", retained_count: 1 },
+          { capacity_class: "creator", retained_count: 0 },
+          { capacity_class: "public", retained_count: 1 },
+        ]);
+        expect(
+          await sql.unsafe<{ count: number }[]>(
+            "SELECT count(*)::integer AS count FROM auggy_coordination_request_partition_counters WHERE namespace = $1",
+            [value],
+          ),
+        ).toEqual([{ count: 2 }]);
+
+        expect(await admittedOwner.abandon(admittedRequest)).toEqual({ status: "ok" });
+        expect(await second.abandon(agentRequest)).toEqual({ status: "ok" });
+        await sql.unsafe(
+          "UPDATE auggy_coordination_requests SET terminal_at = clock_timestamp() - interval '8 days' WHERE namespace = $1",
+          [value],
+        );
+        expect(await first.prune(10)).toMatchObject({ status: "ok", requests: 2 });
+        expect(
+          await sql.unsafe<{ capacity_class: string; retained_count: number }[]>(
+            "SELECT capacity_class, retained_count FROM auggy_coordination_request_class_counters WHERE namespace = $1 ORDER BY capacity_class",
+            [value],
+          ),
+        ).toEqual([
+          { capacity_class: "agent", retained_count: 0 },
+          { capacity_class: "creator", retained_count: 0 },
+          { capacity_class: "public", retained_count: 0 },
+        ]);
+        expect(
+          await sql.unsafe<{ count: number }[]>(
+            "SELECT count(*)::integer AS count FROM auggy_coordination_request_partition_counters WHERE namespace = $1",
+            [value],
+          ),
+        ).toEqual([{ count: 0 }]);
+        expect(
+          await second.admit({
+            ...request("capacity-public-reused", "capacity-thread-reused"),
+            capacity: publicCapacity,
+          }),
+        ).toEqual({ status: "admitted", attempt: 1 });
+      } finally {
+        await sql.close();
+      }
+    } finally {
+      await first.close();
+      await second.close();
+    }
+  });
+
+  postgresTest("fails registration closed when retained-request counters drift", async () => {
+    const value = namespace();
+    const admission: DistributedAdmissionConfig = {
+      maxRateLimitEvents: 0,
+      capacityClasses: [
+        { id: "public", maxRetainedRequests: 2, maxRetainedRequestsPerPartition: 1 },
+      ],
+      rateLimits: [],
+    };
+    const owner = coordinator(
+      value,
+      "capacity-drift-owner",
+      5_000,
+      2,
+      4,
+      { protocolVersion: 6 },
+      coordinatorPolicy.retention,
+      coordinatorPolicy.turnState,
+      admission,
+    );
+    const replacement = coordinator(
+      value,
+      "capacity-drift-replacement",
+      5_000,
+      2,
+      4,
+      { protocolVersion: 6 },
+      coordinatorPolicy.retention,
+      coordinatorPolicy.turnState,
+      admission,
+    );
+    const sql = new SQL(url!);
+    try {
+      await owner.migrate();
+      expect(await owner.register()).toEqual({ status: "registered" });
+      expect(
+        await owner.admit({
+          ...request("capacity-drift-request", "capacity-drift-thread"),
+          capacity: { classId: "public", partitionHash: "9".repeat(64) },
+        }),
+      ).toEqual({ status: "admitted", attempt: 1 });
+      await sql.unsafe(
+        "UPDATE auggy_coordination_request_class_counters SET retained_count = 0 WHERE namespace = $1 AND capacity_class = 'public'",
+        [value],
+      );
+      expect(await replacement.register()).toEqual({ status: "unavailable" });
+    } finally {
+      await sql.close();
+      await owner.close();
+      await replacement.close();
+    }
+  });
+
+  postgresTest("fails registration when retained partitions already exceed policy", async () => {
+    const value = namespace();
+    const admission: DistributedAdmissionConfig = {
+      maxRateLimitEvents: 0,
+      capacityClasses: [
+        { id: "public", maxRetainedRequests: 2, maxRetainedRequestsPerPartition: 1 },
+      ],
+      rateLimits: [],
+    };
+    const owner = coordinator(
+      value,
+      "partition-drift-owner",
+      5_000,
+      2,
+      4,
+      { protocolVersion: 6 },
+      coordinatorPolicy.retention,
+      coordinatorPolicy.turnState,
+      admission,
+    );
+    const replacement = coordinator(
+      value,
+      "partition-drift-replacement",
+      5_000,
+      2,
+      4,
+      { protocolVersion: 6 },
+      coordinatorPolicy.retention,
+      coordinatorPolicy.turnState,
+      admission,
+    );
+    const sql = new SQL(url!);
+    const firstPartition = "7".repeat(64);
+    const secondPartition = "8".repeat(64);
+    try {
+      await owner.migrate();
+      expect(await owner.register()).toEqual({ status: "registered" });
+      expect(
+        await owner.admit({
+          ...request("partition-drift-one", "partition-drift-thread-one"),
+          capacity: { classId: "public", partitionHash: firstPartition },
+        }),
+      ).toEqual({ status: "admitted", attempt: 1 });
+      expect(
+        await owner.admit({
+          ...request("partition-drift-two", "partition-drift-thread-two"),
+          capacity: { classId: "public", partitionHash: secondPartition },
+        }),
+      ).toEqual({ status: "admitted", attempt: 1 });
+      await sql.begin(async (tx) => {
+        await tx.unsafe(
+          "UPDATE auggy_coordination_requests SET capacity_partition_hash = $3 WHERE namespace = $1 AND request_id = $2",
+          [value, "partition-drift-two", firstPartition],
+        );
+        await tx.unsafe(
+          "UPDATE auggy_coordination_request_partition_counters SET retained_count = 2 WHERE namespace = $1 AND capacity_class = 'public' AND partition_hash = $2",
+          [value, firstPartition],
+        );
+        await tx.unsafe(
+          "DELETE FROM auggy_coordination_request_partition_counters WHERE namespace = $1 AND capacity_class = 'public' AND partition_hash = $2",
+          [value, secondPartition],
+        );
+      });
+      expect(await replacement.register()).toEqual({ status: "unavailable" });
+    } finally {
+      await sql.close();
+      await owner.close();
+      await replacement.close();
+    }
+  });
+
+  postgresTest("reserves standalone route quotas once across replicas", async () => {
+    const value = namespace();
+    const admission: DistributedAdmissionConfig = {
+      maxRateLimitEvents: 10,
+      rateLimits: [{ id: "web.console.v1", max: 1, maxEvents: 10, windowMs: 60_000 }],
+    };
+    const first = coordinator(
+      value,
+      "route-rate-a",
+      5_000,
+      2,
+      4,
+      { protocolVersion: 6 },
+      coordinatorPolicy.retention,
+      coordinatorPolicy.turnState,
+      admission,
+    );
+    const second = coordinator(
+      value,
+      "route-rate-b",
+      5_000,
+      2,
+      4,
+      { protocolVersion: 6 },
+      coordinatorPolicy.retention,
+      coordinatorPolicy.turnState,
+      admission,
+    );
+    const reservation = {
+      reservationId: "rate:console-one",
+      admission: [{ policyId: "web.console.v1", subjectHash: "5".repeat(64) }],
+    };
+    try {
+      await first.migrate();
+      expect(await first.register()).toEqual({ status: "registered" });
+      expect(await second.register()).toEqual({ status: "registered" });
+      expect(await first.reserveRateLimits(reservation)).toEqual({ status: "reserved" });
+      expect(await second.reserveRateLimits(reservation)).toEqual({ status: "replayed" });
+      expect(
+        await second.reserveRateLimits({
+          ...reservation,
+          admission: [{ policyId: "web.console.v1", subjectHash: "6".repeat(64) }],
+        }),
+      ).toEqual({ status: "conflict" });
+      expect(
+        await second.reserveRateLimits({
+          reservationId: "rate:console-two",
+          admission: reservation.admission,
+        }),
+      ).toMatchObject({ status: "rejected", reason: "rate-limited" });
+      await expireRateEvents(value);
+      expect(
+        await second.reserveRateLimits({
+          reservationId: "rate:console-three",
+          admission: reservation.admission,
+        }),
+      ).toEqual({ status: "reserved" });
+      const sql = new SQL(url!);
+      try {
+        const rows = await sql.unsafe<{ actual: number; counter: number }[]>(
+          "SELECT (SELECT count(*)::integer FROM auggy_coordination_rate_events WHERE namespace = $1) AS actual, event_count AS counter FROM auggy_coordination_rate_counters WHERE namespace = $1 AND policy_id = 'web.console.v1'",
+          [value],
+        );
+        expect(rows[0]).toEqual({ actual: 1, counter: 1 });
+      } finally {
+        await sql.close();
+      }
+    } finally {
+      await first.close();
+      await second.close();
+    }
+  });
+
+  postgresTest(
+    "isolates route quota locks from namespace heartbeats and unrelated turn policies",
+    async () => {
+      const value = namespace();
+      const admission: DistributedAdmissionConfig = {
+        maxRateLimitEvents: 20,
+        rateLimits: [
+          { id: "web.route.v1", max: 10, maxEvents: 10, windowMs: 60_000 },
+          { id: "web.turn.v1", max: 10, maxEvents: 10, windowMs: 60_000 },
+        ],
+      };
+      const first = coordinator(
+        value,
+        "lock-isolation-a",
+        5_000,
+        2,
+        4,
+        { protocolVersion: 6 },
+        coordinatorPolicy.retention,
+        coordinatorPolicy.turnState,
+        admission,
+      );
+      const second = coordinator(
+        value,
+        "lock-isolation-b",
+        5_000,
+        2,
+        4,
+        { protocolVersion: 6 },
+        coordinatorPolicy.retention,
+        coordinatorPolicy.turnState,
+        admission,
+      );
+      const lockSql = new SQL(url!);
+      const deadline = async <T>(operation: Promise<T>): Promise<T> => {
+        let handle!: ReturnType<typeof setTimeout>;
+        try {
+          return await Promise.race([
+            operation,
+            new Promise<T>((_resolve, reject) => {
+              handle = setTimeout(
+                () => reject(new Error("independent coordination operation blocked")),
+                5_000,
+              );
+            }),
+          ]);
+        } finally {
+          clearTimeout(handle);
+        }
+      };
+      let releaseNamespace = () => {};
+      let releaseRouteCounter = () => {};
+      let namespaceBlocker: Promise<unknown> | undefined;
+      let counterBlocker: Promise<unknown> | undefined;
+      try {
+        await first.migrate();
+        expect(await first.register()).toEqual({ status: "registered" });
+        expect(await second.register()).toEqual({ status: "registered" });
+
+        let namespaceLocked!: () => void;
+        const namespaceAcquired = new Promise<void>((resolve) => {
+          namespaceLocked = resolve;
+        });
+        const namespaceRelease = new Promise<void>((resolve) => {
+          releaseNamespace = resolve;
+        });
+        namespaceBlocker = lockSql.begin(async (tx) => {
+          await tx.unsafe(
+            "SELECT namespace FROM auggy_coordination_namespaces WHERE namespace = $1 FOR UPDATE",
+            [value],
+          );
+          namespaceLocked();
+          await namespaceRelease;
+        });
+        await namespaceAcquired;
+        expect(
+          await deadline(
+            first.reserveRateLimits({
+              reservationId: "rate:namespace-independent",
+              admission: [{ policyId: "web.route.v1", subjectHash: "7".repeat(64) }],
+            }),
+          ),
+        ).toEqual({ status: "reserved" });
+        releaseNamespace();
+        await namespaceBlocker;
+
+        let routeCounterLocked!: () => void;
+        const routeCounterAcquired = new Promise<void>((resolve) => {
+          routeCounterLocked = resolve;
+        });
+        const routeCounterRelease = new Promise<void>((resolve) => {
+          releaseRouteCounter = resolve;
+        });
+        counterBlocker = lockSql.begin(async (tx) => {
+          await tx.unsafe(
+            "SELECT policy_id FROM auggy_coordination_rate_counters WHERE namespace = $1 AND policy_id = 'web.route.v1' FOR UPDATE",
+            [value],
+          );
+          routeCounterLocked();
+          await routeCounterRelease;
+        });
+        await routeCounterAcquired;
+        const [heartbeat, admitted] = await deadline(
+          Promise.all([
+            second.heartbeatInstance(),
+            second.admit({
+              ...request("turn-while-route-locked", "turn-while-route-locked"),
+              admission: [{ policyId: "web.turn.v1", subjectHash: "8".repeat(64) }],
+            }),
+          ]),
+        );
+        expect(heartbeat).toEqual({ status: "ok" });
+        expect(admitted).toEqual({ status: "admitted", attempt: 1 });
+        releaseRouteCounter();
+        await counterBlocker;
+      } finally {
+        releaseNamespace();
+        releaseRouteCounter();
+        await Promise.allSettled([namespaceBlocker, counterBlocker].filter(Boolean));
+        await lockSql.close();
+        await first.close();
+        await second.close();
+      }
+    },
+  );
+
+  postgresTest(
+    "reclaims a targeted expired reservation beyond the bounded cleanup batch",
+    async () => {
+      const value = namespace();
+      const admission: DistributedAdmissionConfig = {
+        maxRateLimitEvents: 2_000,
+        rateLimits: [{ id: "web.route.v1", max: 2_000, maxEvents: 2_000, windowMs: 60_000 }],
+      };
+      const instance = coordinator(
+        value,
+        "targeted-expiry",
+        5_000,
+        2,
+        4,
+        { protocolVersion: 6 },
+        coordinatorPolicy.retention,
+        coordinatorPolicy.turnState,
+        admission,
+      );
+      const sql = new SQL(url!);
+      try {
+        await instance.migrate();
+        expect(await instance.register()).toEqual({ status: "registered" });
+        await sql.begin(async (tx) => {
+          await tx.unsafe(
+            "INSERT INTO auggy_coordination_rate_events (namespace, policy_id, subject_hash, request_id, occurred_at, expires_at) SELECT $1, 'web.route.v1', $2, 'rate:stale-' || series::text, clock_timestamp() - interval '2 seconds', clock_timestamp() - interval '1 second' FROM generate_series(1, 1000) AS series",
+            [value, "1".repeat(64)],
+          );
+          await tx.unsafe(
+            "INSERT INTO auggy_coordination_rate_events (namespace, policy_id, subject_hash, request_id, occurred_at, expires_at) VALUES ($1, 'web.route.v1', $2, 'rate:targeted-expired', clock_timestamp() - interval '2 seconds', clock_timestamp() - interval '1 second')",
+            [value, "f".repeat(64)],
+          );
+          await tx.unsafe(
+            "UPDATE auggy_coordination_rate_counters SET event_count = 1001 WHERE namespace = $1 AND policy_id = 'web.route.v1'",
+            [value],
+          );
+        });
+        expect(
+          await instance.reserveRateLimits({
+            reservationId: "rate:targeted-expired",
+            admission: [{ policyId: "web.route.v1", subjectHash: "f".repeat(64) }],
+          }),
+        ).toEqual({ status: "reserved" });
+        const rows = await sql.unsafe<{ actual: number; counter: number }[]>(
+          "SELECT (SELECT count(*)::integer FROM auggy_coordination_rate_events WHERE namespace = $1) AS actual, event_count AS counter FROM auggy_coordination_rate_counters WHERE namespace = $1 AND policy_id = 'web.route.v1'",
+          [value],
+        );
+        expect(rows[0]).toEqual({ actual: 1, counter: 1 });
+      } finally {
+        await sql.close();
+        await instance.close();
+      }
+    },
+  );
+
+  postgresTest(
+    "upgrades admission policy only when the predecessor request ledger is empty",
+    async () => {
+      const admission: DistributedAdmissionConfig = {
+        maxRateLimitEvents: 10,
+        capacityClasses: [
+          { id: "public", maxRetainedRequests: 10, maxRetainedRequestsPerPartition: 2 },
+        ],
+        rateLimits: [{ id: "web.route.v1", max: 2, maxEvents: 10, windowMs: 60_000 }],
+      };
+      const predecessor = {
+        protocolVersion: 5,
+        protocolFingerprint: "a".repeat(64),
+        configurationFingerprint: "b".repeat(64),
+      };
+      const successor = {
+        protocolVersion: 6,
+        protocolFingerprint: "d".repeat(64),
+        configurationFingerprint: "e".repeat(64),
+        upgradeFrom: predecessor,
+      };
+
+      const emptyNamespace = namespace();
+      const oldEmpty = coordinator(emptyNamespace, "upgrade-empty-old");
+      const newEmpty = coordinator(
+        emptyNamespace,
+        "upgrade-empty-new",
+        5_000,
+        2,
+        4,
+        successor,
+        coordinatorPolicy.retention,
+        coordinatorPolicy.turnState,
+        admission,
+      );
+      try {
+        await oldEmpty.migrate();
+        expect(await oldEmpty.register()).toEqual({ status: "registered" });
+        await oldEmpty.close();
+        await expireInstanceLeases(emptyNamespace);
+        expect(await newEmpty.register()).toEqual({ status: "registered" });
+      } finally {
+        await newEmpty.close();
+      }
+
+      const retainedNamespace = namespace();
+      const oldRetained = coordinator(retainedNamespace, "upgrade-retained-old");
+      const newRetained = coordinator(
+        retainedNamespace,
+        "upgrade-retained-new",
+        5_000,
+        2,
+        4,
+        successor,
+        coordinatorPolicy.retention,
+        coordinatorPolicy.turnState,
+        admission,
+      );
+      try {
+        await oldRetained.migrate();
+        expect(await oldRetained.register()).toEqual({ status: "registered" });
+        const retained = request("upgrade-retained-request", "upgrade-retained-thread");
+        expect(await oldRetained.admit(retained)).toEqual({ status: "admitted", attempt: 1 });
+        expect(await oldRetained.abandon(retained)).toEqual({ status: "ok" });
+        await oldRetained.close();
+        await expireInstanceLeases(retainedNamespace);
+        expect(await newRetained.register()).toEqual({ status: "unavailable" });
+      } finally {
+        await newRetained.close();
+      }
+    },
+  );
 });

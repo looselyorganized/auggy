@@ -1,6 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { SchedulerStartDecision } from "../kernel/keyed-turn-scheduler";
-import type { ExecutionContextV1, RouteAuthContext, TurnTrigger } from "../types";
+import type {
+  DistributedAdmissionCapacityV1,
+  DistributedAdmissionReservationV1,
+  ExecutionContextV1,
+  RouteAuthContext,
+  TurnTrigger,
+} from "../types";
 import type {
   AdmitResult,
   DistributedReplayResult,
@@ -52,7 +58,7 @@ export type DistributedLocalRunResult<T> =
 export type DistributedRootRunResult<T> =
   | { status: "completed"; value: T }
   | { status: "replay"; result: DistributedReplayResult }
-  | { status: "rejected"; reason: string }
+  | { status: "rejected"; reason: string; retryAfterMs?: number }
   | { status: "conflict" }
   | { status: "pending" }
   | { status: "terminal"; state: "failed" | "canceled" }
@@ -206,6 +212,8 @@ export function createCanonicalDistributedTurnRequest(options: {
   threadId: string;
   source: DistributedSourcePolicy;
   executionContext?: ExecutionContextV1;
+  capacity?: DistributedAdmissionCapacityV1;
+  admission?: readonly DistributedAdmissionReservationV1[];
   randomId?: () => string;
 }): DistributedTurnRequest {
   const identity =
@@ -217,6 +225,8 @@ export function createCanonicalDistributedTurnRequest(options: {
     version: 1,
     requestId,
     sourcePolicy: options.source.id,
+    capacity: options.capacity ?? null,
+    admission: options.admission ?? [],
     threadId: options.threadId,
     trigger: {
       type: options.trigger.type,
@@ -233,6 +243,10 @@ export function createCanonicalDistributedTurnRequest(options: {
     threadId: options.threadId,
     source: options.source,
     bindingHash: createHash("sha256").update(binding).digest("hex"),
+    ...(options.capacity === undefined ? {} : { capacity: { ...options.capacity } }),
+    ...(options.admission === undefined
+      ? {}
+      : { admission: options.admission.map((reservation) => ({ ...reservation })) }),
   };
 }
 
@@ -471,7 +485,11 @@ export function createDistributedRootTurnRuntime(
       if (admitted.status === "conflict") return { status: "conflict" };
       if (admitted.status === "unavailable") return { status: "unavailable" };
       if (admitted.status === "rejected") {
-        return { status: "rejected", reason: admitted.reason };
+        return {
+          status: "rejected",
+          reason: admitted.reason,
+          ...(admitted.retryAfterMs === undefined ? {} : { retryAfterMs: admitted.retryAfterMs }),
+        };
       }
       if (admitted.status === "joined") {
         const joined = await callWithDecisionDeadline(

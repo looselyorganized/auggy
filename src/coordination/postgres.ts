@@ -13,6 +13,9 @@ import type {
   ClaimResult,
   CoordinationOutcomeUnknownReason,
   CoordinationRequestState,
+  DistributedAdmissionConfig,
+  DistributedAdmissionReservation,
+  DistributedCapacityClassPolicy,
   DistributedCoordinationEvent,
   DistributedCoordinatorConfig,
   DistributedCoordinatorHealth,
@@ -21,11 +24,13 @@ import type {
   DistributedPeerBindingV1,
   DistributedPruneResult,
   DistributedReplayResult,
+  DistributedRateReservationResult,
   DistributedRequestStatus,
   DistributedTurnCoordinator,
   DistributedTurnCheckpointV1,
   DistributedTurnLease,
   DistributedTurnRequest,
+  DistributedTurnRequestIdentity,
   LeaseResult,
   RegistrationResult,
 } from "./types";
@@ -36,6 +41,10 @@ const MAX_LEASE_MS = 3_600_000;
 const MAX_EVENT_PAGE = 500;
 const MAX_PRUNE_BATCH = 1_000;
 const MAX_BIGINT = 9_223_372_036_854_775_807n;
+const MAX_RATE_POLICIES = 64;
+const MAX_CAPACITY_CLASSES = 64;
+const MAX_RATE_RESERVATIONS = 16;
+const MAX_RATE_WINDOW_MS = 86_400_000;
 const OUTCOME_UNKNOWN_REASONS = new Set<CoordinationOutcomeUnknownReason>([
   "coordinator-unavailable",
   "effect-outcome-unknown",
@@ -48,12 +57,85 @@ interface SqlTransaction extends PostgresMigrationExecutor {
 }
 
 interface LocalOwnedOperation {
+  admissionHash: string;
   attempt: number;
   bindingHash: string;
   controller: AbortController;
   phase: "queued" | "active";
   sourceId: string;
   threadId: string;
+}
+
+interface ResolvedAdmissionReservation extends DistributedAdmissionReservation {
+  max: number;
+  maxEvents: number;
+  windowMs: number;
+}
+
+function normalizedAdmission(config: DistributedCoordinatorConfig): DistributedAdmissionConfig {
+  return config.admission ?? { maxRateLimitEvents: 0, capacityClasses: [], rateLimits: [] };
+}
+
+function canonicalAdmission(
+  reservations: readonly DistributedAdmissionReservation[] | undefined,
+): string {
+  return [...(reservations ?? [])]
+    .map((reservation) => `${reservation.policyId}\0${reservation.subjectHash}`)
+    .sort()
+    .join("\n");
+}
+
+function requestAdmissionHash(request: DistributedTurnRequestIdentity): string {
+  return new Bun.CryptoHasher("sha256")
+    .update(
+      request.capacity ? `${request.capacity.classId}\0${request.capacity.partitionHash}\n` : "\n",
+    )
+    .update(canonicalAdmission(request.admission))
+    .digest("hex");
+}
+
+function admissionPolicyFingerprint(config: DistributedAdmissionConfig): string {
+  const capacity = [...(config.capacityClasses ?? [])]
+    .map(
+      (policy) =>
+        `${policy.id}\0${policy.maxRetainedRequests}\0${policy.maxRetainedRequestsPerPartition}`,
+    )
+    .sort()
+    .join("\n");
+  const rates = [...config.rateLimits]
+    .map((policy) => `${policy.id}\0${policy.max}\0${policy.maxEvents}\0${policy.windowMs}`)
+    .sort()
+    .join("\n");
+  return new Bun.CryptoHasher("sha256")
+    .update("auggy-distributed-admission-policy-v1\0")
+    .update(String(config.maxRateLimitEvents))
+    .update("\0")
+    .update(capacity)
+    .update("\0")
+    .update(rates)
+    .digest("hex");
+}
+
+function resolveAdmissionReservations(
+  config: DistributedAdmissionConfig,
+  reservations: readonly DistributedAdmissionReservation[] | undefined,
+): ResolvedAdmissionReservation[] | null {
+  const policies = new Map(config.rateLimits.map((policy) => [policy.id, policy]));
+  const seen = new Set<string>();
+  const resolved: ResolvedAdmissionReservation[] = [];
+  for (const reservation of reservations ?? []) {
+    if (seen.has(reservation.policyId)) return null;
+    seen.add(reservation.policyId);
+    const policy = policies.get(reservation.policyId);
+    if (!policy) return null;
+    resolved.push({
+      ...reservation,
+      max: policy.max,
+      maxEvents: policy.maxEvents,
+      windowMs: policy.windowMs,
+    });
+  }
+  return resolved;
 }
 
 export interface PostgresCoordinatorOptions extends DistributedCoordinatorConfig {
@@ -198,6 +280,24 @@ function assertRequest(request: DistributedTurnRequest): void {
     throw new Error("source.maxQueued is invalid");
   if (!/^[A-Za-z0-9_-]{16,160}$/.test(request.bindingHash))
     throw new Error("bindingHash must be a one-way canonical request hash");
+  if (request.capacity !== undefined) {
+    assertIdentifier("capacity.classId", request.capacity.classId);
+    if (!/^[0-9a-f]{64}$/.test(request.capacity.partitionHash)) {
+      throw new Error("capacity.partitionHash must be a SHA-256 digest");
+    }
+  }
+  if (
+    !Array.isArray(request.admission ?? []) ||
+    (request.admission?.length ?? 0) > MAX_RATE_RESERVATIONS
+  ) {
+    throw new Error("distributed admission reservations exceed supported bounds");
+  }
+  for (const reservation of request.admission ?? []) {
+    assertIdentifier("admission.policyId", reservation.policyId);
+    if (!/^[0-9a-f]{64}$/.test(reservation.subjectHash)) {
+      throw new Error("admission.subjectHash must be a SHA-256 digest");
+    }
+  }
 }
 
 /**
@@ -288,6 +388,66 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     ) {
       throw new Error("coordination turn-state policy is invalid");
     }
+    const admission = normalizedAdmission(options);
+    if (
+      !Number.isSafeInteger(admission.maxRateLimitEvents) ||
+      admission.maxRateLimitEvents < 0 ||
+      admission.maxRateLimitEvents > MAX_CAPACITY ||
+      !Array.isArray(admission.rateLimits) ||
+      admission.rateLimits.length > MAX_RATE_POLICIES
+    ) {
+      throw new Error("coordination admission policy is invalid");
+    }
+    const ratePolicyIds = new Set<string>();
+    for (const policy of admission.rateLimits) {
+      assertIdentifier("admission.rateLimits.id", policy.id);
+      if (
+        !Number.isSafeInteger(policy.max) ||
+        policy.max < 1 ||
+        policy.max > MAX_CAPACITY ||
+        !Number.isSafeInteger(policy.maxEvents) ||
+        policy.maxEvents < 1 ||
+        policy.maxEvents > MAX_CAPACITY ||
+        !Number.isSafeInteger(policy.windowMs) ||
+        policy.windowMs < 1_000 ||
+        policy.windowMs > MAX_RATE_WINDOW_MS ||
+        ratePolicyIds.has(policy.id)
+      ) {
+        throw new Error("coordination admission rate policy is invalid");
+      }
+      ratePolicyIds.add(policy.id);
+    }
+    if (
+      admission.rateLimits.reduce((sum, policy) => sum + policy.maxEvents, 0) >
+      admission.maxRateLimitEvents
+    ) {
+      throw new Error("coordination admission policy partitions exceed bounded event capacity");
+    }
+    const capacityClasses = admission.capacityClasses ?? [];
+    if (!Array.isArray(capacityClasses) || capacityClasses.length > MAX_CAPACITY_CLASSES) {
+      throw new Error("coordination admission capacity policy is invalid");
+    }
+    const capacityClassIds = new Set<string>();
+    let reservedRequestCapacity = 0;
+    for (const policy of capacityClasses) {
+      assertIdentifier("admission.capacityClasses.id", policy.id);
+      if (
+        !Number.isSafeInteger(policy.maxRetainedRequests) ||
+        policy.maxRetainedRequests < 1 ||
+        policy.maxRetainedRequests > MAX_CAPACITY ||
+        !Number.isSafeInteger(policy.maxRetainedRequestsPerPartition) ||
+        policy.maxRetainedRequestsPerPartition < 1 ||
+        policy.maxRetainedRequestsPerPartition > policy.maxRetainedRequests ||
+        capacityClassIds.has(policy.id)
+      ) {
+        throw new Error("coordination admission capacity policy is invalid");
+      }
+      capacityClassIds.add(policy.id);
+      reservedRequestCapacity += policy.maxRetainedRequests;
+    }
+    if (reservedRequestCapacity > options.retention.maxTerminalRequests) {
+      throw new Error("coordination admission capacity exceeds retained-request capacity");
+    }
     if (
       !Number.isSafeInteger(options.compatibility?.protocolVersion) ||
       options.compatibility.protocolVersion < 1 ||
@@ -339,6 +499,17 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         maxCostMarkersPerTurn: options.turnState.maxCostMarkersPerTurn,
         outbox: { ...options.turnState.outbox },
       },
+      ...(options.admission
+        ? {
+            admission: {
+              maxRateLimitEvents: options.admission.maxRateLimitEvents,
+              capacityClasses: (options.admission.capacityClasses ?? []).map((policy) => ({
+                ...policy,
+              })),
+              rateLimits: options.admission.rateLimits.map((policy) => ({ ...policy })),
+            },
+          }
+        : {}),
     };
     this.#sessionId = new Bun.CryptoHasher("sha256").update(crypto.randomUUID()).digest("hex");
     this.#ownsSql = !options.sql;
@@ -355,10 +526,48 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     if (this.#ownsSql) await (this.#sql as unknown as { close: () => Promise<void> }).close();
   }
 
+  supportsAdmissionPolicy(
+    requirements: Parameters<DistributedTurnCoordinator["supportsAdmissionPolicy"]>[0],
+  ): boolean {
+    try {
+      const admission = normalizedAdmission(this.#config);
+      const expectedCapacity = requirements.capacityClasses ?? [];
+      const expectedRates = requirements.rateLimits ?? [];
+      if (!Array.isArray(expectedCapacity) || !Array.isArray(expectedRates)) return false;
+      return (
+        expectedCapacity.every((expected) => {
+          const stored = (admission.capacityClasses ?? []).find(
+            (candidate) => candidate.id === expected.id,
+          );
+          return (
+            stored?.maxRetainedRequests === expected.maxRetainedRequests &&
+            stored?.maxRetainedRequestsPerPartition === expected.maxRetainedRequestsPerPartition
+          );
+        }) &&
+        expectedRates.every((expected) => {
+          const stored = admission.rateLimits.find((candidate) => candidate.id === expected.id);
+          return (
+            stored !== undefined &&
+            stored.max === expected.max &&
+            stored.windowMs === expected.windowMs &&
+            (expected.minRetainedEvents === undefined ||
+              stored.maxEvents >= expected.minRetainedEvents)
+          );
+        })
+      );
+    } catch {
+      return false;
+    }
+  }
+
   async register(): Promise<RegistrationResult> {
     return this.safe<RegistrationResult>({ status: "unavailable" }, async () =>
       this.transaction(async (tx) => {
         await this.#lockNamespace(tx, true, true);
+        await this.provisionRequestCapacityCounters(tx);
+        await this.verifyRequestCapacityCounters(tx);
+        await this.provisionRateCounters(tx);
+        await this.verifyRateEvidenceCounter(tx);
         const inserted = await tx.unsafe<Row>(
           "INSERT INTO public.auggy_coordination_instances (namespace, instance_id, session_id, build_fingerprint, accepting, draining, lease_expires_at) VALUES ($1, $2, $3, $4, TRUE, FALSE, clock_timestamp() + ($5 * interval '1 millisecond')) ON CONFLICT (namespace, instance_id) DO NOTHING RETURNING session_id",
           [
@@ -428,12 +637,28 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     const result = await this.safe<AdmitResult>({ status: "unavailable" }, async () =>
       this.transaction(async (tx) => {
         assertRequest(request);
+        const resolvedAdmission = resolveAdmissionReservations(
+          normalizedAdmission(this.#config),
+          request.admission,
+        );
+        if (!resolvedAdmission) return { status: "rejected", reason: "invalid-admission" };
+        const capacityPolicies = normalizedAdmission(this.#config).capacityClasses ?? [];
+        const capacityPolicy = request.capacity
+          ? capacityPolicies.find((policy) => policy.id === request.capacity!.classId)
+          : undefined;
+        if (
+          (capacityPolicies.length === 0 && request.capacity !== undefined) ||
+          (capacityPolicies.length > 0 && capacityPolicy === undefined)
+        ) {
+          return { status: "rejected", reason: "invalid-admission" };
+        }
+        const identityAdmissionHash = requestAdmissionHash(request);
         const limits = await this.#lockNamespace(tx);
         const instance = await this.registeredInstance(tx);
         if (!instance) throw new Error("coordinator instance is not registered");
         await this.#expireActive(tx);
         const existing = await tx.unsafe<Row>(
-          "SELECT thread_id, source_id, binding_hash, state, queue_generation, queue_expires_at <= clock_timestamp() AS queue_expired FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 FOR UPDATE",
+          "SELECT thread_id, source_id, binding_hash, admission_hash, state, queue_generation, queue_expires_at <= clock_timestamp() AS queue_expired FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 FOR UPDATE",
           [this.#config.namespace, request.requestId],
         );
         if (existing[0]) {
@@ -441,7 +666,8 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           if (
             text(row, "thread_id") !== request.threadId ||
             text(row, "source_id") !== request.source.id ||
-            text(row, "binding_hash") !== request.bindingHash
+            text(row, "binding_hash") !== request.bindingHash ||
+            text(row, "admission_hash") !== identityAdmissionHash
           ) {
             return { status: "conflict" };
           }
@@ -515,8 +741,48 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         ) {
           return { status: "rejected", reason: "thread-capacity" };
         }
+        if (capacityPolicy && request.capacity) {
+          if (
+            !(await this.lockAvailableRequestCapacity(
+              tx,
+              capacityPolicy,
+              request.capacity.partitionHash,
+            ))
+          ) {
+            return { status: "rejected", reason: "request-capacity" };
+          }
+        }
+        if (resolvedAdmission.length > 0) {
+          await this.lockRatePolicies(
+            tx,
+            resolvedAdmission.map((reservation) => reservation.policyId),
+          );
+          await this.cleanupExpiredRateEvents(
+            tx,
+            resolvedAdmission.map((reservation) => reservation.policyId),
+          );
+          let retryAfterMs = 0;
+          for (const reservation of resolvedAdmission) {
+            const usage = await tx.unsafe<Row>(
+              "SELECT count(*)::integer AS count, CASE WHEN count(*) = 0 THEN 0 ELSE GREATEST(1, ceil(extract(epoch FROM (min(expires_at) - clock_timestamp())) * 1000)::bigint) END AS retry_after_ms FROM public.auggy_coordination_rate_events WHERE namespace = $1 AND policy_id = $2 AND subject_hash = $3 AND expires_at > clock_timestamp()",
+              [this.#config.namespace, reservation.policyId, reservation.subjectHash],
+            );
+            if (number(usage[0]!, "count") >= reservation.max) {
+              retryAfterMs = Math.max(retryAfterMs, number(usage[0]!, "retry_after_ms"));
+            }
+          }
+          if (retryAfterMs > 0) {
+            return { status: "rejected", reason: "rate-limited", retryAfterMs };
+          }
+          if (!(await this.reserveRateEventSlots(tx, resolvedAdmission))) {
+            return { status: "rejected", reason: "admission-capacity" };
+          }
+        }
+        if (capacityPolicy && request.capacity) {
+          await this.reserveRequestCapacitySlot(tx, capacityPolicy, request.capacity.partitionHash);
+        }
         await tx.unsafe(
-          "INSERT INTO public.auggy_coordination_requests (namespace, request_id, thread_id, source_id, binding_hash, state, queue_owner_instance, queue_owner_session, queue_generation, queue_expires_at) VALUES ($1, $2, $3, $4, $5, 'queued', $6, $7, 1, clock_timestamp() + ($8 * interval '1 millisecond'))",
+          "INSERT INTO public.auggy_coordination_requests (namespace, request_id, thread_id, source_id, binding_hash, admission_hash, capacity_class, capacity_partition_hash, state, queue_owner_instance, queue_owner_session, queue_generation, queue_expires_at) VALUES ($1, $2, $3, $4, $5, $9, $10, $11, 'queued', $6, $7, 1, clock_timestamp() + ($8 * interval '1 millisecond'))",
           [
             this.#config.namespace,
             request.requestId,
@@ -526,8 +792,23 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
             this.#config.instanceId,
             this.#sessionId,
             this.#config.leaseMs,
+            identityAdmissionHash,
+            request.capacity?.classId ?? null,
+            request.capacity?.partitionHash ?? null,
           ],
         );
+        for (const reservation of resolvedAdmission) {
+          await tx.unsafe(
+            "INSERT INTO public.auggy_coordination_rate_events (namespace, policy_id, subject_hash, request_id, expires_at) VALUES ($1, $2, $3, $4, clock_timestamp() + ($5 * interval '1 millisecond'))",
+            [
+              this.#config.namespace,
+              reservation.policyId,
+              reservation.subjectHash,
+              request.requestId,
+              reservation.windowMs,
+            ],
+          );
+        }
         return { status: "admitted", attempt: 1 };
       }),
     );
@@ -537,8 +818,105 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     return result;
   }
 
+  async reserveRateLimits(
+    request: Parameters<DistributedTurnCoordinator["reserveRateLimits"]>[0],
+  ): Promise<DistributedRateReservationResult> {
+    return this.safe<DistributedRateReservationResult>({ status: "unavailable" }, async () =>
+      this.transaction(async (tx) => {
+        if (
+          !/^rate:[A-Za-z0-9][A-Za-z0-9._:-]{0,154}$/.test(request.reservationId) ||
+          !Array.isArray(request.admission) ||
+          request.admission.length !== 1
+        ) {
+          return { status: "rejected", reason: "invalid-admission" };
+        }
+        for (const reservation of request.admission) {
+          assertIdentifier("admission.policyId", reservation.policyId);
+          if (!/^[0-9a-f]{64}$/.test(reservation.subjectHash)) {
+            return { status: "rejected", reason: "invalid-admission" };
+          }
+        }
+        const resolved = resolveAdmissionReservations(
+          normalizedAdmission(this.#config),
+          request.admission,
+        );
+        if (!resolved) return { status: "rejected", reason: "invalid-admission" };
+        const instance = await this.registeredInstance(tx, false);
+        if (!instance?.accepting || instance.draining) {
+          return { status: "rejected", reason: "draining" };
+        }
+        await tx.unsafe("SELECT pg_advisory_xact_lock(hashtextextended($1, 0))", [
+          `${this.#config.namespace}\n${request.reservationId}`,
+        ]);
+        const existing = await tx.unsafe<Row>(
+          "SELECT policy_id, subject_hash, expires_at > clock_timestamp() AS live FROM public.auggy_coordination_rate_events WHERE namespace = $1 AND request_id = $2 ORDER BY policy_id, subject_hash FOR UPDATE",
+          [this.#config.namespace, request.reservationId],
+        );
+        const live = existing.filter((row) => row.live === true);
+        if (live.length > 0) {
+          const storedCanonical = live
+            .map((row) => `${text(row, "policy_id")}\0${text(row, "subject_hash")}`)
+            .join("\n");
+          return storedCanonical === canonicalAdmission(request.admission)
+            ? { status: "replayed" }
+            : { status: "conflict" };
+        }
+        const policyIds = [
+          ...new Set([...existing.map((row) => text(row, "policy_id")), resolved[0]!.policyId]),
+        ];
+        await this.lockRatePolicies(tx, policyIds);
+        if (existing.length > 0) {
+          const deleted = await tx.unsafe<Row>(
+            "WITH deleted AS (DELETE FROM public.auggy_coordination_rate_events WHERE namespace = $1 AND request_id = $2 AND expires_at <= clock_timestamp() RETURNING policy_id) SELECT policy_id, count(*)::integer AS count FROM deleted GROUP BY policy_id ORDER BY policy_id",
+            [this.#config.namespace, request.reservationId],
+          );
+          await this.releaseRateEventSlots(
+            tx,
+            deleted.map((row) => ({
+              policyId: text(row, "policy_id"),
+              count: number(row, "count"),
+            })),
+          );
+        }
+        await this.cleanupExpiredRateEvents(
+          tx,
+          resolved.map((reservation) => reservation.policyId),
+        );
+        let retryAfterMs = 0;
+        for (const reservation of resolved) {
+          const usage = await tx.unsafe<Row>(
+            "SELECT count(*)::integer AS count, CASE WHEN count(*) = 0 THEN 0 ELSE GREATEST(1, ceil(extract(epoch FROM (min(expires_at) - clock_timestamp())) * 1000)::bigint) END AS retry_after_ms FROM public.auggy_coordination_rate_events WHERE namespace = $1 AND policy_id = $2 AND subject_hash = $3 AND expires_at > clock_timestamp()",
+            [this.#config.namespace, reservation.policyId, reservation.subjectHash],
+          );
+          if (number(usage[0]!, "count") >= reservation.max) {
+            retryAfterMs = Math.max(retryAfterMs, number(usage[0]!, "retry_after_ms"));
+          }
+        }
+        if (retryAfterMs > 0) {
+          return { status: "rejected", reason: "rate-limited", retryAfterMs };
+        }
+        if (!(await this.reserveRateEventSlots(tx, resolved))) {
+          return { status: "rejected", reason: "admission-capacity" };
+        }
+        for (const reservation of resolved) {
+          await tx.unsafe(
+            "INSERT INTO public.auggy_coordination_rate_events (namespace, policy_id, subject_hash, request_id, expires_at) VALUES ($1, $2, $3, $4, clock_timestamp() + ($5 * interval '1 millisecond'))",
+            [
+              this.#config.namespace,
+              reservation.policyId,
+              reservation.subjectHash,
+              request.reservationId,
+              reservation.windowMs,
+            ],
+          );
+        }
+        return { status: "reserved" };
+      }),
+    );
+  }
+
   async heartbeatQueued(
-    request: Pick<DistributedTurnRequest, "requestId" | "threadId" | "source" | "bindingHash">,
+    request: DistributedTurnRequestIdentity,
     attempt = 1,
   ): Promise<LeaseResult> {
     const result = await this.safe<LeaseResult>({ status: "unavailable" }, async () =>
@@ -547,7 +925,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         await this.#lockNamespace(tx);
         if (!(await this.registeredInstance(tx))) return { status: "stale" };
         const rows = await tx.unsafe<Row>(
-          "UPDATE public.auggy_coordination_requests SET queue_expires_at = clock_timestamp() + ($9 * interval '1 millisecond'), updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND binding_hash = $5 AND state = 'queued' AND queue_owner_instance = $6 AND queue_owner_session = $7 AND queue_generation = $8 AND queue_expires_at > clock_timestamp() RETURNING request_id",
+          "UPDATE public.auggy_coordination_requests SET queue_expires_at = clock_timestamp() + ($9 * interval '1 millisecond'), updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND binding_hash = $5 AND admission_hash = $10 AND state = 'queued' AND queue_owner_instance = $6 AND queue_owner_session = $7 AND queue_generation = $8 AND queue_expires_at > clock_timestamp() RETURNING request_id",
           [
             this.#config.namespace,
             request.requestId,
@@ -558,6 +936,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
             this.#sessionId,
             attempt,
             this.#config.leaseMs,
+            requestAdmissionHash(request),
           ],
         );
         return rows[0] ? { status: "ok" } : { status: "stale" };
@@ -569,10 +948,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     return result;
   }
 
-  async abandon(
-    request: Pick<DistributedTurnRequest, "requestId" | "threadId" | "source" | "bindingHash">,
-    attempt = 1,
-  ): Promise<LeaseResult> {
+  async abandon(request: DistributedTurnRequestIdentity, attempt = 1): Promise<LeaseResult> {
     const result = await this.safe<LeaseResult>(
       { status: "unavailable" },
       async () =>
@@ -581,7 +957,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           await this.#lockNamespace(tx);
           if (!(await this.registeredInstance(tx))) return { status: "stale" };
           const rows = await tx.unsafe<Row>(
-            "UPDATE public.auggy_coordination_requests SET state = 'canceled', queue_owner_instance = NULL, queue_owner_session = NULL, queue_expires_at = NULL, owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, terminal_at = clock_timestamp(), updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND binding_hash = $5 AND queue_generation = $8 AND ((state = 'queued' AND queue_owner_instance = $6 AND queue_owner_session = $7 AND queue_expires_at > clock_timestamp()) OR (state = 'active' AND owner_instance = $6 AND owner_session = $7 AND execution_started_at IS NULL AND lease_expires_at > clock_timestamp())) RETURNING request_id",
+            "UPDATE public.auggy_coordination_requests SET state = 'canceled', queue_owner_instance = NULL, queue_owner_session = NULL, queue_expires_at = NULL, owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, terminal_at = clock_timestamp(), updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND binding_hash = $5 AND admission_hash = $9 AND queue_generation = $8 AND ((state = 'queued' AND queue_owner_instance = $6 AND queue_owner_session = $7 AND queue_expires_at > clock_timestamp()) OR (state = 'active' AND owner_instance = $6 AND owner_session = $7 AND execution_started_at IS NULL AND lease_expires_at > clock_timestamp())) RETURNING request_id",
             [
               this.#config.namespace,
               request.requestId,
@@ -591,6 +967,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
               this.#config.instanceId,
               this.#sessionId,
               attempt,
+              requestAdmissionHash(request),
             ],
           );
           return rows[0] ? { status: "ok" } : { status: "stale" };
@@ -613,7 +990,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         if (!instance) throw new Error("coordinator instance is not registered");
         await this.#expireActive(tx);
         const found = await tx.unsafe<Row>(
-          "SELECT state, thread_id, source_id, binding_hash, fence, owner_instance, owner_session, lease_expires_at, queue_owner_instance, queue_owner_session, queue_generation, queue_expires_at <= clock_timestamp() AS queue_expired FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 FOR UPDATE",
+          "SELECT state, thread_id, source_id, binding_hash, admission_hash, fence, owner_instance, owner_session, lease_expires_at, queue_owner_instance, queue_owner_session, queue_generation, queue_expires_at <= clock_timestamp() AS queue_expired FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 FOR UPDATE",
           [this.#config.namespace, request.requestId],
         );
         const row = found[0];
@@ -621,7 +998,8 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           !row ||
           text(row, "thread_id") !== request.threadId ||
           text(row, "source_id") !== request.source.id ||
-          text(row, "binding_hash") !== request.bindingHash
+          text(row, "binding_hash") !== request.bindingHash ||
+          text(row, "admission_hash") !== requestAdmissionHash(request)
         )
           return { status: "conflict" };
         const state = text(row, "state");
@@ -704,9 +1082,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     return result;
   }
 
-  ownedSignal(
-    request: Pick<DistributedTurnRequest, "requestId" | "threadId" | "source" | "bindingHash">,
-  ): AbortSignal {
+  ownedSignal(request: DistributedTurnRequestIdentity): AbortSignal {
     if (this.#invalidated) return this.unavailableSignal();
     try {
       assertRequest(request);
@@ -716,6 +1092,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     const operation = this.#owned.get(request.requestId);
     return operation &&
       operation.bindingHash === request.bindingHash &&
+      operation.admissionHash === requestAdmissionHash(request) &&
       operation.threadId === request.threadId &&
       operation.sourceId === request.source.id
       ? operation.controller.signal
@@ -1208,9 +1585,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     return result;
   }
 
-  async status(
-    request: Pick<DistributedTurnRequest, "requestId" | "threadId" | "source" | "bindingHash">,
-  ): Promise<DistributedRequestStatus> {
+  async status(request: DistributedTurnRequestIdentity): Promise<DistributedRequestStatus> {
     return this.safe<DistributedRequestStatus>({ status: "unavailable" }, async () =>
       this.transaction(async (tx) => {
         assertRequest(request);
@@ -1220,7 +1595,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         }
         await this.#expireActive(tx);
         const rows = await tx.unsafe<Row>(
-          "SELECT state, thread_id, source_id, binding_hash, CASE WHEN result_body IS NULL THEN NULL ELSE octet_length(result_body) END AS result_bytes FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2",
+          "SELECT state, thread_id, source_id, binding_hash, admission_hash, CASE WHEN result_body IS NULL THEN NULL ELSE octet_length(result_body) END AS result_bytes FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2",
           [this.#config.namespace, request.requestId],
         );
         const row = rows[0];
@@ -1228,7 +1603,8 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         if (
           text(row, "thread_id") !== request.threadId ||
           text(row, "source_id") !== request.source.id ||
-          text(row, "binding_hash") !== request.bindingHash
+          text(row, "binding_hash") !== request.bindingHash ||
+          text(row, "admission_hash") !== requestAdmissionHash(request)
         ) {
           return { status: "conflict" };
         }
@@ -1242,13 +1618,14 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           throw new Error("stored replay exceeds configured limit");
         }
         const replayRows = await tx.unsafe<Row>(
-          "SELECT result_body, result_content_type, result_version FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND binding_hash = $5 AND state = 'completed'",
+          "SELECT result_body, result_content_type, result_version FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND binding_hash = $5 AND admission_hash = $6 AND state = 'completed'",
           [
             this.#config.namespace,
             request.requestId,
             request.threadId,
             request.source.id,
             request.bindingHash,
+            requestAdmissionHash(request),
           ],
         );
         const replayRow = replayRows[0];
@@ -1277,7 +1654,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   }
 
   async wait(
-    request: Pick<DistributedTurnRequest, "requestId" | "threadId" | "source" | "bindingHash">,
+    request: DistributedTurnRequestIdentity,
     options: { signal?: AbortSignal; timeoutMs: number; pollMs: number },
   ): Promise<DistributedRequestStatus> {
     if (
@@ -1370,7 +1747,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         await this.#expireActive(tx);
         await this.#cancelExpiredQueued(tx);
         const requestRows = await tx.unsafe<Row>(
-          "WITH ranked AS (SELECT request.request_id, request.terminal_at, row_number() OVER (ORDER BY request.terminal_at DESC, request.request_id DESC) AS newest_rank FROM public.auggy_coordination_requests request WHERE request.namespace = $1 AND request.state IN ('completed', 'failed', 'canceled') AND NOT EXISTS (SELECT 1 FROM public.auggy_coordination_outbox outbox WHERE outbox.namespace = request.namespace AND outbox.request_id = request.request_id AND outbox.state = 'pending')), victims AS MATERIALIZED (SELECT request_id FROM ranked WHERE terminal_at <= clock_timestamp() - ($2 * interval '1 millisecond') OR newest_rank > $3 ORDER BY terminal_at, request_id LIMIT $4), deleted_costs AS (DELETE FROM public.auggy_coordination_cost_markers cost USING victims WHERE cost.namespace = $1 AND cost.request_id = victims.request_id RETURNING 1), deleted AS (DELETE FROM public.auggy_coordination_requests request USING victims WHERE request.namespace = $1 AND request.request_id = victims.request_id AND (SELECT count(*) FROM deleted_costs) >= 0 RETURNING 1) SELECT count(*)::integer AS count FROM deleted",
+          "WITH ranked AS (SELECT request.request_id, request.terminal_at, row_number() OVER (ORDER BY request.terminal_at DESC, request.request_id DESC) AS newest_rank FROM public.auggy_coordination_requests request WHERE request.namespace = $1 AND request.state IN ('completed', 'failed', 'canceled') AND NOT EXISTS (SELECT 1 FROM public.auggy_coordination_outbox outbox WHERE outbox.namespace = request.namespace AND outbox.request_id = request.request_id AND outbox.state = 'pending')), victims AS MATERIALIZED (SELECT request_id FROM ranked WHERE terminal_at <= clock_timestamp() - ($2 * interval '1 millisecond') OR newest_rank > $3 ORDER BY terminal_at, request_id LIMIT $4), deleted_costs AS (DELETE FROM public.auggy_coordination_cost_markers cost USING victims WHERE cost.namespace = $1 AND cost.request_id = victims.request_id RETURNING 1) DELETE FROM public.auggy_coordination_requests request USING victims WHERE request.namespace = $1 AND request.request_id = victims.request_id AND (SELECT count(*) FROM deleted_costs) >= 0 RETURNING request.capacity_class, request.capacity_partition_hash",
           [
             this.#config.namespace,
             this.#config.retention.terminalRequestRetentionMs,
@@ -1378,6 +1755,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
             batchSize,
           ],
         );
+        await this.releaseRequestCapacitySlots(tx, requestRows);
         const threadRows = await tx.unsafe<Row>(
           "WITH victims AS MATERIALIZED (SELECT thread.thread_id FROM public.auggy_coordination_threads thread WHERE thread.namespace = $1 AND NOT thread.quarantined AND NOT EXISTS (SELECT 1 FROM public.auggy_coordination_requests request WHERE request.namespace = $1 AND request.thread_id = thread.thread_id) ORDER BY thread.thread_id LIMIT $2), deleted_history AS (DELETE FROM public.auggy_coordination_history history USING victims WHERE history.namespace = $1 AND history.thread_id = victims.thread_id RETURNING 1), deleted AS (DELETE FROM public.auggy_coordination_threads thread USING victims WHERE thread.namespace = $1 AND thread.thread_id = victims.thread_id AND (SELECT count(*) FROM deleted_history) >= 0 RETURNING 1) SELECT count(*)::integer AS count FROM deleted",
           [this.#config.namespace, batchSize],
@@ -1399,7 +1777,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           status: "ok",
           events: number(eventRows[0]!, "count"),
           instances: number(instanceRows[0]!, "count"),
-          requests: number(requestRows[0]!, "count"),
+          requests: requestRows.length,
           threads: number(threadRows[0]!, "count"),
         };
       }),
@@ -1497,9 +1875,15 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   ): Promise<
     Pick<DistributedCoordinatorConfig, "maxConcurrent" | "maxQueued" | "maxQueuedPerThread">
   > {
+    const admission = normalizedAdmission(this.#config);
+    const configuredAdmission =
+      this.#config.admission !== undefined || this.#config.compatibility.protocolVersion >= 6;
+    const ratePolicyFingerprint = configuredAdmission
+      ? admissionPolicyFingerprint(admission)
+      : null;
     if (create) {
       await tx.unsafe(
-        "INSERT INTO public.auggy_coordination_namespaces (namespace, max_concurrent, max_queued, max_queued_per_thread, lease_ms, protocol_version, protocol_fingerprint, configuration_fingerprint, terminal_request_retention_ms, max_terminal_requests, event_retention_ms, max_events, max_replay_bytes, max_history_snapshot_bytes, max_history_messages, max_history_threads, max_cost_markers_per_turn, max_outbox_intents_per_turn, max_outbox_intent_bytes, max_pending_outbox_intents) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) ON CONFLICT (namespace) DO NOTHING",
+        "INSERT INTO public.auggy_coordination_namespaces (namespace, max_concurrent, max_queued, max_queued_per_thread, lease_ms, protocol_version, protocol_fingerprint, configuration_fingerprint, terminal_request_retention_ms, max_terminal_requests, event_retention_ms, max_events, max_replay_bytes, max_history_snapshot_bytes, max_history_messages, max_history_threads, max_cost_markers_per_turn, max_outbox_intents_per_turn, max_outbox_intent_bytes, max_pending_outbox_intents, max_rate_limit_events, rate_policy_fingerprint) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22) ON CONFLICT (namespace) DO NOTHING",
         [
           this.#config.namespace,
           this.#config.maxConcurrent,
@@ -1521,6 +1905,8 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           this.#config.turnState.outbox.maxIntentsPerTurn,
           this.#config.turnState.outbox.maxIntentBytes,
           this.#config.turnState.outbox.maxPendingIntents,
+          configuredAdmission ? admission.maxRateLimitEvents : null,
+          ratePolicyFingerprint,
         ],
       );
       await tx.unsafe(
@@ -1529,7 +1915,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       );
     }
     const policy = await tx.unsafe<Row>(
-      "SELECT max_concurrent, max_queued, max_queued_per_thread, lease_ms, protocol_version, protocol_fingerprint, configuration_fingerprint, terminal_request_retention_ms, max_terminal_requests, event_retention_ms, max_events, max_replay_bytes, max_history_snapshot_bytes, max_history_messages, max_history_threads, max_cost_markers_per_turn, max_outbox_intents_per_turn, max_outbox_intent_bytes, max_pending_outbox_intents FROM public.auggy_coordination_namespaces WHERE namespace = $1 FOR UPDATE",
+      "SELECT max_concurrent, max_queued, max_queued_per_thread, lease_ms, protocol_version, protocol_fingerprint, configuration_fingerprint, terminal_request_retention_ms, max_terminal_requests, event_retention_ms, max_events, max_replay_bytes, max_history_snapshot_bytes, max_history_messages, max_history_threads, max_cost_markers_per_turn, max_outbox_intents_per_turn, max_outbox_intent_bytes, max_pending_outbox_intents, max_rate_limit_events, rate_policy_fingerprint FROM public.auggy_coordination_namespaces WHERE namespace = $1 FOR UPDATE",
       [this.#config.namespace],
     );
     const row = policy[0];
@@ -1554,6 +1940,8 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       maxOutboxIntentsPerTurn: nullableNumber(row, "max_outbox_intents_per_turn"),
       maxOutboxIntentBytes: nullableNumber(row, "max_outbox_intent_bytes"),
       maxPendingOutboxIntents: nullableNumber(row, "max_pending_outbox_intents"),
+      maxRateLimitEvents: nullableNumber(row, "max_rate_limit_events"),
+      ratePolicyFingerprint: nullableText(row, "rate_policy_fingerprint"),
     };
     const basePolicyMatches =
       stored.maxConcurrent === this.#config.maxConcurrent &&
@@ -1581,60 +1969,87 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       stored.maxOutboxIntentsPerTurn === null &&
       stored.maxOutboxIntentBytes === null &&
       stored.maxPendingOutboxIntents === null;
+    let admissionMatches = configuredAdmission
+      ? stored.maxRateLimitEvents === admission.maxRateLimitEvents &&
+        stored.ratePolicyFingerprint === ratePolicyFingerprint
+      : stored.maxRateLimitEvents === null && stored.ratePolicyFingerprint === null;
+    const emptyAdmissionPolicy =
+      stored.maxRateLimitEvents === null && stored.ratePolicyFingerprint === null;
     let compatibilityMatches =
       stored.protocolVersion === this.#config.compatibility.protocolVersion &&
       stored.protocolFingerprint === this.#config.compatibility.protocolFingerprint &&
       stored.configurationFingerprint === this.#config.compatibility.configurationFingerprint;
     const predecessor = this.#config.compatibility.upgradeFrom;
+    const upgradesTurnState = !configuredAdmission && emptyTurnStatePolicy;
+    const upgradesAdmission = configuredAdmission && turnStateMatches && emptyAdmissionPolicy;
     if (
       !compatibilityMatches &&
       allowQuiescentUpgrade &&
       basePolicyMatches &&
-      emptyTurnStatePolicy &&
+      (upgradesTurnState || upgradesAdmission) &&
       predecessor &&
       stored.protocolVersion === predecessor.protocolVersion &&
       stored.protocolFingerprint === predecessor.protocolFingerprint &&
       stored.configurationFingerprint === predecessor.configurationFingerprint
     ) {
       const activity = await tx.unsafe<Row>(
-        "SELECT count(*) FILTER (WHERE lease_expires_at > clock_timestamp())::integer AS live_instances, (SELECT count(*)::integer FROM public.auggy_coordination_requests WHERE namespace = $1 AND state IN ('queued', 'active')) AS pending_requests FROM public.auggy_coordination_instances WHERE namespace = $1",
+        "SELECT count(*) FILTER (WHERE lease_expires_at > clock_timestamp())::integer AS live_instances, (SELECT count(*)::integer FROM public.auggy_coordination_requests WHERE namespace = $1 AND state IN ('queued', 'active')) AS pending_requests, (SELECT count(*)::integer FROM public.auggy_coordination_requests WHERE namespace = $1) AS total_requests, (SELECT count(*)::integer FROM public.auggy_coordination_rate_events WHERE namespace = $1) AS rate_events FROM public.auggy_coordination_instances WHERE namespace = $1",
         [this.#config.namespace],
       );
       const quiescent =
         activity[0] &&
         number(activity[0], "live_instances") === 0 &&
-        number(activity[0], "pending_requests") === 0;
+        number(activity[0], "pending_requests") === 0 &&
+        (!upgradesAdmission ||
+          (number(activity[0], "total_requests") === 0 &&
+            number(activity[0], "rate_events") === 0));
       if (quiescent) {
-        const upgraded = await tx.unsafe<Row>(
-          "UPDATE public.auggy_coordination_namespaces SET protocol_version = $5, protocol_fingerprint = $6, configuration_fingerprint = $7, max_history_snapshot_bytes = $8, max_history_messages = $9, max_history_threads = $10, max_cost_markers_per_turn = $11, max_outbox_intents_per_turn = $12, max_outbox_intent_bytes = $13, max_pending_outbox_intents = $14, updated_at = clock_timestamp() WHERE namespace = $1 AND protocol_version = $2 AND protocol_fingerprint = $3 AND configuration_fingerprint = $4 AND max_history_snapshot_bytes IS NULL AND max_history_messages IS NULL AND max_history_threads IS NULL AND max_cost_markers_per_turn IS NULL AND max_outbox_intents_per_turn IS NULL AND max_outbox_intent_bytes IS NULL AND max_pending_outbox_intents IS NULL RETURNING namespace",
-          [
-            this.#config.namespace,
-            predecessor.protocolVersion,
-            predecessor.protocolFingerprint,
-            predecessor.configurationFingerprint,
-            this.#config.compatibility.protocolVersion,
-            this.#config.compatibility.protocolFingerprint,
-            this.#config.compatibility.configurationFingerprint,
-            this.#config.turnState.history.maxSnapshotBytes,
-            this.#config.turnState.history.maxMessages,
-            this.#config.turnState.history.maxThreads,
-            this.#config.turnState.maxCostMarkersPerTurn,
-            this.#config.turnState.outbox.maxIntentsPerTurn,
-            this.#config.turnState.outbox.maxIntentBytes,
-            this.#config.turnState.outbox.maxPendingIntents,
-          ],
-        );
+        const upgraded = upgradesAdmission
+          ? await tx.unsafe<Row>(
+              "UPDATE public.auggy_coordination_namespaces SET protocol_version = $5, protocol_fingerprint = $6, configuration_fingerprint = $7, max_rate_limit_events = $8, rate_policy_fingerprint = $9, updated_at = clock_timestamp() WHERE namespace = $1 AND protocol_version = $2 AND protocol_fingerprint = $3 AND configuration_fingerprint = $4 AND max_rate_limit_events IS NULL AND rate_policy_fingerprint IS NULL RETURNING namespace",
+              [
+                this.#config.namespace,
+                predecessor.protocolVersion,
+                predecessor.protocolFingerprint,
+                predecessor.configurationFingerprint,
+                this.#config.compatibility.protocolVersion,
+                this.#config.compatibility.protocolFingerprint,
+                this.#config.compatibility.configurationFingerprint,
+                admission.maxRateLimitEvents,
+                ratePolicyFingerprint,
+              ],
+            )
+          : await tx.unsafe<Row>(
+              "UPDATE public.auggy_coordination_namespaces SET protocol_version = $5, protocol_fingerprint = $6, configuration_fingerprint = $7, max_history_snapshot_bytes = $8, max_history_messages = $9, max_history_threads = $10, max_cost_markers_per_turn = $11, max_outbox_intents_per_turn = $12, max_outbox_intent_bytes = $13, max_pending_outbox_intents = $14, updated_at = clock_timestamp() WHERE namespace = $1 AND protocol_version = $2 AND protocol_fingerprint = $3 AND configuration_fingerprint = $4 AND max_history_snapshot_bytes IS NULL AND max_history_messages IS NULL AND max_history_threads IS NULL AND max_cost_markers_per_turn IS NULL AND max_outbox_intents_per_turn IS NULL AND max_outbox_intent_bytes IS NULL AND max_pending_outbox_intents IS NULL RETURNING namespace",
+              [
+                this.#config.namespace,
+                predecessor.protocolVersion,
+                predecessor.protocolFingerprint,
+                predecessor.configurationFingerprint,
+                this.#config.compatibility.protocolVersion,
+                this.#config.compatibility.protocolFingerprint,
+                this.#config.compatibility.configurationFingerprint,
+                this.#config.turnState.history.maxSnapshotBytes,
+                this.#config.turnState.history.maxMessages,
+                this.#config.turnState.history.maxThreads,
+                this.#config.turnState.maxCostMarkersPerTurn,
+                this.#config.turnState.outbox.maxIntentsPerTurn,
+                this.#config.turnState.outbox.maxIntentBytes,
+                this.#config.turnState.outbox.maxPendingIntents,
+              ],
+            );
         if (upgraded[0]) {
           await tx.unsafe(
             "DELETE FROM public.auggy_coordination_instances WHERE namespace = $1 AND lease_expires_at <= clock_timestamp()",
             [this.#config.namespace],
           );
           compatibilityMatches = true;
-          turnStateMatches = true;
+          if (upgradesTurnState) turnStateMatches = true;
+          if (upgradesAdmission) admissionMatches = true;
         }
       }
     }
-    if (!basePolicyMatches || !turnStateMatches || !compatibilityMatches) {
+    if (!basePolicyMatches || !turnStateMatches || !admissionMatches || !compatibilityMatches) {
       throw new Error("coordinator namespace policy mismatch");
     }
     return stored;
@@ -1642,9 +2057,10 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
 
   async registeredInstance(
     tx: SqlTransaction,
+    lock = true,
   ): Promise<{ accepting: boolean; draining: boolean } | undefined> {
     const rows = await tx.unsafe<Row>(
-      "SELECT accepting, draining FROM public.auggy_coordination_instances WHERE namespace = $1 AND instance_id = $2 AND session_id = $3 AND build_fingerprint = $4 AND lease_expires_at > clock_timestamp() FOR UPDATE",
+      `SELECT accepting, draining FROM public.auggy_coordination_instances WHERE namespace = $1 AND instance_id = $2 AND session_id = $3 AND build_fingerprint = $4 AND lease_expires_at > clock_timestamp()${lock ? " FOR UPDATE" : ""}`,
       [
         this.#config.namespace,
         this.#config.instanceId,
@@ -1654,6 +2070,195 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     );
     const row = rows[0];
     return row ? { accepting: bool(row, "accepting"), draining: bool(row, "draining") } : undefined;
+  }
+
+  /** Provision immutable retained-request partitions while the namespace row is locked. */
+  async provisionRequestCapacityCounters(tx: SqlTransaction): Promise<void> {
+    const policies = [...(normalizedAdmission(this.#config).capacityClasses ?? [])].sort(
+      (left, right) => left.id.localeCompare(right.id),
+    );
+    for (const policy of policies) {
+      await tx.unsafe(
+        "INSERT INTO public.auggy_coordination_request_class_counters (namespace, capacity_class, max_retained_requests, max_retained_per_partition) VALUES ($1, $2, $3, $4) ON CONFLICT (namespace, capacity_class) DO NOTHING",
+        [
+          this.#config.namespace,
+          policy.id,
+          policy.maxRetainedRequests,
+          policy.maxRetainedRequestsPerPartition,
+        ],
+      );
+    }
+    const rows = await tx.unsafe<Row>(
+      "SELECT capacity_class, max_retained_requests, max_retained_per_partition FROM public.auggy_coordination_request_class_counters WHERE namespace = $1 ORDER BY capacity_class FOR UPDATE",
+      [this.#config.namespace],
+    );
+    if (
+      rows.length !== policies.length ||
+      rows.some((row, index) => {
+        const policy = policies[index];
+        return (
+          !policy ||
+          text(row, "capacity_class") !== policy.id ||
+          number(row, "max_retained_requests") !== policy.maxRetainedRequests ||
+          number(row, "max_retained_per_partition") !== policy.maxRetainedRequestsPerPartition
+        );
+      })
+    ) {
+      throw new Error("coordinator retained request partition mismatch");
+    }
+  }
+
+  /** Fail closed if durable counters and the retained ledger ever diverge. */
+  async verifyRequestCapacityCounters(tx: SqlTransaction): Promise<void> {
+    const classes = await tx.unsafe<Row>(
+      "SELECT counter.capacity_class, counter.retained_count, counter.max_retained_requests, (SELECT count(*)::integer FROM public.auggy_coordination_requests request WHERE request.namespace = counter.namespace AND request.capacity_class = counter.capacity_class) AS actual_count FROM public.auggy_coordination_request_class_counters counter WHERE counter.namespace = $1 ORDER BY counter.capacity_class FOR UPDATE",
+      [this.#config.namespace],
+    );
+    if (
+      classes.some(
+        (row) =>
+          number(row, "retained_count") !== number(row, "actual_count") ||
+          number(row, "retained_count") > number(row, "max_retained_requests"),
+      )
+    ) {
+      throw new Error("coordinator retained request counter mismatch");
+    }
+    const inconsistentPartitions = await tx.unsafe<Row>(
+      "SELECT counter.capacity_class FROM public.auggy_coordination_request_partition_counters counter WHERE counter.namespace = $1 AND (counter.retained_count <= 0 OR counter.retained_count > COALESCE((SELECT class_counter.max_retained_per_partition FROM public.auggy_coordination_request_class_counters class_counter WHERE class_counter.namespace = counter.namespace AND class_counter.capacity_class = counter.capacity_class), -1) OR counter.retained_count <> (SELECT count(*)::integer FROM public.auggy_coordination_requests request WHERE request.namespace = counter.namespace AND request.capacity_class = counter.capacity_class AND request.capacity_partition_hash = counter.partition_hash)) LIMIT 1 FOR UPDATE",
+      [this.#config.namespace],
+    );
+    const orphanedRequests = await tx.unsafe<Row>(
+      "SELECT request.request_id FROM public.auggy_coordination_requests request WHERE request.namespace = $1 AND request.capacity_class IS NOT NULL AND (NOT EXISTS (SELECT 1 FROM public.auggy_coordination_request_class_counters class_counter WHERE class_counter.namespace = request.namespace AND class_counter.capacity_class = request.capacity_class) OR NOT EXISTS (SELECT 1 FROM public.auggy_coordination_request_partition_counters partition_counter WHERE partition_counter.namespace = request.namespace AND partition_counter.capacity_class = request.capacity_class AND partition_counter.partition_hash = request.capacity_partition_hash)) LIMIT 1",
+      [this.#config.namespace],
+    );
+    if (inconsistentPartitions[0] || orphanedRequests[0]) {
+      throw new Error("coordinator retained request counter mismatch");
+    }
+  }
+
+  /** Locks the bounded counter rows without mutating them so later rejection remains side-effect free. */
+  async lockAvailableRequestCapacity(
+    tx: SqlTransaction,
+    policy: DistributedCapacityClassPolicy,
+    partitionHash: string,
+  ): Promise<boolean> {
+    const classes = await tx.unsafe<Row>(
+      "SELECT max_retained_requests, max_retained_per_partition, retained_count FROM public.auggy_coordination_request_class_counters WHERE namespace = $1 AND capacity_class = $2 FOR UPDATE",
+      [this.#config.namespace, policy.id],
+    );
+    const capacityClass = classes[0];
+    if (
+      !capacityClass ||
+      number(capacityClass, "max_retained_requests") !== policy.maxRetainedRequests ||
+      number(capacityClass, "max_retained_per_partition") !== policy.maxRetainedRequestsPerPartition
+    ) {
+      throw new Error("coordinator retained request partition mismatch");
+    }
+    if (number(capacityClass, "retained_count") >= policy.maxRetainedRequests) return false;
+    const partitions = await tx.unsafe<Row>(
+      "SELECT retained_count FROM public.auggy_coordination_request_partition_counters WHERE namespace = $1 AND capacity_class = $2 AND partition_hash = $3 FOR UPDATE",
+      [this.#config.namespace, policy.id, partitionHash],
+    );
+    return (
+      !partitions[0] ||
+      number(partitions[0], "retained_count") < policy.maxRetainedRequestsPerPartition
+    );
+  }
+
+  /** Consumes a previously locked retained-request slot in the admission transaction. */
+  async reserveRequestCapacitySlot(
+    tx: SqlTransaction,
+    policy: DistributedCapacityClassPolicy,
+    partitionHash: string,
+  ): Promise<void> {
+    const capacityClass = await tx.unsafe<Row>(
+      "UPDATE public.auggy_coordination_request_class_counters SET retained_count = retained_count + 1, updated_at = clock_timestamp() WHERE namespace = $1 AND capacity_class = $2 AND max_retained_requests = $3 AND max_retained_per_partition = $4 AND retained_count < max_retained_requests RETURNING capacity_class",
+      [
+        this.#config.namespace,
+        policy.id,
+        policy.maxRetainedRequests,
+        policy.maxRetainedRequestsPerPartition,
+      ],
+    );
+    if (!capacityClass[0]) throw new Error("coordinator retained request counter mismatch");
+    const partition = await tx.unsafe<Row>(
+      "INSERT INTO public.auggy_coordination_request_partition_counters (namespace, capacity_class, partition_hash, retained_count) VALUES ($1, $2, $3, 1) ON CONFLICT (namespace, capacity_class, partition_hash) DO UPDATE SET retained_count = auggy_coordination_request_partition_counters.retained_count + 1, updated_at = clock_timestamp() WHERE auggy_coordination_request_partition_counters.retained_count < $4 RETURNING capacity_class",
+      [this.#config.namespace, policy.id, partitionHash, policy.maxRetainedRequestsPerPartition],
+    );
+    if (!partition[0]) throw new Error("coordinator retained request counter mismatch");
+  }
+
+  /** Releases retained-request slots in the same transaction that prunes their ledger rows. */
+  async releaseRequestCapacitySlots(tx: SqlTransaction, deleted: readonly Row[]): Promise<void> {
+    const classes = new Map<string, { count: number; partitions: Map<string, number> }>();
+    for (const row of deleted) {
+      const capacityClass = nullableText(row, "capacity_class");
+      const partitionHash = nullableText(row, "capacity_partition_hash");
+      if (capacityClass === null && partitionHash === null) continue;
+      if (capacityClass === null || partitionHash === null) {
+        throw new Error("coordinator retained request counter mismatch");
+      }
+      const entry = classes.get(capacityClass) ?? { count: 0, partitions: new Map() };
+      entry.count += 1;
+      entry.partitions.set(partitionHash, (entry.partitions.get(partitionHash) ?? 0) + 1);
+      classes.set(capacityClass, entry);
+    }
+    for (const [capacityClass, release] of [...classes].sort(([left], [right]) =>
+      left.localeCompare(right),
+    )) {
+      const updatedClass = await tx.unsafe<Row>(
+        "UPDATE public.auggy_coordination_request_class_counters SET retained_count = retained_count - $3, updated_at = clock_timestamp() WHERE namespace = $1 AND capacity_class = $2 AND retained_count >= $3 RETURNING capacity_class",
+        [this.#config.namespace, capacityClass, release.count],
+      );
+      if (!updatedClass[0]) throw new Error("coordinator retained request counter mismatch");
+      for (const [partitionHash, count] of [...release.partitions].sort(([left], [right]) =>
+        left.localeCompare(right),
+      )) {
+        const updatedPartition = await tx.unsafe<Row>(
+          "UPDATE public.auggy_coordination_request_partition_counters SET retained_count = retained_count - $4, updated_at = clock_timestamp() WHERE namespace = $1 AND capacity_class = $2 AND partition_hash = $3 AND retained_count >= $4 RETURNING retained_count",
+          [this.#config.namespace, capacityClass, partitionHash, count],
+        );
+        const row = updatedPartition[0];
+        if (!row) throw new Error("coordinator retained request counter mismatch");
+        if (number(row, "retained_count") === 0) {
+          const removed = await tx.unsafe<Row>(
+            "DELETE FROM public.auggy_coordination_request_partition_counters WHERE namespace = $1 AND capacity_class = $2 AND partition_hash = $3 AND retained_count = 0 RETURNING capacity_class",
+            [this.#config.namespace, capacityClass, partitionHash],
+          );
+          if (!removed[0]) throw new Error("coordinator retained request counter mismatch");
+        }
+      }
+    }
+  }
+
+  /** Provision immutable per-policy evidence partitions while the namespace row is locked. */
+  async provisionRateCounters(tx: SqlTransaction): Promise<void> {
+    const policies = [...normalizedAdmission(this.#config).rateLimits].sort((left, right) =>
+      left.id.localeCompare(right.id),
+    );
+    for (const policy of policies) {
+      await tx.unsafe(
+        "INSERT INTO public.auggy_coordination_rate_counters (namespace, policy_id, max_events) VALUES ($1, $2, $3) ON CONFLICT (namespace, policy_id) DO NOTHING",
+        [this.#config.namespace, policy.id, policy.maxEvents],
+      );
+    }
+    const rows = await tx.unsafe<Row>(
+      "SELECT policy_id, max_events FROM public.auggy_coordination_rate_counters WHERE namespace = $1 ORDER BY policy_id FOR UPDATE",
+      [this.#config.namespace],
+    );
+    if (
+      rows.length !== policies.length ||
+      rows.some((row, index) => {
+        const policy = policies[index];
+        return (
+          !policy ||
+          text(row, "policy_id") !== policy.id ||
+          number(row, "max_events") !== policy.maxEvents
+        );
+      })
+    ) {
+      throw new Error("coordinator rate evidence partition mismatch");
+    }
   }
 
   async provisionSources(tx: SqlTransaction): Promise<void> {
@@ -1709,6 +2314,98 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       throw new Error("coordinator source policy mismatch");
     }
     return stored;
+  }
+
+  async lockRatePolicies(tx: SqlTransaction, policyIds: readonly string[]): Promise<void> {
+    const configured = new Map(
+      normalizedAdmission(this.#config).rateLimits.map((policy) => [policy.id, policy]),
+    );
+    for (const policyId of [...new Set(policyIds)].sort()) {
+      const policy = configured.get(policyId);
+      if (!policy) throw new Error("coordinator rate policy is unavailable");
+      const rows = await tx.unsafe<Row>(
+        "SELECT max_events FROM public.auggy_coordination_rate_counters WHERE namespace = $1 AND policy_id = $2 FOR UPDATE",
+        [this.#config.namespace, policyId],
+      );
+      if (!rows[0] || number(rows[0], "max_events") !== policy.maxEvents) {
+        throw new Error("coordinator rate evidence partition mismatch");
+      }
+    }
+  }
+
+  async cleanupExpiredRateEvents(tx: SqlTransaction, policyIds: readonly string[]): Promise<void> {
+    for (const policyId of [...new Set(policyIds)].sort()) {
+      const rows = await tx.unsafe<Row>(
+        "WITH victims AS (SELECT namespace, policy_id, subject_hash, request_id FROM public.auggy_coordination_rate_events WHERE namespace = $1 AND policy_id = $2 AND expires_at <= clock_timestamp() ORDER BY expires_at, subject_hash, request_id LIMIT 1000), deleted AS (DELETE FROM public.auggy_coordination_rate_events event USING victims WHERE event.namespace = victims.namespace AND event.policy_id = victims.policy_id AND event.subject_hash = victims.subject_hash AND event.request_id = victims.request_id RETURNING 1) SELECT count(*)::integer AS count FROM deleted",
+        [this.#config.namespace, policyId],
+      );
+      const deleted = number(rows[0]!, "count");
+      if (deleted > 0) await this.releaseRateEventSlots(tx, [{ policyId, count: deleted }]);
+    }
+  }
+
+  async verifyRateEvidenceCounter(tx: SqlTransaction): Promise<void> {
+    const rows = await tx.unsafe<Row>(
+      "SELECT counter.policy_id, counter.event_count, counter.max_events, (SELECT count(*)::integer FROM public.auggy_coordination_rate_events event WHERE event.namespace = counter.namespace AND event.policy_id = counter.policy_id) AS actual_count FROM public.auggy_coordination_rate_counters counter WHERE counter.namespace = $1 ORDER BY counter.policy_id FOR UPDATE",
+      [this.#config.namespace],
+    );
+    if (
+      rows.some(
+        (row) =>
+          number(row, "event_count") !== number(row, "actual_count") ||
+          number(row, "event_count") > number(row, "max_events"),
+      )
+    ) {
+      throw new Error("coordinator rate evidence counter mismatch");
+    }
+    const orphaned = await tx.unsafe<Row>(
+      "SELECT count(*)::integer AS count FROM public.auggy_coordination_rate_events event WHERE event.namespace = $1 AND NOT EXISTS (SELECT 1 FROM public.auggy_coordination_rate_counters counter WHERE counter.namespace = event.namespace AND counter.policy_id = event.policy_id)",
+      [this.#config.namespace],
+    );
+    if (number(orphaned[0]!, "count") !== 0) {
+      throw new Error("coordinator rate evidence counter mismatch");
+    }
+  }
+
+  async reserveRateEventSlots(
+    tx: SqlTransaction,
+    reservations: readonly ResolvedAdmissionReservation[],
+  ): Promise<boolean> {
+    for (const reservation of reservations) {
+      const rows = await tx.unsafe<Row>(
+        "SELECT event_count, max_events FROM public.auggy_coordination_rate_counters WHERE namespace = $1 AND policy_id = $2 FOR UPDATE",
+        [this.#config.namespace, reservation.policyId],
+      );
+      if (
+        !rows[0] ||
+        number(rows[0], "max_events") !== reservation.maxEvents ||
+        number(rows[0], "event_count") >= reservation.maxEvents
+      ) {
+        return false;
+      }
+    }
+    for (const reservation of reservations) {
+      const updated = await tx.unsafe<Row>(
+        "UPDATE public.auggy_coordination_rate_counters SET event_count = event_count + 1, updated_at = clock_timestamp() WHERE namespace = $1 AND policy_id = $2 AND event_count < max_events RETURNING policy_id",
+        [this.#config.namespace, reservation.policyId],
+      );
+      if (!updated[0]) throw new Error("coordinator rate evidence counter mismatch");
+    }
+    return true;
+  }
+
+  async releaseRateEventSlots(
+    tx: SqlTransaction,
+    releases: readonly { policyId: string; count: number }[],
+  ): Promise<void> {
+    for (const release of releases) {
+      if (release.count < 1) continue;
+      const updated = await tx.unsafe<Row>(
+        "UPDATE public.auggy_coordination_rate_counters SET event_count = event_count - $3, updated_at = clock_timestamp() WHERE namespace = $1 AND policy_id = $2 AND event_count >= $3 RETURNING policy_id",
+        [this.#config.namespace, release.policyId, release.count],
+      );
+      if (!updated[0]) throw new Error("coordinator rate evidence counter mismatch");
+    }
   }
 
   async #expireActive(tx: SqlTransaction): Promise<void> {
@@ -1832,6 +2529,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       existing &&
       !existing.controller.signal.aborted &&
       existing.bindingHash === request.bindingHash &&
+      existing.admissionHash === requestAdmissionHash(request) &&
       existing.threadId === request.threadId &&
       existing.sourceId === request.source.id
     ) {
@@ -1841,6 +2539,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     }
     existing?.controller.abort("ownership-replaced");
     this.#owned.set(request.requestId, {
+      admissionHash: requestAdmissionHash(request),
       attempt,
       bindingHash: request.bindingHash,
       controller: new AbortController(),

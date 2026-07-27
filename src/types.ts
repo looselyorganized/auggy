@@ -129,9 +129,9 @@ export type MemoryProviderSpec = StaticMemoryProvider | NamespaceMemoryProvider;
 export type ToolCategory = "memory" | "search" | "communication" | "meta" | (string & {});
 
 /**
- * Versioned, trusted metadata for one embedded execution. It is accepted only
- * through AgentHandle.inject(); public transports never control these fields.
- * Idempotency material is represented solely by one-way hashes.
+ * Versioned metadata minted by trusted embedding APIs or first-party transport
+ * server code. Raw transport clients never control these fields directly;
+ * idempotency material is represented solely by one-way hashes.
  */
 export interface ExecutionContextV1 {
   version: 1;
@@ -143,6 +143,36 @@ export interface ExecutionContextV1 {
   bindingHash?: string;
   /** Kernel-derived causal scope for stable child-operation separation. */
   operationScope?: string;
+}
+
+/** Trusted transport-selected quota subject for one distributed root request. */
+export interface DistributedAdmissionReservationV1 {
+  policyId: string;
+  /** One-way hash of the canonical fleet quota subject; never a raw IP or identity. */
+  subjectHash: string;
+}
+
+/** Trusted retained-request partition selected by a first-party transport. */
+export interface DistributedAdmissionCapacityV1 {
+  classId: string;
+  /** One-way hash of the canonical caller partition; never a raw identity. */
+  partitionHash: string;
+}
+
+/** Trusted startup requirements contributed by one distributed source. */
+export interface DistributedAdmissionPolicyRequirementsV1 {
+  capacityClasses?: readonly {
+    id: string;
+    maxRetainedRequests: number;
+    maxRetainedRequestsPerPartition: number;
+  }[];
+  rateLimits?: readonly {
+    id: string;
+    max: number;
+    /** Minimum isolated evidence slots required for this policy at startup. */
+    minRetainedEvents?: number;
+    windowMs: number;
+  }[];
 }
 
 /** Fenced coordinator authority exposed only to trusted execution boundaries. */
@@ -440,6 +470,8 @@ export interface TurnResult {
    * unset; the transport's default 5xx fallback handles absence.
    */
   errorClass?: TurnRejectionClass;
+  /** Exact terminal result was loaded from the distributed coordinator. */
+  distributedReplay?: true;
 }
 
 export type TurnRejectionClass = "cap-denied" | "admission-state-failed" | "engine-error";
@@ -788,6 +820,16 @@ export interface TransportKernel {
        * arbitrary augment/model work.
        */
       onExecutionStart?: () => void | Promise<void>;
+      /**
+       * Server-minted execution identity constructed by trusted transport code.
+       * Raw request fields must never be copied into this context without
+       * canonical hashing and validation.
+       */
+      executionContext?: ExecutionContextV1;
+      /** Trusted retained-request class and partition selected by the transport. */
+      distributedCapacity?: DistributedAdmissionCapacityV1;
+      /** Trusted, bounded fleet-quota subjects selected by the transport. */
+      distributedAdmission?: readonly DistributedAdmissionReservationV1[];
     },
   ): Promise<TurnResult>;
   /** Evict an in-memory thread so a later request restores durable state. */
@@ -802,6 +844,24 @@ export interface TransportKernel {
   getAgentCard(): AgentCard;
   /** Process-local, aggregate operational state for authenticated operator surfaces. */
   getOperationalSnapshot?(): RuntimeOperationalSnapshot;
+  /** Private runtime topology signal; it grants no coordinator authority. */
+  getRuntimeTopology?(): "single-replica" | "distributed-preview";
+  /** Trusted non-turn fleet quota reservation; raw clients cannot call this boundary. */
+  reserveDistributedRateLimits?(request: {
+    reservationId: string;
+    admission: readonly DistributedAdmissionReservationV1[];
+  }): Promise<
+    | { status: "reserved" | "replayed" | "conflict" | "unavailable" }
+    | {
+        status: "rejected";
+        reason: "admission-capacity" | "invalid-admission" | "rate-limited" | "draining";
+        retryAfterMs?: number;
+      }
+  >;
+  /** Fail-closed startup check against the immutable coordinator policy. */
+  validateDistributedAdmissionPolicy?(
+    requirements: DistributedAdmissionPolicyRequirementsV1,
+  ): boolean;
   /** Trusted transport-only restoration of a durable thread quarantine. */
   quarantineThread(threadId: string): boolean;
   /**
@@ -1621,10 +1681,31 @@ export interface DistributedCoordinationConfig {
   result: DistributedCoordinationResultConfig;
   /** Bounded, coordinator-owned state committed with one fenced turn. */
   turnState: DistributedCoordinationTurnStateConfig;
+  /** Immutable database-time rate policies used by trusted distributed sources. */
+  admission?: DistributedCoordinationAdmissionConfig;
   leaseDurationMs: number;
   heartbeatIntervalMs: number;
   claimPollMs: number;
   maxWaitMs: number;
+}
+
+export interface DistributedCoordinationAdmissionConfig {
+  /** Hard bound for live rate-reservation evidence across all policy partitions. */
+  maxRateLimitEvents: number;
+  /** Immutable retained-request reservations that prevent trust-class starvation. */
+  capacityClasses?: readonly {
+    id: string;
+    maxRetainedRequests: number;
+    maxRetainedRequestsPerPartition: number;
+  }[];
+  /** Trusted policy identifiers and limits; request code supplies only subject hashes. */
+  rateLimits: readonly {
+    id: string;
+    max: number;
+    /** Isolated evidence capacity; the sum across policies may not exceed the namespace bound. */
+    maxEvents: number;
+    windowMs: number;
+  }[];
 }
 
 export interface DistributedFleetCapacityConfig {

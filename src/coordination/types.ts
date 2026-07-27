@@ -6,6 +6,9 @@
  * credentials or raw provider failures in either plane.
  */
 import type {
+  DistributedAdmissionCapacityV1,
+  DistributedAdmissionPolicyRequirementsV1,
+  DistributedAdmissionReservationV1,
   DistributedCoordinationResultConfig,
   DistributedCoordinationRetentionConfig,
   DistributedCoordinationTurnStateConfig,
@@ -45,8 +48,37 @@ export interface DistributedCoordinatorConfig {
   retention: DistributedCoordinationRetentionConfig;
   result: DistributedCoordinationResultConfig;
   turnState: DistributedCoordinationTurnStateConfig;
+  /**
+   * Immutable database-time rate policies. Omission is the protocol-v5
+   * compatibility shape and permits no distributed rate reservations.
+   */
+  admission?: DistributedAdmissionConfig;
   compatibility: DistributedCoordinatorCompatibility;
 }
+
+export interface DistributedRateLimitPolicy {
+  id: string;
+  max: number;
+  /** Isolated evidence capacity for this policy within the namespace-wide bound. */
+  maxEvents: number;
+  windowMs: number;
+}
+
+export interface DistributedAdmissionConfig {
+  /** Hard bound for the sum of every policy's isolated evidence capacity. */
+  maxRateLimitEvents: number;
+  capacityClasses?: readonly DistributedCapacityClassPolicy[];
+  rateLimits: readonly DistributedRateLimitPolicy[];
+}
+
+export interface DistributedCapacityClassPolicy {
+  id: string;
+  maxRetainedRequests: number;
+  maxRetainedRequestsPerPartition: number;
+}
+
+export type DistributedAdmissionReservation = DistributedAdmissionReservationV1;
+export type DistributedAdmissionCapacity = DistributedAdmissionCapacityV1;
 
 export interface DistributedCoordinatorCompatibilityTuple {
   protocolVersion: number;
@@ -66,7 +98,32 @@ export interface DistributedTurnRequest {
   source: DistributedSourcePolicy;
   /** SHA-256 (or equivalent) of canonical trusted request identity/body. */
   bindingHash: string;
+  /** Trusted retained-request partition, required when capacity classes are configured. */
+  capacity?: DistributedAdmissionCapacity;
+  /** Bounded quota subjects selected by trusted source code, never a client. */
+  admission?: readonly DistributedAdmissionReservation[];
 }
+
+export type DistributedTurnRequestIdentity = Pick<
+  DistributedTurnRequest,
+  "requestId" | "threadId" | "source" | "bindingHash" | "capacity" | "admission"
+>;
+
+export interface DistributedRateReservationRequest {
+  reservationId: string;
+  admission: readonly DistributedAdmissionReservation[];
+}
+
+export type DistributedRateReservationResult =
+  | { status: "reserved" }
+  | { status: "replayed" }
+  | { status: "conflict" }
+  | {
+      status: "rejected";
+      reason: "admission-capacity" | "invalid-admission" | "rate-limited" | "draining";
+      retryAfterMs?: number;
+    }
+  | { status: "unavailable" };
 
 export interface DistributedTurnLease {
   namespace: string;
@@ -154,7 +211,12 @@ export type AdmitResult =
         | "source-capacity"
         | "thread-capacity"
         | "thread-quarantined"
+        | "request-capacity"
+        | "admission-capacity"
+        | "invalid-admission"
+        | "rate-limited"
         | "draining";
+      retryAfterMs?: number;
     }
   | { status: "conflict" }
   | { status: "unavailable" };
@@ -249,13 +311,19 @@ export interface DistributedTurnCoordinator {
   register(): Promise<RegistrationResult>;
   heartbeatInstance(): Promise<LeaseResult>;
   admit(request: DistributedTurnRequest): Promise<AdmitResult>;
+  /** Atomically reserve fleet rate evidence for a non-turn trusted route. */
+  reserveRateLimits(
+    request: DistributedRateReservationRequest,
+  ): Promise<DistributedRateReservationResult>;
+  /** Local immutable-policy check; registration makes the namespace fingerprint authoritative. */
+  supportsAdmissionPolicy(requirements: DistributedAdmissionPolicyRequirementsV1): boolean;
   heartbeatQueued(
-    request: Pick<DistributedTurnRequest, "requestId" | "threadId" | "source" | "bindingHash">,
+    request: DistributedTurnRequestIdentity,
     /** Omission is compatible only with the initial generation (attempt 1). */
     attempt?: number,
   ): Promise<LeaseResult>;
   abandon(
-    request: Pick<DistributedTurnRequest, "requestId" | "threadId" | "source" | "bindingHash">,
+    request: DistributedTurnRequestIdentity,
     /**
      * Terminalize the matching locally owned attempt while it is queued or
      * active but has not crossed the execution-start marker. Omission is
@@ -268,9 +336,7 @@ export interface DistributedTurnCoordinator {
    * Cooperative local cancellation for the currently owned queue/lease.
    * Database ownership and fencing remain authoritative.
    */
-  ownedSignal(
-    request: Pick<DistributedTurnRequest, "requestId" | "threadId" | "source" | "bindingHash">,
-  ): AbortSignal;
+  ownedSignal(request: DistributedTurnRequestIdentity): AbortSignal;
   /**
    * Synchronously revoke this process incarnation after an authority watchdog
    * expires. This performs no database I/O and cannot be reversed.
@@ -296,11 +362,9 @@ export interface DistributedTurnCoordinator {
     lease: DistributedTurnLease,
     reasonCode: CoordinationOutcomeUnknownReason,
   ): Promise<LeaseResult>;
-  status(
-    request: Pick<DistributedTurnRequest, "requestId" | "threadId" | "source" | "bindingHash">,
-  ): Promise<DistributedRequestStatus>;
+  status(request: DistributedTurnRequestIdentity): Promise<DistributedRequestStatus>;
   wait(
-    request: Pick<DistributedTurnRequest, "requestId" | "threadId" | "source" | "bindingHash">,
+    request: DistributedTurnRequestIdentity,
     options: DistributedWaitOptions,
   ): Promise<DistributedRequestStatus>;
   events(options: { afterEventId?: string; limit: number }): Promise<DistributedEventPage>;

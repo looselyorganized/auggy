@@ -15,15 +15,15 @@ const CANONICAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 
 export const DISTRIBUTED_COORDINATION_PROTOCOL = Object.freeze({
   name: "auggy-postgres-coordination" as const,
-  protocolVersion: 5 as const,
-  schemaVersion: 5 as const,
+  protocolVersion: 6 as const,
+  schemaVersion: 6 as const,
   fingerprintVersion: 2 as const,
 });
 
 const PREVIOUS_DISTRIBUTED_COORDINATION_PROTOCOL = Object.freeze({
   name: "auggy-postgres-coordination" as const,
-  protocolVersion: 4 as const,
-  schemaVersion: 4 as const,
+  protocolVersion: 5 as const,
+  schemaVersion: 5 as const,
   fingerprintVersion: 2 as const,
 });
 
@@ -61,11 +61,11 @@ function fingerprint(domain: string, value: unknown): string {
 }
 
 const PROTOCOL_FINGERPRINT = fingerprint(
-  "auggy-distributed-coordination-protocol-v5",
+  "auggy-distributed-coordination-protocol-v6",
   DISTRIBUTED_COORDINATION_PROTOCOL,
 );
 const PREVIOUS_PROTOCOL_FINGERPRINT = fingerprint(
-  "auggy-distributed-coordination-protocol-v4",
+  "auggy-distributed-coordination-protocol-v5",
   PREVIOUS_DISTRIBUTED_COORDINATION_PROTOCOL,
 );
 
@@ -137,6 +137,45 @@ export function buildDistributedCoordinationCompatibility(
         ),
       },
     };
+    const admission = {
+      maxRateLimitEvents: integer(coordination.admission?.maxRateLimitEvents ?? 0, 0, MAX_CAPACITY),
+      capacityClasses: [...(coordination.admission?.capacityClasses ?? [])]
+        .map((policy) => ({
+          id: identifier(policy.id),
+          maxRetainedRequests: integer(policy.maxRetainedRequests, 1, MAX_CAPACITY),
+          maxRetainedRequestsPerPartition: integer(
+            policy.maxRetainedRequestsPerPartition,
+            1,
+            MAX_CAPACITY,
+          ),
+        }))
+        .sort((left, right) => left.id.localeCompare(right.id)),
+      rateLimits: [...(coordination.admission?.rateLimits ?? [])]
+        .map((policy) => ({
+          id: identifier(policy.id),
+          max: integer(policy.max, 1, MAX_CAPACITY),
+          maxEvents: integer(policy.maxEvents, 1, MAX_CAPACITY),
+          windowMs: integer(policy.windowMs, 1_000, 86_400_000),
+        }))
+        .sort((left, right) => left.id.localeCompare(right.id)),
+    };
+    if (
+      admission.capacityClasses.length > 64 ||
+      new Set(admission.capacityClasses.map((policy) => policy.id)).size !==
+        admission.capacityClasses.length ||
+      admission.capacityClasses.some(
+        (policy) => policy.maxRetainedRequestsPerPartition > policy.maxRetainedRequests,
+      ) ||
+      admission.capacityClasses.reduce((sum, policy) => sum + policy.maxRetainedRequests, 0) >
+        retention.maxTerminalRequests ||
+      admission.rateLimits.length > 64 ||
+      new Set(admission.rateLimits.map((policy) => policy.id)).size !==
+        admission.rateLimits.length ||
+      admission.rateLimits.reduce((sum, policy) => sum + policy.maxEvents, 0) >
+        admission.maxRateLimitEvents
+    ) {
+      throw new Error("invalid");
+    }
     const leaseDurationMs = integer(coordination.leaseDurationMs, 1_000, 300_000);
 
     if (!Array.isArray(input.sources) || input.sources.length > MAX_SOURCES) {
@@ -192,18 +231,19 @@ export function buildDistributedCoordinationCompatibility(
       retention,
       result,
       turnState,
+      admission,
       sources,
       augments,
     };
     const configurationFingerprint = fingerprint(
-      "auggy-distributed-coordination-configuration-v5",
+      "auggy-distributed-coordination-configuration-v6",
       {
         protocolFingerprint: PROTOCOL_FINGERPRINT,
         ...semanticConfiguration,
       },
     );
     const previousConfigurationFingerprint = fingerprint(
-      "auggy-distributed-coordination-configuration-v4",
+      "auggy-distributed-coordination-configuration-v5",
       {
         protocolFingerprint: PREVIOUS_PROTOCOL_FINGERPRINT,
         namespace: semanticConfiguration.namespace,
@@ -211,6 +251,7 @@ export function buildDistributedCoordinationCompatibility(
         leaseDurationMs: semanticConfiguration.leaseDurationMs,
         retention: semanticConfiguration.retention,
         result: semanticConfiguration.result,
+        turnState: semanticConfiguration.turnState,
         sources: semanticConfiguration.sources,
         augments: semanticConfiguration.augments,
       },

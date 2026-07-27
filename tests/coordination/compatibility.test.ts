@@ -72,15 +72,15 @@ describe("distributed coordination compatibility fingerprints", () => {
 
     expect(DISTRIBUTED_COORDINATION_PROTOCOL).toEqual({
       name: "auggy-postgres-coordination",
-      protocolVersion: 5,
-      schemaVersion: 5,
+      protocolVersion: 6,
+      schemaVersion: 6,
       fingerprintVersion: 2,
     });
     expect(first).toEqual(second);
-    expect(first.protocolVersion).toBe(5);
+    expect(first.protocolVersion).toBe(6);
     expect(first.protocolFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(first.configurationFingerprint).toMatch(/^[0-9a-f]{64}$/);
-    expect(first.upgradeFrom).toMatchObject({ protocolVersion: 4 });
+    expect(first.upgradeFrom).toMatchObject({ protocolVersion: 5 });
     expect(first.upgradeFrom.protocolFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(first.upgradeFrom.configurationFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(first.upgradeFrom.protocolFingerprint).not.toBe(first.protocolFingerprint);
@@ -97,6 +97,21 @@ describe("distributed coordination compatibility fingerprints", () => {
       (value: ReturnType<typeof input>) => (value.coordination.turnState.history.maxThreads += 1),
       (value: ReturnType<typeof input>) =>
         (value.coordination.turnState.outbox.maxPendingIntents += 1),
+      (value: ReturnType<typeof input>) => {
+        value.coordination.admission = {
+          maxRateLimitEvents: 100,
+          capacityClasses: [
+            {
+              id: "public",
+              maxRetainedRequests: 100,
+              maxRetainedRequestsPerPartition: 10,
+            },
+          ],
+          rateLimits: [
+            { id: "web.anonymous-network.v1", max: 10, maxEvents: 100, windowMs: 60_000 },
+          ],
+        };
+      },
       (value: ReturnType<typeof input>) => (value.sources[0]!.maxQueued += 1),
       (value: ReturnType<typeof input>) => {
         value.augments.reverse();
@@ -117,6 +132,32 @@ describe("distributed coordination compatibility fingerprints", () => {
         baseline.configurationFingerprint,
       );
     }
+  });
+
+  test("canonicalizes distributed admission policy ordering", () => {
+    const firstInput = input();
+    firstInput.coordination.admission = {
+      maxRateLimitEvents: 100,
+      capacityClasses: [
+        { id: "public", maxRetainedRequests: 100, maxRetainedRequestsPerPartition: 10 },
+        { id: "agent", maxRetainedRequests: 50, maxRetainedRequestsPerPartition: 5 },
+      ],
+      rateLimits: [
+        { id: "web.route.one", max: 5, maxEvents: 50, windowMs: 60_000 },
+        { id: "web.route.two", max: 2, maxEvents: 50, windowMs: 60_000 },
+      ],
+    };
+    const secondInput = structuredClone(firstInput);
+    secondInput.coordination.admission!.capacityClasses = [
+      ...secondInput.coordination.admission!.capacityClasses!,
+    ].reverse();
+    secondInput.coordination.admission!.rateLimits = [
+      ...secondInput.coordination.admission!.rateLimits,
+    ].reverse();
+
+    expect(buildDistributedCoordinationCompatibility(firstInput)).toEqual(
+      buildDistributedCoordinationCompatibility(secondInput),
+    );
   });
 
   test("excludes process-local polling, environment names, and secret option values", () => {
@@ -175,6 +216,30 @@ describe("distributed coordination compatibility fingerprints", () => {
           ...value.augments[0]!,
           augmentIndex,
         }));
+        return value;
+      },
+      () => {
+        const value = input();
+        value.coordination.admission = {
+          maxRateLimitEvents: 0,
+          capacityClasses: [
+            { id: "public", maxRetainedRequests: 8_000, maxRetainedRequestsPerPartition: 1 },
+            { id: "agent", maxRetainedRequests: 8_000, maxRetainedRequestsPerPartition: 1 },
+          ],
+          rateLimits: [],
+        };
+        return value;
+      },
+      () => {
+        const value = input();
+        value.coordination.admission = {
+          maxRateLimitEvents: 0,
+          capacityClasses: [
+            { id: "public", maxRetainedRequests: 10, maxRetainedRequestsPerPartition: 1 },
+            { id: "public", maxRetainedRequests: 10, maxRetainedRequestsPerPartition: 1 },
+          ],
+          rateLimits: [],
+        };
         return value;
       },
     ];
