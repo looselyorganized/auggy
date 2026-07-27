@@ -44,6 +44,27 @@ function manifest(configPath: string): PidManifest {
 }
 
 describe("restart target validation", () => {
+  test("rejects disabled coordination before stopping the running generation", async () => {
+    const configPath = config(AGENT_B, "agent-b");
+    writeFileSync(
+      configPath,
+      `${configYaml(AGENT_B, "agent-b")}settings:\n  coordination:\n    mode: postgres\n    namespace: 22222222-2222-4222-8222-222222222222\n`,
+    );
+    const running = manifest(configPath);
+    let stopped = false;
+
+    await expect(
+      runRestart(AGENT_B, {
+        lifecycleOwned: true,
+        _readPidManifest: () => running,
+        _runStop: async () => {
+          stopped = true;
+        },
+      }),
+    ).rejects.toThrow(/runtime-not-enabled/);
+    expect(stopped).toBe(false);
+  });
+
   test("fails closed when a display name has no authoritative runtime identity", async () => {
     await expect(
       runRestart("agent-b", {

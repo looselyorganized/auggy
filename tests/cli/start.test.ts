@@ -58,6 +58,30 @@ function generationFromPlist(path: string): string {
 }
 
 describe("runStart launchd generation fencing", () => {
+  test("rejects disabled coordination before lifecycle or launchd mutation", async () => {
+    writeFileSync(
+      configPath,
+      `${readFileSync(configPath, "utf8")}settings:\n  coordination:\n    mode: postgres\n    namespace: 12345678-1234-4123-8123-123456789abc\n`,
+    );
+    let listed = false;
+    const opts = options();
+
+    await expect(
+      runStart("launch-test", {
+        ...opts,
+        listLaunchd: async () => {
+          listed = true;
+          return "";
+        },
+      }),
+    ).rejects.toThrow(/runtime-not-enabled/);
+
+    expect(listed).toBe(false);
+    expect(existsSync(opts.paths.installPath)).toBe(false);
+    expect(existsSync(opts.paths.storePath)).toBe(false);
+    expect(existsSync(auggyDir)).toBe(false);
+  });
+
   test("closes the previous generation before unloading an installed job", async () => {
     const previousGeneration = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     activateLaunchdGeneration(AGENT_ID, previousGeneration, { auggyDir });

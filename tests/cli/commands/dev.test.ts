@@ -1,9 +1,22 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { stringify } from "yaml";
 import {
   formatDevReadyMessage,
   formatRunDisplayPath,
   resolveRuntimeDataRoot,
+  runDev,
 } from "../../../src/cli/commands/dev";
+
+const tempDirectories: string[] = [];
+
+afterEach(() => {
+  for (const directory of tempDirectories.splice(0)) {
+    rmSync(directory, { recursive: true, force: true });
+  }
+});
 
 describe("resolveRuntimeDataRoot", () => {
   test("selects the Railway volume root only for the exact Railway mode", () => {
@@ -91,5 +104,75 @@ describe("formatDevReadyMessage", () => {
   test("formats config paths relative to the command cwd", () => {
     expect(formatRunDisplayPath("/repo/dx-agent/agent.yaml", "/repo")).toBe("dx-agent/agent.yaml");
     expect(formatRunDisplayPath("/repo/dx-agent/agent.yaml", "/repo/dx-agent")).toBe("agent.yaml");
+  });
+});
+
+describe("runDev distributed startup ordering", () => {
+  test("rejects disabled coordination before importing custom code or opening job state", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "auggy-disabled-coordination-"));
+    tempDirectories.push(directory);
+    const markerPath = join(directory, "custom-imported");
+    const jobsPath = join(directory, "durable-jobs.sqlite");
+    const configPath = join(directory, "agent.yaml");
+    writeFileSync(join(directory, "identity.md"), "# Test identity\n");
+    writeFileSync(
+      join(directory, "package.json"),
+      JSON.stringify({
+        type: "module",
+        dependencies: { auggy: "0.5.0", "@auggy/ollama": "0.5.0" },
+      }),
+    );
+    symlinkSync(join(import.meta.dir, "../../../node_modules"), join(directory, "node_modules"));
+    writeFileSync(
+      join(directory, "probe.ts"),
+      `import { writeFileSync } from "node:fs";\n` +
+        `writeFileSync(${JSON.stringify(markerPath)}, "imported");\n` +
+        `export default function probe() { return { name: "probe" }; }\n`,
+    );
+    writeFileSync(
+      configPath,
+      stringify({
+        id: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+        name: "distributed-ordering-test",
+        identity: "./identity.md",
+        engine: { provider: "ollama", model: "qwen3.5" },
+        settings: {
+          coordination: {
+            mode: "postgres",
+            namespace: "a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+          },
+          jobs: { enabled: true, dbPath: jobsPath },
+        },
+        augments: [{ name: "probe", type: "custom", source: "./probe.ts" }],
+      }),
+    );
+
+    const before = {
+      SIGINT: new Set(process.listeners("SIGINT")),
+      SIGTERM: new Set(process.listeners("SIGTERM")),
+      exit: new Set(process.listeners("exit")),
+    };
+    let error: Error | undefined;
+    try {
+      await runDev(undefined, {
+        config: configPath,
+        cwd: directory,
+        auggyDir: join(directory, ".auggy-test"),
+      });
+    } catch (caught) {
+      error = caught as Error;
+    } finally {
+      for (const signal of ["SIGINT", "SIGTERM", "exit"] as const) {
+        for (const listener of process.listeners(signal)) {
+          if (!before[signal].has(listener)) process.removeListener(signal, listener);
+        }
+      }
+    }
+
+    expect(error?.message).toContain("process-local-fleet-admission");
+    expect(error?.message).not.toContain("AUGGY_COORDINATION_DATABASE_URL");
+    expect(existsSync(markerPath)).toBe(false);
+    expect(existsSync(jobsPath)).toBe(false);
+    expect(existsSync(join(directory, ".auggy-test"))).toBe(false);
   });
 });

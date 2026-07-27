@@ -41,6 +41,10 @@ import {
 import { loadSecretsPlan } from "../deploy/secrets";
 import { getAuggyVersion } from "../scaffold-package-json";
 import type { CloudRecord } from "../types";
+import {
+  assertDistributedCoordinationStartupAllowed,
+  DistributedCoordinationStartupError,
+} from "../../coordination/topology";
 
 export interface DeployLogger {
   info(msg: string): void;
@@ -253,6 +257,17 @@ export async function runDeploy(
     throw new Error(
       `Agent "${nameForMessage}" not found. Run \`auggy create ${nameForMessage}\` first, then \`auggy deploy ${nameForMessage}\`.`,
     );
+  }
+  // Preserve Doctor's complete, operator-facing diagnostics for malformed
+  // configs. A successfully parsed distributed declaration, however, must
+  // stop before Doctor can import custom route code or any Railway call.
+  try {
+    const startupConfig = parseConfig(configPath);
+    assertDistributedCoordinationStartupAllowed(startupConfig.settings.coordination, {
+      configuredAugments: startupConfig.augments.length > 0,
+    });
+  } catch (error) {
+    if (error instanceof DistributedCoordinationStartupError) throw error;
   }
   const name = readAgentName(configPath);
   const agentDir = dirname(configPath);

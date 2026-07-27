@@ -12,6 +12,7 @@ import type { PidManifest } from "../types";
 import { runStop } from "./stop";
 import { runStart } from "./start";
 import { runDev } from "./dev";
+import { assertDistributedCoordinationStartupAllowed } from "../../coordination/topology";
 
 interface RestartOptions {
   config?: string;
@@ -134,6 +135,9 @@ export function assertRestartTarget(manifest: PidManifest, candidatePath: string
     throw new Error("Restart config path does not match the running agent manifest");
   }
   const config = parseConfig(configPath);
+  assertDistributedCoordinationStartupAllowed(config.settings.coordination, {
+    configuredAugments: config.augments.length > 0,
+  });
   if (manifest.agentId && config.id !== manifest.agentId) {
     throw new Error("Restart config identity does not match the running agent manifest");
   }

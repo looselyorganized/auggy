@@ -298,6 +298,21 @@ describe("runDeploy", () => {
     });
   });
 
+  test("rejects disabled coordination before doctor imports or Railway calls", async () => {
+    writeFileSync(
+      join(agentDir, "agent.yaml"),
+      `${readFileSync(join(agentDir, "agent.yaml"), "utf8")}settings:\n  coordination:\n    mode: postgres\n    namespace: a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c\n`,
+    );
+    const { cli, calls } = mockRailwayCli();
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /runtime-not-enabled/,
+    );
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.checkAuth).toBe(0);
+    expect(calls.up).toBe(0);
+  });
+
   test("rejects deployment metadata bound to another immutable agent before Railway access", async () => {
     writeFileSync(
       join(agentDir, ".auggy-cloud.json"),
