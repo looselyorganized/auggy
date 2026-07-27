@@ -21,6 +21,9 @@ import {
   serializeSSE,
   runFinished,
   runError,
+  textMessageContent,
+  textMessageEnd,
+  textMessageStart,
   type AGUIEvent,
 } from "./ag-ui-events";
 import { deriveSigningKey, verifyVisitorToken, type VisitorTokenPayload } from "./visitor-token";
@@ -29,6 +32,7 @@ import {
   createWebIdempotencyStore,
   hashIdempotencyBinding,
   hashIdempotencyKey,
+  resolveWebIdempotencyCapacityPolicy,
   type IdempotencyClaim,
   type RateLimitPolicy,
   type WebIdempotencyStore,
@@ -99,6 +103,10 @@ const DEFAULT_EXTERNAL_AUTH_ASSERTION_HEADER = "x-auggy-auth-assertion";
 const CONSOLE_INTERNAL_RUN_HEADER = "x-auggy-console-internal";
 const ANONYMOUS_SESSION_HEADER = "x-auggy-anonymous-session";
 const ANONYMOUS_SESSION_STATUS_HEADER = "x-auggy-anonymous-session-status";
+const DISTRIBUTED_ANONYMOUS_GLOBAL_POLICY_ID = "web.anonymous-global.v1";
+const DISTRIBUTED_ANONYMOUS_NETWORK_POLICY_ID = "web.anonymous-network.v1";
+const DISTRIBUTED_PEER_POLICY_ID = "web.peer.v1";
+const DISTRIBUTED_CONSOLE_POLICY_ID = "web.console.v1";
 const HTTP_HEADER_NAME = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
 const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
   "authorization",
@@ -120,6 +128,28 @@ const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
   "x-forwarded-proto",
   "x-real-ip",
 ]);
+
+function distributedWebRunId(keyHash: string): string {
+  if (!/^[0-9a-f]{64}$/.test(keyHash)) throw new Error("invalid distributed web key hash");
+  const bytes = createHash("sha256")
+    .update("auggy-distributed-web-run-v1\0")
+    .update(keyHash)
+    .digest();
+  bytes[6] = (bytes[6]! & 0x0f) | 0x50;
+  bytes[8] = (bytes[8]! & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20, 32)}`;
+}
+
+export function distributedWebRoutePolicyId(method: string, path: string): string {
+  const digest = createHash("sha256")
+    .update("auggy-distributed-web-route-policy-v1\0")
+    .update(method)
+    .update("\0")
+    .update(path)
+    .digest("hex");
+  return `web.route.v1:${digest}`;
+}
 
 function withConsoleBoundaryHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
@@ -1044,6 +1074,7 @@ function parseConsoleRunMetadata(
  * opening the stream.
  */
 export function webTransport(opts: WebTransportOptions): Augment {
+  let webIdempotencyCapacity: ReturnType<typeof resolveWebIdempotencyCapacityPolicy> | null = null;
   const overrideDir = opts.overrideDir ?? opts.agentDir;
   const configuredExternalAuthHeader =
     typeof opts.externalAuth?.header === "string" ? opts.externalAuth.header : undefined;
@@ -1212,21 +1243,55 @@ export function webTransport(opts: WebTransportOptions): Augment {
     return { allowed: true };
   }
 
-  function checkRouteRateLimit(
+  async function checkRouteRateLimit(
     routeKey: string,
     ip: string,
     max: number,
-  ): { allowed: true } | { allowed: false; retryAfterSec: number } {
-    return checkLocalRateLimits([{ key: `${routeKey}|${ip}`, max, windowMs: 60_000 }]);
+    policyId: string,
+  ): Promise<{ allowed: true } | { allowed: false; retryAfterSec: number; status: 429 | 503 }> {
+    if (kernel?.getRuntimeTopology?.() !== "distributed-preview") {
+      const local = checkLocalRateLimits([{ key: `${routeKey}|${ip}`, max, windowMs: 60_000 }]);
+      return local.allowed ? local : { ...local, status: 429 };
+    }
+    const network = rateLimitNetworkIdentity(ip, anonymousIpv6PrefixBits);
+    const reserve = kernel.reserveDistributedRateLimits;
+    if (!network || !reserve) return { allowed: false, retryAfterSec: 1, status: 503 };
+    const result = await reserve({
+      reservationId: `rate:web:${crypto.randomUUID()}`,
+      admission: [
+        {
+          policyId,
+          subjectHash: hashIdempotencyBinding({
+            audience: requireSecurityAudience(),
+            kind: "distributed-route-rate",
+            policyId,
+            network,
+          }),
+        },
+      ],
+    });
+    if (result.status === "reserved" || result.status === "replayed") {
+      return { allowed: true };
+    }
+    return result.status === "rejected" && result.reason === "rate-limited"
+      ? {
+          allowed: false,
+          retryAfterSec: Math.max(1, Math.ceil((result.retryAfterMs ?? 1_000) / 1_000)),
+          status: 429,
+        }
+      : { allowed: false, retryAfterSec: 1, status: 503 };
   }
 
-  function anonymousRateLimitPolicies(callerIp: string): RateLimitPolicy[] {
+  function anonymousRateLimitPolicies(
+    callerIp: string,
+  ): Array<RateLimitPolicy & { policyId: string }> {
     if (peerRateLimit === undefined || globalAnonymousLimit === undefined) return [];
     const network = rateLimitNetworkIdentity(callerIp, anonymousIpv6PrefixBits);
     if (!network) throw new Error("anonymous caller network is unavailable");
     const audience = requireSecurityAudience();
     return [
       {
+        policyId: DISTRIBUTED_ANONYMOUS_GLOBAL_POLICY_ID,
         bucketHash: hashIdempotencyBinding({
           audience,
           kind: "anonymous-global",
@@ -1235,6 +1300,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         windowMs: 60_000,
       },
       {
+        policyId: DISTRIBUTED_ANONYMOUS_NETWORK_POLICY_ID,
         bucketHash: hashIdempotencyBinding({
           audience,
           kind: "anonymous-network",
@@ -1397,6 +1463,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         ? "single-process-development anonymous rate limiting is unavailable in production or public deployments"
         : null;
     }
+    if (kernel?.getRuntimeTopology?.() === "distributed-preview") return null;
     const dbPath = resolveIdempotencyDbPath(opts);
     if (dbPath === null || dbPath === ":memory:") {
       return "anonymous rate limiting requires a durable shared idempotency.dbPath or an explicit trusted-edge mode";
@@ -1917,6 +1984,95 @@ export function webTransport(opts: WebTransportOptions): Augment {
         throw new Error("[web-transport] cannot become ready before kernel registration");
       }
       if (server) return;
+      const anonymousBoundaryError = anonymousRateLimitConfigurationError(allowAnonymous);
+      if (anonymousBoundaryError) {
+        throw new Error(`[web-transport] ${anonymousBoundaryError}.`);
+      }
+      if (kernel.getRuntimeTopology?.() === "distributed-preview") {
+        if (opts.adminRoute !== false) {
+          throw new Error(
+            "[web-transport] distributed preview requires adminRoute: false until console state has shared fenced authority",
+          );
+        }
+        if (idempotencyStore !== null) {
+          throw new Error(
+            "[web-transport] distributed preview requires idempotency.dbPath: null; PostgreSQL coordination is the only execution authority",
+          );
+        }
+        const capacityPolicy = webIdempotencyCapacity;
+        if (!capacityPolicy) {
+          throw new Error("[web-transport] distributed web capacity policy is unavailable");
+        }
+        const rateLimits = [
+          ...(opts.adminRoute === false
+            ? []
+            : [
+                {
+                  id: DISTRIBUTED_CONSOLE_POLICY_ID,
+                  max: 60,
+                  minRetainedEvents: 1,
+                  windowMs: 60_000,
+                },
+              ]),
+          ...augmentRoutes.flatMap((route) =>
+            route.rateLimit
+              ? [
+                  {
+                    id: distributedWebRoutePolicyId(route.method, route.path),
+                    max: route.rateLimit.maxPerMinute,
+                    minRetainedEvents: 1,
+                    windowMs: 60_000,
+                  },
+                ]
+              : [],
+          ),
+          ...(peerRateLimit === undefined
+            ? []
+            : [
+                {
+                  id: DISTRIBUTED_PEER_POLICY_ID,
+                  max: peerRateLimit,
+                  minRetainedEvents: 1,
+                  windowMs: 60_000,
+                },
+              ]),
+          ...(allowAnonymous &&
+          peerRateLimit !== undefined &&
+          globalAnonymousLimit !== undefined &&
+          anonymousNetworkMode !== "trusted-edge"
+            ? [
+                {
+                  id: DISTRIBUTED_ANONYMOUS_GLOBAL_POLICY_ID,
+                  max: globalAnonymousLimit,
+                  minRetainedEvents: 1,
+                  windowMs: 60_000,
+                },
+                {
+                  id: DISTRIBUTED_ANONYMOUS_NETWORK_POLICY_ID,
+                  max: peerRateLimit,
+                  minRetainedEvents: 1,
+                  windowMs: 60_000,
+                },
+              ]
+            : []),
+        ];
+        const requirements = {
+          capacityClasses: (["public", "agent", "creator"] as const).map((id) => ({
+            id,
+            maxRetainedRequests: capacityPolicy.classLimits[id],
+            maxRetainedRequestsPerPartition: Math.min(
+              capacityPolicy.classLimits[id],
+              capacityPolicy.maxRecordsPerPartition,
+            ),
+          })),
+          rateLimits,
+        };
+        if (!kernel.validateDistributedAdmissionPolicy?.(requirements)) {
+          throw new Error(
+            "[web-transport] distributed coordinator policy does not satisfy web admission requirements",
+          );
+        }
+      }
       startServer();
     },
     identify,
@@ -2381,7 +2537,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
       // therefore join the one authorized execution.
       externalVisitorAuth = await resolveExternalVisitorAuth(
         req,
-        idempotencyKey !== null && !isConsoleRun ? "defer" : "consume",
+        (idempotencyKey !== null && !isConsoleRun) ||
+          kernel?.getRuntimeTopology?.() === "distributed-preview"
+          ? "defer"
+          : "consume",
       );
       return externalVisitorAuth;
     }
@@ -2704,7 +2863,17 @@ export function webTransport(opts: WebTransportOptions): Augment {
       peer.trustLevel === "public" &&
       peer.publicSubstate === "anonymous" &&
       peerRateLimit !== undefined;
-    if (requiresAnonymousAdmission && idempotencyKey === null) {
+    const distributedRuntime =
+      !isConsoleRun && kernel?.getRuntimeTopology?.() === "distributed-preview";
+    let anonymousAdmissionPolicies: Array<RateLimitPolicy & { policyId: string }> = [];
+    if (requiresAnonymousAdmission && anonymousNetworkMode !== "trusted-edge") {
+      try {
+        anonymousAdmissionPolicies = anonymousRateLimitPolicies(callerIp);
+      } catch {
+        return json({ error: "rate_limit_unavailable" }, 503);
+      }
+    }
+    if (requiresAnonymousAdmission && idempotencyKey === null && !distributedRuntime) {
       let networkLimit: { allowed: true } | { allowed: false; retryAfterSec: number };
       try {
         networkLimit = reserveAnonymousExecution(callerIp);
@@ -2719,49 +2888,107 @@ export function webTransport(opts: WebTransportOptions): Augment {
     }
 
     let internalTurnId = idempotencyKey === null ? publicRunId : crypto.randomUUID();
+    const audience = isConsoleRun ? null : requireSecurityAudience();
+    const executionBindingHash =
+      audience === null
+        ? null
+        : hashIdempotencyBinding({
+            audience,
+            peer: {
+              id: peer.id,
+              kind: peer.kind,
+              trustLevel: peer.trustLevel,
+              publicSubstate: peer.publicSubstate,
+              sourceAugment: peer.sourceAugment,
+              displayName: peer.displayName,
+              orgId: peer.orgId,
+            },
+            threadId,
+            contextId: body.contextId,
+            taskId: body.taskId,
+            messages: body.messages,
+            auth: idempotencyAuthorizationBinding(turnAuth),
+          });
+    const distributedKeyHash =
+      distributedRuntime && idempotencyKey !== null && audience !== null
+        ? hashIdempotencyKey(audience, idempotencyKey)
+        : null;
+    if (distributedKeyHash !== null) {
+      internalTurnId = distributedWebRunId(distributedKeyHash);
+      publicRunId = internalTurnId;
+    }
+    if (
+      distributedRuntime &&
+      turnAuth?.state === "recognized" &&
+      turnAuth.externalAuth !== undefined
+    ) {
+      return json({ error: "external_auth_distributed_unavailable" }, 503);
+    }
+    const distributedExecutionContext =
+      distributedRuntime && executionBindingHash !== null
+        ? {
+            version: 1 as const,
+            executionId: internalTurnId,
+            attempt: 1,
+            bindingHash: executionBindingHash,
+            ...(distributedKeyHash === null ? {} : { idempotencyKeyHash: distributedKeyHash }),
+          }
+        : undefined;
+    const capacityClass =
+      peer.trustLevel === "creator" ? "creator" : peer.trustLevel === "agent" ? "agent" : "public";
+    const partitionHash =
+      audience === null
+        ? null
+        : hashIdempotencyBinding({
+            audience,
+            capacityClass,
+            subject:
+              capacityClass === "public" && peer.publicSubstate === "anonymous"
+                ? "all-anonymous"
+                : peer.id,
+          });
+    const distributedCapacity =
+      distributedRuntime && partitionHash !== null
+        ? { classId: capacityClass, partitionHash }
+        : undefined;
+    const distributedPeerAdmission =
+      distributedRuntime && peerRateLimit !== undefined && audience !== null
+        ? [
+            {
+              policyId: DISTRIBUTED_PEER_POLICY_ID,
+              subjectHash: hashIdempotencyBinding({
+                audience,
+                kind: "web-peer",
+                peerId: peer.id,
+                trustLevel: peer.trustLevel,
+                publicSubstate: peer.publicSubstate,
+              }),
+            },
+          ]
+        : [];
+    const distributedAdmission =
+      distributedRuntime &&
+      (distributedPeerAdmission.length > 0 || anonymousAdmissionPolicies.length > 0)
+        ? [
+            ...distributedPeerAdmission,
+            ...anonymousAdmissionPolicies.map((policy) => ({
+              policyId: policy.policyId,
+              subjectHash: policy.bucketHash,
+            })),
+          ]
+        : undefined;
     let durableIdempotency: {
       store: WebIdempotencyStore;
       keyHash: string;
       ownerToken: string;
     } | null = null;
-    if (idempotencyKey !== null && !isConsoleRun) {
+    if (idempotencyKey !== null && !isConsoleRun && !distributedRuntime) {
       const store = idempotencyStore;
       if (!store) {
         return json({ error: "idempotency_unavailable" }, 503);
       }
-      const audience = requireSecurityAudience();
-      const keyHash = hashIdempotencyKey(audience, idempotencyKey);
-      const capacityClass =
-        peer.trustLevel === "creator"
-          ? "creator"
-          : peer.trustLevel === "agent"
-            ? "agent"
-            : "public";
-      const partitionHash = hashIdempotencyBinding({
-        audience,
-        capacityClass,
-        subject:
-          capacityClass === "public" && peer.publicSubstate === "anonymous"
-            ? "all-anonymous"
-            : peer.id,
-      });
-      const bindingHash = hashIdempotencyBinding({
-        audience,
-        peer: {
-          id: peer.id,
-          kind: peer.kind,
-          trustLevel: peer.trustLevel,
-          publicSubstate: peer.publicSubstate,
-          sourceAugment: peer.sourceAugment,
-          displayName: peer.displayName,
-          orgId: peer.orgId,
-        },
-        threadId,
-        contextId: body.contextId,
-        taskId: body.taskId,
-        messages: body.messages,
-        auth: idempotencyAuthorizationBinding(turnAuth),
-      });
+      const keyHash = hashIdempotencyKey(audience!, idempotencyKey);
+      const bindingHash = executionBindingHash!;
       let claim: IdempotencyClaim;
       try {
         claim = store.claim(
@@ -2769,10 +2996,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
           bindingHash,
           {
             class: capacityClass,
-            partitionHash,
+            partitionHash: partitionHash!,
           },
           requiresAnonymousAdmission && anonymousNetworkMode !== "trusted-edge"
-            ? anonymousRateLimitPolicies(callerIp)
+            ? anonymousAdmissionPolicies
             : undefined,
         );
         if (claim.status === "running") {
@@ -2916,9 +3143,11 @@ export function webTransport(opts: WebTransportOptions): Augment {
     // identity, so every run must receive this stable transport-level adapter.
     const runHistoryPersistence = consoleMetadata ? consoleHistoryPersistence : null;
     const deliveryAbort = new AbortController();
-    const executionSignal = durableIdempotency
-      ? deliveryAbort.signal
-      : AbortSignal.any([req.signal, deliveryAbort.signal]);
+    const disconnectDurableExecution = durableIdempotency !== null || distributedKeyHash !== null;
+    const executionSignal =
+      durableIdempotency || distributedKeyHash !== null
+        ? deliveryAbort.signal
+        : AbortSignal.any([req.signal, deliveryAbort.signal]);
 
     let pullPendingSse: ((controller: ReadableStreamDefaultController<Uint8Array>) => void) | null =
       null;
@@ -2998,7 +3227,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
           // Keyed durable runs intentionally survive a client disconnect so
           // an exact retry can replay the canonical result. Resource-limit
           // overflow still aborts both durable and non-durable execution.
-          if (!durableIdempotency) deliveryAbort.abort();
+          if (!disconnectDurableExecution) deliveryAbort.abort();
         };
 
         const patchRunIdentity = (e: AGUIEvent): AGUIEvent => {
@@ -3039,7 +3268,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
               streamClosed = true;
               pendingChunks.length = 0;
               pendingBytes = 0;
-              if (!durableIdempotency) deliveryAbort.abort();
+              if (!disconnectDurableExecution) deliveryAbort.abort();
               return;
             }
           }
@@ -3266,8 +3495,25 @@ export function webTransport(opts: WebTransportOptions): Augment {
               onExecutionStart: () => {
                 schedulerExecutionStarted = true;
               },
+              executionContext: distributedExecutionContext,
+              distributedCapacity,
+              distributedAdmission,
               ...(runHistoryPersistence ? { historyPersistence: runHistoryPersistence } : {}),
             });
+            if (result.distributedReplay) {
+              const responses = result.responses ?? (result.response ? [result.response] : []);
+              for (const [responseIndex, response] of responses.entries()) {
+                const replayText = response.parts
+                  .filter((part): part is Extract<Part, { kind: "text" }> => part.kind === "text")
+                  .map((part) => part.text)
+                  .join("");
+                if (replayText.length === 0) continue;
+                const messageId = `distributed-replay-${publicRunId}-${responseIndex}`;
+                emitTranslatedEvent(textMessageStart({ messageId, role: "assistant" }));
+                emitTranslatedEvent(textMessageContent({ messageId, delta: replayText }));
+                emitTranslatedEvent(textMessageEnd({ messageId }));
+              }
+            }
             if (result.status === "rejected") {
               if (!schedulerExecutionStarted && result.rejection && durableIdempotency) {
                 // Scheduler rejection happens before persistence, inference,
@@ -3509,10 +3755,6 @@ export function webTransport(opts: WebTransportOptions): Augment {
     adminActions,
     async onBoot() {
       validateExternalAuthRuntimeOptions(opts.externalAuth as unknown);
-      const anonymousBoundaryError = anonymousRateLimitConfigurationError(allowAnonymous);
-      if (anonymousBoundaryError) {
-        throw new Error(`[web-transport] ${anonymousBoundaryError}.`);
-      }
       if (allowAnonymous && peerRateLimit !== undefined) {
         if (anonymousNetworkMode === "trusted-edge") {
           console.warn(
@@ -3554,6 +3796,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
         signingKey = await deriveSigningKey(keySource);
       }
       const idempotencyDbPath = resolveIdempotencyDbPath(opts);
+      webIdempotencyCapacity = resolveWebIdempotencyCapacityPolicy(opts.idempotency ?? {});
       if (idempotencyDbPath !== null) {
         idempotencyStore = createWebIdempotencyStore({
           dbPath: idempotencyDbPath,
@@ -3647,11 +3890,16 @@ export function webTransport(opts: WebTransportOptions): Augment {
               // route-key "admin" for compatibility. Defeats brute-force against
               // HTTP Basic.
               const adminIp = consoleRequest.callerIp;
-              const adminRl = checkRouteRateLimit("admin", adminIp, 60);
+              const adminRl = await checkRouteRateLimit(
+                "admin",
+                adminIp,
+                60,
+                DISTRIBUTED_CONSOLE_POLICY_ID,
+              );
               if (!adminRl.allowed) {
                 return withConsoleBoundaryHeaders(
                   new Response(null, {
-                    status: 429,
+                    status: adminRl.status,
                     headers: { "retry-after": String(adminRl.retryAfterSec) },
                   }),
                 );
@@ -3782,11 +4030,20 @@ export function webTransport(opts: WebTransportOptions): Augment {
               if (augmentRoute.rateLimit) {
                 const routeKey = `${augmentRoute.method} ${augmentRoute.path}`;
                 const ip = getCallerIp(req, server, trustedProxies, xffOnUntrusted);
-                const rl = checkRouteRateLimit(routeKey, ip, augmentRoute.rateLimit.maxPerMinute);
+                const rl = await checkRouteRateLimit(
+                  routeKey,
+                  ip,
+                  augmentRoute.rateLimit.maxPerMinute,
+                  distributedWebRoutePolicyId(augmentRoute.method, augmentRoute.path),
+                );
                 if (!rl.allowed) {
-                  return json({ error: "rate-limited" }, 429, {
-                    "retry-after": String(rl.retryAfterSec),
-                  });
+                  return json(
+                    { error: rl.status === 429 ? "rate-limited" : "rate-limit-unavailable" },
+                    rl.status,
+                    {
+                      "retry-after": String(rl.retryAfterSec),
+                    },
+                  );
                 }
               }
 

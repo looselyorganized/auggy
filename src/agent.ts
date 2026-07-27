@@ -19,6 +19,8 @@ import type {
   ExecutionAuthorityV1,
   OutboundDeliveryContext,
   CostResult,
+  DistributedAdmissionCapacityV1,
+  DistributedAdmissionReservationV1,
   ThreadHistorySnapshot,
 } from "./types";
 import { createTokenizer } from "./tokenizer";
@@ -959,6 +961,8 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
       beforeExecute?: () => Promise<void>;
       onExecutionStart?: () => void | Promise<void>;
       executionContext?: ExecutionContextV1;
+      distributedCapacity?: DistributedAdmissionCapacityV1;
+      distributedAdmission?: readonly DistributedAdmissionReservationV1[];
       executionAuthority?: ExecutionAuthorityV1;
       markExecutionUncertain?: () => void;
       includeExecutionContextInResult?: boolean;
@@ -987,6 +991,8 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
           maxQueued: sourcePolicy.maxQueued,
         },
         executionContext: options.executionContext,
+        capacity: options.distributedCapacity,
+        admission: options.distributedAdmission,
       });
       const distributedState: DistributedTurnStateAccumulator = {
         threadId,
@@ -1037,7 +1043,10 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
       if (coordinated.status === "completed") return coordinated.value;
       if (coordinated.status === "replay") {
         try {
-          return decodeDistributedReplay(coordinated.result, threadId);
+          return {
+            ...decodeDistributedReplay(coordinated.result, threadId),
+            distributedReplay: true,
+          };
         } catch {
           return distributedTerminalResult(trigger, threadId, "outcome-unknown");
         }
@@ -1053,6 +1062,36 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
           { status: "canceled", reason: "distributed-request-canceled" },
           options.executionContext,
         );
+      }
+      if (coordinated.status === "rejected") {
+        const schedulerReason =
+          coordinated.reason === "rate-limited"
+            ? "peer-rate-limit"
+            : coordinated.reason === "global-capacity"
+              ? "agent-capacity"
+              : coordinated.reason === "source-capacity"
+                ? "source-capacity"
+                : coordinated.reason === "thread-capacity"
+                  ? "thread-capacity"
+                  : coordinated.reason === "thread-quarantined"
+                    ? "thread-quarantined"
+                    : coordinated.reason === "draining"
+                      ? "runtime-stopping"
+                      : null;
+        if (schedulerReason) {
+          return schedulerTerminalResult(
+            trigger,
+            threadId,
+            {
+              status: "rejected",
+              reason: schedulerReason,
+              ...(coordinated.retryAfterMs === undefined
+                ? {}
+                : { retryAfterMs: coordinated.retryAfterMs }),
+            },
+            options.executionContext,
+          );
+        }
       }
       return distributedTerminalResult(
         trigger,
@@ -1308,11 +1347,18 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
                     signal?: AbortSignal;
                     historyPersistence?: ThreadHistoryPersistence;
                     onExecutionStart?: () => void | Promise<void>;
+                    executionContext?: ExecutionContextV1;
+                    distributedCapacity?: DistributedAdmissionCapacityV1;
+                    distributedAdmission?: readonly DistributedAdmissionReservationV1[];
                   },
                 ): Promise<TurnResult> {
                   // A listener may bind before a later transport finishes its
                   // ready hook. Hold all traffic until the entire ready phase
                   // succeeds so failed startup cannot process a partial turn.
+                  const executionContext =
+                    opts?.executionContext === undefined
+                      ? undefined
+                      : validateTrustedExecutionContext(opts.executionContext);
                   return scheduleTurn(
                     trigger,
                     {
@@ -1322,6 +1368,9 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
                       historyPersistence: opts?.historyPersistence,
                       beforeExecute: () => admission.wait(opts?.signal),
                       onExecutionStart: opts?.onExecutionStart,
+                      executionContext,
+                      distributedCapacity: opts?.distributedCapacity,
+                      distributedAdmission: opts?.distributedAdmission,
                     },
                     sourcePolicy,
                   );
@@ -1334,6 +1383,16 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
                 },
                 getOperationalSnapshot() {
                   return operationalSnapshot();
+                },
+                getRuntimeTopology() {
+                  return distributed ? "distributed-preview" : "single-replica";
+                },
+                reserveDistributedRateLimits(request) {
+                  if (!distributed) return Promise.resolve({ status: "unavailable" as const });
+                  return distributed.coordinator.reserveRateLimits(request);
+                },
+                validateDistributedAdmissionPolicy(requirements) {
+                  return distributed?.coordinator.supportsAdmissionPolicy(requirements) ?? false;
                 },
                 quarantineThread(threadId: string) {
                   return turnScheduler.quarantine(threadId);

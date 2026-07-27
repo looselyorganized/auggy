@@ -198,48 +198,30 @@ function stableJson(value: unknown): string {
   throw new Error("web idempotency binding contains an unsupported value");
 }
 
-export function createWebIdempotencyStore(config: {
-  dbPath: string;
+export interface WebIdempotencyCapacityOptions {
   maxRecords?: number;
-  maxRateLimitRecords?: number;
-  maxReplayBytes?: number;
-  maxStoredBytes?: number;
   maxRecordsPerPartition?: number;
   maxPublicRecords?: number;
   maxAgentRecords?: number;
   maxCreatorRecords?: number;
-  staleAfterMs?: number;
-  retentionMs?: number;
-  now?: () => number;
-}): WebIdempotencyStore {
+}
+
+export interface WebIdempotencyCapacityPolicy {
+  maxRecords: number;
+  maxRecordsPerPartition: number;
+  classLimits: Record<"public" | "agent" | "creator", number>;
+}
+
+/** One validation path for local SQLite and distributed retained-request quotas. */
+export function resolveWebIdempotencyCapacityPolicy(
+  config: WebIdempotencyCapacityOptions,
+): WebIdempotencyCapacityPolicy {
   const maxRecords = positiveInteger(config.maxRecords, DEFAULT_MAX_RECORDS, "maxRecords");
-  const maxRateLimitRecords = positiveInteger(
-    config.maxRateLimitRecords,
-    DEFAULT_MAX_RATE_LIMIT_RECORDS,
-    "maxRateLimitRecords",
-  );
   if (maxRecords < 3) {
     throw new Error(
       "web idempotency store: maxRecords must be at least 3 to reserve capacity for every trust class",
     );
   }
-  const maxReplayBytes = positiveInteger(
-    config.maxReplayBytes,
-    DEFAULT_MAX_REPLAY_BYTES,
-    "maxReplayBytes",
-  );
-  const staleAfterMs = positiveInteger(config.staleAfterMs, DEFAULT_STALE_AFTER_MS, "staleAfterMs");
-  const maxStoredBytes = positiveInteger(
-    config.maxStoredBytes,
-    DEFAULT_MAX_STORED_BYTES,
-    "maxStoredBytes",
-  );
-  if (maxStoredBytes < maxReplayBytes) {
-    throw new Error(
-      "web idempotency store: maxStoredBytes must be greater than or equal to maxReplayBytes",
-    );
-  }
-  const retentionMs = positiveInteger(config.retentionMs, DEFAULT_RETENTION_MS, "retentionMs");
   const maxRecordsPerPartition = positiveInteger(
     config.maxRecordsPerPartition,
     Math.min(maxRecords, 10_000),
@@ -258,6 +240,44 @@ export function createWebIdempotencyStore(config: {
       "web idempotency store: trust-class record limits must sum to no more than maxRecords",
     );
   }
+  return { maxRecords, maxRecordsPerPartition, classLimits };
+}
+
+export function createWebIdempotencyStore(
+  config: WebIdempotencyCapacityOptions & {
+    dbPath: string;
+    maxRateLimitRecords?: number;
+    maxReplayBytes?: number;
+    maxStoredBytes?: number;
+    staleAfterMs?: number;
+    retentionMs?: number;
+    now?: () => number;
+  },
+): WebIdempotencyStore {
+  const { maxRecords, maxRecordsPerPartition, classLimits } =
+    resolveWebIdempotencyCapacityPolicy(config);
+  const maxRateLimitRecords = positiveInteger(
+    config.maxRateLimitRecords,
+    DEFAULT_MAX_RATE_LIMIT_RECORDS,
+    "maxRateLimitRecords",
+  );
+  const maxReplayBytes = positiveInteger(
+    config.maxReplayBytes,
+    DEFAULT_MAX_REPLAY_BYTES,
+    "maxReplayBytes",
+  );
+  const staleAfterMs = positiveInteger(config.staleAfterMs, DEFAULT_STALE_AFTER_MS, "staleAfterMs");
+  const maxStoredBytes = positiveInteger(
+    config.maxStoredBytes,
+    DEFAULT_MAX_STORED_BYTES,
+    "maxStoredBytes",
+  );
+  if (maxStoredBytes < maxReplayBytes) {
+    throw new Error(
+      "web idempotency store: maxStoredBytes must be greater than or equal to maxReplayBytes",
+    );
+  }
+  const retentionMs = positiveInteger(config.retentionMs, DEFAULT_RETENTION_MS, "retentionMs");
   const now = config.now ?? Date.now;
   const database = openHardenedSqlite({
     path: config.dbPath,

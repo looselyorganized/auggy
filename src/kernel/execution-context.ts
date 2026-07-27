@@ -33,8 +33,8 @@ function readHash(value: unknown, name: string): string {
 }
 
 /**
- * Validate metadata accepted only by AgentHandle.inject(), Auggy's trusted
- * embedding boundary. Public transports cannot supply this context.
+ * Validate metadata minted by Auggy's trusted embedding or first-party
+ * transport boundary. Raw client fields cannot supply this context directly.
  */
 export function validateTrustedExecutionContext(value: unknown): ExecutionContextV1 {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {

@@ -94,8 +94,14 @@ describe("webTransport structure", () => {
     const first = webTransport(options);
     const second = webTransport(options);
 
-    await expect(first.onBoot?.()).rejects.toThrow(/durable shared idempotency\.dbPath/);
-    await expect(second.onBoot?.()).rejects.toThrow(/durable shared idempotency\.dbPath/);
+    for (const [index, augment] of [first, second].entries()) {
+      const agent = defineAgent(
+        { name: `no-ledger-${index}`, model: "test", augments: [augment] },
+        createMockModel(),
+      );
+      await expect(agent.start()).rejects.toThrow(/durable shared idempotency\.dbPath/);
+      await agent.stop();
+    }
   });
 
   it("fails closed on malformed external auth replay configuration", async () => {
