@@ -595,12 +595,178 @@ integration commit `9a4c196`.
 
 ### 5. Shared admission, identity, quotas, and memory
 
-- Port web idempotency/rate limits, visitor replay/revocation/session state,
-  budgets, cost accounting, and notification quotas to PostgreSQL contracts.
-- Add shared layered-memory extraction/dedupe buffers and a supported shared
-  memory adapter.
-- Audit Supabase operations for namespace, peer, atomicity, and fencing needs.
-- Provide startup rejection for remaining local mutable adapters.
+Checkpoint 5 is split into five independently reviewable sub-checkpoints. Each
+sub-checkpoint runs the complete engineering loop and records its own commits,
+tests, hostile-review disposition, compatibility impact, and rollback. This
+prevents web admission, identity authority, financial accounting, customer
+memory, and notification quotas from being hidden inside one oversized change.
+
+#### 5A. Canonical web admission and fleet quotas
+
+- Make the existing PostgreSQL coordinator the single authority for keyed and
+  unkeyed web execution. Do not introduce a second distributed lease/fence
+  ledger beside it.
+- Bind a source-stable keyed request to the canonical audience, peer and trust
+  projection, thread, authorization, context/task, and request content before
+  history access or model execution.
+- Join or replay exact duplicates from any replica; reject a changed binding.
+  Distinct requests for the same thread still serialize through the coordinator.
+- Reserve configured deployment-global, source, trust-class, peer/network, and
+  route quotas atomically using database time. Duplicate followers consume no
+  additional reservation and database failure denies before execution.
+- Keep local scheduler and waiter limits as defense-in-depth only. A local
+  cache, process clock, sticky session, or client IP is never fleet authority.
+- Preserve the current SQLite web path unchanged for supported single-replica
+  mode and keep public distributed startup disabled.
+
+**Implementation status:** complete on the private, disabled integration
+boundary; shared visitor/revocation authority in 5B and public certification in
+checkpoint 11 remain activation blockers.
+
+The security invariant is that every web request reaches one canonical,
+fleet-wide admission decision before history access or model execution. The
+threat model permits a caller to choose and replay keys, bodies, thread IDs,
+credentials, forwarded network metadata, and target replicas; disconnect and
+retry during any phase; and race another caller. It also assumes arbitrary
+load-balancer routing and process/database failure. Namespace, policy, and
+database credentials remain trusted operator configuration. Direct database
+corruption is outside the caller threat model, but startup reconciliation still
+fails closed on counter/ledger drift.
+
+The implemented boundary has these consequences:
+
+- Keyed distributed requests derive a secret-free coordinator request ID from
+  the caller key while the immutable request binding separately covers source,
+  audience, peer/trust, thread, authorization, semantic body, capacity class,
+  and rate subjects. Exact duplicates join or replay; any changed field
+  conflicts before history or execution.
+- Ordinary SSE disconnect does not cancel a keyed fleet execution that another
+  replica may need to join or replay. A bounded delivery-buffer overflow still
+  cancels local work, and the coordinator conservatively classifies any
+  post-start ambiguity.
+- PostgreSQL database-time rate reservations cover anonymous network, global,
+  source, trust, peer, and augment-route policy. Each policy owns an immutable
+  bounded evidence partition, so route traffic cannot consume turn evidence.
+  Standalone route reservations lock only their policy and request identity;
+  they do not block namespace heartbeats or unrelated turn policies.
+- Retained request capacity is atomically partitioned by trust class and
+  canonical peer/network hash. Admission uses O(1) class/partition counters,
+  not a scan of the retained request ledger. Pruning releases those counters in
+  the same transaction, and registration reconciles class and partition
+  counters against the ledger, including configured per-partition maxima.
+- A request cannot make a syntactically valid admission impossible by choosing
+  a policy whose retained evidence is too small: startup verifies the minimum
+  complete reservation set and the sum of isolated policy capacities.
+- Distributed startup rejects a process-local SQLite idempotency ledger and
+  local console state. The required preview web posture is
+  `idempotency.dbPath: null` with `adminRoute: false`; no local file or volume is
+  promoted to fleet authority. The supported single-replica SQLite path is
+  unchanged.
+- External-auth replay consumption is deferred until shared assertion authority
+  exists. An unsupported unkeyed distributed request returns unavailable
+  without consuming its assertion. Visitor identity, revocation, promotion,
+  and direct verification delivery remain disabled pending 5B, 6, and 7.
+
+The `admission` shape on the public TypeScript coordination contract is preview
+runtime/test wiring only. `agent.yaml` deliberately does not parse or support it
+while distributed startup remains disabled. It must not be documented as an
+operator setting until checkpoint 11 connects it to validated configuration,
+preflight, and migration guidance.
+
+**Checkpoint 5A verification record:** coordinator/admission commit `9a13daf`;
+web integration commit `4b5e859`.
+
+- Focused distributed admission, two-replica web, compatibility, local web,
+  idempotency, root-runtime, agent-runtime, and coordinator suites passed 289
+  tests with 1,268 assertions. The strict coordination CLI migration contract
+  also passed after adding migration `20260726_06_coordination_atomic_admission`.
+- A fresh PostgreSQL 16 database passed 44 tests with 324 assertions. Coverage
+  includes strict catalog validation, multi-process claiming, competing fleet
+  rate/capacity reservations, request and partition counter reconciliation,
+  pruning/reuse, namespace and policy lock isolation, targeted reuse beyond a
+  1,000-row cleanup batch, and the quiescent v5-to-v6 transition.
+- All 284 inventoried runtime files passed through sequential inventory shards.
+  Bun 1.3.14 reproduced its known aggregate `EADDRINUSE` behavior before tests
+  in `tests/http.test.ts` and in four server-heavy capability files; each file
+  passed in a fresh isolated process (63 and 77 tests respectively). A
+  sandbox-only IPv6 bind `EPERM` in the doctor shard passed 30/30 with socket
+  permission. Port-heavy files and the fixed two-replica ports 19580-19594 must
+  remain sequential or separately sharded in CI.
+- The console passed 243 tests with 1,093 assertions and its production build
+  passed. `bun run typecheck`, `bun run lint`, `git diff --check`, the 14-shard
+  test inventory check, and `bun run smoke:release` passed. Lint reports only
+  the existing Biome schema/CLI patch-version information notice. Dependencies
+  did not change; release smoke's isolated packed-consumer audit passed.
+- Three hostile review rounds found and closed disconnect-driven duplicate
+  execution, early external-auth replay consumption, local SQLite startup
+  authority, namespace-lock amplification, insufficient evidence capacity,
+  retained-ledger admission scans, missing per-policy expiry indexing, and
+  request-counter drift/over-cap reconciliation. A suspected missing capacity
+  projection was disproven by tracing the unconditional web projection. The
+  final PostgreSQL, web, and contract reviewers found no unresolved High or
+  Medium issue.
+- The remaining Low is replay fidelity: a cross-replica terminal replay
+  reconstructs the sanitized assistant result rather than every original AG-UI
+  progress/tool/error event. It cannot repeat execution or bypass authority,
+  but checkpoint 11 must either certify and document that terminal-only
+  contract or add bounded event replay before public enablement.
+- Rollback is fail closed: drain and quiesce every preview replica, preserve or
+  restore PostgreSQL, and never binary-downgrade in place. Older strict binaries
+  reject the v6 catalog and cannot reopen a namespace upgraded by this
+  checkpoint. Use a matching snapshot or a fresh preview namespace instead.
+
+#### 5B. Shared visitor and assertion authority
+
+- Add namespace-scoped PostgreSQL visitor tokens, verified identities,
+  revocation/version state, promotion evidence, and external-auth assertion
+  replay.
+- Consume one-time tokens and rotate/revoke identity atomically with database
+  time. Revocation wins against delayed verification or session promotion.
+- Replace process-local email locks, proof buffers, and verification-request
+  rate limits with bounded shared evidence tied to canonical source requests.
+- Keep direct verification mail delivery disabled in distributed mode until
+  checkpoints 6 and 7 provide durable intent and provider ownership.
+
+#### 5C. Atomic budgets and exact-once cost accounting
+
+- Reserve peer/day and anonymous rate budgets before execution without holding
+  a database transaction across model or tool work.
+- Bind every reservation to the canonical request, immutable policy
+  fingerprint, admission day, attempt, and active fence.
+- Consume checkpoint 4 cost markers in the fenced terminal transaction and
+  update shared aggregates exactly once. Pre-start cancellation may release a
+  reservation; post-start ambiguity may not silently restore it.
+- Preserve the documented USD cap as post-hoc unless an explicit bounded
+  maximum-cost reservation policy is introduced. Persist threshold dedupe;
+  stage threshold notification intent rather than delivering inline.
+
+#### 5D. Fenced shared memory and extraction state
+
+- Add an exact namespace/peer PostgreSQL memory adapter with expiry,
+  supersession, provenance, tombstones, deterministic operation IDs, and active
+  fence validation for turn-owned mutations.
+- Move auto-save cadence, bounded transcript buffers, peer promotion state,
+  extraction claims, and fact dedupe to shared state. A source turn may produce
+  one committed extraction across the fleet.
+- Audit Supabase schema, RLS, atomicity, and fencing with executable preflight.
+  The current independent PostgREST mutations remain unsupported unless they
+  prove the same authoritative transaction contract.
+- Support only an offline drained SQLite import into a fresh namespace; never
+  dual-write or mount one SQLite file from multiple replicas.
+
+#### 5E. Shared notification quota ledger
+
+- Port notification reservation, semantic dedupe, incident state, and quota
+  evidence to namespace-scoped PostgreSQL using coordinator-derived operation
+  identities and database time.
+- Do not add an ad-hoc delivery worker here. Distributed notification delivery
+  stays rejected until checkpoint 6 supplies transactional outbox claims,
+  sink-idempotency evidence, ambiguity handling, and reconciliation.
+
+Across 5A through 5E, startup continues to reject every SQLite, local-file,
+in-memory, generic Supabase REST, or otherwise unverified mutable authority in
+the distributed profile. The one-replica Railway volume path remains a
+separate supported local profile; sharing that volume never enables replicas.
 
 ### 6. Transactional outbound delivery
 
