@@ -74,13 +74,15 @@ process-local state.
 ## Current-state revalidation
 
 The PostgreSQL coordinator in `src/coordination/` is a tested but disabled
-foundation. Checkpoints 1 through 3 provide bounded admission, immutable source
+foundation. Checkpoints 1 through 4 provide bounded admission, immutable source
 policies, one-use process sessions, process-owned queues, database-time leases,
 namespace-wide monotonic fences, pre-execution adoption, bounded terminal
 replay and events, post-execution outcome-unknown quarantine, compare-and-set
 recovery, cooperative cancellation, instance drain, namespace isolation, and a
-fenced root-pipeline integration exercised through a private direct-source test
-adapter.
+fenced root-pipeline integration. The private integration additionally reloads
+peer-bound PostgreSQL history on every root and atomically commits its next
+history revision, sanitized replay, exact-known cost marker, staged outbox
+intent, and terminal request state.
 
 The integration is consumed internally by `defineAgent` only when the private
 test adapter is attached. The adapter and coordinator runtime are absent from
@@ -93,20 +95,20 @@ The remaining risks are confirmed in current source:
 
 - `src/agent.ts` keeps thread tails, resident history associations, unmanaged
   ownership, scheduler queues, quarantine, and lifecycle state in one process;
-- `ThreadHistoryPersistence` has no expected revision or fencing token;
+- legacy `ThreadHistoryPersistence` has no expected revision or fencing token
+  and is therefore rejected by the distributed integration;
 - web execution idempotency and rate limiting are SQLite-backed;
 - budgets, notification delivery, visitor state, console conversations,
   Telegram replay, AgentMail ingress, Link state, and Durable Jobs use local
   mutable stores;
 - layered-memory extraction buffers are process-local and the default durable
   store is SQLite;
-- the response, history commit, hook pipeline, and outbound delivery are not a
-  single fenced durable transition;
+- arbitrary custom hook/tool effects remain outside the coordinator transaction
+  unless their augment honors fenced operation identities;
 - a queued coordinator row does not durably own the request payload, so an
   abandoned HTTP queue entry needs explicit expiry/adoption semantics;
 - real transports do not yet mint and propagate source-stable distributed
-  request identities, and the coordinator is not yet wired to the shared
-  history/result/cost/outbox commit boundary; and
+  request identities; and
 - the generated Railway deployment deliberately enforces one live volume
   owner and one replica.
 
@@ -482,12 +484,17 @@ The checkpoint establishes these invariants:
   queued or active request exists. Old v3 clients fail compatibility after the
   transition. No schema migration is required for this protocol-only change.
 
+Checkpoint 4 advances the preview contract to protocol/schema v5. The only
+accepted predecessor is the exact code-owned v4 tuple, and the upgrade is
+permitted only after all v4 instance leases expire and no queued or active
+request remains. The upgrade fills the new immutable turn-state policy under
+the locked namespace row; v4 clients fail compatibility after transition.
+
 This checkpoint deliberately does **not** claim transport-level replica
 support. Web, Telegram, AgentMail, and Link still need trusted source-stable
-root identities and shared replay ledgers in checkpoints 5, 7, and 9. Shared
-fenced history/result/cost/outbox commit remains checkpoint 4, transactional
-delivery remains checkpoint 6, and final multi-process transport certification
-and public enablement remain checkpoint 11. Legacy unfenced
+root identities and shared replay ledgers in checkpoints 5, 7, and 9.
+Transactional delivery remains checkpoint 6, and final multi-process transport
+certification and public enablement remain checkpoint 11. Legacy unfenced
 `ThreadHistoryPersistence` is rejected by the private integration instead of
 silently composing it with distributed execution.
 
@@ -524,13 +531,67 @@ silently composing it with distributed execution.
 
 ### 4. Shared history, result replay, and atomic turn commit
 
-- Introduce revision/fence-aware `ThreadHistoryPersistence` contracts.
-- Implement peer-bound PostgreSQL history with compare-and-set writes.
-- Add bounded sanitized result replay and exact binding conflict behavior.
-- Commit history, result, cost marker, outbox intent, and the post-execution
-  coordinator checkpoint through one fenced transaction boundary; retain the
-  lease until required post-turn work settles.
-- Prevent resident process caches from serving an unverified revision.
+**Implementation status:** complete on the private, disabled integration
+boundary; public transport enablement remains blocked on checkpoints 5 through
+11.
+
+- The coordinator owns peer-bound revisioned history. Every arbitrarily routed
+  root reloads it under the exact unstarted lease before model invocation, and
+  a changed peer is denied before history exposure or execution.
+- The only identity transition is authenticated public anonymous-to-recognized
+  promotion with the exact predecessor peer hash and promotion scope.
+- Protocol v5 rejects legacy replay-only `complete()`; a successful execution
+  must use the atomic checkpoint.
+- One PostgreSQL transaction rechecks namespace, instance session, request,
+  attempt, fence, lease expiry, execution marker, peer binding, and expected
+  history revision before committing history, sanitized replay, exact-known
+  cost markers, staged outbox intents, and terminal request state.
+- History, replay, cost, outbox, and namespace cardinality are explicitly
+  bounded by immutable `turnState` and `result` policies. Pending outbox rows
+  protect their terminal request from pruning until checkpoint 6 implements
+  fenced delivery and reconciliation.
+- Resident history is evicted after each distributed root, so another replica's
+  later revision can never be hidden by a stale process cache. Local
+  single-replica history behavior remains unchanged.
+- Outbound handlers are not invoked by the distributed turn path. The atomic
+  commit stages bounded intents only; delivery is intentionally deferred.
+- Empty histories are reserved on the active request but are not materialized
+  before execution. Pre-start cancellation or expiry releases the reservation,
+  preventing abandoned requests from exhausting `maxThreads`.
+- Durable history and replay bodies are structurally validated, and replay is
+  bound to the requested thread both when stored and when read. Malformed or
+  wrong-thread durable state fails closed rather than becoming a replay.
+
+**Checkpoint 4 verification record:** coordinator commit `7ce790e`; runtime
+integration commit `9a4c196`.
+
+- Focused coordinator, runtime, compatibility, CLI, and adjacent suites pass;
+  the final combined changed-surface run covered 331 tests with 1,399
+  assertions. PostgreSQL 16 passes 35 tests with 268 assertions, including
+  multiprocess fencing, absent-history capacity reservations, malformed
+  checkpoint rejection, wrong-thread replay corruption, and rollback after a
+  later atomic write fault.
+- Every canonical runtime shard passed sequentially. The console suite passed
+  243 tests with 1,093 assertions and the production console build passed.
+  `bun run typecheck`, `bun run lint`, `bun audit --json` (`{}`), and
+  `bun run smoke:release` pass. Lint reports only the existing Biome schema
+  version information notice.
+- Three hostile-review rounds found and closed an omitted recovery fingerprint,
+  a v5 replay-only completion bypass, pre-start history-capacity leakage,
+  syntactically valid but structurally malformed checkpoints, and wrong-thread
+  durable replay reads. A suspected causal-child authority bypass was
+  independently disproven: the child receives the parent authority, combined
+  abort signal, uncertainty callback, distributed accumulator, and keyed
+  parent lease.
+- No unresolved High or Medium issue remains inside checkpoint 4's private,
+  disabled integration boundary. Transactional outbox delivery remains the
+  explicit checkpoint 6 activation blocker. Automatic observable pruning and
+  history-capacity reclamation remain the explicit checkpoint 10 activation
+  blocker. Supported startup still rejects this profile, so neither deferred
+  path is reachable through public or local mode.
+- Rollback requires a quiescent fleet and preserved PostgreSQL state. Protocol
+  v4 code cannot reopen a v5 namespace; use a matching database snapshot or a
+  fresh preview namespace rather than attempting an in-place downgrade.
 
 ### 5. Shared admission, identity, quotas, and memory
 

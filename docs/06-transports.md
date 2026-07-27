@@ -1324,6 +1324,16 @@ settings:
       maxEvents: 50000
     result:
       maxReplayBytes: 65536
+    turnState:
+      history:
+        maxSnapshotBytes: 65536
+        maxMessages: 100
+        maxThreads: 1000
+      maxCostMarkersPerTurn: 32
+      outbox:
+        maxIntentsPerTurn: 32
+        maxIntentBytes: 65536
+        maxPendingIntents: 1000
     # urlEnv defaults to AUGGY_COORDINATION_DATABASE_URL
     leaseDurationMs: 30000
     heartbeatIntervalMs: 5000
@@ -1332,12 +1342,14 @@ settings:
 ```
 
 This is deliberately a **fail-closed declaration**, not an instruction to run
-multiple replicas yet. Current fleet admission, thread serialization, history
-commits, idempotency, quarantine, mutable augment stores, and outbound delivery
-are process-local or unfenced. The local keyed scheduler will remain the
-per-process executor behind a future fleet coordinator. Runtime preflight must
-also verify shared budgets, replay ledgers, mutable memory, visitor state, and a
-durable fenced delivery outbox before it can enable distributed execution.
+multiple replicas yet. The private integration now provides fleet admission,
+thread serialization, peer-bound history, bounded replay, idempotency,
+quarantine, and one fenced atomic turn-state checkpoint. Public transports,
+mutable augment stores, shared quota ledgers, ingress ownership, and outbound
+delivery are still disabled or incomplete. The local keyed scheduler remains
+the per-process executor behind the fleet coordinator. Runtime preflight must
+also verify shared budgets, mutable memory, visitor state, source replay, and a
+durable fenced delivery worker before it can enable distributed execution.
 Until then deploy one runtime replica for each logical agent namespace.
 `fleetCapacity` is an explicit fleet-wide contract: its values are not defaults
 for `turnScheduling` and are never multiplied by replica count.
@@ -1345,6 +1357,20 @@ Retention and replay bounds are also explicit. Terminal requests and audit
 events are bounded by age and count; queued, active, and outcome-unknown work
 is never eligible for terminal pruning. `maxReplayBytes` is measured over
 sanitized serialized UTF-8 bytes.
+`turnState` is also required and immutable. It bounds one peer-bound history
+snapshot, namespace history cardinality, exact-known cost markers, and staged
+outbox intents. A configured outbox capacity of zero deliberately disables
+outbound staging; it does not fall back to direct process-local delivery.
+
+The coordination database is sensitive application data, not a metadata-only
+queue. Peer identifiers remain one-way hashes in request/history ownership
+columns, but history and replay bodies contain conversation content, and staged
+outbox bodies contain the delivery payload plus the peer routing fields needed
+by the future worker. Protect the database, backups, and diagnostic access with
+the same controls as conversation storage; use a dedicated least-privilege
+role and verified TLS. Never place provider credentials or raw provider errors
+in these payloads. Application-level encryption and outbox retention are part
+of the delivery checkpoint and are not claimed by this preview boundary.
 
 Built-in replica topology is classified by source-owned verifiers. Configuration
 cannot assert or override a class, verifier result, backend, or readiness. A

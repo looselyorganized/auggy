@@ -763,6 +763,19 @@ export interface AgentConfig {
     result: {
       maxReplayBytes: number;
     };
+    turnState: {
+      history: {
+        maxSnapshotBytes: number;
+        maxMessages: number;
+        maxThreads: number;
+      };
+      maxCostMarkersPerTurn: number;
+      outbox: {
+        maxIntentsPerTurn: number;
+        maxIntentBytes: number;
+        maxPendingIntents: number;
+      };
+    };
     leaseDurationMs: number;
     heartbeatIntervalMs: number;
     claimPollMs: number;
@@ -820,8 +833,8 @@ conversation from consuming it. `maxCausalDepth` bounds nested same-thread
 `SchedulerContext.inject()` work. Queue settings may be zero; active and causal
 limits must be positive safe integers.
 
-`coordination.fleetCapacity` is a separate, required declaration for a future
-distributed coordinator. Its limits apply once to the logical agent fleet and
+`coordination.fleetCapacity` is a separate, required declaration for the
+preview distributed coordinator. Its limits apply once to the logical agent fleet and
 must never be multiplied by replica count or derived from `turnScheduling`.
 Declaring coordination remains fail-closed until the shared-store and fencing
 preflight is complete; it does not enable replicas by itself.
@@ -830,6 +843,14 @@ both age and count. It never authorizes pruning queued, active, or
 outcome-unknown work. `result.maxReplayBytes` bounds one sanitized serialized
 replay result by UTF-8 bytes; a result outside that envelope must remain a
 terminal non-replayable outcome and must never authorize duplicate execution.
+The required `turnState` policy bounds the coordinator-owned history snapshot,
+messages and thread count, exact-known inference cost markers, and staged
+outbox intents. These values are immutable namespace compatibility inputs.
+Checkpoint commits apply history, sanitized replay, cost markers, outbox
+intents, and the terminal request state atomically under the current attempt
+and fence. Staged outbox rows are not delivered until the transactional
+delivery checkpoint is implemented, and public replica startup remains
+disabled.
 
 `inject()` lets trusted non-transport code feed a trigger into the same
 agent-wide scheduler used by transports. It no longer bypasses concurrency or
