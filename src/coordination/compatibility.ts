@@ -15,8 +15,8 @@ const CANONICAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 
 export const DISTRIBUTED_COORDINATION_PROTOCOL = Object.freeze({
   name: "auggy-postgres-coordination" as const,
-  protocolVersion: 1 as const,
-  schemaVersion: 2 as const,
+  protocolVersion: 3 as const,
+  schemaVersion: 4 as const,
   fingerprintVersion: 2 as const,
 });
 
@@ -49,7 +49,7 @@ function fingerprint(domain: string, value: unknown): string {
 }
 
 const PROTOCOL_FINGERPRINT = fingerprint(
-  "auggy-distributed-coordination-protocol-v1",
+  "auggy-distributed-coordination-protocol-v3",
   DISTRIBUTED_COORDINATION_PROTOCOL,
 );
 
@@ -149,7 +149,7 @@ export function buildDistributedCoordinationCompatibility(
     });
 
     const configurationFingerprint = fingerprint(
-      "auggy-distributed-coordination-configuration-v1",
+      "auggy-distributed-coordination-configuration-v3",
       {
         protocolFingerprint: PROTOCOL_FINGERPRINT,
         namespace: coordination.namespace,

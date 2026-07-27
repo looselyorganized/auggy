@@ -100,6 +100,137 @@ ALTER TABLE auggy_coordination_namespaces
     CONSTRAINT auggy_coord_ns_replay_bytes_check CHECK (max_replay_bytes >= 1024 AND max_replay_bytes <= 1048576);
 `;
 
+const COORDINATION_LIFECYCLE_MIGRATION_SQL = `
+UPDATE auggy_coordination_threads AS thread
+   SET quarantined = TRUE,
+       quarantine_fence = request.fence,
+       updated_at = clock_timestamp()
+  FROM auggy_coordination_requests AS request
+ WHERE request.namespace = thread.namespace
+   AND request.thread_id = thread.thread_id
+   AND request.state = 'active'
+   AND request.execution_started_at IS NOT NULL;
+
+UPDATE auggy_coordination_requests
+   SET state = CASE
+         WHEN state = 'active' AND execution_started_at IS NOT NULL THEN 'outcome_unknown'
+         WHEN state IN ('queued', 'active') THEN 'canceled'
+         ELSE state
+       END,
+       owner_instance = NULL,
+       lease_expires_at = NULL,
+       terminal_at = CASE
+         WHEN state IN ('queued', 'active', 'completed', 'failed', 'canceled', 'outcome_unknown')
+           THEN COALESCE(terminal_at, clock_timestamp())
+         ELSE terminal_at
+       END,
+       updated_at = clock_timestamp();
+
+DELETE FROM auggy_coordination_instances;
+
+ALTER TABLE auggy_coordination_instances
+  ADD COLUMN session_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_instance_session_check CHECK (session_id ~ '^[0-9a-f]{64}$'),
+  ADD COLUMN build_fingerprint TEXT NOT NULL
+    CONSTRAINT auggy_coord_instance_build_check CHECK (build_fingerprint ~ '^[0-9a-f]{64}$'),
+  ADD COLUMN accepting BOOLEAN NOT NULL DEFAULT TRUE,
+  ADD COLUMN lease_expires_at TIMESTAMPTZ NOT NULL,
+  ADD COLUMN registered_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  ADD CONSTRAINT auggy_coord_instance_lifecycle_check
+    CHECK ((accepting AND NOT draining) OR (NOT accepting AND draining));
+
+ALTER TABLE auggy_coordination_requests
+  ADD COLUMN owner_session TEXT,
+  ADD COLUMN queue_owner_instance TEXT,
+  ADD COLUMN queue_owner_session TEXT,
+  ADD COLUMN queue_generation BIGINT NOT NULL DEFAULT 0
+    CONSTRAINT auggy_coord_request_queue_generation_check CHECK (queue_generation >= 0),
+  ADD COLUMN queue_expires_at TIMESTAMPTZ,
+  ADD CONSTRAINT auggy_coord_request_lifecycle_check CHECK (
+    (state = 'queued'
+      AND queue_owner_instance IS NOT NULL
+      AND queue_owner_session IS NOT NULL
+      AND queue_generation > 0
+      AND queue_expires_at IS NOT NULL
+      AND fence IS NULL
+      AND owner_instance IS NULL
+      AND owner_session IS NULL
+      AND lease_expires_at IS NULL
+      AND terminal_at IS NULL)
+    OR
+    (state = 'active'
+      AND fence IS NOT NULL
+      AND owner_instance IS NOT NULL
+      AND owner_session IS NOT NULL
+      AND lease_expires_at IS NOT NULL
+      AND queue_owner_instance IS NULL
+      AND queue_owner_session IS NULL
+      AND queue_expires_at IS NULL
+      AND terminal_at IS NULL)
+    OR
+    (state IN ('completed', 'failed', 'canceled', 'outcome_unknown')
+      AND terminal_at IS NOT NULL
+      AND owner_instance IS NULL
+      AND owner_session IS NULL
+      AND lease_expires_at IS NULL
+      AND queue_owner_instance IS NULL
+      AND queue_owner_session IS NULL
+      AND queue_expires_at IS NULL)
+  );
+
+CREATE INDEX auggy_coordination_instance_lease_idx
+  ON auggy_coordination_instances (namespace, lease_expires_at, instance_id);
+CREATE INDEX auggy_coordination_request_queue_lease_idx
+  ON auggy_coordination_requests (namespace, state, queue_expires_at, request_id);
+CREATE INDEX auggy_coordination_request_terminal_idx
+  ON auggy_coordination_requests (namespace, state, terminal_at, request_id);
+`;
+
+const COORDINATION_RESULT_MIGRATION_SQL = `
+UPDATE auggy_coordination_events
+   SET reason = 'legacy-redacted'
+ WHERE reason IS NOT NULL
+   AND reason !~ '^[a-z0-9][a-z0-9._:-]{0,63}$';
+
+ALTER TABLE auggy_coordination_events
+  ADD CONSTRAINT auggy_coord_event_type_check
+    CHECK (event_type ~ '^[a-z0-9][a-z0-9._:-]{0,63}$'),
+  ADD CONSTRAINT auggy_coord_event_reason_check
+    CHECK (reason IS NULL OR reason ~ '^[a-z0-9][a-z0-9._:-]{0,63}$');
+
+ALTER TABLE auggy_coordination_namespaces
+  ADD COLUMN lease_ms BIGINT,
+  ADD COLUMN next_fence BIGINT NOT NULL DEFAULT 0;
+
+UPDATE auggy_coordination_namespaces AS namespace_row
+   SET next_fence = COALESCE((
+     SELECT max(thread.next_fence)
+       FROM auggy_coordination_threads AS thread
+      WHERE thread.namespace = namespace_row.namespace
+   ), 0);
+
+ALTER TABLE auggy_coordination_namespaces
+  ADD CONSTRAINT auggy_coord_ns_lease_ms_check
+    CHECK (lease_ms IS NULL OR (lease_ms >= 1 AND lease_ms <= 3600000)),
+  ADD CONSTRAINT auggy_coord_ns_next_fence_check CHECK (next_fence >= 0);
+
+ALTER TABLE auggy_coordination_requests
+  ADD COLUMN result_body BYTEA,
+  ADD COLUMN result_content_type TEXT,
+  ADD COLUMN result_version SMALLINT,
+  ADD CONSTRAINT auggy_coord_request_result_version_check
+    CHECK (result_version IS NULL OR result_version = 1),
+  ADD CONSTRAINT auggy_coord_request_result_check CHECK (
+    (result_body IS NULL AND result_content_type IS NULL AND result_version IS NULL)
+    OR
+    (state = 'completed'
+      AND result_body IS NOT NULL
+      AND result_content_type = 'application/json'
+      AND result_version = 1
+      AND octet_length(result_body) <= 1048576)
+  );
+`;
+
 /** Recomputed from immutable migration SQL; migration rejects any mismatch. */
 export const postgresCoordinationMigrationChecksum = new Bun.CryptoHasher("sha256")
   .update(INITIAL_COORDINATION_MIGRATION_SQL)
@@ -107,6 +238,14 @@ export const postgresCoordinationMigrationChecksum = new Bun.CryptoHasher("sha25
 
 export const postgresCoordinationCompatibilityMigrationChecksum = new Bun.CryptoHasher("sha256")
   .update(COORDINATION_COMPATIBILITY_MIGRATION_SQL)
+  .digest("hex");
+
+export const postgresCoordinationLifecycleMigrationChecksum = new Bun.CryptoHasher("sha256")
+  .update(COORDINATION_LIFECYCLE_MIGRATION_SQL)
+  .digest("hex");
+
+export const postgresCoordinationResultMigrationChecksum = new Bun.CryptoHasher("sha256")
+  .update(COORDINATION_RESULT_MIGRATION_SQL)
   .digest("hex");
 
 export const POSTGRES_COORDINATION_MIGRATIONS = [
@@ -119,6 +258,16 @@ export const POSTGRES_COORDINATION_MIGRATIONS = [
     id: "20260726_02_coordination_compatibility_contract",
     checksum: postgresCoordinationCompatibilityMigrationChecksum,
     sql: COORDINATION_COMPATIBILITY_MIGRATION_SQL,
+  },
+  {
+    id: "20260726_03_coordination_instance_lifecycle",
+    checksum: postgresCoordinationLifecycleMigrationChecksum,
+    sql: COORDINATION_LIFECYCLE_MIGRATION_SQL,
+  },
+  {
+    id: "20260726_04_coordination_bounded_results",
+    checksum: postgresCoordinationResultMigrationChecksum,
+    sql: COORDINATION_RESULT_MIGRATION_SQL,
   },
 ] as const;
 
@@ -229,9 +378,20 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
   ["auggy_coordination_events", "reason", "text", false, null],
   ["auggy_coordination_events", "request_id", "text", false, null],
   ["auggy_coordination_events", "thread_id", "text", true, null],
+  ["auggy_coordination_instances", "accepting", "boolean", true, "true"],
+  ["auggy_coordination_instances", "build_fingerprint", "text", true, null],
   ["auggy_coordination_instances", "draining", "boolean", true, "false"],
   ["auggy_coordination_instances", "instance_id", "text", true, null],
+  ["auggy_coordination_instances", "lease_expires_at", "timestamp with time zone", true, null],
   ["auggy_coordination_instances", "namespace", "text", true, null],
+  [
+    "auggy_coordination_instances",
+    "registered_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_instances", "session_id", "text", true, null],
   [
     "auggy_coordination_instances",
     "updated_at",
@@ -250,6 +410,7 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
   ["auggy_coordination_migrations", "id", "text", true, null],
   ["auggy_coordination_namespaces", "configuration_fingerprint", "text", true, null],
   ["auggy_coordination_namespaces", "event_retention_ms", "bigint", true, null],
+  ["auggy_coordination_namespaces", "lease_ms", "bigint", false, null],
   ["auggy_coordination_namespaces", "max_concurrent", "integer", true, null],
   ["auggy_coordination_namespaces", "max_events", "integer", true, null],
   ["auggy_coordination_namespaces", "max_queued", "integer", true, null],
@@ -257,6 +418,7 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
   ["auggy_coordination_namespaces", "max_replay_bytes", "integer", true, null],
   ["auggy_coordination_namespaces", "max_terminal_requests", "integer", true, null],
   ["auggy_coordination_namespaces", "namespace", "text", true, null],
+  ["auggy_coordination_namespaces", "next_fence", "bigint", true, "0"],
   ["auggy_coordination_namespaces", "protocol_fingerprint", "text", true, null],
   ["auggy_coordination_namespaces", "protocol_version", "integer", true, null],
   ["auggy_coordination_namespaces", "terminal_request_retention_ms", "bigint", true, null],
@@ -273,6 +435,11 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
   ["auggy_coordination_requests", "lease_expires_at", "timestamp with time zone", false, null],
   ["auggy_coordination_requests", "namespace", "text", true, null],
   ["auggy_coordination_requests", "owner_instance", "text", false, null],
+  ["auggy_coordination_requests", "owner_session", "text", false, null],
+  ["auggy_coordination_requests", "queue_expires_at", "timestamp with time zone", false, null],
+  ["auggy_coordination_requests", "queue_generation", "bigint", true, "0"],
+  ["auggy_coordination_requests", "queue_owner_instance", "text", false, null],
+  ["auggy_coordination_requests", "queue_owner_session", "text", false, null],
   [
     "auggy_coordination_requests",
     "queued_at",
@@ -281,6 +448,9 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
     "clock_timestamp()",
   ],
   ["auggy_coordination_requests", "request_id", "text", true, null],
+  ["auggy_coordination_requests", "result_body", "bytea", false, null],
+  ["auggy_coordination_requests", "result_content_type", "text", false, null],
+  ["auggy_coordination_requests", "result_version", "smallint", false, null],
   ["auggy_coordination_requests", "source_id", "text", true, null],
   ["auggy_coordination_requests", "state", "text", true, null],
   ["auggy_coordination_requests", "terminal_at", "timestamp with time zone", false, null],
@@ -338,6 +508,15 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
   ],
   [
     "auggy_coordination_instances",
+    "auggy_coordination_instance_lease_idx",
+    false,
+    false,
+    "namespace,lease_expires_at,instance_id",
+    "pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_instances",
     "auggy_coordination_instances_pkey",
     true,
     true,
@@ -374,12 +553,30 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
   ],
   [
     "auggy_coordination_requests",
+    "auggy_coordination_request_queue_lease_idx",
+    false,
+    false,
+    "namespace,state,queue_expires_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_requests",
     "auggy_coordination_request_source_idx",
     false,
     false,
     "namespace,source_id,state",
     "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
     "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_requests",
+    "auggy_coordination_request_terminal_idx",
+    false,
+    false,
+    "namespace,state,terminal_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
   ],
   [
     "auggy_coordination_requests",
@@ -441,6 +638,41 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
 
 const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition: string }>([
   [
+    "auggy_coord_event_reason_check",
+    {
+      table: "auggy_coordination_events",
+      definition: "checkreasonisnullorreason~'^[a-z0-9][a-z0-9._:-]{0,63}$'",
+    },
+  ],
+  [
+    "auggy_coord_event_type_check",
+    {
+      table: "auggy_coordination_events",
+      definition: "checkevent_type~'^[a-z0-9][a-z0-9._:-]{0,63}$'",
+    },
+  ],
+  [
+    "auggy_coord_instance_build_check",
+    {
+      table: "auggy_coordination_instances",
+      definition: "checkbuild_fingerprint~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_instance_lifecycle_check",
+    {
+      table: "auggy_coordination_instances",
+      definition: "checkacceptingandnotdrainingornotacceptinganddraining",
+    },
+  ],
+  [
+    "auggy_coord_instance_session_check",
+    {
+      table: "auggy_coordination_instances",
+      definition: "checksession_id~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
     "auggy_coord_ns_config_fingerprint_check",
     {
       table: "auggy_coordination_namespaces",
@@ -455,6 +687,13 @@ const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition
     },
   ],
   [
+    "auggy_coord_ns_lease_ms_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition: "checklease_msisnullorlease_ms>=1andlease_ms<=3600000",
+    },
+  ],
+  [
     "auggy_coord_ns_max_events_check",
     {
       table: "auggy_coordination_namespaces",
@@ -466,6 +705,13 @@ const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition
     {
       table: "auggy_coordination_namespaces",
       definition: "checkmax_terminal_requests>=1andmax_terminal_requests<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_ns_next_fence_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition: "checknext_fence>=0",
     },
   ],
   [
@@ -505,6 +751,36 @@ const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition
   [
     "auggy_coordination_namespaces_max_queued_per_thread_check",
     { table: "auggy_coordination_namespaces", definition: "checkmax_queued_per_thread>=0" },
+  ],
+  [
+    "auggy_coord_request_lifecycle_check",
+    {
+      table: "auggy_coordination_requests",
+      definition:
+        "checkstate='queued'andqueue_owner_instanceisnotnullandqueue_owner_sessionisnotnullandqueue_generation>0andqueue_expires_atisnotnullandfenceisnullandowner_instanceisnullandowner_sessionisnullandlease_expires_atisnullandterminal_atisnullorstate='active'andfenceisnotnullandowner_instanceisnotnullandowner_sessionisnotnullandlease_expires_atisnotnullandqueue_owner_instanceisnullandqueue_owner_sessionisnullandqueue_expires_atisnullandterminal_atisnullorstate=anyarray['completed','failed','canceled','outcome_unknown']andterminal_atisnotnullandowner_instanceisnullandowner_sessionisnullandlease_expires_atisnullandqueue_owner_instanceisnullandqueue_owner_sessionisnullandqueue_expires_atisnull",
+    },
+  ],
+  [
+    "auggy_coord_request_queue_generation_check",
+    {
+      table: "auggy_coordination_requests",
+      definition: "checkqueue_generation>=0",
+    },
+  ],
+  [
+    "auggy_coord_request_result_check",
+    {
+      table: "auggy_coordination_requests",
+      definition:
+        "checkresult_bodyisnullandresult_content_typeisnullandresult_versionisnullorstate='completed'andresult_bodyisnotnullandresult_content_type='application/json'andresult_version=1andoctet_lengthresult_body<=1048576",
+    },
+  ],
+  [
+    "auggy_coord_request_result_version_check",
+    {
+      table: "auggy_coordination_requests",
+      definition: "checkresult_versionisnullorresult_version=1",
+    },
   ],
   [
     "auggy_coordination_requests_state_check",

@@ -103,6 +103,8 @@ describe("runCoordinationMigrate", () => {
     expect(result).toEqual([
       "20260724_01_distributed_turn_coordination",
       "20260726_02_coordination_compatibility_contract",
+      "20260726_03_coordination_instance_lifecycle",
+      "20260726_04_coordination_bounded_results",
     ]);
     expect(JSON.stringify(result)).not.toContain(SENTINEL_URL);
   });

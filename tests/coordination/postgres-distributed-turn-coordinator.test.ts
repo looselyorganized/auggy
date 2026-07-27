@@ -14,6 +14,8 @@ const postgresTest = url ? test : test.skip;
 const hash = "S7l_qm3W92Yd4JbKzV1LQYdKebJ4Q-4C3m3VnuDhxQY";
 const source = { id: "web", maxConcurrent: 2, maxQueued: 4 };
 const coordinatorPolicy = {
+  buildFingerprint: "c".repeat(64),
+  sources: [source],
   retention: {
     terminalRequestRetentionMs: 604_800_000,
     maxTerminalRequests: 10_000,
@@ -22,7 +24,7 @@ const coordinatorPolicy = {
   },
   result: { maxReplayBytes: 65_536 },
   compatibility: {
-    protocolVersion: 1,
+    protocolVersion: 3,
     protocolFingerprint: "a".repeat(64),
     configurationFingerprint: "b".repeat(64),
   },
@@ -40,13 +42,21 @@ function request(requestId: string, threadId = "thread-1", bindingHash = hash) {
   return { requestId, threadId, source, bindingHash };
 }
 
+function replay(value: unknown = { ok: true }) {
+  return {
+    body: new TextEncoder().encode(JSON.stringify(value)),
+    contentType: "application/json" as const,
+  };
+}
+
 function coordinator(
   namespace: string,
   instanceId: string,
-  leaseMs = 80,
+  leaseMs = 5_000,
   maxConcurrent = 2,
   maxQueued = 4,
   compatibility: Partial<(typeof coordinatorPolicy)["compatibility"]> = {},
+  retention: (typeof coordinatorPolicy)["retention"] = coordinatorPolicy.retention,
 ) {
   return new PostgresDistributedTurnCoordinator({
     url: url!,
@@ -57,6 +67,7 @@ function coordinator(
     maxQueuedPerThread: Math.min(2, maxQueued),
     leaseMs,
     ...coordinatorPolicy,
+    retention,
     compatibility: { ...coordinatorPolicy.compatibility, ...compatibility },
   });
 }
@@ -105,6 +116,20 @@ async function expireActiveLease(namespace: string, requestId: string): Promise<
       [namespace, requestId],
     );
     if (rows.length !== 1) throw new Error("expected one active lease to expire");
+  } finally {
+    await sql.close();
+  }
+}
+
+/** Test-only seam: expire process-attached queue ownership using PostgreSQL time. */
+async function expireQueuedLease(namespace: string, requestId: string): Promise<void> {
+  const sql = new SQL(url!);
+  try {
+    const rows = await sql.unsafe<Array<{ request_id: string }>>(
+      "UPDATE auggy_coordination_requests SET queue_expires_at = clock_timestamp() - interval '1 millisecond' WHERE namespace = $1 AND request_id = $2 AND state = 'queued' RETURNING request_id",
+      [namespace, requestId],
+    );
+    if (rows.length !== 1) throw new Error("expected one queued lease to expire");
   } finally {
     await sql.close();
   }
@@ -380,11 +405,9 @@ describe("PostgreSQL distributed turn coordinator", () => {
         `CREATE TABLE ${shadow}.auggy_coordination_namespaces (namespace TEXT PRIMARY KEY)`,
       );
       await instance.migrate();
-      expect(await instance.setDraining(false)).toEqual({ status: "ok" });
+      expect(await instance.register()).toEqual({ status: "registered" });
       expect(await instance.admit(request("shadow-request"))).toEqual({ status: "admitted" });
-      expect(await instance.cancel({ requestId: "shadow-request", bindingHash: hash })).toEqual({
-        status: "ok",
-      });
+      expect(await instance.abandon(request("shadow-request"))).toEqual({ status: "ok" });
 
       const publicRows = await sql.unsafe<Array<{ count: number }>>(
         "SELECT count(*)::integer AS count FROM public.auggy_coordination_requests WHERE namespace = $1",
@@ -448,13 +471,22 @@ describe("PostgreSQL distributed turn coordinator", () => {
       await sql.unsafe(
         `CREATE TABLE ${schema}.auggy_coordination_requests_child () INHERITS (${schema}.auggy_coordination_requests)`,
       );
-      const duplicate = ["inheritance", "duplicate", "thread", "source", hash, "queued"];
+      const duplicate = [
+        "inheritance",
+        "duplicate",
+        "thread",
+        "source",
+        hash,
+        "queued",
+        "owner",
+        "d".repeat(64),
+      ];
       await sql.unsafe(
-        `INSERT INTO ${schema}.auggy_coordination_requests (namespace, request_id, thread_id, source_id, binding_hash, state) VALUES ($1, $2, $3, $4, $5, $6)`,
+        `INSERT INTO ${schema}.auggy_coordination_requests (namespace, request_id, thread_id, source_id, binding_hash, state, queue_owner_instance, queue_owner_session, queue_generation, queue_expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, clock_timestamp() + interval '1 minute')`,
         duplicate,
       );
       await sql.unsafe(
-        `INSERT INTO ${schema}.auggy_coordination_requests_child (namespace, request_id, thread_id, source_id, binding_hash, state) VALUES ($1, $2, $3, $4, $5, $6)`,
+        `INSERT INTO ${schema}.auggy_coordination_requests_child (namespace, request_id, thread_id, source_id, binding_hash, state, queue_owner_instance, queue_owner_session, queue_generation, queue_expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 1, clock_timestamp() + interval '1 minute')`,
         duplicate,
       );
       const visible = await sql.unsafe<Array<{ count: number }>>(
@@ -477,6 +509,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
     const second = coordinator(namespace(), "migration-b");
     try {
       await Promise.all([first.migrate(), second.migrate()]);
+      expect(await first.register()).toEqual({ status: "registered" });
       const sql = new SQL(url!);
       try {
         const migrations = await sql.unsafe<Array<{ id: string; checksum: string }>>(
@@ -501,6 +534,47 @@ describe("PostgreSQL distributed turn coordinator", () => {
     } finally {
       await first.close();
       await second.close();
+    }
+  });
+
+  postgresTest("rejects pre-v3 ownerless queue and active row shapes after migration", async () => {
+    const value = namespace();
+    if (!/^coordination-it-[a-f0-9]{32}$/.test(value)) {
+      throw new Error("generated an unsafe coordination test namespace");
+    }
+    const instance = coordinator(value, "migration-shape");
+    const sql = new SQL(url!);
+    try {
+      await instance.migrate();
+      await sql.unsafe(`
+        DO $guard$
+        BEGIN
+          BEGIN
+            INSERT INTO auggy_coordination_requests
+              (namespace, request_id, thread_id, source_id, binding_hash, state)
+            VALUES
+              ('${value}', 'legacy-queued', 'thread', 'web', '${hash}', 'queued');
+            RAISE EXCEPTION 'legacy queued row was accepted';
+          EXCEPTION WHEN check_violation THEN
+            NULL;
+          END;
+          BEGIN
+            INSERT INTO auggy_coordination_requests
+              (namespace, request_id, thread_id, source_id, binding_hash, state,
+               fence, owner_instance, lease_expires_at)
+            VALUES
+              ('${value}', 'legacy-active', 'thread', 'web', '${hash}', 'active',
+               1, 'old-client', clock_timestamp() + interval '1 minute');
+            RAISE EXCEPTION 'legacy active row was accepted';
+          EXCEPTION WHEN check_violation THEN
+            NULL;
+          END;
+        END
+        $guard$
+      `);
+    } finally {
+      await sql.close();
+      await instance.close();
     }
   });
 
@@ -532,14 +606,255 @@ describe("PostgreSQL distributed turn coordinator", () => {
     expect(results.filter((result) => result.claimed === "waiting")).toHaveLength(1);
   });
 
+  postgresTest(
+    "registers one private instance incarnation and fences same-id collisions",
+    async () => {
+      const value = namespace();
+      const first = coordinator(value, "shared-instance", 500);
+      const collision = coordinator(value, "shared-instance", 500);
+      const sql = new SQL(url!);
+      try {
+        expect(await first.admit(request("before-registration"))).toEqual({
+          status: "unavailable",
+        });
+        await first.migrate();
+        expect(await first.register()).toEqual({ status: "registered" });
+        expect(await collision.register()).toEqual({ status: "conflict" });
+        expect(await collision.admit(request("collision-request"))).toEqual({
+          status: "unavailable",
+        });
+        expect(await collision.heartbeatInstance()).toEqual({ status: "stale" });
+
+        const rows = await sql.unsafe<Array<{ count: number }>>(
+          "SELECT count(*)::integer AS count FROM auggy_coordination_instances WHERE namespace = $1 AND instance_id = $2",
+          [value, "shared-instance"],
+        );
+        expect(rows).toEqual([{ count: 1 }]);
+      } finally {
+        await sql.close();
+        await collision.close();
+        await first.close();
+      }
+    },
+  );
+
+  postgresTest(
+    "keeps live queues local and permits only exact retry adoption after expiry",
+    async () => {
+      const value = namespace();
+      const first = coordinator(value, "queue-owner", 500);
+      const second = coordinator(value, "retry-owner", 500);
+      const sql = new SQL(url!);
+      try {
+        await first.migrate();
+        expect(await first.register()).toEqual({ status: "registered" });
+        expect(await second.register()).toEqual({ status: "registered" });
+        const owned = request("owned-request", "owned-thread");
+        expect(await first.admit(owned)).toEqual({ status: "admitted" });
+        expect(await second.claim(owned)).toEqual({ status: "waiting" });
+        expect(await first.heartbeatQueued(owned)).toEqual({ status: "ok" });
+
+        await expireQueuedLease(value, owned.requestId);
+        expect(await first.heartbeatInstance()).toEqual({ status: "ok" });
+        expect(await second.admit(owned)).toEqual({ status: "adopted" });
+        expect(await first.heartbeatQueued(owned)).toEqual({ status: "stale" });
+        expect(await first.abandon(owned)).toEqual({ status: "stale" });
+        expect(await second.admit({ ...owned, threadId: "changed-thread" })).toEqual({
+          status: "conflict",
+        });
+        expect(
+          await second.admit({
+            ...owned,
+            source: { id: "untrusted-source", maxConcurrent: 999, maxQueued: 999 },
+          }),
+        ).toEqual({ status: "conflict" });
+        expect((await second.claim(owned)).status).toBe("acquired");
+
+        const sources = await sql.unsafe<Array<{ source_id: string }>>(
+          "SELECT source_id FROM auggy_coordination_sources WHERE namespace = $1 ORDER BY source_id",
+          [value],
+        );
+        expect(sources).toEqual([{ source_id: "web" }]);
+      } finally {
+        await sql.close();
+        await second.close();
+        await first.close();
+      }
+    },
+  );
+
+  postgresTest("commits and replays byte-bounded results only for an exact binding", async () => {
+    const value = namespace();
+    const first = coordinator(value, "result-owner", 500);
+    const second = coordinator(value, "result-reader", 500);
+    try {
+      await first.migrate();
+      expect(await first.register()).toEqual({ status: "registered" });
+      expect(await second.register()).toEqual({ status: "registered" });
+      const completed = request("result-request", "result-thread");
+      expect(await first.admit(completed)).toEqual({ status: "admitted" });
+      const claimed = await first.claim(completed);
+      if (claimed.status !== "acquired") throw new Error("expected result lease");
+      const exact = replay("a".repeat(coordinatorPolicy.result.maxReplayBytes - 2));
+      expect(exact.body.byteLength).toBe(coordinatorPolicy.result.maxReplayBytes);
+      expect(await first.complete(claimed.lease, exact)).toEqual({ status: "ok" });
+      expect(await second.status(completed)).toEqual({ status: "completed", result: exact });
+      expect(await second.status({ ...completed, bindingHash: "x".repeat(32) })).toEqual({
+        status: "conflict",
+      });
+      expect(await second.wait(completed, { timeoutMs: 0, pollMs: 10 })).toEqual({
+        status: "completed",
+        result: exact,
+      });
+
+      const oversized = request("oversized-result", "oversized-thread");
+      expect(await first.admit(oversized)).toEqual({ status: "admitted" });
+      const oversizedLease = await first.claim(oversized);
+      if (oversizedLease.status !== "acquired") throw new Error("expected oversized lease");
+      expect(
+        await first.complete(
+          oversizedLease.lease,
+          replay("é".repeat(coordinatorPolicy.result.maxReplayBytes / 2)),
+        ),
+      ).toEqual({ status: "rejected", reason: "result-too-large" });
+      expect(await second.status(oversized)).toEqual({ status: "pending", state: "active" });
+      expect(await first.complete(oversizedLease.lease, replay({ smaller: true }))).toEqual({
+        status: "ok",
+      });
+
+      const pending = request("pending-wait", "pending-thread");
+      expect(await first.admit(pending)).toEqual({ status: "admitted" });
+      const abort = new AbortController();
+      abort.abort();
+      expect(
+        await second.wait(pending, { timeoutMs: 1_000, pollMs: 10, signal: abort.signal }),
+      ).toEqual({ status: "wait-aborted" });
+    } finally {
+      await second.close();
+      await first.close();
+    }
+  });
+
+  postgresTest(
+    "prunes bounded replay state without deleting incidents or reusing thread fences",
+    async () => {
+      const value = namespace();
+      const retention = {
+        terminalRequestRetentionMs: 60_000,
+        maxTerminalRequests: 2,
+        eventRetentionMs: 60_000,
+        maxEvents: 1,
+      };
+      const instance = coordinator(value, "retention-owner", 60_000, 2, 4, {}, retention);
+      const expired = coordinator(value, "expired-instance", 60_000, 2, 4, {}, retention);
+      const sql = new SQL(url!);
+      try {
+        await instance.migrate();
+        expect(await instance.register()).toEqual({ status: "registered" });
+        expect(await expired.register()).toEqual({ status: "registered" });
+
+        let firstFence = 0;
+        for (const [index, [requestId, threadId]] of (
+          [
+            ["retained-a", "reused-thread"],
+            ["retained-b", "retained-thread-b"],
+            ["retained-c", "retained-thread-c"],
+          ] as const
+        ).entries()) {
+          const item = request(requestId, threadId);
+          expect(await instance.admit(item)).toEqual({ status: "admitted" });
+          const claimed = await instance.claim(item);
+          if (claimed.status !== "acquired") throw new Error("expected retained lease");
+          if (index === 0) firstFence = claimed.lease.fence;
+          expect(await instance.complete(claimed.lease, replay({ requestId }))).toEqual({
+            status: "ok",
+          });
+        }
+
+        const unknown = request("retained-unknown", "retained-unknown-thread");
+        expect(await instance.admit(unknown)).toEqual({ status: "admitted" });
+        const incident = await instance.claim(unknown);
+        if (incident.status !== "acquired") throw new Error("expected incident lease");
+        expect(await instance.markExecutionStarted(incident.lease)).toEqual({ status: "ok" });
+        expect(await instance.fail(incident.lease)).toEqual({ status: "outcome-unknown" });
+
+        await sql.unsafe(
+          "UPDATE auggy_coordination_requests SET terminal_at = clock_timestamp() - interval '2 minutes' WHERE namespace = $1 AND state IN ('completed', 'failed', 'canceled')",
+          [value],
+        );
+        await sql.unsafe(
+          "UPDATE auggy_coordination_events SET created_at = clock_timestamp() - interval '2 minutes' WHERE namespace = $1",
+          [value],
+        );
+        await sql.unsafe(
+          "UPDATE auggy_coordination_instances SET lease_expires_at = clock_timestamp() - interval '1 millisecond' WHERE namespace = $1 AND instance_id = 'expired-instance'",
+          [value],
+        );
+
+        expect(await instance.prune(1)).toEqual({
+          status: "ok",
+          events: 0,
+          instances: 1,
+          requests: 1,
+          threads: 1,
+        });
+        expect(await instance.status(request("retained-a", "reused-thread"))).toEqual({
+          status: "missing",
+        });
+        expect(await instance.status(unknown)).toEqual({ status: "quarantined" });
+        expect(await instance.events({ limit: 1 })).toMatchObject({
+          status: "ok",
+          events: [{ eventType: "outcome_unknown", requestId: unknown.requestId }],
+        });
+
+        const reused = request("retained-reused", "reused-thread");
+        expect(await instance.admit(reused)).toEqual({ status: "admitted" });
+        const reusedLease = await instance.claim(reused);
+        if (reusedLease.status !== "acquired") throw new Error("expected reused thread lease");
+        expect(reusedLease.lease.fence).toBeGreaterThan(firstFence);
+        expect(await instance.complete(reusedLease.lease, replay())).toEqual({ status: "ok" });
+
+        expect(
+          await instance.recover(unknown.threadId, incident.lease.fence, "operator-reconciled"),
+        ).toEqual({ status: "ok" });
+        expect(await instance.status(unknown)).toEqual({ status: "terminal", state: "failed" });
+        const firstPage = await instance.events({ limit: 1 });
+        if (firstPage.status !== "ok") throw new Error("expected PostgreSQL event page");
+        expect(firstPage.events[0]?.eventType).toBe("outcome_unknown");
+        if (!firstPage.nextEventId) throw new Error("expected PostgreSQL event cursor");
+        expect(
+          await instance.events({ afterEventId: firstPage.nextEventId, limit: 1 }),
+        ).toMatchObject({
+          status: "ok",
+          events: [{ eventType: "operator_recovery", requestId: unknown.requestId }],
+        });
+        expect(await instance.events({ afterEventId: "01", limit: 1 })).toEqual({
+          status: "unavailable",
+        });
+        expect(await instance.prune(1)).toMatchObject({
+          status: "ok",
+          events: 1,
+          requests: 1,
+        });
+      } finally {
+        await sql.close();
+        await expired.close();
+        await instance.close();
+      }
+    },
+  );
+
   postgresTest("enforces fleet capacity, binding integrity, and namespace isolation", async () => {
     const one = namespace();
     const two = namespace();
-    const first = coordinator(one, "replica-a", 80, 1);
-    const second = coordinator(one, "replica-b", 80, 1);
+    const first = coordinator(one, "replica-a", 5_000, 1);
+    const second = coordinator(one, "replica-b", 5_000, 1);
     const isolated = coordinator(two, "replica-c");
     try {
       await first.migrate();
+      expect(await first.register()).toEqual({ status: "registered" });
+      expect(await second.register()).toEqual({ status: "registered" });
+      expect(await isolated.register()).toEqual({ status: "registered" });
       await first.admit(request("one", "thread-one"));
       await second.admit(request("two", "thread-two"));
       const claimed = await first.claim(request("one", "thread-one"));
@@ -569,22 +884,28 @@ describe("PostgreSQL distributed turn coordinator", () => {
   postgresTest("rejects mixed compatibility before mutating namespace state", async () => {
     const value = namespace();
     const first = coordinator(value, "compatible-instance");
-    const changedProtocol = coordinator(value, "protocol-drift", 80, 2, 4, {
-      protocolVersion: 2,
+    const changedProtocol = coordinator(value, "protocol-drift", 5_000, 2, 4, {
+      protocolVersion: 4,
     });
-    const changedConfiguration = coordinator(value, "configuration-drift", 80, 2, 4, {
+    const changedConfiguration = coordinator(value, "configuration-drift", 5_000, 2, 4, {
       configurationFingerprint: "c".repeat(64),
     });
+    const changedLease = coordinator(value, "lease-drift", 4_000);
     const sql = new SQL(url!);
     try {
       await first.migrate();
+      expect(await first.register()).toEqual({ status: "registered" });
       expect(await first.admit(request("compatibility-first"))).toEqual({ status: "admitted" });
 
-      expect(await changedProtocol.setDraining(true)).toEqual({ status: "unavailable" });
+      expect(await changedProtocol.register()).toEqual({ status: "unavailable" });
       expect(await changedProtocol.admit(request("protocol-request"))).toEqual({
         status: "unavailable",
       });
       expect(await changedConfiguration.admit(request("configuration-request"))).toEqual({
+        status: "unavailable",
+      });
+      expect(await changedLease.register()).toEqual({ status: "unavailable" });
+      expect(await changedLease.admit(request("lease-request"))).toEqual({
         status: "unavailable",
       });
 
@@ -596,7 +917,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
           incompatible_instance_count: number;
         }>
       >(
-        "SELECT namespace.configuration_fingerprint, namespace.protocol_version, (SELECT count(*)::integer FROM auggy_coordination_requests request WHERE request.namespace = namespace.namespace AND request.request_id IN ('protocol-request', 'configuration-request')) AS request_count, (SELECT count(*)::integer FROM auggy_coordination_instances instance WHERE instance.namespace = namespace.namespace AND instance.instance_id IN ('protocol-drift', 'configuration-drift')) AS incompatible_instance_count FROM auggy_coordination_namespaces namespace WHERE namespace.namespace = $1",
+        "SELECT namespace.configuration_fingerprint, namespace.protocol_version, (SELECT count(*)::integer FROM auggy_coordination_requests request WHERE request.namespace = namespace.namespace AND request.request_id IN ('protocol-request', 'configuration-request', 'lease-request')) AS request_count, (SELECT count(*)::integer FROM auggy_coordination_instances instance WHERE instance.namespace = namespace.namespace AND instance.instance_id IN ('protocol-drift', 'configuration-drift', 'lease-drift')) AS incompatible_instance_count FROM auggy_coordination_namespaces namespace WHERE namespace.namespace = $1",
         [value],
       );
       expect(rows).toEqual([
@@ -610,6 +931,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
       expect(await first.admit(request("compatible-second"))).toEqual({ status: "admitted" });
     } finally {
       await sql.close();
+      await changedLease.close();
       await changedConfiguration.close();
       await changedProtocol.close();
       await first.close();
@@ -621,18 +943,22 @@ describe("PostgreSQL distributed turn coordinator", () => {
     async () => {
       const value = namespace();
       const first = coordinator(value, "registration-a");
-      const second = coordinator(value, "registration-b", 80, 2, 4, {
+      const second = coordinator(value, "registration-b", 5_000, 2, 4, {
         configurationFingerprint: "c".repeat(64),
       });
       const sql = new SQL(url!);
       try {
         await first.migrate();
-        const outcomes = await Promise.all([
-          first.admit(request("registration-request-a")),
-          second.admit(request("registration-request-b")),
-        ]);
-        expect(outcomes.filter((outcome) => outcome.status === "admitted")).toHaveLength(1);
+        const outcomes = await Promise.all([first.register(), second.register()]);
+        expect(outcomes.filter((outcome) => outcome.status === "registered")).toHaveLength(1);
         expect(outcomes.filter((outcome) => outcome.status === "unavailable")).toHaveLength(1);
+
+        const winner = outcomes[0]?.status === "registered" ? first : second;
+        const winnerRequest =
+          outcomes[0]?.status === "registered"
+            ? "registration-request-a"
+            : "registration-request-b";
+        expect(await winner.admit(request(winnerRequest))).toEqual({ status: "admitted" });
 
         const rows = await sql.unsafe<
           Array<{ configuration_fingerprint: string; request_id: string }>
@@ -663,6 +989,8 @@ describe("PostgreSQL distributed turn coordinator", () => {
       const second = coordinator(value, "replica-b", 500);
       try {
         await first.migrate();
+        expect(await first.register()).toEqual({ status: "registered" });
+        expect(await second.register()).toEqual({ status: "registered" });
         await first.admit(request("unstarted", "reclaimable-thread"));
         const old = await first.claim(request("unstarted", "reclaimable-thread"));
         if (old.status !== "acquired") throw new Error("expected initial lease");
@@ -670,8 +998,8 @@ describe("PostgreSQL distributed turn coordinator", () => {
         const fresh = await second.claim(request("unstarted", "reclaimable-thread"));
         if (fresh.status !== "acquired") throw new Error("expected reclaimed lease");
         expect(fresh.lease.fence).toBeGreaterThan(old.lease.fence);
-        expect(await first.complete(old.lease)).toEqual({ status: "stale" });
-        expect(await second.complete(fresh.lease)).toEqual({ status: "ok" });
+        expect(await first.complete(old.lease, replay())).toEqual({ status: "stale" });
+        expect(await second.complete(fresh.lease, replay())).toEqual({ status: "ok" });
 
         await first.admit(request("started", "quarantined-thread"));
         const started = await first.claim(request("started", "quarantined-thread"));
@@ -685,7 +1013,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
           await second.recover(
             "quarantined-thread",
             started.lease.fence,
-            "replica-a was terminated after lease loss",
+            "replica-terminated-after-lease-loss",
           ),
         ).toEqual({ status: "ok" });
 
@@ -695,7 +1023,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
             "SELECT reason FROM auggy_coordination_events WHERE namespace = $1 AND thread_id = $2 AND event_type = 'operator_recovery'",
             [value, "quarantined-thread"],
           );
-          expect(events).toEqual([{ reason: "replica-a was terminated after lease loss" }]);
+          expect(events).toEqual([{ reason: "replica-terminated-after-lease-loss" }]);
         } finally {
           await sql.close();
         }
@@ -705,6 +1033,31 @@ describe("PostgreSQL distributed turn coordinator", () => {
       }
     },
   );
+
+  postgresTest("atomically quarantines an ordinary failure after execution starts", async () => {
+    const value = namespace();
+    const first = coordinator(value, "effect-owner", 500);
+    const second = coordinator(value, "effect-observer", 500);
+    try {
+      await first.migrate();
+      expect(await first.register()).toEqual({ status: "registered" });
+      expect(await second.register()).toEqual({ status: "registered" });
+      const effecting = request("failed-effect", "failed-effect-thread");
+      expect(await first.admit(effecting)).toEqual({ status: "admitted" });
+      const claimed = await first.claim(effecting);
+      if (claimed.status !== "acquired") throw new Error("expected effect lease");
+      expect(await first.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+      expect(await first.fail(claimed.lease)).toEqual({ status: "outcome-unknown" });
+      expect(await second.claim(effecting)).toEqual({ status: "quarantined" });
+      expect(await second.admit(request("later-effect", "failed-effect-thread"))).toEqual({
+        status: "rejected",
+        reason: "thread-quarantined",
+      });
+    } finally {
+      await second.close();
+      await first.close();
+    }
+  });
 
   postgresTest(
     "quarantines a child killed after an effect begins until explicit recovery",
@@ -738,15 +1091,12 @@ describe("PostgreSQL distributed turn coordinator", () => {
 
       const recovery = coordinator(value, "recovery-replica", 500);
       try {
+        expect(await recovery.register()).toEqual({ status: "registered" });
         expect(
           await recovery.claim(request("multiprocess-request", "multiprocess-thread")),
         ).toEqual({ status: "quarantined" });
         expect(
-          await recovery.recover(
-            "multiprocess-thread",
-            1,
-            "terminated child reconciled after an ambiguous effect",
-          ),
+          await recovery.recover("multiprocess-thread", 1, "terminated-child-reconciled"),
         ).toEqual({ status: "ok" });
         const resumed = request("after-recovery", "multiprocess-thread");
         expect(await recovery.admit(resumed)).toEqual({ status: "admitted" });
@@ -754,7 +1104,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
         expect(fresh.status).toBe("acquired");
         if (fresh.status !== "acquired") throw new Error("expected recovery lease");
         expect(fresh.lease.fence).toBeGreaterThan(1);
-        expect(await recovery.complete(fresh.lease)).toEqual({ status: "ok" });
+        expect(await recovery.complete(fresh.lease, replay())).toEqual({ status: "ok" });
       } finally {
         await recovery.close();
       }
@@ -766,7 +1116,14 @@ describe("PostgreSQL distributed turn coordinator", () => {
     const draining = coordinator(value, "draining-replica");
     try {
       await draining.migrate();
-      expect(await draining.setDraining(true)).toEqual({ status: "ok" });
+      expect(await draining.register()).toEqual({ status: "registered" });
+      const queued = request("draining-queued", "draining-queued-thread");
+      expect(await draining.admit(queued)).toEqual({ status: "admitted" });
+      const signal = draining.ownedSignal(queued);
+      expect(signal.aborted).toBeFalse();
+      expect(await draining.beginDrain()).toEqual({ status: "ok" });
+      expect(signal.aborted).toBeTrue();
+      expect(signal.reason).toBe("draining");
       expect(await draining.admit(request("draining", "draining-thread"))).toEqual({
         status: "rejected",
         reason: "draining",
@@ -776,11 +1133,32 @@ describe("PostgreSQL distributed turn coordinator", () => {
     }
   });
 
+  postgresTest("cancels an active local ownership signal when the coordinator closes", async () => {
+    const value = namespace();
+    const instance = coordinator(value, "closing-replica", 500);
+    try {
+      await instance.migrate();
+      expect(await instance.register()).toEqual({ status: "registered" });
+      const active = request("closing-active", "closing-active-thread");
+      expect(await instance.admit(active)).toEqual({ status: "admitted" });
+      const claimed = await instance.claim(active);
+      if (claimed.status !== "acquired") throw new Error("expected closing lease");
+      const signal = instance.ownedSignal(active);
+      expect(signal.aborted).toBeFalse();
+      await instance.close();
+      expect(signal.aborted).toBeTrue();
+      expect(signal.reason).toBe("coordinator-closed");
+    } finally {
+      await instance.close();
+    }
+  });
+
   postgresTest("health sweeps expired started work and frees zero-queue capacity", async () => {
     const value = namespace();
     const instance = coordinator(value, "health-sweeper", 500, 1, 0);
     try {
       await instance.migrate();
+      expect(await instance.register()).toEqual({ status: "registered" });
       const startedRequest = request("health-started", "quarantined-thread");
       await instance.admit(startedRequest);
       const lease = await instance.claim(startedRequest);

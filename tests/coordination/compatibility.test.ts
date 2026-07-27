@@ -62,12 +62,12 @@ describe("distributed coordination compatibility fingerprints", () => {
 
     expect(DISTRIBUTED_COORDINATION_PROTOCOL).toEqual({
       name: "auggy-postgres-coordination",
-      protocolVersion: 1,
-      schemaVersion: 2,
+      protocolVersion: 3,
+      schemaVersion: 4,
       fingerprintVersion: 2,
     });
     expect(first).toEqual(second);
-    expect(first.protocolVersion).toBe(1);
+    expect(first.protocolVersion).toBe(3);
     expect(first.protocolFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(first.configurationFingerprint).toMatch(/^[0-9a-f]{64}$/);
   });
