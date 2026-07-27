@@ -74,16 +74,20 @@ process-local state.
 ## Current-state revalidation
 
 The PostgreSQL coordinator in `src/coordination/` is a tested but disabled
-foundation. Checkpoints 1 and 2 provide bounded admission, immutable source
+foundation. Checkpoints 1 through 3 provide bounded admission, immutable source
 policies, one-use process sessions, process-owned queues, database-time leases,
 namespace-wide monotonic fences, pre-execution adoption, bounded terminal
 replay and events, post-execution outcome-unknown quarantine, compare-and-set
-recovery, cooperative cancellation, instance drain, and namespace isolation.
+recovery, cooperative cancellation, instance drain, namespace isolation, and a
+fenced root-pipeline integration exercised through a private direct-source test
+adapter.
 
-It is intentionally not connected to `defineAgent`. Current startup enumerates
-the missing shared boundaries and rejects `settings.coordination` before boot.
-That rejection is correct and remains in place until the final enablement
-checkpoint.
+The integration is consumed internally by `defineAgent` only when the private
+test adapter is attached. The adapter and coordinator runtime are absent from
+all package exports. Ordinary startup still enumerates the missing shared
+boundaries and rejects `settings.coordination` before boot or listener
+registration. That rejection is correct and remains in place until the final
+enablement checkpoint.
 
 The remaining risks are confirmed in current source:
 
@@ -100,8 +104,9 @@ The remaining risks are confirmed in current source:
   single fenced durable transition;
 - a queued coordinator row does not durably own the request payload, so an
   abandoned HTTP queue entry needs explicit expiry/adoption semantics;
-- the coordinator contracts are not yet wired around the real root-turn
-  pipeline or its history/commit boundary; and
+- real transports do not yet mint and propagate source-stable distributed
+  request identities, and the coordinator is not yet wired to the shared
+  history/result/cost/outbox commit boundary; and
 - the generated Railway deployment deliberately enforces one live volume
   owner and one replica.
 
@@ -367,15 +372,15 @@ The implemented lifecycle contract has these consequences:
 - Local abort signals are cooperative cancellation only. Database sessions,
   owner tokens, and fences remain authoritative when work ignores an abort.
 
-The v3 lifecycle and v4 replay/fence migrations reject mutation shapes from
-older coordinator clients. Until checkpoint 10 supplies an explicit
-mixed-version protocol/session gate, all older preview clients must be drained
-and quiesced before applying these migrations. A rollback likewise drains the
-fleet and preserves the database; it does not run an older client against the
-new schema. The v4 migration temporarily permits a null lease policy only for
-an existing quiesced preview namespace; the first registered v4 process fills
-it under the namespace row lock, and every ordinary operation fails closed
-while it is absent.
+The lifecycle and replay/fence schema migrations reject mutation shapes from
+older coordinator clients. Checkpoint 3 adds protocol v4 and a single
+code-owned v3 predecessor transition, but that transition still requires all
+older preview clients and pending work to be quiescent. A rollback likewise
+drains the fleet and preserves the database; it does not run an older client
+against an upgraded namespace. The schema migration temporarily permits a null
+lease policy only for an existing quiesced preview namespace; the first
+registered current process fills it under the namespace row lock, and every
+ordinary operation fails closed while it is absent.
 
 Checkpoint 3 must still prove that every real execution crosses
 `markExecutionStarted` immediately before inference or an effect and that the
@@ -426,6 +431,96 @@ supported horizontal operation.
   trusted execution/tool contexts.
 - Keep causal children within the root lease and quarantine the root on
   ambiguity.
+
+**Implementation status:** complete on the private, disabled integration
+boundary; production transport enablement remains blocked on checkpoints 4
+through 11.
+
+The checkpoint establishes these invariants:
+
+- Distributed admission and local scheduler admission form a bounded
+  two-resource protocol. A deferred fleet claim releases the local executor
+  slot while retaining one bounded local queue reservation; same-thread order
+  and global/source/thread limits remain deterministic.
+- The canonical request binding rejects cyclic, non-normalized, oversized, or
+  structurally excessive inputs. One request ID binds one peer/thread/source
+  and semantic body. Exact duplicates join or replay; changed bindings
+  conflict.
+- A root crosses `markExecutionStarted` after history authorization and gate
+  preparation, but before gate confirmation, augment/model callbacks, tools,
+  delivery, terminal hooks, or causal work. A failed marker prevents those
+  effects.
+- Attempt/fence authority and stable operation IDs reach gate preparation and
+  cost commit, turn-start and context hooks, internal handlers, model/tool
+  execution, outbound delivery, terminal hooks, and causal follow-up turns.
+  Public traces and delivery/hook contexts receive only the safe execution
+  projection; binding and idempotency hashes are not copied into them or into
+  the `TurnResult` passed to augment terminal hooks.
+- Layered-memory auto-save is explicitly unavailable under distributed
+  authority until checkpoint 5 supplies a coordinator-fenced shared memory
+  adapter. Its terminal hook returns before transcript retrieval, promotion
+  state, process-local buffering, child injection, extraction-model dispatch,
+  or persistence. Its internal handler repeats the rejection as defense in
+  depth. Single-process auto-save behavior is unchanged.
+- Caller cancellation or a decision deadline that races a committed admission
+  or claim performs a bounded, attempt-fenced pre-start terminalization.
+  Queue and active ownership, process session, generation, lease expiry, and
+  the execution-start marker are checked again in the store. A stale owner
+  cannot cancel an expired or adopted attempt.
+- Every heartbeat has an independent watchdog. Authority loss synchronously
+  aborts cooperative work, marks the root outcome unknown, quarantines its
+  thread, and after a bounded grace period detaches non-cooperative causal or
+  hook work so one lost external operation cannot retain local capacity or
+  block shutdown forever.
+- An in-flight PostgreSQL operation reports its actual committed result even
+  when local authority is invalidated concurrently. Later mutations fail
+  closed, except the narrowly scoped attempt-fenced pre-start abandonment used
+  to compensate late admission/claim results.
+- Coordination protocol v4 changes the attempt/adoption semantics. A code-owned
+  v3 predecessor tuple can upgrade atomically only while the namespace row is
+  locked, all policy matches, every old instance lease is expired, and no
+  queued or active request exists. Old v3 clients fail compatibility after the
+  transition. No schema migration is required for this protocol-only change.
+
+This checkpoint deliberately does **not** claim transport-level replica
+support. Web, Telegram, AgentMail, and Link still need trusted source-stable
+root identities and shared replay ledgers in checkpoints 5, 7, and 9. Shared
+fenced history/result/cost/outbox commit remains checkpoint 4, transactional
+delivery remains checkpoint 6, and final multi-process transport certification
+and public enablement remain checkpoint 11. Legacy unfenced
+`ThreadHistoryPersistence` is rejected by the private integration instead of
+silently composing it with distributed execution.
+
+**Checkpoint 3 verification record:** implementation commit `c18f6ce`.
+
+- Focused agent, root-runtime, coordinator, compatibility, scheduler,
+  layered-memory, and adjacent suites pass. The final combined focused run
+  covered 146 tests/718 assertions.
+- A clean PostgreSQL 16 run passes 28 tests/206 assertions, including real
+  multiprocess fencing, transaction-ordering cases, and both queued and
+  active-unstarted cleanup after synchronous local invalidation.
+- Repeated fresh hostile-review rounds found and closed late admission/claim
+  capacity retention, post-invalidation result masking, protocol-version
+  ambiguity, expired-owner abandonment, non-cooperative causal retention,
+  missing hook/delivery/model authority, trusted-hash leakage to augment
+  hooks, shutdown admission delay, and distributed layered-memory buffer and
+  persistence gaps. The incomplete Supabase read-then-insert proposal was
+  removed; distributed auto-save now fails before any local or remote effect.
+  The final fresh review found no unresolved High or Medium issue within the
+  checkpoint 3 private integration boundary.
+- Canonical runtime shards passed sequentially. Bun 1.3.14 aggregate socket
+  exhaustion was reproduced only in server-heavy shards; all 75 capability
+  files and all 46 transport/integration files passed in fresh sequential Bun
+  processes, as did the isolated engine and workspace server files.
+- `bun run typecheck`, `bun run lint`, 243 console tests/1,093 assertions, the
+  console production build, and `bun run smoke:release` pass. Lint reports
+  only the existing Biome 2.5.0 schema versus 2.5.5 CLI information notice.
+- Dependencies are unchanged. Public context types changed, so release smoke
+  remains mandatory at the checkpoint gate.
+- Rollback must drain every preview client and preserve PostgreSQL state. A v4
+  namespace cannot be reopened by v3 code after the atomic protocol upgrade;
+  rollback requires the prior code to use a fresh namespace or an explicitly
+  reviewed reverse migration.
 
 ### 4. Shared history, result replay, and atomic turn commit
 
@@ -516,22 +611,16 @@ supported horizontal operation.
 
 ## Dependency and PR shape
 
-This should not be one unreviewable change. Use sequential, mergeable PRs while
-the startup guard keeps behavior disabled:
+Implementation uses one draft integration PR, #166, on
+`production/horizontal-replica-readiness`. Each numbered checkpoint ends in
+separate reviewable Conventional Commits and a recorded verification/review
+gate before the next checkpoint begins. The draft remains unmergeable as a
+supported distributed profile while the startup guard is active.
 
-1. topology contract and coordinator lifecycle;
-2. runtime wiring plus fenced history/result commit;
-3. shared admission, identity, quota, memory, and console state;
-4. transactional outbox plus notification delivery;
-5. Telegram, AgentMail, and Link coordination;
-6. PostgreSQL Durable Jobs and schedules;
-7. fleet operations, certification, documentation, and final enablement.
-
-Each PR starts from the latest green `main`. If an intermediate PR cannot be
-merged independently, it is stacked explicitly and its dependency is recorded.
-No intermediate PR claims replica support. The final PR cannot enable the mode
-until every configured component passes preflight and the complete
-multi-process gate.
+The PR is marked ready only after shared history/result commit, admission and
+identity state, quotas and memory, transactional delivery, provider ownership,
+jobs, operations, certification, documentation, and the final enablement gate
+are complete. No intermediate checkpoint claims replica support.
 
 ## Required engineering loop
 
