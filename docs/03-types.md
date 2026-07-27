@@ -852,6 +852,16 @@ and fence. Staged outbox rows are not delivered until the transactional
 delivery checkpoint is implemented, and public replica startup remains
 disabled.
 
+Optional `coordination.budgets` policies are immutable namespace inputs for the
+private distributed integration boundary. They bound reservations, peer/day
+aggregates, anonymous rolling evidence, and threshold intents. Reservations
+use database UTC time and the active turn fence; completed or ambiguous known
+inference costs are conservatively rounded up to canonical nano-USD precision
+and settle in the same terminal transaction exactly once. Dollar limits remain
+post-hoc soft caps, and threshold intents are not delivered until the
+outbound-delivery checkpoint. The CLI does not yet accept this preview shape
+and distributed startup remains fail closed.
+
 `inject()` lets trusted non-transport code feed a trigger into the same
 agent-wide scheduler used by transports. It no longer bypasses concurrency or
 queue bounds. Callers may supply an abort signal; cancellation while queued

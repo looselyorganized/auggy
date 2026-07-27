@@ -818,16 +818,112 @@ enforcement commit `78bccee`.
 
 #### 5C. Atomic budgets and exact-once cost accounting
 
-- Reserve peer/day and anonymous rate budgets before execution without holding
-  a database transaction across model or tool work.
-- Bind every reservation to the canonical request, immutable policy
-  fingerprint, admission day, attempt, and active fence.
-- Consume checkpoint 4 cost markers in the fenced terminal transaction and
-  update shared aggregates exactly once. Pre-start cancellation may release a
-  reservation; post-start ambiguity may not silently restore it.
-- Preserve the documented USD cap as post-hoc unless an explicit bounded
-  maximum-cost reservation policy is introduced. Persist threshold dedupe;
-  stage threshold notification intent rather than delivering inline.
+**Implementation status:** complete on the private, disabled integration
+boundary. Public configuration and distributed startup remain blocked on the
+later shared-state, delivery, operations, and certification checkpoints.
+
+The security invariant is that a non-creator distributed turn reaches one
+database-time budget decision under its active unstarted fence, and every
+known inference cost reaches one canonical atomic terminal accounting decision. No
+replica-local SQLite transaction, process clock, retry, history conflict,
+outbox conflict, or request-pruning pass can mint another turn, erase same-day
+evidence, or count known cost twice.
+
+The implemented boundary has these consequences:
+
+- Each immutable policy is registered in the namespace compatibility
+  fingerprint and bounded independently by reservation, anonymous-event,
+  peer/day, threshold-intent, and aggregate retention limits. Policy drift and
+  unsupported turn gates fail before augment boot.
+- A reservation is bound to the canonical request binding, policy, hashed
+  peer/thread subjects, database UTC admission day, attempt, and fence. Exact
+  replay returns the same coordinator-minted usage; changed identity or
+  authority conflicts. Peer/day, thread/day, anonymous-minute, peer USD, and
+  global USD checks serialize under the namespace transaction without holding
+  a database transaction over model or tool work.
+- Pre-execution rejection and cancellation release the matching reservation.
+  Once the execution marker exists, release is stale: crash, timeout, or
+  ambiguous completion retains the turn and quarantines the thread rather than
+  restoring capacity.
+- The terminal turn transaction inserts exact operation cost markers, updates
+  global and peer aggregates, settles reservations, and commits success or
+  outcome-unknown state together. Cost is conservatively rounded up to
+  nano-USD precision before staging. Known cost is preserved even when history
+  or outbox validation makes the terminal turn ambiguous. Repeated terminal
+  calls cannot debit it twice, and a duplicate operation identity becomes one
+  unpriced outcome-unknown incident rather than charging the earlier marker
+  again.
+- Reservation evidence is retained separately from terminal replay rows for at
+  least 24 hours. Request pruning therefore cannot reopen a same-day thread
+  cap. Old committed evidence and operator-resolved outcome-unknown evidence
+  are removed only after immutable policy retention. Daily aggregates remain
+  while any reserved or unresolved turn references their day. Unresolved
+  incidents and pending threshold intents stay fail closed; only old suppressed
+  threshold rows are automatically reclaimed.
+- Crossing several spend thresholds in one settlement records every crossing
+  but leaves only the highest new threshold pending. The stable operation ID
+  and intent body are durable coordinator evidence. No notification is sent
+  inline; checkpoint 6 must supply fenced outbox delivery and reconciliation.
+  New admission reserves the still-missing threshold capacity for every UTC
+  admission day with a settleable reservation, plus the current day, so a
+  midnight boundary cannot make terminal accounting fail.
+- The coordinator backend bypasses every local turn-gate prepare/commit path
+  and supplies only validated coordinator-minted usage to the BATS context.
+  Only the built-in coordinator budgets augment can enter that path through an
+  internal non-exported registration; copying a policy-shaped property does not
+  confer authority. Creator turns retain their documented bypass. The
+  supported single-replica SQLite backend and `agent.yaml` contract are
+  unchanged.
+- Coordination migration `20260727_08_coordination_budget_authority` advances
+  the private strict protocol/catalog to v8 with a quiescent v7 upgrade path.
+  Older strict binaries cannot reopen the upgraded namespace.
+
+USD caps remain post-hoc soft caps. An accepted turn can cross the limit before
+the next turn is denied, so provider-side hard spend limits remain required.
+An inference whose process dies before recording a known cost marker is counted
+as one unpriced turn, still consumes its reserved turn, and enters
+outcome-unknown recovery. This is conservative quota behavior, not a claim that
+provider cost can be reconstructed after a hard process loss.
+
+Fresh hostile review found and closed threshold-identity collisions,
+sub-precision cap bypass, cross-midnight aggregate and threshold-capacity
+races, floating-point reference drift, released peer-row capacity leaks,
+recovered-incident retention exhaustion, idle PostgreSQL cleanup gaps,
+forgeable gate opt-in, and terminal paths that could discard known or unpriced
+accounting. The corrected paths preserve every unique known priced marker even
+when another marker is unpriced or collides; only the collided identity becomes
+conservative unpriced evidence.
+
+**Checkpoint 5C verification record:**
+
+- The focused coordination/runtime set passed 101 tests with 656 assertions.
+  A fresh PostgreSQL 16 database passed all 56 budget and coordinator
+  integration tests with 411 assertions, including exact nano-USD arithmetic,
+  concurrent cap admission, cross-midnight settlement, policy migration,
+  partial duplicate markers, restart cleanup, and outcome-unknown retention.
+- The inventory gate found 287 runtime, 29 console, and 3 isolated external
+  tests across 14 explicit shards. Every runtime test passed either in its
+  sequential shard or an isolated process. Bun 1.3.14 reproduced its known
+  suite-scale `EADDRINUSE` behavior in HTTP, capabilities, doctor, transport,
+  coordination, contracts, and workspace aggregation. The HTTP suite passed
+  63/63 alone; all 46 transport/integration files passed one process at a
+  time; and every other affected file passed alone, including web fetch 25/25,
+  webhook delivery 10/10, Telegram transport 42/42, doctor 30/30,
+  distributed web admission 12/12, provider response limits 13/13, and the
+  app-auth bridge 2/2. No socket failure reproduced as an application failure.
+- The console passed 243 tests with 1,093 assertions and its production build
+  passed. `bun run typecheck`, `bun run lint`, `bun run test:inventory`,
+  `bun audit --json`, and the local packed-artifact `bun run smoke:release`
+  passed. The dependency audit returned an empty advisory object; dependencies
+  did not change. Lint reports only the existing Biome schema/CLI patch-version
+  information notice.
+- Two hostile-review rounds closed threshold-identity collisions,
+  sub-precision cap bypass, cross-midnight aggregate and threshold-capacity
+  races, floating-point cap/threshold drift, released-row capacity leaks,
+  recovered-incident retention exhaustion, idle PostgreSQL cleanup gaps,
+  forgeable gate opt-in, and terminal paths that could discard known or
+  conservative unpriced accounting. Three fresh architecture, race, and test
+  reviewers found no unresolved High or Medium issue.
 
 #### 5D. Fenced shared memory and extraction state
 
@@ -927,16 +1023,14 @@ separate supported local profile; sharing that volume never enables replicas.
 
 ## Dependency and PR shape
 
-Implementation uses one draft integration PR, #166, on
-`production/horizontal-replica-readiness`. Each numbered checkpoint ends in
-separate reviewable Conventional Commits and a recorded verification/review
-gate before the next checkpoint begins. The draft remains unmergeable as a
-supported distributed profile while the startup guard is active.
-
-The PR is marked ready only after shared history/result commit, admission and
-identity state, quotas and memory, transactional delivery, provider ownership,
-jobs, operations, certification, documentation, and the final enablement gate
-are complete. No intermediate checkpoint claims replica support.
+PR #166 on `production/horizontal-replica-readiness` contains the disabled
+coordination foundation through checkpoint 5C. It stops before shared memory,
+delivery, provider ownership, jobs, operations, certification, documentation,
+and public enablement. Its Conventional Commits keep each completed boundary
+reviewable and revertible; later checkpoints should continue in separately
+scoped PRs from the merged foundation rather than extending this review
+indefinitely. No intermediate checkpoint claims replica support, and the
+distributed startup guard remains active.
 
 ## Required engineering loop
 

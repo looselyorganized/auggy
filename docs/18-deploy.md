@@ -276,6 +276,10 @@ SQLite stores. They assume one process and one writer; attaching multiple
 replicas to the same volume is not a supported scaling strategy. A shared
 database alone is also insufficient: horizontal replicas need shared fencing,
 replay, budget, history, session, delivery, drain, and migration contracts.
+The preview coordinator now has atomic shared budget reservations and
+exact-once known-cost accounting, but the remaining shared-memory, delivery,
+provider-ownership, operations, and certification gates still keep public
+distributed startup disabled.
 The volume lock makes accidental same-volume overlap fail closed; it does not
 make replicas supported. Every contender must see the same underlying inode on
 a filesystem with coherent cross-process/cross-host `flock`. Separate or cloned

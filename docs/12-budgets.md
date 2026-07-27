@@ -21,8 +21,9 @@ What it does **not** do:
 
 - No hard billing control — configure provider-side spend caps for unattended agents.
 - No pre-call cost estimation (future work — see §10).
-- No multi-instance coordination (single SQLite file; single agent process).
-- No built-in retention/purge policy for accumulated SQLite rows.
+- The supported CLI configuration remains a single-process SQLite backend.
+- Shared PostgreSQL accounting exists behind the disabled distributed-runtime
+  integration boundary, but it does not enable horizontal replicas by itself.
 - No burst allowances, carry-over, or paid upgrades — those are application-level concerns.
 
 ## 2. Quick start
@@ -69,6 +70,28 @@ const budget = budgets({
 Enable it with `auggy augment add budgets` or add it to your agent's
 `augments` array and create `augments/budgets/augment.yaml`. No other wiring is
 needed — the kernel detects `turnGate` automatically.
+
+### Distributed coordinator checkpoint
+
+The horizontal-readiness branch also has a coordinator-owned budget backend.
+It atomically reserves peer/day, thread/day, anonymous-minute, and bounded
+evidence capacity under the active PostgreSQL turn lease. The fenced terminal
+transaction records known inference cost exactly once, including
+outcome-unknown paths, after conservatively rounding up to canonical nano-USD
+precision, and mints the BATS usage snapshot consumed by the augment. Changed
+request, peer, thread, attempt, fence, or immutable policy fails closed.
+
+This backend is not accepted by `agent.yaml` and public distributed startup is
+still disabled. It is an internal checkpoint contract for later certification,
+not an operator-supported deployment mode. Its immutable policy requires at
+least 24 hours of reservation evidence, explicit aggregate and evidence
+capacities, and retention long enough to cover coordinator replay. Threshold
+crossings create bounded durable intents; delivery remains disabled until the
+transactional outbound-delivery checkpoint supplies fenced claims and sink
+idempotency evidence. Pending threshold intents are never discarded merely to
+free capacity. Admission accounts for missing intents across every admission
+day that still has a settleable reservation and fails closed until delivery or
+operator reconciliation can make exhausted capacity safely reclaimable.
 
 ## 3. Configuration reference
 
@@ -307,7 +330,7 @@ The block is omitted entirely when:
 
 ## 9. Limitations
 
-### Single-instance topology
+### SQLite topology
 
 The SQLite store uses `BEGIN IMMEDIATE` transactions and is not safe for concurrent processes sharing the same `dbPath`. Run one agent instance per database file.
 
