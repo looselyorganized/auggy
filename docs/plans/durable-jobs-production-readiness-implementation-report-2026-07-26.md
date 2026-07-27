@@ -6,7 +6,7 @@
 
 **Pull request:** [#165](https://github.com/looselyorganized/auggy/pull/165)
 
-**Status:** implementation complete; final integration gates pending
+**Status:** implementation complete; required local integration gates passed
 
 ## Outcome
 
@@ -76,8 +76,18 @@ were repaired and re-reviewed:
 7. An observational CLI command could silently migrate an older database.
    Fixed with read-only version preflight plus a store-level
    `allowMigrations: false` race backstop.
+8. A supposedly non-migrating store open could still create a missing database
+   or initialize an empty one. Fixed by coupling `allowMigrations: false` to
+   SQLite `create: false` and rejecting missing, empty, and v1 state before DDL.
+9. The worker accepted `success: true` with a non-completed task status, so an
+   `input-required` turn could be persisted as completed. Fixed by requiring
+   exact boolean success and exact `completed` status; every other post-start
+   result is quarantined for reconciliation.
 
-No reviewed High or Medium issue remains in a completed checkpoint.
+The final cross-cutting reviews traced authority, thread ownership, execution
+start, fencing, recovery, cancellation, reconciliation, schema admission,
+schedules, operator output, package exports, Temporal transport, CI coverage,
+and release contents. No reviewed High or Medium issue remains.
 
 ## Compatibility and operations
 
@@ -114,11 +124,52 @@ No reviewed High or Medium issue remains in a completed checkpoint.
   states in the example.
 - The explicit CI shard/external-suite manifest must be maintained as new test
   roots are introduced; inventory validation prevents silent unassigned files.
+- A non-cooperative turn can monopolize the sole v1 worker until it settles or
+  the process restarts. Its persisted state is already quarantined and cannot
+  be replayed blindly.
+- Capacity is allocated to a deterministic schedule prefix. An earlier due
+  schedule can temporarily block a later one until capacity is recovered; the
+  definition count and work per tick are bounded.
+- The operator CLI's read-only identity preflight has a same-host leaf-swap
+  classification race. The hardened store open repeats containment with
+  `NOFOLLOW`, uses `create: false`, emits no row contents, and performs no
+  mutation, so this does not cross the private-volume trust boundary.
+- A trusted job aimed at an already peer-owned thread is rejected before
+  history, model, or tool execution, but the conservative execution-start
+  boundary records it as `outcome_unknown`. Dedicated schedule thread IDs avoid
+  the resulting manual-recovery burden.
+- Restoring an old snapshot cannot prove which later external effects occurred.
+  The restore fence fails closed until an operator reconciles downstream state.
+- Recurring schedule database failures retry at the fixed configured tick
+  interval rather than exponential backoff. The interval is bounded and each
+  failure emits a stable diagnostic code.
+- The nested Temporal dependency audit requires registry availability and
+  fails closed when the registry cannot be reached.
 
 ## Verification record
 
-Checkpoint verification included focused `bun:test` suites, TypeScript,
-Biome, diff checks, two-handle SQLite races, restart fixtures, secret
-sentinels, and repeated hostile reviews. Final aggregate, audit, packed-release,
-and CI results will be recorded in PR #165 before it is marked ready. No package
+Checkpoint verification included focused `bun:test` suites, two-handle SQLite
+races, restart fixtures, secret sentinels, and repeated hostile reviews. The
+final local gate produced these results:
+
+| Command | Result |
+| --- | --- |
+| Focused jobs, CLI, recovery, export, and CI suites | 266 passed, 0 failed |
+| Fresh hostile-review focused suites | 243 passed and 258 passed independently, 0 failed |
+| Completion-state regression and adjacent agent tests | 39 passed, 0 failed |
+| `bun run typecheck` | Passed |
+| `bun run lint` | Passed; one informational Biome schema-version notice |
+| `bun run test:inventory` | 280 runtime, 29 console, and 3 isolated external test files assigned exactly once |
+| `bun run test:runtime` | Passed every canonical runtime shard with loopback access |
+| `bun run test:admin` | 243 passed, 0 failed |
+| `bun run build:admin` | Passed |
+| `bun audit --json` | Passed with `{}` |
+| `bun run test:temporal-example` | Frozen install, 64 tests, typecheck, and audit passed |
+| `bun run smoke:release` | Passed packed contents, isolated provider consumers, CLI scaffold, doctor, health, console assets, and installed-consumer audit |
+| `git diff --check` | Passed |
+
+The restricted local sandbox initially prevented loopback binding with
+`EPERM`/`EADDRINUSE`. The exact canonical runtime inventory passed when rerun
+with loopback access; isolated affected server files also passed. CI results
+and their immutable commit association are recorded on PR #165. No package
 version was changed and no package was published.
