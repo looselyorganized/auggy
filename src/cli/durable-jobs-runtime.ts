@@ -2,7 +2,11 @@ import { randomUUID } from "node:crypto";
 import type { AgentHandle } from "../types";
 import { createDurableJobRuntime, type DurableJobRuntimeOptions } from "../jobs/runtime";
 import { createSqliteDurableJobStore } from "../jobs/sqlite-store";
-import type { DurableJobStore, SqliteDurableJobStoreOptions } from "../jobs/types";
+import type {
+  DurableJobScheduleDefinition,
+  DurableJobStore,
+  SqliteDurableJobStoreOptions,
+} from "../jobs/types";
 import type { DurableJobsConfig } from "./types";
 import { resolveOwnedStatePath } from "./owned-state-path";
 import { resolveRuntimeStatePath } from "./runtime-state-inventory";
@@ -51,7 +55,43 @@ export interface CreateConfiguredDurableJobsRuntimeOptions {
   createStore?: (options: SqliteDurableJobStoreOptions) => DurableJobStore;
   createWorker?: (options: DurableJobRuntimeOptions) => DurableJobWorker;
   /** Receives fixed operational classifications only, never caught error text. */
-  onOperationalError?: (code: "poll-failed" | "settlement-failed") => void;
+  onOperationalError?: (code: "poll-failed" | "settlement-failed" | "schedule-tick-failed") => void;
+  /** Deterministic scheduler seams; production uses the process timers. */
+  setScheduleTimeout?: (callback: () => void, ms: number) => unknown;
+  clearScheduleTimeout?: (handle: unknown) => void;
+}
+
+/** Map trusted parsed configuration to the write-only persisted schedule contract. */
+export function durableScheduleDefinitions(
+  jobs: DurableJobsConfig,
+): DurableJobScheduleDefinition[] {
+  return jobs.schedules.map((schedule) => {
+    const threadId = schedule.threadId ?? `durable-schedule:${schedule.id}`;
+    return {
+      id: schedule.id,
+      cron: schedule.cron,
+      enabled: schedule.enabled,
+      binding: {
+        version: 1,
+        kind: "configured-agent-turn",
+        scheduleId: schedule.id,
+        threadId,
+        timeoutMs: schedule.timeoutMs,
+        maxAttempts: schedule.maxAttempts,
+      },
+      payload: {
+        version: 1,
+        value: {
+          version: 1,
+          kind: "agent-turn",
+          threadId,
+          prompt: schedule.prompt,
+          timeoutMs: schedule.timeoutMs,
+          maxAttempts: schedule.maxAttempts,
+        },
+      },
+    };
+  });
 }
 
 /** Explicit absence means no database, worker, route, or model authority is created. */
@@ -154,6 +194,10 @@ export function createConfiguredDurableJobsRuntime(
   let closed = false;
   let started = false;
   try {
+    // Reconcile declarations even when the configured list is empty so a
+    // removed schedule becomes durably disabled before the agent can admit
+    // background work.
+    store.syncSchedules(durableScheduleDefinitions(options.jobs));
     const worker = createWorker({
       agent: options.agent,
       store,
@@ -164,6 +208,42 @@ export function createConfiguredDurableJobsRuntime(
       defaultTimeoutMs: options.jobs.turnTimeoutMs,
       onOperationalError: (code) => options.onOperationalError?.(code),
     });
+    const setScheduleTimeout =
+      options.setScheduleTimeout ??
+      ((callback: () => void, ms: number): unknown => globalThis.setTimeout(callback, ms));
+    const clearScheduleTimeout =
+      options.clearScheduleTimeout ??
+      ((handle: unknown): void => globalThis.clearTimeout(handle as ReturnType<typeof setTimeout>));
+    const schedulePollMs = Math.max(1_000, options.jobs.claimPollMs);
+    let scheduleTimer: unknown;
+    let scheduleTimerSet = false;
+    const clearScheduleTimer = () => {
+      if (!scheduleTimerSet) return;
+      clearScheduleTimeout(scheduleTimer);
+      scheduleTimer = undefined;
+      scheduleTimerSet = false;
+    };
+    const scheduleNextTick = () => {
+      if (!started || closed || scheduleTimerSet) return;
+      scheduleTimer = setScheduleTimeout(() => {
+        scheduleTimer = undefined;
+        scheduleTimerSet = false;
+        if (!started || closed) return;
+        try {
+          store.materializeDueSchedules();
+        } catch {
+          try {
+            options.onOperationalError?.("schedule-tick-failed");
+          } catch {
+            // Observability callbacks cannot stop scheduling or disclose the
+            // caught database/configuration error through another path.
+          }
+        } finally {
+          scheduleNextTick();
+        }
+      }, schedulePollMs);
+      scheduleTimerSet = true;
+    };
     return Object.freeze({
       databasePath,
       start(): void {
@@ -171,15 +251,21 @@ export function createConfiguredDurableJobsRuntime(
         // Leases are fenced and this transition is expired-only. Running work
         // is quarantined rather than replayed before polling can start.
         store.recoverExpiredLeases();
+        store.materializeDueSchedules();
         worker.start();
         started = true;
+        scheduleNextTick();
       },
       async stop(): Promise<void> {
+        started = false;
+        clearScheduleTimer();
         await worker.stop();
       },
       close(): void {
         if (closed) return;
         closed = true;
+        started = false;
+        clearScheduleTimer();
         store.close();
       },
     });

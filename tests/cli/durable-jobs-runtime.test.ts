@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   createConfiguredDurableJobsRuntime,
   createDurableJobsRuntimeIfEnabled,
+  durableScheduleDefinitions,
   resolveDurableJobsDatabasePath,
   startAgentWithDurableJobs,
   stopAgentWithDurableJobs,
@@ -103,6 +104,14 @@ describe("durable jobs runtime lifecycle", () => {
     const events: string[] = [];
     let storeOptions: unknown;
     const store = {
+      syncSchedules() {
+        events.push("sync-schedules");
+        return [];
+      },
+      materializeDueSchedules() {
+        events.push("materialize-schedules");
+        return { materialized: 0, remaining: 0 };
+      },
       recoverExpiredLeases() {
         events.push("recover-expired");
         return { requeued: 0, quarantined: 0 };
@@ -134,7 +143,13 @@ describe("durable jobs runtime lifecycle", () => {
 
     runtime.start();
     runtime.close();
-    expect(events).toEqual(["recover-expired", "start-worker", "close-store"]);
+    expect(events).toEqual([
+      "sync-schedules",
+      "recover-expired",
+      "materialize-schedules",
+      "start-worker",
+      "close-store",
+    ]);
     expect(storeOptions).toEqual({
       dbPath: join(realpathSync(agentDir), "data", "durable-jobs.sqlite"),
       maxTotalRecords: 100,
@@ -143,6 +158,113 @@ describe("durable jobs runtime lifecycle", () => {
       terminalRetentionMs: 86_400_000,
       auditRetentionMs: 172_800_000,
     });
+  });
+
+  test("maps private schedule config and serializes recurring materialization", async () => {
+    const events: string[] = [];
+    const timers: Array<() => void> = [];
+    const definitions: unknown[] = [];
+    const scheduleConfig = jobs({
+      schedules: [
+        {
+          id: "daily-review",
+          cron: "0 9 * * *",
+          prompt: "private scheduled prompt",
+          enabled: true,
+          maxAttempts: 2,
+          timeoutMs: 45_000,
+        },
+      ],
+    });
+    const store = {
+      syncSchedules(value: unknown) {
+        definitions.push(value);
+        events.push("sync");
+        return [];
+      },
+      materializeDueSchedules() {
+        events.push("materialize");
+        return { materialized: 0, remaining: 0 };
+      },
+      recoverExpiredLeases() {
+        events.push("recover");
+        return { requeued: 0, quarantined: 0 };
+      },
+      close() {
+        events.push("close");
+      },
+    } as unknown as DurableJobStore;
+    const runtime = createConfiguredDurableJobsRuntime({
+      jobs: scheduleConfig,
+      agent: {} as Pick<AgentHandle, "inject">,
+      agentDir: root(),
+      createStore: () => store,
+      createWorker: () => ({
+        start: () => events.push("worker-start"),
+        stop: async () => {
+          events.push("worker-stop");
+        },
+      }),
+      setScheduleTimeout(callback, milliseconds) {
+        expect(milliseconds).toBe(1_000);
+        timers.push(callback);
+        events.push("timer-set");
+        return callback;
+      },
+      clearScheduleTimeout() {
+        events.push("timer-clear");
+      },
+    });
+
+    expect(definitions).toEqual([durableScheduleDefinitions(scheduleConfig)]);
+    expect(JSON.stringify(definitions)).toContain("private scheduled prompt");
+    runtime.start();
+    expect(events).toEqual(["sync", "recover", "materialize", "worker-start", "timer-set"]);
+    timers.shift()?.();
+    expect(events.slice(-2)).toEqual(["materialize", "timer-set"]);
+    await runtime.stop();
+    expect(events.slice(-2)).toEqual(["timer-clear", "worker-stop"]);
+    runtime.close();
+    expect(events.at(-1)).toBe("close");
+  });
+
+  test("contains recurring schedule failures behind a fixed operational code", () => {
+    const callbacks: Array<() => void> = [];
+    const codes: string[] = [];
+    let ticks = 0;
+    const store = {
+      syncSchedules() {
+        return [];
+      },
+      materializeDueSchedules() {
+        ticks++;
+        if (ticks > 1) throw new Error("private schedule database failure");
+        return { materialized: 0, remaining: 0 };
+      },
+      recoverExpiredLeases() {
+        return { requeued: 0, quarantined: 0 };
+      },
+      close() {},
+    } as unknown as DurableJobStore;
+    const runtime = createConfiguredDurableJobsRuntime({
+      jobs: jobs(),
+      agent: {} as Pick<AgentHandle, "inject">,
+      agentDir: root(),
+      createStore: () => store,
+      createWorker: () => ({ start() {}, async stop() {} }),
+      setScheduleTimeout(callback) {
+        callbacks.push(callback);
+        return callback;
+      },
+      clearScheduleTimeout() {},
+      onOperationalError: (code) => codes.push(code),
+    });
+
+    runtime.start();
+    callbacks.shift()?.();
+    expect(codes).toEqual(["schedule-tick-failed"]);
+    expect(JSON.stringify(codes)).not.toContain("private schedule database failure");
+    runtime.close();
   });
 
   test("agent startup completes before worker admission and failure closes durable state", async () => {
