@@ -1619,6 +1619,8 @@ export interface DistributedCoordinationConfig {
   retention: DistributedCoordinationRetentionConfig;
   /** Explicit replay storage bound, measured in serialized UTF-8 bytes. */
   result: DistributedCoordinationResultConfig;
+  /** Bounded, coordinator-owned state committed with one fenced turn. */
+  turnState: DistributedCoordinationTurnStateConfig;
   leaseDurationMs: number;
   heartbeatIntervalMs: number;
   claimPollMs: number;
@@ -1648,6 +1650,27 @@ export interface DistributedCoordinationRetentionConfig {
 export interface DistributedCoordinationResultConfig {
   /** Maximum serialized UTF-8 bytes retained for one sanitized replay result. */
   maxReplayBytes: number;
+}
+
+export interface DistributedCoordinationTurnStateConfig {
+  history: {
+    /** Maximum serialized UTF-8 bytes retained for one thread snapshot. */
+    maxSnapshotBytes: number;
+    /** Maximum messages retained in one thread snapshot. */
+    maxMessages: number;
+    /** Maximum peer-bound thread snapshots retained in one namespace. */
+    maxThreads: number;
+  };
+  /** Maximum exact-known inference-cost markers committed by one root turn. */
+  maxCostMarkersPerTurn: number;
+  outbox: {
+    /** Maximum outbound intents staged by one root turn. */
+    maxIntentsPerTurn: number;
+    /** Maximum serialized UTF-8 bytes retained for one outbound intent. */
+    maxIntentBytes: number;
+    /** Maximum pending outbound intents retained in one namespace. */
+    maxPendingIntents: number;
+  };
 }
 
 export interface TurnSchedulingConfig {

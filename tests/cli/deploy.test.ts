@@ -301,7 +301,7 @@ describe("runDeploy", () => {
   test("rejects disabled coordination before doctor imports or Railway calls", async () => {
     writeFileSync(
       join(agentDir, "agent.yaml"),
-      `${readFileSync(join(agentDir, "agent.yaml"), "utf8")}settings:\n  coordination:\n    mode: postgres\n    namespace: a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c\n    fleetCapacity:\n      maxConcurrent: 4\n      maxQueued: 100\n      maxQueuedPerThread: 20\n    retention:\n      terminalRequestRetentionMs: 604800000\n      maxTerminalRequests: 10000\n      eventRetentionMs: 2592000000\n      maxEvents: 50000\n    result:\n      maxReplayBytes: 65536\n`,
+      `${readFileSync(join(agentDir, "agent.yaml"), "utf8")}settings:\n  coordination:\n    mode: postgres\n    namespace: a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c\n    fleetCapacity:\n      maxConcurrent: 4\n      maxQueued: 100\n      maxQueuedPerThread: 20\n    retention:\n      terminalRequestRetentionMs: 604800000\n      maxTerminalRequests: 10000\n      eventRetentionMs: 2592000000\n      maxEvents: 50000\n    result:\n      maxReplayBytes: 65536\n    turnState:\n      history:\n        maxSnapshotBytes: 65536\n        maxMessages: 100\n        maxThreads: 1000\n      maxCostMarkersPerTurn: 32\n      outbox:\n        maxIntentsPerTurn: 32\n        maxIntentBytes: 65536\n        maxPendingIntents: 1000\n`,
     );
     const { cli, calls } = mockRailwayCli();
 

@@ -22,8 +22,13 @@ const coordinator = new PostgresDistributedTurnCoordinator({
     maxEvents: 50_000,
   },
   result: { maxReplayBytes: 65_536 },
+  turnState: {
+    history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+    maxCostMarkersPerTurn: 32,
+    outbox: { maxIntentsPerTurn: 32, maxIntentBytes: 65_536, maxPendingIntents: 1_000 },
+  },
   compatibility: {
-    protocolVersion: 4,
+    protocolVersion: 5,
     protocolFingerprint: "a".repeat(64),
     configurationFingerprint: "b".repeat(64),
   },

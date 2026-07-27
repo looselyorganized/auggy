@@ -1,12 +1,14 @@
 /**
  * Durable, fenced admission for a single logical agent. The coordinator stores
- * identifiers, a one-way request binding hash, and one bounded sanitized replay
- * result. Callers must never put prompts, peer data, credentials, or raw
- * provider failures in these records.
+ * identifiers and one-way request binding hashes in its control plane. Durable
+ * history, replay, and outbox records are a separate bounded data plane and may
+ * contain conversation content and delivery routing. Callers must never put
+ * credentials or raw provider failures in either plane.
  */
 import type {
   DistributedCoordinationResultConfig,
   DistributedCoordinationRetentionConfig,
+  DistributedCoordinationTurnStateConfig,
 } from "../types";
 
 export type CoordinationRequestState =
@@ -42,6 +44,7 @@ export interface DistributedCoordinatorConfig {
   sources: readonly DistributedSourcePolicy[];
   retention: DistributedCoordinationRetentionConfig;
   result: DistributedCoordinationResultConfig;
+  turnState: DistributedCoordinationTurnStateConfig;
   compatibility: DistributedCoordinatorCompatibility;
 }
 
@@ -83,6 +86,62 @@ export interface DistributedReplayResult {
   contentType: "application/json";
 }
 
+/** Canonical, secret-free authorization binding for one durable thread. */
+export interface DistributedPeerBindingV1 {
+  version: 1;
+  bindingHash: string;
+  peerIdHash: string | null;
+  promotionScopeHash: string;
+  trustLevel: "creator" | "agent" | "public";
+  publicSubstate?: "anonymous" | "recognized";
+  /** Evidence for the one allowed anonymous-to-recognized identity transition. */
+  priorPeerIdHash?: string;
+}
+
+export interface DistributedHistorySnapshotV1 {
+  version: 1;
+  body: Uint8Array;
+  messageCount: number;
+}
+
+export type DistributedHistoryLoadResult =
+  | ({ status: "ok"; revision: number } & DistributedHistorySnapshotV1)
+  | { status: "denied" }
+  | { status: "rejected"; reason: "history-capacity" | "invalid-peer-binding" }
+  | { status: "stale" }
+  | { status: "unavailable" };
+
+export type DistributedCostMarkerV1 =
+  | {
+      version: 1;
+      operationId: string;
+      priced: true;
+      costUsd: number;
+    }
+  | {
+      version: 1;
+      operationId: string;
+      priced: false;
+      reason: "missing-usage" | "missing-pricing";
+    };
+
+export interface DistributedOutboxIntentV1 {
+  version: 1;
+  ordinal: number;
+  operationId: string;
+  body: Uint8Array;
+  contentType: "application/json";
+}
+
+export interface DistributedTurnCheckpointV1 {
+  peerBinding: DistributedPeerBindingV1;
+  expectedHistoryRevision: number;
+  history: DistributedHistorySnapshotV1;
+  replay: DistributedReplayResult;
+  costMarkers: readonly DistributedCostMarkerV1[];
+  outboxIntents: readonly DistributedOutboxIntentV1[];
+}
+
 export type AdmitResult =
   | { status: "admitted"; attempt: number }
   | { status: "adopted"; attempt: number }
@@ -112,7 +171,17 @@ export type ClaimResult =
 export type LeaseResult =
   | { status: "ok"; lease?: DistributedTurnLease }
   | { status: "outcome-unknown" }
-  | { status: "rejected"; reason: "invalid-result" | "result-too-large" }
+  | {
+      status: "rejected";
+      reason:
+        | "atomic-turn-state-required"
+        | "history-too-large"
+        | "invalid-history"
+        | "invalid-result"
+        | "invalid-turn-state"
+        | "outbox-capacity"
+        | "result-too-large";
+    }
   | { status: "stale" }
   | { status: "unavailable" };
 
@@ -210,6 +279,17 @@ export interface DistributedTurnCoordinator {
   /** Must be called immediately before work that could cause an external effect. */
   markExecutionStarted(lease: DistributedTurnLease): Promise<LeaseResult>;
   heartbeat(lease: DistributedTurnLease): Promise<LeaseResult>;
+  /** Claim one peer-bound history revision before model invocation. */
+  loadHistory(
+    lease: DistributedTurnLease,
+    peerBinding: DistributedPeerBindingV1,
+  ): Promise<DistributedHistoryLoadResult>;
+  /** Atomically commit every durable effect of one fenced root turn. */
+  commitTurn(
+    lease: DistributedTurnLease,
+    checkpoint: DistributedTurnCheckpointV1,
+  ): Promise<LeaseResult>;
+  /** Legacy pre-v5 result completion. Protocol v5 and later reject this path. */
   complete(lease: DistributedTurnLease, result: DistributedReplayResult): Promise<LeaseResult>;
   fail(lease: DistributedTurnLease): Promise<LeaseResult>;
   markOutcomeUnknown(

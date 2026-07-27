@@ -1,5 +1,13 @@
 import { migratePostgresCoordinator, type PostgresMigrationExecutor } from "./migrations";
 import { createSecurePostgresCoordinationClient } from "./postgres-url";
+import {
+  allowsDistributedPeerPromotion,
+  EMPTY_DISTRIBUTED_HISTORY,
+  sameDistributedPeerBinding,
+  validDistributedPeerBinding,
+  validDistributedReplay,
+  validateDistributedTurnCheckpoint,
+} from "./turn-state";
 import type {
   AdmitResult,
   ClaimResult,
@@ -9,10 +17,13 @@ import type {
   DistributedCoordinatorConfig,
   DistributedCoordinatorHealth,
   DistributedEventPage,
+  DistributedHistoryLoadResult,
+  DistributedPeerBindingV1,
   DistributedPruneResult,
   DistributedReplayResult,
   DistributedRequestStatus,
   DistributedTurnCoordinator,
+  DistributedTurnCheckpointV1,
   DistributedTurnLease,
   DistributedTurnRequest,
   LeaseResult,
@@ -72,6 +83,10 @@ function number(row: Row, key: string): number {
   return parsed;
 }
 
+function nullableNumber(row: Row, key: string): number | null {
+  return row[key] === null ? null : number(row, key);
+}
+
 function date(row: Row, key: string): number {
   const value = row[key];
   const parsed = value instanceof Date ? value.getTime() : new Date(String(value)).getTime();
@@ -89,6 +104,37 @@ function bytes(row: Row, key: string): Uint8Array {
   const value = row[key];
   if (!(value instanceof Uint8Array)) throw new Error(`invalid coordinator database row: ${key}`);
   return new Uint8Array(value);
+}
+
+function nullableText(row: Row, key: string): string | null {
+  return row[key] === null ? null : text(row, key);
+}
+
+function peerBindingFromRow(row: Row): DistributedPeerBindingV1 {
+  const trustLevel = text(row, "trust_level");
+  if (trustLevel !== "creator" && trustLevel !== "agent" && trustLevel !== "public") {
+    throw new Error("invalid coordinator history trust binding");
+  }
+  const publicSubstate = nullableText(row, "public_substate");
+  if (
+    publicSubstate !== null &&
+    publicSubstate !== "anonymous" &&
+    publicSubstate !== "recognized"
+  ) {
+    throw new Error("invalid coordinator history public binding");
+  }
+  const binding: DistributedPeerBindingV1 = {
+    version: 1,
+    bindingHash: text(row, "peer_binding_hash"),
+    peerIdHash: nullableText(row, "peer_id_hash"),
+    promotionScopeHash: text(row, "promotion_scope_hash"),
+    trustLevel,
+    ...(publicSubstate === null ? {} : { publicSubstate }),
+  };
+  if (!validDistributedPeerBinding(binding)) {
+    throw new Error("invalid coordinator history peer binding");
+  }
+  return binding;
 }
 
 function validReplayResult(result: DistributedReplayResult): boolean {
@@ -218,6 +264,31 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       throw new Error("coordination replay policy is invalid");
     }
     if (
+      !Number.isSafeInteger(options.turnState?.history.maxSnapshotBytes) ||
+      options.turnState.history.maxSnapshotBytes < 1_024 ||
+      options.turnState.history.maxSnapshotBytes > 1_048_576 ||
+      !Number.isSafeInteger(options.turnState.history.maxMessages) ||
+      options.turnState.history.maxMessages < 1 ||
+      options.turnState.history.maxMessages > 10_000 ||
+      !Number.isSafeInteger(options.turnState.history.maxThreads) ||
+      options.turnState.history.maxThreads < 1 ||
+      options.turnState.history.maxThreads > MAX_CAPACITY ||
+      !Number.isSafeInteger(options.turnState.maxCostMarkersPerTurn) ||
+      options.turnState.maxCostMarkersPerTurn < 1 ||
+      options.turnState.maxCostMarkersPerTurn > 1_000 ||
+      !Number.isSafeInteger(options.turnState.outbox.maxIntentsPerTurn) ||
+      options.turnState.outbox.maxIntentsPerTurn < 0 ||
+      options.turnState.outbox.maxIntentsPerTurn > 1_000 ||
+      !Number.isSafeInteger(options.turnState.outbox.maxIntentBytes) ||
+      options.turnState.outbox.maxIntentBytes < 1_024 ||
+      options.turnState.outbox.maxIntentBytes > 1_048_576 ||
+      !Number.isSafeInteger(options.turnState.outbox.maxPendingIntents) ||
+      options.turnState.outbox.maxPendingIntents < 0 ||
+      options.turnState.outbox.maxPendingIntents > MAX_CAPACITY
+    ) {
+      throw new Error("coordination turn-state policy is invalid");
+    }
+    if (
       !Number.isSafeInteger(options.compatibility?.protocolVersion) ||
       options.compatibility.protocolVersion < 1 ||
       options.compatibility.protocolVersion > MAX_CAPACITY ||
@@ -260,7 +331,15 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       if (sourceIds.has(source.id)) throw new Error("coordinator source ids must be unique");
       sourceIds.add(source.id);
     }
-    this.#config = { ...options, sources: options.sources.map((source) => ({ ...source })) };
+    this.#config = {
+      ...options,
+      sources: options.sources.map((source) => ({ ...source })),
+      turnState: {
+        history: { ...options.turnState.history },
+        maxCostMarkersPerTurn: options.turnState.maxCostMarkersPerTurn,
+        outbox: { ...options.turnState.outbox },
+      },
+    };
     this.#sessionId = new Bun.CryptoHasher("sha256").update(crypto.randomUUID()).digest("hex");
     this.#ownsSql = !options.sql;
     this.#sql = (options.sql ??
@@ -689,6 +768,295 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     return result;
   }
 
+  async loadHistory(
+    lease: DistributedTurnLease,
+    peerBinding: DistributedPeerBindingV1,
+  ): Promise<DistributedHistoryLoadResult> {
+    if (!this.validLease(lease)) return { status: "stale" };
+    if (!validDistributedPeerBinding(peerBinding)) {
+      return { status: "rejected", reason: "invalid-peer-binding" };
+    }
+    const result = await this.safe<DistributedHistoryLoadResult>(
+      { status: "unavailable" },
+      async () =>
+        this.transaction(async (tx) => {
+          await this.#lockNamespace(tx);
+          if (!(await this.registeredInstance(tx))) return { status: "stale" };
+          await this.#expireActive(tx);
+          const requests = await tx.unsafe<Row>(
+            "SELECT history_binding_hash, history_revision FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND execution_started_at IS NULL FOR UPDATE",
+            [
+              this.#config.namespace,
+              lease.requestId,
+              lease.threadId,
+              lease.sourceId,
+              lease.attempt,
+              lease.fence,
+              this.#config.instanceId,
+              this.#sessionId,
+            ],
+          );
+          const request = requests[0];
+          if (!request) return { status: "stale" };
+
+          const histories = await tx.unsafe<Row>(
+            "SELECT peer_binding_hash, peer_id_hash, promotion_scope_hash, trust_level, public_substate, revision, snapshot_version, snapshot_body, message_count FROM public.auggy_coordination_history WHERE namespace = $1 AND thread_id = $2 FOR UPDATE",
+            [this.#config.namespace, lease.threadId],
+          );
+          const history = histories[0];
+          if (!history && request.history_binding_hash === null) {
+            const counts = await tx.unsafe<Row>(
+              "SELECT ((SELECT count(*) FROM public.auggy_coordination_history history WHERE history.namespace = $1) + (SELECT count(*) FROM public.auggy_coordination_requests reservation WHERE reservation.namespace = $1 AND reservation.request_id <> $2 AND reservation.state = 'active' AND reservation.history_binding_hash IS NOT NULL AND reservation.history_revision = 0 AND NOT EXISTS (SELECT 1 FROM public.auggy_coordination_history history WHERE history.namespace = reservation.namespace AND history.thread_id = reservation.thread_id)))::integer AS count",
+              [this.#config.namespace, lease.requestId],
+            );
+            if (number(counts[0]!, "count") >= this.#config.turnState.history.maxThreads) {
+              return { status: "rejected", reason: "history-capacity" };
+            }
+          }
+          if (
+            history &&
+            !sameDistributedPeerBinding(peerBindingFromRow(history), peerBinding) &&
+            !allowsDistributedPeerPromotion(peerBindingFromRow(history), peerBinding)
+          ) {
+            return { status: "denied" };
+          }
+          const revision = history ? number(history, "revision") : 0;
+          if (
+            request.history_binding_hash !== null &&
+            (text(request, "history_binding_hash") !== peerBinding.bindingHash ||
+              number(request, "history_revision") !== revision)
+          ) {
+            return { status: "denied" };
+          }
+          const claimed = await tx.unsafe<Row>(
+            "UPDATE public.auggy_coordination_requests SET history_binding_hash = $9, history_revision = $10, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND execution_started_at IS NULL RETURNING request_id",
+            [
+              this.#config.namespace,
+              lease.requestId,
+              lease.threadId,
+              lease.sourceId,
+              lease.attempt,
+              lease.fence,
+              this.#config.instanceId,
+              this.#sessionId,
+              peerBinding.bindingHash,
+              revision,
+            ],
+          );
+          if (!claimed[0]) throw new Error("history claim lost during transaction");
+          const body = history
+            ? bytes(history, "snapshot_body")
+            : new Uint8Array(EMPTY_DISTRIBUTED_HISTORY);
+          const messageCount = history ? number(history, "message_count") : 0;
+          if (
+            (history && number(history, "snapshot_version") !== 1) ||
+            body.byteLength > this.#config.turnState.history.maxSnapshotBytes ||
+            messageCount > this.#config.turnState.history.maxMessages
+          ) {
+            throw new Error("stored history exceeds configured policy");
+          }
+          return { status: "ok", version: 1, body, messageCount, revision };
+        }),
+    );
+    if (result.status === "stale" || result.status === "unavailable") {
+      this.abortOwned(lease.requestId, "lease-ownership-lost");
+    }
+    return result;
+  }
+
+  async commitTurn(
+    lease: DistributedTurnLease,
+    checkpoint: DistributedTurnCheckpointV1,
+  ): Promise<LeaseResult> {
+    if (!this.validLease(lease)) return { status: "stale" };
+    const rejection = validateDistributedTurnCheckpoint(
+      checkpoint,
+      this.#config.turnState,
+      this.#config.result,
+      lease.threadId,
+    );
+    if (rejection) return rejection;
+
+    const result = await this.safe<LeaseResult>({ status: "unavailable" }, async () =>
+      this.transaction(async (tx) => {
+        await this.#lockNamespace(tx);
+        if (!(await this.registeredInstance(tx))) return { status: "stale" };
+        await this.#expireActive(tx);
+        const requests = await tx.unsafe<Row>(
+          "SELECT history_binding_hash, history_revision FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND execution_started_at IS NOT NULL FOR UPDATE",
+          [
+            this.#config.namespace,
+            lease.requestId,
+            lease.threadId,
+            lease.sourceId,
+            lease.attempt,
+            lease.fence,
+            this.#config.instanceId,
+            this.#sessionId,
+          ],
+        );
+        const request = requests[0];
+        if (!request) return { status: "stale" };
+        const histories = await tx.unsafe<Row>(
+          "SELECT peer_binding_hash, peer_id_hash, promotion_scope_hash, trust_level, public_substate, revision FROM public.auggy_coordination_history WHERE namespace = $1 AND thread_id = $2 FOR UPDATE",
+          [this.#config.namespace, lease.threadId],
+        );
+        const history = histories[0];
+        const historyBinding = history ? peerBindingFromRow(history) : undefined;
+        let ambiguous =
+          request.history_binding_hash === null ||
+          text(request, "history_binding_hash") !== checkpoint.peerBinding.bindingHash ||
+          number(request, "history_revision") !== checkpoint.expectedHistoryRevision ||
+          (history
+            ? number(history, "revision") !== checkpoint.expectedHistoryRevision ||
+              (!sameDistributedPeerBinding(historyBinding!, checkpoint.peerBinding) &&
+                !allowsDistributedPeerPromotion(historyBinding!, checkpoint.peerBinding))
+            : checkpoint.expectedHistoryRevision !== 0);
+
+        if (!ambiguous) {
+          for (const marker of checkpoint.costMarkers) {
+            const duplicate = await tx.unsafe<Row>(
+              "SELECT operation_id FROM public.auggy_coordination_cost_markers WHERE namespace = $1 AND operation_id = $2",
+              [this.#config.namespace, marker.operationId],
+            );
+            if (duplicate[0]) ambiguous = true;
+          }
+          for (const intent of checkpoint.outboxIntents) {
+            const duplicate = await tx.unsafe<Row>(
+              "SELECT operation_id FROM public.auggy_coordination_outbox WHERE namespace = $1 AND operation_id = $2",
+              [this.#config.namespace, intent.operationId],
+            );
+            if (duplicate[0]) ambiguous = true;
+          }
+          const pending = await tx.unsafe<Row>(
+            "SELECT count(*)::integer AS count FROM public.auggy_coordination_outbox WHERE namespace = $1 AND state = 'pending'",
+            [this.#config.namespace],
+          );
+          if (
+            number(pending[0]!, "count") + checkpoint.outboxIntents.length >
+            this.#config.turnState.outbox.maxPendingIntents
+          ) {
+            ambiguous = true;
+          }
+          if (!history) {
+            const historyCounts = await tx.unsafe<Row>(
+              "SELECT count(*)::integer AS count FROM public.auggy_coordination_history WHERE namespace = $1",
+              [this.#config.namespace],
+            );
+            if (number(historyCounts[0]!, "count") >= this.#config.turnState.history.maxThreads) {
+              ambiguous = true;
+            }
+          }
+        }
+        if (ambiguous) {
+          const quarantined = await tx.unsafe<Row>(
+            "UPDATE public.auggy_coordination_requests SET state = 'outcome_unknown', terminal_at = clock_timestamp(), owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND execution_started_at IS NOT NULL RETURNING request_id",
+            [
+              this.#config.namespace,
+              lease.requestId,
+              lease.threadId,
+              lease.sourceId,
+              lease.attempt,
+              lease.fence,
+              this.#config.instanceId,
+              this.#sessionId,
+            ],
+          );
+          if (!quarantined[0]) throw new Error("lease changed during turn quarantine");
+          await this.recordQuarantine(
+            tx,
+            lease.threadId,
+            lease.requestId,
+            lease.fence,
+            "effect-outcome-unknown",
+          );
+          return { status: "outcome-unknown" };
+        }
+
+        const historyValues = [
+          this.#config.namespace,
+          lease.threadId,
+          checkpoint.expectedHistoryRevision,
+          checkpoint.peerBinding.bindingHash,
+          checkpoint.peerBinding.peerIdHash,
+          checkpoint.peerBinding.promotionScopeHash,
+          checkpoint.peerBinding.trustLevel,
+          checkpoint.peerBinding.publicSubstate ?? null,
+          new Uint8Array(checkpoint.history.body),
+          checkpoint.history.messageCount,
+        ];
+        const updatedHistory = history
+          ? await tx.unsafe<Row>(
+              "/* cp4:history */ UPDATE public.auggy_coordination_history SET peer_binding_hash = $4, peer_id_hash = $5, promotion_scope_hash = $6, trust_level = $7, public_substate = $8, revision = revision + 1, snapshot_version = 1, snapshot_body = $9, message_count = $10, updated_at = clock_timestamp() WHERE namespace = $1 AND thread_id = $2 AND revision = $3 RETURNING revision",
+              historyValues,
+            )
+          : await tx.unsafe<Row>(
+              "/* cp4:history */ INSERT INTO public.auggy_coordination_history (namespace, thread_id, peer_binding_hash, peer_id_hash, promotion_scope_hash, trust_level, public_substate, revision, snapshot_version, snapshot_body, message_count) VALUES ($1, $2, $4, $5, $6, $7, $8, 1, 1, $9, $10) RETURNING revision",
+              historyValues,
+            );
+        if (!updatedHistory[0]) throw new Error("history revision changed during commit");
+        for (const marker of checkpoint.costMarkers) {
+          await tx.unsafe(
+            "/* cp4:cost */ INSERT INTO public.auggy_coordination_cost_markers (namespace, operation_id, request_id, fence, marker_version, priced, cost_usd, unpriced_reason) VALUES ($1, $2, $3, $4, 1, $5, $6, $7)",
+            [
+              this.#config.namespace,
+              marker.operationId,
+              lease.requestId,
+              lease.fence,
+              marker.priced,
+              marker.priced ? marker.costUsd : null,
+              marker.priced ? null : marker.reason,
+            ],
+          );
+        }
+        for (const intent of checkpoint.outboxIntents) {
+          await tx.unsafe(
+            "/* cp4:outbox */ INSERT INTO public.auggy_coordination_outbox (namespace, request_id, intent_ordinal, operation_id, fence, intent_version, intent_body, intent_content_type) VALUES ($1, $2, $3, $4, $5, 1, $6, $7)",
+            [
+              this.#config.namespace,
+              lease.requestId,
+              intent.ordinal,
+              intent.operationId,
+              lease.fence,
+              new Uint8Array(intent.body),
+              intent.contentType,
+            ],
+          );
+        }
+        const completed = await tx.unsafe<Row>(
+          "/* cp4:request */ UPDATE public.auggy_coordination_requests SET state = 'completed', result_body = $9, result_content_type = $10, result_version = 1, terminal_at = clock_timestamp(), owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND execution_started_at IS NOT NULL AND history_binding_hash = $11 AND history_revision = $12 RETURNING request_id",
+          [
+            this.#config.namespace,
+            lease.requestId,
+            lease.threadId,
+            lease.sourceId,
+            lease.attempt,
+            lease.fence,
+            this.#config.instanceId,
+            this.#sessionId,
+            new Uint8Array(checkpoint.replay.body),
+            checkpoint.replay.contentType,
+            checkpoint.peerBinding.bindingHash,
+            checkpoint.expectedHistoryRevision,
+          ],
+        );
+        if (!completed[0]) throw new Error("lease changed during atomic turn commit");
+        return { status: "ok" };
+      }),
+    );
+    this.abortOwned(
+      lease.requestId,
+      result.status === "ok"
+        ? "settled"
+        : result.status === "outcome-unknown"
+          ? "outcome-unknown"
+          : result.status === "unavailable"
+            ? "coordinator-authority-lost"
+            : "lease-ownership-lost",
+    );
+    return result;
+  }
+
   async complete(
     lease: DistributedTurnLease,
     replayResult: DistributedReplayResult,
@@ -699,10 +1067,50 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     if (replayResult.body.byteLength > this.#config.result.maxReplayBytes) {
       return { status: "rejected", reason: "result-too-large" };
     }
-    const result = await this.updateLease(
-      lease,
-      "state = 'completed', result_body = $1, result_content_type = $2, result_version = 1, terminal_at = clock_timestamp(), owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, updated_at = clock_timestamp()",
-      [new Uint8Array(replayResult.body), replayResult.contentType],
+    if (this.#config.compatibility.protocolVersion >= 5) {
+      return { status: "rejected", reason: "atomic-turn-state-required" };
+    }
+    if (!this.validLease(lease)) return { status: "stale" };
+    const result = await this.safe<LeaseResult>({ status: "unavailable" }, async () =>
+      this.transaction(async (tx) => {
+        await this.#lockNamespace(tx);
+        if (!(await this.registeredInstance(tx))) return { status: "stale" };
+        await this.#expireActive(tx);
+        const rows = await tx.unsafe<Row>(
+          "SELECT history_binding_hash FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() FOR UPDATE",
+          [
+            this.#config.namespace,
+            lease.requestId,
+            lease.threadId,
+            lease.sourceId,
+            lease.attempt,
+            lease.fence,
+            this.#config.instanceId,
+            this.#sessionId,
+          ],
+        );
+        if (!rows[0]) return { status: "stale" };
+        if (rows[0].history_binding_hash !== null) {
+          return { status: "rejected", reason: "atomic-turn-state-required" };
+        }
+        const completed = await tx.unsafe<Row>(
+          "UPDATE public.auggy_coordination_requests SET state = 'completed', result_body = $9, result_content_type = $10, result_version = 1, terminal_at = clock_timestamp(), owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND history_binding_hash IS NULL RETURNING request_id",
+          [
+            this.#config.namespace,
+            lease.requestId,
+            lease.threadId,
+            lease.sourceId,
+            lease.attempt,
+            lease.fence,
+            this.#config.instanceId,
+            this.#sessionId,
+            new Uint8Array(replayResult.body),
+            replayResult.contentType,
+          ],
+        );
+        if (!completed[0]) throw new Error("lease changed during completion");
+        return { status: "ok" };
+      }),
     );
     if (result.status === "ok") this.abortOwned(lease.requestId, "settled");
     else if (result.status === "unavailable") {
@@ -855,7 +1263,12 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           body: bytes(replayRow, "result_body"),
           contentType: "application/json" as const,
         };
-        if (result.body.byteLength !== resultBytes || !validReplayResult(result)) {
+        if (
+          result.body.byteLength !== resultBytes ||
+          (this.#config.compatibility.protocolVersion >= 5
+            ? !validDistributedReplay(result, request.threadId)
+            : !validReplayResult(result))
+        ) {
           throw new Error("invalid completed replay result");
         }
         return { status: "completed", result };
@@ -957,7 +1370,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         await this.#expireActive(tx);
         await this.#cancelExpiredQueued(tx);
         const requestRows = await tx.unsafe<Row>(
-          "WITH ranked AS (SELECT request_id, terminal_at, row_number() OVER (ORDER BY terminal_at DESC, request_id DESC) AS newest_rank FROM public.auggy_coordination_requests WHERE namespace = $1 AND state IN ('completed', 'failed', 'canceled')), victims AS (SELECT request_id FROM ranked WHERE terminal_at <= clock_timestamp() - ($2 * interval '1 millisecond') OR newest_rank > $3 ORDER BY terminal_at, request_id LIMIT $4), deleted AS (DELETE FROM public.auggy_coordination_requests request USING victims WHERE request.namespace = $1 AND request.request_id = victims.request_id RETURNING 1) SELECT count(*)::integer AS count FROM deleted",
+          "WITH ranked AS (SELECT request.request_id, request.terminal_at, row_number() OVER (ORDER BY request.terminal_at DESC, request.request_id DESC) AS newest_rank FROM public.auggy_coordination_requests request WHERE request.namespace = $1 AND request.state IN ('completed', 'failed', 'canceled') AND NOT EXISTS (SELECT 1 FROM public.auggy_coordination_outbox outbox WHERE outbox.namespace = request.namespace AND outbox.request_id = request.request_id AND outbox.state = 'pending')), victims AS MATERIALIZED (SELECT request_id FROM ranked WHERE terminal_at <= clock_timestamp() - ($2 * interval '1 millisecond') OR newest_rank > $3 ORDER BY terminal_at, request_id LIMIT $4), deleted_costs AS (DELETE FROM public.auggy_coordination_cost_markers cost USING victims WHERE cost.namespace = $1 AND cost.request_id = victims.request_id RETURNING 1), deleted AS (DELETE FROM public.auggy_coordination_requests request USING victims WHERE request.namespace = $1 AND request.request_id = victims.request_id AND (SELECT count(*) FROM deleted_costs) >= 0 RETURNING 1) SELECT count(*)::integer AS count FROM deleted",
           [
             this.#config.namespace,
             this.#config.retention.terminalRequestRetentionMs,
@@ -966,7 +1379,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           ],
         );
         const threadRows = await tx.unsafe<Row>(
-          "WITH victims AS (SELECT thread.thread_id FROM public.auggy_coordination_threads thread WHERE thread.namespace = $1 AND NOT thread.quarantined AND NOT EXISTS (SELECT 1 FROM public.auggy_coordination_requests request WHERE request.namespace = $1 AND request.thread_id = thread.thread_id) ORDER BY thread.thread_id LIMIT $2), deleted AS (DELETE FROM public.auggy_coordination_threads thread USING victims WHERE thread.namespace = $1 AND thread.thread_id = victims.thread_id RETURNING 1) SELECT count(*)::integer AS count FROM deleted",
+          "WITH victims AS MATERIALIZED (SELECT thread.thread_id FROM public.auggy_coordination_threads thread WHERE thread.namespace = $1 AND NOT thread.quarantined AND NOT EXISTS (SELECT 1 FROM public.auggy_coordination_requests request WHERE request.namespace = $1 AND request.thread_id = thread.thread_id) ORDER BY thread.thread_id LIMIT $2), deleted_history AS (DELETE FROM public.auggy_coordination_history history USING victims WHERE history.namespace = $1 AND history.thread_id = victims.thread_id RETURNING 1), deleted AS (DELETE FROM public.auggy_coordination_threads thread USING victims WHERE thread.namespace = $1 AND thread.thread_id = victims.thread_id AND (SELECT count(*) FROM deleted_history) >= 0 RETURNING 1) SELECT count(*)::integer AS count FROM deleted",
           [this.#config.namespace, batchSize],
         );
         const eventRows = await tx.unsafe<Row>(
@@ -1086,7 +1499,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
   > {
     if (create) {
       await tx.unsafe(
-        "INSERT INTO public.auggy_coordination_namespaces (namespace, max_concurrent, max_queued, max_queued_per_thread, lease_ms, protocol_version, protocol_fingerprint, configuration_fingerprint, terminal_request_retention_ms, max_terminal_requests, event_retention_ms, max_events, max_replay_bytes) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) ON CONFLICT (namespace) DO NOTHING",
+        "INSERT INTO public.auggy_coordination_namespaces (namespace, max_concurrent, max_queued, max_queued_per_thread, lease_ms, protocol_version, protocol_fingerprint, configuration_fingerprint, terminal_request_retention_ms, max_terminal_requests, event_retention_ms, max_events, max_replay_bytes, max_history_snapshot_bytes, max_history_messages, max_history_threads, max_cost_markers_per_turn, max_outbox_intents_per_turn, max_outbox_intent_bytes, max_pending_outbox_intents) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20) ON CONFLICT (namespace) DO NOTHING",
         [
           this.#config.namespace,
           this.#config.maxConcurrent,
@@ -1101,6 +1514,13 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           this.#config.retention.eventRetentionMs,
           this.#config.retention.maxEvents,
           this.#config.result.maxReplayBytes,
+          this.#config.turnState.history.maxSnapshotBytes,
+          this.#config.turnState.history.maxMessages,
+          this.#config.turnState.history.maxThreads,
+          this.#config.turnState.maxCostMarkersPerTurn,
+          this.#config.turnState.outbox.maxIntentsPerTurn,
+          this.#config.turnState.outbox.maxIntentBytes,
+          this.#config.turnState.outbox.maxPendingIntents,
         ],
       );
       await tx.unsafe(
@@ -1109,7 +1529,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       );
     }
     const policy = await tx.unsafe<Row>(
-      "SELECT max_concurrent, max_queued, max_queued_per_thread, lease_ms, protocol_version, protocol_fingerprint, configuration_fingerprint, terminal_request_retention_ms, max_terminal_requests, event_retention_ms, max_events, max_replay_bytes FROM public.auggy_coordination_namespaces WHERE namespace = $1 FOR UPDATE",
+      "SELECT max_concurrent, max_queued, max_queued_per_thread, lease_ms, protocol_version, protocol_fingerprint, configuration_fingerprint, terminal_request_retention_ms, max_terminal_requests, event_retention_ms, max_events, max_replay_bytes, max_history_snapshot_bytes, max_history_messages, max_history_threads, max_cost_markers_per_turn, max_outbox_intents_per_turn, max_outbox_intent_bytes, max_pending_outbox_intents FROM public.auggy_coordination_namespaces WHERE namespace = $1 FOR UPDATE",
       [this.#config.namespace],
     );
     const row = policy[0];
@@ -1127,6 +1547,13 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       eventRetentionMs: number(row, "event_retention_ms"),
       maxEvents: number(row, "max_events"),
       maxReplayBytes: number(row, "max_replay_bytes"),
+      maxHistorySnapshotBytes: nullableNumber(row, "max_history_snapshot_bytes"),
+      maxHistoryMessages: nullableNumber(row, "max_history_messages"),
+      maxHistoryThreads: nullableNumber(row, "max_history_threads"),
+      maxCostMarkersPerTurn: nullableNumber(row, "max_cost_markers_per_turn"),
+      maxOutboxIntentsPerTurn: nullableNumber(row, "max_outbox_intents_per_turn"),
+      maxOutboxIntentBytes: nullableNumber(row, "max_outbox_intent_bytes"),
+      maxPendingOutboxIntents: nullableNumber(row, "max_pending_outbox_intents"),
     };
     const basePolicyMatches =
       stored.maxConcurrent === this.#config.maxConcurrent &&
@@ -1138,6 +1565,22 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       stored.eventRetentionMs === this.#config.retention.eventRetentionMs &&
       stored.maxEvents === this.#config.retention.maxEvents &&
       stored.maxReplayBytes === this.#config.result.maxReplayBytes;
+    let turnStateMatches =
+      stored.maxHistorySnapshotBytes === this.#config.turnState.history.maxSnapshotBytes &&
+      stored.maxHistoryMessages === this.#config.turnState.history.maxMessages &&
+      stored.maxHistoryThreads === this.#config.turnState.history.maxThreads &&
+      stored.maxCostMarkersPerTurn === this.#config.turnState.maxCostMarkersPerTurn &&
+      stored.maxOutboxIntentsPerTurn === this.#config.turnState.outbox.maxIntentsPerTurn &&
+      stored.maxOutboxIntentBytes === this.#config.turnState.outbox.maxIntentBytes &&
+      stored.maxPendingOutboxIntents === this.#config.turnState.outbox.maxPendingIntents;
+    const emptyTurnStatePolicy =
+      stored.maxHistorySnapshotBytes === null &&
+      stored.maxHistoryMessages === null &&
+      stored.maxHistoryThreads === null &&
+      stored.maxCostMarkersPerTurn === null &&
+      stored.maxOutboxIntentsPerTurn === null &&
+      stored.maxOutboxIntentBytes === null &&
+      stored.maxPendingOutboxIntents === null;
     let compatibilityMatches =
       stored.protocolVersion === this.#config.compatibility.protocolVersion &&
       stored.protocolFingerprint === this.#config.compatibility.protocolFingerprint &&
@@ -1147,6 +1590,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       !compatibilityMatches &&
       allowQuiescentUpgrade &&
       basePolicyMatches &&
+      emptyTurnStatePolicy &&
       predecessor &&
       stored.protocolVersion === predecessor.protocolVersion &&
       stored.protocolFingerprint === predecessor.protocolFingerprint &&
@@ -1162,7 +1606,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         number(activity[0], "pending_requests") === 0;
       if (quiescent) {
         const upgraded = await tx.unsafe<Row>(
-          "UPDATE public.auggy_coordination_namespaces SET protocol_version = $5, protocol_fingerprint = $6, configuration_fingerprint = $7, updated_at = clock_timestamp() WHERE namespace = $1 AND protocol_version = $2 AND protocol_fingerprint = $3 AND configuration_fingerprint = $4 RETURNING namespace",
+          "UPDATE public.auggy_coordination_namespaces SET protocol_version = $5, protocol_fingerprint = $6, configuration_fingerprint = $7, max_history_snapshot_bytes = $8, max_history_messages = $9, max_history_threads = $10, max_cost_markers_per_turn = $11, max_outbox_intents_per_turn = $12, max_outbox_intent_bytes = $13, max_pending_outbox_intents = $14, updated_at = clock_timestamp() WHERE namespace = $1 AND protocol_version = $2 AND protocol_fingerprint = $3 AND configuration_fingerprint = $4 AND max_history_snapshot_bytes IS NULL AND max_history_messages IS NULL AND max_history_threads IS NULL AND max_cost_markers_per_turn IS NULL AND max_outbox_intents_per_turn IS NULL AND max_outbox_intent_bytes IS NULL AND max_pending_outbox_intents IS NULL RETURNING namespace",
           [
             this.#config.namespace,
             predecessor.protocolVersion,
@@ -1171,6 +1615,13 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
             this.#config.compatibility.protocolVersion,
             this.#config.compatibility.protocolFingerprint,
             this.#config.compatibility.configurationFingerprint,
+            this.#config.turnState.history.maxSnapshotBytes,
+            this.#config.turnState.history.maxMessages,
+            this.#config.turnState.history.maxThreads,
+            this.#config.turnState.maxCostMarkersPerTurn,
+            this.#config.turnState.outbox.maxIntentsPerTurn,
+            this.#config.turnState.outbox.maxIntentBytes,
+            this.#config.turnState.outbox.maxPendingIntents,
           ],
         );
         if (upgraded[0]) {
@@ -1179,10 +1630,11 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
             [this.#config.namespace],
           );
           compatibilityMatches = true;
+          turnStateMatches = true;
         }
       }
     }
-    if (!basePolicyMatches || !compatibilityMatches) {
+    if (!basePolicyMatches || !turnStateMatches || !compatibilityMatches) {
       throw new Error("coordinator namespace policy mismatch");
     }
     return stored;

@@ -15,14 +15,16 @@ const CANONICAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 
 export const DISTRIBUTED_COORDINATION_PROTOCOL = Object.freeze({
   name: "auggy-postgres-coordination" as const,
-  protocolVersion: 4 as const,
-  schemaVersion: 4 as const,
+  protocolVersion: 5 as const,
+  schemaVersion: 5 as const,
   fingerprintVersion: 2 as const,
 });
 
 const PREVIOUS_DISTRIBUTED_COORDINATION_PROTOCOL = Object.freeze({
-  ...DISTRIBUTED_COORDINATION_PROTOCOL,
-  protocolVersion: 3 as const,
+  name: "auggy-postgres-coordination" as const,
+  protocolVersion: 4 as const,
+  schemaVersion: 4 as const,
+  fingerprintVersion: 2 as const,
 });
 
 export interface DistributedCompatibilitySourcePolicy {
@@ -59,11 +61,11 @@ function fingerprint(domain: string, value: unknown): string {
 }
 
 const PROTOCOL_FINGERPRINT = fingerprint(
-  "auggy-distributed-coordination-protocol-v4",
+  "auggy-distributed-coordination-protocol-v5",
   DISTRIBUTED_COORDINATION_PROTOCOL,
 );
 const PREVIOUS_PROTOCOL_FINGERPRINT = fingerprint(
-  "auggy-distributed-coordination-protocol-v3",
+  "auggy-distributed-coordination-protocol-v4",
   PREVIOUS_DISTRIBUTED_COORDINATION_PROTOCOL,
 );
 
@@ -113,6 +115,27 @@ export function buildDistributedCoordinationCompatibility(
     };
     const result = {
       maxReplayBytes: integer(coordination.result.maxReplayBytes, 1_024, 1_048_576),
+    };
+    const turnState = {
+      history: {
+        maxSnapshotBytes: integer(
+          coordination.turnState.history.maxSnapshotBytes,
+          1_024,
+          1_048_576,
+        ),
+        maxMessages: integer(coordination.turnState.history.maxMessages, 1, 10_000),
+        maxThreads: integer(coordination.turnState.history.maxThreads, 1, MAX_CAPACITY),
+      },
+      maxCostMarkersPerTurn: integer(coordination.turnState.maxCostMarkersPerTurn, 1, 1_000),
+      outbox: {
+        maxIntentsPerTurn: integer(coordination.turnState.outbox.maxIntentsPerTurn, 0, 1_000),
+        maxIntentBytes: integer(coordination.turnState.outbox.maxIntentBytes, 1_024, 1_048_576),
+        maxPendingIntents: integer(
+          coordination.turnState.outbox.maxPendingIntents,
+          0,
+          MAX_CAPACITY,
+        ),
+      },
     };
     const leaseDurationMs = integer(coordination.leaseDurationMs, 1_000, 300_000);
 
@@ -168,21 +191,28 @@ export function buildDistributedCoordinationCompatibility(
       leaseDurationMs,
       retention,
       result,
+      turnState,
       sources,
       augments,
     };
     const configurationFingerprint = fingerprint(
-      "auggy-distributed-coordination-configuration-v4",
+      "auggy-distributed-coordination-configuration-v5",
       {
         protocolFingerprint: PROTOCOL_FINGERPRINT,
         ...semanticConfiguration,
       },
     );
     const previousConfigurationFingerprint = fingerprint(
-      "auggy-distributed-coordination-configuration-v3",
+      "auggy-distributed-coordination-configuration-v4",
       {
         protocolFingerprint: PREVIOUS_PROTOCOL_FINGERPRINT,
-        ...semanticConfiguration,
+        namespace: semanticConfiguration.namespace,
+        fleetCapacity: semanticConfiguration.fleetCapacity,
+        leaseDurationMs: semanticConfiguration.leaseDurationMs,
+        retention: semanticConfiguration.retention,
+        result: semanticConfiguration.result,
+        sources: semanticConfiguration.sources,
+        augments: semanticConfiguration.augments,
       },
     );
     return Object.freeze({

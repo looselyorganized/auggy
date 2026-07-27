@@ -4,6 +4,11 @@ import {
   resetInMemoryDistributedCoordination,
 } from "../../src/coordination";
 import { POSTGRES_COORDINATION_MIGRATIONS } from "../../src/coordination/migrations";
+import type {
+  DistributedReplayResult,
+  DistributedTurnCoordinator,
+  DistributedTurnLease,
+} from "../../src/coordination/types";
 
 const hash = "S7l_qm3W92Yd4JbKzV1LQYdKebJ4Q-4C3m3VnuDhxQY";
 const source = { id: "web", maxConcurrent: 1, maxQueued: 2 };
@@ -17,8 +22,13 @@ const coordinatorPolicy = {
     maxEvents: 50_000,
   },
   result: { maxReplayBytes: 65_536 },
+  turnState: {
+    history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+    maxCostMarkersPerTurn: 32,
+    outbox: { maxIntentsPerTurn: 32, maxIntentBytes: 65_536, maxPendingIntents: 1_000 },
+  },
   compatibility: {
-    protocolVersion: 4,
+    protocolVersion: 5,
     protocolFingerprint: "a".repeat(64),
     configurationFingerprint: "b".repeat(64),
   },
@@ -41,6 +51,7 @@ function replica(
       configurationFingerprint: string;
     };
     sources: readonly (typeof source)[];
+    historyMaxThreads: number;
   }> = {},
 ) {
   return createInMemoryDistributedTurnCoordinator(
@@ -53,8 +64,15 @@ function replica(
       leaseMs: extra.leaseMs ?? 100,
       ...coordinatorPolicy,
       sources: extra.sources ?? coordinatorPolicy.sources,
+      turnState: {
+        ...coordinatorPolicy.turnState,
+        history: {
+          ...coordinatorPolicy.turnState.history,
+          maxThreads: extra.historyMaxThreads ?? coordinatorPolicy.turnState.history.maxThreads,
+        },
+      },
       compatibility: {
-        protocolVersion: extra.protocolVersion ?? 4,
+        protocolVersion: extra.protocolVersion ?? 5,
         protocolFingerprint: extra.protocolFingerprint ?? "a".repeat(64),
         configurationFingerprint: extra.configurationFingerprint ?? "b".repeat(64),
         ...(extra.upgradeFrom ? { upgradeFrom: extra.upgradeFrom } : {}),
@@ -81,6 +99,62 @@ function replay(value: unknown = { ok: true }) {
     body: new TextEncoder().encode(JSON.stringify(value)),
     contentType: "application/json" as const,
   };
+}
+
+function distributedReplay(threadId: string, text = "ok"): DistributedReplayResult {
+  return replay({
+    version: 1,
+    turnId: "turn-1",
+    threadId,
+    status: "completed",
+    response: { parts: [{ kind: "text", text }] },
+  });
+}
+
+function distributedReplayAtBytes(threadId: string, maximum: number): DistributedReplayResult {
+  const empty = distributedReplay(threadId, "");
+  const textBytes = maximum - empty.body.byteLength;
+  if (textBytes < 0) throw new Error("replay limit is smaller than the envelope");
+  return distributedReplay(threadId, "a".repeat(textBytes));
+}
+
+const atomicPeerBinding = {
+  version: 1 as const,
+  bindingHash: "d".repeat(64),
+  peerIdHash: null,
+  promotionScopeHash: "e".repeat(64),
+  trustLevel: "creator" as const,
+};
+
+async function atomicCheckpoint(
+  coordinator: DistributedTurnCoordinator,
+  lease: DistributedTurnLease,
+  result: DistributedReplayResult = distributedReplay(lease.threadId),
+) {
+  const loaded = await coordinator.loadHistory(lease, atomicPeerBinding);
+  if (loaded.status !== "ok") throw new Error(`expected history load, got ${loaded.status}`);
+  const started = await coordinator.markExecutionStarted(lease);
+  if (started.status !== "ok") throw new Error(`expected execution marker, got ${started.status}`);
+  return {
+    peerBinding: atomicPeerBinding,
+    expectedHistoryRevision: loaded.revision,
+    history: {
+      version: 1 as const,
+      body: loaded.body,
+      messageCount: loaded.messageCount,
+    },
+    replay: result,
+    costMarkers: [],
+    outboxIntents: [],
+  };
+}
+
+async function completeAtomic(
+  coordinator: DistributedTurnCoordinator,
+  lease: DistributedTurnLease,
+  result: DistributedReplayResult = distributedReplay(lease.threadId),
+) {
+  return coordinator.commitTurn(lease, await atomicCheckpoint(coordinator, lease, result));
 }
 
 afterEach(resetInMemoryDistributedCoordination);
@@ -201,7 +275,7 @@ describe("distributed turn coordinator", () => {
     const drainingRequest = request("request-1");
     expect(await first.admit(drainingRequest)).toEqual({ status: "admitted", attempt: 1 });
 
-    const changedProtocol = replica("instance-b", () => 1, { protocolVersion: 5 });
+    const changedProtocol = replica("instance-b", () => 1, { protocolVersion: 6 });
     expect(await changedProtocol.register()).toEqual({ status: "unavailable" });
 
     const changedConfiguration = replica("instance-c", () => 1, {
@@ -219,7 +293,7 @@ describe("distributed turn coordinator", () => {
   test("upgrades an exact predecessor only after every replica and request is quiescent", async () => {
     let now = 0;
     const predecessor = {
-      protocolVersion: 3,
+      protocolVersion: 4,
       protocolFingerprint: "c".repeat(64),
       configurationFingerprint: "d".repeat(64),
     };
@@ -240,7 +314,7 @@ describe("distributed turn coordinator", () => {
   test("refuses a predecessor upgrade while queued or active work remains", async () => {
     let now = 0;
     const predecessor = {
-      protocolVersion: 3,
+      protocolVersion: 4,
       protocolFingerprint: "c".repeat(64),
       configurationFingerprint: "d".repeat(64),
     };
@@ -266,7 +340,7 @@ describe("distributed turn coordinator", () => {
     expect(claimed.status).toBe("acquired");
     expect(await second.claim(request("request-1"))).toEqual({ status: "waiting" });
     if (claimed.status !== "acquired") throw new Error("expected acquisition");
-    expect(await first.complete(claimed.lease, replay())).toEqual({ status: "ok" });
+    expect(await completeAtomic(first, claimed.lease)).toEqual({ status: "ok" });
     await second.admit(request("request-2"));
     const later = await second.claim(request("request-2"));
     expect(later.status).toBe("acquired");
@@ -454,10 +528,11 @@ describe("distributed turn coordinator", () => {
     const waiting = { ...request("request-2", "thread-2"), source: fixedSource };
     expect(await second.admit(waiting)).toEqual({ status: "admitted", attempt: 1 });
     expect(await second.claim(waiting)).toEqual({ status: "waiting" });
-    expect(await first.complete({ ...active.lease, sourceId: "other-source" }, replay())).toEqual({
-      status: "stale",
-    });
-    expect(await first.complete(active.lease, replay())).toEqual({ status: "ok" });
+    const terminalCheckpoint = await atomicCheckpoint(first, active.lease);
+    expect(
+      await first.commitTurn({ ...active.lease, sourceId: "other-source" }, terminalCheckpoint),
+    ).toEqual({ status: "stale" });
+    expect(await first.commitTurn(active.lease, terminalCheckpoint)).toEqual({ status: "ok" });
     expect((await second.claim(waiting)).status).toBe("acquired");
   });
 
@@ -488,7 +563,7 @@ describe("distributed turn coordinator", () => {
     expect(await first.heartbeat(acquired.lease)).toEqual({ status: "stale" });
 
     await second.admit(request("after-start"));
-    await second.complete(reacquired.lease, replay());
+    expect(await completeAtomic(second, reacquired.lease)).toEqual({ status: "ok" });
     const started = await second.claim(request("after-start"));
     if (started.status !== "acquired") throw new Error("expected acquisition");
     expect(await second.markExecutionStarted(started.lease)).toEqual({ status: "ok" });
@@ -577,10 +652,12 @@ describe("distributed turn coordinator", () => {
     const claimed = await first.claim(completed);
     if (claimed.status !== "acquired") throw new Error("expected result lease");
 
-    const exactBody = JSON.stringify("a".repeat(coordinatorPolicy.result.maxReplayBytes - 2));
-    const exactResult = replay(JSON.parse(exactBody));
+    const exactResult = distributedReplayAtBytes(
+      claimed.lease.threadId,
+      coordinatorPolicy.result.maxReplayBytes,
+    );
     expect(exactResult.body.byteLength).toBe(coordinatorPolicy.result.maxReplayBytes);
-    expect(await first.complete(claimed.lease, exactResult)).toEqual({ status: "ok" });
+    expect(await completeAtomic(first, claimed.lease, exactResult)).toEqual({ status: "ok" });
     const status = await second.status(completed);
     expect(status).toEqual({ status: "completed", result: exactResult });
     if (status.status !== "completed") throw new Error("expected replay");
@@ -598,16 +675,25 @@ describe("distributed turn coordinator", () => {
     await first.admit(oversized);
     const oversizedLease = await first.claim(oversized);
     if (oversizedLease.status !== "acquired") throw new Error("expected oversized lease");
-    expect(
-      await first.complete(
-        oversizedLease.lease,
-        replay("é".repeat(coordinatorPolicy.result.maxReplayBytes / 2)),
+    const oversizedCheckpoint = await atomicCheckpoint(
+      first,
+      oversizedLease.lease,
+      distributedReplayAtBytes(
+        oversizedLease.lease.threadId,
+        coordinatorPolicy.result.maxReplayBytes + 1,
       ),
-    ).toEqual({ status: "rejected", reason: "result-too-large" });
-    expect(await second.status(oversized)).toEqual({ status: "pending", state: "active" });
-    expect(await first.complete(oversizedLease.lease, replay({ smaller: true }))).toEqual({
-      status: "ok",
+    );
+    expect(await first.commitTurn(oversizedLease.lease, oversizedCheckpoint)).toEqual({
+      status: "rejected",
+      reason: "result-too-large",
     });
+    expect(await second.status(oversized)).toEqual({ status: "pending", state: "active" });
+    expect(
+      await first.commitTurn(oversizedLease.lease, {
+        ...oversizedCheckpoint,
+        replay: distributedReplay(oversizedLease.lease.threadId, "smaller"),
+      }),
+    ).toEqual({ status: "ok" });
 
     const pending = request("aborted-wait", "aborted-thread");
     await first.admit(pending);
@@ -747,7 +833,13 @@ describe("distributed turn coordinator", () => {
       const claimed = await coordinator.claim(item);
       if (claimed.status !== "acquired") throw new Error("expected retention lease");
       if (index === 0) firstFence = claimed.lease.fence;
-      expect(await coordinator.complete(claimed.lease, replay({ requestId }))).toEqual({
+      expect(
+        await completeAtomic(
+          coordinator,
+          claimed.lease,
+          distributedReplay(claimed.lease.threadId, requestId),
+        ),
+      ).toEqual({
         status: "ok",
       });
     }
@@ -804,7 +896,7 @@ describe("distributed turn coordinator", () => {
     const reusedLease = await coordinator.claim(reused);
     if (reusedLease.status !== "acquired") throw new Error("expected reused thread lease");
     expect(reusedLease.lease.fence).toBeGreaterThan(firstFence);
-    expect(await coordinator.complete(reusedLease.lease, replay())).toEqual({ status: "ok" });
+    expect(await completeAtomic(coordinator, reusedLease.lease)).toEqual({ status: "ok" });
 
     now = 120_004;
     expect(await coordinator.prune(1)).toMatchObject({
@@ -855,5 +947,352 @@ describe("distributed turn coordinator", () => {
       queued: 0,
       quarantined: 0,
     });
+  });
+
+  test("rejects legacy replay-only completion for a current-protocol execution", async () => {
+    const coordinator = replica("atomic-only-owner", () => 1);
+    await register(coordinator);
+    const item = request("atomic-only", "atomic-only-thread");
+    expect(await coordinator.admit(item)).toEqual({ status: "admitted", attempt: 1 });
+    const claimed = await coordinator.claim(item);
+    if (claimed.status !== "acquired") throw new Error("expected atomic-only lease");
+    expect(await coordinator.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+    expect(await coordinator.complete(claimed.lease, replay({ bypass: true }))).toEqual({
+      status: "rejected",
+      reason: "atomic-turn-state-required",
+    });
+    expect(await coordinator.status(item)).toEqual({ status: "pending", state: "active" });
+  });
+
+  test("claims peer-bound history and commits the complete turn state atomically", async () => {
+    const first = replica("turn-state-owner", () => 1);
+    const reader = replica("turn-state-reader", () => 1);
+    await register(first, reader);
+
+    const item = request("turn-state-request", "turn-state-thread");
+    expect(await first.admit(item)).toEqual({ status: "admitted", attempt: 1 });
+    const claimed = await first.claim(item);
+    if (claimed.status !== "acquired") throw new Error("expected turn-state lease");
+
+    const peerBinding = {
+      version: 1 as const,
+      bindingHash: "d".repeat(64),
+      peerIdHash: "e".repeat(64),
+      promotionScopeHash: "f".repeat(64),
+      trustLevel: "public" as const,
+      publicSubstate: "recognized" as const,
+    };
+    const loaded = await first.loadHistory(claimed.lease, peerBinding);
+    expect(loaded).toMatchObject({ status: "ok", revision: 0, messageCount: 0 });
+    if (loaded.status !== "ok") throw new Error("expected claimed history");
+    expect(JSON.parse(new TextDecoder().decode(loaded.body))).toEqual({
+      version: 1,
+      messages: [],
+    });
+
+    expect(await first.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+    const historyBody = new TextEncoder().encode(
+      JSON.stringify({
+        version: 1,
+        messages: [
+          {
+            id: "message-1",
+            role: "assistant",
+            content: "committed",
+            timestamp: 1,
+            tokenCount: 1,
+          },
+        ],
+      }),
+    );
+    const replayResult = distributedReplay(claimed.lease.threadId, "committed");
+    expect(
+      await first.commitTurn(claimed.lease, {
+        peerBinding,
+        expectedHistoryRevision: 0,
+        history: { version: 1, body: historyBody, messageCount: 1 },
+        replay: replayResult,
+        costMarkers: [
+          {
+            version: 1,
+            operationId: `auggy-op-v1-${"1".repeat(64)}`,
+            priced: true,
+            costUsd: 0.001,
+          },
+        ],
+        outboxIntents: [
+          {
+            version: 1,
+            ordinal: 0,
+            operationId: `auggy-op-v1-${"2".repeat(64)}`,
+            body: new TextEncoder().encode(
+              JSON.stringify({ version: 1, targetAugment: "test-transport", text: "committed" }),
+            ),
+            contentType: "application/json",
+          },
+        ],
+      }),
+    ).toEqual({ status: "ok" });
+
+    expect(await reader.status(item)).toEqual({ status: "completed", result: replayResult });
+
+    const next = request("turn-state-next", item.threadId);
+    expect(await reader.admit(next)).toEqual({ status: "admitted", attempt: 1 });
+    const nextClaim = await reader.claim(next);
+    if (nextClaim.status !== "acquired") throw new Error("expected next turn-state lease");
+    const reloaded = await reader.loadHistory(nextClaim.lease, peerBinding);
+    expect(reloaded).toMatchObject({ status: "ok", revision: 1, messageCount: 1 });
+    if (reloaded.status !== "ok") throw new Error("expected reloaded history");
+    expect(reloaded.body).toEqual(historyBody);
+
+    expect(
+      await reader.loadHistory(nextClaim.lease, {
+        ...peerBinding,
+        bindingHash: "0".repeat(64),
+        peerIdHash: "9".repeat(64),
+      }),
+    ).toEqual({ status: "denied" });
+  });
+
+  test("reserves history capacity without materializing abandoned pre-start threads", async () => {
+    const capacitySource = { id: "web", maxConcurrent: 2, maxQueued: 2 };
+    const coordinator = replica("history-capacity-owner", () => 1, {
+      maxConcurrent: 2,
+      sources: [capacitySource],
+      historyMaxThreads: 1,
+    });
+    await register(coordinator);
+    const first = {
+      ...request("history-reservation-1", "reserved-thread"),
+      source: capacitySource,
+    };
+    const second = { ...request("history-reservation-2", "next-thread"), source: capacitySource };
+    expect(await coordinator.admit(first)).toEqual({ status: "admitted", attempt: 1 });
+    expect(await coordinator.admit(second)).toEqual({ status: "admitted", attempt: 1 });
+    const firstClaim = await coordinator.claim(first);
+    const secondClaim = await coordinator.claim(second);
+    if (firstClaim.status !== "acquired" || secondClaim.status !== "acquired") {
+      throw new Error("expected concurrent history reservations");
+    }
+
+    expect(await coordinator.loadHistory(firstClaim.lease, atomicPeerBinding)).toMatchObject({
+      status: "ok",
+      revision: 0,
+    });
+    expect(await coordinator.loadHistory(secondClaim.lease, atomicPeerBinding)).toEqual({
+      status: "rejected",
+      reason: "history-capacity",
+    });
+    expect(await coordinator.abandon(first, firstClaim.lease.attempt)).toEqual({ status: "ok" });
+    expect(await coordinator.loadHistory(secondClaim.lease, atomicPeerBinding)).toMatchObject({
+      status: "ok",
+      revision: 0,
+    });
+  });
+
+  test("fails a stale atomic commit without publishing history or replay", async () => {
+    let now = 1;
+    const first = replica("stale-turn-state-owner", () => now);
+    await register(first);
+
+    const item = request("stale-turn-state-request", "stale-turn-state-thread");
+    expect(await first.admit(item)).toEqual({ status: "admitted", attempt: 1 });
+    const claimed = await first.claim(item);
+    if (claimed.status !== "acquired") throw new Error("expected turn-state lease");
+    const peerBinding = {
+      version: 1 as const,
+      bindingHash: "1".repeat(64),
+      peerIdHash: "2".repeat(64),
+      promotionScopeHash: "3".repeat(64),
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+    };
+    expect(await first.loadHistory(claimed.lease, peerBinding)).toMatchObject({
+      status: "ok",
+      revision: 0,
+    });
+    expect(await first.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+
+    now = 102;
+    expect(
+      await first.commitTurn(claimed.lease, {
+        peerBinding,
+        expectedHistoryRevision: 0,
+        history: {
+          version: 1,
+          body: new TextEncoder().encode(
+            JSON.stringify({
+              version: 1,
+              messages: [
+                {
+                  id: "must-not-publish",
+                  role: "assistant",
+                  content: "must not publish",
+                  timestamp: 1,
+                  tokenCount: 1,
+                },
+              ],
+            }),
+          ),
+          messageCount: 1,
+        },
+        replay: distributedReplay(claimed.lease.threadId, "must-not-replay"),
+        costMarkers: [],
+        outboxIntents: [],
+      }),
+    ).toEqual({ status: "stale" });
+    const reader = replica("stale-turn-state-reader", () => now);
+    await register(reader);
+    expect(await reader.status(item)).toEqual({ status: "quarantined" });
+    expect(await reader.recover(item.threadId, claimed.lease.fence, "verified-no-effect")).toEqual({
+      status: "ok",
+    });
+
+    const next = request("after-stale-turn-state", item.threadId);
+    expect(await reader.admit(next)).toEqual({ status: "admitted", attempt: 1 });
+    const nextClaim = await reader.claim(next);
+    if (nextClaim.status !== "acquired") throw new Error("expected recovered lease");
+    const loaded = await reader.loadHistory(nextClaim.lease, peerBinding);
+    expect(loaded).toMatchObject({ status: "ok", revision: 0, messageCount: 0 });
+    if (loaded.status !== "ok") throw new Error("expected empty recovered history");
+    expect(JSON.parse(new TextDecoder().decode(loaded.body))).toEqual({
+      version: 1,
+      messages: [],
+    });
+  });
+
+  test("permits only an authenticated peer promotion with exact predecessor evidence", async () => {
+    const coordinator = replica("promotion-owner", () => 1);
+    await register(coordinator);
+    const anonymous = {
+      version: 1 as const,
+      bindingHash: "4".repeat(64),
+      peerIdHash: "5".repeat(64),
+      promotionScopeHash: "6".repeat(64),
+      trustLevel: "public" as const,
+      publicSubstate: "anonymous" as const,
+    };
+    const firstRequest = request("anonymous-turn", "promotion-thread");
+    expect(await coordinator.admit(firstRequest)).toEqual({ status: "admitted", attempt: 1 });
+    const firstLease = await coordinator.claim(firstRequest);
+    if (firstLease.status !== "acquired") throw new Error("expected anonymous lease");
+    expect(await coordinator.loadHistory(firstLease.lease, anonymous)).toMatchObject({
+      status: "ok",
+    });
+    expect(await coordinator.markExecutionStarted(firstLease.lease)).toEqual({ status: "ok" });
+    expect(
+      await coordinator.commitTurn(firstLease.lease, {
+        peerBinding: anonymous,
+        expectedHistoryRevision: 0,
+        history: {
+          version: 1,
+          body: new TextEncoder().encode(JSON.stringify({ version: 1, messages: [] })),
+          messageCount: 0,
+        },
+        replay: distributedReplay(firstLease.lease.threadId),
+        costMarkers: [],
+        outboxIntents: [],
+      }),
+    ).toEqual({ status: "ok" });
+
+    const recognized = {
+      ...anonymous,
+      bindingHash: "7".repeat(64),
+      peerIdHash: "8".repeat(64),
+      publicSubstate: "recognized" as const,
+      priorPeerIdHash: anonymous.peerIdHash,
+    };
+    const promotedRequest = request("recognized-turn", firstRequest.threadId);
+    expect(await coordinator.admit(promotedRequest)).toEqual({ status: "admitted", attempt: 1 });
+    const promotedLease = await coordinator.claim(promotedRequest);
+    if (promotedLease.status !== "acquired") throw new Error("expected promotion lease");
+    expect(
+      await coordinator.loadHistory(promotedLease.lease, {
+        ...recognized,
+        promotionScopeHash: "9".repeat(64),
+      }),
+    ).toEqual({ status: "denied" });
+    expect(await coordinator.loadHistory(promotedLease.lease, recognized)).toMatchObject({
+      status: "ok",
+      revision: 1,
+    });
+    expect(
+      await coordinator.complete(promotedLease.lease, replay({ responseText: "bypass" })),
+    ).toEqual({ status: "rejected", reason: "atomic-turn-state-required" });
+  });
+
+  test("rejects malformed or oversized atomic turn-state before mutation", async () => {
+    const coordinator = replica("bounded-turn-state-owner", () => 1);
+    await register(coordinator);
+    const item = request("bounded-turn-state", "bounded-turn-state-thread");
+    expect(await coordinator.admit(item)).toEqual({ status: "admitted", attempt: 1 });
+    const claimed = await coordinator.claim(item);
+    if (claimed.status !== "acquired") throw new Error("expected bounded state lease");
+    const peerBinding = {
+      version: 1 as const,
+      bindingHash: "a".repeat(64),
+      peerIdHash: "b".repeat(64),
+      promotionScopeHash: "c".repeat(64),
+      trustLevel: "agent" as const,
+    };
+    expect(await coordinator.loadHistory(claimed.lease, peerBinding)).toMatchObject({
+      status: "ok",
+    });
+    expect(await coordinator.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+    const base = {
+      peerBinding,
+      expectedHistoryRevision: 0,
+      history: {
+        version: 1 as const,
+        body: new TextEncoder().encode(JSON.stringify({ version: 1, messages: [] })),
+        messageCount: 0,
+      },
+      replay: distributedReplay(claimed.lease.threadId),
+      costMarkers: [],
+      outboxIntents: [],
+    };
+    expect(
+      await coordinator.commitTurn(claimed.lease, {
+        ...base,
+        history: {
+          ...base.history,
+          body: new Uint8Array(coordinatorPolicy.turnState.history.maxSnapshotBytes + 1),
+        },
+      }),
+    ).toEqual({ status: "rejected", reason: "history-too-large" });
+    expect(
+      await coordinator.commitTurn(claimed.lease, {
+        ...base,
+        history: {
+          ...base.history,
+          body: new TextEncoder().encode("not-json"),
+        },
+      }),
+    ).toEqual({ status: "rejected", reason: "invalid-history" });
+    expect(
+      await coordinator.commitTurn(claimed.lease, {
+        ...base,
+        history: {
+          version: 1,
+          body: new TextEncoder().encode(
+            JSON.stringify({ version: 1, messages: [{ id: "not-a-message" }] }),
+          ),
+          messageCount: 1,
+        },
+      }),
+    ).toEqual({ status: "rejected", reason: "invalid-history" });
+    expect(
+      await coordinator.commitTurn(claimed.lease, {
+        ...base,
+        replay: replay({ version: 1, turnId: "turn-1", threadId: item.threadId }),
+      }),
+    ).toEqual({ status: "rejected", reason: "invalid-result" });
+    expect(
+      await coordinator.commitTurn(claimed.lease, {
+        ...base,
+        replay: distributedReplay("different-thread"),
+      }),
+    ).toEqual({ status: "rejected", reason: "invalid-result" });
+    expect(await coordinator.status(item)).toEqual({ status: "pending", state: "active" });
   });
 });

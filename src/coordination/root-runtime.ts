@@ -38,6 +38,8 @@ export interface DistributedRootExecutionControl {
   readonly signal: AbortSignal;
   beforeStart(): Promise<SchedulerStartDecision>;
   ensureExecutionStarted(): Promise<void>;
+  /** Current fenced lease for coordinator-owned pre-execution state. */
+  lease(): DistributedTurnLease;
   executionAuthority(): DistributedExecutionAuthorityV1;
   markUncertain(): void;
 }
@@ -547,6 +549,10 @@ export function createDistributedRootTurnRuntime(
         executionAuthority() {
           if (!lease) throw new Error("distributed execution has not been claimed");
           return Object.freeze({ version: 1, attempt: lease.attempt, fence: lease.fence });
+        },
+        lease() {
+          if (!lease) throw new Error("distributed execution has not been claimed");
+          return { ...lease };
         },
         markUncertain() {
           uncertain = true;

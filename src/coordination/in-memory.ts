@@ -7,7 +7,12 @@ import type {
   DistributedCoordinatorConfig,
   DistributedCoordinatorCompatibilityTuple,
   DistributedCoordinatorHealth,
+  DistributedCostMarkerV1,
   DistributedEventPage,
+  DistributedHistoryLoadResult,
+  DistributedHistorySnapshotV1,
+  DistributedOutboxIntentV1,
+  DistributedPeerBindingV1,
   DistributedPruneResult,
   DistributedReplayResult,
   DistributedRequestStatus,
@@ -18,6 +23,12 @@ import type {
   LeaseResult,
   RegistrationResult,
 } from "./types";
+import {
+  EMPTY_DISTRIBUTED_HISTORY,
+  validDistributedPeerBinding,
+  validDistributedReplay,
+  validateDistributedTurnCheckpoint,
+} from "./turn-state";
 
 interface StoredRequest extends DistributedTurnRequest {
   state: CoordinationRequestState;
@@ -33,6 +44,10 @@ interface StoredRequest extends DistributedTurnRequest {
   queueGeneration: number;
   queueExpiresAt?: number;
   terminalAt?: number;
+  historyClaim?: {
+    bindingHash: string;
+    expectedRevision: number;
+  };
 }
 
 interface StoredInstance {
@@ -55,6 +70,18 @@ interface StoredEvent extends DistributedCoordinationEvent {
   numericId: bigint;
 }
 
+interface StoredHistory extends DistributedHistorySnapshotV1 {
+  binding: DistributedPeerBindingV1;
+  revision: number;
+}
+
+type StoredCostMarker = DistributedCostMarkerV1 & { requestId: string; fence: number };
+
+interface StoredOutboxIntent extends DistributedOutboxIntentV1 {
+  requestId: string;
+  fence: number;
+}
+
 interface LocalOwnedOperation {
   attempt: number;
   bindingHash: string;
@@ -65,7 +92,9 @@ interface LocalOwnedOperation {
 }
 
 interface NamespaceState {
+  costMarkers: Map<string, StoredCostMarker>;
   events: StoredEvent[];
+  histories: Map<string, StoredHistory>;
   instances: Map<string, StoredInstance>;
   leaseMs: number;
   maxConcurrent: number;
@@ -75,7 +104,9 @@ interface NamespaceState {
   nextFence: number;
   retention: DistributedCoordinatorConfig["retention"];
   result: DistributedCoordinatorConfig["result"];
+  turnState: DistributedCoordinatorConfig["turnState"];
   compatibility: DistributedCoordinatorCompatibilityTuple;
+  outbox: Map<string, StoredOutboxIntent>;
   requests: Map<string, StoredRequest>;
   threads: Map<string, StoredThread>;
   sources: Map<string, DistributedSourcePolicy>;
@@ -135,6 +166,28 @@ function assertConfig(config: DistributedCoordinatorConfig): void {
   );
   assertLimit("retention.maxEvents", config.retention.maxEvents, 1);
   assertLimit("result.maxReplayBytes", config.result.maxReplayBytes, 1_024, 1_048_576);
+  assertLimit(
+    "turnState.history.maxSnapshotBytes",
+    config.turnState.history.maxSnapshotBytes,
+    1_024,
+    1_048_576,
+  );
+  assertLimit("turnState.history.maxMessages", config.turnState.history.maxMessages, 1, 10_000);
+  assertLimit("turnState.history.maxThreads", config.turnState.history.maxThreads, 1);
+  assertLimit("turnState.maxCostMarkersPerTurn", config.turnState.maxCostMarkersPerTurn, 1, 1_000);
+  assertLimit(
+    "turnState.outbox.maxIntentsPerTurn",
+    config.turnState.outbox.maxIntentsPerTurn,
+    0,
+    1_000,
+  );
+  assertLimit(
+    "turnState.outbox.maxIntentBytes",
+    config.turnState.outbox.maxIntentBytes,
+    1_024,
+    1_048_576,
+  );
+  assertLimit("turnState.outbox.maxPendingIntents", config.turnState.outbox.maxPendingIntents, 0);
   assertLimit("compatibility.protocolVersion", config.compatibility.protocolVersion, 1);
   if (
     !/^[0-9a-f]{64}$/.test(config.compatibility.protocolFingerprint) ||
@@ -296,6 +349,151 @@ export function createInMemoryDistributedTurnCoordinator(
     }
   }
 
+  function validDigest(value: unknown): value is string {
+    return typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+  }
+
+  function validOperationId(value: unknown): value is string {
+    return typeof value === "string" && /^auggy-op-v1-[0-9a-f]{64}$/.test(value);
+  }
+
+  function validPeerBinding(binding: DistributedPeerBindingV1): boolean {
+    if (
+      binding.version !== 1 ||
+      !validDigest(binding.bindingHash) ||
+      (binding.peerIdHash !== null && !validDigest(binding.peerIdHash)) ||
+      !validDigest(binding.promotionScopeHash) ||
+      !(["creator", "agent", "public"] as const).includes(binding.trustLevel) ||
+      (binding.priorPeerIdHash !== undefined && !validDigest(binding.priorPeerIdHash))
+    ) {
+      return false;
+    }
+    if (binding.trustLevel === "public") {
+      if (binding.publicSubstate !== "anonymous" && binding.publicSubstate !== "recognized") {
+        return false;
+      }
+      if (binding.peerIdHash === null) return false;
+      if (binding.publicSubstate === "anonymous" && binding.priorPeerIdHash !== undefined) {
+        return false;
+      }
+      return true;
+    }
+    return binding.publicSubstate === undefined && binding.priorPeerIdHash === undefined;
+  }
+
+  function copyPeerBinding(binding: DistributedPeerBindingV1): DistributedPeerBindingV1 {
+    return { ...binding };
+  }
+
+  function samePeerBinding(
+    left: DistributedPeerBindingV1,
+    right: DistributedPeerBindingV1,
+  ): boolean {
+    return left.bindingHash === right.bindingHash;
+  }
+
+  function allowsAuthenticatedPromotion(
+    stored: DistributedPeerBindingV1,
+    incoming: DistributedPeerBindingV1,
+  ): boolean {
+    return (
+      stored.trustLevel === "public" &&
+      stored.publicSubstate === "anonymous" &&
+      incoming.trustLevel === "public" &&
+      incoming.publicSubstate === "recognized" &&
+      stored.peerIdHash !== null &&
+      incoming.peerIdHash !== null &&
+      incoming.priorPeerIdHash === stored.peerIdHash &&
+      incoming.promotionScopeHash === stored.promotionScopeHash
+    );
+  }
+
+  function copyHistory(history: StoredHistory): DistributedHistorySnapshotV1 {
+    return {
+      version: 1,
+      body: new Uint8Array(history.body),
+      messageCount: history.messageCount,
+    };
+  }
+
+  function validHistory(history: DistributedHistorySnapshotV1): boolean {
+    if (
+      history.version !== 1 ||
+      !(history.body instanceof Uint8Array) ||
+      !Number.isSafeInteger(history.messageCount) ||
+      history.messageCount < 0 ||
+      history.messageCount > config.turnState.history.maxMessages ||
+      history.body.byteLength > config.turnState.history.maxSnapshotBytes
+    ) {
+      return false;
+    }
+    try {
+      const parsed = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(history.body));
+      return (
+        parsed !== null &&
+        typeof parsed === "object" &&
+        !Array.isArray(parsed) &&
+        parsed.version === 1 &&
+        Array.isArray(parsed.messages) &&
+        parsed.messages.length === history.messageCount
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function validCostMarkers(markers: readonly DistributedCostMarkerV1[]): boolean {
+    if (!Array.isArray(markers) || markers.length > config.turnState.maxCostMarkersPerTurn) {
+      return false;
+    }
+    const operations = new Set<string>();
+    return markers.every((marker) => {
+      if (
+        marker.version !== 1 ||
+        !validOperationId(marker.operationId) ||
+        operations.has(marker.operationId)
+      ) {
+        return false;
+      }
+      operations.add(marker.operationId);
+      return marker.priced
+        ? Number.isFinite(marker.costUsd) && marker.costUsd >= 0
+        : marker.reason === "missing-usage" || marker.reason === "missing-pricing";
+    });
+  }
+
+  function validOutboxIntents(intents: readonly DistributedOutboxIntentV1[]): boolean {
+    if (!Array.isArray(intents) || intents.length > config.turnState.outbox.maxIntentsPerTurn) {
+      return false;
+    }
+    const operations = new Set<string>();
+    const ordinals = new Set<number>();
+    return intents.every((intent) => {
+      if (
+        intent.version !== 1 ||
+        intent.contentType !== "application/json" ||
+        !(intent.body instanceof Uint8Array) ||
+        intent.body.byteLength > config.turnState.outbox.maxIntentBytes ||
+        !Number.isSafeInteger(intent.ordinal) ||
+        intent.ordinal < 0 ||
+        intent.ordinal >= intents.length ||
+        !validOperationId(intent.operationId) ||
+        operations.has(intent.operationId) ||
+        ordinals.has(intent.ordinal)
+      ) {
+        return false;
+      }
+      operations.add(intent.operationId);
+      ordinals.add(intent.ordinal);
+      try {
+        JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(intent.body));
+        return true;
+      } catch {
+        return false;
+      }
+    });
+  }
+
   async function waitDelay(milliseconds: number, signal?: AbortSignal): Promise<boolean> {
     if (signal?.aborted) return false;
     return new Promise<boolean>((resolve) => {
@@ -335,7 +533,9 @@ export function createInMemoryDistributedTurnCoordinator(
     let value = namespaces.get(config.namespace);
     if (!value && create) {
       value = {
+        costMarkers: new Map(),
         events: [],
+        histories: new Map(),
         instances: new Map(),
         leaseMs: config.leaseMs,
         maxConcurrent: config.maxConcurrent,
@@ -343,8 +543,14 @@ export function createInMemoryDistributedTurnCoordinator(
         maxQueuedPerThread: config.maxQueuedPerThread,
         nextEventId: 0n,
         nextFence: 0,
+        outbox: new Map(),
         retention: { ...config.retention },
         result: { ...config.result },
+        turnState: {
+          history: { ...config.turnState.history },
+          maxCostMarkersPerTurn: config.turnState.maxCostMarkersPerTurn,
+          outbox: { ...config.turnState.outbox },
+        },
         compatibility: compatibilityTuple(),
         requests: new Map(),
         threads: new Map(),
@@ -380,6 +586,13 @@ export function createInMemoryDistributedTurnCoordinator(
       current.retention.eventRetentionMs !== config.retention.eventRetentionMs ||
       current.retention.maxEvents !== config.retention.maxEvents ||
       current.result.maxReplayBytes !== config.result.maxReplayBytes ||
+      current.turnState.history.maxSnapshotBytes !== config.turnState.history.maxSnapshotBytes ||
+      current.turnState.history.maxMessages !== config.turnState.history.maxMessages ||
+      current.turnState.history.maxThreads !== config.turnState.history.maxThreads ||
+      current.turnState.maxCostMarkersPerTurn !== config.turnState.maxCostMarkersPerTurn ||
+      current.turnState.outbox.maxIntentsPerTurn !== config.turnState.outbox.maxIntentsPerTurn ||
+      current.turnState.outbox.maxIntentBytes !== config.turnState.outbox.maxIntentBytes ||
+      current.turnState.outbox.maxPendingIntents !== config.turnState.outbox.maxPendingIntents ||
       !sameCompatibility(current.compatibility, compatibilityTuple()) ||
       !sourcesMatch
     ) {
@@ -982,12 +1195,211 @@ export function createInMemoryDistributedTurnCoordinator(
           if (result.status !== "ok") abortOwned(lease.requestId, "lease-ownership-lost");
         },
       ),
+    loadHistory: (lease, peerBinding) => {
+      if (!validDistributedPeerBinding(peerBinding)) {
+        return Promise.resolve({ status: "rejected", reason: "invalid-peer-binding" });
+      }
+      return safe<DistributedHistoryLoadResult>(
+        () =>
+          exclusive(() => {
+            const timestamp = now();
+            const current = state();
+            if (!current || !liveInstance(current, timestamp)) return { status: "stale" };
+            expire(current, timestamp);
+            const stored = owns(current, lease, timestamp);
+            if (!stored || stored.executionStarted) return { status: "stale" };
+
+            let history = current.histories.get(lease.threadId);
+            if (!history) {
+              const reservations = [...current.requests.values()].filter(
+                (request) =>
+                  request !== stored &&
+                  request.state === "active" &&
+                  request.historyClaim?.expectedRevision === 0 &&
+                  !current.histories.has(request.threadId),
+              ).length;
+              if (
+                !stored.historyClaim &&
+                current.histories.size + reservations >= current.turnState.history.maxThreads
+              ) {
+                return { status: "rejected", reason: "history-capacity" };
+              }
+              history = {
+                version: 1,
+                binding: copyPeerBinding(peerBinding),
+                body: new Uint8Array(EMPTY_DISTRIBUTED_HISTORY),
+                messageCount: 0,
+                revision: 0,
+              };
+            } else if (
+              !samePeerBinding(history.binding, peerBinding) &&
+              !allowsAuthenticatedPromotion(history.binding, peerBinding)
+            ) {
+              return { status: "denied" };
+            }
+
+            if (
+              stored.historyClaim &&
+              (stored.historyClaim.bindingHash !== peerBinding.bindingHash ||
+                stored.historyClaim.expectedRevision !== history.revision)
+            ) {
+              return { status: "denied" };
+            }
+            stored.historyClaim = {
+              bindingHash: peerBinding.bindingHash,
+              expectedRevision: history.revision,
+            };
+            return {
+              status: "ok",
+              revision: history.revision,
+              ...copyHistory(history),
+            };
+          }),
+        { status: "unavailable" },
+        (result) => {
+          if (result.status === "stale" || result.status === "unavailable") {
+            abortOwned(lease.requestId, "lease-ownership-lost");
+          }
+        },
+      );
+    },
+    commitTurn: (lease, checkpoint) => {
+      const checkpointRejection = validateDistributedTurnCheckpoint(
+        checkpoint,
+        config.turnState,
+        config.result,
+        lease.threadId,
+      );
+      if (checkpointRejection) return Promise.resolve(checkpointRejection);
+      if (!validPeerBinding(checkpoint.peerBinding)) {
+        return Promise.resolve({ status: "rejected", reason: "invalid-turn-state" });
+      }
+      if (
+        !Number.isSafeInteger(checkpoint.expectedHistoryRevision) ||
+        checkpoint.expectedHistoryRevision < 0
+      ) {
+        return Promise.resolve({ status: "rejected", reason: "invalid-turn-state" });
+      }
+      if (checkpoint.history.body.byteLength > config.turnState.history.maxSnapshotBytes) {
+        return Promise.resolve({ status: "rejected", reason: "history-too-large" });
+      }
+      if (!validHistory(checkpoint.history)) {
+        return Promise.resolve({ status: "rejected", reason: "invalid-history" });
+      }
+      if (!validReplayResult(checkpoint.replay)) {
+        return Promise.resolve({ status: "rejected", reason: "invalid-result" });
+      }
+      if (checkpoint.replay.body.byteLength > config.result.maxReplayBytes) {
+        return Promise.resolve({ status: "rejected", reason: "result-too-large" });
+      }
+      if (
+        !validCostMarkers(checkpoint.costMarkers) ||
+        !validOutboxIntents(checkpoint.outboxIntents)
+      ) {
+        return Promise.resolve({ status: "rejected", reason: "invalid-turn-state" });
+      }
+      return safe<LeaseResult>(
+        () =>
+          exclusive(() => {
+            const timestamp = now();
+            const current = state();
+            if (!current || !liveInstance(current, timestamp)) return { status: "stale" };
+            expire(current, timestamp);
+            const stored = owns(current, lease, timestamp);
+            if (!stored) return { status: "stale" };
+
+            const history = current.histories.get(lease.threadId);
+            const historyMatches =
+              stored.executionStarted &&
+              stored.historyClaim?.bindingHash === checkpoint.peerBinding.bindingHash &&
+              stored.historyClaim.expectedRevision === checkpoint.expectedHistoryRevision &&
+              (history
+                ? history.revision === checkpoint.expectedHistoryRevision &&
+                  (samePeerBinding(history.binding, checkpoint.peerBinding) ||
+                    allowsAuthenticatedPromotion(history.binding, checkpoint.peerBinding))
+                : checkpoint.expectedHistoryRevision === 0);
+            const duplicateCost = checkpoint.costMarkers.some((marker) =>
+              current.costMarkers.has(marker.operationId),
+            );
+            const existingOutboxOperations = new Set(
+              [...current.outbox.values()].map((intent) => intent.operationId),
+            );
+            const duplicateOutbox = checkpoint.outboxIntents.some((intent) =>
+              existingOutboxOperations.has(intent.operationId),
+            );
+            if (!historyMatches || duplicateCost || duplicateOutbox) {
+              quarantine(current, stored, timestamp, "effect-outcome-unknown");
+              return { status: "outcome-unknown" };
+            }
+            if (
+              current.outbox.size + checkpoint.outboxIntents.length >
+              current.turnState.outbox.maxPendingIntents
+            ) {
+              quarantine(current, stored, timestamp, "effect-outcome-unknown");
+              return { status: "outcome-unknown" };
+            }
+            if (!history && current.histories.size >= current.turnState.history.maxThreads) {
+              quarantine(current, stored, timestamp, "effect-outcome-unknown");
+              return { status: "outcome-unknown" };
+            }
+
+            current.histories.set(lease.threadId, {
+              version: 1,
+              binding: copyPeerBinding(checkpoint.peerBinding),
+              body: new Uint8Array(checkpoint.history.body),
+              messageCount: checkpoint.history.messageCount,
+              revision: (history?.revision ?? 0) + 1,
+            });
+            for (const marker of checkpoint.costMarkers) {
+              current.costMarkers.set(marker.operationId, {
+                ...marker,
+                requestId: lease.requestId,
+                fence: lease.fence,
+              });
+            }
+            for (const intent of checkpoint.outboxIntents) {
+              current.outbox.set(`${lease.requestId}:${intent.ordinal}`, {
+                ...intent,
+                body: new Uint8Array(intent.body),
+                requestId: lease.requestId,
+                fence: lease.fence,
+              });
+            }
+            stored.state = "completed";
+            stored.terminalAt = timestamp;
+            stored.ownerInstance = undefined;
+            stored.ownerSession = undefined;
+            stored.expiresAt = undefined;
+            stored.result = copyReplayResult(checkpoint.replay);
+            return { status: "ok" };
+          }),
+        { status: "unavailable" },
+        (result) =>
+          abortOwned(
+            lease.requestId,
+            result.status === "ok"
+              ? "settled"
+              : result.status === "outcome-unknown"
+                ? "outcome-unknown"
+                : result.status === "unavailable"
+                  ? "coordinator-authority-lost"
+                  : "lease-ownership-lost",
+          ),
+      );
+    },
     complete: (lease, result) => {
       if (!validReplayResult(result)) {
         return Promise.resolve({ status: "rejected", reason: "invalid-result" });
       }
       if (result.body.byteLength > config.result.maxReplayBytes) {
         return Promise.resolve({ status: "rejected", reason: "result-too-large" });
+      }
+      if (config.compatibility.protocolVersion >= 5) {
+        return Promise.resolve({ status: "rejected", reason: "atomic-turn-state-required" });
+      }
+      const current = state();
+      if (current?.requests.get(lease.requestId)?.historyClaim) {
+        return Promise.resolve({ status: "rejected", reason: "atomic-turn-state-required" });
       }
       return settle("completed", lease, copyReplayResult(result));
     },
@@ -1036,6 +1448,12 @@ export function createInMemoryDistributedTurnCoordinator(
             if (stored.state === "outcome_unknown") return { status: "quarantined" };
             if (stored.state === "completed") {
               if (!stored.result) throw new Error("missing completed replay result");
+              if (
+                current.compatibility.protocolVersion >= 5 &&
+                !validDistributedReplay(stored.result, request.threadId)
+              ) {
+                throw new Error("invalid completed replay result");
+              }
               return { status: "completed", result: copyReplayResult(stored.result) };
             }
             return { status: "terminal", state: stored.state };
@@ -1073,6 +1491,12 @@ export function createInMemoryDistributedTurnCoordinator(
                 if (stored.state === "outcome_unknown") return { status: "quarantined" };
                 if (stored.state === "completed") {
                   if (!stored.result) throw new Error("missing completed replay result");
+                  if (
+                    current.compatibility.protocolVersion >= 5 &&
+                    !validDistributedReplay(stored.result, request.threadId)
+                  ) {
+                    throw new Error("invalid completed replay result");
+                  }
                   return { status: "completed", result: copyReplayResult(stored.result) };
                 }
                 return { status: "terminal", state: stored.state };
@@ -1130,9 +1554,12 @@ export function createInMemoryDistributedTurnCoordinator(
             const terminalRequests = [...current.requests.values()]
               .filter(
                 (request) =>
-                  request.state === "completed" ||
-                  request.state === "failed" ||
-                  request.state === "canceled",
+                  (request.state === "completed" ||
+                    request.state === "failed" ||
+                    request.state === "canceled") &&
+                  ![...current.outbox.values()].some(
+                    (intent) => intent.requestId === request.requestId,
+                  ),
               )
               .sort(
                 (left, right) =>
@@ -1151,7 +1578,12 @@ export function createInMemoryDistributedTurnCoordinator(
                   index < requestOverflow,
               )
               .slice(0, batchSize);
-            for (const request of removableRequests) current.requests.delete(request.requestId);
+            for (const request of removableRequests) {
+              current.requests.delete(request.requestId);
+              for (const [operationId, marker] of current.costMarkers) {
+                if (marker.requestId === request.requestId) current.costMarkers.delete(operationId);
+              }
+            }
 
             const referencedThreadIds = new Set(
               [...current.requests.values()].map((request) => request.threadId),
@@ -1162,7 +1594,10 @@ export function createInMemoryDistributedTurnCoordinator(
               )
               .sort(([left], [right]) => left.localeCompare(right))
               .slice(0, batchSize);
-            for (const [threadId] of removableThreads) current.threads.delete(threadId);
+            for (const [threadId] of removableThreads) {
+              current.histories.delete(threadId);
+              current.threads.delete(threadId);
+            }
 
             const protectedRequestIds = new Set(
               [...current.requests.values()]

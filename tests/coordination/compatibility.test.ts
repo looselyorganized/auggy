@@ -3,7 +3,16 @@ import {
   buildDistributedCoordinationCompatibility,
   DISTRIBUTED_COORDINATION_PROTOCOL,
 } from "../../src/coordination/compatibility";
-import type { DistributedCoordinationConfig } from "../../src/types";
+import type {
+  DistributedCoordinationConfig,
+  DistributedCoordinationTurnStateConfig,
+} from "../../src";
+
+const defaultTurnState: DistributedCoordinationTurnStateConfig = {
+  history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+  maxCostMarkersPerTurn: 32,
+  outbox: { maxIntentsPerTurn: 32, maxIntentBytes: 65_536, maxPendingIntents: 1_000 },
+};
 
 function coordination(): DistributedCoordinationConfig {
   return {
@@ -18,6 +27,7 @@ function coordination(): DistributedCoordinationConfig {
       maxEvents: 50_000,
     },
     result: { maxReplayBytes: 65_536 },
+    turnState: structuredClone(defaultTurnState),
     leaseDurationMs: 30_000,
     heartbeatIntervalMs: 5_000,
     claimPollMs: 100,
@@ -62,15 +72,15 @@ describe("distributed coordination compatibility fingerprints", () => {
 
     expect(DISTRIBUTED_COORDINATION_PROTOCOL).toEqual({
       name: "auggy-postgres-coordination",
-      protocolVersion: 4,
-      schemaVersion: 4,
+      protocolVersion: 5,
+      schemaVersion: 5,
       fingerprintVersion: 2,
     });
     expect(first).toEqual(second);
-    expect(first.protocolVersion).toBe(4);
+    expect(first.protocolVersion).toBe(5);
     expect(first.protocolFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(first.configurationFingerprint).toMatch(/^[0-9a-f]{64}$/);
-    expect(first.upgradeFrom).toMatchObject({ protocolVersion: 3 });
+    expect(first.upgradeFrom).toMatchObject({ protocolVersion: 4 });
     expect(first.upgradeFrom.protocolFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(first.upgradeFrom.configurationFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(first.upgradeFrom.protocolFingerprint).not.toBe(first.protocolFingerprint);
@@ -84,6 +94,9 @@ describe("distributed coordination compatibility fingerprints", () => {
       (value: ReturnType<typeof input>) => (value.coordination.leaseDurationMs += 1_000),
       (value: ReturnType<typeof input>) => (value.coordination.retention.maxEvents += 1),
       (value: ReturnType<typeof input>) => (value.coordination.result.maxReplayBytes += 1),
+      (value: ReturnType<typeof input>) => (value.coordination.turnState.history.maxThreads += 1),
+      (value: ReturnType<typeof input>) =>
+        (value.coordination.turnState.outbox.maxPendingIntents += 1),
       (value: ReturnType<typeof input>) => (value.sources[0]!.maxQueued += 1),
       (value: ReturnType<typeof input>) => {
         value.augments.reverse();

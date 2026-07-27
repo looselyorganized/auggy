@@ -2,7 +2,12 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { SQL } from "bun";
 import { resolve } from "node:path";
 import { PostgresDistributedTurnCoordinator } from "../../src/coordination";
-import type { DistributedCoordinatorCompatibility } from "../../src/coordination/types";
+import type {
+  DistributedCoordinatorCompatibility,
+  DistributedHistorySnapshotV1,
+  DistributedPeerBindingV1,
+  DistributedTurnCheckpointV1,
+} from "../../src/coordination/types";
 import type { PostgresCoordinatorOptions } from "../../src/coordination/postgres";
 import {
   migratePostgresCoordinator,
@@ -25,8 +30,13 @@ const coordinatorPolicy = {
     maxEvents: 50_000,
   },
   result: { maxReplayBytes: 65_536 },
+  turnState: {
+    history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+    maxCostMarkersPerTurn: 32,
+    outbox: { maxIntentsPerTurn: 32, maxIntentBytes: 65_536, maxPendingIntents: 1_000 },
+  },
   compatibility: {
-    protocolVersion: 4,
+    protocolVersion: 5,
     protocolFingerprint: "a".repeat(64),
     configurationFingerprint: "b".repeat(64),
   },
@@ -51,6 +61,100 @@ function replay(value: unknown = { ok: true }) {
   };
 }
 
+function distributedReplay(threadId: string, text = "ok") {
+  return replay({
+    version: 1,
+    turnId: "turn-1",
+    threadId,
+    status: "completed",
+    response: { parts: [{ kind: "text", text }] },
+  });
+}
+
+function distributedReplayAtBytes(threadId: string, maximum: number) {
+  const empty = distributedReplay(threadId, "");
+  const textBytes = maximum - empty.body.byteLength;
+  if (textBytes < 0) throw new Error("replay limit is smaller than the envelope");
+  return distributedReplay(threadId, "a".repeat(textBytes));
+}
+
+function peerBinding(overrides: Partial<DistributedPeerBindingV1> = {}): DistributedPeerBindingV1 {
+  return {
+    version: 1,
+    bindingHash: "d".repeat(64),
+    peerIdHash: "e".repeat(64),
+    promotionScopeHash: "f".repeat(64),
+    trustLevel: "public",
+    publicSubstate: "anonymous",
+    ...overrides,
+  };
+}
+
+function history(messages: unknown[] = []): DistributedHistorySnapshotV1 {
+  const normalized = messages.map((value, index) => ({
+    id: `message-${index}`,
+    role: "assistant",
+    content: "test",
+    timestamp: index + 1,
+    tokenCount: 1,
+    ...(typeof value === "object" && value !== null ? value : {}),
+  }));
+  return {
+    version: 1,
+    body: new TextEncoder().encode(JSON.stringify({ version: 1, messages: normalized })),
+    messageCount: normalized.length,
+  };
+}
+
+function checkpoint(
+  threadId: string,
+  binding = peerBinding(),
+  revision = 0,
+  overrides: Partial<DistributedTurnCheckpointV1> = {},
+): DistributedTurnCheckpointV1 {
+  return {
+    peerBinding: binding,
+    expectedHistoryRevision: revision,
+    history: history(),
+    replay: distributedReplay(threadId),
+    costMarkers: [],
+    outboxIntents: [],
+    ...overrides,
+  };
+}
+
+async function atomicCheckpoint(
+  owner: PostgresDistributedTurnCoordinator,
+  lease: Parameters<PostgresDistributedTurnCoordinator["commitTurn"]>[0],
+  result = distributedReplay(lease.threadId),
+) {
+  const binding = peerBinding({
+    trustLevel: "creator",
+    publicSubstate: undefined,
+    peerIdHash: null,
+  });
+  const loaded = await owner.loadHistory(lease, binding);
+  if (loaded.status !== "ok") throw new Error(`expected history load, got ${loaded.status}`);
+  const started = await owner.markExecutionStarted(lease);
+  if (started.status !== "ok") throw new Error(`expected execution marker, got ${started.status}`);
+  return checkpoint(lease.threadId, binding, loaded.revision, {
+    history: {
+      version: 1,
+      body: loaded.body,
+      messageCount: loaded.messageCount,
+    },
+    replay: result,
+  });
+}
+
+async function completeAtomic(
+  owner: PostgresDistributedTurnCoordinator,
+  lease: Parameters<PostgresDistributedTurnCoordinator["commitTurn"]>[0],
+  result = distributedReplay(lease.threadId),
+) {
+  return owner.commitTurn(lease, await atomicCheckpoint(owner, lease, result));
+}
+
 function coordinator(
   namespace: string,
   instanceId: string,
@@ -59,6 +163,7 @@ function coordinator(
   maxQueued = 4,
   compatibility: Partial<DistributedCoordinatorCompatibility> = {},
   retention: (typeof coordinatorPolicy)["retention"] = coordinatorPolicy.retention,
+  turnState: (typeof coordinatorPolicy)["turnState"] = coordinatorPolicy.turnState,
 ) {
   return new PostgresDistributedTurnCoordinator({
     url: url!,
@@ -70,6 +175,7 @@ function coordinator(
     leaseMs,
     ...coordinatorPolicy,
     retention,
+    turnState,
     compatibility: { ...coordinatorPolicy.compatibility, ...compatibility },
   });
 }
@@ -98,6 +204,9 @@ async function removeNamespace(value: string): Promise<void> {
   try {
     await sql.begin(async (tx) => {
       await tx.unsafe("DELETE FROM auggy_coordination_events WHERE namespace = $1", [value]);
+      await tx.unsafe("DELETE FROM auggy_coordination_outbox WHERE namespace = $1", [value]);
+      await tx.unsafe("DELETE FROM auggy_coordination_cost_markers WHERE namespace = $1", [value]);
+      await tx.unsafe("DELETE FROM auggy_coordination_history WHERE namespace = $1", [value]);
       await tx.unsafe("DELETE FROM auggy_coordination_requests WHERE namespace = $1", [value]);
       await tx.unsafe("DELETE FROM auggy_coordination_threads WHERE namespace = $1", [value]);
       await tx.unsafe("DELETE FROM auggy_coordination_sources WHERE namespace = $1", [value]);
@@ -699,7 +808,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
         if (sameSessionLease.status !== "acquired") {
           throw new Error("expected same-session adopted lease");
         }
-        expect(await second.complete(sameSessionLease.lease, replay())).toEqual({ status: "ok" });
+        expect(await completeAtomic(second, sameSessionLease.lease)).toEqual({ status: "ok" });
 
         const sources = await sql.unsafe<Array<{ source_id: string }>>(
           "SELECT source_id FROM auggy_coordination_sources WHERE namespace = $1 ORDER BY source_id",
@@ -756,9 +865,12 @@ describe("PostgreSQL distributed turn coordinator", () => {
       expect(await first.admit(completed)).toEqual({ status: "admitted", attempt: 1 });
       const claimed = await first.claim(completed);
       if (claimed.status !== "acquired") throw new Error("expected result lease");
-      const exact = replay("a".repeat(coordinatorPolicy.result.maxReplayBytes - 2));
+      const exact = distributedReplayAtBytes(
+        claimed.lease.threadId,
+        coordinatorPolicy.result.maxReplayBytes,
+      );
       expect(exact.body.byteLength).toBe(coordinatorPolicy.result.maxReplayBytes);
-      expect(await first.complete(claimed.lease, exact)).toEqual({ status: "ok" });
+      expect(await completeAtomic(first, claimed.lease, exact)).toEqual({ status: "ok" });
       expect(await second.status(completed)).toEqual({ status: "completed", result: exact });
       expect(await second.status({ ...completed, bindingHash: "x".repeat(32) })).toEqual({
         status: "conflict",
@@ -772,16 +884,25 @@ describe("PostgreSQL distributed turn coordinator", () => {
       expect(await first.admit(oversized)).toEqual({ status: "admitted", attempt: 1 });
       const oversizedLease = await first.claim(oversized);
       if (oversizedLease.status !== "acquired") throw new Error("expected oversized lease");
-      expect(
-        await first.complete(
-          oversizedLease.lease,
-          replay("é".repeat(coordinatorPolicy.result.maxReplayBytes / 2)),
+      const oversizedCheckpoint = await atomicCheckpoint(
+        first,
+        oversizedLease.lease,
+        distributedReplayAtBytes(
+          oversizedLease.lease.threadId,
+          coordinatorPolicy.result.maxReplayBytes + 1,
         ),
-      ).toEqual({ status: "rejected", reason: "result-too-large" });
-      expect(await second.status(oversized)).toEqual({ status: "pending", state: "active" });
-      expect(await first.complete(oversizedLease.lease, replay({ smaller: true }))).toEqual({
-        status: "ok",
+      );
+      expect(await first.commitTurn(oversizedLease.lease, oversizedCheckpoint)).toEqual({
+        status: "rejected",
+        reason: "result-too-large",
       });
+      expect(await second.status(oversized)).toEqual({ status: "pending", state: "active" });
+      expect(
+        await first.commitTurn(oversizedLease.lease, {
+          ...oversizedCheckpoint,
+          replay: distributedReplay(oversizedLease.lease.threadId, "smaller"),
+        }),
+      ).toEqual({ status: "ok" });
 
       const pending = request("pending-wait", "pending-thread");
       expect(await first.admit(pending)).toEqual({ status: "admitted", attempt: 1 });
@@ -827,9 +948,13 @@ describe("PostgreSQL distributed turn coordinator", () => {
           const claimed = await instance.claim(item);
           if (claimed.status !== "acquired") throw new Error("expected retained lease");
           if (index === 0) firstFence = claimed.lease.fence;
-          expect(await instance.complete(claimed.lease, replay({ requestId }))).toEqual({
-            status: "ok",
-          });
+          expect(
+            await completeAtomic(
+              instance,
+              claimed.lease,
+              distributedReplay(claimed.lease.threadId, requestId),
+            ),
+          ).toEqual({ status: "ok" });
         }
 
         const unknown = request("retained-unknown", "retained-unknown-thread");
@@ -840,7 +965,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
         expect(await instance.fail(incident.lease)).toEqual({ status: "outcome-unknown" });
 
         await sql.unsafe(
-          "UPDATE auggy_coordination_requests SET terminal_at = clock_timestamp() - interval '2 minutes' WHERE namespace = $1 AND state IN ('completed', 'failed', 'canceled')",
+          "UPDATE auggy_coordination_requests SET terminal_at = clock_timestamp() - interval '2 minutes' - CASE request_id WHEN 'retained-a' THEN interval '3 seconds' WHEN 'retained-b' THEN interval '2 seconds' WHEN 'retained-c' THEN interval '1 second' ELSE interval '0 seconds' END WHERE namespace = $1 AND state IN ('completed', 'failed', 'canceled')",
           [value],
         );
         await sql.unsafe(
@@ -873,7 +998,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
         const reusedLease = await instance.claim(reused);
         if (reusedLease.status !== "acquired") throw new Error("expected reused thread lease");
         expect(reusedLease.lease.fence).toBeGreaterThan(firstFence);
-        expect(await instance.complete(reusedLease.lease, replay())).toEqual({ status: "ok" });
+        expect(await completeAtomic(instance, reusedLease.lease)).toEqual({ status: "ok" });
 
         expect(
           await instance.recover(unknown.threadId, incident.lease.fence, "operator-reconciled"),
@@ -951,7 +1076,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
     const value = namespace();
     const first = coordinator(value, "compatible-instance");
     const changedProtocol = coordinator(value, "protocol-drift", 5_000, 2, 4, {
-      protocolVersion: 5,
+      protocolVersion: 6,
     });
     const changedConfiguration = coordinator(value, "configuration-drift", 5_000, 2, 4, {
       configurationFingerprint: "c".repeat(64),
@@ -1013,7 +1138,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
   postgresTest("atomically upgrades an exact quiescent predecessor protocol", async () => {
     const value = namespace();
     const predecessor = {
-      protocolVersion: 3,
+      protocolVersion: 4,
       protocolFingerprint: "c".repeat(64),
       configurationFingerprint: "d".repeat(64),
     };
@@ -1028,6 +1153,10 @@ describe("PostgreSQL distributed turn coordinator", () => {
       const terminal = request("upgrade-terminal", "upgrade-thread");
       expect(await old.admit(terminal)).toEqual({ status: "admitted", attempt: 1 });
       expect(await old.abandon(terminal, 1)).toEqual({ status: "ok" });
+      await sql.unsafe(
+        "UPDATE auggy_coordination_namespaces SET max_history_snapshot_bytes = NULL, max_history_messages = NULL, max_history_threads = NULL, max_cost_markers_per_turn = NULL, max_outbox_intents_per_turn = NULL, max_outbox_intent_bytes = NULL, max_pending_outbox_intents = NULL WHERE namespace = $1",
+        [value],
+      );
       expect(await current.register()).toEqual({ status: "unavailable" });
 
       await expireInstanceLeases(value);
@@ -1059,7 +1188,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
   postgresTest("refuses a predecessor upgrade while queued work remains", async () => {
     const value = namespace();
     const predecessor = {
-      protocolVersion: 3,
+      protocolVersion: 4,
       protocolFingerprint: "c".repeat(64),
       configurationFingerprint: "d".repeat(64),
     };
@@ -1067,6 +1196,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
     const current = coordinator(value, "current-protocol", 5_000, 2, 4, {
       upgradeFrom: predecessor,
     });
+    const sql = new SQL(url!);
     try {
       await old.migrate();
       expect(await old.register()).toEqual({ status: "registered" });
@@ -1074,9 +1204,14 @@ describe("PostgreSQL distributed turn coordinator", () => {
         status: "admitted",
         attempt: 1,
       });
+      await sql.unsafe(
+        "UPDATE auggy_coordination_namespaces SET max_history_snapshot_bytes = NULL, max_history_messages = NULL, max_history_threads = NULL, max_cost_markers_per_turn = NULL, max_outbox_intents_per_turn = NULL, max_outbox_intent_bytes = NULL, max_pending_outbox_intents = NULL WHERE namespace = $1",
+        [value],
+      );
       await expireInstanceLeases(value);
       expect(await current.register()).toEqual({ status: "unavailable" });
     } finally {
+      await sql.close();
       await current.close();
       await old.close();
     }
@@ -1158,12 +1293,14 @@ describe("PostgreSQL distributed turn coordinator", () => {
         expect(fresh.lease.fence).toBeGreaterThan(old.lease.fence);
         expect(await first.markExecutionStarted(old.lease)).toEqual({ status: "stale" });
         expect(await first.heartbeat(old.lease)).toEqual({ status: "stale" });
-        expect(await first.complete(old.lease, replay())).toEqual({ status: "stale" });
+        expect(await first.commitTurn(old.lease, checkpoint(old.lease.threadId))).toEqual({
+          status: "stale",
+        });
         expect(await first.fail(old.lease)).toEqual({ status: "stale" });
         expect(await first.markOutcomeUnknown(old.lease, "lease-lost")).toEqual({
           status: "stale",
         });
-        expect(await second.complete(fresh.lease, replay())).toEqual({ status: "ok" });
+        expect(await completeAtomic(second, fresh.lease)).toEqual({ status: "ok" });
 
         await first.admit(request("started", "quarantined-thread"));
         const started = await first.claim(request("started", "quarantined-thread"));
@@ -1268,7 +1405,7 @@ describe("PostgreSQL distributed turn coordinator", () => {
         expect(fresh.status).toBe("acquired");
         if (fresh.status !== "acquired") throw new Error("expected recovery lease");
         expect(fresh.lease.fence).toBeGreaterThan(1);
-        expect(await recovery.complete(fresh.lease, replay())).toEqual({ status: "ok" });
+        expect(await completeAtomic(recovery, fresh.lease)).toEqual({ status: "ok" });
       } finally {
         await recovery.close();
       }
@@ -1415,6 +1552,476 @@ describe("PostgreSQL distributed turn coordinator", () => {
       }
     },
   );
+
+  postgresTest(
+    "rejects legacy replay-only completion for a current-protocol execution",
+    async () => {
+      const value = namespace();
+      const owner = coordinator(value, "atomic-only-owner");
+      try {
+        await owner.migrate();
+        expect(await owner.register()).toEqual({ status: "registered" });
+        const item = request("atomic-only", "atomic-only-thread");
+        expect(await owner.admit(item)).toEqual({ status: "admitted", attempt: 1 });
+        const claimed = await owner.claim(item);
+        if (claimed.status !== "acquired") throw new Error("expected atomic-only lease");
+        expect(await owner.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+        expect(await owner.complete(claimed.lease, replay({ bypass: true }))).toEqual({
+          status: "rejected",
+          reason: "atomic-turn-state-required",
+        });
+        expect(await owner.status(item)).toEqual({ status: "pending", state: "active" });
+      } finally {
+        await owner.close();
+      }
+    },
+  );
+
+  postgresTest("atomically commits peer-bound history, cost, outbox, and replay", async () => {
+    const value = namespace();
+    const owner = coordinator(value, "turn-state-owner");
+    const reader = coordinator(value, "turn-state-reader");
+    const sql = new SQL(url!);
+    try {
+      await owner.migrate();
+      expect(await owner.register()).toEqual({ status: "registered" });
+      expect(await reader.register()).toEqual({ status: "registered" });
+      const item = request("turn-state-request", "turn-state-thread");
+      expect(await owner.admit(item)).toEqual({ status: "admitted", attempt: 1 });
+      const claimed = await owner.claim(item);
+      if (claimed.status !== "acquired") throw new Error("expected turn-state lease");
+      const binding = peerBinding();
+      expect(await owner.loadHistory(claimed.lease, binding)).toMatchObject({
+        status: "ok",
+        revision: 0,
+        messageCount: 0,
+      });
+      expect(await owner.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+      const storedHistory = history([{ id: "message-1", role: "assistant", content: "ok" }]);
+      const storedReplay = distributedReplay(claimed.lease.threadId);
+      const turnCheckpoint = checkpoint(claimed.lease.threadId, binding, 0, {
+        history: storedHistory,
+        replay: storedReplay,
+        costMarkers: [
+          {
+            version: 1,
+            operationId: `auggy-op-v1-${"1".repeat(64)}`,
+            priced: true,
+            costUsd: 0.001,
+          },
+        ],
+        outboxIntents: [
+          {
+            version: 1,
+            ordinal: 0,
+            operationId: `auggy-op-v1-${"2".repeat(64)}`,
+            contentType: "application/json",
+            body: new TextEncoder().encode(JSON.stringify({ version: 1, text: "deliver" })),
+          },
+        ],
+      });
+      expect(await owner.commitTurn(claimed.lease, turnCheckpoint)).toEqual({ status: "ok" });
+      expect(await reader.status(item)).toEqual({ status: "completed", result: storedReplay });
+
+      const rows = await sql.unsafe<
+        Array<{
+          cost_count: number;
+          history_revision: string;
+          outbox_count: number;
+          request_state: string;
+          result_bytes: number;
+        }>
+      >(
+        "SELECT request.state AS request_state, octet_length(request.result_body)::integer AS result_bytes, history.revision::text AS history_revision, (SELECT count(*)::integer FROM auggy_coordination_cost_markers cost WHERE cost.namespace = request.namespace AND cost.request_id = request.request_id) AS cost_count, (SELECT count(*)::integer FROM auggy_coordination_outbox outbox WHERE outbox.namespace = request.namespace AND outbox.request_id = request.request_id) AS outbox_count FROM auggy_coordination_requests request JOIN auggy_coordination_history history ON history.namespace = request.namespace AND history.thread_id = request.thread_id WHERE request.namespace = $1 AND request.request_id = $2",
+        [value, item.requestId],
+      );
+      expect(rows).toEqual([
+        {
+          request_state: "completed",
+          result_bytes: storedReplay.body.byteLength,
+          history_revision: "1",
+          cost_count: 1,
+          outbox_count: 1,
+        },
+      ]);
+      await sql.unsafe(
+        "UPDATE auggy_coordination_requests SET terminal_at = clock_timestamp() - interval '30 days' WHERE namespace = $1 AND request_id = $2",
+        [value, item.requestId],
+      );
+      expect(await owner.prune(100)).toMatchObject({ status: "ok", requests: 0 });
+      expect(await reader.status(item)).toEqual({ status: "completed", result: storedReplay });
+
+      const next = request("turn-state-next", item.threadId);
+      expect(await reader.admit(next)).toEqual({ status: "admitted", attempt: 1 });
+      const nextClaim = await reader.claim(next);
+      if (nextClaim.status !== "acquired") throw new Error("expected next history lease");
+      expect(await reader.loadHistory(nextClaim.lease, binding)).toEqual({
+        status: "ok",
+        version: 1,
+        body: storedHistory.body,
+        messageCount: 1,
+        revision: 1,
+      });
+      expect(await reader.complete(nextClaim.lease, replay({ responseText: "bypass" }))).toEqual({
+        status: "rejected",
+        reason: "atomic-turn-state-required",
+      });
+    } finally {
+      await sql.close();
+      await reader.close();
+      await owner.close();
+    }
+  });
+
+  postgresTest(
+    "reserves bounded history capacity without materializing abandoned pre-start threads",
+    async () => {
+      const value = namespace();
+      const instance = coordinator(
+        value,
+        "history-capacity-owner",
+        5_000,
+        2,
+        4,
+        {},
+        coordinatorPolicy.retention,
+        {
+          ...coordinatorPolicy.turnState,
+          history: { ...coordinatorPolicy.turnState.history, maxThreads: 1 },
+        },
+      );
+      const sql = new SQL(url!);
+      try {
+        await instance.migrate();
+        expect(await instance.register()).toEqual({ status: "registered" });
+        const first = request("history-reservation-1", "reserved-thread");
+        const second = request("history-reservation-2", "next-thread");
+        const binding = peerBinding();
+        expect(await instance.admit(first)).toEqual({ status: "admitted", attempt: 1 });
+        expect(await instance.admit(second)).toEqual({ status: "admitted", attempt: 1 });
+        const firstClaim = await instance.claim(first);
+        const secondClaim = await instance.claim(second);
+        if (firstClaim.status !== "acquired" || secondClaim.status !== "acquired") {
+          throw new Error("expected concurrent history reservations");
+        }
+        expect(await instance.loadHistory(firstClaim.lease, binding)).toMatchObject({
+          status: "ok",
+          revision: 0,
+        });
+        expect(await instance.loadHistory(secondClaim.lease, binding)).toEqual({
+          status: "rejected",
+          reason: "history-capacity",
+        });
+        const before = await sql.unsafe<Array<{ count: number }>>(
+          "SELECT count(*)::integer AS count FROM auggy_coordination_history WHERE namespace = $1",
+          [value],
+        );
+        expect(before).toEqual([{ count: 0 }]);
+
+        expect(await instance.abandon(first, firstClaim.lease.attempt)).toEqual({ status: "ok" });
+        const loaded = await instance.loadHistory(secondClaim.lease, binding);
+        expect(loaded).toMatchObject({ status: "ok", revision: 0 });
+        if (loaded.status !== "ok") throw new Error("expected released history capacity");
+        expect(await instance.markExecutionStarted(secondClaim.lease)).toEqual({ status: "ok" });
+        expect(
+          await instance.commitTurn(
+            secondClaim.lease,
+            checkpoint(secondClaim.lease.threadId, binding, loaded.revision, {
+              history: {
+                version: 1,
+                body: loaded.body,
+                messageCount: loaded.messageCount,
+              },
+            }),
+          ),
+        ).toEqual({ status: "ok" });
+        const after = await sql.unsafe<Array<{ count: number }>>(
+          "SELECT count(*)::integer AS count FROM auggy_coordination_history WHERE namespace = $1",
+          [value],
+        );
+        expect(after).toEqual([{ count: 1 }]);
+      } finally {
+        await sql.close();
+        await instance.close();
+      }
+    },
+  );
+
+  postgresTest("rejects malformed durable checkpoints before mutating request state", async () => {
+    const value = namespace();
+    const instance = coordinator(value, "malformed-checkpoint-owner");
+    const sql = new SQL(url!);
+    try {
+      await instance.migrate();
+      expect(await instance.register()).toEqual({ status: "registered" });
+      const item = request("malformed-checkpoint", "malformed-checkpoint-thread");
+      expect(await instance.admit(item)).toEqual({ status: "admitted", attempt: 1 });
+      const claimed = await instance.claim(item);
+      if (claimed.status !== "acquired") throw new Error("expected malformed checkpoint lease");
+      const binding = peerBinding();
+      const loaded = await instance.loadHistory(claimed.lease, binding);
+      if (loaded.status !== "ok") throw new Error("expected history claim");
+      expect(await instance.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+      const valid = checkpoint(claimed.lease.threadId, binding, loaded.revision, {
+        history: { version: 1, body: loaded.body, messageCount: loaded.messageCount },
+      });
+      expect(
+        await instance.commitTurn(claimed.lease, {
+          ...valid,
+          history: {
+            version: 1,
+            body: new TextEncoder().encode(
+              JSON.stringify({ version: 1, messages: [{ id: "not-a-message" }] }),
+            ),
+            messageCount: 1,
+          },
+        }),
+      ).toEqual({ status: "rejected", reason: "invalid-history" });
+      expect(
+        await instance.commitTurn(claimed.lease, {
+          ...valid,
+          replay: replay({
+            version: 1,
+            turnId: "turn-1",
+            threadId: claimed.lease.threadId,
+          }),
+        }),
+      ).toEqual({ status: "rejected", reason: "invalid-result" });
+      expect(
+        await instance.commitTurn(claimed.lease, {
+          ...valid,
+          replay: distributedReplay("different-thread"),
+        }),
+      ).toEqual({ status: "rejected", reason: "invalid-result" });
+      expect(await instance.status(item)).toEqual({ status: "pending", state: "active" });
+      expect(await instance.commitTurn(claimed.lease, valid)).toEqual({ status: "ok" });
+      await sql.unsafe(
+        "UPDATE auggy_coordination_requests SET result_body = $3 WHERE namespace = $1 AND request_id = $2",
+        [value, item.requestId, distributedReplay("different-thread").body],
+      );
+      expect(await instance.status(item)).toEqual({ status: "unavailable" });
+    } finally {
+      await sql.close();
+      await instance.close();
+    }
+  });
+
+  postgresTest("rolls back every turn-state write after a stale fenced lease", async () => {
+    const value = namespace();
+    const owner = coordinator(value, "stale-turn-state-owner", 500);
+    const recovery = coordinator(value, "stale-turn-state-recovery", 500);
+    const sql = new SQL(url!);
+    try {
+      await owner.migrate();
+      expect(await owner.register()).toEqual({ status: "registered" });
+      const item = request("stale-turn-state", "stale-turn-state-thread");
+      expect(await owner.admit(item)).toEqual({ status: "admitted", attempt: 1 });
+      const claimed = await owner.claim(item);
+      if (claimed.status !== "acquired") throw new Error("expected stale turn-state lease");
+      const binding = peerBinding();
+      expect(await owner.loadHistory(claimed.lease, binding)).toMatchObject({ status: "ok" });
+      expect(await owner.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+      await expireActiveLease(value, item.requestId);
+      expect(
+        await owner.commitTurn(
+          claimed.lease,
+          checkpoint(claimed.lease.threadId, binding, 0, {
+            history: history([{ id: "must-not-commit" }]),
+            costMarkers: [
+              {
+                version: 1,
+                operationId: `auggy-op-v1-${"3".repeat(64)}`,
+                priced: false,
+                reason: "missing-usage",
+              },
+            ],
+            outboxIntents: [
+              {
+                version: 1,
+                ordinal: 0,
+                operationId: `auggy-op-v1-${"4".repeat(64)}`,
+                contentType: "application/json",
+                body: new TextEncoder().encode(JSON.stringify({ version: 1 })),
+              },
+            ],
+          }),
+        ),
+      ).toEqual({ status: "stale" });
+      const rows = await sql.unsafe<
+        Array<{
+          cost_count: number;
+          history_count: number;
+          outbox_count: number;
+          result_body: Uint8Array | null;
+          state: string;
+        }>
+      >(
+        "SELECT request.state, request.result_body, (SELECT count(*)::integer FROM auggy_coordination_history history WHERE history.namespace = request.namespace AND history.thread_id = request.thread_id) AS history_count, (SELECT count(*)::integer FROM auggy_coordination_cost_markers cost WHERE cost.namespace = request.namespace AND cost.request_id = request.request_id) AS cost_count, (SELECT count(*)::integer FROM auggy_coordination_outbox outbox WHERE outbox.namespace = request.namespace AND outbox.request_id = request.request_id) AS outbox_count FROM auggy_coordination_requests request WHERE request.namespace = $1 AND request.request_id = $2",
+        [value, item.requestId],
+      );
+      expect(rows).toEqual([
+        {
+          state: "outcome_unknown",
+          result_body: null,
+          history_count: 0,
+          cost_count: 0,
+          outbox_count: 0,
+        },
+      ]);
+      expect(await recovery.register()).toEqual({ status: "registered" });
+      expect(await recovery.status(item)).toEqual({ status: "quarantined" });
+      expect(
+        await recovery.recover(item.threadId, claimed.lease.fence, "verified-no-effect"),
+      ).toEqual({ status: "ok" });
+    } finally {
+      await sql.close();
+      await recovery.close();
+      await owner.close();
+    }
+  });
+
+  postgresTest(
+    "rolls back the atomic transaction when a later checkpoint write fails",
+    async () => {
+      const value = namespace();
+      const sql = new SQL(url!);
+      let faultCostWrite = false;
+      const wrappedSql = {
+        async begin<T>(
+          callback: (transaction: PostgresMigrationExecutor) => Promise<T>,
+        ): Promise<T> {
+          return sql.begin(async (transaction) => {
+            const wrapped: PostgresMigrationExecutor = {
+              begin: (nested) => nested(wrapped),
+              unsafe: (query, values) => {
+                if (faultCostWrite && query.includes("/* cp4:cost */")) {
+                  throw new Error("injected checkpoint failure");
+                }
+                return transaction.unsafe(query, values);
+              },
+            };
+            return callback(wrapped);
+          });
+        },
+        unsafe: <T extends object = Record<string, unknown>>(query: string, values?: unknown[]) =>
+          sql.unsafe<T>(query, values),
+      } as NonNullable<PostgresCoordinatorOptions["sql"]>;
+      const instance = new PostgresDistributedTurnCoordinator({
+        sql: wrappedSql,
+        namespace: value,
+        instanceId: "turn-state-fault",
+        maxConcurrent: 2,
+        maxQueued: 4,
+        maxQueuedPerThread: 2,
+        leaseMs: 5_000,
+        ...coordinatorPolicy,
+      });
+      try {
+        await instance.migrate();
+        expect(await instance.register()).toEqual({ status: "registered" });
+        const item = request("turn-state-fault", "turn-state-fault-thread");
+        expect(await instance.admit(item)).toEqual({ status: "admitted", attempt: 1 });
+        const claimed = await instance.claim(item);
+        if (claimed.status !== "acquired") throw new Error("expected fault lease");
+        const binding = peerBinding();
+        expect(await instance.loadHistory(claimed.lease, binding)).toMatchObject({ status: "ok" });
+        expect(await instance.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+        faultCostWrite = true;
+        expect(
+          await instance.commitTurn(
+            claimed.lease,
+            checkpoint(claimed.lease.threadId, binding, 0, {
+              history: history([{ id: "rolled-back" }]),
+              costMarkers: [
+                {
+                  version: 1,
+                  operationId: `auggy-op-v1-${"5".repeat(64)}`,
+                  priced: true,
+                  costUsd: 0.01,
+                },
+              ],
+            }),
+          ),
+        ).toEqual({ status: "unavailable" });
+        faultCostWrite = false;
+        const rows = await sql.unsafe<
+          Array<{
+            cost_count: number;
+            history_count: number;
+            result_body: Uint8Array | null;
+            state: string;
+          }>
+        >(
+          "SELECT request.state, request.result_body, (SELECT count(*)::integer FROM auggy_coordination_history history WHERE history.namespace = request.namespace AND history.thread_id = request.thread_id) AS history_count, (SELECT count(*)::integer FROM auggy_coordination_cost_markers cost WHERE cost.namespace = request.namespace AND cost.request_id = request.request_id) AS cost_count FROM auggy_coordination_requests request WHERE request.namespace = $1 AND request.request_id = $2",
+          [value, item.requestId],
+        );
+        expect(rows).toEqual([
+          {
+            state: "active",
+            result_body: null,
+            history_count: 0,
+            cost_count: 0,
+          },
+        ]);
+      } finally {
+        await instance.close();
+        await sql.close();
+      }
+    },
+  );
+
+  postgresTest("authorizes only exact authenticated history promotion evidence", async () => {
+    const value = namespace();
+    const instance = coordinator(value, "history-promotion");
+    try {
+      await instance.migrate();
+      expect(await instance.register()).toEqual({ status: "registered" });
+      const anonymous = peerBinding();
+      const first = request("promotion-anonymous", "promotion-thread");
+      expect(await instance.admit(first)).toEqual({ status: "admitted", attempt: 1 });
+      const firstClaim = await instance.claim(first);
+      if (firstClaim.status !== "acquired") throw new Error("expected anonymous lease");
+      expect(await instance.loadHistory(firstClaim.lease, anonymous)).toMatchObject({
+        status: "ok",
+      });
+      expect(await instance.markExecutionStarted(firstClaim.lease)).toEqual({ status: "ok" });
+      expect(
+        await instance.commitTurn(
+          firstClaim.lease,
+          checkpoint(firstClaim.lease.threadId, anonymous),
+        ),
+      ).toEqual({ status: "ok" });
+
+      const next = request("promotion-recognized", first.threadId);
+      expect(await instance.admit(next)).toEqual({ status: "admitted", attempt: 1 });
+      const nextClaim = await instance.claim(next);
+      if (nextClaim.status !== "acquired") throw new Error("expected recognized lease");
+      const recognized = peerBinding({
+        bindingHash: "a".repeat(64),
+        peerIdHash: "b".repeat(64),
+        publicSubstate: "recognized",
+        priorPeerIdHash: anonymous.peerIdHash!,
+      });
+      expect(
+        await instance.loadHistory(nextClaim.lease, {
+          ...recognized,
+          priorPeerIdHash: "0".repeat(64),
+        }),
+      ).toEqual({ status: "denied" });
+      expect(
+        await instance.loadHistory(nextClaim.lease, {
+          ...recognized,
+          promotionScopeHash: "9".repeat(64),
+        }),
+      ).toEqual({ status: "denied" });
+      expect(await instance.loadHistory(nextClaim.lease, recognized)).toMatchObject({
+        status: "ok",
+        revision: 1,
+      });
+    } finally {
+      await instance.close();
+    }
+  });
 
   postgresTest("health sweeps expired started work and frees zero-queue capacity", async () => {
     const value = namespace();

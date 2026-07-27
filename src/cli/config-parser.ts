@@ -2469,6 +2469,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         "fleetCapacity",
         "retention",
         "result",
+        "turnState",
         "urlEnv",
         "leaseDurationMs",
         "heartbeatIntervalMs",
@@ -2579,6 +2580,84 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
           errors.push(
             "settings.coordination.result.maxReplayBytes: must be a safe integer between 1024 and 1048576",
           );
+        }
+      }
+      const turnState = coordination.turnState;
+      if (typeof turnState !== "object" || turnState === null || Array.isArray(turnState)) {
+        errors.push("settings.coordination.turnState: must be an object");
+      } else {
+        const policy = turnState as Record<string, unknown>;
+        if (
+          Object.keys(policy).some(
+            (key) => key !== "history" && key !== "maxCostMarkersPerTurn" && key !== "outbox",
+          )
+        ) {
+          errors.push("settings.coordination.turnState: contains unknown turn-state settings");
+        }
+        const history = policy.history;
+        if (typeof history !== "object" || history === null || Array.isArray(history)) {
+          errors.push("settings.coordination.turnState.history: must be an object");
+        } else {
+          const values = history as Record<string, unknown>;
+          const limits = {
+            maxSnapshotBytes: { minimum: 1_024, maximum: 1_048_576 },
+            maxMessages: { minimum: 1, maximum: 10_000 },
+            maxThreads: { minimum: 1, maximum: 1_000_000 },
+          } as const;
+          if (Object.keys(values).some((key) => !Object.hasOwn(limits, key))) {
+            errors.push(
+              "settings.coordination.turnState.history: contains unknown history settings",
+            );
+          }
+          for (const key of Object.keys(limits) as Array<keyof typeof limits>) {
+            const value = values[key];
+            const limit = limits[key];
+            if (
+              !Number.isSafeInteger(value) ||
+              (value as number) < limit.minimum ||
+              (value as number) > limit.maximum
+            ) {
+              errors.push(
+                `settings.coordination.turnState.history.${key}: must be a safe integer between ${limit.minimum} and ${limit.maximum}`,
+              );
+            }
+          }
+        }
+        if (
+          !Number.isSafeInteger(policy.maxCostMarkersPerTurn) ||
+          (policy.maxCostMarkersPerTurn as number) < 1 ||
+          (policy.maxCostMarkersPerTurn as number) > 1_000
+        ) {
+          errors.push(
+            "settings.coordination.turnState.maxCostMarkersPerTurn: must be a safe integer between 1 and 1000",
+          );
+        }
+        const outbox = policy.outbox;
+        if (typeof outbox !== "object" || outbox === null || Array.isArray(outbox)) {
+          errors.push("settings.coordination.turnState.outbox: must be an object");
+        } else {
+          const values = outbox as Record<string, unknown>;
+          const limits = {
+            maxIntentsPerTurn: { minimum: 0, maximum: 1_000 },
+            maxIntentBytes: { minimum: 1_024, maximum: 1_048_576 },
+            maxPendingIntents: { minimum: 0, maximum: 1_000_000 },
+          } as const;
+          if (Object.keys(values).some((key) => !Object.hasOwn(limits, key))) {
+            errors.push("settings.coordination.turnState.outbox: contains unknown outbox settings");
+          }
+          for (const key of Object.keys(limits) as Array<keyof typeof limits>) {
+            const value = values[key];
+            const limit = limits[key];
+            if (
+              !Number.isSafeInteger(value) ||
+              (value as number) < limit.minimum ||
+              (value as number) > limit.maximum
+            ) {
+              errors.push(
+                `settings.coordination.turnState.outbox.${key}: must be a safe integer between ${limit.minimum} and ${limit.maximum}`,
+              );
+            }
+          }
         }
       }
       const urlEnv = coordination.urlEnv ?? DEFAULT_DISTRIBUTED_COORDINATION.urlEnv;
@@ -2703,6 +2782,32 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       },
       result: {
         maxReplayBytes: (coordination.result as Record<string, unknown>).maxReplayBytes as number,
+      },
+      turnState: {
+        history: {
+          maxSnapshotBytes: (
+            (coordination.turnState as Record<string, unknown>).history as Record<string, unknown>
+          ).maxSnapshotBytes as number,
+          maxMessages: (
+            (coordination.turnState as Record<string, unknown>).history as Record<string, unknown>
+          ).maxMessages as number,
+          maxThreads: (
+            (coordination.turnState as Record<string, unknown>).history as Record<string, unknown>
+          ).maxThreads as number,
+        },
+        maxCostMarkersPerTurn: (coordination.turnState as Record<string, unknown>)
+          .maxCostMarkersPerTurn as number,
+        outbox: {
+          maxIntentsPerTurn: (
+            (coordination.turnState as Record<string, unknown>).outbox as Record<string, unknown>
+          ).maxIntentsPerTurn as number,
+          maxIntentBytes: (
+            (coordination.turnState as Record<string, unknown>).outbox as Record<string, unknown>
+          ).maxIntentBytes as number,
+          maxPendingIntents: (
+            (coordination.turnState as Record<string, unknown>).outbox as Record<string, unknown>
+          ).maxPendingIntents as number,
+        },
       },
       urlEnv:
         (coordination.urlEnv as string | undefined) ?? DEFAULT_DISTRIBUTED_COORDINATION.urlEnv,

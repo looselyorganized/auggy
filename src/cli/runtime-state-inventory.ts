@@ -177,6 +177,7 @@ function stateConfigShape(config: ParsedConfig): unknown {
           fleetCapacity: config.settings.coordination.fleetCapacity,
           retention: config.settings.coordination.retention,
           result: config.settings.coordination.result,
+          turnState: config.settings.coordination.turnState,
           leaseDurationMs: config.settings.coordination.leaseDurationMs,
         }
       : undefined,

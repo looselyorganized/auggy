@@ -57,6 +57,15 @@ function writeAgent(withCoordination = true): string {
                 maxEvents: 50_000,
               },
               result: { maxReplayBytes: 65_536 },
+              turnState: {
+                history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+                maxCostMarkersPerTurn: 32,
+                outbox: {
+                  maxIntentsPerTurn: 32,
+                  maxIntentBytes: 65_536,
+                  maxPendingIntents: 1_000,
+                },
+              },
             },
           },
         }
@@ -105,6 +114,7 @@ describe("runCoordinationMigrate", () => {
       "20260726_02_coordination_compatibility_contract",
       "20260726_03_coordination_instance_lifecycle",
       "20260726_04_coordination_bounded_results",
+      "20260726_05_coordination_atomic_turn_state",
     ]);
     expect(JSON.stringify(result)).not.toContain(SENTINEL_URL);
   });

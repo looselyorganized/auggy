@@ -110,6 +110,7 @@ export type {
   DistributedFleetCapacityConfig,
   DistributedCoordinationRetentionConfig,
   DistributedCoordinationResultConfig,
+  DistributedCoordinationTurnStateConfig,
 } from "./types";
 
 // === Agent definition ===

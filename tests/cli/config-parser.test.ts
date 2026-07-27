@@ -405,6 +405,15 @@ describe("parseConfig", () => {
               maxEvents: 50_000,
             },
             result: { maxReplayBytes: 65_536 },
+            turnState: {
+              history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+              maxCostMarkersPerTurn: 32,
+              outbox: {
+                maxIntentsPerTurn: 32,
+                maxIntentBytes: 65_536,
+                maxPendingIntents: 1_000,
+              },
+            },
           },
         },
       }),
@@ -425,6 +434,11 @@ describe("parseConfig", () => {
         maxEvents: 50_000,
       },
       result: { maxReplayBytes: 65_536 },
+      turnState: {
+        history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+        maxCostMarkersPerTurn: 32,
+        outbox: { maxIntentsPerTurn: 32, maxIntentBytes: 65_536, maxPendingIntents: 1_000 },
+      },
       urlEnv: "AUGGY_COORDINATION_DATABASE_URL",
       leaseDurationMs: 30_000,
       heartbeatIntervalMs: 5_000,
@@ -451,18 +465,24 @@ describe("parseConfig", () => {
       maxEvents: 50_000,
     };
     const result = { maxReplayBytes: 65_536 };
+    const turnState = {
+      history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+      maxCostMarkersPerTurn: 32,
+      outbox: { maxIntentsPerTurn: 32, maxIntentBytes: 65_536, maxPendingIntents: 1_000 },
+    };
     const validCoordination = {
       mode: "postgres",
       namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
       fleetCapacity,
       retention,
       result,
+      turnState,
     };
     const invalid = [
       { ...validCoordination, mode: "redis" },
       { ...validCoordination, namespace: "not-a-uuid" },
       { ...validCoordination, namespace: "5D9B9796-65BA-43D0-9BA9-57F1A9DB5EF7" },
-      { mode: "postgres", namespace: validCoordination.namespace, retention, result },
+      { mode: "postgres", namespace: validCoordination.namespace, retention, result, turnState },
       {
         ...validCoordination,
         urlEnv: "URL;SECRET",
@@ -523,6 +543,17 @@ describe("parseConfig", () => {
       { ...validCoordination, result: { maxReplayBytes: 1.5 } },
       { ...validCoordination, result: { maxReplayBytes: 1_048_577 } },
       { ...validCoordination, result: { maxReplayBytes: 65_536, constructor: 1 } },
+      { ...validCoordination, turnState: undefined },
+      { ...validCoordination, turnState: true },
+      {
+        ...validCoordination,
+        turnState: { ...turnState, history: { ...turnState.history, maxThreads: 0 } },
+      },
+      {
+        ...validCoordination,
+        turnState: { ...turnState, outbox: { ...turnState.outbox, maxIntentBytes: 1 } },
+      },
+      { ...validCoordination, turnState: { ...turnState, constructor: 1 } },
     ];
     for (const coordination of invalid) {
       const path = writeYaml("agent.yaml", minimalConfig({ settings: { coordination } }));
@@ -540,11 +571,17 @@ describe("parseConfig", () => {
       maxEvents: 50_000,
     };
     const result = { maxReplayBytes: 65_536 };
+    const turnState = {
+      history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+      maxCostMarkersPerTurn: 32,
+      outbox: { maxIntentsPerTurn: 32, maxIntentBytes: 65_536, maxPendingIntents: 1_000 },
+    };
     const variants = [
-      { fleetCapacity: { ...fleetCapacity, [sentinel]: true }, retention, result },
-      { fleetCapacity, retention: { ...retention, [sentinel]: true }, result },
-      { fleetCapacity, retention, result: { ...result, [sentinel]: true } },
-      { fleetCapacity, retention, result, [sentinel]: true },
+      { fleetCapacity: { ...fleetCapacity, [sentinel]: true }, retention, result, turnState },
+      { fleetCapacity, retention: { ...retention, [sentinel]: true }, result, turnState },
+      { fleetCapacity, retention, result: { ...result, [sentinel]: true }, turnState },
+      { fleetCapacity, retention, result, turnState: { ...turnState, [sentinel]: true } },
+      { fleetCapacity, retention, result, turnState, [sentinel]: true },
     ];
 
     for (const [index, variant] of variants.entries()) {

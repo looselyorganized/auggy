@@ -249,6 +249,11 @@ describe("runtime state inventory", () => {
         maxEvents: 50_000,
       },
       result: { maxReplayBytes: 65_536 },
+      turnState: {
+        history: { maxSnapshotBytes: 65_536, maxMessages: 100, maxThreads: 1_000 },
+        maxCostMarkersPerTurn: 32,
+        outbox: { maxIntentsPerTurn: 32, maxIntentBytes: 65_536, maxPendingIntents: 1_000 },
+      },
       leaseDurationMs: 30_000,
       heartbeatIntervalMs: 5_000,
       claimPollMs: 100,
@@ -261,6 +266,23 @@ describe("runtime state inventory", () => {
     expect(buildRuntimeStateInventory(changedFleetPolicy, paths).configShapeSha256).not.toBe(
       baselineFingerprint,
     );
+
+    const turnStateMutations: Array<(changed: typeof baseline) => void> = [
+      (changed) => changed.settings.coordination!.turnState.history.maxSnapshotBytes++,
+      (changed) => changed.settings.coordination!.turnState.history.maxMessages++,
+      (changed) => changed.settings.coordination!.turnState.history.maxThreads++,
+      (changed) => changed.settings.coordination!.turnState.maxCostMarkersPerTurn++,
+      (changed) => changed.settings.coordination!.turnState.outbox.maxIntentsPerTurn++,
+      (changed) => changed.settings.coordination!.turnState.outbox.maxIntentBytes++,
+      (changed) => changed.settings.coordination!.turnState.outbox.maxPendingIntents++,
+    ];
+    for (const mutate of turnStateMutations) {
+      const changedTurnState = structuredClone(baseline);
+      mutate(changedTurnState);
+      expect(buildRuntimeStateInventory(changedTurnState, paths).configShapeSha256).not.toBe(
+        baselineFingerprint,
+      );
+    }
 
     const changedLocalPolling = structuredClone(baseline);
     changedLocalPolling.settings.coordination!.urlEnv = "DATABASE_URL_B";
