@@ -210,9 +210,12 @@ describe("distributed root turn runtime", () => {
             return { ok: true };
           },
         );
-        return scheduled.status === "completed"
-          ? { status: "completed", value: scheduled.value }
-          : { status: scheduled.status };
+        if (scheduled.status === "completed") {
+          return { status: "completed", value: scheduled.value };
+        }
+        return scheduled.status === "rejected"
+          ? { status: "rejected", value: { ok: false } }
+          : { status: "canceled" };
       },
       isSuccessful: (value) => value.ok,
       commit: (lease, value) => owner.complete(lease, replay(value)),
@@ -243,6 +246,58 @@ describe("distributed root turn runtime", () => {
     });
     expect(conflict).toEqual({ status: "conflict" });
     expect(executions).toBe(1);
+    await runtime.close();
+  });
+
+  test("uses the atomic outcome-unknown settlement hook after execution starts", async () => {
+    const owner = coordinator("instance-a");
+    let legacySettlements = 0;
+    const wrapped = new Proxy(owner, {
+      get(target, property, receiver) {
+        if (property === "markOutcomeUnknown") {
+          return (...args: Parameters<DistributedTurnCoordinator["markOutcomeUnknown"]>) => {
+            legacySettlements++;
+            return target.markOutcomeUnknown(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as DistributedTurnCoordinator;
+    const runtime = createDistributedRootTurnRuntime({
+      coordinator: wrapped,
+      leaseDurationMs: 1_000,
+      heartbeatIntervalMs: 250,
+      claimPollMs: 10,
+      maxWaitMs: 20,
+    });
+    await runtime.start();
+    const request = createCanonicalDistributedTurnRequest({
+      trigger: trigger(),
+      threadId: "thread-1",
+      source,
+      executionContext: { version: 1, executionId: "execution-cost", attempt: 1 },
+    });
+    const settlements: string[] = [];
+    const result = await runtime.run({
+      request,
+      local: async (control) => {
+        await control.beforeStart();
+        await control.ensureExecutionStarted();
+        return { status: "completed", value: { ok: false } };
+      },
+      isSuccessful: (value) => value.ok,
+      commit: (lease, value) => owner.complete(lease, replay(value)),
+      settleOutcomeUnknown: (lease, reason) => {
+        settlements.push(reason);
+        return owner.settleOutcomeUnknown(lease, reason, []);
+      },
+    });
+
+    expect(result).toEqual({ status: "outcome-unknown" });
+    expect(settlements).toEqual(["effect-outcome-unknown"]);
+    expect(legacySettlements).toBe(0);
+    expect(await owner.status(request)).toEqual({ status: "quarantined" });
     await runtime.close();
   });
 
@@ -379,7 +434,9 @@ describe("distributed root turn runtime", () => {
         if (scheduled.status === "completed") {
           return { status: "completed", value: scheduled.value };
         }
-        return { status: scheduled.status };
+        return scheduled.status === "rejected"
+          ? { status: "rejected", value: undefined }
+          : { status: "canceled" };
       },
       isSuccessful: () => false,
       commit: async () => ({ status: "unavailable" }),

@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { z } from "zod";
 import { defineAgent } from "../../src/agent";
 import { layeredMemory } from "../../src/augments/layeredMemory";
+import { budgets } from "../../src/augments/budgets";
 import type { ExtractionCompleteOptions } from "../../src/augments/layeredMemory/extractor/inject-handler";
 import {
   createCanonicalDistributedTurnRequest,
@@ -18,12 +19,15 @@ import {
   type DistributedAgentRuntimeTestAdapter,
 } from "../../src/coordination/testing-agent-runtime";
 import { emptyTrace } from "../../src/kernel/trace-emitter";
+import { registerCoordinatorBudgetTurnGate } from "../../src/kernel/turn-gate-authority";
 import type {
   AgentConfig,
+  Augment,
   ModelClient,
   TransportKernel,
   TurnResult,
   TurnTrigger,
+  DistributedBudgetPolicyV1,
 } from "../../src/types";
 import { createMockModel } from "../fixtures/mock-model";
 import { createTempDir } from "../fixtures/temp-dir";
@@ -36,6 +40,16 @@ const turnStatePolicy = {
   maxCostMarkersPerTurn: 32,
   outbox: { maxIntentsPerTurn: 32, maxIntentBytes: 65_536, maxPendingIntents: 1_000 },
 } as const;
+const distributedTestBudgetPolicy: DistributedBudgetPolicyV1 = {
+  id: "support",
+  caps: { public: { recognized: { maxTurnsPerDay: 1 } } },
+  maxReservations: 200,
+  reservationRetentionMs: 86_400_000,
+  maxAnonymousEvents: 100,
+  maxPeerDays: 100,
+  maxThresholdIntents: 0,
+  aggregateRetentionDays: 7,
+};
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -45,7 +59,11 @@ function deferred<T = void>() {
   return { promise, resolve };
 }
 
-function coordinator(instanceId: string, leaseMs = 1_000): DistributedTurnCoordinator {
+function coordinator(
+  instanceId: string,
+  leaseMs = 1_000,
+  budgetPolicy?: DistributedBudgetPolicyV1,
+): DistributedTurnCoordinator {
   return createInMemoryDistributedTurnCoordinator({
     namespace: "distributed-agent",
     instanceId,
@@ -63,6 +81,7 @@ function coordinator(instanceId: string, leaseMs = 1_000): DistributedTurnCoordi
     },
     result: resultPolicy,
     turnState: turnStatePolicy,
+    ...(budgetPolicy ? { budgets: { policies: [budgetPolicy] } } : {}),
     compatibility: {
       protocolVersion: 5,
       protocolFingerprint: "a".repeat(64),
@@ -185,6 +204,90 @@ describe("distributed agent runtime wiring", () => {
       "direct visitor verification delivery is unavailable in distributed mode",
     );
     expect(bootCalls).toBe(0);
+  });
+
+  test("rejects an unprovisioned distributed turn gate before augment boot", async () => {
+    const owner = coordinator("replica-unprovisioned-budget");
+    let bootCalls = 0;
+    const agent = defineDistributedTestAgent(
+      {
+        name: "distributed-unprovisioned-budget",
+        model: "test",
+        augments: [
+          {
+            name: "unprovisioned-gate",
+            turnGate: {
+              async prepare() {
+                throw new Error("must not run");
+              },
+            },
+            onBoot: async () => {
+              bootCalls++;
+            },
+          },
+        ],
+      },
+      createMockModel(),
+      adapter(owner),
+    );
+
+    await expect(agent.start()).rejects.toThrow("no matching coordinator-owned");
+    expect(bootCalls).toBe(0);
+  });
+
+  test("enforces one shared peer-day budget across independently routed turns", async () => {
+    const owner = coordinator("replica-shared-budget", 1_000, distributedTestBudgetPolicy);
+    const reservations: string[] = [];
+    const coordinatedOwner = new Proxy(owner, {
+      get(target, property, receiver) {
+        if (property === "reserveBudget") {
+          return async (...args: Parameters<DistributedTurnCoordinator["reserveBudget"]>) => {
+            const result = await target.reserveBudget(...args);
+            reservations.push(result.status);
+            return result;
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as DistributedTurnCoordinator;
+    const model = createMockModel({ response: "first allowed" });
+    const agent = defineDistributedTestAgent(
+      {
+        name: "distributed-shared-budget",
+        model: "mock",
+        augments: [budgets({ backend: "coordinator", policy: distributedTestBudgetPolicy })],
+        turnScheduling: { maxConcurrent: 2, maxQueued: 10, maxQueuedPerThread: 10 },
+      },
+      model,
+      adapter(coordinatedOwner),
+    );
+    await agent.start();
+    const peer = {
+      id: "visitor:shared-budget",
+      kind: "human" as const,
+      trustLevel: "public" as const,
+      publicSubstate: "recognized" as const,
+      sourceAugment: "trusted-test",
+    };
+    const first = await agent.inject({ ...trigger(), peer }, { executionContext });
+    const second = await agent.inject(
+      { ...trigger(), turnId: "turn-2", threadId: "thread-2", peer },
+      {
+        executionContext: {
+          ...executionContext,
+          executionId: "execution-2",
+          idempotencyKeyHash: "e".repeat(64),
+        },
+      },
+    );
+
+    expect(first).toMatchObject({ success: true, status: "completed" });
+    expect(second).toMatchObject({ success: false, status: "rejected" });
+    expect(second.error?.message).toBe("daily-turn-cap");
+    expect(reservations).toEqual(["reserved", "rejected"]);
+    expect(model.calls).toHaveLength(1);
+    await agent.stop();
   });
 
   test("rejects malformed durable replay message and part shapes", () => {
@@ -476,7 +579,7 @@ describe("distributed agent runtime wiring", () => {
   });
 
   test("stages cost and delivery while propagating fenced identities to local boundaries", async () => {
-    const owner = coordinator("instance-a");
+    const owner = coordinator("instance-a", 1_000, distributedTestBudgetPolicy);
     let committedCheckpoint: Parameters<DistributedTurnCoordinator["commitTurn"]>[1] | undefined;
     let committedLease: Parameters<DistributedTurnCoordinator["commitTurn"]>[0] | undefined;
     const coordinatedOwner = new Proxy(owner, {
@@ -525,52 +628,52 @@ describe("distributed agent runtime wiring", () => {
       record("model", options);
       return complete(prompt, options);
     };
+    const trustedTest: Augment = {
+      name: "trusted-test",
+      transport: {
+        identify: () => null,
+        register: async (kernel) => {
+          kernel.onOutbound(async (_peer, _message, context) => {
+            record("outbound", context);
+          });
+        },
+      },
+      turnGate: {
+        prepare: async (args) => {
+          record("gate", args);
+          return {
+            decision: { allow: true },
+            confirm: async () => {},
+            rollback: async () => {},
+          };
+        },
+        commit: async (args) => {
+          record("cost-commit", args);
+        },
+      },
+      onTurnStart: async (turn) => {
+        record("turn-start", turn);
+      },
+      context: async (turn) => {
+        record("context", turn);
+        return [];
+      },
+      onTurnEnd: async (hookResult, context) => {
+        hookResults.push(hookResult);
+        record("turn-end", context);
+      },
+      scheduleAfterTurn: async (hookResult, context) => {
+        hookResults.push(hookResult);
+        record("schedule", context);
+      },
+    };
+    registerCoordinatorBudgetTurnGate(trustedTest.turnGate!, distributedTestBudgetPolicy);
     const agent = defineDistributedTestAgent(
       {
         name: "effect-context-agent",
         model: "mock",
         turnScheduling: { maxConcurrent: 2, maxQueued: 10, maxQueuedPerThread: 10 },
-        augments: [
-          {
-            name: "trusted-test",
-            transport: {
-              identify: () => null,
-              register: async (kernel) => {
-                kernel.onOutbound(async (_peer, _message, context) => {
-                  record("outbound", context);
-                });
-              },
-            },
-            turnGate: {
-              prepare: async (args) => {
-                record("gate", args);
-                return {
-                  decision: { allow: true },
-                  confirm: async () => {},
-                  rollback: async () => {},
-                };
-              },
-              commit: async (args) => {
-                record("cost-commit", args);
-              },
-            },
-            onTurnStart: async (turn) => {
-              record("turn-start", turn);
-            },
-            context: async (turn) => {
-              record("context", turn);
-              return [];
-            },
-            onTurnEnd: async (hookResult, context) => {
-              hookResults.push(hookResult);
-              record("turn-end", context);
-            },
-            scheduleAfterTurn: async (hookResult, context) => {
-              hookResults.push(hookResult);
-              record("schedule", context);
-            },
-          },
-        ],
+        augments: [trustedTest],
       },
       effectModel,
       adapter(coordinatedOwner),
@@ -592,7 +695,6 @@ describe("distributed agent runtime wiring", () => {
     expect(result.success).toBeTrue();
     expect(observed.map((entry) => entry.surface).sort()).toEqual([
       "context",
-      "gate",
       "model",
       "schedule",
       "turn-end",

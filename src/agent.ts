@@ -27,6 +27,7 @@ import { createTokenizer } from "./tokenizer";
 import { generateAgentCard } from "./agent-card";
 import { wireMemoryBus } from "./memory/memory-bus";
 import { createTurnLoop } from "./kernel/turn-loop";
+import { coordinatorBudgetPolicyForTurnGate } from "./kernel/turn-gate-authority";
 import { createLifecycleManager } from "./kernel/lifecycle-manager";
 import { collectAugmentRoutes } from "./kernel/route-collector";
 import type { CollectedRoute } from "./kernel/route-collector";
@@ -68,6 +69,7 @@ import type {
   DistributedOutboxIntentV1,
   DistributedPeerBindingV1,
 } from "./coordination/types";
+import { canonicalizeDistributedBudgetCostUsd } from "./coordination/budget-policy";
 
 const DEFAULT_TURN_SCHEDULING: TurnSchedulingConfig = {
   maxConcurrent: 4,
@@ -678,6 +680,33 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
           trackDetachedOperation: options.trackDetachedOperation,
           ...(options.distributedState
             ? {
+                distributedBudget: {
+                  reserve: (
+                    policy: import("./types").DistributedBudgetPolicyV1,
+                    peer: PeerIdentity,
+                    budgetThreadId: string,
+                  ) => {
+                    if (peer.trustLevel === "creator") {
+                      throw new Error("creator turns do not reserve distributed budgets");
+                    }
+                    const control = options.distributedControl ?? options.distributedState!.control;
+                    if (!control) throw new Error("distributed budget authority is unavailable");
+                    return distributed!.coordinator.reserveBudget(control.lease(), {
+                      policyId: policy.id,
+                      peerId: peer.id,
+                      threadId: budgetThreadId,
+                      trustLevel: peer.trustLevel,
+                      ...(peer.trustLevel === "public"
+                        ? { publicSubstate: peer.publicSubstate ?? "anonymous" }
+                        : {}),
+                    });
+                  },
+                  release: (policyId: string) => {
+                    const control = options.distributedControl ?? options.distributedState!.control;
+                    if (!control) throw new Error("distributed budget authority is unavailable");
+                    return distributed!.coordinator.releaseBudget(control.lease(), policyId);
+                  },
+                },
                 stageCost: (cost: CostResult, operationId: string) => {
                   if (
                     options.distributedState!.costMarkers.length >=
@@ -694,7 +723,12 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
                   }
                   options.distributedState!.costMarkers.push(
                     cost.priced
-                      ? { version: 1, operationId, priced: true, costUsd: cost.costUsd }
+                      ? {
+                          version: 1,
+                          operationId,
+                          priced: true,
+                          costUsd: canonicalizeDistributedBudgetCostUsd(cost.costUsd),
+                        }
                       : {
                           version: 1,
                           operationId,
@@ -1013,11 +1047,13 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
             undefined,
             { control, request },
           );
-          if (value.status === "rejected") return { status: "rejected" };
+          if (value.status === "rejected") return { status: "rejected", value };
           if (value.status === "canceled") return { status: "canceled" };
           return { status: "completed", value };
         },
         isSuccessful: (value) => value.success && !value.outcomeUnknown,
+        settleOutcomeUnknown: (lease, reason) =>
+          distributed.coordinator.settleOutcomeUnknown(lease, reason, distributedState.costMarkers),
         commit: (lease, value) => {
           if (
             !distributedState.loaded ||
@@ -1042,6 +1078,7 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
       });
       turnLoop.forgetHistoryManager(threadId);
       if (coordinated.status === "completed") return coordinated.value;
+      if (coordinated.status === "local-rejected") return coordinated.value;
       if (coordinated.status === "replay") {
         try {
           return {
@@ -1310,6 +1347,17 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
         operationalSignals.reset();
         const admission = createStartupAdmissionBarrier();
         try {
+          if (distributed) {
+            for (const augment of effectiveAugments) {
+              if (!augment.turnGate) continue;
+              const policy = coordinatorBudgetPolicyForTurnGate(augment.turnGate);
+              if (!policy || !distributed.coordinator.supportsBudgetPolicy(policy)) {
+                throw new Error(
+                  `Cannot start agent: turn gate "${augment.name}" has no matching coordinator-owned distributed budget policy`,
+                );
+              }
+            }
+          }
           await distributed?.runtime.start();
           if (distributed?.visitorIdentityAuthority) {
             const identityRegistration = await distributed.visitorIdentityAuthority

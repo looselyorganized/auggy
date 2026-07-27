@@ -9,6 +9,7 @@ import type {
 } from "../types";
 import type {
   AdmitResult,
+  CoordinationOutcomeUnknownReason,
   DistributedReplayResult,
   DistributedSourcePolicy,
   DistributedTurnCoordinator,
@@ -52,11 +53,12 @@ export interface DistributedRootExecutionControl {
 
 export type DistributedLocalRunResult<T> =
   | { status: "completed"; value: T }
-  | { status: "rejected" }
+  | { status: "rejected"; value: T }
   | { status: "canceled" };
 
 export type DistributedRootRunResult<T> =
   | { status: "completed"; value: T }
+  | { status: "local-rejected"; value: T }
   | { status: "replay"; result: DistributedReplayResult }
   | { status: "rejected"; reason: string; retryAfterMs?: number }
   | { status: "conflict" }
@@ -80,6 +82,11 @@ export interface DistributedRootRunOptions<T> {
   local(control: DistributedRootExecutionControl): Promise<DistributedLocalRunResult<T>>;
   isSuccessful(value: T): boolean;
   commit(lease: DistributedTurnLease, value: T): Promise<LeaseResult>;
+  /** Persist completed inference cost when the root result cannot be replayed safely. */
+  settleOutcomeUnknown?(
+    lease: DistributedTurnLease,
+    reason: CoordinationOutcomeUnknownReason,
+  ): Promise<LeaseResult>;
 }
 
 export interface DistributedRootTurnRuntime {
@@ -407,11 +414,16 @@ export function createDistributedRootTurnRuntime(
     return stop;
   };
 
-  const settleUnknown = async (lease: DistributedTurnLease): Promise<void> => {
+  const settleUnknown = async <T>(
+    lease: DistributedTurnLease,
+    run: DistributedRootRunOptions<T>,
+  ): Promise<void> => {
     const signal = combinedSignal(authorityLost.signal);
     try {
       await callWithDecisionDeadline(
-        coordinator.markOutcomeUnknown(lease, "effect-outcome-unknown"),
+        run.settleOutcomeUnknown
+          ? run.settleOutcomeUnknown(lease, "effect-outcome-unknown")
+          : coordinator.markOutcomeUnknown(lease, "effect-outcome-unknown"),
         signal,
       );
     } catch {
@@ -588,7 +600,9 @@ export function createDistributedRootTurnRuntime(
           queuedHeartbeatStop();
           const abandoned = await abandonPreStartAttempt();
           if (abandoned.status !== "ok") return { status: "unavailable" };
-          if (local.status === "rejected") return { status: "rejected", reason: "local-admission" };
+          if (local.status === "rejected") {
+            return { status: "local-rejected", value: local.value };
+          }
           if (local.status === "canceled") return { status: "terminal", state: "canceled" };
           return { status: "unavailable" };
         }
@@ -597,7 +611,7 @@ export function createDistributedRootTurnRuntime(
           const abandoned = await abandonPreStartAttempt();
           if (abandoned.status !== "ok") return { status: "unavailable" };
           return local.status === "rejected"
-            ? { status: "rejected", reason: "runtime-admission" }
+            ? { status: "local-rejected", value: local.value }
             : { status: "terminal", state: "canceled" };
         }
         if (
@@ -607,7 +621,7 @@ export function createDistributedRootTurnRuntime(
           !run.isSuccessful(local.value)
         ) {
           activeHeartbeatStop?.();
-          await settleUnknown(lease);
+          await settleUnknown(lease, run);
           return { status: "outcome-unknown" };
         }
         const committed = await callWithDecisionDeadline(
@@ -616,7 +630,7 @@ export function createDistributedRootTurnRuntime(
         ).catch(() => ({ status: "unavailable" }) as LeaseResult);
         activeHeartbeatStop?.();
         if (committed.status !== "ok") {
-          await settleUnknown(lease);
+          await settleUnknown(lease, run);
           return { status: "outcome-unknown" };
         }
         return { status: "completed", value: local.value };
@@ -624,7 +638,7 @@ export function createDistributedRootTurnRuntime(
         queuedHeartbeatStop();
         activeHeartbeatStop?.();
         if (lease && executionStarted) {
-          await settleUnknown(lease);
+          await settleUnknown(lease, run);
           return { status: "outcome-unknown" };
         }
         await abandonPreStartAttempt();

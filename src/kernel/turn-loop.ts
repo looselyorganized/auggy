@@ -21,8 +21,11 @@ import type {
   Part,
   ExecutionContextV1,
   ExecutionAuthorityV1,
+  DistributedBudgetPolicyV1,
 } from "../types";
+import type { DistributedBudgetReservationResult, LeaseResult } from "../coordination/types";
 import type { Tokenizer } from "../tokenizer";
+import { coordinatorBudgetPolicyForTurnGate } from "./turn-gate-authority";
 import { extractText } from "../parts";
 import { costFromResponse } from "../engines/_shared/cost";
 import {
@@ -199,6 +202,15 @@ export interface TurnLoopOptions {
   trackDetachedOperation?: (operation: Promise<unknown>) => void;
   /** Internal distributed seam: stage one known cost marker instead of committing local gates. */
   stageCost?: (cost: CostResult, operationId: string) => void;
+  /** Internal distributed seam: reserve immutable coordinator-owned gate policy. */
+  distributedBudget?: {
+    reserve(
+      policy: DistributedBudgetPolicyV1,
+      peer: NonNullable<TurnTrigger["peer"]>,
+      threadId: string,
+    ): Promise<DistributedBudgetReservationResult>;
+    release(policyId: string): Promise<LeaseResult>;
+  };
 }
 
 export interface TurnLoop {
@@ -473,13 +485,57 @@ export function createTurnLoop(opts: {
       for (const gate of turnGates) {
         let ticket: TurnGateTicket;
         try {
-          ticket = await gate.turnGate.prepare({
-            turnId: trigger.turnId,
-            peer: trigger.peer ?? null,
-            threadId,
-            trigger,
-            ...effectBoundary(`augment:${augments.indexOf(gate)}:${gate.name}:gate`),
-          });
+          const peer = trigger.peer ?? null;
+          if (options?.distributedBudget && peer && peer.trustLevel !== "creator") {
+            const policy = coordinatorBudgetPolicyForTurnGate(gate.turnGate);
+            if (!policy) {
+              throw new Error("distributed turn gate has no coordinator-owned policy");
+            }
+            const reserved = await options.distributedBudget.reserve(policy, peer, threadId);
+            if (reserved.status === "reserved" || reserved.status === "replayed") {
+              turnState.metadata[`auggy.distributedBudget.${policy.id}`] = {
+                admissionDay: reserved.admissionDay,
+                threadTurns: reserved.threadTurns,
+                peerTurns: reserved.peerTurns,
+                peerCostUsd: reserved.peerCostUsd,
+                peerUnpricedTurns: reserved.peerUnpricedTurns,
+                globalCostUsd: reserved.globalCostUsd,
+                globalUnpricedTurns: reserved.globalUnpricedTurns,
+              };
+              ticket = {
+                decision: { allow: true },
+                confirm: async () => {},
+                rollback: async () => {
+                  const released = await options.distributedBudget!.release(policy.id);
+                  if (released.status === "unavailable") {
+                    throw new Error("distributed budget release unavailable");
+                  }
+                },
+              };
+            } else if (reserved.status === "rejected") {
+              ticket = {
+                decision: { allow: false, reason: reserved.reason },
+                confirm: async () => {},
+                rollback: async () => {},
+              };
+            } else {
+              throw new Error(`distributed budget reservation ${reserved.status}`);
+            }
+          } else if (options?.distributedBudget) {
+            ticket = {
+              decision: { allow: true },
+              confirm: async () => {},
+              rollback: async () => {},
+            };
+          } else {
+            ticket = await gate.turnGate.prepare({
+              turnId: trigger.turnId,
+              peer,
+              threadId,
+              trigger,
+              ...effectBoundary(`augment:${augments.indexOf(gate)}:${gate.name}:gate`),
+            });
+          }
         } catch {
           // prepare itself threw — treat as admission-state-failed.
           // Roll back any tickets already prepared.
@@ -547,7 +603,16 @@ export function createTurnLoop(opts: {
         }
         throw error;
       }
-      if (signal?.aborted) return makeAbortResult();
+      if (signal?.aborted) {
+        for (const ticket of tickets) {
+          try {
+            await ticket.rollback();
+          } catch {
+            markExecutionUncertain();
+          }
+        }
+        return makeAbortResult();
+      }
 
       // Phase 3: Confirm — fail-closed. If any confirm throws, roll back all tickets.
       let confirmError: unknown = null;
