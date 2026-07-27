@@ -224,6 +224,8 @@ volume even when an agent's portable config uses a project-relative default:
 - `/app/data/web-idempotency.db` (`webTransport` execution ledger)
 - `/app/data/console-chat.db` (`webTransport` operator conversations)
 - `/app/data/telegram-replay.db` (`telegramTransport` update-claim ledger)
+- `/app/data/durable-jobs.sqlite` (optional `DJOB/v2` jobs, schedules, leases,
+  and incident history)
 - `/app/data/agent-mail/<augment-name>/agent-mail.db` (`agentMail`; each
   instance receives an isolated state namespace)
 - `/app/data/file-memory/<augment-name>.md` (mutable `fileMemory`; seeded once
@@ -245,6 +247,12 @@ streaming.
 Back it up and restore it together with downstream state: losing the ledger
 while retaining completed side effects allows an old caller key to execute
 again.
+
+When `settings.jobs` is enabled, `durable-jobs.sqlite` is equally
+replay-critical and contains private prompts and bindings in plaintext. Keep
+the service at one replica, include the database and live WAL state in the
+stopped runtime-volume bundle, and reconcile every `outcome_unknown` job before
+resuming schedules or ingress after restore. See [Durable Jobs](./33-durable-jobs.md).
 
 Only Link retains a root-level compatibility symlink:
 

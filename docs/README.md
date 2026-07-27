@@ -23,6 +23,7 @@ For installation and first-run instructions, start with the root
 - [Single-Replica Runtime Load Evidence](./30-single-replica-load-evidence.md)
 - [Compatibility, Migrations, and Rollback](./31-compatibility-migrations-and-rollback.md)
 - [Independent Agents on One Platform](./32-independent-agent-isolation.md)
+- [Durable Jobs](./33-durable-jobs.md)
 - [Feature Status](./FEATURES.md)
 
 ## Mental Model
@@ -37,8 +38,9 @@ An Auggy project has four central concepts:
    transports, policy, routes, and lifecycle behavior.
 4. **Peer** — the human, agent, or system interacting with the runtime.
 
-The current runtime is turn-oriented. It does not yet provide durable workflow
-execution or a persistent job queue.
+The runtime is turn-oriented. Its optional Durable Jobs boundary can persist
+and schedule one trusted complete turn on a single replica. It does not
+checkpoint internal steps or replace a general workflow engine.
 
 ## Source Authority
 
@@ -99,6 +101,7 @@ Use this order when documentation disagrees:
 | [30 Single-Replica Runtime Load Evidence](./30-single-replica-load-evidence.md) | Reproducible real-runtime burst, fault, drain, restart, and resource evidence |
 | [31 Compatibility, Migrations, and Rollback](./31-compatibility-migrations-and-rollback.md) | Public artifact boundaries, supported stored-state readers, upgrade rehearsal, and complete rollback |
 | [32 Independent Agents on One Platform](./32-independent-agent-isolation.md) | Immutable identity, shared-host resource fencing, deployment routing, and replica limits |
+| [33 Durable Jobs](./33-durable-jobs.md) | Trusted single-turn persistence, UTC schedules, conservative crash recovery, and workflow boundaries |
 
 ## Common Add-Ons
 

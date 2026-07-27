@@ -112,7 +112,7 @@ Auggy is not:
 - an identity provider;
 - the application’s primary database;
 - a generic web framework;
-- a durable workflow engine or job queue;
+- a general-purpose durable workflow engine or distributed job platform;
 - a replacement for Kubernetes, Railway, Fly.io, or another deployment platform;
 - a mechanism for using prompts as authorization policy.
 
@@ -126,7 +126,7 @@ The implementer should continue to own:
 - secrets and network policy;
 - backups and disaster recovery;
 - domain-specific authorization;
-- long-running workflows and queues;
+- long-running multi-step workflows and distributed queues;
 - operational SLOs.
 
 Auggy should provide the contracts needed to integrate with those systems safely. It should not absorb all of them.
@@ -135,7 +135,10 @@ Auggy should provide the contracts needed to integrate with those systems safely
 
 The kernel should remain small and focused on executing a secure turn. Capabilities and integrations should normally live in augments. Infrastructure-specific coordination should use explicit adapters and interfaces.
 
-If work spans hours, requires durable retries, or needs compensation, a workflow system should own it; an Auggy tool can start or inspect that workflow.
+Auggy can durably run or schedule one bounded, trusted background turn. If work
+spans hours, crosses several independently recoverable business steps, waits
+for human approval, or needs compensation, a workflow system should own it;
+an Auggy activity or tool can be one step in that workflow.
 
 If multiple replicas serve the same logical agent, Auggy needs clear shared coordination contracts for things such as deduplication, quotas, leases, and polling ownership. It does not need to become the load balancer, database service, or cluster orchestrator.
 

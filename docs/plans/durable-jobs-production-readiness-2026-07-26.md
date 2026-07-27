@@ -2,11 +2,14 @@
 
 **Date:** 2026-07-26
 
-**Status:** approved for implementation
+**Status:** implemented on `production/durable-jobs`; final gates tracked in PR #165
 
 **Branch:** `production/durable-jobs`
 
 **Base:** `production/single-replica-readiness` (PR #164)
+
+**Implementation report:**
+[`durable-jobs-production-readiness-implementation-report-2026-07-26.md`](./durable-jobs-production-readiness-implementation-report-2026-07-26.md)
 
 ## Product decision
 
@@ -148,4 +151,3 @@ After all checkpoints, run the tracked suites in bounded shards, console tests
 and build, dependency audit, release smoke, package inspection, and a final
 cross-cutting hostile review. Open one stacked draft PR early and do not merge
 it. Mark it ready only when all applicable gates pass.
-

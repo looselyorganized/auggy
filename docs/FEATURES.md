@@ -34,6 +34,7 @@ When this file disagrees with code, code wins.
 | Provider deadline and brownout isolation | On branch | [`29`](./29-provider-resilience.md) | One bounded model attempt, explicit no-retry policy, cancellation, late-result fencing, and scheduler capacity release |
 | Single-replica runtime load evidence | On branch | [`30`](./30-single-replica-load-evidence.md) | Bounded real-runtime burst, tool, cancellation, fault, drain, restart, and soak evidence; no universal RPS claim |
 | Compatibility and rollback contract | On branch | [`31`](./31-compatibility-migrations-and-rollback.md) | Strict config admission, versioned artifacts/state, tested predecessor migrations, and full-state rollback |
+| Durable single-turn jobs and UTC schedules | On branch | [`33`](./33-durable-jobs.md) | Trusted application/operator submission, fenced SQLite execution, bounded restart recovery, and explicit outcome-unknown reconciliation; one replica only |
 | Auggy Builder Skill | On main | [`11`](./11-skills.md) | Portable coding-agent guidance and evals; public installation UX remains roadmap work |
 | Multiple replicas for one logical agent | Unsupported | [coordination report](./plans/distributed-coordination-implementation-report-2026-07-24.md) | Configuration fails closed; PostgreSQL coordinator foundation is not wired into runtime execution |
 
@@ -69,7 +70,9 @@ When this file disagrees with code, code wins.
 | Delegated app authorization | On main | [`26`](./26-delegated-authorization.md) | App-signed scopes/grants enforced on routes and tools |
 
 These capabilities are usable, but they do not make Auggy a general web
-framework, durable workflow engine, or persistent job queue.
+framework, general workflow engine, or distributed job platform. The optional
+Durable Jobs boundary persists one complete trusted turn; it does not
+checkpoint or orchestrate multi-step business workflows.
 
 ## Package Snapshot
 

@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Single-replica Durable Jobs.** Trusted application code can submit one
+  complete background turn through `auggy/jobs`, while explicit
+  `settings.jobs` enables a fenced SQLite worker, bounded UTC schedules,
+  restart recovery, cancellation, retention, redacted operator controls, and
+  evidence-bearing reconciliation for ambiguous post-start outcomes. The
+  boundary does not expose a public/model submission surface and does not
+  replace a multi-step workflow engine. A hardened standalone Temporal example
+  demonstrates the external-orchestrator contract.
 - **Console capability runtime map.** The per-agent console now derives an
   observed map from mounted augments and their concrete routes, tools, memory,
   installed or available skills, and reported safeguards. It separates
