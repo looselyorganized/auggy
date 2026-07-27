@@ -19,7 +19,11 @@ describe("distributed coordination topology preflight contract", () => {
   });
 
   test("reports the disabled profile without reading configuration values", () => {
-    expect(distributedCoordinationPreflightReport({ configuredAugments: true })).toEqual({
+    expect(
+      distributedCoordinationPreflightReport({
+        augmentEvidence: [{ augmentIndex: 0, requirement: "shared-budget-store-missing" }],
+      }),
+    ).toEqual({
       profile: "disabled",
       ready: false,
       blockers: [
@@ -33,7 +37,24 @@ describe("distributed coordination topology preflight contract", () => {
         "unfenced-delivery-outbox",
         "configured-augment-state-unverified",
       ],
+      components: [{ augmentIndex: 0, requirement: "shared-budget-store-missing" }],
     });
+  });
+
+  test("sanitizes malformed caller evidence to bounded code-owned vocabulary", () => {
+    const report = distributedCoordinationPreflightReport({
+      augmentEvidence: [
+        {
+          augmentIndex: -1,
+          requirement: "postgres://sentinel-secret@example.invalid" as never,
+        },
+      ],
+    });
+
+    expect(report.components).toEqual([
+      { augmentIndex: 0, requirement: "runtime-augment-unverified" },
+    ]);
+    expect(JSON.stringify(report)).not.toContain("sentinel-secret");
   });
 
   test("does not let caller-supplied topology claims erase runtime blockers", () => {

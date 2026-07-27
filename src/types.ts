@@ -1557,18 +1557,29 @@ export interface DistributedCoordinationConfig {
   mode: "postgres";
   namespace: string;
   urlEnv: string;
+  /** Immutable fleet-wide capacity, never multiplied by replica count. */
+  fleetCapacity: DistributedFleetCapacityConfig;
   leaseDurationMs: number;
   heartbeatIntervalMs: number;
   claimPollMs: number;
   maxWaitMs: number;
 }
 
-export interface TurnSchedulingConfig {
-  /** Maximum active complete-turn pipelines across this agent. Default 4. */
+export interface DistributedFleetCapacityConfig {
+  /** Maximum active turns across the logical fleet. */
   maxConcurrent: number;
-  /** Maximum waiting turns across this agent. Default 100. */
+  /** Maximum waiting turns across the logical fleet. */
   maxQueued: number;
-  /** Maximum waiting turns for one resolved thread. Default 20. */
+  /** Maximum waiting turns for one resolved thread across the logical fleet. */
+  maxQueuedPerThread: number;
+}
+
+export interface TurnSchedulingConfig {
+  /** Maximum active complete-turn pipelines in this process. Default 4. */
+  maxConcurrent: number;
+  /** Maximum waiting turns in this process. Default 100. */
+  maxQueued: number;
+  /** Maximum waiting turns for one resolved thread in this process. Default 20. */
   maxQueuedPerThread: number;
   /** Maximum nested same-thread SchedulerContext.inject depth. Default 8. */
   maxCausalDepth: number;

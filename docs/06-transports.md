@@ -1313,6 +1313,10 @@ settings:
   coordination:
     mode: postgres
     namespace: 5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7
+    fleetCapacity:
+      maxConcurrent: 8
+      maxQueued: 200
+      maxQueuedPerThread: 25
     # urlEnv defaults to AUGGY_COORDINATION_DATABASE_URL
     leaseDurationMs: 30000
     heartbeatIntervalMs: 5000
@@ -1328,6 +1332,8 @@ per-process executor behind a future fleet coordinator. Runtime preflight must
 also verify shared budgets, replay ledgers, mutable memory, visitor state, and a
 durable fenced delivery outbox before it can enable distributed execution.
 Until then deploy one runtime replica for each logical agent namespace.
+`fleetCapacity` is an explicit fleet-wide contract: its values are not defaults
+for `turnScheduling` and are never multiplied by replica count.
 
 Provision the dedicated coordination database explicitly; the command reads
 only the environment variable named by `urlEnv`, never a URL in `agent.yaml`:

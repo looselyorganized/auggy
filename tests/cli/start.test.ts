@@ -61,7 +61,7 @@ describe("runStart launchd generation fencing", () => {
   test("rejects disabled coordination before lifecycle or launchd mutation", async () => {
     writeFileSync(
       configPath,
-      `${readFileSync(configPath, "utf8")}settings:\n  coordination:\n    mode: postgres\n    namespace: 12345678-1234-4123-8123-123456789abc\n`,
+      `${readFileSync(configPath, "utf8")}settings:\n  coordination:\n    mode: postgres\n    namespace: 12345678-1234-4123-8123-123456789abc\n    fleetCapacity:\n      maxConcurrent: 4\n      maxQueued: 100\n      maxQueuedPerThread: 20\n`,
     );
     let listed = false;
     const opts = options();

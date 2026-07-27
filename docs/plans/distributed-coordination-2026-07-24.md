@@ -171,6 +171,10 @@ settings:
     mode: postgres
     namespace: 4a11eb09-6576-4f37-a96f-c2fc7eb0e067
     urlEnv: AUGGY_COORDINATION_DATABASE_URL
+    fleetCapacity:
+      maxConcurrent: 8
+      maxQueued: 200
+      maxQueuedPerThread: 25
     leaseDurationMs: 30000
     heartbeatIntervalMs: 5000
     claimPollMs: 100
@@ -179,7 +183,9 @@ settings:
 
 The URL is read from the named environment variable and is never printed.
 `namespace` must be a canonical UUID. `heartbeatIntervalMs * 3` must not exceed
-`leaseDurationMs`. Unknown fields and unsafe bounds are rejected.
+`leaseDurationMs`. `fleetCapacity` is required, applies once to the logical
+fleet, and is never multiplied by replica count or inferred from the local
+`turnScheduling` boundary. Unknown fields and unsafe bounds are rejected.
 
 The CLI must refuse distributed mode when:
 

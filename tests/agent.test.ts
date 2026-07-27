@@ -37,6 +37,11 @@ describe("defineAgent", () => {
           mode: "postgres",
           namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
           urlEnv: "AUGGY_COORDINATION_DATABASE_URL",
+          fleetCapacity: {
+            maxConcurrent: 4,
+            maxQueued: 100,
+            maxQueuedPerThread: 20,
+          },
           leaseDurationMs: 30_000,
           heartbeatIntervalMs: 5_000,
           claimPollMs: 100,

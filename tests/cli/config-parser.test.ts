@@ -350,14 +350,24 @@ describe("parseConfig", () => {
     }
   });
 
-  test("parses a secret-free distributed coordination contract with secure defaults", () => {
+  test("keeps explicit fleet capacity separate from process-local scheduling", () => {
     const path = writeYaml(
       "agent.yaml",
       minimalConfig({
         settings: {
+          turnScheduling: {
+            maxConcurrent: 1,
+            maxQueued: 2,
+            maxQueuedPerThread: 1,
+          },
           coordination: {
             mode: "postgres",
             namespace: "a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+            fleetCapacity: {
+              maxConcurrent: 8,
+              maxQueued: 200,
+              maxQueuedPerThread: 25,
+            },
           },
         },
       }),
@@ -366,32 +376,126 @@ describe("parseConfig", () => {
     expect(parseConfig(path).settings.coordination).toEqual({
       mode: "postgres",
       namespace: "a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+      fleetCapacity: {
+        maxConcurrent: 8,
+        maxQueued: 200,
+        maxQueuedPerThread: 25,
+      },
       urlEnv: "AUGGY_COORDINATION_DATABASE_URL",
       leaseDurationMs: 30_000,
       heartbeatIntervalMs: 5_000,
       claimPollMs: 100,
       maxWaitMs: 30_000,
     });
+    expect(parseConfig(path).settings.turnScheduling).toEqual({
+      maxConcurrent: 1,
+      maxQueued: 2,
+      maxQueuedPerThread: 1,
+    });
   });
 
   test("rejects unsafe or ambiguous distributed coordination settings", () => {
+    const fleetCapacity = {
+      maxConcurrent: 4,
+      maxQueued: 100,
+      maxQueuedPerThread: 20,
+    };
     const invalid = [
       { mode: "redis", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7" },
       { mode: "postgres", namespace: "not-a-uuid" },
       { mode: "postgres", namespace: "5D9B9796-65BA-43D0-9BA9-57F1A9DB5EF7" },
       { mode: "postgres", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7" },
-      { mode: "postgres", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7", urlEnv: "URL;SECRET" },
       {
         mode: "postgres",
         namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        fleetCapacity,
+        urlEnv: "URL;SECRET",
+      },
+      {
+        mode: "postgres",
+        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        fleetCapacity,
         leaseDurationMs: 10_000,
         heartbeatIntervalMs: 4_000,
       },
-      { mode: "postgres", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7", unknown: true },
+      {
+        mode: "postgres",
+        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        fleetCapacity,
+        unknown: true,
+      },
+      {
+        mode: "postgres",
+        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        fleetCapacity: true,
+      },
+      {
+        mode: "postgres",
+        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        fleetCapacity: { ...fleetCapacity, maxConcurrent: 0 },
+      },
+      {
+        mode: "postgres",
+        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        fleetCapacity: { ...fleetCapacity, maxQueued: -1 },
+      },
+      {
+        mode: "postgres",
+        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        fleetCapacity: { ...fleetCapacity, maxConcurrent: 1.5 },
+      },
+      {
+        mode: "postgres",
+        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        fleetCapacity: { ...fleetCapacity, maxQueued: 1_000_001 },
+      },
+      {
+        mode: "postgres",
+        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        fleetCapacity: { ...fleetCapacity, maxQueued: 2, maxQueuedPerThread: 3 },
+      },
+      {
+        mode: "postgres",
+        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        fleetCapacity: { ...fleetCapacity, unknown: 1 },
+      },
+      {
+        mode: "postgres",
+        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        fleetCapacity: { ...fleetCapacity, constructor: 1 },
+      },
     ];
     for (const coordination of invalid) {
       const path = writeYaml("agent.yaml", minimalConfig({ settings: { coordination } }));
       expect(() => parseConfig(path)).toThrow(/settings\.coordination/);
+    }
+  });
+
+  test("does not echo unknown fleet-capacity keys in validation errors", () => {
+    const sentinel = "SENTINEL_CAPACITY_SECRET";
+    const path = writeYaml(
+      "agent.yaml",
+      minimalConfig({
+        settings: {
+          coordination: {
+            mode: "postgres",
+            namespace: "a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+            fleetCapacity: {
+              maxConcurrent: 4,
+              maxQueued: 100,
+              maxQueuedPerThread: 20,
+              [sentinel]: true,
+            },
+          },
+        },
+      }),
+    );
+
+    expect(() => parseConfig(path)).toThrow("contains unknown capacity settings");
+    try {
+      parseConfig(path);
+    } catch (error) {
+      expect(String(error)).not.toContain(sentinel);
     }
   });
 

@@ -31,6 +31,7 @@ import {
 } from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
 import { assertDistributedCoordinationStartupAllowed } from "../../coordination/topology";
+import { configuredAugmentReplicaEvidence } from "../distributed-coordination-preflight";
 
 interface StartOptions {
   config?: string;
@@ -72,7 +73,7 @@ export async function runStart(name: string | undefined, opts: StartOptions): Pr
   const agentDir = dirname(configPath);
   const config = parseConfig(configPath);
   assertDistributedCoordinationStartupAllowed(config.settings.coordination, {
-    configuredAugments: config.augments.length > 0,
+    augmentEvidence: configuredAugmentReplicaEvidence(config.augments),
   });
   const agentName = config.name;
   const processOptions = {

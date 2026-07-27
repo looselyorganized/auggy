@@ -140,6 +140,11 @@ describe("runDev distributed startup ordering", () => {
           coordination: {
             mode: "postgres",
             namespace: "a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+            fleetCapacity: {
+              maxConcurrent: 4,
+              maxQueued: 100,
+              maxQueuedPerThread: 20,
+            },
           },
           jobs: { enabled: true, dbPath: jobsPath },
         },

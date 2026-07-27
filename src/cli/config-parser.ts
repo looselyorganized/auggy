@@ -22,7 +22,7 @@ import type {
   DurableJobsConfig,
   SecurityEvalOverride,
 } from "./types";
-import { KNOWN_PROVIDERS, isKnownProvider } from "./types";
+import { BUILTIN_AUGMENT_TYPES, KNOWN_PROVIDERS, isKnownProvider } from "./types";
 import { parseEnvFile } from "./env-parse";
 import {
   buildConsoleAllowedOrigins,
@@ -358,25 +358,7 @@ const AUG1_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 export const VALID_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const VALID_COMPACTION = new Set(["truncate", "summarize", "sliding-window"]);
 const AUGMENT_SOURCE_LABEL_FIELD = "__auggySourceLabel";
-const BUILTIN_TYPES = new Set([
-  "fileMemory",
-  "supabaseMemory",
-  "layeredMemory",
-  "filesystem",
-  "webTransport",
-  "webFetch",
-  "knowledge",
-  "skills",
-  "bash",
-  "budgets",
-  "notify",
-  "mcp",
-  "agentMail",
-  "telegramTransport",
-  "turnControl",
-  "visitorAuth",
-  "link",
-]);
+const BUILTIN_TYPES = new Set<string>(BUILTIN_AUGMENT_TYPES);
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const VALID_ROUTING_SORTS = new Set(["price", "throughput", "latency"]);
 const VALID_ROUTING_KEYS = new Set(["only", "ignore", "sort", "max_price"]);
@@ -2461,6 +2443,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       const allowed = new Set([
         "mode",
         "namespace",
+        "fleetCapacity",
         "urlEnv",
         "leaseDurationMs",
         "heartbeatIntervalMs",
@@ -2487,6 +2470,46 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         errors.push(
           "settings.coordination.namespace: must equal the immutable UUID portion of the agent id",
         );
+      }
+      const fleetCapacity = coordination.fleetCapacity;
+      if (
+        typeof fleetCapacity !== "object" ||
+        fleetCapacity === null ||
+        Array.isArray(fleetCapacity)
+      ) {
+        errors.push("settings.coordination.fleetCapacity: must be an object");
+      } else {
+        const capacity = fleetCapacity as Record<string, unknown>;
+        const capacityLimits = {
+          maxConcurrent: { minimum: 1, maximum: 1_000_000 },
+          maxQueued: { minimum: 0, maximum: 1_000_000 },
+          maxQueuedPerThread: { minimum: 0, maximum: 1_000_000 },
+        } as const;
+        if (Object.keys(capacity).some((key) => !Object.hasOwn(capacityLimits, key))) {
+          errors.push("settings.coordination.fleetCapacity: contains unknown capacity settings");
+        }
+        for (const key of Object.keys(capacityLimits) as Array<keyof typeof capacityLimits>) {
+          const limits = capacityLimits[key];
+          const value = capacity[key];
+          if (
+            !Number.isSafeInteger(value) ||
+            (value as number) < limits.minimum ||
+            (value as number) > limits.maximum
+          ) {
+            errors.push(
+              `settings.coordination.fleetCapacity.${key}: must be a safe integer between ${limits.minimum} and ${limits.maximum}`,
+            );
+          }
+        }
+        if (
+          Number.isSafeInteger(capacity.maxQueued) &&
+          Number.isSafeInteger(capacity.maxQueuedPerThread) &&
+          (capacity.maxQueuedPerThread as number) > (capacity.maxQueued as number)
+        ) {
+          errors.push(
+            "settings.coordination.fleetCapacity.maxQueuedPerThread: cannot exceed maxQueued",
+          );
+        }
       }
       const urlEnv = coordination.urlEnv ?? DEFAULT_DISTRIBUTED_COORDINATION.urlEnv;
       if (typeof urlEnv !== "string" || !ENV_VAR_NAME_RE.test(urlEnv)) {
@@ -2592,6 +2615,13 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
     parsedSettings.coordination = {
       mode: "postgres",
       namespace: coordination.namespace as string,
+      fleetCapacity: {
+        maxConcurrent: (coordination.fleetCapacity as Record<string, unknown>)
+          .maxConcurrent as number,
+        maxQueued: (coordination.fleetCapacity as Record<string, unknown>).maxQueued as number,
+        maxQueuedPerThread: (coordination.fleetCapacity as Record<string, unknown>)
+          .maxQueuedPerThread as number,
+      },
       urlEnv:
         (coordination.urlEnv as string | undefined) ?? DEFAULT_DISTRIBUTED_COORDINATION.urlEnv,
       leaseDurationMs:

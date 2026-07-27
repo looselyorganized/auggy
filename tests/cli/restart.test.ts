@@ -48,7 +48,7 @@ describe("restart target validation", () => {
     const configPath = config(AGENT_B, "agent-b");
     writeFileSync(
       configPath,
-      `${configYaml(AGENT_B, "agent-b")}settings:\n  coordination:\n    mode: postgres\n    namespace: 22222222-2222-4222-8222-222222222222\n`,
+      `${configYaml(AGENT_B, "agent-b")}settings:\n  coordination:\n    mode: postgres\n    namespace: 22222222-2222-4222-8222-222222222222\n    fleetCapacity:\n      maxConcurrent: 4\n      maxQueued: 100\n      maxQueuedPerThread: 20\n`,
     );
     const running = manifest(configPath);
     let stopped = false;

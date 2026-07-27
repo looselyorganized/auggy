@@ -787,7 +787,10 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       return serializeLifecycle(async () => {
         if (started) throw new Error("Agent already started. Call stop() first.");
         assertDistributedCoordinationStartupAllowed(effectiveConfig.coordination, {
-          configuredAugments: effectiveAugments.length > 0,
+          augmentEvidence: effectiveAugments.map((_augment, augmentIndex) => ({
+            augmentIndex,
+            requirement: "runtime-augment-unverified" as const,
+          })),
         });
         if (turnScheduler.snapshot().state === "stopped") turnScheduler.reopen();
         operationalSignals.reset();

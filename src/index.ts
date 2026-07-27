@@ -103,6 +103,7 @@ export type {
   RuntimeSignalsSnapshot,
   RuntimeOperationalSnapshot,
   DistributedCoordinationConfig,
+  DistributedFleetCapacityConfig,
 } from "./types";
 
 // === Agent definition ===

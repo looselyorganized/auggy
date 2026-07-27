@@ -5,31 +5,39 @@
  * registry, and CLI commands. They are internal to the CLI — not part
  * of the Auggy public API surface.
  */
-import type { ModelResponseLimits, TurnSchedulingConfig } from "../types";
+import type {
+  DistributedFleetCapacityConfig,
+  ModelResponseLimits,
+  TurnSchedulingConfig,
+} from "../types";
 
 // ---------------------------------------------------------------------------
 // Config types — the output of parsing agent.yaml
 // ---------------------------------------------------------------------------
 
+/** Runtime source of truth for the built-in augment type identifiers. */
+export const BUILTIN_AUGMENT_TYPES = [
+  "fileMemory",
+  "supabaseMemory",
+  "layeredMemory",
+  "filesystem",
+  "webTransport",
+  "webFetch",
+  "knowledge",
+  "skills",
+  "bash",
+  "budgets",
+  "notify",
+  "mcp",
+  "agentMail",
+  "telegramTransport",
+  "turnControl",
+  "visitorAuth",
+  "link",
+] as const;
+
 /** The built-in augment type identifiers. */
-export type BuiltinAugmentType =
-  | "fileMemory"
-  | "supabaseMemory"
-  | "layeredMemory"
-  | "filesystem"
-  | "webTransport"
-  | "webFetch"
-  | "knowledge"
-  | "skills"
-  | "bash"
-  | "budgets"
-  | "notify"
-  | "mcp"
-  | "agentMail"
-  | "telegramTransport"
-  | "turnControl"
-  | "visitorAuth"
-  | "link";
+export type BuiltinAugmentType = (typeof BUILTIN_AUGMENT_TYPES)[number];
 
 /** A single augment entry from the `augments:` array in agent.yaml. */
 export interface AugmentConfig {
@@ -208,6 +216,8 @@ export interface DistributedCoordinationConfig {
   namespace: string;
   /** Name of the environment variable containing the PostgreSQL URL. */
   urlEnv: string;
+  /** Immutable fleet-wide capacity, never multiplied by replica count. */
+  fleetCapacity: DistributedFleetCapacityConfig;
   leaseDurationMs: number;
   heartbeatIntervalMs: number;
   claimPollMs: number;

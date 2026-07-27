@@ -45,6 +45,7 @@ import {
   assertDistributedCoordinationStartupAllowed,
   DistributedCoordinationStartupError,
 } from "../../coordination/topology";
+import { configuredAugmentReplicaEvidence } from "../distributed-coordination-preflight";
 
 export interface DeployLogger {
   info(msg: string): void;
@@ -264,7 +265,7 @@ export async function runDeploy(
   try {
     const startupConfig = parseConfig(configPath);
     assertDistributedCoordinationStartupAllowed(startupConfig.settings.coordination, {
-      configuredAugments: startupConfig.augments.length > 0,
+      augmentEvidence: configuredAugmentReplicaEvidence(startupConfig.augments),
     });
   } catch (error) {
     if (error instanceof DistributedCoordinationStartupError) throw error;

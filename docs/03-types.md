@@ -740,11 +740,25 @@ export interface AgentConfig {
   responseLimits?: Partial<ModelResponseLimits>;
   providerRequestTimeoutMs?: number; // default 120000, maximum 600000
   turnScheduling?: Partial<{
-    maxConcurrent: number;       // default 4
-    maxQueued: number;           // default 100
-    maxQueuedPerThread: number;  // default 20
+    maxConcurrent: number;       // process-local, default 4
+    maxQueued: number;           // process-local, default 100
+    maxQueuedPerThread: number;  // process-local, default 20
     maxCausalDepth: number;      // default 8
   }>;
+  coordination?: {
+    mode: "postgres";
+    namespace: string;
+    urlEnv: string;
+    fleetCapacity: {
+      maxConcurrent: number;
+      maxQueued: number;
+      maxQueuedPerThread: number;
+    };
+    leaseDurationMs: number;
+    heartbeatIntervalMs: number;
+    claimPollMs: number;
+    maxWaitMs: number;
+  };
 }
 
 export interface AgentHealth {
@@ -796,6 +810,12 @@ complete active turn pipelines across every transport and injection path.
 conversation from consuming it. `maxCausalDepth` bounds nested same-thread
 `SchedulerContext.inject()` work. Queue settings may be zero; active and causal
 limits must be positive safe integers.
+
+`coordination.fleetCapacity` is a separate, required declaration for a future
+distributed coordinator. Its limits apply once to the logical agent fleet and
+must never be multiplied by replica count or derived from `turnScheduling`.
+Declaring coordination remains fail-closed until the shared-store and fencing
+preflight is complete; it does not enable replicas by itself.
 
 `inject()` lets trusted non-transport code feed a trigger into the same
 agent-wide scheduler used by transports. It no longer bypasses concurrency or

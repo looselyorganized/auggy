@@ -13,6 +13,7 @@ import { runStop } from "./stop";
 import { runStart } from "./start";
 import { runDev } from "./dev";
 import { assertDistributedCoordinationStartupAllowed } from "../../coordination/topology";
+import { configuredAugmentReplicaEvidence } from "../distributed-coordination-preflight";
 
 interface RestartOptions {
   config?: string;
@@ -136,7 +137,7 @@ export function assertRestartTarget(manifest: PidManifest, candidatePath: string
   }
   const config = parseConfig(configPath);
   assertDistributedCoordinationStartupAllowed(config.settings.coordination, {
-    configuredAugments: config.augments.length > 0,
+    augmentEvidence: configuredAugmentReplicaEvidence(config.augments),
   });
   if (manifest.agentId && config.id !== manifest.agentId) {
     throw new Error("Restart config identity does not match the running agent manifest");

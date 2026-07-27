@@ -21,10 +21,39 @@ export type DistributedCoordinationPreflightBlocker =
   | DistributedCoordinationBlocker
   | "configured-augment-state-unverified";
 
+export const DISTRIBUTED_AUGMENT_REQUIREMENT_CODES = [
+  "local-mutable-state",
+  "shared-store-unverified",
+  "local-filesystem-unverified",
+  "shared-web-state-missing",
+  "stateless-verifier-missing",
+  "immutable-assets-unverified",
+  "local-effects-unverified",
+  "shared-budget-store-missing",
+  "shared-delivery-store-missing",
+  "mcp-topology-unverified",
+  "shared-inbound-store-missing",
+  "shared-replay-store-missing",
+  "shared-session-store-missing",
+  "shared-link-store-missing",
+  "custom-augment-unverified",
+  "runtime-augment-unverified",
+  "unknown-augment-type",
+] as const;
+
+export type DistributedAugmentRequirementCode =
+  (typeof DISTRIBUTED_AUGMENT_REQUIREMENT_CODES)[number];
+
+export interface DistributedAugmentPreflightEvidence {
+  augmentIndex: number;
+  requirement: DistributedAugmentRequirementCode;
+}
+
 export interface DistributedCoordinationPreflightReport {
   profile: "disabled";
   ready: false;
   blockers: readonly DistributedCoordinationPreflightBlocker[];
+  components: readonly DistributedAugmentPreflightEvidence[];
 }
 
 export class DistributedCoordinationStartupError extends Error {
@@ -81,17 +110,43 @@ export function enumerateDistributedCoordinationBlockers(): DistributedCoordinat
 }
 
 /** Build fixed, secret-free evidence for the deliberately disabled profile. */
+const DISTRIBUTED_AUGMENT_REQUIREMENT_CODE_SET = new Set<string>(
+  DISTRIBUTED_AUGMENT_REQUIREMENT_CODES,
+);
+
+function safeAugmentEvidence(
+  evidence: readonly DistributedAugmentPreflightEvidence[] | undefined,
+): readonly DistributedAugmentPreflightEvidence[] {
+  return Object.freeze(
+    (evidence ?? []).slice(0, 1_000).map((entry, position) =>
+      Object.freeze({
+        augmentIndex:
+          Number.isSafeInteger(entry?.augmentIndex) &&
+          entry.augmentIndex >= 0 &&
+          entry.augmentIndex <= 999
+            ? entry.augmentIndex
+            : position,
+        requirement: DISTRIBUTED_AUGMENT_REQUIREMENT_CODE_SET.has(entry?.requirement)
+          ? entry.requirement
+          : "runtime-augment-unverified",
+      }),
+    ),
+  );
+}
+
 export function distributedCoordinationPreflightReport(options?: {
-  configuredAugments?: boolean;
+  augmentEvidence?: readonly DistributedAugmentPreflightEvidence[];
 }): DistributedCoordinationPreflightReport {
+  const components = safeAugmentEvidence(options?.augmentEvidence);
   return Object.freeze({
     profile: "disabled" as const,
     ready: false as const,
     blockers: Object.freeze([
       "runtime-not-enabled" as const,
       ...enumerateDistributedCoordinationBlockers(),
-      ...(options?.configuredAugments ? (["configured-augment-state-unverified"] as const) : []),
+      ...(components.length > 0 ? (["configured-augment-state-unverified"] as const) : []),
     ]),
+    components,
   });
 }
 
@@ -101,7 +156,7 @@ export function distributedCoordinationPreflightReport(options?: {
  */
 export function assertDistributedCoordinationStartupAllowed(
   coordination: unknown,
-  options?: { configuredAugments?: boolean },
+  options?: { augmentEvidence?: readonly DistributedAugmentPreflightEvidence[] },
 ): void {
   if (coordination === undefined) return;
   const report = distributedCoordinationPreflightReport(options);
