@@ -6,7 +6,7 @@
  * of the Auggy public API surface.
  */
 import type {
-  DistributedFleetCapacityConfig,
+  DistributedCoordinationConfig as CoreDistributedCoordinationConfig,
   ModelResponseLimits,
   TurnSchedulingConfig,
 } from "../types";
@@ -210,19 +210,7 @@ export interface DurableJobsConfig {
 }
 
 /** Configuration for a fail-closed PostgreSQL distributed coordinator. */
-export interface DistributedCoordinationConfig {
-  mode: "postgres";
-  /** Stable UUID namespace shared only by replicas of this logical agent. */
-  namespace: string;
-  /** Name of the environment variable containing the PostgreSQL URL. */
-  urlEnv: string;
-  /** Immutable fleet-wide capacity, never multiplied by replica count. */
-  fleetCapacity: DistributedFleetCapacityConfig;
-  leaseDurationMs: number;
-  heartbeatIntervalMs: number;
-  claimPollMs: number;
-  maxWaitMs: number;
-}
+export type DistributedCoordinationConfig = CoreDistributedCoordinationConfig;
 
 /**
  * Optional per-agent overrides for the portable security eval suite.

@@ -104,6 +104,8 @@ export type {
   RuntimeOperationalSnapshot,
   DistributedCoordinationConfig,
   DistributedFleetCapacityConfig,
+  DistributedCoordinationRetentionConfig,
+  DistributedCoordinationResultConfig,
 } from "./types";
 
 // === Agent definition ===

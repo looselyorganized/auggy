@@ -1559,6 +1559,10 @@ export interface DistributedCoordinationConfig {
   urlEnv: string;
   /** Immutable fleet-wide capacity, never multiplied by replica count. */
   fleetCapacity: DistributedFleetCapacityConfig;
+  /** Explicit age and count bounds for coordinator-owned terminal/audit records. */
+  retention: DistributedCoordinationRetentionConfig;
+  /** Explicit replay storage bound, measured in serialized UTF-8 bytes. */
+  result: DistributedCoordinationResultConfig;
   leaseDurationMs: number;
   heartbeatIntervalMs: number;
   claimPollMs: number;
@@ -1572,6 +1576,22 @@ export interface DistributedFleetCapacityConfig {
   maxQueued: number;
   /** Maximum waiting turns for one resolved thread across the logical fleet. */
   maxQueuedPerThread: number;
+}
+
+export interface DistributedCoordinationRetentionConfig {
+  /** Age bound for terminal requests; queued, active, and ambiguous work is excluded. */
+  terminalRequestRetentionMs: number;
+  /** Count bound for terminal request records within one namespace. */
+  maxTerminalRequests: number;
+  /** Age bound for bounded coordinator audit events. */
+  eventRetentionMs: number;
+  /** Count bound for coordinator audit events within one namespace. */
+  maxEvents: number;
+}
+
+export interface DistributedCoordinationResultConfig {
+  /** Maximum serialized UTF-8 bytes retained for one sanitized replay result. */
+  maxReplayBytes: number;
 }
 
 export interface TurnSchedulingConfig {

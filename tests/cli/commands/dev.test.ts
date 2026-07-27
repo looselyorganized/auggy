@@ -145,6 +145,13 @@ describe("runDev distributed startup ordering", () => {
               maxQueued: 100,
               maxQueuedPerThread: 20,
             },
+            retention: {
+              terminalRequestRetentionMs: 604_800_000,
+              maxTerminalRequests: 10_000,
+              eventRetentionMs: 2_592_000_000,
+              maxEvents: 50_000,
+            },
+            result: { maxReplayBytes: 65_536 },
           },
           jobs: { enabled: true, dbPath: jobsPath },
         },

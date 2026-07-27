@@ -754,6 +754,15 @@ export interface AgentConfig {
       maxQueued: number;
       maxQueuedPerThread: number;
     };
+    retention: {
+      terminalRequestRetentionMs: number;
+      maxTerminalRequests: number;
+      eventRetentionMs: number;
+      maxEvents: number;
+    };
+    result: {
+      maxReplayBytes: number;
+    };
     leaseDurationMs: number;
     heartbeatIntervalMs: number;
     claimPollMs: number;
@@ -816,6 +825,11 @@ distributed coordinator. Its limits apply once to the logical agent fleet and
 must never be multiplied by replica count or derived from `turnScheduling`.
 Declaring coordination remains fail-closed until the shared-store and fencing
 preflight is complete; it does not enable replicas by itself.
+The required `retention` policy bounds terminal requests and audit events by
+both age and count. It never authorizes pruning queued, active, or
+outcome-unknown work. `result.maxReplayBytes` bounds one sanitized serialized
+replay result by UTF-8 bytes; a result outside that envelope must remain a
+terminal non-replayable outcome and must never authorize duplicate execution.
 
 `inject()` lets trusted non-transport code feed a trigger into the same
 agent-wide scheduler used by transports. It no longer bypasses concurrency or

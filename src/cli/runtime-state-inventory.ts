@@ -174,6 +174,10 @@ function stateConfigShape(config: ParsedConfig): unknown {
       ? {
           mode: config.settings.coordination.mode,
           namespace: config.settings.coordination.namespace,
+          fleetCapacity: config.settings.coordination.fleetCapacity,
+          retention: config.settings.coordination.retention,
+          result: config.settings.coordination.result,
+          leaseDurationMs: config.settings.coordination.leaseDurationMs,
         }
       : undefined,
     jobs: config.settings.jobs
@@ -842,7 +846,7 @@ export function buildRuntimeStateInventory(
       kind: "external",
       backupPlane: "external",
       schema: "postgres coordination migration ledger",
-      retention: "operator-managed",
+      retention: `terminal requests ${config.settings.coordination.retention.terminalRequestRetentionMs}ms/${config.settings.coordination.retention.maxTerminalRequests} records; events ${config.settings.coordination.retention.eventRetentionMs}ms/${config.settings.coordination.retention.maxEvents} records`,
       restoreOrder: 10,
       replayCritical: true,
       required: true,

@@ -2444,15 +2444,16 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         "mode",
         "namespace",
         "fleetCapacity",
+        "retention",
+        "result",
         "urlEnv",
         "leaseDurationMs",
         "heartbeatIntervalMs",
         "claimPollMs",
         "maxWaitMs",
       ]);
-      for (const key of Object.keys(coordination)) {
-        if (!allowed.has(key))
-          errors.push(`settings.coordination.${key}: unknown coordination setting`);
+      if (Object.keys(coordination).some((key) => !allowed.has(key))) {
+        errors.push("settings.coordination: contains unknown coordination settings");
       }
       if (coordination.mode !== "postgres") {
         errors.push('settings.coordination.mode: must be "postgres"');
@@ -2508,6 +2509,52 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         ) {
           errors.push(
             "settings.coordination.fleetCapacity.maxQueuedPerThread: cannot exceed maxQueued",
+          );
+        }
+      }
+      const retention = coordination.retention;
+      if (typeof retention !== "object" || retention === null || Array.isArray(retention)) {
+        errors.push("settings.coordination.retention: must be an object");
+      } else {
+        const policy = retention as Record<string, unknown>;
+        const retentionLimits = {
+          terminalRequestRetentionMs: { minimum: 60_000, maximum: 31_536_000_000 },
+          maxTerminalRequests: { minimum: 1, maximum: 1_000_000 },
+          eventRetentionMs: { minimum: 60_000, maximum: 31_536_000_000 },
+          maxEvents: { minimum: 1, maximum: 1_000_000 },
+        } as const;
+        if (Object.keys(policy).some((key) => !Object.hasOwn(retentionLimits, key))) {
+          errors.push("settings.coordination.retention: contains unknown retention settings");
+        }
+        for (const key of Object.keys(retentionLimits) as Array<keyof typeof retentionLimits>) {
+          const limits = retentionLimits[key];
+          const value = policy[key];
+          if (
+            !Number.isSafeInteger(value) ||
+            (value as number) < limits.minimum ||
+            (value as number) > limits.maximum
+          ) {
+            errors.push(
+              `settings.coordination.retention.${key}: must be a safe integer between ${limits.minimum} and ${limits.maximum}`,
+            );
+          }
+        }
+      }
+      const result = coordination.result;
+      if (typeof result !== "object" || result === null || Array.isArray(result)) {
+        errors.push("settings.coordination.result: must be an object");
+      } else {
+        const policy = result as Record<string, unknown>;
+        if (Object.keys(policy).some((key) => key !== "maxReplayBytes")) {
+          errors.push("settings.coordination.result: contains unknown result settings");
+        }
+        if (
+          !Number.isSafeInteger(policy.maxReplayBytes) ||
+          (policy.maxReplayBytes as number) < 1_024 ||
+          (policy.maxReplayBytes as number) > 1_048_576
+        ) {
+          errors.push(
+            "settings.coordination.result.maxReplayBytes: must be a safe integer between 1024 and 1048576",
           );
         }
       }
@@ -2621,6 +2668,18 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         maxQueued: (coordination.fleetCapacity as Record<string, unknown>).maxQueued as number,
         maxQueuedPerThread: (coordination.fleetCapacity as Record<string, unknown>)
           .maxQueuedPerThread as number,
+      },
+      retention: {
+        terminalRequestRetentionMs: (coordination.retention as Record<string, unknown>)
+          .terminalRequestRetentionMs as number,
+        maxTerminalRequests: (coordination.retention as Record<string, unknown>)
+          .maxTerminalRequests as number,
+        eventRetentionMs: (coordination.retention as Record<string, unknown>)
+          .eventRetentionMs as number,
+        maxEvents: (coordination.retention as Record<string, unknown>).maxEvents as number,
+      },
+      result: {
+        maxReplayBytes: (coordination.result as Record<string, unknown>).maxReplayBytes as number,
       },
       urlEnv:
         (coordination.urlEnv as string | undefined) ?? DEFAULT_DISTRIBUTED_COORDINATION.urlEnv,

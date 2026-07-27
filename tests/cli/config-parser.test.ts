@@ -368,6 +368,13 @@ describe("parseConfig", () => {
               maxQueued: 200,
               maxQueuedPerThread: 25,
             },
+            retention: {
+              terminalRequestRetentionMs: 604_800_000,
+              maxTerminalRequests: 10_000,
+              eventRetentionMs: 2_592_000_000,
+              maxEvents: 50_000,
+            },
+            result: { maxReplayBytes: 65_536 },
           },
         },
       }),
@@ -381,6 +388,13 @@ describe("parseConfig", () => {
         maxQueued: 200,
         maxQueuedPerThread: 25,
       },
+      retention: {
+        terminalRequestRetentionMs: 604_800_000,
+        maxTerminalRequests: 10_000,
+        eventRetentionMs: 2_592_000_000,
+        maxEvents: 50_000,
+      },
+      result: { maxReplayBytes: 65_536 },
       urlEnv: "AUGGY_COORDINATION_DATABASE_URL",
       leaseDurationMs: 30_000,
       heartbeatIntervalMs: 5_000,
@@ -400,70 +414,85 @@ describe("parseConfig", () => {
       maxQueued: 100,
       maxQueuedPerThread: 20,
     };
+    const retention = {
+      terminalRequestRetentionMs: 604_800_000,
+      maxTerminalRequests: 10_000,
+      eventRetentionMs: 2_592_000_000,
+      maxEvents: 50_000,
+    };
+    const result = { maxReplayBytes: 65_536 };
+    const validCoordination = {
+      mode: "postgres",
+      namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+      fleetCapacity,
+      retention,
+      result,
+    };
     const invalid = [
-      { mode: "redis", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7" },
-      { mode: "postgres", namespace: "not-a-uuid" },
-      { mode: "postgres", namespace: "5D9B9796-65BA-43D0-9BA9-57F1A9DB5EF7" },
-      { mode: "postgres", namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7" },
+      { ...validCoordination, mode: "redis" },
+      { ...validCoordination, namespace: "not-a-uuid" },
+      { ...validCoordination, namespace: "5D9B9796-65BA-43D0-9BA9-57F1A9DB5EF7" },
+      { mode: "postgres", namespace: validCoordination.namespace, retention, result },
       {
-        mode: "postgres",
-        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
-        fleetCapacity,
+        ...validCoordination,
         urlEnv: "URL;SECRET",
       },
       {
-        mode: "postgres",
-        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
-        fleetCapacity,
+        ...validCoordination,
         leaseDurationMs: 10_000,
         heartbeatIntervalMs: 4_000,
       },
       {
-        mode: "postgres",
-        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
-        fleetCapacity,
+        ...validCoordination,
         unknown: true,
       },
       {
-        mode: "postgres",
-        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        ...validCoordination,
         fleetCapacity: true,
       },
       {
-        mode: "postgres",
-        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        ...validCoordination,
         fleetCapacity: { ...fleetCapacity, maxConcurrent: 0 },
       },
       {
-        mode: "postgres",
-        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        ...validCoordination,
         fleetCapacity: { ...fleetCapacity, maxQueued: -1 },
       },
       {
-        mode: "postgres",
-        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        ...validCoordination,
         fleetCapacity: { ...fleetCapacity, maxConcurrent: 1.5 },
       },
       {
-        mode: "postgres",
-        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        ...validCoordination,
         fleetCapacity: { ...fleetCapacity, maxQueued: 1_000_001 },
       },
       {
-        mode: "postgres",
-        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        ...validCoordination,
         fleetCapacity: { ...fleetCapacity, maxQueued: 2, maxQueuedPerThread: 3 },
       },
       {
-        mode: "postgres",
-        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        ...validCoordination,
         fleetCapacity: { ...fleetCapacity, unknown: 1 },
       },
       {
-        mode: "postgres",
-        namespace: "5d9b9796-65ba-43d0-9ba9-57f1a9db5ef7",
+        ...validCoordination,
         fleetCapacity: { ...fleetCapacity, constructor: 1 },
       },
+      { ...validCoordination, retention: undefined },
+      { ...validCoordination, retention: true },
+      {
+        ...validCoordination,
+        retention: { ...retention, terminalRequestRetentionMs: 0 },
+      },
+      { ...validCoordination, retention: { ...retention, maxEvents: 1.5 } },
+      { ...validCoordination, retention: { ...retention, maxEvents: 1_000_001 } },
+      { ...validCoordination, retention: { ...retention, constructor: 1 } },
+      { ...validCoordination, result: undefined },
+      { ...validCoordination, result: true },
+      { ...validCoordination, result: { maxReplayBytes: 0 } },
+      { ...validCoordination, result: { maxReplayBytes: 1.5 } },
+      { ...validCoordination, result: { maxReplayBytes: 1_048_577 } },
+      { ...validCoordination, result: { maxReplayBytes: 65_536, constructor: 1 } },
     ];
     for (const coordination of invalid) {
       const path = writeYaml("agent.yaml", minimalConfig({ settings: { coordination } }));
@@ -471,31 +500,42 @@ describe("parseConfig", () => {
     }
   });
 
-  test("does not echo unknown fleet-capacity keys in validation errors", () => {
-    const sentinel = "SENTINEL_CAPACITY_SECRET";
-    const path = writeYaml(
-      "agent.yaml",
-      minimalConfig({
-        settings: {
-          coordination: {
-            mode: "postgres",
-            namespace: "a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
-            fleetCapacity: {
-              maxConcurrent: 4,
-              maxQueued: 100,
-              maxQueuedPerThread: 20,
-              [sentinel]: true,
+  test("does not echo unknown coordination policy keys in validation errors", () => {
+    const sentinel = "SENTINEL_COORDINATION_POLICY_SECRET";
+    const fleetCapacity = { maxConcurrent: 4, maxQueued: 100, maxQueuedPerThread: 20 };
+    const retention = {
+      terminalRequestRetentionMs: 604_800_000,
+      maxTerminalRequests: 10_000,
+      eventRetentionMs: 2_592_000_000,
+      maxEvents: 50_000,
+    };
+    const result = { maxReplayBytes: 65_536 };
+    const variants = [
+      { fleetCapacity: { ...fleetCapacity, [sentinel]: true }, retention, result },
+      { fleetCapacity, retention: { ...retention, [sentinel]: true }, result },
+      { fleetCapacity, retention, result: { ...result, [sentinel]: true } },
+      { fleetCapacity, retention, result, [sentinel]: true },
+    ];
+
+    for (const [index, variant] of variants.entries()) {
+      const path = writeYaml(
+        `coordination-policy-${index}.yaml`,
+        minimalConfig({
+          settings: {
+            coordination: {
+              mode: "postgres",
+              namespace: "a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+              ...variant,
             },
           },
-        },
-      }),
-    );
-
-    expect(() => parseConfig(path)).toThrow("contains unknown capacity settings");
-    try {
-      parseConfig(path);
-    } catch (error) {
-      expect(String(error)).not.toContain(sentinel);
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(/contains unknown/);
+      try {
+        parseConfig(path);
+      } catch (error) {
+        expect(String(error)).not.toContain(sentinel);
+      }
     }
   });
 

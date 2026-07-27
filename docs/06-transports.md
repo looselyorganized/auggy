@@ -1317,6 +1317,13 @@ settings:
       maxConcurrent: 8
       maxQueued: 200
       maxQueuedPerThread: 25
+    retention:
+      terminalRequestRetentionMs: 604800000
+      maxTerminalRequests: 10000
+      eventRetentionMs: 2592000000
+      maxEvents: 50000
+    result:
+      maxReplayBytes: 65536
     # urlEnv defaults to AUGGY_COORDINATION_DATABASE_URL
     leaseDurationMs: 30000
     heartbeatIntervalMs: 5000
@@ -1334,6 +1341,10 @@ durable fenced delivery outbox before it can enable distributed execution.
 Until then deploy one runtime replica for each logical agent namespace.
 `fleetCapacity` is an explicit fleet-wide contract: its values are not defaults
 for `turnScheduling` and are never multiplied by replica count.
+Retention and replay bounds are also explicit. Terminal requests and audit
+events are bounded by age and count; queued, active, and outcome-unknown work
+is never eligible for terminal pruning. `maxReplayBytes` is measured over
+sanitized serialized UTF-8 bytes.
 
 Provision the dedicated coordination database explicitly; the command reads
 only the environment variable named by `urlEnv`, never a URL in `agent.yaml`:

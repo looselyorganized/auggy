@@ -175,6 +175,13 @@ settings:
       maxConcurrent: 8
       maxQueued: 200
       maxQueuedPerThread: 25
+    retention:
+      terminalRequestRetentionMs: 604800000
+      maxTerminalRequests: 10000
+      eventRetentionMs: 2592000000
+      maxEvents: 50000
+    result:
+      maxReplayBytes: 65536
     leaseDurationMs: 30000
     heartbeatIntervalMs: 5000
     claimPollMs: 100
@@ -185,7 +192,9 @@ The URL is read from the named environment variable and is never printed.
 `namespace` must be a canonical UUID. `heartbeatIntervalMs * 3` must not exceed
 `leaseDurationMs`. `fleetCapacity` is required, applies once to the logical
 fleet, and is never multiplied by replica count or inferred from the local
-`turnScheduling` boundary. Unknown fields and unsafe bounds are rejected.
+`turnScheduling` boundary. Required retention and replay policies bound
+terminal records, audit events, and sanitized UTF-8 replay bytes. Unknown
+fields and unsafe bounds are rejected.
 
 The CLI must refuse distributed mode when:
 

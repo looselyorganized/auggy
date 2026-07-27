@@ -233,4 +233,41 @@ describe("runtime state inventory", () => {
       baselineFingerprint,
     );
   });
+
+  test("binds fleet policy but excludes local coordination polling from the recovery fingerprint", () => {
+    const paths = fixture();
+    const baseline = config();
+    baseline.settings.coordination = {
+      mode: "postgres",
+      namespace: "8a3d7828-1597-4db4-bd0e-adc1a1036211",
+      urlEnv: "DATABASE_URL_A",
+      fleetCapacity: { maxConcurrent: 8, maxQueued: 200, maxQueuedPerThread: 25 },
+      retention: {
+        terminalRequestRetentionMs: 604_800_000,
+        maxTerminalRequests: 10_000,
+        eventRetentionMs: 2_592_000_000,
+        maxEvents: 50_000,
+      },
+      result: { maxReplayBytes: 65_536 },
+      leaseDurationMs: 30_000,
+      heartbeatIntervalMs: 5_000,
+      claimPollMs: 100,
+      maxWaitMs: 30_000,
+    };
+    const baselineFingerprint = buildRuntimeStateInventory(baseline, paths).configShapeSha256;
+
+    const changedFleetPolicy = structuredClone(baseline);
+    changedFleetPolicy.settings.coordination!.retention.maxEvents += 1;
+    expect(buildRuntimeStateInventory(changedFleetPolicy, paths).configShapeSha256).not.toBe(
+      baselineFingerprint,
+    );
+
+    const changedLocalPolling = structuredClone(baseline);
+    changedLocalPolling.settings.coordination!.urlEnv = "DATABASE_URL_B";
+    changedLocalPolling.settings.coordination!.claimPollMs = 250;
+    changedLocalPolling.settings.coordination!.maxWaitMs = 5_000;
+    expect(buildRuntimeStateInventory(changedLocalPolling, paths).configShapeSha256).toBe(
+      baselineFingerprint,
+    );
+  });
 });
