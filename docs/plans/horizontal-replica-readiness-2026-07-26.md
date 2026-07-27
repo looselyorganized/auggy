@@ -717,15 +717,104 @@ web integration commit `4b5e859`.
 
 #### 5B. Shared visitor and assertion authority
 
-- Add namespace-scoped PostgreSQL visitor tokens, verified identities,
-  revocation/version state, promotion evidence, and external-auth assertion
-  replay.
-- Consume one-time tokens and rotate/revoke identity atomically with database
-  time. Revocation wins against delayed verification or session promotion.
-- Replace process-local email locks, proof buffers, and verification-request
-  rate limits with bounded shared evidence tied to canonical source requests.
-- Keep direct verification mail delivery disabled in distributed mode until
-  checkpoints 6 and 7 provide durable intent and provider ownership.
+**Implementation status:** complete on the private, disabled integration
+boundary. Direct verification delivery and public distributed startup remain
+blocked on checkpoints 6, 7, and 11.
+
+The security invariant is that namespace- and audience-scoped PostgreSQL state
+is the only recognized visitor, promotion, verification-rate, revocation, or
+external-assertion replay authority in a distributed runtime. Replica-local
+absence, stale signed tokens, legacy versionless tokens, authority outage, and
+policy disagreement never restore recognized authority or promote history.
+Recognized `/agent/run` admission fails closed; explicitly visitor-optional
+routes may still receive their documented anonymous context.
+
+The implemented boundary has these consequences:
+
+- Verification requests bind a server-canonical request ID and binding hash to
+  the token, canonical email, anonymous peer, and exact canonical thread.
+  Exact retries replay one issuance record; any changed field conflicts.
+- Token hashes, peer/thread hashes, email lookup hashes, and complete external
+  assertion tuples are domain separated. Redeemable tokens and raw assertion
+  JTIs are never stored. Canonical email remains in the authority because the
+  existing operator and delivery contract consumes it; it is never emitted in
+  coordinator errors or compatibility fingerprints.
+- Verification consumption, active-identity renewal, revoked-identity
+  rotation, promotion evidence, and revocation are database-time transactions.
+  Revocation invalidates older open evidence and wins against delayed
+  verification. A later valid request rotates to the next identity version
+  while the old visitor ID remains denied. Recognized access and promotion also
+  expire at the immutable database-time reverification deadline even when a
+  signing-key holder supplies a token with a later expiry.
+- Promotion requires the active visitor ID and identity version plus the exact
+  peer and canonical thread recorded by a consumed verification request. A
+  signed token for that thread cannot expose a sibling thread. This also closes
+  the former local generic `/agent/run` sibling-thread promotion path.
+- External assertion claims are scoped by namespace, audience, provider, key
+  ID, and JTI, then bound to the canonical distributed run ID and complete
+  execution binding. Exact followers may join or replay the one execution;
+  changed requests are denied. Protected routes consume a JTI once.
+- Verification-request, visitor, and external-assertion tables are bounded by
+  immutable registered policy. Expired evidence is pruned in bounded batches;
+  exhausted capacity fails unavailable instead of growing without limit.
+- Web visitor callbacks are promise-compatible. The distributed transport asks
+  the shared authority immediately before recognized routing, exact history
+  promotion, and external-assertion execution. Missing or unavailable authority
+  returns a stable 503 and never invokes the route handler or model.
+- Distributed startup rejects a mounted `visitorAuth` augment before `onBoot`,
+  so no SQLite mutation, rate reservation, token issuance, console link, or
+  AgentMail send can begin. Unconsumed pre-v7 local magic links retain their
+  stored exact-thread evidence and mint the current promotion claim when
+  consumed. In the local single-replica runtime, already-minted pre-v7 browser
+  visitor tokens remain recognized but cannot promote anonymous history;
+  reverify when continuity is required. Distributed versionless tokens always
+  fail closed.
+- Coordination migration `20260727_07_coordination_visitor_authority` adds the
+  strict authority catalog and advances the private protocol/catalog to v7
+  with a quiescent v6 upgrade path. Older strict binaries must not be rolled
+  back in place after migration.
+
+**Checkpoint 5B verification record:** shared-authority commit `30bbb5a`; web
+enforcement commit `78bccee`.
+
+- A fresh PostgreSQL 16 database passed the visitor-authority suite 9/9 with 41
+  assertions and the independently routed distributed-web suite 15/15 with 71
+  assertions. Coverage includes concurrent single-use consumption,
+  revocation-versus-delayed-verification, active renewal, post-revocation
+  version rotation, database-time reverification, restart persistence, bounded
+  shared evidence, assertion replay binding, cross-replica revocation, exact
+  anonymous-history promotion, and final pre-execution revocation.
+- All 286 inventoried runtime files passed through sequential shards or fresh
+  per-file processes. Bun 1.3.14 again reproduced its known aggregate
+  `EADDRINUSE` behavior in the monolithic and server-heavy aggregate runners;
+  the HTTP suite passed 63/63 in isolation and every one of the 46 transport
+  and integration files passed separately. No socket failure reproduced as an
+  application failure in isolation.
+- The console passed 243 tests with 1,093 assertions and its production build
+  passed. `bun run typecheck`, `bun run lint`, `git diff --check`, the 14-shard
+  inventory check, `bun audit --json`, the Temporal example's test/type/audit
+  gate, and `bun run smoke:release` passed. Both explicit dependency audits
+  returned an empty advisory object; dependencies did not change. Lint reports
+  only the existing Biome schema/CLI patch-version information notice.
+- Hostile review found and closed database-clock token expiry,
+  caller-controlled reverification, revocation TOCTOU, authority-error leakage,
+  policy-disagreement reads, a missing v6-to-v7 transition, caller-selected
+  visitor IDs, overlong assertion lifetimes, an unenforced database
+  reverification deadline, and an authority check that preceded coordinator
+  queueing. The final fence now runs after claim and before history/model work;
+  replay is rechecked before result bytes are emitted. Fresh web, kernel, and
+  compatibility reviewers found no unresolved High or Medium issue.
+- A suspected distributed-console resolver availability defect was disproven
+  against the current boundary: distributed startup rejects `adminRoute` before
+  the listener can bind until console state has shared fenced authority. The
+  future console-state checkpoint must wire the shared resolver when it enables
+  that route; this checkpoint does not weaken the fail-closed guard.
+- A startup failure after the one-shot distributed runtime begins is
+  intentionally terminal for that `AgentHandle`: the supervisor must construct
+  a fresh handle/process rather than reuse closed fences and database clients.
+  This is a Low availability/operational constraint, not an authorization
+  fallback, and will be surfaced more explicitly by the fleet-operations
+  checkpoint.
 
 #### 5C. Atomic budgets and exact-once cost accounting
 

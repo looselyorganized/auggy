@@ -19,6 +19,21 @@ continuous. `visitorAuth` gives the browser a stable `vis_<uuid>` identity after
 email verification; `layeredMemory` stores and retrieves memory under that peer
 id.
 
+> **Supported topology:** the operator-facing `visitorAuth` augment remains a
+> one-replica feature. Its SQLite store, direct AgentMail send, and console link
+> delivery must not be shared by replicas. Auggy's disabled distributed preview
+> contains a PostgreSQL identity/assertion authority, but direct verification
+> delivery is intentionally rejected before augment boot until transactional
+> outbox ownership and provider fencing are complete. There is no supported
+> `agent.yaml` switch that enables multi-replica visitor-auth delivery today.
+>
+> An unconsumed magic link issued by a pre-v7 local runtime still records its
+> exact thread and gains the current promotion claim when consumed after
+> upgrade. In the local single-replica runtime, a browser visitor token already
+> minted before v7 remains recognized, but lacks that claim and cannot restore
+> anonymous history; reverify when that continuity matters. The distributed
+> preview rejects every versionless visitor token.
+
 ## Recommended v1 setup
 
 For a production visitor-auth experience:
@@ -367,7 +382,7 @@ lookups trim and lowercase operator input just like enrollment.
 - **Token leakage defense (fix #5):** verify-success page has `<meta name="referrer" content="no-referrer">`, zero external assets, runs `history.replaceState` on load to drop the token from the URL bar.
 - **Token replay defense (fix #8):** atomic `UPDATE ... RETURNING`; one caller
   receives the consumed token row and all later/concurrent callers return 410.
-- **Long-term key compromise (fix #9):** 90-day reverification TTL on `verified_visitors`. Operator can revoke at any time.
+- **Long-term key compromise (fix #9):** 90-day reverification TTL on `verified_visitors`. Operator can revoke at any time. The distributed preview enforces both signed-token expiry and the registered database-time reverification deadline.
 
 ## Out of scope at v1
 
