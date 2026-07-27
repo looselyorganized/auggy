@@ -391,6 +391,7 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
     await turnScheduler.drain();
     const shutdown = await lifecycle.shutdown();
     await distributed?.runtime.close().catch(() => {});
+    await distributed?.visitorIdentityAuthority?.close().catch(() => {});
     shutdownObservation.finish(shutdown.hookFailures);
     outboundHandlers.clear();
   }
@@ -1300,11 +1301,24 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
       return serializeLifecycle(async () => {
         if (started) throw new Error("Agent already started. Call stop() first.");
         if (!distributed) assertDistributedCoordinationStartupAllowed(effectiveConfig.coordination);
+        if (distributed && effectiveAugments.some((augment) => augment.type === "visitorAuth")) {
+          throw new Error(
+            "Cannot start agent: direct visitor verification delivery is unavailable in distributed mode until durable outbox ownership is enabled",
+          );
+        }
         if (turnScheduler.snapshot().state === "stopped") turnScheduler.reopen();
         operationalSignals.reset();
         const admission = createStartupAdmissionBarrier();
         try {
           await distributed?.runtime.start();
+          if (distributed?.visitorIdentityAuthority) {
+            const identityRegistration = await distributed.visitorIdentityAuthority
+              .register()
+              .catch(() => ({ status: "unavailable" as const }));
+            if (identityRegistration.status !== "registered") {
+              throw new Error("Cannot start agent: distributed identity authority is unavailable");
+            }
+          }
           await lifecycle.boot();
 
           // Rebuild scheduler fences from every durable incident authority
@@ -1346,6 +1360,7 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
                     onEvent?: import("./types").KernelEventHandler;
                     signal?: AbortSignal;
                     historyPersistence?: ThreadHistoryPersistence;
+                    beforeExecute?: () => void | Promise<void>;
                     onExecutionStart?: () => void | Promise<void>;
                     executionContext?: ExecutionContextV1;
                     distributedCapacity?: DistributedAdmissionCapacityV1;
@@ -1366,7 +1381,10 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
                       onEvent: opts?.onEvent,
                       signal: opts?.signal,
                       historyPersistence: opts?.historyPersistence,
-                      beforeExecute: () => admission.wait(opts?.signal),
+                      beforeExecute: async () => {
+                        await admission.wait(opts?.signal);
+                        await opts?.beforeExecute?.();
+                      },
                       onExecutionStart: opts?.onExecutionStart,
                       executionContext,
                       distributedCapacity: opts?.distributedCapacity,
@@ -1393,6 +1411,64 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
                 },
                 validateDistributedAdmissionPolicy(requirements) {
                   return distributed?.coordinator.supportsAdmissionPolicy(requirements) ?? false;
+                },
+                async resolveDistributedVisitorIdentity(
+                  visitorId,
+                  identityVersion,
+                  credentialExpiresAt,
+                ) {
+                  try {
+                    const result = await distributed?.visitorIdentityAuthority?.resolveVisitor(
+                      visitorId,
+                      identityVersion,
+                      credentialExpiresAt,
+                    );
+                    if (!result) return { status: "unavailable" as const };
+                    if (result.status === "active") {
+                      return result.visitorId === visitorId &&
+                        result.identityVersion === identityVersion &&
+                        typeof result.email === "string" &&
+                        Number.isFinite(result.verifiedAt) &&
+                        Number.isFinite(result.reverifyDueAt)
+                        ? result
+                        : { status: "unavailable" as const };
+                    }
+                    return ["unknown", "expired", "revoked", "unavailable"].includes(result.status)
+                      ? result
+                      : { status: "unavailable" as const };
+                  } catch {
+                    return { status: "unavailable" as const };
+                  }
+                },
+                async authorizeDistributedVisitorPromotion(request) {
+                  try {
+                    const result = await distributed?.visitorIdentityAuthority?.canPromote(request);
+                    return result?.status === "allowed" || result?.status === "denied"
+                      ? result
+                      : { status: "unavailable" as const };
+                  } catch {
+                    return { status: "unavailable" as const };
+                  }
+                },
+                async claimDistributedExternalAssertion(request) {
+                  try {
+                    const result =
+                      await distributed?.visitorIdentityAuthority?.claimExternalAssertion(request);
+                    return result &&
+                      [
+                        "claimed",
+                        "replayed",
+                        "conflict",
+                        "invalid",
+                        "expired",
+                        "capacity",
+                        "unavailable",
+                      ].includes(result.status)
+                      ? result
+                      : { status: "unavailable" as const };
+                  } catch {
+                    return { status: "unavailable" as const };
+                  }
                 },
                 quarantineThread(threadId: string) {
                   return turnScheduler.quarantine(threadId);
@@ -1485,6 +1561,7 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
         }
         const shutdown = await lifecycle.shutdown();
         await distributed?.runtime.close();
+        await distributed?.visitorIdentityAuthority?.close();
         shutdownObservation.finish(shutdown.hookFailures);
         outboundHandlers.clear();
         turnLoop.clearHistoryManagers();

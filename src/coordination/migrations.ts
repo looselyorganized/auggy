@@ -454,6 +454,160 @@ CREATE INDEX auggy_coordination_rate_event_request_idx
     (namespace, request_id, policy_id, subject_hash, expires_at);
 `;
 
+const COORDINATION_VISITOR_AUTHORITY_MIGRATION_SQL = `
+CREATE TABLE auggy_coordination_visitor_authorities (
+  namespace TEXT NOT NULL,
+  audience TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_audience_check
+      CHECK (length(audience) BETWEEN 1 AND 256),
+  policy_fingerprint TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_policy_check
+      CHECK (policy_fingerprint ~ '^[0-9a-f]{64}$'),
+  max_verification_requests INTEGER NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_request_max_check
+      CHECK (max_verification_requests BETWEEN 1 AND 1000000),
+  max_visitors INTEGER NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_visitor_max_check
+      CHECK (max_visitors BETWEEN 1 AND 1000000),
+  max_external_assertions INTEGER NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_assertion_max_check
+      CHECK (max_external_assertions BETWEEN 1 AND 1000000),
+  verification_token_ttl_ms BIGINT NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_token_ttl_check
+      CHECK (verification_token_ttl_ms BETWEEN 1 AND 31536000000),
+  verification_request_retention_ms BIGINT NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_request_retention_check
+      CHECK (verification_request_retention_ms BETWEEN 60000 AND 31536000000),
+  reverify_after_ms BIGINT NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_reverify_check
+      CHECK (reverify_after_ms BETWEEN 1 AND 31536000000),
+  max_external_assertion_ttl_ms BIGINT NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_assertion_ttl_check
+      CHECK (max_external_assertion_ttl_ms BETWEEN 1 AND 31536000000),
+  rate_per_hour INTEGER NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_hour_rate_check
+      CHECK (rate_per_hour BETWEEN 1 AND 1000000),
+  rate_per_day INTEGER NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_day_rate_check
+      CHECK (rate_per_day BETWEEN rate_per_hour AND 1000000),
+  rate_min_interval_ms BIGINT NOT NULL
+    CONSTRAINT auggy_coord_visitor_authority_interval_check
+      CHECK (rate_min_interval_ms BETWEEN 0 AND 86400000),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (namespace, audience)
+);
+
+CREATE TABLE auggy_coordination_visitor_requests (
+  namespace TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  request_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_id_check
+      CHECK (request_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  binding_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_binding_check
+      CHECK (binding_hash ~ '^[0-9a-f]{64}$'),
+  token_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_token_check
+      CHECK (token_hash ~ '^[0-9a-f]{64}$'),
+  email TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_email_check
+      CHECK (length(email) BETWEEN 3 AND 320),
+  email_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_email_hash_check
+      CHECK (email_hash ~ '^[0-9a-f]{64}$'),
+  peer_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_peer_check
+      CHECK (length(peer_id) BETWEEN 1 AND 256),
+  peer_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_peer_hash_check
+      CHECK (peer_hash ~ '^[0-9a-f]{64}$'),
+  thread_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_thread_check
+      CHECK (length(thread_id) BETWEEN 1 AND 256),
+  thread_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_request_thread_hash_check
+      CHECK (thread_hash ~ '^[0-9a-f]{64}$'),
+  issued_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  status TEXT NOT NULL DEFAULT 'open'
+    CONSTRAINT auggy_coord_visitor_request_status_value_check
+      CHECK (status IN ('open', 'verified', 'revoked')),
+  terminal_at TIMESTAMPTZ,
+  visitor_id TEXT,
+  identity_version BIGINT,
+  CONSTRAINT auggy_coord_visitor_request_expiry_check CHECK (expires_at > issued_at),
+  CONSTRAINT auggy_coord_visitor_request_terminal_check CHECK (
+    (status = 'open' AND terminal_at IS NULL AND visitor_id IS NULL AND identity_version IS NULL)
+    OR
+    (status = 'verified' AND terminal_at IS NOT NULL AND visitor_id IS NOT NULL AND identity_version > 0)
+    OR
+    (status = 'revoked' AND terminal_at IS NOT NULL AND visitor_id IS NULL AND identity_version IS NULL)
+  ),
+  PRIMARY KEY (namespace, audience, request_id)
+);
+
+CREATE UNIQUE INDEX auggy_coordination_visitor_request_token_idx
+  ON auggy_coordination_visitor_requests (namespace, audience, token_hash);
+CREATE INDEX auggy_coordination_visitor_request_email_idx
+  ON auggy_coordination_visitor_requests (namespace, audience, email_hash, issued_at, request_id);
+CREATE INDEX auggy_coordination_visitor_request_expiry_idx
+  ON auggy_coordination_visitor_requests (namespace, audience, expires_at, request_id);
+
+CREATE TABLE auggy_coordination_visitors (
+  namespace TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  visitor_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_id_check
+      CHECK (visitor_id ~ '^vis_[A-Za-z0-9._:-]{1,200}$'),
+  email TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_email_check
+      CHECK (length(email) BETWEEN 3 AND 320),
+  email_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_visitor_email_hash_check
+      CHECK (email_hash ~ '^[0-9a-f]{64}$'),
+  identity_version BIGINT NOT NULL
+    CONSTRAINT auggy_coord_visitor_version_check CHECK (identity_version > 0),
+  verified_at TIMESTAMPTZ NOT NULL,
+  last_seen_at TIMESTAMPTZ NOT NULL,
+  reverify_due_at TIMESTAMPTZ NOT NULL,
+  revoked_at TIMESTAMPTZ,
+  revoked_reason TEXT,
+  CONSTRAINT auggy_coord_visitor_reverify_check CHECK (reverify_due_at > verified_at),
+  CONSTRAINT auggy_coord_visitor_revocation_check CHECK (
+    (revoked_at IS NULL AND revoked_reason IS NULL)
+    OR
+    (revoked_at IS NOT NULL AND revoked_reason ~ '^[a-z0-9][a-z0-9._:-]{0,63}$')
+  ),
+  PRIMARY KEY (namespace, audience, visitor_id)
+);
+
+CREATE UNIQUE INDEX auggy_coordination_visitor_email_version_idx
+  ON auggy_coordination_visitors (namespace, audience, email_hash, identity_version);
+CREATE INDEX auggy_coordination_visitor_email_idx
+  ON auggy_coordination_visitors (namespace, audience, email_hash, identity_version, visitor_id);
+
+CREATE TABLE auggy_coordination_external_assertions (
+  namespace TEXT NOT NULL,
+  audience TEXT NOT NULL,
+  claim_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_external_assertion_claim_check
+      CHECK (claim_hash ~ '^[0-9a-f]{64}$'),
+  request_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_external_assertion_request_check
+      CHECK (request_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  binding_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_external_assertion_binding_check
+      CHECK (binding_hash ~ '^[0-9a-f]{64}$'),
+  claimed_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  CONSTRAINT auggy_coord_external_assertion_expiry_check CHECK (expires_at > claimed_at),
+  PRIMARY KEY (namespace, audience, claim_hash)
+);
+
+CREATE INDEX auggy_coordination_external_assertion_expiry_idx
+  ON auggy_coordination_external_assertions (namespace, audience, expires_at, claim_hash);
+`;
+
 /** Recomputed from immutable migration SQL; migration rejects any mismatch. */
 export const postgresCoordinationMigrationChecksum = new Bun.CryptoHasher("sha256")
   .update(INITIAL_COORDINATION_MIGRATION_SQL)
@@ -477,6 +631,10 @@ export const postgresCoordinationTurnStateMigrationChecksum = new Bun.CryptoHash
 
 export const postgresCoordinationAdmissionMigrationChecksum = new Bun.CryptoHasher("sha256")
   .update(COORDINATION_ADMISSION_MIGRATION_SQL)
+  .digest("hex");
+
+export const postgresCoordinationVisitorAuthorityMigrationChecksum = new Bun.CryptoHasher("sha256")
+  .update(COORDINATION_VISITOR_AUTHORITY_MIGRATION_SQL)
   .digest("hex");
 
 export const POSTGRES_COORDINATION_MIGRATIONS = [
@@ -509,6 +667,11 @@ export const POSTGRES_COORDINATION_MIGRATIONS = [
     id: "20260726_06_coordination_atomic_admission",
     checksum: postgresCoordinationAdmissionMigrationChecksum,
     sql: COORDINATION_ADMISSION_MIGRATION_SQL,
+  },
+  {
+    id: "20260727_07_coordination_visitor_authority",
+    checksum: postgresCoordinationVisitorAuthorityMigrationChecksum,
+    sql: COORDINATION_VISITOR_AUTHORITY_MIGRATION_SQL,
   },
 ] as const;
 
@@ -634,6 +797,19 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
   ["auggy_coordination_events", "reason", "text", false, null],
   ["auggy_coordination_events", "request_id", "text", false, null],
   ["auggy_coordination_events", "thread_id", "text", true, null],
+  ["auggy_coordination_external_assertions", "audience", "text", true, null],
+  ["auggy_coordination_external_assertions", "binding_hash", "text", true, null],
+  ["auggy_coordination_external_assertions", "claim_hash", "text", true, null],
+  [
+    "auggy_coordination_external_assertions",
+    "claimed_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_external_assertions", "expires_at", "timestamp with time zone", true, null],
+  ["auggy_coordination_external_assertions", "namespace", "text", true, null],
+  ["auggy_coordination_external_assertions", "request_id", "text", true, null],
   ["auggy_coordination_history", "message_count", "integer", true, null],
   ["auggy_coordination_history", "namespace", "text", true, null],
   ["auggy_coordination_history", "peer_binding_hash", "text", true, null],
@@ -854,6 +1030,66 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
     true,
     "clock_timestamp()",
   ],
+  ["auggy_coordination_visitor_authorities", "audience", "text", true, null],
+  ["auggy_coordination_visitor_authorities", "max_external_assertion_ttl_ms", "bigint", true, null],
+  ["auggy_coordination_visitor_authorities", "max_external_assertions", "integer", true, null],
+  ["auggy_coordination_visitor_authorities", "max_verification_requests", "integer", true, null],
+  ["auggy_coordination_visitor_authorities", "max_visitors", "integer", true, null],
+  ["auggy_coordination_visitor_authorities", "namespace", "text", true, null],
+  ["auggy_coordination_visitor_authorities", "policy_fingerprint", "text", true, null],
+  ["auggy_coordination_visitor_authorities", "rate_min_interval_ms", "bigint", true, null],
+  ["auggy_coordination_visitor_authorities", "rate_per_day", "integer", true, null],
+  ["auggy_coordination_visitor_authorities", "rate_per_hour", "integer", true, null],
+  ["auggy_coordination_visitor_authorities", "reverify_after_ms", "bigint", true, null],
+  [
+    "auggy_coordination_visitor_authorities",
+    "updated_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  [
+    "auggy_coordination_visitor_authorities",
+    "verification_request_retention_ms",
+    "bigint",
+    true,
+    null,
+  ],
+  ["auggy_coordination_visitor_authorities", "verification_token_ttl_ms", "bigint", true, null],
+  ["auggy_coordination_visitor_requests", "audience", "text", true, null],
+  ["auggy_coordination_visitor_requests", "binding_hash", "text", true, null],
+  ["auggy_coordination_visitor_requests", "email", "text", true, null],
+  ["auggy_coordination_visitor_requests", "email_hash", "text", true, null],
+  ["auggy_coordination_visitor_requests", "expires_at", "timestamp with time zone", true, null],
+  ["auggy_coordination_visitor_requests", "identity_version", "bigint", false, null],
+  [
+    "auggy_coordination_visitor_requests",
+    "issued_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_visitor_requests", "namespace", "text", true, null],
+  ["auggy_coordination_visitor_requests", "peer_hash", "text", true, null],
+  ["auggy_coordination_visitor_requests", "peer_id", "text", true, null],
+  ["auggy_coordination_visitor_requests", "request_id", "text", true, null],
+  ["auggy_coordination_visitor_requests", "status", "text", true, "'open'::text"],
+  ["auggy_coordination_visitor_requests", "terminal_at", "timestamp with time zone", false, null],
+  ["auggy_coordination_visitor_requests", "thread_hash", "text", true, null],
+  ["auggy_coordination_visitor_requests", "thread_id", "text", true, null],
+  ["auggy_coordination_visitor_requests", "token_hash", "text", true, null],
+  ["auggy_coordination_visitor_requests", "visitor_id", "text", false, null],
+  ["auggy_coordination_visitors", "audience", "text", true, null],
+  ["auggy_coordination_visitors", "email", "text", true, null],
+  ["auggy_coordination_visitors", "email_hash", "text", true, null],
+  ["auggy_coordination_visitors", "identity_version", "bigint", true, null],
+  ["auggy_coordination_visitors", "last_seen_at", "timestamp with time zone", true, null],
+  ["auggy_coordination_visitors", "namespace", "text", true, null],
+  ["auggy_coordination_visitors", "reverify_due_at", "timestamp with time zone", true, null],
+  ["auggy_coordination_visitors", "revoked_at", "timestamp with time zone", false, null],
+  ["auggy_coordination_visitors", "revoked_reason", "text", false, null],
+  ["auggy_coordination_visitors", "verified_at", "timestamp with time zone", true, null],
+  ["auggy_coordination_visitors", "visitor_id", "text", true, null],
 ].map(([table_name, column_name, data_type, not_null, default_expression]) => ({
   table_name: table_name as string,
   column_name: column_name as string,
@@ -892,6 +1128,24 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
     "event_id",
     "pg_catalog.int8_ops",
     "-",
+  ],
+  [
+    "auggy_coordination_external_assertions",
+    "auggy_coordination_external_assertion_expiry_idx",
+    false,
+    false,
+    "namespace,audience,expires_at,claim_hash",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_external_assertions",
+    "auggy_coordination_external_assertions_pkey",
+    true,
+    true,
+    "namespace,audience,claim_hash",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default",
   ],
   [
     "auggy_coordination_history",
@@ -1127,6 +1381,78 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
     "pg_catalog.text_ops,pg_catalog.text_ops",
     "pg_catalog.default,pg_catalog.default",
   ],
+  [
+    "auggy_coordination_visitor_authorities",
+    "auggy_coordination_visitor_authorities_pkey",
+    true,
+    true,
+    "namespace,audience",
+    "pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_visitor_requests",
+    "auggy_coordination_visitor_request_email_idx",
+    false,
+    false,
+    "namespace,audience,email_hash,issued_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_visitor_requests",
+    "auggy_coordination_visitor_request_expiry_idx",
+    false,
+    false,
+    "namespace,audience,expires_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_visitor_requests",
+    "auggy_coordination_visitor_request_token_idx",
+    true,
+    false,
+    "namespace,audience,token_hash",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_visitor_requests",
+    "auggy_coordination_visitor_requests_pkey",
+    true,
+    true,
+    "namespace,audience,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_visitors",
+    "auggy_coordination_visitor_email_idx",
+    false,
+    false,
+    "namespace,audience,email_hash,identity_version,visitor_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.int8_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_visitors",
+    "auggy_coordination_visitor_email_version_idx",
+    true,
+    false,
+    "namespace,audience,email_hash,identity_version",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.int8_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,-",
+  ],
+  [
+    "auggy_coordination_visitors",
+    "auggy_coordination_visitors_pkey",
+    true,
+    true,
+    "namespace,audience,visitor_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
 ].map(([table_name, index_name, is_unique, is_primary, columns, opclasses, collations]) => ({
   table_name: table_name as string,
   index_name: index_name as string,
@@ -1150,6 +1476,236 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
 }));
 
 const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition: string }>([
+  [
+    "auggy_coord_external_assertion_binding_check",
+    {
+      table: "auggy_coordination_external_assertions",
+      definition: "checkbinding_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_external_assertion_claim_check",
+    {
+      table: "auggy_coordination_external_assertions",
+      definition: "checkclaim_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_external_assertion_expiry_check",
+    { table: "auggy_coordination_external_assertions", definition: "checkexpires_at>claimed_at" },
+  ],
+  [
+    "auggy_coord_external_assertion_request_check",
+    {
+      table: "auggy_coordination_external_assertions",
+      definition: "checkrequest_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_assertion_max_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkmax_external_assertions>=1andmax_external_assertions<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_assertion_ttl_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition:
+        "checkmax_external_assertion_ttl_ms>=1andmax_external_assertion_ttl_ms<=31536000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_audience_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checklengthaudience>=1andlengthaudience<=256",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_day_rate_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkrate_per_day>=rate_per_hourandrate_per_day<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_hour_rate_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkrate_per_hour>=1andrate_per_hour<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_interval_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkrate_min_interval_ms>=0andrate_min_interval_ms<=86400000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_policy_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkpolicy_fingerprint~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_request_max_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkmax_verification_requests>=1andmax_verification_requests<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_request_retention_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition:
+        "checkverification_request_retention_ms>=60000andverification_request_retention_ms<=31536000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_reverify_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkreverify_after_ms>=1andreverify_after_ms<=31536000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_token_ttl_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkverification_token_ttl_ms>=1andverification_token_ttl_ms<=31536000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_authority_visitor_max_check",
+    {
+      table: "auggy_coordination_visitor_authorities",
+      definition: "checkmax_visitors>=1andmax_visitors<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_binding_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checkbinding_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_email_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checklengthemail>=3andlengthemail<=320",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_email_hash_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checkemail_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_expiry_check",
+    { table: "auggy_coordination_visitor_requests", definition: "checkexpires_at>issued_at" },
+  ],
+  [
+    "auggy_coord_visitor_request_id_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checkrequest_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_peer_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checklengthpeer_id>=1andlengthpeer_id<=256",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_peer_hash_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checkpeer_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_status_value_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checkstatus=anyarray['open','verified','revoked']",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_terminal_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition:
+        "checkstatus='open'andterminal_atisnullandvisitor_idisnullandidentity_versionisnullorstatus='verified'andterminal_atisnotnullandvisitor_idisnotnullandidentity_version>0orstatus='revoked'andterminal_atisnotnullandvisitor_idisnullandidentity_versionisnull",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_thread_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checklengththread_id>=1andlengththread_id<=256",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_thread_hash_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checkthread_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_request_token_check",
+    {
+      table: "auggy_coordination_visitor_requests",
+      definition: "checktoken_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_email_check",
+    {
+      table: "auggy_coordination_visitors",
+      definition: "checklengthemail>=3andlengthemail<=320",
+    },
+  ],
+  [
+    "auggy_coord_visitor_email_hash_check",
+    {
+      table: "auggy_coordination_visitors",
+      definition: "checkemail_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_id_check",
+    {
+      table: "auggy_coordination_visitors",
+      definition: "checkvisitor_id~'^vis_[a-za-z0-9._:-]{1,200}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_reverify_check",
+    { table: "auggy_coordination_visitors", definition: "checkreverify_due_at>verified_at" },
+  ],
+  [
+    "auggy_coord_visitor_revocation_check",
+    {
+      table: "auggy_coordination_visitors",
+      definition:
+        "checkrevoked_atisnullandrevoked_reasonisnullorrevoked_atisnotnullandrevoked_reason~'^[a-z0-9][a-z0-9._:-]{0,63}$'",
+    },
+  ],
+  [
+    "auggy_coord_visitor_version_check",
+    { table: "auggy_coordination_visitors", definition: "checkidentity_version>0" },
+  ],
   [
     "auggy_coord_cost_fence_check",
     { table: "auggy_coordination_cost_markers", definition: "checkfence>0" },
@@ -1620,6 +2176,7 @@ const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition
 const EXPECTED_COORDINATION_CONSTRAINTS: readonly CoordinationCatalogConstraint[] = [
   ["auggy_coordination_cost_markers", "auggy_coordination_cost_markers_pkey"],
   ["auggy_coordination_events", "auggy_coordination_events_pkey"],
+  ["auggy_coordination_external_assertions", "auggy_coordination_external_assertions_pkey"],
   ["auggy_coordination_history", "auggy_coordination_history_pkey"],
   ["auggy_coordination_instances", "auggy_coordination_instances_pkey"],
   ["auggy_coordination_migrations", "auggy_coordination_migrations_pkey"],
@@ -1635,6 +2192,9 @@ const EXPECTED_COORDINATION_CONSTRAINTS: readonly CoordinationCatalogConstraint[
   ["auggy_coordination_requests", "auggy_coordination_requests_pkey"],
   ["auggy_coordination_sources", "auggy_coordination_sources_pkey"],
   ["auggy_coordination_threads", "auggy_coordination_threads_pkey"],
+  ["auggy_coordination_visitor_authorities", "auggy_coordination_visitor_authorities_pkey"],
+  ["auggy_coordination_visitor_requests", "auggy_coordination_visitor_requests_pkey"],
+  ["auggy_coordination_visitors", "auggy_coordination_visitors_pkey"],
 ].map(([table_name, constraint_name]) => ({
   table_name: table_name as string,
   constraint_name: constraint_name as string,
@@ -1648,6 +2208,7 @@ const EXPECTED_COORDINATION_CONSTRAINTS: readonly CoordinationCatalogConstraint[
 const EXPECTED_COORDINATION_TABLES: readonly CoordinationCatalogTable[] = [
   "auggy_coordination_cost_markers",
   "auggy_coordination_events",
+  "auggy_coordination_external_assertions",
   "auggy_coordination_history",
   "auggy_coordination_instances",
   "auggy_coordination_migrations",
@@ -1660,6 +2221,9 @@ const EXPECTED_COORDINATION_TABLES: readonly CoordinationCatalogTable[] = [
   "auggy_coordination_requests",
   "auggy_coordination_sources",
   "auggy_coordination_threads",
+  "auggy_coordination_visitor_authorities",
+  "auggy_coordination_visitor_requests",
+  "auggy_coordination_visitors",
 ].map((table_name) => ({
   table_name,
   persistence: "p",
@@ -1728,6 +2292,7 @@ async function assertPostgresCoordinationSchema(
 ): Promise<void> {
   const tables =
     "'auggy_coordination_cost_markers', 'auggy_coordination_events', " +
+    "'auggy_coordination_external_assertions', " +
     "'auggy_coordination_history', 'auggy_coordination_instances', " +
     "'auggy_coordination_migrations', 'auggy_coordination_namespaces', " +
     "'auggy_coordination_outbox', 'auggy_coordination_rate_counters', " +
@@ -1736,7 +2301,10 @@ async function assertPostgresCoordinationSchema(
     "'auggy_coordination_request_partition_counters', " +
     "'auggy_coordination_requests', " +
     "'auggy_coordination_sources', " +
-    "'auggy_coordination_threads'";
+    "'auggy_coordination_threads', " +
+    "'auggy_coordination_visitor_authorities', " +
+    "'auggy_coordination_visitor_requests', " +
+    "'auggy_coordination_visitors'";
   const columns = await sql.unsafe<CoordinationCatalogColumn>(`
     SELECT cls.relname AS table_name,
            attr.attname AS column_name,

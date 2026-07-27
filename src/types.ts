@@ -175,6 +175,28 @@ export interface DistributedAdmissionPolicyRequirementsV1 {
   }[];
 }
 
+/** Shared visitor identity decision returned by the distributed authority. */
+export type DistributedVisitorIdentityResultV1 =
+  | {
+      status: "active";
+      visitorId: string;
+      identityVersion: number;
+      email: string;
+      verifiedAt: number;
+      reverifyDueAt: number;
+    }
+  | { status: "unknown" | "expired" | "revoked" | "unavailable" };
+
+/** Shared external-assertion replay claim, bound to one canonical execution. */
+export interface DistributedExternalAssertionClaimV1 {
+  provider: string;
+  keyId: string | null;
+  jti: string;
+  requestId: string;
+  bindingHash: string;
+  expiresAt: number;
+}
+
 /** Fenced coordinator authority exposed only to trusted execution boundaries. */
 export interface ExecutionAuthorityV1 {
   version: 1;
@@ -815,6 +837,12 @@ export interface TransportKernel {
       signal?: AbortSignal;
       historyPersistence?: ThreadHistoryPersistence;
       /**
+       * Trusted pre-execution authorization fence. It runs after scheduling
+       * and distributed claim acquisition, but before history restoration or
+       * any turn work. A rejection abandons an unstarted distributed attempt.
+       */
+      beforeExecute?: () => void | Promise<void>;
+      /**
        * Runtime-owned effect-start observer. It runs after history
        * authorization and turn-gate preparation, before confirming writes or
        * arbitrary augment/model work.
@@ -862,6 +890,30 @@ export interface TransportKernel {
   validateDistributedAdmissionPolicy?(
     requirements: DistributedAdmissionPolicyRequirementsV1,
   ): boolean;
+  /** Resolve a versioned visitor identity through the shared authority. */
+  resolveDistributedVisitorIdentity?(
+    visitorId: string,
+    identityVersion: number,
+    credentialExpiresAt: number,
+  ): Promise<DistributedVisitorIdentityResultV1>;
+  /** Authorize one exact anonymous-thread promotion through shared evidence. */
+  authorizeDistributedVisitorPromotion?(request: {
+    visitorId: string;
+    identityVersion: number;
+    peerId: string;
+    threadId: string;
+  }): Promise<{ status: "allowed" | "denied" | "unavailable" }>;
+  /** Atomically claim a verified external assertion for one canonical execution. */
+  claimDistributedExternalAssertion?(request: DistributedExternalAssertionClaimV1): Promise<{
+    status:
+      | "claimed"
+      | "replayed"
+      | "conflict"
+      | "invalid"
+      | "expired"
+      | "capacity"
+      | "unavailable";
+  }>;
   /** Trusted transport-only restoration of a durable thread quarantine. */
   quarantineThread(threadId: string): boolean;
   /**

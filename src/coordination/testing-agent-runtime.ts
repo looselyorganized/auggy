@@ -4,6 +4,7 @@ import type {
   DistributedCoordinationTurnStateConfig,
 } from "../types";
 import type { DistributedRootTurnRuntime, DistributedTurnCoordinator } from "./index";
+import type { VisitorIdentityAuthority } from "./visitor-identity-authority";
 
 /**
  * Test-only checkpoint adapter. This module is intentionally absent from the
@@ -15,6 +16,8 @@ export interface DistributedAgentRuntimeTestAdapter {
   coordinator: DistributedTurnCoordinator;
   turnState: DistributedCoordinationTurnStateConfig;
   result: DistributedCoordinationResultConfig;
+  /** Shared visitor/assertion authority owned by the same test deployment namespace. */
+  visitorIdentityAuthority?: VisitorIdentityAuthority;
   /** Bounded cooperative cleanup before non-responsive work is detached. */
   authorityLossGraceMs?: number;
   /** Maximum graceful wait before shutdown revokes distributed authority. */

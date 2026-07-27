@@ -15,15 +15,15 @@ const CANONICAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 
 export const DISTRIBUTED_COORDINATION_PROTOCOL = Object.freeze({
   name: "auggy-postgres-coordination" as const,
-  protocolVersion: 6 as const,
-  schemaVersion: 6 as const,
+  protocolVersion: 7 as const,
+  schemaVersion: 7 as const,
   fingerprintVersion: 2 as const,
 });
 
 const PREVIOUS_DISTRIBUTED_COORDINATION_PROTOCOL = Object.freeze({
   name: "auggy-postgres-coordination" as const,
-  protocolVersion: 5 as const,
-  schemaVersion: 5 as const,
+  protocolVersion: 6 as const,
+  schemaVersion: 6 as const,
   fingerprintVersion: 2 as const,
 });
 
@@ -61,11 +61,11 @@ function fingerprint(domain: string, value: unknown): string {
 }
 
 const PROTOCOL_FINGERPRINT = fingerprint(
-  "auggy-distributed-coordination-protocol-v6",
+  "auggy-distributed-coordination-protocol-v7",
   DISTRIBUTED_COORDINATION_PROTOCOL,
 );
 const PREVIOUS_PROTOCOL_FINGERPRINT = fingerprint(
-  "auggy-distributed-coordination-protocol-v5",
+  "auggy-distributed-coordination-protocol-v6",
   PREVIOUS_DISTRIBUTED_COORDINATION_PROTOCOL,
 );
 
@@ -236,24 +236,17 @@ export function buildDistributedCoordinationCompatibility(
       augments,
     };
     const configurationFingerprint = fingerprint(
-      "auggy-distributed-coordination-configuration-v6",
+      "auggy-distributed-coordination-configuration-v7",
       {
         protocolFingerprint: PROTOCOL_FINGERPRINT,
         ...semanticConfiguration,
       },
     );
     const previousConfigurationFingerprint = fingerprint(
-      "auggy-distributed-coordination-configuration-v5",
+      "auggy-distributed-coordination-configuration-v6",
       {
         protocolFingerprint: PREVIOUS_PROTOCOL_FINGERPRINT,
-        namespace: semanticConfiguration.namespace,
-        fleetCapacity: semanticConfiguration.fleetCapacity,
-        leaseDurationMs: semanticConfiguration.leaseDurationMs,
-        retention: semanticConfiguration.retention,
-        result: semanticConfiguration.result,
-        turnState: semanticConfiguration.turnState,
-        sources: semanticConfiguration.sources,
-        augments: semanticConfiguration.augments,
+        ...semanticConfiguration,
       },
     );
     return Object.freeze({

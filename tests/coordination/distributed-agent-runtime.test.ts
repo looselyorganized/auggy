@@ -127,6 +127,66 @@ const executionContext = {
 afterEach(resetInMemoryDistributedCoordination);
 
 describe("distributed agent runtime wiring", () => {
+  test("fails startup before augment boot when identity authority registration conflicts", async () => {
+    const owner = coordinator("replica-identity-policy-conflict");
+    let bootCalls = 0;
+    let closeCalls = 0;
+    const config: AgentConfig = {
+      name: "distributed-identity-policy-conflict",
+      model: "test",
+      augments: [
+        {
+          name: "boot-sentinel",
+          onBoot: async () => {
+            bootCalls += 1;
+          },
+        },
+      ],
+    };
+    const distributed = adapter(owner);
+    distributed.visitorIdentityAuthority = {
+      register: async () => ({ status: "conflict" }),
+      issueVerificationRequest: async () => ({ status: "unavailable" }),
+      verify: async () => ({ status: "unavailable" }),
+      resolveVisitor: async () => ({ status: "unavailable" }),
+      canPromote: async () => ({ status: "unavailable" }),
+      revokeByEmail: async () => ({ status: "unavailable" }),
+      claimExternalAssertion: async () => ({ status: "unavailable" }),
+      close: async () => {
+        closeCalls += 1;
+      },
+    };
+    const agent = defineDistributedTestAgent(config, createMockModel(), distributed);
+
+    await expect(agent.start()).rejects.toThrow("distributed identity authority is unavailable");
+    expect(bootCalls).toBe(0);
+    expect(closeCalls).toBe(1);
+  });
+
+  test("rejects direct visitor verification delivery before boot in distributed mode", async () => {
+    const owner = coordinator("replica-visitor-delivery-disabled");
+    let bootCalls = 0;
+    const config: AgentConfig = {
+      name: "distributed-visitor-delivery-disabled",
+      model: "test",
+      augments: [
+        {
+          name: "visitor-auth",
+          type: "visitorAuth",
+          onBoot: async () => {
+            bootCalls += 1;
+          },
+        },
+      ],
+    };
+    const agent = defineDistributedTestAgent(config, createMockModel(), adapter(owner));
+
+    await expect(agent.start()).rejects.toThrow(
+      "direct visitor verification delivery is unavailable in distributed mode",
+    );
+    expect(bootCalls).toBe(0);
+  });
+
   test("rejects malformed durable replay message and part shapes", () => {
     const encoded = (value: unknown) => ({
       body: new TextEncoder().encode(JSON.stringify(value)),

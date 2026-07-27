@@ -4,6 +4,20 @@ export {
 } from "./in-memory";
 export { POSTGRES_COORDINATION_MIGRATIONS, migratePostgresCoordinator } from "./migrations";
 export { PostgresDistributedTurnCoordinator } from "./postgres";
+export { PostgresVisitorIdentityAuthority } from "./visitor-identity-authority";
+export type {
+  ExternalAssertionClaimRequest,
+  ExternalAssertionClaimResult,
+  IssueVerificationRequest,
+  IssueVerificationRequestResult,
+  PostgresVisitorIdentityAuthorityOptions,
+  ResolveSharedVisitorResult,
+  SharedVisitorPromotionRequest,
+  VerifyVisitorRequest,
+  VerifyVisitorResult,
+  VisitorIdentityAuthority,
+  VisitorIdentityAuthorityPolicy,
+} from "./visitor-identity-authority";
 export {
   createCanonicalDistributedTurnRequest,
   createDistributedRootTurnRuntime,

@@ -1982,11 +1982,12 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     const predecessor = this.#config.compatibility.upgradeFrom;
     const upgradesTurnState = !configuredAdmission && emptyTurnStatePolicy;
     const upgradesAdmission = configuredAdmission && turnStateMatches && emptyAdmissionPolicy;
+    const upgradesProtocolOnly = turnStateMatches && admissionMatches;
     if (
       !compatibilityMatches &&
       allowQuiescentUpgrade &&
       basePolicyMatches &&
-      (upgradesTurnState || upgradesAdmission) &&
+      (upgradesTurnState || upgradesAdmission || upgradesProtocolOnly) &&
       predecessor &&
       stored.protocolVersion === predecessor.protocolVersion &&
       stored.protocolFingerprint === predecessor.protocolFingerprint &&
@@ -2019,25 +2020,38 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
                 ratePolicyFingerprint,
               ],
             )
-          : await tx.unsafe<Row>(
-              "UPDATE public.auggy_coordination_namespaces SET protocol_version = $5, protocol_fingerprint = $6, configuration_fingerprint = $7, max_history_snapshot_bytes = $8, max_history_messages = $9, max_history_threads = $10, max_cost_markers_per_turn = $11, max_outbox_intents_per_turn = $12, max_outbox_intent_bytes = $13, max_pending_outbox_intents = $14, updated_at = clock_timestamp() WHERE namespace = $1 AND protocol_version = $2 AND protocol_fingerprint = $3 AND configuration_fingerprint = $4 AND max_history_snapshot_bytes IS NULL AND max_history_messages IS NULL AND max_history_threads IS NULL AND max_cost_markers_per_turn IS NULL AND max_outbox_intents_per_turn IS NULL AND max_outbox_intent_bytes IS NULL AND max_pending_outbox_intents IS NULL RETURNING namespace",
-              [
-                this.#config.namespace,
-                predecessor.protocolVersion,
-                predecessor.protocolFingerprint,
-                predecessor.configurationFingerprint,
-                this.#config.compatibility.protocolVersion,
-                this.#config.compatibility.protocolFingerprint,
-                this.#config.compatibility.configurationFingerprint,
-                this.#config.turnState.history.maxSnapshotBytes,
-                this.#config.turnState.history.maxMessages,
-                this.#config.turnState.history.maxThreads,
-                this.#config.turnState.maxCostMarkersPerTurn,
-                this.#config.turnState.outbox.maxIntentsPerTurn,
-                this.#config.turnState.outbox.maxIntentBytes,
-                this.#config.turnState.outbox.maxPendingIntents,
-              ],
-            );
+          : upgradesProtocolOnly
+            ? await tx.unsafe<Row>(
+                "UPDATE public.auggy_coordination_namespaces SET protocol_version = $5, protocol_fingerprint = $6, configuration_fingerprint = $7, updated_at = clock_timestamp() WHERE namespace = $1 AND protocol_version = $2 AND protocol_fingerprint = $3 AND configuration_fingerprint = $4 RETURNING namespace",
+                [
+                  this.#config.namespace,
+                  predecessor.protocolVersion,
+                  predecessor.protocolFingerprint,
+                  predecessor.configurationFingerprint,
+                  this.#config.compatibility.protocolVersion,
+                  this.#config.compatibility.protocolFingerprint,
+                  this.#config.compatibility.configurationFingerprint,
+                ],
+              )
+            : await tx.unsafe<Row>(
+                "UPDATE public.auggy_coordination_namespaces SET protocol_version = $5, protocol_fingerprint = $6, configuration_fingerprint = $7, max_history_snapshot_bytes = $8, max_history_messages = $9, max_history_threads = $10, max_cost_markers_per_turn = $11, max_outbox_intents_per_turn = $12, max_outbox_intent_bytes = $13, max_pending_outbox_intents = $14, updated_at = clock_timestamp() WHERE namespace = $1 AND protocol_version = $2 AND protocol_fingerprint = $3 AND configuration_fingerprint = $4 AND max_history_snapshot_bytes IS NULL AND max_history_messages IS NULL AND max_history_threads IS NULL AND max_cost_markers_per_turn IS NULL AND max_outbox_intents_per_turn IS NULL AND max_outbox_intent_bytes IS NULL AND max_pending_outbox_intents IS NULL RETURNING namespace",
+                [
+                  this.#config.namespace,
+                  predecessor.protocolVersion,
+                  predecessor.protocolFingerprint,
+                  predecessor.configurationFingerprint,
+                  this.#config.compatibility.protocolVersion,
+                  this.#config.compatibility.protocolFingerprint,
+                  this.#config.compatibility.configurationFingerprint,
+                  this.#config.turnState.history.maxSnapshotBytes,
+                  this.#config.turnState.history.maxMessages,
+                  this.#config.turnState.history.maxThreads,
+                  this.#config.turnState.maxCostMarkersPerTurn,
+                  this.#config.turnState.outbox.maxIntentsPerTurn,
+                  this.#config.turnState.outbox.maxIntentBytes,
+                  this.#config.turnState.outbox.maxPendingIntents,
+                ],
+              );
         if (upgraded[0]) {
           await tx.unsafe(
             "DELETE FROM public.auggy_coordination_instances WHERE namespace = $1 AND lease_expires_at <= clock_timestamp()",

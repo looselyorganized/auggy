@@ -1210,6 +1210,61 @@ describe("PostgreSQL distributed turn coordinator", () => {
     }
   });
 
+  postgresTest("advances a fully configured quiescent v6 namespace to v7", async () => {
+    const value = namespace();
+    const admission: DistributedAdmissionConfig = {
+      maxRateLimitEvents: 10,
+      capacityClasses: [
+        { id: "public", maxRetainedRequests: 10, maxRetainedRequestsPerPartition: 2 },
+      ],
+      rateLimits: [{ id: "web.peer.v1", max: 2, maxEvents: 10, windowMs: 60_000 }],
+    };
+    const predecessor = {
+      protocolVersion: 6,
+      protocolFingerprint: "6".repeat(64),
+      configurationFingerprint: "7".repeat(64),
+    };
+    const successor = {
+      protocolVersion: 7,
+      protocolFingerprint: "8".repeat(64),
+      configurationFingerprint: "9".repeat(64),
+      upgradeFrom: predecessor,
+    };
+    const old = coordinator(
+      value,
+      "v6-protocol",
+      5_000,
+      2,
+      4,
+      predecessor,
+      coordinatorPolicy.retention,
+      coordinatorPolicy.turnState,
+      admission,
+    );
+    const current = coordinator(
+      value,
+      "v7-protocol",
+      5_000,
+      2,
+      4,
+      successor,
+      coordinatorPolicy.retention,
+      coordinatorPolicy.turnState,
+      admission,
+    );
+    try {
+      await old.migrate();
+      expect(await old.register()).toEqual({ status: "registered" });
+      expect(await current.register()).toEqual({ status: "unavailable" });
+      await old.close();
+      await expireInstanceLeases(value);
+      expect(await current.register()).toEqual({ status: "registered" });
+    } finally {
+      await current.close();
+      await old.close();
+    }
+  });
+
   postgresTest("refuses a predecessor upgrade while queued work remains", async () => {
     const value = namespace();
     const predecessor = {
