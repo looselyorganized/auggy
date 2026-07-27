@@ -70,5 +70,9 @@ describe("public package exports", () => {
     const jobs = await import("../../src/jobs");
     expect(typeof jobs.createSqliteDurableJobStore).toBe("function");
     expect(typeof jobs.createDurableJobRuntime).toBe("function");
+
+    const root = await import("../../src");
+    expect("createSqliteDurableJobStore" in root).toBe(false);
+    expect("createDurableJobRuntime" in root).toBe(false);
   });
 });
