@@ -132,7 +132,7 @@ describe("runtime state inventory", () => {
     expect(byId.get("notify-delivery:notify")?.replayCritical).toBe(true);
     expect(byId.get("durable-jobs")).toMatchObject({
       relativePath: "durable-jobs.sqlite",
-      schema: "DJOB/v1",
+      schema: "DJOB/v2",
       replayCritical: true,
       required: true,
       restoreOrder: 15,

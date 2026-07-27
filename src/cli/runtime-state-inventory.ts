@@ -343,7 +343,7 @@ export function buildRuntimeStateInventory(
         namespace,
         path: jobsPath,
         runtimeDataRoot,
-        schema: "DJOB/v1",
+        schema: "DJOB/v2",
         retention: `terminal ${config.settings.jobs.terminalRetentionMs}ms; reconciliation evidence ${config.settings.jobs.auditRetentionMs}ms`,
         restoreOrder: 15,
         replayCritical: true,

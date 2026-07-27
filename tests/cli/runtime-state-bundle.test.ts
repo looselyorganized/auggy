@@ -32,6 +32,11 @@ import {
   hashIdempotencyBinding,
   hashIdempotencyKey,
 } from "../../src/transports/idempotency-store";
+import {
+  createSqliteDurableJobStore,
+  DURABLE_JOBS_APPLICATION_ID,
+  DURABLE_JOBS_SCHEMA_VERSION,
+} from "../../src/jobs/sqlite-store";
 
 const roots: string[] = [];
 const AGENT_ID = "aug1_8a3d7828-1597-4db4-bd0e-adc1a1036211";
@@ -425,6 +430,77 @@ describe("runtime state bundle", () => {
       }),
     ).toThrow("state file exceeds 5 bytes");
     expect(readdirSync(paths.backups)).toEqual([]);
+  });
+
+  test("validates the durable-jobs v2 identity before backup succeeds", () => {
+    const paths = fixture();
+    const databasePath = join(paths.source, "durable-jobs.sqlite");
+    const store = createSqliteDurableJobStore({ dbPath: databasePath });
+    store.submit({
+      idempotencyKey: "backup-job",
+      binding: { operation: "inventory-test" },
+      payload: { version: 1, value: { prompt: "private" } },
+    });
+    store.close();
+
+    const durableInventory = () => {
+      const value = inventory();
+      value.stores.push({
+        id: "durable-jobs",
+        owner: "runtime:durable-jobs",
+        namespace: AGENT_ID,
+        kind: "sqlite",
+        backupPlane: "runtime-volume",
+        relativePath: "durable-jobs.sqlite",
+        schema: "DJOB/v2",
+        retention: "test",
+        restoreOrder: 15,
+        replayCritical: true,
+        required: true,
+      });
+      return value;
+    };
+    const value = durableInventory();
+    const validBundle = join(paths.backups, "durable-valid.auggy-state");
+    createRuntimeStateBundle({
+      sourceRoot: paths.source,
+      bundlePath: validBundle,
+      inventory: value,
+      confirmStopped: true,
+    });
+    expect(verifyRuntimeStateBundle(validBundle).inventory.stores).toContainEqual(
+      expect.objectContaining({ id: "durable-jobs", schema: "DJOB/v2" }),
+    );
+
+    const wrongAppPaths = fixture();
+    const wrongApp = new Database(join(wrongAppPaths.source, "durable-jobs.sqlite"));
+    wrongApp.run("CREATE TABLE foreign_state (id TEXT PRIMARY KEY)");
+    wrongApp.run("PRAGMA application_id = 1234");
+    wrongApp.run(`PRAGMA user_version = ${DURABLE_JOBS_SCHEMA_VERSION}`);
+    wrongApp.close();
+    expect(() =>
+      createRuntimeStateBundle({
+        sourceRoot: wrongAppPaths.source,
+        bundlePath: join(wrongAppPaths.backups, "durable-wrong-app.auggy-state"),
+        inventory: durableInventory(),
+        confirmStopped: true,
+      }),
+    ).toThrow("SQLite identity is incompatible");
+
+    const wrongVersionPaths = fixture();
+    const wrongVersion = new Database(join(wrongVersionPaths.source, "durable-jobs.sqlite"));
+    wrongVersion.run("CREATE TABLE future_state (id TEXT PRIMARY KEY)");
+    wrongVersion.run(`PRAGMA application_id = ${DURABLE_JOBS_APPLICATION_ID}`);
+    wrongVersion.run(`PRAGMA user_version = ${DURABLE_JOBS_SCHEMA_VERSION + 1}`);
+    wrongVersion.close();
+    expect(() =>
+      createRuntimeStateBundle({
+        sourceRoot: wrongVersionPaths.source,
+        bundlePath: join(wrongVersionPaths.backups, "durable-wrong-version.auggy-state"),
+        inventory: durableInventory(),
+        confirmStopped: true,
+      }),
+    ).toThrow("SQLite identity is incompatible");
   });
 
   test("resumes only the exact verified subset of an interrupted restore", () => {
