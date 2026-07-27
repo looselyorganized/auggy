@@ -13,6 +13,7 @@ import type {
 } from "./types";
 import { parseThreadHistoryMessages } from "../kernel/history-manager";
 import { decodeDistributedReplay } from "./agent-turn-state";
+import { isCanonicalDistributedBudgetCostUsd } from "./budget-policy";
 
 export const EMPTY_DISTRIBUTED_HISTORY = new TextEncoder().encode(
   JSON.stringify({ version: 1, messages: [] }),
@@ -142,7 +143,7 @@ function validCostMarkers(
     }
     operations.add(marker.operationId);
     return marker.priced === true
-      ? Number.isFinite(marker.costUsd) && (marker.costUsd as number) >= 0
+      ? typeof marker.costUsd === "number" && isCanonicalDistributedBudgetCostUsd(marker.costUsd)
       : marker.priced === false &&
           (marker.reason === "missing-usage" || marker.reason === "missing-pricing");
   });

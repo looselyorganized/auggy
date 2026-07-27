@@ -12,6 +12,9 @@ import type {
   DistributedCoordinationResultConfig,
   DistributedCoordinationRetentionConfig,
   DistributedCoordinationTurnStateConfig,
+  DistributedCoordinationBudgetConfig,
+  DistributedBudgetPolicyV1,
+  DistributedBudgetUsageV1,
 } from "../types";
 
 export type CoordinationRequestState =
@@ -53,6 +56,8 @@ export interface DistributedCoordinatorConfig {
    * compatibility shape and permits no distributed rate reservations.
    */
   admission?: DistributedAdmissionConfig;
+  /** Immutable shared budget policies. Omission permits no distributed budget gate. */
+  budgets?: DistributedCoordinationBudgetConfig;
   compatibility: DistributedCoordinatorCompatibility;
 }
 
@@ -124,6 +129,28 @@ export type DistributedRateReservationResult =
       retryAfterMs?: number;
     }
   | { status: "unavailable" };
+
+export interface DistributedBudgetReservationRequest {
+  policyId: string;
+  peerId: string;
+  threadId: string;
+  trustLevel: "agent" | "public";
+  publicSubstate?: "anonymous" | "recognized";
+}
+
+export type DistributedBudgetReservationResult =
+  | ({ status: "reserved" | "replayed" } & DistributedBudgetUsageV1)
+  | {
+      status: "rejected";
+      reason:
+        | "anonymous-rate-cap"
+        | "daily-global-usd-cap"
+        | "daily-peer-usd-cap"
+        | "daily-thread-turn-cap"
+        | "daily-turn-cap"
+        | "budget-capacity";
+    }
+  | { status: "conflict" | "stale" | "unavailable" };
 
 export interface DistributedTurnLease {
   namespace: string;
@@ -317,6 +344,8 @@ export interface DistributedTurnCoordinator {
   ): Promise<DistributedRateReservationResult>;
   /** Local immutable-policy check; registration makes the namespace fingerprint authoritative. */
   supportsAdmissionPolicy(requirements: DistributedAdmissionPolicyRequirementsV1): boolean;
+  /** Local immutable-policy check; namespace registration remains authoritative. */
+  supportsBudgetPolicy(policy: DistributedBudgetPolicyV1): boolean;
   heartbeatQueued(
     request: DistributedTurnRequestIdentity,
     /** Omission is compatible only with the initial generation (attempt 1). */
@@ -344,6 +373,13 @@ export interface DistributedTurnCoordinator {
   invalidateLocalAuthority(reason: "heartbeat-deadline" | "runtime-stopping"): void;
   /** Must be called immediately before work that could cause an external effect. */
   markExecutionStarted(lease: DistributedTurnLease): Promise<LeaseResult>;
+  /** Reserve one coordinator-owned budget slot while the lease is still unstarted. */
+  reserveBudget(
+    lease: DistributedTurnLease,
+    request: DistributedBudgetReservationRequest,
+  ): Promise<DistributedBudgetReservationResult>;
+  /** Release only the exact still-unstarted reservation. */
+  releaseBudget(lease: DistributedTurnLease, policyId: string): Promise<LeaseResult>;
   heartbeat(lease: DistributedTurnLease): Promise<LeaseResult>;
   /** Claim one peer-bound history revision before model invocation. */
   loadHistory(
@@ -361,6 +397,15 @@ export interface DistributedTurnCoordinator {
   markOutcomeUnknown(
     lease: DistributedTurnLease,
     reasonCode: CoordinationOutcomeUnknownReason,
+  ): Promise<LeaseResult>;
+  /**
+   * Atomically retain an ambiguous turn and persist every completed inference
+   * cost marker. This never fabricates history or a replayable result.
+   */
+  settleOutcomeUnknown(
+    lease: DistributedTurnLease,
+    reasonCode: CoordinationOutcomeUnknownReason,
+    costMarkers: readonly DistributedCostMarkerV1[],
   ): Promise<LeaseResult>;
   status(request: DistributedTurnRequestIdentity): Promise<DistributedRequestStatus>;
   wait(

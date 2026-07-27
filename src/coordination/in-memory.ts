@@ -6,6 +6,7 @@ import type {
   DistributedCoordinationEvent,
   DistributedAdmissionConfig,
   DistributedAdmissionReservation,
+  DistributedBudgetReservationResult,
   DistributedCoordinatorConfig,
   DistributedCoordinatorCompatibilityTuple,
   DistributedCoordinatorHealth,
@@ -27,6 +28,14 @@ import type {
   LeaseResult,
   RegistrationResult,
 } from "./types";
+import {
+  distributedBudgetCostNanos,
+  isCanonicalDistributedBudgetCostUsd,
+  MAX_DISTRIBUTED_BUDGET_COST_USD,
+  normalizeDistributedBudgetConfig,
+  resolveDistributedBudgetCaps,
+  sameDistributedBudgetPolicy,
+} from "./budget-policy";
 import {
   EMPTY_DISTRIBUTED_HISTORY,
   validDistributedPeerBinding,
@@ -86,6 +95,28 @@ interface StoredOutboxIntent extends DistributedOutboxIntentV1 {
   fence: number;
 }
 
+interface StoredBudgetReservation {
+  policyId: string;
+  requestId: string;
+  bindingHash: string;
+  peerIdHash: string;
+  threadIdHash: string;
+  trustLevel: "agent" | "public";
+  publicSubstate?: "anonymous" | "recognized";
+  attempt: number;
+  fence: number;
+  admissionDay: string;
+  state: "reserved" | "committed" | "outcome_unknown";
+  reservedAt: number;
+  settledAt?: number;
+}
+
+interface StoredBudgetDaily {
+  turns: number;
+  costNanos: bigint;
+  unpricedTurns: number;
+}
+
 interface LocalOwnedOperation {
   admissionHash: string;
   attempt: number;
@@ -107,6 +138,17 @@ interface NamespaceState {
   }>;
   rateReservations: Map<string, { bindingHash: string; expiresAt: number }>;
   costMarkers: Map<string, StoredCostMarker>;
+  budgets: ReturnType<typeof normalizeDistributedBudgetConfig>;
+  budgetReservations: Map<string, StoredBudgetReservation>;
+  budgetAnonymousEvents: Array<{
+    policyId: string;
+    requestId: string;
+    subjectHash: string;
+    occurredAt: number;
+    expiresAt: number;
+  }>;
+  budgetDaily: Map<string, StoredBudgetDaily>;
+  budgetThresholds: Map<string, { state: "pending" | "suppressed" }>;
   events: StoredEvent[];
   histories: Map<string, StoredHistory>;
   instances: Map<string, StoredInstance>;
@@ -143,6 +185,26 @@ const MAX_RATE_POLICIES = 64;
 const MAX_CAPACITY_CLASSES = 64;
 const MAX_RATE_RESERVATIONS = 16;
 const MAX_RATE_WINDOW_MS = 86_400_000;
+const GLOBAL_BUDGET_SUBJECT_HASH = "0".repeat(64);
+
+function budgetDigest(domain: string, ...values: string[]): string {
+  const hasher = new Bun.CryptoHasher("sha256").update(domain).update("\0");
+  for (const value of values) hasher.update(value).update("\0");
+  return hasher.digest("hex");
+}
+
+function budgetDay(timestamp: number): string {
+  return new Date(timestamp).toISOString().slice(0, 10);
+}
+
+function budgetDailyKey(
+  policyId: string,
+  day: string,
+  kind: "global" | "peer",
+  subjectHash: string,
+): string {
+  return `${policyId}\0${day}\0${kind}\0${subjectHash}`;
+}
 
 function normalizedAdmission(config: DistributedCoordinatorConfig): DistributedAdmissionConfig {
   return config.admission ?? { maxRateLimitEvents: 0, capacityClasses: [], rateLimits: [] };
@@ -255,6 +317,15 @@ function assertConfig(config: DistributedCoordinatorConfig): void {
   }
   if (reservedRequestCapacity > config.retention.maxTerminalRequests) {
     throw new Error("admission capacity classes exceed retained-request capacity");
+  }
+  const budgets = normalizeDistributedBudgetConfig(
+    config.budgets,
+    config.retention.terminalRequestRetentionMs,
+  );
+  const minimumReservations =
+    config.retention.maxTerminalRequests + config.maxConcurrent + config.maxQueued;
+  if (budgets.policies.some((policy) => policy.maxReservations < minimumReservations)) {
+    throw new Error("coordination budget reservation capacity cannot retain request evidence");
   }
   assertLimit("compatibility.protocolVersion", config.compatibility.protocolVersion, 1);
   if (
@@ -376,6 +447,10 @@ export function createInMemoryDistributedTurnCoordinator(
   const now = options.now ?? Date.now;
   const sessionId = crypto.randomUUID();
   const admission = normalizedAdmission(config);
+  const budgets = normalizeDistributedBudgetConfig(
+    config.budgets,
+    config.retention.terminalRequestRetentionMs,
+  );
   const owned = new Map<string, LocalOwnedOperation>();
   let invalidated = false;
 
@@ -564,7 +639,7 @@ export function createInMemoryDistributedTurnCoordinator(
       }
       operations.add(marker.operationId);
       return marker.priced
-        ? Number.isFinite(marker.costUsd) && marker.costUsd >= 0
+        ? isCanonicalDistributedBudgetCostUsd(marker.costUsd)
         : marker.reason === "missing-usage" || marker.reason === "missing-pricing";
     });
   }
@@ -648,6 +723,13 @@ export function createInMemoryDistributedTurnCoordinator(
         admissionEvents: [],
         rateReservations: new Map(),
         costMarkers: new Map(),
+        budgets: {
+          policies: budgets.policies.map((policy) => structuredClone(policy)),
+        },
+        budgetReservations: new Map(),
+        budgetAnonymousEvents: [],
+        budgetDaily: new Map(),
+        budgetThresholds: new Map(),
         events: [],
         histories: new Map(),
         instances: new Map(),
@@ -711,6 +793,12 @@ export function createInMemoryDistributedTurnCoordinator(
           stored.windowMs === policy.windowMs
         );
       });
+    const budgetsMatch =
+      current.budgets.policies.length === budgets.policies.length &&
+      budgets.policies.every((policy) => {
+        const stored = current.budgets.policies.find((candidate) => candidate.id === policy.id);
+        return stored !== undefined && sameDistributedBudgetPolicy(stored, policy);
+      });
     if (
       current.maxConcurrent !== config.maxConcurrent ||
       current.leaseMs !== config.leaseMs ||
@@ -731,7 +819,8 @@ export function createInMemoryDistributedTurnCoordinator(
       current.turnState.outbox.maxPendingIntents !== config.turnState.outbox.maxPendingIntents ||
       !sameCompatibility(current.compatibility, compatibilityTuple()) ||
       !sourcesMatch ||
-      !admissionMatches
+      !admissionMatches ||
+      !budgetsMatch
     ) {
       throw new Error("coordinator namespace policy mismatch");
     }
@@ -764,6 +853,12 @@ export function createInMemoryDistributedTurnCoordinator(
           stored.windowMs !== policy.windowMs
         );
       });
+    const budgetChanges =
+      current.budgets.policies.length !== budgets.policies.length ||
+      budgets.policies.some((policy) => {
+        const stored = current.budgets.policies.find((candidate) => candidate.id === policy.id);
+        return stored === undefined || !sameDistributedBudgetPolicy(stored, policy);
+      });
     if (
       admissionChanges &&
       (current.requests.size > 0 ||
@@ -772,8 +867,18 @@ export function createInMemoryDistributedTurnCoordinator(
     ) {
       return false;
     }
+    if (
+      budgetChanges &&
+      (current.budgetReservations.size > 0 ||
+        current.budgetAnonymousEvents.length > 0 ||
+        current.budgetDaily.size > 0 ||
+        current.budgetThresholds.size > 0)
+    ) {
+      return false;
+    }
     const prior = current.compatibility;
     const priorAdmission = current.admission;
+    const priorBudgets = current.budgets;
     current.compatibility = compatibilityTuple();
     if (admissionChanges) {
       current.admission = {
@@ -782,11 +887,17 @@ export function createInMemoryDistributedTurnCoordinator(
         rateLimits: admission.rateLimits.map((policy) => ({ ...policy })),
       };
     }
+    if (budgetChanges) {
+      current.budgets = {
+        policies: budgets.policies.map((policy) => structuredClone(policy)),
+      };
+    }
     try {
       namespacePolicy(current);
     } catch {
       current.compatibility = prior;
       current.admission = priorAdmission;
+      current.budgets = priorBudgets;
       return false;
     }
     for (const [instanceId, instance] of current.instances) {
@@ -816,8 +927,17 @@ export function createInMemoryDistributedTurnCoordinator(
     for (const request of current.requests.values()) {
       if (request.state !== "active" || (request.expiresAt ?? Infinity) > timestamp) continue;
       if (request.executionStarted) {
+        const expiredLease = leaseFrom(request);
+        settleBudgetAccounting(
+          current,
+          expiredLease,
+          missingUsageAccountingMarkers(expiredLease),
+          "outcome_unknown",
+          timestamp,
+        );
         quarantine(current, request, timestamp, "lease-lost");
       } else {
+        releaseBudgetReservationsForRequest(current, request.requestId, request.queueGeneration);
         request.state = "queued";
         request.fence = undefined;
         request.ownerInstance = undefined;
@@ -997,6 +1117,7 @@ export function createInMemoryDistributedTurnCoordinator(
       request.queueOwnerInstance = undefined;
       request.queueOwnerSession = undefined;
       request.queueExpiresAt = undefined;
+      releaseBudgetReservationsForRequest(current, request.requestId, request.queueGeneration);
     }
   }
 
@@ -1104,6 +1225,227 @@ export function createInMemoryDistributedTurnCoordinator(
     );
   }
 
+  function budgetReservationKey(policyId: string, requestId: string): string {
+    return `${policyId}\0${requestId}`;
+  }
+
+  function budgetUsage(
+    current: NamespaceState,
+    policyId: string,
+    admissionDay: string,
+    peerIdHash: string,
+    threadIdHash: string,
+  ) {
+    const peer = current.budgetDaily.get(
+      budgetDailyKey(policyId, admissionDay, "peer", peerIdHash),
+    ) ?? { turns: 0, costNanos: 0n, unpricedTurns: 0 };
+    const global = current.budgetDaily.get(
+      budgetDailyKey(policyId, admissionDay, "global", GLOBAL_BUDGET_SUBJECT_HASH),
+    ) ?? { turns: 0, costNanos: 0n, unpricedTurns: 0 };
+    const threadTurns = [...current.budgetReservations.values()].filter(
+      (reservation) =>
+        reservation.policyId === policyId &&
+        reservation.admissionDay === admissionDay &&
+        reservation.peerIdHash === peerIdHash &&
+        reservation.threadIdHash === threadIdHash,
+    ).length;
+    return {
+      admissionDay,
+      threadTurns,
+      peerTurns: peer.turns,
+      peerCostUsd: Number(peer.costNanos) / 1_000_000_000,
+      peerUnpricedTurns: peer.unpricedTurns,
+      globalCostUsd: Number(global.costNanos) / 1_000_000_000,
+      globalUnpricedTurns: global.unpricedTurns,
+    };
+  }
+
+  function releaseBudgetReservation(
+    current: NamespaceState,
+    policyId: string,
+    requestId: string,
+    attempt?: number,
+    fence?: number,
+  ): boolean {
+    const key = budgetReservationKey(policyId, requestId);
+    const reservation = current.budgetReservations.get(key);
+    if (
+      reservation?.state !== "reserved" ||
+      (attempt !== undefined && reservation.attempt !== attempt) ||
+      (fence !== undefined && reservation.fence !== fence)
+    ) {
+      return false;
+    }
+    current.budgetReservations.delete(key);
+    current.budgetAnonymousEvents = current.budgetAnonymousEvents.filter(
+      (event) => event.policyId !== policyId || event.requestId !== requestId,
+    );
+    for (const [kind, subjectHash] of [
+      ["global", GLOBAL_BUDGET_SUBJECT_HASH],
+      ["peer", reservation.peerIdHash],
+    ] as const) {
+      const dailyKey = budgetDailyKey(policyId, reservation.admissionDay, kind, subjectHash);
+      const daily = current.budgetDaily.get(dailyKey);
+      if (daily) {
+        daily.turns = Math.max(0, daily.turns - 1);
+        if (daily.turns === 0 && daily.costNanos === 0n && daily.unpricedTurns === 0) {
+          current.budgetDaily.delete(dailyKey);
+        }
+      }
+    }
+    return true;
+  }
+
+  function releaseBudgetReservationsForRequest(
+    current: NamespaceState,
+    requestId: string,
+    attempt?: number,
+  ): void {
+    for (const reservation of [...current.budgetReservations.values()]) {
+      if (reservation.requestId === requestId && reservation.state === "reserved") {
+        releaseBudgetReservation(current, reservation.policyId, requestId, attempt);
+      }
+    }
+  }
+
+  function pruneBudgetEvidence(
+    current: NamespaceState,
+    timestamp: number,
+    policyId?: string,
+  ): void {
+    for (const policy of current.budgets.policies) {
+      if (policyId !== undefined && policy.id !== policyId) continue;
+      const reservationCutoff = timestamp - policy.reservationRetentionMs;
+      for (const [key, reservation] of current.budgetReservations) {
+        if (
+          reservation.policyId === policy.id &&
+          (reservation.state === "committed" ||
+            (reservation.state === "outcome_unknown" &&
+              current.requests.get(reservation.requestId)?.state !== "outcome_unknown")) &&
+          reservation.settledAt !== undefined &&
+          reservation.settledAt <= reservationCutoff
+        ) {
+          current.budgetReservations.delete(key);
+        }
+      }
+      const cutoffDay = budgetDay(timestamp - policy.aggregateRetentionDays * 24 * 60 * 60 * 1_000);
+      const protectedDays = new Set(
+        [...current.budgetReservations.values()]
+          .filter(
+            (reservation) =>
+              reservation.policyId === policy.id &&
+              (reservation.state === "reserved" || reservation.state === "outcome_unknown"),
+          )
+          .map((reservation) => reservation.admissionDay),
+      );
+      for (const key of current.budgetDaily.keys()) {
+        const [storedPolicyId, day] = key.split("\0");
+        if (storedPolicyId === policy.id && day! <= cutoffDay && !protectedDays.has(day!)) {
+          current.budgetDaily.delete(key);
+        }
+      }
+      for (const key of current.budgetThresholds.keys()) {
+        const [storedPolicyId, day] = key.split("\0");
+        if (
+          storedPolicyId === policy.id &&
+          day! <= cutoffDay &&
+          current.budgetThresholds.get(key)?.state === "suppressed"
+        ) {
+          current.budgetThresholds.delete(key);
+        }
+      }
+    }
+  }
+
+  function settleBudgetAccounting(
+    current: NamespaceState,
+    lease: DistributedTurnLease,
+    markers: readonly DistributedCostMarkerV1[],
+    reservationState: "committed" | "outcome_unknown",
+    timestamp: number,
+  ): void {
+    const reservations = [...current.budgetReservations.values()].filter(
+      (reservation) =>
+        reservation.requestId === lease.requestId &&
+        reservation.attempt === lease.attempt &&
+        reservation.fence === lease.fence &&
+        reservation.state === "reserved",
+    );
+    const hasUnpriced = markers.some((marker) => !marker.priced);
+    const pricedCostNanos = markers.reduce(
+      (sum, marker) => sum + (marker.priced ? distributedBudgetCostNanos(marker.costUsd) : 0n),
+      0n,
+    );
+    if (pricedCostNanos > distributedBudgetCostNanos(MAX_DISTRIBUTED_BUDGET_COST_USD)) {
+      throw new Error("distributed cost total exceeds budget accounting bounds");
+    }
+    const settlements = reservations.map((reservation) => {
+      const policy = current.budgets.policies.find(
+        (candidate) => candidate.id === reservation.policyId,
+      );
+      if (!policy) throw new Error("distributed budget reservation policy is unavailable");
+      const global = current.budgetDaily.get(
+        budgetDailyKey(
+          reservation.policyId,
+          reservation.admissionDay,
+          "global",
+          GLOBAL_BUDGET_SUBJECT_HASH,
+        ),
+      );
+      const peer = current.budgetDaily.get(
+        budgetDailyKey(
+          reservation.policyId,
+          reservation.admissionDay,
+          "peer",
+          reservation.peerIdHash,
+        ),
+      );
+      if (!global || !peer) throw new Error("distributed budget aggregate is missing");
+      const globalTotalNanos = global.costNanos + pricedCostNanos;
+      let newThresholds: number[] = [];
+      if (policy.dailyBudgetUsd !== undefined && policy.notifications && pricedCostNanos > 0n) {
+        const dailyBudgetNanos = distributedBudgetCostNanos(policy.dailyBudgetUsd);
+        const crossed = policy.notifications.thresholds.filter(
+          (threshold) =>
+            globalTotalNanos * 1_000_000n >=
+            dailyBudgetNanos * BigInt(Math.round(threshold * 1_000_000)),
+        );
+        newThresholds = crossed.filter(
+          (threshold) =>
+            !current.budgetThresholds.has(
+              `${policy.id}\0${reservation.admissionDay}\0${Math.round(threshold * 1_000_000)}`,
+            ),
+        );
+        const policyThresholds = [...current.budgetThresholds.keys()].filter((key) =>
+          key.startsWith(`${policy.id}\0`),
+        ).length;
+        if (policyThresholds + newThresholds.length > policy.maxThresholdIntents) {
+          throw new Error("distributed budget threshold intent capacity is exhausted");
+        }
+      }
+      return { reservation, policy, global, peer, newThresholds };
+    });
+    for (const { reservation, policy, global, peer, newThresholds } of settlements) {
+      if (pricedCostNanos > 0n) {
+        global.costNanos += pricedCostNanos;
+        peer.costNanos += pricedCostNanos;
+      }
+      if (hasUnpriced) {
+        global.unpricedTurns++;
+        peer.unpricedTurns++;
+      }
+      const highest = newThresholds.at(-1);
+      for (const threshold of newThresholds) {
+        current.budgetThresholds.set(
+          `${policy.id}\0${reservation.admissionDay}\0${Math.round(threshold * 1_000_000)}`,
+          { state: threshold === highest ? "pending" : "suppressed" },
+        );
+      }
+      reservation.state = reservationState;
+      reservation.settledAt = timestamp;
+    }
+  }
+
   function recordEvent(
     current: NamespaceState,
     event: Omit<DistributedCoordinationEvent, "createdAt" | "eventId">,
@@ -1139,6 +1481,104 @@ export function createInMemoryDistributedTurnCoordinator(
     }
   }
 
+  function collisionAccountingMarkers(
+    markers: readonly DistributedCostMarkerV1[],
+    duplicateOperationIds: ReadonlySet<string>,
+  ): readonly DistributedCostMarkerV1[] {
+    return markers.map((marker) =>
+      duplicateOperationIds.has(marker.operationId)
+        ? { version: 1, operationId: marker.operationId, priced: false, reason: "missing-usage" }
+        : marker,
+    );
+  }
+
+  function missingUsageAccountingMarkers(
+    lease: DistributedTurnLease,
+  ): readonly DistributedCostMarkerV1[] {
+    return [
+      {
+        version: 1,
+        operationId: `auggy-op-v1-${budgetDigest(
+          "auggy-distributed-budget-unknown-cost-v1",
+          config.namespace,
+          lease.requestId,
+          String(lease.attempt),
+          String(lease.fence),
+        )}`,
+        priced: false,
+        reason: "missing-usage",
+      },
+    ];
+  }
+
+  function outcomeUnknownAccountingMarkers(
+    lease: DistributedTurnLease,
+    markers: readonly DistributedCostMarkerV1[],
+    duplicateOperationIds: ReadonlySet<string> = new Set(),
+  ): readonly DistributedCostMarkerV1[] {
+    if (duplicateOperationIds.size > 0) {
+      return collisionAccountingMarkers(markers, duplicateOperationIds);
+    }
+    return markers.length > 0 ? markers : missingUsageAccountingMarkers(lease);
+  }
+
+  function settleUnknown(
+    lease: DistributedTurnLease,
+    reasonCode: CoordinationOutcomeUnknownReason,
+    costMarkers: readonly DistributedCostMarkerV1[],
+  ): Promise<LeaseResult> {
+    if (!OUTCOME_UNKNOWN_REASONS.has(reasonCode)) {
+      return Promise.resolve({ status: "rejected", reason: "invalid-turn-state" });
+    }
+    if (!validCostMarkers(costMarkers)) {
+      return Promise.resolve({ status: "rejected", reason: "invalid-turn-state" });
+    }
+    return safe<LeaseResult>(
+      () =>
+        exclusive(() => {
+          const timestamp = now();
+          const current = state();
+          if (!current || !liveInstance(current, timestamp)) return { status: "stale" };
+          expire(current, timestamp);
+          const stored = owns(current, lease, timestamp);
+          if (!stored?.executionStarted) return { status: "stale" };
+          const duplicateCostOperations = new Set(
+            costMarkers
+              .filter((marker) => current.costMarkers.has(marker.operationId))
+              .map((marker) => marker.operationId),
+          );
+          settleBudgetAccounting(
+            current,
+            lease,
+            outcomeUnknownAccountingMarkers(lease, costMarkers, duplicateCostOperations),
+            "outcome_unknown",
+            timestamp,
+          );
+          for (const marker of costMarkers) {
+            if (!duplicateCostOperations.has(marker.operationId)) {
+              current.costMarkers.set(marker.operationId, {
+                ...marker,
+                requestId: lease.requestId,
+                fence: lease.fence,
+              });
+            }
+          }
+          quarantine(current, stored, timestamp, reasonCode);
+          return { status: "outcome-unknown" };
+        }),
+      { status: "unavailable" },
+      (result) =>
+        abortOwned(
+          lease.requestId,
+          result.status === "outcome-unknown"
+            ? "outcome-unknown"
+            : result.status === "unavailable"
+              ? "coordinator-authority-lost"
+              : "lease-ownership-lost",
+        ),
+    );
+  }
+
   return {
     supportsAdmissionPolicy(requirements) {
       try {
@@ -1166,6 +1606,18 @@ export function createInMemoryDistributedTurnCoordinator(
             );
           })
         );
+      } catch {
+        return false;
+      }
+    },
+    supportsBudgetPolicy(policy) {
+      try {
+        const normalized = normalizeDistributedBudgetConfig(
+          { policies: [policy] },
+          config.retention.terminalRequestRetentionMs,
+        ).policies[0]!;
+        const stored = budgets.policies.find((candidate) => candidate.id === normalized.id);
+        return stored !== undefined && sameDistributedBudgetPolicy(stored, normalized);
       } catch {
         return false;
       }
@@ -1423,6 +1875,7 @@ export function createInMemoryDistributedTurnCoordinator(
             stored.ownerInstance = undefined;
             stored.ownerSession = undefined;
             stored.expiresAt = undefined;
+            releaseBudgetReservationsForRequest(current, stored.requestId, stored.queueGeneration);
             return { status: "ok" };
           }, true),
         { status: "unavailable" },
@@ -1541,6 +1994,234 @@ export function createInMemoryDistributedTurnCoordinator(
           if (result.status !== "ok") abortOwned(lease.requestId, "lease-ownership-lost");
         },
       ),
+    reserveBudget: (lease, request) => {
+      try {
+        assertIdentifier("budget.policyId", request.policyId);
+      } catch {
+        return Promise.resolve({ status: "unavailable" });
+      }
+      if (
+        typeof request.peerId !== "string" ||
+        request.peerId.length < 1 ||
+        request.peerId.length > 256 ||
+        request.threadId !== lease.threadId ||
+        (request.trustLevel !== "agent" && request.trustLevel !== "public") ||
+        (request.trustLevel === "public"
+          ? request.publicSubstate !== "anonymous" && request.publicSubstate !== "recognized"
+          : request.publicSubstate !== undefined)
+      ) {
+        return Promise.resolve({ status: "unavailable" });
+      }
+      const policy = budgets.policies.find((candidate) => candidate.id === request.policyId);
+      if (!policy) return Promise.resolve({ status: "unavailable" });
+      const peerIdHash = budgetDigest(
+        "auggy-distributed-budget-peer-v1",
+        config.namespace,
+        request.peerId,
+      );
+      const threadIdHash = budgetDigest(
+        "auggy-distributed-budget-thread-v1",
+        config.namespace,
+        request.threadId,
+      );
+      return safe<DistributedBudgetReservationResult>(
+        () =>
+          exclusive(() => {
+            const timestamp = now();
+            const current = state();
+            if (!current || !liveInstance(current, timestamp)) return { status: "stale" };
+            expire(current, timestamp);
+            const stored = owns(current, lease, timestamp);
+            if (!stored || stored.executionStarted) return { status: "stale" };
+            const key = budgetReservationKey(policy.id, lease.requestId);
+            const existing = current.budgetReservations.get(key);
+            if (existing) {
+              const matches =
+                existing.bindingHash === stored.bindingHash &&
+                existing.peerIdHash === peerIdHash &&
+                existing.threadIdHash === threadIdHash &&
+                existing.trustLevel === request.trustLevel &&
+                existing.publicSubstate === request.publicSubstate &&
+                existing.attempt === lease.attempt &&
+                existing.fence === lease.fence;
+              return matches
+                ? {
+                    status: "replayed",
+                    ...budgetUsage(
+                      current,
+                      policy.id,
+                      existing.admissionDay,
+                      peerIdHash,
+                      threadIdHash,
+                    ),
+                  }
+                : { status: "conflict" };
+            }
+
+            current.budgetAnonymousEvents = current.budgetAnonymousEvents.filter(
+              (event) => event.expiresAt > timestamp,
+            );
+            pruneBudgetEvidence(current, timestamp, policy.id);
+            const policyReservations = [...current.budgetReservations.values()].filter(
+              (reservation) => reservation.policyId === policy.id,
+            ).length;
+            const policyAnonymousEvents = current.budgetAnonymousEvents.filter(
+              (event) => event.policyId === policy.id,
+            ).length;
+            const admissionDay = budgetDay(timestamp);
+            const policyThresholds = [...current.budgetThresholds.keys()].filter((key) =>
+              key.startsWith(`${policy.id}\0`),
+            );
+            const prospectiveThresholdDays = new Set(
+              [...current.budgetReservations.values()]
+                .filter(
+                  (reservation) =>
+                    reservation.policyId === policy.id && reservation.state === "reserved",
+                )
+                .map((reservation) => reservation.admissionDay),
+            );
+            prospectiveThresholdDays.add(admissionDay);
+            const prospectiveThresholdIntents = policyThresholds.filter((key) => {
+              const [, day] = key.split("\0");
+              return prospectiveThresholdDays.has(day!);
+            }).length;
+            if (
+              policyReservations >= policy.maxReservations ||
+              policyThresholds.length +
+                (policy.notifications?.thresholds.length ?? 0) * prospectiveThresholdDays.size -
+                prospectiveThresholdIntents >
+                policy.maxThresholdIntents ||
+              (request.publicSubstate === "anonymous" &&
+                policy.anonymousGlobalLimit !== undefined &&
+                policyAnonymousEvents >= policy.maxAnonymousEvents)
+            ) {
+              return { status: "rejected", reason: "budget-capacity" };
+            }
+            const caps = resolveDistributedBudgetCaps(
+              policy,
+              request.trustLevel,
+              request.publicSubstate,
+            );
+            const usage = budgetUsage(current, policy.id, admissionDay, peerIdHash, threadIdHash);
+            if (
+              request.publicSubstate === "anonymous" &&
+              policy.anonymousGlobalLimit !== undefined &&
+              current.budgetAnonymousEvents.filter(
+                (event) => event.policyId === policy.id && event.occurredAt > timestamp - 60_000,
+              ).length >= policy.anonymousGlobalLimit
+            ) {
+              return { status: "rejected", reason: "anonymous-rate-cap" };
+            }
+            const globalCostNanos =
+              current.budgetDaily.get(
+                budgetDailyKey(policy.id, admissionDay, "global", GLOBAL_BUDGET_SUBJECT_HASH),
+              )?.costNanos ?? 0n;
+            const peerCostNanos =
+              current.budgetDaily.get(budgetDailyKey(policy.id, admissionDay, "peer", peerIdHash))
+                ?.costNanos ?? 0n;
+            if (
+              policy.dailyBudgetUsd !== undefined &&
+              globalCostNanos >= distributedBudgetCostNanos(policy.dailyBudgetUsd)
+            ) {
+              return { status: "rejected", reason: "daily-global-usd-cap" };
+            }
+            if (
+              caps?.maxUsdPerDay !== undefined &&
+              peerCostNanos >= distributedBudgetCostNanos(caps.maxUsdPerDay)
+            ) {
+              return { status: "rejected", reason: "daily-peer-usd-cap" };
+            }
+            if (
+              caps?.maxTurnsPerThread !== undefined &&
+              usage.threadTurns >= caps.maxTurnsPerThread
+            ) {
+              return { status: "rejected", reason: "daily-thread-turn-cap" };
+            }
+            if (caps?.maxTurnsPerDay !== undefined && usage.peerTurns >= caps.maxTurnsPerDay) {
+              return { status: "rejected", reason: "daily-turn-cap" };
+            }
+            const peerDayKey = budgetDailyKey(policy.id, admissionDay, "peer", peerIdHash);
+            const peerDayCount = [...current.budgetDaily.keys()].filter((key) => {
+              const [storedPolicyId, , kind] = key.split("\0");
+              return storedPolicyId === policy.id && kind === "peer";
+            }).length;
+            if (!current.budgetDaily.has(peerDayKey) && peerDayCount >= policy.maxPeerDays) {
+              return { status: "rejected", reason: "budget-capacity" };
+            }
+            for (const [kind, subjectHash] of [
+              ["global", GLOBAL_BUDGET_SUBJECT_HASH],
+              ["peer", peerIdHash],
+            ] as const) {
+              const dailyKey = budgetDailyKey(policy.id, admissionDay, kind, subjectHash);
+              const daily = current.budgetDaily.get(dailyKey) ?? {
+                turns: 0,
+                costNanos: 0n,
+                unpricedTurns: 0,
+              };
+              daily.turns++;
+              current.budgetDaily.set(dailyKey, daily);
+            }
+            current.budgetReservations.set(key, {
+              policyId: policy.id,
+              requestId: lease.requestId,
+              bindingHash: stored.bindingHash,
+              peerIdHash,
+              threadIdHash,
+              trustLevel: request.trustLevel,
+              ...(request.publicSubstate ? { publicSubstate: request.publicSubstate } : {}),
+              attempt: lease.attempt,
+              fence: lease.fence,
+              admissionDay,
+              state: "reserved",
+              reservedAt: timestamp,
+            });
+            if (
+              request.publicSubstate === "anonymous" &&
+              policy.anonymousGlobalLimit !== undefined
+            ) {
+              current.budgetAnonymousEvents.push({
+                policyId: policy.id,
+                requestId: lease.requestId,
+                subjectHash: peerIdHash,
+                occurredAt: timestamp,
+                expiresAt: timestamp + 60_000,
+              });
+            }
+            return {
+              status: "reserved",
+              ...budgetUsage(current, policy.id, admissionDay, peerIdHash, threadIdHash),
+            };
+          }),
+        { status: "unavailable" },
+      );
+    },
+    releaseBudget: (lease, policyId) => {
+      try {
+        assertIdentifier("budget.policyId", policyId);
+      } catch {
+        return Promise.resolve({ status: "unavailable" });
+      }
+      return safe<LeaseResult>(
+        () =>
+          exclusive(() => {
+            const timestamp = now();
+            const current = state();
+            if (!current || !liveInstance(current, timestamp)) return { status: "stale" };
+            expire(current, timestamp);
+            const stored = owns(current, lease, timestamp);
+            if (!stored || stored.executionStarted) return { status: "stale" };
+            releaseBudgetReservation(
+              current,
+              policyId,
+              lease.requestId,
+              lease.attempt,
+              lease.fence,
+            );
+            return { status: "ok" };
+          }),
+        { status: "unavailable" },
+      );
+    },
     heartbeat: (lease) =>
       safe<LeaseResult>(
         () =>
@@ -1682,8 +2363,10 @@ export function createInMemoryDistributedTurnCoordinator(
                   (samePeerBinding(history.binding, checkpoint.peerBinding) ||
                     allowsAuthenticatedPromotion(history.binding, checkpoint.peerBinding))
                 : checkpoint.expectedHistoryRevision === 0);
-            const duplicateCost = checkpoint.costMarkers.some((marker) =>
-              current.costMarkers.has(marker.operationId),
+            const duplicateCostOperations = new Set(
+              checkpoint.costMarkers
+                .filter((marker) => current.costMarkers.has(marker.operationId))
+                .map((marker) => marker.operationId),
             );
             const existingOutboxOperations = new Set(
               [...current.outbox.values()].map((intent) => intent.operationId),
@@ -1691,22 +2374,43 @@ export function createInMemoryDistributedTurnCoordinator(
             const duplicateOutbox = checkpoint.outboxIntents.some((intent) =>
               existingOutboxOperations.has(intent.operationId),
             );
-            if (!historyMatches || duplicateCost || duplicateOutbox) {
-              quarantine(current, stored, timestamp, "effect-outcome-unknown");
-              return { status: "outcome-unknown" };
-            }
-            if (
+            const pendingOutboxCapacityExceeded =
               current.outbox.size + checkpoint.outboxIntents.length >
-              current.turnState.outbox.maxPendingIntents
+              current.turnState.outbox.maxPendingIntents;
+            const historyCapacityExceeded =
+              !history && current.histories.size >= current.turnState.history.maxThreads;
+            if (
+              !historyMatches ||
+              duplicateCostOperations.size > 0 ||
+              duplicateOutbox ||
+              pendingOutboxCapacityExceeded ||
+              historyCapacityExceeded
             ) {
-              quarantine(current, stored, timestamp, "effect-outcome-unknown");
-              return { status: "outcome-unknown" };
-            }
-            if (!history && current.histories.size >= current.turnState.history.maxThreads) {
+              settleBudgetAccounting(
+                current,
+                lease,
+                outcomeUnknownAccountingMarkers(
+                  lease,
+                  checkpoint.costMarkers,
+                  duplicateCostOperations,
+                ),
+                "outcome_unknown",
+                timestamp,
+              );
+              for (const marker of checkpoint.costMarkers) {
+                if (!duplicateCostOperations.has(marker.operationId)) {
+                  current.costMarkers.set(marker.operationId, {
+                    ...marker,
+                    requestId: lease.requestId,
+                    fence: lease.fence,
+                  });
+                }
+              }
               quarantine(current, stored, timestamp, "effect-outcome-unknown");
               return { status: "outcome-unknown" };
             }
 
+            settleBudgetAccounting(current, lease, checkpoint.costMarkers, "committed", timestamp);
             current.histories.set(lease.threadId, {
               version: 1,
               binding: copyPeerBinding(checkpoint.peerBinding),
@@ -1768,33 +2472,9 @@ export function createInMemoryDistributedTurnCoordinator(
       return settle("completed", lease, copyReplayResult(result));
     },
     fail: (lease) => settle("failed", lease),
-    markOutcomeUnknown: (lease, reasonCode) =>
-      safe<LeaseResult>(
-        () =>
-          exclusive(() => {
-            if (!OUTCOME_UNKNOWN_REASONS.has(reasonCode)) {
-              throw new Error("invalid outcome-unknown reason code");
-            }
-            const timestamp = now();
-            const current = state();
-            if (!current || !liveInstance(current, timestamp)) return { status: "stale" };
-            expire(current, timestamp);
-            const stored = owns(current, lease, timestamp);
-            if (!stored) return { status: "stale" };
-            quarantine(current, stored, timestamp, reasonCode);
-            return { status: "outcome-unknown" };
-          }),
-        { status: "unavailable" },
-        (result) =>
-          abortOwned(
-            lease.requestId,
-            result.status === "outcome-unknown"
-              ? "outcome-unknown"
-              : result.status === "unavailable"
-                ? "coordinator-authority-lost"
-                : "lease-ownership-lost",
-          ),
-      ),
+    markOutcomeUnknown: (lease, reasonCode) => settleUnknown(lease, reasonCode, []),
+    settleOutcomeUnknown: (lease, reasonCode, costMarkers) =>
+      settleUnknown(lease, reasonCode, costMarkers),
     status: (request) =>
       safe<DistributedRequestStatus>(
         () =>
@@ -1944,10 +2624,14 @@ export function createInMemoryDistributedTurnCoordinator(
               .slice(0, batchSize);
             for (const request of removableRequests) {
               current.requests.delete(request.requestId);
+              current.budgetAnonymousEvents = current.budgetAnonymousEvents.filter(
+                (event) => event.requestId !== request.requestId,
+              );
               for (const [operationId, marker] of current.costMarkers) {
                 if (marker.requestId === request.requestId) current.costMarkers.delete(operationId);
               }
             }
+            pruneBudgetEvidence(current, timestamp);
 
             const referencedThreadIds = new Set(
               [...current.requests.values()].map((request) => request.threadId),
@@ -2128,6 +2812,13 @@ export function createInMemoryDistributedTurnCoordinator(
           const stored = owns(current, lease, timestamp);
           if (!stored) return { status: "stale" };
           if (stateName === "failed" && stored.executionStarted) {
+            settleBudgetAccounting(
+              current,
+              lease,
+              missingUsageAccountingMarkers(lease),
+              "outcome_unknown",
+              timestamp,
+            );
             quarantine(current, stored, timestamp, "execution-failed-after-start");
             return { status: "outcome-unknown" };
           }

@@ -1735,10 +1735,63 @@ export interface DistributedCoordinationConfig {
   turnState: DistributedCoordinationTurnStateConfig;
   /** Immutable database-time rate policies used by trusted distributed sources. */
   admission?: DistributedCoordinationAdmissionConfig;
+  /** Immutable coordinator-owned turn/spend guardrails for distributed budget augments. */
+  budgets?: DistributedCoordinationBudgetConfig;
   leaseDurationMs: number;
   heartbeatIntervalMs: number;
   claimPollMs: number;
   maxWaitMs: number;
+}
+
+export interface DistributedBudgetCapsV1 {
+  maxUsdPerDay?: number;
+  maxTurnsPerThread?: number;
+  maxTurnsPerDay?: number;
+}
+
+export interface DistributedBudgetPolicyV1 {
+  /** Stable source-owned augment identity, never selected by a request. */
+  id: string;
+  caps?: {
+    agent?: DistributedBudgetCapsV1;
+    public?: {
+      anonymous?: DistributedBudgetCapsV1;
+      recognized?: DistributedBudgetCapsV1;
+    };
+  };
+  anonymousGlobalLimit?: number;
+  /** Post-hoc facility-wide daily USD ceiling. */
+  dailyBudgetUsd?: number;
+  notifications?: {
+    destination: string;
+    thresholds: readonly number[];
+  };
+  /** Isolated retained reservation capacity for this policy. */
+  maxReservations: number;
+  /** Reservation evidence lasts at least one UTC day and outlives terminal replay evidence. */
+  reservationRetentionMs: number;
+  /** Isolated rolling anonymous-event evidence capacity. */
+  maxAnonymousEvents: number;
+  /** Isolated peer/day aggregate capacity. */
+  maxPeerDays: number;
+  /** Isolated durable threshold-intent capacity. */
+  maxThresholdIntents: number;
+  /** UTC-day retention for settled aggregates. */
+  aggregateRetentionDays: number;
+}
+
+export interface DistributedCoordinationBudgetConfig {
+  policies: readonly DistributedBudgetPolicyV1[];
+}
+
+export interface DistributedBudgetUsageV1 {
+  admissionDay: string;
+  threadTurns: number;
+  peerTurns: number;
+  peerCostUsd: number;
+  peerUnpricedTurns: number;
+  globalCostUsd: number;
+  globalUnpricedTurns: number;
 }
 
 export interface DistributedCoordinationAdmissionConfig {

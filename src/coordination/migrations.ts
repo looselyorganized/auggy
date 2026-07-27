@@ -608,6 +608,163 @@ CREATE INDEX auggy_coordination_external_assertion_expiry_idx
   ON auggy_coordination_external_assertions (namespace, audience, expires_at, claim_hash);
 `;
 
+const COORDINATION_BUDGET_AUTHORITY_MIGRATION_SQL = `
+ALTER TABLE auggy_coordination_namespaces
+  ADD COLUMN max_budget_reservations INTEGER,
+  ADD COLUMN max_budget_anonymous_events INTEGER,
+  ADD COLUMN max_budget_peer_days INTEGER,
+  ADD COLUMN max_budget_threshold_intents INTEGER,
+  ADD COLUMN budget_policy_fingerprint TEXT,
+  ADD CONSTRAINT auggy_coord_ns_budget_policy_check CHECK (
+    (max_budget_reservations IS NULL
+      AND max_budget_anonymous_events IS NULL
+      AND max_budget_peer_days IS NULL
+      AND max_budget_threshold_intents IS NULL
+      AND budget_policy_fingerprint IS NULL)
+    OR
+    (max_budget_reservations BETWEEN 0 AND 1000000
+      AND max_budget_anonymous_events BETWEEN 0 AND 1000000
+      AND max_budget_peer_days BETWEEN 0 AND 1000000
+      AND max_budget_threshold_intents BETWEEN 0 AND 1000000
+      AND budget_policy_fingerprint ~ '^[0-9a-f]{64}$')
+  );
+
+CREATE TABLE auggy_coordination_budget_reservations (
+  namespace TEXT NOT NULL,
+  policy_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_reservation_policy_check
+      CHECK (policy_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  request_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_reservation_request_check
+      CHECK (request_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  request_binding_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_reservation_binding_check
+      CHECK (request_binding_hash ~ '^[A-Za-z0-9_-]{16,160}$'),
+  peer_id_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_reservation_peer_check
+      CHECK (peer_id_hash ~ '^[0-9a-f]{64}$'),
+  thread_id_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_reservation_thread_check
+      CHECK (thread_id_hash ~ '^[0-9a-f]{64}$'),
+  trust_level TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_reservation_trust_check
+      CHECK (trust_level IN ('agent', 'public')),
+  public_substate TEXT,
+  attempt BIGINT NOT NULL
+    CONSTRAINT auggy_coord_budget_reservation_attempt_check CHECK (attempt > 0),
+  fence BIGINT NOT NULL
+    CONSTRAINT auggy_coord_budget_reservation_fence_check CHECK (fence > 0),
+  admission_day DATE NOT NULL,
+  state TEXT NOT NULL DEFAULT 'reserved'
+    CONSTRAINT auggy_coord_budget_reservation_state_check
+      CHECK (state IN ('reserved', 'committed', 'outcome_unknown')),
+  reserved_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  settled_at TIMESTAMPTZ,
+  CONSTRAINT auggy_coord_budget_reservation_public_check CHECK (
+    (trust_level = 'public' AND public_substate IN ('anonymous', 'recognized'))
+    OR (trust_level = 'agent' AND public_substate IS NULL)
+  ),
+  CONSTRAINT auggy_coord_budget_reservation_settled_check CHECK (
+    (state = 'reserved' AND settled_at IS NULL)
+    OR (state IN ('committed', 'outcome_unknown') AND settled_at IS NOT NULL)
+  ),
+  PRIMARY KEY (namespace, policy_id, request_id)
+);
+
+CREATE INDEX auggy_coordination_budget_reservation_cap_idx
+  ON auggy_coordination_budget_reservations
+    (namespace, policy_id, admission_day, peer_id_hash, thread_id_hash, state);
+CREATE INDEX auggy_coordination_budget_reservation_settled_idx
+  ON auggy_coordination_budget_reservations
+    (namespace, policy_id, settled_at, request_id);
+
+CREATE TABLE auggy_coordination_budget_anonymous_events (
+  namespace TEXT NOT NULL,
+  policy_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_anon_policy_check
+      CHECK (policy_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  request_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_anon_request_check
+      CHECK (request_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  subject_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_anon_subject_check
+      CHECK (subject_hash ~ '^[0-9a-f]{64}$'),
+  occurred_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  CONSTRAINT auggy_coord_budget_anon_expiry_check CHECK (expires_at > occurred_at),
+  PRIMARY KEY (namespace, policy_id, request_id)
+);
+
+CREATE INDEX auggy_coordination_budget_anon_expiry_idx
+  ON auggy_coordination_budget_anonymous_events
+    (namespace, policy_id, expires_at, request_id);
+CREATE INDEX auggy_coordination_budget_anon_subject_idx
+  ON auggy_coordination_budget_anonymous_events
+    (namespace, policy_id, subject_hash, occurred_at, request_id);
+
+CREATE TABLE auggy_coordination_budget_daily (
+  namespace TEXT NOT NULL,
+  policy_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_daily_policy_check
+      CHECK (policy_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  admission_day DATE NOT NULL,
+  subject_kind TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_daily_kind_check CHECK (subject_kind IN ('global', 'peer')),
+  subject_hash TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_daily_subject_check
+      CHECK (subject_hash ~ '^[0-9a-f]{64}$'),
+  turns_reserved INTEGER NOT NULL DEFAULT 0
+    CONSTRAINT auggy_coord_budget_daily_turns_check CHECK (turns_reserved >= 0),
+  cost_usd NUMERIC(30, 12) NOT NULL DEFAULT 0
+    CONSTRAINT auggy_coord_budget_daily_cost_check CHECK (cost_usd >= 0),
+  unpriced_turns INTEGER NOT NULL DEFAULT 0
+    CONSTRAINT auggy_coord_budget_daily_unpriced_check CHECK (unpriced_turns >= 0),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  PRIMARY KEY (namespace, policy_id, admission_day, subject_kind, subject_hash)
+);
+
+CREATE INDEX auggy_coordination_budget_daily_policy_idx
+  ON auggy_coordination_budget_daily (namespace, policy_id, admission_day, subject_kind);
+
+CREATE TABLE auggy_coordination_budget_threshold_intents (
+  namespace TEXT NOT NULL,
+  policy_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_threshold_policy_check
+      CHECK (policy_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  admission_day DATE NOT NULL,
+  threshold_ppm INTEGER NOT NULL
+    CONSTRAINT auggy_coord_budget_threshold_value_check
+      CHECK (threshold_ppm BETWEEN 1 AND 1000000),
+  destination TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_threshold_destination_check
+      CHECK (destination ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  request_id TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_threshold_request_check
+      CHECK (request_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  operation_id TEXT
+    CONSTRAINT auggy_coord_budget_threshold_operation_check
+      CHECK (operation_id IS NULL OR operation_id ~ '^auggy-op-v1-[0-9a-f]{64}$'),
+  intent_body BYTEA,
+  state TEXT NOT NULL
+    CONSTRAINT auggy_coord_budget_threshold_state_check
+      CHECK (state IN ('pending', 'suppressed')),
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  CONSTRAINT auggy_coord_budget_threshold_body_check CHECK (
+    (state = 'pending' AND operation_id IS NOT NULL AND intent_body IS NOT NULL
+      AND octet_length(intent_body) BETWEEN 2 AND 65536)
+    OR
+    (state = 'suppressed' AND operation_id IS NULL AND intent_body IS NULL)
+  ),
+  PRIMARY KEY (namespace, policy_id, admission_day, threshold_ppm)
+);
+
+CREATE UNIQUE INDEX auggy_coordination_budget_threshold_operation_idx
+  ON auggy_coordination_budget_threshold_intents (namespace, operation_id);
+CREATE INDEX auggy_coordination_budget_threshold_pending_idx
+  ON auggy_coordination_budget_threshold_intents
+    (namespace, state, created_at, policy_id, admission_day, threshold_ppm);
+`;
+
 /** Recomputed from immutable migration SQL; migration rejects any mismatch. */
 export const postgresCoordinationMigrationChecksum = new Bun.CryptoHasher("sha256")
   .update(INITIAL_COORDINATION_MIGRATION_SQL)
@@ -635,6 +792,10 @@ export const postgresCoordinationAdmissionMigrationChecksum = new Bun.CryptoHash
 
 export const postgresCoordinationVisitorAuthorityMigrationChecksum = new Bun.CryptoHasher("sha256")
   .update(COORDINATION_VISITOR_AUTHORITY_MIGRATION_SQL)
+  .digest("hex");
+
+export const postgresCoordinationBudgetAuthorityMigrationChecksum = new Bun.CryptoHasher("sha256")
+  .update(COORDINATION_BUDGET_AUTHORITY_MIGRATION_SQL)
   .digest("hex");
 
 export const POSTGRES_COORDINATION_MIGRATIONS = [
@@ -672,6 +833,11 @@ export const POSTGRES_COORDINATION_MIGRATIONS = [
     id: "20260727_07_coordination_visitor_authority",
     checksum: postgresCoordinationVisitorAuthorityMigrationChecksum,
     sql: COORDINATION_VISITOR_AUTHORITY_MIGRATION_SQL,
+  },
+  {
+    id: "20260727_08_coordination_budget_authority",
+    checksum: postgresCoordinationBudgetAuthorityMigrationChecksum,
+    sql: COORDINATION_BUDGET_AUTHORITY_MIGRATION_SQL,
   },
 ] as const;
 
@@ -768,6 +934,75 @@ export interface PostgresMigrationOptions {
 const EVENT_ID_SEQUENCE_DEFAULT = "event-id-owned-sequence";
 
 const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
+  [
+    "auggy_coordination_budget_anonymous_events",
+    "expires_at",
+    "timestamp with time zone",
+    true,
+    null,
+  ],
+  ["auggy_coordination_budget_anonymous_events", "namespace", "text", true, null],
+  [
+    "auggy_coordination_budget_anonymous_events",
+    "occurred_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_budget_anonymous_events", "policy_id", "text", true, null],
+  ["auggy_coordination_budget_anonymous_events", "request_id", "text", true, null],
+  ["auggy_coordination_budget_anonymous_events", "subject_hash", "text", true, null],
+  ["auggy_coordination_budget_daily", "admission_day", "date", true, null],
+  ["auggy_coordination_budget_daily", "cost_usd", "numeric(30,12)", true, "0"],
+  ["auggy_coordination_budget_daily", "namespace", "text", true, null],
+  ["auggy_coordination_budget_daily", "policy_id", "text", true, null],
+  ["auggy_coordination_budget_daily", "subject_hash", "text", true, null],
+  ["auggy_coordination_budget_daily", "subject_kind", "text", true, null],
+  ["auggy_coordination_budget_daily", "turns_reserved", "integer", true, "0"],
+  ["auggy_coordination_budget_daily", "unpriced_turns", "integer", true, "0"],
+  [
+    "auggy_coordination_budget_daily",
+    "updated_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_budget_reservations", "admission_day", "date", true, null],
+  ["auggy_coordination_budget_reservations", "attempt", "bigint", true, null],
+  ["auggy_coordination_budget_reservations", "fence", "bigint", true, null],
+  ["auggy_coordination_budget_reservations", "namespace", "text", true, null],
+  ["auggy_coordination_budget_reservations", "peer_id_hash", "text", true, null],
+  ["auggy_coordination_budget_reservations", "policy_id", "text", true, null],
+  ["auggy_coordination_budget_reservations", "public_substate", "text", false, null],
+  ["auggy_coordination_budget_reservations", "request_binding_hash", "text", true, null],
+  ["auggy_coordination_budget_reservations", "request_id", "text", true, null],
+  [
+    "auggy_coordination_budget_reservations",
+    "reserved_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_budget_reservations", "settled_at", "timestamp with time zone", false, null],
+  ["auggy_coordination_budget_reservations", "state", "text", true, "'reserved'::text"],
+  ["auggy_coordination_budget_reservations", "thread_id_hash", "text", true, null],
+  ["auggy_coordination_budget_reservations", "trust_level", "text", true, null],
+  ["auggy_coordination_budget_threshold_intents", "admission_day", "date", true, null],
+  [
+    "auggy_coordination_budget_threshold_intents",
+    "created_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_budget_threshold_intents", "destination", "text", true, null],
+  ["auggy_coordination_budget_threshold_intents", "intent_body", "bytea", false, null],
+  ["auggy_coordination_budget_threshold_intents", "namespace", "text", true, null],
+  ["auggy_coordination_budget_threshold_intents", "operation_id", "text", false, null],
+  ["auggy_coordination_budget_threshold_intents", "policy_id", "text", true, null],
+  ["auggy_coordination_budget_threshold_intents", "request_id", "text", true, null],
+  ["auggy_coordination_budget_threshold_intents", "state", "text", true, null],
+  ["auggy_coordination_budget_threshold_intents", "threshold_ppm", "integer", true, null],
   ["auggy_coordination_cost_markers", "cost_usd", "numeric", false, null],
   [
     "auggy_coordination_cost_markers",
@@ -858,9 +1093,14 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
   ],
   ["auggy_coordination_migrations", "checksum", "text", true, null],
   ["auggy_coordination_migrations", "id", "text", true, null],
+  ["auggy_coordination_namespaces", "budget_policy_fingerprint", "text", false, null],
   ["auggy_coordination_namespaces", "configuration_fingerprint", "text", true, null],
   ["auggy_coordination_namespaces", "event_retention_ms", "bigint", true, null],
   ["auggy_coordination_namespaces", "lease_ms", "bigint", false, null],
+  ["auggy_coordination_namespaces", "max_budget_anonymous_events", "integer", false, null],
+  ["auggy_coordination_namespaces", "max_budget_peer_days", "integer", false, null],
+  ["auggy_coordination_namespaces", "max_budget_reservations", "integer", false, null],
+  ["auggy_coordination_namespaces", "max_budget_threshold_intents", "integer", false, null],
   ["auggy_coordination_namespaces", "max_concurrent", "integer", true, null],
   ["auggy_coordination_namespaces", "max_cost_markers_per_turn", "integer", false, null],
   ["auggy_coordination_namespaces", "max_events", "integer", true, null],
@@ -1102,6 +1342,105 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
 }));
 
 const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
+  [
+    "auggy_coordination_budget_anonymous_events",
+    "auggy_coordination_budget_anon_expiry_idx",
+    false,
+    false,
+    "namespace,policy_id,expires_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_anonymous_events",
+    "auggy_coordination_budget_anon_subject_idx",
+    false,
+    false,
+    "namespace,policy_id,subject_hash,occurred_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_anonymous_events",
+    "auggy_coordination_budget_anonymous_events_pkey",
+    true,
+    true,
+    "namespace,policy_id,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_daily",
+    "auggy_coordination_budget_daily_pkey",
+    true,
+    true,
+    "namespace,policy_id,admission_day,subject_kind,subject_hash",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.date_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_daily",
+    "auggy_coordination_budget_daily_policy_idx",
+    false,
+    false,
+    "namespace,policy_id,admission_day,subject_kind",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.date_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_reservations",
+    "auggy_coordination_budget_reservation_cap_idx",
+    false,
+    false,
+    "namespace,policy_id,admission_day,peer_id_hash,thread_id_hash,state",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.date_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_reservations",
+    "auggy_coordination_budget_reservation_settled_idx",
+    false,
+    false,
+    "namespace,policy_id,settled_at,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_reservations",
+    "auggy_coordination_budget_reservations_pkey",
+    true,
+    true,
+    "namespace,policy_id,request_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_threshold_intents",
+    "auggy_coordination_budget_threshold_intents_pkey",
+    true,
+    true,
+    "namespace,policy_id,admission_day,threshold_ppm",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.date_ops,pg_catalog.int4_ops",
+    "pg_catalog.default,pg_catalog.default,-,-",
+  ],
+  [
+    "auggy_coordination_budget_threshold_intents",
+    "auggy_coordination_budget_threshold_operation_idx",
+    true,
+    false,
+    "namespace,operation_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_budget_threshold_intents",
+    "auggy_coordination_budget_threshold_pending_idx",
+    false,
+    false,
+    "namespace,state,created_at,policy_id,admission_day,threshold_ppm",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops,pg_catalog.date_ops,pg_catalog.int4_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default,-,-",
+  ],
   [
     "auggy_coordination_cost_markers",
     "auggy_coordination_cost_marker_request_idx",
@@ -1476,6 +1815,198 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
 }));
 
 const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition: string }>([
+  [
+    "auggy_coord_budget_anon_expiry_check",
+    {
+      table: "auggy_coordination_budget_anonymous_events",
+      definition: "checkexpires_at>occurred_at",
+    },
+  ],
+  [
+    "auggy_coord_budget_anon_policy_check",
+    {
+      table: "auggy_coordination_budget_anonymous_events",
+      definition: "checkpolicy_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_anon_request_check",
+    {
+      table: "auggy_coordination_budget_anonymous_events",
+      definition: "checkrequest_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_anon_subject_check",
+    {
+      table: "auggy_coordination_budget_anonymous_events",
+      definition: "checksubject_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_daily_cost_check",
+    { table: "auggy_coordination_budget_daily", definition: "checkcost_usd>=0::numeric" },
+  ],
+  [
+    "auggy_coord_budget_daily_kind_check",
+    {
+      table: "auggy_coordination_budget_daily",
+      definition: "checksubject_kind=anyarray['global','peer']",
+    },
+  ],
+  [
+    "auggy_coord_budget_daily_policy_check",
+    {
+      table: "auggy_coordination_budget_daily",
+      definition: "checkpolicy_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_daily_subject_check",
+    {
+      table: "auggy_coordination_budget_daily",
+      definition: "checksubject_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_daily_turns_check",
+    { table: "auggy_coordination_budget_daily", definition: "checkturns_reserved>=0" },
+  ],
+  [
+    "auggy_coord_budget_daily_unpriced_check",
+    { table: "auggy_coordination_budget_daily", definition: "checkunpriced_turns>=0" },
+  ],
+  [
+    "auggy_coord_budget_reservation_attempt_check",
+    { table: "auggy_coordination_budget_reservations", definition: "checkattempt>0" },
+  ],
+  [
+    "auggy_coord_budget_reservation_binding_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition: "checkrequest_binding_hash~'^[a-za-z0-9_-]{16,160}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_reservation_fence_check",
+    { table: "auggy_coordination_budget_reservations", definition: "checkfence>0" },
+  ],
+  [
+    "auggy_coord_budget_reservation_peer_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition: "checkpeer_id_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_reservation_policy_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition: "checkpolicy_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_reservation_public_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition:
+        "checktrust_level='public'andpublic_substate=anyarray['anonymous','recognized']ortrust_level='agent'andpublic_substateisnull",
+    },
+  ],
+  [
+    "auggy_coord_budget_reservation_request_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition: "checkrequest_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_reservation_settled_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition:
+        "checkstate='reserved'andsettled_atisnullorstate=anyarray['committed','outcome_unknown']andsettled_atisnotnull",
+    },
+  ],
+  [
+    "auggy_coord_budget_reservation_state_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition: "checkstate=anyarray['reserved','committed','outcome_unknown']",
+    },
+  ],
+  [
+    "auggy_coord_budget_reservation_thread_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition: "checkthread_id_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_reservation_trust_check",
+    {
+      table: "auggy_coordination_budget_reservations",
+      definition: "checktrust_level=anyarray['agent','public']",
+    },
+  ],
+  [
+    "auggy_coord_budget_threshold_body_check",
+    {
+      table: "auggy_coordination_budget_threshold_intents",
+      definition:
+        "checkstate='pending'andoperation_idisnotnullandintent_bodyisnotnullandoctet_lengthintent_body>=2andoctet_lengthintent_body<=65536orstate='suppressed'andoperation_idisnullandintent_bodyisnull",
+    },
+  ],
+  [
+    "auggy_coord_budget_threshold_destination_check",
+    {
+      table: "auggy_coordination_budget_threshold_intents",
+      definition: "checkdestination~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_threshold_operation_check",
+    {
+      table: "auggy_coordination_budget_threshold_intents",
+      definition: "checkoperation_idisnulloroperation_id~'^auggy-op-v1-[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_threshold_policy_check",
+    {
+      table: "auggy_coordination_budget_threshold_intents",
+      definition: "checkpolicy_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_threshold_request_check",
+    {
+      table: "auggy_coordination_budget_threshold_intents",
+      definition: "checkrequest_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_budget_threshold_state_check",
+    {
+      table: "auggy_coordination_budget_threshold_intents",
+      definition: "checkstate=anyarray['pending','suppressed']",
+    },
+  ],
+  [
+    "auggy_coord_budget_threshold_value_check",
+    {
+      table: "auggy_coordination_budget_threshold_intents",
+      definition: "checkthreshold_ppm>=1andthreshold_ppm<=1000000",
+    },
+  ],
+  [
+    "auggy_coord_ns_budget_policy_check",
+    {
+      table: "auggy_coordination_namespaces",
+      definition:
+        "checkmax_budget_reservationsisnullandmax_budget_anonymous_eventsisnullandmax_budget_peer_daysisnullandmax_budget_threshold_intentsisnullandbudget_policy_fingerprintisnullormax_budget_reservations>=0andmax_budget_reservations<=1000000andmax_budget_anonymous_events>=0andmax_budget_anonymous_events<=1000000andmax_budget_peer_days>=0andmax_budget_peer_days<=1000000andmax_budget_threshold_intents>=0andmax_budget_threshold_intents<=1000000andbudget_policy_fingerprint~'^[0-9a-f]{64}$'",
+    },
+  ],
   [
     "auggy_coord_external_assertion_binding_check",
     {
@@ -2174,6 +2705,13 @@ const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition
 ]);
 
 const EXPECTED_COORDINATION_CONSTRAINTS: readonly CoordinationCatalogConstraint[] = [
+  ["auggy_coordination_budget_anonymous_events", "auggy_coordination_budget_anonymous_events_pkey"],
+  ["auggy_coordination_budget_daily", "auggy_coordination_budget_daily_pkey"],
+  ["auggy_coordination_budget_reservations", "auggy_coordination_budget_reservations_pkey"],
+  [
+    "auggy_coordination_budget_threshold_intents",
+    "auggy_coordination_budget_threshold_intents_pkey",
+  ],
   ["auggy_coordination_cost_markers", "auggy_coordination_cost_markers_pkey"],
   ["auggy_coordination_events", "auggy_coordination_events_pkey"],
   ["auggy_coordination_external_assertions", "auggy_coordination_external_assertions_pkey"],
@@ -2206,6 +2744,10 @@ const EXPECTED_COORDINATION_CONSTRAINTS: readonly CoordinationCatalogConstraint[
 }));
 
 const EXPECTED_COORDINATION_TABLES: readonly CoordinationCatalogTable[] = [
+  "auggy_coordination_budget_anonymous_events",
+  "auggy_coordination_budget_daily",
+  "auggy_coordination_budget_reservations",
+  "auggy_coordination_budget_threshold_intents",
   "auggy_coordination_cost_markers",
   "auggy_coordination_events",
   "auggy_coordination_external_assertions",
@@ -2291,6 +2833,10 @@ async function assertPostgresCoordinationSchema(
   expectedSchema: string,
 ): Promise<void> {
   const tables =
+    "'auggy_coordination_budget_anonymous_events', " +
+    "'auggy_coordination_budget_daily', " +
+    "'auggy_coordination_budget_reservations', " +
+    "'auggy_coordination_budget_threshold_intents', " +
     "'auggy_coordination_cost_markers', 'auggy_coordination_events', " +
     "'auggy_coordination_external_assertions', " +
     "'auggy_coordination_history', 'auggy_coordination_instances', " +

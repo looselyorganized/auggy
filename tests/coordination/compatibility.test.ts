@@ -72,15 +72,15 @@ describe("distributed coordination compatibility fingerprints", () => {
 
     expect(DISTRIBUTED_COORDINATION_PROTOCOL).toEqual({
       name: "auggy-postgres-coordination",
-      protocolVersion: 7,
-      schemaVersion: 7,
+      protocolVersion: 8,
+      schemaVersion: 8,
       fingerprintVersion: 2,
     });
     expect(first).toEqual(second);
-    expect(first.protocolVersion).toBe(7);
+    expect(first.protocolVersion).toBe(8);
     expect(first.protocolFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(first.configurationFingerprint).toMatch(/^[0-9a-f]{64}$/);
-    expect(first.upgradeFrom).toMatchObject({ protocolVersion: 6 });
+    expect(first.upgradeFrom).toMatchObject({ protocolVersion: 7 });
     expect(first.upgradeFrom.protocolFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(first.upgradeFrom.configurationFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(first.upgradeFrom.protocolFingerprint).not.toBe(first.protocolFingerprint);
@@ -109,6 +109,22 @@ describe("distributed coordination compatibility fingerprints", () => {
           ],
           rateLimits: [
             { id: "web.anonymous-network.v1", max: 10, maxEvents: 100, windowMs: 60_000 },
+          ],
+        };
+      },
+      (value: ReturnType<typeof input>) => {
+        value.coordination.budgets = {
+          policies: [
+            {
+              id: "support",
+              caps: { public: { recognized: { maxTurnsPerDay: 10 } } },
+              maxReservations: 20_000,
+              reservationRetentionMs: 604_800_000,
+              maxAnonymousEvents: 1_000,
+              maxPeerDays: 1_000,
+              maxThresholdIntents: 21,
+              aggregateRetentionDays: 7,
+            },
           ],
         };
       },

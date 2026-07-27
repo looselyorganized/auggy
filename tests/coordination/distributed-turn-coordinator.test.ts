@@ -4,6 +4,7 @@ import {
   resetInMemoryDistributedCoordination,
 } from "../../src/coordination";
 import { POSTGRES_COORDINATION_MIGRATIONS } from "../../src/coordination/migrations";
+import { parseDistributedBudgetCostNanos } from "../../src/coordination/budget-policy";
 import type {
   DistributedReplayResult,
   DistributedTurnCoordinator,
@@ -79,6 +80,44 @@ function replica(
       },
     },
     { now, failClosed: extra.failClosed },
+  );
+}
+
+function budgetReplica(
+  instanceId: string,
+  now: () => number,
+  policy: Record<string, unknown> = {},
+  maxTerminalRequests = coordinatorPolicy.retention.maxTerminalRequests,
+) {
+  const budgetSource = { id: "web", maxConcurrent: 2, maxQueued: 4 };
+  return createInMemoryDistributedTurnCoordinator(
+    {
+      namespace: "orders-budget-prod",
+      instanceId,
+      maxConcurrent: 2,
+      maxQueued: 4,
+      maxQueuedPerThread: 2,
+      leaseMs: 100,
+      ...coordinatorPolicy,
+      retention: { ...coordinatorPolicy.retention, maxTerminalRequests },
+      sources: [budgetSource],
+      budgets: {
+        policies: [
+          {
+            id: "support",
+            maxReservations: 10_100,
+            reservationRetentionMs: 604_800_000,
+            maxAnonymousEvents: 100,
+            maxPeerDays: 100,
+            maxThresholdIntents: 21,
+            aggregateRetentionDays: 7,
+            caps: { public: { recognized: { maxTurnsPerDay: 1 } } },
+            ...policy,
+          },
+        ],
+      },
+    },
+    { now },
   );
 }
 
@@ -166,6 +205,300 @@ describe("distributed turn coordinator", () => {
         migration.checksum,
       );
     }
+  });
+
+  test("parses persisted aggregates beyond the bounded per-turn cost", () => {
+    expect(parseDistributedBudgetCostNanos("2000000.000000001000")).toBe(2_000_000_000_000_001n);
+  });
+
+  test("serializes shared budget admission and releases only before execution starts", async () => {
+    const now = () => Date.UTC(2026, 6, 27, 12);
+    const first = budgetReplica("budget-first", now);
+    const second = budgetReplica("budget-second", now);
+    await register(first, second);
+    const budgetSource = { id: "web", maxConcurrent: 2, maxQueued: 4 };
+    const firstRequest = {
+      ...request("budget-first-request", "budget-first-thread"),
+      source: budgetSource,
+    };
+    const secondRequest = {
+      ...request("budget-second-request", "budget-second-thread"),
+      source: budgetSource,
+    };
+    expect(await first.admit(firstRequest)).toEqual({ status: "admitted", attempt: 1 });
+    expect(await second.admit(secondRequest)).toEqual({ status: "admitted", attempt: 1 });
+    const firstClaim = await first.claim(firstRequest);
+    const secondClaim = await second.claim(secondRequest);
+    if (firstClaim.status !== "acquired" || secondClaim.status !== "acquired") {
+      throw new Error("expected two active budget leases");
+    }
+    const input = {
+      policyId: "support",
+      peerId: "visitor:shared",
+      trustLevel: "public" as const,
+      publicSubstate: "recognized" as const,
+    };
+    const [firstResult, secondResult] = await Promise.all([
+      first.reserveBudget(firstClaim.lease, {
+        ...input,
+        threadId: firstClaim.lease.threadId,
+      }),
+      second.reserveBudget(secondClaim.lease, {
+        ...input,
+        threadId: secondClaim.lease.threadId,
+      }),
+    ]);
+    expect([firstResult.status, secondResult.status].sort()).toEqual(["rejected", "reserved"]);
+    const winner = firstResult.status === "reserved" ? first : second;
+    const winnerLease = firstResult.status === "reserved" ? firstClaim.lease : secondClaim.lease;
+    const loser = firstResult.status === "reserved" ? second : first;
+    const loserLease = firstResult.status === "reserved" ? secondClaim.lease : firstClaim.lease;
+    expect(await winner.releaseBudget(winnerLease, "support")).toEqual({ status: "ok" });
+    expect(
+      await loser.reserveBudget(loserLease, { ...input, threadId: loserLease.threadId }),
+    ).toMatchObject({ status: "reserved", admissionDay: "2026-07-27" });
+    expect(await loser.markExecutionStarted(loserLease)).toEqual({ status: "ok" });
+    expect(await loser.releaseBudget(loserLease, "support")).toEqual({ status: "stale" });
+  });
+
+  test("rejects threshold policies that collide at persisted ppm precision", () => {
+    expect(() =>
+      budgetReplica("budget-threshold-collision", () => Date.UTC(2026, 6, 27), {
+        dailyBudgetUsd: 1,
+        notifications: { destination: "operator", thresholds: [0.5, 0.5000001] },
+      }),
+    ).toThrow("at most six decimal places");
+  });
+
+  test("releases zero-valued peer-day capacity for a different peer", async () => {
+    const now = () => Date.UTC(2026, 6, 27, 12);
+    const owner = budgetReplica("budget-peer-capacity", now, {
+      maxPeerDays: 1,
+      caps: { public: { recognized: { maxTurnsPerDay: 10 } } },
+    });
+    await register(owner);
+    const budgetSource = { id: "web", maxConcurrent: 2, maxQueued: 4 };
+    const firstRequest = {
+      ...request("peer-capacity-first", "peer-capacity-first"),
+      source: budgetSource,
+    };
+    const secondRequest = {
+      ...request("peer-capacity-second", "peer-capacity-second"),
+      source: budgetSource,
+    };
+    expect(await owner.admit(firstRequest)).toEqual({ status: "admitted", attempt: 1 });
+    expect(await owner.admit(secondRequest)).toEqual({ status: "admitted", attempt: 1 });
+    const firstClaim = await owner.claim(firstRequest);
+    const secondClaim = await owner.claim(secondRequest);
+    if (firstClaim.status !== "acquired" || secondClaim.status !== "acquired") {
+      throw new Error("expected peer capacity leases");
+    }
+    expect(
+      await owner.reserveBudget(firstClaim.lease, {
+        policyId: "support",
+        peerId: "visitor:first",
+        threadId: firstClaim.lease.threadId,
+        trustLevel: "public",
+        publicSubstate: "recognized",
+      }),
+    ).toMatchObject({ status: "reserved" });
+    expect(await owner.releaseBudget(firstClaim.lease, "support")).toEqual({ status: "ok" });
+    expect(
+      await owner.reserveBudget(secondClaim.lease, {
+        policyId: "support",
+        peerId: "visitor:second",
+        threadId: secondClaim.lease.threadId,
+        trustLevel: "public",
+        publicSubstate: "recognized",
+      }),
+    ).toMatchObject({ status: "reserved" });
+  });
+
+  test("retains prior-day aggregates and reserves threshold capacity across days", async () => {
+    let clock = Date.UTC(2026, 6, 27, 23, 59, 59, 999);
+    const owner = budgetReplica("budget-midnight", () => clock, {
+      aggregateRetentionDays: 1,
+      dailyBudgetUsd: 0.000000001,
+      notifications: { destination: "operator", thresholds: [1] },
+      maxThresholdIntents: 1,
+      caps: { public: { recognized: { maxTurnsPerDay: 10 } } },
+    });
+    await register(owner);
+    const budgetSource = { id: "web", maxConcurrent: 2, maxQueued: 4 };
+    const firstRequest = { ...request("midnight-first", "midnight-first"), source: budgetSource };
+    const secondRequest = {
+      ...request("midnight-second", "midnight-second"),
+      source: budgetSource,
+    };
+    expect(await owner.admit(firstRequest)).toEqual({ status: "admitted", attempt: 1 });
+    expect(await owner.admit(secondRequest)).toEqual({ status: "admitted", attempt: 1 });
+    const firstClaim = await owner.claim(firstRequest);
+    const secondClaim = await owner.claim(secondRequest);
+    if (firstClaim.status !== "acquired" || secondClaim.status !== "acquired") {
+      throw new Error("expected midnight leases");
+    }
+    const reservation = (lease: DistributedTurnLease, peerId: string) =>
+      owner.reserveBudget(lease, {
+        policyId: "support",
+        peerId,
+        threadId: lease.threadId,
+        trustLevel: "public",
+        publicSubstate: "recognized",
+      });
+    expect(await reservation(firstClaim.lease, "visitor:before-midnight")).toMatchObject({
+      status: "reserved",
+      admissionDay: "2026-07-27",
+    });
+    clock += 2;
+    expect(await reservation(secondClaim.lease, "visitor:after-midnight")).toEqual({
+      status: "rejected",
+      reason: "budget-capacity",
+    });
+    const terminal = {
+      ...(await atomicCheckpoint(owner, firstClaim.lease)),
+      costMarkers: [
+        {
+          version: 1 as const,
+          operationId: `auggy-op-v1-${"9".repeat(64)}`,
+          priced: true as const,
+          costUsd: 0.000000001,
+        },
+      ],
+    };
+    expect(await owner.commitTurn(firstClaim.lease, terminal)).toEqual({ status: "ok" });
+  });
+
+  test("enforces exact nano-USD aggregate caps without floating-point drift", async () => {
+    const now = () => Date.UTC(2026, 6, 27, 12);
+    const owner = budgetReplica("budget-exact-nanos", now, {
+      dailyBudgetUsd: 1,
+      caps: { public: { recognized: { maxTurnsPerDay: 20 } } },
+    });
+    await register(owner);
+    const budgetSource = { id: "web", maxConcurrent: 2, maxQueued: 4 };
+    for (let index = 0; index < 10; index += 1) {
+      const turn = {
+        ...request(`nano-turn-${index}`, `nano-thread-${index}`),
+        source: budgetSource,
+      };
+      expect(await owner.admit(turn)).toEqual({ status: "admitted", attempt: 1 });
+      const claimed = await owner.claim(turn);
+      if (claimed.status !== "acquired") throw new Error("expected exact cost lease");
+      expect(
+        await owner.reserveBudget(claimed.lease, {
+          policyId: "support",
+          peerId: "visitor:exact-nanos",
+          threadId: claimed.lease.threadId,
+          trustLevel: "public",
+          publicSubstate: "recognized",
+        }),
+      ).toMatchObject({ status: "reserved" });
+      expect(
+        await owner.commitTurn(claimed.lease, {
+          ...(await atomicCheckpoint(owner, claimed.lease)),
+          costMarkers: [
+            {
+              version: 1,
+              operationId: `auggy-op-v1-${index.toString(16).padStart(64, "0")}`,
+              priced: true,
+              costUsd: 0.1,
+            },
+          ],
+        }),
+      ).toEqual({ status: "ok" });
+    }
+
+    const denied = { ...request("nano-turn-denied", "nano-thread-denied"), source: budgetSource };
+    expect(await owner.admit(denied)).toEqual({ status: "admitted", attempt: 1 });
+    const deniedClaim = await owner.claim(denied);
+    if (deniedClaim.status !== "acquired") throw new Error("expected denied cost lease");
+    expect(
+      await owner.reserveBudget(deniedClaim.lease, {
+        policyId: "support",
+        peerId: "visitor:exact-nanos",
+        threadId: deniedClaim.lease.threadId,
+        trustLevel: "public",
+        publicSubstate: "recognized",
+      }),
+    ).toEqual({ status: "rejected", reason: "daily-global-usd-cap" });
+  });
+
+  test("reclaims recovered outcome-unknown budget evidence after retention", async () => {
+    let clock = Date.UTC(2026, 6, 27, 12);
+    const policy = {
+      maxReservations: 7,
+      reservationRetentionMs: 604_800_000,
+      caps: { public: { recognized: { maxTurnsPerDay: 10 } } },
+    };
+    const owner = budgetReplica("budget-recovery-owner", () => clock, policy, 1);
+    await register(owner);
+    const budgetSource = { id: "web", maxConcurrent: 2, maxQueued: 4 };
+    for (let index = 0; index < 7; index += 1) {
+      const incident = {
+        ...request(`budget-recovery-incident-${index}`, `budget-recovery-incident-${index}`),
+        source: budgetSource,
+      };
+      expect(await owner.admit(incident)).toEqual({ status: "admitted", attempt: 1 });
+      const claimed = await owner.claim(incident);
+      if (claimed.status !== "acquired") throw new Error("expected recovery incident lease");
+      expect(
+        await owner.reserveBudget(claimed.lease, {
+          policyId: "support",
+          peerId: `visitor:incident-${index}`,
+          threadId: claimed.lease.threadId,
+          trustLevel: "public",
+          publicSubstate: "recognized",
+        }),
+      ).toMatchObject({ status: "reserved" });
+      expect(await owner.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+      expect(await owner.fail(claimed.lease)).toEqual({ status: "outcome-unknown" });
+      expect(
+        await owner.recover(
+          claimed.lease.threadId,
+          claimed.lease.fence,
+          "operator-reconciled-budget",
+        ),
+      ).toEqual({ status: "ok" });
+    }
+
+    const saturated = {
+      ...request("budget-recovery-saturated", "budget-recovery-saturated"),
+      source: budgetSource,
+    };
+    expect(await owner.admit(saturated)).toEqual({ status: "admitted", attempt: 1 });
+    const saturatedClaim = await owner.claim(saturated);
+    if (saturatedClaim.status !== "acquired") throw new Error("expected saturated budget lease");
+    expect(
+      await owner.reserveBudget(saturatedClaim.lease, {
+        policyId: "support",
+        peerId: "visitor:saturated",
+        threadId: saturatedClaim.lease.threadId,
+        trustLevel: "public",
+        publicSubstate: "recognized",
+      }),
+    ).toEqual({ status: "rejected", reason: "budget-capacity" });
+    expect(await owner.abandon(saturated, saturatedClaim.lease.attempt)).toEqual({ status: "ok" });
+    await owner.close();
+
+    clock += 604_800_001;
+    const successor = budgetReplica("budget-recovery-successor", () => clock, policy, 1);
+    await register(successor);
+    const next = {
+      ...request("budget-recovery-next", "budget-recovery-next"),
+      source: budgetSource,
+    };
+    expect(await successor.admit(next)).toEqual({ status: "admitted", attempt: 1 });
+    const nextClaim = await successor.claim(next);
+    if (nextClaim.status !== "acquired") throw new Error("expected successor budget lease");
+    expect(
+      await successor.reserveBudget(nextClaim.lease, {
+        policyId: "support",
+        peerId: "visitor:successor",
+        threadId: nextClaim.lease.threadId,
+        trustLevel: "public",
+        publicSubstate: "recognized",
+      }),
+    ).toMatchObject({ status: "reserved" });
   });
 
   test("requires one explicit live instance incarnation before any request mutation", async () => {

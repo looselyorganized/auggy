@@ -1,6 +1,18 @@
 import { migratePostgresCoordinator, type PostgresMigrationExecutor } from "./migrations";
 import { createSecurePostgresCoordinationClient } from "./postgres-url";
 import {
+  distributedBudgetCostNanos,
+  distributedBudgetPolicyFingerprint,
+  formatDistributedBudgetCostNanos,
+  isCanonicalDistributedBudgetCostUsd,
+  MAX_DISTRIBUTED_BUDGET_COST_USD,
+  normalizeDistributedBudgetConfig,
+  parseDistributedBudgetCostNanos,
+  resolveDistributedBudgetCaps,
+  sameDistributedBudgetPolicy,
+} from "./budget-policy";
+import type { DistributedBudgetPolicyV1 } from "../types";
+import {
   allowsDistributedPeerPromotion,
   EMPTY_DISTRIBUTED_HISTORY,
   sameDistributedPeerBinding,
@@ -16,7 +28,10 @@ import type {
   DistributedAdmissionConfig,
   DistributedAdmissionReservation,
   DistributedCapacityClassPolicy,
+  DistributedBudgetReservationRequest,
+  DistributedBudgetReservationResult,
   DistributedCoordinationEvent,
+  DistributedCostMarkerV1,
   DistributedCoordinatorConfig,
   DistributedCoordinatorHealth,
   DistributedEventPage,
@@ -45,6 +60,9 @@ const MAX_RATE_POLICIES = 64;
 const MAX_CAPACITY_CLASSES = 64;
 const MAX_RATE_RESERVATIONS = 16;
 const MAX_RATE_WINDOW_MS = 86_400_000;
+const MAX_BUDGET_POLICIES = 16;
+const MAX_COST_USD = MAX_DISTRIBUTED_BUDGET_COST_USD;
+const GLOBAL_BUDGET_SUBJECT_HASH = "0".repeat(64);
 const OUTCOME_UNKNOWN_REASONS = new Set<CoordinationOutcomeUnknownReason>([
   "coordinator-unavailable",
   "effect-outcome-unknown",
@@ -74,6 +92,31 @@ interface ResolvedAdmissionReservation extends DistributedAdmissionReservation {
 
 function normalizedAdmission(config: DistributedCoordinatorConfig): DistributedAdmissionConfig {
   return config.admission ?? { maxRateLimitEvents: 0, capacityClasses: [], rateLimits: [] };
+}
+
+function normalizedBudgets(config: DistributedCoordinatorConfig) {
+  return normalizeDistributedBudgetConfig(
+    config.budgets,
+    config.retention.terminalRequestRetentionMs,
+  );
+}
+
+function budgetDigest(domain: string, ...values: string[]): string {
+  const hasher = new Bun.CryptoHasher("sha256").update(domain).update("\0");
+  for (const value of values) hasher.update(value).update("\0");
+  return hasher.digest("hex");
+}
+
+function budgetTotals(config: ReturnType<typeof normalizedBudgets>) {
+  return config.policies.reduce(
+    (total, policy) => ({
+      reservations: total.reservations + policy.maxReservations,
+      anonymousEvents: total.anonymousEvents + policy.maxAnonymousEvents,
+      peerDays: total.peerDays + policy.maxPeerDays,
+      thresholdIntents: total.thresholdIntents + policy.maxThresholdIntents,
+    }),
+    { reservations: 0, anonymousEvents: 0, peerDays: 0, thresholdIntents: 0 },
+  );
 }
 
 function canonicalAdmission(
@@ -169,6 +212,22 @@ function nullableNumber(row: Row, key: string): number | null {
   return row[key] === null ? null : number(row, key);
 }
 
+function decimal(row: Row, key: string): number {
+  const value = row[key];
+  if (
+    typeof value !== "number" &&
+    typeof value !== "bigint" &&
+    (typeof value !== "string" || !/^(0|[1-9][0-9]*)(\.[0-9]+)?$/.test(value))
+  ) {
+    throw new Error(`invalid coordinator database row: ${key}`);
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 0 || parsed > MAX_COST_USD * MAX_CAPACITY) {
+    throw new Error(`invalid coordinator database row: ${key}`);
+  }
+  return parsed;
+}
+
 function date(row: Row, key: string): number {
   const value = row[key];
   const parsed = value instanceof Date ? value.getTime() : new Date(String(value)).getTime();
@@ -229,6 +288,70 @@ function validReplayResult(result: DistributedReplayResult): boolean {
   } catch {
     return false;
   }
+}
+
+function validTerminalCostMarkers(
+  markers: readonly DistributedCostMarkerV1[],
+  maximum: number,
+): boolean {
+  if (!Array.isArray(markers) || markers.length > maximum) return false;
+  const operations = new Set<string>();
+  return markers.every((marker) => {
+    if (
+      marker.version !== 1 ||
+      !/^auggy-op-v1-[0-9a-f]{64}$/.test(marker.operationId) ||
+      operations.has(marker.operationId)
+    ) {
+      return false;
+    }
+    operations.add(marker.operationId);
+    return marker.priced
+      ? isCanonicalDistributedBudgetCostUsd(marker.costUsd)
+      : marker.reason === "missing-pricing" || marker.reason === "missing-usage";
+  });
+}
+
+function collisionAccountingMarkers(
+  markers: readonly DistributedCostMarkerV1[],
+  duplicateOperationIds: ReadonlySet<string>,
+): readonly DistributedCostMarkerV1[] {
+  return markers.map((marker) =>
+    duplicateOperationIds.has(marker.operationId)
+      ? { version: 1, operationId: marker.operationId, priced: false, reason: "missing-usage" }
+      : marker,
+  );
+}
+
+function missingUsageAccountingMarkers(
+  namespace: string,
+  lease: DistributedTurnLease,
+): readonly DistributedCostMarkerV1[] {
+  return [
+    {
+      version: 1,
+      operationId: `auggy-op-v1-${budgetDigest(
+        "auggy-distributed-budget-unknown-cost-v1",
+        namespace,
+        lease.requestId,
+        String(lease.attempt),
+        String(lease.fence),
+      )}`,
+      priced: false,
+      reason: "missing-usage",
+    },
+  ];
+}
+
+function outcomeUnknownAccountingMarkers(
+  namespace: string,
+  lease: DistributedTurnLease,
+  markers: readonly DistributedCostMarkerV1[],
+  duplicateOperationIds: ReadonlySet<string> = new Set(),
+): readonly DistributedCostMarkerV1[] {
+  if (duplicateOperationIds.size > 0) {
+    return collisionAccountingMarkers(markers, duplicateOperationIds);
+  }
+  return markers.length > 0 ? markers : missingUsageAccountingMarkers(namespace, lease);
 }
 
 async function waitDelay(milliseconds: number, signal?: AbortSignal): Promise<boolean> {
@@ -448,6 +571,19 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     if (reservedRequestCapacity > options.retention.maxTerminalRequests) {
       throw new Error("coordination admission capacity exceeds retained-request capacity");
     }
+    const budgets = normalizedBudgets(options);
+    if (budgets.policies.length > MAX_BUDGET_POLICIES) {
+      throw new Error("coordination budget policies exceed supported bounds");
+    }
+    const minimumReservations =
+      options.retention.maxTerminalRequests + options.maxConcurrent + options.maxQueued;
+    if (budgets.policies.some((policy) => policy.maxReservations < minimumReservations)) {
+      throw new Error("coordination budget reservation capacity cannot retain request evidence");
+    }
+    const totalBudgetCapacity = budgetTotals(budgets);
+    if (Object.values(totalBudgetCapacity).some((value) => value > MAX_CAPACITY)) {
+      throw new Error("coordination budget capacity exceeds namespace bounds");
+    }
     if (
       !Number.isSafeInteger(options.compatibility?.protocolVersion) ||
       options.compatibility.protocolVersion < 1 ||
@@ -510,6 +646,42 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
             },
           }
         : {}),
+      ...(options.budgets === undefined
+        ? {}
+        : {
+            budgets: {
+              policies: budgets.policies.map((policy) => ({
+                ...policy,
+                ...(policy.caps
+                  ? {
+                      caps: {
+                        ...(policy.caps.agent ? { agent: { ...policy.caps.agent } } : {}),
+                        ...(policy.caps.public
+                          ? {
+                              public: {
+                                ...(policy.caps.public.anonymous
+                                  ? { anonymous: { ...policy.caps.public.anonymous } }
+                                  : {}),
+                                ...(policy.caps.public.recognized
+                                  ? { recognized: { ...policy.caps.public.recognized } }
+                                  : {}),
+                              },
+                            }
+                          : {}),
+                      },
+                    }
+                  : {}),
+                ...(policy.notifications
+                  ? {
+                      notifications: {
+                        destination: policy.notifications.destination,
+                        thresholds: [...policy.notifications.thresholds],
+                      },
+                    }
+                  : {}),
+              })),
+            },
+          }),
     };
     this.#sessionId = new Bun.CryptoHasher("sha256").update(crypto.randomUUID()).digest("hex");
     this.#ownsSql = !options.sql;
@@ -560,6 +732,23 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     }
   }
 
+  supportsBudgetPolicy(policy: DistributedBudgetPolicyV1): boolean {
+    try {
+      const normalized = normalizeDistributedBudgetConfig(
+        { policies: [policy] },
+        this.#config.retention.terminalRequestRetentionMs,
+      ).policies[0];
+      const stored = normalizedBudgets(this.#config).policies.find(
+        (candidate) => candidate.id === normalized?.id,
+      );
+      return normalized !== undefined && stored !== undefined
+        ? sameDistributedBudgetPolicy(stored, normalized)
+        : false;
+    } catch {
+      return false;
+    }
+  }
+
   async register(): Promise<RegistrationResult> {
     return this.safe<RegistrationResult>({ status: "unavailable" }, async () =>
       this.transaction(async (tx) => {
@@ -568,6 +757,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         await this.verifyRequestCapacityCounters(tx);
         await this.provisionRateCounters(tx);
         await this.verifyRateEvidenceCounter(tx);
+        await this.verifyBudgetEvidence(tx);
         const inserted = await tx.unsafe<Row>(
           "INSERT INTO public.auggy_coordination_instances (namespace, instance_id, session_id, build_fingerprint, accepting, draining, lease_expires_at) VALUES ($1, $2, $3, $4, TRUE, FALSE, clock_timestamp() + ($5 * interval '1 millisecond')) ON CONFLICT (namespace, instance_id) DO NOTHING RETURNING session_id",
           [
@@ -970,6 +1160,9 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
               requestAdmissionHash(request),
             ],
           );
+          if (rows[0]) {
+            await this.releaseBudgetReservationsForRequest(tx, request.requestId, attempt);
+          }
           return rows[0] ? { status: "ok" } : { status: "stale" };
         }),
       undefined,
@@ -1115,6 +1308,253 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     return result;
   }
 
+  async reserveBudget(
+    lease: DistributedTurnLease,
+    request: DistributedBudgetReservationRequest,
+  ): Promise<DistributedBudgetReservationResult> {
+    assertIdentifier("budget.policyId", request.policyId);
+    if (
+      typeof request.peerId !== "string" ||
+      request.peerId.length < 1 ||
+      request.peerId.length > 256 ||
+      request.threadId !== lease.threadId ||
+      (request.trustLevel !== "agent" && request.trustLevel !== "public") ||
+      (request.trustLevel === "public"
+        ? request.publicSubstate !== "anonymous" && request.publicSubstate !== "recognized"
+        : request.publicSubstate !== undefined)
+    ) {
+      return { status: "unavailable" };
+    }
+    const policy = normalizedBudgets(this.#config).policies.find(
+      (candidate) => candidate.id === request.policyId,
+    );
+    if (!policy) return { status: "unavailable" };
+    const peerIdHash = budgetDigest(
+      "auggy-distributed-budget-peer-v1",
+      this.#config.namespace,
+      request.peerId,
+    );
+    const threadIdHash = budgetDigest(
+      "auggy-distributed-budget-thread-v1",
+      this.#config.namespace,
+      request.threadId,
+    );
+
+    return this.safe<DistributedBudgetReservationResult>({ status: "unavailable" }, async () =>
+      this.transaction(async (tx) => {
+        await this.#lockNamespace(tx);
+        if (!(await this.registeredInstance(tx))) return { status: "stale" };
+        await this.#expireActive(tx);
+        const requests = await tx.unsafe<Row>(
+          "SELECT binding_hash FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND execution_started_at IS NULL FOR UPDATE",
+          [
+            this.#config.namespace,
+            lease.requestId,
+            lease.threadId,
+            lease.sourceId,
+            lease.attempt,
+            lease.fence,
+            this.#config.instanceId,
+            this.#sessionId,
+          ],
+        );
+        const owner = requests[0];
+        if (!owner) return { status: "stale" };
+        const bindingHash = text(owner, "binding_hash");
+        const existing = await tx.unsafe<Row>(
+          "SELECT request_binding_hash, peer_id_hash, thread_id_hash, trust_level, public_substate, attempt, fence, admission_day::text AS admission_day FROM public.auggy_coordination_budget_reservations WHERE namespace = $1 AND policy_id = $2 AND request_id = $3 FOR UPDATE",
+          [this.#config.namespace, policy.id, lease.requestId],
+        );
+        const current = existing[0];
+        if (current) {
+          const matches =
+            text(current, "request_binding_hash") === bindingHash &&
+            text(current, "peer_id_hash") === peerIdHash &&
+            text(current, "thread_id_hash") === threadIdHash &&
+            text(current, "trust_level") === request.trustLevel &&
+            nullableText(current, "public_substate") === (request.publicSubstate ?? null) &&
+            number(current, "attempt") === lease.attempt &&
+            number(current, "fence") === lease.fence;
+          if (!matches) return { status: "conflict" };
+          const usage = await this.budgetUsage(
+            tx,
+            policy.id,
+            text(current, "admission_day"),
+            peerIdHash,
+            threadIdHash,
+          );
+          return { status: "replayed", ...usage };
+        }
+
+        await this.cleanupExpiredBudgetEvidence(tx, policy, MAX_CAPACITY);
+        const dayRows = await tx.unsafe<Row>(
+          "SELECT (clock_timestamp() AT TIME ZONE 'UTC')::date::text AS admission_day",
+        );
+        const admissionDay = text(dayRows[0]!, "admission_day");
+        const counts = await tx.unsafe<Row>(
+          "WITH prospective_days AS (SELECT DISTINCT admission_day FROM public.auggy_coordination_budget_reservations WHERE namespace = $1 AND policy_id = $2 AND state = 'reserved' UNION SELECT $3::date), prospective_intents AS (SELECT count(*)::integer AS count FROM public.auggy_coordination_budget_threshold_intents intent WHERE intent.namespace = $1 AND intent.policy_id = $2 AND intent.admission_day IN (SELECT admission_day FROM prospective_days)) SELECT (SELECT count(*)::integer FROM public.auggy_coordination_budget_reservations WHERE namespace = $1 AND policy_id = $2) AS reservations, (SELECT count(*)::integer FROM public.auggy_coordination_budget_anonymous_events WHERE namespace = $1 AND policy_id = $2) AS anonymous_events, (SELECT count(*)::integer FROM public.auggy_coordination_budget_daily WHERE namespace = $1 AND policy_id = $2 AND subject_kind = 'peer') AS peer_days, (SELECT count(*)::integer FROM public.auggy_coordination_budget_threshold_intents WHERE namespace = $1 AND policy_id = $2) AS threshold_intents, (SELECT count(*)::integer FROM prospective_days) AS prospective_threshold_days, (SELECT count FROM prospective_intents) AS prospective_threshold_intents",
+          [this.#config.namespace, policy.id, admissionDay],
+        );
+        const count = counts[0];
+        if (
+          !count ||
+          number(count, "reservations") >= policy.maxReservations ||
+          number(count, "threshold_intents") +
+            (policy.notifications?.thresholds.length ?? 0) *
+              number(count, "prospective_threshold_days") -
+            number(count, "prospective_threshold_intents") >
+            policy.maxThresholdIntents ||
+          (request.publicSubstate === "anonymous" &&
+            policy.anonymousGlobalLimit !== undefined &&
+            number(count, "anonymous_events") >= policy.maxAnonymousEvents)
+        ) {
+          return { status: "rejected", reason: "budget-capacity" };
+        }
+
+        const caps = resolveDistributedBudgetCaps(
+          policy,
+          request.trustLevel,
+          request.publicSubstate,
+        );
+        const usage = await this.budgetUsage(tx, policy.id, admissionDay, peerIdHash, threadIdHash);
+        const costCaps = await tx.unsafe<Row>(
+          "SELECT COALESCE((SELECT cost_usd >= $4::numeric FROM public.auggy_coordination_budget_daily WHERE namespace = $1 AND policy_id = $2 AND admission_day = $3::date AND subject_kind = 'global' AND subject_hash = $6), FALSE) AS global_reached, COALESCE((SELECT cost_usd >= $5::numeric FROM public.auggy_coordination_budget_daily WHERE namespace = $1 AND policy_id = $2 AND admission_day = $3::date AND subject_kind = 'peer' AND subject_hash = $7), FALSE) AS peer_reached",
+          [
+            this.#config.namespace,
+            policy.id,
+            admissionDay,
+            policy.dailyBudgetUsd === undefined
+              ? null
+              : formatDistributedBudgetCostNanos(distributedBudgetCostNanos(policy.dailyBudgetUsd)),
+            caps?.maxUsdPerDay === undefined
+              ? null
+              : formatDistributedBudgetCostNanos(distributedBudgetCostNanos(caps.maxUsdPerDay)),
+            GLOBAL_BUDGET_SUBJECT_HASH,
+            peerIdHash,
+          ],
+        );
+        if (request.publicSubstate === "anonymous" && policy.anonymousGlobalLimit !== undefined) {
+          const anonymous = await tx.unsafe<Row>(
+            "SELECT count(*)::integer AS count FROM public.auggy_coordination_budget_anonymous_events WHERE namespace = $1 AND policy_id = $2 AND occurred_at > clock_timestamp() - interval '60 seconds'",
+            [this.#config.namespace, policy.id],
+          );
+          if (number(anonymous[0]!, "count") >= policy.anonymousGlobalLimit) {
+            return { status: "rejected", reason: "anonymous-rate-cap" };
+          }
+        }
+        if (bool(costCaps[0]!, "global_reached")) {
+          return { status: "rejected", reason: "daily-global-usd-cap" };
+        }
+        if (bool(costCaps[0]!, "peer_reached")) {
+          return { status: "rejected", reason: "daily-peer-usd-cap" };
+        }
+        if (caps?.maxTurnsPerThread !== undefined && usage.threadTurns >= caps.maxTurnsPerThread) {
+          return { status: "rejected", reason: "daily-thread-turn-cap" };
+        }
+        if (caps?.maxTurnsPerDay !== undefined && usage.peerTurns >= caps.maxTurnsPerDay) {
+          return { status: "rejected", reason: "daily-turn-cap" };
+        }
+        const peerDayExists = await tx.unsafe<Row>(
+          "SELECT subject_hash FROM public.auggy_coordination_budget_daily WHERE namespace = $1 AND policy_id = $2 AND admission_day = $3::date AND subject_kind = 'peer' AND subject_hash = $4",
+          [this.#config.namespace, policy.id, admissionDay, peerIdHash],
+        );
+        if (!peerDayExists[0] && number(count, "peer_days") >= policy.maxPeerDays) {
+          return { status: "rejected", reason: "budget-capacity" };
+        }
+
+        await tx.unsafe(
+          "INSERT INTO public.auggy_coordination_budget_daily (namespace, policy_id, admission_day, subject_kind, subject_hash, turns_reserved) VALUES ($1, $2, $3::date, 'global', $4, 1) ON CONFLICT (namespace, policy_id, admission_day, subject_kind, subject_hash) DO UPDATE SET turns_reserved = auggy_coordination_budget_daily.turns_reserved + 1, updated_at = clock_timestamp()",
+          [this.#config.namespace, policy.id, admissionDay, GLOBAL_BUDGET_SUBJECT_HASH],
+        );
+        await tx.unsafe(
+          "INSERT INTO public.auggy_coordination_budget_daily (namespace, policy_id, admission_day, subject_kind, subject_hash, turns_reserved) VALUES ($1, $2, $3::date, 'peer', $4, 1) ON CONFLICT (namespace, policy_id, admission_day, subject_kind, subject_hash) DO UPDATE SET turns_reserved = auggy_coordination_budget_daily.turns_reserved + 1, updated_at = clock_timestamp()",
+          [this.#config.namespace, policy.id, admissionDay, peerIdHash],
+        );
+        await tx.unsafe(
+          "INSERT INTO public.auggy_coordination_budget_reservations (namespace, policy_id, request_id, request_binding_hash, peer_id_hash, thread_id_hash, trust_level, public_substate, attempt, fence, admission_day) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11::date)",
+          [
+            this.#config.namespace,
+            policy.id,
+            lease.requestId,
+            bindingHash,
+            peerIdHash,
+            threadIdHash,
+            request.trustLevel,
+            request.publicSubstate ?? null,
+            lease.attempt,
+            lease.fence,
+            admissionDay,
+          ],
+        );
+        if (request.publicSubstate === "anonymous" && policy.anonymousGlobalLimit !== undefined) {
+          await tx.unsafe(
+            "INSERT INTO public.auggy_coordination_budget_anonymous_events (namespace, policy_id, request_id, subject_hash, expires_at) VALUES ($1, $2, $3, $4, clock_timestamp() + interval '60 seconds')",
+            [this.#config.namespace, policy.id, lease.requestId, peerIdHash],
+          );
+        }
+        return {
+          status: "reserved",
+          ...(await this.budgetUsage(tx, policy.id, admissionDay, peerIdHash, threadIdHash)),
+        };
+      }),
+    );
+  }
+
+  async releaseBudget(lease: DistributedTurnLease, policyId: string): Promise<LeaseResult> {
+    assertIdentifier("budget.policyId", policyId);
+    return this.safe<LeaseResult>({ status: "unavailable" }, async () =>
+      this.transaction(async (tx) => {
+        await this.#lockNamespace(tx);
+        if (!(await this.registeredInstance(tx))) return { status: "stale" };
+        const requests = await tx.unsafe<Row>(
+          "SELECT request_id FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND execution_started_at IS NULL FOR UPDATE",
+          [
+            this.#config.namespace,
+            lease.requestId,
+            lease.threadId,
+            lease.sourceId,
+            lease.attempt,
+            lease.fence,
+            this.#config.instanceId,
+            this.#sessionId,
+          ],
+        );
+        if (!requests[0]) return { status: "stale" };
+        const reservations = await tx.unsafe<Row>(
+          "DELETE FROM public.auggy_coordination_budget_reservations WHERE namespace = $1 AND policy_id = $2 AND request_id = $3 AND attempt = $4 AND fence = $5 AND state = 'reserved' RETURNING admission_day::text AS admission_day, peer_id_hash",
+          [this.#config.namespace, policyId, lease.requestId, lease.attempt, lease.fence],
+        );
+        const reservation = reservations[0];
+        if (!reservation) return { status: "ok" };
+        await tx.unsafe(
+          "DELETE FROM public.auggy_coordination_budget_anonymous_events WHERE namespace = $1 AND policy_id = $2 AND request_id = $3",
+          [this.#config.namespace, policyId, lease.requestId],
+        );
+        await tx.unsafe(
+          "UPDATE public.auggy_coordination_budget_daily SET turns_reserved = turns_reserved - 1, updated_at = clock_timestamp() WHERE namespace = $1 AND policy_id = $2 AND admission_day = $3::date AND ((subject_kind = 'global' AND subject_hash = $4) OR (subject_kind = 'peer' AND subject_hash = $5)) AND turns_reserved > 0",
+          [
+            this.#config.namespace,
+            policyId,
+            text(reservation, "admission_day"),
+            GLOBAL_BUDGET_SUBJECT_HASH,
+            text(reservation, "peer_id_hash"),
+          ],
+        );
+        await tx.unsafe(
+          "DELETE FROM public.auggy_coordination_budget_daily WHERE namespace = $1 AND policy_id = $2 AND admission_day = $3::date AND ((subject_kind = 'global' AND subject_hash = $4) OR (subject_kind = 'peer' AND subject_hash = $5)) AND turns_reserved = 0 AND cost_usd = 0 AND unpriced_turns = 0",
+          [
+            this.#config.namespace,
+            policyId,
+            text(reservation, "admission_day"),
+            GLOBAL_BUDGET_SUBJECT_HASH,
+            text(reservation, "peer_id_hash"),
+          ],
+        );
+        return { status: "ok" };
+      }),
+    );
+  }
+
   async heartbeat(lease: DistributedTurnLease): Promise<LeaseResult> {
     if (!this.validLease(lease)) return { status: "stale" };
     const result = await this.safe<LeaseResult>({ status: "unavailable" }, async () =>
@@ -1253,6 +1693,14 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       lease.threadId,
     );
     if (rejection) return rejection;
+    if (
+      !validTerminalCostMarkers(
+        checkpoint.costMarkers,
+        this.#config.turnState.maxCostMarkersPerTurn,
+      )
+    ) {
+      return { status: "rejected", reason: "invalid-turn-state" };
+    }
 
     const result = await this.safe<LeaseResult>({ status: "unavailable" }, async () =>
       this.transaction(async (tx) => {
@@ -1289,15 +1737,19 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
               (!sameDistributedPeerBinding(historyBinding!, checkpoint.peerBinding) &&
                 !allowsDistributedPeerPromotion(historyBinding!, checkpoint.peerBinding))
             : checkpoint.expectedHistoryRevision !== 0);
+        const duplicateCostOperations = new Set<string>();
+        for (const marker of checkpoint.costMarkers) {
+          const duplicate = await tx.unsafe<Row>(
+            "SELECT operation_id FROM public.auggy_coordination_cost_markers WHERE namespace = $1 AND operation_id = $2",
+            [this.#config.namespace, marker.operationId],
+          );
+          if (duplicate[0]) {
+            ambiguous = true;
+            duplicateCostOperations.add(marker.operationId);
+          }
+        }
 
         if (!ambiguous) {
-          for (const marker of checkpoint.costMarkers) {
-            const duplicate = await tx.unsafe<Row>(
-              "SELECT operation_id FROM public.auggy_coordination_cost_markers WHERE namespace = $1 AND operation_id = $2",
-              [this.#config.namespace, marker.operationId],
-            );
-            if (duplicate[0]) ambiguous = true;
-          }
           for (const intent of checkpoint.outboxIntents) {
             const duplicate = await tx.unsafe<Row>(
               "SELECT operation_id FROM public.auggy_coordination_outbox WHERE namespace = $1 AND operation_id = $2",
@@ -1326,6 +1778,22 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           }
         }
         if (ambiguous) {
+          for (const marker of checkpoint.costMarkers) {
+            if (!duplicateCostOperations.has(marker.operationId)) {
+              await this.insertCostMarker(tx, lease, marker);
+            }
+          }
+          await this.settleBudgetAccounting(
+            tx,
+            lease,
+            outcomeUnknownAccountingMarkers(
+              this.#config.namespace,
+              lease,
+              checkpoint.costMarkers,
+              duplicateCostOperations,
+            ),
+            "outcome_unknown",
+          );
           const quarantined = await tx.unsafe<Row>(
             "UPDATE public.auggy_coordination_requests SET state = 'outcome_unknown', terminal_at = clock_timestamp(), owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND execution_started_at IS NOT NULL RETURNING request_id",
             [
@@ -1373,19 +1841,9 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
             );
         if (!updatedHistory[0]) throw new Error("history revision changed during commit");
         for (const marker of checkpoint.costMarkers) {
-          await tx.unsafe(
-            "/* cp4:cost */ INSERT INTO public.auggy_coordination_cost_markers (namespace, operation_id, request_id, fence, marker_version, priced, cost_usd, unpriced_reason) VALUES ($1, $2, $3, $4, 1, $5, $6, $7)",
-            [
-              this.#config.namespace,
-              marker.operationId,
-              lease.requestId,
-              lease.fence,
-              marker.priced,
-              marker.priced ? marker.costUsd : null,
-              marker.priced ? null : marker.reason,
-            ],
-          );
+          await this.insertCostMarker(tx, lease, marker);
         }
+        await this.settleBudgetAccounting(tx, lease, checkpoint.costMarkers, "committed");
         for (const intent of checkpoint.outboxIntents) {
           await tx.unsafe(
             "/* cp4:outbox */ INSERT INTO public.auggy_coordination_outbox (namespace, request_id, intent_ordinal, operation_id, fence, intent_version, intent_body, intent_content_type) VALUES ($1, $2, $3, $4, $5, 1, $6, $7)",
@@ -1521,6 +1979,12 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         const row = rows[0];
         if (!row) return { status: "stale" };
         if (!bool(row, "ambiguous")) return { status: "ok" };
+        await this.settleBudgetAccounting(
+          tx,
+          lease,
+          missingUsageAccountingMarkers(this.#config.namespace, lease),
+          "outcome_unknown",
+        );
         await this.recordQuarantine(
           tx,
           lease.threadId,
@@ -1548,8 +2012,19 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     lease: DistributedTurnLease,
     reasonCode: CoordinationOutcomeUnknownReason,
   ): Promise<LeaseResult> {
+    return this.settleOutcomeUnknown(lease, reasonCode, []);
+  }
+
+  async settleOutcomeUnknown(
+    lease: DistributedTurnLease,
+    reasonCode: CoordinationOutcomeUnknownReason,
+    costMarkers: readonly DistributedCostMarkerV1[],
+  ): Promise<LeaseResult> {
     if (!this.validLease(lease) || !OUTCOME_UNKNOWN_REASONS.has(reasonCode)) {
       return { status: "stale" };
+    }
+    if (!validTerminalCostMarkers(costMarkers, this.#config.turnState.maxCostMarkersPerTurn)) {
+      return { status: "rejected", reason: "invalid-turn-state" };
     }
     const result = await this.safe<LeaseResult>({ status: "unavailable" }, async () =>
       this.transaction(async (tx) => {
@@ -1557,7 +2032,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         if (!(await this.registeredInstance(tx))) return { status: "stale" };
         await this.#expireActive(tx);
         const rows = await tx.unsafe<Row>(
-          "UPDATE public.auggy_coordination_requests SET state = 'outcome_unknown', terminal_at = clock_timestamp(), owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() RETURNING request_id",
+          "SELECT request_id FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND execution_started_at IS NOT NULL FOR UPDATE",
           [
             this.#config.namespace,
             lease.requestId,
@@ -1570,6 +2045,44 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           ],
         );
         if (!rows[0]) return { status: "stale" };
+        const duplicateCostOperations = new Set<string>();
+        for (const marker of costMarkers) {
+          const duplicate = await tx.unsafe<Row>(
+            "SELECT request_id, fence FROM public.auggy_coordination_cost_markers WHERE namespace = $1 AND operation_id = $2",
+            [this.#config.namespace, marker.operationId],
+          );
+          if (duplicate[0]) duplicateCostOperations.add(marker.operationId);
+        }
+        for (const marker of costMarkers) {
+          if (!duplicateCostOperations.has(marker.operationId)) {
+            await this.insertCostMarker(tx, lease, marker);
+          }
+        }
+        await this.settleBudgetAccounting(
+          tx,
+          lease,
+          outcomeUnknownAccountingMarkers(
+            this.#config.namespace,
+            lease,
+            costMarkers,
+            duplicateCostOperations,
+          ),
+          "outcome_unknown",
+        );
+        const settled = await tx.unsafe<Row>(
+          "UPDATE public.auggy_coordination_requests SET state = 'outcome_unknown', terminal_at = clock_timestamp(), owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND execution_started_at IS NOT NULL RETURNING request_id",
+          [
+            this.#config.namespace,
+            lease.requestId,
+            lease.threadId,
+            lease.sourceId,
+            lease.attempt,
+            lease.fence,
+            this.#config.instanceId,
+            this.#sessionId,
+          ],
+        );
+        if (!settled[0]) throw new Error("lease changed during outcome-unknown settlement");
         await this.recordQuarantine(tx, lease.threadId, lease.requestId, lease.fence, reasonCode);
         return { status: "outcome-unknown" };
       }),
@@ -1746,8 +2259,11 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         }
         await this.#expireActive(tx);
         await this.#cancelExpiredQueued(tx);
+        for (const policy of normalizedBudgets(this.#config).policies) {
+          await this.cleanupExpiredBudgetEvidence(tx, policy, batchSize);
+        }
         const requestRows = await tx.unsafe<Row>(
-          "WITH ranked AS (SELECT request.request_id, request.terminal_at, row_number() OVER (ORDER BY request.terminal_at DESC, request.request_id DESC) AS newest_rank FROM public.auggy_coordination_requests request WHERE request.namespace = $1 AND request.state IN ('completed', 'failed', 'canceled') AND NOT EXISTS (SELECT 1 FROM public.auggy_coordination_outbox outbox WHERE outbox.namespace = request.namespace AND outbox.request_id = request.request_id AND outbox.state = 'pending')), victims AS MATERIALIZED (SELECT request_id FROM ranked WHERE terminal_at <= clock_timestamp() - ($2 * interval '1 millisecond') OR newest_rank > $3 ORDER BY terminal_at, request_id LIMIT $4), deleted_costs AS (DELETE FROM public.auggy_coordination_cost_markers cost USING victims WHERE cost.namespace = $1 AND cost.request_id = victims.request_id RETURNING 1) DELETE FROM public.auggy_coordination_requests request USING victims WHERE request.namespace = $1 AND request.request_id = victims.request_id AND (SELECT count(*) FROM deleted_costs) >= 0 RETURNING request.capacity_class, request.capacity_partition_hash",
+          "WITH ranked AS (SELECT request.request_id, request.terminal_at, row_number() OVER (ORDER BY request.terminal_at DESC, request.request_id DESC) AS newest_rank FROM public.auggy_coordination_requests request WHERE request.namespace = $1 AND request.state IN ('completed', 'failed', 'canceled') AND NOT EXISTS (SELECT 1 FROM public.auggy_coordination_outbox outbox WHERE outbox.namespace = request.namespace AND outbox.request_id = request.request_id AND outbox.state = 'pending')), victims AS MATERIALIZED (SELECT request_id FROM ranked WHERE terminal_at <= clock_timestamp() - ($2 * interval '1 millisecond') OR newest_rank > $3 ORDER BY terminal_at, request_id LIMIT $4), deleted_costs AS (DELETE FROM public.auggy_coordination_cost_markers cost USING victims WHERE cost.namespace = $1 AND cost.request_id = victims.request_id RETURNING 1), deleted_budget_anonymous AS (DELETE FROM public.auggy_coordination_budget_anonymous_events event USING victims WHERE event.namespace = $1 AND event.request_id = victims.request_id RETURNING 1) DELETE FROM public.auggy_coordination_requests request USING victims WHERE request.namespace = $1 AND request.request_id = victims.request_id AND (SELECT count(*) FROM deleted_costs) >= 0 AND (SELECT count(*) FROM deleted_budget_anonymous) >= 0 RETURNING request.capacity_class, request.capacity_partition_hash",
           [
             this.#config.namespace,
             this.#config.retention.terminalRequestRetentionMs,
@@ -1868,6 +2384,266 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     return result;
   }
 
+  async insertCostMarker(
+    tx: SqlTransaction,
+    lease: DistributedTurnLease,
+    marker: DistributedCostMarkerV1,
+  ): Promise<void> {
+    await tx.unsafe(
+      "/* cp4:cost */ INSERT INTO public.auggy_coordination_cost_markers (namespace, operation_id, request_id, fence, marker_version, priced, cost_usd, unpriced_reason) VALUES ($1, $2, $3, $4, 1, $5, $6, $7)",
+      [
+        this.#config.namespace,
+        marker.operationId,
+        lease.requestId,
+        lease.fence,
+        marker.priced,
+        marker.priced
+          ? formatDistributedBudgetCostNanos(distributedBudgetCostNanos(marker.costUsd))
+          : null,
+        marker.priced ? null : marker.reason,
+      ],
+    );
+  }
+
+  async settleBudgetAccounting(
+    tx: SqlTransaction,
+    lease: DistributedTurnLease,
+    costMarkers: readonly DistributedCostMarkerV1[],
+    state: "committed" | "outcome_unknown",
+  ): Promise<void> {
+    const reservations = await tx.unsafe<Row>(
+      "SELECT policy_id, admission_day::text AS admission_day, peer_id_hash, thread_id_hash FROM public.auggy_coordination_budget_reservations WHERE namespace = $1 AND request_id = $2 AND attempt = $3 AND fence = $4 AND state = 'reserved' ORDER BY policy_id FOR UPDATE",
+      [this.#config.namespace, lease.requestId, lease.attempt, lease.fence],
+    );
+    if (reservations.length === 0) return;
+    const hasUnpriced = costMarkers.some((marker) => !marker.priced);
+    const pricedCostNanos = costMarkers.reduce(
+      (sum, marker) => sum + (marker.priced ? distributedBudgetCostNanos(marker.costUsd) : 0n),
+      0n,
+    );
+    if (pricedCostNanos > distributedBudgetCostNanos(MAX_COST_USD)) {
+      throw new Error("distributed cost total exceeds budget accounting bounds");
+    }
+    const pricedCost = formatDistributedBudgetCostNanos(pricedCostNanos);
+    const policies = new Map(
+      normalizedBudgets(this.#config).policies.map((policy) => [policy.id, policy]),
+    );
+    for (const reservation of reservations) {
+      const policyId = text(reservation, "policy_id");
+      const policy = policies.get(policyId);
+      if (!policy) throw new Error("distributed budget reservation policy is unavailable");
+      const admissionDay = text(reservation, "admission_day");
+      const peerIdHash = text(reservation, "peer_id_hash");
+      let globalTotalNanos: bigint | null = null;
+      if (pricedCostNanos > 0n) {
+        const global = await tx.unsafe<Row>(
+          "UPDATE public.auggy_coordination_budget_daily SET cost_usd = cost_usd + $5::numeric, updated_at = clock_timestamp() WHERE namespace = $1 AND policy_id = $2 AND admission_day = $3::date AND subject_kind = 'global' AND subject_hash = $4 RETURNING cost_usd::text AS cost_usd",
+          [this.#config.namespace, policyId, admissionDay, GLOBAL_BUDGET_SUBJECT_HASH, pricedCost],
+        );
+        const peer = await tx.unsafe<Row>(
+          "UPDATE public.auggy_coordination_budget_daily SET cost_usd = cost_usd + $5::numeric, updated_at = clock_timestamp() WHERE namespace = $1 AND policy_id = $2 AND admission_day = $3::date AND subject_kind = 'peer' AND subject_hash = $4 RETURNING subject_hash",
+          [this.#config.namespace, policyId, admissionDay, peerIdHash, pricedCost],
+        );
+        if (!global[0] || !peer[0]) throw new Error("distributed budget aggregate is missing");
+        globalTotalNanos = parseDistributedBudgetCostNanos(text(global[0], "cost_usd"));
+      }
+      if (hasUnpriced) {
+        const global = await tx.unsafe<Row>(
+          "UPDATE public.auggy_coordination_budget_daily SET unpriced_turns = unpriced_turns + 1, updated_at = clock_timestamp() WHERE namespace = $1 AND policy_id = $2 AND admission_day = $3::date AND subject_kind = 'global' AND subject_hash = $4 RETURNING subject_hash",
+          [this.#config.namespace, policyId, admissionDay, GLOBAL_BUDGET_SUBJECT_HASH],
+        );
+        const peer = await tx.unsafe<Row>(
+          "UPDATE public.auggy_coordination_budget_daily SET unpriced_turns = unpriced_turns + 1, updated_at = clock_timestamp() WHERE namespace = $1 AND policy_id = $2 AND admission_day = $3::date AND subject_kind = 'peer' AND subject_hash = $4 RETURNING subject_hash",
+          [this.#config.namespace, policyId, admissionDay, peerIdHash],
+        );
+        if (!global[0] || !peer[0]) throw new Error("distributed budget aggregate is missing");
+      }
+
+      if (
+        globalTotalNanos !== null &&
+        policy.dailyBudgetUsd !== undefined &&
+        policy.notifications &&
+        policy.notifications.thresholds.length > 0
+      ) {
+        const dailyBudgetNanos = distributedBudgetCostNanos(policy.dailyBudgetUsd);
+        const crossed = policy.notifications.thresholds.filter(
+          (threshold) =>
+            globalTotalNanos! * 1_000_000n >=
+            dailyBudgetNanos * BigInt(Math.round(threshold * 1_000_000)),
+        );
+        if (crossed.length > 0) {
+          const existing = await tx.unsafe<Row>(
+            "SELECT threshold_ppm FROM public.auggy_coordination_budget_threshold_intents WHERE namespace = $1 AND policy_id = $2 AND admission_day = $3::date ORDER BY threshold_ppm FOR UPDATE",
+            [this.#config.namespace, policyId, admissionDay],
+          );
+          const sent = new Set(existing.map((row) => number(row, "threshold_ppm")));
+          const newlyCrossed = crossed.filter(
+            (threshold) => !sent.has(Math.round(threshold * 1_000_000)),
+          );
+          if (newlyCrossed.length > 0) {
+            const capacity = await tx.unsafe<Row>(
+              "SELECT count(*)::integer AS count FROM public.auggy_coordination_budget_threshold_intents WHERE namespace = $1 AND policy_id = $2",
+              [this.#config.namespace, policyId],
+            );
+            if (number(capacity[0]!, "count") + newlyCrossed.length > policy.maxThresholdIntents) {
+              throw new Error("distributed budget threshold intent capacity is exhausted");
+            }
+            const highest = newlyCrossed.at(-1)!;
+            for (const threshold of newlyCrossed) {
+              const thresholdPpm = Math.round(threshold * 1_000_000);
+              const pending = threshold === highest;
+              const operationId = pending
+                ? `auggy-op-v1-${budgetDigest(
+                    "auggy-distributed-budget-threshold-v1",
+                    this.#config.namespace,
+                    policyId,
+                    admissionDay,
+                    String(thresholdPpm),
+                  )}`
+                : null;
+              const totalUsd = Number(globalTotalNanos) / 1_000_000_000;
+              const body = pending
+                ? new TextEncoder().encode(
+                    JSON.stringify({
+                      version: 1,
+                      kind: "budget-threshold",
+                      destination: policy.notifications.destination,
+                      threshold,
+                      day: admissionDay,
+                      totalUsd,
+                      dailyBudgetUsd: policy.dailyBudgetUsd,
+                      requestId: lease.requestId,
+                      peerIdHash,
+                      threadIdHash: text(reservation, "thread_id_hash"),
+                      summary: `Budget threshold reached: ${Math.round(threshold * 100)}% of daily budget used`,
+                      reason: `Daily budget spend is $${totalUsd.toFixed(2)} of $${policy.dailyBudgetUsd.toFixed(2)} for ${admissionDay}.`,
+                    }),
+                  )
+                : null;
+              if (body && body.byteLength > 65_536) {
+                throw new Error("distributed budget threshold intent exceeds bounds");
+              }
+              await tx.unsafe(
+                "INSERT INTO public.auggy_coordination_budget_threshold_intents (namespace, policy_id, admission_day, threshold_ppm, destination, request_id, operation_id, intent_body, state) VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9)",
+                [
+                  this.#config.namespace,
+                  policyId,
+                  admissionDay,
+                  thresholdPpm,
+                  policy.notifications.destination,
+                  lease.requestId,
+                  operationId,
+                  body,
+                  pending ? "pending" : "suppressed",
+                ],
+              );
+            }
+          }
+        }
+      }
+      const updated = await tx.unsafe<Row>(
+        "UPDATE public.auggy_coordination_budget_reservations SET state = $5, settled_at = clock_timestamp() WHERE namespace = $1 AND policy_id = $2 AND request_id = $3 AND state = 'reserved' AND attempt = $4 AND fence = $6 RETURNING request_id",
+        [this.#config.namespace, policyId, lease.requestId, lease.attempt, state, lease.fence],
+      );
+      if (!updated[0]) throw new Error("distributed budget reservation changed during settlement");
+    }
+  }
+
+  async budgetUsage(
+    tx: SqlTransaction,
+    policyId: string,
+    admissionDay: string,
+    peerIdHash: string,
+    threadIdHash: string,
+  ) {
+    const rows = await tx.unsafe<Row>(
+      "SELECT (SELECT count(*)::integer FROM public.auggy_coordination_budget_reservations reservation WHERE reservation.namespace = $1 AND reservation.policy_id = $2 AND reservation.admission_day = $3::date AND reservation.peer_id_hash = $4 AND reservation.thread_id_hash = $5) AS thread_turns, COALESCE(max(daily.turns_reserved) FILTER (WHERE daily.subject_kind = 'peer' AND daily.subject_hash = $4), 0)::integer AS peer_turns, COALESCE(max(daily.cost_usd) FILTER (WHERE daily.subject_kind = 'peer' AND daily.subject_hash = $4), 0)::text AS peer_cost_usd, COALESCE(max(daily.unpriced_turns) FILTER (WHERE daily.subject_kind = 'peer' AND daily.subject_hash = $4), 0)::integer AS peer_unpriced_turns, COALESCE(max(daily.cost_usd) FILTER (WHERE daily.subject_kind = 'global' AND daily.subject_hash = $6), 0)::text AS global_cost_usd, COALESCE(max(daily.unpriced_turns) FILTER (WHERE daily.subject_kind = 'global' AND daily.subject_hash = $6), 0)::integer AS global_unpriced_turns FROM public.auggy_coordination_budget_daily daily WHERE daily.namespace = $1 AND daily.policy_id = $2 AND daily.admission_day = $3::date",
+      [
+        this.#config.namespace,
+        policyId,
+        admissionDay,
+        peerIdHash,
+        threadIdHash,
+        GLOBAL_BUDGET_SUBJECT_HASH,
+      ],
+    );
+    const row = rows[0];
+    if (!row) throw new Error("missing distributed budget usage row");
+    return {
+      admissionDay,
+      threadTurns: number(row, "thread_turns"),
+      peerTurns: number(row, "peer_turns"),
+      peerCostUsd: decimal(row, "peer_cost_usd"),
+      peerUnpricedTurns: number(row, "peer_unpriced_turns"),
+      globalCostUsd: decimal(row, "global_cost_usd"),
+      globalUnpricedTurns: number(row, "global_unpriced_turns"),
+    };
+  }
+
+  async cleanupExpiredBudgetEvidence(
+    tx: SqlTransaction,
+    policy: DistributedBudgetPolicyV1,
+    limit: number,
+  ): Promise<void> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_CAPACITY) {
+      throw new Error("distributed budget cleanup limit is invalid");
+    }
+    await tx.unsafe(
+      "WITH victims AS (SELECT request_id FROM public.auggy_coordination_budget_anonymous_events WHERE namespace = $1 AND policy_id = $2 AND expires_at <= clock_timestamp() ORDER BY expires_at, request_id LIMIT $3) DELETE FROM public.auggy_coordination_budget_anonymous_events event USING victims WHERE event.namespace = $1 AND event.policy_id = $2 AND event.request_id = victims.request_id",
+      [this.#config.namespace, policy.id, limit],
+    );
+    await tx.unsafe(
+      "WITH victims AS (SELECT reservation.request_id FROM public.auggy_coordination_budget_reservations reservation WHERE reservation.namespace = $1 AND reservation.policy_id = $2 AND reservation.settled_at <= clock_timestamp() - ($3 * interval '1 millisecond') AND (reservation.state = 'committed' OR (reservation.state = 'outcome_unknown' AND NOT EXISTS (SELECT 1 FROM public.auggy_coordination_requests request WHERE request.namespace = reservation.namespace AND request.request_id = reservation.request_id AND request.state = 'outcome_unknown'))) ORDER BY reservation.settled_at, reservation.request_id LIMIT $4) DELETE FROM public.auggy_coordination_budget_reservations reservation USING victims WHERE reservation.namespace = $1 AND reservation.policy_id = $2 AND reservation.request_id = victims.request_id",
+      [this.#config.namespace, policy.id, policy.reservationRetentionMs, limit],
+    );
+    await tx.unsafe(
+      "WITH victims AS (SELECT daily.admission_day, daily.subject_kind, daily.subject_hash FROM public.auggy_coordination_budget_daily daily WHERE daily.namespace = $1 AND daily.policy_id = $2 AND daily.admission_day <= (clock_timestamp() AT TIME ZONE 'UTC')::date - $3 AND NOT EXISTS (SELECT 1 FROM public.auggy_coordination_budget_reservations reservation WHERE reservation.namespace = daily.namespace AND reservation.policy_id = daily.policy_id AND reservation.admission_day = daily.admission_day AND reservation.state IN ('reserved', 'outcome_unknown')) ORDER BY daily.admission_day, daily.subject_kind, daily.subject_hash LIMIT $4) DELETE FROM public.auggy_coordination_budget_daily daily USING victims WHERE daily.namespace = $1 AND daily.policy_id = $2 AND daily.admission_day = victims.admission_day AND daily.subject_kind = victims.subject_kind AND daily.subject_hash = victims.subject_hash",
+      [this.#config.namespace, policy.id, policy.aggregateRetentionDays, limit],
+    );
+    await tx.unsafe(
+      "WITH victims AS (SELECT admission_day, threshold_ppm FROM public.auggy_coordination_budget_threshold_intents WHERE namespace = $1 AND policy_id = $2 AND state = 'suppressed' AND admission_day <= (clock_timestamp() AT TIME ZONE 'UTC')::date - $3 ORDER BY admission_day, threshold_ppm LIMIT $4) DELETE FROM public.auggy_coordination_budget_threshold_intents intent USING victims WHERE intent.namespace = $1 AND intent.policy_id = $2 AND intent.admission_day = victims.admission_day AND intent.threshold_ppm = victims.threshold_ppm",
+      [this.#config.namespace, policy.id, policy.aggregateRetentionDays, limit],
+    );
+  }
+
+  async releaseBudgetReservationsForRequest(
+    tx: SqlTransaction,
+    requestId: string,
+    attempt: number,
+  ): Promise<void> {
+    const reservations = await tx.unsafe<Row>(
+      "DELETE FROM public.auggy_coordination_budget_reservations WHERE namespace = $1 AND request_id = $2 AND attempt = $3 AND state = 'reserved' RETURNING policy_id, admission_day::text AS admission_day, peer_id_hash",
+      [this.#config.namespace, requestId, attempt],
+    );
+    if (reservations.length === 0) return;
+    await tx.unsafe(
+      "DELETE FROM public.auggy_coordination_budget_anonymous_events WHERE namespace = $1 AND request_id = $2",
+      [this.#config.namespace, requestId],
+    );
+    for (const reservation of reservations) {
+      await tx.unsafe(
+        "UPDATE public.auggy_coordination_budget_daily SET turns_reserved = turns_reserved - 1, updated_at = clock_timestamp() WHERE namespace = $1 AND policy_id = $2 AND admission_day = $3::date AND ((subject_kind = 'global' AND subject_hash = $4) OR (subject_kind = 'peer' AND subject_hash = $5)) AND turns_reserved > 0",
+        [
+          this.#config.namespace,
+          text(reservation, "policy_id"),
+          text(reservation, "admission_day"),
+          GLOBAL_BUDGET_SUBJECT_HASH,
+          text(reservation, "peer_id_hash"),
+        ],
+      );
+      await tx.unsafe(
+        "DELETE FROM public.auggy_coordination_budget_daily WHERE namespace = $1 AND policy_id = $2 AND admission_day = $3::date AND ((subject_kind = 'global' AND subject_hash = $4) OR (subject_kind = 'peer' AND subject_hash = $5)) AND turns_reserved = 0 AND cost_usd = 0 AND unpriced_turns = 0",
+        [
+          this.#config.namespace,
+          text(reservation, "policy_id"),
+          text(reservation, "admission_day"),
+          GLOBAL_BUDGET_SUBJECT_HASH,
+          text(reservation, "peer_id_hash"),
+        ],
+      );
+    }
+  }
+
   async #lockNamespace(
     tx: SqlTransaction,
     create = false,
@@ -1881,9 +2657,16 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     const ratePolicyFingerprint = configuredAdmission
       ? admissionPolicyFingerprint(admission)
       : null;
+    const budgets = normalizedBudgets(this.#config);
+    const configuredBudgets =
+      this.#config.budgets !== undefined || this.#config.compatibility.protocolVersion >= 8;
+    const budgetPolicyFingerprint = configuredBudgets
+      ? distributedBudgetPolicyFingerprint(budgets)
+      : null;
+    const budgetCapacity = budgetTotals(budgets);
     if (create) {
       await tx.unsafe(
-        "INSERT INTO public.auggy_coordination_namespaces (namespace, max_concurrent, max_queued, max_queued_per_thread, lease_ms, protocol_version, protocol_fingerprint, configuration_fingerprint, terminal_request_retention_ms, max_terminal_requests, event_retention_ms, max_events, max_replay_bytes, max_history_snapshot_bytes, max_history_messages, max_history_threads, max_cost_markers_per_turn, max_outbox_intents_per_turn, max_outbox_intent_bytes, max_pending_outbox_intents, max_rate_limit_events, rate_policy_fingerprint) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22) ON CONFLICT (namespace) DO NOTHING",
+        "INSERT INTO public.auggy_coordination_namespaces (namespace, max_concurrent, max_queued, max_queued_per_thread, lease_ms, protocol_version, protocol_fingerprint, configuration_fingerprint, terminal_request_retention_ms, max_terminal_requests, event_retention_ms, max_events, max_replay_bytes, max_history_snapshot_bytes, max_history_messages, max_history_threads, max_cost_markers_per_turn, max_outbox_intents_per_turn, max_outbox_intent_bytes, max_pending_outbox_intents, max_rate_limit_events, rate_policy_fingerprint, max_budget_reservations, max_budget_anonymous_events, max_budget_peer_days, max_budget_threshold_intents, budget_policy_fingerprint) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27) ON CONFLICT (namespace) DO NOTHING",
         [
           this.#config.namespace,
           this.#config.maxConcurrent,
@@ -1907,6 +2690,11 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           this.#config.turnState.outbox.maxPendingIntents,
           configuredAdmission ? admission.maxRateLimitEvents : null,
           ratePolicyFingerprint,
+          configuredBudgets ? budgetCapacity.reservations : null,
+          configuredBudgets ? budgetCapacity.anonymousEvents : null,
+          configuredBudgets ? budgetCapacity.peerDays : null,
+          configuredBudgets ? budgetCapacity.thresholdIntents : null,
+          budgetPolicyFingerprint,
         ],
       );
       await tx.unsafe(
@@ -1915,7 +2703,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       );
     }
     const policy = await tx.unsafe<Row>(
-      "SELECT max_concurrent, max_queued, max_queued_per_thread, lease_ms, protocol_version, protocol_fingerprint, configuration_fingerprint, terminal_request_retention_ms, max_terminal_requests, event_retention_ms, max_events, max_replay_bytes, max_history_snapshot_bytes, max_history_messages, max_history_threads, max_cost_markers_per_turn, max_outbox_intents_per_turn, max_outbox_intent_bytes, max_pending_outbox_intents, max_rate_limit_events, rate_policy_fingerprint FROM public.auggy_coordination_namespaces WHERE namespace = $1 FOR UPDATE",
+      "SELECT max_concurrent, max_queued, max_queued_per_thread, lease_ms, protocol_version, protocol_fingerprint, configuration_fingerprint, terminal_request_retention_ms, max_terminal_requests, event_retention_ms, max_events, max_replay_bytes, max_history_snapshot_bytes, max_history_messages, max_history_threads, max_cost_markers_per_turn, max_outbox_intents_per_turn, max_outbox_intent_bytes, max_pending_outbox_intents, max_rate_limit_events, rate_policy_fingerprint, max_budget_reservations, max_budget_anonymous_events, max_budget_peer_days, max_budget_threshold_intents, budget_policy_fingerprint FROM public.auggy_coordination_namespaces WHERE namespace = $1 FOR UPDATE",
       [this.#config.namespace],
     );
     const row = policy[0];
@@ -1942,6 +2730,11 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       maxPendingOutboxIntents: nullableNumber(row, "max_pending_outbox_intents"),
       maxRateLimitEvents: nullableNumber(row, "max_rate_limit_events"),
       ratePolicyFingerprint: nullableText(row, "rate_policy_fingerprint"),
+      maxBudgetReservations: nullableNumber(row, "max_budget_reservations"),
+      maxBudgetAnonymousEvents: nullableNumber(row, "max_budget_anonymous_events"),
+      maxBudgetPeerDays: nullableNumber(row, "max_budget_peer_days"),
+      maxBudgetThresholdIntents: nullableNumber(row, "max_budget_threshold_intents"),
+      budgetPolicyFingerprint: nullableText(row, "budget_policy_fingerprint"),
     };
     const basePolicyMatches =
       stored.maxConcurrent === this.#config.maxConcurrent &&
@@ -1975,6 +2768,23 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       : stored.maxRateLimitEvents === null && stored.ratePolicyFingerprint === null;
     const emptyAdmissionPolicy =
       stored.maxRateLimitEvents === null && stored.ratePolicyFingerprint === null;
+    let budgetMatches = configuredBudgets
+      ? stored.maxBudgetReservations === budgetCapacity.reservations &&
+        stored.maxBudgetAnonymousEvents === budgetCapacity.anonymousEvents &&
+        stored.maxBudgetPeerDays === budgetCapacity.peerDays &&
+        stored.maxBudgetThresholdIntents === budgetCapacity.thresholdIntents &&
+        stored.budgetPolicyFingerprint === budgetPolicyFingerprint
+      : stored.maxBudgetReservations === null &&
+        stored.maxBudgetAnonymousEvents === null &&
+        stored.maxBudgetPeerDays === null &&
+        stored.maxBudgetThresholdIntents === null &&
+        stored.budgetPolicyFingerprint === null;
+    const emptyBudgetPolicy =
+      stored.maxBudgetReservations === null &&
+      stored.maxBudgetAnonymousEvents === null &&
+      stored.maxBudgetPeerDays === null &&
+      stored.maxBudgetThresholdIntents === null &&
+      stored.budgetPolicyFingerprint === null;
     let compatibilityMatches =
       stored.protocolVersion === this.#config.compatibility.protocolVersion &&
       stored.protocolFingerprint === this.#config.compatibility.protocolFingerprint &&
@@ -1982,19 +2792,21 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     const predecessor = this.#config.compatibility.upgradeFrom;
     const upgradesTurnState = !configuredAdmission && emptyTurnStatePolicy;
     const upgradesAdmission = configuredAdmission && turnStateMatches && emptyAdmissionPolicy;
-    const upgradesProtocolOnly = turnStateMatches && admissionMatches;
+    const upgradesBudgets =
+      configuredBudgets && turnStateMatches && admissionMatches && emptyBudgetPolicy;
+    const upgradesProtocolOnly = turnStateMatches && admissionMatches && budgetMatches;
     if (
       !compatibilityMatches &&
       allowQuiescentUpgrade &&
       basePolicyMatches &&
-      (upgradesTurnState || upgradesAdmission || upgradesProtocolOnly) &&
+      (upgradesTurnState || upgradesAdmission || upgradesBudgets || upgradesProtocolOnly) &&
       predecessor &&
       stored.protocolVersion === predecessor.protocolVersion &&
       stored.protocolFingerprint === predecessor.protocolFingerprint &&
       stored.configurationFingerprint === predecessor.configurationFingerprint
     ) {
       const activity = await tx.unsafe<Row>(
-        "SELECT count(*) FILTER (WHERE lease_expires_at > clock_timestamp())::integer AS live_instances, (SELECT count(*)::integer FROM public.auggy_coordination_requests WHERE namespace = $1 AND state IN ('queued', 'active')) AS pending_requests, (SELECT count(*)::integer FROM public.auggy_coordination_requests WHERE namespace = $1) AS total_requests, (SELECT count(*)::integer FROM public.auggy_coordination_rate_events WHERE namespace = $1) AS rate_events FROM public.auggy_coordination_instances WHERE namespace = $1",
+        "SELECT count(*) FILTER (WHERE lease_expires_at > clock_timestamp())::integer AS live_instances, (SELECT count(*)::integer FROM public.auggy_coordination_requests WHERE namespace = $1 AND state IN ('queued', 'active')) AS pending_requests, (SELECT count(*)::integer FROM public.auggy_coordination_requests WHERE namespace = $1) AS total_requests, (SELECT count(*)::integer FROM public.auggy_coordination_rate_events WHERE namespace = $1) AS rate_events, (SELECT count(*)::integer FROM public.auggy_coordination_budget_reservations WHERE namespace = $1) AS budget_reservations, (SELECT count(*)::integer FROM public.auggy_coordination_budget_anonymous_events WHERE namespace = $1) AS budget_anonymous_events, (SELECT count(*)::integer FROM public.auggy_coordination_budget_daily WHERE namespace = $1) AS budget_daily, (SELECT count(*)::integer FROM public.auggy_coordination_budget_threshold_intents WHERE namespace = $1) AS budget_threshold_intents FROM public.auggy_coordination_instances WHERE namespace = $1",
         [this.#config.namespace],
       );
       const quiescent =
@@ -2003,7 +2815,12 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         number(activity[0], "pending_requests") === 0 &&
         (!upgradesAdmission ||
           (number(activity[0], "total_requests") === 0 &&
-            number(activity[0], "rate_events") === 0));
+            number(activity[0], "rate_events") === 0)) &&
+        (!upgradesBudgets ||
+          (number(activity[0], "budget_reservations") === 0 &&
+            number(activity[0], "budget_anonymous_events") === 0 &&
+            number(activity[0], "budget_daily") === 0 &&
+            number(activity[0], "budget_threshold_intents") === 0));
       if (quiescent) {
         const upgraded = upgradesAdmission
           ? await tx.unsafe<Row>(
@@ -2020,9 +2837,9 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
                 ratePolicyFingerprint,
               ],
             )
-          : upgradesProtocolOnly
+          : upgradesBudgets
             ? await tx.unsafe<Row>(
-                "UPDATE public.auggy_coordination_namespaces SET protocol_version = $5, protocol_fingerprint = $6, configuration_fingerprint = $7, updated_at = clock_timestamp() WHERE namespace = $1 AND protocol_version = $2 AND protocol_fingerprint = $3 AND configuration_fingerprint = $4 RETURNING namespace",
+                "UPDATE public.auggy_coordination_namespaces SET protocol_version = $5, protocol_fingerprint = $6, configuration_fingerprint = $7, max_budget_reservations = $8, max_budget_anonymous_events = $9, max_budget_peer_days = $10, max_budget_threshold_intents = $11, budget_policy_fingerprint = $12, updated_at = clock_timestamp() WHERE namespace = $1 AND protocol_version = $2 AND protocol_fingerprint = $3 AND configuration_fingerprint = $4 AND max_budget_reservations IS NULL AND max_budget_anonymous_events IS NULL AND max_budget_peer_days IS NULL AND max_budget_threshold_intents IS NULL AND budget_policy_fingerprint IS NULL RETURNING namespace",
                 [
                   this.#config.namespace,
                   predecessor.protocolVersion,
@@ -2031,27 +2848,45 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
                   this.#config.compatibility.protocolVersion,
                   this.#config.compatibility.protocolFingerprint,
                   this.#config.compatibility.configurationFingerprint,
+                  budgetCapacity.reservations,
+                  budgetCapacity.anonymousEvents,
+                  budgetCapacity.peerDays,
+                  budgetCapacity.thresholdIntents,
+                  budgetPolicyFingerprint,
                 ],
               )
-            : await tx.unsafe<Row>(
-                "UPDATE public.auggy_coordination_namespaces SET protocol_version = $5, protocol_fingerprint = $6, configuration_fingerprint = $7, max_history_snapshot_bytes = $8, max_history_messages = $9, max_history_threads = $10, max_cost_markers_per_turn = $11, max_outbox_intents_per_turn = $12, max_outbox_intent_bytes = $13, max_pending_outbox_intents = $14, updated_at = clock_timestamp() WHERE namespace = $1 AND protocol_version = $2 AND protocol_fingerprint = $3 AND configuration_fingerprint = $4 AND max_history_snapshot_bytes IS NULL AND max_history_messages IS NULL AND max_history_threads IS NULL AND max_cost_markers_per_turn IS NULL AND max_outbox_intents_per_turn IS NULL AND max_outbox_intent_bytes IS NULL AND max_pending_outbox_intents IS NULL RETURNING namespace",
-                [
-                  this.#config.namespace,
-                  predecessor.protocolVersion,
-                  predecessor.protocolFingerprint,
-                  predecessor.configurationFingerprint,
-                  this.#config.compatibility.protocolVersion,
-                  this.#config.compatibility.protocolFingerprint,
-                  this.#config.compatibility.configurationFingerprint,
-                  this.#config.turnState.history.maxSnapshotBytes,
-                  this.#config.turnState.history.maxMessages,
-                  this.#config.turnState.history.maxThreads,
-                  this.#config.turnState.maxCostMarkersPerTurn,
-                  this.#config.turnState.outbox.maxIntentsPerTurn,
-                  this.#config.turnState.outbox.maxIntentBytes,
-                  this.#config.turnState.outbox.maxPendingIntents,
-                ],
-              );
+            : upgradesProtocolOnly
+              ? await tx.unsafe<Row>(
+                  "UPDATE public.auggy_coordination_namespaces SET protocol_version = $5, protocol_fingerprint = $6, configuration_fingerprint = $7, updated_at = clock_timestamp() WHERE namespace = $1 AND protocol_version = $2 AND protocol_fingerprint = $3 AND configuration_fingerprint = $4 RETURNING namespace",
+                  [
+                    this.#config.namespace,
+                    predecessor.protocolVersion,
+                    predecessor.protocolFingerprint,
+                    predecessor.configurationFingerprint,
+                    this.#config.compatibility.protocolVersion,
+                    this.#config.compatibility.protocolFingerprint,
+                    this.#config.compatibility.configurationFingerprint,
+                  ],
+                )
+              : await tx.unsafe<Row>(
+                  "UPDATE public.auggy_coordination_namespaces SET protocol_version = $5, protocol_fingerprint = $6, configuration_fingerprint = $7, max_history_snapshot_bytes = $8, max_history_messages = $9, max_history_threads = $10, max_cost_markers_per_turn = $11, max_outbox_intents_per_turn = $12, max_outbox_intent_bytes = $13, max_pending_outbox_intents = $14, updated_at = clock_timestamp() WHERE namespace = $1 AND protocol_version = $2 AND protocol_fingerprint = $3 AND configuration_fingerprint = $4 AND max_history_snapshot_bytes IS NULL AND max_history_messages IS NULL AND max_history_threads IS NULL AND max_cost_markers_per_turn IS NULL AND max_outbox_intents_per_turn IS NULL AND max_outbox_intent_bytes IS NULL AND max_pending_outbox_intents IS NULL RETURNING namespace",
+                  [
+                    this.#config.namespace,
+                    predecessor.protocolVersion,
+                    predecessor.protocolFingerprint,
+                    predecessor.configurationFingerprint,
+                    this.#config.compatibility.protocolVersion,
+                    this.#config.compatibility.protocolFingerprint,
+                    this.#config.compatibility.configurationFingerprint,
+                    this.#config.turnState.history.maxSnapshotBytes,
+                    this.#config.turnState.history.maxMessages,
+                    this.#config.turnState.history.maxThreads,
+                    this.#config.turnState.maxCostMarkersPerTurn,
+                    this.#config.turnState.outbox.maxIntentsPerTurn,
+                    this.#config.turnState.outbox.maxIntentBytes,
+                    this.#config.turnState.outbox.maxPendingIntents,
+                  ],
+                );
         if (upgraded[0]) {
           await tx.unsafe(
             "DELETE FROM public.auggy_coordination_instances WHERE namespace = $1 AND lease_expires_at <= clock_timestamp()",
@@ -2060,10 +2895,17 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           compatibilityMatches = true;
           if (upgradesTurnState) turnStateMatches = true;
           if (upgradesAdmission) admissionMatches = true;
+          if (upgradesBudgets) budgetMatches = true;
         }
       }
     }
-    if (!basePolicyMatches || !turnStateMatches || !admissionMatches || !compatibilityMatches) {
+    if (
+      !basePolicyMatches ||
+      !turnStateMatches ||
+      !admissionMatches ||
+      !budgetMatches ||
+      !compatibilityMatches
+    ) {
       throw new Error("coordinator namespace policy mismatch");
     }
     return stored;
@@ -2381,6 +3223,27 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
     }
   }
 
+  async verifyBudgetEvidence(tx: SqlTransaction): Promise<void> {
+    const policies = normalizedBudgets(this.#config).policies;
+    const rows = await tx.unsafe<Row>(
+      "SELECT policy_id, (SELECT count(*)::integer FROM public.auggy_coordination_budget_reservations reservation WHERE reservation.namespace = $1 AND reservation.policy_id = policy.policy_id) AS reservations, (SELECT count(*)::integer FROM public.auggy_coordination_budget_anonymous_events event WHERE event.namespace = $1 AND event.policy_id = policy.policy_id) AS anonymous_events, (SELECT count(*)::integer FROM public.auggy_coordination_budget_daily daily WHERE daily.namespace = $1 AND daily.policy_id = policy.policy_id AND daily.subject_kind = 'peer') AS peer_days, (SELECT count(*)::integer FROM public.auggy_coordination_budget_threshold_intents intent WHERE intent.namespace = $1 AND intent.policy_id = policy.policy_id) AS threshold_intents FROM (SELECT DISTINCT policy_id FROM public.auggy_coordination_budget_reservations WHERE namespace = $1 UNION SELECT DISTINCT policy_id FROM public.auggy_coordination_budget_anonymous_events WHERE namespace = $1 UNION SELECT DISTINCT policy_id FROM public.auggy_coordination_budget_daily WHERE namespace = $1 UNION SELECT DISTINCT policy_id FROM public.auggy_coordination_budget_threshold_intents WHERE namespace = $1) policy ORDER BY policy_id",
+      [this.#config.namespace],
+    );
+    const expected = new Map(policies.map((policy) => [policy.id, policy]));
+    for (const row of rows) {
+      const policy = expected.get(text(row, "policy_id"));
+      if (
+        !policy ||
+        number(row, "reservations") > policy.maxReservations ||
+        number(row, "anonymous_events") > policy.maxAnonymousEvents ||
+        number(row, "peer_days") > policy.maxPeerDays ||
+        number(row, "threshold_intents") > policy.maxThresholdIntents
+      ) {
+        throw new Error("coordinator budget evidence exceeds immutable policy");
+      }
+    }
+  }
+
   async reserveRateEventSlots(
     tx: SqlTransaction,
     reservations: readonly ResolvedAdmissionReservation[],
@@ -2424,11 +3287,34 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
 
   async #expireActive(tx: SqlTransaction): Promise<void> {
     const expired = await tx.unsafe<Row>(
-      "UPDATE public.auggy_coordination_requests SET state = CASE WHEN execution_started_at IS NULL THEN 'queued' ELSE 'outcome_unknown' END, queue_owner_instance = CASE WHEN execution_started_at IS NULL THEN owner_instance ELSE NULL END, queue_owner_session = CASE WHEN execution_started_at IS NULL THEN owner_session ELSE NULL END, queue_generation = CASE WHEN execution_started_at IS NULL THEN queue_generation + 1 ELSE queue_generation END, queue_expires_at = CASE WHEN execution_started_at IS NULL THEN clock_timestamp() ELSE NULL END, fence = CASE WHEN execution_started_at IS NULL THEN NULL ELSE fence END, owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, terminal_at = CASE WHEN execution_started_at IS NULL THEN NULL ELSE clock_timestamp() END, updated_at = clock_timestamp() WHERE namespace = $1 AND state = 'active' AND lease_expires_at <= clock_timestamp() RETURNING request_id, thread_id, fence, execution_started_at",
+      "UPDATE public.auggy_coordination_requests SET state = CASE WHEN execution_started_at IS NULL THEN 'queued' ELSE 'outcome_unknown' END, queue_owner_instance = CASE WHEN execution_started_at IS NULL THEN owner_instance ELSE NULL END, queue_owner_session = CASE WHEN execution_started_at IS NULL THEN owner_session ELSE NULL END, queue_generation = CASE WHEN execution_started_at IS NULL THEN queue_generation + 1 ELSE queue_generation END, queue_expires_at = CASE WHEN execution_started_at IS NULL THEN clock_timestamp() ELSE NULL END, fence = CASE WHEN execution_started_at IS NULL THEN NULL ELSE fence END, owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, terminal_at = CASE WHEN execution_started_at IS NULL THEN NULL ELSE clock_timestamp() END, updated_at = clock_timestamp() WHERE namespace = $1 AND state = 'active' AND lease_expires_at <= clock_timestamp() RETURNING request_id, thread_id, source_id, fence, execution_started_at, queue_generation",
       [this.#config.namespace],
     );
     for (const row of expired) {
-      if (row.execution_started_at === null) continue;
+      if (row.execution_started_at === null) {
+        await this.releaseBudgetReservationsForRequest(
+          tx,
+          text(row, "request_id"),
+          number(row, "queue_generation") - 1,
+        );
+        continue;
+      }
+      const lease: DistributedTurnLease = {
+        namespace: this.#config.namespace,
+        requestId: text(row, "request_id"),
+        threadId: text(row, "thread_id"),
+        sourceId: text(row, "source_id"),
+        instanceId: this.#config.instanceId,
+        attempt: number(row, "queue_generation"),
+        fence: number(row, "fence"),
+        expiresAt: 0,
+      };
+      await this.settleBudgetAccounting(
+        tx,
+        lease,
+        missingUsageAccountingMarkers(this.#config.namespace, lease),
+        "outcome_unknown",
+      );
       await this.recordQuarantine(
         tx,
         text(row, "thread_id"),

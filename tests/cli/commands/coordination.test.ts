@@ -117,6 +117,7 @@ describe("runCoordinationMigrate", () => {
       "20260726_05_coordination_atomic_turn_state",
       "20260726_06_coordination_atomic_admission",
       "20260727_07_coordination_visitor_authority",
+      "20260727_08_coordination_budget_authority",
     ]);
     expect(JSON.stringify(result)).not.toContain(SENTINEL_URL);
   });

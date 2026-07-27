@@ -183,6 +183,54 @@ function coordinator(
   });
 }
 
+function budgetCoordinator(
+  namespace: string,
+  instanceId: string,
+  policy: Partial<NonNullable<PostgresCoordinatorOptions["budgets"]>["policies"][number]> = {},
+  compatibility: Partial<DistributedCoordinatorCompatibility> = {},
+) {
+  return new PostgresDistributedTurnCoordinator({
+    url: url!,
+    namespace,
+    instanceId,
+    maxConcurrent: 2,
+    maxQueued: 4,
+    maxQueuedPerThread: 2,
+    leaseMs: 5_000,
+    ...coordinatorPolicy,
+    budgets: {
+      policies: [
+        {
+          id: "support",
+          maxReservations: 10_100,
+          reservationRetentionMs: 604_800_000,
+          maxAnonymousEvents: 100,
+          maxPeerDays: 100,
+          maxThresholdIntents: 21,
+          aggregateRetentionDays: 7,
+          caps: { public: { recognized: { maxTurnsPerDay: 10 } } },
+          ...policy,
+        },
+      ],
+    },
+    compatibility: { ...coordinatorPolicy.compatibility, ...compatibility },
+  });
+}
+
+function reserveRecognizedBudget(
+  owner: PostgresDistributedTurnCoordinator,
+  lease: Parameters<PostgresDistributedTurnCoordinator["reserveBudget"]>[0],
+  peerId: string,
+) {
+  return owner.reserveBudget(lease, {
+    policyId: "support",
+    peerId,
+    threadId: lease.threadId,
+    trustLevel: "public",
+    publicSubstate: "recognized",
+  });
+}
+
 function isolatedMigrationSchema(sql: SQL) {
   const schema = `coordination_migration_${crypto.randomUUID().replaceAll("-", "")}`;
   if (!/^coordination_migration_[a-f0-9]{32}$/.test(schema)) {
@@ -206,6 +254,18 @@ async function removeNamespace(value: string): Promise<void> {
   const sql = new SQL(url!);
   try {
     await sql.begin(async (tx) => {
+      await tx.unsafe(
+        "DELETE FROM auggy_coordination_budget_threshold_intents WHERE namespace = $1",
+        [value],
+      );
+      await tx.unsafe(
+        "DELETE FROM auggy_coordination_budget_anonymous_events WHERE namespace = $1",
+        [value],
+      );
+      await tx.unsafe("DELETE FROM auggy_coordination_budget_reservations WHERE namespace = $1", [
+        value,
+      ]);
+      await tx.unsafe("DELETE FROM auggy_coordination_budget_daily WHERE namespace = $1", [value]);
       await tx.unsafe("DELETE FROM auggy_coordination_events WHERE namespace = $1", [value]);
       await tx.unsafe("DELETE FROM auggy_coordination_rate_events WHERE namespace = $1", [value]);
       await tx.unsafe("DELETE FROM auggy_coordination_rate_counters WHERE namespace = $1", [value]);
@@ -2853,4 +2913,661 @@ describe("PostgreSQL distributed turn coordinator", () => {
       }
     },
   );
+
+  postgresTest("atomically reserves one peer-day turn across two replicas", async () => {
+    const scope = namespace();
+    const sharedOptions = {
+      url: url!,
+      namespace: scope,
+      maxConcurrent: 2,
+      maxQueued: 4,
+      maxQueuedPerThread: 2,
+      leaseMs: 5_000,
+      ...coordinatorPolicy,
+      budgets: {
+        policies: [
+          {
+            id: "support",
+            maxReservations: 10_100,
+            reservationRetentionMs: 604_800_000,
+            maxAnonymousEvents: 100,
+            maxPeerDays: 100,
+            maxThresholdIntents: 21,
+            aggregateRetentionDays: 7,
+            caps: {
+              public: {
+                recognized: { maxTurnsPerDay: 1 },
+              },
+            },
+          },
+        ],
+      },
+    } as unknown as Omit<PostgresCoordinatorOptions, "instanceId">;
+    const first = new PostgresDistributedTurnCoordinator({
+      ...sharedOptions,
+      instanceId: "budget-race-first",
+    });
+    const second = new PostgresDistributedTurnCoordinator({
+      ...sharedOptions,
+      instanceId: "budget-race-second",
+    });
+    try {
+      await first.migrate();
+      expect(await first.register()).toEqual({ status: "registered" });
+      expect(await second.register()).toEqual({ status: "registered" });
+
+      const firstRequest = request("budget-race-first-request", "budget-race-first-thread");
+      const secondRequest = request("budget-race-second-request", "budget-race-second-thread");
+      expect(await first.admit(firstRequest)).toEqual({ status: "admitted", attempt: 1 });
+      expect(await second.admit(secondRequest)).toEqual({ status: "admitted", attempt: 1 });
+      const firstClaim = await first.claim(firstRequest);
+      const secondClaim = await second.claim(secondRequest);
+      if (firstClaim.status !== "acquired" || secondClaim.status !== "acquired") {
+        throw new Error("expected both budget race requests to be claimed");
+      }
+
+      const budgetInput = {
+        policyId: "support",
+        peerId: "visitor:shared-customer",
+        trustLevel: "public" as const,
+        publicSubstate: "recognized" as const,
+      };
+      const [firstReservation, secondReservation] = await Promise.all([
+        first.reserveBudget(firstClaim.lease, {
+          ...budgetInput,
+          threadId: firstClaim.lease.threadId,
+        }),
+        second.reserveBudget(secondClaim.lease, {
+          ...budgetInput,
+          threadId: secondClaim.lease.threadId,
+        }),
+      ]);
+
+      expect(
+        [firstReservation, secondReservation].filter((result) => result.status === "reserved"),
+      ).toHaveLength(1);
+      expect(
+        [firstReservation, secondReservation].filter(
+          (result) => result.status === "rejected" && result.reason === "daily-turn-cap",
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await first.close();
+      await second.close();
+    }
+  });
+
+  postgresTest("releases zero-valued peer-day budget capacity", async () => {
+    const scope = namespace();
+    const owner = budgetCoordinator(scope, "budget-peer-capacity", {
+      maxPeerDays: 1,
+      caps: { public: { recognized: { maxTurnsPerDay: 10 } } },
+    });
+    try {
+      await owner.migrate();
+      expect(await owner.register()).toEqual({ status: "registered" });
+      const first = request("budget-peer-first", "budget-peer-first");
+      const second = request("budget-peer-second", "budget-peer-second");
+      expect(await owner.admit(first)).toEqual({ status: "admitted", attempt: 1 });
+      expect(await owner.admit(second)).toEqual({ status: "admitted", attempt: 1 });
+      const firstClaim = await owner.claim(first);
+      const secondClaim = await owner.claim(second);
+      if (firstClaim.status !== "acquired" || secondClaim.status !== "acquired") {
+        throw new Error("expected peer capacity leases");
+      }
+      expect(
+        await reserveRecognizedBudget(owner, firstClaim.lease, "visitor:peer-first"),
+      ).toMatchObject({ status: "reserved" });
+      expect(await owner.releaseBudget(firstClaim.lease, "support")).toEqual({ status: "ok" });
+      expect(
+        await reserveRecognizedBudget(owner, secondClaim.lease, "visitor:peer-second"),
+      ).toMatchObject({ status: "reserved" });
+    } finally {
+      await owner.close();
+    }
+  });
+
+  postgresTest("settles generic failures and reclaims recovered budget evidence", async () => {
+    const scope = namespace();
+    const owner = budgetCoordinator(scope, "budget-recovered-incident");
+    const sql = new SQL(url!);
+    try {
+      await owner.migrate();
+      expect(await owner.register()).toEqual({ status: "registered" });
+      const incident = request("budget-recovered-incident", "budget-recovered-incident");
+      expect(await owner.admit(incident)).toEqual({ status: "admitted", attempt: 1 });
+      const claimed = await owner.claim(incident);
+      if (claimed.status !== "acquired") throw new Error("expected incident lease");
+      expect(
+        await reserveRecognizedBudget(owner, claimed.lease, "visitor:recovered-incident"),
+      ).toMatchObject({ status: "reserved" });
+      expect(await owner.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+      expect(await owner.fail(claimed.lease)).toEqual({ status: "outcome-unknown" });
+
+      const settled = await sql.unsafe<Array<{ state: string; unpriced_turns: number }>>(
+        "SELECT r.state, max(d.unpriced_turns)::integer AS unpriced_turns FROM auggy_coordination_budget_reservations r JOIN auggy_coordination_budget_daily d ON d.namespace = r.namespace AND d.policy_id = r.policy_id AND d.admission_day = r.admission_day WHERE r.namespace = $1 AND r.request_id = $2 GROUP BY r.state",
+        [scope, incident.requestId],
+      );
+      expect(settled).toEqual([{ state: "outcome_unknown", unpriced_turns: 1 }]);
+      expect(
+        await owner.recover(
+          claimed.lease.threadId,
+          claimed.lease.fence,
+          "operator-reconciled-budget",
+        ),
+      ).toEqual({ status: "ok" });
+      await sql.unsafe(
+        "UPDATE auggy_coordination_budget_reservations SET settled_at = clock_timestamp() - interval '8 days' WHERE namespace = $1 AND request_id = $2",
+        [scope, incident.requestId],
+      );
+      expect(await owner.prune(10)).toMatchObject({ status: "ok" });
+      const afterIdlePrune = await sql.unsafe<Array<{ count: number }>>(
+        "SELECT count(*)::integer AS count FROM auggy_coordination_budget_reservations WHERE namespace = $1 AND request_id = $2",
+        [scope, incident.requestId],
+      );
+      expect(afterIdlePrune).toEqual([{ count: 0 }]);
+
+      const next = request("budget-after-recovery", "budget-after-recovery");
+      expect(await owner.admit(next)).toEqual({ status: "admitted", attempt: 1 });
+      const nextClaim = await owner.claim(next);
+      if (nextClaim.status !== "acquired") throw new Error("expected next budget lease");
+      expect(
+        await reserveRecognizedBudget(owner, nextClaim.lease, "visitor:after-recovery"),
+      ).toMatchObject({ status: "reserved" });
+      const retained = await sql.unsafe<Array<{ count: number }>>(
+        "SELECT count(*)::integer AS count FROM auggy_coordination_budget_reservations WHERE namespace = $1 AND request_id = $2",
+        [scope, incident.requestId],
+      );
+      expect(retained).toEqual([{ count: 0 }]);
+    } finally {
+      await sql.close();
+      await owner.close();
+    }
+  });
+
+  postgresTest(
+    "retains prior-day aggregates and reserves threshold capacity across days",
+    async () => {
+      const scope = namespace();
+      const owner = budgetCoordinator(scope, "budget-midnight", {
+        aggregateRetentionDays: 1,
+        dailyBudgetUsd: 0.000000001,
+        notifications: { destination: "operator", thresholds: [1] },
+        maxThresholdIntents: 1,
+        caps: { public: { recognized: { maxTurnsPerDay: 10 } } },
+      });
+      const sql = new SQL(url!);
+      try {
+        await owner.migrate();
+        expect(await owner.register()).toEqual({ status: "registered" });
+        const prior = request("budget-prior-day", "budget-prior-day");
+        const current = request("budget-current-day", "budget-current-day");
+        expect(await owner.admit(prior)).toEqual({ status: "admitted", attempt: 1 });
+        expect(await owner.admit(current)).toEqual({ status: "admitted", attempt: 1 });
+        const priorClaim = await owner.claim(prior);
+        const currentClaim = await owner.claim(current);
+        if (priorClaim.status !== "acquired" || currentClaim.status !== "acquired") {
+          throw new Error("expected cross-day budget leases");
+        }
+        expect(
+          await reserveRecognizedBudget(owner, priorClaim.lease, "visitor:prior-day"),
+        ).toMatchObject({ status: "reserved" });
+        await sql.unsafe(
+          "UPDATE auggy_coordination_budget_reservations SET admission_day = current_date - 1 WHERE namespace = $1 AND request_id = $2",
+          [scope, prior.requestId],
+        );
+        await sql.unsafe(
+          "UPDATE auggy_coordination_budget_daily SET admission_day = current_date - 1 WHERE namespace = $1",
+          [scope],
+        );
+        expect(
+          await reserveRecognizedBudget(owner, currentClaim.lease, "visitor:current-day"),
+        ).toEqual({ status: "rejected", reason: "budget-capacity" });
+        const terminal = {
+          ...(await atomicCheckpoint(owner, priorClaim.lease)),
+          costMarkers: [
+            {
+              version: 1 as const,
+              operationId: `auggy-op-v1-${"8".repeat(64)}`,
+              priced: true as const,
+              costUsd: 0.000000001,
+            },
+          ],
+        };
+        expect(await owner.commitTurn(priorClaim.lease, terminal)).toEqual({ status: "ok" });
+        const evidence = await sql.unsafe<Array<{ cost_usd: string }>>(
+          "SELECT cost_usd::text FROM auggy_coordination_budget_daily WHERE namespace = $1 AND policy_id = 'support' AND subject_kind = 'global' AND admission_day = current_date - 1",
+          [scope],
+        );
+        expect(evidence).toEqual([{ cost_usd: "0.000000001000" }]);
+      } finally {
+        await sql.close();
+        await owner.close();
+      }
+    },
+  );
+
+  postgresTest("enforces nano-USD cost precision without rounding a cap open", async () => {
+    const scope = namespace();
+    const owner = budgetCoordinator(scope, "budget-nano-cost", {
+      dailyBudgetUsd: 0.000000001,
+      caps: { public: { recognized: { maxTurnsPerDay: 10 } } },
+    });
+    try {
+      await owner.migrate();
+      expect(await owner.register()).toEqual({ status: "registered" });
+      const first = request("budget-nano-first", "budget-nano-first");
+      expect(await owner.admit(first)).toEqual({ status: "admitted", attempt: 1 });
+      const firstClaim = await owner.claim(first);
+      if (firstClaim.status !== "acquired") throw new Error("expected nano-cost lease");
+      expect(
+        await reserveRecognizedBudget(owner, firstClaim.lease, "visitor:nano-first"),
+      ).toMatchObject({ status: "reserved" });
+      const terminal = {
+        ...(await atomicCheckpoint(owner, firstClaim.lease)),
+        costMarkers: [
+          {
+            version: 1 as const,
+            operationId: `auggy-op-v1-${"7".repeat(64)}`,
+            priced: true as const,
+            costUsd: 0.000000001,
+          },
+        ],
+      };
+      expect(await owner.commitTurn(firstClaim.lease, terminal)).toEqual({ status: "ok" });
+
+      const second = request("budget-nano-second", "budget-nano-second");
+      expect(await owner.admit(second)).toEqual({ status: "admitted", attempt: 1 });
+      const secondClaim = await owner.claim(second);
+      if (secondClaim.status !== "acquired") throw new Error("expected second nano-cost lease");
+      expect(
+        await reserveRecognizedBudget(owner, secondClaim.lease, "visitor:nano-second"),
+      ).toEqual({ status: "rejected", reason: "daily-global-usd-cap" });
+    } finally {
+      await owner.close();
+    }
+  });
+
+  postgresTest("quarantines duplicate cost identity without charging it twice", async () => {
+    const scope = namespace();
+    const owner = budgetCoordinator(scope, "budget-duplicate-cost", {
+      caps: { public: { recognized: { maxTurnsPerDay: 10 } } },
+    });
+    const sql = new SQL(url!);
+    try {
+      await owner.migrate();
+      expect(await owner.register()).toEqual({ status: "registered" });
+      const first = request("budget-cost-owner", "budget-cost-owner");
+      const duplicate = request("budget-cost-duplicate", "budget-cost-duplicate");
+      expect(await owner.admit(first)).toEqual({ status: "admitted", attempt: 1 });
+      expect(await owner.admit(duplicate)).toEqual({ status: "admitted", attempt: 1 });
+      const firstClaim = await owner.claim(first);
+      const duplicateClaim = await owner.claim(duplicate);
+      if (firstClaim.status !== "acquired" || duplicateClaim.status !== "acquired") {
+        throw new Error("expected duplicate cost leases");
+      }
+      expect(
+        await reserveRecognizedBudget(owner, firstClaim.lease, "visitor:cost-owner"),
+      ).toMatchObject({ status: "reserved" });
+      expect(
+        await reserveRecognizedBudget(owner, duplicateClaim.lease, "visitor:cost-duplicate"),
+      ).toMatchObject({ status: "reserved" });
+      const marker = {
+        version: 1 as const,
+        operationId: `auggy-op-v1-${"6".repeat(64)}`,
+        priced: true as const,
+        costUsd: 0.1,
+      };
+      const uniqueMarker = {
+        version: 1 as const,
+        operationId: `auggy-op-v1-${"5".repeat(64)}`,
+        priced: true as const,
+        costUsd: 0.2,
+      };
+      expect(
+        await owner.commitTurn(firstClaim.lease, {
+          ...(await atomicCheckpoint(owner, firstClaim.lease)),
+          costMarkers: [marker],
+        }),
+      ).toEqual({ status: "ok" });
+      expect(
+        await owner.commitTurn(duplicateClaim.lease, {
+          ...(await atomicCheckpoint(owner, duplicateClaim.lease)),
+          costMarkers: [marker, uniqueMarker],
+        }),
+      ).toEqual({ status: "outcome-unknown" });
+
+      const evidence = await sql.unsafe<
+        Array<{
+          cost_markers: number;
+          global_cost: string;
+          global_unpriced: number;
+          reservation_state: string;
+        }>
+      >(
+        "SELECT (SELECT count(*)::integer FROM auggy_coordination_cost_markers WHERE namespace = $1) AS cost_markers, cost_usd::text AS global_cost, unpriced_turns::integer AS global_unpriced, (SELECT state FROM auggy_coordination_budget_reservations WHERE namespace = $1 AND request_id = $2) AS reservation_state FROM auggy_coordination_budget_daily WHERE namespace = $1 AND policy_id = 'support' AND subject_kind = 'global'",
+        [scope, duplicate.requestId],
+      );
+      expect(evidence).toEqual([
+        {
+          cost_markers: 2,
+          global_cost: "0.300000000000",
+          global_unpriced: 1,
+          reservation_state: "outcome_unknown",
+        },
+      ]);
+    } finally {
+      await sql.close();
+      await owner.close();
+    }
+  });
+
+  postgresTest(
+    "binds replay, release, and outcome-unknown cost to the exact unstarted lease",
+    async () => {
+      const scope = namespace();
+      const owner = budgetCoordinator(scope, "budget-lifecycle");
+      const sql = new SQL(url!);
+      try {
+        await owner.migrate();
+        expect(await owner.register()).toEqual({ status: "registered" });
+        const turn = request("budget-lifecycle-request", "budget-lifecycle-thread");
+        expect(await owner.admit(turn)).toEqual({ status: "admitted", attempt: 1 });
+        const claimed = await owner.claim(turn);
+        if (claimed.status !== "acquired") throw new Error("expected budget lease");
+        const reservation = {
+          policyId: "support",
+          peerId: "visitor:budget-owner",
+          threadId: claimed.lease.threadId,
+          trustLevel: "public" as const,
+          publicSubstate: "recognized" as const,
+        };
+
+        const reserved = await owner.reserveBudget(claimed.lease, reservation);
+        expect(reserved.status).toBe("reserved");
+        if (reserved.status !== "reserved") throw new Error("expected budget reservation");
+        const databaseDay = await sql.unsafe<Array<{ day: string }>>(
+          "SELECT (clock_timestamp() AT TIME ZONE 'UTC')::date::text AS day",
+        );
+        expect(reserved.admissionDay).toBe(databaseDay[0]!.day);
+        expect(await owner.reserveBudget(claimed.lease, reservation)).toMatchObject({
+          status: "replayed",
+          threadTurns: 1,
+          peerTurns: 1,
+        });
+        expect(
+          await owner.reserveBudget(claimed.lease, {
+            ...reservation,
+            peerId: "visitor:changed-owner",
+          }),
+        ).toEqual({ status: "conflict" });
+
+        expect(await owner.releaseBudget(claimed.lease, "support")).toEqual({ status: "ok" });
+        expect(await owner.reserveBudget(claimed.lease, reservation)).toMatchObject({
+          status: "reserved",
+          threadTurns: 1,
+          peerTurns: 1,
+        });
+        expect(await owner.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+        expect(await owner.releaseBudget(claimed.lease, "support")).toEqual({ status: "stale" });
+
+        const marker = {
+          version: 1 as const,
+          operationId: `auggy-op-v1-${"1".repeat(64)}`,
+          priced: true as const,
+          costUsd: 0.25,
+        };
+        expect(
+          await owner.settleOutcomeUnknown(claimed.lease, "execution-failed-after-start", [marker]),
+        ).toEqual({ status: "outcome-unknown" });
+        expect(
+          await owner.settleOutcomeUnknown(claimed.lease, "execution-failed-after-start", [marker]),
+        ).toEqual({ status: "stale" });
+
+        const evidence = await sql.unsafe<
+          Array<{
+            cost_markers: number;
+            global_cost: string;
+            peer_cost: string;
+            reservation_state: string;
+          }>
+        >(
+          "SELECT (SELECT count(*)::integer FROM auggy_coordination_cost_markers WHERE namespace = $1 AND request_id = $2) AS cost_markers, (max(cost_usd) FILTER (WHERE subject_kind = 'global'))::text AS global_cost, (max(cost_usd) FILTER (WHERE subject_kind = 'peer'))::text AS peer_cost, (SELECT state FROM auggy_coordination_budget_reservations WHERE namespace = $1 AND policy_id = 'support' AND request_id = $2) AS reservation_state FROM auggy_coordination_budget_daily WHERE namespace = $1 AND policy_id = 'support'",
+          [scope, turn.requestId],
+        );
+        expect(evidence).toEqual([
+          {
+            cost_markers: 1,
+            global_cost: "0.250000000000",
+            peer_cost: "0.250000000000",
+            reservation_state: "outcome_unknown",
+          },
+        ]);
+      } finally {
+        await sql.close();
+        await owner.close();
+      }
+    },
+  );
+
+  postgresTest("commits cost once and stages only the highest crossed threshold", async () => {
+    const scope = namespace();
+    const owner = budgetCoordinator(scope, "budget-commit", {
+      dailyBudgetUsd: 0.000000008,
+      notifications: { destination: "operator", thresholds: [0.5, 0.875, 1] },
+    });
+    const sql = new SQL(url!);
+    try {
+      await owner.migrate();
+      expect(await owner.register()).toEqual({ status: "registered" });
+      const turn = request("budget-commit-request", "budget-commit-thread");
+      expect(await owner.admit(turn)).toEqual({ status: "admitted", attempt: 1 });
+      const claimed = await owner.claim(turn);
+      if (claimed.status !== "acquired") throw new Error("expected budget lease");
+      expect(
+        await owner.reserveBudget(claimed.lease, {
+          policyId: "support",
+          peerId: "visitor:commit-owner",
+          threadId: claimed.lease.threadId,
+          trustLevel: "public",
+          publicSubstate: "recognized",
+        }),
+      ).toMatchObject({ status: "reserved" });
+      const binding = peerBinding({ publicSubstate: "recognized" });
+      expect(await owner.loadHistory(claimed.lease, binding)).toMatchObject({
+        status: "ok",
+        revision: 0,
+      });
+      expect(await owner.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+      const committed = await owner.commitTurn(
+        claimed.lease,
+        checkpoint(claimed.lease.threadId, binding, 0, {
+          costMarkers: [
+            {
+              version: 1,
+              operationId: `auggy-op-v1-${"2".repeat(64)}`,
+              priced: true,
+              costUsd: 0.000000007,
+            },
+            {
+              version: 1,
+              operationId: `auggy-op-v1-${"4".repeat(64)}`,
+              priced: false,
+              reason: "missing-pricing",
+            },
+          ],
+        }),
+      );
+      expect(committed).toEqual({ status: "ok" });
+      expect(
+        await owner.commitTurn(claimed.lease, checkpoint(claimed.lease.threadId, binding)),
+      ).toEqual({ status: "stale" });
+
+      const intents = await sql.unsafe<Array<{ state: string; threshold_ppm: number }>>(
+        "SELECT state, threshold_ppm FROM auggy_coordination_budget_threshold_intents WHERE namespace = $1 ORDER BY threshold_ppm",
+        [scope],
+      );
+      expect(intents).toEqual([
+        { state: "suppressed", threshold_ppm: 500_000 },
+        { state: "pending", threshold_ppm: 875_000 },
+      ]);
+      const evidence = await sql.unsafe<
+        Array<{
+          cost_markers: number;
+          global_cost: string;
+          global_unpriced: number;
+          reservation_state: string;
+        }>
+      >(
+        "SELECT (SELECT count(*)::integer FROM auggy_coordination_cost_markers WHERE namespace = $1) AS cost_markers, (max(cost_usd) FILTER (WHERE subject_kind = 'global'))::text AS global_cost, (max(unpriced_turns) FILTER (WHERE subject_kind = 'global'))::integer AS global_unpriced, (SELECT state FROM auggy_coordination_budget_reservations WHERE namespace = $1 AND request_id = $2) AS reservation_state FROM auggy_coordination_budget_daily WHERE namespace = $1",
+        [scope, turn.requestId],
+      );
+      expect(evidence).toEqual([
+        {
+          cost_markers: 2,
+          global_cost: "0.000000007000",
+          global_unpriced: 1,
+          reservation_state: "committed",
+        },
+      ]);
+      await sql.unsafe(
+        "UPDATE auggy_coordination_requests SET terminal_at = clock_timestamp() - interval '8 days' WHERE namespace = $1 AND request_id = $2",
+        [scope, turn.requestId],
+      );
+      expect(await owner.prune(10)).toMatchObject({ status: "ok", requests: 1 });
+      const retainedBudgetEvidence = await sql.unsafe<
+        Array<{ requests: number; reservations: number }>
+      >(
+        "SELECT (SELECT count(*)::integer FROM auggy_coordination_requests WHERE namespace = $1 AND request_id = $2) AS requests, (SELECT count(*)::integer FROM auggy_coordination_budget_reservations WHERE namespace = $1 AND request_id = $2) AS reservations",
+        [scope, turn.requestId],
+      );
+      expect(retainedBudgetEvidence).toEqual([{ requests: 0, reservations: 1 }]);
+    } finally {
+      await sql.close();
+      await owner.close();
+    }
+  });
+
+  postgresTest("accounts known cost when atomic history commit becomes ambiguous", async () => {
+    const scope = namespace();
+    const owner = budgetCoordinator(scope, "budget-ambiguous-commit");
+    const sql = new SQL(url!);
+    try {
+      await owner.migrate();
+      expect(await owner.register()).toEqual({ status: "registered" });
+      const turn = request("budget-ambiguous-request", "budget-ambiguous-thread");
+      expect(await owner.admit(turn)).toEqual({ status: "admitted", attempt: 1 });
+      const claimed = await owner.claim(turn);
+      if (claimed.status !== "acquired") throw new Error("expected budget lease");
+      expect(
+        await owner.reserveBudget(claimed.lease, {
+          policyId: "support",
+          peerId: "visitor:ambiguous-owner",
+          threadId: claimed.lease.threadId,
+          trustLevel: "public",
+          publicSubstate: "recognized",
+        }),
+      ).toMatchObject({ status: "reserved" });
+      const loadedBinding = peerBinding({ publicSubstate: "recognized" });
+      expect(await owner.loadHistory(claimed.lease, loadedBinding)).toMatchObject({
+        status: "ok",
+        revision: 0,
+      });
+      expect(await owner.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+      const changedBinding = peerBinding({
+        bindingHash: "a".repeat(64),
+        peerIdHash: "b".repeat(64),
+        publicSubstate: "recognized",
+      });
+      expect(
+        await owner.commitTurn(
+          claimed.lease,
+          checkpoint(claimed.lease.threadId, changedBinding, 0, {
+            costMarkers: [
+              {
+                version: 1,
+                operationId: `auggy-op-v1-${"3".repeat(64)}`,
+                priced: true,
+                costUsd: 0.4,
+              },
+            ],
+          }),
+        ),
+      ).toEqual({ status: "outcome-unknown" });
+
+      const evidence = await sql.unsafe<
+        Array<{ cost_markers: number; global_cost: string; reservation_state: string }>
+      >(
+        "SELECT (SELECT count(*)::integer FROM auggy_coordination_cost_markers WHERE namespace = $1 AND request_id = $2) AS cost_markers, (max(cost_usd) FILTER (WHERE subject_kind = 'global'))::text AS global_cost, (SELECT state FROM auggy_coordination_budget_reservations WHERE namespace = $1 AND request_id = $2) AS reservation_state FROM auggy_coordination_budget_daily WHERE namespace = $1",
+        [scope, turn.requestId],
+      );
+      expect(evidence).toEqual([
+        {
+          cost_markers: 1,
+          global_cost: "0.400000000000",
+          reservation_state: "outcome_unknown",
+        },
+      ]);
+    } finally {
+      await sql.close();
+      await owner.close();
+    }
+  });
+
+  postgresTest("fails closed on distributed budget policy drift", async () => {
+    const scope = namespace();
+    const established = budgetCoordinator(scope, "budget-policy-established");
+    const drifted = budgetCoordinator(scope, "budget-policy-drifted", {
+      caps: { public: { recognized: { maxTurnsPerDay: 11 } } },
+    });
+    try {
+      await established.migrate();
+      expect(await established.register()).toEqual({ status: "registered" });
+      expect(await drifted.register()).toEqual({ status: "unavailable" });
+      expect(await drifted.admit(request("budget-policy-drift-request"))).toEqual({
+        status: "unavailable",
+      });
+    } finally {
+      await drifted.close();
+      await established.close();
+    }
+  });
+
+  postgresTest("upgrades a quiescent v7 namespace to an immutable v8 budget policy", async () => {
+    const scope = namespace();
+    const predecessor = {
+      protocolVersion: 7,
+      protocolFingerprint: "7".repeat(64),
+      configurationFingerprint: "6".repeat(64),
+    };
+    const successor = {
+      protocolVersion: 8,
+      protocolFingerprint: "8".repeat(64),
+      configurationFingerprint: "9".repeat(64),
+      upgradeFrom: predecessor,
+    };
+    const old = coordinator(scope, "budget-v7", 5_000, 2, 4, predecessor);
+    const current = budgetCoordinator(scope, "budget-v8", {}, successor);
+    const sql = new SQL(url!);
+    try {
+      await old.migrate();
+      expect(await old.register()).toEqual({ status: "registered" });
+      expect(await current.register()).toEqual({ status: "unavailable" });
+      await old.close();
+      await expireInstanceLeases(scope);
+      expect(await current.register()).toEqual({ status: "registered" });
+      const rows = await sql.unsafe<
+        Array<{ budget_policy_fingerprint: string; protocol_version: number }>
+      >(
+        "SELECT budget_policy_fingerprint, protocol_version FROM auggy_coordination_namespaces WHERE namespace = $1",
+        [scope],
+      );
+      expect(rows[0]?.budget_policy_fingerprint).toMatch(/^[0-9a-f]{64}$/);
+      expect(rows[0]?.protocol_version).toBe(8);
+    } finally {
+      await sql.close();
+      await current.close();
+      await old.close();
+    }
+  });
 });
