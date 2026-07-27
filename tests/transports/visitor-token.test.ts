@@ -57,10 +57,14 @@ describe("visitor-token", () => {
       "vis_existing",
       "anon_session_prior",
       "anon_session_prior",
+      "web_thread_exact",
+      7,
     );
     expect(await verifyVisitorToken(key, promoted.token)).toEqual(promoted.payload);
     expect(promoted.payload.priorPeerId).toBe("anon_session_prior");
     expect(promoted.payload.priorThreadScopeId).toBe("anon_session_prior");
+    expect(promoted.payload.priorThreadId).toBe("web_thread_exact");
+    expect(promoted.payload.identityVersion).toBe(7);
   });
 
   it("verifyVisitorToken returns null for an expired token", async () => {

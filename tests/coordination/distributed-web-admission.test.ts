@@ -1,17 +1,21 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { SQL } from "bun";
 import { defineAgent } from "../../src/agent";
 import { createExternalAuthAssertion } from "../../src/auth/external-auth";
 import {
   createDistributedRootTurnRuntime,
   createInMemoryDistributedTurnCoordinator,
+  PostgresVisitorIdentityAuthority,
   resetInMemoryDistributedCoordination,
 } from "../../src/coordination";
+import type { VisitorIdentityAuthority } from "../../src/coordination/visitor-identity-authority";
 import {
   attachDistributedRuntimeForTest,
   type DistributedAgentRuntimeTestAdapter,
 } from "../../src/coordination/testing-agent-runtime";
 import { defineRoute } from "../../src/helpers";
 import { distributedWebRoutePolicyId, webTransport } from "../../src/transports/web-transport";
+import { createVisitorToken, deriveSigningKey } from "../../src/transports/visitor-token";
 import type {
   AgentConfig,
   AssembledPrompt,
@@ -37,10 +41,37 @@ const webCapacityClasses = [
 ] as const;
 
 const agents: Array<ReturnType<typeof defineAgent>> = [];
+const postgresUrl = process.env.AUGGY_TEST_POSTGRES_URL;
+const postgresTest = postgresUrl ? test : test.skip;
+const postgresNamespaces = new Set<string>();
 
 afterEach(async () => {
   for (const agent of agents.splice(0).reverse()) await agent.stop();
   resetInMemoryDistributedCoordination();
+  if (!postgresUrl || postgresNamespaces.size === 0) return;
+  const sql = new SQL(postgresUrl);
+  try {
+    for (const namespace of postgresNamespaces) {
+      await sql.unsafe(
+        "DELETE FROM public.auggy_coordination_external_assertions WHERE namespace = $1",
+        [namespace],
+      );
+      await sql.unsafe(
+        "DELETE FROM public.auggy_coordination_visitor_requests WHERE namespace = $1",
+        [namespace],
+      );
+      await sql.unsafe("DELETE FROM public.auggy_coordination_visitors WHERE namespace = $1", [
+        namespace,
+      ]);
+      await sql.unsafe(
+        "DELETE FROM public.auggy_coordination_visitor_authorities WHERE namespace = $1",
+        [namespace],
+      );
+    }
+  } finally {
+    postgresNamespaces.clear();
+    await sql.close();
+  }
 });
 
 function coordinator(
@@ -49,10 +80,11 @@ function coordinator(
   extraRateLimits: readonly { id: string; max: number; maxEvents: number; windowMs: number }[] = [],
   failClosed?: () => boolean,
   maxRateLimitEvents = 100,
+  namespace = "distributed-web-admission",
 ) {
   return createInMemoryDistributedTurnCoordinator(
     {
-      namespace: "distributed-web-admission",
+      namespace,
       instanceId,
       buildFingerprint: "c".repeat(64),
       maxConcurrent: 2,
@@ -100,6 +132,7 @@ function coordinator(
 
 function adapter(
   owner: ReturnType<typeof createInMemoryDistributedTurnCoordinator>,
+  visitorIdentityAuthority?: VisitorIdentityAuthority,
 ): DistributedAgentRuntimeTestAdapter {
   return {
     coordinator: owner,
@@ -112,7 +145,24 @@ function adapter(
       claimPollMs: 10,
       maxWaitMs: 5_000,
     }),
+    ...(visitorIdentityAuthority ? { visitorIdentityAuthority } : {}),
     drainTimeoutMs: 100,
+  };
+}
+
+function identityAuthority(
+  overrides: Partial<VisitorIdentityAuthority> = {},
+): VisitorIdentityAuthority {
+  return {
+    register: async () => ({ status: "registered" }),
+    issueVerificationRequest: async () => ({ status: "unavailable" }),
+    verify: async () => ({ status: "unavailable" }),
+    resolveVisitor: async () => ({ status: "unavailable" }),
+    canPromote: async () => ({ status: "unavailable" }),
+    revokeByEmail: async () => ({ status: "unavailable" }),
+    claimExternalAssertion: async () => ({ status: "unavailable" }),
+    close: async () => {},
+    ...overrides,
   };
 }
 
@@ -127,7 +177,10 @@ async function replica(options: {
   extraRateLimits?: readonly { id: string; max: number; maxEvents: number; windowMs: number }[];
   failClosed?: () => boolean;
   maxRateLimitEvents?: number;
+  coordinationNamespace?: string;
   externalAuth?: Parameters<typeof webTransport>[0]["externalAuth"];
+  visitorTokens?: Parameters<typeof webTransport>[0]["visitorTokens"];
+  visitorIdentityAuthority?: VisitorIdentityAuthority;
   adminRoute?: boolean;
   idempotencyDbPath?: string | null;
 }) {
@@ -137,6 +190,7 @@ async function replica(options: {
     options.extraRateLimits,
     options.failClosed,
     options.maxRateLimitEvents,
+    options.coordinationNamespace,
   );
   const transport = webTransport({
     port: options.port,
@@ -170,13 +224,14 @@ async function replica(options: {
       maxCreatorRecords: 6,
     },
     ...(options.externalAuth ? { externalAuth: options.externalAuth } : {}),
+    ...(options.visitorTokens ? { visitorTokens: options.visitorTokens } : {}),
   });
   const config: AgentConfig = {
     name: SECURITY_NAMESPACE,
     model: "test",
     augments: [...(options.extraAugments ?? []), transport],
   };
-  attachDistributedRuntimeForTest(config, adapter(owner));
+  attachDistributedRuntimeForTest(config, adapter(owner, options.visitorIdentityAuthority));
   const agent = defineAgent(config, options.model);
   agents.push(agent);
   await agent.start();
@@ -437,8 +492,475 @@ describe("distributed web admission", () => {
     ).rejects.toThrow(/admission|rate/i);
   });
 
+  test("rechecks shared visitor revocation immediately before model dispatch", async () => {
+    const signingKey = "distributed-final-visitor-check";
+    const key = await deriveSigningKey(signingKey);
+    const issued = await createVisitorToken(
+      key,
+      SECURITY_NAMESPACE,
+      3_600,
+      "vis_final_check",
+      undefined,
+      undefined,
+      undefined,
+      1,
+    );
+    let resolveCalls = 0;
+    const authority = identityAuthority({
+      resolveVisitor: async () => {
+        resolveCalls += 1;
+        return resolveCalls <= 2
+          ? {
+              status: "active",
+              visitorId: "vis_final_check",
+              identityVersion: 1,
+              email: "final-check@example.test",
+              verifiedAt: Date.now(),
+              reverifyDueAt: Date.now() + 86_400_000,
+            }
+          : { status: "revoked" };
+      },
+    });
+    const model = createMockModel();
+    const { owner } = await replica({
+      instanceId: "visitor-final-check",
+      model,
+      port: 19600,
+      allowAnonymous: true,
+      anonymousLimit: 10,
+      visitorTokens: {
+        enabled: true,
+        signingKey,
+        agentBinding: SECURITY_NAMESPACE,
+      },
+      visitorIdentityAuthority: authority,
+    });
+    let historyLoads = 0;
+    const loadHistory = owner.loadHistory.bind(owner);
+    owner.loadHistory = (...args) => {
+      historyLoads += 1;
+      return loadHistory(...args);
+    };
+
+    const response = await fetch("http://127.0.0.1:19600/agent/run", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "visitor-final-check-key",
+        "x-visitor-token": issued.token,
+      },
+      body: JSON.stringify({ messages: [{ role: "user", content: "must not execute" }] }),
+    });
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain("VISITOR_AUTHORIZATION_REVOKED");
+    expect(resolveCalls).toBe(3);
+    expect(historyLoads).toBe(0);
+    expect(model.calls).toHaveLength(0);
+  });
+
+  test("normalizes rejected distributed identity authority calls without leaking errors", async () => {
+    const signingKey = "distributed-rejected-visitor-authority";
+    const key = await deriveSigningKey(signingKey);
+    const issued = await createVisitorToken(
+      key,
+      SECURITY_NAMESPACE,
+      3_600,
+      "vis_rejected_authority",
+      undefined,
+      undefined,
+      undefined,
+      1,
+    );
+    const sentinel = "SENTINEL_DISTRIBUTED_IDENTITY_DATABASE_SECRET";
+    const model = createMockModel();
+    await replica({
+      instanceId: "visitor-rejected-authority",
+      model,
+      port: 19601,
+      allowAnonymous: true,
+      anonymousLimit: 10,
+      visitorTokens: {
+        enabled: true,
+        signingKey,
+        agentBinding: SECURITY_NAMESPACE,
+      },
+      visitorIdentityAuthority: identityAuthority({
+        resolveVisitor: async () => {
+          throw new Error(sentinel);
+        },
+      }),
+    });
+
+    const response = await fetch("http://127.0.0.1:19601/agent/run", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": "visitor-rejected-authority-key",
+        "x-visitor-token": issued.token,
+      },
+      body: JSON.stringify({ messages: [{ role: "user", content: "must not execute" }] }),
+    });
+    expect(response.status).toBe(503);
+    const body = await response.text();
+    expect(body).toBe('{"error":"identity_authority_unavailable"}');
+    expect(body).not.toContain(sentinel);
+    expect(model.calls).toHaveLength(0);
+  });
+
+  postgresTest("shares exact external assertion replay authority across two replicas", async () => {
+    const namespace = `distributed-web-identity-${crypto.randomUUID()}`;
+    postgresNamespaces.add(namespace);
+    const authorityOptions = {
+      url: postgresUrl!,
+      namespace,
+      audience: SECURITY_NAMESPACE,
+      policy: {
+        maxVerificationRequests: 20,
+        maxVisitors: 20,
+        maxExternalAssertions: 20,
+        verificationTokenTtlMs: 900_000,
+        verificationRequestRetentionMs: 60_000,
+        reverifyAfterMs: 86_400_000,
+        maxExternalAssertionTtlMs: 300_000,
+        rateLimit: { perHour: 10, perDay: 10, minIntervalMs: 0 },
+      },
+    } as const;
+    const firstAuthority = new PostgresVisitorIdentityAuthority(authorityOptions);
+    const secondAuthority = new PostgresVisitorIdentityAuthority(authorityOptions);
+    await firstAuthority.migrate();
+    expect(await firstAuthority.register()).toEqual({ status: "registered" });
+    expect(await secondAuthority.register()).toEqual({ status: "registered" });
+
+    let localReplayCalls = 0;
+    const externalAuth = {
+      secret: "distributed-external-auth-shared-secret",
+      audience: SECURITY_NAMESPACE,
+      replayProtection: {
+        enabled: true as const,
+        store: {
+          consume() {
+            localReplayCalls += 1;
+            return true;
+          },
+        },
+      },
+    };
+    const model = createMockModel();
+    await replica({
+      instanceId: "external-auth-shared-a",
+      model,
+      port: 19595,
+      coordinationNamespace: namespace,
+      externalAuth,
+      visitorIdentityAuthority: firstAuthority,
+    });
+    await replica({
+      instanceId: "external-auth-shared-b",
+      model,
+      port: 19596,
+      coordinationNamespace: namespace,
+      externalAuth,
+      visitorIdentityAuthority: secondAuthority,
+    });
+
+    const assertion = createExternalAuthAssertion({
+      secret: externalAuth.secret,
+      audience: SECURITY_NAMESPACE,
+      provider: "test",
+      subject: "external-user",
+      ttlSeconds: 60,
+      jti: `shared-jti-${crypto.randomUUID()}`,
+    });
+    const send = (port: number, key: string, content: string) =>
+      fetch(`http://127.0.0.1:${port}/agent/run`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "idempotency-key": key,
+          "x-auggy-auth-assertion": assertion,
+        },
+        body: JSON.stringify({
+          threadId: "distributed-external-thread",
+          messages: [{ role: "user", content }],
+        }),
+      });
+
+    const key = `shared-key-${crypto.randomUUID()}`;
+    const [first, second] = await Promise.all([
+      send(19595, key, "same request"),
+      send(19596, key, "same request"),
+    ]);
+    expect([first.status, second.status]).toEqual([200, 200]);
+    await Promise.all([first.text(), second.text()]);
+    expect(model.calls).toHaveLength(1);
+
+    const changedKey = await send(19596, `changed-key-${crypto.randomUUID()}`, "same request");
+    expect(changedKey.status).toBe(401);
+    expect(await changedKey.json()).toEqual({ error: "unauthorized" });
+
+    const changed = await send(19596, `changed-key-${crypto.randomUUID()}`, "changed request");
+    expect(changed.status).toBe(401);
+    expect(await changed.json()).toEqual({ error: "unauthorized" });
+    expect(model.calls).toHaveLength(1);
+    expect(localReplayCalls).toBe(0);
+  });
+
+  postgresTest("shares visitor identity and revocation authority across replicas", async () => {
+    const namespace = `distributed-web-visitor-${crypto.randomUUID()}`;
+    postgresNamespaces.add(namespace);
+    const authorityOptions = {
+      url: postgresUrl!,
+      namespace,
+      audience: SECURITY_NAMESPACE,
+      policy: {
+        maxVerificationRequests: 20,
+        maxVisitors: 20,
+        maxExternalAssertions: 20,
+        verificationTokenTtlMs: 900_000,
+        verificationRequestRetentionMs: 60_000,
+        reverifyAfterMs: 86_400_000,
+        maxExternalAssertionTtlMs: 300_000,
+        rateLimit: { perHour: 10, perDay: 10, minIntervalMs: 0 },
+      },
+    } as const;
+    const firstAuthority = new PostgresVisitorIdentityAuthority(authorityOptions);
+    const secondAuthority = new PostgresVisitorIdentityAuthority(authorityOptions);
+    await firstAuthority.migrate();
+    await firstAuthority.register();
+    await secondAuthority.register();
+
+    const rawVerificationToken = crypto.randomUUID();
+    const requestId = `visitor-request-${crypto.randomUUID()}`;
+    expect(
+      await firstAuthority.issueVerificationRequest({
+        requestId,
+        bindingHash: new Bun.CryptoHasher("sha256").update(requestId).digest("hex"),
+        token: rawVerificationToken,
+        email: "shared-visitor@example.test",
+        peerId: "anon_session_22222222-2222-4222-8222-222222222222",
+        threadId: "shared-visitor-thread",
+      }),
+    ).toMatchObject({ status: "issued" });
+    const verified = await firstAuthority.verify({ token: rawVerificationToken });
+    if (verified.status !== "verified") throw new Error("shared visitor verification failed");
+
+    const signingKey = "distributed-shared-visitor-signing-key";
+    const cryptoKey = await deriveSigningKey(signingKey);
+    const issued = await createVisitorToken(
+      cryptoKey,
+      SECURITY_NAMESPACE,
+      3_600,
+      verified.visitorId,
+      verified.priorPeerId,
+      undefined,
+      verified.priorThreadId,
+      verified.identityVersion,
+      verified.authoritativeNow,
+    );
+    const legacy = await createVisitorToken(
+      cryptoKey,
+      SECURITY_NAMESPACE,
+      3_600,
+      verified.visitorId,
+    );
+    let handlerCalls = 0;
+    const route: Augment = {
+      name: "distributed-visitor-route",
+      httpRoutes: [
+        defineRoute.get("/shared-visitor", {
+          auth: "visitor.required",
+          handler: (context) => {
+            handlerCalls += 1;
+            return Response.json({
+              state: context.auth.mode === "visitor" ? context.auth.state : "wrong-mode",
+              visitorId:
+                context.auth.mode === "visitor" && context.auth.state === "recognized"
+                  ? context.auth.visitorId
+                  : null,
+            });
+          },
+        }),
+      ],
+    };
+    const visitorTokens = {
+      enabled: true,
+      signingKey,
+      agentBinding: SECURITY_NAMESPACE,
+    } as const;
+    await replica({
+      instanceId: "visitor-shared-a",
+      model: createMockModel(),
+      port: 19597,
+      coordinationNamespace: namespace,
+      extraAugments: [route],
+      visitorTokens,
+      visitorIdentityAuthority: firstAuthority,
+    });
+    await replica({
+      instanceId: "visitor-shared-b",
+      model: createMockModel(),
+      port: 19598,
+      coordinationNamespace: namespace,
+      extraAugments: [route],
+      visitorTokens,
+      visitorIdentityAuthority: secondAuthority,
+    });
+
+    const recognized = await fetch("http://127.0.0.1:19598/shared-visitor", {
+      headers: { "x-visitor-token": issued.token },
+    });
+    expect(recognized.status).toBe(200);
+    expect(await recognized.json()).toEqual({
+      state: "recognized",
+      visitorId: verified.visitorId,
+    });
+
+    const legacyResponse = await fetch("http://127.0.0.1:19597/shared-visitor", {
+      headers: { "x-visitor-token": legacy.token },
+    });
+    expect(legacyResponse.status).toBe(503);
+    expect(await legacyResponse.json()).toEqual({ error: "identity_authority_unavailable" });
+
+    const sql = new SQL(postgresUrl!);
+    try {
+      await sql.unsafe(
+        "UPDATE public.auggy_coordination_visitors SET verified_at = clock_timestamp() - INTERVAL '2 seconds', reverify_due_at = clock_timestamp() - INTERVAL '1 second' WHERE namespace = $1 AND audience = $2 AND visitor_id = $3",
+        [namespace, SECURITY_NAMESPACE, verified.visitorId],
+      );
+    } finally {
+      await sql.close();
+    }
+    const reverifyExpired = await fetch("http://127.0.0.1:19598/shared-visitor", {
+      headers: { "x-visitor-token": issued.token },
+    });
+    expect(reverifyExpired.status).toBe(401);
+
+    expect(
+      await firstAuthority.revokeByEmail("shared-visitor@example.test", "operator-revoked"),
+    ).toMatchObject({ status: "revoked", visitorId: verified.visitorId });
+    const revoked = await fetch("http://127.0.0.1:19598/shared-visitor", {
+      headers: { "x-visitor-token": issued.token },
+    });
+    expect(revoked.status).toBe(401);
+    expect(handlerCalls).toBe(1);
+  });
+
+  postgresTest("promotes only PostgreSQL-proven anonymous history before execution", async () => {
+    const namespace = `distributed-web-promotion-${crypto.randomUUID()}`;
+    postgresNamespaces.add(namespace);
+    const authority = new PostgresVisitorIdentityAuthority({
+      url: postgresUrl!,
+      namespace,
+      audience: SECURITY_NAMESPACE,
+      policy: {
+        maxVerificationRequests: 20,
+        maxVisitors: 20,
+        maxExternalAssertions: 20,
+        verificationTokenTtlMs: 900_000,
+        verificationRequestRetentionMs: 60_000,
+        reverifyAfterMs: 86_400_000,
+        maxExternalAssertionTtlMs: 300_000,
+        rateLimit: { perHour: 10, perDay: 10, minIntervalMs: 0 },
+      },
+    });
+    await authority.migrate();
+    await authority.register();
+    const signingKey = "distributed-promotion-signing-key";
+    const model = createMockModel({ response: "promotion result" });
+    await replica({
+      instanceId: "visitor-promotion",
+      model,
+      port: 19599,
+      coordinationNamespace: namespace,
+      allowAnonymous: true,
+      anonymousLimit: 10,
+      visitorTokens: {
+        enabled: true,
+        signingKey,
+        agentBinding: SECURITY_NAMESPACE,
+      },
+      visitorIdentityAuthority: authority,
+    });
+
+    const bootstrap = await runRequest(19599, {
+      key: `promotion-bootstrap-${crypto.randomUUID()}`,
+      threadId: "visitor-promotion-thread",
+      anonymous: true,
+    });
+    expect(bootstrap.status).toBe(428);
+    const anonymousSession = bootstrap.headers.get("x-auggy-anonymous-session");
+    expect(anonymousSession).toBeTruthy();
+    await bootstrap.text();
+
+    const anonymous = await runRequest(19599, {
+      key: `promotion-anonymous-${crypto.randomUUID()}`,
+      text: "anonymous history sentinel",
+      threadId: "visitor-promotion-thread",
+      anonymous: true,
+      anonymousSession: anonymousSession ?? undefined,
+    });
+    const anonymousBody = await anonymous.text();
+    expect(anonymous.status).toBe(200);
+    const canonicalThread = anonymousBody.match(/"threadId":"([^"]+)"/)?.[1];
+    expect(canonicalThread).toMatch(/^web_thread_/);
+
+    const [encodedSession] = (anonymousSession ?? "").split(".");
+    const sessionPayload = JSON.parse(
+      Buffer.from(encodedSession!, "base64url").toString("utf8"),
+    ) as { peerId: string; threadScopeId: string };
+    const rawVerificationToken = crypto.randomUUID();
+    const requestId = `promotion-request-${crypto.randomUUID()}`;
+    expect(
+      await authority.issueVerificationRequest({
+        requestId,
+        bindingHash: new Bun.CryptoHasher("sha256").update(requestId).digest("hex"),
+        token: rawVerificationToken,
+        email: "promotion@example.test",
+        peerId: sessionPayload.peerId,
+        threadId: canonicalThread!,
+      }),
+    ).toMatchObject({ status: "issued" });
+    const verified = await authority.verify({ token: rawVerificationToken });
+    if (verified.status !== "verified") throw new Error("promotion verification failed");
+    const tokenKey = await deriveSigningKey(signingKey);
+    const visitor = await createVisitorToken(
+      tokenKey,
+      SECURITY_NAMESPACE,
+      3_600,
+      verified.visitorId,
+      verified.priorPeerId,
+      sessionPayload.threadScopeId,
+      verified.priorThreadId,
+      verified.identityVersion,
+      verified.authoritativeNow,
+    );
+
+    const promoted = await fetch("http://127.0.0.1:19599/agent/run", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "idempotency-key": `promotion-recognized-${crypto.randomUUID()}`,
+        "x-auggy-anonymous-session": anonymousSession!,
+        "x-visitor-token": visitor.token,
+      },
+      body: JSON.stringify({
+        threadId: canonicalThread,
+        messages: [{ role: "user", content: "recognized continuation" }],
+      }),
+    });
+    expect(promoted.status).toBe(200);
+    await promoted.text();
+    expect(model.calls).toHaveLength(2);
+    expect(
+      model.calls[1]?.messages.some((message) =>
+        message.content.includes("anonymous history sentinel"),
+      ),
+    ).toBe(true);
+  });
+
   test("does not consume an unsupported unkeyed external-auth assertion", async () => {
     let consumeCalls = 0;
+    const sentinel = "SENTINEL_DISTRIBUTED_ASSERTION_DATABASE_SECRET";
     const model = createMockModel();
     await replica({
       instanceId: "external-auth-deferred",
@@ -457,6 +979,11 @@ describe("distributed web admission", () => {
           },
         },
       },
+      visitorIdentityAuthority: identityAuthority({
+        claimExternalAssertion: async () => {
+          throw new Error(sentinel);
+        },
+      }),
     });
     const assertion = createExternalAuthAssertion({
       secret: "distributed-external-auth-secret",
@@ -475,7 +1002,9 @@ describe("distributed web admission", () => {
       body: JSON.stringify({ messages: [{ role: "user", content: "unsupported for now" }] }),
     });
     expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: "external_auth_distributed_unavailable" });
+    const body = await response.text();
+    expect(body).toBe('{"error":"external_auth_distributed_unavailable"}');
+    expect(body).not.toContain(sentinel);
     expect(consumeCalls).toBe(0);
     expect(model.calls).toHaveLength(0);
   });

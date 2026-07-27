@@ -151,20 +151,36 @@ export interface VisitorAuthAugmentExtras {
    * revoked. Reads directly from the store — no caching, always current.
    * Intended to be wired as `webTransport.visitorTokens.revocationCheck`.
    */
-  isVisitorRevoked(visitorId: string): boolean;
+  isVisitorRevoked(visitorId: string, identityVersion?: number): boolean | Promise<boolean>;
   /**
    * Resolve a verified visitor by `vis_<uuid>` id. Returns null for unknown or
    * revoked visitors. Used by app-route auth to attach email / verification
    * metadata to route handlers without embedding PII in the visitor token.
    */
-  resolveVisitorIdentity(visitorId: string): {
-    visitorId: string;
-    email: string;
-    verifiedAt: number;
-    reverifyDueAt: number;
-  } | null;
+  resolveVisitorIdentity(
+    visitorId: string,
+    identityVersion?: number,
+  ):
+    | {
+        visitorId: string;
+        email: string;
+        verifiedAt: number;
+        reverifyDueAt: number;
+      }
+    | null
+    | Promise<{
+        visitorId: string;
+        email: string;
+        verifiedAt: number;
+        reverifyDueAt: number;
+      } | null>;
   /** Authorize promotion only for the anonymous thread that issued the consumed link. */
-  canPromoteAnonymousThread(visitorId: string, threadId: string): boolean;
+  canPromoteAnonymousThread(
+    visitorId: string,
+    threadId: string,
+    identityVersion?: number,
+    priorPeerId?: string,
+  ): boolean | Promise<boolean>;
 }
 
 /** Return shape of `request_auth({...})`. JSON-stringified by the tool. */
