@@ -161,6 +161,22 @@ describe("auggy jobs", () => {
     ]);
     expect(stale.out[0]).toContain("version_conflict");
     expect(stale.exits).toEqual([1]);
+    const refusedReconcile = invoke([
+      "reconcile",
+      submitted.id,
+      "--version",
+      String(submitted.version),
+      "--disposition",
+      "cancel",
+      "--evidence",
+      "ticket-123",
+      "--config",
+      fixture.config,
+      "--root",
+      fixture.root,
+    ]);
+    expect(refusedReconcile.out[0]).toContain('"reconciled":false');
+    expect(refusedReconcile.exits).toEqual([1]);
 
     const unsafeEvidence = invoke([
       "reconcile",
@@ -267,6 +283,19 @@ describe("auggy jobs", () => {
     ]);
     expect(paused.out[0]).toContain('"paused":true');
     const pausedOutput = JSON.parse(paused.out[0]!) as { schedule: { version: number } };
+    const stalePause = invoke([
+      "schedules",
+      "pause",
+      schedule.id,
+      "--version",
+      String(schedule.version),
+      "--config",
+      fixture.config,
+      "--root",
+      fixture.root,
+    ]);
+    expect(stalePause.out[0]).toContain('"paused":false');
+    expect(stalePause.exits).toEqual([1]);
     const staleResume = invoke([
       "schedules",
       "resume",
