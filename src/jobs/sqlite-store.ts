@@ -814,6 +814,10 @@ function positiveOption(
 export function createSqliteDurableJobStore(
   options: SqliteDurableJobStoreOptions,
 ): DurableJobStore {
+  const allowMigrations = options.allowMigrations ?? true;
+  if (typeof allowMigrations !== "boolean") {
+    throw new Error(`${LABEL}: allowMigrations must be a boolean`);
+  }
   const maxTotalRecords = positiveOption(
     options.maxTotalRecords,
     DEFAULT_MAX_TOTAL_RECORDS,
@@ -887,6 +891,9 @@ export function createSqliteDurableJobStore(
         migrateOwned(database, fromVersion, objects) {
           if (fromVersion !== 1 || !hasExactV1Schema(objects)) {
             throw new Error(`${LABEL}: database schema is incompatible`);
+          }
+          if (!allowMigrations) {
+            throw new Error(`${LABEL}: database schema migration is required`);
           }
           for (const sql of SCHEDULE_SCHEMA) database.run(sql);
         },

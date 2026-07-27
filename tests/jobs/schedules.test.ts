@@ -146,6 +146,24 @@ describe("durable schedule persistence", () => {
     ).toEqual(before);
     after.close();
   });
+
+  test("can refuse an exact v1 migration without changing the database", () => {
+    const path = dbPath();
+    const store = createSqliteDurableJobStore({ dbPath: path, now: () => start });
+    store.submit(request());
+    store.close();
+    downgradeExactV1(path);
+
+    expect(() =>
+      createSqliteDurableJobStore({ dbPath: path, now: () => start, allowMigrations: false }),
+    ).toThrow("database schema migration is required");
+    const unchanged = new Database(path, { readonly: true });
+    expect(unchanged.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    expect(
+      unchanged.query("SELECT name FROM sqlite_schema WHERE name = 'durable_job_schedules'").get(),
+    ).toBeNull();
+    unchanged.close();
+  });
   test("materializes one deterministic, redacted occurrence and coalesces downtime", () => {
     const path = dbPath();
     let now = start;

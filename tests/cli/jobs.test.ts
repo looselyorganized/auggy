@@ -11,6 +11,7 @@ import {
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Command } from "commander";
+import { Database } from "bun:sqlite";
 import { createSqliteDurableJobStore } from "../../src/jobs/sqlite-store";
 import {
   DurableJobsCommandError,
@@ -159,6 +160,7 @@ describe("auggy jobs", () => {
       fixture.root,
     ]);
     expect(stale.out[0]).toContain("version_conflict");
+    expect(stale.exits).toEqual([1]);
 
     const unsafeEvidence = invoke([
       "reconcile",
@@ -239,6 +241,7 @@ describe("auggy jobs", () => {
       fixture.root,
     ]);
     expect(refusedUnknown.out[0]).toContain('"retried":false');
+    expect(refusedUnknown.exits).toEqual([1]);
 
     const listed = invoke([
       "schedules",
@@ -276,6 +279,7 @@ describe("auggy jobs", () => {
       fixture.root,
     ]);
     expect(staleResume.out[0]).toContain('"resumed":false');
+    expect(staleResume.exits).toEqual([1]);
     const resumed = invoke([
       "schedules",
       "resume",
@@ -359,5 +363,25 @@ describe("auggy jobs", () => {
     expect(result.out.join("\n")).not.toContain(SENTINEL);
     expect(result.err.join("\n")).not.toContain(SENTINEL);
     expect(result.err).toEqual(["Error: durable jobs database is not available"]);
+  });
+
+  test("refuses to migrate an exact older database from an operator command", () => {
+    submitFixtureJob();
+    const database = new Database(fixture.db);
+    database.run("DROP TABLE durable_job_schedule_occurrences");
+    database.run("DROP TABLE durable_job_schedules");
+    database.run("PRAGMA user_version = 1");
+    database.close();
+
+    const result = invoke(["list", "--config", fixture.config, "--root", fixture.root]);
+    expect(result.exits).toEqual([1]);
+    expect(result.out).toEqual([]);
+    expect(result.err).toEqual(["Error: durable jobs runtime migration is required"]);
+    const unchanged = new Database(fixture.db, { readonly: true });
+    expect(unchanged.query("PRAGMA user_version").get()).toEqual({ user_version: 1 });
+    expect(
+      unchanged.query("SELECT name FROM sqlite_schema WHERE name = 'durable_job_schedules'").get(),
+    ).toBeNull();
+    unchanged.close();
   });
 });

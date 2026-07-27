@@ -178,6 +178,8 @@ export interface DurableJobStore {
 
 export interface SqliteDurableJobStoreOptions {
   dbPath: string;
+  /** Disable automatic owned-schema migrations for observational/operator clients. */
+  allowMigrations?: boolean;
   now?: () => number;
   jobId?: () => string;
   leaseToken?: () => string;

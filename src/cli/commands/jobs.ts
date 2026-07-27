@@ -1,5 +1,5 @@
 /**
- * Offline, operator-only control plane for the local Durable Jobs v1 store.
+ * Offline, operator-only control plane for the local Durable Jobs store.
  *
  * This command deliberately exposes summaries only. Prompts, canonical
  * bindings, results, reconciliation evidence, and raw SQLite diagnostics are
@@ -8,8 +8,13 @@
 
 import { lstatSync } from "node:fs";
 import { dirname, isAbsolute, resolve } from "node:path";
+import { Database } from "bun:sqlite";
 import { Command } from "commander";
-import { createSqliteDurableJobStore } from "../../jobs/sqlite-store";
+import {
+  createSqliteDurableJobStore,
+  DURABLE_JOBS_APPLICATION_ID,
+  DURABLE_JOBS_SCHEMA_VERSION,
+} from "../../jobs/sqlite-store";
 import type {
   DurableJobScheduleSummary,
   DurableJobState,
@@ -85,6 +90,10 @@ function databaseMissingError(): DurableJobsCommandError {
   return new DurableJobsCommandError("durable jobs database is not available");
 }
 
+function migrationRequiredError(): DurableJobsCommandError {
+  return new DurableJobsCommandError("durable jobs runtime migration is required");
+}
+
 function operationError(): DurableJobsCommandError {
   return new DurableJobsCommandError("durable jobs operation could not be completed");
 }
@@ -153,6 +162,7 @@ function parseDisposition(value: string): "retry" | "cancel" | "confirm_complete
 function durableStoreOptions(dbPath: string, jobs: DurableJobsConfig) {
   return {
     dbPath,
+    allowMigrations: false,
     maxTotalRecords: jobs.maxTotalRecords,
     maxQueuedRecords: jobs.maxQueuedRecords,
     maxPrivateBytes: jobs.maxPrivateBytes,
@@ -197,6 +207,34 @@ export function resolveDurableJobsDatabase(
     // before a runtime initializes the store. An offline read/control command
     // must never turn that marker into a newly initialized database.
     if (stat.isSymbolicLink() || !stat.isFile() || stat.size < 1) throw unavailableError();
+    // Operator commands never own schema migration. This read-only preflight
+    // provides a stable outcome, while allowMigrations:false on the actual
+    // store closes the path-replacement race between this probe and open.
+    const probe = new Database(dbPath, { readonly: true });
+    try {
+      const applicationId = probe.query("PRAGMA application_id").get() as {
+        application_id?: unknown;
+      } | null;
+      const userVersion = probe.query("PRAGMA user_version").get() as {
+        user_version?: unknown;
+      } | null;
+      if (
+        applicationId?.application_id === DURABLE_JOBS_APPLICATION_ID &&
+        typeof userVersion?.user_version === "number" &&
+        userVersion.user_version > 0 &&
+        userVersion.user_version < DURABLE_JOBS_SCHEMA_VERSION
+      ) {
+        throw migrationRequiredError();
+      }
+      if (
+        applicationId?.application_id !== DURABLE_JOBS_APPLICATION_ID ||
+        userVersion?.user_version !== DURABLE_JOBS_SCHEMA_VERSION
+      ) {
+        throw unavailableError();
+      }
+    } finally {
+      probe.close();
+    }
     return { dbPath, jobs };
   } catch (error) {
     if (error instanceof DurableJobsCommandError) throw error;
@@ -409,6 +447,10 @@ function runAction(
   }
 }
 
+function markMutationFailure(applied: boolean, exit: (code: number) => void): void {
+  if (!applied) exit(1);
+}
+
 export function jobsCommand(deps: DurableJobsCommandDeps = {}): Command {
   const log = deps.log ?? ((line: string) => console.log(line));
   const error = deps.error ?? ((line: string) => console.error(line));
@@ -461,6 +503,10 @@ export function jobsCommand(deps: DurableJobsCommandDeps = {}): Command {
             status: result.status,
             job: result.job ? durableJobSummaryOutput(result.job) : null,
           });
+          markMutationFailure(
+            result.status === "canceled" || result.status === "cancellation_requested",
+            exit,
+          );
         },
         error,
         exit,
@@ -481,6 +527,7 @@ export function jobsCommand(deps: DurableJobsCommandDeps = {}): Command {
             retried: result.retried,
             job: result.job ? durableJobSummaryOutput(result.job) : null,
           });
+          markMutationFailure(result.retried, exit);
         },
         error,
         exit,
@@ -503,6 +550,7 @@ export function jobsCommand(deps: DurableJobsCommandDeps = {}): Command {
             reconciled: result.reconciled,
             job: result.job ? durableJobSummaryOutput(result.job) : null,
           });
+          markMutationFailure(result.reconciled, exit);
         },
         error,
         exit,
@@ -542,6 +590,7 @@ export function jobsCommand(deps: DurableJobsCommandDeps = {}): Command {
             paused: result.paused,
             schedule: result.schedule ? durableJobScheduleSummaryOutput(result.schedule) : null,
           });
+          markMutationFailure(result.paused, exit);
         },
         error,
         exit,
@@ -562,6 +611,7 @@ export function jobsCommand(deps: DurableJobsCommandDeps = {}): Command {
             resumed: result.resumed,
             schedule: result.schedule ? durableJobScheduleSummaryOutput(result.schedule) : null,
           });
+          markMutationFailure(result.resumed, exit);
         },
         error,
         exit,
