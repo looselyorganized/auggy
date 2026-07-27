@@ -553,7 +553,8 @@ export function createDurableJobRuntime(options: DurableJobRuntimeOptions) {
         heartbeatFailed ||
         controller.signal.aborted ||
         result.outcomeUnknown ||
-        !result.success
+        result.success !== true ||
+        result.status !== "completed"
       ) {
         return settleUnknown(lease, "execution-outcome-unknown");
       }

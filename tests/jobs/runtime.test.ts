@@ -213,6 +213,60 @@ describe("durable job runtime", () => {
     expect(serialized).not.toContain("sentinel-private-order-prompt");
   });
 
+  it("completes only an exact completed result after execution starts", async () => {
+    for (const status of [
+      "working",
+      "input-required",
+      "auth-required",
+      "failed",
+      "canceled",
+      "rejected",
+    ] as const) {
+      const { store, calls } = storeWith(lease());
+      const agent: Pick<AgentHandle, "inject"> = {
+        async inject(_trigger, options) {
+          await options?.onExecutionStart?.();
+          return {
+            ...successfulResult(),
+            status,
+          };
+        },
+      };
+      const worker = runtime(agent, store);
+      worker.start();
+
+      await expect(worker.processNext()).resolves.toEqual({
+        status: "outcome-unknown",
+        jobId: "job-1",
+      });
+      expect(calls.map((call) => call.method).join(",")).toBe(
+        "claim,markExecutionStarted,markOutcomeUnknown",
+      );
+      expect(calls.some((call) => call.method === "complete")).toBe(false);
+    }
+  });
+
+  it("fails closed on a malformed truthy success value from an untyped host", async () => {
+    const { store, calls } = storeWith(lease());
+    const agent: Pick<AgentHandle, "inject"> = {
+      async inject(_trigger, options) {
+        await options?.onExecutionStart?.();
+        return {
+          ...successfulResult(),
+          success: "true" as unknown as boolean,
+        };
+      },
+    };
+    const worker = runtime(agent, store);
+    worker.start();
+
+    await expect(worker.processNext()).resolves.toEqual({
+      status: "outcome-unknown",
+      jobId: "job-1",
+    });
+    expect(calls.some((call) => call.method === "complete")).toBe(false);
+  });
+
   it("retries pre-start admission failures with bounded backoff", async () => {
     const { store, calls } = storeWith(lease());
     const agent: Pick<AgentHandle, "inject"> = {
