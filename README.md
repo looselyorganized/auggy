@@ -101,9 +101,10 @@ This gives you:
 - a creator console, diagnostics, and Railway deployment,
 - one extension surface for built-in and application-specific behavior.
 
-Auggy is not currently a durable workflow engine, job queue, or replacement for
-a general web framework. It is the runtime in which your agent receives context,
-uses capabilities, and completes turns.
+Auggy is not a general workflow engine, distributed job platform, or
+replacement for a general web framework. Its optional Durable Jobs boundary
+can persist and schedule one trusted complete turn on a single replica; it does
+not checkpoint the model and tool steps inside that turn.
 
 ## What Gets Created
 
@@ -394,6 +395,11 @@ It does not make Auggy a general application backend or durable workflow
 system. Treat generated clients and delegated app authorization as preview
 capabilities while their APIs settle.
 
+For trusted background turns, restart recovery, and bounded UTC schedules, see
+[Durable Jobs](./docs/33-durable-jobs.md). For multi-step business workflows,
+human approvals, and compensation, keep a workflow engine outside Auggy and
+call the agent as one activity.
+
 See:
 
 - [Generated Route Clients](https://auggy.dev/docs/generated-route-clients)
@@ -443,6 +449,8 @@ auggy deploy --yes
 | `auggy doctor [name]` | Check configuration, environment, dependencies, port, and skills |
 | `auggy list` / `auggy status [name]` | Discover agent projects and inspect local process state |
 | `auggy state inventory/backup/verify/restore/restore-resume/reconcile` | Inventory and rehearse fenced offline single-replica runtime-volume recovery |
+| `auggy jobs list/inspect/cancel/retry/reconcile/prune` | Inspect and recover redacted single-replica durable job state |
+| `auggy jobs schedules list/pause/resume` | Inspect and compare-and-set configured UTC schedules |
 | `auggy chat [name]` | Open a running agent's browser chat |
 | `auggy augment list` | Show core, stable, and preview augments |
 | `auggy augment add [name...]` | Select or add built-in augments |

@@ -1,9 +1,14 @@
-import type { TurnTrace } from "../types";
+import type { ExecutionTraceContextV1, TurnTrace } from "../types";
 
 type InferenceStep = TurnTrace["inferenceSteps"][number];
 
 export interface TraceEmitter {
-  startTurn(opts: { turnId: string; threadId: string; trigger: TurnTrace["trigger"] }): TurnTrace;
+  startTurn(opts: {
+    turnId: string;
+    threadId: string;
+    trigger: TurnTrace["trigger"];
+    executionContext?: ExecutionTraceContextV1;
+  }): TurnTrace;
 
   recordContextAssembly(trace: TurnTrace, data: TurnTrace["contextAssembly"]): void;
   recordToolSelection(trace: TurnTrace, data: TurnTrace["toolSelection"]): void;
@@ -25,6 +30,7 @@ export function emptyTrace(opts: {
   turnId: string;
   threadId: string;
   trigger: TurnTrace["trigger"];
+  executionContext?: ExecutionTraceContextV1;
 }): TurnTrace {
   return {
     turnId: opts.turnId,
@@ -32,6 +38,7 @@ export function emptyTrace(opts: {
     timestamp: Date.now(),
     duration: 0,
     trigger: opts.trigger,
+    ...(opts.executionContext === undefined ? {} : { executionContext: opts.executionContext }),
     contextAssembly: {
       augmentBlocks: [],
       preambleTokens: 0,

@@ -128,6 +128,30 @@ export type MemoryProviderSpec = StaticMemoryProvider | NamespaceMemoryProvider;
 
 export type ToolCategory = "memory" | "search" | "communication" | "meta" | (string & {});
 
+/**
+ * Versioned, trusted metadata for one embedded execution. It is accepted only
+ * through AgentHandle.inject(); public transports never control these fields.
+ * Idempotency material is represented solely by one-way hashes.
+ */
+export interface ExecutionContextV1 {
+  version: 1;
+  executionId: string;
+  attempt: number;
+  deadlineAt?: number;
+  correlationId?: string;
+  idempotencyKeyHash?: string;
+  bindingHash?: string;
+}
+
+/** Safe projection permitted in traces and kernel events. */
+export interface ExecutionTraceContextV1 {
+  version: 1;
+  executionId: string;
+  attempt: number;
+  deadlineAt?: number;
+  correlationId?: string;
+}
+
 export interface ToolExecuteContext {
   turnId: string;
   peer: PeerIdentity | null;
@@ -135,6 +159,10 @@ export interface ToolExecuteContext {
   auth?: RouteAuthContext;
   /** Combined request/deadline cancellation for this exact tool attempt. */
   signal?: AbortSignal;
+  /** Safe execution metadata projection; binding and idempotency hashes stay trusted to the kernel. */
+  executionContext?: ExecutionTraceContextV1;
+  /** Opaque downstream idempotency identity derived from the execution and tool position. */
+  operationId?: string;
 }
 
 // biome-ignore lint/suspicious/noExplicitAny: Tool is covariant over arbitrary model-facing schemas.
@@ -283,6 +311,8 @@ export interface TurnState {
   metadata: Record<string, unknown>;
   /** Caller cancellation for turn-scoped context and lifecycle work. */
   signal?: AbortSignal;
+  /** Trusted embedding metadata; never read from a public trigger. */
+  executionContext?: ExecutionContextV1;
 }
 
 export interface OutboundMessage {
@@ -312,6 +342,8 @@ export interface TurnTrace {
     peerKind?: string;
     trustLevel?: string;
   };
+  /** Safe execution metadata projection; excludes binding and idempotency hashes. */
+  executionContext?: ExecutionTraceContextV1;
   contextAssembly: {
     augmentBlocks: {
       source: string;
@@ -372,6 +404,8 @@ export interface TurnResult {
   toolCalls: ToolCallRecord[];
   trace: TurnTrace;
   error?: { message: string; source: string };
+  /** Trusted execution metadata returned to the embedding caller. */
+  executionContext?: ExecutionContextV1;
   /**
    * True when work crossed a side-effect boundary without a trustworthy
    * terminal result. The agent scheduler quarantines the resolved thread
@@ -483,6 +517,8 @@ export type KernelEvent =
       threadId: string;
       contextId?: string;
       taskId?: string;
+      /** Safe projection; binding and idempotency hashes are never emitted. */
+      execution?: ExecutionTraceContextV1;
     }
   | {
       kind: "tool_call_started";
@@ -1647,12 +1683,25 @@ export interface AgentHandle {
   /** Aggregate, process-lifetime operational signals with no customer content or identifiers. */
   operationalSnapshot(): RuntimeOperationalSnapshot;
   card(): AgentCard;
-  inject(trigger: TurnTrigger, options?: { signal?: AbortSignal }): Promise<TurnResult>;
+  inject(trigger: TurnTrigger, options?: AgentInjectOptions): Promise<TurnResult>;
   /**
    * Clear a fail-closed thread quarantine after a trusted operator has
    * reconciled the outcome-unknown side effect.
    */
   recoverThread(threadId: string): boolean;
+}
+
+/** Options for the trusted embedding API. Public transports do not receive this surface. */
+export interface AgentInjectOptions {
+  signal?: AbortSignal;
+  executionContext?: ExecutionContextV1;
+  onEvent?: KernelEventHandler;
+  /**
+   * Trusted pre-execution hook. It runs after scheduler admission and before
+   * model or tool execution. A rejected hook prevents the turn from starting.
+   * Public transports do not receive this embedding surface.
+   */
+  onExecutionStart?: () => void | Promise<void>;
 }
 
 // === Notify augment ===

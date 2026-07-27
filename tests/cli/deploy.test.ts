@@ -174,6 +174,13 @@ function appendAugmentId(agentDir: string, id: string): void {
   );
 }
 
+function appendJobsSettings(agentDir: string, dbPath: string): void {
+  writeFileSync(
+    join(agentDir, "agent.yaml"),
+    `${readFileSync(join(agentDir, "agent.yaml"), "utf-8")}settings:\n  jobs:\n    enabled: true\n    dbPath: ${JSON.stringify(dbPath)}\n`,
+  );
+}
+
 function writeWebTransportWithVisitorBinding(agentDir: string): void {
   writeAugmentMetadata(agentDir, "webTransport", {
     type: "webTransport",
@@ -849,6 +856,27 @@ describe("runDeploy", () => {
       type: "budgets",
       config: { dbPath: "/app/data/budget-ledger.db" },
     });
+    const { cli, calls } = mockRailwayCli();
+
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+
+    expect(calls.checkPresence).toBe(1);
+    expect(calls.up).toBe(1);
+  });
+
+  test("requires durable jobs to live on the Railway runtime volume", async () => {
+    appendJobsSettings(agentDir, "/app/runtime/durable-jobs.sqlite");
+    const { cli, calls } = mockRailwayCli();
+
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /settings\.jobs\.dbPath must resolve below \/app\/data/,
+    );
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.up).toBe(0);
+  });
+
+  test("accepts durable jobs on the Railway runtime volume", async () => {
+    appendJobsSettings(agentDir, "./data/durable-jobs.sqlite");
     const { cli, calls } = mockRailwayCli();
 
     await runDeploy("zip", baseDeployOptions(cli, auggyDir));

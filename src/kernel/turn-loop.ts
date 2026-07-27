@@ -18,6 +18,7 @@ import type {
   TurnGateTicket,
   ToolResult,
   Part,
+  ExecutionContextV1,
 } from "../types";
 import type { Tokenizer } from "../tokenizer";
 import { extractText } from "../parts";
@@ -169,6 +170,7 @@ import { createContextAllocator } from "./context-allocator";
 import { createCapabilityTable } from "./capability-table";
 import { selectTools } from "./tool-selector";
 import { createTraceEmitter } from "./trace-emitter";
+import { deriveToolOperationId, executionContextForTrace } from "./execution-context";
 import { buildPreamble } from "./preamble";
 import { validateOutput } from "./output-validator";
 import { createHistoryManager, type HistoryManager } from "./history-manager";
@@ -182,6 +184,7 @@ import type { RuntimeSignals } from "./runtime-signals";
 export interface TurnLoopOptions {
   signal?: AbortSignal;
   onEvent?: KernelEventHandler;
+  executionContext?: ExecutionContextV1;
   trackDetachedOperation?: (operation: Promise<unknown>) => void;
 }
 
@@ -323,6 +326,8 @@ export function createTurnLoop(opts: {
     ): Promise<TurnResult> {
       const signal = options?.signal;
       const emitEvent: KernelEventHandler = options?.onEvent ?? (() => {});
+      const executionContext = options?.executionContext;
+      const executionTrace = executionContextForTrace(executionContext);
       const peer = trigger.peer ?? null;
       const turnState: TurnState = {
         turnId: trigger.turnId,
@@ -333,6 +338,7 @@ export function createTurnLoop(opts: {
         turnStartedAt: Date.now(),
         metadata: {},
         ...(signal ? { signal } : {}),
+        ...(executionContext ? { executionContext } : {}),
       };
 
       const toolCallRecords: ToolCallRecord[] = [];
@@ -356,6 +362,7 @@ export function createTurnLoop(opts: {
           peerKind: peer?.kind,
           trustLevel: peer?.trustLevel,
         },
+        ...(executionTrace ? { executionContext: executionTrace } : {}),
       });
 
       // ADR-027: record a per-turn snapshot before returning. Called at
@@ -594,6 +601,7 @@ export function createTurnLoop(opts: {
         threadId,
         contextId: trigger.contextId,
         taskId: trigger.taskId,
+        ...(executionTrace ? { execution: executionTrace } : {}),
       });
 
       // ADR-027 Decision 5: internal-trigger handler dispatch.
@@ -1043,6 +1051,7 @@ export function createTurnLoop(opts: {
         capabilityTable.resetTurn();
         const consecutiveFailures = new Map<string, number>();
         let inferenceCount = 0;
+        let nextToolOperationOrdinal = 0;
         const maxInferenceLoops = config.maxInferenceLoops ?? 10;
 
         while (inferenceCount < maxInferenceLoops) {
@@ -1134,6 +1143,7 @@ export function createTurnLoop(opts: {
                 call: { name: string; arguments: Record<string, unknown> };
                 reg: { tool: Tool; augment: string };
                 validatedInput: unknown;
+                operationOrdinal: number;
               };
 
           const entries: ToolCallEntry[] = [];
@@ -1241,7 +1251,13 @@ export function createTurnLoop(opts: {
               break;
             }
             turnState.toolCallsSoFar++;
-            entries.push({ type: "execute", call, reg, validatedInput: validation.data });
+            entries.push({
+              type: "execute",
+              call,
+              reg,
+              validatedInput: validation.data,
+              operationOrdinal: nextToolOperationOrdinal++,
+            });
           }
 
           // Phase 2: Execute validated tools in parallel (with event emission)
@@ -1292,6 +1308,16 @@ export function createTurnLoop(opts: {
                       threadId,
                       signal: deadlineSignal,
                       ...(trigger.auth !== undefined ? { auth: trigger.auth } : {}),
+                      ...(executionTrace !== undefined ? { executionContext: executionTrace } : {}),
+                      ...(executionContext === undefined
+                        ? {}
+                        : {
+                            operationId: deriveToolOperationId(
+                              executionContext,
+                              entry.reg.tool.name,
+                              entry.operationOrdinal,
+                            ),
+                          }),
                     }),
                   timeout,
                   signal,

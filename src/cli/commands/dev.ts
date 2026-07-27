@@ -37,6 +37,12 @@ import type { PidManifest } from "../types";
 import { displayPath } from "../display-path";
 import { prepareRailwayRuntimeVolume } from "../runtime-volume";
 import { runtimeResourceClaims } from "../runtime-resource-claims";
+import {
+  createDurableJobsRuntimeIfEnabled,
+  startAgentWithDurableJobs,
+  stopAgentWithDurableJobs,
+  type ConfiguredDurableJobsRuntime,
+} from "../durable-jobs-runtime";
 
 /**
  * Extract the webTransport port from augment configs (for the PID manifest
@@ -324,6 +330,32 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
 
   // Create and start the agent.
   const agent = defineAgent(agentConfig, model);
+  let durableJobs: ConfiguredDurableJobsRuntime | undefined;
+  try {
+    durableJobs = createDurableJobsRuntimeIfEnabled({
+      jobs: config.settings.jobs,
+      agent,
+      agentDir,
+      ...(runtimeDataRoot ? { runtimeDataRoot } : {}),
+      // Fixed classifications are intentionally all that reaches stdout:
+      // SQLite and job payload errors may contain operator-owned data.
+      onOperationalError: (code) => console.error(`[durable-jobs] ${code}`),
+    });
+  } catch (error) {
+    releaseRuntimeOwnership();
+    throw error;
+  }
+
+  let durableJobsClosed = false;
+  const closeDurableJobs = () => {
+    if (durableJobsClosed) return;
+    durableJobsClosed = true;
+    try {
+      durableJobs?.close();
+    } catch {
+      console.error("[durable-jobs] close-failed");
+    }
+  };
 
   // Graceful shutdown handler.
   let stopping = false;
@@ -331,11 +363,10 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
     if (stopping) return;
     stopping = true;
     console.log(`\n${signal} received — shutting down ${agentName}...`);
-    try {
-      await agent.stop();
-    } catch (err) {
-      console.error("Error during shutdown:", err);
-    }
+    await stopAgentWithDurableJobs(agent, durableJobs, (code) =>
+      console.error(`${code === "agent-stop-failed" ? "[runtime]" : "[durable-jobs]"} ${code}`),
+    );
+    durableJobsClosed = true;
     releaseRuntimeOwnership();
     console.log(`${agentName} stopped.`);
     process.exit(0);
@@ -346,43 +377,60 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
 
   // Also clean up PID on unexpected exit.
   process.on("exit", () => {
+    closeDurableJobs();
     releaseRuntimeOwnership();
   });
 
   // Start the agent.
   console.log("Starting services:");
   try {
-    await agent.start();
+    await startAgentWithDurableJobs(agent, durableJobs, (code) =>
+      console.error(`${code === "agent-stop-failed" ? "[runtime]" : "[durable-jobs]"} ${code}`),
+    );
   } catch (error) {
+    durableJobsClosed = true;
     releaseRuntimeOwnership();
     throw error;
   }
 
   const consoleUrl = port ? `http://localhost:${port}/console` : null;
-  console.log(
-    `\n${formatDevReadyMessage({
-      agentName,
-      port,
-      configPath: formatRunDisplayPath(configPath, opts.cwd),
-      deployCommand: name ? `auggy deploy ${agentName}` : "auggy deploy",
-      runtime: opts.internalMode === "railway" ? "railway" : "local",
-      publicUrl: process.env.AUGGY_PUBLIC_URL,
-    })}`,
-  );
+  try {
+    console.log(
+      `\n${formatDevReadyMessage({
+        agentName,
+        port,
+        configPath: formatRunDisplayPath(configPath, opts.cwd),
+        deployCommand: name ? `auggy deploy ${agentName}` : "auggy deploy",
+        runtime: opts.internalMode === "railway" ? "railway" : "local",
+        publicUrl: process.env.AUGGY_PUBLIC_URL,
+      })}`,
+    );
 
-  // --open: pop the operator's browser to the chat surface. Small delay so
-  // the banner lands first, then the browser opens — cleaner than racing
-  // stdout against the browser launcher.
-  if (opts.open && consoleUrl) {
-    setTimeout(() => {
-      const result = openBrowser(`${consoleUrl}/chat`);
-      if (!result.ok) {
-        console.log(
-          `  (couldn't auto-launch \`${result.command}\`; open ${consoleUrl}/chat manually)`,
-        );
-      }
-    }, 50);
+    // --open: pop the operator's browser to the chat surface. Small delay so
+    // the banner lands first, then the browser opens — cleaner than racing
+    // stdout against the browser launcher.
+    if (opts.open && consoleUrl) {
+      setTimeout(() => {
+        try {
+          const result = openBrowser(`${consoleUrl}/chat`);
+          if (!result.ok) {
+            console.log(
+              `  (couldn't auto-launch \`${result.command}\`; open ${consoleUrl}/chat manually)`,
+            );
+          }
+        } catch {
+          console.error("[runtime] browser-open-failed");
+        }
+      }, 50);
+    }
+
+    opts.onReady?.({ agentName, port, consoleUrl });
+  } catch (error) {
+    await stopAgentWithDurableJobs(agent, durableJobs, (code) =>
+      console.error(`${code === "agent-stop-failed" ? "[runtime]" : "[durable-jobs]"} ${code}`),
+    );
+    durableJobsClosed = true;
+    releaseRuntimeOwnership();
+    throw error;
   }
-
-  opts.onReady?.({ agentName, port, consoleUrl });
 }

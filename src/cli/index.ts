@@ -48,6 +48,7 @@ import { evalCommand } from "./commands/eval";
 import { mcpCommand } from "./commands/mcp";
 import { modelsCommand } from "./commands/models";
 import { runtimeStateCommand } from "./commands/state";
+import { jobsCommand } from "./commands/jobs";
 import { runRemove } from "./commands/remove";
 import { runLs } from "./commands/ls";
 import { withBrailleSpinner } from "./spinner";
@@ -108,6 +109,7 @@ export function buildCli(): Command {
   program.addCommand(coordinationCommand());
   program.addCommand(modelsCommand());
   program.addCommand(runtimeStateCommand());
+  program.addCommand(jobsCommand());
   program.addCommand(routesCommand());
   program.addCommand(augmentCommand());
   program.addCommand(agentMailCommand());

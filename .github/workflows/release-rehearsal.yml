@@ -75,6 +75,9 @@ jobs:
       - name: Run console tests
         run: bun scripts/test-surface-inventory.ts run console
 
+      - name: Validate Temporal orchestration example
+        run: bun run test:temporal-example
+
       - name: Smoke packed release
         run: bun run smoke:release
 

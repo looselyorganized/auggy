@@ -5,6 +5,7 @@ export type {
   AugmentConstraints,
   AgentConfig,
   AgentHandle,
+  AgentInjectOptions,
   AgentHealth,
   AuthorizationAction,
   AuthorizationConstraintValue,
@@ -37,6 +38,8 @@ export type {
   ToolExecuteContext,
   ToolDefinition,
   ToolResult,
+  ExecutionContextV1,
+  ExecutionTraceContextV1,
   // Peers
   PeerIdentity,
   PeerKind,

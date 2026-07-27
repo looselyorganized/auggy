@@ -39,6 +39,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./cli": "./src/cli/index.ts",
+    "./jobs": "./src/jobs/index.ts",
     "./internal/cost": "./src/engines/_shared/cost.ts",
     "./internal/schema-normalize": "./src/engines/_shared/schema-normalize.ts",
     "./internal/tool-call": "./src/engines/_shared/tool-call.ts",
@@ -84,9 +85,11 @@
   "private": false,
   "scripts": {
     "test": "bun run test:runtime && bun run test:admin",
+    "test:full": "bun run test && bun run test:temporal-example",
     "test:inventory": "bun scripts/test-surface-inventory.ts check",
     "test:runtime": "bun scripts/test-surface-inventory.ts run-runtime",
     "test:admin": "bun scripts/test-surface-inventory.ts run console",
+    "test:temporal-example": "bash scripts/test-temporal-example.sh",
     "test:watch": "bun test --watch ./tests ./examples ./packages",
     "dx:agent": "bash scripts/dx-lab-agent.sh",
     "smoke:release": "bash scripts/release-smoke.sh",

@@ -30,7 +30,32 @@ function config(): ParsedConfig {
     id: "aug1_8a3d7828-1597-4db4-bd0e-adc1a1036211",
     name: "inventory-test",
     engine: { provider: "anthropic", model: "claude-sonnet-4-6" },
-    settings: {},
+    settings: {
+      jobs: {
+        enabled: true,
+        dbPath: "./data/durable-jobs.sqlite",
+        leaseDurationMs: 30_000,
+        heartbeatIntervalMs: 5_000,
+        claimPollMs: 250,
+        turnTimeoutMs: 300_000,
+        maxAttempts: 3,
+        maxTotalRecords: 10_000,
+        maxQueuedRecords: 1_000,
+        maxPrivateBytes: 134_217_728,
+        terminalRetentionMs: 2_592_000_000,
+        auditRetentionMs: 7_776_000_000,
+        schedules: [
+          {
+            id: "daily-review",
+            cron: "0 9 * * *",
+            prompt: "runtime-state-secret-sentinel-prompt",
+            enabled: true,
+            maxAttempts: 3,
+            timeoutMs: 300_000,
+          },
+        ],
+      },
+    },
     augments: [
       {
         name: "learned",
@@ -105,6 +130,13 @@ describe("runtime state inventory", () => {
     expect(byId.get("notify-delivery:notify")?.relativePath).toBe("notify-notify.db");
     expect(byId.get("notify-delivery:notify")?.schema).toBe("NTFY/v1");
     expect(byId.get("notify-delivery:notify")?.replayCritical).toBe(true);
+    expect(byId.get("durable-jobs")).toMatchObject({
+      relativePath: "durable-jobs.sqlite",
+      schema: "DJOB/v2",
+      replayCritical: true,
+      required: true,
+      restoreOrder: 15,
+    });
     expect(byId.get("notify-log:notify:creator")?.relativePath).toBe("notifications.jsonl");
     expect(byId.get("admin-overrides")?.restoreOrder).toBeLessThan(
       byId.get("web-idempotency:web")!.restoreOrder,
@@ -180,6 +212,25 @@ describe("runtime state inventory", () => {
     });
     const serialized = JSON.stringify(buildRuntimeStateInventory(value, paths));
     expect(serialized).not.toContain("runtime-state-secret-sentinel");
+    expect(serialized).not.toContain("runtime-state-secret-sentinel-prompt");
     expect(serialized).not.toContain("example.invalid");
+  });
+
+  test("binds durable execution policy and schedule prompts into the recovery fingerprint", () => {
+    const paths = fixture();
+    const baseline = config();
+    const baselineFingerprint = buildRuntimeStateInventory(baseline, paths).configShapeSha256;
+
+    const changedPrompt = config();
+    changedPrompt.settings.jobs!.schedules[0]!.prompt = "a different private schedule prompt";
+    expect(buildRuntimeStateInventory(changedPrompt, paths).configShapeSha256).not.toBe(
+      baselineFingerprint,
+    );
+
+    const changedPolicy = config();
+    changedPolicy.settings.jobs!.leaseDurationMs += 1_000;
+    expect(buildRuntimeStateInventory(changedPolicy, paths).configShapeSha256).not.toBe(
+      baselineFingerprint,
+    );
   });
 });

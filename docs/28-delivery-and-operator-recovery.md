@@ -18,6 +18,7 @@ multiple replicas of one Auggy supported.
 | AgentMail outbound/review | Requests are fingerprinted and quota-reserved before provider dispatch. Reviews preserve exact approved content. | A provider-reached request without a trustworthy result remains in an ambiguous sending state and is never automatically retried. | Creator verifies AgentMail state, then reconciles the exact review fingerprint as sent or failed. |
 | Generic `notify` | `NTFY/v1` atomically reserves quota and an operation hash before any adapter await. Exact dedup and quota survive restart. Creator/system calls bypass quota, not replay safety. Direct construction requires durable state. | Throws, adapter-reported unknown results, invalid results, failed settlement, and interrupted pending attempts stay fenced. Runtime startup restores the thread fence before model work. | Creator action compares incident ID/version and records only a SHA-256 evidence digest. Confirmed delivery retains quota; confirmed no-effect releases it. Core still checks every other incident authority before lane recovery. |
 | Link calls | Originating identity and delegated authority remain bound across the link; downstream authority cannot exceed the caller. | A non-cancelable post-dispatch timeout is outcome-unknown and terminates the turn. | No blind retry. Reconcile the downstream peer before trusted thread recovery. Link's package-owned task state remains an external recovery prerequisite. |
+| Durable jobs | A trusted application/operator submission binds one idempotency key to one canonical system-peer turn. The store leases and marks execution started before inference or tools. | An interrupted unstarted lease may requeue within bounds. Any untrusted post-start result, non-cooperative deadline, or crash becomes a versioned `outcome_unknown` incident. | Inspect the downstream system, then reconcile the exact job incident/version as retry, cancel, or confirmed completed. Ordinary failed jobs and ambiguous jobs use different controls. |
 | Lifecycle hooks and first-party tools | The keyed scheduler retains the lane through causally owned work and cancellation. Every admission also consults registered durable incident authorities. | Typed outcome-unknown errors quarantine the runtime thread before another model inference. Durable incidents are restored before routes or listeners register. | `recoverThread` is a trusted operator/application API, never a model tool. Core releases only after every registered authority reports the thread clear. |
 
 ## Recovery rules
@@ -34,7 +35,7 @@ multiple replicas of one Auggy supported.
 
 ## Backup and deployment implications
 
-`AUID/v2`, `TGRP/v2`, `AMIL/v2`, and `NTFY/v1` are replay-critical. Back them
+`AUID/v2`, `DJOB/v2`, `TGRP/v2`, `AMIL/v2`, and `NTFY/v1` are replay-critical. Back them
 up and restore them with the whole stopped runtime-volume workflow in
 [`27-runtime-state-recovery.md`](./27-runtime-state-recovery.md). Copying only a
 main SQLite file while omitting its WAL/SHM state is unsupported.

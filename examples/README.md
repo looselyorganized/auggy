@@ -25,6 +25,13 @@ A form or conversation creates the same structured service intake. The agent
 can escalate urgent work through `notify`, while visitor-authenticated routes
 and tools hold and confirm appointments under public chat budgets.
 
+### [Temporal Order Support](./temporal-order-support/README.md)
+
+A standalone Node/TypeScript Temporal Workflow that calls authenticated Auggy
+`/agent/run` through a bounded Activity. It demonstrates durable order/refund
+orchestration and conservative reconciliation without turning Temporal into an
+Auggy augment or package.
+
 ## Supporting patterns and fixtures
 
 - [Concierge](./concierge/README.md) is the smallest route/tool/domain example.

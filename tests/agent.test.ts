@@ -5,6 +5,7 @@ import { extractText } from "@/parts";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createMockTransport, createIdentityAugment } from "@tests/fixtures/mock-augment";
 import { emptyTrace } from "@/kernel/trace-emitter";
+import { deriveToolOperationId } from "@/kernel/execution-context";
 import type { Augment, TransportKernel } from "@/types";
 
 describe("defineAgent", () => {
@@ -254,6 +255,361 @@ describe("defineAgent", () => {
 
     expect(result.success).toBe(true);
     expect(extractText(result.response?.parts ?? [])).toBe("Injected response");
+
+    await agent.stop();
+  });
+
+  it("propagates trusted execution context without exposing idempotency material to traces or events", async () => {
+    let toolContext: import("@/types").ToolExecuteContext | undefined;
+    let observedTurn: import("@/types").TurnState | undefined;
+    const model = createMockModel();
+    model.pushResponse({
+      toolCalls: [{ name: "charge", arguments: { amount: 42 } }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "charged" });
+    const agent = defineAgent(
+      {
+        name: "execution-context-agent",
+        model: "mock",
+        augments: [
+          {
+            name: "charge-augment",
+            context: async (turn) => {
+              observedTurn = turn;
+              return [];
+            },
+            tools: [
+              {
+                name: "charge",
+                description: "charges an order",
+                category: "meta",
+                input: z.object({ amount: z.number() }),
+                execute: async (_input, context) => {
+                  toolContext = context;
+                  return "charged";
+                },
+              },
+            ],
+          },
+        ],
+      },
+      model,
+    );
+    const executionContext = {
+      version: 1 as const,
+      executionId: "job-8cba58e1",
+      attempt: 2,
+      deadlineAt: Date.now() + 60_000,
+      correlationId: "order-7f3c",
+      idempotencyKeyHash: "a".repeat(64),
+      bindingHash: "b".repeat(64),
+    };
+    const events: import("@/types").KernelEvent[] = [];
+
+    await agent.start();
+    const result = await agent.inject(
+      {
+        type: "message",
+        turnId: "trusted-execution-turn",
+        threadId: "trusted-execution-thread",
+        timestamp: Date.now(),
+        source: "trusted-test",
+        peer: null,
+        payload: { sourceAugment: "trusted-test", peer: null, timestamp: Date.now(), parts: [] },
+      },
+      { executionContext, onEvent: (event) => events.push(event) },
+    );
+
+    expect(result.executionContext).toEqual(executionContext);
+    expect(observedTurn?.executionContext).toEqual(executionContext);
+    expect(result.trace.executionContext).toEqual({
+      version: 1,
+      executionId: "job-8cba58e1",
+      attempt: 2,
+      deadlineAt: executionContext.deadlineAt,
+      correlationId: "order-7f3c",
+    });
+    expect(toolContext?.executionContext).toEqual(result.trace.executionContext);
+    expect(toolContext?.operationId).toMatch(/^auggy-op-v1-[a-f0-9]{64}$/);
+    expect(events.find((event) => event.kind === "run_started")).toMatchObject({
+      execution: result.trace.executionContext,
+    });
+    const serialized = JSON.stringify({ trace: result.trace, events, toolContext });
+    expect(serialized).not.toContain("a".repeat(64));
+    expect(serialized).not.toContain("b".repeat(64));
+
+    await agent.stop();
+  });
+
+  it("awaits trusted execution-start persistence before model admission", async () => {
+    let persistenceCommitted = false;
+    let contextObservedCommit = false;
+    const agent = defineAgent(
+      {
+        name: "execution-start-hook-agent",
+        model: "mock",
+        augments: [
+          {
+            name: "execution-start-probe",
+            context: async () => {
+              contextObservedCommit = persistenceCommitted;
+              return [];
+            },
+          },
+        ],
+      },
+      createMockModel({ response: "ok" }),
+    );
+    await agent.start();
+    try {
+      await agent.inject(
+        {
+          type: "internal",
+          turnId: "execution-start-turn",
+          threadId: "execution-start-thread",
+          timestamp: Date.now(),
+          source: "trusted-test",
+          payload: { sourceAugment: "trusted-test", peer: null, timestamp: Date.now(), parts: [] },
+        },
+        {
+          onExecutionStart: async () => {
+            await Promise.resolve();
+            persistenceCommitted = true;
+          },
+        },
+      );
+      expect(contextObservedCommit).toBe(true);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("does not admit model execution when the trusted execution-start hook rejects", async () => {
+    const model = createMockModel({ response: "must-not-run" });
+    const agent = defineAgent(
+      { name: "execution-start-rejection-agent", model: "mock", augments: [] },
+      model,
+    );
+    await agent.start();
+    try {
+      await expect(
+        agent.inject(
+          {
+            type: "internal",
+            turnId: "execution-start-rejection-turn",
+            threadId: "execution-start-rejection-thread",
+            timestamp: Date.now(),
+            source: "trusted-test",
+            payload: {
+              sourceAugment: "trusted-test",
+              peer: null,
+              timestamp: Date.now(),
+              parts: [],
+            },
+          },
+          { onExecutionStart: async () => Promise.reject(new Error("durable-start-fenced")) },
+        ),
+      ).rejects.toThrow("durable-start-fenced");
+      expect(model.calls).toHaveLength(0);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("derives stable downstream operation identities without exposing trusted hashes", () => {
+    const base = {
+      version: 1 as const,
+      executionId: "job-8cba58e1",
+      attempt: 1,
+      bindingHash: "b".repeat(64),
+      idempotencyKeyHash: "a".repeat(64),
+    };
+    const initial = deriveToolOperationId(base, "charge", 0);
+    const retry = deriveToolOperationId({ ...base, attempt: 2 }, "charge", 0);
+    const rebound = deriveToolOperationId({ ...base, bindingHash: "c".repeat(64) }, "charge", 0);
+
+    expect(initial).toBe(retry);
+    expect(rebound).not.toBe(initial);
+    expect(initial).not.toContain(base.bindingHash);
+    expect(initial).not.toContain(base.idempotencyKeyHash);
+  });
+
+  it("assigns distinct stable operation identities across inference rounds and execution retries", async () => {
+    const model = createMockModel();
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      model.pushResponse({
+        toolCalls: [{ name: "charge", arguments: { amount: 10 } }],
+        finishReason: "tool_use",
+      });
+      model.pushResponse({
+        toolCalls: [{ name: "charge", arguments: { amount: 20 } }],
+        finishReason: "tool_use",
+      });
+      model.pushResponse({ content: "done" });
+    }
+    const operationIds: string[] = [];
+    const agent = defineAgent(
+      {
+        name: "multi-round-operation-agent",
+        model: "mock",
+        augments: [
+          {
+            name: "charge-augment",
+            tools: [
+              {
+                name: "charge",
+                description: "charges an order",
+                category: "meta",
+                input: z.object({ amount: z.number() }),
+                execute: async (_input, context) => {
+                  operationIds.push(context?.operationId ?? "missing");
+                  return "charged";
+                },
+              },
+            ],
+          },
+        ],
+      },
+      model,
+    );
+    const bindingHash = "d".repeat(64);
+
+    await agent.start();
+    for (let attempt = 1; attempt <= 2; attempt++) {
+      await agent.inject(
+        {
+          type: "message",
+          turnId: `multi-round-turn-${attempt}`,
+          threadId: "multi-round-thread",
+          timestamp: Date.now(),
+          source: "trusted-test",
+          peer: null,
+          payload: { sourceAugment: "trusted-test", peer: null, timestamp: Date.now(), parts: [] },
+        },
+        {
+          executionContext: {
+            version: 1,
+            executionId: "multi-round-job",
+            attempt,
+            bindingHash,
+          },
+        },
+      );
+    }
+
+    expect(operationIds).toHaveLength(4);
+    expect(operationIds[0]).not.toBe(operationIds[1]);
+    expect(operationIds.slice(0, 2)).toEqual(operationIds.slice(2));
+    expect(operationIds.slice(0, 2)).toEqual([
+      deriveToolOperationId(
+        { version: 1, executionId: "multi-round-job", attempt: 1, bindingHash },
+        "charge",
+        0,
+      )!,
+      deriveToolOperationId(
+        { version: 1, executionId: "multi-round-job", attempt: 1, bindingHash },
+        "charge",
+        1,
+      )!,
+    ]);
+    await agent.stop();
+  });
+
+  it("cancels a trusted execution when its deadline expires", async () => {
+    const model = createMockModel();
+    model.pushResponse({
+      toolCalls: [{ name: "wait", arguments: {} }],
+      finishReason: "tool_use",
+    });
+    let toolAborted = false;
+    const agent = defineAgent(
+      {
+        name: "execution-deadline-agent",
+        model: "mock",
+        augments: [
+          {
+            name: "slow-tool",
+            tools: [
+              {
+                name: "wait",
+                description: "waits for cancellation",
+                category: "meta",
+                input: z.object({}),
+                execute: async (_input, context) =>
+                  new Promise<string>((_resolve, reject) => {
+                    context?.signal?.addEventListener(
+                      "abort",
+                      () => {
+                        toolAborted = true;
+                        reject(context.signal?.reason);
+                      },
+                      { once: true },
+                    );
+                  }),
+              },
+            ],
+          },
+        ],
+      },
+      model,
+    );
+
+    await agent.start();
+    const result = await agent.inject(
+      {
+        type: "message",
+        turnId: "deadline-turn",
+        timestamp: Date.now(),
+        source: "trusted-test",
+        peer: null,
+        payload: { sourceAugment: "trusted-test", peer: null, timestamp: Date.now(), parts: [] },
+      },
+      {
+        executionContext: {
+          version: 1,
+          executionId: "deadline-job",
+          attempt: 1,
+          deadlineAt: Date.now() + 25,
+        },
+      },
+    );
+
+    expect(result.status).toBe("canceled");
+    expect(toolAborted).toBe(true);
+    await agent.stop();
+  });
+
+  it("rejects malformed trusted execution context before admitting a turn", async () => {
+    const model = createMockModel({ response: "must not run" });
+    const agent = defineAgent(
+      { name: "execution-context-validation", model: "mock", augments: [] },
+      model,
+    );
+    await agent.start();
+
+    await expect(
+      agent.inject(
+        {
+          type: "message",
+          turnId: "invalid-execution-turn",
+          timestamp: Date.now(),
+          source: "trusted-test",
+          peer: null,
+          payload: { sourceAugment: "trusted-test", peer: null, timestamp: Date.now(), parts: [] },
+        },
+        {
+          executionContext: {
+            version: 1,
+            executionId: "job-1",
+            attempt: 1,
+            idempotencyKeyHash: "a".repeat(64),
+            idempotencyKey: "raw-secret-must-not-cross-the-boundary",
+          },
+        } as never,
+      ),
+    ).rejects.toThrow("Invalid trusted execution context");
+    expect(model.calls).toHaveLength(0);
 
     await agent.stop();
   });

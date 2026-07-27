@@ -55,6 +55,23 @@ jobs:
       - name: Typecheck
         run: bun run typecheck
 
+  temporal_example:
+    name: Temporal example gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Install, test, typecheck, and audit Temporal example
+        run: bun run test:temporal-example
+
   pricing:
     name: v1 pricing gate
     runs-on: ubuntu-latest
@@ -289,6 +306,7 @@ jobs:
       - linux_boundaries
       - runtime_shards
       - postgres_coordination
+      - temporal_example
     runs-on: ubuntu-latest
     timeout-minutes: 2
 
@@ -304,8 +322,9 @@ jobs:
           LINUX_RESULT: ${{ needs.linux_boundaries.result }}
           SHARD_RESULT: ${{ needs.runtime_shards.result }}
           POSTGRES_COORDINATION_RESULT: ${{ needs.postgres_coordination.result }}
+          TEMPORAL_EXAMPLE_RESULT: ${{ needs.temporal_example.result }}
         run: |
-          if [[ "$LINT_RESULT" != "success" || "$TYPECHECK_RESULT" != "success" || "$PRICING_RESULT" != "success" || "$INVENTORY_RESULT" != "success" || "$CONSOLE_RESULT" != "success" || "$TEST_RESULT" != "success" || "$LINUX_RESULT" != "success" || "$SHARD_RESULT" != "success" || "$POSTGRES_COORDINATION_RESULT" != "success" ]]; then
-            echo "lint=$LINT_RESULT typecheck=$TYPECHECK_RESULT pricing=$PRICING_RESULT inventory=$INVENTORY_RESULT console=$CONSOLE_RESULT deterministic-tests=$TEST_RESULT linux-boundaries=$LINUX_RESULT runtime-shards=$SHARD_RESULT postgres-coordination=$POSTGRES_COORDINATION_RESULT"
+          if [[ "$LINT_RESULT" != "success" || "$TYPECHECK_RESULT" != "success" || "$PRICING_RESULT" != "success" || "$INVENTORY_RESULT" != "success" || "$CONSOLE_RESULT" != "success" || "$TEST_RESULT" != "success" || "$LINUX_RESULT" != "success" || "$SHARD_RESULT" != "success" || "$POSTGRES_COORDINATION_RESULT" != "success" || "$TEMPORAL_EXAMPLE_RESULT" != "success" ]]; then
+            echo "lint=$LINT_RESULT typecheck=$TYPECHECK_RESULT pricing=$PRICING_RESULT inventory=$INVENTORY_RESULT console=$CONSOLE_RESULT deterministic-tests=$TEST_RESULT linux-boundaries=$LINUX_RESULT runtime-shards=$SHARD_RESULT postgres-coordination=$POSTGRES_COORDINATION_RESULT temporal-example=$TEMPORAL_EXAMPLE_RESULT"
             exit 1
           fi

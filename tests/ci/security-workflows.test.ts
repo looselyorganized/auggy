@@ -149,6 +149,7 @@ describe("release publishing identity", () => {
     );
     expect(verifyJob).not.toContain("id-token: write");
     expect(verifyJob).not.toContain("NODE_AUTH_TOKEN");
+    expect(verifyJob).toContain("bun run test:full");
     expect(publishJob).toContain("needs: verify");
     expect(publishJob).toContain("environment: npm-publish");
     expect(publishJob).toContain("id-token: write");
@@ -190,6 +191,9 @@ describe("tracked test-surface workflow enforcement", () => {
       "bun scripts/test-surface-inventory.ts run console",
     );
     expect(packageJson.scripts?.test).toBe("bun run test:runtime && bun run test:admin");
+    expect(packageJson.scripts?.["test:full"]).toBe(
+      "bun run test && bun run test:temporal-example",
+    );
   });
 
   test("primary CI derives its runtime matrix and aggregate gate from inventory", () => {
@@ -219,15 +223,37 @@ describe("tracked test-surface workflow enforcement", () => {
       "bun scripts/test-surface-inventory.ts run console",
     );
 
+    const temporal = requireJob(jobs, "temporal_example");
+    expect(requireStep(temporal, "Install, test, typecheck, and audit Temporal example").run).toBe(
+      "bun run test:temporal-example",
+    );
+    const temporalScript = readFileSync(join(ROOT, "scripts/test-temporal-example.sh"), "utf8");
+    for (const required of [
+      "set -euo pipefail",
+      "bun install --frozen-lockfile",
+      "bun run test",
+      "bun run typecheck",
+      "bun audit --json",
+    ]) {
+      expect(temporalScript).toContain(required);
+    }
+
     const aggregate = requireJob(jobs, "test");
     expect(normalizedNeeds(aggregate)).toContain("inventory");
     expect(normalizedNeeds(aggregate)).toContain("postgres_coordination");
+    expect(normalizedNeeds(aggregate)).toContain("temporal_example");
     expect(requireStep(aggregate, "Verify constituent gates").env?.INVENTORY_RESULT).toBe(
       "${{ needs.inventory.result }}",
     );
     expect(
       requireStep(aggregate, "Verify constituent gates").env?.POSTGRES_COORDINATION_RESULT,
     ).toBe("${{ needs.postgres_coordination.result }}");
+    expect(requireStep(aggregate, "Verify constituent gates").env?.TEMPORAL_EXAMPLE_RESULT).toBe(
+      "${{ needs.temporal_example.result }}",
+    );
+    expect(requireStep(aggregate, "Verify constituent gates").run).toContain(
+      '"$TEMPORAL_EXAMPLE_RESULT" != "success"',
+    );
 
     const postgres = requireJob(jobs, "postgres_coordination");
     expect(postgres.services?.postgres?.image).toBe(
@@ -261,6 +287,9 @@ describe("tracked test-surface workflow enforcement", () => {
     );
     expect(requireStep(rehearse, "Run console tests").run).toBe(
       "bun scripts/test-surface-inventory.ts run console",
+    );
+    expect(requireStep(rehearse, "Validate Temporal orchestration example").run).toBe(
+      "bun run test:temporal-example",
     );
     expect(requireStep(rehearse, "Smoke packed release").run).toBe("bun run smoke:release");
     expect(rehearse.steps?.some((step) => step.run?.includes("bun test "))).toBeFalse();

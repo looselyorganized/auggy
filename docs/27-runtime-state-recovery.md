@@ -48,6 +48,7 @@ The initial catalog covers:
 | Budgets | `BUDG/v1` | Unbounded unless `retentionDays` is set | Reservations, counts, and cost |
 | Visitor auth | `VAUT/v1` | Until explicit deletion | Identities, consumed tokens, revocations |
 | Web idempotency | `AUID/v2` | Configured replay window | Completed and outcome-unknown execution fence |
+| Durable jobs and schedules | `DJOB/v2` | 30-day terminal jobs and 90-day reconciliation audit by default | Job leases, attempt history, schedule occurrences, cancellation, and outcome-unknown incidents |
 | Console chat/history | `CCHT/v4` | Until authenticated deletion | Ownership, history, runs, tombstones |
 | Telegram replay | `TGRP/v2` | 30 days and configured entry cap | Claims, conflicts, discard decisions |
 | AgentMail inbound | `AMIL/v2` | Ledger policy | Inbound leases, outcome-unknown incidents, recovery evidence hashes, and terminal work |
@@ -79,6 +80,12 @@ The volume may also contain `.auggy-runtime-singleton.lock`. Backing up or
 restoring this regular owner-only file while the sole replica is stopped is
 safe because its bytes carry no authority. A restored copy begins unlocked;
 the next supported runtime acquires a new kernel lease during admission.
+
+When `settings.jobs.enabled: true`, the durable-jobs database is also rooted on
+this volume. It contains plaintext private prompts and bindings, so the same
+confidentiality, encryption, and access-control requirements apply to live
+volumes and backup bundles. A restored `outcome_unknown` job remains fenced;
+restore never converts uncertainty into a retry.
 
 ## Offline backup
 

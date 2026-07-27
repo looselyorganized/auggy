@@ -158,6 +158,27 @@ NODE
       if (typeof core.defineAgent !== "function") {
         throw new Error("packed Auggy core does not export defineAgent");
       }
+      const jobs = await import("auggy/jobs");
+      if (
+        typeof jobs.createSqliteDurableJobStore !== "function" ||
+        typeof jobs.createDurableJobRuntime !== "function"
+      ) {
+        throw new Error("packed Auggy core does not export the durable jobs contract");
+      }
+      const store = jobs.createSqliteDurableJobStore({
+        dbPath: "./packed-durable-jobs.sqlite",
+        maxTotalRecords: 2,
+        maxQueuedRecords: 1,
+      });
+      const submitted = store.submit({
+        idempotencyKey: "packed-consumer",
+        binding: { consumer: packageName },
+        payload: { version: 1, value: { kind: "release-smoke" } },
+      });
+      if (submitted.status !== "created" || store.list().length !== 1) {
+        throw new Error("packed durable jobs store failed its consumer contract");
+      }
+      store.close();
       const provider = await import(packageName);
       if (typeof provider[factoryName] !== "function") {
         throw new Error(`${packageName} does not export ${factoryName}`);
@@ -235,6 +256,9 @@ reject_pack_pattern() {
 }
 
 require_pack_entry "src/cli/index.ts"
+require_pack_entry "src/jobs/index.ts"
+require_pack_entry "src/jobs/runtime.ts"
+require_pack_entry "src/jobs/sqlite-store.ts"
 require_pack_entry "src/cli/model-registry.ts"
 require_pack_entry "src/cli/model-snapshot.ts"
 require_pack_entry "src/scaffold-starter-skills/auggy/assets/templates/nextjs-server-client/admin-reindex-route.ts.txt"

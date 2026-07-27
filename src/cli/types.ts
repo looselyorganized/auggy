@@ -159,12 +159,46 @@ export interface AgentSettings {
   maxInferenceLoops?: number;
   turnScheduling?: Partial<TurnSchedulingConfig>;
   /**
+   * Explicit opt-in for the single-replica durable background-turn worker.
+   * This is trusted runtime configuration, not authority granted to augments,
+   * models, or public transports.
+   */
+  jobs?: DurableJobsConfig;
+  /**
    * Opt-in contract for the forthcoming PostgreSQL-backed distributed turn
    * coordinator. Supplying this setting does not enable replicas until the
    * runtime preflight can prove every participating store is shared and
    * fenced.
    */
   coordination?: DistributedCoordinationConfig;
+}
+
+/** A trusted, declarative UTC schedule for one complete Auggy turn. */
+export interface DurableJobScheduleConfig {
+  id: string;
+  cron: string;
+  prompt: string;
+  threadId?: string;
+  enabled: boolean;
+  maxAttempts: number;
+  timeoutMs: number;
+}
+
+/** Configuration for the bounded, SQLite-backed Durable Jobs v1 facility. */
+export interface DurableJobsConfig {
+  enabled: true;
+  dbPath: string;
+  leaseDurationMs: number;
+  heartbeatIntervalMs: number;
+  claimPollMs: number;
+  turnTimeoutMs: number;
+  maxAttempts: number;
+  maxTotalRecords: number;
+  maxQueuedRecords: number;
+  maxPrivateBytes: number;
+  terminalRetentionMs: number;
+  auditRetentionMs: number;
+  schedules: DurableJobScheduleConfig[];
 }
 
 /** Configuration for a fail-closed PostgreSQL distributed coordinator. */

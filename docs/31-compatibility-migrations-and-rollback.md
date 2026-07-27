@@ -20,6 +20,7 @@ reinterpreted, or accepted merely because an object has a familiar name.
 | OpenAPI route artifact | OpenAPI 3.1.0 plus `x-auggy.artifactSchemaVersion: 1` | Regenerate when route paths, auth, policies, media types, or schemas change. `info.version` labels the generated API description, not the Auggy package. |
 | Generated TypeScript client | Generator `v0` in the file header | Generated files are application-owned snapshots, not package exports. Regenerate and typecheck them during an upgrade; Auggy never rewrites copied clients or templates. |
 | Scheduler recovery | Package API plus store-owned incident versions | Process-local `recoverThread()` is valid only after every durable incident authority has been reconciled. AgentMail, Telegram, notify, and console recovery use their own versioned, compare-and-set records. |
+| Durable job execution | `auggy/jobs` source API plus `DJOB/v2` | One server-minted job and immutable binding per key. Unstarted work may retry within bounds; post-start ambiguity requires exact incident/version reconciliation. This is not a multi-step workflow-history contract. |
 | Runtime inventory and bundle | Inventory v1, bundle v1, volume identity v1, restore fence v1 | Readers require exact supported versions, configuration shape, agent identity, replay-critical mapping, paths, modes, and hashes. Unknown/newer formats fail before restore or startup. |
 | PostgreSQL coordination preview | Checksum ledger plus exact catalog validation in the `public` schema | Provisioning is explicit. Every run revalidates owned tables, columns, types, nullability, defaults, sequence ownership, indexes, and checks, including when the ledger already says the migration ran. The runtime still refuses replica mode. |
 | Logical-agent identity and local lifecycle | Immutable `agent.yaml` `aug1_` id | State and authority namespaces, local process manifests, launchd labels, and owned runtime paths bind to the immutable id. Display names are non-authoritative aliases and ambiguous aliases fail closed. |
@@ -47,6 +48,7 @@ tampered, or newer database fails without stamping or mutating it.
 | Telegram replay/conflicts | `TGRP/v2` | Exact prior replay fixture | Restore bundle and reconcile provider offsets/conflicts before ingress |
 | AgentMail inbound ledger | `AMIL/v2` | Exact v1 and recognized legacy fixtures | Restore bundle and reconcile mailbox/downstream delivery state |
 | Notify delivery incidents/quotas | `NTFY/v1` | Exact recognized legacy shape only | Restore bundle and reconcile outcome-unknown notifications |
+| Durable jobs and schedules | `DJOB/v2` | Exact branded `DJOB/v1` migrates atomically to v2; lookalikes fail before DDL | Restore the complete pre-upgrade bundle to roll back; reconcile every ambiguous downstream effect before enabling schedules or ingress |
 | Local runtime claims and launchd generations | `AUCL/v2` | Exact branded v1 claim table migrates to v2 | Local CLI control state, not runtime-volume state; stop and unload every local agent before restoring the matching registry |
 
 Admin overrides (`admin-overrides/v1`), thread-history snapshots (`version: 1`),
