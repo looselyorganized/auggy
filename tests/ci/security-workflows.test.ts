@@ -9,6 +9,7 @@ const ROOT = join(import.meta.dir, "..", "..");
 
 interface WorkflowStep {
   id?: string;
+  if?: string;
   name?: string;
   run?: string;
   env?: Record<string, string>;
@@ -137,7 +138,11 @@ describe("release publishing identity", () => {
   test("isolates repository execution from OIDC and environment-only publish credentials", () => {
     const source = readFileSync(join(ROOT, ".github/workflows/publish.yml"), "utf8");
     const releaseDocs = readFileSync(join(ROOT, "docs/RELEASING.md"), "utf8");
-    const publishJob = source.slice(source.indexOf("\n  publish:"));
+    const publishJob = source.slice(
+      source.indexOf("\n  publish:"),
+      source.indexOf("\n  github_release:"),
+    );
+    const githubReleaseJob = source.slice(source.indexOf("\n  github_release:"));
     const verifyJob = source.slice(source.indexOf("\n  verify:"), source.indexOf("\n  publish:"));
 
     expect(source).toContain('node-version: "24"');
@@ -150,10 +155,13 @@ describe("release publishing identity", () => {
     expect(verifyJob).not.toContain("id-token: write");
     expect(verifyJob).not.toContain("NODE_AUTH_TOKEN");
     expect(verifyJob).toContain("bun run test:full");
+    expect(verifyJob).toContain('bun scripts/release-metadata.ts "$REF_NAME"');
+    expect(verifyJob).toContain("release_version: ${{ steps.release-metadata.outputs.version }}");
+    expect(verifyJob).toContain("npm_tag: ${{ steps.release-metadata.outputs.npm_tag }}");
     expect(publishJob).toContain("needs: verify");
     expect(publishJob).toContain("environment: npm-publish");
     expect(publishJob).toContain("id-token: write");
-    expect(publishJob).toContain("NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN_PUBLISH_ENV_ONLY }}");
+    expect(publishJob).not.toContain("NODE_AUTH_TOKEN");
     expect(publishJob).not.toContain("actions/checkout");
     expect(publishJob).not.toContain("bun install");
     expect(publishJob).not.toContain("bun run test");
@@ -161,17 +169,25 @@ describe("release publishing identity", () => {
     expect(publishJob).toContain("manifest.name !== expectedName");
     expect(publishJob).toContain("manifest.version !== expectedVersion");
     expect(publishJob).toContain("manifest.publishConfig !== undefined");
+    expect(publishJob).toContain("git+https://github.com/looselyorganized/auggy.git");
     expect(publishJob).toContain("--registry=https://registry.npmjs.org");
-    expect(publishJob).toContain("--tag=latest");
+    expect(publishJob).toContain('--tag="$DIST_TAG"');
     expect(publishJob).toContain("--access=public");
     expect(publishJob).toContain("--ignore-scripts");
     expect(publishJob).not.toContain('npm publish "$tarball" --access public');
+    expect(githubReleaseJob).toContain("needs: [verify, publish]");
+    expect(githubReleaseJob).not.toContain("actions/checkout");
+    expect(githubReleaseJob).toContain("sha256sum ./*.tgz");
+    expect(githubReleaseJob).toContain("gh release create");
+    expect(githubReleaseJob).toContain("--prerelease");
+    expect(githubReleaseJob).toContain("./SHA256SUMS");
     expect(releaseDocs).toContain("workflow filename");
     expect(releaseDocs).toContain("`publish.yml`");
     expect(releaseDocs).toContain("Environment");
     expect(releaseDocs).toContain("`npm-publish`");
     expect(releaseDocs).toContain("allowed action `npm publish` only");
     expect(releaseDocs).toContain("Do not allow\n   `npm stage publish`");
+    expect(releaseDocs).toContain("OIDC-only");
   });
 });
 
@@ -276,7 +292,7 @@ describe("tracked test-surface workflow enforcement", () => {
   });
 
   test("release rehearsal executes the same canonical bounded inventory", () => {
-    const { jobs } = readWorkflow("release-rehearsal.yml");
+    const { source, jobs } = readWorkflow("release-rehearsal.yml");
     const rehearse = requireJob(jobs, "rehearse");
 
     expect(requireStep(rehearse, "Validate tracked test surface").run).toBe(
@@ -292,6 +308,11 @@ describe("tracked test-surface workflow enforcement", () => {
       "bun run test:temporal-example",
     );
     expect(requireStep(rehearse, "Smoke packed release").run).toBe("bun run smoke:release");
+    const releaseDetection = requireStep(rehearse, "Detect explicit release PR or version change");
+    expect(releaseDetection.run).toContain('case "${GITHUB_HEAD_REF:-}" in');
+    expect(releaseDetection.run).toContain("release/*) RELEASE_PR=true");
+    expect(releaseDetection.run).toContain('echo "required=true"');
+    expect(source.match(/if: steps\.version-check\.outputs\.required == 'true'/g)?.length).toBe(3);
     expect(rehearse.steps?.some((step) => step.run?.includes("bun test "))).toBeFalse();
   });
 });

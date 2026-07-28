@@ -1,6 +1,6 @@
 {
   "name": "@auggy/openrouter",
-  "version": "0.5.0",
+  "version": "0.5.0-rc.1",
   "description": "OpenRouter engine adapter for auggy — implements ModelClient against OpenRouter's OpenAI-compatible API.",
   "keywords": [
     "auggy",
@@ -11,6 +11,11 @@
   "license": "Apache-2.0",
   "author": "LORF (Loosely Organized Research Facility)",
   "homepage": "https://auggy.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/looselyorganized/auggy.git",
+    "directory": "packages/openrouter"
+  },
   "bugs": {
     "email": "hello@looselyorganized.xyz"
   },
@@ -30,7 +35,7 @@
   },
   "private": false,
   "peerDependencies": {
-    "auggy": "^0.5.0"
+    "auggy": "^0.5.0-rc.1"
   },
   "peerDependenciesMeta": {
     "auggy": {
@@ -38,7 +43,7 @@
     }
   },
   "dependencies": {
-    "@auggy/openai": "^0.5.0",
+    "@auggy/openai": "^0.5.0-rc.1",
     "openai": "^6.34.0"
   }
 }

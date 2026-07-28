@@ -1,7 +1,9 @@
 name: Release rehearsal (PR)
 
-# Runs on every PR targeting main, but the *release-specific* gates only fire
-# when this PR actually bumps `package.json.version` vs. the base branch.
+# Runs on every PR targeting main. The *release-specific* gates fire when the
+# package version changes or when the PR head uses the explicit `release/*`
+# namespace. The latter handles the one-time unpublished 0.5.0 already present
+# on main without weakening ordinary feature-PR behavior.
 #
 # Why split: most feature PRs don't touch the version. Forcing them to bump
 # would conflate "merging code" with "shipping artifacts" — exactly the
@@ -13,13 +15,12 @@ name: Release rehearsal (PR)
 #  - lint / test regressions
 #  - a full pack, isolated install, scaffold, boot, and console asset smoke
 #
-# What runs ONLY when version changed (i.e. release PRs):
+# What runs ONLY for a version change or explicit `release/*` PR:
 #  - version-vs-npm conflict check (would `npm publish` succeed?)
 #  - tarball packaging dry-run (would `npm pack` produce a valid tarball?)
 #
-# Detection: compares `package.json.version` at the PR HEAD against the same
-# field at the PR base. If equal, the release gates short-circuit with a
-# success notice. If different, the gates run normally.
+# Detection compares `package.json.version` at the PR HEAD against the base and
+# independently checks the trusted GitHub-provided head branch name.
 #
 # No NPM_TOKEN needed (everything is read-only). First line of defense
 # against the publish workflow failing on real tags.
@@ -54,7 +55,7 @@ jobs:
       - name: Setup Node (for npm CLI)
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
         with:
-          node-version: "20"
+          node-version: "24"
           registry-url: "https://registry.npmjs.org"
 
       - name: Install deps
@@ -81,16 +82,18 @@ jobs:
       - name: Smoke packed release
         run: bun run smoke:release
 
-      # Detect whether this PR bumps the package.json version vs. base.
-      # If unchanged, the release-specific gates below short-circuit.
+      # Detect whether this PR bumps the package version or deliberately uses
+      # the release branch namespace. Either condition enables every
+      # release-specific gate below.
       #
       # Uses GITHUB_BASE_REF (auto-set by Actions on pull_request events) and
       # treats it as a git ref name, NOT shell input — it's quoted everywhere.
-      - name: Detect version change vs base
+      - name: Detect explicit release PR or version change
         id: version-check
         run: |
           set -eu
           HEAD_VERSION="$(node -p "require('./package.json').version")"
+          bun scripts/release-metadata.ts "v$HEAD_VERSION" >/dev/null
           # Resolve the base branch's tip to a SHA, then read package.json
           # from that commit (handles force-pushes + rewrites cleanly).
           if BASE_SHA="$(git rev-parse "origin/${GITHUB_BASE_REF}" 2>/dev/null)" \
@@ -101,12 +104,24 @@ jobs:
           fi
           echo "head=$HEAD_VERSION" >> "$GITHUB_OUTPUT"
           echo "base=$BASE_VERSION" >> "$GITHUB_OUTPUT"
-          if [ "$BASE_VERSION" = "$HEAD_VERSION" ]; then
-            echo "changed=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::package.json version unchanged ($HEAD_VERSION). Feature PR, not a release — skipping npm-version and tarball gates."
-          else
+          RELEASE_PR=false
+          case "${GITHUB_HEAD_REF:-}" in
+            release/*) RELEASE_PR=true ;;
+          esac
+          echo "release_pr=$RELEASE_PR" >> "$GITHUB_OUTPUT"
+
+          if [ "$BASE_VERSION" != "$HEAD_VERSION" ]; then
             echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "required=true" >> "$GITHUB_OUTPUT"
             echo "::notice::package.json version bumped: ${BASE_VERSION:-<absent>} -> ${HEAD_VERSION}. Running release-specific gates."
+          elif [ "$RELEASE_PR" = "true" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "required=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Explicit release PR with unchanged version $HEAD_VERSION. Running release-specific gates."
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "required=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::package.json version unchanged ($HEAD_VERSION). Feature PR, not a release — skipping npm-version and tarball gates."
           fi
 
       # Version-conflict check: read-only. Fails if a real publish at this
@@ -114,10 +129,10 @@ jobs:
       # (where the version IS already on npm by design) are out of scope —
       # those go through the tag workflow's skip-if-published gate.
       #
-      # Only fires when this PR actually bumps the version. Feature PRs with
-      # the version unchanged from base skip this step.
+      # Fires for explicit release PRs even when main already carries the
+      # candidate version. Ordinary unchanged feature PRs skip this step.
       - name: Confirm package.json version is not already on npm
-        if: steps.version-check.outputs.changed == 'true'
+        if: steps.version-check.outputs.required == 'true'
         run: |
           PKG_NAME="$(node -p "require('./package.json').name")"
           PKG_VERSION="$(node -p "require('./package.json').version")"
@@ -131,7 +146,7 @@ jobs:
       # contacting the registry as a publisher. Catches missing files entries,
       # broken bin paths, etc. Only relevant on release PRs.
       - name: Validate tarball packaging
-        if: steps.version-check.outputs.changed == 'true'
+        if: steps.version-check.outputs.required == 'true'
         run: npm pack --dry-run
 
       # All packages version-lock together. On a release PR, confirm every
@@ -139,7 +154,7 @@ jobs:
       # cleanly. Catches drift before tag push, where the publish workflow
       # would fail with a clearer error but later in the cycle.
       - name: Validate engine packages match root version + pack cleanly
-        if: steps.version-check.outputs.changed == 'true'
+        if: steps.version-check.outputs.required == 'true'
         run: |
           ROOT_VERSION="$(node -p "require('./package.json').version")"
           for pkg_dir in packages/anthropic packages/openai packages/openrouter packages/ollama packages/evals; do

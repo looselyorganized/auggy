@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
@@ -20,6 +20,12 @@ import type {
   TransportKernel,
   TurnResult,
 } from "@/types";
+
+const expectedAuggyVersion = (
+  JSON.parse(readFileSync(join(import.meta.dir, "../../..", "package.json"), "utf8")) as {
+    version: string;
+  }
+).version;
 
 const numberInput: AdminActionInput = {
   name: "value",
@@ -392,7 +398,7 @@ describe("handleAdminRoute — auth", () => {
       csrfTokens: unknown[];
     };
     expect(body.card.provider.name).toBe("zip");
-    expect(body.auggyVersion).toBe("0.5.0");
+    expect(body.auggyVersion).toBe(expectedAuggyVersion);
     expect(Array.isArray(body.blocks)).toBe(true);
     expect(Array.isArray(body.csrfTokens)).toBe(true);
     expect(body.routes.summary).toEqual({

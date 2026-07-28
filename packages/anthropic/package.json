@@ -1,6 +1,6 @@
 {
   "name": "@auggy/anthropic",
-  "version": "0.5.0",
+  "version": "0.5.0-rc.1",
   "description": "Anthropic engine adapter for auggy — implements ModelClient against @anthropic-ai/sdk.",
   "keywords": [
     "auggy",
@@ -12,6 +12,11 @@
   "license": "Apache-2.0",
   "author": "LORF (Loosely Organized Research Facility)",
   "homepage": "https://auggy.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/looselyorganized/auggy.git",
+    "directory": "packages/anthropic"
+  },
   "bugs": {
     "email": "hello@looselyorganized.xyz"
   },
@@ -31,7 +36,7 @@
   },
   "private": false,
   "peerDependencies": {
-    "auggy": "^0.5.0"
+    "auggy": "^0.5.0-rc.1"
   },
   "peerDependenciesMeta": {
     "auggy": {

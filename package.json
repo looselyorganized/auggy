@@ -1,6 +1,6 @@
 {
   "name": "auggy",
-  "version": "0.5.0",
+  "version": "0.5.0-rc.1",
   "description": "Small Bun/TypeScript runtime for building self-hosted agents from composable augments.",
   "keywords": [
     "agent",
@@ -30,6 +30,10 @@
   "license": "Apache-2.0",
   "author": "LORF (Loosely Organized Research Facility)",
   "homepage": "https://auggy.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/looselyorganized/auggy.git"
+  },
   "bugs": {
     "email": "hello@looselyorganized.xyz"
   },

@@ -8,6 +8,11 @@ const ADAPTERS = ["anthropic", "openai", "openrouter", "ollama"] as const;
 interface PackageManifest {
   name: string;
   version: string;
+  repository?: {
+    type?: string;
+    url?: string;
+    directory?: string;
+  };
   dependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
   peerDependenciesMeta?: Record<string, { optional?: boolean }>;
@@ -21,6 +26,26 @@ function readManifest(path: string): PackageManifest {
 
 describe("published provider package contracts", () => {
   const rootManifest = readManifest(join(ROOT, "package.json"));
+
+  test("all publishable packages identify the exact public source repository", () => {
+    const publishable = [
+      { path: "package.json", directory: undefined },
+      { path: "packages/anthropic/package.json", directory: "packages/anthropic" },
+      { path: "packages/openai/package.json", directory: "packages/openai" },
+      { path: "packages/openrouter/package.json", directory: "packages/openrouter" },
+      { path: "packages/ollama/package.json", directory: "packages/ollama" },
+      { path: "packages/evals/package.json", directory: "packages/evals" },
+    ];
+
+    for (const entry of publishable) {
+      const manifest = readManifest(join(ROOT, entry.path));
+      expect(manifest.repository, manifest.name).toEqual({
+        type: "git",
+        url: "git+https://github.com/looselyorganized/auggy.git",
+        ...(entry.directory ? { directory: entry.directory } : {}),
+      });
+    }
+  });
 
   for (const adapter of ADAPTERS) {
     test(`@auggy/${adapter} declares its core runtime contract`, () => {
