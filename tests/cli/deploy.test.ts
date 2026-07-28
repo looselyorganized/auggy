@@ -6,6 +6,7 @@ import {
   readFileSync,
   readdirSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -1699,12 +1700,14 @@ describe("runDeploy", () => {
     const { cli, calls } = mockRailwayCli();
     let stagingDir: string | undefined;
     let stagedTarball = false;
+    let stagedTarballContents: string | undefined;
     let stagedAuggyDependency: unknown;
     let stagedDockerfile: string | undefined;
     cli.linkProject = async (args) => {
       stagingDir = args.cwd;
       calls.linkProject.push(args);
       stagedTarball = existsSync(join(args.cwd, tarballName));
+      stagedTarballContents = readFileSync(join(args.cwd, tarballName), "utf8");
       const stagedPackage = JSON.parse(readFileSync(join(args.cwd, "package.json"), "utf-8")) as {
         dependencies?: { auggy?: unknown };
       };
@@ -1716,12 +1719,33 @@ describe("runDeploy", () => {
 
     expect(stagingDir).toBeDefined();
     expect(stagedTarball).toBe(true);
+    expect(stagedTarballContents).toBe("packed runtime");
     expect(stagedAuggyDependency).toBe(`file:./${tarballName}`);
     expect(stagedDockerfile!.indexOf(`COPY ${tarballName} /app/`)).toBeGreaterThan(-1);
     expect(stagedDockerfile!.indexOf("RUN bun install")).toBeGreaterThan(
       stagedDockerfile!.indexOf(`COPY ${tarballName} /app/`),
     );
     expect(existsSync(stagingDir!)).toBe(false);
+  });
+
+  test("does not vendor a symlinked local runtime tarball", async () => {
+    if (process.platform === "win32") return;
+    const version = getAuggyVersion();
+    const tarballName = `auggy-${version}.tgz`;
+    const target = join(dirname(agentDir), "untrusted-runtime-target.tgz");
+    writeFileSync(target, "must not enter deploy staging");
+    symlinkSync(target, join(dirname(agentDir), tarballName));
+
+    const { cli, calls } = mockRailwayCli();
+    let stagedTarball = false;
+    cli.linkProject = async (args) => {
+      calls.linkProject.push(args);
+      stagedTarball = existsSync(join(args.cwd, tarballName));
+    };
+
+    await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+
+    expect(stagedTarball).toBe(false);
   });
 
   test("vendors an existing file: auggy tarball dependency before bun install", async () => {

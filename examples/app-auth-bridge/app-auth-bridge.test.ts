@@ -60,18 +60,17 @@ afterEach(async () => {
 describe("app auth bridge example", () => {
   test("generated browser client calls protected routes with Supabase-style assertions", async () => {
     const orders = ordersAugment();
-    const port = freePort();
-
-    agent = defineAgent(
-      {
-        name: AUDIENCE,
-        model: "mock",
-        purpose: "app auth bridge example",
-        augments: [orders, appAuthWebTransport(port)],
-      },
-      createMockModel(),
+    const port = await startAgentOnAvailablePort((availablePort) =>
+      defineAgent(
+        {
+          name: AUDIENCE,
+          model: "mock",
+          purpose: "app auth bridge example",
+          augments: [orders, appAuthWebTransport(availablePort)],
+        },
+        createMockModel(),
+      ),
     );
-    await agent.start();
 
     const generated = await loadGeneratedBrowserClient(orders);
     const allowedHandler = createSupabaseAuggyAssertionHandler(fakeSupabase(), {
@@ -120,17 +119,17 @@ describe("app auth bridge example", () => {
     });
     model.pushResponse({ content: "Refund started.", finishReason: "end_turn" });
 
-    const port = freePort();
-    agent = defineAgent(
-      {
-        name: AUDIENCE,
-        model: "mock",
-        purpose: "app auth bridge example",
-        augments: [ordersAugment(), appAuthWebTransport(port)],
-      },
-      model,
+    const port = await startAgentOnAvailablePort((availablePort) =>
+      defineAgent(
+        {
+          name: AUDIENCE,
+          model: "mock",
+          purpose: "app auth bridge example",
+          augments: [ordersAugment(), appAuthWebTransport(availablePort)],
+        },
+        model,
+      ),
     );
-    await agent.start();
 
     const clerkHandler = createClerkAuggyAssertionHandler(fakeClerk(), {
       assertion: assertionOptions(),
@@ -309,6 +308,34 @@ function textContent(events: readonly SseEvent[]): string {
     .join("");
 }
 
-function freePort(): number {
-  return 30_000 + Math.floor(Math.random() * 9999);
+async function startAgentOnAvailablePort(create: (port: number) => AgentHandle): Promise<number> {
+  let collision: unknown;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const reservation = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      fetch: () => new Response(null, { status: 503 }),
+    });
+    const port = reservation.port;
+    await reservation.stop(true);
+
+    const candidate = create(port);
+    try {
+      await candidate.start();
+      agent = candidate;
+      return port;
+    } catch (error) {
+      await candidate.stop().catch(() => undefined);
+      if (!isAddressInUse(error)) throw error;
+      collision = error;
+    }
+  }
+  throw collision ?? new Error("could not allocate an app-auth bridge test port");
+}
+
+function isAddressInUse(error: unknown): boolean {
+  return (
+    (typeof error === "object" && error !== null && "code" in error && error.code === "EADDRINUSE") ||
+    (error instanceof Error && /address already in use|port .* in use/i.test(error.message))
+  );
 }

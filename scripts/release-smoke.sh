@@ -98,7 +98,7 @@ ANTHROPIC_TARBALL="$(pack_release_package "packages/anthropic" "@auggy/anthropic
 OPENAI_TARBALL="$(pack_release_package "packages/openai" "@auggy/openai" "$ROOT_VERSION")"
 OPENROUTER_TARBALL="$(pack_release_package "packages/openrouter" "@auggy/openrouter" "$ROOT_VERSION")"
 OLLAMA_TARBALL="$(pack_release_package "packages/ollama" "@auggy/ollama" "$ROOT_VERSION")"
-pack_release_package "packages/evals" "@auggy/evals" "$ROOT_VERSION" >/dev/null
+EVALS_TARBALL="$(pack_release_package "packages/evals" "@auggy/evals" "$ROOT_VERSION")"
 
 verify_adapter_manifest() {
   local tarball="$1"
@@ -226,6 +226,56 @@ NODE
     || fail "packed provider consumer failed for $package_name"
 }
 
+verify_evals_consumer() {
+  local consumer_dir="$SMOKE_DIR/evals-consumer"
+  mkdir -p "$consumer_dir"
+  node - "$consumer_dir/package.json" <<'NODE'
+const { writeFileSync } = require("node:fs");
+writeFileSync(
+  process.argv[2],
+  `${JSON.stringify({
+    name: "packed-evals-consumer",
+    private: true,
+    type: "module",
+    overrides: {
+      "@hono/node-server": "2.0.11",
+      "body-parser": "2.3.0",
+      "fast-uri": "3.1.4",
+      "hono": "4.12.31",
+    },
+  }, null, 2)}\n`,
+);
+NODE
+  (
+    cd "$consumer_dir"
+    bun add --offline --no-summary "$TARBALL"
+    bun add --offline --no-summary "$EVALS_TARBALL"
+    bun -e '
+      import { existsSync } from "node:fs";
+      const security = await import("@auggy/evals/security/run");
+      const autoSave = await import("@auggy/evals/auto-save/run");
+      if (
+        typeof security.runEvalSuite !== "function" ||
+        typeof security.getDefaultFixtureConfigPath !== "function" ||
+        typeof autoSave.runAutoSaveEval !== "function"
+      ) {
+        throw new Error("packed @auggy/evals exports are incomplete");
+      }
+      if (!existsSync(security.getDefaultFixtureConfigPath())) {
+        throw new Error("packed @auggy/evals omitted its default security fixture");
+      }
+    '
+    bun ./node_modules/auggy/src/cli/index.ts eval auto-save --dry-run
+    bun audit --json | node -e '
+      const result = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+      if (Object.keys(result).length !== 0) {
+        throw new Error(`packed eval consumer has advisories: ${Object.keys(result).join(", ")}`);
+      }
+    '
+  ) >"$LOG_DIR/evals-consumer.log" 2>&1 \
+    || fail "packed @auggy/evals consumer failed"
+}
+
 info "verify packed provider contracts and isolated imports"
 verify_adapter_manifest "$ANTHROPIC_TARBALL" "@auggy/anthropic"
 verify_adapter_manifest "$OPENAI_TARBALL" "@auggy/openai"
@@ -240,6 +290,7 @@ verify_adapter_consumer \
   "$OPENROUTER_TARBALL" "$OPENAI_TARBALL"
 verify_adapter_consumer \
   "ollama" "@auggy/ollama" "createOllamaEngine" "$OLLAMA_TARBALL"
+verify_evals_consumer
 
 info "verify package contents"
 PACK_LIST="$LOG_DIR/tarball-files.txt"

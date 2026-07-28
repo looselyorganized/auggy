@@ -5,7 +5,7 @@
  * canonical starter skill such as `auggy` in `<agent-dir>/skills/<skill>/`.
  */
 
-import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
 import {
@@ -15,6 +15,7 @@ import {
   listStarterSkillNames,
 } from "../scaffold-skills";
 import { displayPath } from "../display-path";
+import { writeFileExclusively } from "../safe-write";
 
 function bundledSkillExists(type: string): boolean {
   const dir = resolve(import.meta.dir, "../../augments", type, "skill", "SKILL.md");
@@ -132,23 +133,28 @@ export function skillCommand(deps: AddSkillCommandDeps = {}): Command {
         const agentDir = resolveAgentDir(opts.agent, { auggyDir: deps.auggyDir, cwd: deps.cwd });
         const dir = join(agentDir, "skills", name);
         const path = join(dir, "SKILL.md");
-        if (existsSync(path))
-          throw new Error(`Skill already exists: ${displayPath(path, deps.cwd)}`);
         mkdirSync(dir, { recursive: true });
-        writeFileSync(
-          path,
-          [
-            "---",
-            `name: ${name}`,
-            "description: Describe when the agent should use this skill.",
-            "---",
-            "",
-            `# ${name}`,
-            "",
-            "Write instructions, examples, and operating guidance for the agent here.",
-            "",
-          ].join("\n"),
-        );
+        try {
+          writeFileExclusively(
+            path,
+            [
+              "---",
+              `name: ${name}`,
+              "description: Describe when the agent should use this skill.",
+              "---",
+              "",
+              `# ${name}`,
+              "",
+              "Write instructions, examples, and operating guidance for the agent here.",
+              "",
+            ].join("\n"),
+          );
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+            throw new Error(`Skill already exists: ${displayPath(path, deps.cwd)}`);
+          }
+          throw error;
+        }
         console.log(`Created skill "${name}" -> ${displayPath(path, deps.cwd)}`);
         exit(0);
       } catch (err) {

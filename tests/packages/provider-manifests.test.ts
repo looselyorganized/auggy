@@ -47,6 +47,11 @@ describe("published provider package contracts", () => {
     }
   });
 
+  test("@auggy/evals declares the packed core runtime it imports", () => {
+    const manifest = readManifest(join(ROOT, "packages/evals/package.json"));
+    expect(manifest.peerDependencies?.auggy).toBe(`^${rootManifest.version}`);
+  });
+
   for (const adapter of ADAPTERS) {
     test(`@auggy/${adapter} declares its core runtime contract`, () => {
       const manifest = readManifest(join(ROOT, "packages", adapter, "package.json"));

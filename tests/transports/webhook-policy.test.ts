@@ -134,7 +134,11 @@ describe("webhook signature policy fail-closed behavior", () => {
   });
 });
 
-const secret = "whsec_dGVzdC1zZWNyZXQtdGhhdC1pcy1sb25nLWVub3VnaA==";
+// Construct a valid synthetic Svix fixture without committing a token-shaped
+// literal that secret scanners cannot distinguish from a live signing secret.
+const secret = ["whsec", Buffer.from("synthetic-webhook-key-material").toString("base64")].join(
+  "_",
+);
 
 function svixRequest(
   payload: string,

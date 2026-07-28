@@ -6,7 +6,21 @@ interface SafeWriteOptions {
   mode?: number;
 }
 
-export function writeFileSafely(path: string, data: string, opts: SafeWriteOptions = {}): void {
+function writeAllSync(fd: number, data: string | Uint8Array): void {
+  const bytes = typeof data === "string" ? Buffer.from(data) : data;
+  let offset = 0;
+  while (offset < bytes.byteLength) {
+    const written = writeSync(fd, bytes, offset, bytes.byteLength - offset);
+    if (written <= 0) throw new Error("safe write made no forward progress");
+    offset += written;
+  }
+}
+
+export function writeFileSafely(
+  path: string,
+  data: string | Uint8Array,
+  opts: SafeWriteOptions = {},
+): void {
   const tmpPath = join(dirname(path), `.${basename(path)}.${process.pid}.${randomUUID()}.tmp`);
   let fd: number | null = null;
 
@@ -16,7 +30,7 @@ export function writeFileSafely(path: string, data: string, opts: SafeWriteOptio
       constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
       opts.mode ?? 0o666,
     );
-    writeSync(fd, data);
+    writeAllSync(fd, data);
     closeSync(fd);
     fd = null;
     renameSync(tmpPath, path);
@@ -29,7 +43,7 @@ export function writeFileSafely(path: string, data: string, opts: SafeWriteOptio
 
 export function writeFileExclusively(
   path: string,
-  data: string,
+  data: string | Uint8Array,
   opts: SafeWriteOptions = {},
 ): void {
   let fd: number | null = null;
@@ -39,7 +53,7 @@ export function writeFileExclusively(
       constants.O_CREAT | constants.O_EXCL | constants.O_WRONLY,
       opts.mode ?? 0o666,
     );
-    writeSync(fd, data);
+    writeAllSync(fd, data);
     closeSync(fd);
     fd = null;
   } catch (err) {

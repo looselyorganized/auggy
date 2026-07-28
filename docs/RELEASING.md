@@ -34,10 +34,10 @@ git push origin v0.5.0-rc.1
 
 ## Current release state
 
-As of 2026-07-27, npm's latest version is `0.4.4`. `main` carried an unpublished
-`0.5.0` candidate; the explicit release branch is versioned `0.5.0-rc.1`, and
-neither RC nor stable tag exists yet. Do not treat a package version in a
-working tree as proof of publication.
+When this release branch was cut on 2026-07-27, npm's stable `latest` version
+was `0.4.4`. The explicit release branch is versioned `0.5.0-rc.1`; registry
+metadata and the corresponding Git tag—not a working-tree version—are the
+authority on whether the RC has since been published.
 
 The next release follows the
 [OSS Production Release Plan](./plans/production-readiness-roadmap-2026-07-24.md):
@@ -64,7 +64,7 @@ Concrete checks the workflows enforce:
 | Tag suffix matches `package.json.version` | `publish.yml` (on tag push) | Tag push only | Catches version/tag drift |
 | Tag is exact stable or prerelease SemVer | `scripts/release-metadata.ts` + `publish.yml` | Tag push only | Rejects malformed, ambiguous, and build-metadata tags |
 | Prerelease uses `next`; stable uses `latest` | `scripts/release-metadata.ts` + `publish.yml` | Tag push only | Prevents an RC from replacing npm `latest` |
-| Version already on npm? | `publish.yml` (idempotency gate) | Tag push only | Retroactive tags don't republish |
+| Existing version has identical tarball integrity | `publish.yml` (idempotency gate) | Tag push only | Safe retries skip only byte-identical artifacts and reject mixed-commit releases |
 | GitHub release matches tag posture | `publish.yml` | After npm publication | Publishes the six verified tarballs and `SHA256SUMS` as a prerelease or stable release |
 
 ### Tracked test-surface inventory
@@ -108,7 +108,7 @@ In a dedicated branch off `main` (name suggestion: `release/X.Y.Z`):
   `auggy` / `@auggy/openai` ranges to `^0.5.0-rc.1`; final `0.5.0` restores
   `^0.5.0`.
 - [ ] Update `CHANGELOG.md`:
-  - Move `[Unreleased]` items into a new `[X.Y.Z] - YYYY-MM-DD` section
+  - Move `[Unreleased]` items into a new `[X.Y.Z[-prerelease]] - YYYY-MM-DD` section
   - Group entries under `### Added` / `### Changed` / `### Fixed` / `### Architecture` / `### Process` per [Keep a Changelog](https://keepachangelog.com/en/1.1.0/)
 - [ ] Push, open PR. The PR's title should be `release: vX.Y.Z` so it's obvious in history.
 - [ ] **Wait for `release-rehearsal` to pass.** Every `release/*` PR runs all
@@ -265,7 +265,10 @@ git push --delete origin v<X.Y.Z>
 # Fix the issue, then re-tag and push
 ```
 
-The publish workflow's idempotency gate means a repeat push to the same version is safe even if the first attempt half-succeeded (e.g., npm published but the workflow then failed at a later step).
+The publish workflow's idempotency gate makes a repeat push safe only when every
+already-published package has the same registry `dist.integrity` as the locally
+verified tarball. A same-version artifact from a different commit fails closed;
+the workflow will not assemble a release from mixed package bytes.
 
 ## Provenance gate
 

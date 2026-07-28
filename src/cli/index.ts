@@ -476,14 +476,14 @@ export function formatDeployInfoLine(msg: string, style: CliStyleOptions = {}): 
   let match = msg.match(/^Using Railway workspace "(.+)"\.$/);
   if (match) return `${check} Railway workspace: ${match[1]}`;
 
-  match = msg.match(/^Created Railway project (.+) \((.+)\)\.$/);
-  if (match) return `${check} Created Railway project ${match[1]} (${match[2]})`;
+  let pair = splitBoundedMessage(msg, "Created Railway project ", " (", ").");
+  if (pair) return `${check} Created Railway project ${pair[0]} (${pair[1]})`;
 
-  match = msg.match(/^First deploy of (.+) to existing Railway project (.+)\.$/);
-  if (match) return `${check} Railway project: ${match[2]}`;
+  pair = splitBoundedMessage(msg, "First deploy of ", " to existing Railway project ", ".");
+  if (pair) return `${check} Railway project: ${pair[1]}`;
 
-  match = msg.match(/^Redeploying (.+) to Railway project (.+)\.$/);
-  if (match) return `${check} Railway project: ${match[2]}`;
+  pair = splitBoundedMessage(msg, "Redeploying ", " to Railway project ", ".");
+  if (pair) return `${check} Railway project: ${pair[1]}`;
 
   match = msg.match(/^Created Railway service (.+)\.$/);
   if (match) return `${check} Created Railway service ${match[1]}`;
@@ -491,8 +491,8 @@ export function formatDeployInfoLine(msg: string, style: CliStyleOptions = {}): 
   match = msg.match(/^Using existing Railway service (.+)\.$/);
   if (match) return `${check} Railway service: ${match[1]}`;
 
-  match = msg.match(/^Volume "(.+)" mounted at (.+)\.$/);
-  if (match) return `${check} Mounted volume ${match[1]} at ${match[2]}`;
+  pair = splitBoundedMessage(msg, 'Volume "', '" mounted at ', ".");
+  if (pair) return `${check} Mounted volume ${pair[0]} at ${pair[1]}`;
 
   match = msg.match(/^Public URL: (.+)$/);
   if (match) return `${check} Public URL: ${match[1]}`;
@@ -520,6 +520,19 @@ export function formatDeployInfoLine(msg: string, style: CliStyleOptions = {}): 
   if (match) return `Health check pending: ${match[1]}`;
 
   return msg;
+}
+
+function splitBoundedMessage(
+  value: string,
+  prefix: string,
+  separator: string,
+  suffix: string,
+): [string, string] | null {
+  if (!value.startsWith(prefix) || !value.endsWith(suffix)) return null;
+  const body = value.slice(prefix.length, value.length - suffix.length);
+  const separatorIndex = body.lastIndexOf(separator);
+  if (separatorIndex <= 0 || separatorIndex + separator.length >= body.length) return null;
+  return [body.slice(0, separatorIndex), body.slice(separatorIndex + separator.length)];
 }
 
 export function formatDeployResultMessage(

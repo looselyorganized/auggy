@@ -7,11 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.0] - Unreleased
+## [0.5.0-rc.1] - 2026-07-27
 
 This section consolidates the complete change set since `v0.4.4`. The first
-public candidate is packaged as `0.5.0-rc.1`; the final release date will be
-set only after the RC gate passes.
+public candidate is packaged as `0.5.0-rc.1`; final `0.5.0` remains unreleased
+until the RC gate passes.
 
 ### Added
 
@@ -152,6 +152,14 @@ set only after the RC gate passes.
 - **Terminal hooks settle before outbound delivery errors escape.** Delivery
   failures remain caller-visible while `onTurnEnd` and scheduled terminal hooks
   still get their cleanup and persistence opportunity.
+- **Packed evals resolve the published runtime.** `@auggy/evals` imports the
+  installed `auggy` package instead of monorepo-only aliases, declares its core
+  peer, and is imported and exercised from an isolated tarball consumer during
+  release smoke.
+- **Release and CI races fail safely.** App-auth example tests use OS-assigned
+  ports with bounded collision retry, local deploy tarballs are read through
+  no-follow descriptors, and publish retries accept an existing npm version
+  only when its `dist.integrity` matches the verified tarball.
 
 ### Removed
 
@@ -400,7 +408,15 @@ Initial tagged release. The kernel and built-in augments described in `docs/02-a
 - **CLI** — `aug1 create / add / dev / start / stop / restart / status` with launchd installation on macOS and PID-manifest tracking under `~/.auggy/`.
 - **Reference documentation** — `docs/01-philosophy.md` through `docs/11-skills.md`.
 
-[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.1...HEAD
+[0.5.0-rc.1]: https://github.com/looselyorganized/auggy/compare/v0.4.4...v0.5.0-rc.1
+[0.4.4]: https://github.com/looselyorganized/auggy/compare/v0.4.3...v0.4.4
+[0.4.3]: https://github.com/looselyorganized/auggy/compare/v0.4.2...v0.4.3
+[0.4.2]: https://github.com/looselyorganized/auggy/compare/v0.4.1...v0.4.2
+[0.4.1]: https://github.com/looselyorganized/auggy/compare/v0.4.0...v0.4.1
+[0.4.0]: https://github.com/looselyorganized/auggy/compare/v0.3.1...v0.4.0
+[0.3.1]: https://github.com/looselyorganized/auggy/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/looselyorganized/auggy/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/looselyorganized/auggy/compare/v0.1.1...v0.2.0
 [0.1.1]: https://github.com/looselyorganized/auggy/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/looselyorganized/auggy/releases/tag/v0.1.0

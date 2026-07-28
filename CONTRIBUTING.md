@@ -1,8 +1,8 @@
 # Contributing to Auggy
 
-Thanks for taking a look. Auggy is currently in public-preview development with
-private source collaboration. This document covers what invited collaborators
-need to know to land a change.
+Thanks for taking a look. Auggy is open-source software in public-preview
+development. This document covers what contributors need to know to land a
+change.
 
 ## Before you start
 
@@ -19,7 +19,7 @@ Auggy runs on Bun. There is no Node.js fallback.
 
 ```bash
 # 1. Clone and install
-git clone <private-auggy-repo-url>
+git clone https://github.com/looselyorganized/auggy.git
 cd auggy
 bun install
 
@@ -228,9 +228,8 @@ When the provider cap fires, the engine adapter surfaces a clear operator-action
 
 ## Filing issues
 
-During private-preview source collaboration, use the shared issue tracker only
-if you have repo access. Bugs need a reproduction. Feature requests need a use
-case.
+Use the public issue tracker for bugs and feature requests. Bugs need a
+reproduction; feature requests need a concrete use case.
 
 For security issues, **do not open a public issue.** See [SECURITY.md](SECURITY.md).
 

@@ -170,6 +170,9 @@ describe("release publishing identity", () => {
     expect(publishJob).toContain("manifest.version !== expectedVersion");
     expect(publishJob).toContain("manifest.publishConfig !== undefined");
     expect(publishJob).toContain("git+https://github.com/looselyorganized/auggy.git");
+    expect(publishJob).toContain("metadata?.dist?.integrity");
+    expect(publishJob).toContain('published_integrity" = "$local_integrity');
+    expect(publishJob).toContain("already exists with different integrity");
     expect(publishJob).toContain("--registry=https://registry.npmjs.org");
     expect(publishJob).toContain('--tag="$DIST_TAG"');
     expect(publishJob).toContain("--access=public");
