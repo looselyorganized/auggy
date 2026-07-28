@@ -7,6 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0-rc.2] - 2026-07-28
+
+This second public candidate preserves the RC.1 runtime behavior while
+refreshing the package metadata and the Auggy guidance shipped in newly
+scaffolded agents and the portable builder-skill package.
+
+### Changed
+
+- **Business-capability positioning.** Public package and repository copy now
+  describes augments as controlled, predictable interfaces to application
+  systems without implying unrestricted backend access, automatically shared
+  authorization, or ownership of databases, workflows, and systems of record.
+- **Packaged Auggy skill guidance.** Starter, portable, and Concierge mirrors
+  now teach the same capability boundary, keeping identity, authorization,
+  schemas, tools, routes, and domain logic reviewable while leaving the
+  application as the system of record.
+- **Release reliability.** GitHub release creation now receives explicit
+  repository context after changing into the downloaded artifact directory.
+
 ## [0.5.0-rc.1] - 2026-07-27
 
 This section consolidates the complete change set since `v0.4.4`. The first
@@ -408,7 +427,8 @@ Initial tagged release. The kernel and built-in augments described in `docs/02-a
 - **CLI** — `aug1 create / add / dev / start / stop / restart / status` with launchd installation on macOS and PID-manifest tracking under `~/.auggy/`.
 - **Reference documentation** — `docs/01-philosophy.md` through `docs/11-skills.md`.
 
-[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.1...HEAD
+[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.2...HEAD
+[0.5.0-rc.2]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.1...v0.5.0-rc.2
 [0.5.0-rc.1]: https://github.com/looselyorganized/auggy/compare/v0.4.4...v0.5.0-rc.1
 [0.4.4]: https://github.com/looselyorganized/auggy/compare/v0.4.3...v0.4.4
 [0.4.3]: https://github.com/looselyorganized/auggy/compare/v0.4.2...v0.4.3
