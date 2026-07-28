@@ -5,6 +5,7 @@ import type {
 import type {
   DistributedCostMarkerV1,
   DistributedHistorySnapshotV1,
+  DistributedMemoryMutationV1,
   DistributedOutboxIntentV1,
   DistributedPeerBindingV1,
   DistributedReplayResult,
@@ -14,6 +15,7 @@ import type {
 import { parseThreadHistoryMessages } from "../kernel/history-manager";
 import { decodeDistributedReplay } from "./agent-turn-state";
 import { isCanonicalDistributedBudgetCostUsd } from "./budget-policy";
+import { isCanonicalDistributedMemoryEraseTarget } from "./memory-policy";
 
 export const EMPTY_DISTRIBUTED_HISTORY = new TextEncoder().encode(
   JSON.stringify({ version: 1, messages: [] }),
@@ -168,6 +170,11 @@ function validOutboxIntents(
       (intent.ordinal as number) < 0 ||
       (intent.ordinal as number) >= value.length ||
       !validDistributedOperationId(intent.operationId) ||
+      (intent.retryMode !== "never" && intent.retryMode !== "sink-idempotent") ||
+      !Number.isSafeInteger(intent.maxAttempts) ||
+      (intent.maxAttempts as number) < 1 ||
+      (intent.maxAttempts as number) > 10 ||
+      (intent.retryMode === "never" && intent.maxAttempts !== 1) ||
       operations.has(intent.operationId) ||
       ordinals.has(intent.ordinal as number)
     ) {
@@ -181,6 +188,52 @@ function validOutboxIntents(
     } catch {
       return false;
     }
+  });
+}
+
+function validMemoryMutations(value: unknown): value is readonly DistributedMemoryMutationV1[] {
+  if (value === undefined) return true;
+  if (!Array.isArray(value) || value.length > 1_000) return false;
+  const operations = new Set<string>();
+  return value.every((entry) => {
+    if (typeof entry !== "object" || entry === null || Array.isArray(entry)) return false;
+    const mutation = entry as Partial<DistributedMemoryMutationV1>;
+    if (
+      mutation.version !== 1 ||
+      !validDistributedOperationId(mutation.operationId) ||
+      operations.has(mutation.operationId) ||
+      typeof mutation.policyId !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(mutation.policyId) ||
+      typeof mutation.sourceTurnId !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(mutation.sourceTurnId) ||
+      (mutation.origin !== "operator" &&
+        mutation.origin !== "peer-derived" &&
+        mutation.origin !== "agent-derived" &&
+        mutation.origin !== "agent") ||
+      !validDistributedDigest(mutation.provenanceHash)
+    ) {
+      return false;
+    }
+    operations.add(mutation.operationId);
+    if (mutation.kind === "forget") {
+      return isCanonicalDistributedMemoryEraseTarget(mutation.targetPeerId);
+    }
+    if (
+      (mutation.kind !== "write" && mutation.kind !== "supersede") ||
+      typeof mutation.entryId !== "string" ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(mutation.entryId) ||
+      !(mutation.body instanceof Uint8Array) ||
+      !Number.isSafeInteger(mutation.expectedPeerEraseEpoch) ||
+      typeof mutation.expectedPeerEraseEpoch !== "number" ||
+      mutation.expectedPeerEraseEpoch < 0
+    ) {
+      return false;
+    }
+    return (
+      mutation.kind !== "supersede" ||
+      (typeof mutation.supersedesEntryId === "string" &&
+        /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(mutation.supersedesEntryId))
+    );
   });
 }
 
@@ -221,7 +274,8 @@ export function validateDistributedTurnCheckpoint(
   }
   if (
     !validCostMarkers(checkpoint.costMarkers, turnState.maxCostMarkersPerTurn) ||
-    !validOutboxIntents(checkpoint.outboxIntents, turnState.outbox)
+    !validOutboxIntents(checkpoint.outboxIntents, turnState.outbox) ||
+    !validMemoryMutations(checkpoint.memoryMutations)
   ) {
     return { status: "rejected", reason: "invalid-turn-state" };
   }

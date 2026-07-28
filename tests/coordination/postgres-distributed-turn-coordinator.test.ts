@@ -1758,6 +1758,8 @@ describe("PostgreSQL distributed turn coordinator", () => {
             ordinal: 0,
             operationId: `auggy-op-v1-${"2".repeat(64)}`,
             contentType: "application/json",
+            retryMode: "never",
+            maxAttempts: 1,
             body: new TextEncoder().encode(JSON.stringify({ version: 1, text: "deliver" })),
           },
         ],
@@ -1812,6 +1814,158 @@ describe("PostgreSQL distributed turn coordinator", () => {
       await sql.close();
       await reader.close();
       await owner.close();
+    }
+  });
+
+  postgresTest("fences outbox claims and retries only with sink idempotency evidence", async () => {
+    const value = namespace();
+    const first = coordinator(value, "outbox-first");
+    const second = coordinator(value, "outbox-second");
+    const sql = new SQL(url!);
+    const binding = peerBinding();
+    const commitDelivery = async (
+      owner: PostgresDistributedTurnCoordinator,
+      requestId: string,
+      threadId: string,
+      operationId: string,
+      retryMode: "never" | "sink-idempotent",
+      maxAttempts: number,
+    ) => {
+      const item = request(requestId, threadId);
+      expect(await owner.admit(item)).toEqual({ status: "admitted", attempt: 1 });
+      const claimed = await owner.claim(item);
+      if (claimed.status !== "acquired") throw new Error("expected outbox root lease");
+      const loaded = await owner.loadHistory(claimed.lease, binding);
+      if (loaded.status !== "ok") throw new Error("expected outbox history claim");
+      expect(await owner.markExecutionStarted(claimed.lease)).toEqual({ status: "ok" });
+      expect(
+        await owner.commitTurn(
+          claimed.lease,
+          checkpoint(threadId, binding, loaded.revision, {
+            history: { version: 1, body: loaded.body, messageCount: loaded.messageCount },
+            outboxIntents: [
+              {
+                version: 1,
+                ordinal: 0,
+                operationId,
+                contentType: "application/json",
+                retryMode,
+                maxAttempts,
+                body: new TextEncoder().encode(JSON.stringify({ version: 1, text: "deliver" })),
+              },
+            ],
+          }),
+        ),
+      ).toEqual({ status: "ok" });
+    };
+    try {
+      await first.migrate();
+      expect(await first.register()).toEqual({ status: "registered" });
+      expect(await second.register()).toEqual({ status: "registered" });
+
+      const unsafeOperation = `auggy-op-v1-${"5".repeat(64)}`;
+      await commitDelivery(
+        first,
+        "unsafe-delivery",
+        "unsafe-delivery-thread",
+        unsafeOperation,
+        "never",
+        1,
+      );
+      const unsafeLease = await first.claimOutbox();
+      if (unsafeLease.status !== "acquired") throw new Error("expected unsafe delivery lease");
+      expect(await second.claimOutbox()).toEqual({ status: "waiting" });
+      await sql.unsafe(
+        "UPDATE auggy_coordination_outbox SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE namespace = $1 AND operation_id = $2",
+        [value, unsafeOperation],
+      );
+      expect(await second.claimOutbox()).toEqual({ status: "waiting" });
+      expect(
+        await second.recoverOutbox(
+          unsafeOperation,
+          unsafeLease.lease.deliveryFence,
+          "retry",
+          "operator-requested-retry",
+        ),
+      ).toEqual({ status: "rejected", reason: "retry-unsafe" });
+      expect(
+        await second.recoverOutbox(
+          unsafeOperation,
+          unsafeLease.lease.deliveryFence,
+          "delivered",
+          "operator-confirmed-delivery",
+        ),
+      ).toEqual({ status: "ok" });
+
+      const safeOperation = `auggy-op-v1-${"6".repeat(64)}`;
+      await commitDelivery(
+        second,
+        "safe-delivery",
+        "safe-delivery-thread",
+        safeOperation,
+        "sink-idempotent",
+        3,
+      );
+      const initial = await first.claimOutbox();
+      if (initial.status !== "acquired") throw new Error("expected initial safe delivery lease");
+      await sql.unsafe(
+        "UPDATE auggy_coordination_outbox SET lease_expires_at = clock_timestamp() - interval '1 second' WHERE namespace = $1 AND operation_id = $2",
+        [value, safeOperation],
+      );
+      const retry = await second.claimOutbox();
+      if (retry.status !== "acquired") throw new Error("expected safe retry lease");
+      expect(retry.lease.operationId).toBe(initial.lease.operationId);
+      expect(retry.lease.attempt).toBe(2);
+      expect(retry.lease.deliveryFence).toBeGreaterThan(initial.lease.deliveryFence);
+      expect(await first.settleOutbox(initial.lease, { outcome: "delivered" })).toEqual({
+        status: "stale",
+      });
+      expect(
+        await second.settleOutbox(retry.lease, {
+          outcome: "outcome-unknown",
+          reasonCode: "delivery-result-unknown",
+        }),
+      ).toEqual({ status: "ok" });
+      expect(
+        await first.recoverOutbox(
+          safeOperation,
+          retry.lease.deliveryFence + 1,
+          "retry",
+          "operator-confirmed-idempotency",
+        ),
+      ).toEqual({ status: "conflict" });
+      expect(
+        await first.recoverOutbox(
+          safeOperation,
+          retry.lease.deliveryFence,
+          "retry",
+          "operator-confirmed-idempotency",
+        ),
+      ).toEqual({ status: "ok" });
+      const recovered = await first.claimOutbox();
+      if (recovered.status !== "acquired") throw new Error("expected recovered safe lease");
+      expect(recovered.lease.attempt).toBe(3);
+      expect(recovered.lease.deliveryFence).toBeGreaterThan(retry.lease.deliveryFence);
+      expect(await second.settleOutbox(retry.lease, { outcome: "delivered" })).toEqual({
+        status: "stale",
+      });
+      expect(await first.settleOutbox(recovered.lease, { outcome: "delivered" })).toEqual({
+        status: "ok",
+      });
+      await sql.unsafe(
+        "UPDATE auggy_coordination_requests SET terminal_at = clock_timestamp() - interval '30 days' WHERE namespace = $1 AND request_id = 'safe-delivery'",
+        [value],
+      );
+      expect(await first.prune(10)).toMatchObject({ status: "ok", requests: 1 });
+      const retained = await sql.unsafe<Array<{ outbox: number; requests: number }>>(
+        "SELECT (SELECT count(*)::integer FROM auggy_coordination_requests WHERE namespace = $1 AND request_id = 'safe-delivery') AS requests, (SELECT count(*)::integer FROM auggy_coordination_outbox WHERE namespace = $1 AND request_id = 'safe-delivery') AS outbox",
+        [value],
+      );
+      expect(retained).toEqual([{ requests: 0, outbox: 0 }]);
+    } finally {
+      await sql.close();
+      await second.close();
+      await first.close();
     }
   });
 
@@ -1983,6 +2137,8 @@ describe("PostgreSQL distributed turn coordinator", () => {
                 ordinal: 0,
                 operationId: `auggy-op-v1-${"4".repeat(64)}`,
                 contentType: "application/json",
+                retryMode: "never",
+                maxAttempts: 1,
                 body: new TextEncoder().encode(JSON.stringify({ version: 1 })),
               },
             ],

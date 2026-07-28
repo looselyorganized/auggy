@@ -72,15 +72,15 @@ describe("distributed coordination compatibility fingerprints", () => {
 
     expect(DISTRIBUTED_COORDINATION_PROTOCOL).toEqual({
       name: "auggy-postgres-coordination",
-      protocolVersion: 8,
-      schemaVersion: 8,
+      protocolVersion: 10,
+      schemaVersion: 10,
       fingerprintVersion: 2,
     });
     expect(first).toEqual(second);
-    expect(first.protocolVersion).toBe(8);
+    expect(first.protocolVersion).toBe(10);
     expect(first.protocolFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(first.configurationFingerprint).toMatch(/^[0-9a-f]{64}$/);
-    expect(first.upgradeFrom).toMatchObject({ protocolVersion: 7 });
+    expect(first.upgradeFrom).toMatchObject({ protocolVersion: 9 });
     expect(first.upgradeFrom.protocolFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(first.upgradeFrom.configurationFingerprint).toMatch(/^[0-9a-f]{64}$/);
     expect(first.upgradeFrom.protocolFingerprint).not.toBe(first.protocolFingerprint);
@@ -148,6 +148,38 @@ describe("distributed coordination compatibility fingerprints", () => {
         baseline.configurationFingerprint,
       );
     }
+  });
+
+  test("binds the exact v9 predecessor fingerprint to shared-memory policy", () => {
+    const baseline = buildDistributedCoordinationCompatibility(input());
+    const changed = input();
+    changed.coordination.memory = {
+      policies: [
+        {
+          id: "episodic",
+          namespacePrefix: "ep:",
+          maxEntries: 100,
+          maxEntriesPerPeer: 20,
+          maxBytes: 1_048_576,
+          maxBytesPerPeer: 262_144,
+          maxEntryBytes: 8_192,
+          maxQueryBytes: 1_024,
+          maxResultBytes: 16_384,
+          maxResults: 10,
+          maxMutationsPerTurn: 10,
+          maxOperations: 100,
+          maxTombstones: 100,
+          operationRetentionMs: 604_800_000,
+          entryRetentionMs: 604_800_000,
+        },
+      ],
+    };
+    const updated = buildDistributedCoordinationCompatibility(changed);
+
+    expect(updated.configurationFingerprint).not.toBe(baseline.configurationFingerprint);
+    expect(updated.upgradeFrom.configurationFingerprint).not.toBe(
+      baseline.upgradeFrom.configurationFingerprint,
+    );
   });
 
   test("canonicalizes distributed admission policy ordering", () => {

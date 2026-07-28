@@ -14,7 +14,16 @@ import type {
   DistributedEventPage,
   DistributedHistoryLoadResult,
   DistributedHistorySnapshotV1,
+  DistributedMemoryEntryV1,
+  DistributedMemoryMutationV1,
+  DistributedMemoryOriginV1,
+  DistributedMemoryPeerEpochResult,
+  DistributedMemoryReadResult,
+  DistributedMemorySearchResult,
+  DistributedOutboxClaimResult,
   DistributedOutboxIntentV1,
+  DistributedOutboxLeaseV1,
+  DistributedOutboxResult,
   DistributedPeerBindingV1,
   DistributedPruneResult,
   DistributedReplayResult,
@@ -37,6 +46,14 @@ import {
   sameDistributedBudgetPolicy,
 } from "./budget-policy";
 import {
+  decodeDistributedMemoryDocument,
+  decodeDistributedMemoryQuery,
+  distributedMemoryEraseTargetScope,
+  distributedMemoryPeerScope,
+  normalizeDistributedMemoryConfig,
+  sameDistributedMemoryPolicy,
+} from "./memory-policy";
+import {
   EMPTY_DISTRIBUTED_HISTORY,
   validDistributedPeerBinding,
   validDistributedReplay,
@@ -58,7 +75,7 @@ interface StoredRequest extends DistributedTurnRequest {
   queueExpiresAt?: number;
   terminalAt?: number;
   historyClaim?: {
-    bindingHash: string;
+    binding: DistributedPeerBindingV1;
     expectedRevision: number;
   };
 }
@@ -88,11 +105,38 @@ interface StoredHistory extends DistributedHistorySnapshotV1 {
   revision: number;
 }
 
+interface StoredMemoryEntry {
+  id: string;
+  peerIdHash: string;
+  body: Uint8Array;
+  content: string;
+  sourceTurnId: string;
+  origin: DistributedMemoryOriginV1;
+  provenanceHash: string;
+  createdAt: number;
+}
+
+interface StoredMemoryOperation {
+  semanticHash: string;
+  policyId: string;
+  expiresAt: number;
+}
+
 type StoredCostMarker = DistributedCostMarkerV1 & { requestId: string; fence: number };
 
 interface StoredOutboxIntent extends DistributedOutboxIntentV1 {
   requestId: string;
   fence: number;
+  state: "pending" | "delivering" | "delivered" | "failed" | "outcome_unknown";
+  createdAt: number;
+  updatedAt: number;
+  attempt: number;
+  deliveryFence: number;
+  ownerInstance?: string;
+  ownerSession?: string;
+  leaseExpiresAt?: number;
+  settledAt?: number;
+  reasonCode?: string;
 }
 
 interface StoredBudgetReservation {
@@ -139,6 +183,11 @@ interface NamespaceState {
   rateReservations: Map<string, { bindingHash: string; expiresAt: number }>;
   costMarkers: Map<string, StoredCostMarker>;
   budgets: ReturnType<typeof normalizeDistributedBudgetConfig>;
+  memory: ReturnType<typeof normalizeDistributedMemoryConfig>;
+  memoryEntries: Map<string, StoredMemoryEntry>;
+  memoryTombstones: Map<string, number>;
+  memoryPeerEraseEpochs: Map<string, { epoch: number; expiresAt: number }>;
+  memoryOperations: Map<string, StoredMemoryOperation>;
   budgetReservations: Map<string, StoredBudgetReservation>;
   budgetAnonymousEvents: Array<{
     policyId: string;
@@ -210,6 +259,13 @@ function normalizedAdmission(config: DistributedCoordinatorConfig): DistributedA
   return config.admission ?? { maxRateLimitEvents: 0, capacityClasses: [], rateLimits: [] };
 }
 
+function normalizedMemory(config: DistributedCoordinatorConfig) {
+  return normalizeDistributedMemoryConfig(
+    config.memory,
+    config.retention.terminalRequestRetentionMs,
+  );
+}
+
 function assertIdentifier(name: string, value: string): void {
   if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(value)) {
     throw new Error(`${name} must be a non-secret identifier of at most 160 characters`);
@@ -273,6 +329,9 @@ function assertConfig(config: DistributedCoordinatorConfig): void {
   );
   assertLimit("turnState.outbox.maxPendingIntents", config.turnState.outbox.maxPendingIntents, 0);
   const admission = normalizedAdmission(config);
+  // Validate immutable memory policies at construction. No request-controlled
+  // values can make a disabled policy available later.
+  normalizedMemory(config);
   assertLimit("admission.maxRateLimitEvents", admission.maxRateLimitEvents, 0);
   if (!Array.isArray(admission.rateLimits) || admission.rateLimits.length > MAX_RATE_POLICIES) {
     throw new Error("admission rate policies exceed supported bounds");
@@ -451,6 +510,7 @@ export function createInMemoryDistributedTurnCoordinator(
     config.budgets,
     config.retention.terminalRequestRetentionMs,
   );
+  const memory = normalizedMemory(config);
   const owned = new Map<string, LocalOwnedOperation>();
   let invalidated = false;
 
@@ -660,6 +720,11 @@ export function createInMemoryDistributedTurnCoordinator(
         intent.ordinal < 0 ||
         intent.ordinal >= intents.length ||
         !validOperationId(intent.operationId) ||
+        (intent.retryMode !== "never" && intent.retryMode !== "sink-idempotent") ||
+        !Number.isSafeInteger(intent.maxAttempts) ||
+        intent.maxAttempts < 1 ||
+        intent.maxAttempts > 10 ||
+        (intent.retryMode === "never" && intent.maxAttempts !== 1) ||
         operations.has(intent.operationId) ||
         ordinals.has(intent.ordinal)
       ) {
@@ -726,6 +791,11 @@ export function createInMemoryDistributedTurnCoordinator(
         budgets: {
           policies: budgets.policies.map((policy) => structuredClone(policy)),
         },
+        memory: { policies: memory.policies.map((policy) => structuredClone(policy)) },
+        memoryEntries: new Map(),
+        memoryTombstones: new Map(),
+        memoryPeerEraseEpochs: new Map(),
+        memoryOperations: new Map(),
         budgetReservations: new Map(),
         budgetAnonymousEvents: [],
         budgetDaily: new Map(),
@@ -799,6 +869,12 @@ export function createInMemoryDistributedTurnCoordinator(
         const stored = current.budgets.policies.find((candidate) => candidate.id === policy.id);
         return stored !== undefined && sameDistributedBudgetPolicy(stored, policy);
       });
+    const memoryMatch =
+      current.memory.policies.length === memory.policies.length &&
+      memory.policies.every((policy) => {
+        const stored = current.memory.policies.find((candidate) => candidate.id === policy.id);
+        return stored !== undefined && sameDistributedMemoryPolicy(stored, policy);
+      });
     if (
       current.maxConcurrent !== config.maxConcurrent ||
       current.leaseMs !== config.leaseMs ||
@@ -820,7 +896,8 @@ export function createInMemoryDistributedTurnCoordinator(
       !sameCompatibility(current.compatibility, compatibilityTuple()) ||
       !sourcesMatch ||
       !admissionMatches ||
-      !budgetsMatch
+      !budgetsMatch ||
+      !memoryMatch
     ) {
       throw new Error("coordinator namespace policy mismatch");
     }
@@ -1579,6 +1656,376 @@ export function createInMemoryDistributedTurnCoordinator(
     );
   }
 
+  function memoryEntryKey(policyId: string, peerIdHash: string, entryId: string): string {
+    return `${policyId}\0${peerIdHash}\0${entryId}`;
+  }
+
+  function memoryTombstoneKey(policyId: string, peerIdHash: string, entryId: string): string {
+    return `${policyId}\0${peerIdHash}\0${entryId}`;
+  }
+
+  function memoryPeerEraseKey(policyId: string, peerIdHash: string): string {
+    return `${policyId}\0${peerIdHash}`;
+  }
+
+  function memorySemanticHash(
+    mutation: DistributedMemoryMutationV1,
+    affectedPeerScope: string,
+    namespacePrefix: string,
+  ): string {
+    const body =
+      mutation.kind === "forget"
+        ? ""
+        : new Bun.CryptoHasher("sha256").update(mutation.body).digest("hex");
+    return new Bun.CryptoHasher("sha256")
+      .update("auggy-distributed-memory-mutation-v1\0")
+      .update(
+        JSON.stringify({
+          policyId: mutation.policyId,
+          namespacePrefix,
+          peerScope: affectedPeerScope,
+          sourceTurnId: mutation.sourceTurnId,
+          origin: mutation.origin,
+          provenanceHash: mutation.provenanceHash,
+          kind: mutation.kind,
+          ...(mutation.kind === "forget"
+            ? { targetPeerScope: affectedPeerScope }
+            : { entryId: mutation.entryId }),
+          ...(mutation.kind === "supersede"
+            ? { supersedesEntryId: mutation.supersedesEntryId }
+            : {}),
+          ...(mutation.kind === "forget"
+            ? {}
+            : { expectedPeerEraseEpoch: mutation.expectedPeerEraseEpoch }),
+          body,
+        }),
+      )
+      .digest("hex");
+  }
+
+  function pruneMemory(current: NamespaceState, timestamp: number): void {
+    for (const [key, entry] of current.memoryEntries) {
+      const policy = current.memory.policies.find((candidate) =>
+        key.startsWith(`${candidate.id}\0`),
+      );
+      if (!policy || entry.createdAt + policy.entryRetentionMs <= timestamp)
+        current.memoryEntries.delete(key);
+    }
+    for (const [key, deletedAt] of current.memoryTombstones) {
+      const policy = current.memory.policies.find((candidate) =>
+        key.startsWith(`${candidate.id}\0`),
+      );
+      const retentionMs = key.endsWith("\0*")
+        ? policy?.operationRetentionMs
+        : policy?.entryRetentionMs;
+      if (!retentionMs || deletedAt + retentionMs <= timestamp)
+        current.memoryTombstones.delete(key);
+    }
+    for (const [key, operation] of current.memoryOperations) {
+      if (operation.expiresAt <= timestamp) current.memoryOperations.delete(key);
+    }
+    for (const [key, erase] of current.memoryPeerEraseEpochs) {
+      if (erase.expiresAt <= timestamp) current.memoryPeerEraseEpochs.delete(key);
+    }
+  }
+
+  function preflightMemoryMutations(
+    current: NamespaceState,
+    peerBinding: DistributedPeerBindingV1,
+    mutations: readonly DistributedMemoryMutationV1[] | undefined,
+    _timestamp: number,
+  ): "memory-capacity" | "memory-conflict" | "invalid-turn-state" | undefined {
+    if (!mutations || mutations.length === 0) return undefined;
+    const perPolicy = new Map<string, number>();
+    const bytesPerPolicy = new Map<string, number>();
+    const removalsPerPolicy = new Map<string, number>();
+    const removedBytesPerPolicy = new Map<string, number>();
+    const tombstoneAdds = new Map<string, number>();
+    const stagedTargets = new Set<string>();
+    const stagedSupersedes = new Set<string>();
+    const stagedErases = new Set<string>();
+    const stagedWriteScopes = new Set<string>();
+    for (const mutation of mutations) {
+      const policy = current.memory.policies.find(
+        (candidate) => candidate.id === mutation.policyId,
+      );
+      if (
+        !policy ||
+        mutations.filter((candidate) => candidate.policyId === mutation.policyId).length >
+          policy.maxMutationsPerTurn
+      ) {
+        return "invalid-turn-state";
+      }
+      if (
+        (mutation.kind === "write" || mutation.kind === "supersede") &&
+        mutation.body.byteLength > policy.maxEntryBytes
+      )
+        return "invalid-turn-state";
+      if (mutation.kind === "write" || mutation.kind === "supersede") {
+        try {
+          decodeDistributedMemoryDocument(mutation.body);
+        } catch {
+          return "invalid-turn-state";
+        }
+      }
+      const peerScope = distributedMemoryPeerScope(peerBinding);
+      let affectedPeerScope = peerScope;
+      if (mutation.kind === "forget") {
+        try {
+          affectedPeerScope = distributedMemoryEraseTargetScope(mutation.targetPeerId);
+        } catch {
+          return "invalid-turn-state";
+        }
+      }
+      const semanticHash = memorySemanticHash(mutation, affectedPeerScope, policy.namespacePrefix);
+      const existingOperation = current.memoryOperations.get(mutation.operationId);
+      if (existingOperation && existingOperation.semanticHash !== semanticHash)
+        return "memory-conflict";
+      if (existingOperation) continue;
+      if (
+        [...current.memoryOperations.values()].filter(
+          (operation) => operation.policyId === policy.id,
+        ).length +
+          mutations.filter(
+            (candidate) =>
+              candidate.policyId === policy.id &&
+              !current.memoryOperations.has(candidate.operationId),
+          ).length >
+        policy.maxOperations
+      ) {
+        return "memory-capacity";
+      }
+      if (mutation.kind === "forget") {
+        if (peerBinding.trustLevel !== "creator" && peerBinding.trustLevel !== "agent") {
+          return "memory-conflict";
+        }
+        const eraseKey = `${policy.id}\0${affectedPeerScope}`;
+        if (stagedErases.has(eraseKey) || stagedWriteScopes.has(eraseKey)) {
+          return "memory-conflict";
+        }
+        stagedErases.add(eraseKey);
+        if (!current.memoryTombstones.has(memoryTombstoneKey(policy.id, affectedPeerScope, "*"))) {
+          tombstoneAdds.set(policy.id, (tombstoneAdds.get(policy.id) ?? 0) + 1);
+        }
+        continue;
+      }
+      const writeScope = `${policy.id}\0${peerScope}`;
+      if (stagedErases.has(writeScope)) return "memory-conflict";
+      stagedWriteScopes.add(writeScope);
+      const key = memoryEntryKey(policy.id, peerScope, mutation.entryId);
+      const eraseEpoch =
+        current.memoryPeerEraseEpochs.get(memoryPeerEraseKey(policy.id, peerScope))?.epoch ?? 0;
+      if (mutation.expectedPeerEraseEpoch !== eraseEpoch) return "memory-conflict";
+      const tombstone = memoryTombstoneKey(policy.id, peerScope, mutation.entryId);
+      if (
+        stagedTargets.has(key) ||
+        current.memoryEntries.has(key) ||
+        current.memoryTombstones.has(key) ||
+        current.memoryTombstones.has(tombstone)
+      )
+        return "memory-conflict";
+      if (mutation.kind === "supersede") {
+        const previousKey = memoryEntryKey(policy.id, peerScope, mutation.supersedesEntryId);
+        const previous = current.memoryEntries.get(previousKey);
+        if (stagedSupersedes.has(previousKey) || !previous) return "memory-conflict";
+        stagedSupersedes.add(previousKey);
+        removalsPerPolicy.set(policy.id, (removalsPerPolicy.get(policy.id) ?? 0) + 1);
+        removedBytesPerPolicy.set(
+          policy.id,
+          (removedBytesPerPolicy.get(policy.id) ?? 0) + previous.body.byteLength,
+        );
+        tombstoneAdds.set(policy.id, (tombstoneAdds.get(policy.id) ?? 0) + 1);
+      }
+      stagedTargets.add(key);
+      perPolicy.set(policy.id, (perPolicy.get(policy.id) ?? 0) + 1);
+      bytesPerPolicy.set(
+        policy.id,
+        (bytesPerPolicy.get(policy.id) ?? 0) + mutation.body.byteLength,
+      );
+    }
+    for (const [policyId, additions] of perPolicy) {
+      const policy = current.memory.policies.find((candidate) => candidate.id === policyId)!;
+      const total = [...current.memoryEntries.keys()].filter((key) =>
+        key.startsWith(`${policyId}\0`),
+      ).length;
+      let peer = 0;
+      let totalBytes = 0;
+      let peerBytes = 0;
+      for (const [key, entry] of current.memoryEntries) {
+        if (key.startsWith(`${policyId}\0`)) {
+          totalBytes += entry.body.byteLength;
+          if (entry.peerIdHash === distributedMemoryPeerScope(peerBinding)) {
+            peer += 1;
+            peerBytes += entry.body.byteLength;
+          }
+        }
+      }
+      const removals = removalsPerPolicy.get(policyId) ?? 0;
+      const removedBytes = removedBytesPerPolicy.get(policyId) ?? 0;
+      const additionsBytes = bytesPerPolicy.get(policyId) ?? 0;
+      if (
+        total - removals + additions > policy.maxEntries ||
+        peer - removals + additions > policy.maxEntriesPerPeer ||
+        totalBytes - removedBytes + additionsBytes > policy.maxBytes ||
+        peerBytes - removedBytes + additionsBytes > policy.maxBytesPerPeer
+      )
+        return "memory-capacity";
+    }
+    for (const [policyId, additions] of tombstoneAdds) {
+      const policy = current.memory.policies.find((candidate) => candidate.id === policyId)!;
+      const retained = [...current.memoryTombstones.keys()].filter((key) =>
+        key.startsWith(`${policyId}\0`),
+      ).length;
+      if (retained + additions > policy.maxTombstones) return "memory-capacity";
+    }
+    return undefined;
+  }
+
+  function applyMemoryMutations(
+    current: NamespaceState,
+    peerBinding: DistributedPeerBindingV1,
+    mutations: readonly DistributedMemoryMutationV1[] | undefined,
+    timestamp: number,
+  ): void {
+    if (!mutations) return;
+    const peerIdHash = distributedMemoryPeerScope(peerBinding);
+    for (const mutation of mutations) {
+      const policy = current.memory.policies.find(
+        (candidate) => candidate.id === mutation.policyId,
+      )!;
+      const affectedPeerScope =
+        mutation.kind === "forget"
+          ? distributedMemoryEraseTargetScope(mutation.targetPeerId)
+          : peerIdHash;
+      const semanticHash = memorySemanticHash(mutation, affectedPeerScope, policy.namespacePrefix);
+      if (current.memoryOperations.has(mutation.operationId)) continue;
+      current.memoryOperations.set(mutation.operationId, {
+        semanticHash,
+        policyId: policy.id,
+        expiresAt: timestamp + policy.operationRetentionMs,
+      });
+      if (mutation.kind === "forget") {
+        const targetScope = distributedMemoryEraseTargetScope(mutation.targetPeerId);
+        for (const key of current.memoryEntries.keys()) {
+          if (key.startsWith(`${policy.id}\0${targetScope}\0`)) current.memoryEntries.delete(key);
+        }
+        current.memoryTombstones.set(memoryTombstoneKey(policy.id, targetScope, "*"), timestamp);
+        const eraseKey = memoryPeerEraseKey(policy.id, targetScope);
+        const prior = current.memoryPeerEraseEpochs.get(eraseKey)?.epoch ?? 0;
+        current.memoryPeerEraseEpochs.set(eraseKey, {
+          epoch: prior + 1,
+          expiresAt: timestamp + policy.operationRetentionMs,
+        });
+      } else {
+        const entryKey = memoryEntryKey(policy.id, peerIdHash, mutation.entryId);
+        if (mutation.kind === "supersede") {
+          const oldKey = memoryEntryKey(policy.id, peerIdHash, mutation.supersedesEntryId);
+          current.memoryEntries.delete(oldKey);
+          current.memoryTombstones.set(
+            memoryTombstoneKey(policy.id, peerIdHash, mutation.supersedesEntryId),
+            timestamp,
+          );
+        }
+        current.memoryEntries.set(entryKey, {
+          id: mutation.entryId,
+          peerIdHash,
+          body: new Uint8Array(mutation.body),
+          content: decodeDistributedMemoryDocument(mutation.body).content,
+          sourceTurnId: mutation.sourceTurnId,
+          origin: mutation.origin,
+          provenanceHash: mutation.provenanceHash,
+          createdAt: timestamp,
+        });
+      }
+    }
+  }
+
+  function validDeliveryReason(value: string): boolean {
+    return /^[a-z0-9][a-z0-9._:-]{0,63}$/.test(value);
+  }
+
+  function unresolvedOutbox(intent: StoredOutboxIntent): boolean {
+    return (
+      intent.state === "pending" ||
+      intent.state === "delivering" ||
+      intent.state === "outcome_unknown"
+    );
+  }
+
+  function expireOutbox(current: NamespaceState, timestamp: number): void {
+    for (const intent of current.outbox.values()) {
+      if (intent.state !== "delivering" || (intent.leaseExpiresAt ?? 0) > timestamp) continue;
+      intent.ownerInstance = undefined;
+      intent.ownerSession = undefined;
+      intent.leaseExpiresAt = undefined;
+      intent.updatedAt = timestamp;
+      if (intent.retryMode === "sink-idempotent" && intent.attempt < intent.maxAttempts) {
+        intent.state = "pending";
+        intent.reasonCode = "delivery-lease-expired-retry-safe";
+      } else {
+        intent.state = "outcome_unknown";
+        intent.settledAt = timestamp;
+        intent.reasonCode = "delivery-lease-expired";
+      }
+    }
+  }
+
+  function copyOutboxLease(
+    current: NamespaceState,
+    intent: StoredOutboxIntent,
+  ): DistributedOutboxLeaseV1 {
+    const request = current.requests.get(intent.requestId);
+    if (!request || intent.leaseExpiresAt === undefined) {
+      throw new Error("outbox request or lease is missing");
+    }
+    return {
+      version: 1,
+      requestId: intent.requestId,
+      threadId: request.threadId,
+      ordinal: intent.ordinal,
+      operationId: intent.operationId,
+      body: new Uint8Array(intent.body),
+      contentType: intent.contentType,
+      retryMode: intent.retryMode,
+      maxAttempts: intent.maxAttempts,
+      attempt: intent.attempt,
+      deliveryFence: intent.deliveryFence,
+      leaseExpiresAt: new Date(intent.leaseExpiresAt).toISOString(),
+    };
+  }
+
+  function ownsOutbox(
+    current: NamespaceState,
+    lease: DistributedOutboxLeaseV1,
+    timestamp: number,
+  ): StoredOutboxIntent | undefined {
+    if (
+      lease.version !== 1 ||
+      !validOperationId(lease.operationId) ||
+      !Number.isSafeInteger(lease.ordinal) ||
+      lease.ordinal < 0 ||
+      !Number.isSafeInteger(lease.attempt) ||
+      lease.attempt < 1 ||
+      !Number.isSafeInteger(lease.deliveryFence) ||
+      lease.deliveryFence < 1
+    ) {
+      return undefined;
+    }
+    const intent = current.outbox.get(`${lease.requestId}:${lease.ordinal}`);
+    if (
+      intent?.state !== "delivering" ||
+      intent.operationId !== lease.operationId ||
+      intent.attempt !== lease.attempt ||
+      intent.deliveryFence !== lease.deliveryFence ||
+      intent.ownerInstance !== config.instanceId ||
+      intent.ownerSession !== sessionId ||
+      (intent.leaseExpiresAt ?? 0) <= timestamp
+    ) {
+      return undefined;
+    }
+    return intent;
+  }
+
   return {
     supportsAdmissionPolicy(requirements) {
       try {
@@ -1618,6 +2065,18 @@ export function createInMemoryDistributedTurnCoordinator(
         ).policies[0]!;
         const stored = budgets.policies.find((candidate) => candidate.id === normalized.id);
         return stored !== undefined && sameDistributedBudgetPolicy(stored, normalized);
+      } catch {
+        return false;
+      }
+    },
+    supportsMemoryPolicy(policy) {
+      try {
+        const normalized = normalizeDistributedMemoryConfig(
+          { policies: [policy] },
+          config.retention.terminalRequestRetentionMs,
+        ).policies[0]!;
+        const stored = memory.policies.find((candidate) => candidate.id === normalized.id);
+        return stored !== undefined && sameDistributedMemoryPolicy(stored, normalized);
       } catch {
         return false;
       }
@@ -1986,6 +2445,7 @@ export function createInMemoryDistributedTurnCoordinator(
             expire(current, timestamp);
             const stored = owns(current, lease, timestamp);
             if (!stored) return { status: "stale" };
+
             stored.executionStarted = true;
             return { status: "ok" };
           }),
@@ -2232,6 +2692,7 @@ export function createInMemoryDistributedTurnCoordinator(
             expire(current, timestamp);
             const stored = owns(current, lease, timestamp);
             if (!stored) return { status: "stale" };
+
             stored.expiresAt = timestamp + config.leaseMs;
             return { status: "ok", lease: leaseFrom(stored) };
           }),
@@ -2285,13 +2746,13 @@ export function createInMemoryDistributedTurnCoordinator(
 
             if (
               stored.historyClaim &&
-              (stored.historyClaim.bindingHash !== peerBinding.bindingHash ||
+              (!samePeerBinding(stored.historyClaim.binding, peerBinding) ||
                 stored.historyClaim.expectedRevision !== history.revision)
             ) {
               return { status: "denied" };
             }
             stored.historyClaim = {
-              bindingHash: peerBinding.bindingHash,
+              binding: copyPeerBinding(peerBinding),
               expectedRevision: history.revision,
             };
             return {
@@ -2308,6 +2769,176 @@ export function createInMemoryDistributedTurnCoordinator(
         },
       );
     },
+    readMemory: (lease, request) =>
+      safe<DistributedMemoryReadResult>(
+        () =>
+          exclusive(() => {
+            const timestamp = now();
+            const current = state();
+            if (!current || !liveInstance(current, timestamp)) return { status: "stale" };
+            expire(current, timestamp);
+            pruneMemory(current, timestamp);
+            if (
+              !validPeerBinding(request.peerBinding) ||
+              !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(request.entryId)
+            ) {
+              return { status: "rejected", reason: "invalid-memory-request" };
+            }
+            const policy = current.memory.policies.find(
+              (candidate) => candidate.id === request.policyId,
+            );
+            if (!policy) return { status: "denied" };
+            const owned = owns(current, lease, timestamp);
+            if (!owned?.executionStarted || !owned.historyClaim) return { status: "stale" };
+            if (!samePeerBinding(owned.historyClaim.binding, request.peerBinding)) {
+              return { status: "denied" };
+            }
+            const entry = current.memoryEntries.get(
+              memoryEntryKey(
+                policy.id,
+                distributedMemoryPeerScope(request.peerBinding),
+                request.entryId,
+              ),
+            );
+            if (!entry) return { status: "missing" };
+            return {
+              status: "ok",
+              entry: {
+                version: 1,
+                id: entry.id,
+                body: new Uint8Array(entry.body),
+                sourceTurnId: entry.sourceTurnId,
+                origin: entry.origin,
+                provenanceHash: entry.provenanceHash,
+                createdAt: new Date(entry.createdAt).toISOString(),
+              },
+            };
+          }),
+        { status: "unavailable" },
+        (result) => {
+          if (result.status === "stale" || result.status === "unavailable") {
+            abortOwned(lease.requestId, "lease-ownership-lost");
+          }
+        },
+      ),
+    loadMemoryPeerEpoch: (lease, request) =>
+      safe<DistributedMemoryPeerEpochResult>(
+        () =>
+          exclusive(() => {
+            const timestamp = now();
+            const current = state();
+            if (!current || !liveInstance(current, timestamp)) return { status: "stale" };
+            expire(current, timestamp);
+            pruneMemory(current, timestamp);
+            if (!validPeerBinding(request.peerBinding)) {
+              return { status: "rejected", reason: "invalid-memory-request" };
+            }
+            const policy = current.memory.policies.find(
+              (candidate) => candidate.id === request.policyId,
+            );
+            if (!policy) return { status: "denied" };
+            const owned = owns(current, lease, timestamp);
+            if (!owned?.executionStarted || !owned.historyClaim) return { status: "stale" };
+            if (!samePeerBinding(owned.historyClaim.binding, request.peerBinding)) {
+              return { status: "denied" };
+            }
+            return {
+              status: "ok",
+              eraseEpoch:
+                current.memoryPeerEraseEpochs.get(
+                  memoryPeerEraseKey(policy.id, distributedMemoryPeerScope(request.peerBinding)),
+                )?.epoch ?? 0,
+            };
+          }),
+        { status: "unavailable" },
+        (result) => {
+          if (result.status === "stale" || result.status === "unavailable") {
+            abortOwned(lease.requestId, "lease-ownership-lost");
+          }
+        },
+      ),
+    searchMemory: (lease, request) =>
+      safe<DistributedMemorySearchResult>(
+        () =>
+          exclusive(() => {
+            const timestamp = now();
+            const current = state();
+            if (!current || !liveInstance(current, timestamp)) return { status: "stale" };
+            expire(current, timestamp);
+            pruneMemory(current, timestamp);
+            if (
+              !validPeerBinding(request.peerBinding) ||
+              !(request.query instanceof Uint8Array) ||
+              !Number.isSafeInteger(request.limit) ||
+              request.limit < 1
+            ) {
+              return { status: "rejected", reason: "invalid-memory-request" };
+            }
+            const policy = current.memory.policies.find(
+              (candidate) => candidate.id === request.policyId,
+            );
+            if (!policy) return { status: "denied" };
+            if (
+              request.query.byteLength > policy.maxQueryBytes ||
+              request.limit > policy.maxResults
+            ) {
+              return { status: "rejected", reason: "invalid-memory-request" };
+            }
+            let query: { contains: string };
+            try {
+              query = decodeDistributedMemoryQuery(request.query);
+            } catch {
+              return { status: "rejected", reason: "invalid-memory-request" };
+            }
+            const owned = owns(current, lease, timestamp);
+            if (!owned?.executionStarted || !owned.historyClaim) return { status: "stale" };
+            if (!samePeerBinding(owned.historyClaim.binding, request.peerBinding)) {
+              return { status: "denied" };
+            }
+            let bytes = 0;
+            const entries: DistributedMemoryEntryV1[] = [];
+            const candidates: StoredMemoryEntry[] = [];
+            const compare = (left: StoredMemoryEntry, right: StoredMemoryEntry) =>
+              right.createdAt - left.createdAt || left.id.localeCompare(right.id);
+            for (const [key, candidate] of current.memoryEntries) {
+              if (
+                !key.startsWith(`${policy.id}\0`) ||
+                candidate.peerIdHash !== distributedMemoryPeerScope(request.peerBinding) ||
+                !candidate.content.includes(query.contains)
+              ) {
+                continue;
+              }
+              let index = candidates.findIndex((existing) => compare(candidate, existing) < 0);
+              if (index < 0) index = candidates.length;
+              candidates.splice(index, 0, candidate);
+              if (candidates.length > request.limit) candidates.pop();
+            }
+            for (const entry of candidates) {
+              if (
+                entries.length >= request.limit ||
+                bytes + entry.body.byteLength > policy.maxResultBytes
+              )
+                break;
+              bytes += entry.body.byteLength;
+              entries.push({
+                version: 1,
+                id: entry.id,
+                body: new Uint8Array(entry.body),
+                sourceTurnId: entry.sourceTurnId,
+                origin: entry.origin,
+                provenanceHash: entry.provenanceHash,
+                createdAt: new Date(entry.createdAt).toISOString(),
+              });
+            }
+            return { status: "ok", entries };
+          }),
+        { status: "unavailable" },
+        (result) => {
+          if (result.status === "stale" || result.status === "unavailable") {
+            abortOwned(lease.requestId, "lease-ownership-lost");
+          }
+        },
+      ),
     commitTurn: (lease, checkpoint) => {
       const checkpointRejection = validateDistributedTurnCheckpoint(
         checkpoint,
@@ -2353,10 +2984,27 @@ export function createInMemoryDistributedTurnCoordinator(
             const stored = owns(current, lease, timestamp);
             if (!stored) return { status: "stale" };
 
+            if (
+              checkpoint.memoryMutations?.some(
+                (mutation) => mutation.sourceTurnId !== lease.requestId,
+              )
+            ) {
+              return { status: "rejected", reason: "invalid-turn-state" };
+            }
+
             const history = current.histories.get(lease.threadId);
+            pruneMemory(current, timestamp);
+            const memoryRejection = preflightMemoryMutations(
+              current,
+              checkpoint.peerBinding,
+              checkpoint.memoryMutations,
+              timestamp,
+            );
+            if (memoryRejection) return { status: "rejected", reason: memoryRejection };
             const historyMatches =
               stored.executionStarted &&
-              stored.historyClaim?.bindingHash === checkpoint.peerBinding.bindingHash &&
+              stored.historyClaim !== undefined &&
+              samePeerBinding(stored.historyClaim.binding, checkpoint.peerBinding) &&
               stored.historyClaim.expectedRevision === checkpoint.expectedHistoryRevision &&
               (history
                 ? history.revision === checkpoint.expectedHistoryRevision &&
@@ -2375,7 +3023,8 @@ export function createInMemoryDistributedTurnCoordinator(
               existingOutboxOperations.has(intent.operationId),
             );
             const pendingOutboxCapacityExceeded =
-              current.outbox.size + checkpoint.outboxIntents.length >
+              [...current.outbox.values()].filter(unresolvedOutbox).length +
+                checkpoint.outboxIntents.length >
               current.turnState.outbox.maxPendingIntents;
             const historyCapacityExceeded =
               !history && current.histories.size >= current.turnState.history.maxThreads;
@@ -2418,6 +3067,12 @@ export function createInMemoryDistributedTurnCoordinator(
               messageCount: checkpoint.history.messageCount,
               revision: (history?.revision ?? 0) + 1,
             });
+            applyMemoryMutations(
+              current,
+              checkpoint.peerBinding,
+              checkpoint.memoryMutations,
+              timestamp,
+            );
             for (const marker of checkpoint.costMarkers) {
               current.costMarkers.set(marker.operationId, {
                 ...marker,
@@ -2431,6 +3086,11 @@ export function createInMemoryDistributedTurnCoordinator(
                 body: new Uint8Array(intent.body),
                 requestId: lease.requestId,
                 fence: lease.fence,
+                state: "pending",
+                createdAt: timestamp,
+                updatedAt: timestamp,
+                attempt: 0,
+                deliveryFence: 0,
               });
             }
             stored.state = "completed";
@@ -2455,6 +3115,141 @@ export function createInMemoryDistributedTurnCoordinator(
           ),
       );
     },
+    claimOutbox: () =>
+      safe<DistributedOutboxClaimResult>(
+        () =>
+          exclusive(() => {
+            const timestamp = now();
+            const current = state();
+            if (!current || !liveInstance(current, timestamp, true)) return { status: "stale" };
+            expireOutbox(current, timestamp);
+            const intent = [...current.outbox.values()]
+              .filter(
+                (candidate) =>
+                  candidate.state === "pending" && candidate.attempt < candidate.maxAttempts,
+              )
+              .sort(
+                (left, right) =>
+                  left.createdAt - right.createdAt ||
+                  left.requestId.localeCompare(right.requestId) ||
+                  left.ordinal - right.ordinal,
+              )[0];
+            if (!intent) return { status: "waiting" };
+            current.nextFence++;
+            intent.state = "delivering";
+            intent.attempt++;
+            intent.deliveryFence = current.nextFence;
+            intent.ownerInstance = config.instanceId;
+            intent.ownerSession = sessionId;
+            intent.leaseExpiresAt = timestamp + config.leaseMs;
+            intent.updatedAt = timestamp;
+            intent.settledAt = undefined;
+            intent.reasonCode = undefined;
+            return { status: "acquired", lease: copyOutboxLease(current, intent) };
+          }),
+        { status: "unavailable" },
+      ),
+    heartbeatOutbox: (lease) =>
+      safe<DistributedOutboxResult>(
+        () =>
+          exclusive(() => {
+            const timestamp = now();
+            const current = state();
+            if (!current || !liveInstance(current, timestamp)) return { status: "stale" };
+            const intent = ownsOutbox(current, lease, timestamp);
+            if (!intent) return { status: "stale" };
+            intent.leaseExpiresAt = timestamp + config.leaseMs;
+            intent.updatedAt = timestamp;
+            return { status: "ok" };
+          }),
+        { status: "unavailable" },
+      ),
+    settleOutbox: (lease, settlement) =>
+      safe<DistributedOutboxResult>(
+        () =>
+          exclusive(() => {
+            const timestamp = now();
+            const current = state();
+            if (!current || !liveInstance(current, timestamp)) return { status: "stale" };
+            const intent = ownsOutbox(current, lease, timestamp);
+            if (!intent) return { status: "stale" };
+            if (
+              (settlement.outcome === "confirmed-failure" ||
+                settlement.outcome === "outcome-unknown") &&
+              !validDeliveryReason(settlement.reasonCode)
+            ) {
+              return { status: "rejected", reason: "invalid-delivery" };
+            }
+            intent.state =
+              settlement.outcome === "delivered"
+                ? "delivered"
+                : settlement.outcome === "confirmed-failure"
+                  ? "failed"
+                  : "outcome_unknown";
+            intent.reasonCode =
+              settlement.outcome === "delivered" ? undefined : settlement.reasonCode;
+            intent.ownerInstance = undefined;
+            intent.ownerSession = undefined;
+            intent.leaseExpiresAt = undefined;
+            intent.settledAt = timestamp;
+            intent.updatedAt = timestamp;
+            return { status: "ok" };
+          }),
+        { status: "unavailable" },
+      ),
+    recoverOutbox: (operationId, expectedDeliveryFence, resolution, reasonCode) =>
+      safe<DistributedOutboxResult>(
+        () =>
+          exclusive(() => {
+            if (
+              !validOperationId(operationId) ||
+              !Number.isSafeInteger(expectedDeliveryFence) ||
+              expectedDeliveryFence < 1 ||
+              !validDeliveryReason(reasonCode) ||
+              (resolution !== "delivered" &&
+                resolution !== "confirmed-failure" &&
+                resolution !== "retry")
+            ) {
+              return { status: "rejected", reason: "invalid-delivery" };
+            }
+            const timestamp = now();
+            const current = state();
+            if (!current || !liveInstance(current, timestamp)) return { status: "stale" };
+            expireOutbox(current, timestamp);
+            const intent = [...current.outbox.values()].find(
+              (candidate) => candidate.operationId === operationId,
+            );
+            if (intent?.state !== "outcome_unknown") return { status: "stale" };
+            if (intent.deliveryFence !== expectedDeliveryFence) return { status: "conflict" };
+            if (resolution === "retry") {
+              if (intent.retryMode !== "sink-idempotent" || intent.attempt >= intent.maxAttempts) {
+                return { status: "rejected", reason: "retry-unsafe" };
+              }
+              intent.state = "pending";
+              intent.settledAt = undefined;
+            } else {
+              intent.state = resolution === "delivered" ? "delivered" : "failed";
+              intent.settledAt = timestamp;
+            }
+            intent.reasonCode = reasonCode;
+            intent.updatedAt = timestamp;
+            const request = current.requests.get(intent.requestId);
+            if (!request) throw new Error("outbox recovery request is missing");
+            recordEvent(
+              current,
+              {
+                eventType: "operator_recovery",
+                fence: expectedDeliveryFence,
+                reasonCode,
+                requestId: intent.requestId,
+                threadId: request.threadId,
+              },
+              timestamp,
+            );
+            return { status: "ok" };
+          }),
+        { status: "unavailable" },
+      ),
     complete: (lease, result) => {
       if (!validReplayResult(result)) {
         return Promise.resolve({ status: "rejected", reason: "invalid-result" });
@@ -2602,7 +3397,7 @@ export function createInMemoryDistributedTurnCoordinator(
                     request.state === "failed" ||
                     request.state === "canceled") &&
                   ![...current.outbox.values()].some(
-                    (intent) => intent.requestId === request.requestId,
+                    (intent) => intent.requestId === request.requestId && unresolvedOutbox(intent),
                   ),
               )
               .sort(
@@ -2629,6 +3424,9 @@ export function createInMemoryDistributedTurnCoordinator(
               );
               for (const [operationId, marker] of current.costMarkers) {
                 if (marker.requestId === request.requestId) current.costMarkers.delete(operationId);
+              }
+              for (const [key, intent] of current.outbox) {
+                if (intent.requestId === request.requestId) current.outbox.delete(key);
               }
             }
             pruneBudgetEvidence(current, timestamp);

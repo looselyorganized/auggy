@@ -199,6 +199,284 @@ async function completeAtomic(
 afterEach(resetInMemoryDistributedCoordination);
 
 describe("distributed turn coordinator", () => {
+  test("commits peer-isolated memory under one fenced root turn and rejects stale or conflicting replays", async () => {
+    const now = () => Date.UTC(2026, 6, 27, 12);
+    const memoryPolicy = {
+      id: "committed-memory",
+      namespacePrefix: "facts",
+      maxEntries: 4,
+      maxEntriesPerPeer: 2,
+      maxBytes: 4096,
+      maxBytesPerPeer: 2048,
+      maxEntryBytes: 1024,
+      maxQueryBytes: 1024,
+      maxResultBytes: 1024,
+      maxResults: 2,
+      maxMutationsPerTurn: 2,
+      maxOperations: 8,
+      maxTombstones: 8,
+      operationRetentionMs: 604_800_000,
+      entryRetentionMs: 604_800_000,
+    };
+    const coordinator = createInMemoryDistributedTurnCoordinator(
+      {
+        namespace: "memory-coordination",
+        instanceId: "memory-replica",
+        maxConcurrent: 1,
+        maxQueued: 2,
+        maxQueuedPerThread: 2,
+        leaseMs: 100,
+        ...coordinatorPolicy,
+        memory: { policies: [memoryPolicy] },
+        compatibility: {
+          protocolVersion: 10,
+          protocolFingerprint: "9".repeat(64),
+          configurationFingerprint: "8".repeat(64),
+        },
+      },
+      { now },
+    );
+    await register(coordinator);
+    const peer = {
+      version: 1 as const,
+      bindingHash: "1".repeat(64),
+      peerIdHash: "2".repeat(64),
+      promotionScopeHash: "3".repeat(64),
+      trustLevel: "public" as const,
+      publicSubstate: "recognized" as const,
+    };
+    const first = request("memory-write", "memory-thread");
+    expect(await coordinator.admit(first)).toEqual({ status: "admitted", attempt: 1 });
+    const claimed = await coordinator.claim(first);
+    if (claimed.status !== "acquired") throw new Error("expected lease");
+    const loaded = await coordinator.loadHistory(claimed.lease, peer);
+    if (loaded.status !== "ok") throw new Error("expected history");
+    expect(await coordinator.markExecutionStarted(claimed.lease)).toMatchObject({ status: "ok" });
+    const epoch = await coordinator.loadMemoryPeerEpoch(claimed.lease, {
+      policyId: memoryPolicy.id,
+      peerBinding: peer,
+    });
+    if (epoch.status !== "ok") throw new Error("expected memory epoch");
+    const document = new TextEncoder().encode(
+      JSON.stringify({ version: 1, content: "order shipped" }),
+    );
+    const mutation = {
+      version: 1 as const,
+      operationId: `auggy-op-v1-${"a".repeat(64)}`,
+      policyId: memoryPolicy.id,
+      sourceTurnId: first.requestId,
+      origin: "agent" as const,
+      provenanceHash: "b".repeat(64),
+      kind: "write" as const,
+      entryId: "order-status",
+      expectedPeerEraseEpoch: epoch.eraseEpoch,
+      body: document,
+    };
+    expect(
+      await coordinator.commitTurn(claimed.lease, {
+        peerBinding: peer,
+        expectedHistoryRevision: loaded.revision,
+        history: { version: 1, body: loaded.body, messageCount: loaded.messageCount },
+        replay: distributedReplay(first.threadId),
+        costMarkers: [],
+        outboxIntents: [],
+        memoryMutations: [mutation],
+      }),
+    ).toEqual({ status: "ok" });
+
+    const read = request("memory-read", "memory-thread");
+    expect(await coordinator.admit(read)).toEqual({ status: "admitted", attempt: 1 });
+    const next = await coordinator.claim(read);
+    if (next.status !== "acquired") throw new Error("expected next lease");
+    const loadedNext = await coordinator.loadHistory(next.lease, peer);
+    expect(loadedNext.status).toBe("ok");
+    if (loadedNext.status !== "ok") throw new Error("expected history");
+    expect(await coordinator.markExecutionStarted(next.lease)).toMatchObject({ status: "ok" });
+    expect(
+      await coordinator.searchMemory(next.lease, {
+        policyId: memoryPolicy.id,
+        peerBinding: peer,
+        query: new TextEncoder().encode(JSON.stringify({ version: 1, contains: "shipped" })),
+        limit: 2,
+      }),
+    ).toMatchObject({ status: "ok", entries: [{ id: "order-status" }] });
+    expect(
+      await coordinator.readMemory(
+        { ...next.lease, fence: next.lease.fence + 1 },
+        {
+          policyId: memoryPolicy.id,
+          peerBinding: peer,
+          entryId: "order-status",
+        },
+      ),
+    ).toEqual({ status: "stale" });
+    const conflict = {
+      ...mutation,
+      sourceTurnId: read.requestId,
+      body: new TextEncoder().encode(JSON.stringify({ version: 1, content: "refunded" })),
+    };
+    expect(
+      await coordinator.commitTurn(next.lease, {
+        peerBinding: peer,
+        expectedHistoryRevision: loadedNext.revision,
+        history: { version: 1, body: loadedNext.body, messageCount: loadedNext.messageCount },
+        replay: distributedReplay(read.threadId),
+        costMarkers: [],
+        outboxIntents: [],
+        memoryMutations: [conflict],
+      }),
+    ).toEqual({ status: "rejected", reason: "memory-conflict" });
+  });
+
+  test("leases committed deliveries once and quarantines unsafe expiry until fenced recovery", async () => {
+    let time = Date.UTC(2026, 6, 27, 12);
+    const now = () => time;
+    const first = replica("delivery-first", now);
+    const second = replica("delivery-second", now);
+    await register(first, second);
+    const peer = {
+      version: 1 as const,
+      bindingHash: "1".repeat(64),
+      peerIdHash: "2".repeat(64),
+      promotionScopeHash: "3".repeat(64),
+      trustLevel: "agent" as const,
+    };
+    const item = request("delivery-request", "delivery-thread");
+    expect(await first.admit(item)).toEqual({ status: "admitted", attempt: 1 });
+    const claimed = await first.claim(item);
+    if (claimed.status !== "acquired") throw new Error("expected root lease");
+    const loaded = await first.loadHistory(claimed.lease, peer);
+    if (loaded.status !== "ok") throw new Error("expected history claim");
+    expect(await first.markExecutionStarted(claimed.lease)).toMatchObject({ status: "ok" });
+    expect(
+      await first.commitTurn(claimed.lease, {
+        peerBinding: peer,
+        expectedHistoryRevision: loaded.revision,
+        history: { version: 1, body: loaded.body, messageCount: loaded.messageCount },
+        replay: distributedReplay(item.threadId),
+        costMarkers: [],
+        outboxIntents: [
+          {
+            version: 1,
+            ordinal: 0,
+            operationId: `auggy-op-v1-${"4".repeat(64)}`,
+            contentType: "application/json",
+            retryMode: "never",
+            maxAttempts: 1,
+            body: new TextEncoder().encode(JSON.stringify({ version: 1, text: "deliver" })),
+          },
+        ],
+      }),
+    ).toEqual({ status: "ok" });
+
+    const [left, right] = await Promise.all([first.claimOutbox(), second.claimOutbox()]);
+    const acquired = left.status === "acquired" ? left : right.status === "acquired" ? right : null;
+    expect(acquired?.status).toBe("acquired");
+    expect([left.status, right.status].sort()).toEqual(["acquired", "waiting"]);
+    if (acquired?.status !== "acquired") throw new Error("expected delivery lease");
+    const owner = left.status === "acquired" ? first : second;
+    const nonOwner = owner === first ? second : first;
+    expect(await nonOwner.settleOutbox(acquired.lease, { outcome: "delivered" })).toEqual({
+      status: "stale",
+    });
+
+    time += 50;
+    expect(await nonOwner.heartbeatInstance()).toMatchObject({ status: "ok" });
+    time += 51;
+    expect(await nonOwner.claimOutbox()).toEqual({ status: "waiting" });
+    expect(
+      await nonOwner.recoverOutbox(
+        acquired.lease.operationId,
+        acquired.lease.deliveryFence + 1,
+        "delivered",
+        "operator-confirmed-delivery",
+      ),
+    ).toEqual({ status: "conflict" });
+    expect(
+      await nonOwner.recoverOutbox(
+        acquired.lease.operationId,
+        acquired.lease.deliveryFence,
+        "retry",
+        "operator-requested-retry",
+      ),
+    ).toEqual({ status: "rejected", reason: "retry-unsafe" });
+    expect(
+      await nonOwner.recoverOutbox(
+        acquired.lease.operationId,
+        acquired.lease.deliveryFence,
+        "delivered",
+        "operator-confirmed-delivery",
+      ),
+    ).toEqual({ status: "ok" });
+    expect(
+      await nonOwner.recoverOutbox(
+        acquired.lease.operationId,
+        acquired.lease.deliveryFence,
+        "delivered",
+        "operator-confirmed-delivery",
+      ),
+    ).toEqual({ status: "stale" });
+  });
+
+  test("reclaims expired delivery leases only with immutable sink-idempotency evidence", async () => {
+    let time = Date.UTC(2026, 6, 27, 12);
+    const now = () => time;
+    const first = replica("retry-delivery-first", now);
+    const second = replica("retry-delivery-second", now);
+    await register(first, second);
+    const peer = {
+      version: 1 as const,
+      bindingHash: "5".repeat(64),
+      peerIdHash: "6".repeat(64),
+      promotionScopeHash: "7".repeat(64),
+      trustLevel: "agent" as const,
+    };
+    const item = request("retry-delivery-request", "retry-delivery-thread");
+    expect(await first.admit(item)).toEqual({ status: "admitted", attempt: 1 });
+    const claimed = await first.claim(item);
+    if (claimed.status !== "acquired") throw new Error("expected root lease");
+    const loaded = await first.loadHistory(claimed.lease, peer);
+    if (loaded.status !== "ok") throw new Error("expected history claim");
+    expect(await first.markExecutionStarted(claimed.lease)).toMatchObject({ status: "ok" });
+    expect(
+      await first.commitTurn(claimed.lease, {
+        peerBinding: peer,
+        expectedHistoryRevision: loaded.revision,
+        history: { version: 1, body: loaded.body, messageCount: loaded.messageCount },
+        replay: distributedReplay(item.threadId),
+        costMarkers: [],
+        outboxIntents: [
+          {
+            version: 1,
+            ordinal: 0,
+            operationId: `auggy-op-v1-${"8".repeat(64)}`,
+            contentType: "application/json",
+            retryMode: "sink-idempotent",
+            maxAttempts: 2,
+            body: new TextEncoder().encode(JSON.stringify({ version: 1, text: "deliver" })),
+          },
+        ],
+      }),
+    ).toEqual({ status: "ok" });
+    const initial = await first.claimOutbox();
+    if (initial.status !== "acquired") throw new Error("expected initial delivery lease");
+    time += 50;
+    expect(await second.heartbeatInstance()).toMatchObject({ status: "ok" });
+    time += 51;
+    const retry = await second.claimOutbox();
+    if (retry.status !== "acquired") throw new Error("expected retry delivery lease");
+    expect(retry.lease.operationId).toBe(initial.lease.operationId);
+    expect(retry.lease.attempt).toBe(2);
+    expect(retry.lease.deliveryFence).toBeGreaterThan(initial.lease.deliveryFence);
+    expect(await first.settleOutbox(initial.lease, { outcome: "delivered" })).toEqual({
+      status: "stale",
+    });
+    expect(await second.settleOutbox(retry.lease, { outcome: "delivered" })).toEqual({
+      status: "ok",
+    });
+    expect(await second.claimOutbox()).toEqual({ status: "waiting" });
+  });
+
   test("derives every persisted migration checksum from its immutable SQL", () => {
     for (const migration of POSTGRES_COORDINATION_MIGRATIONS) {
       expect(new Bun.CryptoHasher("sha256").update(migration.sql).digest("hex")).toBe(
@@ -1362,6 +1640,8 @@ describe("distributed turn coordinator", () => {
               JSON.stringify({ version: 1, targetAugment: "test-transport", text: "committed" }),
             ),
             contentType: "application/json",
+            retryMode: "never",
+            maxAttempts: 1,
           },
         ],
       }),

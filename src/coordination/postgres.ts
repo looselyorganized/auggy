@@ -13,6 +13,15 @@ import {
 } from "./budget-policy";
 import type { DistributedBudgetPolicyV1 } from "../types";
 import {
+  decodeDistributedMemoryDocument,
+  decodeDistributedMemoryQuery,
+  distributedMemoryEraseTargetScope,
+  distributedMemoryPeerScope,
+  normalizeDistributedMemoryConfig,
+  sameDistributedMemoryPolicy,
+} from "./memory-policy";
+import type { DistributedMemoryPolicyV1 } from "../types";
+import {
   allowsDistributedPeerPromotion,
   EMPTY_DISTRIBUTED_HISTORY,
   sameDistributedPeerBinding,
@@ -36,6 +45,18 @@ import type {
   DistributedCoordinatorHealth,
   DistributedEventPage,
   DistributedHistoryLoadResult,
+  DistributedMemoryReadRequest,
+  DistributedMemoryReadResult,
+  DistributedMemorySearchRequest,
+  DistributedMemorySearchResult,
+  DistributedMemoryMutationV1,
+  DistributedMemoryOriginV1,
+  DistributedMemoryPeerEpochResult,
+  DistributedMemoryPeerEpochRequest,
+  DistributedOutboxClaimResult,
+  DistributedOutboxLeaseV1,
+  DistributedOutboxResult,
+  DistributedOutboxSettlement,
   DistributedPeerBindingV1,
   DistributedPruneResult,
   DistributedReplayResult,
@@ -52,6 +73,7 @@ import type {
 
 type Row = Record<string, unknown>;
 const MAX_CAPACITY = 1_000_000;
+const MEMORY_MAINTENANCE_BATCH = 256;
 const MAX_LEASE_MS = 3_600_000;
 const MAX_EVENT_PAGE = 500;
 const MAX_PRUNE_BATCH = 1_000;
@@ -101,10 +123,50 @@ function normalizedBudgets(config: DistributedCoordinatorConfig) {
   );
 }
 
+function normalizedMemory(config: DistributedCoordinatorConfig) {
+  return normalizeDistributedMemoryConfig(
+    config.memory,
+    config.retention.terminalRequestRetentionMs,
+  );
+}
+
 function budgetDigest(domain: string, ...values: string[]): string {
   const hasher = new Bun.CryptoHasher("sha256").update(domain).update("\0");
   for (const value of values) hasher.update(value).update("\0");
   return hasher.digest("hex");
+}
+
+function memoryMutationSemanticHash(
+  mutation: DistributedMemoryMutationV1,
+  peerScope: string,
+  namespacePrefix: string,
+): string {
+  const body =
+    mutation.kind === "forget"
+      ? ""
+      : new Bun.CryptoHasher("sha256").update(mutation.body).digest("hex");
+  return new Bun.CryptoHasher("sha256")
+    .update("auggy-distributed-memory-mutation-v1\0")
+    .update(
+      JSON.stringify({
+        policyId: mutation.policyId,
+        namespacePrefix,
+        peerScope,
+        sourceTurnId: mutation.sourceTurnId,
+        origin: mutation.origin,
+        provenanceHash: mutation.provenanceHash,
+        kind: mutation.kind,
+        ...(mutation.kind === "forget"
+          ? { targetPeerScope: peerScope }
+          : { entryId: mutation.entryId }),
+        ...(mutation.kind === "supersede" ? { supersedesEntryId: mutation.supersedesEntryId } : {}),
+        ...(mutation.kind === "forget"
+          ? {}
+          : { expectedPeerEraseEpoch: mutation.expectedPeerEraseEpoch }),
+        body,
+      }),
+    )
+    .digest("hex");
 }
 
 function budgetTotals(config: ReturnType<typeof normalizedBudgets>) {
@@ -194,6 +256,19 @@ function text(row: Row, key: string): string {
   return value;
 }
 
+function memoryOrigin(row: Row, key: string): DistributedMemoryOriginV1 {
+  const value = text(row, key);
+  if (
+    value !== "operator" &&
+    value !== "peer-derived" &&
+    value !== "agent-derived" &&
+    value !== "agent"
+  ) {
+    throw new Error(`invalid coordinator database row: ${key}`);
+  }
+  return value;
+}
+
 function number(row: Row, key: string): number {
   const value = row[key];
   if (
@@ -274,6 +349,33 @@ function peerBindingFromRow(row: Row): DistributedPeerBindingV1 {
   };
   if (!validDistributedPeerBinding(binding)) {
     throw new Error("invalid coordinator history peer binding");
+  }
+  return binding;
+}
+
+function peerBindingFromRequestClaim(row: Row): DistributedPeerBindingV1 {
+  const trustLevel = text(row, "history_trust_level");
+  if (trustLevel !== "creator" && trustLevel !== "agent" && trustLevel !== "public") {
+    throw new Error("invalid coordinator request trust binding");
+  }
+  const publicSubstate = nullableText(row, "history_public_substate");
+  if (
+    publicSubstate !== null &&
+    publicSubstate !== "anonymous" &&
+    publicSubstate !== "recognized"
+  ) {
+    throw new Error("invalid coordinator request public binding");
+  }
+  const binding: DistributedPeerBindingV1 = {
+    version: 1,
+    bindingHash: text(row, "history_binding_hash"),
+    peerIdHash: nullableText(row, "history_peer_id_hash"),
+    promotionScopeHash: text(row, "history_promotion_scope_hash"),
+    trustLevel,
+    ...(publicSubstate === null ? {} : { publicSubstate }),
+  };
+  if (!validDistributedPeerBinding(binding)) {
+    throw new Error("invalid coordinator request peer binding");
   }
   return binding;
 }
@@ -572,6 +674,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       throw new Error("coordination admission capacity exceeds retained-request capacity");
     }
     const budgets = normalizedBudgets(options);
+    const memory = normalizedMemory(options);
     if (budgets.policies.length > MAX_BUDGET_POLICIES) {
       throw new Error("coordination budget policies exceed supported bounds");
     }
@@ -682,6 +785,9 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
               })),
             },
           }),
+      ...(options.memory === undefined
+        ? {}
+        : { memory: { policies: memory.policies.map((policy) => ({ ...policy })) } }),
     };
     this.#sessionId = new Bun.CryptoHasher("sha256").update(crypto.randomUUID()).digest("hex");
     this.#ownsSql = !options.sql;
@@ -744,6 +850,18 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       return normalized !== undefined && stored !== undefined
         ? sameDistributedBudgetPolicy(stored, normalized)
         : false;
+    } catch {
+      return false;
+    }
+  }
+
+  supportsMemoryPolicy(policy: DistributedMemoryPolicyV1): boolean {
+    try {
+      const normalized = normalizeDistributedMemoryConfig({ policies: [policy] }).policies[0]!;
+      const stored = normalizedMemory(this.#config).policies.find(
+        (candidate) => candidate.id === normalized.id,
+      );
+      return stored !== undefined && sameDistributedMemoryPolicy(stored, normalized);
     } catch {
       return false;
     }
@@ -1601,7 +1719,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           if (!(await this.registeredInstance(tx))) return { status: "stale" };
           await this.#expireActive(tx);
           const requests = await tx.unsafe<Row>(
-            "SELECT history_binding_hash, history_revision FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND execution_started_at IS NULL FOR UPDATE",
+            "SELECT history_binding_hash, history_peer_id_hash, history_promotion_scope_hash, history_trust_level, history_public_substate, history_revision FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND execution_started_at IS NULL FOR UPDATE",
             [
               this.#config.namespace,
               lease.requestId,
@@ -1640,13 +1758,13 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
           const revision = history ? number(history, "revision") : 0;
           if (
             request.history_binding_hash !== null &&
-            (text(request, "history_binding_hash") !== peerBinding.bindingHash ||
+            (!sameDistributedPeerBinding(peerBindingFromRequestClaim(request), peerBinding) ||
               number(request, "history_revision") !== revision)
           ) {
             return { status: "denied" };
           }
           const claimed = await tx.unsafe<Row>(
-            "UPDATE public.auggy_coordination_requests SET history_binding_hash = $9, history_revision = $10, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND execution_started_at IS NULL RETURNING request_id",
+            "UPDATE public.auggy_coordination_requests SET history_binding_hash = $9, history_peer_id_hash = $10, history_promotion_scope_hash = $11, history_trust_level = $12, history_public_substate = $13, history_revision = $14, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND execution_started_at IS NULL RETURNING request_id",
             [
               this.#config.namespace,
               lease.requestId,
@@ -1657,6 +1775,10 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
               this.#config.instanceId,
               this.#sessionId,
               peerBinding.bindingHash,
+              peerBinding.peerIdHash,
+              peerBinding.promotionScopeHash,
+              peerBinding.trustLevel,
+              peerBinding.publicSubstate ?? null,
               revision,
             ],
           );
@@ -1673,6 +1795,212 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
             throw new Error("stored history exceeds configured policy");
           }
           return { status: "ok", version: 1, body, messageCount, revision };
+        }),
+    );
+    if (result.status === "stale" || result.status === "unavailable") {
+      this.abortOwned(lease.requestId, "lease-ownership-lost");
+    }
+    return result;
+  }
+
+  async readMemory(
+    lease: DistributedTurnLease,
+    request: DistributedMemoryReadRequest,
+  ): Promise<DistributedMemoryReadResult> {
+    if (
+      !this.validLease(lease) ||
+      !validDistributedPeerBinding(request.peerBinding) ||
+      !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(request.entryId)
+    ) {
+      return { status: "rejected", reason: "invalid-memory-request" };
+    }
+    const policy = normalizedMemory(this.#config).policies.find(
+      (candidate) => candidate.id === request.policyId,
+    );
+    if (!policy) return { status: "denied" };
+    const result = await this.safe<DistributedMemoryReadResult>(
+      { status: "unavailable" },
+      async () =>
+        this.transaction(async (tx) => {
+          const rows = await tx.unsafe<Row>(
+            "WITH clock AS MATERIALIZED (SELECT clock_timestamp() AS observed_at), owned AS MATERIALIZED (SELECT history_binding_hash, history_peer_id_hash, history_promotion_scope_hash, history_trust_level, history_public_substate FROM public.auggy_coordination_requests, clock WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock.observed_at AND execution_started_at IS NOT NULL), authorized AS MATERIALIZED (SELECT true AS is_authorized FROM owned WHERE history_binding_hash = $13 AND history_peer_id_hash IS NOT DISTINCT FROM $15 AND history_promotion_scope_hash = $16 AND history_trust_level = $17 AND history_public_substate IS NOT DISTINCT FROM $18), selected AS MATERIALIZED (SELECT candidate.entry_id, candidate.created_at, octet_length(candidate.body) AS body_bytes FROM authorized CROSS JOIN clock CROSS JOIN public.auggy_coordination_memory_entries candidate WHERE candidate.namespace = $1 AND candidate.policy_id = $9 AND candidate.namespace_prefix = $10 AND candidate.peer_id_hash = $11 AND candidate.entry_id = $12 AND candidate.expires_at > clock.observed_at AND NOT EXISTS (SELECT 1 FROM public.auggy_coordination_memory_tombstones tombstone WHERE tombstone.namespace = $1 AND tombstone.policy_id = $9 AND tombstone.namespace_prefix = $10 AND tombstone.peer_id_hash = $11 AND tombstone.entry_id = $12 AND tombstone.expires_at > clock.observed_at)), payload AS (SELECT candidate.entry_id, candidate.body, candidate.source_turn_id, candidate.origin, candidate.provenance_hash, candidate.created_at FROM selected JOIN public.auggy_coordination_memory_entries candidate ON candidate.namespace = $1 AND candidate.policy_id = $9 AND candidate.namespace_prefix = $10 AND candidate.peer_id_hash = $11 AND candidate.entry_id = selected.entry_id WHERE selected.body_bytes <= $14) SELECT owned.history_binding_hash, authorized.is_authorized, selected.body_bytes, payload.entry_id, payload.body, payload.source_turn_id, payload.origin, payload.provenance_hash, payload.created_at FROM owned LEFT JOIN authorized ON true LEFT JOIN selected ON true LEFT JOIN payload ON true",
+            [
+              this.#config.namespace,
+              lease.requestId,
+              lease.threadId,
+              lease.sourceId,
+              lease.attempt,
+              lease.fence,
+              this.#config.instanceId,
+              this.#sessionId,
+              policy.id,
+              policy.namespacePrefix,
+              distributedMemoryPeerScope(request.peerBinding),
+              request.entryId,
+              request.peerBinding.bindingHash,
+              policy.maxEntryBytes,
+              request.peerBinding.peerIdHash,
+              request.peerBinding.promotionScopeHash,
+              request.peerBinding.trustLevel,
+              request.peerBinding.publicSubstate ?? null,
+            ],
+          );
+          const row = rows[0];
+          if (!row) return { status: "stale" };
+          if (row.is_authorized !== true) return { status: "denied" };
+          if (row.body_bytes !== null && number(row, "body_bytes") > policy.maxEntryBytes) {
+            throw new Error("stored memory entry exceeds policy");
+          }
+          if (row.entry_id === null) return { status: "missing" };
+          const body = bytes(row, "body");
+          if (body.byteLength > policy.maxEntryBytes)
+            throw new Error("stored memory entry exceeds policy");
+          return {
+            status: "ok",
+            entry: {
+              version: 1,
+              id: text(row, "entry_id"),
+              body,
+              sourceTurnId: text(row, "source_turn_id"),
+              origin: memoryOrigin(row, "origin"),
+              provenanceHash: text(row, "provenance_hash"),
+              createdAt: new Date(date(row, "created_at")).toISOString(),
+            },
+          };
+        }),
+    );
+    if (result.status === "stale" || result.status === "unavailable") {
+      this.abortOwned(lease.requestId, "lease-ownership-lost");
+    }
+    return result;
+  }
+
+  async searchMemory(
+    lease: DistributedTurnLease,
+    request: DistributedMemorySearchRequest,
+  ): Promise<DistributedMemorySearchResult> {
+    if (
+      !this.validLease(lease) ||
+      !validDistributedPeerBinding(request.peerBinding) ||
+      !(request.query instanceof Uint8Array) ||
+      !Number.isSafeInteger(request.limit) ||
+      request.limit < 1
+    ) {
+      return { status: "rejected", reason: "invalid-memory-request" };
+    }
+    const policy = normalizedMemory(this.#config).policies.find(
+      (candidate) => candidate.id === request.policyId,
+    );
+    if (!policy) return { status: "denied" };
+    if (request.query.byteLength > policy.maxQueryBytes || request.limit > policy.maxResults)
+      return { status: "rejected", reason: "invalid-memory-request" };
+    let query: { contains: string };
+    try {
+      query = decodeDistributedMemoryQuery(request.query);
+    } catch {
+      return { status: "rejected", reason: "invalid-memory-request" };
+    }
+    const result = await this.safe<DistributedMemorySearchResult>(
+      { status: "unavailable" },
+      async () =>
+        this.transaction(async (tx) => {
+          const rows = await tx.unsafe<Row>(
+            "WITH clock AS MATERIALIZED (SELECT clock_timestamp() AS observed_at), owned AS MATERIALIZED (SELECT history_binding_hash, history_peer_id_hash, history_promotion_scope_hash, history_trust_level, history_public_substate FROM public.auggy_coordination_requests, clock WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock.observed_at AND execution_started_at IS NOT NULL), authorized AS MATERIALIZED (SELECT true AS is_authorized FROM owned WHERE history_binding_hash = $16 AND history_peer_id_hash IS NOT DISTINCT FROM $17 AND history_promotion_scope_hash = $18 AND history_trust_level = $19 AND history_public_substate IS NOT DISTINCT FROM $20), candidates AS MATERIALIZED (SELECT entry.entry_id, entry.created_at, octet_length(entry.body) AS body_bytes FROM authorized CROSS JOIN clock CROSS JOIN public.auggy_coordination_memory_entries entry WHERE entry.namespace = $1 AND entry.policy_id = $9 AND entry.namespace_prefix = $10 AND entry.peer_id_hash = $11 AND entry.expires_at > clock.observed_at AND position($12 in entry.content_text) > 0 AND NOT EXISTS (SELECT 1 FROM public.auggy_coordination_memory_tombstones tombstone WHERE tombstone.namespace = $1 AND tombstone.policy_id = $9 AND tombstone.namespace_prefix = $10 AND tombstone.peer_id_hash = $11 AND tombstone.entry_id = entry.entry_id AND tombstone.expires_at > clock.observed_at) ORDER BY entry.created_at DESC, entry.entry_id ASC LIMIT $13), summary AS (SELECT COALESCE(bool_or(body_bytes > $14), false) AS has_oversized FROM candidates), ranked AS (SELECT entry_id, created_at, body_bytes, sum(body_bytes) OVER (ORDER BY created_at DESC, entry_id ASC) AS used_bytes FROM candidates), qualified AS MATERIALIZED (SELECT entry_id, created_at FROM ranked WHERE body_bytes <= $14 AND used_bytes <= $15), payload AS (SELECT entry.entry_id, entry.body, entry.source_turn_id, entry.origin, entry.provenance_hash, qualified.created_at FROM qualified JOIN public.auggy_coordination_memory_entries entry ON entry.namespace = $1 AND entry.policy_id = $9 AND entry.namespace_prefix = $10 AND entry.peer_id_hash = $11 AND entry.entry_id = qualified.entry_id) SELECT owned.history_binding_hash, authorized.is_authorized, summary.has_oversized, payload.entry_id, payload.body, payload.source_turn_id, payload.origin, payload.provenance_hash, payload.created_at FROM owned LEFT JOIN authorized ON true CROSS JOIN summary LEFT JOIN payload ON true ORDER BY payload.created_at DESC, payload.entry_id ASC",
+            [
+              this.#config.namespace,
+              lease.requestId,
+              lease.threadId,
+              lease.sourceId,
+              lease.attempt,
+              lease.fence,
+              this.#config.instanceId,
+              this.#sessionId,
+              policy.id,
+              policy.namespacePrefix,
+              distributedMemoryPeerScope(request.peerBinding),
+              query.contains,
+              request.limit,
+              policy.maxEntryBytes,
+              policy.maxResultBytes,
+              request.peerBinding.bindingHash,
+              request.peerBinding.peerIdHash,
+              request.peerBinding.promotionScopeHash,
+              request.peerBinding.trustLevel,
+              request.peerBinding.publicSubstate ?? null,
+            ],
+          );
+          const first = rows[0];
+          if (!first) return { status: "stale" };
+          if (first.is_authorized !== true) return { status: "denied" };
+          if (first.has_oversized === true) throw new Error("stored memory entry exceeds policy");
+          let used = 0;
+          const entries = [];
+          for (const row of rows) {
+            if (row.entry_id === null) continue;
+            const body = bytes(row, "body");
+            if (body.byteLength > policy.maxEntryBytes)
+              throw new Error("stored memory entry exceeds policy");
+            if (used + body.byteLength > policy.maxResultBytes) break;
+            used += body.byteLength;
+            entries.push({
+              version: 1 as const,
+              id: text(row, "entry_id"),
+              body,
+              sourceTurnId: text(row, "source_turn_id"),
+              origin: memoryOrigin(row, "origin"),
+              provenanceHash: text(row, "provenance_hash"),
+              createdAt: new Date(date(row, "created_at")).toISOString(),
+            });
+          }
+          return { status: "ok", entries };
+        }),
+    );
+    if (result.status === "stale" || result.status === "unavailable") {
+      this.abortOwned(lease.requestId, "lease-ownership-lost");
+    }
+    return result;
+  }
+
+  async loadMemoryPeerEpoch(
+    lease: DistributedTurnLease,
+    request: DistributedMemoryPeerEpochRequest,
+  ): Promise<DistributedMemoryPeerEpochResult> {
+    if (!this.validLease(lease) || !validDistributedPeerBinding(request.peerBinding)) {
+      return { status: "rejected", reason: "invalid-memory-request" };
+    }
+    const policy = normalizedMemory(this.#config).policies.find(
+      (candidate) => candidate.id === request.policyId,
+    );
+    if (!policy) return { status: "denied" };
+    const result = await this.safe<DistributedMemoryPeerEpochResult>(
+      { status: "unavailable" },
+      async () =>
+        this.transaction(async (tx) => {
+          const rows = await tx.unsafe<Row>(
+            "WITH clock AS MATERIALIZED (SELECT clock_timestamp() AS observed_at), owned AS MATERIALIZED (SELECT history_binding_hash, history_peer_id_hash, history_promotion_scope_hash, history_trust_level, history_public_substate FROM public.auggy_coordination_requests, clock WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock.observed_at AND execution_started_at IS NOT NULL FOR UPDATE), authorized AS MATERIALIZED (SELECT true AS is_authorized FROM owned WHERE history_binding_hash = $12 AND history_peer_id_hash IS NOT DISTINCT FROM $13 AND history_promotion_scope_hash = $14 AND history_trust_level = $15 AND history_public_substate IS NOT DISTINCT FROM $16), erase AS (SELECT tombstone.erase_epoch FROM authorized CROSS JOIN clock CROSS JOIN public.auggy_coordination_memory_tombstones tombstone WHERE tombstone.namespace = $1 AND tombstone.policy_id = $9 AND tombstone.namespace_prefix = $10 AND tombstone.peer_id_hash = $11 AND tombstone.entry_id = '*' AND tombstone.expires_at > clock.observed_at) SELECT owned.history_binding_hash, authorized.is_authorized, COALESCE(erase.erase_epoch, 0)::bigint AS erase_epoch FROM owned LEFT JOIN authorized ON true LEFT JOIN erase ON true",
+            [
+              this.#config.namespace,
+              lease.requestId,
+              lease.threadId,
+              lease.sourceId,
+              lease.attempt,
+              lease.fence,
+              this.#config.instanceId,
+              this.#sessionId,
+              policy.id,
+              policy.namespacePrefix,
+              distributedMemoryPeerScope(request.peerBinding),
+              request.peerBinding.bindingHash,
+              request.peerBinding.peerIdHash,
+              request.peerBinding.promotionScopeHash,
+              request.peerBinding.trustLevel,
+              request.peerBinding.publicSubstate ?? null,
+            ],
+          );
+          const row = rows[0];
+          if (!row) return { status: "stale" };
+          if (row.is_authorized !== true) return { status: "denied" };
+          return { status: "ok", eraseEpoch: number(row, "erase_epoch") };
         }),
     );
     if (result.status === "stale" || result.status === "unavailable") {
@@ -1708,7 +2036,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         if (!(await this.registeredInstance(tx))) return { status: "stale" };
         await this.#expireActive(tx);
         const requests = await tx.unsafe<Row>(
-          "SELECT history_binding_hash, history_revision FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND execution_started_at IS NOT NULL FOR UPDATE",
+          "SELECT history_binding_hash, history_peer_id_hash, history_promotion_scope_hash, history_trust_level, history_public_substate, history_revision FROM public.auggy_coordination_requests WHERE namespace = $1 AND request_id = $2 AND thread_id = $3 AND source_id = $4 AND state = 'active' AND queue_generation = $5 AND fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() AND execution_started_at IS NOT NULL FOR UPDATE",
           [
             this.#config.namespace,
             lease.requestId,
@@ -1728,6 +2056,226 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         );
         const history = histories[0];
         const historyBinding = history ? peerBindingFromRow(history) : undefined;
+        const memoryPolicies = normalizedMemory(this.#config).policies;
+        const memoryMutations = checkpoint.memoryMutations ?? [];
+        for (const policy of memoryPolicies) {
+          await this.cleanupExpiredMemoryEvidence(tx, policy, MEMORY_MAINTENANCE_BATCH);
+        }
+        const memoryMutationCounts = new Map<string, number>();
+        for (const mutation of memoryMutations) {
+          if (mutation.sourceTurnId !== lease.requestId) {
+            return { status: "rejected", reason: "invalid-turn-state" };
+          }
+          const policy = memoryPolicies.find((candidate) => candidate.id === mutation.policyId);
+          if (!policy) return { status: "rejected", reason: "invalid-turn-state" };
+          memoryMutationCounts.set(policy.id, (memoryMutationCounts.get(policy.id) ?? 0) + 1);
+          if (memoryMutationCounts.get(policy.id)! > policy.maxMutationsPerTurn) {
+            return { status: "rejected", reason: "invalid-turn-state" };
+          }
+          if (mutation.kind !== "forget") {
+            if (mutation.body.byteLength > policy.maxEntryBytes)
+              return { status: "rejected", reason: "invalid-turn-state" };
+            try {
+              decodeDistributedMemoryDocument(mutation.body);
+            } catch {
+              return { status: "rejected", reason: "invalid-turn-state" };
+            }
+          }
+          await tx.unsafe(
+            "DELETE FROM public.auggy_coordination_memory_operations WHERE namespace = $1 AND operation_id = $2 AND expires_at <= clock_timestamp()",
+            [this.#config.namespace, mutation.operationId],
+          );
+          if (mutation.kind !== "forget") {
+            await tx.unsafe(
+              "DELETE FROM public.auggy_coordination_memory_entries WHERE namespace = $1 AND policy_id = $2 AND namespace_prefix = $3 AND peer_id_hash = $4 AND entry_id = $5 AND expires_at <= clock_timestamp()",
+              [
+                this.#config.namespace,
+                policy.id,
+                policy.namespacePrefix,
+                distributedMemoryPeerScope(checkpoint.peerBinding),
+                mutation.entryId,
+              ],
+            );
+            await tx.unsafe(
+              "DELETE FROM public.auggy_coordination_memory_tombstones WHERE namespace = $1 AND policy_id = $2 AND namespace_prefix = $3 AND peer_id_hash = $4 AND entry_id = $5 AND expires_at <= clock_timestamp()",
+              [
+                this.#config.namespace,
+                policy.id,
+                policy.namespacePrefix,
+                distributedMemoryPeerScope(checkpoint.peerBinding),
+                mutation.entryId,
+              ],
+            );
+          }
+          const prior = await tx.unsafe<Row>(
+            "SELECT semantic_hash FROM public.auggy_coordination_memory_operations WHERE namespace = $1 AND operation_id = $2 AND expires_at > clock_timestamp() FOR UPDATE",
+            [this.#config.namespace, mutation.operationId],
+          );
+          if (
+            prior[0] &&
+            text(prior[0], "semantic_hash") !==
+              memoryMutationSemanticHash(
+                mutation,
+                mutation.kind === "forget"
+                  ? distributedMemoryEraseTargetScope(mutation.targetPeerId)
+                  : distributedMemoryPeerScope(checkpoint.peerBinding),
+                policy.namespacePrefix,
+              )
+          ) {
+            return { status: "rejected", reason: "memory-conflict" };
+          }
+        }
+        // The namespace lock serializes this preflight with the later write.
+        // It must run before history/result mutation so a rejection is atomic.
+        const projectedAdds = new Map<string, number>();
+        const projectedBytes = new Map<string, number>();
+        const projectedRemovals = new Map<string, number>();
+        const projectedRemovedBytes = new Map<string, number>();
+        const projectedOperations = new Map<string, number>();
+        const projectedTombstones = new Map<string, number>();
+        const stagedTargets = new Set<string>();
+        const stagedSupersedes = new Set<string>();
+        const stagedErases = new Set<string>();
+        const stagedWriteScopes = new Set<string>();
+        for (const mutation of memoryMutations) {
+          const policy = memoryPolicies.find((candidate) => candidate.id === mutation.policyId)!;
+          const prior = await tx.unsafe<Row>(
+            "SELECT semantic_hash FROM public.auggy_coordination_memory_operations WHERE namespace = $1 AND operation_id = $2 AND expires_at > clock_timestamp()",
+            [this.#config.namespace, mutation.operationId],
+          );
+          if (prior[0]) continue;
+          projectedOperations.set(policy.id, (projectedOperations.get(policy.id) ?? 0) + 1);
+          if (mutation.kind === "forget") {
+            if (
+              checkpoint.peerBinding.trustLevel !== "creator" &&
+              checkpoint.peerBinding.trustLevel !== "agent"
+            ) {
+              return { status: "rejected", reason: "memory-conflict" };
+            }
+            const targetScope = distributedMemoryEraseTargetScope(mutation.targetPeerId);
+            const eraseKey = `${policy.id}\0${targetScope}`;
+            if (stagedErases.has(eraseKey) || stagedWriteScopes.has(eraseKey))
+              return { status: "rejected", reason: "memory-conflict" };
+            stagedErases.add(eraseKey);
+            const retainedErase = await tx.unsafe<Row>(
+              "SELECT entry_id FROM public.auggy_coordination_memory_tombstones WHERE namespace = $1 AND policy_id = $2 AND namespace_prefix = $3 AND peer_id_hash = $4 AND entry_id = '*' AND expires_at > clock_timestamp()",
+              [this.#config.namespace, policy.id, policy.namespacePrefix, targetScope],
+            );
+            if (!retainedErase[0]) {
+              projectedTombstones.set(policy.id, (projectedTombstones.get(policy.id) ?? 0) + 1);
+            }
+            continue;
+          }
+          const peerIdHash = distributedMemoryPeerScope(checkpoint.peerBinding);
+          const writeScope = `${policy.id}\0${peerIdHash}`;
+          if (stagedErases.has(writeScope)) {
+            return { status: "rejected", reason: "memory-conflict" };
+          }
+          stagedWriteScopes.add(writeScope);
+          const epochs = await tx.unsafe<Row>(
+            "SELECT COALESCE((SELECT erase_epoch FROM public.auggy_coordination_memory_tombstones WHERE namespace = $1 AND policy_id = $2 AND namespace_prefix = $3 AND peer_id_hash = $4 AND entry_id = '*' AND expires_at > clock_timestamp()), 0)::bigint AS erase_epoch",
+            [this.#config.namespace, policy.id, policy.namespacePrefix, peerIdHash],
+          );
+          if (number(epochs[0]!, "erase_epoch") !== mutation.expectedPeerEraseEpoch) {
+            return { status: "rejected", reason: "memory-conflict" };
+          }
+          const targetKey = `${policy.id}\0${peerIdHash}\0${mutation.entryId}`;
+          if (stagedTargets.has(targetKey))
+            return { status: "rejected", reason: "memory-conflict" };
+          const existing = await tx.unsafe<Row>(
+            "SELECT entry_id FROM public.auggy_coordination_memory_entries WHERE namespace = $1 AND policy_id = $2 AND namespace_prefix = $3 AND peer_id_hash = $4 AND entry_id = $5 AND expires_at > clock_timestamp()",
+            [
+              this.#config.namespace,
+              policy.id,
+              policy.namespacePrefix,
+              peerIdHash,
+              mutation.entryId,
+            ],
+          );
+          const tombstone = await tx.unsafe<Row>(
+            "SELECT entry_id FROM public.auggy_coordination_memory_tombstones WHERE namespace = $1 AND policy_id = $2 AND namespace_prefix = $3 AND peer_id_hash = $4 AND entry_id = $5 AND expires_at > clock_timestamp()",
+            [
+              this.#config.namespace,
+              policy.id,
+              policy.namespacePrefix,
+              peerIdHash,
+              mutation.entryId,
+            ],
+          );
+          if (existing[0] || tombstone[0]) return { status: "rejected", reason: "memory-conflict" };
+          if (mutation.kind === "supersede") {
+            const previous = await tx.unsafe<Row>(
+              "SELECT entry_id, octet_length(body) AS body_bytes FROM public.auggy_coordination_memory_entries WHERE namespace = $1 AND policy_id = $2 AND namespace_prefix = $3 AND peer_id_hash = $4 AND entry_id = $5 AND expires_at > clock_timestamp()",
+              [
+                this.#config.namespace,
+                policy.id,
+                policy.namespacePrefix,
+                peerIdHash,
+                mutation.supersedesEntryId,
+              ],
+            );
+            if (!previous[0]) return { status: "rejected", reason: "memory-conflict" };
+            const previousKey = `${policy.id}\0${peerIdHash}\0${mutation.supersedesEntryId}`;
+            if (stagedSupersedes.has(previousKey))
+              return { status: "rejected", reason: "memory-conflict" };
+            stagedSupersedes.add(previousKey);
+            projectedRemovals.set(policy.id, (projectedRemovals.get(policy.id) ?? 0) + 1);
+            projectedRemovedBytes.set(
+              policy.id,
+              (projectedRemovedBytes.get(policy.id) ?? 0) + number(previous[0]!, "body_bytes"),
+            );
+            projectedTombstones.set(policy.id, (projectedTombstones.get(policy.id) ?? 0) + 1);
+          }
+          stagedTargets.add(targetKey);
+          projectedAdds.set(policy.id, (projectedAdds.get(policy.id) ?? 0) + 1);
+          projectedBytes.set(
+            policy.id,
+            (projectedBytes.get(policy.id) ?? 0) + mutation.body.byteLength,
+          );
+        }
+        for (const [policyId, additions] of projectedOperations) {
+          const policy = memoryPolicies.find((candidate) => candidate.id === policyId)!;
+          const rows = await tx.unsafe<Row>(
+            "SELECT count(*)::integer AS count FROM public.auggy_coordination_memory_operations WHERE namespace = $1 AND policy_id = $2 AND expires_at > clock_timestamp()",
+            [this.#config.namespace, policyId],
+          );
+          if (number(rows[0]!, "count") + additions > policy.maxOperations) {
+            return { status: "rejected", reason: "memory-capacity" };
+          }
+        }
+        for (const [policyId, additions] of projectedTombstones) {
+          const policy = memoryPolicies.find((candidate) => candidate.id === policyId)!;
+          const rows = await tx.unsafe<Row>(
+            "SELECT count(*)::integer AS count FROM public.auggy_coordination_memory_tombstones WHERE namespace = $1 AND policy_id = $2 AND expires_at > clock_timestamp()",
+            [this.#config.namespace, policyId],
+          );
+          if (number(rows[0]!, "count") + additions > policy.maxTombstones) {
+            return { status: "rejected", reason: "memory-capacity" };
+          }
+        }
+        for (const [policyId, additions] of projectedAdds) {
+          const policy = memoryPolicies.find((candidate) => candidate.id === policyId)!;
+          const counts = await tx.unsafe<Row>(
+            "SELECT count(*)::integer AS total, count(*) FILTER (WHERE peer_id_hash = $4)::integer AS peer, COALESCE(sum(octet_length(body)), 0)::bigint AS total_bytes, COALESCE(sum(octet_length(body)) FILTER (WHERE peer_id_hash = $4), 0)::bigint AS peer_bytes FROM public.auggy_coordination_memory_entries WHERE namespace = $1 AND policy_id = $2 AND namespace_prefix = $3 AND expires_at > clock_timestamp()",
+            [
+              this.#config.namespace,
+              policy.id,
+              policy.namespacePrefix,
+              distributedMemoryPeerScope(checkpoint.peerBinding),
+            ],
+          );
+          const removals = projectedRemovals.get(policyId) ?? 0;
+          const removedBytes = projectedRemovedBytes.get(policyId) ?? 0;
+          const addedBytes = projectedBytes.get(policyId) ?? 0;
+          if (
+            number(counts[0]!, "total") - removals + additions > policy.maxEntries ||
+            number(counts[0]!, "peer") - removals + additions > policy.maxEntriesPerPeer ||
+            number(counts[0]!, "total_bytes") - removedBytes + addedBytes > policy.maxBytes ||
+            number(counts[0]!, "peer_bytes") - removedBytes + addedBytes > policy.maxBytesPerPeer
+          ) {
+            return { status: "rejected", reason: "memory-capacity" };
+          }
+        }
         let ambiguous =
           request.history_binding_hash === null ||
           text(request, "history_binding_hash") !== checkpoint.peerBinding.bindingHash ||
@@ -1758,7 +2306,7 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
             if (duplicate[0]) ambiguous = true;
           }
           const pending = await tx.unsafe<Row>(
-            "SELECT count(*)::integer AS count FROM public.auggy_coordination_outbox WHERE namespace = $1 AND state = 'pending'",
+            "SELECT count(*)::integer AS count FROM public.auggy_coordination_outbox WHERE namespace = $1 AND state IN ('pending', 'delivering', 'outcome_unknown')",
             [this.#config.namespace],
           );
           if (
@@ -1840,13 +2388,167 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
               historyValues,
             );
         if (!updatedHistory[0]) throw new Error("history revision changed during commit");
+        for (const mutation of memoryMutations) {
+          const policy = memoryPolicies.find((candidate) => candidate.id === mutation.policyId)!;
+          const operation = await tx.unsafe<Row>(
+            "SELECT semantic_hash FROM public.auggy_coordination_memory_operations WHERE namespace = $1 AND operation_id = $2 FOR UPDATE",
+            [this.#config.namespace, mutation.operationId],
+          );
+          if (operation[0]) {
+            if (
+              text(operation[0], "semantic_hash") !==
+              memoryMutationSemanticHash(
+                mutation,
+                mutation.kind === "forget"
+                  ? distributedMemoryEraseTargetScope(mutation.targetPeerId)
+                  : distributedMemoryPeerScope(checkpoint.peerBinding),
+                policy.namespacePrefix,
+              )
+            ) {
+              throw new Error("memory operation semantic conflict during commit");
+            }
+            continue;
+          }
+          if (mutation.kind === "forget") {
+            const targetScope = distributedMemoryEraseTargetScope(mutation.targetPeerId);
+            await tx.unsafe(
+              "DELETE FROM public.auggy_coordination_memory_entries WHERE namespace = $1 AND policy_id = $2 AND namespace_prefix = $3 AND peer_id_hash = $4",
+              [this.#config.namespace, policy.id, policy.namespacePrefix, targetScope],
+            );
+            await tx.unsafe(
+              "INSERT INTO public.auggy_coordination_memory_tombstones (namespace, policy_id, namespace_prefix, peer_id_hash, entry_id, erase_epoch, expires_at) VALUES ($1, $2, $3, $4, '*', 1, clock_timestamp() + ($5 * interval '1 millisecond')) ON CONFLICT (namespace, policy_id, peer_id_hash, entry_id) DO UPDATE SET deleted_at = clock_timestamp(), erase_epoch = public.auggy_coordination_memory_tombstones.erase_epoch + 1, expires_at = EXCLUDED.expires_at",
+              [
+                this.#config.namespace,
+                policy.id,
+                policy.namespacePrefix,
+                targetScope,
+                policy.operationRetentionMs,
+              ],
+            );
+            await tx.unsafe(
+              "INSERT INTO public.auggy_coordination_memory_operations (namespace, operation_id, semantic_hash, policy_id, namespace_prefix, peer_id_hash, request_id, fence, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp() + ($9 * interval '1 millisecond'))",
+              [
+                this.#config.namespace,
+                mutation.operationId,
+                memoryMutationSemanticHash(mutation, targetScope, policy.namespacePrefix),
+                policy.id,
+                policy.namespacePrefix,
+                targetScope,
+                lease.requestId,
+                lease.fence,
+                policy.operationRetentionMs,
+              ],
+            );
+            continue;
+          }
+          const peerIdHash = distributedMemoryPeerScope(checkpoint.peerBinding);
+          const existing = await tx.unsafe<Row>(
+            "SELECT entry_id FROM public.auggy_coordination_memory_entries WHERE namespace = $1 AND policy_id = $2 AND namespace_prefix = $3 AND peer_id_hash = $4 AND entry_id = $5 AND expires_at > clock_timestamp() FOR UPDATE",
+            [
+              this.#config.namespace,
+              policy.id,
+              policy.namespacePrefix,
+              peerIdHash,
+              mutation.entryId,
+            ],
+          );
+          if (existing[0]) {
+            // The namespace lock plus preflight should make this unreachable.
+            // Throw to roll back the already-updated history rather than
+            // returning a rejection after durable state has changed.
+            throw new Error("memory entry changed after atomic preflight");
+          }
+          const tombstone = await tx.unsafe<Row>(
+            "SELECT entry_id FROM public.auggy_coordination_memory_tombstones WHERE namespace = $1 AND policy_id = $2 AND namespace_prefix = $3 AND peer_id_hash = $4 AND entry_id = $5 AND expires_at > clock_timestamp() FOR UPDATE",
+            [
+              this.#config.namespace,
+              policy.id,
+              policy.namespacePrefix,
+              peerIdHash,
+              mutation.entryId,
+            ],
+          );
+          if (tombstone[0]) {
+            throw new Error("memory tombstone changed after atomic preflight");
+          }
+          if (mutation.kind === "supersede") {
+            const previous = await tx.unsafe<Row>(
+              "DELETE FROM public.auggy_coordination_memory_entries WHERE namespace = $1 AND policy_id = $2 AND namespace_prefix = $3 AND peer_id_hash = $4 AND entry_id = $5 AND expires_at > clock_timestamp() RETURNING entry_id",
+              [
+                this.#config.namespace,
+                policy.id,
+                policy.namespacePrefix,
+                peerIdHash,
+                mutation.supersedesEntryId,
+              ],
+            );
+            if (!previous[0]) {
+              throw new Error("memory predecessor changed after atomic preflight");
+            }
+            await tx.unsafe(
+              "INSERT INTO public.auggy_coordination_memory_tombstones (namespace, policy_id, namespace_prefix, peer_id_hash, entry_id, expires_at) VALUES ($1, $2, $3, $4, $5, clock_timestamp() + ($6 * interval '1 millisecond')) ON CONFLICT (namespace, policy_id, peer_id_hash, entry_id) DO UPDATE SET deleted_at = clock_timestamp(), expires_at = EXCLUDED.expires_at",
+              [
+                this.#config.namespace,
+                policy.id,
+                policy.namespacePrefix,
+                peerIdHash,
+                mutation.supersedesEntryId,
+                policy.entryRetentionMs,
+              ],
+            );
+          }
+          {
+            const counts = await tx.unsafe<Row>(
+              "SELECT count(*) FILTER (WHERE true)::integer AS total, count(*) FILTER (WHERE peer_id_hash = $4)::integer AS peer, COALESCE(sum(octet_length(body)), 0)::bigint AS total_bytes, COALESCE(sum(octet_length(body)) FILTER (WHERE peer_id_hash = $4), 0)::bigint AS peer_bytes FROM public.auggy_coordination_memory_entries WHERE namespace = $1 AND policy_id = $2 AND namespace_prefix = $3 AND expires_at > clock_timestamp()",
+              [this.#config.namespace, policy.id, policy.namespacePrefix, peerIdHash],
+            );
+            if (
+              number(counts[0]!, "total") >= policy.maxEntries ||
+              number(counts[0]!, "peer") >= policy.maxEntriesPerPeer ||
+              number(counts[0]!, "total_bytes") + mutation.body.byteLength > policy.maxBytes ||
+              number(counts[0]!, "peer_bytes") + mutation.body.byteLength > policy.maxBytesPerPeer
+            )
+              throw new Error("memory capacity changed after atomic preflight");
+            const document = decodeDistributedMemoryDocument(mutation.body);
+            await tx.unsafe(
+              "INSERT INTO public.auggy_coordination_memory_entries (namespace, policy_id, namespace_prefix, peer_id_hash, entry_id, source_turn_id, origin, provenance_hash, body, content_text, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, clock_timestamp() + ($11 * interval '1 millisecond'))",
+              [
+                this.#config.namespace,
+                policy.id,
+                policy.namespacePrefix,
+                peerIdHash,
+                mutation.entryId,
+                mutation.sourceTurnId,
+                mutation.origin,
+                mutation.provenanceHash,
+                new Uint8Array(mutation.body),
+                document.content,
+                policy.entryRetentionMs,
+              ],
+            );
+          }
+          await tx.unsafe(
+            "INSERT INTO public.auggy_coordination_memory_operations (namespace, operation_id, semantic_hash, policy_id, namespace_prefix, peer_id_hash, request_id, fence, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, clock_timestamp() + ($9 * interval '1 millisecond'))",
+            [
+              this.#config.namespace,
+              mutation.operationId,
+              memoryMutationSemanticHash(mutation, peerIdHash, policy.namespacePrefix),
+              policy.id,
+              policy.namespacePrefix,
+              peerIdHash,
+              lease.requestId,
+              lease.fence,
+              policy.operationRetentionMs,
+            ],
+          );
+        }
         for (const marker of checkpoint.costMarkers) {
           await this.insertCostMarker(tx, lease, marker);
         }
         await this.settleBudgetAccounting(tx, lease, checkpoint.costMarkers, "committed");
         for (const intent of checkpoint.outboxIntents) {
           await tx.unsafe(
-            "/* cp4:outbox */ INSERT INTO public.auggy_coordination_outbox (namespace, request_id, intent_ordinal, operation_id, fence, intent_version, intent_body, intent_content_type) VALUES ($1, $2, $3, $4, $5, 1, $6, $7)",
+            "/* cp6:outbox */ INSERT INTO public.auggy_coordination_outbox (namespace, request_id, intent_ordinal, operation_id, fence, intent_version, intent_body, intent_content_type, retry_mode, max_attempts) VALUES ($1, $2, $3, $4, $5, 1, $6, $7, $8, $9)",
             [
               this.#config.namespace,
               lease.requestId,
@@ -1855,6 +2557,8 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
               lease.fence,
               new Uint8Array(intent.body),
               intent.contentType,
+              intent.retryMode,
+              intent.maxAttempts,
             ],
           );
         }
@@ -1890,6 +2594,214 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
             : "lease-ownership-lost",
     );
     return result;
+  }
+
+  async claimOutbox(): Promise<DistributedOutboxClaimResult> {
+    return this.safe<DistributedOutboxClaimResult>({ status: "unavailable" }, async () =>
+      this.transaction(async (tx) => {
+        await this.#lockNamespace(tx);
+        const instance = await this.registeredInstance(tx);
+        if (!instance) return { status: "stale" };
+        if (!instance.accepting || instance.draining) return { status: "waiting" };
+        await tx.unsafe(
+          "UPDATE public.auggy_coordination_outbox SET state = 'pending', owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, reason_code = 'delivery-lease-expired-retry-safe', updated_at = clock_timestamp() WHERE namespace = $1 AND state = 'delivering' AND lease_expires_at <= clock_timestamp() AND retry_mode = 'sink-idempotent' AND attempt_count < max_attempts",
+          [this.#config.namespace],
+        );
+        await tx.unsafe(
+          "UPDATE public.auggy_coordination_outbox SET state = 'outcome_unknown', owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, settled_at = clock_timestamp(), reason_code = 'delivery-lease-expired', updated_at = clock_timestamp() WHERE namespace = $1 AND state = 'delivering' AND lease_expires_at <= clock_timestamp()",
+          [this.#config.namespace],
+        );
+        const candidates = await tx.unsafe<Row>(
+          "SELECT outbox.request_id, request.thread_id, outbox.intent_ordinal, outbox.operation_id FROM public.auggy_coordination_outbox outbox JOIN public.auggy_coordination_requests request ON request.namespace = outbox.namespace AND request.request_id = outbox.request_id WHERE outbox.namespace = $1 AND outbox.state = 'pending' AND outbox.attempt_count < outbox.max_attempts ORDER BY outbox.created_at, outbox.request_id, outbox.intent_ordinal LIMIT 1 FOR UPDATE OF outbox SKIP LOCKED",
+          [this.#config.namespace],
+        );
+        const candidate = candidates[0];
+        if (!candidate) return { status: "waiting" };
+        const fences = await tx.unsafe<Row>(
+          "UPDATE public.auggy_coordination_namespaces SET next_fence = next_fence + 1, updated_at = clock_timestamp() WHERE namespace = $1 RETURNING next_fence",
+          [this.#config.namespace],
+        );
+        const deliveryFence = number(fences[0]!, "next_fence");
+        const rows = await tx.unsafe<Row>(
+          "UPDATE public.auggy_coordination_outbox SET state = 'delivering', attempt_count = attempt_count + 1, delivery_fence = $4, owner_instance = $5, owner_session = $6, lease_expires_at = clock_timestamp() + ($7 * interval '1 millisecond'), settled_at = NULL, reason_code = NULL, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND intent_ordinal = $3 AND state = 'pending' RETURNING intent_version, intent_body, intent_content_type, retry_mode, max_attempts, attempt_count, lease_expires_at",
+          [
+            this.#config.namespace,
+            text(candidate, "request_id"),
+            number(candidate, "intent_ordinal"),
+            deliveryFence,
+            this.#config.instanceId,
+            this.#sessionId,
+            this.#config.leaseMs,
+          ],
+        );
+        const row = rows[0];
+        if (!row) throw new Error("outbox claim changed during transaction");
+        if (
+          number(row, "intent_version") !== 1 ||
+          text(row, "intent_content_type") !== "application/json"
+        ) {
+          throw new Error("stored outbox intent is invalid");
+        }
+        const retryMode = text(row, "retry_mode");
+        if (retryMode !== "never" && retryMode !== "sink-idempotent") {
+          throw new Error("stored outbox retry policy is invalid");
+        }
+        const body = bytes(row, "intent_body");
+        if (body.byteLength > this.#config.turnState.outbox.maxIntentBytes) {
+          throw new Error("stored outbox intent exceeds policy");
+        }
+        return {
+          status: "acquired",
+          lease: {
+            version: 1,
+            requestId: text(candidate, "request_id"),
+            threadId: text(candidate, "thread_id"),
+            ordinal: number(candidate, "intent_ordinal"),
+            operationId: text(candidate, "operation_id"),
+            body,
+            contentType: "application/json",
+            retryMode,
+            maxAttempts: number(row, "max_attempts"),
+            attempt: number(row, "attempt_count"),
+            deliveryFence,
+            leaseExpiresAt: new Date(date(row, "lease_expires_at")).toISOString(),
+          },
+        };
+      }),
+    );
+  }
+
+  async heartbeatOutbox(lease: DistributedOutboxLeaseV1): Promise<DistributedOutboxResult> {
+    if (!this.validOutboxLease(lease)) return { status: "rejected", reason: "invalid-delivery" };
+    return this.safe<DistributedOutboxResult>({ status: "unavailable" }, async () =>
+      this.transaction(async (tx) => {
+        await this.#lockNamespace(tx);
+        if (!(await this.registeredInstance(tx))) return { status: "stale" };
+        const rows = await tx.unsafe<Row>(
+          "UPDATE public.auggy_coordination_outbox SET lease_expires_at = clock_timestamp() + ($9 * interval '1 millisecond'), updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND intent_ordinal = $3 AND operation_id = $4 AND state = 'delivering' AND attempt_count = $5 AND delivery_fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() RETURNING operation_id",
+          [
+            this.#config.namespace,
+            lease.requestId,
+            lease.ordinal,
+            lease.operationId,
+            lease.attempt,
+            lease.deliveryFence,
+            this.#config.instanceId,
+            this.#sessionId,
+            this.#config.leaseMs,
+          ],
+        );
+        return rows[0] ? { status: "ok" } : { status: "stale" };
+      }),
+    );
+  }
+
+  async settleOutbox(
+    lease: DistributedOutboxLeaseV1,
+    settlement: DistributedOutboxSettlement,
+  ): Promise<DistributedOutboxResult> {
+    if (!this.validOutboxLease(lease)) return { status: "rejected", reason: "invalid-delivery" };
+    const reasonCode = settlement.outcome === "delivered" ? null : settlement.reasonCode;
+    if (
+      (settlement.outcome !== "delivered" &&
+        settlement.outcome !== "confirmed-failure" &&
+        settlement.outcome !== "outcome-unknown") ||
+      (reasonCode !== null && !this.validDeliveryReason(reasonCode))
+    ) {
+      return { status: "rejected", reason: "invalid-delivery" };
+    }
+    const state =
+      settlement.outcome === "delivered"
+        ? "delivered"
+        : settlement.outcome === "confirmed-failure"
+          ? "failed"
+          : "outcome_unknown";
+    return this.safe<DistributedOutboxResult>({ status: "unavailable" }, async () =>
+      this.transaction(async (tx) => {
+        await this.#lockNamespace(tx);
+        if (!(await this.registeredInstance(tx))) return { status: "stale" };
+        const rows = await tx.unsafe<Row>(
+          "UPDATE public.auggy_coordination_outbox SET state = $9, owner_instance = NULL, owner_session = NULL, lease_expires_at = NULL, settled_at = clock_timestamp(), reason_code = $10, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND intent_ordinal = $3 AND operation_id = $4 AND state = 'delivering' AND attempt_count = $5 AND delivery_fence = $6 AND owner_instance = $7 AND owner_session = $8 AND lease_expires_at > clock_timestamp() RETURNING operation_id",
+          [
+            this.#config.namespace,
+            lease.requestId,
+            lease.ordinal,
+            lease.operationId,
+            lease.attempt,
+            lease.deliveryFence,
+            this.#config.instanceId,
+            this.#sessionId,
+            state,
+            reasonCode,
+          ],
+        );
+        return rows[0] ? { status: "ok" } : { status: "stale" };
+      }),
+    );
+  }
+
+  async recoverOutbox(
+    operationId: string,
+    expectedDeliveryFence: number,
+    resolution: "delivered" | "confirmed-failure" | "retry",
+    reasonCode: string,
+  ): Promise<DistributedOutboxResult> {
+    if (
+      !/^auggy-op-v1-[0-9a-f]{64}$/.test(operationId) ||
+      !Number.isSafeInteger(expectedDeliveryFence) ||
+      expectedDeliveryFence < 1 ||
+      !this.validDeliveryReason(reasonCode) ||
+      (resolution !== "delivered" && resolution !== "confirmed-failure" && resolution !== "retry")
+    ) {
+      return { status: "rejected", reason: "invalid-delivery" };
+    }
+    return this.safe<DistributedOutboxResult>({ status: "unavailable" }, async () =>
+      this.transaction(async (tx) => {
+        await this.#lockNamespace(tx);
+        if (!(await this.registeredInstance(tx))) return { status: "stale" };
+        const rows = await tx.unsafe<Row>(
+          "SELECT outbox.request_id, outbox.intent_ordinal, outbox.state, outbox.delivery_fence, outbox.retry_mode, outbox.attempt_count, outbox.max_attempts, request.thread_id FROM public.auggy_coordination_outbox outbox JOIN public.auggy_coordination_requests request ON request.namespace = outbox.namespace AND request.request_id = outbox.request_id WHERE outbox.namespace = $1 AND outbox.operation_id = $2 FOR UPDATE",
+          [this.#config.namespace, operationId],
+        );
+        const row = rows[0];
+        if (!row || text(row, "state") !== "outcome_unknown") return { status: "stale" };
+        if (number(row, "delivery_fence") !== expectedDeliveryFence) {
+          return { status: "conflict" };
+        }
+        if (
+          resolution === "retry" &&
+          (text(row, "retry_mode") !== "sink-idempotent" ||
+            number(row, "attempt_count") >= number(row, "max_attempts"))
+        ) {
+          return { status: "rejected", reason: "retry-unsafe" };
+        }
+        const state =
+          resolution === "retry" ? "pending" : resolution === "delivered" ? "delivered" : "failed";
+        const updated = await tx.unsafe<Row>(
+          "UPDATE public.auggy_coordination_outbox SET state = $5, settled_at = CASE WHEN $5 = 'pending' THEN NULL ELSE clock_timestamp() END, reason_code = $6, updated_at = clock_timestamp() WHERE namespace = $1 AND request_id = $2 AND intent_ordinal = $3 AND delivery_fence = $4 AND state = 'outcome_unknown' RETURNING operation_id",
+          [
+            this.#config.namespace,
+            text(row, "request_id"),
+            number(row, "intent_ordinal"),
+            expectedDeliveryFence,
+            state,
+            reasonCode,
+          ],
+        );
+        if (!updated[0]) return { status: "conflict" };
+        await tx.unsafe(
+          "INSERT INTO public.auggy_coordination_events (namespace, thread_id, request_id, fence, event_type, reason) VALUES ($1, $2, $3, $4, 'operator_recovery', $5)",
+          [
+            this.#config.namespace,
+            text(row, "thread_id"),
+            text(row, "request_id"),
+            expectedDeliveryFence,
+            reasonCode,
+          ],
+        );
+        return { status: "ok" };
+      }),
+    );
   }
 
   async complete(
@@ -2262,8 +3174,11 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         for (const policy of normalizedBudgets(this.#config).policies) {
           await this.cleanupExpiredBudgetEvidence(tx, policy, batchSize);
         }
+        for (const policy of normalizedMemory(this.#config).policies) {
+          await this.cleanupExpiredMemoryEvidence(tx, policy, batchSize);
+        }
         const requestRows = await tx.unsafe<Row>(
-          "WITH ranked AS (SELECT request.request_id, request.terminal_at, row_number() OVER (ORDER BY request.terminal_at DESC, request.request_id DESC) AS newest_rank FROM public.auggy_coordination_requests request WHERE request.namespace = $1 AND request.state IN ('completed', 'failed', 'canceled') AND NOT EXISTS (SELECT 1 FROM public.auggy_coordination_outbox outbox WHERE outbox.namespace = request.namespace AND outbox.request_id = request.request_id AND outbox.state = 'pending')), victims AS MATERIALIZED (SELECT request_id FROM ranked WHERE terminal_at <= clock_timestamp() - ($2 * interval '1 millisecond') OR newest_rank > $3 ORDER BY terminal_at, request_id LIMIT $4), deleted_costs AS (DELETE FROM public.auggy_coordination_cost_markers cost USING victims WHERE cost.namespace = $1 AND cost.request_id = victims.request_id RETURNING 1), deleted_budget_anonymous AS (DELETE FROM public.auggy_coordination_budget_anonymous_events event USING victims WHERE event.namespace = $1 AND event.request_id = victims.request_id RETURNING 1) DELETE FROM public.auggy_coordination_requests request USING victims WHERE request.namespace = $1 AND request.request_id = victims.request_id AND (SELECT count(*) FROM deleted_costs) >= 0 AND (SELECT count(*) FROM deleted_budget_anonymous) >= 0 RETURNING request.capacity_class, request.capacity_partition_hash",
+          "WITH ranked AS (SELECT request.request_id, request.terminal_at, row_number() OVER (ORDER BY request.terminal_at DESC, request.request_id DESC) AS newest_rank FROM public.auggy_coordination_requests request WHERE request.namespace = $1 AND request.state IN ('completed', 'failed', 'canceled') AND NOT EXISTS (SELECT 1 FROM public.auggy_coordination_outbox outbox WHERE outbox.namespace = request.namespace AND outbox.request_id = request.request_id AND outbox.state IN ('pending', 'delivering', 'outcome_unknown'))), victims AS MATERIALIZED (SELECT request_id FROM ranked WHERE terminal_at <= clock_timestamp() - ($2 * interval '1 millisecond') OR newest_rank > $3 ORDER BY terminal_at, request_id LIMIT $4), deleted_costs AS (DELETE FROM public.auggy_coordination_cost_markers cost USING victims WHERE cost.namespace = $1 AND cost.request_id = victims.request_id RETURNING 1), deleted_budget_anonymous AS (DELETE FROM public.auggy_coordination_budget_anonymous_events event USING victims WHERE event.namespace = $1 AND event.request_id = victims.request_id RETURNING 1), deleted_outbox AS (DELETE FROM public.auggy_coordination_outbox outbox USING victims WHERE outbox.namespace = $1 AND outbox.request_id = victims.request_id RETURNING 1) DELETE FROM public.auggy_coordination_requests request USING victims WHERE request.namespace = $1 AND request.request_id = victims.request_id AND (SELECT count(*) FROM deleted_costs) >= 0 AND (SELECT count(*) FROM deleted_budget_anonymous) >= 0 AND (SELECT count(*) FROM deleted_outbox) >= 0 RETURNING request.capacity_class, request.capacity_partition_hash",
           [
             this.#config.namespace,
             this.#config.retention.terminalRequestRetentionMs,
@@ -2604,6 +3519,26 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
       "WITH victims AS (SELECT admission_day, threshold_ppm FROM public.auggy_coordination_budget_threshold_intents WHERE namespace = $1 AND policy_id = $2 AND state = 'suppressed' AND admission_day <= (clock_timestamp() AT TIME ZONE 'UTC')::date - $3 ORDER BY admission_day, threshold_ppm LIMIT $4) DELETE FROM public.auggy_coordination_budget_threshold_intents intent USING victims WHERE intent.namespace = $1 AND intent.policy_id = $2 AND intent.admission_day = victims.admission_day AND intent.threshold_ppm = victims.threshold_ppm",
       [this.#config.namespace, policy.id, policy.aggregateRetentionDays, limit],
     );
+  }
+
+  async cleanupExpiredMemoryEvidence(
+    tx: SqlTransaction,
+    policy: DistributedMemoryPolicyV1,
+    limit: number,
+  ): Promise<void> {
+    if (!Number.isSafeInteger(limit) || limit < 1 || limit > MAX_CAPACITY) {
+      throw new Error("distributed memory cleanup limit is invalid");
+    }
+    for (const table of [
+      "auggy_coordination_memory_entries",
+      "auggy_coordination_memory_tombstones",
+      "auggy_coordination_memory_operations",
+    ]) {
+      await tx.unsafe(
+        `WITH victims AS (SELECT ctid FROM public.${table} WHERE namespace = $1 AND policy_id = $2 AND expires_at <= clock_timestamp() ORDER BY expires_at, ctid LIMIT $3) DELETE FROM public.${table} evidence USING victims WHERE evidence.ctid = victims.ctid`,
+        [this.#config.namespace, policy.id, limit],
+      );
+    }
   }
 
   async releaseBudgetReservationsForRequest(
@@ -3416,6 +4351,35 @@ export class PostgresDistributedTurnCoordinator implements DistributedTurnCoordi
         }
       })()
     );
+  }
+
+  validOutboxLease(lease: DistributedOutboxLeaseV1): boolean {
+    return (
+      lease.version === 1 &&
+      /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(lease.requestId) &&
+      /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(lease.threadId) &&
+      Number.isSafeInteger(lease.ordinal) &&
+      lease.ordinal >= 0 &&
+      /^auggy-op-v1-[0-9a-f]{64}$/.test(lease.operationId) &&
+      lease.contentType === "application/json" &&
+      lease.body instanceof Uint8Array &&
+      lease.body.byteLength <= this.#config.turnState.outbox.maxIntentBytes &&
+      (lease.retryMode === "never" || lease.retryMode === "sink-idempotent") &&
+      Number.isSafeInteger(lease.maxAttempts) &&
+      lease.maxAttempts >= 1 &&
+      lease.maxAttempts <= 10 &&
+      (lease.retryMode !== "never" || lease.maxAttempts === 1) &&
+      Number.isSafeInteger(lease.attempt) &&
+      lease.attempt >= 1 &&
+      lease.attempt <= lease.maxAttempts &&
+      Number.isSafeInteger(lease.deliveryFence) &&
+      lease.deliveryFence >= 1 &&
+      Number.isFinite(Date.parse(lease.leaseExpiresAt))
+    );
+  }
+
+  validDeliveryReason(value: string): boolean {
+    return /^[a-z0-9][a-z0-9._:-]{0,63}$/.test(value);
   }
 
   trackOwned(

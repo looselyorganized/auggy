@@ -765,6 +765,143 @@ CREATE INDEX auggy_coordination_budget_threshold_pending_idx
     (namespace, state, created_at, policy_id, admission_day, threshold_ppm);
 `;
 
+/** Protocol v9: peer-isolated committed memory and replay evidence. */
+const COORDINATION_MEMORY_AUTHORITY_MIGRATION_SQL = `
+ALTER TABLE auggy_coordination_requests
+  ADD COLUMN history_peer_id_hash TEXT,
+  ADD COLUMN history_promotion_scope_hash TEXT,
+  ADD COLUMN history_trust_level TEXT,
+  ADD COLUMN history_public_substate TEXT,
+  ADD CONSTRAINT auggy_coord_request_history_binding_claim_check CHECK (
+    (history_binding_hash IS NULL
+      AND history_peer_id_hash IS NULL
+      AND history_promotion_scope_hash IS NULL
+      AND history_trust_level IS NULL
+      AND history_public_substate IS NULL)
+    OR
+    (history_binding_hash IS NOT NULL
+      AND (history_peer_id_hash IS NULL OR history_peer_id_hash ~ '^[0-9a-f]{64}$')
+      AND history_promotion_scope_hash ~ '^[0-9a-f]{64}$'
+      AND history_trust_level IN ('creator', 'agent', 'public')
+      AND ((history_trust_level = 'public'
+            AND history_public_substate IN ('anonymous', 'recognized')
+            AND history_peer_id_hash IS NOT NULL)
+           OR (history_trust_level <> 'public' AND history_public_substate IS NULL)))
+  );
+
+CREATE TABLE auggy_coordination_memory_entries (
+  namespace TEXT NOT NULL,
+  policy_id TEXT NOT NULL,
+  namespace_prefix TEXT NOT NULL,
+  peer_id_hash TEXT NOT NULL,
+  entry_id TEXT NOT NULL,
+  source_turn_id TEXT NOT NULL,
+  origin TEXT NOT NULL,
+  provenance_hash TEXT NOT NULL,
+  body BYTEA NOT NULL,
+  content_text TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (namespace, policy_id, peer_id_hash, entry_id),
+  CONSTRAINT auggy_coord_memory_entry_body_check CHECK (octet_length(body) BETWEEN 1 AND 1048576),
+  CONSTRAINT auggy_coord_memory_entry_source_check CHECK (source_turn_id ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$'),
+  CONSTRAINT auggy_coord_memory_entry_origin_check CHECK (origin IN ('operator', 'peer-derived', 'agent-derived', 'agent')),
+  CONSTRAINT auggy_coord_memory_entry_provenance_check CHECK (provenance_hash ~ '^[0-9a-f]{64}$')
+);
+CREATE INDEX auggy_coordination_memory_entries_peer_idx
+  ON auggy_coordination_memory_entries (namespace, policy_id, peer_id_hash, created_at DESC, entry_id);
+CREATE INDEX auggy_coordination_memory_entries_expiry_idx
+  ON auggy_coordination_memory_entries (namespace, policy_id, expires_at, peer_id_hash, entry_id);
+
+CREATE TABLE auggy_coordination_memory_tombstones (
+  namespace TEXT NOT NULL,
+  policy_id TEXT NOT NULL,
+  namespace_prefix TEXT NOT NULL,
+  peer_id_hash TEXT NOT NULL,
+  entry_id TEXT NOT NULL,
+  deleted_at TIMESTAMPTZ NOT NULL DEFAULT clock_timestamp(),
+  -- Monotonic peer-wide erase fence; entry tombstones retain zero.
+  erase_epoch BIGINT NOT NULL DEFAULT 0
+    CONSTRAINT auggy_coord_memory_tombstone_erase_epoch_check CHECK (erase_epoch >= 0),
+  expires_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (namespace, policy_id, peer_id_hash, entry_id)
+);
+CREATE INDEX auggy_coordination_memory_tombstones_expiry_idx
+  ON auggy_coordination_memory_tombstones (namespace, policy_id, expires_at, peer_id_hash, entry_id);
+
+CREATE TABLE auggy_coordination_memory_operations (
+  namespace TEXT NOT NULL,
+  operation_id TEXT NOT NULL,
+  semantic_hash TEXT NOT NULL,
+  policy_id TEXT NOT NULL,
+  namespace_prefix TEXT NOT NULL,
+  peer_id_hash TEXT NOT NULL,
+  request_id TEXT NOT NULL,
+  fence BIGINT NOT NULL,
+  expires_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (namespace, operation_id),
+  CONSTRAINT auggy_coord_memory_operation_hash_check CHECK (semantic_hash ~ '^[0-9a-f]{64}$')
+);
+CREATE INDEX auggy_coordination_memory_operations_expiry_idx
+  ON auggy_coordination_memory_operations (namespace, expires_at, operation_id);
+`;
+
+const COORDINATION_OUTBOX_DELIVERY_MIGRATION_SQL = `
+ALTER TABLE auggy_coordination_outbox
+  DROP CONSTRAINT auggy_coord_outbox_state_check,
+  ADD COLUMN retry_mode TEXT NOT NULL DEFAULT 'never'
+    CONSTRAINT auggy_coord_outbox_retry_mode_check
+      CHECK (retry_mode IN ('never', 'sink-idempotent')),
+  ADD COLUMN max_attempts INTEGER NOT NULL DEFAULT 1
+    CONSTRAINT auggy_coord_outbox_max_attempts_check
+      CHECK (max_attempts BETWEEN 1 AND 10),
+  ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0
+    CONSTRAINT auggy_coord_outbox_attempt_count_check
+      CHECK (attempt_count BETWEEN 0 AND max_attempts),
+  ADD COLUMN delivery_fence BIGINT NOT NULL DEFAULT 0
+    CONSTRAINT auggy_coord_outbox_delivery_fence_check CHECK (delivery_fence >= 0),
+  ADD COLUMN owner_instance TEXT,
+  ADD COLUMN owner_session TEXT,
+  ADD COLUMN lease_expires_at TIMESTAMPTZ,
+  ADD COLUMN settled_at TIMESTAMPTZ,
+  ADD COLUMN reason_code TEXT
+    CONSTRAINT auggy_coord_outbox_reason_check
+      CHECK (reason_code IS NULL OR reason_code ~ '^[a-z0-9][a-z0-9._:-]{0,63}$'),
+  ADD CONSTRAINT auggy_coord_outbox_retry_policy_check
+    CHECK ((retry_mode = 'never' AND max_attempts = 1) OR retry_mode = 'sink-idempotent'),
+  ADD CONSTRAINT auggy_coord_outbox_state_check
+    CHECK (state IN ('pending', 'delivering', 'delivered', 'failed', 'outcome_unknown')),
+  ADD CONSTRAINT auggy_coord_outbox_lifecycle_check CHECK (
+    (state = 'pending'
+      AND owner_instance IS NULL
+      AND owner_session IS NULL
+      AND lease_expires_at IS NULL
+      AND settled_at IS NULL)
+    OR
+    (state = 'delivering'
+      AND attempt_count > 0
+      AND delivery_fence > 0
+      AND owner_instance IS NOT NULL
+      AND owner_session IS NOT NULL
+      AND lease_expires_at IS NOT NULL
+      AND settled_at IS NULL
+      AND reason_code IS NULL)
+    OR
+    (state IN ('delivered', 'failed', 'outcome_unknown')
+      AND attempt_count > 0
+      AND delivery_fence > 0
+      AND owner_instance IS NULL
+      AND owner_session IS NULL
+      AND lease_expires_at IS NULL
+      AND settled_at IS NOT NULL
+      AND (state = 'delivered' OR reason_code IS NOT NULL))
+  );
+
+CREATE INDEX auggy_coordination_outbox_claim_idx
+  ON auggy_coordination_outbox
+    (namespace, state, lease_expires_at, created_at, request_id, intent_ordinal);
+`;
+
 /** Recomputed from immutable migration SQL; migration rejects any mismatch. */
 export const postgresCoordinationMigrationChecksum = new Bun.CryptoHasher("sha256")
   .update(INITIAL_COORDINATION_MIGRATION_SQL)
@@ -796,6 +933,14 @@ export const postgresCoordinationVisitorAuthorityMigrationChecksum = new Bun.Cry
 
 export const postgresCoordinationBudgetAuthorityMigrationChecksum = new Bun.CryptoHasher("sha256")
   .update(COORDINATION_BUDGET_AUTHORITY_MIGRATION_SQL)
+  .digest("hex");
+
+export const postgresCoordinationMemoryAuthorityMigrationChecksum = new Bun.CryptoHasher("sha256")
+  .update(COORDINATION_MEMORY_AUTHORITY_MIGRATION_SQL)
+  .digest("hex");
+
+export const postgresCoordinationOutboxDeliveryMigrationChecksum = new Bun.CryptoHasher("sha256")
+  .update(COORDINATION_OUTBOX_DELIVERY_MIGRATION_SQL)
   .digest("hex");
 
 export const POSTGRES_COORDINATION_MIGRATIONS = [
@@ -838,6 +983,16 @@ export const POSTGRES_COORDINATION_MIGRATIONS = [
     id: "20260727_08_coordination_budget_authority",
     checksum: postgresCoordinationBudgetAuthorityMigrationChecksum,
     sql: COORDINATION_BUDGET_AUTHORITY_MIGRATION_SQL,
+  },
+  {
+    id: "20260727_09_coordination_memory_authority",
+    checksum: postgresCoordinationMemoryAuthorityMigrationChecksum,
+    sql: COORDINATION_MEMORY_AUTHORITY_MIGRATION_SQL,
+  },
+  {
+    id: "20260727_10_coordination_outbox_delivery",
+    checksum: postgresCoordinationOutboxDeliveryMigrationChecksum,
+    sql: COORDINATION_OUTBOX_DELIVERY_MIGRATION_SQL,
   },
 ] as const;
 
@@ -1084,6 +1239,47 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
     true,
     "clock_timestamp()",
   ],
+  ["auggy_coordination_memory_entries", "body", "bytea", true, null],
+  ["auggy_coordination_memory_entries", "content_text", "text", true, null],
+  [
+    "auggy_coordination_memory_entries",
+    "created_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_memory_entries", "entry_id", "text", true, null],
+  ["auggy_coordination_memory_entries", "expires_at", "timestamp with time zone", true, null],
+  ["auggy_coordination_memory_entries", "namespace", "text", true, null],
+  ["auggy_coordination_memory_entries", "namespace_prefix", "text", true, null],
+  ["auggy_coordination_memory_entries", "origin", "text", true, null],
+  ["auggy_coordination_memory_entries", "peer_id_hash", "text", true, null],
+  ["auggy_coordination_memory_entries", "policy_id", "text", true, null],
+  ["auggy_coordination_memory_entries", "provenance_hash", "text", true, null],
+  ["auggy_coordination_memory_entries", "source_turn_id", "text", true, null],
+  ["auggy_coordination_memory_operations", "expires_at", "timestamp with time zone", true, null],
+  ["auggy_coordination_memory_operations", "fence", "bigint", true, null],
+  ["auggy_coordination_memory_operations", "namespace", "text", true, null],
+  ["auggy_coordination_memory_operations", "namespace_prefix", "text", true, null],
+  ["auggy_coordination_memory_operations", "operation_id", "text", true, null],
+  ["auggy_coordination_memory_operations", "peer_id_hash", "text", true, null],
+  ["auggy_coordination_memory_operations", "policy_id", "text", true, null],
+  ["auggy_coordination_memory_operations", "request_id", "text", true, null],
+  ["auggy_coordination_memory_operations", "semantic_hash", "text", true, null],
+  [
+    "auggy_coordination_memory_tombstones",
+    "deleted_at",
+    "timestamp with time zone",
+    true,
+    "clock_timestamp()",
+  ],
+  ["auggy_coordination_memory_tombstones", "entry_id", "text", true, null],
+  ["auggy_coordination_memory_tombstones", "erase_epoch", "bigint", true, "0"],
+  ["auggy_coordination_memory_tombstones", "expires_at", "timestamp with time zone", true, null],
+  ["auggy_coordination_memory_tombstones", "namespace", "text", true, null],
+  ["auggy_coordination_memory_tombstones", "namespace_prefix", "text", true, null],
+  ["auggy_coordination_memory_tombstones", "peer_id_hash", "text", true, null],
+  ["auggy_coordination_memory_tombstones", "policy_id", "text", true, null],
   [
     "auggy_coordination_migrations",
     "applied_at",
@@ -1128,6 +1324,7 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
     true,
     "clock_timestamp()",
   ],
+  ["auggy_coordination_outbox", "attempt_count", "integer", true, "0"],
   [
     "auggy_coordination_outbox",
     "created_at",
@@ -1135,14 +1332,22 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
     true,
     "clock_timestamp()",
   ],
+  ["auggy_coordination_outbox", "delivery_fence", "bigint", true, "0"],
   ["auggy_coordination_outbox", "fence", "bigint", true, null],
   ["auggy_coordination_outbox", "intent_body", "bytea", true, null],
   ["auggy_coordination_outbox", "intent_content_type", "text", true, null],
   ["auggy_coordination_outbox", "intent_ordinal", "integer", true, null],
   ["auggy_coordination_outbox", "intent_version", "smallint", true, null],
+  ["auggy_coordination_outbox", "lease_expires_at", "timestamp with time zone", false, null],
+  ["auggy_coordination_outbox", "max_attempts", "integer", true, "1"],
   ["auggy_coordination_outbox", "namespace", "text", true, null],
   ["auggy_coordination_outbox", "operation_id", "text", true, null],
+  ["auggy_coordination_outbox", "owner_instance", "text", false, null],
+  ["auggy_coordination_outbox", "owner_session", "text", false, null],
+  ["auggy_coordination_outbox", "reason_code", "text", false, null],
   ["auggy_coordination_outbox", "request_id", "text", true, null],
+  ["auggy_coordination_outbox", "retry_mode", "text", true, "'never'::text"],
+  ["auggy_coordination_outbox", "settled_at", "timestamp with time zone", false, null],
   ["auggy_coordination_outbox", "state", "text", true, "'pending'::text"],
   [
     "auggy_coordination_outbox",
@@ -1216,7 +1421,11 @@ const EXPECTED_COORDINATION_COLUMNS: readonly CoordinationCatalogColumn[] = [
   ["auggy_coordination_requests", "execution_started_at", "timestamp with time zone", false, null],
   ["auggy_coordination_requests", "fence", "bigint", false, null],
   ["auggy_coordination_requests", "history_binding_hash", "text", false, null],
+  ["auggy_coordination_requests", "history_peer_id_hash", "text", false, null],
+  ["auggy_coordination_requests", "history_promotion_scope_hash", "text", false, null],
+  ["auggy_coordination_requests", "history_public_substate", "text", false, null],
   ["auggy_coordination_requests", "history_revision", "bigint", false, null],
+  ["auggy_coordination_requests", "history_trust_level", "text", false, null],
   ["auggy_coordination_requests", "lease_expires_at", "timestamp with time zone", false, null],
   ["auggy_coordination_requests", "namespace", "text", true, null],
   ["auggy_coordination_requests", "owner_instance", "text", false, null],
@@ -1514,6 +1723,69 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
     "pg_catalog.default,pg_catalog.default",
   ],
   [
+    "auggy_coordination_memory_entries",
+    "auggy_coordination_memory_entries_expiry_idx",
+    false,
+    false,
+    "namespace,policy_id,expires_at,peer_id_hash,entry_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_memory_entries",
+    "auggy_coordination_memory_entries_peer_idx",
+    false,
+    false,
+    "namespace,policy_id,peer_id_hash,created_at,entry_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_memory_entries",
+    "auggy_coordination_memory_entries_pkey",
+    true,
+    true,
+    "namespace,policy_id,peer_id_hash,entry_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_memory_operations",
+    "auggy_coordination_memory_operations_expiry_idx",
+    false,
+    false,
+    "namespace,expires_at,operation_id",
+    "pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops",
+    "pg_catalog.default,-,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_memory_operations",
+    "auggy_coordination_memory_operations_pkey",
+    true,
+    true,
+    "namespace,operation_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_memory_tombstones",
+    "auggy_coordination_memory_tombstones_expiry_idx",
+    false,
+    false,
+    "namespace,policy_id,expires_at,peer_id_hash,entry_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,-,pg_catalog.default,pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_memory_tombstones",
+    "auggy_coordination_memory_tombstones_pkey",
+    true,
+    true,
+    "namespace,policy_id,peer_id_hash,entry_id",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.text_ops",
+    "pg_catalog.default,pg_catalog.default,pg_catalog.default,pg_catalog.default",
+  ],
+  [
     "auggy_coordination_migrations",
     "auggy_coordination_migrations_pkey",
     true,
@@ -1530,6 +1802,15 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
     "namespace",
     "pg_catalog.text_ops",
     "pg_catalog.default",
+  ],
+  [
+    "auggy_coordination_outbox",
+    "auggy_coordination_outbox_claim_idx",
+    false,
+    false,
+    "namespace,state,lease_expires_at,created_at,request_id,intent_ordinal",
+    "pg_catalog.text_ops,pg_catalog.text_ops,pg_catalog.timestamptz_ops,pg_catalog.timestamptz_ops,pg_catalog.text_ops,pg_catalog.int4_ops",
+    "pg_catalog.default,pg_catalog.default,-,-,pg_catalog.default,-",
   ],
   [
     "auggy_coordination_outbox",
@@ -1808,13 +2089,58 @@ const EXPECTED_COORDINATION_INDEXES: readonly CoordinationCatalogIndex[] = [
   has_included_columns: false,
   opclasses: opclasses as string,
   collations: collations as string,
-  options: (columns as string)
-    .split(",")
-    .map(() => "0")
-    .join(","),
+  options:
+    index_name === "auggy_coordination_memory_entries_peer_idx"
+      ? "0,0,0,3,0"
+      : (columns as string)
+          .split(",")
+          .map(() => "0")
+          .join(","),
 }));
 
 const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition: string }>([
+  [
+    "auggy_coord_memory_entry_body_check",
+    {
+      table: "auggy_coordination_memory_entries",
+      definition: "checkoctet_lengthbody>=1andoctet_lengthbody<=1048576",
+    },
+  ],
+  [
+    "auggy_coord_memory_entry_origin_check",
+    {
+      table: "auggy_coordination_memory_entries",
+      definition: "checkorigin=anyarray['operator','peer-derived','agent-derived','agent']",
+    },
+  ],
+  [
+    "auggy_coord_memory_entry_provenance_check",
+    {
+      table: "auggy_coordination_memory_entries",
+      definition: "checkprovenance_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_memory_entry_source_check",
+    {
+      table: "auggy_coordination_memory_entries",
+      definition: "checksource_turn_id~'^[a-za-z0-9][a-za-z0-9._:-]{0,159}$'",
+    },
+  ],
+  [
+    "auggy_coord_memory_operation_hash_check",
+    {
+      table: "auggy_coordination_memory_operations",
+      definition: "checksemantic_hash~'^[0-9a-f]{64}$'",
+    },
+  ],
+  [
+    "auggy_coord_memory_tombstone_erase_epoch_check",
+    {
+      table: "auggy_coordination_memory_tombstones",
+      definition: "checkerase_epoch>=0",
+    },
+  ],
   [
     "auggy_coord_budget_anon_expiry_check",
     {
@@ -2628,6 +2954,14 @@ const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition
     },
   ],
   [
+    "auggy_coord_request_history_binding_claim_check",
+    {
+      table: "auggy_coordination_requests",
+      definition:
+        "checkhistory_binding_hashisnullandhistory_peer_id_hashisnullandhistory_promotion_scope_hashisnullandhistory_trust_levelisnullandhistory_public_substateisnullorhistory_binding_hashisnotnullandhistory_peer_id_hashisnullorhistory_peer_id_hash~'^[0-9a-f]{64}$'andhistory_promotion_scope_hash~'^[0-9a-f]{64}$'andhistory_trust_level=anyarray['creator','agent','public']andhistory_trust_level='public'andhistory_public_substate=anyarray['anonymous','recognized']andhistory_peer_id_hashisnotnullorhistory_trust_level<>'public'andhistory_public_substateisnull",
+    },
+  ],
+  [
     "auggy_coord_request_queue_generation_check",
     {
       table: "auggy_coordination_requests",
@@ -2658,6 +2992,13 @@ const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition
     },
   ],
   [
+    "auggy_coord_outbox_attempt_count_check",
+    {
+      table: "auggy_coordination_outbox",
+      definition: "checkattempt_count>=0andattempt_count<=max_attempts",
+    },
+  ],
+  [
     "auggy_coord_outbox_body_check",
     {
       table: "auggy_coordination_outbox",
@@ -2672,8 +3013,27 @@ const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition
     },
   ],
   [
+    "auggy_coord_outbox_delivery_fence_check",
+    { table: "auggy_coordination_outbox", definition: "checkdelivery_fence>=0" },
+  ],
+  [
     "auggy_coord_outbox_fence_check",
     { table: "auggy_coordination_outbox", definition: "checkfence>0" },
+  ],
+  [
+    "auggy_coord_outbox_lifecycle_check",
+    {
+      table: "auggy_coordination_outbox",
+      definition:
+        "checkstate='pending'andowner_instanceisnullandowner_sessionisnullandlease_expires_atisnullandsettled_atisnullorstate='delivering'andattempt_count>0anddelivery_fence>0andowner_instanceisnotnullandowner_sessionisnotnullandlease_expires_atisnotnullandsettled_atisnullandreason_codeisnullorstate=anyarray['delivered','failed','outcome_unknown']andattempt_count>0anddelivery_fence>0andowner_instanceisnullandowner_sessionisnullandlease_expires_atisnullandsettled_atisnotnullandstate='delivered'orreason_codeisnotnull",
+    },
+  ],
+  [
+    "auggy_coord_outbox_max_attempts_check",
+    {
+      table: "auggy_coordination_outbox",
+      definition: "checkmax_attempts>=1andmax_attempts<=10",
+    },
   ],
   [
     "auggy_coord_outbox_operation_check",
@@ -2687,8 +3047,33 @@ const EXPECTED_COORDINATION_CHECKS = new Map<string, { table: string; definition
     { table: "auggy_coordination_outbox", definition: "checkintent_ordinal>=0" },
   ],
   [
+    "auggy_coord_outbox_reason_check",
+    {
+      table: "auggy_coordination_outbox",
+      definition: "checkreason_codeisnullorreason_code~'^[a-z0-9][a-z0-9._:-]{0,63}$'",
+    },
+  ],
+  [
+    "auggy_coord_outbox_retry_mode_check",
+    {
+      table: "auggy_coordination_outbox",
+      definition: "checkretry_mode=anyarray['never','sink-idempotent']",
+    },
+  ],
+  [
+    "auggy_coord_outbox_retry_policy_check",
+    {
+      table: "auggy_coordination_outbox",
+      definition: "checkretry_mode='never'andmax_attempts=1orretry_mode='sink-idempotent'",
+    },
+  ],
+  [
     "auggy_coord_outbox_state_check",
-    { table: "auggy_coordination_outbox", definition: "checkstate='pending'" },
+    {
+      table: "auggy_coordination_outbox",
+      definition:
+        "checkstate=anyarray['pending','delivering','delivered','failed','outcome_unknown']",
+    },
   ],
   [
     "auggy_coord_outbox_version_check",
@@ -2717,6 +3102,9 @@ const EXPECTED_COORDINATION_CONSTRAINTS: readonly CoordinationCatalogConstraint[
   ["auggy_coordination_external_assertions", "auggy_coordination_external_assertions_pkey"],
   ["auggy_coordination_history", "auggy_coordination_history_pkey"],
   ["auggy_coordination_instances", "auggy_coordination_instances_pkey"],
+  ["auggy_coordination_memory_entries", "auggy_coordination_memory_entries_pkey"],
+  ["auggy_coordination_memory_operations", "auggy_coordination_memory_operations_pkey"],
+  ["auggy_coordination_memory_tombstones", "auggy_coordination_memory_tombstones_pkey"],
   ["auggy_coordination_migrations", "auggy_coordination_migrations_pkey"],
   ["auggy_coordination_namespaces", "auggy_coordination_namespaces_pkey"],
   ["auggy_coordination_outbox", "auggy_coordination_outbox_pkey"],
@@ -2753,6 +3141,9 @@ const EXPECTED_COORDINATION_TABLES: readonly CoordinationCatalogTable[] = [
   "auggy_coordination_external_assertions",
   "auggy_coordination_history",
   "auggy_coordination_instances",
+  "auggy_coordination_memory_entries",
+  "auggy_coordination_memory_operations",
+  "auggy_coordination_memory_tombstones",
   "auggy_coordination_migrations",
   "auggy_coordination_namespaces",
   "auggy_coordination_outbox",
@@ -2809,14 +3200,14 @@ function normalizedDefault(row: CoordinationCatalogColumn): string | null {
 }
 
 function validCoordinationColumns(rows: readonly CoordinationCatalogColumn[]): boolean {
-  return catalogMatches(
-    rows.map((row) => ({ ...row, default_expression: normalizedDefault(row) })),
-    EXPECTED_COORDINATION_COLUMNS,
-  );
+  const actual = rows.map((row) => ({ ...row, default_expression: normalizedDefault(row) }));
+  return catalogMatches(actual, EXPECTED_COORDINATION_COLUMNS);
 }
 
 function validCoordinationChecks(rows: readonly CoordinationCatalogCheck[]): boolean {
-  if (rows.length !== EXPECTED_COORDINATION_CHECKS.size) return false;
+  if (rows.length !== EXPECTED_COORDINATION_CHECKS.size) {
+    return false;
+  }
   return rows.every((row) => {
     const expected = EXPECTED_COORDINATION_CHECKS.get(row.constraint_name);
     return (
@@ -2841,6 +3232,8 @@ async function assertPostgresCoordinationSchema(
     "'auggy_coordination_external_assertions', " +
     "'auggy_coordination_history', 'auggy_coordination_instances', " +
     "'auggy_coordination_migrations', 'auggy_coordination_namespaces', " +
+    "'auggy_coordination_memory_entries', 'auggy_coordination_memory_operations', " +
+    "'auggy_coordination_memory_tombstones', " +
     "'auggy_coordination_outbox', 'auggy_coordination_rate_counters', " +
     "'auggy_coordination_rate_events', " +
     "'auggy_coordination_request_class_counters', " +

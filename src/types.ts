@@ -83,12 +83,37 @@ export interface MemoryEntry {
 
 export interface MemoryQueryOpts {
   peerId?: string;
+  /**
+   * Kernel-minted distributed execution metadata. Namespace providers that
+   * participate in coordinator-owned memory must reject its absence rather
+   * than reading a process-local fallback.
+   */
+  executionContext?: ExecutionTraceContextV1;
+  executionAuthority?: ExecutionAuthorityV1;
+  operationId?: string;
 }
 
 export interface MemoryWriteOpts {
   peerId?: string;
   trustLevel?: TrustLevel;
+  /** See MemoryQueryOpts. Writes use operationId for root-atomic dedupe. */
+  executionContext?: ExecutionTraceContextV1;
+  executionAuthority?: ExecutionAuthorityV1;
+  operationId?: string;
 }
+
+export interface MemoryForgetOpts {
+  /** Authenticated caller peer, distinct from the erasure target argument. */
+  peerId?: string;
+  executionContext?: ExecutionTraceContextV1;
+  executionAuthority?: ExecutionAuthorityV1;
+  operationId?: string;
+}
+
+/** A namespace provider may stage a write for the fenced root commit. */
+// biome-ignore lint/suspicious/noConfusingVoidType: existing provider writes preserve Promise<void>.
+export type MemoryWriteResult = void | { status: "staged" };
+export type MemoryForgetResult = number | { status: "staged" | "replayed" };
 
 export interface StaticMemoryProvider {
   owns: { kind: "static"; labels: string[] };
@@ -96,7 +121,7 @@ export interface StaticMemoryProvider {
   /** Optional peer trust allowlist for writes. Omit to use the origin-based policy. */
   writeTrustLevels?: readonly TrustLevel[];
   read: (label: string) => Promise<MemoryEntry | null>;
-  write?: (label: string, content: string) => Promise<void>;
+  write?: (label: string, content: string) => Promise<MemoryWriteResult>;
 }
 
 export interface NamespaceMemoryProvider {
@@ -105,10 +130,10 @@ export interface NamespaceMemoryProvider {
   /** Optional peer trust allowlist for writes. Omit to use the origin-based policy. */
   writeTrustLevels?: readonly TrustLevel[];
   search: (query: string, opts?: MemoryQueryOpts) => Promise<MemoryEntry[]>;
-  write?: (label: string, content: string, opts?: MemoryWriteOpts) => Promise<void>;
+  write?: (label: string, content: string, opts?: MemoryWriteOpts) => Promise<MemoryWriteResult>;
   read?: (label: string) => Promise<MemoryEntry | null>;
   list?: () => Promise<string[]>;
-  forget?: (peerId: string) => Promise<number>;
+  forget?: (peerId: string, opts?: MemoryForgetOpts) => Promise<MemoryForgetResult>;
   /**
    * Read-only listing for `/admin`'s Memory tab. Returns most-recent entries
    * (peer-scoped if `peerId` given). Implementing it is optional — providers
@@ -582,6 +607,14 @@ export interface OutboundDeliveryContext {
   operationId?: string;
 }
 
+/** Source-owned retry evidence registered with an outbound sink. */
+export interface OutboundDeliveryPolicy {
+  /** Automatic retries require a sink-enforced idempotency key. */
+  retryMode: "never" | "sink-idempotent";
+  /** Includes the initial attempt. `never` requires exactly one attempt. */
+  maxAttempts: number;
+}
+
 /**
  * Context handed to `Augment.handleInternalTurn` (ADR-027 Decision 5).
  * Exposes the kernel-resolved threadId + peer for the internal turn so
@@ -868,6 +901,7 @@ export interface TransportKernel {
       message: OutboundMessage,
       context?: OutboundDeliveryContext,
     ) => Promise<void>,
+    policy?: OutboundDeliveryPolicy,
   ): void;
   getAgentCard(): AgentCard;
   /** Process-local, aggregate operational state for authenticated operator surfaces. */
@@ -1737,6 +1771,8 @@ export interface DistributedCoordinationConfig {
   admission?: DistributedCoordinationAdmissionConfig;
   /** Immutable coordinator-owned turn/spend guardrails for distributed budget augments. */
   budgets?: DistributedCoordinationBudgetConfig;
+  /** Immutable coordinator-owned committed-memory partitions. */
+  memory?: DistributedCoordinationMemoryConfig;
   leaseDurationMs: number;
   heartbeatIntervalMs: number;
   claimPollMs: number;
@@ -1782,6 +1818,38 @@ export interface DistributedBudgetPolicyV1 {
 
 export interface DistributedCoordinationBudgetConfig {
   policies: readonly DistributedBudgetPolicyV1[];
+}
+
+/**
+ * A bounded, peer-isolated committed-memory partition.  The policy contains
+ * identifiers and limits only; credentials and provider settings must never
+ * be placed in the distributed compatibility projection.
+ */
+export interface DistributedMemoryPolicyV1 {
+  /** Stable source-owned memory augment identity. */
+  id: string;
+  /** Stable logical partition prefix; callers cannot select it per request. */
+  namespacePrefix: string;
+  maxEntries: number;
+  maxEntriesPerPeer: number;
+  /** Retained encoded entry bytes across the fleet partition and one peer. */
+  maxBytes: number;
+  maxBytesPerPeer: number;
+  maxEntryBytes: number;
+  maxQueryBytes: number;
+  maxResultBytes: number;
+  maxResults: number;
+  maxMutationsPerTurn: number;
+  /** Isolated retained replay-evidence capacity. */
+  maxOperations: number;
+  /** Isolated retained entry/supersession/peer-erase tombstone capacity. */
+  maxTombstones: number;
+  operationRetentionMs: number;
+  entryRetentionMs: number;
+}
+
+export interface DistributedCoordinationMemoryConfig {
+  policies: readonly DistributedMemoryPolicyV1[];
 }
 
 export interface DistributedBudgetUsageV1 {

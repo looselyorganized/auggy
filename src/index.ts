@@ -62,6 +62,7 @@ export type {
   SchedulerContext,
   TurnLifecycleContext,
   OutboundDeliveryContext,
+  OutboundDeliveryPolicy,
   // Kernel events
   KernelEvent,
   KernelEventHandler,

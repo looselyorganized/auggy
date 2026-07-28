@@ -9,6 +9,10 @@ import {
   distributedBudgetPolicyFingerprint,
   normalizeDistributedBudgetConfig,
 } from "./budget-policy";
+import {
+  distributedMemoryPolicyFingerprint,
+  normalizeDistributedMemoryConfig,
+} from "./memory-policy";
 
 const MAX_CAPACITY = 1_000_000;
 const MAX_COMPONENTS = 256;
@@ -19,15 +23,15 @@ const CANONICAL_UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 
 export const DISTRIBUTED_COORDINATION_PROTOCOL = Object.freeze({
   name: "auggy-postgres-coordination" as const,
-  protocolVersion: 8 as const,
-  schemaVersion: 8 as const,
+  protocolVersion: 10 as const,
+  schemaVersion: 10 as const,
   fingerprintVersion: 2 as const,
 });
 
 const PREVIOUS_DISTRIBUTED_COORDINATION_PROTOCOL = Object.freeze({
   name: "auggy-postgres-coordination" as const,
-  protocolVersion: 7 as const,
-  schemaVersion: 7 as const,
+  protocolVersion: 9 as const,
+  schemaVersion: 9 as const,
   fingerprintVersion: 2 as const,
 });
 
@@ -65,11 +69,11 @@ function fingerprint(domain: string, value: unknown): string {
 }
 
 const PROTOCOL_FINGERPRINT = fingerprint(
-  "auggy-distributed-coordination-protocol-v8",
+  "auggy-distributed-coordination-protocol-v10",
   DISTRIBUTED_COORDINATION_PROTOCOL,
 );
 const PREVIOUS_PROTOCOL_FINGERPRINT = fingerprint(
-  "auggy-distributed-coordination-protocol-v7",
+  "auggy-distributed-coordination-protocol-v9",
   PREVIOUS_DISTRIBUTED_COORDINATION_PROTOCOL,
 );
 
@@ -171,6 +175,14 @@ export function buildDistributedCoordinationCompatibility(
       policies: budgets.policies,
       fingerprint: distributedBudgetPolicyFingerprint(budgets),
     };
+    const memory = normalizeDistributedMemoryConfig(
+      coordination.memory,
+      retention.terminalRequestRetentionMs,
+    );
+    const memoryProjection = {
+      policies: memory.policies,
+      fingerprint: distributedMemoryPolicyFingerprint(memory),
+    };
     if (
       admission.capacityClasses.length > 64 ||
       new Set(admission.capacityClasses.map((policy) => policy.id)).size !==
@@ -245,22 +257,22 @@ export function buildDistributedCoordinationCompatibility(
       turnState,
       admission,
       budgets: budgetProjection,
+      memory: memoryProjection,
       sources,
       augments,
     };
     const configurationFingerprint = fingerprint(
-      "auggy-distributed-coordination-configuration-v8",
+      "auggy-distributed-coordination-configuration-v10",
       {
         protocolFingerprint: PROTOCOL_FINGERPRINT,
         ...semanticConfiguration,
       },
     );
-    const { budgets: _budgets, ...previousSemanticConfiguration } = semanticConfiguration;
     const previousConfigurationFingerprint = fingerprint(
-      "auggy-distributed-coordination-configuration-v7",
+      "auggy-distributed-coordination-configuration-v9",
       {
         protocolFingerprint: PREVIOUS_PROTOCOL_FINGERPRINT,
-        ...previousSemanticConfiguration,
+        ...semanticConfiguration,
       },
     );
     return Object.freeze({

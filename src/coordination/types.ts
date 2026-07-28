@@ -15,6 +15,8 @@ import type {
   DistributedCoordinationBudgetConfig,
   DistributedBudgetPolicyV1,
   DistributedBudgetUsageV1,
+  DistributedCoordinationMemoryConfig,
+  DistributedMemoryPolicyV1,
 } from "../types";
 
 export type CoordinationRequestState =
@@ -58,6 +60,8 @@ export interface DistributedCoordinatorConfig {
   admission?: DistributedAdmissionConfig;
   /** Immutable shared budget policies. Omission permits no distributed budget gate. */
   budgets?: DistributedCoordinationBudgetConfig;
+  /** Immutable peer-isolated committed-memory policies. */
+  memory?: DistributedCoordinationMemoryConfig;
   compatibility: DistributedCoordinatorCompatibility;
 }
 
@@ -215,7 +219,131 @@ export interface DistributedOutboxIntentV1 {
   operationId: string;
   body: Uint8Array;
   contentType: "application/json";
+  /** Immutable sink evidence selected by trusted registration code. */
+  retryMode: "never" | "sink-idempotent";
+  /** Includes the first dispatch. `never` requires exactly one attempt. */
+  maxAttempts: number;
 }
+
+export interface DistributedOutboxLeaseV1 {
+  version: 1;
+  requestId: string;
+  threadId: string;
+  ordinal: number;
+  operationId: string;
+  body: Uint8Array;
+  contentType: "application/json";
+  retryMode: "never" | "sink-idempotent";
+  maxAttempts: number;
+  attempt: number;
+  deliveryFence: number;
+  leaseExpiresAt: string;
+}
+
+export type DistributedOutboxClaimResult =
+  | { status: "acquired"; lease: DistributedOutboxLeaseV1 }
+  | { status: "waiting" | "stale" | "unavailable" };
+
+export type DistributedOutboxSettlement =
+  | { outcome: "delivered" }
+  | { outcome: "confirmed-failure"; reasonCode: string }
+  | { outcome: "outcome-unknown"; reasonCode: string };
+
+export type DistributedOutboxRecoveryResolution = "delivered" | "confirmed-failure" | "retry";
+
+export type DistributedOutboxResult =
+  | { status: "ok" }
+  | { status: "stale" | "conflict" | "unavailable" }
+  | { status: "rejected"; reason: "invalid-delivery" | "retry-unsafe" };
+
+export interface DistributedMemoryEntryV1 {
+  version: 1;
+  id: string;
+  body: Uint8Array;
+  /** Trusted source root and source-owned provenance committed with the entry. */
+  sourceTurnId: string;
+  origin: DistributedMemoryOriginV1;
+  provenanceHash: string;
+  createdAt: string;
+}
+
+export type DistributedMemoryOriginV1 = "operator" | "peer-derived" | "agent-derived" | "agent";
+
+export type DistributedMemoryMutationV1 =
+  | {
+      version: 1;
+      operationId: string;
+      policyId: string;
+      /** Trusted source turn, never a model-selected identity. */
+      sourceTurnId: string;
+      /** Source-owned provenance label such as tool or extracted-fact. */
+      origin: DistributedMemoryOriginV1;
+      provenanceHash: string;
+      kind: "write";
+      entryId: string;
+      /** Peer erase epoch observed by this root before staging the mutation. */
+      expectedPeerEraseEpoch: number;
+      body: Uint8Array;
+    }
+  | {
+      version: 1;
+      operationId: string;
+      policyId: string;
+      sourceTurnId: string;
+      origin: DistributedMemoryOriginV1;
+      provenanceHash: string;
+      kind: "supersede";
+      entryId: string;
+      supersedesEntryId: string;
+      /** Peer erase epoch observed by this root before staging the mutation. */
+      expectedPeerEraseEpoch: number;
+      body: Uint8Array;
+    }
+  | {
+      version: 1;
+      operationId: string;
+      policyId: string;
+      sourceTurnId: string;
+      origin: DistributedMemoryOriginV1;
+      provenanceHash: string;
+      kind: "forget";
+      /** Canonical raw peer id, hashed by the coordinator and never retained raw. */
+      targetPeerId: string;
+    };
+
+export interface DistributedMemoryReadRequest {
+  policyId: string;
+  peerBinding: DistributedPeerBindingV1;
+  entryId: string;
+}
+
+export interface DistributedMemorySearchRequest {
+  policyId: string;
+  peerBinding: DistributedPeerBindingV1;
+  /** Opaque bounded caller query. Matching is augment-owned; coordinator never interprets it. */
+  query: Uint8Array;
+  limit: number;
+}
+
+export interface DistributedMemoryPeerEpochRequest {
+  policyId: string;
+  peerBinding: DistributedPeerBindingV1;
+}
+
+export type DistributedMemoryPeerEpochResult =
+  | { status: "ok"; eraseEpoch: number }
+  | { status: "denied" | "stale" | "unavailable" }
+  | { status: "rejected"; reason: "invalid-memory-request" };
+
+export type DistributedMemoryReadResult =
+  | { status: "ok"; entry: DistributedMemoryEntryV1 }
+  | { status: "missing" | "denied" | "stale" | "unavailable" }
+  | { status: "rejected"; reason: "invalid-memory-request" };
+
+export type DistributedMemorySearchResult =
+  | { status: "ok"; entries: readonly DistributedMemoryEntryV1[] }
+  | { status: "denied" | "stale" | "unavailable" }
+  | { status: "rejected"; reason: "invalid-memory-request" };
 
 export interface DistributedTurnCheckpointV1 {
   peerBinding: DistributedPeerBindingV1;
@@ -224,6 +352,8 @@ export interface DistributedTurnCheckpointV1 {
   replay: DistributedReplayResult;
   costMarkers: readonly DistributedCostMarkerV1[];
   outboxIntents: readonly DistributedOutboxIntentV1[];
+  /** Optional until the memory augment opts into the v9 coordinator surface. */
+  memoryMutations?: readonly DistributedMemoryMutationV1[];
 }
 
 export type AdmitResult =
@@ -268,6 +398,8 @@ export type LeaseResult =
         | "invalid-history"
         | "invalid-result"
         | "invalid-turn-state"
+        | "memory-capacity"
+        | "memory-conflict"
         | "outbox-capacity"
         | "result-too-large";
     }
@@ -346,6 +478,8 @@ export interface DistributedTurnCoordinator {
   supportsAdmissionPolicy(requirements: DistributedAdmissionPolicyRequirementsV1): boolean;
   /** Local immutable-policy check; namespace registration remains authoritative. */
   supportsBudgetPolicy(policy: DistributedBudgetPolicyV1): boolean;
+  /** Local immutable-policy check; persisted compatibility remains authoritative. */
+  supportsMemoryPolicy(policy: DistributedMemoryPolicyV1): boolean;
   heartbeatQueued(
     request: DistributedTurnRequestIdentity,
     /** Omission is compatible only with the initial generation (attempt 1). */
@@ -386,11 +520,42 @@ export interface DistributedTurnCoordinator {
     lease: DistributedTurnLease,
     peerBinding: DistributedPeerBindingV1,
   ): Promise<DistributedHistoryLoadResult>;
+  /** Read a peer-isolated committed memory entry under the active history fence. */
+  readMemory(
+    lease: DistributedTurnLease,
+    request: DistributedMemoryReadRequest,
+  ): Promise<DistributedMemoryReadResult>;
+  /** List only the caller's committed memory partition under the active history fence. */
+  searchMemory(
+    lease: DistributedTurnLease,
+    request: DistributedMemorySearchRequest,
+  ): Promise<DistributedMemorySearchResult>;
+  /** Read the fenced peer-wide erase epoch before staging a memory mutation. */
+  loadMemoryPeerEpoch(
+    lease: DistributedTurnLease,
+    request: DistributedMemoryPeerEpochRequest,
+  ): Promise<DistributedMemoryPeerEpochResult>;
   /** Atomically commit every durable effect of one fenced root turn. */
   commitTurn(
     lease: DistributedTurnLease,
     checkpoint: DistributedTurnCheckpointV1,
   ): Promise<LeaseResult>;
+  /** Claim one committed outbound intent under this live instance incarnation. */
+  claimOutbox(): Promise<DistributedOutboxClaimResult>;
+  /** Extend only the exact actively owned delivery lease. */
+  heartbeatOutbox(lease: DistributedOutboxLeaseV1): Promise<DistributedOutboxResult>;
+  /** Settle only the exact actively owned delivery lease. */
+  settleOutbox(
+    lease: DistributedOutboxLeaseV1,
+    settlement: DistributedOutboxSettlement,
+  ): Promise<DistributedOutboxResult>;
+  /** Authenticated operator compare-and-set for an observed ambiguous delivery. */
+  recoverOutbox(
+    operationId: string,
+    expectedDeliveryFence: number,
+    resolution: DistributedOutboxRecoveryResolution,
+    reasonCode: string,
+  ): Promise<DistributedOutboxResult>;
   /** Legacy pre-v5 result completion. Protocol v5 and later reject this path. */
   complete(lease: DistributedTurnLease, result: DistributedReplayResult): Promise<LeaseResult>;
   fail(lease: DistributedTurnLease): Promise<LeaseResult>;

@@ -300,3 +300,79 @@ export function encodeDistributedOutboxBody(
   }
   return body;
 }
+
+export function decodeDistributedOutboxBody(body: Uint8Array): {
+  targetAugment: string;
+  peer: PeerIdentity;
+  message: OutboundMessage;
+} {
+  const parsed = plainRecord(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(body)));
+  if (parsed?.version !== 1 || typeof parsed.targetAugment !== "string") {
+    throw new Error("distributed outbox body is invalid");
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(parsed.targetAugment)) {
+    throw new Error("distributed outbox target is invalid");
+  }
+  const peer = plainRecord(parsed.peer);
+  if (
+    !peer ||
+    typeof peer.id !== "string" ||
+    peer.id.length === 0 ||
+    peer.id.length > 256 ||
+    (peer.kind !== "human" &&
+      peer.kind !== "agent" &&
+      peer.kind !== "system" &&
+      peer.kind !== "anonymous") ||
+    (peer.trustLevel !== "creator" &&
+      peer.trustLevel !== "agent" &&
+      peer.trustLevel !== "public") ||
+    typeof peer.sourceAugment !== "string" ||
+    peer.sourceAugment.length === 0 ||
+    peer.sourceAugment.length > 160 ||
+    (peer.publicSubstate !== undefined &&
+      peer.publicSubstate !== "anonymous" &&
+      peer.publicSubstate !== "recognized") ||
+    (peer.trustLevel === "public") !== (peer.publicSubstate !== undefined) ||
+    (peer.orgId !== undefined && typeof peer.orgId !== "string")
+  ) {
+    throw new Error("distributed outbox peer is invalid");
+  }
+  let delegatedOrigin: PeerIdentity["delegatedOrigin"];
+  if (peer.delegatedOrigin !== undefined) {
+    const delegated = plainRecord(peer.delegatedOrigin);
+    if (
+      !delegated ||
+      typeof delegated.subject !== "string" ||
+      typeof delegated.sourceAugment !== "string" ||
+      typeof delegated.viaPeerId !== "string" ||
+      !Number.isSafeInteger(delegated.hopCount) ||
+      (delegated.hopCount as number) < 0 ||
+      (delegated.hopCount as number) > 32
+    ) {
+      throw new Error("distributed outbox delegation is invalid");
+    }
+    delegatedOrigin = {
+      subject: delegated.subject,
+      sourceAugment: delegated.sourceAugment,
+      viaPeerId: delegated.viaPeerId,
+      hopCount: delegated.hopCount as number,
+    };
+  }
+  const message = sanitizedMessage(parsed.message);
+  if (message.targetAugment !== undefined && message.targetAugment !== parsed.targetAugment) {
+    throw new Error("distributed outbox target is inconsistent");
+  }
+  return {
+    targetAugment: parsed.targetAugment,
+    peer: {
+      id: peer.id,
+      kind: peer.kind,
+      trustLevel: peer.trustLevel,
+      sourceAugment: peer.sourceAugment,
+      ...(peer.publicSubstate ? { publicSubstate: peer.publicSubstate } : {}),
+      ...(peer.orgId ? { orgId: peer.orgId } : {}),
+      ...(delegatedOrigin ? { delegatedOrigin } : {}),
+    },
+    message,
+  };
+}
