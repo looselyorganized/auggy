@@ -606,7 +606,12 @@ export interface TransportKernel {
     options?: { onEvent?: KernelEventHandler },
   ): Promise<TurnResult>;
   onOutbound(
-    callback: (peer: PeerIdentity, message: OutboundMessage) => Promise<void>,
+    callback: (
+      peer: PeerIdentity,
+      message: OutboundMessage,
+      context?: OutboundDeliveryContext,
+    ) => Promise<void>,
+    policy?: OutboundDeliveryPolicy,
   ): void;
   getAgentCard(): AgentCard;
 }
@@ -621,6 +626,12 @@ export interface TransportSpec {
 ```
 
 `TransportSpec` is what an augment puts on its `transport` field. The runtime calls `register(kernel)` once at boot, passing in a `TransportKernel` that the augment can use to feed inbound triggers and listen for outbound messages.
+
+`OutboundDeliveryPolicy` is source-owned retry evidence. Omission means
+`{ retryMode: "never", maxAttempts: 1 }`. A transport may declare
+`retryMode: "sink-idempotent"` only when it passes `context.operationId` to a
+sink that atomically deduplicates that key; merely making the callback locally
+idempotent is insufficient.
 
 `identify(raw)` is a pure function from "whatever the transport's wire format hands you" to `PeerIdentity | null`. The web transport implements it by reading `x-peer-*` headers; a future spine transport would read auth tokens from a different envelope.
 

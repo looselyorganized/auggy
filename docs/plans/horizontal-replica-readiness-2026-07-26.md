@@ -553,8 +553,9 @@ boundary; public transport enablement remains blocked on checkpoints 5 through
 - Resident history is evicted after each distributed root, so another replica's
   later revision can never be hidden by a stale process cache. Local
   single-replica history behavior remains unchanged.
-- Outbound handlers are not invoked by the distributed turn path. The atomic
-  commit stages bounded intents only; delivery is intentionally deferred.
+- At checkpoint 4, outbound handlers were not invoked by the distributed turn
+  path: the atomic commit staged bounded intents only. Checkpoint 6 below now
+  supplies the fenced post-commit worker without weakening that transaction.
 - Empty histories are reserved on the active request but are not materialized
   before execution. Pre-start cancellation or expiry releases the reservation,
   preventing abandoned requests from exhausting `maxThreads`.
@@ -927,6 +928,13 @@ conservative unpriced evidence.
 
 #### 5D. Fenced shared memory and extraction state
 
+**Implementation status:** the peer-isolated coordinator storage core is
+implemented and exercised through the private runtime seam; checkpoint 5D is
+not complete. Shared auto-save cadence/transcript state, extraction claims and
+fact dedupe, offline SQLite import, and any independently verified Supabase
+authority remain open. The supported distributed profile therefore still
+rejects mutable layered-memory configurations.
+
 - Add an exact namespace/peer PostgreSQL memory adapter with expiry,
   supersession, provenance, tombstones, deterministic operation IDs, and active
   fence validation for turn-owned mutations.
@@ -955,11 +963,80 @@ separate supported local profile; sharing that volume never enables replicas.
 
 ### 6. Transactional outbound delivery
 
+**Implementation status:** complete on the private, disabled integration
+boundary; notification delivery, provider ownership, operator commands, and
+public distributed enablement remain in checkpoints 5E, 7, 10, and 11.
+
 - Add namespace-scoped outbox rows in the fenced turn commit.
 - Claim deliveries with leases and stable operation keys.
 - Separate confirmed failure from unknown effect and from confirmed delivery.
 - Add authenticated compare-and-set recovery and bounded audit/retention.
 - Make retries depend on sink idempotency evidence, never elapsed time alone.
+
+The fenced turn commit now stores each bounded intent with its stable operation
+ID and an immutable source-owned retry policy. Registered sinks default to
+`never` with one attempt. `sink-idempotent` permits a bounded retry only when
+trusted registration code asserts that the receiving sink atomically
+deduplicates the operation ID; remote payload annotations cannot select this
+policy.
+
+Every replica may claim pending work, but only one live instance incarnation
+owns a specific attempt and delivery fence. Heartbeats and terminal writes
+compare the namespace, request, ordinal, operation ID, attempt, fence, instance,
+session, and unexpired lease. Lease loss after callback entry is conservative:
+unsafe delivery becomes `outcome_unknown`; only sink-idempotent work with a
+remaining attempt returns to `pending`. Stale owners cannot settle a later
+attempt. Trusted control-plane recovery is a compare-and-set on the observed
+operation ID and delivery fence and records a bounded `operator_recovery`
+event. The authenticated CLI/API wrapper remains checkpoint 10 work.
+
+The runtime starts claims only after all transports report ready, passes the
+stable operation ID and cancellation signal to the handler, stops new claims
+during drain, and bounds shutdown even when callback or coordinator I/O does
+not return. Non-cancelable work is detached after the deadline; durable lease
+expiry, rather than a local guess, determines whether it is retryable or must
+be quarantined. Unresolved outbox rows protect their parent request from
+pruning, while delivered and confirmed-failed rows are removed atomically with
+eligible terminal request state.
+
+Protocol/schema v10 adds the delivery lifecycle and accepts only the exact
+quiescent v9 predecessor. This private seam does not enable the supported
+distributed profile and does not claim that Telegram, AgentMail, notification
+quotas, console mutation, jobs, or Link are replica-safe.
+
+**Checkpoint 6 verification record:**
+
+- The focused memory, delivery, runtime, compatibility, CLI, and Telegram
+  surface passes 242 tests with 977 assertions. It covers simultaneous claims,
+  stale settlements, unsafe expiry, sink-idempotent lease recovery, exact
+  compare-and-set operator recovery, conflicting durable routing, cancellation,
+  non-cooperative callback shutdown, hung coordinator I/O, and migration
+  manifest parity.
+- A PostgreSQL 16 database passes all 57 coordinator integration tests with 436
+  assertions. The real catalog gate validates schema v10, and the outbox cases
+  exercise database-time expiry, attempt/fence rollover, stale-owner denial,
+  ambiguity recovery, retry-policy enforcement, and atomic terminal pruning.
+- Every canonical runtime inventory shard passes when run with normal loopback
+  access. The sandboxed first run reproduced Bun 1.3.14's known suite-scale
+  `EADDRINUSE` condition before an application assertion; the same HTTP file
+  passed 63/63 alone and the complete explicit shard runner then passed.
+- The console passes 243 tests with 1,093 assertions and its production build
+  passes. `bun run typecheck`, `bun run lint`, `bun audit --json`, and the local
+  packed-tarball `bun run smoke:release` pass. The audit result is empty;
+  dependencies and package versions did not change. Lint reports only the
+  existing Biome schema-version information notice.
+- Hostile diff review found and closed a v9 predecessor fingerprint that had
+  accidentally projected v8 policy, a premature peer-binding rejection that
+  skipped known-cost quarantine, unbounded shutdown around coordinator I/O,
+  conflicting durable target routing, and strict PostgreSQL catalog ordering
+  and normalization defects. No unresolved High or Medium issue remains within
+  the private checkpoint 6 boundary.
+- Residual operational work is explicit: the authenticated operator-facing
+  inspection/recovery surface is checkpoint 10, provider ownership and
+  notification integration are checkpoints 5E and 7, and random-routing crash
+  certification plus public enablement remain checkpoint 11. A custom outbound
+  handler is not replica-safe merely because it declares sink idempotency; its
+  receiving system must actually enforce the stable operation key.
 
 ### 7. Telegram and AgentMail ownership
 

@@ -1379,9 +1379,10 @@ deferred until budget enforcement needs a stronger pre-turn guarantee.
 ### v0 limitations
 
 - **Single-instance topology.** The SQLite store is not safe for concurrent processes. Run one agent instance per `dbPath`.
-- **Distributed backend remains private.** Shared threshold rows are staged but
-  cannot be delivered until transactional outbound delivery is implemented and
-  the final multi-process profile is certified.
+- **Distributed backend remains private.** Shared threshold rows and outbound
+  intents now use the transactional coordinator boundary, but public enablement
+  still requires the remaining shared notification/provider work, operator
+  recovery surfaces, and final multi-process certification.
 - **One-turn dollar overshoot.** See post-hoc note above.
 - **No rebuild path.** If the database is deleted, usage history is lost. The budgets store does not reconstruct from external state.
 

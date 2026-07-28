@@ -69,7 +69,12 @@ export interface TransportKernel {
     options?: { onEvent?: KernelEventHandler },
   ): Promise<TurnResult>;
   onOutbound(
-    callback: (peer: PeerIdentity, message: OutboundMessage) => Promise<void>,
+    callback: (
+      peer: PeerIdentity,
+      message: OutboundMessage,
+      context?: OutboundDeliveryContext,
+    ) => Promise<void>,
+    policy?: OutboundDeliveryPolicy,
   ): void;
   getAgentCard(): AgentCard;
 }
@@ -79,7 +84,23 @@ export interface TransportKernel {
 
 The function returns a `Promise<TurnResult>` that resolves when the turn is complete. The `TurnResult.status` is one of `completed`, `failed`, `canceled`, or `rejected` — the transport should check it and react appropriately (the web transport synthesizes `RUN_ERROR` events for `rejected` status, since the kernel emits no events for those).
 
-**`onOutbound(callback)`** registers a callback that fires when the kernel wants to send a message *out* to a peer through this transport. The callback receives `(peer, message)`. This is used for proactive communication — when an agent decides on its own to send a follow-up message, not in response to an inbound. The web transport doesn't actively use `onOutbound` (every web turn returns its response synchronously), but a spine transport would.
+**`onOutbound(callback, policy?)`** registers a callback that fires when the
+kernel wants to send a message *out* to a peer through this transport. The
+callback receives `(peer, message, context)`. `context.signal` carries
+cancellation and `context.operationId` is the stable effect identity. This is
+used for proactive communication — when an agent decides on its own to send a
+follow-up message, not in response to an inbound. The web transport doesn't
+actively use `onOutbound` (every web turn returns its response synchronously),
+but a spine transport would.
+
+The default policy is fail-closed: `{ retryMode: "never", maxAttempts: 1 }`.
+Declare `retryMode: "sink-idempotent"` only when the receiving system
+atomically deduplicates `context.operationId`; a transport-level promise,
+timeout, or elapsed lease is not proof that an external effect did or did not
+happen. In the private distributed runtime, outbound intents commit with the
+turn, are claimed under a lease and fence, and become `outcome_unknown` when a
+started effect loses authority. Automatic retries are permitted only by the
+immutable sink-idempotency policy.
 
 **`getAgentCard()`** returns the agent card. Used by the web transport to serve `/.well-known/agent-card.json`.
 
