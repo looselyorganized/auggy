@@ -1,7 +1,7 @@
 {
   "name": "@auggy/evals",
   "version": "0.5.0-rc.1",
-  "description": "Eval suites for auggy agents — security red-team prompts, auto-save fact extraction fixtures, shared harness primitives, and internal layered-memory graders.",
+  "description": "Security and memory evaluation suites for Auggy agents, with red-team fixtures, reusable harness primitives, and layered-memory graders.",
   "keywords": [
     "auggy",
     "evals",

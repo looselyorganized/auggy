@@ -1,6 +1,6 @@
 # @auggy/anthropic
 
-Anthropic engine adapter for [auggy](https://www.npmjs.com/package/auggy) — implements `ModelClient` against the official [`@anthropic-ai/sdk`](https://www.npmjs.com/package/@anthropic-ai/sdk).
+Anthropic engine adapter for [Auggy](https://www.npmjs.com/package/auggy), powered by the official [`@anthropic-ai/sdk`](https://www.npmjs.com/package/@anthropic-ai/sdk).
 
 ## Install
 

@@ -1,7 +1,7 @@
 {
   "name": "@auggy/openrouter",
   "version": "0.5.0-rc.1",
-  "description": "OpenRouter engine adapter for auggy — implements ModelClient against OpenRouter's OpenAI-compatible API.",
+  "description": "OpenRouter engine adapter for Auggy, using OpenRouter's OpenAI-compatible API.",
   "keywords": [
     "auggy",
     "openrouter",

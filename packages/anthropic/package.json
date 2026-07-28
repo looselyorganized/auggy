@@ -1,7 +1,7 @@
 {
   "name": "@auggy/anthropic",
   "version": "0.5.0-rc.1",
-  "description": "Anthropic engine adapter for auggy — implements ModelClient against @anthropic-ai/sdk.",
+  "description": "Anthropic engine adapter for Auggy, powered by the official @anthropic-ai/sdk.",
   "keywords": [
     "auggy",
     "anthropic",

@@ -1,7 +1,7 @@
 {
   "name": "auggy",
   "version": "0.5.0-rc.1",
-  "description": "Small Bun/TypeScript runtime for building self-hosted agents from composable augments.",
+  "description": "Self-hosted Bun/TypeScript agent runtime with composable tools, memory, skills, transports, and policy.",
   "keywords": [
     "agent",
     "agents",

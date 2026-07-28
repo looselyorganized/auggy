@@ -11,8 +11,8 @@
   <img src="https://img.shields.io/badge/language-TypeScript-3178C6?logo=typescript" alt="TypeScript" />
 </p>
 
-Auggy is a small Bun/TypeScript runtime for building self-hosted agents from
-composable augments.
+Auggy is a self-hosted Bun/TypeScript agent runtime with composable tools,
+memory, skills, transports, and policy.
 
 The kernel runs agent turns. Augments add the tools, memory, transports,
 context, skills, and policy your agent needs.
