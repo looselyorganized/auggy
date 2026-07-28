@@ -1,6 +1,5 @@
 import type {
   Message,
-  Storage,
   CompactionStrategy,
   Transcript,
   PeerIdentity,
@@ -31,8 +30,6 @@ export interface HistoryManager {
   append(message: Message): void;
   getHistory(tokenBudget: number): Message[];
   compact(tokenBudget: number, strategy: CompactionStrategy): void;
-  save(storage: Storage): Promise<void>;
-  restore(storage: Storage): Promise<void>;
   /** Return an isolated, versioned snapshot suitable for durable storage. */
   snapshot(): ThreadHistorySnapshot;
   /**
@@ -149,10 +146,9 @@ function parseSnapshot(snapshot: unknown): Message[] {
   return validated;
 }
 
-export function createHistoryManager(opts: { threadId: string }): HistoryManager {
+export function createHistoryManager(): HistoryManager {
   let messages: Message[] = [];
   let runningTokens = 0;
-  const storageKey = `history:${opts.threadId}`;
   // Insertion-ordered snapshot store. JS Map preserves insertion order;
   // we evict oldest when capacity is exceeded.
   const turnSnapshots = new Map<string, TurnSnapshot>();
@@ -264,31 +260,6 @@ export function createHistoryManager(opts: { threadId: string }): HistoryManager
         }
         const removed = messages.splice(0, keepFrom);
         runningTokens -= removed.reduce((s, m) => s + m.tokenCount, 0);
-      }
-    },
-
-    async save(storage: Storage) {
-      await storage.put(
-        storageKey,
-        JSON.stringify({
-          version: 1,
-          messages: messages.map((message) => ({ ...message })),
-        } satisfies ThreadHistorySnapshot),
-      );
-    },
-
-    async restore(storage: Storage) {
-      const data = await storage.get(storageKey);
-      if (data) {
-        let parsed: unknown;
-        try {
-          parsed = JSON.parse(data);
-        } catch {
-          throw new Error("Invalid thread history snapshot: malformed JSON");
-        }
-        const validated = parseSnapshot(parsed);
-        messages = validated;
-        runningTokens = validated.reduce((sum, message) => sum + message.tokenCount, 0);
       }
     },
 
