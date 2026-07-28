@@ -35,7 +35,12 @@ export function resolveConfigBool(
   envKey: string,
   defaultFn: () => boolean,
 ): ConfigResolution<boolean> {
-  if (yamlValue !== undefined) return { value: yamlValue, source: "yaml" };
+  if (yamlValue !== undefined) {
+    if (typeof yamlValue !== "boolean") {
+      throw new TypeError(`Explicit value for ${envKey} must be a boolean.`);
+    }
+    return { value: yamlValue, source: "yaml" };
+  }
   const envValue = process.env[envKey];
   if (envValue === "true") return { value: true, source: "env" };
   if (envValue === "false") return { value: false, source: "env" };

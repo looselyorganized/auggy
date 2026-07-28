@@ -182,7 +182,7 @@ config:
 ```
 
 This caps total daily spend (user-facing + extraction). If the cap is hit,
-the kernel's 2PC turn-gate refuses new turns until the next day. Internal
+the kernel's transactional turn gate refuses new turns until the next day. Internal
 extraction turns flow through the same budget rather than using a separate
 spend surface.
 

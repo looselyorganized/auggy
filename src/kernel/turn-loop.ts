@@ -211,6 +211,18 @@ export function createTurnLoop(opts: {
   operationalSignals?: RuntimeSignals;
 }): TurnLoop {
   const { augments, model, tokenizer, config } = opts;
+  const turnGateOwners = augments.filter(
+    (augment): augment is Augment & { turnGate: TurnGateProvider } =>
+      augment.turnGate !== undefined,
+  );
+  if (turnGateOwners.length > 1) {
+    throw new Error(
+      `Only one augment may declare turnGate; found: ${turnGateOwners
+        .map((augment) => augment.name)
+        .join(", ")}.`,
+    );
+  }
+  const turnGateOwner = turnGateOwners[0];
   const responseLimits = resolveModelResponseLimits(config.responseLimits);
   const providerRequestTimeoutMs = resolveProviderRequestTimeoutMs(config.providerRequestTimeoutMs);
   const detachedProviderAttemptLimit = Math.max(2, config.turnScheduling?.maxConcurrent ?? 4);
@@ -431,34 +443,21 @@ export function createTurnLoop(opts: {
       if (signal?.aborted) return makeAbortResult();
 
       // ---------------------------------------------------------------------------
-      // Pre-dispatch: turn-gate admission via 2PC (prepare → confirm/rollback → cost commit)
+      // Pre-dispatch: transactional turn-gate admission
+      // (prepare → confirm/rollback → cost commit)
       // ---------------------------------------------------------------------------
-      const turnGates = augments.filter(
-        (a): a is Augment & { turnGate: TurnGateProvider } => a.turnGate !== undefined,
-      );
+      let turnGateTicket: TurnGateTicket | undefined;
 
-      const tickets: TurnGateTicket[] = [];
-
-      // Phase 1: Prepare — each gate stages its writes inside its own open transaction.
-      for (const gate of turnGates) {
-        let ticket: TurnGateTicket;
+      // Prepare stages admission writes inside the sole gate owner's transaction.
+      if (turnGateOwner) {
         try {
-          ticket = await gate.turnGate.prepare({
+          turnGateTicket = await turnGateOwner.turnGate.prepare({
             turnId: trigger.turnId,
             peer: trigger.peer ?? null,
             threadId,
             trigger,
           });
         } catch {
-          // prepare itself threw — treat as admission-state-failed.
-          // Roll back any tickets already prepared.
-          for (const t of tickets) {
-            try {
-              await t.rollback();
-            } catch (e) {
-              console.error(`[turn-gate ${gate.name}] rollback after prepare-throw failed:`, e);
-            }
-          }
           await finalizeReturn();
           return {
             turnId: trigger.turnId,
@@ -468,25 +467,20 @@ export function createTurnLoop(opts: {
             toolCalls: [],
             trace,
             error: {
-              message: `Turn gate "${gate.name}" failed during admission.`,
-              source: gate.name,
+              message: `Turn gate "${turnGateOwner.name}" failed during admission.`,
+              source: turnGateOwner.name,
             },
             errorClass: "admission-state-failed",
           };
         }
-        tickets.push(ticket);
       }
 
-      // Phase 2: Decision evaluation — conjunctive. Any denial rolls back all tickets.
-      const denied = tickets.find((t) => !t.decision.allow);
-      if (denied) {
-        const denialReason = (denied.decision as { allow: false; reason: string }).reason;
-        for (const t of tickets) {
-          try {
-            await t.rollback();
-          } catch (err) {
-            console.error("[turn-gate] rollback failed:", err);
-          }
+      if (turnGateTicket && !turnGateTicket.decision.allow) {
+        const denialReason = turnGateTicket.decision.reason;
+        try {
+          await turnGateTicket.rollback();
+        } catch (err) {
+          console.error(`[turn-gate ${turnGateOwner?.name}] rollback failed:`, err);
         }
         await finalizeReturn();
         return {
@@ -501,45 +495,39 @@ export function createTurnLoop(opts: {
         };
       }
 
-      // Phase 3: Confirm — fail-closed. If any confirm throws, roll back all tickets.
-      let confirmError: unknown = null;
-      let confirmErrorGateName = "turn-gate";
-      for (let ci = 0; ci < tickets.length; ci++) {
+      // Confirm is fail-closed. Because exactly one owner is permitted, a
+      // failed confirm cannot leave another participant partially committed.
+      if (turnGateTicket) {
         try {
-          await tickets[ci]!.confirm();
+          await turnGateTicket.confirm();
         } catch (err) {
-          confirmError = err;
-          confirmErrorGateName = turnGates[ci]?.name ?? "turn-gate";
-          break;
-        }
-      }
-      if (confirmError !== null) {
-        for (const t of tickets) {
           try {
-            await t.rollback();
-          } catch (err) {
-            console.error("[turn-gate] rollback after confirm-throw failed:", err);
+            await turnGateTicket.rollback();
+          } catch (rollbackError) {
+            console.error(
+              `[turn-gate ${turnGateOwner?.name}] rollback after confirm-throw failed:`,
+              rollbackError,
+            );
           }
+          await finalizeReturn();
+          return {
+            turnId: trigger.turnId,
+            success: false,
+            status: "rejected",
+            response: undefined,
+            toolCalls: [],
+            trace,
+            error: {
+              message: `admission state could not be persisted: ${err instanceof Error ? err.message : String(err)}`,
+              source: turnGateOwner?.name ?? "turn-gate",
+            },
+            errorClass: "admission-state-failed",
+          };
         }
-        await finalizeReturn();
-        return {
-          turnId: trigger.turnId,
-          success: false,
-          status: "rejected",
-          response: undefined,
-          toolCalls: [],
-          trace,
-          error: {
-            message: `admission state could not be persisted: ${confirmError instanceof Error ? confirmError.message : String(confirmError)}`,
-            source: confirmErrorGateName,
-          },
-          errorClass: "admission-state-failed",
-        };
       }
       admissionConfirmed = true;
 
-      // All gates admitted. Fall through to turn body.
-      // Phase 5 (cost commit) runs after the engine call returns — see bottom of executeTurn.
+      // Admission confirmed. Cost commit runs after the engine call returns.
 
       const history = getOrCreateHistory(threadId);
 
@@ -924,17 +912,18 @@ export function createTurnLoop(opts: {
                   ? { priced: false, reason: unpricedReason }
                   : { priced: true, costUsd: totalCostUsd };
             }
-            for (const gate of turnGates) {
-              if (!gate.turnGate.commit) continue;
+            if (turnGateOwner?.turnGate.commit) {
               try {
-                await gate.turnGate.commit({
+                await turnGateOwner.turnGate.commit({
                   turnId: trigger.turnId,
                   peer: trigger.peer ?? null,
                   threadId,
                   cost,
                 });
               } catch {
-                console.error(`[turn-gate ${gate.name}] cost commit failed after inference`);
+                console.error(
+                  `[turn-gate ${turnGateOwner.name}] cost commit failed after inference`,
+                );
                 throw new OutcomeUnknownError(
                   "Inference completed but durable cost accounting did not reach a terminal state.",
                 );

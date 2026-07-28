@@ -61,6 +61,24 @@ describe("webTransport structure", () => {
     expect(aug.transport).toBeDefined();
   });
 
+  it("rejects non-boolean programmatic security options", () => {
+    const invalidOptions: Array<[string, Record<string, unknown>]> = [
+      ["allowAnonymous", { allowAnonymous: "false" }],
+      ["adminRoute", { adminRoute: "false" }],
+      ["publicIntegration", { publicIntegration: "false" }],
+      ["visitorTokens.enabled", { visitorTokens: { enabled: "false" } }],
+    ];
+    for (const [field, invalid] of invalidOptions) {
+      expect(() =>
+        webTransport({
+          port: 0,
+          auth: { type: "bearer", token: "test-token" },
+          ...invalid,
+        } as Parameters<typeof webTransport>[0]),
+      ).toThrow(field);
+    }
+  });
+
   it("rejects readiness before registration", async () => {
     const aug = webTransport({
       port: 0,

@@ -528,6 +528,8 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
   // work. Sequential ordering preserves ADR-027 Decision 2:
   // scheduleAfterTurn observes a fully-settled onTurnEnd. Errors in either
   // hook family are caught and logged so background work is best-effort.
+  // Outbound delivery errors are retained until both terminal hook families
+  // settle, then rethrown to preserve the caller-visible delivery failure.
   async function runPostTurn(
     result: TurnResult,
     trigger: TurnTrigger,
@@ -535,11 +537,22 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     lease: KeyedTurnLease,
     signal?: AbortSignal,
   ): Promise<void> {
-    await dispatchOutbound(result, trigger, signal);
+    let deliveryFailed = false;
+    let deliveryError: unknown;
+    try {
+      await dispatchOutbound(result, trigger, signal);
+    } catch (error) {
+      deliveryFailed = true;
+      deliveryError = error;
+    }
 
-    if (signal?.aborted) return;
+    const finishOrRethrowDelivery = (): void => {
+      if (deliveryFailed) throw deliveryError;
+    };
+
+    if (signal?.aborted) return finishOrRethrowDelivery();
     for (const a of effectiveAugments) {
-      if (signal?.aborted) return;
+      if (signal?.aborted) return finishOrRethrowDelivery();
       if (a.onTurnEnd) {
         try {
           await a.onTurnEnd(result, { signal });
@@ -548,7 +561,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
           operationalSignals.recordHookFailure(
             isOutcomeUnknownError(err) ? "outcome-unknown" : "failed",
           );
-          if (signal?.aborted) return;
+          if (signal?.aborted) return finishOrRethrowDelivery();
           const category = err instanceof Error ? "error-object" : "non-error-value";
           console.warn(`onTurnEnd hook "${a.name}" failed category=${category}`);
         }
@@ -556,9 +569,9 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     }
 
     const completedTurnId = result.turnId;
-    if (signal?.aborted) return;
+    if (signal?.aborted) return finishOrRethrowDelivery();
     for (const a of effectiveAugments) {
-      if (signal?.aborted) return;
+      if (signal?.aborted) return finishOrRethrowDelivery();
       if (a.scheduleAfterTurn) {
         let contextActive = true;
         const ctx: SchedulerContext = {
@@ -611,6 +624,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         await lease.join();
       }
     }
+    finishOrRethrowDelivery();
   }
 
   function schedulerTerminalResult(

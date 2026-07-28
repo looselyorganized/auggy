@@ -398,6 +398,25 @@ function validateWebTransportOptions(
   ) {
     errors.push(`${optionsPrefix}.port: required integer from 1 to 65535`);
   }
+  for (const field of ["allowAnonymous", "adminRoute", "publicIntegration"] as const) {
+    if (opts[field] !== undefined && typeof opts[field] !== "boolean") {
+      errors.push(`${optionsPrefix}.${field}: must be a boolean`);
+    }
+  }
+  if (opts.visitorTokens !== undefined) {
+    if (
+      opts.visitorTokens === null ||
+      typeof opts.visitorTokens !== "object" ||
+      Array.isArray(opts.visitorTokens)
+    ) {
+      errors.push(`${optionsPrefix}.visitorTokens: must be an object`);
+    } else {
+      const visitorTokens = opts.visitorTokens as Record<string, unknown>;
+      if (visitorTokens.enabled !== undefined && typeof visitorTokens.enabled !== "boolean") {
+        errors.push(`${optionsPrefix}.visitorTokens.enabled: must be a boolean`);
+      }
+    }
+  }
   if (opts.rateLimitPerPeer !== undefined) {
     if (
       opts.rateLimitPerPeer === null ||

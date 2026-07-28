@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { Database } from "bun:sqlite";
 import { defineAgent, webTransport } from "@/index";
 import { budgets } from "@/augments/budgets";
-import type { Augment, PeerIdentity, TurnTrigger, TurnGateTicket } from "@/types";
+import type { PeerIdentity, TurnTrigger } from "@/types";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createTempDir } from "@tests/fixtures/temp-dir";
 
@@ -60,27 +60,6 @@ function creatorPeer(): PeerIdentity {
     kind: "human",
     trustLevel: "creator",
     sourceAugment: "test",
-  };
-}
-
-// ──────────────────────────────────────────────────────────────────────────────
-// Fake turn-gate for Test 5 (confirm always throws)
-// ──────────────────────────────────────────────────────────────────────────────
-
-function failingConfirmGate(): Augment {
-  return {
-    name: "fail-confirm-gate",
-    turnGate: {
-      async prepare(_args): Promise<TurnGateTicket> {
-        return {
-          decision: { allow: true },
-          confirm: async () => {
-            throw new Error("simulated confirm failure");
-          },
-          rollback: async () => {},
-        };
-      },
-    },
   };
 }
 
@@ -328,77 +307,10 @@ describe("budgets + trust integration", () => {
     }
   }, 30000);
 
-  // ── Test 5: Confirm-phase failure → admission-state-failed ────────────────
+  // ── Test 5: Cost commit happens on success ────────────────────────────────
 
-  it("Test 5: confirm-phase failure rolls back all tickets and returns admission-state-failed", async () => {
+  it("Test 5: cost commit updates peer_daily_costs after a successful priced turn", async () => {
     const dbPath = join(tmp.path, "t5.db");
-    const model = createMockModel({ response: "ok" });
-    const port = 0;
-
-    const agent = defineAgent(
-      {
-        name: "test-agent",
-        purpose: "test",
-        model: "mock",
-        augments: [
-          // budgets augment is FIRST: prepare/confirm runs before failingConfirmGate
-          budgets({
-            dbPath,
-            caps: { public: { recognized: { maxTurnsPerThread: 10 } } },
-          }),
-          // failingConfirmGate is SECOND: confirm throws, triggering rollback of ALL tickets
-          failingConfirmGate(),
-          webTransport({
-            port,
-            auth: { type: "bearer", token: "test-token" },
-          }),
-        ],
-      },
-      model,
-    );
-
-    await agent.start();
-    try {
-      const peer = recognizedPeer("vis-test5");
-      const threadId = "thread-t5";
-
-      const result = await agent.inject(makeTrigger({ peer, threadId }));
-
-      // Kernel must report admission-state-failed
-      expect(result.success).toBe(false);
-      expect(result.status).toBe("rejected");
-      expect(result.errorClass).toBe("admission-state-failed");
-
-      // Model was never called — inference must not have occurred
-      expect(model.calls.length).toBe(0);
-
-      // Note on rollback semantics: the budgets augment confirms FIRST (it appears
-      // before failingConfirmGate in the augments list), so its SQLite COMMIT runs
-      // before the failing gate throws. Once a SQLite transaction is committed it
-      // cannot be rolled back — the rollback call on the already-done ticket is a
-      // no-op by design. What matters is that (a) the kernel returns the correct
-      // errorClass and (b) no engine call was made. Both are verified above.
-      // There is no peer_daily_costs row because commit() (post-response cost write)
-      // is never reached for a rejected turn.
-      const db = new Database(dbPath, { readonly: true });
-      const today = new Date().toISOString().slice(0, 10);
-      const costRow = db
-        .prepare<{ n: number }, [string, string]>(
-          "SELECT COUNT(*) AS n FROM peer_daily_costs WHERE peer_id = ? AND day = ?",
-        )
-        .get(peer.id, today);
-      db.close();
-      // No cost commit was performed (no engine call → no runCostCommit)
-      expect(costRow?.n ?? 0).toBe(0);
-    } finally {
-      await agent.stop();
-    }
-  }, 30000);
-
-  // ── Test 6: Cost commit happens on success ────────────────────────────────
-
-  it("Test 6: cost commit updates peer_daily_costs after a successful priced turn", async () => {
-    const dbPath = join(tmp.path, "t6.db");
     const model = createMockModel();
     const knownCostUsd = 0.0045;
 
@@ -434,8 +346,8 @@ describe("budgets + trust integration", () => {
 
     await agent.start();
     try {
-      const peer = recognizedPeer("vis-test6");
-      const threadId = "thread-t6";
+      const peer = recognizedPeer("vis-test5");
+      const threadId = "thread-t5";
 
       const result = await agent.inject(makeTrigger({ peer, threadId }));
       expect(result.success).toBe(true);
@@ -458,10 +370,10 @@ describe("budgets + trust integration", () => {
     }
   }, 30000);
 
-  // ── Test 8: Budget preamble block injected into context ──────────────────
+  // ── Test 6: Budget preamble block injected into context ──────────────────
 
-  it("Test 8: recognized peer with caps gets a budget preamble block in the model's contextBlocks", async () => {
-    const dbPath = join(tmp.path, "t8.db");
+  it("Test 6: recognized peer with caps gets a budget preamble block in the model's contextBlocks", async () => {
+    const dbPath = join(tmp.path, "t6.db");
     const model = createMockModel({ response: "ok" });
     const port = 0;
 
@@ -486,8 +398,8 @@ describe("budgets + trust integration", () => {
 
     await agent.start();
     try {
-      const peer = recognizedPeer("vis-test8");
-      const threadId = "thread-t8";
+      const peer = recognizedPeer("vis-test6");
+      const threadId = "thread-t6";
 
       const result = await agent.inject(makeTrigger({ peer, threadId }));
       expect(result.success).toBe(true);

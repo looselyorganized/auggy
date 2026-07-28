@@ -644,7 +644,7 @@ no events for turns that do not run. The `code` field on `RUN_ERROR` is:
 
 **HTTP status remains 200** for the SSE stream in v0. The gate decision is
 embedded in the stream rather than in the HTTP status because the Response
-must be opened before the kernel's admission or 2PC result is known (the
+must be opened before the kernel's admission result is known (the
 stream starts synchronously; the turn runs inside the async IIFE). A future
 synchronous reservation API would allow the transport to return 429 or 503
 before opening the stream.

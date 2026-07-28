@@ -385,9 +385,12 @@ releasing its lane.
 
 Optional for backward compatibility; older rejection sites may omit it.
 
-## Section 7b — Turn gate (admission 2PC)
+## Section 7b — Transactional turn gate
 
-The turn-gate contract gives augments a structured way to admit or reject a turn **before** the engine is called, with full atomicity guarantees.
+The turn-gate contract gives one augment a structured way to admit or reject a
+turn **before** the engine is called. At most one augment per agent may declare
+`turnGate`, so atomicity is scoped to that owner's storage transaction rather
+than claimed across independent augments.
 
 ```ts
 export interface TurnGateProvider {
@@ -413,15 +416,15 @@ export interface TurnGateTicket {
 }
 ```
 
-**The 2PC contract:**
+**The transactional contract:**
 
 1. `prepare(args)` — the gate opens a transaction, evaluates caps against current state, stages reservation rows inside the transaction, and returns a ticket. The ticket carries the decision and owns the open transaction.
-2. The kernel evaluates all decisions conjunctively. Any `allow: false` → rollback all tickets → reject with `errorClass: "cap-denied"`. No engine call.
-3. All `allow: true` → `confirm()` each ticket in order. Any confirm throw → rollback all → reject with `errorClass: "admission-state-failed"`. No engine call.
+2. `allow: false` → rollback the ticket → reject with `errorClass: "cap-denied"`. No engine call.
+3. `allow: true` → `confirm()` the ticket. A confirm error triggers rollback and rejection with `errorClass: "admission-state-failed"`. No engine call.
 4. Engine call proceeds.
-5. After the engine returns, `commit(args)` is called on each gate that defines it, passing the `CostResult`. A commit error makes the completed inference outcome-unknown; the kernel withholds a successful terminal result and does not automatically retry it.
+5. After the engine returns, `commit(args)` is called when the gate defines it, passing the `CostResult`. A commit error makes the completed inference outcome-unknown; the kernel withholds a successful terminal result and does not automatically retry it.
 
-**v0 scope:** first-party only. The budgets augment is the sole shipped implementation. The kernel cannot mechanically prevent third-party augments from violating the prepare-then-confirm contract (e.g. writing outside the transaction). Third-party turn-gate augments are out of scope until the contract has real-world miles.
+**v0 scope:** first-party only and exactly one owner per agent. The budgets augment is the sole shipped implementation. The kernel cannot mechanically prevent third-party augments from violating the prepare-then-confirm contract (e.g. writing outside the transaction). Third-party turn-gate augments are out of scope until the contract has real-world miles.
 
 ## Section 7c — CostResult discriminated union
 
@@ -707,15 +710,23 @@ boundary.
 - `toolTimeoutMs` — wraps each `execute()` in `withTimeout` (default 30000ms) and passes the combined signal in `ToolExecuteContext.signal`
 - `perTrustLevel` — per-trust-level additive constraints (Layer 1). Keyed by `TrustLevel` (`creator` / `agent` / `public`), each level can specify its own `neverExpose` and `requiresHumanApproval` lists. These apply only to peers at that level; top-level `neverExpose` still applies to everyone (no escape). Null peer (internal/scheduled triggers) is treated as `creator`. Example: `perTrustLevel: { public: { neverExpose: ["fs_remove"] } }` hides `fs_remove` from public peers but keeps it visible to agent and creator.
 
-**`turnGate`** is an optional `TurnGateProvider`. Augments that set this field participate in the kernel's pre-dispatch admission 2PC. The kernel calls `prepare` before running any augment context or the engine; the gate can deny the turn or commit a reservation. See Section 7b for the full contract. v0: only the built-in budgets augment ships a turn gate.
+**`turnGate`** is an optional `TurnGateProvider`. At most one augment per agent
+may set this field. The kernel calls `prepare` before running any augment
+context or the engine; the gate can deny the turn or commit a reservation. See
+Section 7b for the full contract. v0: only the built-in budgets augment ships a
+turn gate.
 
 **Lifecycle hooks:**
 - `onBoot` — called once at `agent.start()`. Failures throw and abort startup.
 - `onShutdown` — called once at `agent.stop()`, in reverse order, with a 5s timeout signal. Failures swallowed.
 - `onTurnStart` — called at the beginning of every turn, before context assembly. Failures on required augments abort the turn.
-- `onTurnEnd` — called after every turn with the caller signal. Hooks run sequentially; failures are logged and swallowed.
-- `scheduleAfterTurn` — called sequentially after `onTurnEnd`; its owned causal
-  injections and descendants complete inside the current keyed lane.
+- `onTurnEnd` — called after every completed turn with the caller signal,
+  including when outbound delivery throws. Hooks run sequentially; failures
+  are logged and swallowed.
+- `scheduleAfterTurn` — called sequentially after `onTurnEnd`, including after
+  an outbound delivery error; its owned causal injections and descendants
+  complete inside the current keyed lane. The saved delivery error is rethrown
+  after terminal hooks settle.
 - `onIdle` — called by the lifecycle manager's idle timer (5min default). Used by augments that do background work like consolidation.
 
 ## Section 15 — Agent config and handle

@@ -4,7 +4,10 @@
 
 ## 1. Overview
 
-The `budgets` augment enforces admission caps on inbound turns before the engine runs. It is the sole built-in implementation of the `TurnGateProvider` 2PC contract (see [03-types.md § Section 7b](./03-types.md#section-7b--turn-gate-admission-2pc)).
+The `budgets` augment enforces admission caps on inbound turns before the
+engine runs. It is the sole built-in implementation of the transactional
+`TurnGateProvider` contract (see
+[03-types.md § Section 7b](./03-types.md#section-7b--transactional-turn-gate)).
 
 `budgets` remains preview in the pre-1.0 line. Treat it as **runtime spend guardrails**,
 not billing control. It can reject future turns after settled usage crosses a
@@ -136,7 +139,7 @@ The augment uses `PeerIdentity.trustLevel` and `PeerIdentity.publicSubstate` to 
 
 If no caps are configured for a tier, that tier is uncapped — the store still records the turn (so future caps can be applied retroactively) but no admission check fires.
 
-## 5. 2PC dispatch flow
+## 5. Transactional dispatch flow
 
 Every non-creator turn goes through five phases:
 
@@ -343,7 +346,7 @@ See [ROADMAP.md](../../docs/ROADMAP.md) for the authoritative list.
 
 ## Cross-references
 
-- [03-types.md § Section 7b](./03-types.md#section-7b--turn-gate-admission-2pc) — `TurnGateProvider` and `TurnGateTicket` interfaces
-- [04-kernel.md § Phase 0b](./04-kernel.md#phase-0b--turn-gate-admission-2pc) — how the kernel calls prepare/confirm/commit
+- [03-types.md § Section 7b](./03-types.md#section-7b--transactional-turn-gate) — `TurnGateProvider` and `TurnGateTicket` interfaces
+- [04-kernel.md § Phase 0b](./04-kernel.md#phase-0b--transactional-turn-gate-admission) — how the kernel calls prepare/confirm/commit
 - [06-transports.md § Rejection mapping](./06-transports.md#rejection-mapping--error-codes-in-sse) — SSE error codes for cap-denied and admission-state-failed
 - [07-built-in-augments.md § budgets](./07-built-in-augments.md#budgets--per-trust-level-turn-budgets) — quick summary with config table

@@ -1044,6 +1044,25 @@ function parseConsoleRunMetadata(
  * opening the stream.
  */
 export function webTransport(opts: WebTransportOptions): Augment {
+  for (const field of ["allowAnonymous", "adminRoute", "publicIntegration"] as const) {
+    if (opts[field] !== undefined && typeof opts[field] !== "boolean") {
+      throw new TypeError(`[web-transport] ${field} must be a boolean when configured.`);
+    }
+  }
+  if (
+    opts.visitorTokens !== undefined &&
+    (opts.visitorTokens === null ||
+      typeof opts.visitorTokens !== "object" ||
+      Array.isArray(opts.visitorTokens))
+  ) {
+    throw new TypeError("[web-transport] visitorTokens must be an object when configured.");
+  }
+  if (
+    opts.visitorTokens?.enabled !== undefined &&
+    typeof opts.visitorTokens.enabled !== "boolean"
+  ) {
+    throw new TypeError("[web-transport] visitorTokens.enabled must be a boolean when configured.");
+  }
   const overrideDir = opts.overrideDir ?? opts.agentDir;
   const configuredExternalAuthHeader =
     typeof opts.externalAuth?.header === "string" ? opts.externalAuth.header : undefined;
@@ -1798,10 +1817,6 @@ export function webTransport(opts: WebTransportOptions): Augment {
       augmentRoutes = k.getAugmentRoutes();
       augmentRouteMap = new Map();
       const patternRoutes: import("../types").AugmentHttpRoute[] = [];
-
-      if (opts.publicIntegration !== undefined && typeof opts.publicIntegration !== "boolean") {
-        throw new Error("[web-transport] publicIntegration must be a boolean when configured");
-      }
 
       // G36 — apply admin-overrides on top of yaml/env/default.
       // The override file is read once at boot; the closure values are the

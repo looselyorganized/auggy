@@ -1274,7 +1274,10 @@ const budget = budgets({
 
 ### What it does
 
-The budgets augment is a turn-gate (see [03-types.md § Section 7b](./03-types.md#section-7b--turn-gate-admission-2pc)) that enforces per-trust-level turn budgets using a SQLite store. It runs a full 2PC cycle on every turn: reserve on prepare, commit on confirm, debit on cost-commit.
+The budgets augment is the agent's sole transactional turn gate (see
+[03-types.md § Section 7b](./03-types.md#section-7b--transactional-turn-gate)).
+It enforces per-trust-level turn budgets using a SQLite store: reserve on
+prepare, persist on confirm, and debit on cost commit.
 
 `budgets` remains preview in the pre-1.0 line. It is runtime spend guardrails, not billing
 control. USD caps are post-hoc soft caps, so a turn can overshoot the configured
@@ -1326,12 +1329,12 @@ SQLite-backed budgets are single-process and single-replica. The store has no
 built-in retention or purge policy yet; reservation and anonymous-request rows
 accumulate until the operator removes or archives them.
 
-### 2PC semantics
+### Transactional semantics
 
 On every non-creator turn:
 
 1. **Prepare** — the store opens a SQLite transaction, reads current usage, evaluates all active caps, stages a `turn_reservations` row (and optionally an `anonymous_requests` row), returns a ticket.
-2. **Decision** — if any cap is exceeded, `decision: { allow: false, reason }`. Kernel rolls back all tickets, rejects with `errorClass: "cap-denied"`.
+2. **Decision** — if any cap is exceeded, `decision: { allow: false, reason }`. Kernel rolls back the ticket and rejects with `errorClass: "cap-denied"`.
 3. **Confirm** — kernel calls `ticket.confirm()`, which commits the staged rows.
 4. **Context** — `budgets.context()` runs (after confirm, so the current turn is already counted). It reads peer usage and emits a BATS preamble block.
 5. **Engine call** — normal turn execution.

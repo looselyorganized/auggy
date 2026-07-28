@@ -26,6 +26,32 @@ describe("defineAgent", () => {
     await agent.stop();
   });
 
+  it("rejects multiple turn-gate owners during agent construction", () => {
+    const gate = (name: string): Augment => ({
+      name,
+      turnGate: {
+        async prepare() {
+          return {
+            decision: { allow: true as const },
+            confirm: async () => {},
+            rollback: async () => {},
+          };
+        },
+      },
+    });
+
+    expect(() =>
+      defineAgent(
+        {
+          name: "ambiguous-gate-agent",
+          model: "mock",
+          augments: [gate("gate-a"), gate("gate-b")],
+        },
+        createMockModel(),
+      ),
+    ).toThrow("Only one augment may declare turnGate; found: gate-a, gate-b");
+  });
+
   it("fails closed before booting or registering transports when distributed coordination is declared", async () => {
     let booted = false;
     let registered = false;
@@ -675,6 +701,70 @@ describe("defineAgent", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(turnEndCalled).toBe(true);
 
+    await agent.stop();
+  });
+
+  it("runs terminal hooks before propagating outbound delivery failures", async () => {
+    const calls: string[] = [];
+    const deliveryError = new Error("outbound delivery failed");
+    let kernel: TransportKernel | undefined;
+    const transport: Augment = {
+      name: "failing-transport",
+      transport: {
+        identify: () => null,
+        async register(registeredKernel) {
+          kernel = registeredKernel;
+          registeredKernel.onOutbound(async () => {
+            calls.push("delivery");
+            throw deliveryError;
+          });
+        },
+      },
+    };
+    const lifecycle: Augment = {
+      name: "terminal-hooks",
+      async onTurnEnd() {
+        calls.push("onTurnEnd");
+      },
+      async scheduleAfterTurn() {
+        calls.push("scheduleAfterTurn");
+      },
+    };
+    const agent = defineAgent(
+      {
+        name: "delivery-failure-agent",
+        model: "mock",
+        augments: [transport, lifecycle],
+      },
+      createMockModel({ response: "Hello" }),
+    );
+    const peer = {
+      id: "tester",
+      kind: "human" as const,
+      trustLevel: "creator" as const,
+      sourceAugment: "failing-transport",
+    };
+
+    await agent.start();
+    expect(kernel).toBeDefined();
+    const caught = await kernel!
+      .handleInbound({
+        type: "message",
+        turnId: "delivery-failure",
+        timestamp: Date.now(),
+        source: "failing-transport",
+        peer,
+        payload: {
+          parts: [{ kind: "text", text: "Test" }],
+          sourceAugment: "failing-transport",
+          peer,
+          timestamp: Date.now(),
+        },
+      })
+      .catch((error) => error);
+
+    expect(caught).toBe(deliveryError);
+    expect(calls).toEqual(["delivery", "onTurnEnd", "scheduleAfterTurn"]);
     await agent.stop();
   });
 
