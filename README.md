@@ -11,12 +11,11 @@
   <img src="https://img.shields.io/badge/language-TypeScript-3178C6?logo=typescript" alt="TypeScript" />
 </p>
 
-**Give agents business capabilities—not backend access.**
+**Turn business operations into agent-ready capabilities.**
 
-Auggy runs business operations through TypeScript augments—controlled,
-predictable interfaces to your systems. An application-specific augment can
-keep identity and authorization rules, typed schemas, tools, routes, and domain
-logic together.
+Auggy replaces one-off integration glue with TypeScript augments—controlled,
+predictable interfaces that bundle identity, authorization, schemas, tools,
+routes, and domain logic.
 
 Underneath, a small Bun/TypeScript runtime runs agent turns. Augments also add
 memory, transports, context, skills, lifecycle behavior, and operator controls

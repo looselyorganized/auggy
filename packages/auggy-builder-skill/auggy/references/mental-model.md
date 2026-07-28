@@ -1,12 +1,10 @@
 # Auggy Mental Model
 
-**Give agents business capabilities—not backend access.**
+**Turn business operations into agent-ready capabilities.**
 
-Auggy is a self-hosted agent for business operations. It runs those operations
-through TypeScript augments—controlled, predictable interfaces to application
-systems. Application-specific augments can keep identity and authorization
-rules, typed schemas, tools, routes, and domain logic together while the
-application remains the system of record.
+Auggy replaces one-off integration glue with TypeScript augments—controlled,
+predictable interfaces that bundle identity, authorization, schemas, tools,
+routes, and domain logic. The application remains the system of record.
 
 The core product idea:
 
