@@ -17,6 +17,7 @@ import type { AdminOverrides } from "../../src/lib/admin-overrides";
 import { createVisitorToken, deriveSigningKey } from "../../src/transports/visitor-token";
 import { generateCsrfToken } from "../../src/transports/admin/admin-csrf";
 import { createSqliteVisitorAuthStore } from "../../src/augments/visitorAuth/storage/sqlite-store";
+import { declaredDistributedLayeredMemoryPolicy } from "../../src/augments/layeredMemory/distributed-runtime";
 import { defineAgent } from "../../src/agent";
 import { createMockModel } from "../fixtures/mock-model";
 import type { AgentHandle } from "../../src/types";
@@ -529,6 +530,45 @@ describe("resolveAugments — layeredMemory", () => {
     expect(augments[0]!.memory?.owns).toEqual({ kind: "namespace", prefix: "test:" });
     expect(augments[0]!.scheduleAfterTurn).toBeUndefined();
     expect(augments[0]!.handleInternalTurn).toBeUndefined();
+  });
+
+  test("forwards a valid distributed policy into the factory declaration", async () => {
+    const distributedPolicy = {
+      id: "episodic",
+      namespacePrefix: "test:",
+      maxEntries: 100,
+      maxEntriesPerPeer: 20,
+      maxBytes: 1_048_576,
+      maxBytesPerPeer: 262_144,
+      maxEntryBytes: 8_192,
+      maxQueryBytes: 1_024,
+      maxResultBytes: 16_384,
+      maxResults: 10,
+      maxMutationsPerTurn: 10,
+      maxOperations: 100,
+      maxTombstones: 100,
+      operationRetentionMs: 86_400_000,
+      entryRetentionMs: 86_400_000,
+    };
+    const [augment] = await resolveAugments(
+      [
+        {
+          name: "memory",
+          type: "layeredMemory",
+          options: {
+            backend: "coordinator",
+            namespace: "test",
+            distributedPolicy,
+          },
+        },
+      ],
+      TMP,
+    );
+    try {
+      expect(declaredDistributedLayeredMemoryPolicy(augment!)).toEqual(distributedPolicy);
+    } finally {
+      await augment!.onShutdown?.();
+    }
   });
 
   test("binds the configured namespace to the immutable agent id", async () => {

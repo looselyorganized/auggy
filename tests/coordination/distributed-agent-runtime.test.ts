@@ -12,7 +12,10 @@ import {
   createInMemoryDistributedTurnCoordinator,
   resetInMemoryDistributedCoordination,
 } from "../../src/coordination";
-import { decodeDistributedReplay } from "../../src/coordination/agent-turn-state";
+import {
+  decodeDistributedOutboxBody,
+  decodeDistributedReplay,
+} from "../../src/coordination/agent-turn-state";
 import type { DistributedTurnCoordinator } from "../../src/coordination/types";
 import {
   attachDistributedRuntimeForTest,
@@ -28,6 +31,7 @@ import type {
   TurnResult,
   TurnTrigger,
   DistributedBudgetPolicyV1,
+  DistributedMemoryPolicyV1,
 } from "../../src/types";
 import { createMockModel } from "../fixtures/mock-model";
 import { createTempDir } from "../fixtures/temp-dir";
@@ -50,6 +54,23 @@ const distributedTestBudgetPolicy: DistributedBudgetPolicyV1 = {
   maxThresholdIntents: 0,
   aggregateRetentionDays: 7,
 };
+const distributedTestMemoryPolicy: DistributedMemoryPolicyV1 = {
+  id: "episodic",
+  namespacePrefix: "ep:",
+  maxEntries: 100,
+  maxEntriesPerPeer: 20,
+  maxBytes: 1_048_576,
+  maxBytesPerPeer: 262_144,
+  maxEntryBytes: 8_192,
+  maxQueryBytes: 1_024,
+  maxResultBytes: 16_384,
+  maxResults: 10,
+  maxMutationsPerTurn: 10,
+  maxOperations: 100,
+  maxTombstones: 100,
+  operationRetentionMs: 86_400_000,
+  entryRetentionMs: 86_400_000,
+};
 
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
@@ -63,6 +84,7 @@ function coordinator(
   instanceId: string,
   leaseMs = 1_000,
   budgetPolicy?: DistributedBudgetPolicyV1,
+  memoryPolicy?: DistributedMemoryPolicyV1,
 ): DistributedTurnCoordinator {
   return createInMemoryDistributedTurnCoordinator({
     namespace: "distributed-agent",
@@ -82,6 +104,7 @@ function coordinator(
     result: resultPolicy,
     turnState: turnStatePolicy,
     ...(budgetPolicy ? { budgets: { policies: [budgetPolicy] } } : {}),
+    ...(memoryPolicy ? { memory: { policies: [memoryPolicy] } } : {}),
     compatibility: {
       protocolVersion: 5,
       protocolFingerprint: "a".repeat(64),
@@ -146,6 +169,51 @@ const executionContext = {
 afterEach(resetInMemoryDistributedCoordination);
 
 describe("distributed agent runtime wiring", () => {
+  test("unbinds coordinator-backed layered memory when an agent stops", async () => {
+    const dir = await createTempDir();
+    const memory = await layeredMemory({
+      backend: "coordinator",
+      namespace: "ep",
+      distributedPolicy: distributedTestMemoryPolicy,
+    });
+    let first: ReturnType<typeof defineDistributedTestAgent> | undefined;
+    let second: ReturnType<typeof defineDistributedTestAgent> | undefined;
+    try {
+      first = defineDistributedTestAgent(
+        {
+          name: "distributed-memory-first",
+          model: "mock",
+          turnScheduling: { maxConcurrent: 2, maxQueued: 10, maxQueuedPerThread: 10 },
+          augments: [memory],
+        },
+        createMockModel(),
+        adapter(
+          coordinator("distributed-memory-first", 1_000, undefined, distributedTestMemoryPolicy),
+        ),
+      );
+      await first.start();
+      await first.stop();
+
+      second = defineDistributedTestAgent(
+        {
+          name: "distributed-memory-second",
+          model: "mock",
+          turnScheduling: { maxConcurrent: 2, maxQueued: 10, maxQueuedPerThread: 10 },
+          augments: [memory],
+        },
+        createMockModel(),
+        adapter(
+          coordinator("distributed-memory-second", 1_000, undefined, distributedTestMemoryPolicy),
+        ),
+      );
+      await expect(second.start()).resolves.toBeUndefined();
+    } finally {
+      await second?.stop();
+      await first?.stop();
+      await dir.cleanup();
+    }
+  });
+
   test("fails startup before augment boot when identity authority registration conflicts", async () => {
     const owner = coordinator("replica-identity-policy-conflict");
     let bootCalls = 0;
@@ -320,6 +388,29 @@ describe("distributed agent runtime wiring", () => {
         "thread-2",
       ),
     ).toThrow("invalid distributed replay");
+  });
+
+  test("rejects a durable delivery with inconsistent routing authority", () => {
+    const encoded = new TextEncoder().encode(
+      JSON.stringify({
+        version: 1,
+        targetAugment: "telegram-primary",
+        peer: {
+          id: "peer-1",
+          kind: "human",
+          trustLevel: "creator",
+          sourceAugment: "telegram-primary",
+        },
+        message: {
+          targetAugment: "telegram-secondary",
+          parts: [{ kind: "text", text: "must not reroute" }],
+        },
+      }),
+    );
+
+    expect(() => decodeDistributedOutboxBody(encoded)).toThrow(
+      "distributed outbox target is inconsistent",
+    );
   });
 
   test("keeps the incomplete runtime seam outside every published export", async () => {
@@ -604,6 +695,10 @@ describe("distributed agent runtime wiring", () => {
       operationId?: string;
       bindingHash?: string;
     }> = [];
+    let resolveDelivery!: () => void;
+    const deliveryObserved = new Promise<void>((resolve) => {
+      resolveDelivery = resolve;
+    });
     const hookResults: TurnResult[] = [];
     const record = (
       surface: string,
@@ -635,6 +730,7 @@ describe("distributed agent runtime wiring", () => {
         register: async (kernel) => {
           kernel.onOutbound(async (_peer, _message, context) => {
             record("outbound", context);
+            resolveDelivery();
           });
         },
       },
@@ -692,15 +788,28 @@ describe("distributed agent runtime wiring", () => {
       { executionContext },
     );
 
+    let deliveryTimer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      deliveryObserved,
+      new Promise<never>((_, reject) => {
+        deliveryTimer = setTimeout(
+          () => reject(new Error("timed out waiting for outbox delivery")),
+          1_000,
+        );
+      }),
+    ]);
+    if (deliveryTimer !== undefined) clearTimeout(deliveryTimer);
+
     expect(result.success).toBeTrue();
     expect(observed.map((entry) => entry.surface).sort()).toEqual([
       "context",
       "model",
+      "outbound",
       "schedule",
       "turn-end",
       "turn-start",
     ]);
-    for (const entry of observed) {
+    for (const entry of observed.filter((candidate) => candidate.surface !== "outbound")) {
       expect(entry.authority).toEqual({ version: 1, attempt: 1, fence: 1 });
       expect(entry.operationId).toMatch(/^auggy-op-v1-[a-f0-9]{64}$/);
     }
@@ -712,6 +821,13 @@ describe("distributed agent runtime wiring", () => {
     expect(committedCheckpoint?.outboxIntents[0]?.operationId).toMatch(
       /^auggy-op-v1-[a-f0-9]{64}$/,
     );
+    expect(committedCheckpoint?.outboxIntents[0]).toMatchObject({
+      retryMode: "never",
+      maxAttempts: 1,
+    });
+    expect(observed.find((entry) => entry.surface === "outbound")).toMatchObject({
+      operationId: committedCheckpoint?.outboxIntents[0]?.operationId,
+    });
     expect(committedCheckpoint?.costMarkers[0]?.operationId).not.toBe(
       committedCheckpoint?.outboxIntents[0]?.operationId,
     );
@@ -730,7 +846,156 @@ describe("distributed agent runtime wiring", () => {
     await agent.stop();
   });
 
-  test("blocks layered-memory auto-save before unfenced extraction or persistence", async () => {
+  test("cancels a non-cooperative delivery and quarantines its effect on shutdown", async () => {
+    const owner = coordinator("outbox-shutdown-owner", 1_000, distributedTestBudgetPolicy);
+    const deliveryStarted = deferred<{
+      signal?: AbortSignal;
+      operationId?: string;
+    }>();
+    const deliverySettled = deferred<{
+      lease: Parameters<DistributedTurnCoordinator["settleOutbox"]>[0];
+      settlement: Parameters<DistributedTurnCoordinator["settleOutbox"]>[1];
+    }>();
+    const coordinatedOwner = new Proxy(owner, {
+      get(target, property, receiver) {
+        if (property === "settleOutbox") {
+          return async (
+            lease: Parameters<DistributedTurnCoordinator["settleOutbox"]>[0],
+            settlement: Parameters<DistributedTurnCoordinator["settleOutbox"]>[1],
+          ) => {
+            const result = await target.settleOutbox(lease, settlement);
+            deliverySettled.resolve({ lease, settlement });
+            return result;
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as DistributedTurnCoordinator;
+    const never = new Promise<never>(() => {});
+    const deliveryAugment: Augment = {
+      name: "trusted-test",
+      transport: {
+        identify: () => null,
+        register: async (kernel) => {
+          kernel.onOutbound(async (_peer, _message, context) => {
+            deliveryStarted.resolve({
+              signal: context?.signal,
+              operationId: context?.operationId,
+            });
+            await never;
+          });
+        },
+      },
+      turnGate: {
+        prepare: async () => ({
+          decision: { allow: true },
+          confirm: async () => {},
+          rollback: async () => {},
+        }),
+      },
+    };
+    registerCoordinatorBudgetTurnGate(deliveryAugment.turnGate!, distributedTestBudgetPolicy);
+    const agent = defineDistributedTestAgent(
+      {
+        name: "outbox-shutdown-agent",
+        model: "mock",
+        turnScheduling: { maxConcurrent: 2, maxQueued: 10, maxQueuedPerThread: 10 },
+        augments: [deliveryAugment],
+      },
+      createMockModel({ response: "committed before delivery" }),
+      adapter(coordinatedOwner),
+    );
+    await agent.start();
+    const result = await agent.inject(
+      {
+        ...trigger(),
+        peer: {
+          id: "peer-outbox-shutdown",
+          kind: "human",
+          trustLevel: "creator",
+          sourceAugment: "trusted-test",
+        },
+      },
+      { executionContext },
+    );
+    expect(result.success).toBeTrue();
+    const started = await deliveryStarted.promise;
+
+    await agent.stop();
+    const settled = await deliverySettled.promise;
+
+    expect(started.signal?.aborted).toBeTrue();
+    expect(started.operationId).toBe(settled.lease.operationId);
+    expect(settled.settlement).toEqual({
+      outcome: "outcome-unknown",
+      reasonCode: "delivery-result-unknown",
+    });
+  });
+
+  test("rejects an unsafe outbound retry declaration during startup", async () => {
+    const owner = coordinator("invalid-outbox-policy-owner");
+    const agent = defineDistributedTestAgent(
+      {
+        name: "invalid-outbox-policy-agent",
+        model: "mock",
+        augments: [
+          {
+            name: "invalid-delivery-policy",
+            transport: {
+              identify: () => null,
+              register: async (kernel) => {
+                kernel.onOutbound(async () => {}, { retryMode: "never", maxAttempts: 2 });
+              },
+            },
+          },
+        ],
+      },
+      createMockModel(),
+      adapter(owner),
+    );
+
+    await expect(agent.start()).rejects.toThrow(
+      'Augment "invalid-delivery-policy" registered an invalid delivery policy',
+    );
+  });
+
+  test("bounds shutdown when a coordinator outbox claim does not return", async () => {
+    const owner = coordinator("hung-outbox-claim-owner");
+    const claimStarted = deferred();
+    const never = new Promise<never>(() => {});
+    const coordinatedOwner = new Proxy(owner, {
+      get(target, property, receiver) {
+        if (property === "claimOutbox") {
+          return async () => {
+            claimStarted.resolve();
+            return never;
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as DistributedTurnCoordinator;
+    const agent = defineDistributedTestAgent(
+      {
+        name: "hung-outbox-claim-agent",
+        model: "mock",
+        turnScheduling: { maxConcurrent: 2, maxQueued: 10, maxQueuedPerThread: 10 },
+        augments: [],
+      },
+      createMockModel(),
+      adapter(coordinatedOwner),
+    );
+    await agent.start();
+    await claimStarted.promise;
+
+    const startedAt = Date.now();
+    await agent.stop();
+
+    expect(Date.now() - startedAt).toBeLessThan(500);
+  });
+
+  test("rejects process-local layered memory before distributed startup", async () => {
     const dir = await createTempDir();
     let extractionOptions: ExtractionCompleteOptions | undefined;
     const memory = await layeredMemory({
@@ -752,33 +1017,133 @@ describe("distributed agent runtime wiring", () => {
         },
       },
     });
+    try {
+      expect(() =>
+        defineDistributedTestAgent(
+          {
+            name: "distributed-memory-agent",
+            model: "mock",
+            turnScheduling: { maxConcurrent: 2, maxQueued: 10, maxQueuedPerThread: 10 },
+            augments: [memory],
+          },
+          createMockModel({ response: "Hello Sam" }),
+          adapter(coordinator("memory-owner")),
+        ),
+      ).toThrow(
+        'distributed memory provider "layered-memory-distributed" has no coordinator-owned policy',
+      );
+      expect(extractionOptions).toBeUndefined();
+    } finally {
+      await memory.onShutdown?.();
+      await dir.cleanup();
+    }
+  });
+
+  test("stages peer memory through the fenced coordinator and never falls back to local storage", async () => {
+    const dir = await createTempDir();
+    const owner = coordinator(
+      "distributed-layered-memory",
+      1_000,
+      undefined,
+      distributedTestMemoryPolicy,
+    );
+    let searchCalls = 0;
+    const wrapped = new Proxy(owner, {
+      get(target, property, receiver) {
+        if (property === "searchMemory") {
+          return (...args: Parameters<DistributedTurnCoordinator["searchMemory"]>) => {
+            searchCalls += 1;
+            return target.searchMemory(...args);
+          };
+        }
+        const value = Reflect.get(target, property, receiver);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    }) as DistributedTurnCoordinator;
+    const memory = await layeredMemory({
+      backend: "coordinator",
+      namespace: "ep",
+      distributedPolicy: distributedTestMemoryPolicy,
+    });
+    const model = createMockModel();
+    model.pushResponse({
+      toolCalls: [
+        { name: "memory_write", arguments: { topic: "profile", content: "prefers tea" } },
+      ],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "saved" });
+    model.pushResponse({
+      toolCalls: [{ name: "memory_search", arguments: { query: "tea" } }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "found" });
     const agent = defineDistributedTestAgent(
       {
-        name: "distributed-memory-agent",
+        name: "distributed-layered-memory-agent",
         model: "mock",
         turnScheduling: { maxConcurrent: 2, maxQueued: 10, maxQueuedPerThread: 10 },
         augments: [memory],
       },
-      createMockModel({ response: "Hello Sam" }),
-      adapter(coordinator("memory-owner")),
+      model,
+      adapter(wrapped),
     );
+    const peer = {
+      id: "peer-memory",
+      kind: "agent" as const,
+      trustLevel: "agent" as const,
+      sourceAugment: "trusted-test",
+    };
+
     try {
       await agent.start();
-      const peer = {
-        id: "peer-sam",
-        kind: "agent" as const,
-        trustLevel: "agent" as const,
-        sourceAugment: "trusted-test",
-      };
-      const result = await agent.inject({ ...trigger(), peer }, { executionContext });
+      const written = await agent.inject({ ...trigger(), peer }, { executionContext });
+      expect(written.success).toBeTrue();
+      expect(written.toolCalls[0]?.output).toContain("STAGED:");
 
-      expect(result.success).toBeTrue();
-      expect(extractionOptions).toBeUndefined();
+      const read = await agent.inject(
+        { ...trigger("recall preferences"), turnId: "turn-2", threadId: "thread-2", peer },
+        {
+          executionContext: {
+            ...executionContext,
+            executionId: "execution-2",
+            idempotencyKeyHash: "e".repeat(64),
+          },
+        },
+      );
+      expect(read.success).toBeTrue();
+      // Context synthesis and the tool both use the coordinator. A local
+      // SQLite fallback would leave the staged entry invisible here.
+      expect(searchCalls).toBeGreaterThanOrEqual(3);
+      expect(read.toolCalls[0]?.output).toContain("prefers tea");
+      expect(read.toolCalls[0]?.output).toContain("ep:peer-memory:profile");
+
       const provider = memory.memory;
-      if (!provider || !("search" in provider)) {
-        throw new Error("expected layered-memory namespace provider");
-      }
-      expect(await provider.search("Sam", { peerId: "peer-sam" })).toEqual([]);
+      if (!provider || !("search" in provider)) throw new Error("expected layered-memory provider");
+      await expect(provider.search("tea", { peerId: peer.id })).rejects.toThrow(
+        "distributed layered memory authority is required",
+      );
+      await expect(provider.forget?.(peer.id)).rejects.toThrow(
+        "distributed layered memory authority is required",
+      );
+      await expect(provider.listEntries?.()).rejects.toThrow(
+        "distributed layered memory listing requires coordinator authority",
+      );
+      await expect(memory.adminInfo?.()).rejects.toThrow(
+        "distributed layered memory admin reads require coordinator authority",
+      );
+      await expect(memory.adminActions?.["memory-erase"]?.({ rowKey: peer.id })).resolves.toEqual({
+        ok: false,
+        message: "distributed layered memory admin erase requires a fenced turn",
+      });
+      await expect(
+        provider.write?.("ep:peer-memory:forged", "local fallback", {
+          peerId: peer.id,
+          executionContext: { ...executionContext, executionId: "forged" },
+          executionAuthority: { version: 1, attempt: 1, fence: 1 },
+          operationId: "forged",
+        }),
+      ).rejects.toThrow("distributed layered memory execution is stale");
     } finally {
       await agent.stop();
       await dir.cleanup();

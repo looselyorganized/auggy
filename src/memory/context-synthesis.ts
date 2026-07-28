@@ -50,7 +50,10 @@ export function synthesizeContextFor(aug: Augment): Augment {
       const payload = turn.trigger.payload as InboundMessage;
       const peerId = turn.peer?.id;
 
-      if (peerId && nsSpec.listEntries) {
+      // The coordinator currently exposes canonical query reads, not an
+      // unbounded "recent entries" listing primitive. Do not silently read a
+      // process-local store while this turn has distributed authority.
+      if (peerId && nsSpec.listEntries && !turn.executionAuthority) {
         try {
           const recent = await nsSpec.listEntries({
             peerId,
@@ -65,7 +68,11 @@ export function synthesizeContextFor(aug: Augment): Augment {
       const query = extractText(payload?.parts ?? []);
       if (query) {
         try {
-          const results = await nsSpec.search(query, { peerId });
+          const results = await nsSpec.search(query, {
+            peerId,
+            ...(turn.executionContext ? { executionContext: turn.executionContext } : {}),
+            ...(turn.executionAuthority ? { executionAuthority: turn.executionAuthority } : {}),
+          });
           appendUniqueEntries(entries, results);
         } catch (err) {
           if (isRequired) throw err;

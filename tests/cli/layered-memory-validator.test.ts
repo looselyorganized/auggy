@@ -121,6 +121,35 @@ describe("validateLayeredMemoryOptions", () => {
     expect(() => parseConfig(path)).not.toThrow();
   });
 
+  it("rejects a malformed distributedPolicy before runtime resolution", () => {
+    const path = writeYaml(
+      `${BASE}  - name: memory
+    type: layeredMemory
+    options:
+      backend: sqlite
+      namespace: test
+      dbPath: ./memory.sqlite
+      distributedPolicy:
+        id: episodic
+        namespacePrefix: "test:"
+        maxEntries: 0
+        maxEntriesPerPeer: 20
+        maxBytes: 1048576
+        maxBytesPerPeer: 262144
+        maxEntryBytes: 8192
+        maxQueryBytes: 1024
+        maxResultBytes: 16384
+        maxResults: 10
+        maxMutationsPerTurn: 10
+        maxOperations: 100
+        maxTombstones: 100
+        operationRetentionMs: 86400000
+        entryRetentionMs: 86400000
+`,
+    );
+    expect(() => parseConfig(path)).toThrow(/distributedPolicy/);
+  });
+
   it("rejects autoSave that is not an object", () => {
     const path = writeYaml(
       `${BASE}  - name: memory

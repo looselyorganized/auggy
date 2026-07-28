@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type {
@@ -5,12 +6,17 @@ import type {
   AdminInfoBlock,
   Augment,
   CostResult,
+  DistributedMemoryPolicyV1,
   ExecutionAuthorityV1,
   ExecutionTraceContextV1,
   InternalTurnContext,
   MemoryEntry,
+  MemoryForgetOpts,
+  MemoryForgetResult,
   MemoryQueryOpts,
+  MemoryWriteResult,
   MemoryWriteOpts,
+  PeerIdentity,
   SchedulerContext,
   Transcript,
   TurnResult,
@@ -34,6 +40,14 @@ import type { MemoryStore, StoreEntry } from "./storage/types";
 import { emptyTrace } from "../../kernel/trace-emitter";
 import { deriveNestedOperationId } from "../../kernel/execution-context";
 import { isOutcomeUnknownError } from "../../outcome-unknown";
+import {
+  declareDistributedLayeredMemoryPolicy,
+  distributedLayeredMemoryBinding,
+  type DistributedLayeredMemoryBinding,
+  type DistributedLayeredMemoryExecution,
+} from "./distributed-runtime";
+import { decodeDistributedMemoryDocument } from "../../coordination/memory-policy";
+import type { DistributedMemoryMutationV1 } from "../../coordination/types";
 
 /**
  * Optional auto-save block (PR β / ADR-018 Phase 2). When `enabled` is
@@ -76,7 +90,7 @@ export interface LayeredMemoryAutoSaveOptions {
 }
 
 export interface LayeredMemoryOptions {
-  backend: "sqlite" | "supabase";
+  backend: "sqlite" | "supabase" | "coordinator";
   namespace: string;
   retentionDays?: number;
   // SQLite-specific
@@ -86,6 +100,12 @@ export interface LayeredMemoryOptions {
   table?: string;
   // PR β
   autoSave?: LayeredMemoryAutoSaveOptions;
+  /**
+   * Exact immutable coordinator partition for this namespace. This is only a
+   * declaration: the agent binds it after the coordinator confirms the same
+   * policy at startup. It never carries a database credential.
+   */
+  distributedPolicy?: DistributedMemoryPolicyV1;
 }
 
 /**
@@ -129,6 +149,80 @@ function storeEntryToMemoryEntry(e: StoreEntry): MemoryEntry {
     isVerbatim: e.isVerbatim,
     origin: e.origin,
   };
+}
+
+function memoryDigest(value: string): string {
+  return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function canonicalDistributedMemoryDocument(content: string, maxEntryBytes: number): Uint8Array {
+  const minimumBytes = Buffer.byteLength(JSON.stringify({ version: 1, content: "" }), "utf8");
+  if (Buffer.byteLength(content, "utf8") + minimumBytes > maxEntryBytes) {
+    throw new Error("distributed layered memory content exceeds coordinator bounds");
+  }
+  const encoded = new TextEncoder().encode(JSON.stringify({ version: 1, content }));
+  if (encoded.byteLength > maxEntryBytes) {
+    throw new Error("distributed layered memory content exceeds coordinator bounds");
+  }
+  return encoded;
+}
+
+function canonicalDistributedMemoryQuery(query: string, maxBytes: number): Uint8Array {
+  if (query.length === 0) throw new Error("distributed layered memory search query is empty");
+  const minimumBytes = Buffer.byteLength(JSON.stringify({ version: 1, contains: "" }), "utf8");
+  if (Buffer.byteLength(query, "utf8") + minimumBytes > maxBytes) {
+    throw new Error("distributed layered memory search query exceeds coordinator bounds");
+  }
+  const encoded = new TextEncoder().encode(JSON.stringify({ version: 1, contains: query }));
+  if (encoded.byteLength > maxBytes) {
+    throw new Error("distributed layered memory search query exceeds coordinator bounds");
+  }
+  return encoded;
+}
+
+function distributedEntryId(
+  prefix: string,
+  peerId: string,
+  label: string,
+  operationId: string,
+): string {
+  const peerPrefix = `${prefix}${peerId}`;
+  if (label !== peerPrefix && !label.startsWith(`${peerPrefix}:`)) {
+    throw new Error("distributed layered memory label is not peer-bound");
+  }
+  const suffix = label.slice(peerPrefix.length);
+  const encodedSuffix = Buffer.from(suffix, "utf8").toString("base64url");
+  const operationSuffix = Buffer.from(memoryDigest(operationId), "hex").toString("base64url");
+  const entryId = `mem.${encodedSuffix}.${operationSuffix}`;
+  if (entryId.length > 160) {
+    throw new Error("distributed layered memory label exceeds coordinator bounds");
+  }
+  return entryId;
+}
+
+function distributedEntryLabel(prefix: string, peerId: string, entryId: string): string {
+  const matched = /^mem\.([A-Za-z0-9_-]*)\.[A-Za-z0-9_-]{43}$/.exec(entryId);
+  if (!matched) throw new Error("distributed layered memory entry identity is invalid");
+  let suffix: string;
+  try {
+    suffix = new TextDecoder("utf-8", { fatal: true }).decode(
+      Buffer.from(matched[1]!, "base64url"),
+    );
+  } catch {
+    throw new Error("distributed layered memory entry identity is invalid");
+  }
+  if (
+    Buffer.from(suffix, "utf8").toString("base64url") !== matched[1] ||
+    suffix !== suffix.normalize("NFC") ||
+    [...suffix].some((character) => {
+      const code = character.codePointAt(0)!;
+      return code <= 0x1f || code === 0x7f;
+    }) ||
+    (suffix !== "" && !suffix.startsWith(":"))
+  ) {
+    throw new Error("distributed layered memory entry identity is invalid");
+  }
+  return `${prefix}${peerId}${suffix}`;
 }
 
 /**
@@ -446,9 +540,15 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
   const namespace = canonicalMemoryNamespace(opts.namespace, "layeredMemory");
   const prefix = namespace.prefix;
   const retentionDays = opts.retentionDays ?? 90;
+  let augment!: Augment;
 
-  let store: MemoryStore;
+  let store: MemoryStore | undefined;
   if (opts.backend === "sqlite") {
+    if (opts.distributedPolicy) {
+      throw new Error(
+        "layeredMemory: distributedPolicy requires the coordinator backend; import SQLite only while drained",
+      );
+    }
     if (!opts.dbPath) throw new Error("layeredMemory: sqlite backend requires dbPath");
     store = createSqliteStore({
       dbPath: opts.dbPath,
@@ -456,6 +556,11 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       namespace: namespace.namespace,
     });
   } else if (opts.backend === "supabase") {
+    if (opts.distributedPolicy) {
+      throw new Error(
+        "layeredMemory: generic Supabase is not a fenced distributed memory authority",
+      );
+    }
     if (!opts.client || !opts.table) {
       throw new Error("layeredMemory: supabase backend requires client and table");
     }
@@ -465,11 +570,15 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       retentionDays,
       namespace: namespace.namespace,
     });
+  } else if (opts.backend === "coordinator") {
+    if (!opts.distributedPolicy) {
+      throw new Error("layeredMemory: coordinator backend requires distributedPolicy");
+    }
   } else {
     throw new Error(`layeredMemory: unknown backend "${opts.backend}"`);
   }
 
-  await store.initialize();
+  await store?.initialize();
 
   // Auto-save state (per-augment-instance — process-local). The buffer
   // accumulates session-end-only transcripts; turnIndexes drives the
@@ -507,7 +616,96 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     }
   }
 
+  type PeerBoundDistributedExecution = {
+    binding: DistributedLayeredMemoryBinding;
+    execution: DistributedLayeredMemoryExecution & { peer: PeerIdentity };
+  };
+  type PossiblyPeerlessDistributedExecution = {
+    binding: DistributedLayeredMemoryBinding;
+    execution: DistributedLayeredMemoryExecution;
+  };
+
+  function distributedExecution(
+    options: Pick<MemoryQueryOpts, "peerId" | "executionContext" | "executionAuthority">,
+  ): PeerBoundDistributedExecution | null;
+  function distributedExecution(
+    options: Pick<MemoryQueryOpts, "peerId" | "executionContext" | "executionAuthority">,
+    allowPeerless: true,
+  ): PossiblyPeerlessDistributedExecution | null;
+  function distributedExecution(
+    options: Pick<MemoryQueryOpts, "peerId" | "executionContext" | "executionAuthority">,
+    allowPeerless = false,
+  ): PeerBoundDistributedExecution | PossiblyPeerlessDistributedExecution | null {
+    const binding = distributedLayeredMemoryBinding(augment);
+    if (!binding) return null;
+    if (!options.executionAuthority || !options.executionContext) {
+      throw new Error("distributed layered memory authority is required");
+    }
+    const execution = binding.resolveExecution(
+      options.executionContext,
+      options.executionAuthority,
+    );
+    if (!execution) throw new Error("distributed layered memory execution is stale");
+    if (!execution.peer) {
+      if (!allowPeerless || options.peerId !== undefined) {
+        throw new Error("distributed layered memory peer binding is denied");
+      }
+      return { binding, execution };
+    }
+    if (!options.peerId || options.peerId !== execution.peer.id) {
+      throw new Error("distributed layered memory peer binding is denied");
+    }
+    return { binding, execution: { ...execution, peer: execution.peer } };
+  }
+
   const search = async (query: string, queryOpts?: MemoryQueryOpts): Promise<MemoryEntry[]> => {
+    const distributed = distributedExecution(queryOpts ?? {});
+    if (distributed) {
+      const result = await distributed.binding.coordinator.searchMemory(
+        distributed.execution.lease,
+        {
+          policyId: distributed.binding.policy.id,
+          peerBinding: distributed.execution.peerBinding,
+          query: canonicalDistributedMemoryQuery(query, distributed.binding.policy.maxQueryBytes),
+          limit: distributed.binding.policy.maxResults,
+        },
+      );
+      if (result.status !== "ok") {
+        throw new Error(`distributed layered memory search ${result.status}`);
+      }
+      return result.entries.map((entry) => {
+        const document = decodeDistributedMemoryDocument(entry.body);
+        if (
+          entry.origin !== "operator" &&
+          entry.origin !== "peer-derived" &&
+          entry.origin !== "agent-derived" &&
+          entry.origin !== "agent"
+        ) {
+          throw new Error("distributed layered memory provenance is invalid");
+        }
+        if (
+          !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/.test(entry.sourceTurnId) ||
+          !/^[0-9a-f]{64}$/.test(entry.provenanceHash)
+        ) {
+          throw new Error("distributed layered memory provenance is invalid");
+        }
+        return {
+          label: distributedEntryLabel(prefix, distributed.execution.peer.id, entry.id),
+          content: document.content,
+          peerId: distributed.execution.peer.id,
+          trustLevel: distributed.execution.peer.trustLevel,
+          createdAt: Date.parse(entry.createdAt),
+          metadata: {
+            sourceTurnId: entry.sourceTurnId,
+            provenanceHash: entry.provenanceHash,
+          },
+          retentionClass: "operational" as const,
+          isVerbatim: false,
+          origin: entry.origin,
+        };
+      });
+    }
+    if (!store) throw new Error("distributed layered memory authority is required");
     const results = await store.search(query, queryOpts?.peerId);
     return results.map(storeEntryToMemoryEntry);
   };
@@ -516,7 +714,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     label: string,
     content: string,
     writeOpts?: MemoryWriteOpts,
-  ): Promise<void> => {
+  ): Promise<MemoryWriteResult> => {
     if (!label.startsWith(prefix)) {
       throw new Error(
         `layeredMemory: label "${label}" does not start with namespace prefix "${prefix}"`,
@@ -539,6 +737,38 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       }
     }
 
+    const distributed = distributedExecution(writeOpts ?? {});
+    if (distributed) {
+      if (!writeOpts?.operationId) {
+        throw new Error("distributed layered memory write lacks an operation identity");
+      }
+      if (writeOpts.trustLevel && writeOpts.trustLevel !== distributed.execution.peer.trustLevel) {
+        throw new Error("distributed layered memory trust binding is denied");
+      }
+      const operationId = writeOpts.operationId;
+      const document = canonicalDistributedMemoryDocument(
+        content,
+        distributed.binding.policy.maxEntryBytes,
+      );
+      const mutation: DistributedMemoryMutationV1 = {
+        version: 1,
+        operationId,
+        policyId: distributed.binding.policy.id,
+        sourceTurnId: distributed.execution.lease.requestId,
+        origin: "peer-derived",
+        provenanceHash: memoryDigest(
+          `auggy-layered-memory-write-v1\0${operationId}\0${distributed.execution.peerBinding.bindingHash}`,
+        ),
+        kind: "write",
+        entryId: distributedEntryId(prefix, distributed.execution.peer.id, label, operationId),
+        expectedPeerEraseEpoch: -1,
+        body: document,
+      };
+      await distributed.execution.stageMemoryMutation(mutation);
+      return { status: "staged" };
+    }
+
+    if (!store) throw new Error("distributed layered memory authority is required");
     await store.write({
       label,
       content,
@@ -552,7 +782,30 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     });
   };
 
-  const forget = async (peerId: string): Promise<number> => {
+  const forget = async (
+    peerId: string,
+    forgetOpts?: MemoryForgetOpts,
+  ): Promise<MemoryForgetResult> => {
+    const distributed = distributedExecution(forgetOpts ?? {}, true);
+    if (distributed) {
+      if (!forgetOpts?.operationId) {
+        throw new Error("distributed layered memory forget lacks an operation identity");
+      }
+      await distributed.execution.stageMemoryMutation({
+        version: 1,
+        operationId: forgetOpts.operationId,
+        policyId: distributed.binding.policy.id,
+        sourceTurnId: distributed.execution.lease.requestId,
+        origin: "operator",
+        provenanceHash: memoryDigest(
+          `auggy-layered-memory-forget-v1\0${forgetOpts.operationId}\0${distributed.execution.peerBinding.bindingHash}`,
+        ),
+        kind: "forget",
+        targetPeerId: peerId,
+      });
+      return { status: "staged" };
+    }
+    if (!store) throw new Error("distributed layered memory authority is required");
     return store.forget(peerId);
   };
 
@@ -866,6 +1119,15 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
         errorMessage: "no extraction engine configured",
       });
     }
+    if (!store) {
+      return buildExtractionTurnResult({
+        trigger,
+        status: "rejected",
+        cost: { priced: false, reason: "distributed auto-save storage is not configured" },
+        inferenceDurationMs: 0,
+        errorMessage: "distributed auto-save requires coordinator-owned extraction state",
+      });
+    }
     return runExtractionInsideTurn({
       trigger,
       transcript: trigger.payload.transcript as Transcript,
@@ -894,6 +1156,10 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
   }
 
   async function adminInfo(): Promise<AdminInfoBlock> {
+    if (distributedLayeredMemoryBinding(augment)) {
+      throw new Error("distributed layered memory admin reads require coordinator authority");
+    }
+    if (!store) throw new Error("distributed layered memory authority is required");
     const counts = await store.countByRetentionClass();
     const entries = await store.listEntriesByPeer({ limit: 50 });
     return {
@@ -938,6 +1204,15 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     (params: Record<string, unknown>) => Promise<AdminActionResult>
   > = {
     "memory-erase": async (params) => {
+      if (distributedLayeredMemoryBinding(augment)) {
+        return {
+          ok: false,
+          message: "distributed layered memory admin erase requires a fenced turn",
+        };
+      }
+      if (!store) {
+        return { ok: false, message: "distributed layered memory authority is required" };
+      }
       const rowKey = typeof params.rowKey === "string" ? params.rowKey : "";
       if (!rowKey || rowKey === "(no peer)") {
         return { ok: false, message: "memory-erase requires a rowKey (peer id)" };
@@ -947,7 +1222,7 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
     },
   };
 
-  return {
+  augment = {
     name: `layered-memory-${namespace.namespace}`,
     type: "layeredMemory",
     category: "memory",
@@ -965,6 +1240,10 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       write,
       forget,
       listEntries: async (opts) => {
+        if (distributedLayeredMemoryBinding(augment)) {
+          throw new Error("distributed layered memory listing requires coordinator authority");
+        }
+        if (!store) throw new Error("distributed layered memory authority is required");
         const rows = await store.listEntriesByPeer(opts);
         return rows.map((r) => ({
           label: r.label,
@@ -990,7 +1269,11 @@ export async function layeredMemory(opts: LayeredMemoryOptions): Promise<Augment
       buffer.clear();
       turnIndexes.clear();
       threadPeerHistory.clear();
-      await store.close();
+      await store?.close();
     },
   };
+  if (opts.distributedPolicy) {
+    declareDistributedLayeredMemoryPolicy(augment, opts.distributedPolicy);
+  }
+  return augment;
 }

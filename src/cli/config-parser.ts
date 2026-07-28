@@ -31,6 +31,10 @@ import {
 import { DEFAULT_EXTRACTION_BUFFER_LIMITS } from "../augments/layeredMemory/extractor/buffer";
 import { MAX_PROVIDER_REQUEST_TIMEOUT_MS } from "../engines/_shared/provider-resilience";
 import { parseUtcCron } from "../jobs/cron";
+import {
+  normalizeDistributedMemoryConfig,
+  normalizeDistributedMemoryPolicy,
+} from "../coordination/memory-policy";
 
 // ---------------------------------------------------------------------------
 // .env loading
@@ -897,6 +901,18 @@ function validateLayeredMemoryOptions(
   optionsPrefix: string,
   errors: string[],
 ): void {
+  if (opts.distributedPolicy !== undefined) {
+    try {
+      normalizeDistributedMemoryPolicy(opts.distributedPolicy as never);
+    } catch {
+      errors.push(`${optionsPrefix}.distributedPolicy: must be a bounded immutable memory policy`);
+    }
+    if (opts.backend !== "coordinator") {
+      errors.push(`${optionsPrefix}.distributedPolicy: requires backend "coordinator"`);
+    }
+  } else if (opts.backend === "coordinator") {
+    errors.push(`${optionsPrefix}.distributedPolicy: is required by backend "coordinator"`);
+  }
   if (opts.autoSave === undefined) return;
   if (opts.autoSave === null || typeof opts.autoSave !== "object" || Array.isArray(opts.autoSave)) {
     errors.push(`${optionsPrefix}.autoSave: must be an object`);
@@ -2470,6 +2486,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
         "retention",
         "result",
         "turnState",
+        "memory",
         "urlEnv",
         "leaseDurationMs",
         "heartbeatIntervalMs",
@@ -2660,6 +2677,15 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
           }
         }
       }
+      if (coordination.memory !== undefined) {
+        try {
+          normalizeDistributedMemoryConfig(coordination.memory as never);
+        } catch {
+          errors.push(
+            "settings.coordination.memory: must contain bounded immutable memory policies",
+          );
+        }
+      }
       const urlEnv = coordination.urlEnv ?? DEFAULT_DISTRIBUTED_COORDINATION.urlEnv;
       if (typeof urlEnv !== "string" || !ENV_VAR_NAME_RE.test(urlEnv)) {
         errors.push("settings.coordination.urlEnv: must be a safe environment-variable name");
@@ -2809,6 +2835,9 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
           ).maxPendingIntents as number,
         },
       },
+      ...(coordination.memory === undefined
+        ? {}
+        : { memory: normalizeDistributedMemoryConfig(coordination.memory as never) }),
       urlEnv:
         (coordination.urlEnv as string | undefined) ?? DEFAULT_DISTRIBUTED_COORDINATION.urlEnv,
       leaseDurationMs:

@@ -1,5 +1,10 @@
 import { describe, test, expect } from "bun:test";
-import { parseExtractionResponse } from "@/augments/layeredMemory/extractor/parse";
+import {
+  MAX_EXTRACTED_FACT_FIELD_BYTES,
+  MAX_EXTRACTED_FACTS,
+  MAX_EXTRACTION_RESPONSE_BYTES,
+  parseExtractionResponse,
+} from "@/augments/layeredMemory/extractor/parse";
 
 describe("parseExtractionResponse", () => {
   test("parses valid JSON array of facts", () => {
@@ -128,6 +133,69 @@ describe("parseExtractionResponse", () => {
     const raw = '[{"subject":"peer"';
     const result = parseExtractionResponse(raw);
     expect(result.success).toBe(false);
+  });
+
+  test("rejects an oversized wrapper before searching for JSON", () => {
+    const result = parseExtractionResponse(`${"x".repeat(MAX_EXTRACTION_RESPONSE_BYTES)}[]`);
+    expect(result).toEqual({ success: false, error: "extraction response exceeds byte limit" });
+  });
+
+  test("rejects an unterminated response within the byte limit", () => {
+    const result = parseExtractionResponse(`[${" ".repeat(MAX_EXTRACTION_RESPONSE_BYTES - 2)}`);
+    expect(result.success).toBe(false);
+    if (!result.success) expect(result.error).toContain("no balanced JSON array");
+  });
+
+  test("rejects too many facts", () => {
+    const fact = {
+      subject: "peer",
+      predicate: "name",
+      object: "Sam",
+      confidence: 0.95,
+      isVerbatim: true,
+    };
+    const result = parseExtractionResponse(
+      JSON.stringify(Array.from({ length: MAX_EXTRACTED_FACTS + 1 }, () => fact)),
+    );
+    expect(result).toEqual({ success: false, error: "extraction output exceeds fact limit" });
+  });
+
+  test("rejects a fact field over its UTF-8 byte cap", () => {
+    const raw = JSON.stringify([
+      {
+        subject: "é".repeat(Math.floor(MAX_EXTRACTED_FACT_FIELD_BYTES / 2) + 1),
+        predicate: "name",
+        object: "Sam",
+        confidence: 0.95,
+        isVerbatim: true,
+      },
+    ]);
+    const result = parseExtractionResponse(raw);
+    expect(result).toEqual({ success: false, error: "entry 0 text field exceeds byte limit" });
+  });
+
+  test("rejects total fact text over its byte cap", () => {
+    const fact = {
+      subject: "s".repeat(MAX_EXTRACTED_FACT_FIELD_BYTES),
+      predicate: "p".repeat(MAX_EXTRACTED_FACT_FIELD_BYTES),
+      object: "o".repeat(MAX_EXTRACTED_FACT_FIELD_BYTES),
+      confidence: 0.95,
+      isVerbatim: true,
+    };
+    const result = parseExtractionResponse(JSON.stringify([fact, fact]));
+    expect(result).toEqual({
+      success: false,
+      error: "extraction output exceeds total fact text byte limit",
+    });
+  });
+
+  test("rejects non-finite and out-of-range confidence", () => {
+    for (const confidence of ["1e999", "-0.01", "1.01"]) {
+      const raw = `[{"subject":"peer","predicate":"name","object":"Sam","confidence":${confidence},"isVerbatim":true}]`;
+      const result = parseExtractionResponse(raw);
+      expect(result.success).toBe(false);
+      if (!result.success) expect(result.error).toContain("invalid confidence");
+    }
   });
 
   test("rejects fact missing required fields", () => {

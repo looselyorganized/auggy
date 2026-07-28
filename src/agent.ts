@@ -16,6 +16,7 @@ import type {
   ThreadHistoryPersistence,
   RuntimeOperationalSnapshot,
   ExecutionContextV1,
+  ExecutionTraceContextV1,
   ExecutionAuthorityV1,
   OutboundDeliveryContext,
   CostResult,
@@ -58,6 +59,7 @@ import {
 } from "./coordination/testing-agent-runtime";
 import {
   createDistributedPeerBinding,
+  decodeDistributedOutboxBody,
   decodeDistributedHistory,
   decodeDistributedReplay,
   encodeDistributedHistory,
@@ -66,10 +68,18 @@ import {
 } from "./coordination/agent-turn-state";
 import type {
   DistributedCostMarkerV1,
+  DistributedMemoryMutationV1,
+  DistributedTurnCoordinator,
   DistributedOutboxIntentV1,
+  DistributedOutboxLeaseV1,
   DistributedPeerBindingV1,
 } from "./coordination/types";
 import { canonicalizeDistributedBudgetCostUsd } from "./coordination/budget-policy";
+import {
+  bindDistributedLayeredMemory,
+  declaredDistributedLayeredMemoryPolicy,
+  type DistributedLayeredMemoryBinding,
+} from "./augments/layeredMemory/distributed-runtime";
 
 const DEFAULT_TURN_SCHEDULING: TurnSchedulingConfig = {
   maxConcurrent: 4,
@@ -82,11 +92,14 @@ interface DistributedTurnStateAccumulator {
   threadId: string;
   loaded: boolean;
   control?: DistributedRootExecutionControl;
+  peer?: PeerIdentity;
   peerBinding?: DistributedPeerBindingV1;
   expectedHistoryRevision?: number;
   history?: ThreadHistorySnapshot;
   costMarkers: DistributedCostMarkerV1[];
   outboxIntents: DistributedOutboxIntentV1[];
+  memoryMutations: DistributedMemoryMutationV1[];
+  memoryPeerEraseEpochs: Map<string, Promise<number>>;
 }
 
 function resolveTurnScheduling(configured: AgentConfig["turnScheduling"]): TurnSchedulingConfig {
@@ -262,6 +275,126 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
     ? [...wiring.augmentsWithSynthesizedContext, wiring.syntheticToolsAugment]
     : wiring.augmentsWithSynthesizedContext;
 
+  const distributedMemoryExecutions = new Map<
+    string,
+    {
+      control: DistributedRootExecutionControl;
+      state: DistributedTurnStateAccumulator;
+      depth: number;
+    }
+  >();
+  const distributedMemoryBinders: Array<() => () => void> = [];
+  const distributedMemoryUnbinders: Array<() => void> = [];
+  const distributedMemoryExecutionKey = (
+    context: ExecutionTraceContextV1,
+    authority: ExecutionAuthorityV1,
+  ) => `${context.executionId}\0${authority.attempt}\0${authority.fence}`;
+  if (distributed) {
+    for (const augment of effectiveAugments) {
+      const policy = declaredDistributedLayeredMemoryPolicy(augment);
+      if (!policy) {
+        if (augment.memory?.owns.kind === "namespace" || augment.memory?.write) {
+          throw new Error(
+            `distributed memory provider "${augment.name}" has no coordinator-owned policy`,
+          );
+        }
+        continue;
+      }
+      if (
+        augment.memory?.owns.kind !== "namespace" ||
+        augment.memory.owns.prefix !== policy.namespacePrefix
+      ) {
+        throw new Error("layeredMemory distributed policy namespace does not match its provider");
+      }
+      if (!distributed.coordinator.supportsMemoryPolicy(policy)) {
+        throw new Error("layeredMemory has no matching coordinator-owned memory policy");
+      }
+      const binding: DistributedLayeredMemoryBinding = {
+        coordinator: distributed.coordinator,
+        policy,
+        resolveExecution(executionContext, executionAuthority) {
+          if (!executionContext || !executionAuthority) return null;
+          const active = distributedMemoryExecutions.get(
+            distributedMemoryExecutionKey(executionContext, executionAuthority),
+          );
+          if (!active?.state.peerBinding) return null;
+          const peerBinding = active.state.peerBinding;
+          let authority: ExecutionAuthorityV1;
+          try {
+            authority = active.control.executionAuthority();
+          } catch {
+            return null;
+          }
+          if (
+            authority.version !== executionAuthority.version ||
+            authority.attempt !== executionAuthority.attempt ||
+            authority.fence !== executionAuthority.fence
+          ) {
+            return null;
+          }
+          return {
+            lease: active.control.lease(),
+            ...(active.state.peer ? { peer: { ...active.state.peer } } : {}),
+            peerBinding: { ...peerBinding },
+            async stageMemoryMutation(mutation) {
+              let staged = mutation;
+              if (mutation.kind === "write" || mutation.kind === "supersede") {
+                let epoch = active.state.memoryPeerEraseEpochs.get(policy.id);
+                if (!epoch) {
+                  epoch = distributed.coordinator
+                    .loadMemoryPeerEpoch(active.control.lease(), {
+                      policyId: policy.id,
+                      peerBinding,
+                    })
+                    .then((result) => {
+                      if (result.status !== "ok") {
+                        throw new Error(`distributed layered memory epoch ${result.status}`);
+                      }
+                      return result.eraseEpoch;
+                    });
+                  active.state.memoryPeerEraseEpochs.set(policy.id, epoch);
+                }
+                staged = { ...mutation, expectedPeerEraseEpoch: await epoch };
+              }
+              const existing = active.state.memoryMutations.find(
+                (candidate) => candidate.operationId === mutation.operationId,
+              );
+              if (existing) {
+                const same =
+                  JSON.stringify({
+                    ...existing,
+                    ...(existing.kind === "forget"
+                      ? {}
+                      : { body: Buffer.from(existing.body).toString("base64") }),
+                  }) ===
+                  JSON.stringify({
+                    ...staged,
+                    ...(staged.kind === "forget"
+                      ? {}
+                      : { body: Buffer.from(staged.body).toString("base64") }),
+                  });
+                if (!same) throw new Error("distributed memory operation identity conflicts");
+                return "replayed";
+              }
+              const count = active.state.memoryMutations.filter(
+                (candidate) => candidate.policyId === policy.id,
+              ).length;
+              if (count >= policy.maxMutationsPerTurn) {
+                throw new Error("distributed memory mutation capacity is exhausted");
+              }
+              active.state.memoryMutations.push({
+                ...staged,
+                ...(staged.kind === "forget" ? {} : { body: new Uint8Array(staged.body) }),
+              });
+              return "staged";
+            },
+          };
+        },
+      };
+      distributedMemoryBinders.push(() => bindDistributedLayeredMemory(augment, binding));
+    }
+  }
+
   const effectiveConfig: AgentConfig = {
     ...config,
     augments: effectiveAugments,
@@ -295,11 +428,14 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
 
   const outboundHandlers = new Map<
     string,
-    (
-      peer: PeerIdentity,
-      message: OutboundMessage,
-      context?: OutboundDeliveryContext,
-    ) => Promise<void>
+    {
+      handler: (
+        peer: PeerIdentity,
+        message: OutboundMessage,
+        context?: OutboundDeliveryContext,
+      ) => Promise<void>;
+      policy: { retryMode: "never" | "sink-idempotent"; maxAttempts: number };
+    }
   >();
   const threadTails = new Map<string, Promise<void>>();
   const turnScheduling = resolveTurnScheduling(effectiveConfig.turnScheduling);
@@ -367,6 +503,9 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
 
   let started = false;
   let lifecycleTail: Promise<void> | null = null;
+  let outboxAccepting = false;
+  let outboxAbort: AbortController | null = null;
+  let outboxWorker: Promise<void> | null = null;
 
   function serializeLifecycle(operation: () => Promise<void>): Promise<void> {
     const predecessor = lifecycleTail;
@@ -385,15 +524,189 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
     return result;
   }
 
+  function abortableDelay(milliseconds: number, signal: AbortSignal): Promise<void> {
+    if (signal.aborted) return Promise.resolve();
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        signal.removeEventListener("abort", aborted);
+        resolve();
+      }, milliseconds);
+      const aborted = () => {
+        clearTimeout(timer);
+        resolve();
+      };
+      signal.addEventListener("abort", aborted, { once: true });
+    });
+  }
+
+  async function deliverDistributedOutbox(
+    lease: DistributedOutboxLeaseV1,
+    workerAbort: AbortController,
+  ): Promise<void> {
+    if (!distributed) return;
+    let decoded: ReturnType<typeof decodeDistributedOutboxBody>;
+    try {
+      decoded = decodeDistributedOutboxBody(lease.body);
+    } catch {
+      await distributed.coordinator.settleOutbox(lease, {
+        outcome: "confirmed-failure",
+        reasonCode: "invalid-committed-delivery",
+      });
+      return;
+    }
+    const registered = outboundHandlers.get(decoded.targetAugment);
+    if (!registered) {
+      await distributed.coordinator.settleOutbox(lease, {
+        outcome: "confirmed-failure",
+        reasonCode: "delivery-handler-unavailable",
+      });
+      return;
+    }
+    if (
+      registered.policy.retryMode !== lease.retryMode ||
+      registered.policy.maxAttempts !== lease.maxAttempts
+    ) {
+      await distributed.coordinator.settleOutbox(lease, {
+        outcome: "confirmed-failure",
+        reasonCode: "delivery-policy-mismatch",
+      });
+      return;
+    }
+
+    const localAbort = new AbortController();
+    const signal = AbortSignal.any([workerAbort.signal, localAbort.signal]);
+    const remaining = Date.parse(lease.leaseExpiresAt) - Date.now();
+    const heartbeatMs = Math.max(10, Math.min(1_000, Math.floor(Math.max(30, remaining) / 3)));
+    let finished = false;
+    let effectStarted = false;
+    const heartbeat = (async () => {
+      while (!finished && !signal.aborted) {
+        await abortableDelay(heartbeatMs, signal);
+        if (finished || signal.aborted) return;
+        const result = await distributed.coordinator.heartbeatOutbox(lease);
+        if (result.status !== "ok") {
+          localAbort.abort("delivery-authority-lost");
+          return;
+        }
+      }
+    })();
+    const observation = operationalSignals.beginResponseDelivery();
+    const startedAt = Date.now();
+    const execution = (async () => {
+      if (signal.aborted) return { status: "aborted" as const };
+      effectStarted = true;
+      try {
+        await registered.handler(decoded.peer, decoded.message, {
+          signal,
+          operationId: lease.operationId,
+        });
+        return { status: "delivered" as const };
+      } catch {
+        return { status: "failed" as const };
+      }
+    })();
+    const aborted = new Promise<{ status: "aborted" }>((resolve) => {
+      if (signal.aborted) resolve({ status: "aborted" });
+      else signal.addEventListener("abort", () => resolve({ status: "aborted" }), { once: true });
+    });
+    const result = await Promise.race([execution, aborted]);
+    finished = true;
+    localAbort.abort("delivery-finished");
+    void heartbeat.catch(() => {});
+    if (result.status === "delivered") {
+      const settled = await distributed.coordinator.settleOutbox(lease, { outcome: "delivered" });
+      observation.finish(
+        settled.status === "ok" ? "completed" : "outcome-unknown",
+        Date.now() - startedAt,
+      );
+      return;
+    }
+    void execution;
+    const settlement = effectStarted
+      ? ({ outcome: "outcome-unknown", reasonCode: "delivery-result-unknown" } as const)
+      : ({ outcome: "confirmed-failure", reasonCode: "delivery-not-started" } as const);
+    await distributed.coordinator.settleOutbox(lease, settlement);
+    observation.finish(effectStarted ? "outcome-unknown" : "failed", Date.now() - startedAt);
+  }
+
+  function startDistributedOutboxWorker(): void {
+    if (!distributed || outboxWorker) return;
+    outboxAccepting = true;
+    const controller = new AbortController();
+    outboxAbort = controller;
+    const signal = controller.signal;
+    let worker!: Promise<void>;
+    worker = (async () => {
+      while (outboxAccepting && !signal.aborted) {
+        let claim: Awaited<ReturnType<DistributedTurnCoordinator["claimOutbox"]>>;
+        try {
+          claim = await distributed.coordinator.claimOutbox();
+        } catch {
+          await abortableDelay(250, signal);
+          continue;
+        }
+        if (claim.status === "acquired") {
+          try {
+            await deliverDistributedOutbox(claim.lease, controller);
+          } catch {
+            // The exact delivery lease remains authoritative. If local
+            // settlement I/O failed, expiry will conservatively retry only a
+            // sink-idempotent attempt or quarantine it as outcome-unknown.
+          }
+          continue;
+        }
+        if (claim.status === "stale") {
+          if (outboxAbort === controller) outboxAccepting = false;
+          return;
+        }
+        await abortableDelay(claim.status === "unavailable" ? 250 : 25, signal);
+      }
+    })().finally(() => {
+      if (outboxWorker === worker) outboxWorker = null;
+      if (outboxAbort === controller) outboxAbort = null;
+    });
+    outboxWorker = worker;
+  }
+
+  async function stopDistributedOutboxWorker(graceMs: number): Promise<boolean> {
+    outboxAccepting = false;
+    const worker = outboxWorker;
+    const controller = outboxAbort;
+    if (!worker) {
+      controller?.abort("runtime-stopping");
+      if (outboxAbort === controller) outboxAbort = null;
+      return true;
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const result = await Promise.race([
+      worker.then(() => "drained" as const),
+      new Promise<"deadline">((resolve) => {
+        timer = setTimeout(() => resolve("deadline"), graceMs);
+      }),
+    ]);
+    if (timer !== undefined) clearTimeout(timer);
+    if (result === "drained") {
+      if (outboxAbort === controller) outboxAbort = null;
+      return true;
+    }
+    controller?.abort("runtime-stopping");
+    if (outboxWorker === worker) outboxWorker = null;
+    if (outboxAbort === controller) outboxAbort = null;
+    void worker.catch(() => {});
+    return false;
+  }
+
   async function rollbackStartup(): Promise<void> {
     const shutdownObservation = operationalSignals.beginShutdown();
     lifecycle.stopIdleTimer();
     turnScheduler.close();
+    await stopDistributedOutboxWorker(distributed?.drainTimeoutMs ?? 30_000);
     await distributed?.runtime.beginDrain().catch(() => {});
     await turnScheduler.drain();
     const shutdown = await lifecycle.shutdown();
     await distributed?.runtime.close().catch(() => {});
     await distributed?.visitorIdentityAuthority?.close().catch(() => {});
+    for (const unbind of distributedMemoryUnbinders.splice(0)) unbind();
     shutdownObservation.finish(shutdown.hookFailures);
     outboundHandlers.clear();
   }
@@ -435,8 +748,8 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
       const targetAugment = msg.targetAugment ?? trigger.source;
       const peer = trigger.peer;
       if (!targetAugment || !peer) continue;
-      const handler = outboundHandlers.get(targetAugment);
-      if (handler) {
+      const registered = outboundHandlers.get(targetAugment);
+      if (registered) {
         if (distributedState) {
           if (
             distributedState.outboxIntents.length >= distributed!.turnState.outbox.maxIntentsPerTurn
@@ -458,6 +771,8 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
             ordinal: distributedState.outboxIntents.length,
             operationId,
             contentType: "application/json",
+            retryMode: registered.policy.retryMode,
+            maxAttempts: registered.policy.maxAttempts,
             body: encodeDistributedOutboxBody(
               targetAugment,
               peer,
@@ -470,7 +785,7 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
         const startedAt = Date.now();
         const observation = operationalSignals.beginResponseDelivery();
         try {
-          await handler(
+          await registered.handler(
             peer,
             msg,
             effectContext(
@@ -654,6 +969,7 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
           }
           turnLoop.getHistoryManager(threadId).replace(decodeDistributedHistory(loaded.body));
           options.distributedState.loaded = true;
+          options.distributedState.peer = trigger.peer ? { ...trigger.peer } : undefined;
           options.distributedState.peerBinding = binding;
           options.distributedState.expectedHistoryRevision = loaded.revision;
           options.distributedState.history = turnLoop.getHistoryManager(threadId).snapshot();
@@ -1034,6 +1350,8 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
         loaded: false,
         costMarkers: [],
         outboxIntents: [],
+        memoryMutations: [],
+        memoryPeerEraseEpochs: new Map(),
       };
       const coordinated = await distributed.runtime.run<TurnResult>({
         request,
@@ -1073,6 +1391,9 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
             replay: encodeDistributedReplay(value, threadId, distributed.result),
             costMarkers: distributedState.costMarkers,
             outboxIntents: distributedState.outboxIntents,
+            ...(distributedState.memoryMutations.length > 0
+              ? { memoryMutations: distributedState.memoryMutations }
+              : {}),
           });
         },
       });
@@ -1188,6 +1509,34 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
           restoredThreads.delete(threadId);
         }
         const unpinHistory = turnLoop.pinHistoryManager(threadId);
+        const distributedMemoryControl =
+          distributedControl?.control ?? options.distributedState?.control;
+        const distributedMemoryExecution =
+          distributedMemoryControl &&
+          executionContext &&
+          executionAuthority &&
+          options.distributedState
+            ? {
+                key: distributedMemoryExecutionKey(executionContext, executionAuthority),
+                value: { control: distributedMemoryControl, state: options.distributedState },
+              }
+            : undefined;
+        if (distributedMemoryExecution) {
+          const existing = distributedMemoryExecutions.get(distributedMemoryExecution.key);
+          if (
+            existing &&
+            (existing.control !== distributedMemoryExecution.value.control ||
+              existing.state !== distributedMemoryExecution.value.state)
+          ) {
+            throw new Error("distributed layered memory execution identity conflicts");
+          }
+          if (existing) existing.depth += 1;
+          else
+            distributedMemoryExecutions.set(distributedMemoryExecution.key, {
+              ...distributedMemoryExecution.value,
+              depth: 1,
+            });
+        }
         try {
           const result = await executeThreadTurn(trigger, threadId, {
             onEvent: options.onEvent,
@@ -1238,6 +1587,16 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
           if (isOutcomeUnknownError(error)) lease.quarantine();
           throw error;
         } finally {
+          if (
+            distributedMemoryExecution &&
+            distributedMemoryExecutions.get(distributedMemoryExecution.key)?.control ===
+              distributedMemoryExecution.value.control
+          ) {
+            const current = distributedMemoryExecutions.get(distributedMemoryExecution.key)!;
+            if (current.depth <= 1)
+              distributedMemoryExecutions.delete(distributedMemoryExecution.key);
+            else current.depth -= 1;
+          }
           unpinHistory();
         }
       };
@@ -1358,6 +1717,12 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
               }
             }
           }
+          if (distributedMemoryUnbinders.length > 0) {
+            throw new Error("distributed layered memory authority is already active");
+          }
+          for (const bind of distributedMemoryBinders) {
+            distributedMemoryUnbinders.push(bind());
+          }
           await distributed?.runtime.start();
           if (distributed?.visitorIdentityAuthority) {
             const identityRegistration = await distributed.visitorIdentityAuthority
@@ -1441,8 +1806,24 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
                     sourcePolicy,
                   );
                 },
-                onOutbound(callback) {
-                  outboundHandlers.set(aug.name, callback);
+                onOutbound(callback, policy) {
+                  if (outboundHandlers.has(aug.name)) {
+                    throw new Error(`Augment "${aug.name}" registered outbound delivery twice`);
+                  }
+                  const resolved = policy ?? { retryMode: "never" as const, maxAttempts: 1 };
+                  if (
+                    (resolved.retryMode !== "never" && resolved.retryMode !== "sink-idempotent") ||
+                    !Number.isSafeInteger(resolved.maxAttempts) ||
+                    resolved.maxAttempts < 1 ||
+                    resolved.maxAttempts > 10 ||
+                    (resolved.retryMode === "never" && resolved.maxAttempts !== 1)
+                  ) {
+                    throw new Error(`Augment "${aug.name}" registered an invalid delivery policy`);
+                  }
+                  outboundHandlers.set(aug.name, {
+                    handler: callback,
+                    policy: { ...resolved },
+                  });
                 },
                 getAgentCard() {
                   return agentCard;
@@ -1542,6 +1923,8 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
             await aug.transport?.ready?.();
           }
 
+          startDistributedOutboxWorker();
+
           lifecycle.startIdleTimer(async () => {
             for (const aug of effectiveAugments) {
               if (aug.onIdle) {
@@ -1574,6 +1957,7 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
         // suspend; leaving the local scheduler open across that await admits
         // work after shutdown has begun.
         turnScheduler.close();
+        outboxAccepting = false;
         let coordinationDrainError: unknown;
         try {
           await distributed?.runtime.beginDrain();
@@ -1607,9 +1991,14 @@ function defineAgentRuntime(config: AgentConfig, model: ModelClient): AgentHandl
         } else {
           await Promise.all([...threadTails.values()].map((tail) => tail.catch(() => {})));
         }
+        await stopDistributedOutboxWorker(distributed?.drainTimeoutMs ?? 30_000);
         const shutdown = await lifecycle.shutdown();
-        await distributed?.runtime.close();
-        await distributed?.visitorIdentityAuthority?.close();
+        try {
+          await distributed?.runtime.close();
+          await distributed?.visitorIdentityAuthority?.close();
+        } finally {
+          for (const unbind of distributedMemoryUnbinders.splice(0)) unbind();
+        }
         shutdownObservation.finish(shutdown.hookFailures);
         outboundHandlers.clear();
         turnLoop.clearHistoryManagers();

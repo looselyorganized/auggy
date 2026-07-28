@@ -17,6 +17,23 @@ export type ParseResult =
   | { success: false; error: string };
 
 /**
+ * Extraction output is model-controlled. Keep its parser limits independent
+ * from storage limits: rejecting an overlarge response is safer than parsing
+ * it and hoping later layers decline every derived fact.
+ */
+export const MAX_EXTRACTION_RESPONSE_BYTES = 64 * 1024;
+export const MAX_EXTRACTION_BRACKET_SCAN_CODE_UNITS = 64 * 1024;
+export const MAX_EXTRACTED_FACTS = 64;
+export const MAX_EXTRACTED_FACT_FIELD_BYTES = 4 * 1024;
+export const MAX_EXTRACTED_FACT_TEXT_BYTES = 16 * 1024;
+
+function utf8Bytes(value: string): number {
+  // Buffer.byteLength scans without materializing a second model-controlled
+  // byte array, so the raw response cap applies before a large allocation.
+  return Buffer.byteLength(value, "utf8");
+}
+
+/**
  * Defensive JSON parser for the extraction LLM's response. The model should
  * emit a top-level JSON array of fact objects per `prompt.md`, but real
  * models drift (markdown code fences, leading/trailing prose, language tags,
@@ -61,7 +78,8 @@ function extractJsonArray(raw: string): string | null {
   let inString = false;
   let escaped = false;
 
-  for (let i = start; i < raw.length; i++) {
+  const scanEnd = Math.min(raw.length, MAX_EXTRACTION_BRACKET_SCAN_CODE_UNITS);
+  for (let i = start; i < scanEnd; i++) {
     const c = raw[i];
     if (escaped) {
       escaped = false;
@@ -87,6 +105,12 @@ function extractJsonArray(raw: string): string | null {
 }
 
 export function parseExtractionResponse(raw: string): ParseResult {
+  if (typeof raw !== "string") {
+    return { success: false, error: "extraction response is not text" };
+  }
+  if (utf8Bytes(raw) > MAX_EXTRACTION_RESPONSE_BYTES) {
+    return { success: false, error: "extraction response exceeds byte limit" };
+  }
   const jsonText = extractJsonArray(raw);
   if (jsonText === null) {
     return { success: false, error: "no balanced JSON array found in response" };
@@ -100,7 +124,11 @@ export function parseExtractionResponse(raw: string): ParseResult {
   if (!Array.isArray(parsed)) {
     return { success: false, error: "extraction output is not a JSON array" };
   }
+  if (parsed.length > MAX_EXTRACTED_FACTS) {
+    return { success: false, error: "extraction output exceeds fact limit" };
+  }
   const facts: ExtractedFact[] = [];
+  let totalFactTextBytes = 0;
   for (const [i, item] of parsed.entries()) {
     if (item === null || typeof item !== "object") {
       return { success: false, error: `entry ${i} is not an object` };
@@ -115,11 +143,24 @@ export function parseExtractionResponse(raw: string): ParseResult {
     if (typeof e.object !== "string") {
       return { success: false, error: `entry ${i} missing/invalid object` };
     }
-    if (typeof e.confidence !== "number") {
+    if (
+      typeof e.confidence !== "number" ||
+      !Number.isFinite(e.confidence) ||
+      e.confidence < 0 ||
+      e.confidence > 1
+    ) {
       return { success: false, error: `entry ${i} missing/invalid confidence` };
     }
     if (typeof e.isVerbatim !== "boolean") {
       return { success: false, error: `entry ${i} missing/invalid isVerbatim` };
+    }
+    const fieldBytes = [utf8Bytes(e.subject), utf8Bytes(e.predicate), utf8Bytes(e.object)];
+    if (fieldBytes.some((size) => size > MAX_EXTRACTED_FACT_FIELD_BYTES)) {
+      return { success: false, error: `entry ${i} text field exceeds byte limit` };
+    }
+    totalFactTextBytes += fieldBytes[0]! + fieldBytes[1]! + fieldBytes[2]!;
+    if (totalFactTextBytes > MAX_EXTRACTED_FACT_TEXT_BYTES) {
+      return { success: false, error: "extraction output exceeds total fact text byte limit" };
     }
     facts.push({
       subject: e.subject,

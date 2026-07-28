@@ -10,6 +10,7 @@ import type {
 } from "../types";
 import { defineTool } from "../helpers";
 import { effectiveTrustLevel } from "../kernel/capability-table";
+import { deriveNestedOperationId } from "../kernel/execution-context";
 import { lookupProvider } from "./registry";
 import type { MemoryRegistry } from "./types";
 
@@ -260,10 +261,18 @@ export function createMemoryTools(
         }
 
         try {
-          await spec.write!(derivedLabel, content, {
+          const writeResult = await spec.write!(derivedLabel, content, {
             peerId: context.peer.id,
             trustLevel: context.peer.trustLevel,
+            ...(context.executionContext ? { executionContext: context.executionContext } : {}),
+            ...(context.executionAuthority
+              ? { executionAuthority: context.executionAuthority }
+              : {}),
+            ...(context.operationId ? { operationId: context.operationId } : {}),
           });
+          if (writeResult && writeResult.status === "staged") {
+            return `STAGED: Peer memory will be atomically committed with this turn at "${derivedLabel}".`;
+          }
         } catch (err) {
           console.error(
             `[memory-bus] Provider "${candidate.augment.name}" failed to persist peer memory:`,
@@ -304,7 +313,10 @@ export function createMemoryTools(
       }
 
       try {
-        await spec.write(label, content);
+        const writeResult = await spec.write(label, content);
+        if (writeResult && writeResult.status === "staged") {
+          return `STAGED: Memory will be atomically committed with this turn at "${label}".`;
+        }
       } catch (err) {
         console.error(
           `[memory-bus] Provider "${provider.name}" failed to persist "${label}":`,
@@ -351,7 +363,14 @@ export function createMemoryTools(
       const results = await Promise.allSettled(
         candidates.map(async (aug) => {
           const spec = aug.memory! as NamespaceMemoryProvider;
-          const entries = await spec.search(query, { peerId: context.peer?.id });
+          const entries = await spec.search(query, {
+            ...(context.peer?.id ? { peerId: context.peer.id } : {}),
+            ...(context.executionContext ? { executionContext: context.executionContext } : {}),
+            ...(context.executionAuthority
+              ? { executionAuthority: context.executionAuthority }
+              : {}),
+            ...(context.operationId ? { operationId: context.operationId } : {}),
+          });
           // Phase 1b Task 7: explicit per-entry origin pass-through. Memory
           // providers may carry an `origin` field on individual entries
           // (Phase 1a's storage layer added it as an OriginValue) so the
@@ -436,18 +455,40 @@ export function createMemoryTools(
       }
 
       let totalDeleted = 0;
+      let staged = false;
       const errors: string[] = [];
-      for (const ns of registry.namespaces) {
+      for (const [namespaceOrdinal, ns] of registry.namespaces.entries()) {
         const spec = ns.augment.memory as NamespaceMemoryProvider;
         if (spec.forget) {
           try {
-            totalDeleted += await spec.forget(targetPeerId);
+            const operationId = deriveNestedOperationId(
+              context.operationId,
+              `memory-forget:${ns.augment.name}`,
+              namespaceOrdinal,
+            );
+            const outcome = await spec.forget(targetPeerId, {
+              ...(context.peer?.id ? { peerId: context.peer.id } : {}),
+              ...(context.executionContext ? { executionContext: context.executionContext } : {}),
+              ...(context.executionAuthority
+                ? { executionAuthority: context.executionAuthority }
+                : {}),
+              ...(operationId ? { operationId } : {}),
+            });
+            if (typeof outcome === "number") totalDeleted += outcome;
+            else staged = true;
           } catch {
             errors.push(`${ns.augment.name}: provider operation failed`);
           }
         }
       }
 
+      if (staged) {
+        return JSON.stringify({
+          status: errors.length === 0 ? "staged" : "partial",
+          errors: errors.length > 0 ? errors : undefined,
+          message: "Peer memory erasure is staged for atomic commit with this turn.",
+        });
+      }
       return JSON.stringify({
         status: errors.length === 0 ? "ok" : "partial",
         deleted: totalDeleted,

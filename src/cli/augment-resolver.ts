@@ -187,6 +187,19 @@ async function resolveLayeredMemory(
     opts.autoSave && typeof opts.autoSave === "object" && !Array.isArray(opts.autoSave)
       ? (opts.autoSave as Parameters<typeof layeredMemory>[0]["autoSave"])
       : undefined;
+  const distributedPolicy = opts.distributedPolicy as
+    | Parameters<typeof layeredMemory>[0]["distributedPolicy"]
+    | undefined;
+
+  if (backend === "coordinator") {
+    return layeredMemory({
+      backend: "coordinator",
+      namespace,
+      retentionDays,
+      autoSave,
+      distributedPolicy,
+    });
+  }
 
   if (backend === "sqlite") {
     const dbPath = opts.dbPath as string | undefined;
@@ -201,6 +214,7 @@ async function resolveLayeredMemory(
       namespace,
       retentionDays,
       autoSave,
+      distributedPolicy,
     });
   }
 
@@ -231,6 +245,7 @@ async function resolveLayeredMemory(
       namespace,
       retentionDays,
       autoSave,
+      distributedPolicy,
     });
   }
 
