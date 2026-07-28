@@ -1,22 +1,18 @@
-import type { Tool, TurnState, ToolDefinition } from "../types";
+import type { Tool, ToolDefinition } from "../types";
 
 export interface ToolSelectionResult {
   mounted: Tool[];
   definitions: ToolDefinition[];
   withheld: string[];
   phase1Used: boolean;
-  selectedCategories?: string[];
 }
 
 export function selectTools(
   tools: Tool[],
-  _turn: TurnState,
   opts: {
-    threshold?: number;
     canExpose?: (toolName: string) => boolean;
   } = {},
 ): ToolSelectionResult {
-  const _threshold = opts.threshold ?? 25;
   const canExpose = opts.canExpose ?? (() => true);
 
   const exposed: Tool[] = [];
@@ -29,7 +25,6 @@ export function selectTools(
     }
   }
 
-  // v1: mount all if below threshold. Two-phase deferred.
   const mounted = exposed;
 
   const definitions: ToolDefinition[] = mounted.map((t) => ({

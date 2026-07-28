@@ -361,8 +361,9 @@ umask. Create them with mode `0600` and correct permissions when updating an
 existing file.
 
 Evidence:
-[`src/cli/commands/create.ts:591`](../../src/cli/commands/create.ts#L591),
-[`src/cli/scaffold.ts:123`](../../src/cli/scaffold.ts#L123)
+[`src/cli/commands/create.ts:591`](../../src/cli/commands/create.ts#L591). The
+parallel legacy scaffolder cited by the original audit was removed after its
+behavior was consolidated into the `create` command.
 
 ### M-14 — Railway secrets enter argv and errors verbatim
 

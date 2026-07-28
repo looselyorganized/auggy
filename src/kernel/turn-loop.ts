@@ -278,7 +278,7 @@ export function createTurnLoop(opts: {
           evictHistory(oldestId);
         }
       }
-      hm = createHistoryManager({ threadId });
+      hm = createHistoryManager();
       historyManagers.set(threadId, hm);
     }
     historyLastAccess.set(threadId, Date.now());
@@ -395,7 +395,7 @@ export function createTurnLoop(opts: {
       let admissionConfirmed = false;
       let costCommitPromise: Promise<void> | null = null;
 
-      async function finalizeReturn(_opts?: { withCostCommit?: boolean }): Promise<void> {
+      async function finalizeReturn(): Promise<void> {
         traceEmitter.finalize(trace);
         if (admissionConfirmed && trace.inferenceSteps.length > 0) {
           await runCostCommit();
@@ -660,7 +660,7 @@ export function createTurnLoop(opts: {
               turnId: trigger.turnId,
               status: "failed",
             });
-            await finalizeReturn({ withCostCommit: true });
+            await finalizeReturn();
             return {
               turnId: trigger.turnId,
               success: false,
@@ -828,7 +828,7 @@ export function createTurnLoop(opts: {
       }
 
       // Select tools
-      const toolSelection = selectTools(allTools, turnState, {
+      const toolSelection = selectTools(allTools, {
         canExpose: (name) => capabilityTable.canExpose(name, turnState),
       });
 
@@ -1109,7 +1109,7 @@ export function createTurnLoop(opts: {
               });
             }
 
-            await finalizeReturn({ withCostCommit: true });
+            await finalizeReturn();
             emitEvent({
               kind: "run_finished",
               turnId: trigger.turnId,
@@ -1467,7 +1467,7 @@ export function createTurnLoop(opts: {
             if (pendingTerminate.message) {
               transcriptParts.push({ kind: "text", text: pendingTerminate.message });
             }
-            await finalizeReturn({ withCostCommit: true });
+            await finalizeReturn();
             emitEvent({
               kind: "run_finished",
               turnId: trigger.turnId,
@@ -1526,7 +1526,7 @@ export function createTurnLoop(opts: {
                 });
               }
             }
-            await finalizeReturn({ withCostCommit: true });
+            await finalizeReturn();
             emitEvent({
               kind: "run_finished",
               turnId: trigger.turnId,
@@ -1569,7 +1569,7 @@ export function createTurnLoop(opts: {
           text: "I've completed the available actions.",
         });
         transcriptParts.push({ kind: "text", text: "I've completed the available actions." });
-        await finalizeReturn({ withCostCommit: true });
+        await finalizeReturn();
         emitEvent({
           kind: "run_finished",
           turnId: trigger.turnId,

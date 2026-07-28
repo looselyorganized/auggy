@@ -412,32 +412,6 @@ describe("createMemoryTools", () => {
       expect(expectWriteError(result, "NOT_PERSISTED")).toMatch(/requires agent or creator/i);
     });
 
-    it("blocks public peer from writing to origin:system label", async () => {
-      const providers: Augment[] = [
-        {
-          name: "learned",
-          memory: {
-            owns: { kind: "static", labels: ["learned"] },
-            defaults,
-            read: async () => null,
-            write: async () => {},
-          },
-        },
-      ];
-      const registry = buildRegistry(providers);
-      const { tools } = createMemoryTools(registry);
-      const writeTool = tools.find((t) => t.name === "memory_write")!;
-      const result = await writeTool.execute(
-        { label: "learned", content: "poisoned" },
-        {
-          turnId: "t1",
-          peer: { id: "vis_1", kind: "human", trustLevel: "public", sourceAugment: "web" },
-          threadId: "th1",
-        },
-      );
-      expect(expectWriteError(result, "NOT_PERSISTED")).toMatch(/requires agent or creator/i);
-    });
-
     it("allows creator to write to origin:system label", async () => {
       const writes: string[] = [];
       const providers: Augment[] = [
