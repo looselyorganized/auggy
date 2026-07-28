@@ -63,11 +63,10 @@ surface and then give concise default guidance from this skill.
 
 ## What Auggy Is
 
-Auggy is a self-hosted agent for business operations. It runs those operations
-through TypeScript augments: controlled, predictable interfaces to application
-systems. An application-specific augment can keep identity and authorization
-rules, typed schemas, tools, routes, and domain logic together while the
-application remains the system of record.
+Turn business operations into agent-ready capabilities. Auggy replaces one-off
+integration glue with TypeScript augments—controlled, predictable interfaces
+that bundle identity, authorization, schemas, tools, routes, and domain logic.
+The application remains the system of record.
 
 Underneath, a small TypeScript runtime executes the agent:
 

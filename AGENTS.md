@@ -47,11 +47,13 @@ kernel edits require a concrete bug or boundary reason. Keep reference docs and
 examples aligned with public behavior. Do not bump package versions or publish
 npm packages outside a release PR.
 
-Augments are the ownership and security boundary for business capabilities.
-Keep reusable schemas and domain logic behind narrow tool and route adapters,
-make identity and authorization explicit on each exposed interface, and never
-give the model unrestricted backend access. Application databases, durable
-workflows, and systems of record remain outside the agent runtime.
+Preserve the product promise: “Turn business operations into agent-ready
+capabilities.” Describe Auggy as replacing one-off integration glue with
+TypeScript augments—controlled, predictable interfaces that bundle identity,
+authorization, schemas, tools, routes, and domain logic. Augments remain the
+ownership and security boundary: keep reusable logic behind narrow adapters,
+make authorization explicit on every exposed interface, and never imply that
+Auggy replaces application databases, durable workflows, or systems of record.
 
 PostgreSQL coordination is an internal, disabled integration until its public
 profile, operator tooling, and multi-process certification are complete. Keep

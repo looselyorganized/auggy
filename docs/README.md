@@ -1,11 +1,10 @@
 # Auggy Documentation
 
-**Give agents business capabilities—not backend access.** Auggy runs business
-operations through TypeScript augments—controlled, predictable interfaces to
-your systems. Each augment can keep identity and authorization rules, typed
-schemas, tools, routes, and domain logic together. Underneath, the small
-Bun/TypeScript kernel runs turns while the application remains the system of
-record.
+**Turn business operations into agent-ready capabilities.** Auggy replaces
+one-off integration glue with TypeScript augments—controlled, predictable
+interfaces that bundle identity, authorization, schemas, tools, routes, and
+domain logic. Underneath, the small Bun/TypeScript kernel runs turns while the
+application remains the system of record.
 
 For installation and first-run instructions, start with the root
 [`README.md`](../README.md).
