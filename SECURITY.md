@@ -13,8 +13,9 @@ Auggy is pre-1.0. Breaking changes between minor versions are possible. Pin to a
 Use one of these private channels instead:
 
 1. **Email** — `hello@looselyorganized.xyz`.
-2. **GitHub Private Vulnerability Reporting** — choose **Report a
-   vulnerability** from the repository's Security tab.
+2. **GitHub Private Vulnerability Reporting** — anyone with a GitHub account
+   can [open a private report](https://github.com/looselyorganized/auggy/security/advisories/new)
+   without creating a public issue.
 
 Please include:
 
@@ -38,7 +39,9 @@ This is a small project. We do best-effort response, not a contractual SLA.
 
 In scope:
 
-- The Auggy runtime — `src/kernel/`, `src/augments/`, `src/engines/`, `src/transports/`, `src/memory/`, `src/cli/`.
+- The Auggy runtime — `src/kernel/`, `src/augments/`, `src/engines/`,
+  `src/transports/`, `src/memory/`, `src/jobs/`, `src/coordination/`, and
+  `src/cli/`.
 - The CLI tooling and launchd integration.
 - The reference docs under `docs/` if they describe a security property the implementation doesn't actually have.
 

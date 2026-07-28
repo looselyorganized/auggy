@@ -3,11 +3,12 @@
 ## Project Structure & Module Organization
 
 Core runtime code lives in `src/`: `kernel/` owns turns, `augments/` contains
-capabilities, `transports/` serves chat and the console, and `cli/` implements
-operator commands. Provider adapters and evals are under `packages/`. Console
-source is in `admin/src/` and its bundle is `admin/dist/`. Tests mirror source
-areas in `tests/`; integrations and reference material live in `examples/` and
-`docs/`.
+capabilities, `transports/` serves chat and the console, `jobs/` owns durable
+single-turn work, `coordination/` contains the fail-closed PostgreSQL replica
+foundation, and `cli/` implements operator commands. Provider adapters and
+evals are under `packages/`. Console source is in `admin/src/` and its bundle
+is `admin/dist/`. Tests mirror source areas in `tests/`; integrations and
+reference material live in `examples/` and `docs/`.
 
 ## Build, Test, and Development Commands
 
@@ -34,10 +35,10 @@ types/components, and kebab-case for CLI-facing slugs.
 
 Use `bun:test`, never Vitest. Put runtime `*.test.ts` files in the matching
 `tests/` subtree and console `*.test.tsx` files beside their owner in
-`admin/src/`. Cover success, validation, authorization, and failures. Generated route
-clients, manifests, OpenAPI, and
-console payloads are contract-sensitive; update fixtures and parity tests
-together.
+`admin/src/`. Cover success, validation, authorization, and failures. Generated
+route clients, manifests, OpenAPI, console payloads, coordination protocol
+fingerprints, and stored-state migrations are contract-sensitive; update
+fixtures and parity tests together.
 
 ## Architecture & Release Boundaries
 
@@ -45,6 +46,18 @@ Prefer augment, CLI, transport, or documentation changes over kernel changes;
 kernel edits require a concrete bug or boundary reason. Keep reference docs and
 examples aligned with public behavior. Do not bump package versions or publish
 npm packages outside a release PR.
+
+Augments are the ownership and security boundary for business capabilities.
+Keep reusable schemas and domain logic behind narrow tool and route adapters,
+make identity and authorization explicit on each exposed interface, and never
+give the model unrestricted backend access. Application databases, durable
+workflows, and systems of record remain outside the agent runtime.
+
+PostgreSQL coordination is an internal, disabled integration until its public
+profile, operator tooling, and multi-process certification are complete. Keep
+`settings.coordination` fail closed in ordinary startup, preserve the supported
+single-replica SQLite path, and update compatibility fingerprints, migrations,
+topology checks, tests, and status docs together when its contract changes.
 
 ## Commit & Pull Request Guidelines
 

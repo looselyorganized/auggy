@@ -11,11 +11,16 @@
   <img src="https://img.shields.io/badge/language-TypeScript-3178C6?logo=typescript" alt="TypeScript" />
 </p>
 
-Auggy is a self-hosted Bun/TypeScript agent runtime with composable tools,
-memory, skills, transports, and policy.
+**Give agents business capabilities—not backend access.**
 
-The kernel runs agent turns. Augments add the tools, memory, transports,
-context, skills, and policy your agent needs.
+Auggy runs business operations through TypeScript augments—controlled,
+predictable interfaces to your systems. An application-specific augment can
+keep identity and authorization rules, typed schemas, tools, routes, and domain
+logic together.
+
+Underneath, a small Bun/TypeScript runtime runs agent turns. Augments also add
+memory, transports, context, skills, lifecycle behavior, and operator controls
+without making the model the application or security boundary.
 
 Auggy 0.5 is in public preview. The release candidate is distributed through
 npm's `next` tag; pin its exact version for production-like evaluation until
@@ -524,6 +529,12 @@ auggy --version
 - [MCP](https://auggy.dev/docs/mcp)
 - [Console](https://auggy.dev/docs/console)
 - [Deploy](https://auggy.dev/docs/deploy)
+- [Runtime State Recovery](./docs/27-runtime-state-recovery.md)
+- [Delivery and Operator Recovery](./docs/28-delivery-and-operator-recovery.md)
+- [Provider Resilience](./docs/29-provider-resilience.md)
+- [Compatibility, Migrations, and Rollback](./docs/31-compatibility-migrations-and-rollback.md)
+- [Independent Agent Isolation](./docs/32-independent-agent-isolation.md)
+- [Durable Jobs](./docs/33-durable-jobs.md)
 
 ## License
 

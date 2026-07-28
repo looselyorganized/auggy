@@ -1,12 +1,17 @@
 # Auggy Mental Model
 
-Auggy is a small TypeScript runtime for building self-hosted agents from
-composable augments.
+**Give agents business capabilities—not backend access.**
+
+Auggy is a self-hosted agent for business operations. It runs those operations
+through TypeScript augments—controlled, predictable interfaces to application
+systems. Application-specific augments can keep identity and authorization
+rules, typed schemas, tools, routes, and domain logic together while the
+application remains the system of record.
 
 The core product idea:
 
-- the kernel runs agent turns,
-- augments add the capabilities around those turns,
+- a small TypeScript kernel runs agent turns,
+- augments package the capabilities around those turns,
 - agent projects remain ordinary files and TypeScript,
 - operators install only what a particular agent needs.
 

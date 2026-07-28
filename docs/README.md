@@ -1,8 +1,11 @@
 # Auggy Documentation
 
-Auggy is a small Bun/TypeScript runtime for building self-hosted agents from
-composable augments. The kernel runs agent turns; augments add tools, memory,
-transports, context, skills, policy, and integrations.
+**Give agents business capabilities—not backend access.** Auggy runs business
+operations through TypeScript augments—controlled, predictable interfaces to
+your systems. Each augment can keep identity and authorization rules, typed
+schemas, tools, routes, and domain logic together. Underneath, the small
+Bun/TypeScript kernel runs turns while the application remains the system of
+record.
 
 For installation and first-run instructions, start with the root
 [`README.md`](../README.md).

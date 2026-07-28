@@ -11,7 +11,8 @@ Read these in order:
 1. [`README.md`](README.md) — what Auggy is and how to run an agent.
 2. [`docs/02-architecture-overview.md`](docs/02-architecture-overview.md) — module map and turn data-flow.
 3. [`docs/07-built-in-augments.md`](docs/07-built-in-augments.md) — what each built-in augment does and the bundled-skill convention.
-4. [`CLAUDE.md`](CLAUDE.md) — repo rules. Particularly the **kernel-is-finished** rule.
+4. [`AGENTS.md`](AGENTS.md) — repository rules, architecture boundaries, and
+   verification expectations. `CLAUDE.md` points to the same source of truth.
 
 ## Development setup
 
@@ -40,7 +41,8 @@ Required versions: **Bun ≥ 1.2.0**, **TypeScript ≥ 5**.
 
 ## What to work on
 
-- **Behavior changes go in augments**, not the kernel. The kernel under `src/kernel/` is finished — bug fixes are welcome, new features need explicit justification in the PR description. (See [CLAUDE.md](CLAUDE.md) rule 1.)
+- **Prefer behavior changes in augments, transports, the CLI, or docs.** Kernel
+  changes need a concrete bug or boundary reason in the PR description.
 - **New built-in augments** are welcome under `src/augments/` — see existing augments as templates and read [`docs/07-built-in-augments.md`](docs/07-built-in-augments.md) for the contract.
 - **Engine adapters** belong in `packages/<provider>/`. Shared adapter helpers
   and pricing tables can live under `src/engines/`; do not create `src/models/`.
@@ -57,7 +59,8 @@ Required versions: **Bun ≥ 1.2.0**, **TypeScript ≥ 5**.
 - **Skills are files, not code.** The runtime publishes frontmatter summaries
   for discovery; full `SKILL.md` bodies and references are read on demand.
 
-If you've read the rule list in [CLAUDE.md](CLAUDE.md), you've seen all of this.
+If you've read [AGENTS.md](AGENTS.md), you've seen the concise repository-wide
+version of these rules.
 
 ## Bundled skills convention
 
@@ -160,6 +163,9 @@ Before requesting review:
 - [ ] `bun run lint` is clean.
 - [ ] If you changed behavior documented in `docs/`, the doc is updated in the same PR.
 - [ ] If the change crosses a public surface (new augment, new tool, new engine), a test exercises it.
+- [ ] If the change touches coordination or durable state, compatibility
+      fingerprints, migrations, fail-closed topology checks, rollback docs, and
+      focused multi-process tests were updated together.
 - [ ] Commit messages follow the convention above.
 
 We squash-merge by default. Keep your PR description sharp — that's what becomes the merged commit.
