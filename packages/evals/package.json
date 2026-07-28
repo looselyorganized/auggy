@@ -48,6 +48,11 @@
   "peerDependencies": {
     "auggy": "^0.5.0-rc.1"
   },
+  "peerDependenciesMeta": {
+    "auggy": {
+      "optional": true
+    }
+  },
   "dependencies": {
     "yaml": "^2.8.3",
     "zod": "^4.3.6"

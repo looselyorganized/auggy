@@ -93,6 +93,9 @@
       "peerDependencies": {
         "auggy": "^0.5.0-rc.1",
       },
+      "optionalPeers": [
+        "auggy",
+      ],
     },
     "packages/ollama": {
       "name": "@auggy/ollama",
