@@ -3,13 +3,6 @@ import { createMemoryTools } from "@/memory/tools";
 import { buildRegistry } from "@/memory/registry";
 import type { Augment, MemoryDefaults, MemoryEntry, ToolExecuteContext } from "@/types";
 
-// Local helper type — MemoryEntry plus an optional origin field. Phase 1a
-// added `origin` to the storage-layer StoreEntry; the public MemoryEntry
-// surface tolerates extra fields at runtime since memory providers
-// vary in what provenance they track. Phase 1b's contract is that
-// memory_search forwards a per-entry origin field when present.
-type MemoryEntryWithOrigin = MemoryEntry & { origin?: string };
-
 const peerDerivedDefaults: MemoryDefaults = {
   mutable: true,
   origin: "peer-derived",
@@ -26,7 +19,7 @@ const CREATOR_CTX: ToolExecuteContext = {
 
 describe("memory_search payload includes per-entry origin (Phase 1b Task 7)", () => {
   it("forwards origin field for entries that carry it", async () => {
-    const entries: MemoryEntryWithOrigin[] = [
+    const entries: MemoryEntry[] = [
       { label: "ep:vis_a:1", content: "agent paraphrase fact", origin: "agent-derived" },
       { label: "ep:vis_a:2", content: "verbatim peer note", origin: "peer-derived" },
     ];
@@ -60,7 +53,7 @@ describe("memory_search payload includes per-entry origin (Phase 1b Task 7)", ()
   });
 
   it("omits origin field for entries that don't carry it (no fabricated default)", async () => {
-    const entries: MemoryEntryWithOrigin[] = [
+    const entries: MemoryEntry[] = [
       // Plain MemoryEntry — provider tracks no origin per entry. Even though
       // the provider's defaults.origin is "peer-derived", the search payload
       // must not invent a per-entry origin where the entry has none. The
@@ -91,7 +84,7 @@ describe("memory_search payload includes per-entry origin (Phase 1b Task 7)", ()
   });
 
   it("preserves all existing MemoryEntry fields alongside origin", async () => {
-    const entries: MemoryEntryWithOrigin[] = [
+    const entries: MemoryEntry[] = [
       {
         label: "ep:vis_c:1",
         content: "fact",
