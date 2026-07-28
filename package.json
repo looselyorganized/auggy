@@ -1,7 +1,7 @@
 {
   "name": "auggy",
-  "version": "0.5.0",
-  "description": "Small Bun/TypeScript runtime for building self-hosted agents from composable augments.",
+  "version": "0.5.0-rc.1",
+  "description": "Self-hosted Bun/TypeScript agent runtime with composable tools, memory, skills, transports, and policy.",
   "keywords": [
     "agent",
     "agents",
@@ -30,6 +30,10 @@
   "license": "Apache-2.0",
   "author": "LORF (Loosely Organized Research Facility)",
   "homepage": "https://auggy.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/looselyorganized/auggy.git"
+  },
   "bugs": {
     "email": "hello@looselyorganized.xyz"
   },
@@ -57,6 +61,7 @@
     "./internal/cli/config-parser": "./src/cli/config-parser.ts",
     "./internal/cli/engine-resolver": "./src/cli/engine-resolver.ts",
     "./internal/cli/augment-resolver": "./src/cli/augment-resolver.ts",
+    "./internal/cli/types": "./src/cli/types.ts",
     "./internal/augments/layeredMemory": "./src/augments/layeredMemory/index.ts",
     "./internal/augments/layeredMemory/storage/types": "./src/augments/layeredMemory/storage/types.ts",
     "./internal/augments/layeredMemory/storage/sqlite-store": "./src/augments/layeredMemory/storage/sqlite-store.ts",

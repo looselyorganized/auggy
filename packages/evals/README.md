@@ -1,6 +1,6 @@
 # @auggy/evals
 
-Eval suites for [auggy](https://www.npmjs.com/package/auggy) agents.
+Security and memory evaluation suites for [Auggy](https://www.npmjs.com/package/auggy) agents.
 
 | Suite | What it tests | Cost |
 |---|---|---|

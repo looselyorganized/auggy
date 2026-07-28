@@ -18,12 +18,15 @@ import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
 import { resolve, dirname, join } from "node:path";
 import { parse as parseYaml } from "yaml";
 
-import { defineAgent, extractText } from "@/index";
-import type { AgentConfig, Part, TrustLevel, TurnResult, TurnTrigger } from "@/types";
-import { parseConfig } from "@/cli/config-parser";
-import { resolveEngine, type EngineImporter } from "@/cli/engine-resolver";
-import { resolveAugments } from "@/cli/augment-resolver";
-import type { AugmentConfig } from "@/cli/types";
+import { defineAgent, extractText } from "auggy";
+import type { AgentConfig, Part, TrustLevel, TurnResult, TurnTrigger } from "auggy";
+import { resolveAugments } from "auggy/internal/cli/augment-resolver";
+import { parseConfig } from "auggy/internal/cli/config-parser";
+import {
+  resolveEngine,
+  type EngineImporter,
+} from "auggy/internal/cli/engine-resolver";
+import type { AugmentConfig } from "auggy/internal/cli/types";
 
 /**
  * Engine importer for the eval runner. The eval fixture lives inside the

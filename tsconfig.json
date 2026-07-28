@@ -40,6 +40,7 @@
       "auggy/internal/cli/config-parser": ["./src/cli/config-parser.ts"],
       "auggy/internal/cli/engine-resolver": ["./src/cli/engine-resolver.ts"],
       "auggy/internal/cli/augment-resolver": ["./src/cli/augment-resolver.ts"],
+      "auggy/internal/cli/types": ["./src/cli/types.ts"],
       "auggy/internal/augments/layeredMemory": ["./src/augments/layeredMemory/index.ts"],
       "auggy/internal/augments/layeredMemory/storage/types": [
         "./src/augments/layeredMemory/storage/types.ts"

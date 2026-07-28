@@ -790,6 +790,10 @@ describe("manifest construction", () => {
     expect(() => knowledge({ baseUrl: "https://example.com" })).not.toThrow();
   });
 
+  it("trims a pathological trailing-slash input in linear time", () => {
+    expect(() => knowledge({ baseUrl: `https://example.com${"/".repeat(100_000)}` })).not.toThrow();
+  });
+
   it("rejects a bearer token over non-loopback plaintext HTTP", () => {
     expect(() =>
       knowledge({

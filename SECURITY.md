@@ -13,9 +13,8 @@ Auggy is pre-1.0. Breaking changes between minor versions are possible. Pin to a
 Use one of these private channels instead:
 
 1. **Email** — `hello@looselyorganized.xyz`.
-2. **GitHub Private Vulnerability Reporting** — invited source collaborators
-   with repo access may also open a private report from the repo's Security
-   tab.
+2. **GitHub Private Vulnerability Reporting** — choose **Report a
+   vulnerability** from the repository's Security tab.
 
 Please include:
 

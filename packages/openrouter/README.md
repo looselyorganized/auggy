@@ -1,6 +1,6 @@
 # @auggy/openrouter
 
-OpenRouter engine adapter for [auggy](https://www.npmjs.com/package/auggy) — implements `ModelClient` against [OpenRouter](https://openrouter.ai/)'s OpenAI-compatible API. Routes to any of the 200+ models OpenRouter supports.
+OpenRouter engine adapter for [Auggy](https://www.npmjs.com/package/auggy), using [OpenRouter](https://openrouter.ai/)'s OpenAI-compatible API. Routes to any of the 200+ models OpenRouter supports.
 
 ## Install
 

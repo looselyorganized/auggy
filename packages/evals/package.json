@@ -1,7 +1,7 @@
 {
   "name": "@auggy/evals",
-  "version": "0.5.0",
-  "description": "Eval suites for auggy agents — security red-team prompts, auto-save fact extraction fixtures, shared harness primitives, and internal layered-memory graders.",
+  "version": "0.5.0-rc.1",
+  "description": "Security and memory evaluation suites for Auggy agents, with red-team fixtures, reusable harness primitives, and layered-memory graders.",
   "keywords": [
     "auggy",
     "evals",
@@ -13,6 +13,11 @@
   "license": "Apache-2.0",
   "author": "LORF (Loosely Organized Research Facility)",
   "homepage": "https://auggy.dev",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/looselyorganized/auggy.git",
+    "directory": "packages/evals"
+  },
   "bugs": {
     "email": "hello@looselyorganized.xyz"
   },
@@ -40,6 +45,14 @@
     "bun": ">=1.2.0"
   },
   "private": false,
+  "peerDependencies": {
+    "auggy": "^0.5.0-rc.1"
+  },
+  "peerDependenciesMeta": {
+    "auggy": {
+      "optional": true
+    }
+  },
   "dependencies": {
     "yaml": "^2.8.3",
     "zod": "^4.3.6"

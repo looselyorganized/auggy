@@ -22,7 +22,16 @@
  * crash when agent.yaml interpolates `${AUGGY_PUBLIC_URL}` or similar.
  */
 
-import { copyFileSync, existsSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  openSync,
+  readFileSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { getAgentFromDir, readBoundCloudRecord, setCloudForDir } from "../agent-index";
@@ -40,6 +49,7 @@ import {
 } from "../deploy/railway-cli";
 import { loadSecretsPlan } from "../deploy/secrets";
 import { getAuggyVersion } from "../scaffold-package-json";
+import { writeFileSafely } from "../safe-write";
 import type { CloudRecord } from "../types";
 
 export interface DeployLogger {
@@ -145,8 +155,11 @@ function formatMissingServiceError(args: {
 
 function clearCloudMetadataForDir(agentDir: string): void {
   const path = join(agentDir, ".auggy-cloud.json");
-  if (!existsSync(path)) return;
-  unlinkSync(path);
+  try {
+    unlinkSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
 }
 
 function formatStaleCloudMetadataWarning(args: {
@@ -167,6 +180,8 @@ function maybeVendorLocalAuggyTarball(args: {
   stagingDir: string;
   cwd?: string;
 }): string | null {
+  const maxStagedPackageBytes = 1024 * 1024;
+  const maxRuntimeTarballBytes = 256 * 1024 * 1024;
   const version = getAuggyVersion();
   const tarballName = `auggy-${version}.tgz`;
   const candidates = [
@@ -178,25 +193,56 @@ function maybeVendorLocalAuggyTarball(args: {
   ].filter((p): p is string => Boolean(p));
 
   const stagedPackagePath = join(args.stagingDir, "package.json");
-  if (!existsSync(stagedPackagePath)) return null;
-
-  const parsed = JSON.parse(readFileSync(stagedPackagePath, "utf-8")) as {
+  const stagedPackageBytes = readRegularFileNoFollow(stagedPackagePath, maxStagedPackageBytes);
+  if (!stagedPackageBytes) return null;
+  const parsed = JSON.parse(new TextDecoder().decode(stagedPackageBytes)) as {
     dependencies?: Record<string, string>;
   };
   const deps = parsed.dependencies;
   if (!deps?.auggy) return null;
-  const tarballPath =
-    resolveFileAuggyTarball(deps.auggy, args.agentDir) ??
-    (/^\^?\d+\.\d+\.\d+/.test(deps.auggy)
-      ? candidates.map((root) => resolve(root, tarballName)).find(existsSync)
-      : null);
-  if (!tarballPath) return null;
+  const explicitTarball = resolveFileAuggyTarball(deps.auggy, args.agentDir);
+  const tarballCandidates = explicitTarball
+    ? [explicitTarball]
+    : /^\^?\d+\.\d+\.\d+/.test(deps.auggy)
+      ? candidates.map((root) => resolve(root, tarballName))
+      : [];
+  let selectedTarball: { path: string; bytes: Uint8Array } | null = null;
+  for (const candidate of tarballCandidates) {
+    const bytes = readRegularFileNoFollow(candidate, maxRuntimeTarballBytes);
+    if (bytes) {
+      selectedTarball = { path: candidate, bytes };
+      break;
+    }
+  }
+  if (!selectedTarball) return null;
 
-  const stagedTarballName = basename(tarballPath);
-  copyFileSync(tarballPath, join(args.stagingDir, stagedTarballName));
+  const stagedTarballName = basename(selectedTarball.path);
+  writeFileSafely(join(args.stagingDir, stagedTarballName), selectedTarball.bytes);
   deps.auggy = `file:./${stagedTarballName}`;
-  writeFileSync(stagedPackagePath, `${JSON.stringify(parsed, null, 2)}\n`);
+  writeFileSafely(stagedPackagePath, `${JSON.stringify(parsed, null, 2)}\n`);
   return stagedTarballName;
+}
+
+function readRegularFileNoFollow(path: string, maxBytes: number): Uint8Array | null {
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(
+      path,
+      constants.O_RDONLY | (process.platform === "win32" ? 0 : (constants.O_NOFOLLOW ?? 0)),
+    );
+    const stat = fstatSync(descriptor);
+    if (!stat.isFile()) return null;
+    if (!Number.isSafeInteger(stat.size) || stat.size < 0 || stat.size > maxBytes) {
+      throw new Error(`deploy source file exceeds the ${maxBytes}-byte safety limit: ${path}`);
+    }
+    return readFileSync(descriptor);
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException).code;
+    if (code === "ENOENT" || code === "ELOOP") return null;
+    throw error;
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
 }
 
 function configuredDatabaseArtifacts(config: ReturnType<typeof parseConfig>): string[] {
@@ -232,7 +278,7 @@ function resolveFileAuggyTarball(spec: string, agentDir: string): string | null 
     return null;
   }
   if (!resolved.endsWith(".tgz")) return null;
-  return existsSync(resolved) ? resolved : null;
+  return resolved;
 }
 
 export async function runDeploy(

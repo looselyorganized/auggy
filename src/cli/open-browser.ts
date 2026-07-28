@@ -2,9 +2,9 @@
  * Best-effort cross-platform browser launcher.
  *
  * Spawns the platform default-handler:
- *   - macOS:  `open <url>`
- *   - Linux:  `xdg-open <url>`
- *   - Windows: `start "" <url>` (via cmd /c)
+ *   - macOS:  `/usr/bin/open <url>`
+ *   - Linux:  `/usr/bin/xdg-open <url>`
+ *   - Windows: `C:\\Windows\\System32\\rundll32.exe url.dll,FileProtocolHandler <url>`
  *
  * Detached + ignored stdio so the parent process (typically `auggy dev --open`)
  * doesn't accumulate a child handle. Failures are swallowed; the caller is
@@ -22,21 +22,23 @@ export interface OpenBrowserResult {
 }
 
 export function openBrowser(url: string): OpenBrowserResult {
-  let command: string;
-  let args: string[];
-  if (process.platform === "darwin") {
-    command = "open";
-    args = [url];
-  } else if (process.platform === "win32") {
-    command = "cmd";
-    args = ["/c", "start", "", url];
-  } else {
-    command = "xdg-open";
-    args = [url];
-  }
+  if (!isSafeBrowserUrl(url)) return { ok: false, command: "" };
 
+  let command = "/usr/bin/xdg-open";
   try {
-    const child = spawn(command, args, { stdio: "ignore", detached: true });
+    let child: ReturnType<typeof spawn>;
+    if (process.platform === "darwin") {
+      command = "/usr/bin/open";
+      child = spawn("/usr/bin/open", [url], { stdio: "ignore", detached: true });
+    } else if (process.platform === "win32") {
+      command = "C:\\Windows\\System32\\rundll32.exe";
+      child = spawn("C:\\Windows\\System32\\rundll32.exe", ["url.dll,FileProtocolHandler", url], {
+        stdio: "ignore",
+        detached: true,
+      });
+    } else {
+      child = spawn("/usr/bin/xdg-open", [url], { stdio: "ignore", detached: true });
+    }
     child.on("error", () => {
       // best-effort; the caller has already printed the URL
     });
@@ -44,5 +46,19 @@ export function openBrowser(url: string): OpenBrowserResult {
     return { ok: true, command };
   } catch {
     return { ok: false, command };
+  }
+}
+
+function isSafeBrowserUrl(value: string): boolean {
+  if (value.length === 0 || value.length > 4096) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const codePoint = value.charCodeAt(index);
+    if (codePoint <= 31 || codePoint === 127) return false;
+  }
+  try {
+    const parsed = new URL(value);
+    return parsed.protocol === "http:" || parsed.protocol === "https:";
+  } catch {
+    return false;
   }
 }

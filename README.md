@@ -11,19 +11,20 @@
   <img src="https://img.shields.io/badge/language-TypeScript-3178C6?logo=typescript" alt="TypeScript" />
 </p>
 
-Auggy is a small Bun/TypeScript runtime for building self-hosted agents from
-composable augments.
+Auggy is a self-hosted Bun/TypeScript agent runtime with composable tools,
+memory, skills, transports, and policy.
 
 The kernel runs agent turns. Augments add the tools, memory, transports,
 context, skills, and policy your agent needs.
 
-Auggy is in public preview. Pin exact versions for production work until
+Auggy 0.5 is in public preview. The release candidate is distributed through
+npm's `next` tag; pin its exact version for production-like evaluation until
 `1.0.0`.
 
 ## Quick Start
 
 ```bash
-npm i -g auggy
+npm i -g auggy@next
 auggy create my-agent
 cd my-agent
 auggy run
@@ -362,8 +363,8 @@ The default notification destination writes JSON Lines locally with no secrets.
 Configure a webhook, Telegram, or AgentMail destination when you need real
 delivery.
 
-For model-callable email and the durable inbound/review foundation implemented
-in the unpublished `0.5.0` candidate:
+For model-callable email and the durable inbound/review foundation in the 0.5
+public-preview line:
 
 ```bash
 auggy augment add agentMail

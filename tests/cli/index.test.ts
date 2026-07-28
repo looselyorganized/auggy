@@ -113,6 +113,13 @@ describe("auggy CLI command table", () => {
     ).toBe("✔ Service is healthy: https://agent.test/health");
   });
 
+  test("formats delimiter-heavy Railway output without regex backtracking", () => {
+    const repeated = "agent to existing Railway project ".repeat(10_000);
+    expect(formatDeployInfoLine(`First deploy of ${repeated}target.`, { color: false })).toBe(
+      "✔ Railway project: target",
+    );
+  });
+
   test("formats deploy success marks in green for TTY output", () => {
     expect(formatDeployInfoLine("Deploy preflight passed.", { color: true })).toBe(
       "\x1b[32m✔\x1b[0m Deploy preflight passed",

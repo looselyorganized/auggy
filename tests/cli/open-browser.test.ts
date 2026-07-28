@@ -32,25 +32,36 @@ afterEach(() => {
 });
 
 describe("openBrowser", () => {
-  test("macOS uses `open <url>`", () => {
+  test("macOS uses the absolute system `open` path", () => {
     setPlatform("darwin");
     const result = openBrowser("http://localhost:8080/admin");
     expect(result.ok).toBe(true);
-    expect(result.command).toBe("open");
-    expect(spawnCalls).toEqual([{ cmd: "open", args: ["http://localhost:8080/admin"] }]);
+    expect(result.command).toBe("/usr/bin/open");
+    expect(spawnCalls).toEqual([{ cmd: "/usr/bin/open", args: ["http://localhost:8080/admin"] }]);
   });
 
-  test("Linux uses `xdg-open <url>`", () => {
+  test("Linux uses the absolute system `xdg-open` path", () => {
     setPlatform("linux");
     openBrowser("http://localhost:8080/admin");
-    expect(spawnCalls).toEqual([{ cmd: "xdg-open", args: ["http://localhost:8080/admin"] }]);
+    expect(spawnCalls).toEqual([
+      { cmd: "/usr/bin/xdg-open", args: ["http://localhost:8080/admin"] },
+    ]);
   });
 
-  test('Windows uses `cmd /c start "" <url>`', () => {
+  test("Windows uses rundll32 directly without a command shell", () => {
     setPlatform("win32");
     openBrowser("http://localhost:8080/admin");
     expect(spawnCalls).toEqual([
-      { cmd: "cmd", args: ["/c", "start", "", "http://localhost:8080/admin"] },
+      {
+        cmd: "C:\\Windows\\System32\\rundll32.exe",
+        args: ["url.dll,FileProtocolHandler", "http://localhost:8080/admin"],
+      },
     ]);
+  });
+
+  test("rejects non-web and control-character URLs before spawning", () => {
+    expect(openBrowser("file:///tmp/secret").ok).toBe(false);
+    expect(openBrowser("https://example.test/\nnext").ok).toBe(false);
+    expect(spawnCalls).toEqual([]);
   });
 });

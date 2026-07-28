@@ -1,6 +1,6 @@
 # @auggy/openai
 
-OpenAI engine adapter for [auggy](https://www.npmjs.com/package/auggy) — implements `ModelClient` against the official [`openai`](https://www.npmjs.com/package/openai) SDK.
+OpenAI engine adapter for [Auggy](https://www.npmjs.com/package/auggy), powered by the official [`openai`](https://www.npmjs.com/package/openai) SDK.
 
 ## Install
 

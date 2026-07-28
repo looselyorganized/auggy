@@ -12,6 +12,18 @@ import type { Augment, ModelClient } from "@/types";
 const bearer = "console-persistence-test-token";
 const consoleAuthorization = `Basic ${Buffer.from(`:${bearer}`).toString("base64")}`;
 
+async function availablePort(): Promise<number> {
+  const reservation = Bun.serve({
+    hostname: "127.0.0.1",
+    port: 0,
+    fetch: () => new Response(null, { status: 503 }),
+  });
+  const port = reservation.port;
+  await reservation.stop(true);
+  if (port === undefined) throw new Error("Bun did not assign a test port");
+  return port;
+}
+
 async function sendConsoleMessage(port: number, threadId: string, message: string) {
   const csrf = await generateCsrfToken({
     bearer,
@@ -90,8 +102,8 @@ async function deleteConsoleThread(port: number, threadId: string) {
 
 describe("webTransport console persistence boundary", () => {
   it("restores a file-backed transcript and kernel history after a full agent restart", async () => {
-    const firstPort = 39444;
-    const secondPort = 39445;
+    const firstPort = await availablePort();
+    const secondPort = await availablePort();
     const directory = await createTempDir();
     const dbPath = join(directory.path, "console-chat.db");
     const firstModel = createMockModel({ response: "first persisted reply" });
@@ -167,8 +179,8 @@ describe("webTransport console persistence boundary", () => {
   });
 
   it("keeps a deleted file-backed thread tombstoned across restart while new chat still works", async () => {
-    const firstPort = 39446;
-    const secondPort = 39447;
+    const firstPort = await availablePort();
+    const secondPort = await availablePort();
     const deletedThreadId = "deleted-across-restart";
     const freshThreadId = "fresh-after-restart";
     const directory = await createTempDir();
@@ -279,7 +291,7 @@ describe("webTransport console persistence boundary", () => {
   });
 
   it("durably finishes the transcript before exposing RUN_FINISHED and blocks direct reuse", async () => {
-    const port = 19441;
+    const port = await availablePort();
     const model = createMockModel({ response: "persisted assistant reply" });
     const aug = webTransport({
       port,
@@ -330,7 +342,7 @@ describe("webTransport console persistence boundary", () => {
   });
 
   it("returns gone without invoking the model when a deleted console thread is reused", async () => {
-    const port = 19448;
+    const port = await availablePort();
     const model = createMockModel({ response: "should not be regenerated" });
     const aug = webTransport({
       port,
@@ -362,7 +374,7 @@ describe("webTransport console persistence boundary", () => {
   });
 
   it("keeps an active console run conflict at conflict rather than gone", async () => {
-    const port = 19449;
+    const port = await availablePort();
     let callCount = 0;
     let signalStarted!: () => void;
     let release!: () => void;
@@ -423,7 +435,7 @@ describe("webTransport console persistence boundary", () => {
   });
 
   it("persists separate paragraphs for text emitted across tool-loop inference segments", async () => {
-    const port = 19446;
+    const port = await availablePort();
     let inference = 0;
     const model: ModelClient = {
       maxContextTokens: 100_000,
@@ -488,7 +500,7 @@ describe("webTransport console persistence boundary", () => {
   });
 
   it("continues the exact anonymous thread as its verified visitor", async () => {
-    const port = 19447;
+    const port = await availablePort();
     const signingKey = "console-thread-promotion-key";
     const agentBinding = "console-persistence-test";
     const visitorId = "vis_promoted";
@@ -636,7 +648,7 @@ describe("webTransport console persistence boundary", () => {
   });
 
   it("releases a failed run lease so the same persisted thread can be retried", async () => {
-    const port = 19442;
+    const port = await availablePort();
     const model: ModelClient = {
       maxContextTokens: 100_000,
       async complete() {
@@ -675,7 +687,7 @@ describe("webTransport console persistence boundary", () => {
   });
 
   it("abandons an oversized transcript update without stranding the run lease", async () => {
-    const port = 19443;
+    const port = await availablePort();
     let callCount = 0;
     const oversizedSentinel = "GROUP8_OVERSIZED_RESPONSE_SENTINEL";
     const model: ModelClient = {

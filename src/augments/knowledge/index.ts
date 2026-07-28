@@ -326,6 +326,12 @@ function validateManifest(raw: unknown): Manifest | null {
 
 const FILE_SCHEME_RE = /^file:/i;
 
+function trimTrailingSlashes(value: string): string {
+  let end = value.length;
+  while (end > 0 && value.charCodeAt(end - 1) === 47) end -= 1;
+  return end === value.length ? value : value.slice(0, end);
+}
+
 /**
  * Parse a `file://...` URL into an absolute filesystem base directory.
  *
@@ -339,7 +345,7 @@ const FILE_SCHEME_RE = /^file:/i;
  */
 function parseFileBaseUrl(baseUrl: string): string {
   // Strip any trailing slash for consistent join semantics.
-  const trimmed = baseUrl.replace(/\/+$/, "");
+  const trimmed = trimTrailingSlashes(baseUrl);
   let absPath: string;
   try {
     absPath = fileURLToPath(trimmed);
@@ -543,7 +549,7 @@ export function knowledge(opts: ManifestOptions): Augment {
   // For HTTP/HTTPS: keep existing behavior (trim trailing slash, init client).
   // For file://: parse to an absolute filesystem path; the http client is
   // unused. realBaseDir is resolved (and cached) at first manifest fetch.
-  const httpBaseUrl = isFile ? "" : opts.baseUrl.replace(/\/+$/, "");
+  const httpBaseUrl = isFile ? "" : trimTrailingSlashes(opts.baseUrl);
   const fileBasePath = isFile ? parseFileBaseUrl(opts.baseUrl) : "";
 
   const client =

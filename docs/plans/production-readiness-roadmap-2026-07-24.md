@@ -111,42 +111,32 @@ deployment gates below still apply afterward.
 
 ### P0 — Secret-scanning disposition before public visibility
 
-GitHub reports one open secret-scanning alert at a committed test fixture. The
-alert classifies the value as a Stripe webhook signing secret; the location is
-in `tests/transports/webhook-policy.test.ts` and was introduced by the Svix
-webhook test commit.
-
-Do not make the repository public until the value is classified without
-printing it:
-
-- if it was ever live, rotate it, purge it from public history as required,
-  and close the alert as revoked;
-- if it is a synthetic third-party test vector, replace the detector-shaped
-  literal with a runtime-derived deterministic fixture and resolve the alert
-  as a false positive with evidence; and
-- verify the open-alert count is zero before changing repository visibility.
+Closed, 2026-07-28: the detector-shaped synthetic webhook fixture was replaced,
+GitHub reports zero open secret-scanning alerts, and the independent
+full-history path/signature audit found no real credentials. The repository was
+made public only after those checks passed.
 
 ### P0 — Public repository and package identity
 
-The repository is currently private. Before the RC:
-
-- complete a full-history credential, private-data, license, and artifact
-  review;
-- add the exact public GitHub `repository` metadata required by npm trusted
-  publishing to all six publishable packages;
-- verify README, license, contribution, code-of-conduct, support, and security
-  reporting paths from an anonymous browser session;
-- change repository visibility to public only after the secret gate passes;
-- keep CodeQL, secret scanning, push protection, and Dependabot alerts enabled;
-- enable private vulnerability reporting and its maintainer notifications; and
-- verify forks, issues, branch protection, and release permissions behave as
-  intended for a public repository.
+Update, 2026-07-28: the repository is public and anonymous access returns 200;
+the full-history review passed; all six package manifests use the exact public
+repository identity; the README, license, contribution, code-of-conduct, and
+security paths exist; secret scanning, push protection, Dependabot security
+updates, and private vulnerability reporting are enabled; and strict `main`
+branch protection survived the visibility change. PR #169's merge ref has zero
+open CodeQL alerts. The ten alerts still attached to the older default-branch
+analysis must clear when the candidate merges and CodeQL analyzes `main`.
 
 ### P0 — Trusted publishing and provenance
 
-No GitHub Actions Environment currently exists. Legacy repository secrets named
-`NPM_TOKEN` and `ANTHROPIC_API_KEY_SECURITY_EVAL` remain even though the
-hardened workflows expect environment-scoped identities.
+Update, 2026-07-28: the repository is public; the protected `npm-publish` and
+`security-eval` Environments exist with maintainer approval and exact tag/branch
+policies; the evaluation key is environment-scoped; the legacy repository
+secrets were deleted; all six npm trusted-publisher connections were
+operator-confirmed; and package publishing disallows traditional tokens. The
+remaining evidence is confirmation that the obsolete npm account token was
+revoked and that the first RC publication displays OIDC provenance for every
+package.
 
 Before the RC:
 

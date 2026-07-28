@@ -6,8 +6,9 @@ the compact feature/status matrix.
 
 ## Release Framing
 
-- **Latest published release:** `0.4.4`.
-- **Current source:** the unpublished `0.5.0` candidate. It includes the
+- **Latest stable release:** `0.4.4`.
+- **Public-preview candidate:** `0.5.0-rc.1`, distributed through npm's `next`
+  tag. It includes the
   app-backend foundation, durable AgentMail inbound/review, the security-audit
   remediation, keyed turn scheduling, Telegram conflict recovery, CI
   test-surface enforcement, and a fail-closed distributed-coordination
@@ -32,7 +33,7 @@ completed plans are removed once their durable decisions reach reference docs.
 
 ## 0.5.0 Candidate — OSS Production Preview
 
-Status: **implemented on `main`; not published**.
+Status: **public release candidate (`0.5.0-rc.1`)**.
 
 The candidate includes:
 

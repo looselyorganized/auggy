@@ -19,7 +19,11 @@ import { readFileSync } from "node:fs";
 import { resolve, isAbsolute } from "node:path";
 import { parse as parseYaml } from "yaml";
 
-import type { AugmentConfig, ParsedConfig, SecurityEvalOverride } from "@/cli/types";
+import type {
+  AugmentConfig,
+  ParsedConfig,
+  SecurityEvalOverride,
+} from "auggy/internal/cli/types";
 
 // ---------------------------------------------------------------------------
 // Public types
