@@ -180,6 +180,7 @@ describe("release publishing identity", () => {
     expect(publishJob).not.toContain('npm publish "$tarball" --access public');
     expect(githubReleaseJob).toContain("needs: [verify, publish]");
     expect(githubReleaseJob).not.toContain("actions/checkout");
+    expect(githubReleaseJob).toContain("GH_REPO: looselyorganized/auggy");
     expect(githubReleaseJob).toContain("sha256sum ./*.tgz");
     expect(githubReleaseJob).toContain("gh release create");
     expect(githubReleaseJob).toContain("--prerelease");
