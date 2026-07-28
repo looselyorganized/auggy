@@ -412,7 +412,7 @@ export function budgets(opts: BudgetsAugmentOptions): Augment {
     /**
      * BATS-style budget context block. Reads peer usage from the store
      * and emits a ContextBlock describing remaining capacity and behavioral
-     * guidance. Called after the turn-gate 2PC confirm, so `used` already
+     * guidance. Called after the turn-gate confirm, so `used` already
      * counts the current turn as consumed — remaining values are post-this-turn.
      */
     context: async (turn: TurnState): Promise<ContextBlock[]> => {

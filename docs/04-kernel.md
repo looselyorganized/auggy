@@ -27,51 +27,63 @@ const trace = traceEmitter.startTurn({...});
 
 Every turn starts with a `TurnState` (the read-only view augments see) and a `TurnTrace` (the audit log being built up).
 
-#### Phase 0b — Turn-gate admission (2PC)
+#### Phase 0b — Transactional turn-gate admission
 
-Before any augment context or engine work, the kernel runs a pre-dispatch admission check through all augments that declare a `turnGate`.
+Before any augment context or engine work, the kernel runs a pre-dispatch
+admission check through the sole augment that declares a `turnGate`. Agent
+construction fails closed if more than one augment declares one.
 
 ```ts
-const turnGates = augments.filter((a) => a.turnGate !== undefined);
+const turnGateOwner = augments.find((a) => a.turnGate !== undefined);
 ```
 
-**Prepare phase.** For each gate in declaration order:
+**Prepare phase.** The gate stages its admission state:
 
 ```ts
-ticket = await gate.turnGate.prepare({ turnId, peer, threadId, trigger });
+ticket = await turnGateOwner.turnGate.prepare({ turnId, peer, threadId, trigger });
 ```
 
-The gate opens a SQLite transaction, evaluates the peer's caps against current usage, stages reservation rows inside the transaction, and returns a `TurnGateTicket`. If `prepare` itself throws, all already-prepared tickets are rolled back and the turn is rejected with `errorClass: "admission-state-failed"`.
+The gate opens a storage transaction, evaluates the peer's caps against current
+usage, stages reservation rows inside the transaction, and returns a
+`TurnGateTicket`. If `prepare` throws, the turn is rejected with
+`errorClass: "admission-state-failed"`.
 
-**Decision evaluation — conjunctive.** After all prepares complete, the kernel checks for any denial:
+**Decision evaluation.** The kernel checks the ticket's decision:
 
 ```ts
-const denied = tickets.find((t) => !t.decision.allow);
+if (!ticket.decision.allow) await ticket.rollback();
 ```
 
-If any ticket denies (`allow: false`), all tickets are rolled back and the turn returns immediately with `status: "rejected"` and `errorClass: "cap-denied"`. No engine call is made.
+If the ticket denies (`allow: false`), it is rolled back and the turn returns
+immediately with `status: "rejected"` and `errorClass: "cap-denied"`. No engine
+call is made.
 
-**Confirm phase — fail-closed.** If all decisions are `allow: true`, the kernel confirms each ticket in order:
+**Confirm phase — fail-closed.** If the decision is `allow: true`, the kernel confirms the ticket:
 
 ```ts
-await tickets[i].confirm();
+await ticket.confirm();
 ```
 
-If any confirm throws, all tickets are rolled back and the turn is rejected with `errorClass: "admission-state-failed"`. No engine call.
+If confirm throws, the ticket is rolled back and the turn is rejected with
+`errorClass: "admission-state-failed"`. No engine call. Because there is one
+owner, another gate cannot already have partially committed.
 
-**Engine call** proceeds only after all gates have confirmed. The context pipeline, allocator, and inference loop run as normal.
+**Engine call** proceeds only after the gate has confirmed. The context pipeline, allocator, and inference loop run as normal.
 
-**Cost commit phase.** After the engine returns, for each gate that defines `commit()`:
+**Cost commit phase.** After the engine returns, if the gate defines `commit()`:
 
 ```ts
-await gate.turnGate.commit({ turnId, peer, threadId, cost });
+await turnGateOwner.turnGate.commit({ turnId, peer, threadId, cost });
 ```
 
 The `cost` is the aggregate `CostResult` across all inference steps. A commit
 error after inference is outcome-unknown: the kernel withholds a successful
 terminal result and the execution is not automatically retried.
 
-**v0 scope:** first-party only. The budgets augment is the sole shipped turn gate. See [03-types.md § Section 7b](./03-types.md#section-7b--turn-gate-admission-2pc) for the full `TurnGateProvider` / `TurnGateTicket` contract.
+**v0 scope:** first-party only and one turn-gate owner per agent. The budgets
+augment is the sole shipped turn gate. See
+[03-types.md § Section 7b](./03-types.md#section-7b--transactional-turn-gate) for
+the full `TurnGateProvider` / `TurnGateTicket` contract.
 
 #### Phase 1 — Abort check + history append
 

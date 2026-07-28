@@ -1,9 +1,9 @@
 /**
- * Turn-gate 2PC dispatch tests.
+ * Transactional turn-gate dispatch tests.
  *
- * These tests exercise the prepare → confirm/rollback → cost-commit flow
- * added to the kernel turn loop. They are independent of the budgets augment
- * (T6/T7) — they use a lightweight fakeTurnGate fixture.
+ * These tests exercise the single-owner prepare → confirm/rollback →
+ * cost-commit flow. They are independent of the budgets augment and use a
+ * lightweight fakeTurnGate fixture.
  */
 
 import { describe, it, expect } from "bun:test";
@@ -106,7 +106,7 @@ function fakeTurnGate(opts: FakeTurnGateOpts): Augment {
 // Tests
 // ---------------------------------------------------------------------------
 
-describe("Turn-gate 2PC dispatch", () => {
+describe("Transactional turn-gate dispatch", () => {
   // -------------------------------------------------------------------------
   // No turn-gates — loop runs unchanged
   // -------------------------------------------------------------------------
@@ -152,76 +152,32 @@ describe("Turn-gate 2PC dispatch", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Multiple gates: gate B denies after gate A allowed
+  // Multiple owners are rejected before any gate can mutate state
   // -------------------------------------------------------------------------
-  it("rejects turn when gate B denies after gate A allowed — both tickets rolled back", async () => {
-    const rollbacksA: string[] = [];
-    const rollbacksB: string[] = [];
-    const confirmsA: string[] = [];
-
-    const gateA = fakeTurnGate({
-      name: "gate-a",
-      decision: { allow: true },
-      recordRollbacks: rollbacksA,
-      recordConfirms: confirmsA,
-    });
-    const gateB = fakeTurnGate({
-      name: "gate-b",
-      decision: { allow: false, reason: "rate limit exceeded" },
-      recordRollbacks: rollbacksB,
-    });
-
-    const model = createMockModel({ response: "SHOULD NOT APPEAR" });
-    const loop = createTurnLoop({
-      augments: [gateA, gateB],
-      model,
-      tokenizer: createTokenizer(),
-      config: { name: "test", model: "mock", augments: [] },
-    });
-
-    const result = await loop.executeTurn(makeTrigger(), "t-2");
-
-    expect(result.success).toBe(false);
-    expect(result.status).toBe("rejected");
-    expect(result.errorClass).toBe("cap-denied");
-    expect(result.error?.message).toBe("rate limit exceeded");
-    // Both tickets rolled back
-    expect(rollbacksA).toHaveLength(1);
-    expect(rollbacksB).toHaveLength(1);
-    // Gate A's confirm was never called (decision phase runs after prepare for all gates)
-    expect(confirmsA).toHaveLength(0);
-    expect(model.calls).toHaveLength(0);
+  it("rejects multiple turn-gate owners at construction", () => {
+    expect(() =>
+      makeLoop([fakeTurnGate({ name: "gate-a" }), fakeTurnGate({ name: "gate-b" })]),
+    ).toThrow("Only one augment may declare turnGate; found: gate-a, gate-b");
   });
 
   // -------------------------------------------------------------------------
-  // All gates allow → all confirms run → engine called → all commits run
+  // Allow → confirm → engine → cost commit
   // -------------------------------------------------------------------------
-  it("runs engine and commits after all gates allow and confirm", async () => {
-    const preparesA: string[] = [];
-    const confirmsA: string[] = [];
-    const commitsA: string[] = [];
-    const preparesB: string[] = [];
-    const confirmsB: string[] = [];
-    const commitsB: string[] = [];
-
-    const gateA = fakeTurnGate({
-      name: "gate-a",
+  it("runs the engine and commits cost after the gate allows", async () => {
+    const prepares: string[] = [];
+    const confirms: string[] = [];
+    const commits: string[] = [];
+    const gate = fakeTurnGate({
+      name: "gate",
       decision: { allow: true },
-      recordPrepares: preparesA,
-      recordConfirms: confirmsA,
-      recordCommits: commitsA,
-    });
-    const gateB = fakeTurnGate({
-      name: "gate-b",
-      decision: { allow: true },
-      recordPrepares: preparesB,
-      recordConfirms: confirmsB,
-      recordCommits: commitsB,
+      recordPrepares: prepares,
+      recordConfirms: confirms,
+      recordCommits: commits,
     });
 
     const model = createMockModel({ response: "All good" });
     const loop = createTurnLoop({
-      augments: [gateA, gateB],
+      augments: [gate],
       model,
       tokenizer: createTokenizer(),
       config: { name: "test", model: "mock", augments: [] },
@@ -231,43 +187,27 @@ describe("Turn-gate 2PC dispatch", () => {
 
     expect(result.success).toBe(true);
     expect(result.status).toBe("completed");
-    // Prepare called once each
-    expect(preparesA).toHaveLength(1);
-    expect(preparesB).toHaveLength(1);
-    // Confirm called once each
-    expect(confirmsA).toHaveLength(1);
-    expect(confirmsB).toHaveLength(1);
-    // Engine called
+    expect(prepares).toHaveLength(1);
+    expect(confirms).toHaveLength(1);
     expect(model.calls).toHaveLength(1);
-    // Commit called once each
-    expect(commitsA).toHaveLength(1);
-    expect(commitsB).toHaveLength(1);
+    expect(commits).toHaveLength(1);
   });
 
   // -------------------------------------------------------------------------
-  // Gate A confirm succeeds, gate B confirm throws → all rolled back, rejected
+  // Confirm failure rolls back the sole ticket
   // -------------------------------------------------------------------------
-  it("rejects with admission-state-failed when gate B confirm throws after gate A confirmed", async () => {
-    const rollbacksA: string[] = [];
-    const rollbacksB: string[] = [];
-
-    // Gate A confirms successfully — its ticket is done=true, so rollback is a no-op.
-    const gateA = fakeTurnGate({
-      name: "gate-a",
-      decision: { allow: true },
-      recordRollbacks: rollbacksA,
-    });
-    // Gate B confirm throws — its ticket is not yet done.
-    const gateB = fakeTurnGate({
-      name: "gate-b",
+  it("rejects with admission-state-failed when confirm throws", async () => {
+    const rollbacks: string[] = [];
+    const gate = fakeTurnGate({
+      name: "gate",
       decision: { allow: true },
       confirmError: new Error("disk full"),
-      recordRollbacks: rollbacksB,
+      recordRollbacks: rollbacks,
     });
 
     const model = createMockModel({ response: "SHOULD NOT APPEAR" });
     const loop = createTurnLoop({
-      augments: [gateA, gateB],
+      augments: [gate],
       model,
       tokenizer: createTokenizer(),
       config: { name: "test", model: "mock", augments: [] },
@@ -279,10 +219,7 @@ describe("Turn-gate 2PC dispatch", () => {
     expect(result.status).toBe("rejected");
     expect(result.errorClass).toBe("admission-state-failed");
     expect(result.error?.message).toContain("disk full");
-    // Gate A's ticket was already done=true (confirm ran), so rollback is a no-op — but
-    // rollback IS still called. Our idempotent fixture means rollbacksA stays empty.
-    expect(rollbacksA).toHaveLength(0); // confirm ran first, done=true, rollback is no-op
-    expect(rollbacksB).toHaveLength(1); // confirm threw before done=true
+    expect(rollbacks).toHaveLength(1);
     expect(model.calls).toHaveLength(0);
   });
 
@@ -435,24 +372,17 @@ describe("Turn-gate 2PC dispatch", () => {
   });
 
   // -------------------------------------------------------------------------
-  // prepare throws — treated as admission-state-failed; prior tickets rolled back
+  // prepare throws — treated as admission-state-failed
   // -------------------------------------------------------------------------
   it("rejects with admission-state-failed when prepare throws", async () => {
-    const rollbacksA: string[] = [];
-
-    const gateA = fakeTurnGate({
-      name: "gate-a",
-      decision: { allow: true },
-      recordRollbacks: rollbacksA,
-    });
-    const gateB = fakeTurnGate({
-      name: "gate-b",
+    const gate = fakeTurnGate({
+      name: "gate",
       prepareError: new Error("db connection failed"),
     });
 
     const model = createMockModel({ response: "SHOULD NOT APPEAR" });
     const loop = createTurnLoop({
-      augments: [gateA, gateB],
+      augments: [gate],
       model,
       tokenizer: createTokenizer(),
       config: { name: "test", model: "mock", augments: [] },
@@ -463,10 +393,8 @@ describe("Turn-gate 2PC dispatch", () => {
     expect(result.success).toBe(false);
     expect(result.status).toBe("rejected");
     expect(result.errorClass).toBe("admission-state-failed");
-    expect(result.error?.message).toBe('Turn gate "gate-b" failed during admission.');
+    expect(result.error?.message).toBe('Turn gate "gate" failed during admission.');
     expect(result.error?.message).not.toContain("db connection failed");
-    // Gate A's ticket should have been rolled back.
-    expect(rollbacksA).toHaveLength(1);
     expect(model.calls).toHaveLength(0);
   });
 

@@ -31,6 +31,12 @@ describe("resolveConfigBool", () => {
     });
   });
 
+  it("rejects non-boolean explicit values at runtime", () => {
+    expect(() => resolveConfigBool("false" as never, ENV_KEY, () => false)).toThrow(
+      /must be a boolean/,
+    );
+  });
+
   it("falls through to env when yaml is undefined", () => {
     process.env[ENV_KEY] = "true";
     expect(resolveConfigBool(undefined, ENV_KEY, () => false)).toEqual({

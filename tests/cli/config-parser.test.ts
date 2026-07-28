@@ -71,6 +71,34 @@ describe("parseConfig", () => {
     }
   });
 
+  test("rejects quoted web transport security booleans", () => {
+    const invalidOptions = [
+      { allowAnonymous: "false" },
+      { adminRoute: "false" },
+      { publicIntegration: "false" },
+      { visitorTokens: { enabled: "false" } },
+    ];
+    for (const [index, invalid] of invalidOptions.entries()) {
+      const path = writeYaml(
+        `web-security-boolean-${index}.yaml`,
+        minimalConfig({
+          augments: [
+            {
+              name: "web",
+              type: "webTransport",
+              options: {
+                port: 8080,
+                auth: { type: "bearer", token: "test-token" },
+                ...invalid,
+              },
+            },
+          ],
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(/must be a boolean/);
+    }
+  });
+
   test("accepts hardened anonymous network rate-limit policy", () => {
     const augments = [
       {

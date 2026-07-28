@@ -1172,20 +1172,20 @@ export interface AugmentHttpRoute {
   ) => Promise<Response>;
 }
 
-// === Turn Gate (2PC admission) ===
+// === Transactional Turn Gate ===
 
 /**
- * Pre-dispatch admission gate. Augments declaring `turnGate` participate
- * in two-phase commit (2PC) admission: the augment opens a transaction,
- * stages writes inside it, returns a ticket the kernel uses to confirm
- * (commit) or rollback (discard).
+ * Pre-dispatch admission gate. At most one augment in an agent may declare
+ * `turnGate`. The augment opens a transaction, stages writes inside it, and
+ * returns a ticket the kernel uses to confirm (commit) or rollback (discard).
  *
  * The kernel pairs every prepare with exactly one of confirm or rollback.
  * Storage transactions enforce atomicity; the augment cannot leak partial
  * state because the writes only escape into the live state when the
  * kernel signals confirm.
  *
- * v0 NOTE: This contract is FIRST-PARTY ONLY. The kernel cannot
+ * The single-owner rule avoids advertising cross-augment atomicity that the
+ * process cannot guarantee. v0 NOTE: This contract is FIRST-PARTY ONLY. The kernel cannot
  * mechanically prevent third-party augments from violating the
  * prepare-then-confirm contract (e.g. by writing outside the transaction).
  * v0 ships with the budgets augment as the sole turn-gate; third-party
@@ -1504,7 +1504,8 @@ export interface Augment {
   ) => Promise<TurnResult | null>;
   /**
    * Pre-dispatch admission gate. Kernel calls prepare/confirm/rollback
-   * before executing the turn. See TurnGateProvider for the 2PC contract.
+   * before executing the turn. Only one augment per agent may declare a
+   * turn gate. See TurnGateProvider for the transactional contract.
    *
    * v0 NOTE: First-party only. The budgets augment is the sole shipped
    * implementation. Third-party turn-gate augments are out of scope

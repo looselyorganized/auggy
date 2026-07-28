@@ -122,8 +122,8 @@ describe("layered-memory auto-save cost-flow (option a)", () => {
       {
         name: "test-agent",
         model: "mock",
-        // Order matters: budgetGate first so it observes the turn-gate
-        // 2PC, layered-memory second so its scheduleAfterTurn fires.
+        // budgetGate owns transactional admission; layered-memory schedules
+        // extraction after the user-facing turn completes.
         augments: [budgetGate, lm],
       },
       createMockModel({ response: "Hi Sam!" }),

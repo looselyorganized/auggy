@@ -24,7 +24,7 @@ export interface BuildBudgetPreambleInput {
  *   ratio === 0        → "Grace turn — summarize and close."
  *
  * Note on timing: when context() is called the current turn's reservation
- * is already committed (Phase 3 of the 2PC gate runs before the context
+ * is already committed (turn-gate confirm runs before the context
  * pipeline). So `used.thread` counts the current turn as consumed —
  * "remaining" values correctly reflect how many turns are left *after*
  * this one.
