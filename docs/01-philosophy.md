@@ -1,10 +1,16 @@
 # 01 — Product North Star
 
-Yes. My clearest understanding is:
+> **Give agents business capabilities—not backend access.**
 
-> Auggy is a self-hosted application runtime for adding a conversational agent to real software without turning the model into the application, the security boundary, or the system of record.
+Auggy runs business operations through TypeScript augments—controlled,
+predictable interfaces to application systems. Each augment can keep identity
+and authorization rules, typed schemas, tools, deterministic routes, and
+domain logic together.
 
-It occupies the missing layer between an LLM provider SDK and an engineering team’s existing services.
+In technical terms, Auggy is a self-hosted agent for adding natural language to
+real software without turning the model into the application, the security
+boundary, or the system of record. It occupies the missing layer between an
+LLM provider SDK and an engineering team’s existing services.
 
 ## The product thesis
 
@@ -18,7 +24,7 @@ A provider SDK can produce text and tool calls. It does not give a team a cohere
 - supporting web, Telegram, or other transports consistently;
 - tracing and testing the resulting behavior.
 
-Without a runtime such as Auggy, every team eventually invents those pieces independently—usually as middleware, prompt conventions, callbacks, and one-off glue.
+Without an agent runtime like Auggy's, every team eventually invents those pieces independently—usually as middleware, prompt conventions, callbacks, and one-off glue.
 
 Auggy standardizes that agent-specific plumbing while leaving the actual application in the team’s control.
 
@@ -156,8 +162,12 @@ Its strongest advantages are:
 
 It is less compelling for a throwaway chatbot, a purely deterministic CRUD application, a team wanting a no-code hosted builder, or a system whose main problem is durable workflow orchestration.
 
-My proposed positioning would therefore be:
+The product positioning is therefore:
 
-> **Auggy is a composable, self-hosted TypeScript runtime for building secure agents around an application’s existing capabilities. It gives engineering teams a deterministic boundary for identity, tools, policy, memory, transports, and observability while keeping business state and infrastructure under their control.**
+> **Give agents business capabilities—not backend access.**
+>
+> Auggy runs business operations through TypeScript augments—controlled,
+> predictable interfaces to your systems. Each augment bundles identity and
+> authorization rules, typed schemas, tools, routes, and domain logic.
 
-The recent security and distributed-coordination work supports that runtime promise. It was not inherently “platform work.” Some of it touched operational contracts required for serious self-hosting, but the product remains an application runtime—not a managed platform.
+The recent security and distributed-coordination work supports that runtime promise. It was not inherently “platform work.” Some of it touched operational contracts required for serious self-hosting, but the product remains a self-hosted agent with an application runtime—not a managed platform.

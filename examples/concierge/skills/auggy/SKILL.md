@@ -1,6 +1,6 @@
 ---
 name: auggy
-description: Build and troubleshoot self-hosted Auggy agents with custom augments, tools, memory, transports, skills, MCP, deployment, and optional app-integration routes.
+description: Build and troubleshoot self-hosted Auggy agents that run business operations through controlled TypeScript custom augments with tools, routes, identity, authorization, domain logic, memory, transports, skills, MCP, deployment, and optional app-integration routes.
 allowedTrustLevels:
   - creator
 ---
@@ -63,7 +63,13 @@ surface and then give concise default guidance from this skill.
 
 ## What Auggy Is
 
-Auggy is a small TypeScript runtime for self-hosted agents.
+Auggy is a self-hosted agent for business operations. It runs those operations
+through TypeScript augments: controlled, predictable interfaces to application
+systems. An application-specific augment can keep identity and authorization
+rules, typed schemas, tools, routes, and domain logic together while the
+application remains the system of record.
+
+Underneath, a small TypeScript runtime executes the agent:
 
 - **The kernel** runs turns: receive input, assemble context, call a model,
   execute validated tools, and return a result.
