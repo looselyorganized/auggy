@@ -246,6 +246,7 @@ jobs:
       - name: Create checksums and publish release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: looselyorganized/auggy
           REF_NAME: ${{ github.ref_name }}
           IS_PRERELEASE: ${{ needs.verify.outputs.is_prerelease }}
           RELEASE_ARTIFACT_DIR: ${{ runner.temp }}/release-artifacts
