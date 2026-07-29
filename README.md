@@ -28,7 +28,7 @@ npm's `next` tag; pin its exact version for production-like evaluation until
 ## Quick Start
 
 ```bash
-bun add --global auggy@0.5.0-rc.2
+bun add --global auggy@0.5.0-rc.3
 auggy create my-agent
 cd my-agent
 auggy doctor
