@@ -19,6 +19,7 @@ import {
   LOGIN_ARTIFACT_SCHEMA_VERSION,
   LOGIN_HTML_PATHS,
   LOGIN_MANIFEST_FILENAME,
+  MAX_LOGIN_STYLESHEET_BYTES,
   renderLoginDocument,
   serializeLoginManifest,
   sha256Hex,
@@ -358,6 +359,14 @@ describe("login artifact manifest", () => {
       (manifest: LoginArtifactManifest) => Object.assign(manifest.artifacts[0]!, { size: 1.5 }),
     ],
     [
+      "oversized stylesheet",
+      (manifest: LoginArtifactManifest) =>
+        Object.assign(
+          manifest.artifacts.find((entry) => entry.logicalName === "stylesheet")!,
+          { size: MAX_LOGIN_STYLESHEET_BYTES + 1 },
+        ),
+    ],
+    [
       "uppercase digest",
       (manifest: LoginArtifactManifest) =>
         Object.assign(manifest.artifacts[0]!, { sha256: "A".repeat(64) }),
@@ -408,6 +417,14 @@ describe("login artifact build", () => {
       "manifest.json",
     ]);
     expect(Object.keys(first).some((path) => /\.(?:js|map)$/.test(path))).toBeFalse();
+    const stylesheetPath = paths[0];
+    if (!stylesheetPath) throw new Error("login build did not emit a stylesheet");
+    const stylesheetBytes = readFileSync(join(destination, ...stylesheetPath.split("/")));
+    const stylesheet = stylesheetBytes.toString("utf8");
+    expect(stylesheetBytes.byteLength).toBeLessThan(40 * 1024);
+    for (const unrelatedSelector of [".animate-spin", ".grid-cols-3", ".overflow-x-auto"]) {
+      expect(stylesheet).not.toContain(unrelatedSelector);
+    }
     expect(() => verifyLoginArtifactDirectory(destination)).not.toThrow();
 
     writeFileSync(join(destination, "stale.js"), "alert(1)");

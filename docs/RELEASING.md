@@ -142,11 +142,19 @@ If you manually test only the local CLI tarball before publishing, pin generated
 agents to that same core tarball:
 
 ```bash
+bun install --frozen-lockfile
 npm pack
 PACK="$(ls -t auggy-*.tgz | head -1)"
 npm i -g "$PWD/$PACK"
 export AUGGY_SCAFFOLD_AUGGY_SPEC="file:$PWD/$PACK"
 ```
+
+The root package's `prepack` lifecycle rebuilds and independently verifies the
+authenticated Console SPA plus the three fixed no-JavaScript login variants
+before npm creates the tarball. Do not pass `--ignore-scripts` when packing from
+a source checkout; that bypasses this stale/missing-artifact guard. The publish
+workflow uses `--ignore-scripts` only when publishing the already-built,
+smoke-verified tarball artifact.
 
 From the repository checkout, `auggy create` automatically pairs that local
 core tarball with the matching local provider adapter under `packages/`. For a
@@ -183,7 +191,8 @@ Manual checks:
 Package artifact checks are covered by `bun run smoke:release`:
 
 - [ ] Tarball includes CLI source, `README.md`, `CHANGELOG.md`, `LICENSE`, `SECURITY.md`, and `admin/dist/index.html`
-- [ ] Tarball includes built console JS/CSS
+- [ ] Tarball includes built Console JS/CSS plus the login manifest, three fixed HTML variants, and one fingerprinted login stylesheet
+- [ ] Tarball contains no login JavaScript or source maps
 - [ ] Tarball excludes source maps and local-only state (`.env`, `.git/`, `.auggy/`, `node_modules/`, `docs/`, `tests/`)
 
 Augment checks:

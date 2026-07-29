@@ -187,6 +187,11 @@ describe("loadConsoleLoginArtifacts", () => {
       );
       expect(await loadConsoleLoginArtifacts(root)).toBeUndefined();
     }
+    {
+      const { root, loginRoot } = createFixture();
+      replaceAndResign(loginRoot, "stylesheet", () => `.x{color:red}${" ".repeat(40 * 1024)}`);
+      expect(await loadConsoleLoginArtifacts(root)).toBeUndefined();
+    }
   });
 
   test("rejects a symlinked artifact even when it resolves inside the login root", async () => {

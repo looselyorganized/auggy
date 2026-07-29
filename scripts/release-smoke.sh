@@ -314,7 +314,10 @@ require_pack_entry "src/cli/model-registry.ts"
 require_pack_entry "src/cli/model-snapshot.ts"
 require_pack_entry "src/scaffold-starter-skills/auggy/assets/templates/nextjs-server-client/admin-reindex-route.ts.txt"
 require_pack_entry "admin/dist/index.html"
-require_pack_entry "admin/dist/login/login.html"
+require_pack_entry "admin/dist/login/default.html"
+require_pack_entry "admin/dist/login/invalid-password.html"
+require_pack_entry "admin/dist/login/invalid-ticket.html"
+require_pack_entry "admin/dist/login/manifest.json"
 require_pack_entry "README.md"
 require_pack_entry "CHANGELOG.md"
 require_pack_entry "LICENSE"
@@ -330,13 +333,32 @@ grep -Eq '^package/admin/dist/assets/.+\.js$' "$PACK_LIST" \
   || fail "tarball missing built console JavaScript"
 grep -Eq '^package/admin/dist/assets/.+\.css$' "$PACK_LIST" \
   || fail "tarball missing built console CSS"
-grep -Eq '^package/admin/dist/login/assets/.+\.js$' "$PACK_LIST" \
-  || fail "tarball missing built Console login JavaScript"
-grep -Eq '^package/admin/dist/login/assets/.+\.css$' "$PACK_LIST" \
-  || fail "tarball missing built Console login CSS"
+reject_pack_pattern '^package/admin/dist/login/.*\.(js|mjs|cjs|map)$' \
+  "tarball includes executable Console login output or source maps"
 reject_pack_pattern '\.map$' "tarball includes source maps"
 reject_pack_pattern '^package/(\.env|node_modules/|\.git/|\.auggy/|docs/|tests/)' \
   "tarball includes local-only files"
+
+PACKED_LOGIN_ROOT="$SMOKE_DIR/packed-login"
+mkdir -p "$PACKED_LOGIN_ROOT"
+tar -xf "$TARBALL" -C "$PACKED_LOGIN_ROOT"
+PACKED_LOGIN_DIR="$PACKED_LOGIN_ROOT/package/admin/dist/login"
+if grep -R -F -l "$ROOT" "$PACKED_LOGIN_ROOT/package" >"$LOG_DIR/packed-source-paths.txt"; then
+  fail "packed Auggy artifact embeds the source checkout path"
+fi
+PACKED_LOGIN_STYLESHEET_PATH="$(
+  cd "$ROOT/admin"
+  bun -e '
+    import { verifyLoginArtifactDirectory } from "./scripts/login-artifacts";
+    const manifest = verifyLoginArtifactDirectory(process.argv[1]);
+    const stylesheet = manifest.artifacts.find((entry) => entry.logicalName === "stylesheet");
+    if (!stylesheet) throw new Error("packed login stylesheet is missing");
+    process.stdout.write(stylesheet.path);
+  ' "$PACKED_LOGIN_DIR"
+)" || fail "packed Console login artifact verification failed"
+[[ "$PACKED_LOGIN_STYLESHEET_PATH" =~ ^assets/login-[A-Za-z0-9_-]{6,64}\.css$ ]] \
+  || fail "packed Console login manifest has an invalid stylesheet path"
+require_pack_entry "admin/dist/login/$PACKED_LOGIN_STYLESHEET_PATH"
 
 assert_augment_metadata() {
   local id="$1"
@@ -441,6 +463,18 @@ info "install agent dependencies"
   cd "$AGENT_DIR"
   bun install
 )
+PACKED_AUGGY_REALPATH="$(
+  cd "$AGENT_DIR"
+  node -e 'process.stdout.write(require("node:fs").realpathSync("node_modules/auggy"))'
+)"
+PACKED_AGENT_REALPATH="$(
+  cd "$AGENT_DIR"
+  node -e 'process.stdout.write(require("node:fs").realpathSync("."))'
+)"
+case "$PACKED_AUGGY_REALPATH" in
+  "$PACKED_AGENT_REALPATH"/node_modules/*) ;;
+  *) fail "generated agent resolved auggy outside its isolated node_modules" ;;
+esac
 
 info "audit installed agent"
 (
@@ -530,24 +564,67 @@ esac
 HTTP_STATUS=""
 HTTP_CONTENT_TYPE=""
 HTTP_BODY=""
-fetch_console_resource() {
+HTTP_HEADERS=""
+capture_console_request() {
   local resource_path="$1"
   local log_name="$2"
+  shift 2
   local metadata
   HTTP_BODY="$LOG_DIR/$log_name.body"
+  HTTP_HEADERS="$LOG_DIR/$log_name.headers"
   if ! metadata="$(
     curl --silent --show-error \
       --connect-timeout 2 \
       --max-time 10 \
-      --user ":$WEB_TOKEN" \
-      --dump-header "$LOG_DIR/$log_name.headers" \
+      --dump-header "$HTTP_HEADERS" \
       --output "$HTTP_BODY" \
       --write-out $'%{http_code}\t%{content_type}' \
+      "$@" \
       "http://127.0.0.1:$SMOKE_PORT$resource_path"
   )"; then
     fail "could not fetch packed console resource: $resource_path"
   fi
   IFS=$'\t' read -r HTTP_STATUS HTTP_CONTENT_TYPE <<<"$metadata"
+}
+
+fetch_console_resource() {
+  local resource_path="$1"
+  local log_name="$2"
+  capture_console_request "$resource_path" "$log_name" --user ":$WEB_TOKEN"
+}
+
+response_header_value() {
+  local header_name="$1"
+  node - "$HTTP_HEADERS" "$header_name" <<'NODE'
+const { readFileSync } = require("node:fs");
+const [file, expectedName] = process.argv.slice(2);
+const lines = readFileSync(file, "utf8").split(/\r?\n/);
+for (let index = lines.length - 1; index >= 0; index -= 1) {
+  const line = lines[index];
+  const separator = line.indexOf(":");
+  if (separator < 0) continue;
+  if (line.slice(0, separator).toLowerCase() !== expectedName.toLowerCase()) continue;
+  process.stdout.write(line.slice(separator + 1).trim());
+  process.exit(0);
+}
+NODE
+}
+
+assert_status() {
+  local expected_status="$1"
+  local description="$2"
+  [[ "$HTTP_STATUS" == "$expected_status" ]] \
+    || fail "$description returned HTTP $HTTP_STATUS, expected $expected_status"
+}
+
+assert_header_exact() {
+  local header_name="$1"
+  local expected_value="$2"
+  local description="$3"
+  local actual_value
+  actual_value="$(response_header_value "$header_name")"
+  [[ "$actual_value" == "$expected_value" ]] \
+    || fail "$description returned $header_name '$actual_value', expected '$expected_value'"
 }
 
 assert_console_response() {
@@ -562,6 +639,165 @@ assert_console_response() {
       ;;
   esac
 }
+
+LOGIN_CSP="default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'"
+
+capture_console_request "/console" "console-unauthenticated"
+assert_status "303" "unauthenticated Console navigation"
+assert_header_exact "location" "/console/login?next=%2Fconsole" \
+  "unauthenticated Console navigation"
+assert_header_exact "cache-control" "no-store" "unauthenticated Console navigation"
+
+capture_console_request "/console/login?next=%2Fconsole" "console-login-default"
+assert_status "200" "packed Console login"
+[[ "$HTTP_CONTENT_TYPE" == text/html* ]] \
+  || fail "packed Console login returned $HTTP_CONTENT_TYPE, expected text/html"
+assert_header_exact "content-security-policy" "$LOGIN_CSP" "packed Console login"
+assert_header_exact "cache-control" "no-store" "packed Console login"
+LOGIN_HTML="$HTTP_BODY"
+grep -Fq 'data-auggy-login-source="registry"' "$LOGIN_HTML" \
+  || fail "packed Console login did not serve the registry-authored document"
+grep -Fq 'data-auggy-login-variant="default"' "$LOGIN_HTML" \
+  || fail "packed Console login did not serve the default fixed variant"
+grep -Eq '<form[^>]*method="post"' "$LOGIN_HTML" \
+  || fail "packed Console login does not contain a native POST form"
+grep -Eq '<input[^>]*name="password"' "$LOGIN_HTML" \
+  || fail "packed Console login does not contain a named password control"
+grep -Eq '<input[^>]*type="password"' "$LOGIN_HTML" \
+  || fail "packed Console login does not contain the password control"
+if grep -Eqi '<script([[:space:]>])|[[:space:]]on[a-z]+=' "$LOGIN_HTML"; then
+  fail "packed Console login contains executable browser content"
+fi
+LOGIN_STYLESHEET_URL="/console/login-assets/$PACKED_LOGIN_STYLESHEET_PATH"
+grep -Fq "href=\"$LOGIN_STYLESHEET_URL\"" "$LOGIN_HTML" \
+  || fail "packed Console login does not reference the manifest-listed stylesheet"
+if grep -Fq "$WEB_TOKEN" "$LOGIN_HTML"; then
+  fail "packed Console login leaked AUGGY_WEB_TOKEN"
+fi
+
+capture_console_request "$LOGIN_STYLESHEET_URL" "console-login-stylesheet"
+assert_status "200" "packed Console login stylesheet"
+[[ "$HTTP_CONTENT_TYPE" == text/css* ]] \
+  || fail "packed Console login stylesheet returned $HTTP_CONTENT_TYPE, expected text/css"
+assert_header_exact "cache-control" "public, max-age=31536000, immutable" \
+  "packed Console login stylesheet"
+assert_header_exact "content-security-policy" "frame-ancestors 'none'" \
+  "packed Console login stylesheet"
+assert_header_exact "x-content-type-options" "nosniff" \
+  "packed Console login stylesheet"
+
+capture_console_request "$LOGIN_STYLESHEET_URL" "console-login-stylesheet-head" \
+  --request HEAD
+assert_status "200" "packed Console login stylesheet HEAD"
+[[ "$HTTP_CONTENT_TYPE" == text/css* ]] \
+  || fail "packed Console login stylesheet HEAD returned $HTTP_CONTENT_TYPE, expected text/css"
+assert_header_exact "cache-control" "public, max-age=31536000, immutable" \
+  "packed Console login stylesheet HEAD"
+[[ ! -s "$HTTP_BODY" ]] || fail "packed Console login stylesheet HEAD returned a body"
+
+LOGIN_JAVASCRIPT_URL="${LOGIN_STYLESHEET_URL%.css}.js"
+negative_login_asset_index=0
+for rejected_login_path in \
+  "/console/login-assets/manifest.json" \
+  "/console/login-assets/default.html" \
+  "$LOGIN_JAVASCRIPT_URL" \
+  "/console/login-assets/assets/unknown.css" \
+  "/console/login-assets/%2e%2e%2Fdefault.html"; do
+  negative_login_asset_index=$((negative_login_asset_index + 1))
+  capture_console_request "$rejected_login_path" \
+    "console-login-rejected-$negative_login_asset_index"
+  assert_status "404" "rejected pre-auth Console login asset $rejected_login_path"
+  assert_header_exact "cache-control" "no-store" \
+    "rejected pre-auth Console login asset $rejected_login_path"
+done
+
+capture_console_request "/console/login" "console-login-invalid-password" \
+  --request POST \
+  --header "origin: http://127.0.0.1:$SMOKE_PORT" \
+  --header "content-type: application/x-www-form-urlencoded" \
+  --data-urlencode "password=definitely-not-the-console-password"
+assert_status "401" "invalid Console password"
+assert_header_exact "content-security-policy" "$LOGIN_CSP" "invalid Console password"
+grep -Fq 'data-auggy-login-variant="invalid-password"' "$HTTP_BODY" \
+  || fail "invalid Console password did not serve the fixed branded error variant"
+grep -Fq "Invalid console password." "$HTTP_BODY" \
+  || fail "invalid Console password did not return the generic error"
+if grep -Fq "definitely-not-the-console-password" "$HTTP_BODY"; then
+  fail "invalid Console password response echoed the submitted value"
+fi
+
+CONSOLE_PASSWORD_COOKIE_JAR="$SMOKE_DIR/console-password.cookies"
+capture_console_request "/console/login?next=%2Fconsole%2Fchat" \
+  "console-login-valid-password" \
+  --request POST \
+  --header "origin: http://127.0.0.1:$SMOKE_PORT" \
+  --header "content-type: application/x-www-form-urlencoded" \
+  --data-urlencode "password=$WEB_TOKEN" \
+  --cookie-jar "$CONSOLE_PASSWORD_COOKIE_JAR"
+assert_status "303" "valid Console password"
+assert_header_exact "location" "/console/chat" "valid Console password"
+PASSWORD_SET_COOKIE="$(response_header_value "set-cookie")"
+[[ "$PASSWORD_SET_COOKIE" == *HttpOnly* && "$PASSWORD_SET_COOKIE" == *SameSite=Lax* \
+  && "$PASSWORD_SET_COOKIE" == *Path=/console* ]] \
+  || fail "valid Console password did not establish the hardened HttpOnly session"
+
+capture_console_request "/console/chat" "console-password-session" \
+  --cookie "$CONSOLE_PASSWORD_COOKIE_JAR"
+assert_status "200" "password-authenticated Console session"
+[[ "$HTTP_CONTENT_TYPE" == text/html* ]] \
+  || fail "password-authenticated Console session did not receive HTML"
+
+capture_console_request "/console/api/cli-login" "console-cli-ticket-issue" \
+  --request POST \
+  --user ":$WEB_TOKEN"
+assert_status "200" "Console CLI ticket issue"
+assert_header_exact "cache-control" "no-store, must-revalidate" "Console CLI ticket issue"
+CLI_LOGIN_PATH="$(node - "$HTTP_BODY" <<'NODE'
+const { readFileSync } = require("node:fs");
+const value = JSON.parse(readFileSync(process.argv[2], "utf8"));
+if (
+  !value ||
+  typeof value !== "object" ||
+  Array.isArray(value) ||
+  Object.keys(value).sort().join(",") !== "expiresInSeconds,loginPath" ||
+  typeof value.loginPath !== "string" ||
+  !/^\/console\/cli-login\/[A-Za-z0-9_-]{43}$/.test(value.loginPath) ||
+  !Number.isInteger(value.expiresInSeconds) ||
+  value.expiresInSeconds < 1 ||
+  value.expiresInSeconds > 30
+) {
+  throw new Error("packed Console CLI ticket response is malformed");
+}
+process.stdout.write(value.loginPath);
+NODE
+)" || fail "packed Console CLI ticket response validation failed"
+
+CONSOLE_TICKET_COOKIE_JAR="$SMOKE_DIR/console-ticket.cookies"
+capture_console_request "$CLI_LOGIN_PATH" "console-cli-ticket-consume" \
+  --cookie-jar "$CONSOLE_TICKET_COOKIE_JAR"
+assert_status "303" "Console CLI ticket consume"
+assert_header_exact "location" "/console/chat" "Console CLI ticket consume"
+TICKET_SET_COOKIE="$(response_header_value "set-cookie")"
+[[ "$TICKET_SET_COOKIE" == *HttpOnly* && "$TICKET_SET_COOKIE" == *SameSite=Lax* \
+  && "$TICKET_SET_COOKIE" == *Path=/console* ]] \
+  || fail "Console CLI ticket did not establish the hardened HttpOnly session"
+
+capture_console_request "/console/chat" "console-cli-ticket-session" \
+  --cookie "$CONSOLE_TICKET_COOKIE_JAR"
+assert_status "200" "CLI-ticket-authenticated Console session"
+[[ "$HTTP_CONTENT_TYPE" == text/html* ]] \
+  || fail "CLI-ticket-authenticated Console session did not receive HTML"
+
+capture_console_request "$CLI_LOGIN_PATH" "console-cli-ticket-replay"
+assert_status "401" "Console CLI ticket replay"
+assert_header_exact "content-security-policy" "$LOGIN_CSP" "Console CLI ticket replay"
+grep -Fq 'data-auggy-login-variant="invalid-ticket"' "$HTTP_BODY" \
+  || fail "Console CLI ticket replay did not serve the fixed branded error variant"
+grep -Fq "This automatic sign-in link is invalid or expired." "$HTTP_BODY" \
+  || fail "Console CLI ticket replay did not return the generic error"
+if grep -Fq "$CLI_LOGIN_PATH" "$HTTP_BODY"; then
+  fail "Console CLI ticket replay response leaked the one-time path"
+fi
 
 fetch_console_resource "/console/chat" "console-chat"
 assert_console_response "/console/chat" "text/html"
@@ -579,6 +815,15 @@ if (assets.size > 0) process.stdout.write("\n");
 NODE
 grep -Eq '\.js$' "$CONSOLE_ASSETS" || fail "served console HTML does not reference JavaScript"
 grep -Eq '\.css$' "$CONSOLE_ASSETS" || fail "served console HTML does not reference CSS"
+
+PREAUTH_CONSOLE_ASSET="$(sed -n '1p' "$CONSOLE_ASSETS")"
+[[ -n "$PREAUTH_CONSOLE_ASSET" ]] || fail "served console HTML has no asset to test pre-auth isolation"
+capture_console_request "$PREAUTH_CONSOLE_ASSET" "console-asset-preauth"
+assert_status "303" "unauthenticated main Console asset"
+PREAUTH_ASSET_LOCATION="$(response_header_value "location")"
+[[ "$PREAUTH_ASSET_LOCATION" == /console/login\?next=* ]] \
+  || fail "unauthenticated main Console asset did not redirect to first-party login"
+assert_header_exact "cache-control" "no-store" "unauthenticated main Console asset"
 
 asset_index=0
 while IFS= read -r asset_path; do
@@ -598,6 +843,13 @@ for brand_path in "/console/brand/auggy-wave.png" "/console/brand/auggy-white.pn
   fetch_console_resource "$brand_path" "console-brand-$brand_index"
   assert_console_response "$brand_path" "image/png"
 done
+
+if grep -Fq "$CLI_LOGIN_PATH" "$LOG_DIR/console-cli-ticket-replay.headers"; then
+  fail "Console CLI ticket replay headers leaked the one-time path"
+fi
+if grep -R -Fq "$WEB_TOKEN" "$LOG_DIR"; then
+  fail "packed runtime responses or logs leaked AUGGY_WEB_TOKEN"
+fi
 
 kill "$SERVER_PID" 2>/dev/null || true
 wait "$SERVER_PID" 2>/dev/null || true

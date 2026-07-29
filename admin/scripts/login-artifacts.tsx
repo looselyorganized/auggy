@@ -11,6 +11,8 @@ import {
 
 export const LOGIN_ARTIFACT_SCHEMA_VERSION = 1 as const;
 export const LOGIN_MANIFEST_FILENAME = "manifest.json";
+export const MAX_LOGIN_HTML_BYTES = 256 * 1024;
+export const MAX_LOGIN_STYLESHEET_BYTES = 40 * 1024;
 
 export const LOGIN_HTML_PATHS: Readonly<Record<LoginVariant, string>> = {
   default: "default.html",
@@ -113,7 +115,9 @@ export function validateLoginManifest(value: unknown): asserts value is LoginArt
     } else if (path !== expectedHtmlPath || mediaType !== "text/html") {
       throw new Error("login manifest HTML entry is invalid");
     }
-    if (!Number.isSafeInteger(size) || (size as number) <= 0) {
+    const byteLimit =
+      logicalName === "stylesheet" ? MAX_LOGIN_STYLESHEET_BYTES : MAX_LOGIN_HTML_BYTES;
+    if (!Number.isSafeInteger(size) || (size as number) <= 0 || (size as number) > byteLimit) {
       throw new Error("login manifest artifact size is invalid");
     }
     if (typeof sha256 !== "string" || !/^[a-f0-9]{64}$/.test(sha256)) {

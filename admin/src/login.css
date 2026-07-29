@@ -1,4 +1,4 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
 @import "./auggy-theme.css";
 
 @source "./LoginPage.tsx";

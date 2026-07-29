@@ -31,7 +31,7 @@ interface LoginArtifactManifest {
 const LOGIN_MANIFEST_FILENAME = "manifest.json";
 const MAX_MANIFEST_BYTES = 64 * 1024;
 const MAX_HTML_BYTES = 256 * 1024;
-const MAX_STYLESHEET_BYTES = 1024 * 1024;
+const MAX_STYLESHEET_BYTES = 40 * 1024;
 const TEXT_DECODER = new TextDecoder("utf-8", { fatal: true });
 const HTML_PATHS: Readonly<Record<ConsoleLoginVariant, string>> = {
   default: "default.html",

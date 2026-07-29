@@ -99,6 +99,8 @@
     "dx:agent": "bash scripts/dx-lab-agent.sh",
     "smoke:release": "bash scripts/release-smoke.sh",
     "build:admin": "bun run --cwd admin build",
+    "verify:admin": "bun run --cwd admin verify:build",
+    "prepack": "bun scripts/prepack.ts",
     "typecheck": "tsc --noEmit",
     "lint": "bunx --bun @biomejs/biome@2.5.5 check",
     "lint:fix": "bunx --bun @biomejs/biome@2.5.5 check --write",

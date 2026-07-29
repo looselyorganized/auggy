@@ -6358,6 +6358,67 @@ describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
     }
   });
 
+  it("delegates Console login method contracts through the booted HTTP boundary", async () => {
+    const model = createMockModel();
+    const port = 29515;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const origin = `http://127.0.0.1:${port}`;
+      const login = await fetch(`${origin}/console/login`);
+      expect(login.status).toBe(200);
+      expect(login.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      expect(login.headers.get("cache-control")).toBe("no-store");
+      expect(login.headers.get("content-security-policy")).toBe(
+        "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      );
+      const loginBody = await login.text();
+      expect(loginBody).toMatch(/data-auggy-login-source="(?:fallback|registry)"/);
+      expect(loginBody).toMatch(/<form\b[^>]*method="post"/i);
+      expect(loginBody).not.toMatch(/<script\b/i);
+
+      const assetUrl = `${origin}/console/login-assets/assets/login-missing-test.css`;
+      const head = await fetch(assetUrl, { method: "HEAD" });
+      expect(head.status).toBe(404);
+      expect(head.headers.get("cache-control")).toBe("no-store");
+      expect(await head.text()).toBe("");
+
+      for (const method of ["PUT", "OPTIONS"]) {
+        const response = await fetch(assetUrl, { method, headers: { origin } });
+        expect(response.status).toBe(405);
+        expect(response.headers.get("allow")).toBe("GET, HEAD");
+      }
+
+      const loginOptions = await fetch(`${origin}/console/login`, {
+        method: "OPTIONS",
+        headers: { origin },
+      });
+      expect(loginOptions.status).toBe(405);
+      expect(loginOptions.headers.get("allow")).toBe("GET, POST");
+
+      const ticketOptions = await fetch(`${origin}/console/cli-login/${"A".repeat(43)}`, {
+        method: "OPTIONS",
+        headers: { origin },
+      });
+      expect(ticketOptions.status).toBe(405);
+      expect(ticketOptions.headers.get("allow")).toBe("GET");
+
+      const basic = Buffer.from(":test-token").toString("base64");
+      const issueOptions = await fetch(`${origin}/console/api/cli-login`, {
+        method: "OPTIONS",
+        headers: { authorization: `Basic ${basic}`, origin },
+      });
+      expect(issueOptions.status).toBe(405);
+      expect(issueOptions.headers.get("allow")).toBe("POST");
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("HEAD /admin → 405 with Allow: GET, POST", async () => {
     const model = createMockModel();
     const port = 19202;
