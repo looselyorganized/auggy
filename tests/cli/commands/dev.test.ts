@@ -30,6 +30,7 @@ describe("formatDevReadyMessage", () => {
     expect(out).toContain("  Console:  http://localhost:8080/console");
     expect(out).toContain("  Health:   http://localhost:8080/health");
     expect(out).toContain("  Home:     http://localhost:8080/");
+    expect(out).toContain("  Password: AUGGY_WEB_TOKEN in .env (manual sign-in)");
     expect(out).toContain("Extend it:");
     expect(out).toContain("  auggy augment list");
     expect(out).toContain("  auggy augment add <name>");
@@ -66,6 +67,7 @@ describe("formatDevReadyMessage", () => {
     expect(out).toContain("  Console:  https://zip-production.up.railway.app/console");
     expect(out).toContain("  Health:   https://zip-production.up.railway.app/health");
     expect(out).toContain("  Home:     https://zip-production.up.railway.app");
+    expect(out).toContain("  Password: AUGGY_WEB_TOKEN Railway variable (manual sign-in)");
     expect(out).toContain("Config: agent.yaml");
     expect(out).toContain("Runtime: Railway");
     expect(out).not.toContain("http://localhost:8080");

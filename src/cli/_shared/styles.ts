@@ -3,7 +3,7 @@ export interface CliStyleOptions {
 }
 
 function shouldColor(opts: CliStyleOptions): boolean {
-  return opts.color ?? Boolean(process.stdout.isTTY);
+  return opts.color ?? (Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined);
 }
 
 function ansi(code: number, value: string, opts: CliStyleOptions): string {

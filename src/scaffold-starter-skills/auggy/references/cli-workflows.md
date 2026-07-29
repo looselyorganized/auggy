@@ -50,13 +50,21 @@ var name. Do not ask them to paste the secret value into chat.
 auggy run
 ```
 
-Then open the console URL shown by the CLI. The chat surface is normally under
-`/console/chat`.
+The CLI opens the Console chat already signed in. If automatic sign-in is
+unavailable, use `AUGGY_WEB_TOKEN` from the agent's `.env` on the password
+screen.
 
 If the agent is a named project outside the current directory:
 
 ```bash
 auggy run <name>
+```
+
+To open an already-running local agent or its saved Railway deployment without
+starting it:
+
+```bash
+auggy console <name>
 ```
 
 ## Inspect Routes

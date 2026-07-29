@@ -6322,6 +6322,42 @@ describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
     }
   });
 
+  it("exchanges a CLI bearer for a one-time browser session", async () => {
+    const model = createMockModel();
+    const port = 19213;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const basic = Buffer.from("auggy:test-token").toString("base64");
+      const issued = await fetch(`http://127.0.0.1:${port}/console/api/cli-login`, {
+        method: "POST",
+        headers: { authorization: `Basic ${basic}` },
+      });
+      expect(issued.status).toBe(200);
+      const body = (await issued.json()) as { loginPath: string };
+      expect(body.loginPath).toMatch(/^\/console\/cli-login\/[A-Za-z0-9_-]{43}$/);
+
+      const consume = () =>
+        fetch(`http://127.0.0.1:${port}${body.loginPath}`, { redirect: "manual" });
+      const login = await consume();
+      expect(login.status).toBe(303);
+      expect(login.headers.get("location")).toBe("/console/chat");
+      const cookie = login.headers.get("set-cookie")!.split(";")[0]!;
+
+      const dashboard = await fetch(`http://127.0.0.1:${port}/console/api/dashboard`, {
+        headers: { cookie },
+      });
+      expect(dashboard.status).toBe(200);
+      expect((await consume()).status).toBe(401);
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("HEAD /admin → 405 with Allow: GET, POST", async () => {
     const model = createMockModel();
     const port = 19202;

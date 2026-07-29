@@ -60,7 +60,7 @@ export function mockInquirerPrompts(getAnswers: () => Answers): void {
       choices: Array<{ name?: string; value: unknown }>;
     }) => {
       const answers = getAnswers();
-      if (config.message.startsWith("Engine provider")) return answers.provider ?? "anthropic";
+      if (config.message.startsWith("Model provider")) return answers.provider ?? "anthropic";
       if (config.message.startsWith("Where does Ollama")) return answers.ollamaMode ?? "local";
       if (config.message.startsWith("Model:")) return answers.model ?? "claude-sonnet-4-6";
       return config.choices[0]?.value;
@@ -69,7 +69,8 @@ export function mockInquirerPrompts(getAnswers: () => Answers): void {
       const answers = getAnswers();
       if (config.message.startsWith("Agent display name"))
         return answers.displayName ?? config.default ?? "";
-      if (config.message.startsWith("Operator name")) return answers.operatorName ?? "tester";
+      if (config.message.startsWith("Creator name"))
+        return answers.operatorName ?? config.default ?? "tester";
       if (config.message.startsWith("Agent purpose")) return answers.purpose ?? "testing";
       if (config.message.startsWith("Ollama URL")) return answers.ollamaBaseURL ?? "";
       return config.default ?? "";

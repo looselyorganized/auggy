@@ -91,13 +91,14 @@ Runtime data and generated artifacts belong here instead of next to agent.yaml,
 identity.md, or .env.
 `;
 
-// ANSI color helpers. Truecolor #FBF7EB ("cream") matches the facility palette.
+// ANSI color helpers. Cream and signal orange mirror the public site palette.
 // Strips to plain text when stdout is not a TTY so piped output stays clean.
-const IS_TTY = Boolean(process.stdout.isTTY);
+const IS_TTY = Boolean(process.stdout.isTTY) && process.env.NO_COLOR === undefined;
 const ansi = (code: string, s: string): string => (IS_TTY ? `\x1b[${code}m${s}\x1b[0m` : s);
 const bold = (s: string): string => ansi("1", s);
 const dim = (s: string): string => ansi("2", s);
 const cream = (s: string): string => ansi("38;2;251;247;235", s);
+const signal = (s: string): string => ansi("38;2;236;113;60", s);
 const green = (s: string): string => ansi("32", s);
 
 export interface CreateOpts {
@@ -180,7 +181,7 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
   const provider = await withEscRestart((ctx) =>
     select<Provider>(
       {
-        message: "Engine provider:",
+        message: "Model provider:",
         choices: [
           { name: "anthropic — Claude models", value: "anthropic" },
           { name: "openai — GPT models", value: "openai" },
@@ -252,7 +253,7 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
     const key = await withEscRestart((ctx) =>
       password(
         {
-          message: `${providerLabel(provider)} API key (optional):`,
+          message: `${providerLabel(provider)} API key (optional, saved to .env):`,
           mask: "*",
         },
         ctx,
@@ -419,7 +420,7 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
   const operatorName = await withEscRestart((ctx) =>
     input(
       {
-        message: "Creator name (what Auggy should call you after runtime verification):",
+        message: "Creator name (used after local verification):",
         default: DEFAULT_OPERATOR_NAME,
       },
       ctx,
@@ -555,7 +556,7 @@ async function runCreateIntoDir(
     copyStarterSkills(tempDir);
 
     console.log();
-    console.log(dim(" Installing augments..."));
+    console.log(dim(" Adding core augments..."));
     console.log();
     for (const entry of augments) {
       copyBundledSkill(entry.type, tempDir);
@@ -720,7 +721,7 @@ async function runCreateIntoDir(
   }
 
   console.log();
-  console.log(dim(" ─────────────────────────────────────────────"));
+  console.log(signal(" ─────────────────────────────────────────────"));
   console.log();
   console.log(` ${green("✓")} ${bold(cream(`Agent "${name}" created`))}`);
   console.log(`   ${dim(displayPath(finalDir, opts.cwd))}`);
@@ -751,9 +752,8 @@ async function runCreateIntoDir(
     console.log(
       `   ${cream(`${step++}.`)}  Set .env   ${dim(`(${envVarsForNextSteps.join(", ")})`)}`,
     );
-  } else {
-    console.log(`   ${cream(`${step++}.`)}  Open in your editor   ${dim("(identity.md, .env)")}`);
   }
+  console.log(`   ${cream(`${step++}.`)}  auggy doctor`);
   console.log(`   ${cream(`${step++}.`)}  auggy run`);
   console.log();
 }
@@ -947,21 +947,22 @@ function printWelcome(): void {
   ];
 
   console.log();
-  for (const line of banner) console.log(cream(line));
+  for (const line of banner) console.log(signal(line));
   console.log();
-  console.log(` ${bold("auggy")}  ${dim("·  by the Loosely Organized Research Facility")}`);
+  console.log(` ${bold(cream("auggy"))}  ${dim("·  by the Loosely Organized Research Facility")}`);
   console.log();
-  console.log(" Auggy is a small runtime for self-hosted agents.");
-  console.log(" Start with a working agent, then add the tools, memory,");
-  console.log(" transports, skills, and policy it needs through augments.");
+  console.log(` ${bold(cream("Turn business operations into agent-ready capabilities."))}`);
   console.log();
-  console.log(dim(" ─────────────────────────────────────────────"));
+  console.log(" Auggy replaces one-off integration glue with TypeScript augments—");
+  console.log(" controlled, predictable interfaces that bundle identity, authorization,");
+  console.log(" schemas, tools, routes, and domain logic.");
   console.log();
-  console.log(" Let's configure your agent. Start by picking an engine.");
+  console.log(signal(" ─────────────────────────────────────────────"));
   console.log();
-  console.log(dim(" The engine is the LLM provider the kernel calls each turn —"));
-  console.log(dim(" one per agent (Anthropic, OpenAI, OpenRouter, Ollama). Augments plug in"));
-  console.log(dim(" around it. Both are swappable later in agent.yaml."));
+  console.log(" Let's configure your agent. Start by picking a model provider.");
+  console.log();
+  console.log(dim(" The provider supplies the model Auggy calls each turn."));
+  console.log(dim(" You can change the provider, model, and augments later in agent.yaml."));
   console.log();
 }
 

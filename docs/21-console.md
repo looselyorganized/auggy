@@ -85,6 +85,14 @@ bearer as the password remains available for operator automation. The bearer is
 also accepted by `/agent/run` for creator-authorized chat, but that route may
 separately allow anonymous, visitor-token, or external-auth traffic.
 
+`auggy run` and `auggy console` request a random, process-local browser ticket
+using explicit Basic authentication. The ticket expires after 30 seconds, is
+consumed once, and is exchanged for the same HTTP-only session cookie before the
+browser is redirected to `/console/chat`. The permanent bearer never appears in
+the browser URL. Remote ticket requests require HTTPS; direct loopback HTTP is
+the only exception. If the exchange is unavailable, the CLI opens the normal
+login page and points to `AUGGY_WEB_TOKEN` in the agent's `.env`.
+
 The console validates the exact Host and Origin before authentication. Local
 origins for `localhost`, `127.0.0.1`, and `::1` on the configured port are
 allowed automatically. Public deployments must configure exact
@@ -203,8 +211,10 @@ dashboard payload or future developer tools; they are not promoted to top-level
 
 ## Operator Entry Points
 
-- `auggy run <name>` boots the agent and opens `/console/chat`.
-- `auggy dev <name> --open` is the lower-level equivalent.
+- `auggy run <name>` boots the agent and opens `/console/chat` already signed in.
+- `auggy console <name>` opens an already-running local agent or its saved Railway
+  deployment already signed in. Add `--cloud` to prefer Railway when both exist.
+- `auggy dev <name> --open` is the lower-level local equivalent.
 - `auggy dev <name>` boots foreground without launching a browser.
 - `auggy list` shows each agent's console URL alongside name and status.
 
