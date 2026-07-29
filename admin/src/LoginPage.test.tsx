@@ -1,12 +1,18 @@
 import { describe, expect, it } from "bun:test";
 import { renderToStaticMarkup } from "react-dom/server";
-import { LoginPage } from "./LoginPage";
+import { LOGIN_ERROR_MESSAGES, LOGIN_VARIANTS, LoginPage, type LoginVariant } from "./LoginPage";
+
+function renderLoginPage(variant: LoginVariant = "default") {
+  return renderToStaticMarkup(<LoginPage variant={variant} />);
+}
+
+function countMatches(value: string, pattern: RegExp): number {
+  return [...value.matchAll(pattern)].length;
+}
 
 describe("LoginPage", () => {
-  it("uses the Auggy registry surface for the Console password flow", () => {
-    const html = renderToStaticMarkup(
-      <LoginPage action="/console/login?next=%2Fconsole%2Fchat" />,
-    );
+  it("composes the Auggy registry Card, Input, and Button primitives", () => {
+    const html = renderLoginPage();
 
     expect(html).toContain('data-slot="card"');
     expect(html).toContain('data-slot="input"');
@@ -15,16 +21,54 @@ describe("LoginPage", () => {
     expect(html).toContain("Welcome back.");
     expect(html).toContain("AUGGY_WEB_TOKEN");
     expect(html).toContain("auggy console &lt;agent&gt;");
-    expect(html).toContain('action="/console/login?next=%2Fconsole%2Fchat"');
   });
 
-  it("renders authentication failures as an accessible alert", () => {
-    const html = renderToStaticMarkup(
-      <LoginPage action="/console/login" error="Invalid console password." />,
-    );
+  it("uses a complete native password form without a runtime-computed action", () => {
+    const html = renderLoginPage();
+    const form = html.match(/<form\b[^>]*>/)?.[0];
 
-    expect(html).toContain('role="alert"');
-    expect(html).toContain("Invalid console password.");
+    expect(form).toBeDefined();
+    expect(form).toContain('method="post"');
+    expect(form).not.toMatch(/\saction=/);
+    expect(countMatches(html, /<form\b/g)).toBe(1);
+    expect(html).toContain('<label for="password"');
+    expect(html).toContain('id="password"');
+    expect(html).toContain('name="password"');
+    expect(html).toContain('type="password"');
+    expect(html).toContain('autoComplete="current-password"');
+    expect(html).toContain('autofocus=""');
+    expect(html).toContain('required=""');
+    expect(html).not.toMatch(/\svalue=/);
+  });
+
+  it("renders the default variant without an error alert", () => {
+    const html = renderLoginPage("default");
+
+    expect(html).not.toContain('role="alert"');
+    expect(html).not.toContain('aria-invalid="true"');
+    for (const message of Object.values(LOGIN_ERROR_MESSAGES)) {
+      expect(html).not.toContain(message);
+    }
+  });
+
+  it.each([
+    ["invalid-password", LOGIN_ERROR_MESSAGES["invalid-password"]!],
+    ["invalid-ticket", LOGIN_ERROR_MESSAGES["invalid-ticket"]!],
+  ] as const)("renders the %s variant as one fixed accessible alert", (variant, message) => {
+    const html = renderLoginPage(variant);
+
+    expect(countMatches(html, /role="alert"/g)).toBe(1);
+    expect(html).toContain(message);
     expect(html).toContain('aria-invalid="true"');
+    expect(html).toContain('aria-describedby="login-error"');
+    expect(html).toContain('id="login-error"');
+    expect(html).not.toMatch(/\svalue=/);
+    for (const otherMessage of Object.values(LOGIN_ERROR_MESSAGES)) {
+      expect(html.includes(otherMessage)).toBe(otherMessage === message);
+    }
+  });
+
+  it("keeps the generated variant inventory explicit and exhaustive", () => {
+    expect(LOGIN_VARIANTS).toEqual(["default", "invalid-password", "invalid-ticket"]);
   });
 });

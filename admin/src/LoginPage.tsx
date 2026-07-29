@@ -1,21 +1,29 @@
 import { Button } from "@/components/ui/button";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 
+export const LOGIN_VARIANTS = ["default", "invalid-password", "invalid-ticket"] as const;
+
+export type LoginVariant = (typeof LOGIN_VARIANTS)[number];
+
+export const LOGIN_ERROR_MESSAGES: Readonly<Partial<Record<LoginVariant, string>>> = {
+  "invalid-password": "Invalid console password.",
+  "invalid-ticket": "This automatic sign-in link is invalid or expired.",
+};
+
 interface LoginPageProps {
-  action: string;
-  error?: string;
+  variant?: LoginVariant;
 }
 
-export function LoginPage({ action, error }: LoginPageProps) {
+export function LoginPage({ variant = "default" }: LoginPageProps) {
+  const error = LOGIN_ERROR_MESSAGES[variant];
+
   return (
-    <div className="flex min-h-full flex-col bg-background text-foreground">
+    <div
+      className="flex min-h-full flex-col bg-background text-foreground"
+      data-auggy-login-source="registry"
+      data-auggy-login-variant={variant}
+    >
       <div className="auggy-brand-stripe" aria-hidden="true" />
       <main className="auggy-grid-surface flex flex-1 items-center justify-center px-4 py-10 sm:px-6">
         <div className="w-full max-w-md">
@@ -40,15 +48,18 @@ export function LoginPage({ action, error }: LoginPageProps) {
                 Welcome back.
               </CardTitle>
               <CardDescription className="pt-1 text-[15px] leading-6">
-                Enter <code className="font-mono text-[0.88em] text-foreground">AUGGY_WEB_TOKEN</code>{" "}
-                from this agent&apos;s <code className="font-mono text-[0.88em] text-foreground">.env</code>{" "}
-                file or deployment secrets.
+                Enter{" "}
+                <code className="font-mono text-[0.88em] text-foreground">AUGGY_WEB_TOKEN</code>{" "}
+                from this agent&apos;s{" "}
+                <code className="font-mono text-[0.88em] text-foreground">.env</code> file or
+                deployment secrets.
               </CardDescription>
             </CardHeader>
 
             <CardContent className="p-7 pt-0 sm:p-8 sm:pt-0">
               {error ? (
                 <p
+                  id="login-error"
                   className="mb-5 rounded-md border border-brand-signal/45 bg-brand-signal/10 px-3 py-2.5 text-sm text-foreground"
                   role="alert"
                 >
@@ -56,7 +67,7 @@ export function LoginPage({ action, error }: LoginPageProps) {
                 </p>
               ) : null}
 
-              <form method="post" action={action} className="space-y-4">
+              <form method="post" className="space-y-4">
                 <div className="space-y-2">
                   <label htmlFor="password" className="text-sm font-medium">
                     Console password
@@ -69,6 +80,7 @@ export function LoginPage({ action, error }: LoginPageProps) {
                     autoFocus
                     required
                     aria-invalid={error ? true : undefined}
+                    aria-describedby={error ? "login-error" : undefined}
                     className="h-11 bg-background/70"
                   />
                 </div>
@@ -80,8 +92,9 @@ export function LoginPage({ action, error }: LoginPageProps) {
           </Card>
 
           <p className="mt-5 text-center text-xs leading-5 text-muted-foreground">
-            From your terminal, <code className="font-mono text-foreground">auggy console &lt;agent&gt;</code>{" "}
-            opens an automatic one-time sign-in.
+            From your terminal,{" "}
+            <code className="font-mono text-foreground">auggy console &lt;agent&gt;</code> opens an
+            automatic one-time sign-in.
           </p>
         </div>
       </main>
