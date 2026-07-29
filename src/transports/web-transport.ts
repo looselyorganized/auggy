@@ -124,6 +124,9 @@ const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
 
 function withConsoleBoundaryHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
+  if (!headers.has("cache-control")) {
+    headers.set("cache-control", "no-store");
+  }
   headers.set("content-security-policy", "frame-ancestors 'none'");
   headers.set("x-frame-options", "DENY");
   headers.set("x-content-type-options", "nosniff");

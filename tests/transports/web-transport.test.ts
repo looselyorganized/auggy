@@ -6251,6 +6251,36 @@ describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
     }
   });
 
+  it("marks outer Console rate-limit responses as no-store", async () => {
+    const model = createMockModel();
+    const port = 29516;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const origin = `http://127.0.0.1:${port}`;
+      for (let request = 0; request < 60; request += 1) {
+        const response = await fetch(`${origin}/console/login`);
+        expect(response.status).toBe(200);
+      }
+
+      const limited = await fetch(`${origin}/console/login`, {
+        method: "POST",
+        headers: { origin },
+        body: new URLSearchParams({ password: "test-token" }),
+        redirect: "manual",
+      });
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get("retry-after")).toMatch(/^\d+$/);
+      expect(limited.headers.get("cache-control")).toBe("no-store");
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("GET /console from loopback without bearer redirects to login", async () => {
     const model = createMockModel();
     const port = 19200;

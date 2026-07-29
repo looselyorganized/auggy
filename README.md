@@ -505,7 +505,7 @@ curl -fsSL https://bun.sh/install | bash
 ## Development
 
 ```bash
-git clone <auggy-repository-url>
+git clone https://github.com/looselyorganized/auggy.git
 cd auggy
 bun install
 bun run typecheck

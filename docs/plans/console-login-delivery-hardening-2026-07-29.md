@@ -1,8 +1,8 @@
 # Console Login Delivery Hardening Contract
 
-Date: 2026-07-29  
-Status: normative implementation contract for draft PR #175  
-Initial base: `origin/main` at `8f83b09`  
+Date: 2026-07-29
+Status: normative implementation contract for draft PR #175
+Initial base: `origin/main` at `8f83b09`
 Working branch: `feat/branded-console-login` in `/private/tmp/auggy-console-login`
 
 ## Purpose
