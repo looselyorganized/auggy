@@ -314,6 +314,7 @@ require_pack_entry "src/cli/model-registry.ts"
 require_pack_entry "src/cli/model-snapshot.ts"
 require_pack_entry "src/scaffold-starter-skills/auggy/assets/templates/nextjs-server-client/admin-reindex-route.ts.txt"
 require_pack_entry "admin/dist/index.html"
+require_pack_entry "admin/dist/login/login.html"
 require_pack_entry "README.md"
 require_pack_entry "CHANGELOG.md"
 require_pack_entry "LICENSE"
@@ -329,6 +330,10 @@ grep -Eq '^package/admin/dist/assets/.+\.js$' "$PACK_LIST" \
   || fail "tarball missing built console JavaScript"
 grep -Eq '^package/admin/dist/assets/.+\.css$' "$PACK_LIST" \
   || fail "tarball missing built console CSS"
+grep -Eq '^package/admin/dist/login/assets/.+\.js$' "$PACK_LIST" \
+  || fail "tarball missing built Console login JavaScript"
+grep -Eq '^package/admin/dist/login/assets/.+\.css$' "$PACK_LIST" \
+  || fail "tarball missing built Console login CSS"
 reject_pack_pattern '\.map$' "tarball includes source maps"
 reject_pack_pattern '^package/(\.env|node_modules/|\.git/|\.auggy/|docs/|tests/)' \
   "tarball includes local-only files"

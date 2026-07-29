@@ -1,8 +1,10 @@
 # `@auggy/admin` — Per-agent creator console
 
-The `/console` SPA. Vite + React + Tailwind 4 + local shadcn registry output. Served by
+The `/console` SPA. Vite + React + Tailwind 4 + local Auggy registry output. Served by
 `src/transports/admin/` from `admin/dist/` on each agent's own port at
-`GET /console`.
+`GET /console`. The first-party password screen is a separate registry-based
+React entry under `dist/login/`; only its `/console/login-assets/*` bundle is
+served before authentication. The main Console assets remain protected.
 
 > See [`docs/21-console.md`](../docs/21-console.md) for the full spec, server-side API, and v1 → v1.1 roadmap.
 
@@ -31,11 +33,15 @@ memory, auth posture, and warnings.
 ```
 admin/
 ├── index.html                  Vite entry HTML with pre-paint theme apply
+├── login.html                  Unauthenticated Console sign-in entry
 ├── package.json
 ├── tsconfig.json
 ├── vite.config.ts              base: '/console/', port 5174
+├── vite.login.config.ts        isolated '/console/login-assets/' build
 └── src/
     ├── main.tsx                React bootstrap, BrowserRouter basename="/console"
+    ├── login-main.tsx          Sign-in bootstrap and native form action
+    ├── LoginPage.tsx           Registry-composed password screen
     ├── App.tsx                 Shell composition: Header + console routes
     ├── index.css               Imports local Auggy Tailwind 4 tokens
     ├── components/

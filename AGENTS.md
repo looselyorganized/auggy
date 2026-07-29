@@ -31,6 +31,12 @@ Built-in augments use `src/augments/<name>/index.ts`; tool-providing augments
 should include `skill/SKILL.md`. Use camelCase for functions, PascalCase for
 types/components, and kebab-case for CLI-facing slugs.
 
+For product UI work, use the Auggy component registry and its shared theme
+tokens before introducing local primitives or one-off styling. Console
+consumers own generated registry source under `admin/src/components/ui/`. If a
+needed primitive is missing, add it to the sibling `auggy-ui` registry first,
+then sync it into the consumer with `shadcn add @auggy/<name>`.
+
 ## Testing Guidelines
 
 Use `bun:test`, never Vitest. Put runtime `*.test.ts` files in the matching

@@ -51,6 +51,7 @@ import {
 } from "./admin-credentials";
 import { readFileSync } from "node:fs";
 import { isIP } from "node:net";
+import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { readManagedText } from "./admin-managed-files";
 import type {
@@ -330,6 +331,8 @@ type ChatPreviewMode = "creator" | "anonymous" | "visitor";
 
 const LOGIN_RATE_LIMIT_WINDOW_MS = 60_000;
 const LOGIN_RATE_LIMIT_MAX = 10;
+const CONSOLE_LOGIN_ASSET_PATH_PREFIX = "/console/login-assets/";
+const CONSOLE_LOGIN_ERROR_PLACEHOLDER = "__AUGGY_LOGIN_ERROR__";
 const loginAttempts = new Map<string, number[]>();
 
 const EXPIRED_CSRF_HTML = `<!doctype html>
@@ -355,9 +358,15 @@ async function dispatchAdminRoute(req: Request, ctx: AdminRouteContext): Promise
   const agentName = agentCard.provider.name || "auggy";
 
   const secureRequest = isSecureConsoleRequest(req, ctx);
+  if (url.pathname.startsWith(CONSOLE_LOGIN_ASSET_PATH_PREFIX)) {
+    if (!isInsecureLoopbackAllowed(ctx) && !secureRequest) return consoleHttpsRequiredResponse(url);
+    if (req.method !== "GET") return methodNotAllowed("GET");
+    return handleLoginAsset(ctx, url.pathname);
+  }
+
   if (url.pathname === "/console/login") {
     if (!isInsecureLoopbackAllowed(ctx) && !secureRequest) return consoleHttpsRequiredResponse(url);
-    if (req.method === "GET") return loginPageResponse(undefined, url.search);
+    if (req.method === "GET") return loginPageResponse(ctx);
     if (req.method === "POST") return handleLoginPost(req, ctx, secureRequest);
     return new Response(null, { status: 405, headers: { allow: "GET, POST" } });
   }
@@ -636,7 +645,9 @@ async function boundAuthenticatedAdminRequest(
 
 function withConsoleSecurityHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
-  headers.set("content-security-policy", "frame-ancestors 'none'");
+  if (!headers.has("content-security-policy")) {
+    headers.set("content-security-policy", "frame-ancestors 'none'");
+  }
   headers.set("x-frame-options", "DENY");
   headers.set("referrer-policy", "no-referrer");
   headers.set("x-content-type-options", "nosniff");
@@ -674,12 +685,12 @@ async function handleLoginPost(
         headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
       });
     }
-    return loginPageResponse("Invalid console password.", new URL(req.url).search);
+    return loginPageResponse(ctx, "Invalid console password.");
   }
 
   const password = form.get("password") ?? "";
   if (!timingSafeStringEqual(password, ctx.bearer)) {
-    return loginPageResponse("Invalid console password.", new URL(req.url).search);
+    return loginPageResponse(ctx, "Invalid console password.");
   }
 
   return new Response(null, {
@@ -712,11 +723,11 @@ function handleCliLoginTicketIssue(req: Request, ctx: AdminRouteContext): Respon
   }
 }
 
-function handleCliLoginTicket(
+async function handleCliLoginTicket(
   req: Request,
   ctx: AdminRouteContext,
   secureRequest: boolean,
-): Response {
+): Promise<Response> {
   const url = new URL(req.url);
   const token = url.pathname.slice(CONSOLE_CLI_LOGIN_TICKET_PATH_PREFIX.length);
   const result = ctx.cliLoginTickets?.consume({
@@ -725,7 +736,7 @@ function handleCliLoginTicket(
     origin: effectiveConsoleOrigin(req, ctx),
   });
   if (!result?.ok) {
-    return loginPageResponse("This automatic sign-in link is invalid or expired.");
+    return loginPageResponse(ctx, "This automatic sign-in link is invalid or expired.");
   }
 
   return new Response(null, {
@@ -738,51 +749,32 @@ function handleCliLoginTicket(
   });
 }
 
-function loginPageResponse(error?: string, search = ""): Response {
-  const escapedError = error ? escapeHtml(error) : "";
-  const action = `/console/login${search}`;
-  return new Response(
-    `<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Console sign-in</title>
-  <style>
-    :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #0f172a; color: #f8fafc; }
-    main { width: min(360px, calc(100vw - 32px)); }
-    h1 { font-size: 24px; font-weight: 650; margin: 0 0 8px; }
-    p { color: #cbd5e1; margin: 0 0 20px; line-height: 1.45; }
-    code { color: #fed7aa; font-size: 0.92em; }
-    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; color: #e2e8f0; }
-    input { box-sizing: border-box; width: 100%; height: 44px; border: 1px solid #334155; border-radius: 6px; padding: 0 12px; background: #020617; color: #f8fafc; font-size: 16px; }
-    button { width: 100%; height: 42px; margin-top: 14px; border: 0; border-radius: 6px; background: #f8fafc; color: #020617; font-weight: 700; cursor: pointer; }
-    .error { margin-bottom: 14px; color: #fecaca; }
-  </style>
-</head>
-<body>
-  <main>
-    <h1>Console sign-in</h1>
-    <p>Enter <code>AUGGY_WEB_TOKEN</code> from this agent's <code>.env</code> file or deployment secrets.</p>
-    ${escapedError ? `<p class="error">${escapedError}</p>` : ""}
-    <form method="post" action="${escapeHtml(action)}">
-      <label for="password">Console password</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" autofocus required>
-      <button type="submit">Sign in</button>
-    </form>
-  </main>
-</body>
-</html>`,
-    {
-      status: error ? 401 : 200,
-      headers: {
-        "content-type": "text/html; charset=utf-8",
-        "cache-control": "no-store",
-        "x-robots-tag": "noindex, nofollow",
-      },
+function handleLoginAsset(ctx: AdminRouteContext, pathname: string): Response {
+  if (!ctx.staticDir) return buildRequiredResponse();
+  const relativePath = pathname.slice(CONSOLE_LOGIN_ASSET_PATH_PREFIX.length);
+  if (!relativePath) return staticFailureResponse(404);
+  return serveStaticFile(join(ctx.staticDir, "login"), relativePath) ?? staticFailureResponse(404);
+}
+
+async function loginPageResponse(ctx: AdminRouteContext, error?: string): Promise<Response> {
+  if (!ctx.staticDir) return buildRequiredResponse();
+  const templateResponse = serveStaticFile(join(ctx.staticDir, "login"), "login.html");
+  if (templateResponse?.status !== 200) return buildRequiredResponse();
+
+  const template = await templateResponse.text();
+  if (!template.includes(CONSOLE_LOGIN_ERROR_PLACEHOLDER)) return buildRequiredResponse();
+  const body = template.replace(CONSOLE_LOGIN_ERROR_PLACEHOLDER, escapeHtml(error ?? ""));
+
+  return new Response(body, {
+    status: error ? 401 : 200,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "x-robots-tag": "noindex, nofollow",
+      "content-security-policy":
+        "default-src 'none'; script-src 'self'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
     },
-  );
+  });
 }
 
 async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): Promise<Response> {

@@ -6264,7 +6264,7 @@ describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
       expect(resp.status).toBe(200);
       expect(resp.headers.get("www-authenticate")).toBeNull();
       expect(resp.url).toContain("/console/login");
-      expect(await resp.text()).toContain("Console sign-in");
+      expect(await resp.text()).toContain("Sign in — Auggy Console");
     } finally {
       await agent.stop();
     }

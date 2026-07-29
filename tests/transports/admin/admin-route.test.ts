@@ -130,6 +130,21 @@ function basicHeader(bearer: string): string {
   return `Basic ${Buffer.from(`:${bearer}`).toString("base64")}`;
 }
 
+function createLoginStaticFixture(): { staticDir: string; cleanup: () => void } {
+  const staticDir = mkdtempSync(join(tmpdir(), "auggy-console-login-"));
+  const loginDir = join(staticDir, "login");
+  mkdirSync(join(loginDir, "assets"), { recursive: true });
+  writeFileSync(
+    join(loginDir, "login.html"),
+    '<!doctype html><html data-auggy-login-error="__AUGGY_LOGIN_ERROR__"><script type="module" src="/console/login-assets/assets/login.js"></script></html>',
+  );
+  writeFileSync(join(loginDir, "assets", "login.js"), "console.log('login');");
+  return {
+    staticDir,
+    cleanup: () => rmSync(staticDir, { recursive: true, force: true }),
+  };
+}
+
 describe("handleAdminRoute — auth", () => {
   it("GET /console without bearer from non-loopback → 401", async () => {
     const req = new Request("https://my-agent.fly.dev/console", {
@@ -163,49 +178,67 @@ describe("handleAdminRoute — auth", () => {
   });
 
   it("GET /console/login serves a first-party login page", async () => {
-    const req = new Request("https://my-agent.fly.dev/console/login");
-    const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
-    expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toContain("text/html");
-    const body = await res.text();
-    expect(body).toContain("Console sign-in");
-    expect(body).toContain("AUGGY_WEB_TOKEN");
-    expect(body).not.toContain("test-bearer");
+    const fixture = createLoginStaticFixture();
+    try {
+      const req = new Request("https://my-agent.fly.dev/console/login");
+      const res = await handleAdminRoute(
+        req,
+        await makeCtx({ callerIp: "10.0.0.5", staticDir: fixture.staticDir }),
+      );
+      expect(res.status).toBe(200);
+      expect(res.headers.get("content-type")).toContain("text/html");
+      const body = await res.text();
+      expect(body).toContain("/console/login-assets/assets/login.js");
+      expect(body).not.toContain("__AUGGY_LOGIN_ERROR__");
+      expect(body).not.toContain("test-bearer");
+      expect(res.headers.get("content-security-policy")).toContain("script-src 'self'");
+      expect(res.headers.get("content-security-policy")).toContain("form-action 'self'");
+      expect(res.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    } finally {
+      fixture.cleanup();
+    }
   });
 
   it("exchanges explicit Basic auth for a single-use browser session ticket", async () => {
+    const fixture = createLoginStaticFixture();
     const cliLoginTickets = createConsoleCliLoginTicketStore();
     const ctx = await makeCtx({
       callerIp: "10.0.0.5",
       requestOrigin: "https://my-agent.fly.dev",
       cliLoginTickets,
+      staticDir: fixture.staticDir,
     });
-    const issueRes = await handleAdminRoute(
-      new Request("https://my-agent.fly.dev/console/api/cli-login", {
-        method: "POST",
-        headers: { authorization: basicHeader("test-bearer") },
-      }),
-      ctx,
-    );
-    expect(issueRes.status).toBe(200);
-    const issued = (await issueRes.json()) as {
-      loginPath: string;
-      expiresInSeconds: number;
-    };
-    expect(issued.loginPath).toMatch(/^\/console\/cli-login\/[A-Za-z0-9_-]{43}$/);
-    expect(issued.expiresInSeconds).toBe(30);
+    try {
+      const issueRes = await handleAdminRoute(
+        new Request("https://my-agent.fly.dev/console/api/cli-login", {
+          method: "POST",
+          headers: { authorization: basicHeader("test-bearer") },
+        }),
+        ctx,
+      );
+      expect(issueRes.status).toBe(200);
+      const issued = (await issueRes.json()) as {
+        loginPath: string;
+        expiresInSeconds: number;
+      };
+      expect(issued.loginPath).toMatch(/^\/console\/cli-login\/[A-Za-z0-9_-]{43}$/);
+      expect(issued.expiresInSeconds).toBe(30);
 
-    const consume = () =>
-      handleAdminRoute(new Request(`https://my-agent.fly.dev${issued.loginPath}`), ctx);
-    const loginRes = await consume();
-    expect(loginRes.status).toBe(303);
-    expect(loginRes.headers.get("location")).toBe("/console/chat");
-    expect(loginRes.headers.get("set-cookie")).toContain("HttpOnly");
-    expect(loginRes.headers.get("set-cookie")).toContain("Secure");
+      const consume = () =>
+        handleAdminRoute(new Request(`https://my-agent.fly.dev${issued.loginPath}`), ctx);
+      const loginRes = await consume();
+      expect(loginRes.status).toBe(303);
+      expect(loginRes.headers.get("location")).toBe("/console/chat");
+      expect(loginRes.headers.get("set-cookie")).toContain("HttpOnly");
+      expect(loginRes.headers.get("set-cookie")).toContain("Secure");
 
-    const replayRes = await consume();
-    expect(replayRes.status).toBe(401);
-    expect(await replayRes.text()).toContain("invalid or expired");
+      const replayRes = await consume();
+      expect(replayRes.status).toBe(401);
+      expect(await replayRes.text()).toContain("invalid or expired");
+    } finally {
+      fixture.cleanup();
+    }
   });
 
   it("does not issue CLI tickets from a browser origin or session cookie", async () => {
@@ -760,6 +793,35 @@ describe("handleAdminRoute — auth", () => {
 });
 
 describe("handleAdminRoute — static console", () => {
+  it("serves only the dedicated login bundle without Console authentication", async () => {
+    const fixture = createLoginStaticFixture();
+    try {
+      const ctx = await makeCtx({ callerIp: "10.0.0.5", staticDir: fixture.staticDir });
+      const asset = await handleAdminRoute(
+        new Request("https://my-agent.fly.dev/console/login-assets/assets/login.js"),
+        ctx,
+      );
+      expect(asset.status).toBe(200);
+      expect(asset.headers.get("content-type")).toContain("application/javascript");
+      expect(await asset.text()).toContain("console.log");
+
+      const traversal = await handleAdminRoute(
+        new Request("https://my-agent.fly.dev/console/login-assets/%2e%2e/index.html"),
+        ctx,
+      );
+      expect(traversal.status).not.toBe(200);
+
+      const protectedAsset = await handleAdminRoute(
+        new Request("https://my-agent.fly.dev/console/assets/app.js"),
+        ctx,
+      );
+      expect(protectedAsset.status).toBe(303);
+      expect(protectedAsset.headers.get("location")).toContain("/console/login");
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it("fails closed for static namespaces while preserving files and SPA deep links", async () => {
     const staticDir = mkdtempSync(join(tmpdir(), "auggy-console-static-"));
     mkdirSync(join(staticDir, "assets"), { recursive: true });

@@ -6,7 +6,7 @@
   "description": "Auggy /console — per-agent operator surface (Vite + React + shadcn)",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "build": "tsc -p tsconfig.json --noEmit && vite build && vite build --config vite.login.config.ts",
     "preview": "vite preview",
     "lint": "tsc -p tsconfig.json --noEmit",
     "test": "bun test"
