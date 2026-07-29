@@ -124,6 +124,9 @@ const RESERVED_EXTERNAL_AUTH_HEADERS = new Set([
 
 function withConsoleBoundaryHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
+  if (!headers.has("cache-control")) {
+    headers.set("cache-control", "no-store");
+  }
   headers.set("content-security-policy", "frame-ancestors 'none'");
   headers.set("x-frame-options", "DENY");
   headers.set("x-content-type-options", "nosniff");
@@ -3602,8 +3605,17 @@ export function webTransport(opts: WebTransportOptions): Augment {
           async fetch(req, server) {
             const url = new URL(req.url);
 
+            const adminEnabled = opts.adminRoute !== false;
+            const isAdminPath = url.pathname === "/console" || url.pathname.startsWith("/console/");
+            const hasRouteOwnedConsoleMethods =
+              url.pathname === "/console/login" ||
+              url.pathname === "/console/api/cli-login" ||
+              url.pathname === "/console/login-assets" ||
+              url.pathname.startsWith("/console/login-assets/") ||
+              url.pathname.startsWith("/console/cli-login/");
+
             // CORS preflight — required for browser-based AG-UI clients
-            if (req.method === "OPTIONS") {
+            if (req.method === "OPTIONS" && !(adminEnabled && hasRouteOwnedConsoleMethods)) {
               return handleCorsPreFlight();
             }
 
@@ -3612,12 +3624,10 @@ export function webTransport(opts: WebTransportOptions): Augment {
             // Exact-match on "/console" + scoped prefix on "/console/action/" — NOT
             // startsWith("/console") which would also match /administrative and
             // leak the opt-out setting (M3 fix).
-            const adminEnabled = opts.adminRoute !== false;
             // SPA expansion — accept the bare `/console`, the action POST surface,
             // and any client-side route under `/console/<path>`. Using the literal
             // `/console/` prefix (note trailing slash) keeps siblings like
             // `/administrative` from being captured (M3 fix preserved).
-            const isAdminPath = url.pathname === "/console" || url.pathname.startsWith("/console/");
             if (adminEnabled && isAdminPath) {
               const consoleRequest = evaluateConsoleRequest({
                 req,
@@ -3642,21 +3652,23 @@ export function webTransport(opts: WebTransportOptions): Augment {
                   ),
                 );
               }
-              if (req.method === "HEAD") {
-                return withConsoleBoundaryHeaders(
-                  new Response(null, {
-                    status: 405,
-                    headers: { allow: "GET, POST" },
-                  }),
-                );
-              }
-              if (req.method !== "GET" && req.method !== "POST") {
-                return withConsoleBoundaryHeaders(
-                  new Response(null, {
-                    status: 405,
-                    headers: { allow: "GET, POST" },
-                  }),
-                );
+              if (!hasRouteOwnedConsoleMethods) {
+                if (req.method === "HEAD") {
+                  return withConsoleBoundaryHeaders(
+                    new Response(null, {
+                      status: 405,
+                      headers: { allow: "GET, POST" },
+                    }),
+                  );
+                }
+                if (req.method !== "GET" && req.method !== "POST") {
+                  return withConsoleBoundaryHeaders(
+                    new Response(null, {
+                      status: 405,
+                      headers: { allow: "GET, POST" },
+                    }),
+                  );
+                }
               }
 
               // M4 fix — rate-limit BEFORE handling. Per-IP combined budget

@@ -42,7 +42,7 @@ export function consoleCommand(deps: ConsoleCommandDeps = {}): Command {
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
   return new Command("console")
-    .description("Open an agent's local or Railway Console")
+    .description("Open an agent's local or Railway Console with a one-time sign-in")
     .argument("[name]", "agent name (defaults to ./agent.yaml)")
     .option("--config <path>", "path to agent.yaml")
     .option("--cloud", "open the saved Railway deployment even when the agent is running locally")
@@ -102,9 +102,15 @@ export async function runConsole(
 
   const envPath = displayPath(join(agentDir, ".env"), opts.cwd);
   warn(
-    `Automatic sign-in was unavailable; ${result.opened ? "opened" : "use"} the password screen.`,
+    result.automaticSignIn
+      ? "The browser could not be launched; use the password screen."
+      : `Automatic sign-in was unavailable; ${result.opened ? "opened" : "use"} the password screen.`,
   );
-  log(`Password: AUGGY_WEB_TOKEN in ${envPath}`);
+  log(
+    runtime === "Railway"
+      ? `Password: AUGGY_WEB_TOKEN in Railway service variables (normally synced from ${envPath})`
+      : `Password: AUGGY_WEB_TOKEN in ${envPath}`,
+  );
   if (!result.opened) log(`Console: ${result.consoleUrl}`);
 }
 

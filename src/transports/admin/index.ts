@@ -16,6 +16,7 @@ import {
   CONSOLE_CLI_LOGIN_TICKET_PATH_PREFIX,
   type ConsoleCliLoginTicketStore,
 } from "./cli-login-tickets";
+import { loadConsoleLoginArtifacts, type ConsoleLoginVariant } from "./login-artifacts";
 import { coerceInputs } from "./admin-coerce";
 import {
   collectAdminInfoBlocks,
@@ -330,6 +331,10 @@ type ChatPreviewMode = "creator" | "anonymous" | "visitor";
 
 const LOGIN_RATE_LIMIT_WINDOW_MS = 60_000;
 const LOGIN_RATE_LIMIT_MAX = 10;
+const CONSOLE_LOGIN_ASSET_PATH = "/console/login-assets";
+const CONSOLE_LOGIN_ASSET_PATH_PREFIX = `${CONSOLE_LOGIN_ASSET_PATH}/`;
+const CONSOLE_LOGIN_CSP =
+  "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 const loginAttempts = new Map<string, number[]>();
 
 const EXPIRED_CSRF_HTML = `<!doctype html>
@@ -355,11 +360,20 @@ async function dispatchAdminRoute(req: Request, ctx: AdminRouteContext): Promise
   const agentName = agentCard.provider.name || "auggy";
 
   const secureRequest = isSecureConsoleRequest(req, ctx);
+  if (
+    url.pathname === CONSOLE_LOGIN_ASSET_PATH ||
+    url.pathname.startsWith(CONSOLE_LOGIN_ASSET_PATH_PREFIX)
+  ) {
+    if (!isInsecureLoopbackAllowed(ctx) && !secureRequest) return consoleHttpsRequiredResponse(url);
+    if (req.method !== "GET" && req.method !== "HEAD") return methodNotAllowed("GET, HEAD");
+    return handleLoginAsset(ctx, url.pathname, req.method);
+  }
+
   if (url.pathname === "/console/login") {
     if (!isInsecureLoopbackAllowed(ctx) && !secureRequest) return consoleHttpsRequiredResponse(url);
-    if (req.method === "GET") return loginPageResponse(undefined, url.search);
+    if (req.method === "GET") return loginPageResponse(ctx, "default");
     if (req.method === "POST") return handleLoginPost(req, ctx, secureRequest);
-    return new Response(null, { status: 405, headers: { allow: "GET, POST" } });
+    return methodNotAllowed("GET, POST");
   }
 
   if (url.pathname.startsWith(CONSOLE_CLI_LOGIN_TICKET_PATH_PREFIX)) {
@@ -636,7 +650,9 @@ async function boundAuthenticatedAdminRequest(
 
 function withConsoleSecurityHeaders(response: Response): Response {
   const headers = new Headers(response.headers);
-  headers.set("content-security-policy", "frame-ancestors 'none'");
+  if (!headers.has("content-security-policy")) {
+    headers.set("content-security-policy", "frame-ancestors 'none'");
+  }
   headers.set("x-frame-options", "DENY");
   headers.set("referrer-policy", "no-referrer");
   headers.set("x-content-type-options", "nosniff");
@@ -664,22 +680,34 @@ async function handleLoginPost(
     });
   }
 
-  let form: URLSearchParams;
-  try {
-    form = new URLSearchParams(await readRequestBodyText(req, 4096));
-  } catch (error) {
-    if (error instanceof RequestBodyTooLargeError) {
-      return new Response("Request body too large.", {
-        status: 413,
-        headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
-      });
-    }
-    return loginPageResponse("Invalid console password.", new URL(req.url).search);
+  if (!hasUrlEncodedContentType(req.headers.get("content-type"))) {
+    return loginRequestFailureResponse(400, "Invalid login request.");
   }
 
-  const password = form.get("password") ?? "";
+  let body: string;
+  try {
+    body = await readRequestBodyText(req, 4096);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return loginRequestFailureResponse(413, "Request body too large.");
+    }
+    return loginRequestFailureResponse(400, "Invalid login request.");
+  }
+
+  if (!isWellFormedUrlEncodedBody(body)) {
+    return loginRequestFailureResponse(400, "Invalid login request.");
+  }
+
+  const form = new URLSearchParams(body);
+  const passwordValues = form.getAll("password");
+  const keys = Array.from(form.keys());
+  if (passwordValues.length > 1 || keys.some((key) => key !== "password")) {
+    return loginRequestFailureResponse(400, "Invalid login request.");
+  }
+
+  const password = passwordValues[0] ?? "";
   if (!timingSafeStringEqual(password, ctx.bearer)) {
-    return loginPageResponse("Invalid console password.", new URL(req.url).search);
+    return loginPageResponse(ctx, "invalid-password");
   }
 
   return new Response(null, {
@@ -688,6 +716,34 @@ async function handleLoginPost(
       location: safeConsoleNextPath(new URL(req.url).searchParams.get("next")),
       "set-cookie": createConsoleSessionSetCookie({ bearer: ctx.bearer, secure: secureRequest }),
       "cache-control": "no-store",
+    },
+  });
+}
+
+function hasUrlEncodedContentType(value: string | null): boolean {
+  if (!value) return false;
+  const [mediaType, ...parameters] = value.split(";").map((part) => part.trim());
+  if (mediaType?.toLowerCase() !== "application/x-www-form-urlencoded") return false;
+  if (parameters.length === 0) return true;
+  return parameters.length === 1 && /^charset\s*=\s*(?:utf-8|"utf-8")$/i.test(parameters[0] ?? "");
+}
+
+function isWellFormedUrlEncodedBody(body: string): boolean {
+  try {
+    decodeURIComponent(body.replace(/\+/g, " "));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function loginRequestFailureResponse(status: 400 | 413, message: string): Response {
+  return new Response(message, {
+    status,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+      "x-robots-tag": "noindex, nofollow",
     },
   });
 }
@@ -712,11 +768,11 @@ function handleCliLoginTicketIssue(req: Request, ctx: AdminRouteContext): Respon
   }
 }
 
-function handleCliLoginTicket(
+async function handleCliLoginTicket(
   req: Request,
   ctx: AdminRouteContext,
   secureRequest: boolean,
-): Response {
+): Promise<Response> {
   const url = new URL(req.url);
   const token = url.pathname.slice(CONSOLE_CLI_LOGIN_TICKET_PATH_PREFIX.length);
   const result = ctx.cliLoginTickets?.consume({
@@ -725,7 +781,7 @@ function handleCliLoginTicket(
     origin: effectiveConsoleOrigin(req, ctx),
   });
   if (!result?.ok) {
-    return loginPageResponse("This automatic sign-in link is invalid or expired.");
+    return loginPageResponse(ctx, "invalid-ticket");
   }
 
   return new Response(null, {
@@ -738,51 +794,87 @@ function handleCliLoginTicket(
   });
 }
 
-function loginPageResponse(error?: string, search = ""): Response {
-  const escapedError = error ? escapeHtml(error) : "";
-  const action = `/console/login${search}`;
-  return new Response(
-    `<!doctype html>
+async function handleLoginAsset(
+  ctx: AdminRouteContext,
+  pathname: string,
+  method: "GET" | "HEAD",
+): Promise<Response> {
+  const relativePath = pathname.slice(CONSOLE_LOGIN_ASSET_PATH_PREFIX.length);
+  if (!relativePath || pathname === CONSOLE_LOGIN_ASSET_PATH) return staticFailureResponse(404);
+
+  const artifacts = await loadConsoleLoginArtifacts(ctx.staticDir);
+  if (!artifacts || relativePath !== artifacts.stylesheet.path) {
+    return staticFailureResponse(404);
+  }
+
+  return new Response(method === "HEAD" ? null : artifacts.stylesheet.bytes, {
+    status: 200,
+    headers: {
+      "content-type": "text/css; charset=utf-8",
+      "cache-control": "public, max-age=31536000, immutable",
+      "x-content-type-options": "nosniff",
+      "x-robots-tag": "noindex, nofollow",
+    },
+  });
+}
+
+async function loginPageResponse(
+  ctx: AdminRouteContext,
+  variant: ConsoleLoginVariant,
+): Promise<Response> {
+  const artifacts = await loadConsoleLoginArtifacts(ctx.staticDir);
+  const body = artifacts?.variants[variant] ?? fallbackLoginDocument(variant);
+
+  return new Response(body, {
+    status: variant === "default" ? 200 : 401,
+    headers: {
+      "content-type": "text/html; charset=utf-8",
+      "cache-control": "no-store",
+      "x-robots-tag": "noindex, nofollow",
+      "content-security-policy": CONSOLE_LOGIN_CSP,
+    },
+  });
+}
+
+function fallbackLoginDocument(variant: ConsoleLoginVariant): string {
+  const error =
+    variant === "invalid-password"
+      ? "Invalid console password."
+      : variant === "invalid-ticket"
+        ? "This automatic sign-in link is invalid or expired."
+        : undefined;
+  const errorMarkup = error ? `<p id="login-error" role="alert">${error}</p>` : "";
+  const inputErrorAttributes = error ? ' aria-invalid="true" aria-describedby="login-error"' : "";
+
+  return `<!doctype html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Console sign-in</title>
-  <style>
-    :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
-    body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #0f172a; color: #f8fafc; }
-    main { width: min(360px, calc(100vw - 32px)); }
-    h1 { font-size: 24px; font-weight: 650; margin: 0 0 8px; }
-    p { color: #cbd5e1; margin: 0 0 20px; line-height: 1.45; }
-    code { color: #fed7aa; font-size: 0.92em; }
-    label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; color: #e2e8f0; }
-    input { box-sizing: border-box; width: 100%; height: 44px; border: 1px solid #334155; border-radius: 6px; padding: 0 12px; background: #020617; color: #f8fafc; font-size: 16px; }
-    button { width: 100%; height: 42px; margin-top: 14px; border: 0; border-radius: 6px; background: #f8fafc; color: #020617; font-weight: 700; cursor: pointer; }
-    .error { margin-bottom: 14px; color: #fecaca; }
-  </style>
+  <meta name="robots" content="noindex, nofollow">
+  <title>Sign in — Auggy Console</title>
 </head>
-<body>
+<body data-auggy-login-source="fallback" data-auggy-login-variant="${variant}">
   <main>
-    <h1>Console sign-in</h1>
-    <p>Enter <code>AUGGY_WEB_TOKEN</code> from this agent's <code>.env</code> file or deployment secrets.</p>
-    ${escapedError ? `<p class="error">${escapedError}</p>` : ""}
-    <form method="post" action="${escapeHtml(action)}">
-      <label for="password">Console password</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" autofocus required>
-      <button type="submit">Sign in</button>
+    <header>
+      <p>Auggy</p>
+      <p>Creator Console</p>
+      <h1>Welcome back.</h1>
+      <p>Enter <code>AUGGY_WEB_TOKEN</code> from this agent's <code>.env</code> file or deployment secrets.</p>
+    </header>
+    ${errorMarkup}
+    <form method="post">
+      <p>
+        <label for="password">Console password</label><br>
+        <input id="password" name="password" type="password" autocomplete="current-password" autofocus required${inputErrorAttributes}>
+      </p>
+      <button type="submit">Open Console</button>
     </form>
+    <p>From your terminal, <code>auggy console &lt;agent&gt;</code> opens an automatic one-time sign-in.</p>
   </main>
 </body>
-</html>`,
-    {
-      status: error ? 401 : 200,
-      headers: {
-        "content-type": "text/html; charset=utf-8",
-        "cache-control": "no-store",
-        "x-robots-tag": "noindex, nofollow",
-      },
-    },
-  );
+</html>
+`;
 }
 
 async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): Promise<Response> {
@@ -2033,6 +2125,8 @@ function consoleHttpsRequiredResponse(url: URL): Response {
       upgrade: "TLS/1.2",
       connection: "Upgrade",
       "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+      "x-robots-tag": "noindex, nofollow",
     },
   });
 }
@@ -2050,8 +2144,23 @@ function isInsecureLoopbackAllowed(ctx: AdminRouteContext): boolean {
 function safeConsoleNextPath(next: string | null): string {
   if (!next) return "/console";
   try {
-    const decoded = decodeURIComponent(next);
-    if (decoded === "/console" || decoded.startsWith("/console/")) return decoded;
+    if (
+      next.includes("%") ||
+      next.includes("\\") ||
+      next.includes("?") ||
+      next.includes("#") ||
+      Array.from(next).some((character) => {
+        const codePoint = character.codePointAt(0) ?? 0;
+        return codePoint <= 0x1f || codePoint === 0x7f;
+      })
+    ) {
+      return "/console";
+    }
+    const parsed = new URL(next, "https://console.auggy.invalid");
+    if (parsed.origin !== "https://console.auggy.invalid" || parsed.pathname !== next) {
+      return "/console";
+    }
+    if (next === "/console" || next.startsWith("/console/")) return next;
   } catch {
     // Fall through to the safe default.
   }
@@ -2087,23 +2196,6 @@ function timingSafeStringEqual(a: string, b: string): boolean {
     diff |= (aa[i] ?? 0) ^ (bb[i] ?? 0);
   }
   return diff === 0;
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (ch) => {
-    switch (ch) {
-      case "&":
-        return "&amp;";
-      case "<":
-        return "&lt;";
-      case ">":
-        return "&gt;";
-      case '"':
-        return "&quot;";
-      default:
-        return "&#39;";
-    }
-  });
 }
 
 // Re-export for callers (web-transport) that need to resolve dist on boot.

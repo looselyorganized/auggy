@@ -147,6 +147,34 @@ describe("auggy console", () => {
     ]);
     expect(warnings[0]).toContain("opened the password screen");
     expect(logs[0]).toContain("AUGGY_WEB_TOKEN");
+    expect(logs[0]).toContain("Railway service variables");
     expect(logs[0]).toContain("my-agent/.env");
+  });
+
+  test("distinguishes browser-launch failure from unavailable automatic sign-in", async () => {
+    const root = makeRoot();
+    const agentDir = writeAgent(root);
+    const logs: string[] = [];
+    const warnings: string[] = [];
+    await runConsole(
+      "my-agent",
+      { cwd: root },
+      {
+        readLiveManifest: () => liveManifest(agentDir),
+        openConsole: async ({ baseUrl }): Promise<OpenConsoleResult> => ({
+          opened: false,
+          automaticSignIn: true,
+          consoleUrl: `${baseUrl}/console`,
+          reason: "the browser could not be launched",
+        }),
+        log: (message) => logs.push(message),
+        warn: (message) => warnings.push(message),
+      },
+    );
+
+    expect(warnings).toEqual(["The browser could not be launched; use the password screen."]);
+    expect(warnings[0]).not.toContain("Automatic sign-in was unavailable");
+    expect(logs).toContain("Password: AUGGY_WEB_TOKEN in my-agent/.env");
+    expect(logs).toContain("Console: http://localhost:8080/console");
   });
 });

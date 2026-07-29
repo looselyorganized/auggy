@@ -22,6 +22,7 @@ import {
 } from "@/auth/external-auth";
 import type { Augment, DelegatedAuthorizationDeniedAuditEvent, ModelClient } from "@/types";
 import { createTempDir } from "@tests/fixtures/temp-dir";
+import { resolveDistDir } from "@/transports/admin/admin-static";
 
 async function bootstrapAnonymousRequest(
   url: string,
@@ -6250,6 +6251,36 @@ describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
     }
   });
 
+  it("marks outer Console rate-limit responses as no-store", async () => {
+    const model = createMockModel();
+    const port = 29516;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const origin = `http://127.0.0.1:${port}`;
+      for (let request = 0; request < 60; request += 1) {
+        const response = await fetch(`${origin}/console/login`);
+        expect(response.status).toBe(200);
+      }
+
+      const limited = await fetch(`${origin}/console/login`, {
+        method: "POST",
+        headers: { origin },
+        body: new URLSearchParams({ password: "test-token" }),
+        redirect: "manual",
+      });
+      expect(limited.status).toBe(429);
+      expect(limited.headers.get("retry-after")).toMatch(/^\d+$/);
+      expect(limited.headers.get("cache-control")).toBe("no-store");
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("GET /console from loopback without bearer redirects to login", async () => {
     const model = createMockModel();
     const port = 19200;
@@ -6260,17 +6291,18 @@ describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
     const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
     await agent.start();
     try {
-      const resp = await fetch(`http://127.0.0.1:${port}/console`);
-      expect(resp.status).toBe(200);
+      const resp = await fetch(`http://127.0.0.1:${port}/console`, { redirect: "manual" });
+      expect(resp.status).toBe(303);
       expect(resp.headers.get("www-authenticate")).toBeNull();
-      expect(resp.url).toContain("/console/login");
-      expect(await resp.text()).toContain("Console sign-in");
+      expect(resp.headers.get("location")).toBe("/console/login?next=%2Fconsole");
+      expect(await resp.text()).toBe("");
     } finally {
       await agent.stop();
     }
   });
 
-  it("GET /admin with HTTP Basic bearer → 200 SPA shell when dist is built (or 503 notice when not)", async () => {
+  it("GET /admin with HTTP Basic bearer matches the explicitly detected SPA precondition", async () => {
+    const builtSpaAvailable = resolveDistDir() !== undefined;
     const model = createMockModel();
     const port = 19201;
     const aug = webTransport({
@@ -6286,12 +6318,10 @@ describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
       });
       const body = await resp.text();
       expect(resp.headers.get("content-type")).toContain("text/html");
-      // Either the built SPA shell (200) or the "build required" notice (503)
-      // — both are valid post-SPA. Auth passed in either case.
-      if (resp.status === 200) {
+      expect(resp.status).toBe(builtSpaAvailable ? 200 : 503);
+      if (builtSpaAvailable) {
         expect(body.toLowerCase()).toContain("auggy");
       } else {
-        expect(resp.status).toBe(503);
         expect(body).toContain("Console SPA not built");
       }
     } finally {
@@ -6353,6 +6383,67 @@ describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
       });
       expect(dashboard.status).toBe(200);
       expect((await consume()).status).toBe(401);
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("delegates Console login method contracts through the booted HTTP boundary", async () => {
+    const model = createMockModel();
+    const port = 29515;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const origin = `http://127.0.0.1:${port}`;
+      const login = await fetch(`${origin}/console/login`);
+      expect(login.status).toBe(200);
+      expect(login.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      expect(login.headers.get("cache-control")).toBe("no-store");
+      expect(login.headers.get("content-security-policy")).toBe(
+        "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      );
+      const loginBody = await login.text();
+      expect(loginBody).toMatch(/data-auggy-login-source="(?:fallback|registry)"/);
+      expect(loginBody).toMatch(/<form\b[^>]*method="post"/i);
+      expect(loginBody).not.toMatch(/<script\b/i);
+
+      const assetUrl = `${origin}/console/login-assets/assets/login-missing-test.css`;
+      const head = await fetch(assetUrl, { method: "HEAD" });
+      expect(head.status).toBe(404);
+      expect(head.headers.get("cache-control")).toBe("no-store");
+      expect(await head.text()).toBe("");
+
+      for (const method of ["PUT", "OPTIONS"]) {
+        const response = await fetch(assetUrl, { method, headers: { origin } });
+        expect(response.status).toBe(405);
+        expect(response.headers.get("allow")).toBe("GET, HEAD");
+      }
+
+      const loginOptions = await fetch(`${origin}/console/login`, {
+        method: "OPTIONS",
+        headers: { origin },
+      });
+      expect(loginOptions.status).toBe(405);
+      expect(loginOptions.headers.get("allow")).toBe("GET, POST");
+
+      const ticketOptions = await fetch(`${origin}/console/cli-login/${"A".repeat(43)}`, {
+        method: "OPTIONS",
+        headers: { origin },
+      });
+      expect(ticketOptions.status).toBe(405);
+      expect(ticketOptions.headers.get("allow")).toBe("GET");
+
+      const basic = Buffer.from(":test-token").toString("base64");
+      const issueOptions = await fetch(`${origin}/console/api/cli-login`, {
+        method: "OPTIONS",
+        headers: { authorization: `Basic ${basic}`, origin },
+      });
+      expect(issueOptions.status).toBe(405);
+      expect(issueOptions.headers.get("allow")).toBe("POST");
     } finally {
       await agent.stop();
     }

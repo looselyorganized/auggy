@@ -19,7 +19,7 @@ export function runCommand(deps: RunCommandDeps = {}): Command {
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
   return new Command("run")
-    .description("Run an agent locally and open /console/chat")
+    .description("Run an agent locally and open /console/chat with a one-time sign-in")
     .argument("[name]", "agent name (defaults to ./agent.yaml)")
     .option("--config <path>", "path to agent.yaml")
     .option("--no-open", "don't launch a browser after boot")

@@ -79,9 +79,10 @@ logs, and augment installation.
 ## Auth and browser boundary
 
 `/console` always requires authentication, including on loopback. The first-party
-login page accepts the agent bearer (`AUGGY_WEB_TOKEN` in the agent's `.env`) and
-sets an HTTP-only session cookie. HTTP Basic with a blank username and the same
-bearer as the password remains available for operator automation. The bearer is
+login page accepts the agent bearer (`AUGGY_WEB_TOKEN` in the local `.env` or
+deployment secret) and sets an HTTP-only session cookie. HTTP Basic with a
+blank username and the same bearer as the password remains available for
+operator automation. The bearer is
 also accepted by `/agent/run` for creator-authorized chat, but that route may
 separately allow anonymous, visitor-token, or external-auth traffic.
 
@@ -91,7 +92,16 @@ consumed once, and is exchanged for the same HTTP-only session cookie before the
 browser is redirected to `/console/chat`. The permanent bearer never appears in
 the browser URL. Remote ticket requests require HTTPS; direct loopback HTTP is
 the only exception. If the exchange is unavailable, the CLI opens the normal
-login page and points to `AUGGY_WEB_TOKEN` in the agent's `.env`.
+login page. For a local agent it points to `AUGGY_WEB_TOKEN` in the agent's
+`.env`; for Railway it points to the service variable, normally synced from
+that `.env` by `auggy deploy`.
+
+The branded login is generated as three fixed, registry-authored HTML documents
+and one fingerprinted stylesheet. It has no JavaScript dependency. If that
+generated bundle is absent or invalid, the server returns a semantic native
+form with the same password and fixed-error behavior. Only the exact
+manifest-listed stylesheet is public before authentication; the manifest,
+HTML variants, login JavaScript, and main Console assets are not.
 
 The console validates the exact Host and Origin before authentication. Local
 origins for `localhost`, `127.0.0.1`, and `::1` on the configured port are

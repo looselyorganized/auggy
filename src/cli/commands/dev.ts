@@ -124,8 +124,8 @@ export function formatDevReadyMessage(args: {
     lines.push(`  Home:     ${urls.home}`);
     lines.push(
       args.runtime === "railway"
-        ? "  Password: AUGGY_WEB_TOKEN Railway variable (manual sign-in)"
-        : "  Password: AUGGY_WEB_TOKEN in .env (manual sign-in)",
+        ? "  Password: AUGGY_WEB_TOKEN Railway variable (if the sign-in screen appears)"
+        : "  Password: AUGGY_WEB_TOKEN in .env (if the sign-in screen appears)",
     );
     lines.push("");
   }
