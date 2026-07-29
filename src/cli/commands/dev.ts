@@ -31,7 +31,7 @@ import {
   releaseRuntimePidManifest,
 } from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
-import { openBrowser } from "../open-browser";
+import { openConsoleWithSignIn } from "../console-login";
 import type { AgentConfig, Augment, ModelClient } from "../../types";
 import type { PidManifest } from "../types";
 import { displayPath } from "../display-path";
@@ -53,6 +53,19 @@ function extractPort(config: ReturnType<typeof parseConfig>): number | null {
     if (aug.type === "webTransport") {
       return aug.options!.port as number;
     }
+  }
+  return null;
+}
+
+function extractConsoleBearer(config: ReturnType<typeof parseConfig>): string | null {
+  for (const augment of config.augments) {
+    if (augment.type !== "webTransport") continue;
+    const auth = augment.options?.auth;
+    if (!auth || typeof auth !== "object" || Array.isArray(auth)) return null;
+    const record = auth as Record<string, unknown>;
+    return record.type === "bearer" && typeof record.token === "string" && record.token
+      ? record.token
+      : null;
   }
   return null;
 }
@@ -109,6 +122,11 @@ export function formatDevReadyMessage(args: {
     lines.push(`  Console:  ${urls.console}`);
     lines.push(`  Health:   ${urls.health}`);
     lines.push(`  Home:     ${urls.home}`);
+    lines.push(
+      args.runtime === "railway"
+        ? "  Password: AUGGY_WEB_TOKEN Railway variable (manual sign-in)"
+        : "  Password: AUGGY_WEB_TOKEN in .env (manual sign-in)",
+    );
     lines.push("");
   }
 
@@ -211,6 +229,7 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
 
   // Claim the immutable identity and exclusive runtime resources before boot.
   const port = extractPort(config);
+  const consoleBearer = extractConsoleBearer(config);
   let pidManifestClaimed = false;
   let pidManifest: PidManifest | null = null;
   let runtimeOwnershipReleased = false;
@@ -406,17 +425,26 @@ export async function runDev(name: string | undefined, opts: DevOpts): Promise<v
       })}`,
     );
 
-    // --open: pop the operator's browser to the chat surface. Small delay so
-    // the banner lands first, then the browser opens — cleaner than racing
-    // stdout against the browser launcher.
+    // --open: establish a short-lived browser login and open the chat surface.
+    // The permanent bearer is sent only to the loopback agent, never in a URL.
     if (opts.open && consoleUrl) {
-      setTimeout(() => {
+      setTimeout(async () => {
         try {
-          const result = openBrowser(`${consoleUrl}/chat`);
-          if (!result.ok) {
-            console.log(
-              `  (couldn't auto-launch \`${result.command}\`; open ${consoleUrl}/chat manually)`,
+          if (!consoleBearer) {
+            console.warn("[runtime] automatic Console sign-in is not configured");
+            return;
+          }
+          const result = await openConsoleWithSignIn({
+            baseUrl: `http://localhost:${port}`,
+            bearer: consoleBearer,
+          });
+          if (!result.automaticSignIn) {
+            console.warn(
+              "Automatic sign-in was unavailable; use AUGGY_WEB_TOKEN from .env on the password screen.",
             );
+          }
+          if (!result.opened) {
+            console.log(`  (couldn't auto-launch the browser; open ${result.consoleUrl} manually)`);
           }
         } catch {
           console.error("[runtime] browser-open-failed");

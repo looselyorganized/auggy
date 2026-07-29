@@ -78,6 +78,7 @@ import {
   type ConsoleChatStore,
   type ConsoleChatToolCall,
 } from "./admin/console-chat-store";
+import { createConsoleCliLoginTicketStore } from "./admin/cli-login-tickets";
 import {
   buildConsoleAllowedOrigins,
   compileTrustedProxyNetworks,
@@ -1079,6 +1080,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // Capability shared only with the same-process authenticated admin proxy.
   // It is deliberately never added to CORS or any response/log surface.
   const consoleInternalRunMarker = opts.adminRoute === false ? null : crypto.randomUUID();
+  const consoleCliLoginTickets = createConsoleCliLoginTicketStore();
 
   // PR γ.1 — augment-registered routes captured at register() time.
   // Empty until register fires; once populated, immutable for the server's lifetime.
@@ -3682,6 +3684,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 callerIp: adminIp,
                 secureRequest: consoleRequest.secure,
                 requestOrigin: consoleRequest.origin,
+                cliLoginTickets: consoleCliLoginTickets,
                 allowInsecureLoopback: consoleRequest.allowInsecureLoopback,
                 actionRegistry,
                 staticDir: adminStaticDir,

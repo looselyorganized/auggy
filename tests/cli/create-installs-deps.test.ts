@@ -493,7 +493,11 @@ describe("runCreate scaffolding integration", () => {
     }
 
     expect(logs.join("\n")).toContain("cd demo-output");
+    expect(logs.join("\n")).toContain("Turn business operations into agent-ready capabilities.");
+    expect(logs.join("\n")).toContain("Adding core augments");
+    expect(logs.join("\n")).not.toContain("small runtime for self-hosted agents");
     expect(logs.join("\n")).toContain("Set .env");
+    expect(logs.join("\n")).toContain("auggy doctor");
     expect(logs.join("\n")).toContain("auggy run");
     expect(logs.join("\n")).not.toContain("auggy run demo-output");
     expect(logs.join("\n")).not.toContain("auggy dev demo-output --open");
@@ -531,8 +535,8 @@ describe("runCreate scaffolding integration", () => {
       expect(statSync(join(dir, ".env")).mode & 0o777).toBe(0o600);
     }
     expect(logs.join("\n")).not.toContain("Set .env");
-    expect(logs.join("\n")).toContain("Open in your editor");
-    expect(logs.join("\n")).toContain("identity.md");
+    expect(logs.join("\n")).not.toContain("Open in your editor");
+    expect(logs.join("\n")).toContain("auggy doctor");
     expect(logs.join("\n")).toContain("auggy run");
   });
 

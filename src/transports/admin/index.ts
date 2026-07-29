@@ -10,7 +10,12 @@ import {
   checkAdminAuth,
   createConsoleSessionClearCookie,
   createConsoleSessionSetCookie,
+  hasValidConsoleBasicAuth,
 } from "./admin-auth";
+import {
+  CONSOLE_CLI_LOGIN_TICKET_PATH_PREFIX,
+  type ConsoleCliLoginTicketStore,
+} from "./cli-login-tickets";
 import { coerceInputs } from "./admin-coerce";
 import {
   collectAdminInfoBlocks,
@@ -255,6 +260,8 @@ export interface AdminRouteContext {
   secureRequest?: boolean;
   /** Exact effective origin after Host, scheme, and proxy validation. */
   requestOrigin?: string;
+  /** Process-local, bounded tickets used by the CLI to establish a browser session. */
+  cliLoginTickets?: ConsoleCliLoginTicketStore;
   /** True only for a direct loopback socket with no forwarding boundary. */
   allowInsecureLoopback?: boolean;
   /** True when the transport has validated that X-Forwarded-Proto came from a trusted proxy. */
@@ -355,6 +362,12 @@ async function dispatchAdminRoute(req: Request, ctx: AdminRouteContext): Promise
     return new Response(null, { status: 405, headers: { allow: "GET, POST" } });
   }
 
+  if (url.pathname.startsWith(CONSOLE_CLI_LOGIN_TICKET_PATH_PREFIX)) {
+    if (!isInsecureLoopbackAllowed(ctx) && !secureRequest) return consoleHttpsRequiredResponse(url);
+    if (req.method !== "GET") return methodNotAllowed("GET");
+    return handleCliLoginTicket(req, ctx, secureRequest);
+  }
+
   // Auth + HTTPS gate
   const auth = checkAdminAuth({
     req,
@@ -367,6 +380,11 @@ async function dispatchAdminRoute(req: Request, ctx: AdminRouteContext): Promise
   });
   if (auth.kind === "https-required") return auth.response;
   if (auth.kind === "unauthorized") return auth.response;
+
+  if (url.pathname === "/console/api/cli-login") {
+    if (req.method !== "POST") return methodNotAllowed("POST");
+    return handleCliLoginTicketIssue(req, ctx);
+  }
 
   if (url.pathname === "/console/logout") {
     if (req.method !== "POST") {
@@ -674,6 +692,52 @@ async function handleLoginPost(
   });
 }
 
+function handleCliLoginTicketIssue(req: Request, ctx: AdminRouteContext): Response {
+  if (!ctx.cliLoginTickets)
+    return jsonResponse({ error: "Console CLI sign-in is unavailable" }, 503);
+  if (req.headers.has("origin") || !hasValidConsoleBasicAuth(req, ctx.bearer)) {
+    return jsonResponse({ error: "unauthorized" }, 401);
+  }
+  if (req.body !== null) return jsonResponse({ error: "request body is not allowed" }, 400);
+
+  const origin = effectiveConsoleOrigin(req, ctx);
+  try {
+    const ticket = ctx.cliLoginTickets.issue({ bearer: ctx.bearer, origin });
+    return jsonResponse({
+      loginPath: `${CONSOLE_CLI_LOGIN_TICKET_PATH_PREFIX}${ticket.token}`,
+      expiresInSeconds: ticket.expiresInSeconds,
+    });
+  } catch {
+    return jsonResponse({ error: "Console CLI sign-in is temporarily unavailable" }, 503);
+  }
+}
+
+function handleCliLoginTicket(
+  req: Request,
+  ctx: AdminRouteContext,
+  secureRequest: boolean,
+): Response {
+  const url = new URL(req.url);
+  const token = url.pathname.slice(CONSOLE_CLI_LOGIN_TICKET_PATH_PREFIX.length);
+  const result = ctx.cliLoginTickets?.consume({
+    token,
+    bearer: ctx.bearer,
+    origin: effectiveConsoleOrigin(req, ctx),
+  });
+  if (!result?.ok) {
+    return loginPageResponse("This automatic sign-in link is invalid or expired.");
+  }
+
+  return new Response(null, {
+    status: 303,
+    headers: {
+      location: result.nextPath,
+      "set-cookie": createConsoleSessionSetCookie({ bearer: ctx.bearer, secure: secureRequest }),
+      "cache-control": "no-store",
+    },
+  });
+}
+
 function loginPageResponse(error?: string, search = ""): Response {
   const escapedError = error ? escapeHtml(error) : "";
   const action = `/console/login${search}`;
@@ -690,6 +754,7 @@ function loginPageResponse(error?: string, search = ""): Response {
     main { width: min(360px, calc(100vw - 32px)); }
     h1 { font-size: 24px; font-weight: 650; margin: 0 0 8px; }
     p { color: #cbd5e1; margin: 0 0 20px; line-height: 1.45; }
+    code { color: #fed7aa; font-size: 0.92em; }
     label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; color: #e2e8f0; }
     input { box-sizing: border-box; width: 100%; height: 44px; border: 1px solid #334155; border-radius: 6px; padding: 0 12px; background: #020617; color: #f8fafc; font-size: 16px; }
     button { width: 100%; height: 42px; margin-top: 14px; border: 0; border-radius: 6px; background: #f8fafc; color: #020617; font-weight: 700; cursor: pointer; }
@@ -699,7 +764,7 @@ function loginPageResponse(error?: string, search = ""): Response {
 <body>
   <main>
     <h1>Console sign-in</h1>
-    <p>Enter your console password.</p>
+    <p>Enter <code>AUGGY_WEB_TOKEN</code> from this agent's <code>.env</code> file or deployment secrets.</p>
     ${escapedError ? `<p class="error">${escapedError}</p>` : ""}
     <form method="post" action="${escapeHtml(action)}">
       <label for="password">Console password</label>
@@ -1946,6 +2011,10 @@ function isSecureConsoleRequest(req: Request, ctx: AdminRouteContext): boolean {
   return (
     url.protocol === "https:" || (ctx.trustForwardedProto === true && forwardedProto === "https")
   );
+}
+
+function effectiveConsoleOrigin(req: Request, ctx: AdminRouteContext): string {
+  return ctx.requestOrigin ?? new URL(req.url).origin;
 }
 
 function consoleHttpsRequiredResponse(url: URL): Response {

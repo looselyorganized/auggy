@@ -77,28 +77,32 @@ export function checkAdminAuth(ctx: AdminAuthContext): AdminAuthResult {
   // 3. HTTP Basic check. Loopback is a transport property, not authority:
   // reverse proxies, port-forwarding, and DNS rebinding can all make an
   // attacker-controlled request appear to originate locally.
-  const authHeader = ctx.req.headers.get("authorization");
-  if (!authHeader?.toLowerCase().startsWith("basic ")) {
-    return unauthorized(ctx.agentName, shouldRedirectToLogin(ctx.req), ctx.req);
-  }
-
-  const b64 = authHeader.slice(6).trim();
-  let decoded: string;
-  try {
-    decoded = atob(b64);
-  } catch {
-    return unauthorized(ctx.agentName, false, ctx.req);
-  }
-
-  const colonIdx = decoded.indexOf(":");
-  if (colonIdx < 0) return unauthorized(ctx.agentName, false, ctx.req);
-  const password = decoded.slice(colonIdx + 1);
-
-  if (!timingSafeEqual(password, ctx.bearer)) {
-    return unauthorized(ctx.agentName, false, ctx.req);
+  if (!hasValidConsoleBasicAuth(ctx.req, ctx.bearer)) {
+    return unauthorized(
+      ctx.agentName,
+      shouldRedirectToLogin(ctx.req) && !ctx.req.headers.has("authorization"),
+      ctx.req,
+    );
   }
 
   return { kind: "ok" };
+}
+
+/** Validate the explicit Basic credential used by non-browser Console clients. */
+export function hasValidConsoleBasicAuth(req: Request, bearer: string): boolean {
+  const authHeader = req.headers.get("authorization");
+  if (!authHeader?.toLowerCase().startsWith("basic ")) return false;
+
+  let decoded: string;
+  try {
+    decoded = atob(authHeader.slice(6).trim());
+  } catch {
+    return false;
+  }
+
+  const colonIdx = decoded.indexOf(":");
+  if (colonIdx < 0) return false;
+  return timingSafeEqual(decoded.slice(colonIdx + 1), bearer);
 }
 
 export function createConsoleSessionSetCookie(args: {

@@ -26,6 +26,7 @@ describe("auggy CLI command table", () => {
     expect(names).toContain("skill");
     expect(names).not.toContain("add-skill");
     expect(names).toContain("run");
+    expect(names).toContain("console");
     expect(names).toContain("doctor");
     expect(names).toContain("coordination");
     expect(names).toContain("state");
@@ -153,6 +154,7 @@ describe("auggy CLI command table", () => {
     expect(out).toContain("  Health:   https://dx-agent.up.railway.app/health");
     expect(out).toContain("  Home:     https://dx-agent.up.railway.app");
     expect(out).toContain("Manage it:");
+    expect(out).toContain("  auggy console dx-agent");
     expect(out).toContain("  auggy logs");
     expect(out).toMatch(/ {2}auggy deploy --yes\s+Redeploy/);
     expect(out).toContain("Details:");

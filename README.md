@@ -31,11 +31,12 @@ npm's `next` tag; pin its exact version for production-like evaluation until
 npm i -g auggy@next
 auggy create my-agent
 cd my-agent
+auggy doctor
 auggy run
 ```
 
-`auggy create` walks through the engine, model, identity, and augment choices,
-then installs the agent's local dependencies. Choose Anthropic, OpenAI,
+`auggy create` walks through the model provider, model, and agent identity,
+adds the core augments, then installs the agent's local dependencies. Choose Anthropic, OpenAI,
 OpenRouter, or a local/remote Ollama instance.
 
 Generated agents own an audited root-level dependency override for
@@ -439,6 +440,7 @@ After the first deploy, the selected target is saved locally. Useful follow-up
 commands:
 
 ```bash
+auggy console
 auggy logs
 auggy deploy --yes
 ```
@@ -450,6 +452,7 @@ auggy deploy --yes
 | `auggy create <name>` | Scaffold a standalone agent project |
 | `auggy init [name]` | Initialize the current directory as an agent |
 | `auggy run [name]` | Run locally and open chat |
+| `auggy console [name]` | Open an already-running local or Railway Console and sign in |
 | `auggy dev [name]` | Run in the foreground without opening a browser |
 | `auggy doctor [name]` | Check configuration, environment, dependencies, port, and skills |
 | `auggy list` / `auggy status [name]` | Discover agent projects and inspect local process state |

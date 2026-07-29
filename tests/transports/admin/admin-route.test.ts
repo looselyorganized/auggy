@@ -12,6 +12,7 @@ import {
   handleAdminRoute,
 } from "@/transports/admin/index";
 import { generateCsrfToken } from "@/transports/admin/admin-csrf";
+import { createConsoleCliLoginTicketStore } from "@/transports/admin/cli-login-tickets";
 import type {
   AdminActionInput,
   AgentCard,
@@ -168,7 +169,97 @@ describe("handleAdminRoute — auth", () => {
     expect(res.headers.get("content-type")).toContain("text/html");
     const body = await res.text();
     expect(body).toContain("Console sign-in");
-    expect(body).not.toContain("AUGGY_WEB_TOKEN");
+    expect(body).toContain("AUGGY_WEB_TOKEN");
+    expect(body).not.toContain("test-bearer");
+  });
+
+  it("exchanges explicit Basic auth for a single-use browser session ticket", async () => {
+    const cliLoginTickets = createConsoleCliLoginTicketStore();
+    const ctx = await makeCtx({
+      callerIp: "10.0.0.5",
+      requestOrigin: "https://my-agent.fly.dev",
+      cliLoginTickets,
+    });
+    const issueRes = await handleAdminRoute(
+      new Request("https://my-agent.fly.dev/console/api/cli-login", {
+        method: "POST",
+        headers: { authorization: basicHeader("test-bearer") },
+      }),
+      ctx,
+    );
+    expect(issueRes.status).toBe(200);
+    const issued = (await issueRes.json()) as {
+      loginPath: string;
+      expiresInSeconds: number;
+    };
+    expect(issued.loginPath).toMatch(/^\/console\/cli-login\/[A-Za-z0-9_-]{43}$/);
+    expect(issued.expiresInSeconds).toBe(30);
+
+    const consume = () =>
+      handleAdminRoute(new Request(`https://my-agent.fly.dev${issued.loginPath}`), ctx);
+    const loginRes = await consume();
+    expect(loginRes.status).toBe(303);
+    expect(loginRes.headers.get("location")).toBe("/console/chat");
+    expect(loginRes.headers.get("set-cookie")).toContain("HttpOnly");
+    expect(loginRes.headers.get("set-cookie")).toContain("Secure");
+
+    const replayRes = await consume();
+    expect(replayRes.status).toBe(401);
+    expect(await replayRes.text()).toContain("invalid or expired");
+  });
+
+  it("does not issue CLI tickets from a browser origin or session cookie", async () => {
+    const cliLoginTickets = createConsoleCliLoginTicketStore();
+    const ctx = await makeCtx({
+      callerIp: "10.0.0.5",
+      requestOrigin: "https://my-agent.fly.dev",
+      cliLoginTickets,
+    });
+    const browserRes = await handleAdminRoute(
+      new Request("https://my-agent.fly.dev/console/api/cli-login", {
+        method: "POST",
+        headers: {
+          authorization: basicHeader("test-bearer"),
+          origin: "https://my-agent.fly.dev",
+        },
+      }),
+      ctx,
+    );
+    expect(browserRes.status).toBe(401);
+
+    const loginRes = await handleAdminRoute(
+      new Request("https://my-agent.fly.dev/console/login", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ password: "test-bearer" }).toString(),
+      }),
+      ctx,
+    );
+    const cookie = loginRes.headers.get("set-cookie")!.split(";")[0]!;
+    const sessionRes = await handleAdminRoute(
+      new Request("https://my-agent.fly.dev/console/api/cli-login", {
+        method: "POST",
+        headers: { cookie },
+      }),
+      ctx,
+    );
+    expect(sessionRes.status).toBe(401);
+  });
+
+  it("requires HTTPS before consuming a remote CLI login ticket", async () => {
+    const cliLoginTickets = createConsoleCliLoginTicketStore({
+      randomToken: () => "A".repeat(43),
+    });
+    cliLoginTickets.issue({ bearer: "test-bearer", origin: "http://my-agent.fly.dev" });
+    const res = await handleAdminRoute(
+      new Request(`http://my-agent.fly.dev/console/cli-login/${"A".repeat(43)}`),
+      await makeCtx({
+        callerIp: "10.0.0.5",
+        requestOrigin: "http://my-agent.fly.dev",
+        cliLoginTickets,
+      }),
+    );
+    expect(res.status).toBe(426);
   });
 
   it("POST /console/login with valid password sets an HttpOnly session cookie", async () => {

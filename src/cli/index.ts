@@ -9,6 +9,7 @@
  *   auggy augment list               List augments in an agent
  *   auggy skill add <augment>        Repair/reinstall a bundled skill
  *   auggy run [name] [--no-open]     Run agent in foreground; opens /console/chat by default
+ *   auggy console [name] [--cloud]   Open a running local or Railway Console
  *   auggy doctor [name]              Check whether an agent is ready to run
  *   auggy coordination migrate [name] Apply configured coordination migrations
  *   auggy models list [provider]     List known/provider engine models
@@ -33,6 +34,7 @@ import pkg from "../../package.json" with { type: "json" };
 import { runCreate } from "./commands/create";
 import { skillCommand } from "./commands/add-skill";
 import { runCommand } from "./commands/run";
+import { consoleCommand } from "./commands/console";
 import { doctorCommand } from "./commands/doctor";
 import { coordinationCommand } from "./commands/coordination";
 import { routesCommand } from "./commands/routes";
@@ -105,6 +107,7 @@ export function buildCli(): Command {
 
   program.addCommand(skillCommand());
   program.addCommand(runCommand());
+  program.addCommand(consoleCommand());
   program.addCommand(doctorCommand());
   program.addCommand(coordinationCommand());
   program.addCommand(modelsCommand());
@@ -556,6 +559,7 @@ export function formatDeployResultMessage(
     `  Home:     ${result.url}`,
     "",
     result.health.ok ? "Manage it:" : "Next:",
+    `  auggy console ${result.name}`,
     "  auggy logs",
     `  ${rerun.padEnd(24)} Redeploy`,
     "",

@@ -7,15 +7,15 @@
  *
  *   auggy chat                  — discover running agents; open if one,
  *                                 prompt if many, error if none.
- *   auggy chat <name>           — open that agent's /console/chat.
+ *   auggy chat <name>           — open that agent's /console/chat signed in.
  *   auggy chat <name> --no-open — print the URL only.
  */
 
 import { Command } from "commander";
 import { select } from "@inquirer/prompts";
 import { inspectRuntimeProcess, listPidManifests, readLivePidManifest } from "../pid-registry";
-import { openBrowser } from "../open-browser";
 import type { PidManifest } from "../types";
+import { runConsole } from "./console";
 
 export function chatCommand(): Command {
   return new Command("chat")
@@ -47,14 +47,16 @@ export function chatCommand(): Command {
         return;
       }
 
-      const url = `http://localhost:${port}/console/chat`;
-      console.log(url);
+      if (!opts.open) {
+        console.log(`http://localhost:${port}/console/chat`);
+        return;
+      }
 
-      if (opts.open) {
-        const result = openBrowser(url);
-        if (!result.ok) {
-          console.log(`[auggy chat] Couldn't launch a browser; open the URL above manually.`);
-        }
+      try {
+        await runConsole(undefined, { config: manifest.configPath });
+      } catch (error) {
+        console.error(`[auggy chat] ${(error as Error).message}`);
+        process.exit(1);
       }
     });
 }
