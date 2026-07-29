@@ -1,6 +1,6 @@
 {
   "name": "@auggy/ollama",
-  "version": "0.5.0-rc.2",
+  "version": "0.5.0-rc.3",
   "description": "Ollama engine adapter for Auggy, supporting local and remote Ollama servers.",
   "keywords": [
     "auggy",
@@ -38,7 +38,7 @@
   },
   "private": false,
   "peerDependencies": {
-    "auggy": "^0.5.0-rc.2"
+    "auggy": "^0.5.0-rc.3"
   },
   "peerDependenciesMeta": {
     "auggy": {

@@ -1,6 +1,6 @@
 {
   "name": "auggy",
-  "version": "0.5.0-rc.2",
+  "version": "0.5.0-rc.3",
   "description": "Turn business operations into agent-ready capabilities with controlled, predictable TypeScript augments.",
   "keywords": [
     "agent",

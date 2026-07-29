@@ -1,6 +1,6 @@
 {
   "name": "@auggy/anthropic",
-  "version": "0.5.0-rc.2",
+  "version": "0.5.0-rc.3",
   "description": "Anthropic engine adapter for Auggy, powered by the official @anthropic-ai/sdk.",
   "keywords": [
     "auggy",
@@ -36,7 +36,7 @@
   },
   "private": false,
   "peerDependencies": {
-    "auggy": "^0.5.0-rc.2"
+    "auggy": "^0.5.0-rc.3"
   },
   "peerDependenciesMeta": {
     "auggy": {

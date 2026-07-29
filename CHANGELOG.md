@@ -7,6 +7,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0-rc.3] - 2026-07-29
+
+This third public candidate adds seamless, short-lived Console sign-in and
+ships the complete branded login experience inside the npm package.
+
+### Added
+
+- **Single-use CLI Console sign-in.** `auggy run` and `auggy console [name]`
+  exchange a short-lived, origin-bound ticket for an HttpOnly Console session
+  without putting the permanent bearer in browser URLs or logs. Direct local
+  and Railway browser visits retain the console-password flow.
+- **Packaged branded login artifacts.** The Console build now generates three
+  fixed no-JavaScript login documents from Auggy registry components and
+  Tailwind conventions, plus one fingerprinted stylesheet and a verified
+  integrity manifest.
+
+### Security
+
+- **Fail-closed pre-auth delivery.** Login artifacts are path-confined,
+  inventory-checked, descriptor-read without following symlinks, and verified
+  by size and digest. Missing or corrupt output falls back to an operational
+  no-JavaScript form with strict CSP and no-store responses.
+- **Release-path authentication proof.** Packed-release smoke now exercises
+  password sessions, one-time ticket consumption and replay rejection,
+  pre-auth asset confinement, and installed-package provenance.
+
 ## [0.5.0-rc.2] - 2026-07-28
 
 This second public candidate preserves the RC.1 runtime behavior while
@@ -427,7 +453,8 @@ Initial tagged release. The kernel and built-in augments described in `docs/02-a
 - **CLI** — `aug1 create / add / dev / start / stop / restart / status` with launchd installation on macOS and PID-manifest tracking under `~/.auggy/`.
 - **Reference documentation** — `docs/01-philosophy.md` through `docs/11-skills.md`.
 
-[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.2...HEAD
+[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.3...HEAD
+[0.5.0-rc.3]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.2...v0.5.0-rc.3
 [0.5.0-rc.2]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.1...v0.5.0-rc.2
 [0.5.0-rc.1]: https://github.com/looselyorganized/auggy/compare/v0.4.4...v0.5.0-rc.1
 [0.4.4]: https://github.com/looselyorganized/auggy/compare/v0.4.3...v0.4.4
