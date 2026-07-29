@@ -77,6 +77,6 @@ checkpoint or orchestrate multi-step business workflows.
 ## Package Snapshot
 
 - Latest stable package: `0.4.4`.
-- Release candidate: `0.5.0-rc.3` (publish to npm's `next` tag after the release PR passes).
+- Release candidate: `0.5.0-rc.3` on npm's `next` tag.
 - Release plan: [`plans/production-readiness-roadmap-2026-07-24.md`](./plans/production-readiness-roadmap-2026-07-24.md).
 - Source of truth: code in `src/`, followed by the numbered reference docs.
