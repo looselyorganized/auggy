@@ -16,6 +16,7 @@ import {
   CONSOLE_CLI_LOGIN_TICKET_PATH_PREFIX,
   type ConsoleCliLoginTicketStore,
 } from "./cli-login-tickets";
+import { loadConsoleLoginArtifacts, type ConsoleLoginVariant } from "./login-artifacts";
 import { coerceInputs } from "./admin-coerce";
 import {
   collectAdminInfoBlocks,
@@ -51,7 +52,6 @@ import {
 } from "./admin-credentials";
 import { readFileSync } from "node:fs";
 import { isIP } from "node:net";
-import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import { readManagedText } from "./admin-managed-files";
 import type {
@@ -331,8 +331,10 @@ type ChatPreviewMode = "creator" | "anonymous" | "visitor";
 
 const LOGIN_RATE_LIMIT_WINDOW_MS = 60_000;
 const LOGIN_RATE_LIMIT_MAX = 10;
-const CONSOLE_LOGIN_ASSET_PATH_PREFIX = "/console/login-assets/";
-const CONSOLE_LOGIN_ERROR_PLACEHOLDER = "__AUGGY_LOGIN_ERROR__";
+const CONSOLE_LOGIN_ASSET_PATH = "/console/login-assets";
+const CONSOLE_LOGIN_ASSET_PATH_PREFIX = `${CONSOLE_LOGIN_ASSET_PATH}/`;
+const CONSOLE_LOGIN_CSP =
+  "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
 const loginAttempts = new Map<string, number[]>();
 
 const EXPIRED_CSRF_HTML = `<!doctype html>
@@ -358,17 +360,20 @@ async function dispatchAdminRoute(req: Request, ctx: AdminRouteContext): Promise
   const agentName = agentCard.provider.name || "auggy";
 
   const secureRequest = isSecureConsoleRequest(req, ctx);
-  if (url.pathname.startsWith(CONSOLE_LOGIN_ASSET_PATH_PREFIX)) {
+  if (
+    url.pathname === CONSOLE_LOGIN_ASSET_PATH ||
+    url.pathname.startsWith(CONSOLE_LOGIN_ASSET_PATH_PREFIX)
+  ) {
     if (!isInsecureLoopbackAllowed(ctx) && !secureRequest) return consoleHttpsRequiredResponse(url);
-    if (req.method !== "GET") return methodNotAllowed("GET");
-    return handleLoginAsset(ctx, url.pathname);
+    if (req.method !== "GET" && req.method !== "HEAD") return methodNotAllowed("GET, HEAD");
+    return handleLoginAsset(ctx, url.pathname, req.method);
   }
 
   if (url.pathname === "/console/login") {
     if (!isInsecureLoopbackAllowed(ctx) && !secureRequest) return consoleHttpsRequiredResponse(url);
-    if (req.method === "GET") return loginPageResponse(ctx);
+    if (req.method === "GET") return loginPageResponse(ctx, "default");
     if (req.method === "POST") return handleLoginPost(req, ctx, secureRequest);
-    return new Response(null, { status: 405, headers: { allow: "GET, POST" } });
+    return methodNotAllowed("GET, POST");
   }
 
   if (url.pathname.startsWith(CONSOLE_CLI_LOGIN_TICKET_PATH_PREFIX)) {
@@ -675,22 +680,34 @@ async function handleLoginPost(
     });
   }
 
-  let form: URLSearchParams;
-  try {
-    form = new URLSearchParams(await readRequestBodyText(req, 4096));
-  } catch (error) {
-    if (error instanceof RequestBodyTooLargeError) {
-      return new Response("Request body too large.", {
-        status: 413,
-        headers: { "content-type": "text/plain; charset=utf-8", "cache-control": "no-store" },
-      });
-    }
-    return loginPageResponse(ctx, "Invalid console password.");
+  if (!hasUrlEncodedContentType(req.headers.get("content-type"))) {
+    return loginRequestFailureResponse(400, "Invalid login request.");
   }
 
-  const password = form.get("password") ?? "";
+  let body: string;
+  try {
+    body = await readRequestBodyText(req, 4096);
+  } catch (error) {
+    if (error instanceof RequestBodyTooLargeError) {
+      return loginRequestFailureResponse(413, "Request body too large.");
+    }
+    return loginRequestFailureResponse(400, "Invalid login request.");
+  }
+
+  if (!isWellFormedUrlEncodedBody(body)) {
+    return loginRequestFailureResponse(400, "Invalid login request.");
+  }
+
+  const form = new URLSearchParams(body);
+  const passwordValues = form.getAll("password");
+  const keys = Array.from(form.keys());
+  if (passwordValues.length > 1 || keys.some((key) => key !== "password")) {
+    return loginRequestFailureResponse(400, "Invalid login request.");
+  }
+
+  const password = passwordValues[0] ?? "";
   if (!timingSafeStringEqual(password, ctx.bearer)) {
-    return loginPageResponse(ctx, "Invalid console password.");
+    return loginPageResponse(ctx, "invalid-password");
   }
 
   return new Response(null, {
@@ -699,6 +716,34 @@ async function handleLoginPost(
       location: safeConsoleNextPath(new URL(req.url).searchParams.get("next")),
       "set-cookie": createConsoleSessionSetCookie({ bearer: ctx.bearer, secure: secureRequest }),
       "cache-control": "no-store",
+    },
+  });
+}
+
+function hasUrlEncodedContentType(value: string | null): boolean {
+  if (!value) return false;
+  const [mediaType, ...parameters] = value.split(";").map((part) => part.trim());
+  if (mediaType?.toLowerCase() !== "application/x-www-form-urlencoded") return false;
+  if (parameters.length === 0) return true;
+  return parameters.length === 1 && /^charset\s*=\s*(?:utf-8|"utf-8")$/i.test(parameters[0] ?? "");
+}
+
+function isWellFormedUrlEncodedBody(body: string): boolean {
+  try {
+    decodeURIComponent(body.replace(/\+/g, " "));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function loginRequestFailureResponse(status: 400 | 413, message: string): Response {
+  return new Response(message, {
+    status,
+    headers: {
+      "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+      "x-robots-tag": "noindex, nofollow",
     },
   });
 }
@@ -736,7 +781,7 @@ async function handleCliLoginTicket(
     origin: effectiveConsoleOrigin(req, ctx),
   });
   if (!result?.ok) {
-    return loginPageResponse(ctx, "This automatic sign-in link is invalid or expired.");
+    return loginPageResponse(ctx, "invalid-ticket");
   }
 
   return new Response(null, {
@@ -749,32 +794,87 @@ async function handleCliLoginTicket(
   });
 }
 
-function handleLoginAsset(ctx: AdminRouteContext, pathname: string): Response {
-  if (!ctx.staticDir) return buildRequiredResponse();
+async function handleLoginAsset(
+  ctx: AdminRouteContext,
+  pathname: string,
+  method: "GET" | "HEAD",
+): Promise<Response> {
   const relativePath = pathname.slice(CONSOLE_LOGIN_ASSET_PATH_PREFIX.length);
-  if (!relativePath) return staticFailureResponse(404);
-  return serveStaticFile(join(ctx.staticDir, "login"), relativePath) ?? staticFailureResponse(404);
+  if (!relativePath || pathname === CONSOLE_LOGIN_ASSET_PATH) return staticFailureResponse(404);
+
+  const artifacts = await loadConsoleLoginArtifacts(ctx.staticDir);
+  if (!artifacts || relativePath !== artifacts.stylesheet.path) {
+    return staticFailureResponse(404);
+  }
+
+  return new Response(method === "HEAD" ? null : artifacts.stylesheet.bytes, {
+    status: 200,
+    headers: {
+      "content-type": "text/css; charset=utf-8",
+      "cache-control": "public, max-age=31536000, immutable",
+      "x-content-type-options": "nosniff",
+      "x-robots-tag": "noindex, nofollow",
+    },
+  });
 }
 
-async function loginPageResponse(ctx: AdminRouteContext, error?: string): Promise<Response> {
-  if (!ctx.staticDir) return buildRequiredResponse();
-  const templateResponse = serveStaticFile(join(ctx.staticDir, "login"), "login.html");
-  if (templateResponse?.status !== 200) return buildRequiredResponse();
-
-  const template = await templateResponse.text();
-  if (!template.includes(CONSOLE_LOGIN_ERROR_PLACEHOLDER)) return buildRequiredResponse();
-  const body = template.replace(CONSOLE_LOGIN_ERROR_PLACEHOLDER, escapeHtml(error ?? ""));
+async function loginPageResponse(
+  ctx: AdminRouteContext,
+  variant: ConsoleLoginVariant,
+): Promise<Response> {
+  const artifacts = await loadConsoleLoginArtifacts(ctx.staticDir);
+  const body = artifacts?.variants[variant] ?? fallbackLoginDocument(variant);
 
   return new Response(body, {
-    status: error ? 401 : 200,
+    status: variant === "default" ? 200 : 401,
     headers: {
       "content-type": "text/html; charset=utf-8",
       "cache-control": "no-store",
       "x-robots-tag": "noindex, nofollow",
-      "content-security-policy":
-        "default-src 'none'; script-src 'self'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      "content-security-policy": CONSOLE_LOGIN_CSP,
     },
   });
+}
+
+function fallbackLoginDocument(variant: ConsoleLoginVariant): string {
+  const error =
+    variant === "invalid-password"
+      ? "Invalid console password."
+      : variant === "invalid-ticket"
+        ? "This automatic sign-in link is invalid or expired."
+        : undefined;
+  const errorMarkup = error ? `<p id="login-error" role="alert">${error}</p>` : "";
+  const inputErrorAttributes = error ? ' aria-invalid="true" aria-describedby="login-error"' : "";
+
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Sign in — Auggy Console</title>
+</head>
+<body data-auggy-login-source="fallback" data-auggy-login-variant="${variant}">
+  <main>
+    <header>
+      <p>Auggy</p>
+      <p>Creator Console</p>
+      <h1>Welcome back.</h1>
+      <p>Enter <code>AUGGY_WEB_TOKEN</code> from this agent's <code>.env</code> file or deployment secrets.</p>
+    </header>
+    ${errorMarkup}
+    <form method="post">
+      <p>
+        <label for="password">Console password</label><br>
+        <input id="password" name="password" type="password" autocomplete="current-password" autofocus required${inputErrorAttributes}>
+      </p>
+      <button type="submit">Open Console</button>
+    </form>
+    <p>From your terminal, <code>auggy console &lt;agent&gt;</code> opens an automatic one-time sign-in.</p>
+  </main>
+</body>
+</html>
+`;
 }
 
 async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): Promise<Response> {
@@ -2025,6 +2125,8 @@ function consoleHttpsRequiredResponse(url: URL): Response {
       upgrade: "TLS/1.2",
       connection: "Upgrade",
       "content-type": "text/plain; charset=utf-8",
+      "cache-control": "no-store",
+      "x-robots-tag": "noindex, nofollow",
     },
   });
 }
@@ -2042,8 +2144,23 @@ function isInsecureLoopbackAllowed(ctx: AdminRouteContext): boolean {
 function safeConsoleNextPath(next: string | null): string {
   if (!next) return "/console";
   try {
-    const decoded = decodeURIComponent(next);
-    if (decoded === "/console" || decoded.startsWith("/console/")) return decoded;
+    if (
+      next.includes("%") ||
+      next.includes("\\") ||
+      next.includes("?") ||
+      next.includes("#") ||
+      Array.from(next).some((character) => {
+        const codePoint = character.codePointAt(0) ?? 0;
+        return codePoint <= 0x1f || codePoint === 0x7f;
+      })
+    ) {
+      return "/console";
+    }
+    const parsed = new URL(next, "https://console.auggy.invalid");
+    if (parsed.origin !== "https://console.auggy.invalid" || parsed.pathname !== next) {
+      return "/console";
+    }
+    if (next === "/console" || next.startsWith("/console/")) return next;
   } catch {
     // Fall through to the safe default.
   }
@@ -2079,23 +2196,6 @@ function timingSafeStringEqual(a: string, b: string): boolean {
     diff |= (aa[i] ?? 0) ^ (bb[i] ?? 0);
   }
   return diff === 0;
-}
-
-function escapeHtml(value: string): string {
-  return value.replace(/[&<>"']/g, (ch) => {
-    switch (ch) {
-      case "&":
-        return "&amp;";
-      case "<":
-        return "&lt;";
-      case ">":
-        return "&gt;";
-      case '"':
-        return "&quot;";
-      default:
-        return "&#39;";
-    }
-  });
 }
 
 // Re-export for callers (web-transport) that need to resolve dist on boot.

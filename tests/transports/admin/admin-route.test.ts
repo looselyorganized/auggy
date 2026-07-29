@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -130,19 +131,108 @@ function basicHeader(bearer: string): string {
   return `Basic ${Buffer.from(`:${bearer}`).toString("base64")}`;
 }
 
-function createLoginStaticFixture(): { staticDir: string; cleanup: () => void } {
+const LOGIN_CSP =
+  "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
+const LOGIN_STYLESHEET_PATH = "assets/login-test123.css";
+const LOGIN_ERRORS = {
+  "invalid-password": "Invalid console password.",
+  "invalid-ticket": "This automatic sign-in link is invalid or expired.",
+} as const;
+type LoginFixtureVariant = "default" | keyof typeof LOGIN_ERRORS;
+
+interface LoginStaticFixture {
+  staticDir: string;
+  loginDir: string;
+  stylesheetPath: string;
+  cleanup: () => void;
+}
+
+function sha256(value: string): string {
+  return createHash("sha256").update(value).digest("hex");
+}
+
+function createLoginFixtureDocument(variant: LoginFixtureVariant): string {
+  const error = variant === "default" ? undefined : LOGIN_ERRORS[variant];
+  const errorMarkup = error ? `<p id="login-error" role="alert">${error}</p>` : "";
+  const errorInput = error ? ' aria-invalid="true" aria-describedby="login-error"' : "";
+  return `<!doctype html>
+<html lang="en" class="dark h-full">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="robots" content="noindex, nofollow"><title>Sign in — Auggy Console</title><link rel="stylesheet" href="/console/login-assets/${LOGIN_STYLESHEET_PATH}"></head>
+<body><main data-auggy-login-source="registry" data-auggy-login-variant="${variant}"><section data-slot="card"><h1>Welcome back.</h1><p>Enter <code>AUGGY_WEB_TOKEN</code> from this agent's environment.</p>${errorMarkup}<form method="post"><label for="password">Console password</label><input data-slot="input" id="password" name="password" type="password" autocomplete="current-password" required${errorInput}><button data-slot="button" type="submit">Open Console</button></form></section></main></body>
+</html>
+`;
+}
+
+function createLoginStaticFixture(): LoginStaticFixture {
   const staticDir = mkdtempSync(join(tmpdir(), "auggy-console-login-"));
   const loginDir = join(staticDir, "login");
   mkdirSync(join(loginDir, "assets"), { recursive: true });
+  const stylesheet = "body{color:#f5efe3;background:#191a1c}";
+  const documents = {
+    default: createLoginFixtureDocument("default"),
+    "invalid-password": createLoginFixtureDocument("invalid-password"),
+    "invalid-ticket": createLoginFixtureDocument("invalid-ticket"),
+  } as const;
+  writeFileSync(join(loginDir, LOGIN_STYLESHEET_PATH), stylesheet);
+  for (const [variant, document] of Object.entries(documents)) {
+    writeFileSync(join(loginDir, `${variant}.html`), document);
+  }
+  const artifacts = [
+    {
+      logicalName: "stylesheet",
+      path: LOGIN_STYLESHEET_PATH,
+      mediaType: "text/css",
+      size: Buffer.byteLength(stylesheet),
+      sha256: sha256(stylesheet),
+    },
+    ...(["default", "invalid-password", "invalid-ticket"] as const).map((variant) => ({
+      logicalName: variant,
+      path: `${variant}.html`,
+      mediaType: "text/html",
+      size: Buffer.byteLength(documents[variant]),
+      sha256: sha256(documents[variant]),
+    })),
+  ];
   writeFileSync(
-    join(loginDir, "login.html"),
-    '<!doctype html><html data-auggy-login-error="__AUGGY_LOGIN_ERROR__"><script type="module" src="/console/login-assets/assets/login.js"></script></html>',
+    join(loginDir, "manifest.json"),
+    `${JSON.stringify({ schemaVersion: 1, artifacts }, null, 2)}\n`,
   );
-  writeFileSync(join(loginDir, "assets", "login.js"), "console.log('login');");
   return {
     staticDir,
+    loginDir,
+    stylesheetPath: LOGIN_STYLESHEET_PATH,
     cleanup: () => rmSync(staticDir, { recursive: true, force: true }),
   };
+}
+
+function expectLoginSecurityHeaders(response: Response): void {
+  expect(response.headers.get("content-type")).toBe("text/html; charset=utf-8");
+  expect(response.headers.get("cache-control")).toBe("no-store");
+  expect(response.headers.get("content-security-policy")).toBe(LOGIN_CSP);
+  expect(response.headers.get("x-frame-options")).toBe("DENY");
+  expect(response.headers.get("referrer-policy")).toBe("no-referrer");
+  expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+  expect(response.headers.get("x-robots-tag")).toBe("noindex, nofollow");
+}
+
+function expectNativeLoginForm(body: string, error?: string): void {
+  const form = body.match(/<form\b[^>]*>/i)?.[0];
+  expect(form).toBeDefined();
+  expect(form).toMatch(/\smethod="post"/i);
+  expect(form).not.toMatch(/\saction\s*=/i);
+  expect(body.match(/<form\b/gi)).toHaveLength(1);
+  expect(body).toContain('name="password"');
+  expect(body).toContain('type="password"');
+  expect(body).toContain('autocomplete="current-password"');
+  expect(body).not.toMatch(/<script\b/i);
+  expect(body).not.toMatch(/\son[a-z]+\s*=/i);
+  expect(body).not.toContain("test-bearer");
+  if (error) {
+    expect(body).toContain('role="alert"');
+    expect(body).toContain(error);
+  } else {
+    expect(body).not.toContain('role="alert"');
+  }
 }
 
 describe("handleAdminRoute — auth", () => {
@@ -177,7 +267,22 @@ describe("handleAdminRoute — auth", () => {
     expect(res.headers.get("www-authenticate")).toContain("auggy-admin zip");
   });
 
-  it("GET /console/login serves a first-party login page", async () => {
+  it("GET /console/login serves an operable semantic fallback without built assets", async () => {
+    const res = await handleAdminRoute(
+      new Request("https://my-agent.fly.dev/console/login"),
+      await makeCtx({ callerIp: "10.0.0.5" }),
+    );
+
+    expect(res.status).toBe(200);
+    expectLoginSecurityHeaders(res);
+    const body = await res.text();
+    expect(body).toContain("Sign in — Auggy Console");
+    expect(body).toContain("AUGGY_WEB_TOKEN");
+    expect(body).not.toContain("/console/login-assets/");
+    expectNativeLoginForm(body);
+  });
+
+  it("GET /console/login serves the fixed registry-authored default variant", async () => {
     const fixture = createLoginStaticFixture();
     try {
       const req = new Request("https://my-agent.fly.dev/console/login");
@@ -186,59 +291,51 @@ describe("handleAdminRoute — auth", () => {
         await makeCtx({ callerIp: "10.0.0.5", staticDir: fixture.staticDir }),
       );
       expect(res.status).toBe(200);
-      expect(res.headers.get("content-type")).toContain("text/html");
+      expectLoginSecurityHeaders(res);
       const body = await res.text();
-      expect(body).toContain("/console/login-assets/assets/login.js");
-      expect(body).not.toContain("__AUGGY_LOGIN_ERROR__");
-      expect(body).not.toContain("test-bearer");
-      expect(res.headers.get("content-security-policy")).toContain("script-src 'self'");
-      expect(res.headers.get("content-security-policy")).toContain("form-action 'self'");
-      expect(res.headers.get("referrer-policy")).toBe("no-referrer");
-      expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(body).toContain('data-auggy-login-source="registry"');
+      expect(body).toContain('data-auggy-login-variant="default"');
+      expect(body).toContain(`/console/login-assets/${fixture.stylesheetPath}`);
+      expectNativeLoginForm(body);
     } finally {
       fixture.cleanup();
     }
   });
 
-  it("exchanges explicit Basic auth for a single-use browser session ticket", async () => {
-    const fixture = createLoginStaticFixture();
+  it("exchanges Basic auth once and renders replay failure without built assets", async () => {
     const cliLoginTickets = createConsoleCliLoginTicketStore();
     const ctx = await makeCtx({
       callerIp: "10.0.0.5",
       requestOrigin: "https://my-agent.fly.dev",
       cliLoginTickets,
-      staticDir: fixture.staticDir,
     });
-    try {
-      const issueRes = await handleAdminRoute(
-        new Request("https://my-agent.fly.dev/console/api/cli-login", {
-          method: "POST",
-          headers: { authorization: basicHeader("test-bearer") },
-        }),
-        ctx,
-      );
-      expect(issueRes.status).toBe(200);
-      const issued = (await issueRes.json()) as {
-        loginPath: string;
-        expiresInSeconds: number;
-      };
-      expect(issued.loginPath).toMatch(/^\/console\/cli-login\/[A-Za-z0-9_-]{43}$/);
-      expect(issued.expiresInSeconds).toBe(30);
+    const issueRes = await handleAdminRoute(
+      new Request("https://my-agent.fly.dev/console/api/cli-login", {
+        method: "POST",
+        headers: { authorization: basicHeader("test-bearer") },
+      }),
+      ctx,
+    );
+    expect(issueRes.status).toBe(200);
+    const issued = (await issueRes.json()) as {
+      loginPath: string;
+      expiresInSeconds: number;
+    };
+    expect(issued.loginPath).toMatch(/^\/console\/cli-login\/[A-Za-z0-9_-]{43}$/);
+    expect(issued.expiresInSeconds).toBe(30);
 
-      const consume = () =>
-        handleAdminRoute(new Request(`https://my-agent.fly.dev${issued.loginPath}`), ctx);
-      const loginRes = await consume();
-      expect(loginRes.status).toBe(303);
-      expect(loginRes.headers.get("location")).toBe("/console/chat");
-      expect(loginRes.headers.get("set-cookie")).toContain("HttpOnly");
-      expect(loginRes.headers.get("set-cookie")).toContain("Secure");
+    const consume = () =>
+      handleAdminRoute(new Request(`https://my-agent.fly.dev${issued.loginPath}`), ctx);
+    const loginRes = await consume();
+    expect(loginRes.status).toBe(303);
+    expect(loginRes.headers.get("location")).toBe("/console/chat");
+    expect(loginRes.headers.get("set-cookie")).toContain("HttpOnly");
+    expect(loginRes.headers.get("set-cookie")).toContain("Secure");
 
-      const replayRes = await consume();
-      expect(replayRes.status).toBe(401);
-      expect(await replayRes.text()).toContain("invalid or expired");
-    } finally {
-      fixture.cleanup();
-    }
+    const replayRes = await consume();
+    expect(replayRes.status).toBe(401);
+    expectLoginSecurityHeaders(replayRes);
+    expectNativeLoginForm(await replayRes.text(), LOGIN_ERRORS["invalid-ticket"]);
   });
 
   it("does not issue CLI tickets from a browser origin or session cookie", async () => {
@@ -295,10 +392,57 @@ describe("handleAdminRoute — auth", () => {
     expect(res.status).toBe(426);
   });
 
+  it("enforces exact methods and bodylessness across login ticket routes", async () => {
+    const ctx = await makeCtx({
+      callerIp: "10.0.0.62",
+      requestOrigin: "https://my-agent.fly.dev",
+      cliLoginTickets: createConsoleCliLoginTicketStore(),
+    });
+    const loginMethod = await handleAdminRoute(
+      new Request("https://my-agent.fly.dev/console/login", { method: "DELETE" }),
+      ctx,
+    );
+    expect(loginMethod.status).toBe(405);
+    expect(loginMethod.headers.get("allow")).toBe("GET, POST");
+
+    const ticketMethod = await handleAdminRoute(
+      new Request(`https://my-agent.fly.dev/console/cli-login/${"A".repeat(43)}`, {
+        method: "POST",
+      }),
+      ctx,
+    );
+    expect(ticketMethod.status).toBe(405);
+    expect(ticketMethod.headers.get("allow")).toBe("GET");
+
+    const issueMethod = await handleAdminRoute(
+      new Request("https://my-agent.fly.dev/console/api/cli-login", {
+        method: "GET",
+        headers: { authorization: basicHeader("test-bearer") },
+      }),
+      ctx,
+    );
+    expect(issueMethod.status).toBe(405);
+    expect(issueMethod.headers.get("allow")).toBe("POST");
+
+    const issueBody = await handleAdminRoute(
+      new Request("https://my-agent.fly.dev/console/api/cli-login", {
+        method: "POST",
+        headers: {
+          authorization: basicHeader("test-bearer"),
+          "content-type": "application/json",
+        },
+        body: "{}",
+      }),
+      ctx,
+    );
+    expect(issueBody.status).toBe(400);
+    expect(issueBody.headers.get("cache-control")).toContain("no-store");
+  });
+
   it("POST /console/login with valid password sets an HttpOnly session cookie", async () => {
     const req = new Request("https://my-agent.fly.dev/console/login?next=%2Fconsole%2Fchat", {
       method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
+      headers: { "content-type": "application/x-www-form-urlencoded; charset=UTF-8" },
       body: new URLSearchParams({ password: "test-bearer" }).toString(),
     });
     const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
@@ -310,6 +454,102 @@ describe("handleAdminRoute — auth", () => {
     expect(cookie).toContain("SameSite=Lax");
     expect(cookie).toContain("Path=/console");
     expect(cookie).toContain("Secure");
+  });
+
+  it("renders the fixed branded password and ticket error variants", async () => {
+    const fixture = createLoginStaticFixture();
+    try {
+      const ctx = await makeCtx({
+        callerIp: "10.0.0.61",
+        requestOrigin: "https://my-agent.fly.dev",
+        staticDir: fixture.staticDir,
+      });
+      const passwordRes = await handleAdminRoute(
+        new Request("https://my-agent.fly.dev/console/login", {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: "password=wrong",
+        }),
+        ctx,
+      );
+      expect(passwordRes.status).toBe(401);
+      expectLoginSecurityHeaders(passwordRes);
+      const passwordBody = await passwordRes.text();
+      expect(passwordBody).toContain('data-auggy-login-variant="invalid-password"');
+      expectNativeLoginForm(passwordBody, LOGIN_ERRORS["invalid-password"]);
+
+      const ticketRes = await handleAdminRoute(
+        new Request(`https://my-agent.fly.dev/console/cli-login/${"A".repeat(43)}`),
+        ctx,
+      );
+      expect(ticketRes.status).toBe(401);
+      expectLoginSecurityHeaders(ticketRes);
+      const ticketBody = await ticketRes.text();
+      expect(ticketBody).toContain('data-auggy-login-variant="invalid-ticket"');
+      expectNativeLoginForm(ticketBody, LOGIN_ERRORS["invalid-ticket"]);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it("keeps invalid and missing passwords operable when no login build exists", async () => {
+    for (const [index, body] of ["password=wrong", "password=", ""].entries()) {
+      const res = await handleAdminRoute(
+        new Request("https://my-agent.fly.dev/console/login", {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body,
+        }),
+        await makeCtx({ callerIp: `10.0.1.${index + 1}` }),
+      );
+      expect(res.status).toBe(401);
+      expectLoginSecurityHeaders(res);
+      expectNativeLoginForm(await res.text(), LOGIN_ERRORS["invalid-password"]);
+    }
+  });
+
+  it("rejects duplicate, extra, malformed, and non-form password submissions", async () => {
+    const cases = [
+      {
+        name: "duplicate password",
+        contentType: "application/x-www-form-urlencoded",
+        body: "password=test-bearer&password=test-bearer",
+      },
+      {
+        name: "extra field",
+        contentType: "application/x-www-form-urlencoded",
+        body: "password=test-bearer&next=%2Fconsole",
+      },
+      {
+        name: "malformed percent escape",
+        contentType: "application/x-www-form-urlencoded",
+        body: "password=%E0%A4%A",
+      },
+      { name: "plain text", contentType: "text/plain", body: "password=test-bearer" },
+      { name: "JSON", contentType: "application/json", body: '{"password":"test-bearer"}' },
+      {
+        name: "unsupported form charset",
+        contentType: "application/x-www-form-urlencoded; charset=iso-8859-1",
+        body: "password=test-bearer",
+      },
+      { name: "missing content type", contentType: undefined, body: "password=test-bearer" },
+    ] as const;
+
+    for (const [index, testCase] of cases.entries()) {
+      const headers = testCase.contentType ? { "content-type": testCase.contentType } : undefined;
+      const res = await handleAdminRoute(
+        new Request("https://my-agent.fly.dev/console/login", {
+          method: "POST",
+          headers,
+          body: testCase.body,
+        }),
+        await makeCtx({ callerIp: `10.0.2.${index + 1}` }),
+      );
+      expect(res.status, testCase.name).toBe(400);
+      expect(res.headers.get("cache-control"), testCase.name).toBe("no-store");
+      expect(res.headers.get("set-cookie"), testCase.name).toBeNull();
+      expect(await res.text(), testCase.name).not.toContain("test-bearer");
+    }
   });
 
   it("POST /console/login rejects an oversized body before form parsing", async () => {
@@ -436,17 +676,26 @@ describe("handleAdminRoute — auth", () => {
     expect(res.headers.get("set-cookie")).toContain("Secure");
   });
 
-  it("POST /console/login rejects open redirect next values", async () => {
-    const req = new Request(
-      "https://my-agent.fly.dev/console/login?next=https%3A%2F%2Fevil.example",
-      {
+  it("normalizes login next to the Console path boundary", async () => {
+    const cases = [
+      ["%2Fconsole%2Fchat", "/console/chat"],
+      ["https%3A%2F%2Fevil.example", "/console"],
+      ["%2F%2Fevil.example", "/console"],
+      ["%2Fadmin", "/console"],
+      ["%252Fconsole%252Fchat", "/console"],
+      ["%2Fconsole%2F..%2Fadmin", "/console"],
+    ] as const;
+
+    for (const [index, [next, expected]] of cases.entries()) {
+      const req = new Request(`https://my-agent.fly.dev/console/login?next=${next}`, {
         method: "POST",
         headers: { "content-type": "application/x-www-form-urlencoded" },
-        body: new URLSearchParams({ password: "test-bearer" }).toString(),
-      },
-    );
-    const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
-    expect(res.headers.get("location")).toBe("/console");
+        body: "password=test-bearer",
+      });
+      const res = await handleAdminRoute(req, await makeCtx({ callerIp: `10.0.3.${index + 1}` }));
+      expect(res.status).toBe(303);
+      expect(res.headers.get("location")).toBe(expected);
+    }
   });
 
   it("GET /console from loopback without bearer requires authentication", async () => {
@@ -793,32 +1042,128 @@ describe("handleAdminRoute — auth", () => {
 });
 
 describe("handleAdminRoute — static console", () => {
-  it("serves only the dedicated login bundle without Console authentication", async () => {
+  it("serves only the exact manifest-listed login stylesheet before authentication", async () => {
     const fixture = createLoginStaticFixture();
     try {
       const ctx = await makeCtx({ callerIp: "10.0.0.5", staticDir: fixture.staticDir });
-      const asset = await handleAdminRoute(
-        new Request("https://my-agent.fly.dev/console/login-assets/assets/login.js"),
-        ctx,
-      );
+      const assetUrl = `https://my-agent.fly.dev/console/login-assets/${fixture.stylesheetPath}`;
+      const asset = await handleAdminRoute(new Request(assetUrl), ctx);
       expect(asset.status).toBe(200);
-      expect(asset.headers.get("content-type")).toContain("application/javascript");
-      expect(await asset.text()).toContain("console.log");
+      expect(asset.headers.get("content-type")).toBe("text/css; charset=utf-8");
+      expect(asset.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
+      expect(asset.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(asset.headers.get("x-frame-options")).toBe("DENY");
+      expect(asset.headers.get("referrer-policy")).toBe("no-referrer");
+      expect(asset.headers.get("content-security-policy")).toContain("frame-ancestors 'none'");
+      expect(await asset.text()).toContain("background:#191a1c");
 
-      const traversal = await handleAdminRoute(
-        new Request("https://my-agent.fly.dev/console/login-assets/%2e%2e/index.html"),
-        ctx,
+      const head = await handleAdminRoute(new Request(assetUrl, { method: "HEAD" }), ctx);
+      expect(head.status).toBe(200);
+      expect(head.headers.get("content-type")).toBe("text/css; charset=utf-8");
+      expect(await head.text()).toBe("");
+
+      for (const method of ["POST", "PUT"]) {
+        const response = await handleAdminRoute(new Request(assetUrl, { method }), ctx);
+        expect(response.status).toBe(405);
+        expect(response.headers.get("allow")).toBe("GET, HEAD");
+        expect(response.headers.get("cache-control")).toContain("no-store");
+      }
+
+      for (const path of [
+        "/console/login-assets",
+        "/console/login-assets/",
+        "/console/login-assets/manifest.json",
+        "/console/login-assets/default.html",
+        "/console/login-assets/assets/login-test123.js",
+        "/console/login-assets/assets/unknown.css",
+        "/console/login-assets/nested/arbitrary.css",
+      ]) {
+        const response = await handleAdminRoute(
+          new Request(`https://my-agent.fly.dev${path}`),
+          ctx,
+        );
+        expect(response.status, path).toBe(404);
+        expect(response.headers.get("cache-control"), path).toBe("no-store");
+      }
+
+      for (const path of [
+        "/console/login-assets/%2e%2e%2Findex.html",
+        "/console/login-assets/assets%5Clogin-test123.css",
+        "/console/login-assets/%00.css",
+      ]) {
+        const response = await handleAdminRoute(
+          new Request(`https://my-agent.fly.dev${path}`),
+          ctx,
+        );
+        expect(response.status, path).toBe(404);
+        expect(response.headers.get("cache-control"), path).toBe("no-store");
+      }
+
+      const insecureRemote = await handleAdminRoute(
+        new Request(`http://my-agent.fly.dev/console/login-assets/${fixture.stylesheetPath}`),
+        await makeCtx({ callerIp: "10.0.0.75", staticDir: fixture.staticDir }),
       );
-      expect(traversal.status).not.toBe(200);
+      expect(insecureRemote.status).toBe(426);
+      expect(await insecureRemote.text()).not.toContain("background:#191a1c");
 
       const protectedAsset = await handleAdminRoute(
-        new Request("https://my-agent.fly.dev/console/assets/app.js"),
+        new Request("https://my-agent.fly.dev/console/assets/app.js", {
+          headers: { accept: "text/html" },
+        }),
         ctx,
       );
       expect(protectedAsset.status).toBe(303);
       expect(protectedAsset.headers.get("location")).toContain("/console/login");
     } finally {
       fixture.cleanup();
+    }
+  });
+
+  it("falls back deterministically when any required login artifact is corrupt", async () => {
+    const corruptions: Array<[string, (fixture: LoginStaticFixture) => void]> = [
+      ["missing manifest", (fixture) => rmSync(join(fixture.loginDir, "manifest.json"))],
+      [
+        "corrupt default document",
+        (fixture) => writeFileSync(join(fixture.loginDir, "default.html"), "corrupt"),
+      ],
+      [
+        "corrupt stylesheet",
+        (fixture) => writeFileSync(join(fixture.loginDir, fixture.stylesheetPath), "corrupt"),
+      ],
+      [
+        "malformed manifest",
+        (fixture) => writeFileSync(join(fixture.loginDir, "manifest.json"), "{not-json"),
+      ],
+    ];
+
+    for (const [name, corrupt] of corruptions) {
+      const fixture = createLoginStaticFixture();
+      try {
+        corrupt(fixture);
+        const ctx = await makeCtx({ callerIp: "10.0.0.74", staticDir: fixture.staticDir });
+        const get = await handleAdminRoute(
+          new Request("https://my-agent.fly.dev/console/login"),
+          ctx,
+        );
+        expect(get.status, name).toBe(200);
+        expectLoginSecurityHeaders(get);
+        const body = await get.text();
+        expectNativeLoginForm(body);
+        expect(body, name).not.toContain('data-auggy-login-source="registry"');
+
+        const invalid = await handleAdminRoute(
+          new Request("https://my-agent.fly.dev/console/login", {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            body: "password=wrong",
+          }),
+          ctx,
+        );
+        expect(invalid.status, name).toBe(401);
+        expectNativeLoginForm(await invalid.text(), LOGIN_ERRORS["invalid-password"]);
+      } finally {
+        fixture.cleanup();
+      }
     }
   });
 

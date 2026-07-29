@@ -22,6 +22,7 @@ import {
 } from "@/auth/external-auth";
 import type { Augment, DelegatedAuthorizationDeniedAuditEvent, ModelClient } from "@/types";
 import { createTempDir } from "@tests/fixtures/temp-dir";
+import { resolveDistDir } from "@/transports/admin/admin-static";
 
 async function bootstrapAnonymousRequest(
   url: string,
@@ -6260,17 +6261,18 @@ describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
     const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
     await agent.start();
     try {
-      const resp = await fetch(`http://127.0.0.1:${port}/console`);
-      expect(resp.status).toBe(200);
+      const resp = await fetch(`http://127.0.0.1:${port}/console`, { redirect: "manual" });
+      expect(resp.status).toBe(303);
       expect(resp.headers.get("www-authenticate")).toBeNull();
-      expect(resp.url).toContain("/console/login");
-      expect(await resp.text()).toContain("Sign in — Auggy Console");
+      expect(resp.headers.get("location")).toBe("/console/login?next=%2Fconsole");
+      expect(await resp.text()).toBe("");
     } finally {
       await agent.stop();
     }
   });
 
-  it("GET /admin with HTTP Basic bearer → 200 SPA shell when dist is built (or 503 notice when not)", async () => {
+  it("GET /admin with HTTP Basic bearer matches the explicitly detected SPA precondition", async () => {
+    const builtSpaAvailable = resolveDistDir() !== undefined;
     const model = createMockModel();
     const port = 19201;
     const aug = webTransport({
@@ -6286,12 +6288,10 @@ describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
       });
       const body = await resp.text();
       expect(resp.headers.get("content-type")).toContain("text/html");
-      // Either the built SPA shell (200) or the "build required" notice (503)
-      // — both are valid post-SPA. Auth passed in either case.
-      if (resp.status === 200) {
+      expect(resp.status).toBe(builtSpaAvailable ? 200 : 503);
+      if (builtSpaAvailable) {
         expect(body.toLowerCase()).toContain("auggy");
       } else {
-        expect(resp.status).toBe(503);
         expect(body).toContain("Console SPA not built");
       }
     } finally {
