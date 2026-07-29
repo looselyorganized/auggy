@@ -28,7 +28,7 @@ npm's `next` tag; pin its exact version for production-like evaluation until
 ## Quick Start
 
 ```bash
-npm i -g auggy@next
+bun add --global auggy@0.5.0-rc.2
 auggy create my-agent
 cd my-agent
 auggy doctor
@@ -64,7 +64,14 @@ Agent "my-agent" is live.
   Console:  http://localhost:8080/console
   Health:   http://localhost:8080/health
   Home:     http://localhost:8080/
+  Password: AUGGY_WEB_TOKEN in .env (if the sign-in screen appears)
 ```
+
+`auggy run` requests a short-lived, single-use login from the loopback agent
+before opening `/console/chat`. The permanent `AUGGY_WEB_TOKEN` is never placed
+in the browser URL. If automatic sign-in or browser launch is unavailable, open
+the printed Console URL and use `AUGGY_WEB_TOKEN` from that agent's `.env` on
+the native password screen; it works without JavaScript.
 
 You now have an ordinary TypeScript project you can inspect, edit, test, and
 deploy.
@@ -445,14 +452,20 @@ auggy logs
 auggy deploy --yes
 ```
 
+`auggy console [name]` prefers a running local agent and otherwise uses its
+saved Railway deployment. Add `--cloud` to select Railway even when the local
+agent is running. It opens the same single-use sign-in flow; when that exchange
+is unavailable, it opens the password screen and points to the applicable
+`AUGGY_WEB_TOKEN` location.
+
 ## CLI Reference
 
 | Command | What it does |
 | --- | --- |
 | `auggy create <name>` | Scaffold a standalone agent project |
 | `auggy init [name]` | Initialize the current directory as an agent |
-| `auggy run [name]` | Run locally and open chat |
-| `auggy console [name]` | Open an already-running local or Railway Console and sign in |
+| `auggy run [name]` | Run locally and open chat with a one-time Console sign-in |
+| `auggy console [name]` | Open a running local or Railway Console with a one-time sign-in or password fallback |
 | `auggy dev [name]` | Run in the foreground without opening a browser |
 | `auggy doctor [name]` | Check configuration, environment, dependencies, port, and skills |
 | `auggy list` / `auggy status [name]` | Discover agent projects and inspect local process state |

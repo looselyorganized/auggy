@@ -17,10 +17,25 @@ describe("LoginPage", () => {
     expect(html).toContain('data-slot="card"');
     expect(html).toContain('data-slot="input"');
     expect(html).toContain('data-slot="button"');
+    expect(html).toContain("border-muted-foreground!");
+    expect(html).toContain("aria-invalid:border-brand-signal!");
+    expect(html).toContain("motion-reduce:transition-none");
+    expect(html).toContain("forced-colors:focus-visible:outline-[Highlight]");
     expect(html).toContain("Creator Console");
     expect(html).toContain("Welcome back.");
     expect(html).toContain("AUGGY_WEB_TOKEN");
     expect(html).toContain("auggy console &lt;agent&gt;");
+  });
+
+  it("exposes one level-one heading without naming a generic brand container", () => {
+    const html = renderLoginPage();
+    const nativeHeadings = html.match(/<h[1-6]\b[^>]*>/g) ?? [];
+    const roleHeadings = html.match(/<[^>]+role="heading"[^>]*>/g) ?? [];
+
+    expect([...nativeHeadings, ...roleHeadings]).toHaveLength(1);
+    expect(roleHeadings).toHaveLength(1);
+    expect(roleHeadings[0]).toContain('aria-level="1"');
+    expect(html).not.toContain('aria-label="Auggy"');
   });
 
   it("uses a complete native password form without a runtime-computed action", () => {

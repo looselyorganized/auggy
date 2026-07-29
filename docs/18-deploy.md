@@ -50,6 +50,27 @@ The CLI walks you through:
 
 Successful deploy output includes the public URL, `/health`, `/console`, and `/console/chat`. Follow later builds in the [Railway dashboard](https://railway.com) or with `auggy logs`.
 
+## Open the deployed Console
+
+From the agent project, open its saved Railway Console with:
+
+```bash
+auggy console --cloud
+```
+
+With an optional agent name, use `auggy console <name> --cloud`. Without
+`--cloud`, the command prefers that agent's running local process and falls
+back to its saved Railway deployment when no local Console is available.
+
+The CLI sends the configured bearer only to the Railway HTTPS origin to request
+a short-lived, single-use login, then opens that one-time path in the browser.
+The permanent bearer is never placed in a browser URL. If the exchange or
+browser launch is unavailable, the CLI opens or prints `/console/login` and
+points you to the password. For Railway, the authoritative password is the
+service's `AUGGY_WEB_TOKEN` variable, normally synced from the agent's local
+`.env` by `auggy deploy`. Opening Railway's public Console URL directly shows
+the same native password form, which works without JavaScript.
+
 ---
 
 ## Redeploy

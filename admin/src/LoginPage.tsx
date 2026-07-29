@@ -25,9 +25,9 @@ export function LoginPage({ variant = "default" }: LoginPageProps) {
       data-auggy-login-variant={variant}
     >
       <div className="auggy-brand-stripe" aria-hidden="true" />
-      <main className="auggy-grid-surface flex flex-1 items-center justify-center px-4 py-10 sm:px-6">
+      <main className="auggy-grid-surface flex flex-1 items-center justify-center overflow-x-clip overflow-y-visible px-4 py-10 sm:px-6">
         <div className="w-full max-w-md">
-          <div className="mb-7 inline-flex items-center gap-2.5" aria-label="Auggy">
+          <div className="mb-7 inline-flex items-center gap-2.5">
             <span className="font-heading text-3xl font-extrabold tracking-[-0.055em]">Auggy</span>
             <span
               className="size-2.5 rotate-45 rounded-[2px] bg-brand-signal shadow-[0_0_18px_color-mix(in_hsl,var(--brand-signal)_55%,transparent)]"
@@ -60,7 +60,7 @@ export function LoginPage({ variant = "default" }: LoginPageProps) {
               {error ? (
                 <p
                   id="login-error"
-                  className="mb-5 rounded-md border border-brand-signal/45 bg-brand-signal/10 px-3 py-2.5 text-sm text-foreground"
+                  className="mb-5 rounded-md border border-brand-signal/45 bg-brand-signal/10 px-3 py-2.5 text-sm text-foreground forced-colors:border-[CanvasText]"
                   role="alert"
                 >
                   {error}
@@ -81,10 +81,14 @@ export function LoginPage({ variant = "default" }: LoginPageProps) {
                     required
                     aria-invalid={error ? true : undefined}
                     aria-describedby={error ? "login-error" : undefined}
-                    className="h-11 bg-background/70"
+                    className="h-11 border-muted-foreground! bg-background/70 aria-invalid:border-brand-signal! aria-invalid:ring-brand-signal! motion-reduce:transition-none forced-colors:border-[ButtonText]! forced-colors:focus-visible:outline-2 forced-colors:focus-visible:outline-offset-2 forced-colors:focus-visible:outline-[Highlight]"
                   />
                 </div>
-                <Button type="submit" size="lg" className="h-11 w-full">
+                <Button
+                  type="submit"
+                  size="lg"
+                  className="h-11 w-full motion-reduce:transition-none motion-reduce:active:translate-y-0! forced-colors:border-[ButtonText] forced-colors:focus-visible:outline-2 forced-colors:focus-visible:outline-offset-2 forced-colors:focus-visible:outline-[Highlight]"
+                >
                   Open Console
                 </Button>
               </form>

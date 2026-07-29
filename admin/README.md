@@ -3,8 +3,13 @@
 The `/console` SPA. Vite + React + Tailwind 4 + local Auggy registry output. Served by
 `src/transports/admin/` from `admin/dist/` on each agent's own port at
 `GET /console`. The first-party password screen is a separate registry-based
-React entry under `dist/login/`; only its `/console/login-assets/*` bundle is
-served before authentication. The main Console assets remain protected.
+source rendered at build time into three fixed HTML documents and one
+fingerprinted stylesheet under `dist/login/`. It uses a native form and ships
+no login JavaScript. Only the manifest-listed stylesheet is served from
+`/console/login-assets/*` before authentication; the manifest, HTML variants,
+and main Console assets remain protected. If the generated login bundle is
+missing or invalid, the runtime serves the same password flow as a semantic,
+unstyled fallback.
 
 > See [`docs/21-console.md`](../docs/21-console.md) for the full spec, server-side API, and v1 → v1.1 roadmap.
 
@@ -33,15 +38,17 @@ memory, auth posture, and warnings.
 ```
 admin/
 ├── index.html                  Vite entry HTML with pre-paint theme apply
-├── login.html                  Unauthenticated Console sign-in entry
 ├── package.json
 ├── tsconfig.json
 ├── vite.config.ts              base: '/console/', port 5174
-├── vite.login.config.ts        isolated '/console/login-assets/' build
+├── scripts/
+│   ├── build-login.ts          deterministic CSS + static-document build
+│   └── login-artifacts.tsx     render, manifest, and integrity verification
 └── src/
     ├── main.tsx                React bootstrap, BrowserRouter basename="/console"
-    ├── login-main.tsx          Sign-in bootstrap and native form action
-    ├── LoginPage.tsx           Registry-composed password screen
+    ├── LoginPage.tsx           Registry-composed static password source
+    ├── login.css               login-only registry/theme CSS entry
+    ├── auggy-theme.css         shared generated Auggy theme tokens
     ├── App.tsx                 Shell composition: Header + console routes
     ├── index.css               Imports local Auggy Tailwind 4 tokens
     ├── components/

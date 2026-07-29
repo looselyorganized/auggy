@@ -5,3 +5,4 @@
 @source "./components/ui/button.tsx";
 @source "./components/ui/card.tsx";
 @source "./components/ui/input.tsx";
+@source "../scripts/login-artifacts.tsx";

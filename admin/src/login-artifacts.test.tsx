@@ -92,6 +92,32 @@ function fileDigestInventory(root: string, prefix = ""): Record<string, string> 
   );
 }
 
+function cssHexCustomProperty(block: string, name: string): string {
+  const value = block.match(new RegExp(`--${name}:(#[a-f0-9]{6})`, "i"))?.[1];
+  if (!value) throw new Error(`compiled login CSS omitted --${name}`);
+  return value;
+}
+
+function contrastRatio(left: string, right: string): number {
+  const luminance = (hex: string): number => {
+    const channels = hex
+      .slice(1)
+      .match(/.{2}/g)
+      ?.map((value) => Number.parseInt(value, 16) / 255);
+    if (!channels || channels.length !== 3) throw new Error(`invalid fixture color: ${hex}`);
+    const linear = channels.map((value) =>
+      value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4,
+    );
+    return linear[0]! * 0.2126 + linear[1]! * 0.7152 + linear[2]! * 0.0722;
+  };
+  const leftLuminance = luminance(left);
+  const rightLuminance = luminance(right);
+  return (
+    (Math.max(leftLuminance, rightLuminance) + 0.05) /
+    (Math.min(leftLuminance, rightLuminance) + 0.05)
+  );
+}
+
 function resignArtifact(
   root: string,
   logicalName: LoginArtifactLogicalName,
@@ -422,6 +448,25 @@ describe("login artifact build", () => {
     const stylesheetBytes = readFileSync(join(destination, ...stylesheetPath.split("/")));
     const stylesheet = stylesheetBytes.toString("utf8");
     expect(stylesheetBytes.byteLength).toBeLessThan(40 * 1024);
+    expect(stylesheet).toMatch(/\.h-full\{height:100%\}/);
+    expect(stylesheet).toContain("border-color:var(--muted-foreground)!important");
+    expect(stylesheet).toContain("border-color:var(--brand-signal)!important");
+    expect(stylesheet).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+    expect(stylesheet).toMatch(/@media\s*\(forced-colors:\s*active\)/);
+    expect(stylesheet).toContain("outline-color:highlight");
+    expect(stylesheet).toContain("border-color:buttontext");
+    expect(stylesheet).toContain("border-color:canvastext");
+    expect(stylesheet).toContain("overflow-x:clip");
+    expect(stylesheet).toContain("overflow-y:visible");
+    const darkTheme = stylesheet.match(/\.dark\{([^}]+)\}/)?.[1];
+    if (!darkTheme) throw new Error("compiled login CSS omitted the dark theme");
+    const card = cssHexCustomProperty(darkTheme, "card");
+    expect(contrastRatio(cssHexCustomProperty(darkTheme, "muted-foreground"), card)).toBeGreaterThanOrEqual(
+      3,
+    );
+    expect(contrastRatio(cssHexCustomProperty(darkTheme, "brand-signal"), card)).toBeGreaterThanOrEqual(
+      3,
+    );
     for (const unrelatedSelector of [".animate-spin", ".grid-cols-3", ".overflow-x-auto"]) {
       expect(stylesheet).not.toContain(unrelatedSelector);
     }
