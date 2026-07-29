@@ -1,5 +1,14 @@
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, readdirSync, realpathSync } from "node:fs";
+import {
+  closeSync,
+  constants,
+  fstatSync,
+  lstatSync,
+  openSync,
+  readFileSync,
+  readdirSync,
+  realpathSync,
+} from "node:fs";
 import { posix, resolve, sep } from "node:path";
 import { renderToStaticMarkup } from "react-dom/server";
 import {
@@ -243,11 +252,7 @@ export function verifyLoginArtifactDirectory(root: string): LoginArtifactManifes
   }
   const canonicalRoot = realpathSync(requestedRoot);
   const manifestPath = resolve(canonicalRoot, LOGIN_MANIFEST_FILENAME);
-  const manifestStat = lstatSync(manifestPath);
-  if (!manifestStat.isFile() || manifestStat.isSymbolicLink()) {
-    throw new Error("login manifest must be a regular file");
-  }
-  const manifestBytes = readFileSync(manifestPath);
+  const manifestBytes = readRegularFileNoFollow(manifestPath, "login manifest");
   if (manifestBytes.byteLength > 64 * 1024) throw new Error("login manifest is too large");
   const parsed: unknown = JSON.parse(manifestBytes.toString("utf8"));
   validateLoginManifest(parsed);
@@ -269,11 +274,7 @@ export function verifyLoginArtifactDirectory(root: string): LoginArtifactManifes
   for (const entry of parsed.artifacts) {
     const artifactPath = resolve(canonicalRoot, ...entry.path.split("/"));
     if (!isWithin(canonicalRoot, artifactPath)) throw new Error("login artifact escapes its root");
-    const stat = lstatSync(artifactPath);
-    if (!stat.isFile() || stat.isSymbolicLink()) {
-      throw new Error("login artifact must be a regular file");
-    }
-    const bytes = readFileSync(artifactPath);
+    const bytes = readRegularFileNoFollow(artifactPath, "login artifact");
     if (bytes.byteLength !== entry.size || sha256Hex(bytes) !== entry.sha256) {
       throw new Error("login artifact integrity check failed");
     }
@@ -288,6 +289,22 @@ export function verifyLoginArtifactDirectory(root: string): LoginArtifactManifes
     }
   }
   return parsed;
+}
+
+function readRegularFileNoFollow(path: string, label: string): Buffer {
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    if (!fstatSync(descriptor).isFile()) {
+      throw new Error(`${label} must be a regular file`);
+    }
+    return readFileSync(descriptor);
+  } catch (error) {
+    if (error instanceof Error && error.message === `${label} must be a regular file`) throw error;
+    throw new Error(`${label} must be a regular file`, { cause: error });
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
+  }
 }
 
 export function serializeLoginManifest(manifest: LoginArtifactManifest): string {
