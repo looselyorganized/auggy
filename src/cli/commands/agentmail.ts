@@ -1,6 +1,6 @@
 import { confirm, input, password, select } from "@inquirer/prompts";
 import { Command } from "commander";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
@@ -19,6 +19,7 @@ import {
   VISITOR_AUTH_AGENTMAIL_RATE_LIMIT_DEFAULT,
   VISITOR_AUTH_LOCAL_RATE_LIMIT_DEFAULT,
 } from "../augment-catalog";
+import { isWellFormedEmail } from "../../augments/visitorAuth/email-validation";
 
 export type AgentMailSetupTarget = "visitorAuth" | "agentMail";
 export type AgentMailSetupMode = "signup" | "existing" | "manual" | "env";
@@ -119,6 +120,7 @@ export async function runAgentMailSetup(
         `  Run \`auggy augment add ${target}\` first.`,
     );
   }
+  const updatedAugmentConfig = renderAgentMailConfig(target, augmentPath);
 
   const provisioner =
     deps.provisioner ??
@@ -155,19 +157,28 @@ export async function runAgentMailSetup(
         : mode === "existing"
           ? await runExistingAccountFlow(target, agentName, agentId, opts, provisioner, prompts)
           : await runManualFlow(opts, prompts);
+  const resolvedCredentials: { inboxId: string; apiKey: string; email?: string } =
+    target === "agentMail" ? await ensureInboxEmail(credentials, provisioner) : credentials;
 
-  const envKeys = upsertEnvValues(envPath, {
-    AGENTMAIL_API_KEY: credentials.apiKey,
-    AGENTMAIL_INBOX_ID: credentials.inboxId,
+  const envKeys = commitAgentMailSetup({
+    envPath,
+    augmentPath,
+    updatedAugmentConfig,
+    envValues: {
+      AGENTMAIL_API_KEY: resolvedCredentials.apiKey,
+      AGENTMAIL_INBOX_ID: resolvedCredentials.inboxId,
+      ...(target === "agentMail"
+        ? { AGENTMAIL_INBOX_EMAIL: requireInboxEmail(resolvedCredentials.email) }
+        : {}),
+    },
   });
-  patchAgentMailConfig(target, augmentPath);
 
   return {
     agentName,
     target,
     mode,
-    inboxId: credentials.inboxId,
-    inboxEmail: credentials.email,
+    inboxId: resolvedCredentials.inboxId,
+    inboxEmail: resolvedCredentials.email,
     envPath,
     augmentPath,
     envKeys,
@@ -213,13 +224,17 @@ async function runSignupFlow(
   const verified = await provisioner.verify(signup.apiKey, otpCode.trim());
   if (!verified.verified) throw new Error("AgentMail verification did not complete.");
 
+  const inbox =
+    target === "agentMail"
+      ? await lookupCanonicalInbox(provisioner, signup.apiKey, signup.inboxId)
+      : undefined;
   const runtimeKey = await provisioner.createInboxApiKey({
     apiKey: signup.apiKey,
     inboxId: signup.inboxId,
     name: runtimeKeyName(agentName, target),
     permissions: AGENTMAIL_RUNTIME_KEY_PERMISSIONS,
   });
-  return { inboxId: signup.inboxId, apiKey: runtimeKey.apiKey };
+  return { inboxId: signup.inboxId, apiKey: runtimeKey.apiKey, email: inbox?.email };
 }
 
 async function runExistingAccountFlow(
@@ -287,7 +302,7 @@ async function runManualFlow(
   return { inboxId: inboxId.trim(), apiKey: apiKey.trim() };
 }
 
-function patchAgentMailConfig(target: AgentMailSetupTarget, augmentPath: string): void {
+function renderAgentMailConfig(target: AgentMailSetupTarget, augmentPath: string): string {
   const raw = parseYaml(readFileSync(augmentPath, "utf-8"));
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`${displayPath(augmentPath)} is not a valid augment.yaml object.`);
@@ -324,10 +339,42 @@ function patchAgentMailConfig(target: AgentMailSetupTarget, augmentPath: string)
   } else {
     config.apiKey = "${AGENTMAIL_API_KEY}";
     config.inboxId = "${AGENTMAIL_INBOX_ID}";
+    config.emailAddress = "${AGENTMAIL_INBOX_EMAIL}";
+    config.addressVisibility = "public";
   }
 
   doc.config = config;
-  writeFileSafely(augmentPath, stringifyYaml(doc));
+  return stringifyYaml(doc);
+}
+
+function commitAgentMailSetup(input: {
+  envPath: string;
+  augmentPath: string;
+  updatedAugmentConfig: string;
+  envValues: Record<string, string>;
+}): string[] {
+  const envExisted = existsSync(input.envPath);
+  const originalEnv = envExisted ? readFileSync(input.envPath, "utf-8") : undefined;
+  const envKeys = upsertEnvValues(input.envPath, input.envValues);
+  try {
+    writeFileSafely(input.augmentPath, input.updatedAugmentConfig);
+  } catch (writeError) {
+    try {
+      if (originalEnv === undefined) {
+        rmSync(input.envPath, { force: true });
+      } else {
+        writeFileSafely(input.envPath, originalEnv, { mode: 0o600 });
+      }
+    } catch (rollbackError) {
+      throw new Error(
+        `AgentMail setup could not update ${displayPath(input.augmentPath)} and could not restore ` +
+          `${displayPath(input.envPath)}. Restore both files before retrying. ` +
+          `Write error: ${safeErrorMessage(writeError)}. Rollback error: ${safeErrorMessage(rollbackError)}.`,
+      );
+    }
+    throw writeError;
+  }
+  return envKeys;
 }
 
 function isExactRecord(value: unknown, expected: Readonly<Record<string, number>>): boolean {
@@ -444,9 +491,7 @@ function readAgentId(configPath: string): string | null {
   return null;
 }
 
-function readExistingEnvCredentials(
-  envPath: string,
-): { inboxId: string; apiKey: string; email?: string } | null {
+function readExistingEnvCredentials(envPath: string): { inboxId: string; apiKey: string } | null {
   if (!existsSync(envPath)) return null;
   const values: Record<string, string> = {};
   for (const line of parseEnvFile(readFileSync(envPath, "utf-8"))) {
@@ -456,6 +501,58 @@ function readExistingEnvCredentials(
   const inboxId = usableEnvValue(values.AGENTMAIL_INBOX_ID);
   if (!apiKey || !inboxId) return null;
   return { apiKey, inboxId };
+}
+
+async function ensureInboxEmail(
+  credentials: { inboxId: string; apiKey: string; email?: string },
+  provisioner: AgentMailProvisioningClient,
+): Promise<{ inboxId: string; apiKey: string; email: string }> {
+  const email = usableInboxEmail(credentials.email);
+  if (email) return { ...credentials, email };
+
+  const inbox = await lookupCanonicalInbox(provisioner, credentials.apiKey, credentials.inboxId);
+  return { ...credentials, email: inbox.email };
+}
+
+async function lookupCanonicalInbox(
+  provisioner: AgentMailProvisioningClient,
+  apiKey: string,
+  inboxId: string,
+): Promise<{ inboxId: string; email: string; displayName?: string }> {
+  let inbox: { inboxId: string; email: string; displayName?: string };
+  try {
+    inbox = await provisioner.getInbox(apiKey, inboxId);
+  } catch {
+    throw new Error(
+      `Could not resolve the canonical email for AgentMail inbox ${inboxId}. ` +
+        "Check the runtime key and inbox ID, then retry setup.",
+    );
+  }
+  if (inbox.inboxId !== inboxId) {
+    throw new Error(
+      `AgentMail returned inbox ${inbox.inboxId} while resolving ${inboxId}; setup was not saved.`,
+    );
+  }
+  const email = usableInboxEmail(inbox.email);
+  if (!email) {
+    throw new Error(`AgentMail inbox ${inboxId} did not return a valid canonical email.`);
+  }
+  return { ...inbox, email };
+}
+
+function usableInboxEmail(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed || trimmed.startsWith("${") || !isWellFormedEmail(trimmed)) return null;
+  return trimmed.toLowerCase();
+}
+
+function requireInboxEmail(value: string | undefined): string {
+  if (!value) throw new Error("AgentMail setup did not resolve a canonical inbox email.");
+  return value;
+}
+
+function safeErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "unknown error";
 }
 
 function usableEnvValue(value: string | undefined): string | null {

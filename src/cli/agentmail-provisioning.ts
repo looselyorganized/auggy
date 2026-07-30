@@ -8,7 +8,7 @@ export interface AgentMailProvisioningClientOptions {
   /** Development-only escape hatch for credentialed non-loopback HTTP. */
   allowInsecureHttpWithCredentials?: boolean;
   timeoutMs?: number;
-  http?: Pick<HttpClient, "post">;
+  http?: Pick<HttpClient, "post" | "get">;
 }
 
 export interface AgentMailSignUpInput {
@@ -59,6 +59,7 @@ export interface AgentMailProvisioningClient {
   signUp(input: AgentMailSignUpInput): Promise<AgentMailSignUpResult>;
   verify(apiKey: string, otpCode: string): Promise<{ verified: boolean }>;
   createInbox(input: AgentMailCreateInboxInput): Promise<AgentMailInboxResult>;
+  getInbox(apiKey: string, inboxId: string): Promise<AgentMailInboxResult>;
   createInboxApiKey(input: AgentMailCreateInboxApiKeyInput): Promise<AgentMailApiKeyResult>;
 }
 
@@ -96,6 +97,20 @@ export function createAgentMailProvisioningClient(
     const res = await http.post(`${baseUrl}${path}`, {
       headers,
       body: JSON.stringify(body),
+    });
+    if (res.status < 200 || res.status >= 300) {
+      throw new Error(`AgentMail ${path} failed (${res.status}): ${res.body.slice(0, 240)}`);
+    }
+    try {
+      return JSON.parse(res.body) as T;
+    } catch (err) {
+      throw new Error(`AgentMail ${path} returned invalid JSON: ${(err as Error).message}`);
+    }
+  }
+
+  async function getJson<T>(path: string, apiKey: string): Promise<T> {
+    const res = await http.get(`${baseUrl}${path}`, {
+      headers: { authorization: `Bearer ${apiKey}` },
     });
     if (res.status < 200 || res.status >= 300) {
       throw new Error(`AgentMail ${path} failed (${res.status}): ${res.body.slice(0, 240)}`);
@@ -159,6 +174,12 @@ export function createAgentMailProvisioningClient(
       };
     },
 
+    async getInbox(apiKey, inboxId) {
+      const path = `/inboxes/${encodeURIComponent(inboxId)}`;
+      const raw = await getJson<unknown>(path, apiKey);
+      return parseInboxResult(raw, inboxId, "get inbox");
+    },
+
     async createInboxApiKey(input) {
       const raw = await postJson<Record<string, unknown>>(
         `/inboxes/${encodeURIComponent(input.inboxId)}/api-keys`,
@@ -185,4 +206,76 @@ export function createAgentMailProvisioningClient(
 
 function stringField(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function parseInboxResult(
+  value: unknown,
+  expectedInboxId: string,
+  operation: string,
+): AgentMailInboxResult {
+  if (!isRecord(value)) {
+    throw new Error(`AgentMail ${operation} response was not an object.`);
+  }
+  const inboxId = strictString(value.inbox_id);
+  const email = strictEmail(value.email);
+  const displayName = optionalDisplayName(value.display_name);
+  if (!inboxId || !email || displayName === null) {
+    throw new Error(
+      `AgentMail ${operation} response had an invalid inbox_id, email, or display_name.`,
+    );
+  }
+  if (inboxId !== expectedInboxId) {
+    throw new Error(`AgentMail ${operation} response did not match the requested inbox.`);
+  }
+  return {
+    inboxId,
+    email,
+    ...(displayName === undefined ? {} : { displayName }),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function strictString(value: unknown): string | null {
+  if (typeof value !== "string" || !value || value !== value.trim()) return null;
+  if (/\p{Cc}/u.test(value)) return null;
+  return value;
+}
+
+function strictEmail(value: unknown): string | null {
+  const email = strictString(value);
+  if (!email || email.length > 254 || /\s/u.test(email)) return null;
+
+  const at = email.lastIndexOf("@");
+  if (at <= 0 || at !== email.indexOf("@") || at === email.length - 1) return null;
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  if (local.length > 64 || domain.length > 253) return null;
+  if (!/^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+$/.test(local)) return null;
+  if (local.startsWith(".") || local.endsWith(".") || local.includes("..")) return null;
+
+  const labels = domain.split(".");
+  if (labels.length < 2) return null;
+  if (
+    labels.some(
+      (label) =>
+        label.length === 0 ||
+        label.length > 63 ||
+        !/^[A-Za-z0-9-]+$/.test(label) ||
+        label.startsWith("-") ||
+        label.endsWith("-"),
+    )
+  ) {
+    return null;
+  }
+  return email;
+}
+
+function optionalDisplayName(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return undefined;
+  const displayName = strictString(value);
+  if (!displayName || displayName.length > 256) return null;
+  return displayName;
 }

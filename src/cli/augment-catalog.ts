@@ -289,6 +289,8 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     defaultOptions: {
       apiKey: "${AGENTMAIL_API_KEY}",
       inboxId: "${AGENTMAIL_INBOX_ID}",
+      emailAddress: "${AGENTMAIL_INBOX_EMAIL}",
+      addressVisibility: "public",
       dbPath: "./agent-mail.db",
       outbound: {
         allowedTrustLevels: ["creator"],
@@ -310,7 +312,12 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     },
     required: false,
     stability: "stable",
-    envVars: ["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID", "AGENTMAIL_WEBHOOK_SECRET"],
+    envVars: [
+      "AGENTMAIL_API_KEY",
+      "AGENTMAIL_INBOX_ID",
+      "AGENTMAIL_INBOX_EMAIL",
+      "AGENTMAIL_WEBHOOK_SECRET",
+    ],
     hasSkill: true,
   },
   {

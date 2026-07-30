@@ -276,18 +276,82 @@ describe("createAgentMailClient", () => {
 });
 
 describe("createAgentMailClient.getInbox", () => {
-  test("returns ok when inbox exists (2xx)", async () => {
+  test("returns canonical inbox identity when inbox exists (2xx)", async () => {
     const client = createAgentMailClient({
       apiKey: "am_test",
       http: mockHttp((url, _body, headers) => {
         expect(url).toBe("https://api.agentmail.to/v0/inboxes/inb_x");
         expect(headers?.authorization).toBe("Bearer am_test");
-        return { status: 200, body: JSON.stringify({ inbox_id: "inb_x" }) };
+        return {
+          status: 200,
+          body: JSON.stringify({
+            inbox_id: "inb_x",
+            email: "support@example.com",
+            display_name: "Support",
+          }),
+        };
       }),
     });
     const r = await client.getInbox("inb_x");
     expect(r.status).toBe("ok");
-    if (r.status === "ok") expect(r.inboxId).toBe("inb_x");
+    if (r.status === "ok") {
+      expect(r.inboxId).toBe("inb_x");
+      expect(r.email).toBe("support@example.com");
+      expect(r.displayName).toBe("Support");
+    }
+  });
+
+  test("accepts an omitted display name", async () => {
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: mockHttp(() => ({
+        status: 200,
+        body: JSON.stringify({ inbox_id: "inb_x", email: "support@example.com" }),
+      })),
+    });
+    const r = await client.getInbox("inb_x");
+    expect(r).toEqual({
+      status: "ok",
+      inboxId: "inb_x",
+      email: "support@example.com",
+    });
+  });
+
+  test("fails closed when the provider returns a different inbox identity", async () => {
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: mockHttp(() => ({
+        status: 200,
+        body: JSON.stringify({ inbox_id: "inb_other", email: "other@example.com" }),
+      })),
+    });
+    await expect(client.getInbox("inb_x")).resolves.toEqual({
+      status: "failed",
+      detail: "agentmail returned an invalid inbox response",
+      httpStatus: 200,
+      failureKind: "invalid-response",
+    });
+  });
+
+  test("fails closed on malformed successful inbox responses", async () => {
+    const responses = [
+      "not-json",
+      JSON.stringify({ inbox_id: "inb_x" }),
+      JSON.stringify({ inbox_id: "inb_x", email: "not-an-email" }),
+      JSON.stringify({ inbox_id: "inb_x", email: "support@example.com", display_name: 42 }),
+    ];
+    for (const body of responses) {
+      const client = createAgentMailClient({
+        apiKey: "am_test",
+        http: mockHttp(() => ({ status: 200, body })),
+      });
+      await expect(client.getInbox("inb_x")).resolves.toEqual({
+        status: "failed",
+        detail: "agentmail returned an invalid inbox response",
+        httpStatus: 200,
+        failureKind: "invalid-response",
+      });
+    }
   });
 
   test("returns failed with httpStatus on non-2xx", async () => {
@@ -300,6 +364,7 @@ describe("createAgentMailClient.getInbox", () => {
     expect(r.status).toBe("failed");
     if (r.status === "failed") {
       expect(r.httpStatus).toBe(404);
+      expect(r.failureKind).toBe("provider");
       expect(r.detail).toContain("404");
       expect(r.detail).not.toContain(sentinel);
     }
@@ -322,6 +387,7 @@ describe("createAgentMailClient.getInbox", () => {
     expect(r.status).toBe("failed");
     if (r.status === "failed") {
       expect(r.detail).toBe("agentmail request failed");
+      expect(r.failureKind).toBe("network");
       expect(r.detail).not.toContain(sentinel);
     }
   });

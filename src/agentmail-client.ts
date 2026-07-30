@@ -31,8 +31,10 @@ export interface AgentMailClientOptions {
 }
 
 export interface AgentMailInboxInfo {
+  /** Canonical provider identity; the returned inbox ID must match the request. */
   inboxId: string;
-  /** Echoed back when the inbox exists. */
+  email: string;
+  displayName?: string;
   status: "ok";
 }
 
@@ -41,6 +43,8 @@ export interface AgentMailInboxError {
   detail: string;
   /** HTTP status if the failure originated from AgentMail (vs. network). */
   httpStatus?: number;
+  /** Distinguishes provider rejection, transport failure, and invalid successful identity data. */
+  failureKind?: "provider" | "network" | "invalid-response";
 }
 
 export interface SendMessageInput {
@@ -239,7 +243,7 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
       return postSend(url, body, input.signal);
     },
     async getInbox(inboxId: string) {
-      const url = `${baseUrl}/inboxes/${inboxId}`;
+      const url = `${baseUrl}/inboxes/${encodeURIComponent(inboxId)}`;
       try {
         const res = await http.get(url, {
           headers: {
@@ -251,12 +255,96 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
             status: "failed" as const,
             detail: `agentmail returned HTTP ${res.status}`,
             httpStatus: res.status,
+            failureKind: "provider" as const,
           };
         }
-        return { inboxId, status: "ok" as const };
+        const parsed = parseInboxResponse(res.body, inboxId);
+        if (!parsed) {
+          return {
+            status: "failed" as const,
+            detail: "agentmail returned an invalid inbox response",
+            httpStatus: res.status,
+            failureKind: "invalid-response" as const,
+          };
+        }
+        return { ...parsed, status: "ok" as const };
       } catch {
-        return { status: "failed" as const, detail: "agentmail request failed" };
+        return {
+          status: "failed" as const,
+          detail: "agentmail request failed",
+          failureKind: "network" as const,
+        };
       }
     },
   };
+}
+
+function parseInboxResponse(
+  body: string,
+  expectedInboxId: string,
+): Omit<AgentMailInboxInfo, "status"> | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (!isRecord(parsed)) return null;
+
+  const inboxId = strictString(parsed.inbox_id);
+  const email = strictEmail(parsed.email);
+  const displayName = optionalDisplayName(parsed.display_name);
+  if (inboxId !== expectedInboxId || !email || displayName === null) return null;
+
+  return {
+    inboxId,
+    email,
+    ...(displayName === undefined ? {} : { displayName }),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function strictString(value: unknown): string | null {
+  if (typeof value !== "string" || !value || value !== value.trim()) return null;
+  if (/\p{Cc}/u.test(value)) return null;
+  return value;
+}
+
+function strictEmail(value: unknown): string | null {
+  const email = strictString(value);
+  if (!email || email.length > 254 || /\s/u.test(email)) return null;
+
+  const at = email.lastIndexOf("@");
+  if (at <= 0 || at !== email.indexOf("@") || at === email.length - 1) return null;
+  const local = email.slice(0, at);
+  const domain = email.slice(at + 1);
+  if (local.length > 64 || domain.length > 253) return null;
+  if (!/^[A-Za-z0-9!#$%&'*+/=?^_`{|}~.-]+$/.test(local)) return null;
+  if (local.startsWith(".") || local.endsWith(".") || local.includes("..")) return null;
+
+  const labels = domain.split(".");
+  if (labels.length < 2) return null;
+  if (
+    labels.some(
+      (label) =>
+        label.length === 0 ||
+        label.length > 63 ||
+        !/^[A-Za-z0-9-]+$/.test(label) ||
+        label.startsWith("-") ||
+        label.endsWith("-"),
+    )
+  ) {
+    return null;
+  }
+  return email;
+}
+
+function optionalDisplayName(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return undefined;
+  const displayName = strictString(value);
+  if (!displayName || displayName.length > 256) return null;
+  return displayName;
 }

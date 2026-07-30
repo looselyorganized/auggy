@@ -48,7 +48,7 @@ function fakeClient(): { client: AgentMailClient; sent: SendMessageInput[] } {
         return { status: "sent", messageId: "forward_1", threadId: "thread_1" };
       },
       async getInbox(inboxId) {
-        return { status: "ok", inboxId };
+        return { status: "ok", inboxId, email: "agent@example.com" };
       },
     },
   };

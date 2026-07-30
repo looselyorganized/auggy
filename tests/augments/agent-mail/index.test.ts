@@ -24,6 +24,7 @@ import type {
   Tool,
   TransportKernel,
   TurnResult,
+  TurnState,
   TurnTrigger,
 } from "../../../src/types";
 import { asStringTool } from "../../fixtures/tool-helpers";
@@ -59,7 +60,7 @@ function fakeClient(overrides: Partial<AgentMailClient> = {}): {
     },
     async getInbox(id) {
       log.inbox.push(id);
-      return { inboxId: id, status: "ok" as const };
+      return { inboxId: id, email: "agent@example.com", status: "ok" as const };
     },
     ...overrides,
   };
@@ -104,6 +105,31 @@ async function executeParsed(
 
 const baseOpts = { apiKey: "am_test_key", inboxId: "inb_test" };
 
+function turnState(peerIdentity: PeerIdentity | null): TurnState {
+  const turnId = `turn-${crypto.randomUUID()}`;
+  const timestamp = Date.now();
+  return {
+    turnId,
+    threadId: "thread-context",
+    trigger: {
+      type: "message",
+      turnId,
+      threadId: "thread-context",
+      timestamp,
+      payload: {
+        parts: [],
+        sourceAugment: "web",
+        peer: peerIdentity,
+        timestamp,
+      },
+    },
+    peer: peerIdentity,
+    toolCallsSoFar: 0,
+    turnStartedAt: timestamp,
+    metadata: {},
+  };
+}
+
 // Track temp dirs for cleanup.
 const tmpDirs: string[] = [];
 function makeTmpDir(): string {
@@ -146,6 +172,13 @@ describe("agentMail factory", () => {
         outbound: { subjectPrefix: "" },
       }),
     ).toThrow(/subjectPrefix/);
+  });
+
+  test("rejects malformed canonical inbox identity options", () => {
+    expect(() => agentMail({ ...baseOpts, emailAddress: "not-an-email" })).toThrow(/emailAddress/);
+    expect(() => agentMail({ ...baseOpts, addressVisibility: "everyone" as never })).toThrow(
+      /addressVisibility/,
+    );
   });
 
   test("requires an explicit sender allowlist when inbound is enabled", () => {
@@ -1493,6 +1526,81 @@ describe("onBoot", () => {
     expect(log.inbox).toEqual(["inb_test"]);
   });
 
+  test("discovers the canonical address and exposes it to creator context", async () => {
+    const { client } = fakeClient({
+      async getInbox(inboxId) {
+        return {
+          inboxId,
+          email: "Canonical@Example.com",
+          displayName: "Canonical Agent",
+          status: "ok" as const,
+        };
+      },
+    });
+    const aug = agentMail({ ...baseOpts, _client: client });
+    await aug.onBoot?.();
+
+    const creatorBlocks = await aug.context!(turnState(peer("creator")));
+    expect(creatorBlocks).toHaveLength(1);
+    expect(JSON.stringify(creatorBlocks)).toContain("canonical@example.com");
+    expect(JSON.stringify(creatorBlocks)).toContain("Inbound monitoring is disabled");
+    expect(await aug.context!(turnState(peer("public")))).toEqual([]);
+  });
+
+  test("shares a public address contextually and describes degraded monitoring", async () => {
+    const failingClient = fakeClient({
+      async getInbox() {
+        return { status: "failed" as const, detail: "temporary outage", httpStatus: 503 };
+      },
+    });
+    const aug = agentMail({
+      ...baseOpts,
+      emailAddress: "public@example.com",
+      addressVisibility: "public",
+      _client: failingClient.client,
+    });
+    await aug.onBoot?.();
+
+    const blocks = await aug.context!(turnState(peer("public")));
+    expect(JSON.stringify(blocks)).toContain("public@example.com");
+    expect(JSON.stringify(blocks)).toContain("Inbound monitoring is disabled");
+  });
+
+  test("fails closed when configured and provider inbox addresses disagree", async () => {
+    const { client } = fakeClient({
+      async getInbox(inboxId) {
+        return { status: "ok" as const, inboxId, email: "provider@example.com" };
+      },
+    });
+    const aug = agentMail({
+      ...baseOpts,
+      emailAddress: "configured@example.com",
+      _client: client,
+    });
+    await expect(aug.onBoot?.()).rejects.toThrow(/does not match AgentMail inbox/);
+  });
+
+  test("fails closed on a malformed successful provider identity", async () => {
+    const failingClient = fakeClient({
+      async getInbox() {
+        return {
+          status: "failed" as const,
+          detail: "agentmail returned an invalid inbox response",
+          httpStatus: 200,
+          failureKind: "invalid-response" as const,
+        };
+      },
+    });
+    const aug = agentMail({
+      ...baseOpts,
+      emailAddress: "configured@example.com",
+      addressVisibility: "public",
+      _client: failingClient.client,
+    });
+
+    await expect(aug.onBoot?.()).rejects.toThrow(/invalid identity/);
+  });
+
   test("warn-and-continues on 5xx healthcheck failure", async () => {
     const failingClient = fakeClient({
       async getInbox() {
@@ -1546,6 +1654,17 @@ describe("onBoot", () => {
       _client: client,
     });
     await expect(aug.onBoot?.()).rejects.toThrow(/AGENTMAIL_INBOX_ID is unresolved/);
+  });
+
+  test("throws when AGENTMAIL_INBOX_EMAIL is unresolved (placeholder)", async () => {
+    const { client } = fakeClient();
+    const aug = agentMail({
+      apiKey: "am_test_key",
+      inboxId: "inb_test",
+      emailAddress: "${AGENTMAIL_INBOX_EMAIL}",
+      _client: client,
+    });
+    await expect(aug.onBoot?.()).rejects.toThrow(/AGENTMAIL_INBOX_EMAIL is unresolved/);
   });
 });
 
@@ -1986,6 +2105,10 @@ describe("adminInfo", () => {
     const kv = info.sections.find((s) => s.kind === "keyValue")!;
     expect(kv.kind).toBe("keyValue");
     if (kv.kind === "keyValue") {
+      expect(kv.rows.find((r) => r.label === "Inbox email")?.value).toBe(
+        "(unavailable — run AgentMail setup)",
+      );
+      expect(kv.rows.find((r) => r.label === "Inbox email")?.source).toBe("unavailable");
       const apiKeyRow = kv.rows.find((r) => r.label === "API key");
       expect(apiKeyRow).toBeDefined();
       expect(apiKeyRow!.value).not.toContain("test_key"); // masked

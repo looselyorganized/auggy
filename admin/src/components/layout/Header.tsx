@@ -124,6 +124,7 @@ function AgentDetailsButton({
   const purpose = dashboard?.agentMeta?.purpose ?? dashboard?.card.purpose;
   const modelLabel = formatModelLabel(dashboard);
   const auggyVersion = dashboard?.auggyVersion;
+  const inboxEmail = selectAgentMailInboxEmail(dashboard?.blocks ?? []);
   const transports = dashboard?.augments.filter((a) => a.isTransport).map((a) => a.type) ?? [];
   const augmentCount = dashboard?.augments.length ?? 0;
   const { push } = useToast();
@@ -176,6 +177,9 @@ function AgentDetailsButton({
               ["Auggy version", auggyVersion ? `v${auggyVersion}` : "unknown"],
               ["Engine", modelLabel ?? "unknown"],
               ["Agent UUID", agentId ?? "not set"],
+              ...(inboxEmail
+                ? [["Inbox email", inboxEmail] satisfies [string, string]]
+                : []),
               ...buildRuntimeEndpointRows(origin),
               ["Transports", transports.length > 0 ? transports.join(", ") : "none reported"],
               ["Augments", String(augmentCount)],
@@ -202,6 +206,27 @@ function AgentDetailsButton({
       </DialogContent>
     </Dialog>
   );
+}
+
+export function selectAgentMailInboxEmail(blocks: DashboardData["blocks"]): string | undefined {
+  const emails = new Set<string>();
+  for (const block of blocks) {
+    if (block.augmentName !== "agent-mail") continue;
+
+    for (const section of block.sections) {
+      if (section.kind !== "keyValue") continue;
+
+      const row = section.rows.find(({ label }) => label === "Inbox email");
+      const email = row?.value.trim();
+      if (email && isDisplayableEmail(email)) emails.add(email);
+    }
+  }
+
+  return emails.size > 0 ? [...emails].join(", ") : undefined;
+}
+
+function isDisplayableEmail(value: string): boolean {
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 export function buildRuntimeEndpointRows(origin: string): Array<[string, string]> {

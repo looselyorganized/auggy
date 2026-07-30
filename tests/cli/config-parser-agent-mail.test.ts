@@ -76,6 +76,25 @@ describe("config-parser: agentMail validation", () => {
     expect(() => parseConfig(path)).toThrow(/inboxId/);
   });
 
+  test("accepts canonical inbox identity settings", () => {
+    const path = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        emailAddress: "agent@example.com",
+        addressVisibility: "public",
+      }),
+    );
+    expect(() => parseConfig(path)).not.toThrow();
+  });
+
+  test("rejects malformed inbox identity settings", () => {
+    for (const options of [{ emailAddress: "not-email" }, { addressVisibility: "everyone" }]) {
+      const path = writeYaml(configWithAgentMail({ apiKey: "am_x", inboxId: "inb_x", ...options }));
+      expect(() => parseConfig(path)).toThrow(/emailAddress|addressVisibility/);
+    }
+  });
+
   test("rejects empty subjectPrefix", () => {
     const path = writeYaml(
       configWithAgentMail({

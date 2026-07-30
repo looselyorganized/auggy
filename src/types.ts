@@ -1854,6 +1854,9 @@ export interface NotifyAdapter {
  */
 export type AgentMailInboundMode = "none" | "websocket" | "polling" | "webhook";
 
+/** Who may learn the canonical inbox address through model context. */
+export type AgentMailAddressVisibility = "creator" | "public";
+
 export interface AgentMailRateLimitOptions {
   /** Master toggle; default true. Creator/null peer always bypass when enabled. */
   enabled?: boolean;
@@ -1940,6 +1943,18 @@ export interface AgentMailAugmentOptions {
   apiKey: string;
   /** AgentMail inbox ID this augment sends from / receives at. */
   inboxId: string;
+  /**
+   * Last setup-verified canonical inbox address. The runtime compares it with
+   * AgentMail when the provider is reachable and refuses to publish a known
+   * mismatch.
+   */
+  emailAddress?: string;
+  /**
+   * Model-context visibility for the canonical address. Default `"creator"`.
+   * `"public"` allows the agent to provide the address when contextually
+   * appropriate, while still describing whether inbound monitoring is active.
+   */
+  addressVisibility?: AgentMailAddressVisibility;
   /** Override AgentMail API base URL (testing/sandbox). */
   apiBaseUrl?: string;
   /** Development-only escape hatch for credentialed non-loopback HTTP/WS. */
