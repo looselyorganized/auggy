@@ -29,7 +29,11 @@ import {
 import { dirname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { SkillFrontmatter } from "../../cli/skill-frontmatter";
-import { augmentFolderForType, buildFolderToTypeMap } from "../../cli/scaffold-skills";
+import {
+  augmentFolderForType,
+  buildFolderToTypeMap,
+  listStarterSkillNames,
+} from "../../cli/scaffold-skills";
 import {
   ensureManagedDirectory,
   inspectManagedDirectory,
@@ -44,7 +48,8 @@ import {
 // Types surfaced to the SPA via /console/api/skills
 // ---------------------------------------------------------------------------
 
-export type SkillSource = "bundled" | "modified" | "manual";
+/** Content provenance that can be proven from the installed and packaged bytes. */
+export type SkillProvenance = "auggy-provided" | "customized-auggy-skill" | "user-created";
 
 export interface InstalledSkillInfo {
   /** Folder name under `<agentDir>/skills/`. Stable identifier. */
@@ -53,11 +58,11 @@ export interface InstalledSkillInfo {
   name: string | null;
   /** YAML `description` from frontmatter. `null` when frontmatter is missing/invalid. */
   description: string | null;
-  /** Source classification — drives the Edit / Remove / Reset affordances. */
-  source: SkillSource;
+  /** Content provenance. This does not report when or how the skill was installed. */
+  provenance: SkillProvenance;
   /**
-   * Canonical type of the mounted augment that owns this bundled skill.
-   * Absent for manual skills and bundled skills whose augment is not mounted.
+   * Canonical type of the mounted augment that owns this Auggy-provided skill.
+   * Absent for user-created skills and package skills whose augment is not mounted.
    */
   fromAugmentType?: string;
   /** True when the SKILL.md frontmatter parses cleanly (validator-friendly). */
@@ -70,8 +75,10 @@ export interface AvailableSkillInfo {
   folder: string;
   name: string | null;
   description: string | null;
-  /** The augment type whose `src/augments/<folder>/skill/SKILL.md` is the source. */
-  fromAugmentType: string;
+  /** Available content is sourced from the installed Auggy package. */
+  provenance: "auggy-provided";
+  /** Owning augment type, absent for Auggy's general starter skill. */
+  fromAugmentType?: string;
 }
 
 export interface SkillsInfo {
@@ -102,13 +109,32 @@ export interface SkillsInfo {
  * route handler doesn't import private CLI helpers.
  */
 export function bundledSkillSourceDir(folder: string): string | null {
+  const safe = validateSkillFolderName(folder);
+  if (!safe) return null;
   // `import.meta.url` resolves relative to THIS file: `src/transports/admin/`.
-  // From there → up to `src/`, then into `augments/<folder>/skill/`.
+  // From there → up to `src/`, then into either an augment skill or a
+  // non-augment starter skill.
   const here = dirname(fileURLToPath(import.meta.url));
-  const root = resolve(here, "../../augments");
-  const candidate = resolve(root, folder, "skill");
+  const candidates = [
+    { root: resolve(here, "../../augments"), parts: [safe, "skill"] },
+    { root: resolve(here, "../../scaffold-starter-skills"), parts: [safe] },
+  ];
+  for (const { root, parts } of candidates) {
+    const resolved = resolveTrustedSkillDirectory(root, parts);
+    if (resolved) return resolved;
+  }
+  return null;
+}
+
+function resolveTrustedSkillDirectory(root: string, parts: readonly string[]): string | null {
+  const candidate = resolve(root, ...parts);
   try {
-    for (const path of [resolve(root, folder), candidate]) {
+    const rootInfo = lstatSync(root);
+    if (rootInfo.isSymbolicLink() || !rootInfo.isDirectory()) return null;
+    let cursor = root;
+    for (const part of parts) {
+      cursor = join(cursor, part);
+      const path = cursor;
       const info = lstatSync(path);
       if (info.isSymbolicLink() || !info.isDirectory()) return null;
     }
@@ -117,12 +143,6 @@ export function bundledSkillSourceDir(folder: string): string | null {
     const rootPrefix = canonicalRoot.endsWith(sep) ? canonicalRoot : `${canonicalRoot}${sep}`;
     if (!canonicalCandidate.startsWith(rootPrefix)) return null;
 
-    let cursor = canonicalRoot;
-    for (const part of relative(canonicalRoot, canonicalCandidate).split(sep)) {
-      cursor = join(cursor, part);
-      const info = lstatSync(cursor);
-      if (info.isSymbolicLink() || !info.isDirectory()) return null;
-    }
     return canonicalCandidate;
   } catch {
     return null;
@@ -202,10 +222,100 @@ function listInstalledFolders(agentDir: string | undefined): string[] {
   return folders;
 }
 
-function classifyInstalledSkill(folder: string, installedContent: string): SkillSource {
-  const bundled = readBundledSkillContent(folder);
-  if (!bundled) return "manual";
-  return bundled === installedContent ? "bundled" : "modified";
+type SkillTreeEntry = { kind: "directory" } | { kind: "file"; content: string };
+
+const MAX_SKILL_TREE_NODES = 10_000;
+const MAX_SKILL_TREE_DEPTH = 64;
+const MAX_SKILL_TREE_BYTES = 16 * 1024 * 1024;
+
+function classifyInstalledSkill(agentDir: string | undefined, folder: string): SkillProvenance {
+  const source = bundledSkillSourceDir(folder);
+  if (!source) return "user-created";
+  const packaged = snapshotTrustedSkillTree(source);
+  const installed = snapshotInstalledSkillTree(agentDir, folder);
+  return packaged && installed && skillTreeSnapshotsEqual(packaged, installed)
+    ? "auggy-provided"
+    : "customized-auggy-skill";
+}
+
+function snapshotTrustedSkillTree(root: string): Map<string, SkillTreeEntry> | null {
+  const entries = new Map<string, SkillTreeEntry>();
+  let nodes = 0;
+  let bytes = 0;
+
+  function walk(directory: string, prefix: string, depth: number): boolean {
+    if (depth > MAX_SKILL_TREE_DEPTH) return false;
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      nodes += 1;
+      if (nodes > MAX_SKILL_TREE_NODES || entry.isSymbolicLink()) return false;
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      const absolutePath = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        entries.set(relativePath, { kind: "directory" });
+        if (!walk(absolutePath, relativePath, depth + 1)) return false;
+        continue;
+      }
+      if (!entry.isFile()) return false;
+      const content = readTrustedBundledFile(absolutePath);
+      if (content === null) return false;
+      bytes += Buffer.byteLength(content);
+      if (bytes > MAX_SKILL_TREE_BYTES) return false;
+      entries.set(relativePath, { kind: "file", content });
+    }
+    return true;
+  }
+
+  return walk(root, "", 0) ? entries : null;
+}
+
+function snapshotInstalledSkillTree(
+  agentDir: string | undefined,
+  folder: string,
+): Map<string, SkillTreeEntry> | null {
+  const entries = new Map<string, SkillTreeEntry>();
+  let nodes = 0;
+  let bytes = 0;
+
+  function walk(managedDirectory: string, prefix: string, depth: number): boolean {
+    if (depth > MAX_SKILL_TREE_DEPTH) return false;
+    const listed = listManagedDirectoryNames(agentDir, managedDirectory);
+    if ("error" in listed || "missing" in listed) return false;
+    for (const name of listed.names) {
+      nodes += 1;
+      if (nodes > MAX_SKILL_TREE_NODES) return false;
+      const relativePath = prefix ? `${prefix}/${name}` : name;
+      const childPath = join(managedDirectory, name);
+      const directory = inspectManagedDirectory(agentDir, childPath);
+      if (!("error" in directory) && directory.exists) {
+        entries.set(relativePath, { kind: "directory" });
+        if (!walk(childPath, relativePath, depth + 1)) return false;
+        continue;
+      }
+      const file = readManagedText(agentDir, childPath, MAX_SKILL_BYTES);
+      if ("error" in file || "missing" in file) return false;
+      bytes += file.contentBytes;
+      if (bytes > MAX_SKILL_TREE_BYTES) return false;
+      entries.set(relativePath, { kind: "file", content: file.content });
+    }
+    return true;
+  }
+
+  return walk(join("skills", folder), "", 0) ? entries : null;
+}
+
+function skillTreeSnapshotsEqual(
+  packaged: ReadonlyMap<string, SkillTreeEntry>,
+  installed: ReadonlyMap<string, SkillTreeEntry>,
+): boolean {
+  if (packaged.size !== installed.size) return false;
+  for (const [path, expected] of packaged) {
+    const actual = installed.get(path);
+    if (!actual || actual.kind !== expected.kind) return false;
+    if (expected.kind === "file" && actual.kind === "file" && actual.content !== expected.content) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /**
@@ -231,7 +341,7 @@ export function collectSkillsInfo(
       contentBytes = file.contentBytes;
     }
     const fm: SkillFrontmatter | null = content ? parseFrontmatterFromString(content) : null;
-    const source = content ? classifyInstalledSkill(folder, content) : "manual";
+    const provenance = classifyInstalledSkill(agentDir, folder);
     const fromAugmentType = folderToType.get(folder);
     const isMountedOwner =
       fromAugmentType !== undefined &&
@@ -240,8 +350,8 @@ export function collectSkillsInfo(
       folder,
       name: fm?.name ?? null,
       description: fm?.description ?? null,
-      source,
-      ...(source !== "manual" && isMountedOwner ? { fromAugmentType } : {}),
+      provenance,
+      ...(provenance !== "user-created" && isMountedOwner ? { fromAugmentType } : {}),
       frontmatterValid: fm !== null,
       contentBytes,
     };
@@ -261,7 +371,20 @@ export function collectSkillsInfo(
       folder,
       name: fm?.name ?? null,
       description: fm?.description ?? null,
+      provenance: "auggy-provided",
       fromAugmentType: type,
+    });
+  }
+  for (const folder of listStarterSkillNames()) {
+    if (installedSet.has(folder)) continue;
+    const packaged = readBundledSkillContent(folder);
+    if (!packaged) continue;
+    const fm = parseFrontmatterFromString(packaged);
+    available.push({
+      folder,
+      name: fm?.name ?? null,
+      description: fm?.description ?? null,
+      provenance: "auggy-provided",
     });
   }
   available.sort((a, b) => a.folder.localeCompare(b.folder));
@@ -352,7 +475,7 @@ export function removeInstalledSkill(agentDir: string | undefined, folder: strin
 
 export function resetInstalledSkill(agentDir: string | undefined, folder: string): MutationResult {
   const src = bundledSkillSourceDir(folder);
-  if (!src) return { ok: false, message: "no bundled skill for this folder" };
+  if (!src) return { ok: false, message: "no Auggy-provided skill for this folder" };
   const dest = installedSkillDir(agentDir, folder);
   if (!dest) return { ok: false, message: "invalid skill folder" };
   const inspected = inspectManagedDirectory(agentDir, join("skills", folder));
@@ -434,9 +557,10 @@ export function installBundledSkill(agentDir: string | undefined, folder: string
   if (!safe) return { ok: false, message: "invalid skill folder" };
   // Confirm the folder maps to a known augment with a bundled skill.
   const type = augmentTypeForFolder(safe);
-  if (!type) return { ok: false, message: "unknown skill folder" };
+  const isStarter = listStarterSkillNames().includes(safe);
+  if (!type && !isStarter) return { ok: false, message: "unknown skill folder" };
   const src = bundledSkillSourceDir(safe);
-  if (!src) return { ok: false, message: "bundled skill not on disk" };
+  if (!src) return { ok: false, message: "Auggy-provided skill not on disk" };
   const dest = installedSkillDir(agentDir, safe);
   if (!dest) return { ok: false, message: "invalid skill folder" };
   const inspected = inspectManagedDirectory(agentDir, join("skills", safe));
@@ -480,8 +604,8 @@ function copyBundledTree(
       ok: true,
       message:
         verb === "Installed"
-          ? `Installed ${folder} from bundle`
-          : `Reset ${folder} to bundled version`,
+          ? `Installed ${folder} from the Auggy package`
+          : `Reset ${folder} to the Auggy-provided version`,
     };
   } catch {
     const dest = installedSkillDir(agentDir, folder);
@@ -492,7 +616,7 @@ function copyBundledTree(
         // Leave a changed tree untouched rather than following it during cleanup.
       }
     }
-    return { ok: false, message: `${verb.toLowerCase()} failed: unsafe bundled skill tree` };
+    return { ok: false, message: `${verb.toLowerCase()} failed: unsafe Auggy-provided skill tree` };
   }
 }
 

@@ -79,6 +79,7 @@ import {
   type ConsoleChatToolCall,
 } from "./admin/console-chat-store";
 import { createConsoleCliLoginTicketStore } from "./admin/cli-login-tickets";
+import { createConsoleAuthFailureLimiter } from "./admin/admin-auth-rate-limiter";
 import {
   buildConsoleAllowedOrigins,
   compileTrustedProxyNetworks,
@@ -1084,6 +1085,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
   // It is deliberately never added to CORS or any response/log surface.
   const consoleInternalRunMarker = opts.adminRoute === false ? null : crypto.randomUUID();
   const consoleCliLoginTickets = createConsoleCliLoginTicketStore();
+  const consoleAuthFailureLimiter = createConsoleAuthFailureLimiter();
 
   // PR γ.1 — augment-registered routes captured at register() time.
   // Empty until register fires; once populated, immutable for the server's lifetime.
@@ -3671,21 +3673,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 }
               }
 
-              // M4 fix — rate-limit BEFORE handling. Per-IP combined budget
-              // across the entire /console* surface: 60 req/min via synthetic
-              // route-key "admin" for compatibility. Defeats brute-force against
-              // HTTP Basic.
               const adminIp = consoleRequest.callerIp;
-              const adminRl = checkRouteRateLimit("admin", adminIp, 60);
-              if (!adminRl.allowed) {
-                return withConsoleBoundaryHeaders(
-                  new Response(null, {
-                    status: 429,
-                    headers: { "retry-after": String(adminRl.retryAfterSec) },
-                  }),
-                );
-              }
-
               if (!kernel) {
                 return withConsoleBoundaryHeaders(new Response(null, { status: 503 }));
               }
@@ -3694,6 +3682,7 @@ export function webTransport(opts: WebTransportOptions): Augment {
                 bearer: opts.auth.token,
                 agentDir: opts.agentDir,
                 callerIp: adminIp,
+                authFailureLimiter: consoleAuthFailureLimiter,
                 secureRequest: consoleRequest.secure,
                 requestOrigin: consoleRequest.origin,
                 cliLoginTickets: consoleCliLoginTickets,

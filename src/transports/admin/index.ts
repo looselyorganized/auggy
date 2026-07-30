@@ -13,6 +13,10 @@ import {
   hasValidConsoleBasicAuth,
 } from "./admin-auth";
 import {
+  createConsoleAuthFailureLimiter,
+  type ConsoleAuthFailureLimiter,
+} from "./admin-auth-rate-limiter";
+import {
   CONSOLE_CLI_LOGIN_TICKET_PATH_PREFIX,
   type ConsoleCliLoginTicketStore,
 } from "./cli-login-tickets";
@@ -257,6 +261,8 @@ export interface AdminRouteContext {
   bearer: string;
   agentDir: string | undefined;
   callerIp: string;
+  /** Process-local failed-authentication limiter keyed by the effective caller IP. */
+  authFailureLimiter?: ConsoleAuthFailureLimiter;
   /** Effective scheme after the transport validates the immediate proxy and forwarding chain. */
   secureRequest?: boolean;
   /** Exact effective origin after Host, scheme, and proxy validation. */
@@ -329,13 +335,11 @@ const CONSOLE_CHAT_THREAD_ID_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._:-]{0,255})$/;
 const CHAT_PREVIEW_MODES = new Set(["creator", "anonymous", "visitor"]);
 type ChatPreviewMode = "creator" | "anonymous" | "visitor";
 
-const LOGIN_RATE_LIMIT_WINDOW_MS = 60_000;
-const LOGIN_RATE_LIMIT_MAX = 10;
 const CONSOLE_LOGIN_ASSET_PATH = "/console/login-assets";
 const CONSOLE_LOGIN_ASSET_PATH_PREFIX = `${CONSOLE_LOGIN_ASSET_PATH}/`;
 const CONSOLE_LOGIN_CSP =
   "default-src 'none'; style-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'";
-const loginAttempts = new Map<string, number[]>();
+const fallbackAuthFailureLimiter = createConsoleAuthFailureLimiter();
 
 const EXPIRED_CSRF_HTML = `<!doctype html>
 <html lang="en">
@@ -393,7 +397,23 @@ async function dispatchAdminRoute(req: Request, ctx: AdminRouteContext): Promise
     trustForwardedProto: ctx.trustForwardedProto,
   });
   if (auth.kind === "https-required") return auth.response;
-  if (auth.kind === "unauthorized") return auth.response;
+  if (auth.kind === "unauthorized") {
+    if (auth.failure === "missing") return auth.response;
+    // A stale or rotated signed session is not a password attempt. Clear it
+    // immediately so dashboard polling and multiple tabs cannot poison the
+    // password/Basic-auth budget or prevent navigation back to sign-in.
+    if (auth.failure === "invalid-session") return auth.response;
+    const limited = checkAuthenticationLimit(ctx);
+    if (limited) {
+      return limited;
+    }
+    recordAuthenticationFailure(ctx);
+    return auth.response;
+  }
+  if (auth.method === "basic") {
+    const limited = checkAuthenticationLimit(ctx);
+    if (limited) return limited;
+  }
 
   if (url.pathname === "/console/api/cli-login") {
     if (req.method !== "POST") return methodNotAllowed("POST");
@@ -668,18 +688,6 @@ async function handleLoginPost(
   ctx: AdminRouteContext,
   secureRequest: boolean,
 ): Promise<Response> {
-  const loginLimit = checkLoginRateLimit(ctx.callerIp);
-  if (!loginLimit.allowed) {
-    return new Response("Too many attempts. Try again shortly.", {
-      status: 429,
-      headers: {
-        "content-type": "text/plain; charset=utf-8",
-        "retry-after": String(loginLimit.retryAfterSec),
-        "cache-control": "no-store",
-      },
-    });
-  }
-
   if (!hasUrlEncodedContentType(req.headers.get("content-type"))) {
     return loginRequestFailureResponse(400, "Invalid login request.");
   }
@@ -706,7 +714,13 @@ async function handleLoginPost(
   }
 
   const password = passwordValues[0] ?? "";
+  // Keep admission, comparison, and failure recording in one synchronous
+  // section after the bounded async body read so parallel POSTs cannot all
+  // pass an earlier empty-bucket check before any failure is recorded.
+  const limited = checkAuthenticationLimit(ctx);
+  if (limited) return limited;
   if (!timingSafeStringEqual(password, ctx.bearer)) {
+    recordAuthenticationFailure(ctx);
     return loginPageResponse(ctx, "invalid-password");
   }
 
@@ -896,7 +910,13 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
     summary: summarizeRouteManifest(routeManifest),
     entries: routeManifest,
   };
-  const web = readWebDashboardState(blocks);
+  const web = {
+    ...readWebDashboardState(blocks),
+    // Token verification and operator-facing identity resolution are separate
+    // capabilities. The Console must not probe this endpoint merely because
+    // visitor tokens are enabled for public routes.
+    visitorIdentityEnabled: Boolean(ctx.resolveConsoleVisitorIdentity),
+  };
 
   // Mint a CSRF token per (skill-action, folder) tuple so console skill APIs
   // can validate writes against the same bearer-bound HMAC scheme as the
@@ -1501,10 +1521,10 @@ async function handleConsoleVisitorIdentity(
   if (!ctx.resolveConsoleVisitorIdentity) {
     return jsonResponse(
       {
-        error: "Visitor identity resolution is unavailable.",
-        code: "visitor_identity_unavailable",
+        error: "Visitor identity resolution is not configured.",
+        code: "visitor_identity_not_configured",
       },
-      503,
+      501,
     );
   }
 
@@ -2167,23 +2187,27 @@ function safeConsoleNextPath(next: string | null): string {
   return "/console";
 }
 
-function checkLoginRateLimit(
-  callerIp: string,
-): { allowed: true } | { allowed: false; retryAfterSec: number } {
-  const now = Date.now();
-  const cutoff = now - LOGIN_RATE_LIMIT_WINDOW_MS;
-  const hits = (loginAttempts.get(callerIp) ?? []).filter((ts) => ts > cutoff);
-  if (hits.length >= LOGIN_RATE_LIMIT_MAX) {
-    const retryAfterSec = Math.max(
-      1,
-      Math.ceil((hits[0]! + LOGIN_RATE_LIMIT_WINDOW_MS - now) / 1000),
-    );
-    loginAttempts.set(callerIp, hits);
-    return { allowed: false, retryAfterSec };
-  }
-  hits.push(now);
-  loginAttempts.set(callerIp, hits);
-  return { allowed: true };
+function checkAuthenticationLimit(ctx: AdminRouteContext): Response | null {
+  const limiter = ctx.authFailureLimiter ?? fallbackAuthFailureLimiter;
+  const result = limiter.check(ctx.callerIp);
+  return result.allowed ? null : authenticationRateLimitResponse(result.retryAfterSec);
+}
+
+function recordAuthenticationFailure(ctx: AdminRouteContext): void {
+  const limiter = ctx.authFailureLimiter ?? fallbackAuthFailureLimiter;
+  limiter.recordFailure(ctx.callerIp);
+}
+
+function authenticationRateLimitResponse(retryAfterSec = 1): Response {
+  return new Response(JSON.stringify({ error: "too many authentication attempts" }), {
+    status: 429,
+    headers: {
+      "content-type": "application/json",
+      "retry-after": String(retryAfterSec),
+      "cache-control": "no-store",
+      "x-robots-tag": "noindex, nofollow",
+    },
+  });
 }
 
 function timingSafeStringEqual(a: string, b: string): boolean {

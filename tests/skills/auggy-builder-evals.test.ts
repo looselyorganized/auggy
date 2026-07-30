@@ -36,7 +36,7 @@ describe("auggy builder skill fresh-agent eval prompts", () => {
 
   test("suite metadata is stable", () => {
     expect(suite.suite).toBe("auggy-builder-skill-fresh-agent");
-    expect(suite.version).toBe(2);
+    expect(suite.version).toBe(3);
     expect(suite.skillPath).toBe("../auggy");
     expect(suite.cases.length).toBeGreaterThanOrEqual(8);
   });
@@ -102,5 +102,23 @@ describe("auggy builder skill fresh-agent eval prompts", () => {
     expect(appAuth!.requiredAssets).toContain(
       "assets/templates/app-auth-bridge/supabase-next-route.ts.txt",
     );
+  });
+
+  test("custom augment evals reject stale layout, APIs, and incomplete authorization", () => {
+    const customCases = suite.cases.filter(
+      (testCase) => testCase.category === "augment-development",
+    );
+    expect(customCases.length).toBeGreaterThanOrEqual(2);
+
+    for (const testCase of customCases) {
+      expect(testCase.requiredReferences).toContain("references/routes-tools-augments.md");
+      const criteria = testCase.successCriteria.join("\n");
+      expect(criteria, testCase.id).toContain("keeps skills/<name>/SKILL.md separate");
+      expect(criteria, testCase.id).toContain("does not use the legacy raw-object augment API");
+      expect(criteria, testCase.id).toContain("selects route auth explicitly");
+      expect(criteria, testCase.id).toContain(
+        "distinguishes route auth, delegated requires, and tool visibility",
+      );
+    }
   });
 });

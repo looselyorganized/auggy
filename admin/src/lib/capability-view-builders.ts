@@ -179,7 +179,7 @@ export function buildSkillViews(data: DashboardData): SkillCapabilityView[] {
         ...(augmentType ? { augmentType } : {}),
         badges: [
           badge("skill-state", "installed", skill.frontmatterValid ? "success" : "warning"),
-          badge("skill-source", skill.source, "neutral"),
+          badge("skill-provenance", skillProvenanceLabel(skill.provenance), "neutral"),
           ...(!skill.frontmatterValid
             ? [badge("control", "frontmatter invalid", "warning")]
             : []),
@@ -187,18 +187,21 @@ export function buildSkillViews(data: DashboardData): SkillCapabilityView[] {
       };
     }),
     ...data.skills.available.map(
-      (skill): SkillCapabilityView => ({
-        id: `available:${skill.fromAugmentType}:${skill.folder}`,
-        title: skill.name ?? skill.folder,
-        detail: `${skill.description ?? "Bundled skill"} · available from ${skill.fromAugmentType}`,
-        state: "available",
-        folder: skill.folder,
-        augmentType: skill.fromAugmentType,
-        badges: [
-          badge("skill-state", "available", "info"),
-          badge("skill-source", "bundled", "neutral"),
-        ],
-      }),
+      (skill): SkillCapabilityView => {
+        const owner = skill.fromAugmentType;
+        return {
+          id: `available:${owner ?? "auggy"}:${skill.folder}`,
+          title: skill.name ?? skill.folder,
+          detail: `${skill.description ?? "Auggy-provided skill"} · available from ${owner ?? "Auggy"}`,
+          state: "available",
+          folder: skill.folder,
+          ...(owner ? { augmentType: owner } : {}),
+          badges: [
+            badge("skill-state", "available", "info"),
+            badge("skill-provenance", skillProvenanceLabel(skill.provenance), "neutral"),
+          ],
+        };
+      },
     ),
   ];
 }
@@ -292,6 +295,19 @@ function installedSkillOwner(skill: InstalledSkillInfo): string | undefined {
   return skill.fromAugmentType && skill.fromAugmentType.length > 0
     ? skill.fromAugmentType
     : undefined;
+}
+
+function skillProvenanceLabel(
+  provenance: InstalledSkillInfo["provenance"] | "auggy-provided",
+): string {
+  switch (provenance) {
+    case "auggy-provided":
+      return "Auggy-provided";
+    case "customized-auggy-skill":
+      return "Customized Auggy skill";
+    case "user-created":
+      return "User-created";
+  }
 }
 
 function isPubliclyReachable(route: RouteManifestEntry): boolean {

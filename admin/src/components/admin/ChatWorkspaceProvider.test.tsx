@@ -51,6 +51,14 @@ const dashboardData = {
   skills: { installed: [], available: [], skillsDir: null },
 } as unknown as DashboardData;
 
+const dashboardWithoutVisitorIdentity = {
+  ...dashboardData,
+  web: {
+    ...dashboardData.web,
+    visitorIdentityEnabled: false,
+  },
+} as DashboardData;
+
 const renderers = new Set<ReactTestRenderer>();
 
 beforeEach(() => {
@@ -965,6 +973,156 @@ describe("ChatWorkspaceProvider persistence", () => {
       requests.get("token-c")?.resolve(identityResponse("c@example.com"));
     });
     expect(harness.value.visitorIdentity).toEqual({ status: "absent" });
+  });
+
+  it("issues zero identity requests without a visitor token", async () => {
+    let identityRequests = 0;
+    await mountProvider({
+      fetchImpl: mockFetch(async (path) => {
+        if (path === "/console/api/visitor-identity") identityRequests++;
+        throw new Error(`Unexpected request: ${path}`);
+      }),
+      initialState: createDraftWorkspace(
+        createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
+      ),
+    });
+
+    expect(identityRequests).toBe(0);
+  });
+
+  it("settles an unconfigured identity feature across provider mounts without a request", async () => {
+    const storage = new Map<string, string>([[VISITOR_TOKEN_KEY, "stored-token"]]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    let identityRequests = 0;
+    const fetchImpl = mockFetch(async (path) => {
+      if (path === "/console/api/visitor-identity") identityRequests++;
+      throw new Error(`Unexpected request: ${path}`);
+    });
+
+    const first = await mountProvider({
+      fetchImpl,
+      dashboard: dashboardWithoutVisitorIdentity,
+      initialState: createDraftWorkspace(
+        createChatThread({ id: "first", previewMode: "creator", model: MODEL, now: T0 }),
+      ),
+    });
+    const second = await mountProvider({
+      fetchImpl,
+      dashboard: dashboardWithoutVisitorIdentity,
+      initialState: createDraftWorkspace(
+        createChatThread({ id: "second", previewMode: "creator", model: MODEL, now: T0 }),
+      ),
+    });
+
+    expect(identityRequests).toBe(0);
+    expect(first.value.visitorIdentity).toEqual({
+      status: "not-configured",
+      error: "Verified visitor identity is not configured for this agent.",
+    });
+    expect(second.value.visitorIdentity).toEqual(first.value.visitorIdentity);
+  });
+
+  it("does not amplify a transient identity failure on repeated focus events", async () => {
+    const storage = new Map<string, string>([[VISITOR_TOKEN_KEY, "stored-token"]]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    const listeners = new Map<string, EventListener>();
+    Object.defineProperty(globalThis, "window", {
+      configurable: true,
+      value: {
+        location: { href: "http://localhost:8080/console/chat" },
+        addEventListener: (type: string, listener: EventListener) => {
+          listeners.set(type, listener);
+        },
+        removeEventListener: (type: string, listener: EventListener) => {
+          if (listeners.get(type) === listener) listeners.delete(type);
+        },
+      },
+    });
+    let identityRequests = 0;
+    const harness = await mountProvider({
+      fetchImpl: mockFetch(async (path) => {
+        if (path !== "/console/api/visitor-identity") {
+          throw new Error(`Unexpected request: ${path}`);
+        }
+        identityRequests++;
+        return json(
+          {
+            error: "Visitor identity resolution is temporarily unavailable.",
+            code: "visitor_identity_unavailable",
+          },
+          503,
+        );
+      }),
+      initialState: createDraftWorkspace(
+        createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
+      ),
+    });
+
+    expect(identityRequests).toBe(1);
+    expect(harness.value.visitorIdentity).toMatchObject({ status: "unavailable" });
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await act(async () => {
+        listeners.get("focus")?.(new Event("focus"));
+        await Promise.resolve();
+      });
+    }
+    await act(async () => {
+      harness.setDashboard({
+        ...dashboardData,
+        csrfTokens: [{ actionId: "console-chat", token: "refreshed-csrf-token" }],
+      });
+      await Promise.resolve();
+    });
+
+    expect(identityRequests).toBe(1);
+    expect(harness.value.visitorIdentity).toMatchObject({ status: "unavailable" });
+  });
+
+  it("keeps a Console authorization failure distinct and settled", async () => {
+    const storage = new Map<string, string>([[VISITOR_TOKEN_KEY, "stored-token"]]);
+    Object.defineProperty(globalThis, "localStorage", {
+      configurable: true,
+      value: {
+        getItem: (key: string) => storage.get(key) ?? null,
+        removeItem: (key: string) => storage.delete(key),
+      },
+    });
+    let identityRequests = 0;
+    const harness = await mountProvider({
+      fetchImpl: mockFetch(async (path) => {
+        if (path !== "/console/api/visitor-identity") {
+          throw new Error(`Unexpected request: ${path}`);
+        }
+        identityRequests++;
+        return json({ error: "CSRF check failed.", code: "csrf_rejected" }, 403);
+      }),
+      initialState: createDraftWorkspace(
+        createChatThread({ id: "draft", previewMode: "creator", model: MODEL, now: T0 }),
+      ),
+    });
+
+    expect(identityRequests).toBe(1);
+    expect(harness.value.visitorIdentity).toEqual({
+      status: "session-error",
+      error: "Console authorization could not be verified. Reload and sign in again.",
+    });
+    act(() => {
+      harness.value.refreshVisitorToken();
+      harness.value.refreshVisitorToken();
+    });
+    expect(identityRequests).toBe(1);
   });
 
   it("validates a stored visitor token when dashboard CSRF arrives after mount", async () => {

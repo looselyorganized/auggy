@@ -10,7 +10,7 @@ allowedTrustLevels:
 Use this skill when the creator asks what this agent is, what it can do, what
 to add next, or how to build a workflow with Auggy.
 
-This bundled skill is the canonical Auggy companion skill for the agent itself.
+This Auggy-provided skill is the canonical companion skill for the agent itself.
 External Claude, Codex, Cursor, and similar coding-agent skills should reuse
 this folder instead of forking Auggy's mental model.
 
@@ -176,6 +176,10 @@ auggy augment create <name>
 ```
 
 Read `skills/auggy/references/routes-tools-augments.md` before giving code.
+Reading this top-level `SKILL.md` is not enough for that request. Do not give
+custom-augment file structure or code until that reference read succeeds. If
+`fs_read` is unavailable or the read fails, provide only the command and
+reference path, explain the limitation, and do not invent an implementation.
 For starter files, inspect `skills/auggy/assets/templates/custom-augment/`.
 After route changes, recommend:
 

@@ -29,7 +29,7 @@ Augments can own:
 - HTTP routes
 - Background listeners
 - Operator notifications
-- Bundled skills and model-facing instructions
+- Auggy-provided skills and model-facing instructions
 - Audit trails and console surfaces
 
 The model does not need to see "augments" directly. As described in

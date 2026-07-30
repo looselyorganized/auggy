@@ -49,7 +49,7 @@ describe("auggy skill — command shape", () => {
     expect(add).toBeDefined();
     expect(add?.helpInformation()).toContain("<skill>");
     expect(add?.options.map((o) => o.long)).toContain("--agent");
-    expect(add?.description()).toMatch(/bundled .*skill/i);
+    expect(add?.description()).toMatch(/Auggy-provided .*skill/i);
   });
 });
 
@@ -293,7 +293,7 @@ describe("auggy skill add — augment without a bundled skill", () => {
     }
 
     expect(exit).toHaveBeenCalledWith(1);
-    expect(errors.join("\n")).toMatch(/fileMemory.*ships no bundled skill/i);
+    expect(errors.join("\n")).toMatch(/fileMemory.*ships no Auggy-provided skill/i);
     expect(existsSync(join(dir, "skills", "fileMemory"))).toBe(false);
   });
 });

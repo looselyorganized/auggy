@@ -54,5 +54,13 @@ export default function services(opts: ServicesOptions = {}) {
         execute: async (input) => JSON.stringify({ lead: saveLead(input, { recordsPath }) }),
       }),
     ],
+    constraints: {
+      // Route auth does not authorize tools. This side-effecting tool starts
+      // creator-only; relax visibility only after choosing the allowed peers.
+      perTrustLevel: {
+        public: { neverExpose: ["save_lead"] },
+        agent: { neverExpose: ["save_lead"] },
+      },
+    },
   });
 }

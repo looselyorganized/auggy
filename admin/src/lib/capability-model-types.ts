@@ -50,7 +50,7 @@ export type CapabilityBadgeKind =
   | "body-limit"
   | "timeout"
   | "skill-state"
-  | "skill-source"
+  | "skill-provenance"
   | "control";
 
 export interface CapabilityBadge {

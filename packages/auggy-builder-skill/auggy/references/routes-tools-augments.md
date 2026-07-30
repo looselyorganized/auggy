@@ -35,6 +35,32 @@ should wrap that logic, not duplicate it.
 For copyable starter files, inspect
 `skills/auggy/assets/templates/custom-augment/`.
 
+Never place `SKILL.md` inside `augments/<name>/`. Runtime code and model-facing
+teaching are separate surfaces with different loading and authorization rules.
+
+## Authorization Decisions
+
+Every route and tool needs three independent decisions. Do not collapse them
+into a generic statement that the augment "has auth":
+
+1. **Route caller authentication (`auth`)** decides who may enter an HTTP
+   route. Choose the narrowest mode that fits: public discovery may use
+   `"none"`; recognized visitors normally use `"visitor.required"`; operator
+   routes use `"creator"` or another explicit protected mode.
+2. **Delegated authorization (`requires`)** enforces scopes or resource grants
+   from a verified external-app assertion before a protected route handler or
+   model tool executes. Use it when the application remains the authority for
+   which records or actions a peer may access.
+3. **Tool visibility (`constraints.perTrustLevel`)** controls which trust
+   levels can even see or invoke model-callable tools. HTTP route `auth` does
+   not protect a matching tool automatically. Hide side-effecting or operator
+   tools from `public` and `agent` unless the product deliberately supports
+   those callers.
+
+For delegated app authorization, read
+`skills/auggy/references/authz-memory-trust.md` and
+`skills/auggy/references/app-auth-bridge-e2e.md` before writing code.
+
 ## Route/Tool/Domain Pattern
 
 ```ts
@@ -111,9 +137,22 @@ export default function services() {
         execute: async (input) => JSON.stringify({ lead: await saveLead(input) }),
       }),
     ],
+    constraints: {
+      perTrustLevel: {
+        public: { neverExpose: ["save_lead"] },
+        agent: { neverExpose: ["save_lead"] },
+      },
+    },
   });
 }
 ```
+
+The example intentionally keeps the side-effecting `save_lead` tool
+creator-only while leaving the separately rate-limited intake route public.
+Remove or change those visibility constraints only after deciding which chat
+trust levels may perform that side effect. If an app delegates record-specific
+authority, add matching `requires` rules to both its route and tool; one does
+not authorize the other.
 
 ## Route Options
 

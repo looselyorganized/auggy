@@ -788,6 +788,15 @@ assert_status "200" "CLI-ticket-authenticated Console session"
 [[ "$HTTP_CONTENT_TYPE" == text/html* ]] \
   || fail "CLI-ticket-authenticated Console session did not receive HTML"
 
+for sustained_request in {1..72}; do
+  capture_console_request "/console/api/dashboard" \
+    "console-sustained-dashboard-$sustained_request" \
+    --cookie "$CONSOLE_PASSWORD_COOKIE_JAR"
+  assert_status "200" "sustained authenticated Console request $sustained_request"
+  [[ "$HTTP_CONTENT_TYPE" == application/json* ]] \
+    || fail "sustained authenticated Console request returned $HTTP_CONTENT_TYPE"
+done
+
 capture_console_request "$CLI_LOGIN_PATH" "console-cli-ticket-replay"
 assert_status "401" "Console CLI ticket replay"
 assert_header_exact "content-security-policy" "$LOGIN_CSP" "Console CLI ticket replay"

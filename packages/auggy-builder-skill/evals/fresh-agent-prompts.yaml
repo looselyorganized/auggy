@@ -1,9 +1,9 @@
 suite: auggy-builder-skill-fresh-agent
-version: 2
+version: 3
 skillPath: ../auggy
 owners:
   - Auggy core
-lastUpdated: 2026-07-08
+lastUpdated: 2026-07-30
 purpose: >
   Forward-test whether a fresh coding agent can use the Auggy skill to explain,
   scaffold, extend, connect, and troubleshoot a self-hosted Auggy agent without prior
@@ -62,8 +62,12 @@ cases:
       - assets/templates/custom-augment/schemas.ts.txt
     successCriteria:
       - creates code under augments/<name>
+      - keeps skills/<name>/SKILL.md separate from augment runtime source
       - keeps domain logic separate from route and tool wrappers
       - uses defineRoute and defineTool with Zod schemas
+      - does not use the legacy raw-object augment API
+      - selects route auth explicitly
+      - distinguishes route auth, delegated requires, and tool visibility
       - recommends auggy augment test and auggy routes after changes
 
   - id: generated-client-target-split
@@ -185,5 +189,9 @@ cases:
     successCriteria:
       - discovers the Auggy skill from the request without explicit invocation
       - reads the custom augment route and tool reference before answering
+      - keeps skills/<name>/SKILL.md separate from augment runtime source
       - keeps shared domain logic separate from route and tool wrappers
+      - does not use the legacy raw-object augment API
+      - selects route auth explicitly
+      - distinguishes route auth, delegated requires, and tool visibility
       - recommends auggy augment test and auggy routes after changes
