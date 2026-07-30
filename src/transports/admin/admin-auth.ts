@@ -14,9 +14,13 @@ export interface AdminAuthContext {
 }
 
 export type AdminAuthResult =
-  | { kind: "ok" }
+  | { kind: "ok"; method: "session" | "basic" }
   | { kind: "https-required"; response: Response }
-  | { kind: "unauthorized"; response: Response };
+  | {
+      kind: "unauthorized";
+      response: Response;
+      failure: "missing" | "invalid-session" | "invalid-basic";
+    };
 
 const CONSOLE_SESSION_COOKIE = "auggy_console";
 const CONSOLE_SESSION_MAX_AGE_SEC = 60 * 60 * 12;
@@ -71,21 +75,25 @@ export function checkAdminAuth(ctx: AdminAuthContext): AdminAuthResult {
 
   const session = ctx.req.headers.get("cookie");
   if (session && verifyConsoleSessionCookie(session, ctx.bearer)) {
-    return { kind: "ok" };
+    return { kind: "ok", method: "session" };
   }
 
   // 3. HTTP Basic check. Loopback is a transport property, not authority:
   // reverse proxies, port-forwarding, and DNS rebinding can all make an
   // attacker-controlled request appear to originate locally.
   if (!hasValidConsoleBasicAuth(ctx.req, ctx.bearer)) {
+    const invalidSession = hasConsoleSessionCookie(session);
+    const invalidBasic = ctx.req.headers.has("authorization");
     return unauthorized(
       ctx.agentName,
       shouldRedirectToLogin(ctx.req) && !ctx.req.headers.has("authorization"),
       ctx.req,
+      invalidBasic ? "invalid-basic" : invalidSession ? "invalid-session" : "missing",
+      invalidSession ? isSecureRequest : undefined,
     );
   }
 
-  return { kind: "ok" };
+  return { kind: "ok", method: "basic" };
 }
 
 /** Validate the explicit Basic credential used by non-browser Console clients. */
@@ -189,6 +197,14 @@ function parseCookie(header: string): Record<string, string> | null {
   return out;
 }
 
+function hasConsoleSessionCookie(header: string | null): boolean {
+  if (!header) return false;
+  return header.split(";").some((part) => {
+    const separator = part.indexOf("=");
+    return separator >= 0 && part.slice(0, separator).trim() === CONSOLE_SESSION_COOKIE;
+  });
+}
+
 function shouldRedirectToLogin(req: Request): boolean {
   if (req.method !== "GET") return false;
   const url = new URL(req.url);
@@ -198,7 +214,17 @@ function shouldRedirectToLogin(req: Request): boolean {
   return accept === "" || accept.includes("text/html") || accept.includes("*/*");
 }
 
-function unauthorized(agentName: string, redirectToLogin: boolean, req: Request): AdminAuthResult {
+function unauthorized(
+  agentName: string,
+  redirectToLogin: boolean,
+  req: Request,
+  failure: "missing" | "invalid-session" | "invalid-basic",
+  clearSessionSecure?: boolean,
+): AdminAuthResult {
+  const clearSession =
+    clearSessionSecure === undefined
+      ? undefined
+      : createConsoleSessionClearCookie(clearSessionSecure);
   if (redirectToLogin) {
     const reqUrl = new URL(req.url);
     const next = safeConsoleNext(reqUrl.pathname + reqUrl.search);
@@ -209,8 +235,10 @@ function unauthorized(agentName: string, redirectToLogin: boolean, req: Request)
         headers: {
           location: `/console/login?next=${encodeURIComponent(next)}`,
           "cache-control": "no-store",
+          ...(clearSession ? { "set-cookie": clearSession } : {}),
         },
       }),
+      failure,
     };
   }
 
@@ -221,8 +249,10 @@ function unauthorized(agentName: string, redirectToLogin: boolean, req: Request)
       headers: {
         "content-type": "application/json",
         "www-authenticate": `Basic realm="auggy-admin ${agentName} (username auggy, password AUGGY_WEB_TOKEN)"`,
+        ...(clearSession ? { "set-cookie": clearSession } : {}),
       },
     }),
+    failure,
   };
 }
 

@@ -112,9 +112,10 @@ owned by the subsystem it protects rather than by a screenshot-specific test.
 
 - Static assets and successfully authenticated Console traffic MUST NOT share
   a brute-force limiter with failed authentication.
-- Password login attempts and invalid HTTP Basic/session authentication MUST be
-  rate-limited by effective caller IP. A valid credential/session MUST not be
-  penalized by normal polling or asset requests.
+- Password login attempts and invalid HTTP Basic authentication MUST be
+  rate-limited by effective caller IP. Invalid signed sessions MUST clear
+  themselves and MUST NOT let polling or multiple tabs poison that budget. A
+  valid session MUST not be penalized by normal polling or asset requests.
 - Limiter state MUST be bounded or lazily expired so unique spoofed/untrusted
   caller inputs cannot grow process memory without limit.
 - Host, HTTPS/loopback, trusted-proxy, origin, CSRF, body-size, CLI-ticket, and

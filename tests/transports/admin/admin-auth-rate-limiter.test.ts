@@ -13,6 +13,7 @@ describe("Console authentication failure limiter", () => {
 
     expect(limiter.recordFailure("192.0.2.1")).toEqual({ allowed: true });
     expect(limiter.recordFailure("192.0.2.2")).toEqual({ allowed: true });
+    expect(limiter.check("192.0.2.1")).toEqual({ allowed: true });
     expect(limiter.recordFailure("192.0.2.3")).toEqual({
       allowed: false,
       retryAfterSec: 1,
@@ -25,6 +26,14 @@ describe("Console authentication failure limiter", () => {
       allowed: false,
       retryAfterSec: 1,
     });
+  });
+
+  it("blocks a later correct credential check without adding another failure", () => {
+    const limiter = createConsoleAuthFailureLimiter({ maxFailures: 1 });
+
+    expect(limiter.recordFailure("192.0.2.1")).toEqual({ allowed: true });
+    expect(limiter.check("192.0.2.1")).toMatchObject({ allowed: false });
+    expect(limiter.recordFailure("192.0.2.1")).toMatchObject({ allowed: false });
   });
 
   it("rejects non-positive and fractional limits", () => {

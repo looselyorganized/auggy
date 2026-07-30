@@ -6326,7 +6326,7 @@ describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
     }
   });
 
-  it("rate-limits invalid Basic credentials by effective caller IP without penalizing valid auth", async () => {
+  it("rate-limits Basic guesses by effective caller IP while preserving valid sessions", async () => {
     const model = createMockModel();
     const port = 29517;
     const aug = webTransport({
@@ -6344,6 +6344,20 @@ describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
         "x-forwarded-for": callerIp,
         "x-forwarded-proto": "https",
       });
+      const sessionLogin = await fetch(`${origin}/console/login`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/x-www-form-urlencoded",
+          origin: `https://127.0.0.1:${port}`,
+          "x-forwarded-for": "203.0.113.10",
+          "x-forwarded-proto": "https",
+        },
+        body: new URLSearchParams({ password: "test-token" }),
+        redirect: "manual",
+      });
+      expect(sessionLogin.status).toBe(303);
+      const sessionCookie = sessionLogin.headers.get("set-cookie")?.split(";", 1)[0];
+      expect(sessionCookie).toContain("auggy_console=");
 
       for (let attempt = 0; attempt < 10; attempt += 1) {
         const invalid = await fetch(`${origin}/console/api/dashboard`, {
@@ -6371,7 +6385,16 @@ describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
       const valid = await fetch(`${origin}/console/api/dashboard`, {
         headers: forwardedHeaders("203.0.113.10", "test-token"),
       });
-      expect(valid.status).toBe(200);
+      expect(valid.status).toBe(429);
+
+      const session = await fetch(`${origin}/console/api/dashboard`, {
+        headers: {
+          cookie: sessionCookie!,
+          "x-forwarded-for": "203.0.113.10",
+          "x-forwarded-proto": "https",
+        },
+      });
+      expect(session.status).toBe(200);
     } finally {
       await agent.stop();
     }

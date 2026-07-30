@@ -398,11 +398,21 @@ async function dispatchAdminRoute(req: Request, ctx: AdminRouteContext): Promise
   });
   if (auth.kind === "https-required") return auth.response;
   if (auth.kind === "unauthorized") {
-    if (hasPresentedConsoleCredential(req)) {
-      const limited = recordAuthenticationFailure(ctx);
-      if (limited) return limited;
+    if (auth.failure === "missing") return auth.response;
+    // A stale or rotated signed session is not a password attempt. Clear it
+    // immediately so dashboard polling and multiple tabs cannot poison the
+    // password/Basic-auth budget or prevent navigation back to sign-in.
+    if (auth.failure === "invalid-session") return auth.response;
+    const limited = checkAuthenticationLimit(ctx);
+    if (limited) {
+      return limited;
     }
+    recordAuthenticationFailure(ctx);
     return auth.response;
+  }
+  if (auth.method === "basic") {
+    const limited = checkAuthenticationLimit(ctx);
+    if (limited) return limited;
   }
 
   if (url.pathname === "/console/api/cli-login") {
@@ -704,9 +714,13 @@ async function handleLoginPost(
   }
 
   const password = passwordValues[0] ?? "";
+  // Keep admission, comparison, and failure recording in one synchronous
+  // section after the bounded async body read so parallel POSTs cannot all
+  // pass an earlier empty-bucket check before any failure is recorded.
+  const limited = checkAuthenticationLimit(ctx);
+  if (limited) return limited;
   if (!timingSafeStringEqual(password, ctx.bearer)) {
-    const limited = recordAuthenticationFailure(ctx);
-    if (limited) return limited;
+    recordAuthenticationFailure(ctx);
     return loginPageResponse(ctx, "invalid-password");
   }
 
@@ -2173,25 +2187,23 @@ function safeConsoleNextPath(next: string | null): string {
   return "/console";
 }
 
-function hasPresentedConsoleCredential(req: Request): boolean {
-  if (req.headers.has("authorization")) return true;
-  const cookie = req.headers.get("cookie");
-  if (!cookie) return false;
-  return cookie.split(";").some((part) => {
-    const separator = part.indexOf("=");
-    return separator >= 0 && part.slice(0, separator).trim() === "auggy_console";
-  });
+function checkAuthenticationLimit(ctx: AdminRouteContext): Response | null {
+  const limiter = ctx.authFailureLimiter ?? fallbackAuthFailureLimiter;
+  const result = limiter.check(ctx.callerIp);
+  return result.allowed ? null : authenticationRateLimitResponse(result.retryAfterSec);
 }
 
-function recordAuthenticationFailure(ctx: AdminRouteContext): Response | null {
+function recordAuthenticationFailure(ctx: AdminRouteContext): void {
   const limiter = ctx.authFailureLimiter ?? fallbackAuthFailureLimiter;
-  const result = limiter.recordFailure(ctx.callerIp);
-  if (result.allowed) return null;
+  limiter.recordFailure(ctx.callerIp);
+}
+
+function authenticationRateLimitResponse(retryAfterSec = 1): Response {
   return new Response(JSON.stringify({ error: "too many authentication attempts" }), {
     status: 429,
     headers: {
       "content-type": "application/json",
-      "retry-after": String(result.retryAfterSec ?? 1),
+      "retry-after": String(retryAfterSec),
       "cache-control": "no-store",
       "x-robots-tag": "noindex, nofollow",
     },

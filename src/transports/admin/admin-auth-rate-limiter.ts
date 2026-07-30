@@ -4,6 +4,7 @@ export interface ConsoleAuthFailureLimitResult {
 }
 
 export interface ConsoleAuthFailureLimiter {
+  check(callerIp: string): ConsoleAuthFailureLimitResult;
   recordFailure(callerIp: string): ConsoleAuthFailureLimitResult;
 }
 
@@ -47,6 +48,7 @@ export function createConsoleAuthFailureLimiter(
 
   const failuresByCaller = new Map<string, number[]>();
   let touches = 0;
+  let lastCapacityGcAt = Number.NEGATIVE_INFINITY;
 
   function removeExpired(cutoff: number): void {
     for (const [callerIp, failures] of failuresByCaller) {
@@ -56,33 +58,53 @@ export function createConsoleAuthFailureLimiter(
     }
   }
 
+  function check(callerIp: string): ConsoleAuthFailureLimitResult {
+    const timestamp = now();
+    const cutoff = timestamp - windowMs;
+    touches += 1;
+    if (touches >= GC_INTERVAL) {
+      touches = 0;
+      removeExpired(cutoff);
+    }
+
+    const existing = failuresByCaller.get(callerIp);
+    const failures = (existing ?? []).filter((failure) => failure > cutoff);
+    if (failures.length >= maxFailures) {
+      failuresByCaller.set(callerIp, failures);
+      return {
+        allowed: false,
+        retryAfterSec: Math.max(1, Math.ceil((failures[0]! + windowMs - timestamp) / 1000)),
+      };
+    }
+
+    if (
+      !existing &&
+      failuresByCaller.size >= maxCallers &&
+      timestamp - lastCapacityGcAt >= Math.min(windowMs, 1_000)
+    ) {
+      lastCapacityGcAt = timestamp;
+      removeExpired(cutoff);
+    }
+
+    if (!existing && failuresByCaller.size >= maxCallers) {
+      return {
+        allowed: false,
+        retryAfterSec: Math.max(1, Math.ceil(windowMs / 1000)),
+      };
+    }
+
+    if (existing && failures.length === 0) failuresByCaller.delete(callerIp);
+    else if (existing) failuresByCaller.set(callerIp, failures);
+    return { allowed: true };
+  }
+
   return {
+    check,
     recordFailure(callerIp): ConsoleAuthFailureLimitResult {
+      const allowed = check(callerIp);
+      if (!allowed.allowed) return allowed;
       const timestamp = now();
-      const cutoff = timestamp - windowMs;
-      touches += 1;
-      if (touches >= GC_INTERVAL || failuresByCaller.size >= maxCallers) {
-        touches = 0;
-        removeExpired(cutoff);
-      }
-
-      const existing = failuresByCaller.get(callerIp);
-      const failures = (existing ?? []).filter((failure) => failure > cutoff);
-      if (failures.length >= maxFailures) {
-        failuresByCaller.set(callerIp, failures);
-        return {
-          allowed: false,
-          retryAfterSec: Math.max(1, Math.ceil((failures[0]! + windowMs - timestamp) / 1000)),
-        };
-      }
-
-      if (!existing && failuresByCaller.size >= maxCallers) {
-        return {
-          allowed: false,
-          retryAfterSec: Math.max(1, Math.ceil(windowMs / 1000)),
-        };
-      }
-
+      const failures = failuresByCaller.get(callerIp) ?? [];
       failures.push(timestamp);
       failuresByCaller.set(callerIp, failures);
       return { allowed: true };

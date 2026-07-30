@@ -458,10 +458,14 @@ describe("handleAdminRoute — auth", () => {
     expect(cookie).toContain("Secure");
   });
 
-  it("counts only failed password authentication and still admits a valid password after throttling", async () => {
+  it("blocks every password attempt after throttling and recovers when the window expires", async () => {
+    let now = 1_000;
     const ctx = await makeCtx({
       callerIp: "10.0.9.1",
-      authFailureLimiter: createConsoleAuthFailureLimiter(),
+      authFailureLimiter: createConsoleAuthFailureLimiter({
+        windowMs: 1_000,
+        now: () => now,
+      }),
     });
     const login = (password: string) =>
       handleAdminRoute(
@@ -485,11 +489,35 @@ describe("handleAdminRoute — auth", () => {
     expect(limited.headers.get("retry-after")).toMatch(/^\d+$/);
     expect(limited.headers.get("cache-control")).toBe("no-store");
     expect(await limited.text()).not.toContain("wrong-password");
+    expect((await login("test-bearer")).status).toBe(429);
+    now = 2_001;
     expect((await login("test-bearer")).status).toBe(303);
   });
 
-  it("rate-limits invalid Basic and session credentials without counting missing or valid auth", async () => {
-    const limiter = createConsoleAuthFailureLimiter({ maxFailures: 2 });
+  it("atomically admits only the configured number of concurrent password failures", async () => {
+    const ctx = await makeCtx({
+      callerIp: "10.0.9.4",
+      authFailureLimiter: createConsoleAuthFailureLimiter({ maxFailures: 2 }),
+    });
+    const attempts = await Promise.all(
+      Array.from({ length: 12 }, (_, attempt) =>
+        handleAdminRoute(
+          new Request("https://my-agent.fly.dev/console/login", {
+            method: "POST",
+            headers: { "content-type": "application/x-www-form-urlencoded" },
+            body: new URLSearchParams({ password: `wrong-${attempt}` }),
+          }),
+          ctx,
+        ),
+      ),
+    );
+
+    expect(attempts.filter((response) => response.status === 401)).toHaveLength(2);
+    expect(attempts.filter((response) => response.status === 429)).toHaveLength(10);
+  });
+
+  it("blocks Basic guesses after throttling while valid sessions remain available", async () => {
+    const limiter = createConsoleAuthFailureLimiter({ maxFailures: 1 });
     const ctx = await makeCtx({ callerIp: "10.0.9.2", authFailureLimiter: limiter });
     const request = (headers: Record<string, string> = {}) =>
       handleAdminRoute(
@@ -508,12 +536,82 @@ describe("handleAdminRoute — auth", () => {
     expect(limited.headers.get("retry-after")).toMatch(/^\d+$/);
     expect(limited.headers.get("cache-control")).toBe("no-store");
 
-    expect((await request({ authorization: basicHeader("test-bearer") })).status).toBe(200);
+    expect((await request({ authorization: basicHeader("test-bearer") })).status).toBe(429);
     const cookie = createConsoleSessionSetCookie({
       bearer: "test-bearer",
       secure: true,
     }).split(";")[0]!;
     expect((await request({ cookie })).status).toBe(200);
+  });
+
+  it("clears stale sessions without poisoning authentication recovery", async () => {
+    const ctx = await makeCtx({
+      callerIp: "10.0.9.3",
+      authFailureLimiter: createConsoleAuthFailureLimiter({ maxFailures: 1 }),
+    });
+    const staleCookie = { cookie: "auggy_console=stale.payload" };
+
+    const first = await handleAdminRoute(
+      new Request("https://my-agent.fly.dev/console/api/dashboard", {
+        headers: staleCookie,
+      }),
+      ctx,
+    );
+    expect(first.status).toBe(401);
+    expect(first.headers.get("set-cookie")).toContain("auggy_console=");
+    expect(first.headers.get("set-cookie")).toContain("Max-Age=0");
+
+    const repeated = await handleAdminRoute(
+      new Request("https://my-agent.fly.dev/console/api/dashboard", {
+        headers: staleCookie,
+      }),
+      ctx,
+    );
+    expect(repeated.status).toBe(401);
+    expect(repeated.headers.get("set-cookie")).toContain("Max-Age=0");
+
+    const navigation = await handleAdminRoute(
+      new Request("https://my-agent.fly.dev/console/chat", {
+        headers: { ...staleCookie, accept: "text/html" },
+      }),
+      ctx,
+    );
+    expect(navigation.status).toBe(303);
+    expect(navigation.headers.get("location")).toContain("/console/login");
+    expect(navigation.headers.get("set-cookie")).toContain("Max-Age=0");
+
+    const validBasic = await handleAdminRoute(
+      new Request("https://my-agent.fly.dev/console/api/dashboard", {
+        headers: { authorization: basicHeader("test-bearer") },
+      }),
+      ctx,
+    );
+    expect(validBasic.status).toBe(200);
+
+    const staleWithWrongBasic = {
+      ...staleCookie,
+      authorization: basicHeader("wrong"),
+    };
+    expect(
+      (
+        await handleAdminRoute(
+          new Request("https://my-agent.fly.dev/console/api/dashboard", {
+            headers: staleWithWrongBasic,
+          }),
+          ctx,
+        )
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await handleAdminRoute(
+          new Request("https://my-agent.fly.dev/console/api/dashboard", {
+            headers: staleWithWrongBasic,
+          }),
+          ctx,
+        )
+      ).status,
+    ).toBe(429);
   });
 
   it("renders the fixed branded password and ticket error variants", async () => {
@@ -645,6 +743,7 @@ describe("handleAdminRoute — auth", () => {
     });
     const res = await handleAdminRoute(req, await makeCtx({ callerIp: "10.0.0.5" }));
     expect(res.status).toBe(401);
+    expect(res.headers.get("set-cookie")).toContain("Max-Age=0");
   });
 
   it("GET /console/logout is non-mutating", async () => {
