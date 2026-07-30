@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0-rc.4] - 2026-07-30
+
+This fourth public candidate hardens Console behavior under authentication and
+identity failures, and corrects the guidance and provenance shown for skills
+and custom augments.
+
+### Changed
+
+- **Semantic skill provenance.** The runtime and Console now distinguish
+  Auggy-provided, customized Auggy, and user-created skill trees while keeping
+  owning-augment metadata separate. Provenance compares the complete bounded
+  tree and fails closed on unsafe filesystem entries.
+- **Current custom-augment guidance.** Scaffolded and portable Auggy guidance
+  now uses the public `defineAugment` and `defineTool` APIs, keeps optional model
+  guidance under `skills/<name>/SKILL.md`, and explains the distinct `auth`,
+  `requires`, and tool-visibility boundaries.
+
+### Fixed
+
+- **Console authentication traffic isolation.** Failed password and Basic-auth
+  attempts are throttled independently from authenticated polling and static
+  assets, so normal Console use and refreshes cannot exhaust the login budget
+  or return JavaScript and stylesheet requests as `429` responses.
+- **Visitor-identity request settlement.** Unconfigured, unauthorized, and
+  transient identity states settle without focus, remount, or missing-token
+  request amplification.
+
+### Security
+
+- **Concurrent login throttling and stale-session recovery.** Concurrent
+  failures cannot race through the credential limit, correct later guesses
+  remain blocked for the failure window, valid HttpOnly sessions remain usable,
+  and stale signed sessions clear without poisoning credential buckets.
+
 ## [0.5.0-rc.3] - 2026-07-29
 
 This third public candidate adds seamless, short-lived Console sign-in and
@@ -453,7 +487,8 @@ Initial tagged release. The kernel and built-in augments described in `docs/02-a
 - **CLI** — `aug1 create / add / dev / start / stop / restart / status` with launchd installation on macOS and PID-manifest tracking under `~/.auggy/`.
 - **Reference documentation** — `docs/01-philosophy.md` through `docs/11-skills.md`.
 
-[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.3...HEAD
+[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.4...HEAD
+[0.5.0-rc.4]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.3...v0.5.0-rc.4
 [0.5.0-rc.3]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.2...v0.5.0-rc.3
 [0.5.0-rc.2]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.1...v0.5.0-rc.2
 [0.5.0-rc.1]: https://github.com/looselyorganized/auggy/compare/v0.4.4...v0.5.0-rc.1
