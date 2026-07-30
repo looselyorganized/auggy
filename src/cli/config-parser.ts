@@ -32,6 +32,7 @@ import { DEFAULT_EXTRACTION_BUFFER_LIMITS } from "../augments/layeredMemory/extr
 import { MAX_PROVIDER_REQUEST_TIMEOUT_MS } from "../engines/_shared/provider-resilience";
 import { parseUtcCron } from "../jobs/cron";
 import { isWellFormedEmail } from "../augments/visitorAuth/email-validation";
+import { validateAgentMailInboundConfig } from "../augments/agentMail/inbound-policy";
 
 // ---------------------------------------------------------------------------
 // .env loading
@@ -1431,8 +1432,6 @@ function validateNotifyOptions(
   }
 }
 
-/** Single source of truth for the AgentMail inbound mode discriminator. */
-const AGENT_MAIL_INBOUND_MODES = new Set(["none", "websocket", "polling", "webhook"]);
 const VALID_TRUST_LEVELS = new Set(["creator", "agent", "public"]);
 
 function validateAgentMailOptions(
@@ -1579,90 +1578,10 @@ function validateAgentMailOptions(
   }
 
   if (opts.inbound !== undefined) {
-    if (typeof opts.inbound !== "object" || opts.inbound === null) {
-      errors.push(`${prefix}.inbound: must be an object with a "mode" field`);
-    } else {
-      const inb = opts.inbound as Record<string, unknown>;
-      const mode = inb.mode;
-      if (typeof mode !== "string") {
-        errors.push(`${prefix}.inbound.mode: required string`);
-      } else if (!AGENT_MAIL_INBOUND_MODES.has(mode)) {
-        errors.push(
-          `${prefix}.inbound.mode: unknown mode "${mode}" — valid modes are ${[...AGENT_MAIL_INBOUND_MODES].map((m) => `"${m}"`).join(", ")}`,
-        );
-      } else if (mode !== "none") {
-        if (!Array.isArray(inb.allowedSenders) || inb.allowedSenders.length === 0) {
-          errors.push(
-            `${prefix}.inbound.allowedSenders: required non-empty array when inbound is enabled`,
-          );
-        } else {
-          for (let i = 0; i < inb.allowedSenders.length; i++) {
-            if (typeof inb.allowedSenders[i] !== "string" || inb.allowedSenders[i].length === 0) {
-              errors.push(`${prefix}.inbound.allowedSenders[${i}]: must be a non-empty string`);
-            }
-          }
-        }
-        for (const field of ["pollIntervalMs", "maxPromptBytes", "maxAttempts"] as const) {
-          if (
-            inb[field] !== undefined &&
-            (typeof inb[field] !== "number" ||
-              !Number.isSafeInteger(inb[field]) ||
-              (inb[field] as number) <= 0)
-          ) {
-            errors.push(`${prefix}.inbound.${field}: must be a positive integer`);
-          }
-        }
-        if (typeof inb.maxPromptBytes === "number" && inb.maxPromptBytes < 512) {
-          errors.push(`${prefix}.inbound.maxPromptBytes: must be at least 512`);
-        }
-        if (inb.classifications !== undefined) {
-          if (typeof inb.classifications !== "object" || inb.classifications === null) {
-            errors.push(`${prefix}.inbound.classifications: must be an object`);
-          } else {
-            const classifications = inb.classifications as Record<string, unknown>;
-            for (const field of ["received", "spam", "blocked", "unauthenticated"] as const) {
-              const action = classifications[field];
-              if (action !== undefined && action !== "process" && action !== "discard") {
-                errors.push(
-                  `${prefix}.inbound.classifications.${field}: must be "process" or "discard"`,
-                );
-              }
-            }
-          }
-        }
-        if (mode === "webhook") {
-          if (typeof inb.webhook !== "object" || inb.webhook === null) {
-            errors.push(`${prefix}.inbound.webhook: required object when mode is "webhook"`);
-          } else {
-            const webhook = inb.webhook as Record<string, unknown>;
-            if (
-              webhook.path !== undefined &&
-              (typeof webhook.path !== "string" || !webhook.path.startsWith("/"))
-            ) {
-              errors.push(`${prefix}.inbound.webhook.path: must start with "/"`);
-            }
-            if (
-              webhook.secretEnv !== undefined &&
-              (typeof webhook.secretEnv !== "string" || webhook.secretEnv.length === 0)
-            ) {
-              errors.push(`${prefix}.inbound.webhook.secretEnv: must be a non-empty string`);
-            }
-            if (
-              webhook.timestampToleranceSeconds !== undefined &&
-              (typeof webhook.timestampToleranceSeconds !== "number" ||
-                !Number.isFinite(webhook.timestampToleranceSeconds) ||
-                webhook.timestampToleranceSeconds <= 0 ||
-                webhook.timestampToleranceSeconds > 300)
-            ) {
-              errors.push(
-                `${prefix}.inbound.webhook.timestampToleranceSeconds: must be between 1 and 300`,
-              );
-            }
-          }
-        } else if (inb.webhook !== undefined) {
-          errors.push(`${prefix}.inbound.webhook: only valid when mode is "webhook"`);
-        }
-      }
+    try {
+      validateAgentMailInboundConfig(opts.inbound);
+    } catch (error) {
+      errors.push(`${prefix}.inbound: ${(error as Error).message}`);
     }
   }
 }

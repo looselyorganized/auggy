@@ -121,7 +121,7 @@ describe("config-parser: agentMail validation", () => {
     const path = writeYaml(
       configWithAgentMail({ apiKey: "am_x", inboxId: "inb_x", inbound: { mode: "bogus" } }),
     );
-    expect(() => parseConfig(path)).toThrow(/unknown mode/);
+    expect(() => parseConfig(path)).toThrow(/inbound\.mode/);
   });
 
   test("requires an explicit sender allowlist for enabled inbound modes", () => {
@@ -150,6 +150,139 @@ describe("config-parser: agentMail validation", () => {
         ),
       );
       expect(() => parseConfig(path)).not.toThrow();
+    }
+  });
+
+  test("rejects malformed and duplicate inbound sender patterns", () => {
+    for (const allowedSenders of [
+      ["*"],
+      ["foo*"],
+      ["*@example"],
+      ["sender@example.com "],
+      ["Sender@Example.com", "sender@example.com"],
+    ]) {
+      const path = writeYaml(
+        configWithAgentMail({
+          apiKey: "am_x",
+          inboxId: "inb_x",
+          inbound: { mode: "websocket", allowedSenders },
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(/allowedSenders/);
+    }
+  });
+
+  test("enforces bounded inbound polling, prompt, and attempt settings", () => {
+    for (const setting of [
+      { pollIntervalMs: 999 },
+      { pollIntervalMs: 86_400_001 },
+      { maxPromptBytes: 511 },
+      { maxPromptBytes: 1_048_577 },
+      { maxAttempts: 0 },
+      { maxAttempts: 21 },
+    ]) {
+      const path = writeYaml(
+        configWithAgentMail({
+          apiKey: "am_x",
+          inboxId: "inb_x",
+          inbound: {
+            mode: "polling",
+            allowedSenders: ["sender@example.com"],
+            ...setting,
+          },
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(/pollIntervalMs|maxPromptBytes|maxAttempts/);
+    }
+  });
+
+  test("requires an enabled inbox to process at least one classification", () => {
+    const path = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        inbound: {
+          mode: "websocket",
+          allowedSenders: ["sender@example.com"],
+          classifications: {
+            received: "discard",
+            spam: "discard",
+            blocked: "discard",
+            unauthenticated: "discard",
+          },
+        },
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow(/at least one message classification/);
+  });
+
+  test("validates dormant inbound policy instead of accepting a dangerous future toggle", () => {
+    const invalidSender = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        inbound: { mode: "none", allowedSenders: ["foo*"] },
+      }),
+    );
+    expect(() => parseConfig(invalidSender)).toThrow(/allowedSenders/);
+
+    const invalidClassification = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        inbound: { mode: "none", classifications: { received: "maybe" } },
+      }),
+    );
+    expect(() => parseConfig(invalidClassification)).toThrow(/classifications.received/);
+
+    const unknownClassification = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        inbound: { mode: "none", classifications: { received: "process", typo: "discard" } },
+      }),
+    );
+    expect(() => parseConfig(unknownClassification)).toThrow(/classifications.*typo/);
+  });
+
+  test("rejects array-shaped inbound and webhook objects", () => {
+    const inboundArray = writeYaml(
+      configWithAgentMail({ apiKey: "am_x", inboxId: "inb_x", inbound: [] }),
+    );
+    expect(() => parseConfig(inboundArray)).toThrow(/inbound.*object/);
+
+    const webhookArray = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        inbound: {
+          mode: "webhook",
+          allowedSenders: ["sender@example.com"],
+          webhook: [],
+        },
+      }),
+    );
+    expect(() => parseConfig(webhookArray)).toThrow(/webhook.*required/);
+  });
+
+  test("rejects malformed or credential-bearing WebSocket override URLs", () => {
+    for (const websocketBaseUrl of [
+      "https://ws.example.com",
+      "wss://user:secret@ws.example.com",
+      "not-a-url",
+    ]) {
+      const path = writeYaml(
+        configWithAgentMail({
+          apiKey: "am_x",
+          inboxId: "inb_x",
+          inbound: {
+            mode: "websocket",
+            allowedSenders: ["sender@example.com"],
+            websocketBaseUrl,
+          },
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(/websocketBaseUrl/);
     }
   });
 

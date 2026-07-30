@@ -93,6 +93,16 @@ describe("agentmail setup command", () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-signup-identity-"));
     try {
       const paths = writeAgentMailAgent(root);
+      setAgentMailInbound(paths.augmentPath, {
+        mode: "websocket",
+        allowedSenders: ["*@example.com"],
+        classifications: {
+          received: "process",
+          spam: "discard",
+          blocked: "discard",
+          unauthenticated: "discard",
+        },
+      });
       const order: string[] = [];
       const provisioner: AgentMailProvisioningClient = {
         signUp: mock(async () => ({
@@ -112,6 +122,11 @@ describe("agentmail setup command", () => {
         createInboxApiKey: mock(async (input) => {
           order.push("runtime-key");
           expect(input.apiKey).toBe("am_parent");
+          expect(input.permissions).toEqual({
+            inbox_read: true,
+            message_send: true,
+            message_read: true,
+          });
           return { apiKeyId: "key_1", apiKey: "am_runtime" };
         }),
       };
@@ -130,6 +145,7 @@ describe("agentmail setup command", () => {
 
       expect(order).toEqual(["identity", "runtime-key"]);
       expect(result.inboxEmail).toBe("agent@custom.example");
+      expect(result.requiredPermissions).toEqual(["inbox_read", "message_send", "message_read"]);
       expect(readEnv(paths.envPath).AGENTMAIL_INBOX_EMAIL).toBe("agent@custom.example");
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -195,6 +211,11 @@ describe("agentmail setup command", () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-augment-"));
     try {
       const paths = writeAgentMailAgent(root);
+      const disabledInbound = {
+        mode: "none",
+        classifications: { spam: "process", blocked: "process" },
+      };
+      setAgentMailInbound(paths.augmentPath, disabledInbound);
       const provisioner: AgentMailProvisioningClient = {
         signUp: mock(async () => {
           throw new Error("not used");
@@ -247,7 +268,69 @@ describe("agentmail setup command", () => {
         inboxId: "${AGENTMAIL_INBOX_ID}",
         emailAddress: "${AGENTMAIL_INBOX_EMAIL}",
         addressVisibility: "public",
+        inbound: disabledInbound,
       });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("existing mode mints only the label permissions explicitly processed by inbound policy", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-inbound-permissions-"));
+    try {
+      const paths = writeAgentMailAgent(root);
+      const inbound = {
+        mode: "polling",
+        allowedSenders: ["*@example.com"],
+        classifications: {
+          received: "process",
+          spam: "process",
+          blocked: "process",
+          unauthenticated: "discard",
+        },
+      };
+      setAgentMailInbound(paths.augmentPath, inbound);
+      const createInboxApiKey = mock(
+        async (input: Parameters<AgentMailProvisioningClient["createInboxApiKey"]>[0]) => {
+          expect(input.permissions).toEqual({
+            inbox_read: true,
+            message_send: true,
+            message_read: true,
+            label_spam_read: true,
+            label_blocked_read: true,
+          });
+          return { apiKeyId: "key_inbound", apiKey: "am_runtime_inbound" };
+        },
+      );
+      const provisioner = unusedProvisioner({
+        createInbox: mock(async () => ({
+          inboxId: "inb_inbound",
+          email: "inbound@example.com",
+        })),
+        createInboxApiKey,
+      });
+
+      const result = await runAgentMailSetup(
+        "agentMail",
+        {
+          config: paths.configPath,
+          mode: "existing",
+          apiKey: "am_parent",
+          username: "inbound",
+          displayName: "Inbound",
+        },
+        { provisioner },
+      );
+
+      expect(createInboxApiKey).toHaveBeenCalledTimes(1);
+      expect(result.requiredPermissions).toEqual([
+        "inbox_read",
+        "message_send",
+        "message_read",
+        "label_spam_read",
+        "label_blocked_read",
+      ]);
+      expect(readAgentMailConfig(paths.augmentPath).inbound).toEqual(inbound);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -521,6 +604,115 @@ describe("agentmail setup command", () => {
     }
   });
 
+  test("rejects invalid inbound permission policy before provider side effects", async () => {
+    const cases: Array<{ inbound: Record<string, unknown>; expected: RegExp }> = [
+      { inbound: { mode: "smtp" }, expected: /inbound\.mode/ },
+      { inbound: { mode: "websocket" }, expected: /allowedSenders/ },
+      {
+        inbound: { mode: "websocket", allowedSenders: ["*"] },
+        expected: /sender pattern/,
+      },
+      {
+        inbound: {
+          mode: "polling",
+          allowedSenders: ["sender@example.com"],
+          pollIntervalMs: 999,
+        },
+        expected: /pollIntervalMs/,
+      },
+      {
+        inbound: {
+          mode: "websocket",
+          allowedSenders: ["sender@example.com"],
+          classifications: {
+            received: "discard",
+            spam: "discard",
+            blocked: "discard",
+            unauthenticated: "discard",
+          },
+        },
+        expected: /at least one message classification/,
+      },
+      {
+        inbound: {
+          mode: "websocket",
+          allowedSenders: ["sender@example.com"],
+          websocketBaseUrl: "https://ws.example.com",
+        },
+        expected: /websocketBaseUrl/,
+      },
+      {
+        inbound: {
+          mode: "webhook",
+          allowedSenders: ["sender@example.com"],
+        },
+        expected: /inbound\.webhook/,
+      },
+      {
+        inbound: {
+          mode: "webhook",
+          allowedSenders: ["sender@example.com"],
+          webhook: {},
+        },
+        expected: /requires a webTransport/,
+      },
+      {
+        inbound: {
+          mode: "websocket",
+          allowedSenders: ["sender@example.com"],
+          classifications: { spam: "am_secret_classification" },
+        },
+        expected: /inbound\.classifications\.spam/,
+      },
+      {
+        inbound: {
+          mode: "websocket",
+          allowedSenders: ["sender@example.com"],
+          classifications: { received: "process", typo: "discard" },
+        },
+        expected: /unsupported.*typo/,
+      },
+    ];
+
+    for (const [index, testCase] of cases.entries()) {
+      const root = mkdtempSync(join(tmpdir(), `agentmail-setup-policy-preflight-${index}-`));
+      try {
+        const paths = writeAgentMailAgent(root);
+        setAgentMailInbound(paths.augmentPath, testCase.inbound);
+        const originalEnv = readFileSync(paths.envPath, "utf-8");
+        const originalAugment = readFileSync(paths.augmentPath, "utf-8");
+        const signUp = mock(async () => {
+          throw new Error("must not provision");
+        });
+
+        let error: Error | undefined;
+        try {
+          await runAgentMailSetup(
+            "agentMail",
+            {
+              config: paths.configPath,
+              mode: "signup",
+              humanEmail: "human@example.com",
+              username: "agent",
+              otp: "123456",
+            },
+            { provisioner: unusedProvisioner({ signUp }) },
+          );
+        } catch (caught) {
+          error = caught as Error;
+        }
+
+        expect(error?.message).toMatch(testCase.expected);
+        expect(error?.message).not.toContain("am_secret_classification");
+        expect(signUp).not.toHaveBeenCalled();
+        expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
+        expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
   test("restores .env when the augment YAML commit fails", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-rollback-"));
     let augmentDir: string | undefined;
@@ -646,6 +838,7 @@ describe("agentmail setup command", () => {
       envPath: "/tmp/agent/.env",
       augmentPath: "/tmp/agent/augments/visitorAuth/augment.yaml",
       envKeys: ["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID", "AGENTMAIL_INBOX_EMAIL"],
+      requiredPermissions: ["inbox_read", "message_send"],
     });
 
     expect(text).toContain("AgentMail inbox ready: dx-agent@agentmail.to (inb_1)");
@@ -653,7 +846,26 @@ describe("agentmail setup command", () => {
       "Wrote .env: AGENTMAIL_API_KEY, AGENTMAIL_INBOX_ID, AGENTMAIL_INBOX_EMAIL",
     );
     expect(text).toContain("agentMail will now send outbound email with AgentMail");
+    expect(text).toContain("Runtime key permissions: inbox_read, message_send");
     expect(text).not.toContain("am_");
+  });
+
+  test("warns when setup cannot change permissions on an existing runtime key", () => {
+    const text = formatAgentMailSetupResult({
+      agentName: "dx-agent",
+      target: "agentMail",
+      mode: "manual",
+      inboxId: "inb_1",
+      inboxEmail: "dx-agent@agentmail.to",
+      envPath: "/tmp/agent/.env",
+      augmentPath: "/tmp/agent/augments/agentMail/augment.yaml",
+      envKeys: ["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID", "AGENTMAIL_INBOX_EMAIL"],
+      requiredPermissions: ["inbox_read", "message_send", "message_read", "label_spam_read"],
+    });
+
+    expect(text).toContain("Warning: Setup did not change the existing runtime key");
+    expect(text).toContain("inbox_read, message_send, message_read, label_spam_read");
+    expect(text).not.toContain("am_super_secret");
   });
 });
 
@@ -787,4 +999,12 @@ function readAgentMailConfig(augmentPath: string): Record<string, unknown> {
     config?: Record<string, unknown>;
   };
   return parsed.config ?? {};
+}
+
+function setAgentMailInbound(augmentPath: string, inbound: Record<string, unknown>): void {
+  const parsed = parseYaml(readFileSync(augmentPath, "utf-8")) as {
+    config?: Record<string, unknown>;
+  };
+  parsed.config = { ...(parsed.config ?? {}), inbound };
+  writeFileSync(augmentPath, stringifyYaml(parsed));
 }

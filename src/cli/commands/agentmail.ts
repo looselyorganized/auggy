@@ -4,9 +4,10 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
-  AGENTMAIL_RUNTIME_KEY_PERMISSIONS,
+  buildAgentMailRuntimeKeyPermissions,
   createAgentMailProvisioningClient,
   type AgentMailProvisioningClient,
+  type AgentMailRuntimeKeyPermissions,
 } from "../agentmail-provisioning";
 import { successMark } from "../_shared/styles";
 import { displayPath } from "../display-path";
@@ -20,6 +21,10 @@ import {
   VISITOR_AUTH_LOCAL_RATE_LIMIT_DEFAULT,
 } from "../augment-catalog";
 import { isWellFormedEmail } from "../../augments/visitorAuth/email-validation";
+import {
+  validateAgentMailInboundConfig,
+  type ValidatedAgentMailInboundConfig,
+} from "../../augments/agentMail/inbound-policy";
 
 export type AgentMailSetupTarget = "visitorAuth" | "agentMail";
 export type AgentMailSetupMode = "signup" | "existing" | "manual" | "env";
@@ -63,6 +68,7 @@ export interface AgentMailSetupResult {
   envPath: string;
   augmentPath: string;
   envKeys: string[];
+  requiredPermissions?: string[];
 }
 
 export function agentMailCommand(deps: AgentMailCommandDeps = {}): Command {
@@ -120,7 +126,12 @@ export async function runAgentMailSetup(
         `  Run \`auggy augment add ${target}\` first.`,
     );
   }
-  const updatedAugmentConfig = renderAgentMailConfig(target, augmentPath);
+  const configPlan = planAgentMailConfig(target, augmentPath);
+  if (configPlan.requiresWebTransport && !agentConfigHasAugmentType(configPath, "webTransport")) {
+    throw new Error(
+      `${displayPath(augmentPath)} config.inbound.mode webhook requires a webTransport augment before AgentMail setup can provision resources.`,
+    );
+  }
 
   const provisioner =
     deps.provisioner ??
@@ -153,9 +164,24 @@ export async function runAgentMailSetup(
     mode === "env"
       ? (envCredentials ?? missingEnvCredentials())
       : mode === "signup"
-        ? await runSignupFlow(target, agentName, opts, provisioner, prompts)
+        ? await runSignupFlow(
+            target,
+            agentName,
+            opts,
+            provisioner,
+            prompts,
+            configPlan.runtimeKeyPermissions,
+          )
         : mode === "existing"
-          ? await runExistingAccountFlow(target, agentName, agentId, opts, provisioner, prompts)
+          ? await runExistingAccountFlow(
+              target,
+              agentName,
+              agentId,
+              opts,
+              provisioner,
+              prompts,
+              configPlan.runtimeKeyPermissions,
+            )
           : await runManualFlow(opts, prompts);
   const resolvedCredentials: { inboxId: string; apiKey: string; email?: string } =
     target === "agentMail" ? await ensureInboxEmail(credentials, provisioner) : credentials;
@@ -163,7 +189,7 @@ export async function runAgentMailSetup(
   const envKeys = commitAgentMailSetup({
     envPath,
     augmentPath,
-    updatedAugmentConfig,
+    updatedAugmentConfig: configPlan.updatedAugmentConfig,
     envValues: {
       AGENTMAIL_API_KEY: resolvedCredentials.apiKey,
       AGENTMAIL_INBOX_ID: resolvedCredentials.inboxId,
@@ -182,6 +208,7 @@ export async function runAgentMailSetup(
     envPath,
     augmentPath,
     envKeys,
+    requiredPermissions: enabledPermissionNames(configPlan.runtimeKeyPermissions),
   };
 }
 
@@ -195,6 +222,7 @@ async function runSignupFlow(
     password: PromptPassword;
     confirm: PromptConfirm;
   },
+  runtimeKeyPermissions: AgentMailRuntimeKeyPermissions,
 ): Promise<{ inboxId: string; apiKey: string; email?: string }> {
   const humanEmail =
     opts.humanEmail ??
@@ -232,7 +260,7 @@ async function runSignupFlow(
     apiKey: signup.apiKey,
     inboxId: signup.inboxId,
     name: runtimeKeyName(agentName, target),
-    permissions: AGENTMAIL_RUNTIME_KEY_PERMISSIONS,
+    permissions: runtimeKeyPermissions,
   });
   return { inboxId: signup.inboxId, apiKey: runtimeKey.apiKey, email: inbox?.email };
 }
@@ -247,6 +275,7 @@ async function runExistingAccountFlow(
     input: PromptInput;
     password: PromptPassword;
   },
+  runtimeKeyPermissions: AgentMailRuntimeKeyPermissions,
 ): Promise<{ inboxId: string; apiKey: string; email?: string }> {
   const parentApiKey =
     opts.apiKey ??
@@ -274,7 +303,7 @@ async function runExistingAccountFlow(
     apiKey: parentApiKey.trim(),
     inboxId: inbox.inboxId,
     name: runtimeKeyName(agentName, target),
-    permissions: AGENTMAIL_RUNTIME_KEY_PERMISSIONS,
+    permissions: runtimeKeyPermissions,
   });
   return { inboxId: inbox.inboxId, apiKey: runtimeKey.apiKey, email: inbox.email };
 }
@@ -302,7 +331,16 @@ async function runManualFlow(
   return { inboxId: inboxId.trim(), apiKey: apiKey.trim() };
 }
 
-function renderAgentMailConfig(target: AgentMailSetupTarget, augmentPath: string): string {
+interface AgentMailConfigPlan {
+  updatedAugmentConfig: string;
+  runtimeKeyPermissions: AgentMailRuntimeKeyPermissions;
+  requiresWebTransport: boolean;
+}
+
+function planAgentMailConfig(
+  target: AgentMailSetupTarget,
+  augmentPath: string,
+): AgentMailConfigPlan {
   const raw = parseYaml(readFileSync(augmentPath, "utf-8"));
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`${displayPath(augmentPath)} is not a valid augment.yaml object.`);
@@ -316,6 +354,23 @@ function renderAgentMailConfig(target: AgentMailSetupTarget, augmentPath: string
     doc.config && typeof doc.config === "object" && !Array.isArray(doc.config)
       ? (doc.config as Record<string, unknown>)
       : {};
+  let validatedInbound: ValidatedAgentMailInboundConfig | undefined;
+  if (target === "agentMail" && config.inbound !== undefined) {
+    try {
+      validatedInbound = validateAgentMailInboundConfig(config.inbound);
+    } catch (error) {
+      throw new Error(
+        `${displayPath(augmentPath)} config.inbound is invalid: ${(error as Error).message}`,
+      );
+    }
+  }
+  const inboundEnabled = validatedInbound !== undefined && validatedInbound.config.mode !== "none";
+  const runtimeKeyPermissions = buildAgentMailRuntimeKeyPermissions({
+    inboundEnabled,
+    processSpam: validatedInbound?.processedEventTypes.includes("message.received.spam") ?? false,
+    processBlocked:
+      validatedInbound?.processedEventTypes.includes("message.received.blocked") ?? false,
+  });
 
   if (target === "visitorAuth") {
     const currentAgentMail =
@@ -344,7 +399,29 @@ function renderAgentMailConfig(target: AgentMailSetupTarget, augmentPath: string
   }
 
   doc.config = config;
-  return stringifyYaml(doc);
+  return {
+    updatedAugmentConfig: stringifyYaml(doc),
+    runtimeKeyPermissions,
+    requiresWebTransport: validatedInbound?.config.mode === "webhook",
+  };
+}
+
+function agentConfigHasAugmentType(configPath: string, type: string): boolean {
+  const raw = parseYaml(readFileSync(configPath, "utf-8"));
+  if (!isRecord(raw) || !Array.isArray(raw.augments)) return false;
+  const agentDir = dirname(configPath);
+  return raw.augments.some((entry) => {
+    if (isRecord(entry)) return entry.type === type;
+    if (typeof entry !== "string") return false;
+    const referencedPath = join(agentDir, "augments", entry, "augment.yaml");
+    if (!existsSync(referencedPath)) return false;
+    try {
+      const referenced = parseYaml(readFileSync(referencedPath, "utf-8"));
+      return isRecord(referenced) && referenced.type === type;
+    } catch {
+      return false;
+    }
+  });
 }
 
 function commitAgentMailSetup(input: {
@@ -460,6 +537,11 @@ function validAgentMailUsername(value: string): boolean {
 
 export function formatAgentMailSetupResult(result: AgentMailSetupResult): string {
   const inbox = result.inboxEmail ? `${result.inboxEmail} (${result.inboxId})` : result.inboxId;
+  const permissions = (result.requiredPermissions ?? ["inbox_read", "message_send"]).join(", ");
+  const permissionText =
+    result.mode === "manual" || result.mode === "env"
+      ? `Warning: Setup did not change the existing runtime key. It must grant: ${permissions}.`
+      : `${successMark()} Runtime key permissions: ${permissions}`;
   const readyText =
     result.target === "visitorAuth"
       ? "visitorAuth will now send magic links with AgentMail."
@@ -468,6 +550,7 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
     `${successMark()} AgentMail inbox ready: ${inbox}`,
     `${successMark()} Wrote .env: ${result.envKeys.join(", ")}`,
     `${successMark()} Updated ${displayPath(result.augmentPath)}`,
+    permissionText,
     "",
     readyText,
     "",
@@ -549,6 +632,16 @@ function usableInboxEmail(value: string | undefined): string | null {
 function requireInboxEmail(value: string | undefined): string {
   if (!value) throw new Error("AgentMail setup did not resolve a canonical inbox email.");
   return value;
+}
+
+function enabledPermissionNames(permissions: AgentMailRuntimeKeyPermissions): string[] {
+  return Object.entries(permissions)
+    .filter(([, enabled]) => enabled)
+    .map(([name]) => name);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function safeErrorMessage(error: unknown): string {
