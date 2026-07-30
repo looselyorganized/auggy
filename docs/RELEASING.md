@@ -31,24 +31,21 @@ git push origin vX.Y.Z
 
 ## Current release state
 
-As of 2026-07-30, npm's stable `latest` version is `0.4.4` and `next` is
-`0.5.0-rc.3`. The `v0.5.0-rc.1`, `v0.5.0-rc.2`, and `v0.5.0-rc.3` tags are
-published, immutable release candidates. The `release/0.5.0-rc.4` branch
-prepares the next candidate; it is not published until the merged release
-commit is tagged `v0.5.0-rc.4` and the publish workflow succeeds. Registry
-metadata and the corresponding Git tag—not a working-tree version—remain the
-authority for release state.
+As of 2026-07-30, npm's stable `latest` version for all six packages is `0.4.4`
+and `next` is `0.5.0-rc.4` for all six. The `v0.5.0-rc.1` through
+`v0.5.0-rc.4` tags are published, immutable release candidates. The RC.4
+GitHub prerelease contains all six verified package tarballs and `SHA256SUMS`.
+Registry metadata and the corresponding Git tag—not a working-tree
+version—remain the authority for release state.
 
 The next release follows the
 [OSS Production Release Plan](./plans/production-readiness-roadmap-2026-07-24.md).
 On 2026-07-28, the repository became public after the full-history secret and
 artifact audit passed. The protected GitHub Environments, environment-only
 evaluation secret, six npm trusted-publisher connections, and package-level
-token restrictions are configured. All six `0.5.0-rc.2` packages expose npm's
-SLSA provenance attestation, and the rc.3 publication produced fresh
-attestations for all six exact artifacts. Rc.4 must produce fresh attestations
-for its exact artifacts. Final `0.5.0` remains a separate release PR and must
-publish under `latest` only after every remaining RC gate passes.
+token restrictions are configured. All six `0.5.0-rc.4` packages expose npm's
+SLSA provenance attestation. Final `0.5.0` remains a separate release PR and
+must publish under `latest` only after every remaining RC gate passes.
 
 All publishable package manifests contain the exact public GitHub `repository`
 URL required by npm trusted publishing. Reconfirm each attestation on the exact
@@ -293,9 +290,8 @@ the workflow will not assemble a release from mixed package bytes.
 
 The source repository is public and the release workflow is configured for npm
 trusted publishing. npm's generated SLSA provenance attestation is present for
-all six `0.5.0-rc.3` packages, so the rc.3 provenance gate is complete. Rc.4
-and stable `0.5.0` each require fresh attestation checks on their exact package
-artifacts.
+all six `0.5.0-rc.4` packages, so the rc.4 provenance gate is complete. Stable
+`0.5.0` requires fresh attestation checks on its exact package artifacts.
 
 The publish workflow separates uncredentialed verification from publication.
 Repository and dependency code runs in `verify`, which has neither
@@ -328,10 +324,11 @@ environment-only evaluation key, package-level token restrictions, and GitHub
 secret migration were completed on 2026-07-28. The `0.5.0-rc.2` publication
 then produced attestations for all six packages, providing the authoritative
 end-to-end OIDC proof. The `0.5.0-rc.3` publication repeated exact-candidate
-verification and produced fresh attestations for all six packages. Rc.4 must
-repeat the exact-candidate verification before its tag is pushed. Confirm the
-obsolete npm account token remains revoked and recheck configuration before
-every tag; configuration drift makes publication fail closed.
+verification and produced fresh attestations for all six packages. The
+`0.5.0-rc.4` publication repeated that verification and produced fresh
+attestations for all six packages. Confirm the obsolete npm account token
+remains revoked and recheck configuration before every tag; configuration
+drift makes publication fail closed.
 
 Current npm trusted publishing automatically generates provenance for public
 packages published from public GitHub repositories; no `--provenance` flag is
