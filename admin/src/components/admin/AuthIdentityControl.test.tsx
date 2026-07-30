@@ -24,6 +24,8 @@ describe("AuthIdentityControl", () => {
   it.each([
     { status: "invalid", error: "Visitor credential was rejected." },
     { status: "unavailable", error: "Identity lookup is temporarily unavailable." },
+    { status: "not-configured", error: "Visitor identity is not configured." },
+    { status: "session-error", error: "Console session expired." },
   ] satisfies VisitorIdentityState[])(
     "keeps the clear action touch-visible and keyboard reachable while identity is $status",
     (identity) => {

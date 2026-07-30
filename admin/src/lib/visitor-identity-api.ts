@@ -11,14 +11,43 @@ export type InvalidVisitorIdentity = {
   error: string;
 };
 
-export type VisitorIdentitySummary = VerifiedVisitorIdentity | InvalidVisitorIdentity;
+export type UnconfiguredVisitorIdentity = {
+  status: "not-configured";
+  error: string;
+};
+
+export type VisitorIdentitySummary =
+  | VerifiedVisitorIdentity
+  | InvalidVisitorIdentity
+  | UnconfiguredVisitorIdentity;
 
 export type VisitorIdentityState =
   | { status: "absent" }
   | { status: "checking" }
-  | VerifiedVisitorIdentity
-  | InvalidVisitorIdentity
-  | { status: "unavailable"; error: string };
+  | VisitorIdentitySummary
+  | { status: "unavailable"; error: string }
+  | { status: "session-error"; error: string };
+
+type VisitorIdentityRequestErrorKind =
+  | "authorization"
+  | "transient"
+  | "request";
+
+class VisitorIdentityRequestError extends Error {
+  readonly status: number;
+  readonly kind: VisitorIdentityRequestErrorKind;
+
+  constructor(message: string, status: number, kind: VisitorIdentityRequestErrorKind) {
+    super(message);
+    this.name = "VisitorIdentityRequestError";
+    this.status = status;
+    this.kind = kind;
+  }
+}
+
+export function isVisitorIdentityAuthorizationError(error: unknown): boolean {
+  return error instanceof VisitorIdentityRequestError && error.kind === "authorization";
+}
 
 export async function resolveConsoleVisitorIdentity(
   visitorToken: string,
@@ -41,8 +70,32 @@ export async function resolveConsoleVisitorIdentity(
     const rejection = await readCredentialRejection(response);
     if (rejection) return { status: "invalid", error: rejection };
   }
+  if (response.status === 501 && (await isNotConfiguredResponse(response))) {
+    return {
+      status: "not-configured",
+      error: "Verified visitor identity is not configured for this agent.",
+    };
+  }
   if (!response.ok) {
-    throw new Error(`Visitor identity request failed (${response.status}).`);
+    if (response.status === 401 || response.status === 403 || response.status === 419) {
+      throw new VisitorIdentityRequestError(
+        "Console authorization could not be verified. Reload and sign in again.",
+        response.status,
+        "authorization",
+      );
+    }
+    if (response.status >= 500) {
+      throw new VisitorIdentityRequestError(
+        "Visitor identity is temporarily unavailable.",
+        response.status,
+        "transient",
+      );
+    }
+    throw new VisitorIdentityRequestError(
+      `Visitor identity request failed (${response.status}).`,
+      response.status,
+      "request",
+    );
   }
   if (!response.headers.get("content-type")?.toLowerCase().includes("application/json")) {
     throw new Error("Visitor identity response was not JSON.");
@@ -81,6 +134,23 @@ export async function resolveConsoleVisitorIdentity(
     return { status: "invalid", error: identity.error };
   }
   throw new Error("Visitor identity response was malformed.");
+}
+
+async function isNotConfiguredResponse(response: Response): Promise<boolean> {
+  if (!response.headers.get("content-type")?.toLowerCase().includes("application/json")) {
+    return false;
+  }
+  try {
+    const value: unknown = await response.json();
+    return (
+      isRecord(value) &&
+      hasExactKeys(value, ["error", "code"]) &&
+      value.code === "visitor_identity_not_configured" &&
+      typeof value.error === "string"
+    );
+  } catch {
+    return false;
+  }
 }
 
 async function readCredentialRejection(response: Response): Promise<string | null> {

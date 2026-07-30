@@ -765,6 +765,7 @@ describe("handleAdminRoute — auth", () => {
       web: {
         allowAnonymous: { value: boolean | null };
         publicIntegration: { value: boolean | null };
+        visitorIdentityEnabled: boolean;
       };
       tools: { totalTools: number; entries: unknown[] };
       blocks: unknown[];
@@ -783,7 +784,28 @@ describe("handleAdminRoute — auth", () => {
     expect(body.routes.entries).toEqual([]);
     expect(body.web.allowAnonymous.value).toBeNull();
     expect(body.web.publicIntegration.value).toBeNull();
+    expect(body.web.visitorIdentityEnabled).toBe(false);
     expect(body.tools).toEqual({ totalTools: 0, entries: [] });
+  });
+
+  it("reports visitor identity resolution independently from visitor token support", async () => {
+    const req = new Request("http://127.0.0.1:8080/console/api/dashboard", {
+      headers: { authorization: basicHeader("test-bearer") },
+    });
+    const res = await handleAdminRoute(
+      req,
+      await makeCtx({
+        resolveConsoleVisitorIdentity: async () => ({
+          status: "verified",
+          email: "visitor@example.com",
+          expiresAt: 1_800_000_000_000,
+        }),
+      }),
+    );
+
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { web: { visitorIdentityEnabled: boolean } };
+    expect(body.web.visitorIdentityEnabled).toBe(true);
   });
 
   it("includes detailed runtime signals only behind console authentication", async () => {

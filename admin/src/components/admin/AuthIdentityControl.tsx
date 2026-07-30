@@ -255,7 +255,11 @@ function getPreviewModeDisabledReason(
   if (options.visitorIdentity.status === "invalid") {
     return options.visitorIdentity.error;
   }
-  if (options.visitorIdentity.status === "unavailable") {
+  if (
+    options.visitorIdentity.status === "unavailable" ||
+    options.visitorIdentity.status === "not-configured" ||
+    options.visitorIdentity.status === "session-error"
+  ) {
     return options.visitorIdentity.error;
   }
   return undefined;

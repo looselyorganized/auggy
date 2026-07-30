@@ -896,7 +896,13 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
     summary: summarizeRouteManifest(routeManifest),
     entries: routeManifest,
   };
-  const web = readWebDashboardState(blocks);
+  const web = {
+    ...readWebDashboardState(blocks),
+    // Token verification and operator-facing identity resolution are separate
+    // capabilities. The Console must not probe this endpoint merely because
+    // visitor tokens are enabled for public routes.
+    visitorIdentityEnabled: Boolean(ctx.resolveConsoleVisitorIdentity),
+  };
 
   // Mint a CSRF token per (skill-action, folder) tuple so console skill APIs
   // can validate writes against the same bearer-bound HMAC scheme as the
@@ -1501,10 +1507,10 @@ async function handleConsoleVisitorIdentity(
   if (!ctx.resolveConsoleVisitorIdentity) {
     return jsonResponse(
       {
-        error: "Visitor identity resolution is unavailable.",
-        code: "visitor_identity_unavailable",
+        error: "Visitor identity resolution is not configured.",
+        code: "visitor_identity_not_configured",
       },
-      503,
+      501,
     );
   }
 

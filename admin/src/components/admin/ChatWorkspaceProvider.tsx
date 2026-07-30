@@ -51,6 +51,7 @@ import {
 import { reconcileChatSummarySnapshot } from "@/lib/chat-request-snapshot";
 import { createRequestAuthority } from "@/lib/request-authority";
 import {
+  isVisitorIdentityAuthorizationError,
   resolveConsoleVisitorIdentity,
   type VisitorIdentityState,
 } from "@/lib/visitor-identity-api";
@@ -359,7 +360,7 @@ export function ChatWorkspaceProvider({
     };
   }, [dispatch, initialState, requestAuthority]);
 
-  const resolveVisitorIdentity = useCallback((token: string | undefined, force = false) => {
+  const resolveVisitorIdentity = useCallback((token: string | undefined) => {
     if (!token) {
       requestAuthority.invalidate(VISITOR_IDENTITY_REQUEST_SCOPE);
       visitorIdentityInFlightTokenRef.current = undefined;
@@ -367,9 +368,21 @@ export function ChatWorkspaceProvider({
       if (mountedRef.current) setVisitorIdentity({ status: "absent" });
       return;
     }
+    if (dependenciesRef.current.data?.web.visitorIdentityEnabled === false) {
+      requestAuthority.invalidate(VISITOR_IDENTITY_REQUEST_SCOPE);
+      visitorIdentityInFlightTokenRef.current = undefined;
+      visitorIdentitySettledTokenRef.current = token;
+      if (mountedRef.current) {
+        setVisitorIdentity({
+          status: "not-configured",
+          error: "Verified visitor identity is not configured for this agent.",
+        });
+      }
+      return;
+    }
     if (
       visitorIdentityInFlightTokenRef.current === token ||
-      (!force && visitorIdentitySettledTokenRef.current === token)
+      visitorIdentitySettledTokenRef.current === token
     ) {
       return;
     }
@@ -418,8 +431,11 @@ export function ChatWorkspaceProvider({
           return;
         }
         visitorIdentityInFlightTokenRef.current = undefined;
+        visitorIdentitySettledTokenRef.current = token;
         setVisitorIdentity({
-          status: "unavailable",
+          status: isVisitorIdentityAuthorizationError(error)
+            ? "session-error"
+            : "unavailable",
           error: errorMessage(error, "Visitor identity could not be verified."),
         });
         requestAuthority.finish(identityLease);
@@ -427,7 +443,7 @@ export function ChatWorkspaceProvider({
     );
   }, [requestAuthority]);
 
-  const refreshVisitorToken = useCallback((forceIdentity = false) => {
+  const refreshVisitorToken = useCallback(() => {
     const token = readVisitorToken();
     currentVisitorTokenRef.current = token;
     const available = Boolean(token);
@@ -442,7 +458,7 @@ export function ChatWorkspaceProvider({
       }
     }
     if (mountedRef.current) setHasVisitorToken(available);
-    resolveVisitorIdentity(token, forceIdentity);
+    resolveVisitorIdentity(token);
     return available;
   }, [resolveVisitorIdentity]);
 
@@ -456,7 +472,7 @@ export function ChatWorkspaceProvider({
     if (!token) return;
     currentVisitorTokenRef.current = token;
     resolveVisitorIdentity(token);
-  }, [consoleChatCsrfToken, resolveVisitorIdentity]);
+  }, [consoleChatCsrfToken, data?.web.visitorIdentityEnabled, resolveVisitorIdentity]);
 
   const clearVisitor = useCallback(() => {
     for (const threadId of visitorTokenByThreadRef.current.keys()) {
@@ -581,7 +597,7 @@ export function ChatWorkspaceProvider({
   ]);
 
   useEffect(() => {
-    const refresh = () => refreshVisitorToken(true);
+    const refresh = () => refreshVisitorToken();
     const handleStorage = (event: StorageEvent) => {
       if (
         event.key === VISITOR_TOKEN_STORAGE_KEY ||
@@ -599,7 +615,7 @@ export function ChatWorkspaceProvider({
         ? new window.BroadcastChannel(VISITOR_AUTH_BROADCAST_CHANNEL)
         : null;
     const handleVerification = (event: MessageEvent<unknown>) => {
-      if (isVisitorVerifiedNotification(event.data)) refresh();
+      if (isVisitorVerifiedNotification(event.data)) refreshVisitorToken();
     };
     channel?.addEventListener("message", handleVerification);
     return () => {

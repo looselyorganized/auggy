@@ -105,15 +105,16 @@ describe("console visitor identity summary route", () => {
     });
   });
 
-  it("distinguishes unavailable resolution without leaking resolver errors", async () => {
-    const unavailable = await handleAdminRoute(
+  it("distinguishes an unconfigured feature from transient resolver failure", async () => {
+    const notConfigured = await handleAdminRoute(
       request({ csrf: await csrf(), visitorToken: "token" }),
       await context(),
     );
-    expect(unavailable.status).toBe(503);
-    expect(((await unavailable.json()) as { code: string }).code).toBe(
-      "visitor_identity_unavailable",
-    );
+    expect(notConfigured.status).toBe(501);
+    expect(await notConfigured.json()).toEqual({
+      error: "Visitor identity resolution is not configured.",
+      code: "visitor_identity_not_configured",
+    });
 
     const failed = await handleAdminRoute(
       request({ csrf: await csrf(), visitorToken: "token" }),

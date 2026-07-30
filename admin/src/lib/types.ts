@@ -243,6 +243,8 @@ export interface WebDashboardState {
   trustedProxies: string[];
   corsOrigins: string[];
   visitorTokensEnabled: boolean | null;
+  /** Whether this runtime can resolve a browser token to a Console-safe identity summary. */
+  visitorIdentityEnabled?: boolean;
   externalAuthEnabled: boolean | null;
   externalAuthHeader?: string;
   externalAuthAudience?: string;
