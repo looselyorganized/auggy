@@ -193,7 +193,7 @@ function skillFindings(
       message:
         code === "skill.frontmatter-invalid"
           ? "Installed skill frontmatter is invalid and may prevent reliable discovery."
-          : "A bundled skill is available but has not been installed for this agent.",
+          : "An Auggy-provided skill is available but has not been installed for this agent.",
     }];
   });
 }

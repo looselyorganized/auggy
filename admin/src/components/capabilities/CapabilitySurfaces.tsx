@@ -273,7 +273,10 @@ function SkillSurface({ model }: { model: CapabilityModel }) {
           healthLabel={skill.state === "installed" ? "Installed" : "Available"}
           fields={[
             { label: "State", value: capitalize(skill.state) },
-            { label: "Source", value: badgeValue(skill.badges, "skill-source") ?? "Not reported" },
+            {
+              label: "Provenance",
+              value: badgeValue(skill.badges, "skill-provenance") ?? "Not reported",
+            },
             {
               label: skill.state === "installed" ? "Installed at" : "Installs to",
               value: `skills/${skill.folder}/SKILL.md`,

@@ -26,6 +26,9 @@ describe("CapabilityDetail", () => {
     expect(output).toContain("Web authentication posture");
     expect(output).toContain("Reported");
     expect(output).toContain("Installs to");
+    expect(output).toContain("Provenance");
+    expect(output).toContain("Auggy-provided");
+    expect(output).not.toContain("bundled");
     expect(output).toContain("Change auth and integration settings");
     expect(renderer?.root.findAllByType("a")[0]?.props.href).toBe("/integrations");
   });
@@ -40,6 +43,57 @@ describe("CapabilityDetail", () => {
       health: "neutral",
       fields: [{ label: "Access", value: "Not reported" }],
     });
+  });
+
+  it("renders semantic provenance for every installed skill state", async () => {
+    const data = dashboard();
+    data.skills = {
+      installed: [
+        {
+          folder: "filesystem",
+          name: "Filesystem",
+          description: "Use files",
+          provenance: "auggy-provided",
+          fromAugmentType: "filesystem",
+          frontmatterValid: true,
+          contentBytes: 100,
+        },
+        {
+          folder: "layeredMemory",
+          name: "Memory",
+          description: "Use memory",
+          provenance: "customized-auggy-skill",
+          fromAugmentType: "layeredMemory",
+          frontmatterValid: true,
+          contentBytes: 110,
+        },
+        {
+          folder: "order-support",
+          name: "Order support",
+          description: "Handle orders",
+          provenance: "user-created",
+          frontmatterValid: true,
+          contentBytes: 120,
+        },
+      ],
+      available: [],
+      skillsDir: "/agent/skills",
+    };
+
+    let renderer: ReturnType<typeof create> | undefined;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <CapabilityDetail data={data} model={buildCapabilityModel(data)} />
+        </MemoryRouter>,
+      );
+    });
+
+    const output = JSON.stringify(renderer?.toJSON());
+    expect(output).toContain("Auggy-provided");
+    expect(output).toContain("Customized Auggy skill");
+    expect(output).toContain("User-created");
+    expect(output).not.toMatch(/bundled|scaffold/i);
   });
 
   it("explains memory role, mutability, and context placement", async () => {
@@ -136,6 +190,7 @@ function dashboard(): DashboardData {
           folder: "browser-auth",
           name: "Browser auth",
           description: "Configure visitor identity",
+          provenance: "auggy-provided",
           fromAugmentType: "webTransport",
         },
       ],

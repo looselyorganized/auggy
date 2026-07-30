@@ -479,7 +479,7 @@ is unavailable, it opens the password screen and points to the applicable
 | `auggy augment create <name>` | Create and register a custom augment in the current agent |
 | `auggy augment install <agent> <path>` | Import a custom augment authored elsewhere |
 | `auggy skill create <name>` | Create a skill folder |
-| `auggy skill add <name>` | Install or refresh a bundled skill |
+| `auggy skill add <name>` | Install or refresh an Auggy-provided skill |
 | `auggy routes [name]` | Inspect preview routes and generate clients |
 | `auggy mcp init/list/show/add-json/remove/doctor` | Manage MCP servers |
 | `auggy models list [provider] --refresh` | Refresh the provider model list |

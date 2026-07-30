@@ -213,6 +213,21 @@ summaries, tool inventory, web posture state, the live route manifest
 summary/entries, CSRF tokens, skill snapshots, and raw admin blocks used by
 current or future developer tools.
 
+Skill snapshots report content provenance separately from installation state
+and owning augment:
+
+| Provenance | What the runtime can prove |
+| --- | --- |
+| `auggy-provided` | The installed bytes match the skill shipped by the running Auggy package. |
+| `customized-auggy-skill` | Auggy ships a skill at this path, but the installed bytes differ. |
+| `user-created` | The running Auggy package has no skill source at this path. |
+
+The Console displays these as **Auggy-provided**, **Customized Auggy skill**,
+and **User-created**. It does not infer whether a skill was present when the
+agent was scaffolded or added later; no installation-history ledger exists.
+Available skills use `auggy-provided`, while `fromAugmentType` independently
+identifies the owning augment.
+
 Older unreachable React tabs for identity, skills, credentials, budget,
 security, and augments have been removed from the preview bundle. The backend
 dashboard/action APIs remain where they are still tested and feed the live

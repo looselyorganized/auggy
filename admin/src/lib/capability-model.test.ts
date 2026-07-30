@@ -372,7 +372,7 @@ describe("buildCapabilityModel", () => {
     ]);
   });
 
-  it("scopes owned skills by augment type while keeping manual skills in All", () => {
+  it("scopes owned skills by augment type while keeping user-created skills in All", () => {
     const model = buildCapabilityModel(
       dashboard({
         augments: [augment("orders")],
@@ -382,7 +382,7 @@ describe("buildCapabilityModel", () => {
               folder: "orders",
               name: "Order support",
               description: "Manage orders",
-              source: "bundled",
+              provenance: "auggy-provided",
               frontmatterValid: true,
               contentBytes: 120,
               fromAugmentType: "orders",
@@ -393,7 +393,7 @@ describe("buildCapabilityModel", () => {
               folder: "custom",
               name: "Custom",
               description: null,
-              source: "manual",
+              provenance: "user-created",
               frontmatterValid: false,
               contentBytes: 40,
             },
@@ -403,6 +403,7 @@ describe("buildCapabilityModel", () => {
               folder: "returns",
               name: "Returns",
               description: "Handle returns",
+              provenance: "auggy-provided",
               fromAugmentType: "orders",
             },
           ],
@@ -413,6 +414,9 @@ describe("buildCapabilityModel", () => {
     );
 
     expect(model.scope.skills.map((skill) => skill.title)).toEqual(["Order support", "Returns"]);
+    expect(model.scope.skills.map((skill) =>
+      skill.badges.find((badge) => badge.kind === "skill-provenance")?.label
+    )).toEqual(["Auggy-provided", "Auggy-provided"]);
     expect(model.scope.notes.map((finding) => finding.code)).toEqual([
       "skill.available-not-installed",
     ]);
@@ -436,6 +440,7 @@ describe("buildCapabilityModel", () => {
             folder: "orders",
             name: "Order support",
             description: "Manage orders",
+            provenance: "auggy-provided",
             fromAugmentType: "orders",
           },
         ],
@@ -451,6 +456,63 @@ describe("buildCapabilityModel", () => {
     expect(global.augmentNodes.map((node) => node.summary.noteCount)).toEqual([1, 1]);
     expect(selected.scope.skills).toHaveLength(1);
     expect(selected.scope.notes).toHaveLength(1);
+  });
+
+  it("presents all skill provenance states without implying install timing", () => {
+    const model = buildCapabilityModel(
+      dashboard({
+        skills: {
+          installed: [
+            {
+              folder: "filesystem",
+              name: "Filesystem",
+              description: "Use files",
+              provenance: "auggy-provided",
+              fromAugmentType: "filesystem",
+              frontmatterValid: true,
+              contentBytes: 100,
+            },
+            {
+              folder: "layeredMemory",
+              name: "Memory",
+              description: "Use memory",
+              provenance: "customized-auggy-skill",
+              fromAugmentType: "layeredMemory",
+              frontmatterValid: true,
+              contentBytes: 110,
+            },
+            {
+              folder: "order-support",
+              name: "Order support",
+              description: "Handle orders",
+              provenance: "user-created",
+              frontmatterValid: true,
+              contentBytes: 120,
+            },
+          ],
+          available: [
+            {
+              folder: "mcp",
+              name: "MCP",
+              description: "Use MCP servers",
+              provenance: "auggy-provided",
+              fromAugmentType: "mcp",
+            },
+          ],
+          skillsDir: "/agent/skills",
+        },
+      }),
+    );
+
+    expect(model.scope.skills.map((skill) =>
+      skill.badges.find((badge) => badge.kind === "skill-provenance")?.label
+    )).toEqual([
+      "Auggy-provided",
+      "Customized Auggy skill",
+      "User-created",
+      "Auggy-provided",
+    ]);
+    expect(JSON.stringify(model.scope.skills)).not.toMatch(/bundled|scaffold/i);
   });
 
   it("models sanitized route, tool, augment, and web safeguards", () => {

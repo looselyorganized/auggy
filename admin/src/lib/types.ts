@@ -145,7 +145,7 @@ export interface InstalledSkillInfo {
   folder: string;
   name: string | null;
   description: string | null;
-  source: "bundled" | "modified" | "manual";
+  provenance: "auggy-provided" | "customized-auggy-skill" | "user-created";
   fromAugmentType?: string;
   frontmatterValid: boolean;
   contentBytes: number;
@@ -156,6 +156,7 @@ export interface AvailableSkillInfo {
   folder: string;
   name: string | null;
   description: string | null;
+  provenance: "auggy-provided";
   fromAugmentType: string;
 }
 
@@ -307,6 +308,6 @@ export interface DashboardData {
   runtime?: RuntimeOperationalState | null;
   blocks: AdminInfoBlock[];
   csrfTokens: CsrfToken[];
-  /** Skills snapshot — installed + bundled-but-not-installed. */
+  /** Skills snapshot — installed + available Auggy-provided skills. */
   skills: SkillsInfo;
 }

@@ -44,7 +44,8 @@ import {
 // Types surfaced to the SPA via /console/api/skills
 // ---------------------------------------------------------------------------
 
-export type SkillSource = "bundled" | "modified" | "manual";
+/** Content provenance that can be proven from the installed and packaged bytes. */
+export type SkillProvenance = "auggy-provided" | "customized-auggy-skill" | "user-created";
 
 export interface InstalledSkillInfo {
   /** Folder name under `<agentDir>/skills/`. Stable identifier. */
@@ -53,11 +54,11 @@ export interface InstalledSkillInfo {
   name: string | null;
   /** YAML `description` from frontmatter. `null` when frontmatter is missing/invalid. */
   description: string | null;
-  /** Source classification — drives the Edit / Remove / Reset affordances. */
-  source: SkillSource;
+  /** Content provenance. This does not report when or how the skill was installed. */
+  provenance: SkillProvenance;
   /**
-   * Canonical type of the mounted augment that owns this bundled skill.
-   * Absent for manual skills and bundled skills whose augment is not mounted.
+   * Canonical type of the mounted augment that owns this Auggy-provided skill.
+   * Absent for user-created skills and package skills whose augment is not mounted.
    */
   fromAugmentType?: string;
   /** True when the SKILL.md frontmatter parses cleanly (validator-friendly). */
@@ -70,6 +71,8 @@ export interface AvailableSkillInfo {
   folder: string;
   name: string | null;
   description: string | null;
+  /** Available content is sourced from the installed Auggy package. */
+  provenance: "auggy-provided";
   /** The augment type whose `src/augments/<folder>/skill/SKILL.md` is the source. */
   fromAugmentType: string;
 }
@@ -202,10 +205,10 @@ function listInstalledFolders(agentDir: string | undefined): string[] {
   return folders;
 }
 
-function classifyInstalledSkill(folder: string, installedContent: string): SkillSource {
+function classifyInstalledSkill(folder: string, installedContent: string): SkillProvenance {
   const bundled = readBundledSkillContent(folder);
-  if (!bundled) return "manual";
-  return bundled === installedContent ? "bundled" : "modified";
+  if (!bundled) return "user-created";
+  return bundled === installedContent ? "auggy-provided" : "customized-auggy-skill";
 }
 
 /**
@@ -231,7 +234,7 @@ export function collectSkillsInfo(
       contentBytes = file.contentBytes;
     }
     const fm: SkillFrontmatter | null = content ? parseFrontmatterFromString(content) : null;
-    const source = content ? classifyInstalledSkill(folder, content) : "manual";
+    const provenance = classifyInstalledSkill(folder, content);
     const fromAugmentType = folderToType.get(folder);
     const isMountedOwner =
       fromAugmentType !== undefined &&
@@ -240,8 +243,8 @@ export function collectSkillsInfo(
       folder,
       name: fm?.name ?? null,
       description: fm?.description ?? null,
-      source,
-      ...(source !== "manual" && isMountedOwner ? { fromAugmentType } : {}),
+      provenance,
+      ...(provenance !== "user-created" && isMountedOwner ? { fromAugmentType } : {}),
       frontmatterValid: fm !== null,
       contentBytes,
     };
@@ -261,6 +264,7 @@ export function collectSkillsInfo(
       folder,
       name: fm?.name ?? null,
       description: fm?.description ?? null,
+      provenance: "auggy-provided",
       fromAugmentType: type,
     });
   }
@@ -352,7 +356,7 @@ export function removeInstalledSkill(agentDir: string | undefined, folder: strin
 
 export function resetInstalledSkill(agentDir: string | undefined, folder: string): MutationResult {
   const src = bundledSkillSourceDir(folder);
-  if (!src) return { ok: false, message: "no bundled skill for this folder" };
+  if (!src) return { ok: false, message: "no Auggy-provided skill for this folder" };
   const dest = installedSkillDir(agentDir, folder);
   if (!dest) return { ok: false, message: "invalid skill folder" };
   const inspected = inspectManagedDirectory(agentDir, join("skills", folder));
@@ -436,7 +440,7 @@ export function installBundledSkill(agentDir: string | undefined, folder: string
   const type = augmentTypeForFolder(safe);
   if (!type) return { ok: false, message: "unknown skill folder" };
   const src = bundledSkillSourceDir(safe);
-  if (!src) return { ok: false, message: "bundled skill not on disk" };
+  if (!src) return { ok: false, message: "Auggy-provided skill not on disk" };
   const dest = installedSkillDir(agentDir, safe);
   if (!dest) return { ok: false, message: "invalid skill folder" };
   const inspected = inspectManagedDirectory(agentDir, join("skills", safe));
@@ -480,8 +484,8 @@ function copyBundledTree(
       ok: true,
       message:
         verb === "Installed"
-          ? `Installed ${folder} from bundle`
-          : `Reset ${folder} to bundled version`,
+          ? `Installed ${folder} from the Auggy package`
+          : `Reset ${folder} to the Auggy-provided version`,
     };
   } catch {
     const dest = installedSkillDir(agentDir, folder);
@@ -492,7 +496,7 @@ function copyBundledTree(
         // Leave a changed tree untouched rather than following it during cleanup.
       }
     }
-    return { ok: false, message: `${verb.toLowerCase()} failed: unsafe bundled skill tree` };
+    return { ok: false, message: `${verb.toLowerCase()} failed: unsafe Auggy-provided skill tree` };
   }
 }
 

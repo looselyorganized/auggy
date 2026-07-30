@@ -49,23 +49,24 @@ runtime for legacy/manual configs, but is intentionally not shown in the default
 CLI catalog.
 
 `auggy augment list` is the discovery surface. `auggy augment add` installs the
-augment config, package dependencies, and bundled skill together. `auggy skill
-add` is a repair/update command for restoring a bundled skill folder, not part
-of the normal install path.
+augment config, package dependencies, and Auggy-provided skill together.
+`auggy skill add` is a repair/update command for restoring an Auggy-provided
+skill folder, not part of the normal install path.
 
-### Augment-as-folder + bundled-skill convention
+### Augment-as-folder + Auggy-provided skill convention
 
 Every built-in augment lives at `src/augments/<name>/index.ts` using the
-folder shape. Augments that contribute model-callable tools ship a bundled
-`<name>/skill/SKILL.md` colocated in the same folder; `auggy create` and
-`auggy augment add` copy it to `<agent-dir>/skills/<name>/SKILL.md`, and `auggy skill
-add <name>` installs it retroactively. A boot-time validator warns at agent
+folder shape. Augments that contribute model-callable tools ship an
+Auggy-provided `<name>/skill/SKILL.md` colocated in the same folder; `auggy
+create` and `auggy augment add` copy it to
+`<agent-dir>/skills/<name>/SKILL.md`, and `auggy skill add <name>` installs it
+retroactively. A boot-time validator warns at agent
 startup if a tool-providing augment is mounted without a skill — applies to
 both factory-declared `tools[]` and namespace memory providers
 (kernel-synthesized `memory_*` tools). Tool-less augments (transports, static
 memory providers, admission gates) skip the skill folder.
 
-Augments shipping a bundled skill in the current line: `filesystem`,
+Augments shipping an Auggy-provided skill in the current line: `filesystem`,
 `layeredMemory`, `webFetch`, `knowledge`, `bash`, `notify`, `mcp`, `agentMail`,
 `turnControl`, `visitorAuth`, `link`. The `skills` augment is the model-facing
 surface that lists them — it carries no SKILL.md of its own.
@@ -641,7 +642,7 @@ durable path when loss is unacceptable.
 
 #### `[AGENT-DERIVED]` origin marker
 
-Entries written by auto-save carry `origin: "agent-derived"`. When the context allocator renders these entries into context or `memory_search` returns them, they appear with an `[AGENT-DERIVED]` provenance marker. The model's bundled skill teaches it to treat these as paraphrases, not verbatim records, and to prefer `[PEER-DERIVED]` entries when they conflict.
+Entries written by auto-save carry `origin: "agent-derived"`. When the context allocator renders these entries into context or `memory_search` returns them, they appear with an `[AGENT-DERIVED]` provenance marker. The model's Auggy-provided skill teaches it to treat these as paraphrases, not verbatim records, and to prefer `[PEER-DERIVED]` entries when they conflict.
 
 Auto-save never overwrites a verbatim peer entry. Explicit `memory_write` calls from the model and auto-save writes coexist; the trust hierarchy (verbatim peer statements outrank LLM paraphrases) applies at retrieval time.
 
@@ -649,9 +650,9 @@ Auto-save never overwrites a verbatim peer entry. Explicit `memory_write` calls 
 
 Auto-save extraction runs as an admitted internal turn — it flows through the same `budgets` augment turn-gate and `dailyBudgetUsd` cap as user-facing turns. There is no separate extraction cost surface; operators see one daily-spend total. When the daily budget cap is reached, further extraction turns are denied exactly like user-facing turns.
 
-#### Bundled skill
+#### Auggy-provided skill
 
-The bundled `src/augments/layeredMemory/skill/SKILL.md` teaches the model when and how to use `memory_write`, `memory_search`, `memory_list`, and `memory_forget`, plus a section on interpreting `[AGENT-DERIVED]` entries and the privacy boundaries that apply to both manual and auto-saved writes. Copied into `<agent-dir>/skills/layeredMemory/SKILL.md` at `auggy create`/`auggy augment add` time; install retroactively with `auggy skill add layeredMemory`.
+The Auggy-provided `src/augments/layeredMemory/skill/SKILL.md` teaches the model when and how to use `memory_write`, `memory_search`, `memory_list`, and `memory_forget`, plus a section on interpreting `[AGENT-DERIVED]` entries and the privacy boundaries that apply to both manual and auto-saved writes. Copied into `<agent-dir>/skills/layeredMemory/SKILL.md` at `auggy create`/`auggy augment add` time; install retroactively with `auggy skill add layeredMemory`.
 
 ### Console/API info
 
@@ -859,9 +860,9 @@ that already has access to the same inode.
 
 **Filesystem mount paths must not overlap with `fileMemory` source paths.** If the same file is owned by `fileMemory` (cached at boot) and accessible via a writable filesystem mount, writes through the filesystem augment won't invalidate `fileMemory`'s cache, causing stale context. This is an operator responsibility in v1.
 
-### Bundled skill
+### Auggy-provided skill
 
-The filesystem augment ships a bundled skill folder colocated under its augment directory:
+The filesystem augment ships an Auggy-provided skill folder colocated under its augment directory:
 
 ```
 src/augments/filesystem/skill/
