@@ -7,6 +7,7 @@ import { auggySelf } from "@/cli/auggy-self-augment";
 import { defineTool } from "@/helpers";
 import { createCapabilityTable } from "@/kernel/capability-table";
 import type { Augment, PeerIdentity, ToolExecuteContext, TurnState } from "@/types";
+import pkg from "../../package.json" with { type: "json" };
 
 let tempDir: string;
 
@@ -149,6 +150,67 @@ describe("auggySelf augment", () => {
     expect(JSON.stringify(parsed)).not.toContain("do-not-return");
   });
 
+  test("reports the running package version when no test override is supplied", async () => {
+    const aug = auggySelf({
+      agentDir: tempDir,
+      agent: {
+        name: "demo",
+        engine: { provider: "anthropic", model: "claude-sonnet-4-6" },
+      },
+      configs: [],
+      augments: [],
+    });
+
+    const infoTool = aug.tools!.find((tool) => tool.name === "auggy_self_info")!;
+    const parsed = parseToolResult(await infoTool.execute({}, makeContext(creatorPeer))) as {
+      agent: { runtimeVersion: string | null };
+    };
+
+    expect(parsed.agent.runtimeVersion).toBe(pkg.version);
+  });
+
+  test("catalog grounds custom-augment guidance even before the reference is read", async () => {
+    const aug = auggySelf({
+      agentDir: tempDir,
+      agent: {
+        name: "demo",
+        engine: { provider: "anthropic", model: "claude-sonnet-4-6" },
+      },
+      configs: [],
+      augments: [],
+    });
+
+    const catalogTool = aug.tools!.find((tool) => tool.name === "auggy_self_catalog")!;
+    const parsed = parseToolResult(await catalogTool.execute({}, makeContext(creatorPeer))) as {
+      customAugment: {
+        command: string;
+        runtimePath: string;
+        optionalSkillPath: string;
+        requiredReference: string;
+        implementationApi: string[];
+        authorizationDecisions: string[];
+      };
+    };
+
+    expect(parsed.customAugment.command).toBe("auggy augment create <name>");
+    expect(parsed.customAugment.runtimePath).toBe("augments/<name>/");
+    expect(parsed.customAugment.optionalSkillPath).toBe("skills/<name>/SKILL.md");
+    expect(parsed.customAugment.requiredReference).toBe(
+      "skills/auggy/references/routes-tools-augments.md",
+    );
+    expect(parsed.customAugment.implementationApi).toEqual([
+      "defineAugment",
+      "defineTool",
+      "defineRoute",
+      "Zod schemas",
+    ]);
+    expect(parsed.customAugment.authorizationDecisions).toEqual([
+      "route caller authentication (`auth`)",
+      "delegated scopes or grants (`requires`)",
+      "tool visibility by trust level (`constraints.perTrustLevel`)",
+    ]);
+  });
+
   test("is structurally hidden from non-creator peers and denies fabricated calls", async () => {
     const aug = auggySelf({
       agentDir: tempDir,
@@ -199,6 +261,43 @@ describe("auggySelf augment", () => {
     expect(parsed.recommendation.kind).toBe("knowledge");
     expect(parsed.recommendation.alreadyInstalled).toBe(true);
     expect(parsed.recommendation.nextSteps.join("\n")).toContain("knowledge/local");
+  });
+
+  test("requires the canonical reference and authorization decisions for custom augments", async () => {
+    const aug = auggySelf({
+      agentDir: tempDir,
+      agent: {
+        name: "demo",
+        engine: { provider: "anthropic", model: "claude-sonnet-4-6" },
+      },
+      configs: [],
+      augments: [],
+    });
+
+    const recommendTool = aug.tools!.find((tool) => tool.name === "auggy_self_recommend")!;
+    const parsed = parseToolResult(
+      await recommendTool.execute(
+        { goal: "Check what's installed and then talk to me about creating a new augment." },
+        makeContext(creatorPeer),
+      ),
+    ) as {
+      recommendation: {
+        kind: string;
+        requiredReference: string;
+        nextSteps: string[];
+        authorizationDecisions: string[];
+      };
+    };
+
+    expect(parsed.recommendation.kind).toBe("custom-augment");
+    expect(parsed.recommendation.requiredReference).toBe(
+      "skills/auggy/references/routes-tools-augments.md",
+    );
+    expect(parsed.recommendation.nextSteps).toContain(
+      "Read `skills/auggy/references/routes-tools-augments.md` with `fs_read` before giving implementation details.",
+    );
+    expect(parsed.recommendation.authorizationDecisions).toHaveLength(3);
+    expect(parsed.recommendation.nextSteps.join("\n")).not.toContain("augments/<name>/SKILL.md");
   });
 
   test("describes layered memory as a stable add-on when it is not installed", async () => {

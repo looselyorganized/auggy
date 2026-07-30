@@ -1,6 +1,7 @@
 import { existsSync, readdirSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { z } from "zod";
+import pkg from "../../package.json" with { type: "json" };
 import { defineAugment, defineTool } from "../helpers";
 import { inspectAugment, type AugmentRuntimeShape } from "../augment-inspector";
 import type { Augment, AugmentCategory, CreatorConfig, ToolExecuteContext } from "../types";
@@ -10,6 +11,25 @@ import { readSkillFrontmatter } from "./skill-frontmatter";
 import type { AugmentConfig, EngineConfig } from "./types";
 
 const TOOL_NAMES = ["auggy_self_info", "auggy_self_catalog", "auggy_self_recommend"] as const;
+const CUSTOM_AUGMENT_REFERENCE = "skills/auggy/references/routes-tools-augments.md";
+const CUSTOM_AUGMENT_AUTHORIZATION_DECISIONS = [
+  "route caller authentication (`auth`)",
+  "delegated scopes or grants (`requires`)",
+  "tool visibility by trust level (`constraints.perTrustLevel`)",
+] as const;
+
+function customAugmentContract() {
+  return {
+    command: "auggy augment create <name>",
+    runtimePath: "augments/<name>/",
+    optionalSkillPath: "skills/<name>/SKILL.md",
+    skillIsRuntimeSource: false,
+    requiredReference: CUSTOM_AUGMENT_REFERENCE,
+    referenceReadRequiredBeforeImplementationDetails: true,
+    implementationApi: ["defineAugment", "defineTool", "defineRoute", "Zod schemas"],
+    authorizationDecisions: [...CUSTOM_AUGMENT_AUTHORIZATION_DECISIONS],
+  };
+}
 
 export interface AuggySelfAgentMetadata {
   name: string;
@@ -145,7 +165,7 @@ function buildInfo(opts: AuggySelfOptions, context: ToolExecuteContext | undefin
       purpose: opts.agent.purpose ?? null,
       engine: opts.agent.engine,
       creatorDisplayName: opts.agent.creator?.displayName ?? null,
-      runtimeVersion: opts.version ?? null,
+      runtimeVersion: opts.version ?? pkg.version,
     },
     augments,
     skills,
@@ -284,19 +304,30 @@ function recommend(goal: string, installed: Set<string>) {
     );
   }
 
-  if (/\b(api|route|endpoint|integration|custom|tool call|function)\b/.test(normalized)) {
-    return rec(
-      "custom-augment",
-      "Create a custom augment",
-      "Agent-specific APIs, tools, and HTTP routes require runtime code.",
-      [
-        "Run `auggy augment create <name>`.",
-        "Implement narrow typed tools or routes in `augments/<name>/index.ts`.",
-        "Run `auggy augment test ./augments/<name>`.",
-        "The create command registers it in the current agent automatically.",
-        "Create `skills/<name>/SKILL.md` only when the model needs usage guidance.",
-      ],
-    );
+  if (
+    /\b(api|route|endpoint|integration|custom|tool call|function)\b/.test(normalized) ||
+    /\b(create|creating|build|building|write|writing)\s+(?:a\s+|an\s+|my\s+)?(?:new\s+)?augment\b/.test(
+      normalized,
+    )
+  ) {
+    return {
+      ...rec(
+        "custom-augment",
+        "Create a custom augment",
+        "Agent-specific APIs, tools, and HTTP routes require runtime code.",
+        [
+          `Read \`${CUSTOM_AUGMENT_REFERENCE}\` with \`fs_read\` before giving implementation details.`,
+          "Run `auggy augment create <name>`.",
+          "Implement narrow typed tools or routes in `augments/<name>/index.ts` with `defineAugment`, `defineTool`, `defineRoute`, and Zod schemas.",
+          "Choose route `auth`, delegated `requires`, and per-trust tool visibility deliberately.",
+          "Run `auggy augment test ./augments/<name>`.",
+          "The create command registers it in the current agent automatically.",
+          "Create `skills/<name>/SKILL.md` only when the model needs usage guidance; it is never augment source.",
+        ],
+      ),
+      requiredReference: CUSTOM_AUGMENT_REFERENCE,
+      authorizationDecisions: [...CUSTOM_AUGMENT_AUTHORIZATION_DECISIONS],
+    };
   }
 
   if (/\b(identity|persona|voice|tone|policy|refuse|boundary|purpose)\b/.test(normalized)) {
@@ -421,6 +452,7 @@ export function auggySelf(opts: AuggySelfOptions): Augment {
         preview: AUGMENT_CATALOG.filter((entry) => entry.stability === "preview").map((entry) =>
           catalogEntry(entry, installed),
         ),
+        customAugment: customAugmentContract(),
       });
     },
   });

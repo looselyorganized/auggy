@@ -32,12 +32,16 @@ describe("scaffoldCustomAugment", () => {
     expect(source).toContain('name: "weather"');
     expect(source).toContain('name: "weather_echo"');
     expect(source).toContain("export default function weather");
+    expect(source).toContain("perTrustLevel:");
+    expect(source).toContain('neverExpose: ["weather_echo"]');
     expect(source).not.toContain("capabilities:");
 
     const metadata = readFileSync(join(target, "augment.yaml"), "utf-8");
     expect(metadata).toContain("type: custom");
     expect(metadata).toContain("source: ./index.ts");
-    expect(readFileSync(join(target, "README.md"), "utf-8")).not.toContain("augment install");
+    const readme = readFileSync(join(target, "README.md"), "utf-8");
+    expect(readme).not.toContain("augment install");
+    expect(readme.replace(/\s+/g, " ")).toContain("Route auth does not authorize model tools");
   });
 
   test("writes an optional skill under the requested skills directory", () => {
@@ -52,7 +56,9 @@ describe("scaffoldCustomAugment", () => {
 
     expect(existsSync(join(target, "SKILL.md"))).toBe(false);
     expect(existsSync(join(skillTarget, "SKILL.md"))).toBe(true);
-    expect(readFileSync(join(skillTarget, "SKILL.md"), "utf-8")).toContain("name: weather");
+    const skill = readFileSync(join(skillTarget, "SKILL.md"), "utf-8");
+    expect(skill).toContain("name: weather");
+    expect(skill).toContain("allowedTrustLevels:\n  - creator");
   });
 
   test("supports hyphenated slugs", () => {

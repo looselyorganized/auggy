@@ -49,6 +49,34 @@ describe("auggy builder skill mirrors", () => {
     }
   });
 
+  test("custom augment guidance pins layout, modern APIs, and all authorization boundaries", () => {
+    const skill = readFileSync(join(CANONICAL_SKILL, "SKILL.md"), "utf-8");
+    const reference = readFileSync(
+      join(CANONICAL_SKILL, "references", "routes-tools-augments.md"),
+      "utf-8",
+    );
+    const template = readFileSync(
+      join(CANONICAL_SKILL, "assets", "templates", "custom-augment", "index.ts.txt"),
+      "utf-8",
+    );
+
+    expect(skill.replace(/\s+/g, " ")).toContain(
+      "Do not give custom-augment file structure or code until that reference read succeeds",
+    );
+    expect(reference).toContain("skills/<name>/");
+    expect(reference).toContain("optional usage guidance, not augment source");
+    for (const api of ["defineAugment", "defineRoute", "defineTool", 'from "zod"']) {
+      expect(reference, api).toContain(api);
+      expect(template, api).toContain(api);
+    }
+    expect(reference).toContain("Route caller authentication (`auth`)");
+    expect(reference).toContain("Delegated authorization (`requires`)");
+    expect(reference).toContain("Tool visibility (`constraints.perTrustLevel`)");
+    expect(template).toContain("perTrustLevel:");
+    expect(template).toContain('neverExpose: ["save_lead"]');
+    expect(reference).not.toContain("augments/<name>/\n  SKILL.md");
+  });
+
   test("skill frontmatter advertises implicit builder triggers", () => {
     const skill = readFileSync(join(CANONICAL_SKILL, "SKILL.md"), "utf-8");
     const frontmatter = skill.split("---")[1] ?? "";

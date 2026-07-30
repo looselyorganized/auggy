@@ -84,6 +84,14 @@ export default function ${slug.replace(/-/g, "_")}(opts: ${typeName} = {}) {
         },
       }),
     ],
+    constraints: {
+      // A new model tool starts creator-only. Route auth does not authorize a
+      // matching tool; relax these rules only after choosing allowed peers.
+      perTrustLevel: {
+        public: { neverExpose: ["${toolName}"] },
+        agent: { neverExpose: ["${toolName}"] },
+      },
+    },
   });
 }
 `;
@@ -93,6 +101,8 @@ function skillTemplate(slug: string): string {
   return `---
 name: ${slug}
 description: How and when to use the ${slug} augment.
+allowedTrustLevels:
+  - creator
 ---
 
 # ${slug}
@@ -117,6 +127,10 @@ Custom Auggy augment scaffolded by \`auggy augment create ${slug}\`.
 
 The create command also registers this augment in the current project's
 \`agent.yaml\`.
+
+The starter tool is creator-only by default. Route auth does not authorize
+model tools: choose each route's \`auth\`, any delegated \`requires\`, and tool
+visibility under \`constraints.perTrustLevel\` independently.
 
 ## Test
 

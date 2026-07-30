@@ -176,6 +176,10 @@ auggy augment create <name>
 ```
 
 Read `skills/auggy/references/routes-tools-augments.md` before giving code.
+Reading this top-level `SKILL.md` is not enough for that request. Do not give
+custom-augment file structure or code until that reference read succeeds. If
+`fs_read` is unavailable or the read fails, provide only the command and
+reference path, explain the limitation, and do not invent an implementation.
 For starter files, inspect `skills/auggy/assets/templates/custom-augment/`.
 After route changes, recommend:
 
