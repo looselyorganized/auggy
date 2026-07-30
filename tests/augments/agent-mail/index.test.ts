@@ -187,6 +187,45 @@ describe("agentMail factory", () => {
     );
   });
 
+  test("enforces inbound policy at the direct factory boundary", () => {
+    for (const inbound of [
+      { mode: "polling", allowedSenders: ["*"] },
+      { mode: "polling", allowedSenders: ["sender@example.com"], pollIntervalMs: 999 },
+      { mode: "polling", allowedSenders: ["sender@example.com"], maxPromptBytes: 511 },
+      { mode: "polling", allowedSenders: ["sender@example.com"], maxAttempts: 21 },
+      {
+        mode: "polling",
+        allowedSenders: ["sender@example.com"],
+        classifications: {
+          received: "discard",
+          spam: "discard",
+          blocked: "discard",
+          unauthenticated: "discard",
+        },
+      },
+      { mode: "none", classifications: { typo: "process" } },
+    ]) {
+      expect(() => agentMail({ ...baseOpts, inbound: inbound as never })).toThrow();
+    }
+  });
+
+  test("allows a dormant, valid all-discard inbound policy", () => {
+    expect(() =>
+      agentMail({
+        ...baseOpts,
+        inbound: {
+          mode: "none",
+          classifications: {
+            received: "discard",
+            spam: "discard",
+            blocked: "discard",
+            unauthenticated: "discard",
+          },
+        },
+      }),
+    ).not.toThrow();
+  });
+
   test("exposes inbound behavior through a concrete transport field", () => {
     const aug = agentMail({
       ...baseOpts,
@@ -1929,6 +1968,206 @@ describe("inbound lifecycle", () => {
       ledger.close();
     }
   });
+
+  test("continues REST reconciliation after a permanent WebSocket close", async () => {
+    const { client } = fakeClient();
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:" });
+    const triggers: TurnTrigger[] = [];
+    const envelope = normalizeAgentMailReceivedEvent(
+      receivedWebhookEvent(),
+      "webhook",
+      baseOpts.inboxId,
+    );
+    let closedUnexpectedly = false;
+    let listCalls = 0;
+    let subscribedEventTypes: readonly string[] = [];
+    let resolveClosed!: () => void;
+    const closed = new Promise<void>((resolve) => {
+      resolveClosed = resolve;
+    });
+    const sdk: AgentMailSdkAdapters = {
+      catchUp: {
+        async listMessages(input) {
+          listCalls++;
+          expect(input.processedEventTypes).toEqual(["message.received"]);
+          return {
+            messages: closedUnexpectedly
+              ? [
+                  {
+                    inboxId: envelope.message.inboxId,
+                    threadId: envelope.message.threadId,
+                    messageId: envelope.message.messageId,
+                    labels: envelope.message.labels,
+                    timestamp: envelope.message.timestamp,
+                  },
+                ]
+              : [],
+            nextPageToken: undefined,
+          };
+        },
+        async getMessage() {
+          return envelope.message;
+        },
+      },
+      live: {
+        subscribe: async (input) => {
+          subscribedEventTypes = input.eventTypes;
+          await input.onSubscribed?.({ reconnected: false });
+          return { closed, close: async () => resolveClosed() };
+        },
+      },
+    };
+    const aug = agentMail({
+      ...baseOpts,
+      _client: client,
+      _inboundLedger: ledger,
+      _sdkAdapters: sdk,
+      inbound: {
+        mode: "websocket",
+        allowedSenders: ["customer@example.com"],
+        pollIntervalMs: 1_000,
+      },
+    });
+
+    try {
+      await aug.onBoot!();
+      await aug.transport!.register(fakeInboundKernel(triggers), aug.name);
+      await aug.transport!.ready!();
+      expect(subscribedEventTypes).toEqual(["message.received"]);
+      expect(listCalls).toBe(1);
+
+      closedUnexpectedly = true;
+      resolveClosed();
+      await eventuallyWithin(() => triggers.length === 1, 1_500);
+
+      expect(listCalls).toBeGreaterThanOrEqual(2);
+      const runtime = (await aug.adminInfo!()).sections.find(
+        (section) => section.kind === "keyValue",
+      );
+      if (runtime?.kind !== "keyValue") throw new Error("missing AgentMail runtime rows");
+      expect(runtime.rows.find((row) => row.label === "Inbound runtime")?.value).toBe("degraded");
+      expect(ledger.get(baseOpts.inboxId, envelope.message.messageId)?.state).toBe("processed");
+    } finally {
+      await aug.onShutdown!();
+      ledger.close();
+    }
+  });
+
+  test("periodically reconciles webhook delivery gaps", async () => {
+    const { client } = fakeClient();
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:" });
+    const triggers: TurnTrigger[] = [];
+    const envelope = normalizeAgentMailReceivedEvent(
+      receivedWebhookEvent(),
+      "webhook",
+      baseOpts.inboxId,
+    );
+    let missedDeliveryAvailable = false;
+    let listCalls = 0;
+    const sdk: AgentMailSdkAdapters = {
+      catchUp: {
+        async listMessages() {
+          listCalls++;
+          return {
+            messages: missedDeliveryAvailable
+              ? [
+                  {
+                    inboxId: envelope.message.inboxId,
+                    threadId: envelope.message.threadId,
+                    messageId: envelope.message.messageId,
+                    labels: envelope.message.labels,
+                    timestamp: envelope.message.timestamp,
+                  },
+                ]
+              : [],
+            nextPageToken: undefined,
+          };
+        },
+        async getMessage() {
+          return envelope.message;
+        },
+      },
+      live: emptySdkAdapters().live,
+    };
+    const aug = agentMail({
+      ...baseOpts,
+      _client: client,
+      _inboundLedger: ledger,
+      _sdkAdapters: sdk,
+      inbound: {
+        mode: "webhook",
+        allowedSenders: ["customer@example.com"],
+        pollIntervalMs: 1_000,
+        webhook: {},
+      },
+    });
+
+    try {
+      await aug.onBoot!();
+      await aug.transport!.register(fakeInboundKernel(triggers), aug.name);
+      await aug.transport!.ready!();
+      expect(listCalls).toBe(1);
+
+      missedDeliveryAvailable = true;
+      await eventuallyWithin(() => triggers.length === 1, 1_500);
+
+      expect(listCalls).toBeGreaterThanOrEqual(2);
+      expect(ledger.get(baseOpts.inboxId, envelope.message.messageId)?.state).toBe("processed");
+    } finally {
+      await aug.onShutdown!();
+      ledger.close();
+    }
+  });
+
+  test("coalesces overlapping scheduled catch-up runs", async () => {
+    const { client } = fakeClient();
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:" });
+    let listCalls = 0;
+    let releaseSlowCatchUp!: () => void;
+    const slowCatchUp = new Promise<void>((resolve) => {
+      releaseSlowCatchUp = resolve;
+    });
+    const sdk: AgentMailSdkAdapters = {
+      catchUp: {
+        async listMessages() {
+          listCalls++;
+          if (listCalls === 2) await slowCatchUp;
+          return { messages: [], nextPageToken: undefined };
+        },
+        async getMessage() {
+          throw new Error("unexpected getMessage");
+        },
+      },
+      live: emptySdkAdapters().live,
+    };
+    const aug = agentMail({
+      ...baseOpts,
+      _client: client,
+      _inboundLedger: ledger,
+      _sdkAdapters: sdk,
+      inbound: {
+        mode: "polling",
+        allowedSenders: ["customer@example.com"],
+        pollIntervalMs: 1_000,
+      },
+    });
+
+    try {
+      await aug.onBoot!();
+      await aug.transport!.register(fakeInboundKernel([]), aug.name);
+      await aug.transport!.ready!();
+      await eventuallyWithin(() => listCalls === 2, 1_500);
+
+      await new Promise((resolve) => setTimeout(resolve, 1_100));
+      expect(listCalls).toBe(2);
+      releaseSlowCatchUp();
+      await eventuallyWithin(() => listCalls >= 3, 1_500);
+    } finally {
+      releaseSlowCatchUp();
+      await aug.onShutdown!();
+      ledger.close();
+    }
+  });
 });
 
 describe("onShutdown", () => {
@@ -2088,6 +2327,125 @@ describe("onShutdown", () => {
       outcomeUnknown: 0,
     });
     reopened.close();
+  });
+
+  test("waits for active reconciliation before closing its owned ledger", async () => {
+    const { client } = fakeClient();
+    const dbPath = join(makeTmpDir(), "catch-up-shutdown.sqlite");
+    let listCalls = 0;
+    let releaseCatchUp!: () => void;
+    const catchUpBlocked = new Promise<void>((resolve) => {
+      releaseCatchUp = resolve;
+    });
+    const sdk: AgentMailSdkAdapters = {
+      catchUp: {
+        async listMessages() {
+          listCalls++;
+          if (listCalls === 2) await catchUpBlocked;
+          return { messages: [], nextPageToken: undefined };
+        },
+        async getMessage() {
+          throw new Error("unexpected getMessage");
+        },
+      },
+      live: emptySdkAdapters().live,
+    };
+    const aug = agentMail({
+      ...baseOpts,
+      dbPath,
+      _client: client,
+      _sdkAdapters: sdk,
+      inbound: {
+        mode: "polling",
+        allowedSenders: ["customer@example.com"],
+        pollIntervalMs: 1_000,
+      },
+    });
+    await aug.onBoot!();
+    await aug.transport!.register(fakeInboundKernel([]), aug.name);
+    await aug.transport!.ready!();
+    await eventuallyWithin(() => listCalls === 2, 1_500);
+
+    let stopped = false;
+    const shutdown = aug.onShutdown!().then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(stopped).toBe(false);
+
+    releaseCatchUp();
+    await shutdown;
+    const callsAtShutdown = listCalls;
+    await new Promise((resolve) => setTimeout(resolve, 1_100));
+    expect(listCalls).toBe(callsAtShutdown);
+
+    const reopened = createAgentMailInboundLedger({ dbPath });
+    expect(reopened.counts().pending).toBe(0);
+    reopened.close();
+  });
+
+  test("treats an abort-aware active reconciliation as a clean shutdown", async () => {
+    const { client } = fakeClient();
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:" });
+    const envelope = normalizeAgentMailReceivedEvent(
+      receivedWebhookEvent(),
+      "webhook",
+      baseOpts.inboxId,
+    );
+    let listCalls = 0;
+    let releaseCatchUp!: () => void;
+    const catchUpBlocked = new Promise<void>((resolve) => {
+      releaseCatchUp = resolve;
+    });
+    const sdk: AgentMailSdkAdapters = {
+      catchUp: {
+        async listMessages() {
+          listCalls++;
+          if (listCalls === 1) return { messages: [], nextPageToken: undefined };
+          await catchUpBlocked;
+          return {
+            messages: [
+              {
+                inboxId: envelope.message.inboxId,
+                threadId: envelope.message.threadId,
+                messageId: envelope.message.messageId,
+                labels: envelope.message.labels,
+                timestamp: envelope.message.timestamp,
+              },
+            ],
+            nextPageToken: undefined,
+          };
+        },
+        async getMessage() {
+          throw new Error("aborted catch-up must not fetch a message body");
+        },
+      },
+      live: emptySdkAdapters().live,
+    };
+    const aug = agentMail({
+      ...baseOpts,
+      _client: client,
+      _inboundLedger: ledger,
+      _sdkAdapters: sdk,
+      inbound: {
+        mode: "polling",
+        allowedSenders: ["customer@example.com"],
+        pollIntervalMs: 1_000,
+      },
+    });
+    try {
+      await aug.onBoot!();
+      await aug.transport!.register(fakeInboundKernel([]), aug.name);
+      await aug.transport!.ready!();
+      await eventuallyWithin(() => listCalls === 2, 1_500);
+
+      const shutdown = aug.onShutdown!();
+      releaseCatchUp();
+      await expect(shutdown).resolves.toBeUndefined();
+    } finally {
+      releaseCatchUp();
+      ledger.close();
+    }
   });
 });
 
@@ -2338,4 +2696,16 @@ async function eventually(predicate: () => boolean | Promise<boolean>): Promise<
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
   throw new Error("condition was not met");
+}
+
+async function eventuallyWithin(
+  predicate: () => boolean | Promise<boolean>,
+  timeoutMs: number,
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(`condition was not met within ${timeoutMs}ms`);
 }

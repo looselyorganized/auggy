@@ -78,7 +78,8 @@ import {
   runAgentMailCatchUp,
   type AgentMailSdkAdapters,
 } from "./sdk-provider";
-import { AGENTMAIL_RECEIVED_EVENT_TYPES, type AgentMailEventSubscription } from "./provider";
+import type { AgentMailEventSubscription } from "./provider";
+import { processedAgentMailEventTypes, validateAgentMailInboundConfig } from "./inbound-policy";
 import { createAgentMailWebhookRoute } from "./webhook-provider";
 import {
   createAgentMailReviewQueue,
@@ -122,15 +123,9 @@ function validateOptions(opts: AgentMailAugmentInternalOptions): void {
   if (opts.outbound?.subjectPrefix !== undefined && opts.outbound.subjectPrefix.length === 0) {
     throw new Error("agentMail: outbound.subjectPrefix cannot be the empty string");
   }
-  const mode = opts.inbound?.mode ?? "none";
-  if (
-    mode !== "none" &&
-    (!opts.inbound?.allowedSenders || opts.inbound.allowedSenders.length === 0)
-  ) {
-    throw new Error("agentMail: inbound.allowedSenders must be non-empty when inbound is enabled");
-  }
-  if (mode === "webhook" && !opts.inbound?.webhook) {
-    throw new Error("agentMail: inbound.webhook is required when inbound.mode is webhook");
+  const inbound = opts.inbound;
+  if (inbound !== undefined) {
+    validateAgentMailInboundConfig(inbound);
   }
   const reviewExpiry = opts.outbound?.humanReview?.expiresAfterMs;
   if (
@@ -392,10 +387,12 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   let inboundRegisteredName = "agent-mail";
   let inboundWorker: AgentMailInboundWorker | undefined;
   let liveSubscription: AgentMailEventSubscription | undefined;
-  let pollTimer: ReturnType<typeof setInterval> | undefined;
+  let reconciliationTimer: ReturnType<typeof setInterval> | undefined;
   let drainTimer: ReturnType<typeof setInterval> | undefined;
   let drainKickTimer: ReturnType<typeof setTimeout> | undefined;
+  let reconciliationController: AbortController | undefined;
   let shutdownPromise: Promise<void> | undefined;
+  let activeCatchUp: Promise<void> | undefined;
   let activeDrain: Promise<void> | undefined;
   let drainScheduled = false;
   let inboundReady = false;
@@ -426,24 +423,58 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     };
   }
 
-  async function catchUpInbound(): Promise<void> {
-    if (!inboundLedger || !sdkAdapters) throw new Error("agentMail: inbound runtime is not booted");
-    try {
-      const result = await runAgentMailCatchUp({
-        reader: sdkAdapters.catchUp,
-        ledger: inboundLedger,
-        inboxId: opts.inboxId,
-      });
-      lastCatchUpAt = now();
-      lastCatchUpSummary =
-        `${result.pages} page(s), ${result.scanned} scanned, ` +
-        `${result.enqueued} enqueued, ${result.duplicates} duplicate(s)`;
-      if (result.enqueued > 0) lastInboundEventAt = lastCatchUpAt;
-      lastProviderError = undefined;
-    } catch (error) {
-      recordProviderError(error);
-      throw error;
+  const processedInboundEventTypes =
+    inboundMode === "none" ? [] : processedAgentMailEventTypes(opts.inbound?.classifications);
+
+  function catchUpInbound(): Promise<void> {
+    if (activeCatchUp) return activeCatchUp;
+    const ledger = inboundLedger;
+    const adapters = sdkAdapters;
+    const controller = reconciliationController;
+    if (!ledger || !adapters || !controller) {
+      return Promise.reject(new Error("agentMail: inbound runtime is not booted"));
     }
+    if (controller.signal.aborted) {
+      return Promise.reject(new Error("agentMail: inbound reconciliation is stopping"));
+    }
+
+    const catchUp = (async () => {
+      try {
+        const result = await runAgentMailCatchUp({
+          reader: adapters.catchUp,
+          ledger,
+          inboxId: opts.inboxId,
+          processedEventTypes: processedInboundEventTypes,
+          signal: controller.signal,
+        });
+        lastCatchUpAt = now();
+        lastCatchUpSummary =
+          `${result.pages} page(s), ${result.scanned} scanned, ` +
+          `${result.enqueued} enqueued, ${result.duplicates} duplicate(s)`;
+        if (result.enqueued > 0) lastInboundEventAt = lastCatchUpAt;
+        lastProviderError = undefined;
+      } catch (error) {
+        recordProviderError(error);
+        throw error;
+      }
+    })().finally(() => {
+      if (activeCatchUp === catchUp) activeCatchUp = undefined;
+    });
+    activeCatchUp = catchUp;
+    return catchUp;
+  }
+
+  function reconcileOnSchedule(): void {
+    if (!inboundReady || reconciliationController?.signal.aborted) return;
+    void catchUpInbound()
+      .then(() => {
+        if (inboundReady) scheduleDrain();
+      })
+      .catch((error) => {
+        if (!reconciliationController?.signal.aborted) {
+          console.warn(`[agent-mail] catch-up failed: ${(error as Error).message}`);
+        }
+      });
   }
 
   function drainInbound(): Promise<void> {
@@ -476,7 +507,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   }
 
   function scheduleDrain(): void {
-    if (drainScheduled) return;
+    if (!inboundReady || reconciliationController?.signal.aborted || drainScheduled) return;
     drainScheduled = true;
     drainKickTimer = setTimeout(() => {
       drainScheduled = false;
@@ -536,7 +567,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
               try {
                 liveSubscription = await sdkAdapters.live.subscribe({
                   inboxId: opts.inboxId,
-                  eventTypes: AGENTMAIL_RECEIVED_EVENT_TYPES,
+                  eventTypes: processedInboundEventTypes,
                   onSubscribed: async () => {
                     await catchUpInbound();
                     liveState = "subscribed";
@@ -576,20 +607,12 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             }
 
             const pollIntervalMs = opts.inbound?.pollIntervalMs ?? 60_000;
-            if (inboundMode === "polling") {
-              pollTimer = setInterval(() => {
-                void catchUpInbound()
-                  .then(() => scheduleDrain())
-                  .catch((error) => {
-                    console.warn(`[agent-mail] catch-up failed: ${(error as Error).message}`);
-                  });
-              }, pollIntervalMs);
-              pollTimer.unref?.();
-            }
             drainTimer = setInterval(() => void drainInbound(), 1_000);
             drainTimer.unref?.();
             inboundReady = true;
             if (inboundMode !== "websocket") liveState = "ready";
+            reconciliationTimer = setInterval(reconcileOnSchedule, pollIntervalMs);
+            reconciliationTimer.unref?.();
             scheduleDrain();
           },
           identify: () => null,
@@ -1504,6 +1527,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     lastWorkerOutcome = undefined;
     lastProviderError = undefined;
     liveState = inboundMode === "none" ? "disabled" : "stopped";
+    if (activeCatchUp) {
+      throw new Error("agentMail: previous inbound reconciliation has not stopped");
+    }
+    reconciliationController = inboundMode === "none" ? undefined : new AbortController();
 
     // Placeholder-resolution check — same pattern as visitor-auth.
     if (looksLikePlaceholder(opts.apiKey)) {
@@ -1647,10 +1674,11 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
           if (timeout) clearTimeout(timeout);
         }
       }
-      if (pollTimer) clearInterval(pollTimer);
+      reconciliationController?.abort();
+      if (reconciliationTimer) clearInterval(reconciliationTimer);
       if (drainTimer) clearInterval(drainTimer);
       if (drainKickTimer) clearTimeout(drainKickTimer);
-      pollTimer = undefined;
+      reconciliationTimer = undefined;
       drainTimer = undefined;
       drainKickTimer = undefined;
       drainScheduled = false;
@@ -1674,6 +1702,21 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         failure ??= error;
       }
 
+      // Polling and reconnect catch-up may be inside a provider request when
+      // shutdown begins. Abort future pages, then retain the ledger until the
+      // current single-flight run has quiesced.
+      let catchUpQuiesced = true;
+      const catchUp = activeCatchUp;
+      try {
+        if (catchUp) await withinDeadline(catchUp, "inbound catch-up shutdown");
+      } catch (error) {
+        catchUpQuiesced = activeCatchUp === undefined;
+        // An abort-aware catch-up rejects as part of an ordinary stop. Only a
+        // provider request that remains live past the deadline is a shutdown
+        // failure; completed provider errors are already recorded in status.
+        if (!catchUpQuiesced) failure ??= error;
+      }
+
       // Listener close drains its queued delivery chain. Retain the current
       // ledger until it quiesces, then capture the latest worker drain so an
       // event delivered during close cannot be lost or race a closed handle.
@@ -1689,14 +1732,32 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       liveSubscription = undefined;
       inboundLedger = opts._inboundLedger;
       ownsInboundLedger = false;
+      reconciliationController = undefined;
       liveState = inboundMode === "none" ? "disabled" : "stopped";
       inboundWorker = undefined;
       inboundKernel = undefined;
       seenMessagesByTurn.clear();
-      try {
-        ownedLedger?.close();
-      } catch (error) {
-        failure ??= error;
+      if (catchUpQuiesced) {
+        try {
+          ownedLedger?.close();
+        } catch (error) {
+          failure ??= error;
+        }
+      } else if (ownedLedger && catchUp) {
+        // The deadline expired while a provider request ignored cancellation.
+        // Never close SQLite under that request; release it once the request
+        // settles, while still reporting the bounded-shutdown failure.
+        void catchUp
+          .catch(() => undefined)
+          .then(() => {
+            try {
+              ownedLedger.close();
+            } catch (error) {
+              console.warn(
+                `[agent-mail] deferred inbound ledger shutdown failed: ${(error as Error).message}`,
+              );
+            }
+          });
       }
       if (overrideRootRetained) {
         releaseAdminOverrideRoot(overrideDir);
