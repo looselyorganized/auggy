@@ -12,10 +12,11 @@ describe("agentMail catalog entry", () => {
     expect(entry!.defaultName).toBe("agentMail");
   });
 
-  test("declares AgentMail API, inbox, and optional webhook secret env vars", () => {
+  test("declares AgentMail identity and optional webhook secret env vars", () => {
     expect(entry!.envVars).toEqual([
       "AGENTMAIL_API_KEY",
       "AGENTMAIL_INBOX_ID",
+      "AGENTMAIL_INBOX_EMAIL",
       "AGENTMAIL_WEBHOOK_SECRET",
     ]);
   });
@@ -28,6 +29,8 @@ describe("agentMail catalog entry", () => {
     const opts = entry!.defaultOptions as Record<string, unknown>;
     expect(opts.apiKey).toBe("${AGENTMAIL_API_KEY}");
     expect(opts.inboxId).toBe("${AGENTMAIL_INBOX_ID}");
+    expect(opts.emailAddress).toBe("${AGENTMAIL_INBOX_EMAIL}");
+    expect(opts.addressVisibility).toBe("public");
     const inbound = opts.inbound as Record<string, unknown>;
     expect(inbound.mode).toBe("none");
     const outbound = opts.outbound as Record<string, unknown>;

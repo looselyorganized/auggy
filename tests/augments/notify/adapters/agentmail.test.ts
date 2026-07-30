@@ -19,7 +19,7 @@ function mockClient(handler: (input: SendMessageInput) => SendMessageResult | Se
     send: async (input: SendMessageInput) => handler(input),
     reply: async () => unusedSendResult,
     forward: async () => unusedSendResult,
-    getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
+    getInbox: async () => ({ inboxId: "i", email: "agent@example.com", status: "ok" as const }),
   });
 }
 
@@ -45,7 +45,11 @@ describe("agentMailAdapter", () => {
           },
           reply: async () => unusedSendResult,
           forward: async () => unusedSendResult,
-          getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
+          getInbox: async () => ({
+            inboxId: "i",
+            email: "agent@example.com",
+            status: "ok" as const,
+          }),
         };
       },
     });
@@ -155,7 +159,11 @@ describe("agentMailAdapter", () => {
         },
         reply: async () => unusedSendResult,
         forward: async () => unusedSendResult,
-        getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
+        getInbox: async () => ({
+          inboxId: "i",
+          email: "agent@example.com",
+          status: "ok" as const,
+        }),
       }),
     });
     await expect(adapter.deliver(dest, { summary: "x" })).rejects.toMatchObject({
@@ -171,7 +179,11 @@ describe("agentMailAdapter", () => {
         },
         reply: async () => unusedSendResult,
         forward: async () => unusedSendResult,
-        getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
+        getInbox: async () => ({
+          inboxId: "i",
+          email: "agent@example.com",
+          status: "ok" as const,
+        }),
       }),
     });
 
@@ -190,7 +202,11 @@ describe("agentMailAdapter", () => {
         },
         reply: async () => unusedSendResult,
         forward: async () => unusedSendResult,
-        getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
+        getInbox: async () => ({
+          inboxId: "i",
+          email: "agent@example.com",
+          status: "ok" as const,
+        }),
       }),
     });
     const result = await adapter.deliver(

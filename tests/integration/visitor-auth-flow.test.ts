@@ -87,7 +87,11 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
       },
       reply: async () => ({ status: "sent", messageId: "msg-r", threadId: "thr-1" }),
       forward: async () => ({ status: "sent", messageId: "msg-f", threadId: "thr-f" }),
-      getInbox: async () => ({ inboxId: "ibx_test", status: "ok" }),
+      getInbox: async () => ({
+        inboxId: "ibx_test",
+        email: "agent@example.com",
+        status: "ok",
+      }),
     };
 
     // -----------------------------------------------------------------------
@@ -472,7 +476,7 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
         send: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
         reply: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
         forward: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
-        getInbox: async () => ({ inboxId: "x", status: "ok" }),
+        getInbox: async () => ({ inboxId: "x", email: "agent@example.com", status: "ok" }),
       };
       // Even with NODE_ENV=production and transport=console, test injection
       // wins — tests need deterministic behavior regardless of test-runner env.
@@ -649,7 +653,7 @@ describe("integration: visitorAuth full flow — anon → verify → recognized"
       send: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
       reply: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
       forward: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
-      getInbox: async () => ({ inboxId: "x", status: "ok" }),
+      getInbox: async () => ({ inboxId: "x", email: "agent@example.com", status: "ok" }),
     };
     const augment = visitorAuth({
       publicUrl: "https://prod.example.com",

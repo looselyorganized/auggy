@@ -78,7 +78,7 @@ export function createConsoleMailClient(opts: ConsoleMailClientOptions = {}): Ag
     async getInbox(inboxId: string): Promise<AgentMailInboxInfo> {
       // The console adapter has no inbox; return a synthetic OK so any
       // boot-time inbox validation passes without touching the network.
-      return { inboxId, status: "ok" };
+      return { inboxId, email: "console@localhost.invalid", status: "ok" };
     },
   };
 }

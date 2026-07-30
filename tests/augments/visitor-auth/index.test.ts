@@ -27,7 +27,7 @@ function fakeAgentMail(overrides: Partial<AgentMailClient> = {}): AgentMailClien
     send: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
     reply: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
     forward: async () => ({ status: "sent", messageId: "m", threadId: "t" }),
-    getInbox: async () => ({ inboxId: "i", status: "ok" }),
+    getInbox: async () => ({ inboxId: "i", email: "agent@example.com", status: "ok" }),
     ...overrides,
   } as AgentMailClient;
 }
@@ -274,7 +274,7 @@ describe("visitorAuth (skeleton)", () => {
       _agentMailClient: fakeAgentMail({
         getInbox: async () => {
           calls++;
-          return { inboxId: "ibx_x", status: "ok" };
+          return { inboxId: "ibx_x", email: "agent@example.com", status: "ok" };
         },
       }),
     });
@@ -2213,7 +2213,11 @@ function makeAugWithFirstVerify(dbPath: string) {
         });
         return { status: "sent" as const, messageId: "m", threadId: "t" };
       },
-      getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
+      getInbox: async () => ({
+        inboxId: "ibx_x",
+        email: "agent@example.com",
+        status: "ok" as const,
+      }),
     } as never,
   });
   return { aug, sends };
@@ -2324,7 +2328,11 @@ describe("notifyOnFirstVerify", () => {
           // operator notification send fails
           return { status: "failed" as const, detail: "400 rejected", httpStatus: 400 };
         },
-        getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
+        getInbox: async () => ({
+          inboxId: "ibx_x",
+          email: "agent@example.com",
+          status: "ok" as const,
+        }),
       } as never,
     });
     await aug.onBoot?.();
@@ -2377,7 +2385,11 @@ describe("notifyOnFirstVerify", () => {
             }
             return { status: "sent" as const, messageId: "m", threadId: "t" };
           },
-          getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
+          getInbox: async () => ({
+            inboxId: "ibx_x",
+            email: "agent@example.com",
+            status: "ok" as const,
+          }),
         } as never,
       });
 
@@ -2413,7 +2425,11 @@ describe("notifyOnFirstVerify", () => {
           sends.push(i);
           return { status: "sent" as const, messageId: "m", threadId: "t" };
         },
-        getInbox: async () => ({ inboxId: "ibx_x", status: "ok" as const }),
+        getInbox: async () => ({
+          inboxId: "ibx_x",
+          email: "agent@example.com",
+          status: "ok" as const,
+        }),
       } as never,
     });
     await aug.onBoot?.();
@@ -2445,7 +2461,11 @@ describe("isVisitorRevoked (fix C1)", () => {
         send: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
         reply: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
         forward: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
-        getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
+        getInbox: async () => ({
+          inboxId: "i",
+          email: "agent@example.com",
+          status: "ok" as const,
+        }),
       } as AgentMailClient,
     });
     // isVisitorRevoked is accessible via the VisitorAuthAugmentExtras surface.
@@ -2468,7 +2488,11 @@ describe("isVisitorRevoked (fix C1)", () => {
         },
         reply: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
         forward: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
-        getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
+        getInbox: async () => ({
+          inboxId: "i",
+          email: "agent@example.com",
+          status: "ok" as const,
+        }),
       } as AgentMailClient,
     });
     await aug.onBoot?.();
@@ -2491,7 +2515,11 @@ describe("isVisitorRevoked (fix C1)", () => {
         },
         reply: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
         forward: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
-        getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
+        getInbox: async () => ({
+          inboxId: "i",
+          email: "agent@example.com",
+          status: "ok" as const,
+        }),
       } as AgentMailClient,
     });
     await aug.onBoot?.();
@@ -2523,7 +2551,11 @@ describe("isVisitorRevoked (fix C1)", () => {
         },
         reply: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
         forward: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
-        getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
+        getInbox: async () => ({
+          inboxId: "i",
+          email: "agent@example.com",
+          status: "ok" as const,
+        }),
       } as AgentMailClient,
     });
     await aug.onBoot?.();
@@ -2571,7 +2603,11 @@ describe("isVisitorRevoked (fix C1)", () => {
         },
         reply: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
         forward: async () => ({ status: "sent" as const, messageId: "m", threadId: "t" }),
-        getInbox: async () => ({ inboxId: "i", status: "ok" as const }),
+        getInbox: async () => ({
+          inboxId: "i",
+          email: "agent@example.com",
+          status: "ok" as const,
+        }),
       } as AgentMailClient,
     });
     await aug.onBoot?.();

@@ -1010,6 +1010,10 @@ export async function resolveAugments(
           augment = agentMail({
             apiKey: opts.apiKey as string,
             inboxId: opts.inboxId as string,
+            emailAddress: opts.emailAddress as string | undefined,
+            addressVisibility: opts.addressVisibility as
+              | AgentMailAugmentOptions["addressVisibility"]
+              | undefined,
             apiBaseUrl: opts.apiBaseUrl as string | undefined,
             allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials as
               | boolean

@@ -1,5 +1,13 @@
 import { describe, expect, mock, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -39,6 +47,9 @@ describe("agentmail setup command", () => {
           });
           return { apiKeyId: "key_1", apiKey: "am_runtime" };
         }),
+        getInbox: mock(async () => {
+          throw new Error("not used");
+        }),
       };
 
       const result = await runAgentMailSetup(
@@ -57,10 +68,12 @@ describe("agentmail setup command", () => {
       );
 
       expect(result.inboxId).toBe("inb_1");
+      expect(result.inboxEmail).toBeUndefined();
       expect(readEnv(paths.envPath)).toMatchObject({
         AGENTMAIL_API_KEY: "am_runtime",
         AGENTMAIL_INBOX_ID: "inb_1",
       });
+      expect(readEnv(paths.envPath).AGENTMAIL_INBOX_EMAIL).toBeUndefined();
       expect(readVisitorAuthAgentMail(paths.augmentPath)).toEqual({
         transport: "agentmail",
         subjectPrefix: "[Verify] ",
@@ -71,6 +84,53 @@ describe("agentmail setup command", () => {
         perHour: 1,
         perDay: 3,
       });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("agentMail signup verifies identity before minting the one-time runtime key", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-signup-identity-"));
+    try {
+      const paths = writeAgentMailAgent(root);
+      const order: string[] = [];
+      const provisioner: AgentMailProvisioningClient = {
+        signUp: mock(async () => ({
+          organizationId: "org_1",
+          inboxId: "inb_1",
+          apiKey: "am_parent",
+        })),
+        verify: mock(async () => ({ verified: true })),
+        createInbox: mock(async () => {
+          throw new Error("not used");
+        }),
+        getInbox: mock(async (apiKey, inboxId) => {
+          order.push("identity");
+          expect(apiKey).toBe("am_parent");
+          return { inboxId, email: "Agent@Custom.Example" };
+        }),
+        createInboxApiKey: mock(async (input) => {
+          order.push("runtime-key");
+          expect(input.apiKey).toBe("am_parent");
+          return { apiKeyId: "key_1", apiKey: "am_runtime" };
+        }),
+      };
+
+      const result = await runAgentMailSetup(
+        "agentMail",
+        {
+          config: paths.configPath,
+          mode: "signup",
+          humanEmail: "human@example.com",
+          username: "agent",
+          otp: "123456",
+        },
+        { provisioner, promptConfirm: (async () => true) as never },
+      );
+
+      expect(order).toEqual(["identity", "runtime-key"]);
+      expect(result.inboxEmail).toBe("agent@custom.example");
+      expect(readEnv(paths.envPath).AGENTMAIL_INBOX_EMAIL).toBe("agent@custom.example");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -103,6 +163,9 @@ describe("agentmail setup command", () => {
           expect(input.permissions).toEqual({ inbox_read: true, message_send: true });
           return { apiKeyId: "key_support", apiKey: "am_runtime_support" };
         }),
+        getInbox: mock(async () => {
+          throw new Error("not used");
+        }),
       };
 
       const result = await runAgentMailSetup(
@@ -122,6 +185,7 @@ describe("agentmail setup command", () => {
         AGENTMAIL_API_KEY: "am_runtime_support",
         AGENTMAIL_INBOX_ID: "inb_support",
       });
+      expect(readEnv(paths.envPath).AGENTMAIL_INBOX_EMAIL).toBeUndefined();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -155,6 +219,9 @@ describe("agentmail setup command", () => {
           expect(input.permissions).toEqual({ inbox_read: true, message_send: true });
           return { apiKeyId: "key_outbound", apiKey: "am_runtime_outbound" };
         }),
+        getInbox: mock(async () => {
+          throw new Error("not used");
+        }),
       };
 
       const result = await runAgentMailSetup(
@@ -173,10 +240,13 @@ describe("agentmail setup command", () => {
       expect(readEnv(paths.envPath)).toMatchObject({
         AGENTMAIL_API_KEY: "am_runtime_outbound",
         AGENTMAIL_INBOX_ID: "inb_outbound",
+        AGENTMAIL_INBOX_EMAIL: "outbound@agentmail.to",
       });
       expect(readAgentMailConfig(paths.augmentPath)).toMatchObject({
         apiKey: "${AGENTMAIL_API_KEY}",
         inboxId: "${AGENTMAIL_INBOX_ID}",
+        emailAddress: "${AGENTMAIL_INBOX_EMAIL}",
+        addressVisibility: "public",
       });
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -204,6 +274,9 @@ describe("agentmail setup command", () => {
         createInboxApiKey: mock(async () => {
           throw new Error("not used");
         }),
+        getInbox: mock(async () => {
+          throw new Error("not used");
+        }),
       };
 
       const result = await runAgentMailSetup(
@@ -213,10 +286,12 @@ describe("agentmail setup command", () => {
       );
 
       expect(result.mode).toBe("env");
+      expect(result.inboxEmail).toBeUndefined();
       expect(readEnv(paths.envPath)).toMatchObject({
         AGENTMAIL_API_KEY: "am_env",
         AGENTMAIL_INBOX_ID: "inb_env",
       });
+      expect(readEnv(paths.envPath).AGENTMAIL_INBOX_EMAIL).toBeUndefined();
       expect(readVisitorAuthAgentMail(paths.augmentPath)).toMatchObject({
         transport: "agentmail",
         apiKey: "${AGENTMAIL_API_KEY}",
@@ -227,7 +302,60 @@ describe("agentmail setup command", () => {
     }
   });
 
-  test("manual mode configures an existing inbox without provisioning network calls", async () => {
+  test("agentMail env mode re-verifies and replaces a stored inbox email", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-env-email-"));
+    try {
+      const paths = writeAgentMailAgent(root);
+      writeFileSync(
+        paths.envPath,
+        [
+          "ANTHROPIC_API_KEY=sk-test",
+          "AGENTMAIL_API_KEY=am_env",
+          "AGENTMAIL_INBOX_ID=inb_env",
+          "AGENTMAIL_INBOX_EMAIL=  team@custom.example  ",
+          "",
+        ].join("\n"),
+      );
+      const getInbox = mock(async (apiKey: string, inboxId: string) => {
+        expect(apiKey).toBe("am_env");
+        expect(inboxId).toBe("inb_env");
+        return { inboxId, email: "Canonical@Custom.Example" };
+      });
+      const provisioner: AgentMailProvisioningClient = {
+        signUp: mock(async () => {
+          throw new Error("not used");
+        }),
+        verify: mock(async () => {
+          throw new Error("not used");
+        }),
+        createInbox: mock(async () => {
+          throw new Error("not used");
+        }),
+        createInboxApiKey: mock(async () => {
+          throw new Error("not used");
+        }),
+        getInbox,
+      };
+
+      const result = await runAgentMailSetup(
+        "agentMail",
+        { config: paths.configPath, mode: "env" },
+        { provisioner },
+      );
+
+      expect(result.inboxEmail).toBe("canonical@custom.example");
+      expect(getInbox).toHaveBeenCalledTimes(1);
+      expect(readEnv(paths.envPath).AGENTMAIL_INBOX_EMAIL).toBe("canonical@custom.example");
+      expect(readAgentMailConfig(paths.augmentPath)).toMatchObject({
+        emailAddress: "${AGENTMAIL_INBOX_EMAIL}",
+        addressVisibility: "public",
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("manual mode resolves an existing inbox with its runtime key", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-manual-"));
     try {
       const paths = writeVisitorAuthAgent(root);
@@ -242,6 +370,9 @@ describe("agentmail setup command", () => {
           throw new Error("not used");
         }),
         createInboxApiKey: mock(async () => {
+          throw new Error("not used");
+        }),
+        getInbox: mock(async () => {
           throw new Error("not used");
         }),
       };
@@ -261,7 +392,169 @@ describe("agentmail setup command", () => {
         AGENTMAIL_API_KEY: "am_existing",
         AGENTMAIL_INBOX_ID: "inb_existing",
       });
+      expect(readEnv(paths.envPath).AGENTMAIL_INBOX_EMAIL).toBeUndefined();
     } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("agentMail manual mode always verifies and canonicalizes the provider address", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-manual-email-"));
+    try {
+      const paths = writeAgentMailAgent(root);
+      const getInbox = mock(async (apiKey: string, inboxId: string) => {
+        expect(apiKey).toBe("am_existing");
+        expect(inboxId).toBe("inb_existing");
+        return { inboxId, email: "Help@Custom.Example" };
+      });
+      const provisioner: AgentMailProvisioningClient = {
+        signUp: mock(async () => {
+          throw new Error("not used");
+        }),
+        verify: mock(async () => {
+          throw new Error("not used");
+        }),
+        createInbox: mock(async () => {
+          throw new Error("not used");
+        }),
+        createInboxApiKey: mock(async () => {
+          throw new Error("not used");
+        }),
+        getInbox,
+      };
+
+      const result = await runAgentMailSetup(
+        "agentMail",
+        {
+          config: paths.configPath,
+          mode: "manual",
+          apiKey: "am_existing",
+          inboxId: "inb_existing",
+        },
+        { provisioner },
+      );
+
+      expect(result.inboxEmail).toBe("help@custom.example");
+      expect(getInbox).toHaveBeenCalledTimes(1);
+      expect(readEnv(paths.envPath).AGENTMAIL_INBOX_EMAIL).toBe("help@custom.example");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("does not write credentials or config when canonical email lookup fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-email-failure-"));
+    try {
+      const paths = writeAgentMailAgent(root);
+      const originalEnv = readFileSync(paths.envPath, "utf-8");
+      const originalAugment = readFileSync(paths.augmentPath, "utf-8");
+      const provisioner: AgentMailProvisioningClient = {
+        signUp: mock(async () => {
+          throw new Error("not used");
+        }),
+        verify: mock(async () => {
+          throw new Error("not used");
+        }),
+        createInbox: mock(async () => {
+          throw new Error("not used");
+        }),
+        createInboxApiKey: mock(async () => {
+          throw new Error("not used");
+        }),
+        getInbox: mock(async () => {
+          throw new Error("provider rejected am_super_secret");
+        }),
+      };
+
+      let error: Error | undefined;
+      try {
+        await runAgentMailSetup(
+          "agentMail",
+          {
+            config: paths.configPath,
+            mode: "manual",
+            apiKey: "am_super_secret",
+            inboxId: "inb_missing",
+          },
+          { provisioner },
+        );
+      } catch (caught) {
+        error = caught as Error;
+      }
+
+      expect(error?.message).toContain("Could not resolve the canonical email");
+      expect(error?.message).toContain("retry setup");
+      expect(error?.message).not.toContain("am_super_secret");
+      expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
+      expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("preflights the augment YAML before provisioning or local mutation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-preflight-"));
+    try {
+      const paths = writeAgentMailAgent(root);
+      const originalEnv = readFileSync(paths.envPath, "utf-8");
+      writeFileSync(paths.augmentPath, "type: [invalid\n");
+      const getInbox = mock(async () => ({ inboxId: "inb_x", email: "agent@example.com" }));
+      const provisioner = unusedProvisioner({ getInbox });
+
+      await expect(
+        runAgentMailSetup(
+          "agentMail",
+          {
+            config: paths.configPath,
+            mode: "manual",
+            apiKey: "am_runtime",
+            inboxId: "inb_x",
+          },
+          { provisioner },
+        ),
+      ).rejects.toThrow();
+
+      expect(getInbox).not.toHaveBeenCalled();
+      expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("restores .env when the augment YAML commit fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-rollback-"));
+    let augmentDir: string | undefined;
+    try {
+      const paths = writeAgentMailAgent(root);
+      const originalEnv = readFileSync(paths.envPath, "utf-8");
+      const originalAugment = readFileSync(paths.augmentPath, "utf-8");
+      augmentDir = join(root, "augments", "agentMail");
+      chmodSync(augmentDir, 0o500);
+
+      await expect(
+        runAgentMailSetup(
+          "agentMail",
+          {
+            config: paths.configPath,
+            mode: "manual",
+            apiKey: "am_runtime",
+            inboxId: "inb_x",
+          },
+          {
+            provisioner: unusedProvisioner({
+              getInbox: mock(async () => ({
+                inboxId: "inb_x",
+                email: "agent@example.com",
+              })),
+            }),
+          },
+        ),
+      ).rejects.toThrow();
+
+      expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
+      expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
+    } finally {
+      if (augmentDir) chmodSync(augmentDir, 0o700);
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -293,6 +586,9 @@ describe("agentmail setup command", () => {
           throw new Error("not used");
         }),
         createInboxApiKey: mock(async () => {
+          throw new Error("not used");
+        }),
+        getInbox: mock(async () => {
           throw new Error("not used");
         }),
       };
@@ -343,21 +639,46 @@ describe("agentmail setup command", () => {
   test("formats result without leaking API keys", () => {
     const text = formatAgentMailSetupResult({
       agentName: "dx-agent",
-      target: "visitorAuth",
+      target: "agentMail",
       mode: "existing",
       inboxId: "inb_1",
       inboxEmail: "dx-agent@agentmail.to",
       envPath: "/tmp/agent/.env",
       augmentPath: "/tmp/agent/augments/visitorAuth/augment.yaml",
-      envKeys: ["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID"],
+      envKeys: ["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID", "AGENTMAIL_INBOX_EMAIL"],
     });
 
     expect(text).toContain("AgentMail inbox ready: dx-agent@agentmail.to (inb_1)");
-    expect(text).toContain("Wrote .env: AGENTMAIL_API_KEY, AGENTMAIL_INBOX_ID");
-    expect(text).toContain("visitorAuth will now send magic links with AgentMail");
+    expect(text).toContain(
+      "Wrote .env: AGENTMAIL_API_KEY, AGENTMAIL_INBOX_ID, AGENTMAIL_INBOX_EMAIL",
+    );
+    expect(text).toContain("agentMail will now send outbound email with AgentMail");
     expect(text).not.toContain("am_");
   });
 });
+
+function unusedProvisioner(
+  overrides: Partial<AgentMailProvisioningClient> = {},
+): AgentMailProvisioningClient {
+  return {
+    signUp: async () => {
+      throw new Error("not used");
+    },
+    verify: async () => {
+      throw new Error("not used");
+    },
+    createInbox: async () => {
+      throw new Error("not used");
+    },
+    getInbox: async () => {
+      throw new Error("not used");
+    },
+    createInboxApiKey: async () => {
+      throw new Error("not used");
+    },
+    ...overrides,
+  };
+}
 
 function writeVisitorAuthAgent(root: string): {
   configPath: string;

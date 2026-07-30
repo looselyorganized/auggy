@@ -62,6 +62,9 @@ type: agentMail
 config:
   apiKey: ${AGENTMAIL_API_KEY}
   inboxId: ${AGENTMAIL_INBOX_ID}
+  emailAddress: ${AGENTMAIL_INBOX_EMAIL}
+  # creator | public. Setup uses public for a model-facing AgentMail inbox.
+  addressVisibility: public
   # apiBaseUrl: https://api.agentmail.to/v0
   # dbPath: ./agent-mail.db
 
@@ -120,6 +123,14 @@ requires both `allowInsecureHttpWithCredentials: true` and
 `webTransport` is required for `inbound.mode: webhook`. It is also required
 with `adminRoute` enabled whenever an executable trust level requires outbound
 human review, because review decisions are creator-authenticated admin actions.
+
+`emailAddress` is the last setup-verified canonical address for the inbox.
+At boot, a reachable provider response must agree with it before Auggy exposes
+the address. A transient provider failure may use the configured address with
+degraded status; an authoritative mismatch fails startup so the agent cannot
+publish the wrong contact address. When `addressVisibility` is `public`, the
+model may provide the address when email is contextually appropriate. It must
+still say when inbound monitoring is disabled or degraded.
 
 Only one enabled inbound `agentMail` augment may own a given inbox. Multiple
 outbound-only instances can coexist, but two workers must not compete for the
@@ -220,6 +231,7 @@ webhook-policy routes.
 | --- | --- | --- |
 | `AGENTMAIL_API_KEY` | Always | AgentMail bearer key (`am_...`) |
 | `AGENTMAIL_INBOX_ID` | Always | Inbox used for send and receive |
+| `AGENTMAIL_INBOX_EMAIL` | Model-facing `agentMail` setup | Setup-verified canonical inbox address |
 | `AGENTMAIL_WEBHOOK_SECRET` | Webhook mode, unless `secretEnv` changes | Svix signing secret (`whsec_...`) |
 
 Prefer an inbox-scoped, least-privilege key. The exact AgentMail permissions
@@ -247,6 +259,7 @@ visitor-auth state; only Link retains its legacy symlink path.
 
 The creator-authenticated admin surface reports:
 
+- the canonical inbox email, its source, and model-context visibility;
 - inbound mode and live state;
 - pending, processing, processed, discarded, and outcome-unknown ledger counts;
 - catch-up checkpoint, last catch-up summary, last inbound event, and last

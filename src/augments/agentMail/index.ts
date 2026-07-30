@@ -48,13 +48,16 @@ import type {
   AdminActionResult,
   AdminInfoBlock,
   Augment,
+  ContextBlock,
   ToolResult,
   ToolExecuteContext,
   TransportKernel,
   TrustLevel,
+  TurnState,
 } from "../../types";
 import type { AgentMailAugmentInternalOptions, DispatchRecord } from "./types";
 import { redactRecipients, scanForSensitive, validateOutbound } from "./outbound";
+import { canonicalizeEmail, isWellFormedEmail } from "../visitorAuth/email-validation";
 import {
   checkRateLimit,
   commitReservation,
@@ -100,6 +103,20 @@ function validateOptions(opts: AgentMailAugmentInternalOptions): void {
   }
   if (!opts.inboxId || typeof opts.inboxId !== "string") {
     throw new Error("agentMail: inboxId is required (set AGENTMAIL_INBOX_ID in .env)");
+  }
+  if (
+    opts.emailAddress !== undefined &&
+    !looksLikePlaceholder(opts.emailAddress) &&
+    !isWellFormedEmail(opts.emailAddress)
+  ) {
+    throw new Error("agentMail: emailAddress must be a well-formed email address");
+  }
+  if (
+    opts.addressVisibility !== undefined &&
+    opts.addressVisibility !== "creator" &&
+    opts.addressVisibility !== "public"
+  ) {
+    throw new Error('agentMail: addressVisibility must be "creator" or "public"');
   }
   // Subject prefix non-empty when explicitly set.
   if (opts.outbound?.subjectPrefix !== undefined && opts.outbound.subjectPrefix.length === 0) {
@@ -326,6 +343,14 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   }
 
   const inboundMode = opts.inbound?.mode ?? "none";
+  const addressVisibility = opts.addressVisibility ?? "creator";
+  let resolvedInboxEmail =
+    opts.emailAddress && !looksLikePlaceholder(opts.emailAddress)
+      ? canonicalizeEmail(opts.emailAddress)
+      : undefined;
+  let inboxIdentitySource: "configured" | "provider" | "unavailable" = resolvedInboxEmail
+    ? "configured"
+    : "unavailable";
   const agentMailRoutes: NonNullable<Augment["httpRoutes"]> = [
     defineRoute.get("/agentmail/reviews/:reviewId", {
       auth: "creator",
@@ -1491,6 +1516,11 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         `agentMail: AGENTMAIL_INBOX_ID is unresolved (got "${opts.inboxId}"). Set it in .env and restart.`,
       );
     }
+    if (opts.emailAddress && looksLikePlaceholder(opts.emailAddress)) {
+      throw new Error(
+        `agentMail: AGENTMAIL_INBOX_EMAIL is unresolved (got "${opts.emailAddress}"). Set it in .env and restart.`,
+      );
+    }
 
     if (inboundMode !== "none") {
       if (!inboundLedger) {
@@ -1537,6 +1567,11 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     // same error). 4xx is a config error and DOES throw.
     const health = await client.getInbox(opts.inboxId);
     if (health.status === "failed") {
+      if (health.failureKind === "invalid-response") {
+        throw new Error(
+          `agentMail: AgentMail returned an invalid identity for inbox "${opts.inboxId}". Refusing to publish the configured address; retry setup or contact AgentMail support.`,
+        );
+      }
       const httpStatus = health.httpStatus;
       if (httpStatus !== undefined && httpStatus >= 400 && httpStatus < 500) {
         throw new Error(
@@ -1550,7 +1585,44 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       recordProviderError(health.detail);
       return;
     }
-    // ok
+    const providerEmail = canonicalizeEmail(health.email);
+    if (resolvedInboxEmail && resolvedInboxEmail !== providerEmail) {
+      throw new Error(
+        `agentMail: configured emailAddress "${resolvedInboxEmail}" does not match AgentMail inbox "${providerEmail}". Run AgentMail setup again before publishing this address.`,
+      );
+    }
+    resolvedInboxEmail = providerEmail;
+    inboxIdentitySource = "provider";
+  }
+
+  async function context(turn: TurnState): Promise<ContextBlock[]> {
+    if (!resolvedInboxEmail) return [];
+    const trustLevel = turn.peer?.trustLevel ?? "creator";
+    if (addressVisibility === "creator" && trustLevel !== "creator") return [];
+
+    const monitoring =
+      inboundMode === "none"
+        ? "Inbound monitoring is disabled. Do not describe this as a monitored contact channel; if asked, explain that messages may not be read."
+        : liveState === "ready" || liveState === "subscribed"
+          ? `Inbound monitoring is active via ${inboundMode}.`
+          : liveState === "degraded"
+            ? `Inbound ${inboundMode} monitoring is degraded, so replies may be delayed until catch-up succeeds.`
+            : `Inbound ${inboundMode} monitoring is configured but not ready.`;
+
+    return [
+      {
+        source: "agent-mail-identity",
+        content:
+          `AgentMail inbox ${opts.inboxId} uses the canonical email address ${resolvedInboxEmail}. ${monitoring} ` +
+          "Provide the address when someone reasonably asks how to contact you or email is the appropriate channel. Do not volunteer it indiscriminately or promise an immediate response.",
+        placement: "preamble",
+        provenance: "augment",
+        priority: "normal",
+        eviction: "drop",
+        origin: "system",
+        ttl: "turn",
+      },
+    ];
   }
 
   async function onShutdown(): Promise<void> {
@@ -1698,6 +1770,16 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
           kind: "keyValue",
           rows: [
             { label: "Inbox ID", value: opts.inboxId },
+            {
+              label: "Inbox email",
+              value: resolvedInboxEmail ?? "(unavailable — run AgentMail setup)",
+              source: inboxIdentitySource,
+            },
+            {
+              label: "Address visibility",
+              value: addressVisibility,
+              source: "yaml",
+            },
             { label: "API key", value: maskApiKey(opts.apiKey) },
             {
               label: "Global cap (per hour)",
@@ -2218,6 +2300,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     _markSeenForTest?: (messageId: string, meta: { from: string; replyAllTo?: string[] }) => void;
   } = {
     name: "agent-mail",
+    context,
     tools: [sendMessageTool, replyToMessageTool, forwardMessageTool],
     ...(inboundTransport ? { transport: inboundTransport } : {}),
     httpRoutes: agentMailRoutes,

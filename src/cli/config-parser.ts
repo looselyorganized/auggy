@@ -31,6 +31,7 @@ import {
 import { DEFAULT_EXTRACTION_BUFFER_LIMITS } from "../augments/layeredMemory/extractor/buffer";
 import { MAX_PROVIDER_REQUEST_TIMEOUT_MS } from "../engines/_shared/provider-resilience";
 import { parseUtcCron } from "../jobs/cron";
+import { isWellFormedEmail } from "../augments/visitorAuth/email-validation";
 
 // ---------------------------------------------------------------------------
 // .env loading
@@ -1444,6 +1445,18 @@ function validateAgentMailOptions(
   }
   if (typeof opts.inboxId !== "string" || !opts.inboxId) {
     errors.push(`${prefix}.inboxId: required string (set AGENTMAIL_INBOX_ID in .env)`);
+  }
+  if (opts.emailAddress !== undefined) {
+    if (typeof opts.emailAddress !== "string" || !isWellFormedEmail(opts.emailAddress)) {
+      errors.push(`${prefix}.emailAddress: must be a well-formed email address`);
+    }
+  }
+  if (
+    opts.addressVisibility !== undefined &&
+    opts.addressVisibility !== "creator" &&
+    opts.addressVisibility !== "public"
+  ) {
+    errors.push(`${prefix}.addressVisibility: must be "creator" or "public"`);
   }
 
   if (opts.outbound !== undefined) {
