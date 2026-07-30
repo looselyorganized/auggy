@@ -6251,31 +6251,127 @@ describe("webTransport /console route — basic dispatch (G36 phase 2)", () => {
     }
   });
 
-  it("marks outer Console rate-limit responses as no-store", async () => {
+  it("keeps authenticated Console APIs, chat, shell, and assets available after sustained polling", async () => {
     const model = createMockModel();
     const port = 29516;
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
+      consoleChat: { dbPath: ":memory:" },
     });
     const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
     await agent.start();
     try {
       const origin = `http://127.0.0.1:${port}`;
-      for (let request = 0; request < 60; request += 1) {
-        const response = await fetch(`${origin}/console/login`);
+      const authorization = `Basic ${Buffer.from(":test-token").toString("base64")}`;
+
+      let chatCsrf = "";
+      for (let request = 0; request < 72; request += 1) {
+        const response = await fetch(`${origin}/console/api/dashboard`, {
+          headers: { authorization },
+        });
         expect(response.status).toBe(200);
+        const body = (await response.json()) as {
+          csrfTokens: Array<{ actionId: string; token: string }>;
+        };
+        chatCsrf = body.csrfTokens.find((token) => token.actionId === "console-chat")?.token ?? "";
+      }
+      expect(chatCsrf).not.toBe("");
+
+      const chat = await fetch(`${origin}/console/api/chat`, {
+        method: "POST",
+        headers: {
+          authorization,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          csrf: chatCsrf,
+          message: "sustained polling regression",
+          threadId: "sustained-polling-thread",
+        }),
+      });
+      const chatBody = await chat.text();
+      expect(chat.status, chatBody).toBe(200);
+      expect(chat.headers.get("content-type")).toContain("text/event-stream");
+
+      const shell = await fetch(`${origin}/console/chat`, { headers: { authorization } });
+      const builtSpaAvailable = resolveDistDir() !== undefined;
+      expect(shell.status).toBe(builtSpaAvailable ? 200 : 503);
+      expect(shell.headers.get("content-type")).toBe("text/html; charset=utf-8");
+      expect(shell.headers.get("x-content-type-options")).toBe("nosniff");
+      const html = await shell.text();
+      if (!builtSpaAvailable) {
+        expect(html).toContain("Console SPA not built");
+        return;
+      }
+      const assets = Array.from(
+        html.matchAll(/\b(?:src|href)=["'](\/console\/assets\/[^"']+\.(?:js|css))["']/g),
+        (match) => match[1]!,
+      );
+      expect(assets.some((asset) => asset.endsWith(".js"))).toBe(true);
+      expect(assets.some((asset) => asset.endsWith(".css"))).toBe(true);
+      for (const asset of assets) {
+        const response = await fetch(`${origin}${asset}`, { headers: { authorization } });
+        expect(response.status, asset).toBe(200);
+        expect(response.headers.get("content-type"), asset).toBe(
+          asset.endsWith(".css")
+            ? "text/css; charset=utf-8"
+            : "application/javascript; charset=utf-8",
+        );
+        expect(response.headers.get("x-content-type-options"), asset).toBe("nosniff");
+        await response.arrayBuffer();
+      }
+    } finally {
+      await agent.stop();
+    }
+  });
+
+  it("rate-limits invalid Basic credentials by effective caller IP without penalizing valid auth", async () => {
+    const model = createMockModel();
+    const port = 29517;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      trustedProxies: ["127.0.0.1"],
+      consoleSecurity: { allowedOrigins: [`https://127.0.0.1:${port}`] },
+    });
+    const agent = defineAgent({ name: "zip", model: "mock", augments: [aug] }, model);
+    await agent.start();
+    try {
+      const origin = `http://127.0.0.1:${port}`;
+      const forwardedHeaders = (callerIp: string, password: string) => ({
+        authorization: `Basic ${Buffer.from(`:${password}`).toString("base64")}`,
+        "x-forwarded-for": callerIp,
+        "x-forwarded-proto": "https",
+      });
+
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        const invalid = await fetch(`${origin}/console/api/dashboard`, {
+          headers: forwardedHeaders("203.0.113.10", "wrong-token"),
+        });
+        expect(invalid.status).toBe(401);
       }
 
-      const limited = await fetch(`${origin}/console/login`, {
-        method: "POST",
-        headers: { origin },
-        body: new URLSearchParams({ password: "test-token" }),
-        redirect: "manual",
+      const isolatedCaller = await fetch(`${origin}/console/api/dashboard`, {
+        headers: forwardedHeaders("203.0.113.11", "wrong-token"),
+      });
+      expect(isolatedCaller.status).toBe(401);
+
+      const limited = await fetch(`${origin}/console/api/dashboard`, {
+        headers: forwardedHeaders("203.0.113.10", "wrong-token"),
       });
       expect(limited.status).toBe(429);
       expect(limited.headers.get("retry-after")).toMatch(/^\d+$/);
       expect(limited.headers.get("cache-control")).toBe("no-store");
+      expect(limited.headers.get("content-security-policy")).toBe("frame-ancestors 'none'");
+      expect(limited.headers.get("x-frame-options")).toBe("DENY");
+      expect(limited.headers.get("x-content-type-options")).toBe("nosniff");
+      expect(await limited.text()).not.toContain("test-token");
+
+      const valid = await fetch(`${origin}/console/api/dashboard`, {
+        headers: forwardedHeaders("203.0.113.10", "test-token"),
+      });
+      expect(valid.status).toBe(200);
     } finally {
       await agent.stop();
     }

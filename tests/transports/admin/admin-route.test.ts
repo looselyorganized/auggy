@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
 import { coerceInputs } from "@/transports/admin/admin-coerce";
+import { createConsoleSessionSetCookie } from "@/transports/admin/admin-auth";
+import { createConsoleAuthFailureLimiter } from "@/transports/admin/admin-auth-rate-limiter";
 import { serveStaticFile } from "@/transports/admin/admin-static";
 import {
   type AdminActionRegistry,
@@ -454,6 +456,64 @@ describe("handleAdminRoute — auth", () => {
     expect(cookie).toContain("SameSite=Lax");
     expect(cookie).toContain("Path=/console");
     expect(cookie).toContain("Secure");
+  });
+
+  it("counts only failed password authentication and still admits a valid password after throttling", async () => {
+    const ctx = await makeCtx({
+      callerIp: "10.0.9.1",
+      authFailureLimiter: createConsoleAuthFailureLimiter(),
+    });
+    const login = (password: string) =>
+      handleAdminRoute(
+        new Request("https://my-agent.fly.dev/console/login", {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({ password }).toString(),
+        }),
+        ctx,
+      );
+
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      expect((await login("test-bearer")).status).toBe(303);
+    }
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      expect((await login("wrong-password")).status).toBe(401);
+    }
+
+    const limited = await login("wrong-password");
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toMatch(/^\d+$/);
+    expect(limited.headers.get("cache-control")).toBe("no-store");
+    expect(await limited.text()).not.toContain("wrong-password");
+    expect((await login("test-bearer")).status).toBe(303);
+  });
+
+  it("rate-limits invalid Basic and session credentials without counting missing or valid auth", async () => {
+    const limiter = createConsoleAuthFailureLimiter({ maxFailures: 2 });
+    const ctx = await makeCtx({ callerIp: "10.0.9.2", authFailureLimiter: limiter });
+    const request = (headers: Record<string, string> = {}) =>
+      handleAdminRoute(
+        new Request("https://my-agent.fly.dev/console/api/dashboard", { headers }),
+        ctx,
+      );
+
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      expect((await request()).status).toBe(401);
+    }
+    expect((await request({ authorization: basicHeader("wrong") })).status).toBe(401);
+    expect((await request({ cookie: "auggy_console=invalid.payload" })).status).toBe(401);
+
+    const limited = await request({ authorization: "Bearer wrong" });
+    expect(limited.status).toBe(429);
+    expect(limited.headers.get("retry-after")).toMatch(/^\d+$/);
+    expect(limited.headers.get("cache-control")).toBe("no-store");
+
+    expect((await request({ authorization: basicHeader("test-bearer") })).status).toBe(200);
+    const cookie = createConsoleSessionSetCookie({
+      bearer: "test-bearer",
+      secure: true,
+    }).split(";")[0]!;
+    expect((await request({ cookie })).status).toBe(200);
   });
 
   it("renders the fixed branded password and ticket error variants", async () => {
