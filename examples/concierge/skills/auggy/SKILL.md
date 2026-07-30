@@ -10,7 +10,7 @@ allowedTrustLevels:
 Use this skill when the creator asks what this agent is, what it can do, what
 to add next, or how to build a workflow with Auggy.
 
-This bundled skill is the canonical Auggy companion skill for the agent itself.
+This Auggy-provided skill is the canonical companion skill for the agent itself.
 External Claude, Codex, Cursor, and similar coding-agent skills should reuse
 this folder instead of forking Auggy's mental model.
 

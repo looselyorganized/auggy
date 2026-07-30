@@ -759,8 +759,8 @@ Two primary use cases:
 **1. Skill folder access.** The agent needs to read SKILL.md files and their
 supporting references on demand. This is **progressive disclosure** — the
 model reads skills via `fs_read` when it decides the conversation needs
-guidance. The filesystem augment IS the skill loader. Bundled skill folders
-for each tool-providing augment are copied into
+guidance. The filesystem augment IS the skill loader. Auggy-provided skill
+folders for each tool-providing augment are copied into
 `<agent-dir>/skills/<augment-name>/` at scaffold time.
 
 **2. Agent workspace.** The agent needs to create, read, and manage files as
@@ -937,7 +937,7 @@ dedup remains an additional process-local suppression.
 
 For the full operator reference, see [docs/13-notify.md](./13-notify.md).
 
-### Bundled skill
+### Auggy-provided skill
 
 This augment ships `src/augments/notify/skill/SKILL.md` with model teaching on the `notify` tool — destination semantics, when to escalate vs answer in-thread, dedup awareness. Copied into `<agent-dir>/skills/notify/SKILL.md` at `auggy create`/`auggy augment add` time; install retroactively with `auggy skill add notify`.
 
@@ -1077,7 +1077,7 @@ is accepted only for loopback, or with the explicit
 
 Boot is graceful: if a source is unreachable at startup (HTTP) or the configured directory is missing (`file://`), the agent starts without that source's manifest and logs a warning. `knowledge_fetch` will return clear error messages until the source becomes reachable. This prevents a temporarily unavailable knowledge API from taking down a running agent.
 
-### Bundled skill
+### Auggy-provided skill
 
 This augment ships `src/augments/knowledge/skill/SKILL.md` with model teaching on the `knowledge_fetch` tool — source manifests, when to fetch endpoints, progressive-disclosure rationale. Copied into `<agent-dir>/skills/knowledge/SKILL.md` at `auggy create`/`auggy augment add` time; install retroactively with `auggy skill add knowledge`.
 
@@ -1178,7 +1178,7 @@ Operator-configured clients can select `urlPolicy: "operator-configured"` when a
 
 The URL and address helpers live in `src/http.ts`; augment authors handling untrusted URLs should use `createHttpClient({ urlPolicy: "public" })`.
 
-### Bundled skill
+### Auggy-provided skill
 
 This augment ships `src/augments/webFetch/skill/SKILL.md` with model teaching on the `web_fetch` tool — when to fetch vs ask, prompt-aware summarization, blocked-URL handling. Copied into `<agent-dir>/skills/webFetch/SKILL.md` at `auggy create`/`auggy augment add` time; install retroactively with `auggy skill add webFetch`.
 
@@ -1249,7 +1249,7 @@ Passing `perTrustLevel: {}` would expose bash to everyone. Operators are respons
 | `onBoot` | Verifies `cwd` exists. Throws if missing (to catch misconfiguration early). |
 | `onShutdown` | None. |
 
-### Bundled skill
+### Auggy-provided skill
 
 This augment ships `src/augments/bash/skill/SKILL.md` with model teaching on `shell_exec` and `run_script` — allowlist semantics, risk-tier framing, and per-trust-level defaults. Copied into `<agent-dir>/skills/bash/SKILL.md` at `auggy create`/`auggy augment add` time; install retroactively with `auggy skill add bash`.
 
@@ -1447,7 +1447,7 @@ the operator explicitly acknowledges that links will appear in service logs.
 
 `visitorAuth.signingKey` and `webTransport.visitorTokens.signingKey` MUST be the same value. If they drift, visitor tokens minted by visitorAuth will fail webTransport's verification on the next request.
 
-### Bundled skill
+### Auggy-provided skill
 
 `visitorAuth` ships `src/augments/visitorAuth/skill/SKILL.md` with model teaching on the `request_auth` tool — when to offer verification, confused-deputy awareness, and rate-limit messaging. Copied into `<agent-dir>/skills/visitorAuth/SKILL.md` at `auggy create`/`auggy augment add` time; install retroactively with `auggy skill add visitorAuth`.
 
@@ -1711,7 +1711,7 @@ registry served by the coordinator. The LLM-facing shape (`link_list`
 returning `{name, purpose?, examples?}`) stays the same; only the source
 flips. Today's augment-config-described peers are forward-compatible.
 
-### Bundled skill
+### Auggy-provided skill
 
 `link` ships `src/augments/link/skill/SKILL.md` with model teaching on the `link_send` and `link_list` tools: when to delegate (genuinely-different expertise/access) vs answer directly, choosing the right peer from `link_list`, the **probe-on-pushback** pattern (re-ping the peer with the user's clarification instead of refusing on "no visibility into their tools"), synthesis-vs-echo when relaying a peer's reply, failure-mode handling (`unknown peer` / unreachable / refused), and the inbound side (when YOU are the peer being called). Copied into `<agent-dir>/skills/link/SKILL.md` at `auggy create`/`auggy augment add` time; install retroactively with `auggy skill add link`.
 

@@ -75,7 +75,9 @@ interface AddSkillCommandDeps {
 function installBundledSkill(skill: string, agentDir: string): void {
   if (listStarterSkillNames().includes(skill)) {
     if (!copyStarterSkill(skill, agentDir)) {
-      throw new Error(`failed to copy bundled starter skill for "${skill}" (source not found).`);
+      throw new Error(
+        `failed to copy Auggy-provided starter skill for "${skill}" (source not found).`,
+      );
     }
     return;
   }
@@ -90,12 +92,12 @@ function installBundledSkill(skill: string, agentDir: string): void {
   }
 
   if (!bundledSkillExists(type)) {
-    throw new Error(`"${skill}" augment ships no bundled skill. Nothing to add.`);
+    throw new Error(`"${skill}" augment ships no Auggy-provided skill. Nothing to add.`);
   }
 
   const copied = copyBundledSkill(type, agentDir);
   if (!copied) {
-    throw new Error(`failed to copy bundled skill for "${skill}" (source not found).`);
+    throw new Error(`failed to copy Auggy-provided skill for "${skill}" (source not found).`);
   }
 }
 
@@ -105,14 +107,17 @@ export function skillCommand(deps: AddSkillCommandDeps = {}): Command {
 
   command
     .command("add <skill>")
-    .description("Install or refresh a bundled starter or augment skill")
+    .description("Install or refresh an Auggy-provided starter or augment skill")
     .option("--agent <name>", "agent project directory name (defaults to current directory)")
     .action(async (skill: string, opts: { agent?: string }) => {
       try {
         const agentDir = resolveAgentDir(opts.agent, { auggyDir: deps.auggyDir, cwd: deps.cwd });
         installBundledSkill(skill, agentDir);
         console.log(
-          `Installed bundled skill for "${skill}" -> ${displayPath(join(agentDir, "skills", skill), deps.cwd)}/`,
+          `Installed Auggy-provided skill for "${skill}" -> ${displayPath(
+            join(agentDir, "skills", skill),
+            deps.cwd,
+          )}/`,
         );
         exit(0);
       } catch (err) {
