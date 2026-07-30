@@ -393,15 +393,16 @@ complete them.
 
 ## Product implications
 
-The strongest scaffolds should show the route/tool/domain pattern on day one:
+Today, create and register each augment with the supported command, then add
+its route, tool, schema, and shared domain modules deliberately:
 
 ```bash
-auggy augment create catalog --with-route --with-tool --with-admin
-auggy augment create transactions --with-route --with-tool --with-db
-auggy augment create scheduling --with-route --with-tool --with-webhook
+auggy augment create catalog
+auggy augment create transactions
+auggy augment create scheduling
 ```
 
-Generated augments should include:
+The generated skeleton starts with a creator-only model tool. Extend it with:
 
 - Shared domain function
 - Route wrapper

@@ -13,6 +13,7 @@ import { join } from "node:path";
 import {
   bundledSkillSourceDir,
   collectSkillsInfo,
+  installBundledSkill as installAvailableSkill,
   readInstalledSkillContent,
   removeInstalledSkill,
   resetInstalledSkill,
@@ -94,14 +95,67 @@ describe("collectSkillsInfo installed skill provenance and ownership", () => {
 
     const available = collectSkillsInfo(root, new Set(["webFetch"])).available;
 
-    expect(available).toEqual([
-      expect.objectContaining({
-        folder: "webFetch",
-        provenance: "auggy-provided",
-        fromAugmentType: "webFetch",
-      }),
-    ]);
+    expect(available).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ folder: "auggy", provenance: "auggy-provided" }),
+        expect.objectContaining({
+          folder: "webFetch",
+          provenance: "auggy-provided",
+          fromAugmentType: "webFetch",
+        }),
+      ]),
+    );
+    expect(available.find((skill) => skill.folder === "auggy")).not.toHaveProperty(
+      "fromAugmentType",
+    );
     expect(JSON.stringify(available)).not.toMatch(/bundled|scaffold/i);
+  });
+
+  it("classifies the complete Auggy starter tree and keeps it unowned", () => {
+    const root = testRoot();
+    mkdirSync(join(root, "skills"), { recursive: true });
+    expect(installAvailableSkill(root, "auggy").ok).toBe(true);
+
+    const exact = collectSkillsInfo(root).installed.find((skill) => skill.folder === "auggy");
+    expect(exact).toMatchObject({ folder: "auggy", provenance: "auggy-provided" });
+    expect(exact).not.toHaveProperty("fromAugmentType");
+
+    const reference = join(root, "skills", "auggy", "references", "mental-model.md");
+    writeFileSync(reference, `${readFileSync(reference, "utf-8")}\nLocal teaching.\n`);
+    expect(
+      collectSkillsInfo(root).installed.find((skill) => skill.folder === "auggy"),
+    ).toMatchObject({ provenance: "customized-auggy-skill" });
+
+    expect(resetInstalledSkill(root, "auggy").ok).toBe(true);
+    expect(
+      collectSkillsInfo(root).installed.find((skill) => skill.folder === "auggy"),
+    ).toMatchObject({ provenance: "auggy-provided" });
+  });
+
+  it("marks a packaged skill customized when any reference or extra file differs", () => {
+    const root = testRoot();
+    installBundledSkill(root, "filesystem");
+    const reference = join(root, "skills", "filesystem", "references", "mount-permissions.md");
+    writeFileSync(reference, `${readFileSync(reference, "utf-8")}\nCustomized reference.\n`);
+
+    expect(collectSkillsInfo(root).installed[0]?.provenance).toBe("customized-auggy-skill");
+
+    expect(resetInstalledSkill(root, "filesystem").ok).toBe(true);
+    expect(collectSkillsInfo(root).installed[0]?.provenance).toBe("auggy-provided");
+    writeFileSync(join(root, "skills", "filesystem", "operator-notes.md"), "Local notes.\n");
+    expect(collectSkillsInfo(root).installed[0]?.provenance).toBe("customized-auggy-skill");
+  });
+
+  it("fails provenance closed for a nested symlink in a packaged-name skill", () => {
+    const root = testRoot();
+    const outside = testRoot();
+    installBundledSkill(root, "filesystem");
+    const sentinel = join(outside, "sentinel.md");
+    writeFileSync(sentinel, "DO_NOT_READ_THROUGH_SYMLINK\n");
+    symlinkSync(sentinel, join(root, "skills", "filesystem", "references", "operator-link.md"));
+
+    expect(collectSkillsInfo(root).installed[0]?.provenance).toBe("customized-auggy-skill");
+    expect(readFileSync(sentinel, "utf-8")).toBe("DO_NOT_READ_THROUGH_SYMLINK\n");
   });
 
   it("classifies a missing known SKILL.md as customized instead of user-created", () => {

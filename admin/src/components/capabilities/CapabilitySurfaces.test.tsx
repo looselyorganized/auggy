@@ -76,7 +76,14 @@ describe("CapabilityDetail", () => {
           contentBytes: 120,
         },
       ],
-      available: [],
+      available: [
+        {
+          folder: "auggy",
+          name: "Auggy",
+          description: "Build and extend this agent",
+          provenance: "auggy-provided",
+        },
+      ],
       skillsDir: "/agent/skills",
     };
 
@@ -93,6 +100,8 @@ describe("CapabilityDetail", () => {
     expect(output).toContain("Auggy-provided");
     expect(output).toContain("Customized Auggy skill");
     expect(output).toContain("User-created");
+    expect(output).toContain("available from Auggy");
+    expect(output).not.toContain("available from undefined");
     expect(output).not.toMatch(/bundled|scaffold/i);
   });
 

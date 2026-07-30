@@ -157,7 +157,7 @@ export interface AvailableSkillInfo {
   name: string | null;
   description: string | null;
   provenance: "auggy-provided";
-  fromAugmentType: string;
+  fromAugmentType?: string;
 }
 
 export interface SkillsInfo {

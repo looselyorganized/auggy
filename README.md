@@ -271,6 +271,14 @@ export default function weather() {
         },
       }),
     ],
+    constraints: {
+      // Route auth does not authorize model tools. Start creator-only and
+      // relax this only after deciding which chat callers may use the tool.
+      perTrustLevel: {
+        public: { neverExpose: ["weather_lookup"] },
+        agent: { neverExpose: ["weather_lookup"] },
+      },
+    },
   });
 }
 ```

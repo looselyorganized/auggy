@@ -187,18 +187,21 @@ export function buildSkillViews(data: DashboardData): SkillCapabilityView[] {
       };
     }),
     ...data.skills.available.map(
-      (skill): SkillCapabilityView => ({
-        id: `available:${skill.fromAugmentType}:${skill.folder}`,
-        title: skill.name ?? skill.folder,
-        detail: `${skill.description ?? "Auggy-provided skill"} · available from ${skill.fromAugmentType}`,
-        state: "available",
-        folder: skill.folder,
-        augmentType: skill.fromAugmentType,
-        badges: [
-          badge("skill-state", "available", "info"),
-          badge("skill-provenance", skillProvenanceLabel(skill.provenance), "neutral"),
-        ],
-      }),
+      (skill): SkillCapabilityView => {
+        const owner = skill.fromAugmentType;
+        return {
+          id: `available:${owner ?? "auggy"}:${skill.folder}`,
+          title: skill.name ?? skill.folder,
+          detail: `${skill.description ?? "Auggy-provided skill"} · available from ${owner ?? "Auggy"}`,
+          state: "available",
+          folder: skill.folder,
+          ...(owner ? { augmentType: owner } : {}),
+          badges: [
+            badge("skill-state", "available", "info"),
+            badge("skill-provenance", skillProvenanceLabel(skill.provenance), "neutral"),
+          ],
+        };
+      },
     ),
   ];
 }
