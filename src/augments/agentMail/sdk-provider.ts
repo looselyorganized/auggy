@@ -129,7 +129,8 @@ function finiteStatus(error: unknown): number | undefined {
 
 function requestError(operation: string, error: unknown): AgentMailProviderRequestError {
   const status = finiteStatus(error);
-  const retryable = status === undefined || status === 408 || status === 429 || status >= 500;
+  const retryable =
+    status === undefined || status === 408 || status === 425 || status === 429 || status >= 500;
   return new AgentMailProviderRequestError(operation, retryable, status);
 }
 

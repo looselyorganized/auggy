@@ -117,9 +117,9 @@ export interface AgentMailClient {
   /**
    * Best-effort healthcheck. Pings AgentMail's `inboxes.get` endpoint to
    * confirm the inbox exists and the API key has access. Used by visitorAuth
-   * onBoot. Caller should warn-and-continue on failure: a transient AgentMail
-   * outage shouldn't block agent startup; the first real send will surface
-   * the same error.
+   * and agentMail during boot. Callers fail closed on deterministic identity
+   * or configuration errors, while transient provider and network failures
+   * may degrade without blocking startup.
    */
   getInbox(inboxId: string): Promise<AgentMailInboxInfo | AgentMailInboxError>;
 }

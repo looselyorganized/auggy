@@ -254,6 +254,42 @@ describe("AgentMail SDK catch-up reader", () => {
     expect(error).toMatchObject({ httpStatus: 503, retryable: true });
     expect(String(error)).not.toContain("sk-secret");
   });
+
+  test("classifies transient read failures consistently with inbox healthchecks", async () => {
+    for (const httpStatus of [408, 425, 429, 503] as const) {
+      const fake = fakeSdk({
+        async list() {
+          throw { statusCode: httpStatus };
+        },
+      });
+      const adapters = createAgentMailSdkAdapters({ apiKey: "am_test", _sdk: fake.sdk as never });
+      let error: unknown;
+      try {
+        await adapters.catchUp.listMessages({ inboxId: "support@agentmail.to" });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toMatchObject({ httpStatus, retryable: true });
+    }
+  });
+
+  test("keeps deterministic read failures non-retryable", async () => {
+    for (const httpStatus of [400, 401, 403, 404, 422] as const) {
+      const fake = fakeSdk({
+        async list() {
+          throw { statusCode: httpStatus };
+        },
+      });
+      const adapters = createAgentMailSdkAdapters({ apiKey: "am_test", _sdk: fake.sdk as never });
+      let error: unknown;
+      try {
+        await adapters.catchUp.listMessages({ inboxId: "support@agentmail.to" });
+      } catch (caught) {
+        error = caught;
+      }
+      expect(error).toMatchObject({ httpStatus, retryable: false });
+    }
+  });
 });
 
 describe("runAgentMailCatchUp", () => {

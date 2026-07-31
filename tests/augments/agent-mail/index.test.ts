@@ -1853,39 +1853,165 @@ describe("onBoot", () => {
     await expect(aug.onBoot?.()).rejects.toThrow(/invalid identity/);
   });
 
-  test("warn-and-continues on 5xx healthcheck failure", async () => {
-    const failingClient = fakeClient({
-      async getInbox() {
-        return {
-          status: "failed" as const,
-          detail: "AgentMail 503",
-          httpStatus: 503,
-        };
-      },
-    });
-    const aug = agentMail({ ...baseOpts, _client: failingClient.client });
-    // Should NOT throw — transient outage shouldn't block boot.
-    await expect(aug.onBoot?.()).resolves.toBeUndefined();
-    const info = await aug.adminInfo!();
-    expect(info.sections.find((section) => section.kind === "status")).toMatchObject({
-      kind: "status",
-      level: "warn",
-      message: expect.stringContaining("AgentMail 503"),
-    });
-  });
+  const transientHealthFailures = [
+    {
+      label: "network",
+      detail: "AgentMail network unavailable",
+      httpStatus: undefined,
+      failureKind: "network",
+    },
+    { label: "HTTP 408", detail: "AgentMail 408", httpStatus: 408, failureKind: "provider" },
+    { label: "HTTP 425", detail: "AgentMail 425", httpStatus: 425, failureKind: "provider" },
+    { label: "HTTP 429", detail: "AgentMail 429", httpStatus: 429, failureKind: "provider" },
+    { label: "HTTP 503", detail: "AgentMail 503", httpStatus: 503, failureKind: "provider" },
+  ] as const;
 
-  test("throws on 4xx healthcheck failure (config error)", async () => {
-    const failingClient = fakeClient({
-      async getInbox() {
-        return {
-          status: "failed" as const,
-          detail: "AgentMail 401: invalid api key",
-          httpStatus: 401,
-        };
-      },
+  for (const failure of transientHealthFailures) {
+    test(`warn-and-continues on transient ${failure.label} without publishing an unverified address`, async () => {
+      const failingClient = fakeClient({
+        async getInbox() {
+          return {
+            status: "failed" as const,
+            detail: failure.detail,
+            failureKind: failure.failureKind,
+            ...(failure.httpStatus === undefined ? {} : { httpStatus: failure.httpStatus }),
+          };
+        },
+      });
+      const aug = agentMail({
+        ...baseOpts,
+        addressVisibility: "public",
+        _client: failingClient.client,
+      });
+
+      await expect(aug.onBoot?.()).resolves.toBeUndefined();
+      expect(await aug.context!(turnState(peer("public")))).toEqual([]);
+      const info = await aug.adminInfo!();
+      expect(info.sections.find((section) => section.kind === "status")).toMatchObject({
+        kind: "status",
+        level: "warn",
+        message: expect.stringContaining(failure.detail),
+      });
+      const keyValue = info.sections.find((section) => section.kind === "keyValue");
+      expect(keyValue?.kind).toBe("keyValue");
+      if (keyValue?.kind === "keyValue") {
+        expect(keyValue.rows.find((row) => row.label === "Inbox email")).toMatchObject({
+          value: "(unavailable — run AgentMail setup)",
+          source: "unavailable",
+        });
+      }
     });
-    const aug = agentMail({ ...baseOpts, _client: failingClient.client });
-    await expect(aug.onBoot?.()).rejects.toThrow(/401/);
+
+    test(`warn-and-continues on transient ${failure.label} with the setup-verified address`, async () => {
+      const failingClient = fakeClient({
+        async getInbox() {
+          return {
+            status: "failed" as const,
+            detail: failure.detail,
+            failureKind: failure.failureKind,
+            ...(failure.httpStatus === undefined ? {} : { httpStatus: failure.httpStatus }),
+          };
+        },
+      });
+      const aug = agentMail({
+        ...baseOpts,
+        emailAddress: "Setup-Verified@Example.com",
+        addressVisibility: "public",
+        _client: failingClient.client,
+      });
+
+      await expect(aug.onBoot?.()).resolves.toBeUndefined();
+      expect(JSON.stringify(await aug.context!(turnState(peer("public"))))).toContain(
+        "setup-verified@example.com",
+      );
+      const info = await aug.adminInfo!();
+      const keyValue = info.sections.find((section) => section.kind === "keyValue");
+      expect(keyValue?.kind).toBe("keyValue");
+      if (keyValue?.kind === "keyValue") {
+        expect(keyValue.rows.find((row) => row.label === "Inbox email")).toMatchObject({
+          value: "setup-verified@example.com",
+          source: "configured",
+        });
+      }
+    });
+  }
+
+  for (const httpStatus of [400, 401, 403, 404, 422] as const) {
+    for (const emailAddress of [undefined, "setup-verified@example.com"] as const) {
+      test(`fails closed on deterministic HTTP ${httpStatus} healthcheck failure ${emailAddress ? "with" : "without"} a configured address`, async () => {
+        const failingClient = fakeClient({
+          async getInbox() {
+            return {
+              status: "failed" as const,
+              detail: `AgentMail ${httpStatus}`,
+              httpStatus,
+              failureKind: "provider" as const,
+            };
+          },
+        });
+        const aug = agentMail({
+          ...baseOpts,
+          ...(emailAddress ? { emailAddress } : {}),
+          _client: failingClient.client,
+        });
+        await expect(aug.onBoot?.()).rejects.toThrow(new RegExp(String(httpStatus)));
+      });
+    }
+  }
+
+  test("keeps inbox identity and health status isolated between instances", async () => {
+    const support = agentMail({
+      ...baseOpts,
+      instanceId: "support",
+      inboxId: "inb_support",
+      emailAddress: "support@example.com",
+      addressVisibility: "public",
+      _client: fakeClient({
+        async getInbox() {
+          return {
+            status: "failed" as const,
+            detail: "support inbox rate limited",
+            httpStatus: 429,
+            failureKind: "provider" as const,
+          };
+        },
+      }).client,
+    });
+    const billing = agentMail({
+      ...baseOpts,
+      instanceId: "billing",
+      inboxId: "inb_billing",
+      addressVisibility: "public",
+      _client: fakeClient({
+        async getInbox(inboxId) {
+          return { status: "ok" as const, inboxId, email: "billing@example.com" };
+        },
+      }).client,
+    });
+
+    try {
+      await expect(Promise.all([support.onBoot?.(), billing.onBoot?.()])).resolves.toEqual([
+        undefined,
+        undefined,
+      ]);
+      expect(JSON.stringify(await support.context!(turnState(peer("public"))))).toContain(
+        "support@example.com",
+      );
+      expect(JSON.stringify(await billing.context!(turnState(peer("public"))))).toContain(
+        "billing@example.com",
+      );
+      expect((await support.adminInfo!()).sections[0]).toMatchObject({
+        kind: "status",
+        level: "warn",
+        message: expect.stringContaining("support inbox rate limited"),
+      });
+      expect((await billing.adminInfo!()).sections[0]).toMatchObject({
+        kind: "status",
+        level: "ok",
+      });
+    } finally {
+      await Promise.all([support.onShutdown?.(), billing.onShutdown?.()]);
+    }
   });
 
   test("throws when AGENTMAIL_API_KEY is unresolved (placeholder)", async () => {
