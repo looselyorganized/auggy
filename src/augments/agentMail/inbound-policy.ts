@@ -1,5 +1,6 @@
 import type {
   AgentMailInboundConfig,
+  AgentMailInboundRateLimitOptions,
   AgentMailInboundReplyMode,
   AgentMailOutboundOptions,
 } from "../../types";
@@ -17,6 +18,8 @@ export const AGENTMAIL_MAX_PROMPT_BYTES = 1024 * 1024;
 export const AGENTMAIL_MAX_ATTEMPTS = 20;
 export const AGENTMAIL_MAX_ALLOWED_SENDERS = 1_000;
 export const AGENTMAIL_MAX_AUTOMATIC_REPLIES_PER_HOUR = 100;
+export const AGENTMAIL_MAX_INBOUND_GLOBAL_PER_HOUR = 10_000;
+export const AGENTMAIL_MAX_INBOUND_PER_SENDER_PER_HOUR = 1_000;
 
 export interface ResolvedAgentMailInboundReplies {
   mode: AgentMailInboundReplyMode;
@@ -48,9 +51,12 @@ const DEFAULT_CLASSIFICATION_ACTIONS = {
 } as const satisfies Required<NonNullable<AgentMailInboundConfig["classifications"]>>;
 
 const REPLY_FIELDS = new Set(["mode", "allowReplyAll"]);
+const INBOUND_RATE_LIMIT_FIELDS = new Set(["globalMaxPerHour", "perSenderMaxPerHour"]);
 const INBOUND_FIELDS = new Set([
   "mode",
   "allowedSenders",
+  "allowAnySender",
+  "rateLimit",
   "classifications",
   "replies",
   "creatorDigest",
@@ -119,6 +125,11 @@ export function normalizeAgentMailAllowedSenders(values: readonly string[]): str
         "agentMail: inbound.allowedSenders entries must not contain control characters",
       );
     }
+    if (value === "*") {
+      throw new Error(
+        'agentMail: inbound.allowedSenders does not accept "*"; use inbound.allowAnySender: true with a bounded inbound.rateLimit',
+      );
+    }
 
     const candidate = value.toLowerCase();
     const valid = candidate.startsWith("*@")
@@ -138,6 +149,52 @@ export function normalizeAgentMailAllowedSenders(values: readonly string[]): str
     normalized.push(candidate);
   }
   return normalized;
+}
+
+/** Validate the optional durable inbound admission quota contract. */
+export function validateAgentMailInboundRateLimit(
+  value: unknown,
+): AgentMailInboundRateLimitOptions {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    throw new Error("agentMail: inbound.rateLimit must be an object");
+  }
+  const rateLimit = value as Record<string, unknown>;
+  for (const field of Object.keys(rateLimit)) {
+    if (!INBOUND_RATE_LIMIT_FIELDS.has(field)) {
+      throw new Error(`agentMail: unsupported inbound.rateLimit field ${JSON.stringify(field)}`);
+    }
+  }
+
+  const globalMaxPerHour = rateLimit.globalMaxPerHour;
+  if (
+    typeof globalMaxPerHour !== "number" ||
+    !Number.isSafeInteger(globalMaxPerHour) ||
+    globalMaxPerHour < 1 ||
+    globalMaxPerHour > AGENTMAIL_MAX_INBOUND_GLOBAL_PER_HOUR
+  ) {
+    throw new Error(
+      `agentMail: inbound.rateLimit.globalMaxPerHour must be a safe integer between 1 and ${AGENTMAIL_MAX_INBOUND_GLOBAL_PER_HOUR}`,
+    );
+  }
+
+  const perSenderMaxPerHour = rateLimit.perSenderMaxPerHour;
+  if (
+    typeof perSenderMaxPerHour !== "number" ||
+    !Number.isSafeInteger(perSenderMaxPerHour) ||
+    perSenderMaxPerHour < 1 ||
+    perSenderMaxPerHour > AGENTMAIL_MAX_INBOUND_PER_SENDER_PER_HOUR
+  ) {
+    throw new Error(
+      `agentMail: inbound.rateLimit.perSenderMaxPerHour must be a safe integer between 1 and ${AGENTMAIL_MAX_INBOUND_PER_SENDER_PER_HOUR}`,
+    );
+  }
+  if (perSenderMaxPerHour > globalMaxPerHour) {
+    throw new Error(
+      "agentMail: inbound.rateLimit.perSenderMaxPerHour must not exceed globalMaxPerHour",
+    );
+  }
+
+  return { globalMaxPerHour, perSenderMaxPerHour };
 }
 
 function selectedAgentMailEventTypes(
@@ -325,8 +382,26 @@ export function validateAgentMailInboundConfig(
       throw new Error("agentMail: inbound.allowedSenders must be an array");
     }
     normalizeAgentMailAllowedSenders(inbound.allowedSenders);
-  } else if (mode !== "none") {
-    throw new Error("agentMail: inbound.allowedSenders must be non-empty when inbound is enabled");
+  }
+
+  if (inbound.allowAnySender !== undefined && typeof inbound.allowAnySender !== "boolean") {
+    throw new Error("agentMail: inbound.allowAnySender must be a boolean");
+  }
+  if (inbound.allowedSenders !== undefined && inbound.allowAnySender !== undefined) {
+    throw new Error(
+      "agentMail: inbound.allowedSenders and inbound.allowAnySender cannot be combined",
+    );
+  }
+  if (inbound.rateLimit !== undefined) {
+    validateAgentMailInboundRateLimit(inbound.rateLimit);
+  }
+  if (inbound.allowAnySender === true && inbound.rateLimit === undefined) {
+    throw new Error("agentMail: inbound.allowAnySender requires a bounded inbound.rateLimit");
+  }
+  if (mode !== "none" && inbound.allowedSenders === undefined && inbound.allowAnySender !== true) {
+    throw new Error(
+      "agentMail: enabled inbound requires either non-empty inbound.allowedSenders or inbound.allowAnySender: true",
+    );
   }
 
   const config = value as AgentMailInboundConfig;

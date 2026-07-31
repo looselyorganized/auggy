@@ -122,7 +122,7 @@ describe("runtime state inventory", () => {
     expect(byId.get("agentmail-ledger:mail-a")?.relativePath).toBe(
       "agent-mail/mail-a/agent-mail.db",
     );
-    expect(byId.get("agentmail-ledger:mail-a")?.schema).toBe("AMIL/v4");
+    expect(byId.get("agentmail-ledger:mail-a")?.schema).toBe("AMIL/v5");
     expect(byId.get("agent-mail-rate/v2:mail-a")?.relativePath).toBe(
       "agent-mail/mail-a/agent-mail-state.json",
     );

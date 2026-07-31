@@ -124,11 +124,81 @@ describe("config-parser: agentMail validation", () => {
     expect(() => parseConfig(path)).toThrow(/inbound\.mode/);
   });
 
-  test("requires an explicit sender allowlist for enabled inbound modes", () => {
+  test("requires an explicit sender policy for enabled inbound modes", () => {
     const path = writeYaml(
       configWithAgentMail({ apiKey: "am_x", inboxId: "inb_x", inbound: { mode: "websocket" } }),
     );
     expect(() => parseConfig(path)).toThrow(/allowedSenders/);
+  });
+
+  test("accepts bounded public inbound and preserves allowlisted compatibility", () => {
+    for (const inbound of [
+      {
+        mode: "websocket",
+        allowAnySender: true,
+        rateLimit: { globalMaxPerHour: 100, perSenderMaxPerHour: 5 },
+      },
+      { mode: "polling", allowedSenders: ["*@company.example"] },
+    ]) {
+      const path = writeYaml(
+        configWithAgentMail({ apiKey: "am_x", inboxId: "inb_x", inbound }, [
+          { name: "web", type: "webTransport", options: { port: 18_080 } },
+        ]),
+      );
+      expect(() => parseConfig(path)).not.toThrow();
+    }
+  });
+
+  test("rejects ambiguous or unbounded public inbound admission", () => {
+    for (const inbound of [
+      { mode: "websocket", allowAnySender: true },
+      {
+        mode: "websocket",
+        allowedSenders: ["sender@example.com"],
+        allowAnySender: true,
+        rateLimit: { globalMaxPerHour: 100, perSenderMaxPerHour: 5 },
+      },
+      {
+        mode: "websocket",
+        allowAnySender: true,
+        rateLimit: { globalMaxPerHour: 5, perSenderMaxPerHour: 6 },
+      },
+    ]) {
+      const path = writeYaml(configWithAgentMail({ apiKey: "am_x", inboxId: "inb_x", inbound }));
+      expect(() => parseConfig(path)).toThrow(
+        /allowAnySender|cannot be combined|perSenderMaxPerHour/,
+      );
+    }
+  });
+
+  test("rejects wildcard shorthand with actionable public-inbox guidance", () => {
+    const path = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        inbound: { mode: "websocket", allowedSenders: ["*"] },
+      }),
+    );
+    expect(() => parseConfig(path)).toThrow(/allowAnySender: true.*inbound\.rateLimit/);
+  });
+
+  test("strictly validates inbound rate-limit shape through YAML parsing", () => {
+    for (const rateLimit of [
+      [],
+      {},
+      { globalMaxPerHour: 100, perSenderMaxPerHour: 5, typo: true },
+      { globalMaxPerHour: 10_001, perSenderMaxPerHour: 5 },
+      { globalMaxPerHour: 100, perSenderMaxPerHour: 1_001 },
+    ]) {
+      const path = writeYaml(
+        configWithAgentMail({
+          apiKey: "am_x",
+          inboxId: "inb_x",
+          inbound: { mode: "none", rateLimit },
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(/inbound\.rateLimit/);
+    }
   });
 
   test("accepts enabled inbound modes with policy configuration", () => {

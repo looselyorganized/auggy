@@ -558,6 +558,14 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   );
   const inboundReplies = validatedInbound.replies;
   const creatorDigestConfig = validatedInbound.creatorDigest;
+  const inboundRateLimit = validatedInbound.config.rateLimit;
+  const inboundSenderPolicy =
+    inboundMode === "none"
+      ? ("disabled" as const)
+      : validatedInbound.config.allowAnySender === true
+        ? ("any" as const)
+        : ("allowlist" as const);
+  const inboundAllowedSenderCount = validatedInbound.config.allowedSenders?.length ?? 0;
   if (inboundReplies.mode !== "disabled" && !stateDir && opts._reviewQueue === undefined) {
     throw new Error(
       "agentMail: enabled inbound replies require durable review storage; set agentDir/stateDir or provide the test-only _reviewQueue seam",
@@ -902,6 +910,8 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     const config = opts.inbound!;
     return {
       allowedSenders: config.allowedSenders ?? [],
+      allowAnySender: config.allowAnySender,
+      rateLimit: config.rateLimit,
       classifications: {
         "message.received": config.classifications?.received,
         "message.received.spam": config.classifications?.spam,
@@ -2707,6 +2717,12 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       ambiguous: 0,
       dismissed: 0,
     };
+    let inboundQuota = {
+      rollingGlobalUsage: 0,
+      globalRejections: 0,
+      perSenderRejections: 0,
+      lastRejectedAt: undefined as number | undefined,
+    };
     let checkpoint: string | undefined;
     if (inboundLedger) {
       try {
@@ -2718,6 +2734,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
           limit: 50,
         });
         attentionCounts = inboundLedger.creatorAttention.counts(opts.inboxId);
+        inboundQuota = inboundLedger.inboundQuotaStatus(opts.inboxId);
         checkpoint = inboundLedger.checkpoint(opts.inboxId);
       } catch (error) {
         recordProviderError(error);
@@ -2725,6 +2742,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     }
     const operationalWarnings: string[] = [];
     if (inboundMode !== "none" && !inboundReady) operationalWarnings.push("inbound not ready");
+    if (inboundSenderPolicy === "any") {
+      operationalWarnings.push("public inbound sender admission enabled");
+    }
     if (lastProviderError) operationalWarnings.push(`provider: ${lastProviderError}`);
     if (ambiguousReviews.length > 0) {
       operationalWarnings.push(
@@ -2902,6 +2922,45 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             { label: "Pending human reviews", value: String(pendingReviews.length) },
             { label: "Ambiguous sending reviews", value: String(ambiguousReviews.length) },
             { label: "Inbound mode", value: inboundMode, source: "yaml" },
+            {
+              label: "Inbound sender policy",
+              value:
+                inboundSenderPolicy === "any"
+                  ? "any well-formed sender"
+                  : inboundSenderPolicy === "allowlist"
+                    ? `${inboundAllowedSenderCount} allowlist entries`
+                    : "disabled",
+              source: "yaml",
+            },
+            {
+              label: "Inbound global cap (per hour)",
+              value: inboundRateLimit ? String(inboundRateLimit.globalMaxPerHour) : "(disabled)",
+              source: "yaml",
+            },
+            {
+              label: "Inbound per-sender cap (per hour)",
+              value: inboundRateLimit ? String(inboundRateLimit.perSenderMaxPerHour) : "(disabled)",
+              source: "yaml",
+            },
+            {
+              label: "Inbound rolling-hour usage",
+              value: String(inboundQuota.rollingGlobalUsage),
+            },
+            {
+              label: "Inbound global quota rejections",
+              value: String(inboundQuota.globalRejections),
+            },
+            {
+              label: "Inbound per-sender quota rejections",
+              value: String(inboundQuota.perSenderRejections),
+            },
+            {
+              label: "Last inbound quota rejection",
+              value:
+                inboundQuota.lastRejectedAt === undefined
+                  ? "(never)"
+                  : new Date(inboundQuota.lastRejectedAt).toISOString(),
+            },
             { label: "Inbound runtime", value: liveState },
             { label: "Inbound pending", value: String(ledgerCounts.pending) },
             { label: "Inbound processing", value: String(ledgerCounts.processing) },
@@ -3147,7 +3206,26 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         inboxId: opts.inboxId,
         ...(resolvedInboxEmail ? { inboxEmail: resolvedInboxEmail } : {}),
         status: { level: statusLevel, message: statusMessage },
-        inbound: { mode: inboundMode, state: liveState },
+        inbound: {
+          mode: inboundMode,
+          state: liveState,
+          senderPolicy: inboundSenderPolicy,
+          allowedSenderCount: inboundAllowedSenderCount,
+          ...(inboundSenderPolicy !== "disabled" && inboundRateLimit
+            ? {
+                rateLimit: {
+                  globalMaxPerHour: inboundRateLimit.globalMaxPerHour,
+                  perSenderMaxPerHour: inboundRateLimit.perSenderMaxPerHour,
+                  rollingGlobalUsage: inboundQuota.rollingGlobalUsage,
+                  globalRejections: inboundQuota.globalRejections,
+                  perSenderRejections: inboundQuota.perSenderRejections,
+                  ...(inboundQuota.lastRejectedAt === undefined
+                    ? {}
+                    : { lastRejectedAt: new Date(inboundQuota.lastRejectedAt).toISOString() }),
+                },
+              }
+            : {}),
+        },
         reviews: projectedReviews,
         attention: projectedAttention,
       },

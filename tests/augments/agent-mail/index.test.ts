@@ -297,10 +297,23 @@ describe("agentMail factory", () => {
     );
   });
 
-  test("requires an explicit sender allowlist when inbound is enabled", () => {
+  test("requires an explicit sender policy when inbound is enabled", () => {
     expect(() => agentMail({ ...baseOpts, inbound: { mode: "websocket" } })).toThrow(
       /allowedSenders/,
     );
+  });
+
+  test("accepts explicit bounded public inbound at the direct factory boundary", () => {
+    const aug = agentMail({
+      ...baseOpts,
+      _reviewQueue: createAgentMailReviewQueue(),
+      inbound: {
+        mode: "polling",
+        allowAnySender: true,
+        rateLimit: { globalMaxPerHour: 100, perSenderMaxPerHour: 5 },
+      },
+    });
+    expect(aug.transport).toBeDefined();
   });
 
   test("enforces inbound policy at the direct factory boundary", () => {
@@ -4130,6 +4143,84 @@ describe("adminInfo", () => {
       "/agentmail/reviews/:reviewId",
       "/agentmail/messages/:messageId",
     ]);
+  });
+
+  test("projects metadata-only public inbound quota diagnostics", async () => {
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:", now: () => 1_000 });
+    const firstEnvelope = receivedEnvelope("message_quota_admitted");
+    firstEnvelope.message.from = "customer@example.com";
+    ledger.enqueue(firstEnvelope);
+    const first = ledger.claimNext({ workerId: "quota-test", leaseMs: 10_000 })!;
+    expect(
+      ledger.reserveInboundQuota(first, {
+        canonicalSender: "customer@example.com",
+        globalMaxPerHour: 1,
+        perSenderMaxPerHour: 1,
+      }).status,
+    ).toBe("admitted");
+    expect(ledger.complete(first)).toBeTrue();
+
+    const secondEnvelope = receivedEnvelope("message_quota_rejected");
+    secondEnvelope.message.from = "other@example.com";
+    ledger.enqueue(secondEnvelope);
+    const second = ledger.claimNext({ workerId: "quota-test", leaseMs: 10_000 })!;
+    expect(
+      ledger.reserveInboundQuota(second, {
+        canonicalSender: "other@example.com",
+        globalMaxPerHour: 1,
+        perSenderMaxPerHour: 1,
+      }),
+    ).toEqual({ status: "discarded", reason: "policy-rate-limit-global" });
+
+    const aug = agentMail({
+      ...baseOpts,
+      _client: fakeClient().client,
+      _reviewQueue: createAgentMailReviewQueue(),
+      _inboundLedger: ledger,
+      _sdkAdapters: emptySdkAdapters(),
+      inbound: {
+        mode: "polling",
+        allowAnySender: true,
+        rateLimit: { globalMaxPerHour: 1, perSenderMaxPerHour: 1 },
+      },
+    });
+    try {
+      const info = await aug.adminInfo!();
+      const keyValue = info.sections.find((section) => section.kind === "keyValue");
+      expect(keyValue).toMatchObject({
+        kind: "keyValue",
+        rows: expect.arrayContaining([
+          expect.objectContaining({
+            label: "Inbound sender policy",
+            value: "any well-formed sender",
+          }),
+          expect.objectContaining({ label: "Inbound rolling-hour usage", value: "1" }),
+          expect.objectContaining({ label: "Inbound global quota rejections", value: "1" }),
+        ]),
+      });
+      expect(info.projection).toMatchObject({
+        kind: "mail",
+        inbound: {
+          senderPolicy: "any",
+          allowedSenderCount: 0,
+          rateLimit: {
+            globalMaxPerHour: 1,
+            perSenderMaxPerHour: 1,
+            rollingGlobalUsage: 1,
+            globalRejections: 1,
+            perSenderRejections: 0,
+            lastRejectedAt: "1970-01-01T00:00:01.000Z",
+          },
+        },
+      });
+      const serialized = JSON.stringify(info);
+      expect(serialized).not.toContain("customer@example.com");
+      expect(serialized).not.toContain("other@example.com");
+      expect(ledger.creatorAttention.counts(baseOpts.inboxId).open).toBe(0);
+    } finally {
+      await aug.onShutdown!();
+      ledger.close();
+    }
   });
 
   test("projects only mail metadata and serves inbound bodies on demand", async () => {

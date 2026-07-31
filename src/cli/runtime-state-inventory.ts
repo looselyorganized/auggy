@@ -694,9 +694,9 @@ export function buildRuntimeStateInventory(
             namespace,
             path,
             runtimeDataRoot,
-            schema: "AMIL/v4",
+            schema: "AMIL/v5",
             retention:
-              "terminal inbound work and unresolved creator-digest batches retained according to ledger policy",
+              "terminal inbound work, bounded content-free policy tombstones, fail-closed rejection filter, quota aggregates, and unresolved creator-digest batches retained according to ledger policy",
             restoreOrder: 50,
             replayCritical: true,
             required:

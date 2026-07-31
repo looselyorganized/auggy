@@ -9,6 +9,7 @@ import {
 } from "../../../src/augments/agentMail/creator-digest";
 import {
   AGENTMAIL_LEDGER_APPLICATION_ID,
+  AGENTMAIL_LEDGER_SCHEMA_VERSION,
   createAgentMailInboundLedger,
   type AgentMailInboundLedger,
 } from "../../../src/augments/agentMail/inbound-ledger";
@@ -428,7 +429,7 @@ describe("AgentMail creator digest", () => {
     const probe = new Database(dbPath, { readonly: true });
     expect(
       probe.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version,
-    ).toBe(4);
+    ).toBe(AGENTMAIL_LEDGER_SCHEMA_VERSION);
     expect(
       probe.query<{ application_id: number }, []>("PRAGMA application_id").get()?.application_id,
     ).toBe(AGENTMAIL_LEDGER_APPLICATION_ID);

@@ -45,6 +45,12 @@ describe("MailActionCenter", () => {
     expect(html).toContain("east@example.com");
     expect(html).toContain('aria-label="Pending email reviews"');
     expect(html).toContain('aria-label="Email creator attention"');
+    expect(html).toContain("public senders");
+    expect(html).toContain("Any well-formed sender may start an untrusted public email turn");
+    expect(html).toContain("Inbound quota: 7/100 admitted this rolling hour");
+    expect(html).toContain("5 per sender");
+    expect(html).toContain("1 global / 2 per-sender rejected");
+    expect(html).toContain("Last rejection:");
     expect(html).not.toContain("private body");
   });
 
@@ -203,7 +209,20 @@ function projection(): MailDashboardProjection {
         inboxId: "ibx_west",
         inboxEmail: "west@example.com",
         status: { level: "ok", message: "Inbound websocket ready" },
-        inbound: { mode: "websocket", state: "ready" },
+        inbound: {
+          mode: "websocket",
+          state: "ready",
+          senderPolicy: "any",
+          allowedSenderCount: 0,
+          rateLimit: {
+            globalMaxPerHour: 100,
+            perSenderMaxPerHour: 5,
+            rollingGlobalUsage: 7,
+            globalRejections: 1,
+            perSenderRejections: 2,
+            lastRejectedAt: "2026-07-30T10:02:00.000Z",
+          },
+        },
         reviews: [
           {
             rowKey: "review_1",

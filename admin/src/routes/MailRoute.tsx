@@ -176,11 +176,42 @@ function InboxSummary({
               <Badge variant={instance.inbound.state === "ready" ? "success" : "secondary"}>
                 {instance.inbound.state}
               </Badge>
+              {instance.inbound.senderPolicy === "any" && (
+                <Badge variant="warn">public senders</Badge>
+              )}
+              {instance.inbound.senderPolicy === "allowlist" && (
+                <Badge variant="outline">
+                  {instance.inbound.allowedSenderCount ?? 0} allowed sender
+                  {(instance.inbound.allowedSenderCount ?? 0) === 1 ? "" : "s"}
+                </Badge>
+              )}
             </div>
             <p className="mt-1 break-all font-mono text-xs text-muted-foreground">
               {instance.inboxId} · {instance.augmentName}
             </p>
             <p className="mt-2 text-sm text-muted-foreground">{instance.status.message}</p>
+            {instance.inbound.senderPolicy === "any" && (
+              <p className="mt-2 flex items-center gap-1.5 text-xs text-amber-700 dark:text-amber-300">
+                <AlertTriangle className="size-3.5 shrink-0" aria-hidden="true" />
+                Any well-formed sender may start an untrusted public email turn.
+              </p>
+            )}
+            {instance.inbound.rateLimit && (
+              <div className="mt-2 grid gap-1 text-xs text-muted-foreground">
+                <p>
+                  Inbound quota: {instance.inbound.rateLimit.rollingGlobalUsage}/
+                  {instance.inbound.rateLimit.globalMaxPerHour} admitted this rolling hour · max{" "}
+                  {instance.inbound.rateLimit.perSenderMaxPerHour} per sender ·{" "}
+                  {instance.inbound.rateLimit.globalRejections} global /{" "}
+                  {instance.inbound.rateLimit.perSenderRejections} per-sender rejected total
+                </p>
+                {instance.inbound.rateLimit.lastRejectedAt && (
+                  <p>
+                    Last rejection: {formatTimestamp(instance.inbound.rateLimit.lastRejectedAt)}
+                  </p>
+                )}
+              </div>
+            )}
           </div>
         </div>
         <div className="shrink-0 text-left sm:text-right">

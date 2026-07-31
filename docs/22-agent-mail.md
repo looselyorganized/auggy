@@ -46,11 +46,13 @@ simpler.
 
 ## Configuration
 
-Inbound is disabled by default. Enabling it requires a non-empty sender
-allowlist. Exact addresses and `*@domain` patterns are compared case
-insensitively. Patterns must be canonical email/domain forms; broad or partial
-wildcards such as `*` and `foo*` are rejected instead of silently matching
-nothing. A domain pattern matches that exact domain, not its subdomains.
+Inbound is disabled by default. Enabling it requires exactly one sender policy:
+a non-empty `allowedSenders` list, or the explicit public-inbox switch
+`allowAnySender: true`. Configuring both is rejected. Exact addresses and
+`*@domain` patterns are compared case insensitively. Patterns must be canonical
+email/domain forms; broad or partial wildcards such as `*` and `foo*` remain
+invalid. Use `allowAnySender: true` when every well-formed sender should be
+eligible. A domain pattern matches that exact domain, not its subdomains.
 
 ```yaml
 # agent.yaml
@@ -102,6 +104,10 @@ config:
     allowedSenders:
       - support@example.com
       - "*@customer.example"
+    # Optional for an allowlisted inbox. The window is a rolling local hour.
+    rateLimit:
+      globalMaxPerHour: 100
+      perSenderMaxPerHour: 5
     pollIntervalMs: 60000
     maxPromptBytes: 102400
     maxAttempts: 5
@@ -129,6 +135,43 @@ config:
     #   secretEnv: AGENTMAIL_WEBHOOK_SECRET
     #   timestampToleranceSeconds: 300
 ```
+
+For a deliberately public inbox, replace `allowedSenders` with
+`allowAnySender: true`. Public admission must always have both finite limits:
+
+```yaml
+inbound:
+  mode: websocket
+  allowAnySender: true
+  rateLimit:
+    globalMaxPerHour: 100
+    perSenderMaxPerHour: 5
+```
+
+`100` globally and `5` per sender is the recommended starting posture for a
+public inbox. `globalMaxPerHour` accepts 1–10,000,
+`perSenderMaxPerHour` accepts 1–1,000, and the per-sender limit cannot exceed
+the global limit. Allowlisted inboxes may omit `rateLimit` to preserve their
+existing behavior, or configure the same bounded fields for defense in depth.
+Changing inbound admission or limit settings requires editing YAML and
+restarting the agent; there is no live Console override.
+
+These limits protect Auggy's local admission and model-processing boundary.
+They do not reject mail at SMTP time or prevent AgentMail from accepting and
+storing it upstream. Usage is counted over a rolling hour using local admission
+time. Provider duplicates, reconnects, and retries do not create another
+charge for the same message.
+
+After the local worker evaluates any pre-model policy rejection, it atomically
+replaces the stored sender, recipients, subject, body, attachment metadata, and
+provider label list with a fixed-shape content-free tombstone. Each inbox
+retains at most 1,000 such tombstones; lifetime quota counters and a fixed-size
+probabilistic rejection filter live in a separate bounded aggregate. The
+filter has no false negatives, so an evicted rejected message cannot re-enter
+after the rolling window advances. Under extreme rejection volume a hash
+collision may reject additional new mail, which is the fail-closed outcome.
+This bounds terminal rejection evidence, not transient full messages already
+accepted upstream or waiting for local evaluation.
 
 Credential-bearing AgentMail endpoints require HTTPS/WSS. Plaintext HTTP/WS is
 accepted only for loopback development. A remote sandbox that cannot use TLS
@@ -221,7 +264,8 @@ removed by the ledger.
 
 ## Inbound trust and prompt shape
 
-Email is untrusted input, even when its sender matches `allowedSenders`.
+Email is untrusted input, whether its sender matches `allowedSenders` or the
+inbox deliberately uses `allowAnySender`.
 The allowlist accepts at most 1,000 exact-address or exact-domain patterns;
 use a domain pattern for a large company inbox instead of enumerating every
 employee address.
@@ -239,9 +283,17 @@ restricted spam/blocked/unauthenticated buckets and filters ordinary results
 locally. This keeps scoped keys least privileged. A verified webhook may still deliver another received
 classification; that event is durably discarded before kernel admission.
 
+A malformed `From` address is rejected before model admission. Sender quota
+keys are case-insensitive, but plus-address aliases remain distinct addresses;
+the global cap is therefore the authoritative bound against sender rotation.
+When either quota is exhausted, the message is durably rate-limited and
+content-compacted without a model turn, automatic reply, pending review,
+creator-attention record, or creator notification. Rate-limited mail is not
+deferred into a backlog that could wake the agent after the window advances.
+
 Definitively failed turns are retried. After `maxAttempts` (default 5), the
 message is durably discarded rather than looping forever. A turn whose effects
-are outcome-unknown is never retried: `AMIL/v4` creates a server-minted
+are outcome-unknown is never retried: `AMIL/v5` creates a server-minted
 incident, blocks every later message in that provider thread, and restores the
 kernel thread quarantine after process restart. `pollIntervalMs` ranges from
 one second to 24 hours, `maxPromptBytes` ranges from 512 bytes to 1 MiB, and
@@ -412,6 +464,8 @@ The creator-authenticated admin surface reports:
 - the canonical inbox email, its source, and model-context visibility;
 - inbound mode and live state;
 - pending, processing, processed, discarded, and outcome-unknown ledger counts;
+- sender policy, configured rolling global/per-sender caps, rolling global
+  usage, aggregate rejection counts, and the last rejection time;
 - creator-digest state, pending metadata item count, bounded attempts, and last
   successful presentation;
 - catch-up checkpoint, last catch-up summary, last inbound event, and last
@@ -426,13 +480,19 @@ The creator-authenticated admin surface reports:
   Inbound evidence is stored only as SHA-256; raw evidence is never written to
   the ledger.
 
+The Console marks unrestricted sender admission explicitly. Its quota
+diagnostics are metadata-only: they do not expose sender addresses, sender
+hashes, subjects, or bodies. They are observational; change the YAML and
+restart to adjust inbound limits.
+
 ## Common failures
 
 | Symptom | Likely cause and fix |
 | --- | --- |
 | `AGENTMAIL_API_KEY is unresolved` | Set the variable in `.env` and restart |
 | Inbox healthcheck returns 401/403 | Check the key, inbox ID, and provider permissions |
-| Inbound config rejects an empty allowlist | Add at least one exact sender or `*@domain`; enabled inbound is deny-by-default |
+| Inbound config rejects its sender policy | Configure either a non-empty exact/domain `allowedSenders` list or `allowAnySender: true`, never both; use `allowAnySender` instead of `"*"` |
+| Public inbound says rate limits are required | Set both `inbound.rateLimit.globalMaxPerHour` and `perSenderMaxPerHour`, with the per-sender value no greater than the global value, then restart |
 | Inbound setup/runtime returns 403 | Rotate or replace the scoped key with `message_read`; processing spam/blocked also needs its matching label-read permission |
 | Webhook mode says `webTransport` is required | Mount `webTransport` so the verified route can be served |
 | Human review says the admin route is required | Enable `webTransport.adminRoute` or change review/allowed trust levels |

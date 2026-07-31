@@ -167,6 +167,129 @@ describe("Mail dashboard projection", () => {
       reconcilePending: { actionId: "agentmail-inbound-reconcile-no-effect" },
     });
   });
+
+  it("preserves bounded public-inbound quota metadata", () => {
+    const valid = instance("mail-public", "public@example.com");
+    valid.inbound = {
+      mode: "websocket",
+      state: "ready",
+      senderPolicy: "any",
+      allowedSenderCount: 0,
+      rateLimit: {
+        globalMaxPerHour: 100,
+        perSenderMaxPerHour: 5,
+        rollingGlobalUsage: 12,
+        globalRejections: 3,
+        perSenderRejections: 7,
+        lastRejectedAt: "2026-07-31T12:00:00.000Z",
+      },
+    };
+
+    expect(
+      selectMailDashboard(
+        baseDashboard({ mail: { schemaVersion: 1, instances: [valid] } }),
+      )?.instances[0]?.inbound,
+    ).toEqual(valid.inbound);
+  });
+
+  it("rejects malformed or impossible public-inbound quota metadata", () => {
+    const cases = [
+      { senderPolicy: "everyone" },
+      { allowedSenderCount: 1_001 },
+      { senderPolicy: "any", allowedSenderCount: 0 },
+      { senderPolicy: "allowlist", allowedSenderCount: 0 },
+      { senderPolicy: "disabled", allowedSenderCount: 0 },
+      {
+        senderPolicy: "disabled",
+        allowedSenderCount: 0,
+        rateLimit: {
+          globalMaxPerHour: 10,
+          perSenderMaxPerHour: 1,
+          rollingGlobalUsage: 0,
+          globalRejections: 0,
+          perSenderRejections: 0,
+        },
+      },
+      {
+        senderPolicy: "any",
+        allowedSenderCount: 1,
+        rateLimit: {
+          globalMaxPerHour: 10,
+          perSenderMaxPerHour: 1,
+          rollingGlobalUsage: 0,
+          globalRejections: 0,
+          perSenderRejections: 0,
+        },
+      },
+      {
+        mode: "none",
+        senderPolicy: "any",
+        allowedSenderCount: 0,
+        rateLimit: {
+          globalMaxPerHour: 10,
+          perSenderMaxPerHour: 1,
+          rollingGlobalUsage: 0,
+          globalRejections: 0,
+          perSenderRejections: 0,
+        },
+      },
+      {
+        rateLimit: {
+          globalMaxPerHour: 10,
+          perSenderMaxPerHour: 11,
+          rollingGlobalUsage: 0,
+          globalRejections: 0,
+          perSenderRejections: 0,
+        },
+      },
+      {
+        rateLimit: {
+          globalMaxPerHour: 10_001,
+          perSenderMaxPerHour: 1,
+          rollingGlobalUsage: 0,
+          globalRejections: 0,
+          perSenderRejections: 0,
+        },
+      },
+      {
+        senderPolicy: "any",
+        allowedSenderCount: 0,
+        rateLimit: {
+          globalMaxPerHour: 10,
+          perSenderMaxPerHour: 1,
+          rollingGlobalUsage: 0,
+          globalRejections: 0,
+          perSenderRejections: 0,
+          lastRejectedAt: "not-a-timestamp",
+        },
+      },
+      {
+        senderPolicy: "any",
+        allowedSenderCount: 0,
+        rateLimit: {
+          globalMaxPerHour: 10,
+          perSenderMaxPerHour: 1,
+          rollingGlobalUsage: 0,
+          globalRejections: 0,
+          perSenderRejections: 0,
+          lastRejectedAt: "July 31, 2026",
+        },
+      },
+    ];
+
+    for (const inboundOverride of cases) {
+      const valid = instance("mail-public", "public@example.com");
+      const candidate = {
+        ...valid,
+        inbound: { ...valid.inbound, ...inboundOverride },
+      } as MailInstanceProjection;
+      expect(
+        selectMailDashboard(
+          baseDashboard({ mail: { schemaVersion: 1, instances: [candidate] } }),
+        ),
+      ).toBeNull();
+    }
+  });
 });
 
 function instance(augmentName: string, inboxEmail: string): MailInstanceProjection {

@@ -20,7 +20,9 @@ import {
   AGENTMAIL_MAX_PROMPT_BYTES,
   AGENTMAIL_MIN_PROMPT_BYTES,
   normalizeAgentMailAllowedSenders,
+  validateAgentMailInboundRateLimit,
 } from "./inbound-policy";
+import { canonicalizeEmail, isWellFormedEmail } from "../visitorAuth/email-validation";
 
 const DEFAULT_LEASE_MS = 5 * 60_000;
 const DEFAULT_MAX_ATTEMPTS = 5;
@@ -34,6 +36,13 @@ export type AgentMailInboundClassificationAction = "process" | "discard";
 export interface AgentMailInboundTurnPolicy {
   /** Exact addresses or `*@domain` patterns. Empty means deny every sender. */
   allowedSenders: readonly string[];
+  /** Explicitly admit every syntactically valid sender. Requires rateLimit. */
+  allowAnySender?: boolean;
+  /** Durable rolling-hour limits applied before model or attention effects. */
+  rateLimit?: {
+    globalMaxPerHour: number;
+    perSenderMaxPerHour: number;
+  };
   classifications?: Partial<
     Record<AgentMailReceivedEventType, AgentMailInboundClassificationAction>
   >;
@@ -188,14 +197,33 @@ export function createAgentMailInboundWorker(
       const messageId = claim.envelope.message.messageId;
       const decision = decideInbound(claim.envelope, inboxId, policy);
       if (!decision.process) {
-        if (!options.ledger.discard(claim, decision.reason)) {
+        if (!options.ledger.discardInboundPolicy(claim, decision.reason)) {
           return { status: "lease-lost", messageId };
         }
         return { status: "discarded", messageId, reason: decision.reason };
       }
 
+      if (policy.rateLimit) {
+        const quota = options.ledger.reserveInboundQuota(claim, {
+          canonicalSender: decision.canonicalSender,
+          globalMaxPerHour: policy.rateLimit.globalMaxPerHour,
+          perSenderMaxPerHour: policy.rateLimit.perSenderMaxPerHour,
+        });
+        if (quota.status === "discarded") {
+          return { status: "discarded", messageId, reason: quota.reason };
+        }
+      }
+
+      const admittedEnvelope =
+        claim.envelope.message.from === decision.canonicalSender
+          ? claim.envelope
+          : {
+              ...claim.envelope,
+              message: { ...claim.envelope.message, from: decision.canonicalSender },
+            };
+
       const trigger = agentMailEnvelopeToTrigger(
-        claim.envelope,
+        admittedEnvelope,
         sourceAugment,
         policy.maxPromptBytes,
         now(),
@@ -204,7 +232,7 @@ export function createAgentMailInboundWorker(
       let preparation: undefined | AgentMailInboundPreparationResult;
       try {
         preparation = await options.onTurnPrepared?.({
-          envelope: claim.envelope,
+          envelope: admittedEnvelope,
           trigger,
         });
       } catch {
@@ -260,7 +288,7 @@ export function createAgentMailInboundWorker(
           try {
             effectsObserved =
               (await options.onTurnEffectsObserved?.({
-                envelope: claim.envelope,
+                envelope: admittedEnvelope,
                 trigger,
               })) ?? false;
           } catch {
@@ -294,7 +322,7 @@ export function createAgentMailInboundWorker(
         try {
           effectsObserved =
             (await options.onTurnEffectsObserved?.({
-              envelope: claim.envelope,
+              envelope: admittedEnvelope,
               trigger,
               turn,
             })) ?? false;
@@ -309,7 +337,7 @@ export function createAgentMailInboundWorker(
         if (turn.success) {
           try {
             await options.onTurnCompleted?.({
-              envelope: claim.envelope,
+              envelope: admittedEnvelope,
               trigger,
               turn,
             });
@@ -404,7 +432,7 @@ function decideInbound(
   envelope: AgentMailInboundEnvelope,
   inboxId: string,
   policy: NormalizedPolicy,
-): { process: true } | { process: false; reason: string } {
+): { process: true; canonicalSender: string } | { process: false; reason: string } {
   if (envelope.message.inboxId !== inboxId) {
     return { process: false, reason: "policy-inbox-mismatch" };
   }
@@ -412,10 +440,14 @@ function decideInbound(
   if (action !== "process") {
     return { process: false, reason: `policy-classification-${envelope.eventType}` };
   }
-  if (!senderMatches(envelope.message.from, policy.allowedSenders)) {
+  const canonicalSender = canonicalizeEmail(envelope.message.from);
+  if (!isWellFormedEmail(canonicalSender)) {
+    return { process: false, reason: "policy-sender-invalid" };
+  }
+  if (!policy.allowAnySender && !senderMatches(canonicalSender, policy.allowedSenders)) {
     return { process: false, reason: "policy-sender-not-allowed" };
   }
-  return { process: true };
+  return { process: true, canonicalSender };
 }
 
 function retryDefinitiveFailure(
@@ -440,13 +472,17 @@ function senderPeer(
   sourceAugment: string,
   threadId: string,
 ): PeerIdentity {
+  const canonicalSender = canonicalizeEmail(message.from);
+  if (!isWellFormedEmail(canonicalSender)) {
+    throw new Error("agentMail inbound worker: sender must be a well-formed email address");
+  }
   return {
-    id: opaqueId("am-anon", `${message.inboxId}\0${message.from}\0${threadId}`),
+    id: opaqueId("am-anon", `${message.inboxId}\0${canonicalSender}\0${threadId}`),
     kind: "human",
     trustLevel: "public",
     publicSubstate: "anonymous",
     sourceAugment,
-    displayName: message.from,
+    displayName: canonicalSender,
   };
 }
 
@@ -512,6 +548,11 @@ function opaqueId(prefix: string, value: string): string {
 
 interface NormalizedPolicy {
   allowedSenders: readonly string[];
+  allowAnySender: boolean;
+  rateLimit?: {
+    globalMaxPerHour: number;
+    perSenderMaxPerHour: number;
+  };
   classifications: Record<AgentMailReceivedEventType, AgentMailInboundClassificationAction>;
   maxPromptBytes: number;
   maxAttempts: number;
@@ -536,6 +577,21 @@ function normalizePolicy(policy: AgentMailInboundTurnPolicy): NormalizedPolicy {
       `agentMail inbound worker: maxAttempts must be between 1 and ${AGENTMAIL_MAX_ATTEMPTS}`,
     );
   }
+  if (policy.allowAnySender !== undefined && typeof policy.allowAnySender !== "boolean") {
+    throw new Error("agentMail inbound worker: allowAnySender must be a boolean");
+  }
+  const allowAnySender = policy.allowAnySender === true;
+  if (allowAnySender && policy.allowedSenders.length > 0) {
+    throw new Error(
+      "agentMail inbound worker: allowAnySender cannot be combined with allowedSenders",
+    );
+  }
+  if (allowAnySender && !policy.rateLimit) {
+    throw new Error("agentMail inbound worker: allowAnySender requires durable rateLimit caps");
+  }
+  const rateLimit = policy.rateLimit
+    ? validateAgentMailInboundRateLimit(policy.rateLimit)
+    : undefined;
   return {
     // The worker boundary retains an explicit empty deny-all policy for
     // direct/internal callers. Public augment configuration rejects empty
@@ -544,6 +600,8 @@ function normalizePolicy(policy: AgentMailInboundTurnPolicy): NormalizedPolicy {
       policy.allowedSenders.length === 0
         ? []
         : normalizeAgentMailAllowedSenders(policy.allowedSenders),
+    allowAnySender,
+    ...(rateLimit ? { rateLimit } : {}),
     classifications: {
       "message.received": policy.classifications?.["message.received"] ?? "process",
       "message.received.spam": policy.classifications?.["message.received.spam"] ?? "discard",

@@ -47,10 +47,17 @@ tampered, or newer database fails without stamping or mutating it.
 | Web idempotency and rate limits | `AUID/v2` | Exact v1 migration fixture | Restore bundle; do not roll back terminal request evidence independently |
 | Console chat/history | `CCHT/v4` | Exact v2 and v3 fixtures migrate to v4 | Restore bundle with matching thread ownership/history state |
 | Telegram replay/conflicts | `TGRP/v2` | Exact prior replay fixture | Restore bundle and reconcile provider offsets/conflicts before ingress |
-| AgentMail inbound ledger | `AMIL/v4` | Exact v1, v2, and v3 fixtures | Restore bundle and reconcile mailbox/downstream delivery and pending digest state |
+| AgentMail inbound ledger | `AMIL/v5` | Exact v1, v2, v3, and v4 fixtures | Restore bundle and reconcile mailbox/downstream delivery, inbound quota, and pending digest state |
 | Notify delivery incidents/quotas | `NTFY/v2` | Exact v1 migration fixture | Restore bundle and reconcile outcome-unknown notifications and internal retry authorizations |
 | Durable jobs and schedules | `DJOB/v2` | Exact branded `DJOB/v1` migrates atomically to v2; lookalikes fail before DDL | Restore the complete pre-upgrade bundle to roll back; reconcile every ambiguous downstream effect before enabling schedules or ingress |
 | Local runtime claims and launchd generations | `AUCL/v2` | Exact branded v1 claim table migrates to v2 | Local CLI control state, not runtime-volume state; stop and unload every local agent before restoring the matching registry |
+
+Runtime-state restore intentionally requires an exact replay-critical schema
+topology. A bundle declaring `AMIL/v4` can be verified by this release, but it
+cannot be restored directly into an inventory that declares `AMIL/v5`. Restore
+that bundle with the retained v4 Auggy binary first, then start the v5 binary
+against the restored runtime volume so the owned ledger migration runs before
+ingress. Do not copy only the ledger around this fence.
 
 Thread-history snapshots (`version: 1`), anonymous-session proofs
 (`version: 1`), Link provenance (`version: 1`), and model snapshots

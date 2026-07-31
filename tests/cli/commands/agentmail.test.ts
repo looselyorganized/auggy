@@ -616,7 +616,7 @@ describe("agentmail setup command", () => {
       { inbound: { mode: "websocket" }, expected: /allowedSenders/ },
       {
         inbound: { mode: "websocket", allowedSenders: ["*"] },
-        expected: /sender pattern/,
+        expected: /allowAnySender/,
       },
       {
         inbound: {

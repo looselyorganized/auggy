@@ -18,6 +18,7 @@ import { createSqliteTelegramReplayStore } from "../../src/augments/telegramTran
 import { createAgentMailReviewQueue } from "../../src/augments/agentMail/review-queue";
 import {
   assertNoRuntimeStateRestoreFence,
+  assertRuntimeStateRestoreCompatibility,
   admitRuntimeStateIdentity,
   createRuntimeStateBundle,
   readRuntimeStateRestoreFence,
@@ -387,6 +388,29 @@ describe("runtime state bundle", () => {
     expect(existsSync(destination)).toBe(false);
   });
 
+  test("verifies AMIL/v4 bundles but preserves the exact cross-version restore boundary", () => {
+    const paths = fixture();
+    const bundledInventory = inventory();
+    bundledInventory.stores[0]!.id = "agentmail-ledger:support";
+    bundledInventory.stores[0]!.owner = "augment:agentMail";
+    bundledInventory.stores[0]!.relativePath = "agent-mail/support/inbound-ledger.sqlite";
+    bundledInventory.stores[0]!.schema = "AMIL/v4";
+    const bundlePath = join(paths.backups, "agentmail-v4.auggy-state");
+    createRuntimeStateBundle({
+      sourceRoot: paths.source,
+      bundlePath,
+      inventory: bundledInventory,
+      confirmStopped: true,
+    });
+    expect(verifyRuntimeStateBundle(bundlePath).inventory.stores[0]?.schema).toBe("AMIL/v4");
+
+    const currentInventory = structuredClone(bundledInventory);
+    currentInventory.stores[0]!.schema = "AMIL/v5";
+    expect(() =>
+      assertRuntimeStateRestoreCompatibility(bundledInventory, currentInventory),
+    ).toThrow("replay-critical state topology is incompatible");
+  });
+
   test("rejects wrong declared SQLite identity and bounded byte overflow", () => {
     const paths = fixture();
     const foreign = new Database(join(paths.source, "web-idempotency.db"));
@@ -432,10 +456,11 @@ describe("runtime state bundle", () => {
     expect(readdirSync(paths.backups)).toEqual([]);
   });
 
-  test("admits exact legacy inventory identities, including the historical AMIL/v2 label", () => {
+  test("admits exact legacy inventory identities, including historical AMIL labels", () => {
     const paths = fixture();
     for (const [filename, schema, applicationId, userVersion] of [
       ["agent-mail-v2-label.db", "AMIL/v2", 0x414d494c, 3],
+      ["agent-mail-v4.db", "AMIL/v4", 0x414d494c, 4],
       ["notify-v1.db", "NTFY/v1", 0x4e544659, 1],
     ] as const) {
       const db = new Database(join(paths.source, filename));

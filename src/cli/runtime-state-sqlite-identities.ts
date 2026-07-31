@@ -62,9 +62,13 @@ export const RUNTIME_STATE_SQLITE_IDENTITIES: Readonly<Record<string, RuntimeSta
       applicationId: TELEGRAM_REPLAY_APPLICATION_ID,
       userVersion: TELEGRAM_REPLAY_SCHEMA_VERSION,
     },
-    "AMIL/v4": {
+    "AMIL/v5": {
       applicationId: AGENTMAIL_LEDGER_APPLICATION_ID,
       userVersion: AGENTMAIL_LEDGER_SCHEMA_VERSION,
+    },
+    "AMIL/v4": {
+      applicationId: AGENTMAIL_LEDGER_APPLICATION_ID,
+      userVersion: 4,
     },
     "AMIL/v3": {
       applicationId: AGENTMAIL_LEDGER_APPLICATION_ID,
