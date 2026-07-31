@@ -41,6 +41,23 @@ export interface AgentMailInboxResult {
 
 export type AgentMailApiKeyPermissions = Record<string, boolean>;
 
+export type AgentMailRuntimeKeyPermissions = AgentMailApiKeyPermissions & {
+  inbox_read: true;
+  message_send: true;
+  message_read?: true;
+  label_spam_read?: true;
+  label_blocked_read?: true;
+};
+
+export interface AgentMailRuntimePermissionRequirements {
+  /** Whether the agentMail augment will admit inbound messages. */
+  inboundEnabled: boolean;
+  /** Whether spam-classified messages are intentionally processed. */
+  processSpam?: boolean;
+  /** Whether blocked-classified messages are intentionally processed. */
+  processBlocked?: boolean;
+}
+
 export interface AgentMailCreateInboxApiKeyInput {
   apiKey: string;
   inboxId: string;
@@ -63,10 +80,25 @@ export interface AgentMailProvisioningClient {
   createInboxApiKey(input: AgentMailCreateInboxApiKeyInput): Promise<AgentMailApiKeyResult>;
 }
 
-export const AGENTMAIL_RUNTIME_KEY_PERMISSIONS: AgentMailApiKeyPermissions = {
-  inbox_read: true,
-  message_send: true,
-};
+export function buildAgentMailRuntimeKeyPermissions(
+  requirements: AgentMailRuntimePermissionRequirements,
+): AgentMailRuntimeKeyPermissions {
+  if (!requirements.inboundEnabled && (requirements.processSpam || requirements.processBlocked)) {
+    throw new Error("AgentMail label-read permissions require inbound delivery to be enabled.");
+  }
+  return {
+    inbox_read: true,
+    message_send: true,
+    ...(requirements.inboundEnabled ? { message_read: true as const } : {}),
+    ...(requirements.processSpam ? { label_spam_read: true as const } : {}),
+    ...(requirements.processBlocked ? { label_blocked_read: true as const } : {}),
+  };
+}
+
+/** Backward-compatible outbound-only permission set. */
+export const AGENTMAIL_RUNTIME_KEY_PERMISSIONS = buildAgentMailRuntimeKeyPermissions({
+  inboundEnabled: false,
+});
 
 export function createAgentMailProvisioningClient(
   opts: AgentMailProvisioningClientOptions = {},

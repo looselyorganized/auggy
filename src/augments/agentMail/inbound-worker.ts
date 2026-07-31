@@ -15,6 +15,12 @@ import type {
   AgentMailInboundMessage,
   AgentMailReceivedEventType,
 } from "./provider";
+import {
+  AGENTMAIL_MAX_ATTEMPTS,
+  AGENTMAIL_MAX_PROMPT_BYTES,
+  AGENTMAIL_MIN_PROMPT_BYTES,
+  normalizeAgentMailAllowedSenders,
+} from "./inbound-policy";
 
 const DEFAULT_LEASE_MS = 5 * 60_000;
 const DEFAULT_MAX_ATTEMPTS = 5;
@@ -362,11 +368,25 @@ function normalizePolicy(policy: AgentMailInboundTurnPolicy): NormalizedPolicy {
     policy.maxPromptBytes ?? DEFAULT_MAX_PROMPT_BYTES,
     "maxPromptBytes",
   );
-  if (maxPromptBytes < 512) {
-    throw new Error("agentMail inbound worker: maxPromptBytes must be at least 512");
+  if (maxPromptBytes < AGENTMAIL_MIN_PROMPT_BYTES || maxPromptBytes > AGENTMAIL_MAX_PROMPT_BYTES) {
+    throw new Error(
+      `agentMail inbound worker: maxPromptBytes must be between ${AGENTMAIL_MIN_PROMPT_BYTES} and ${AGENTMAIL_MAX_PROMPT_BYTES}`,
+    );
+  }
+  const maxAttempts = positiveInteger(policy.maxAttempts ?? DEFAULT_MAX_ATTEMPTS, "maxAttempts");
+  if (maxAttempts > AGENTMAIL_MAX_ATTEMPTS) {
+    throw new Error(
+      `agentMail inbound worker: maxAttempts must be between 1 and ${AGENTMAIL_MAX_ATTEMPTS}`,
+    );
   }
   return {
-    allowedSenders: policy.allowedSenders.map((sender) => requireText(sender, "allowed sender")),
+    // The worker boundary retains an explicit empty deny-all policy for
+    // direct/internal callers. Public augment configuration rejects empty
+    // lists before the worker is constructed.
+    allowedSenders:
+      policy.allowedSenders.length === 0
+        ? []
+        : normalizeAgentMailAllowedSenders(policy.allowedSenders),
     classifications: {
       "message.received": policy.classifications?.["message.received"] ?? "process",
       "message.received.spam": policy.classifications?.["message.received.spam"] ?? "discard",
@@ -375,7 +395,7 @@ function normalizePolicy(policy: AgentMailInboundTurnPolicy): NormalizedPolicy {
         policy.classifications?.["message.received.unauthenticated"] ?? "discard",
     },
     maxPromptBytes,
-    maxAttempts: positiveInteger(policy.maxAttempts ?? DEFAULT_MAX_ATTEMPTS, "maxAttempts"),
+    maxAttempts,
     retryBaseMs: positiveInteger(policy.retryBaseMs ?? DEFAULT_RETRY_BASE_MS, "retryBaseMs"),
     retryMaxMs: positiveInteger(policy.retryMaxMs ?? DEFAULT_RETRY_MAX_MS, "retryMaxMs"),
     leaseMs: positiveInteger(policy.leaseMs ?? DEFAULT_LEASE_MS, "leaseMs"),

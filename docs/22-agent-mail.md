@@ -1,8 +1,7 @@
 # `agentMail` augment
 
-**Availability:** outbound email and the durable inbound/review foundation are
-implemented in the unpublished `0.5.0` candidate. The latest npm release,
-`0.4.4`, does not include them.
+**Availability:** outbound email and the durable inbound/review foundation ship
+in the `0.5.0-rc.4` release line. Inbound remains an explicit opt-in.
 
 `agentMail` gives an agent a policy-gated AgentMail inbox. It exposes
 `send_message`, `reply_to_message`, and `forward_message`, and can turn admitted
@@ -49,7 +48,9 @@ simpler.
 
 Inbound is disabled by default. Enabling it requires a non-empty sender
 allowlist. Exact addresses and `*@domain` patterns are compared case
-insensitively.
+insensitively. Patterns must be canonical email/domain forms; broad or partial
+wildcards such as `*` and `foo*` are rejected instead of silently matching
+nothing. A domain pattern matches that exact domain, not its subdomains.
 
 ```yaml
 # agent.yaml
@@ -136,16 +137,26 @@ Only one enabled inbound `agentMail` augment may own a given inbox. Multiple
 outbound-only instances can coexist, but two workers must not compete for the
 same inbound stream.
 
+`auggy augment setup agentMail` reads this inbound block before it creates an
+inbox-scoped runtime key. The key always receives `inbox_read` and
+`message_send`; enabled inbound adds `message_read`. It adds
+`label_spam_read` or `label_blocked_read` only when the matching classification
+is explicitly set to `process`. Manual or `.env` credentials are not widened by
+Auggy, so the supplied key must already have the same permissions.
+
 ## Choosing an inbound mode
 
 | Mode | Arrival path | Recovery behavior | Use it when |
 | --- | --- | --- | --- |
 | `none` | No inbound turns | No ledger worker | The agent only sends mail |
-| `polling` | Periodic AgentMail REST reads | The same reads advance a durable checkpoint | Simplicity is more important than immediate delivery |
-| `websocket` | AgentMail live subscription | REST catch-up runs after subscription and the SDK reconnects | You want low latency without a public callback URL |
-| `webhook` | Svix-verified HTTP callback | REST catch-up runs at boot; webhook deliveries are deduplicated in the ledger | The agent has a stable public URL |
+| `polling` | Periodic AgentMail REST reads | Single-flight reads advance a durable checkpoint | Simplicity is more important than immediate delivery |
+| `websocket` | AgentMail live subscription | REST catch-up runs after subscription/reconnect and periodically repairs silent gaps | You want low latency without a public callback URL |
+| `webhook` | Svix-verified HTTP callback | Periodic REST catch-up repairs missed callbacks; all arrivals deduplicate in the ledger | The agent has a stable public URL |
 
-All enabled modes drain the same SQLite ledger. The ledger records provider
+All enabled modes run one managed REST reconciliation loop and drain the same
+SQLite ledger. Catch-up is single-flight even when a provider request exceeds
+the configured interval, and shutdown stops scheduling and quiesces active
+catch-up before closing the ledger. The ledger records provider
 delivery IDs and message IDs, checkpoints catch-up reads with overlap, leases a
 message to one worker, retries failed turns with bounded backoff, and durably
 marks processed or discarded mail. The default first-run lookback is 24 hours;
@@ -155,6 +166,9 @@ removed by the ledger.
 ## Inbound trust and prompt shape
 
 Email is untrusted input, even when its sender matches `allowedSenders`.
+The allowlist accepts at most 1,000 exact-address or exact-domain patterns;
+use a domain pattern for a large company inbox instead of enumerating every
+employee address.
 Admitted senders become deterministic `public` + `anonymous` peer identities
 scoped to the inbox, sender, and thread. `visitorAuth` does not silently promote
 an email sender.
@@ -163,14 +177,26 @@ The runtime renders the provider envelope as bounded, explicitly untrusted JSON
 inside the turn. It never promotes email headers or body text into system
 instructions. Ordinary `message.received` events are processed by default;
 spam, blocked, and unauthenticated classifications are discarded unless the
-operator deliberately overrides that posture.
+operator deliberately overrides that posture. WebSocket subscribes only to
+classifications configured as `process`; REST opts into only the selected
+restricted spam/blocked/unauthenticated buckets and filters ordinary results
+locally. This keeps scoped keys least privileged. A verified webhook may still deliver another received
+classification; that event is durably discarded before kernel admission.
 
 Definitively failed turns are retried. After `maxAttempts` (default 5), the
 message is durably discarded rather than looping forever. A turn whose effects
 are outcome-unknown is never retried: `AMIL/v2` creates a server-minted
 incident, blocks every later message in that provider thread, and restores the
-kernel thread quarantine after process restart. `maxPromptBytes` defaults to
-100 KiB and must be at least 512 bytes.
+kernel thread quarantine after process restart. `pollIntervalMs` ranges from
+one second to 24 hours, `maxPromptBytes` ranges from 512 bytes to 1 MiB, and
+`maxAttempts` ranges from 1 to 20.
+
+Inbound delivery does not imply automatic replies or creator push. A plain
+assistant response produced by an inbound turn is not sent as email. The agent
+must call `reply_to_message`, and public-originated mail remains subject to the
+configured outbound trust and durable human-review policy. `notify` is a
+separate augment; no external creator alert is sent merely because inbound is
+enabled.
 
 A processing lease is a liveness heartbeat, not permission to replay after
 expiry. Runtime startup fences every retained processing claim as ambiguous;
@@ -278,6 +304,7 @@ The creator-authenticated admin surface reports:
 | `AGENTMAIL_API_KEY is unresolved` | Set the variable in `.env` and restart |
 | Inbox healthcheck returns 401/403 | Check the key, inbox ID, and provider permissions |
 | Inbound config rejects an empty allowlist | Add at least one exact sender or `*@domain`; enabled inbound is deny-by-default |
+| Inbound setup/runtime returns 403 | Rotate or replace the scoped key with `message_read`; processing spam/blocked also needs its matching label-read permission |
 | Webhook mode says `webTransport` is required | Mount `webTransport` so the verified route can be served |
 | Human review says the admin route is required | Enable `webTransport.adminRoute` or change review/allowed trust levels |
 | A reply says the message was not delivered this turn | Reply only from the turn triggered by that inbound message |
@@ -302,5 +329,6 @@ The creator-authenticated admin surface reports:
 - [`25-generated-route-clients.md`](./25-generated-route-clients.md) — route
   policy and generated-client behavior.
 - AgentMail documentation: [API](https://docs.agentmail.to/api-reference),
-  [WebSockets](https://docs.agentmail.to/websockets/quickstart), and
+  [permissions](https://docs.agentmail.to/permissions),
+  [WebSockets](https://docs.agentmail.to/websockets), and
   [webhook verification](https://docs.agentmail.to/webhook-verification).

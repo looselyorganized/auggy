@@ -127,20 +127,28 @@ async function nextTask(): Promise<void> {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-function subscribedAck() {
+function subscribedAck(
+  eventTypes: readonly (typeof AGENTMAIL_RECEIVED_EVENT_TYPES)[number][] = AGENTMAIL_RECEIVED_EVENT_TYPES,
+  inboxIds: string[] = ["support@agentmail.to"],
+) {
   return {
     type: "subscribed",
-    inboxIds: ["support@agentmail.to"],
-    eventTypes: [...AGENTMAIL_RECEIVED_EVENT_TYPES],
+    inboxIds,
+    eventTypes: [...eventTypes],
   };
 }
 
-function receivedEvent(messageId: string) {
+function receivedEvent(
+  messageId: string,
+  eventType: (typeof AGENTMAIL_RECEIVED_EVENT_TYPES)[number] = "message.received",
+) {
+  const labels =
+    eventType === "message.received" ? ["received"] : [eventType.slice("message.received.".length)];
   return {
     type: "event",
-    eventType: "message.received",
+    eventType,
     eventId: `event_${messageId}`,
-    message: sdkMessage(messageId),
+    message: sdkMessage(messageId, { labels }),
     thread: {
       inboxId: "support@agentmail.to",
       threadId: "thread_1",
@@ -180,6 +188,25 @@ describe("AgentMail SDK catch-up reader", () => {
       timestamp: "2026-07-14T10:20:30.000Z",
     });
     expect(page.nextPageToken).toBe("next_1");
+  });
+
+  test("requests only selected provider classification buckets", async () => {
+    let request: Record<string, unknown> | undefined;
+    const fake = fakeSdk({
+      async list(_inboxId, value) {
+        request = value;
+        return { messages: [] };
+      },
+    });
+    const adapters = createAgentMailSdkAdapters({ apiKey: "am_test", _sdk: fake.sdk as never });
+    await adapters.catchUp.listMessages({
+      inboxId: "support@agentmail.to",
+      processedEventTypes: ["message.received", "message.received.spam"],
+    });
+
+    expect(request?.includeSpam).toBe(true);
+    expect("includeBlocked" in (request ?? {})).toBe(false);
+    expect("includeUnauthenticated" in (request ?? {})).toBe(false);
   });
 
   test("rejects unordered pages and mismatched get responses", async () => {
@@ -296,20 +323,175 @@ describe("runAgentMailCatchUp", () => {
     ).rejects.toThrow(/pagination token repeated/);
     ledger.close();
   });
+
+  test("skips unselected summaries before body fetch and still advances the checkpoint", async () => {
+    const ledger = createAgentMailInboundLedger({ dbPath: tempDb() });
+    const messages = [
+      sdkMessage("ordinary", {
+        labels: ["received"],
+        timestamp: new Date("2026-07-14T20:00:00.000Z"),
+      }),
+      sdkMessage("spam", {
+        labels: ["spam"],
+        timestamp: new Date("2026-07-14T20:01:00.000Z"),
+      }),
+      sdkMessage("blocked", {
+        labels: ["blocked"],
+        timestamp: new Date("2026-07-14T20:02:00.000Z"),
+      }),
+      sdkMessage("unauthenticated", {
+        labels: ["unauthenticated"],
+        timestamp: new Date("2026-07-14T20:03:00.000Z"),
+      }),
+      sdkMessage("sent", {
+        labels: ["sent"],
+        timestamp: new Date("2026-07-14T20:04:00.000Z"),
+      }),
+    ];
+    const byId = new Map(messages.map((message) => [message.messageId, message]));
+    const getCalls: string[] = [];
+    let listRequest: Record<string, unknown> | undefined;
+    const fake = fakeSdk({
+      async list(_inboxId, request) {
+        listRequest = request;
+        return { messages };
+      },
+      async get(_inboxId, messageId) {
+        getCalls.push(messageId);
+        return byId.get(messageId);
+      },
+    });
+    const adapters = createAgentMailSdkAdapters({ apiKey: "am_test", _sdk: fake.sdk as never });
+    const result = await runAgentMailCatchUp({
+      reader: adapters.catchUp,
+      ledger,
+      inboxId: "support@agentmail.to",
+      processedEventTypes: ["message.received", "message.received.blocked"],
+    });
+
+    expect(listRequest?.includeBlocked).toBe(true);
+    expect("includeSpam" in (listRequest ?? {})).toBe(false);
+    expect("includeUnauthenticated" in (listRequest ?? {})).toBe(false);
+    expect(getCalls).toEqual(["ordinary", "blocked"]);
+    expect(result).toMatchObject({ scanned: 5, received: 2, enqueued: 2 });
+    expect(result.checkpoint).toBe("2026-07-14T20:04:00.000Z");
+    expect(ledger.get("support@agentmail.to", "spam")).toBeNull();
+    expect(ledger.get("support@agentmail.to", "unauthenticated")).toBeNull();
+    ledger.close();
+  });
+
+  test("rejects empty and duplicate processed event-type sets", async () => {
+    const ledger = createAgentMailInboundLedger({ dbPath: tempDb() });
+    const fake = fakeSdk({});
+    const adapters = createAgentMailSdkAdapters({ apiKey: "am_test", _sdk: fake.sdk as never });
+
+    await expect(
+      runAgentMailCatchUp({
+        reader: adapters.catchUp,
+        ledger,
+        inboxId: "support@agentmail.to",
+        processedEventTypes: [],
+      }),
+    ).rejects.toThrow(/non-empty received event-type subset/);
+    await expect(
+      runAgentMailCatchUp({
+        reader: adapters.catchUp,
+        ledger,
+        inboxId: "support@agentmail.to",
+        processedEventTypes: ["message.received", "message.received"],
+      }),
+    ).rejects.toThrow(/duplicate event types/);
+    await expect(
+      runAgentMailCatchUp({
+        reader: adapters.catchUp,
+        ledger,
+        inboxId: "support@agentmail.to",
+        processedEventTypes: ["message.sent" as never],
+      }),
+    ).rejects.toThrow(/unsupported received event type/);
+    ledger.close();
+  });
+
+  test("fails the batch if full-message classification drifts from its summary", async () => {
+    const ledger = createAgentMailInboundLedger({ dbPath: tempDb() });
+    const fake = fakeSdk({
+      async list() {
+        return { messages: [sdkMessage("changed", { labels: ["received"] })] };
+      },
+      async get() {
+        return sdkMessage("changed", { labels: ["spam"] });
+      },
+    });
+    const adapters = createAgentMailSdkAdapters({ apiKey: "am_test", _sdk: fake.sdk as never });
+
+    await expect(
+      runAgentMailCatchUp({
+        reader: adapters.catchUp,
+        ledger,
+        inboxId: "support@agentmail.to",
+      }),
+    ).rejects.toThrow(/classification does not match its list entry/);
+    expect(ledger.get("support@agentmail.to", "changed")).toBeNull();
+    expect(ledger.checkpoint("support@agentmail.to")).toBeUndefined();
+    ledger.close();
+  });
 });
 
 describe("AgentMail SDK WebSocket source", () => {
-  test("refuses subscriptions that omit a received classification", async () => {
+  test("requires a non-empty duplicate-free supported subscription subset", async () => {
     const fake = fakeSdk({});
     const adapters = createAgentMailSdkAdapters({ apiKey: "am_test", _sdk: fake.sdk as never });
     await expect(
       adapters.live.subscribe({
         inboxId: "support@agentmail.to",
-        eventTypes: ["message.received"],
+        eventTypes: [],
         async onEvent() {},
         onError() {},
       }),
-    ).rejects.toThrow(/must include every received event type/);
+    ).rejects.toThrow(/non-empty received event-type subset/);
+    await expect(
+      adapters.live.subscribe({
+        inboxId: "support@agentmail.to",
+        eventTypes: ["message.received", "message.received"],
+        async onEvent() {},
+        onError() {},
+      }),
+    ).rejects.toThrow(/duplicate event types/);
+    await expect(
+      adapters.live.subscribe({
+        inboxId: "support@agentmail.to",
+        eventTypes: ["message.sent" as never],
+        async onEvent() {},
+        onError() {},
+      }),
+    ).rejects.toThrow(/unsupported received event type/);
+  });
+
+  test("subscribes to a proper subset and accepts an exact ack in any order", async () => {
+    const fake = fakeSdk({});
+    const adapters = createAgentMailSdkAdapters({
+      apiKey: "am_test",
+      handshakeTimeoutMs: 1_000,
+      _sdk: fake.sdk as never,
+    });
+    const eventTypes = ["message.received.spam", "message.received"] as const;
+    const subscribing = adapters.live.subscribe({
+      inboxId: "support@agentmail.to",
+      eventTypes,
+      async onEvent() {},
+      onError() {},
+    });
+    await nextTask();
+    fake.socket.emit("open");
+    expect(fake.socket.subscriptions[0]).toEqual({
+      type: "subscribe",
+      inboxIds: ["support@agentmail.to"],
+      eventTypes: [...eventTypes],
+    });
+    fake.socket.emit("message", subscribedAck(["message.received", "message.received.spam"]));
+
+    const subscription = await subscribing;
+    await subscription.close();
   });
 
   test("waits for a full ack, runs catch-up first, and serializes received events", async () => {
@@ -394,7 +576,7 @@ describe("AgentMail SDK WebSocket source", () => {
     await subscription.close();
   });
 
-  test("fails closed when the ack omits a requested classification", async () => {
+  test("fails closed unless the ack event-type set exactly matches", async () => {
     const fake = fakeSdk({});
     const adapters = createAgentMailSdkAdapters({
       apiKey: "am_test",
@@ -418,9 +600,77 @@ describe("AgentMail SDK WebSocket source", () => {
       eventTypes: ["message.received"],
     });
 
-    await expect(subscribing).rejects.toThrow(/did not confirm every received event type/);
+    await expect(subscribing).rejects.toThrow(/did not exactly match the requested event types/);
     expect(fake.socket.closeCalls).toBe(1);
     expect(errors).toHaveLength(1);
+  });
+
+  test("rejects ack extras, duplicate event types, and additional inboxes", async () => {
+    const cases = [
+      {
+        ack: subscribedAck(["message.received", "message.received.spam"]),
+        message: /did not exactly match the requested event types/,
+      },
+      {
+        ack: subscribedAck(["message.received", "message.received"]),
+        message: /contains invalid received event types/,
+      },
+      {
+        ack: subscribedAck(["message.received"], ["support@agentmail.to", "other@agentmail.to"]),
+        message: /did not exactly match the configured inbox/,
+      },
+    ];
+
+    for (const entry of cases) {
+      const fake = fakeSdk({});
+      const adapters = createAgentMailSdkAdapters({
+        apiKey: "am_test",
+        handshakeTimeoutMs: 1_000,
+        _sdk: fake.sdk as never,
+      });
+      const subscribing = adapters.live.subscribe({
+        inboxId: "support@agentmail.to",
+        eventTypes: ["message.received"],
+        async onEvent() {},
+        onError() {},
+      });
+      await nextTask();
+      fake.socket.emit("open");
+      fake.socket.emit("message", entry.ack);
+      await expect(subscribing).rejects.toThrow(entry.message);
+      expect(fake.socket.closeCalls).toBe(1);
+    }
+  });
+
+  test("fails closed when live delivery emits a supported unsubscribed type", async () => {
+    const fake = fakeSdk({});
+    const adapters = createAgentMailSdkAdapters({
+      apiKey: "am_test",
+      handshakeTimeoutMs: 1_000,
+      _sdk: fake.sdk as never,
+    });
+    const delivered: string[] = [];
+    const errors: Error[] = [];
+    const subscribing = adapters.live.subscribe({
+      inboxId: "support@agentmail.to",
+      eventTypes: ["message.received"],
+      async onEvent(event) {
+        delivered.push(event.eventType);
+      },
+      onError(error) {
+        errors.push(error);
+      },
+    });
+    await nextTask();
+    fake.socket.emit("open");
+    fake.socket.emit("message", subscribedAck(["message.received"]));
+    const subscription = await subscribing;
+    fake.socket.emit("message", receivedEvent("unexpected_spam", "message.received.spam"));
+    await subscription.closed;
+
+    expect(delivered).toEqual([]);
+    expect(errors.some((error) => /outside the subscription/.test(error.message))).toBe(true);
+    expect(fake.socket.closeCalls).toBe(1);
   });
 
   test("does not deliver queued mail when reconnect catch-up fails", async () => {

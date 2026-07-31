@@ -1913,7 +1913,12 @@ export interface AgentMailOutboundOptions {
 export interface AgentMailInboundConfig {
   /** Inbound delivery channel. */
   mode: AgentMailInboundMode;
-  /** Exact sender addresses or `*@domain` patterns. Required when inbound is enabled. */
+  /**
+   * Exact sender addresses or `*@domain` patterns. Required when inbound is
+   * enabled. Patterns are ASCII, case-insensitive, and match one exact domain;
+   * `*@example.com` does not match a subdomain. This is admission policy, not
+   * sender authentication: admitted mail remains public/anonymous.
+   */
   allowedSenders?: string[];
   /** Classification gates. Only ordinary received mail is processed by default. */
   classifications?: {
@@ -1922,11 +1927,11 @@ export interface AgentMailInboundConfig {
     blocked?: "process" | "discard";
     unauthenticated?: "process" | "discard";
   };
-  /** Poll/catch-up cadence. Default 60 seconds. */
+  /** Poll/reconciliation cadence. Default 60 seconds; range 1 second to 24 hours. */
   pollIntervalMs?: number;
-  /** Max bytes rendered into the untrusted email prompt. Default 100 KiB. */
+  /** Max bytes rendered into the untrusted email prompt. Default 100 KiB; max 1 MiB. */
   maxPromptBytes?: number;
-  /** Attempts before durable discard. Default 5. */
+  /** Attempts before durable discard. Default 5; maximum 20. */
   maxAttempts?: number;
   /** WebSocket origin override for sandbox providers. */
   websocketBaseUrl?: string;

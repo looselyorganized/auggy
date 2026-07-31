@@ -99,6 +99,8 @@ export interface RunAgentMailCatchUpOptions {
   reader: AgentMailCatchUpReader;
   ledger: AgentMailInboundLedger;
   inboxId: string;
+  /** Received classifications to fetch and enqueue. Defaults to every supported type. */
+  processedEventTypes?: readonly AgentMailReceivedEventType[];
   pageSize?: number;
   fetchConcurrency?: number;
   maxPages?: number;
@@ -227,25 +229,63 @@ function isReceivedEventType(value: unknown): value is AgentMailReceivedEventTyp
   );
 }
 
+function receivedEventTypeSubset(
+  value: readonly AgentMailReceivedEventType[],
+  label: string,
+): AgentMailReceivedEventType[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new Error(`agentMail provider: ${label} must be a non-empty received event-type subset`);
+  }
+  const unique = new Set<AgentMailReceivedEventType>();
+  for (const eventType of value) {
+    if (!isReceivedEventType(eventType)) {
+      throw new Error(`agentMail provider: ${label} contains an unsupported received event type`);
+    }
+    if (unique.has(eventType)) {
+      throw new Error(`agentMail provider: ${label} must not contain duplicate event types`);
+    }
+    unique.add(eventType);
+  }
+  return [...unique];
+}
+
 function eventField(record: Record<string, unknown>, camel: string, snake: string): unknown {
   return record[camel] ?? record[snake];
 }
 
 function validateSubscribedAck(
   event: Record<string, unknown>,
-  input: AgentMailSubscribeInput,
+  inboxId: string,
+  subscribedEventTypes: readonly AgentMailReceivedEventType[],
 ): void {
   const inboxIds = eventField(event, "inboxIds", "inbox_ids");
   const eventTypes = eventField(event, "eventTypes", "event_types");
-  if (!Array.isArray(inboxIds) || !inboxIds.includes(input.inboxId)) {
-    throw new AgentMailPayloadError("WebSocket subscription did not confirm the configured inbox");
+  if (!Array.isArray(inboxIds) || inboxIds.length !== 1 || inboxIds[0] !== inboxId) {
+    throw new AgentMailPayloadError(
+      "WebSocket subscription ack did not exactly match the configured inbox",
+    );
   }
+  if (!Array.isArray(eventTypes)) {
+    throw new AgentMailPayloadError("WebSocket subscription ack is missing event types");
+  }
+  let acknowledgedEventTypes: AgentMailReceivedEventType[];
+  try {
+    acknowledgedEventTypes = receivedEventTypeSubset(
+      eventTypes as AgentMailReceivedEventType[],
+      "WebSocket subscription ack eventTypes",
+    );
+  } catch {
+    throw new AgentMailPayloadError(
+      "WebSocket subscription ack contains invalid received event types",
+    );
+  }
+  const expected = new Set(subscribedEventTypes);
   if (
-    !Array.isArray(eventTypes) ||
-    !input.eventTypes.every((eventType) => eventTypes.includes(eventType))
+    acknowledgedEventTypes.length !== expected.size ||
+    acknowledgedEventTypes.some((eventType) => !expected.has(eventType))
   ) {
     throw new AgentMailPayloadError(
-      "WebSocket subscription did not confirm every received event type",
+      "WebSocket subscription ack did not exactly match the requested event types",
     );
   }
 }
@@ -262,6 +302,11 @@ function createCatchUpReader(sdk: SdkClientBoundary): AgentMailCatchUpReader {
       if (after && !Number.isFinite(after.getTime())) {
         throw new Error("agentMail provider: list after must be an ISO-8601 timestamp");
       }
+      const processedEventTypes = receivedEventTypeSubset(
+        input.processedEventTypes ?? AGENTMAIL_RECEIVED_EVENT_TYPES,
+        "list processedEventTypes",
+      );
+      const processed = new Set(processedEventTypes);
       let response: unknown;
       try {
         response = await sdk.inboxes.messages.list(input.inboxId, {
@@ -269,9 +314,11 @@ function createCatchUpReader(sdk: SdkClientBoundary): AgentMailCatchUpReader {
           ...(input.pageToken ? { pageToken: input.pageToken } : {}),
           ...(after ? { after } : {}),
           ascending: true,
-          includeSpam: true,
-          includeBlocked: true,
-          includeUnauthenticated: true,
+          ...(processed.has("message.received.spam") ? { includeSpam: true } : {}),
+          ...(processed.has("message.received.blocked") ? { includeBlocked: true } : {}),
+          ...(processed.has("message.received.unauthenticated")
+            ? { includeUnauthenticated: true }
+            : {}),
         });
       } catch (error) {
         throw requestError("list messages", error);
@@ -318,13 +365,11 @@ function createLiveSource(
 ): AgentMailLiveEventSource {
   return {
     async subscribe(input): Promise<AgentMailEventSubscription> {
-      if (
-        !AGENTMAIL_RECEIVED_EVENT_TYPES.every((eventType) => input.eventTypes.includes(eventType))
-      ) {
-        throw new Error(
-          "agentMail provider: WebSocket subscriptions must include every received event type",
-        );
-      }
+      const subscribedEventTypes = receivedEventTypeSubset(
+        input.eventTypes,
+        "WebSocket eventTypes",
+      );
+      const subscribedEventTypeSet = new Set(subscribedEventTypes);
       const handshakeTimeoutMs = requirePositiveInteger(
         options.handshakeTimeoutMs ?? DEFAULT_HANDSHAKE_TIMEOUT_MS,
         "handshakeTimeoutMs",
@@ -408,7 +453,7 @@ function createLiveSource(
           socket!.sendSubscribe({
             type: "subscribe",
             inboxIds: [input.inboxId],
-            eventTypes: [...input.eventTypes],
+            eventTypes: [...subscribedEventTypes],
           });
         } catch {
           closePermanently(new AgentMailProviderRequestError("subscribe WebSocket", true));
@@ -442,7 +487,7 @@ function createLiveSource(
         if (event.type === "subscribed") {
           if (generationAcknowledged) return;
           try {
-            validateSubscribedAck(event, input);
+            validateSubscribedAck(event, input.inboxId, subscribedEventTypes);
           } catch (error) {
             closePermanently(error as Error);
             return;
@@ -474,6 +519,14 @@ function createLiveSource(
               new AgentMailPayloadError("WebSocket emitted an unsupported received event type"),
             );
           }
+          return;
+        }
+        if (!subscribedEventTypeSet.has(receivedType)) {
+          closePermanently(
+            new AgentMailPayloadError(
+              "WebSocket emitted a supported received event type outside the subscription",
+            ),
+          );
           return;
         }
         if (!generationAcknowledged) {
@@ -563,6 +616,11 @@ export async function runAgentMailCatchUp(
     "maxPages",
     10_000,
   );
+  const processedEventTypes = receivedEventTypeSubset(
+    options.processedEventTypes ?? AGENTMAIL_RECEIVED_EVENT_TYPES,
+    "catch-up processedEventTypes",
+  );
+  const processedEventTypeSet = new Set(processedEventTypes);
   const after = options.ledger.catchUpAfter(options.inboxId);
   const seenPageTokens = new Set<string>();
   let pageToken: string | undefined;
@@ -582,14 +640,17 @@ export async function runAgentMailCatchUp(
       after,
       pageToken,
       limit: pageSize,
+      processedEventTypes,
     });
     result.pages++;
     result.scanned += page.messages.length;
 
-    const receivedSummaries = page.messages.filter((summary) =>
-      receivedEventTypeForLabels(summary.labels),
-    );
-    const envelopes = await mapConcurrent(receivedSummaries, fetchConcurrency, async (summary) => {
+    const receivedSummaries = page.messages.flatMap((summary) => {
+      const eventType = receivedEventTypeForLabels(summary.labels);
+      return eventType && processedEventTypeSet.has(eventType) ? [{ summary, eventType }] : [];
+    });
+    const envelopes = await mapConcurrent(receivedSummaries, fetchConcurrency, async (entry) => {
+      const { summary, eventType } = entry;
       if (options.signal?.aborted) throw new Error("agentMail catch-up aborted");
       const message = await options.reader.getMessage({
         inboxId: options.inboxId,
@@ -601,7 +662,13 @@ export async function runAgentMailCatchUp(
       ) {
         throw new AgentMailPayloadError("full message identity does not match its list entry");
       }
-      return agentMailRestEnvelope(message);
+      const envelope = agentMailRestEnvelope(message);
+      if (envelope.eventType !== eventType) {
+        throw new AgentMailPayloadError(
+          "full message classification does not match its list entry",
+        );
+      }
+      return envelope;
     });
     result.received += envelopes.length;
 

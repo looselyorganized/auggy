@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { createAgentMailProvisioningClient } from "../../src/cli/agentmail-provisioning";
+import {
+  buildAgentMailRuntimeKeyPermissions,
+  createAgentMailProvisioningClient,
+} from "../../src/cli/agentmail-provisioning";
 import type { HttpRequestInit, HttpResponse } from "../../src/http";
 
 function response(url: string, status: number, body: string): HttpResponse {
@@ -12,6 +15,57 @@ function response(url: string, status: number, body: string): HttpResponse {
     body,
   };
 }
+
+describe("buildAgentMailRuntimeKeyPermissions", () => {
+  test("uses the outbound-only permission set when inbound is disabled", () => {
+    expect(buildAgentMailRuntimeKeyPermissions({ inboundEnabled: false })).toEqual({
+      inbox_read: true,
+      message_send: true,
+    });
+  });
+
+  test("adds only message_read for ordinary inbound mail", () => {
+    expect(buildAgentMailRuntimeKeyPermissions({ inboundEnabled: true })).toEqual({
+      inbox_read: true,
+      message_send: true,
+      message_read: true,
+    });
+  });
+
+  test("adds label visibility only for classifications that are processed", () => {
+    expect(
+      buildAgentMailRuntimeKeyPermissions({
+        inboundEnabled: true,
+        processSpam: true,
+        processBlocked: true,
+      }),
+    ).toEqual({
+      inbox_read: true,
+      message_send: true,
+      message_read: true,
+      label_spam_read: true,
+      label_blocked_read: true,
+    });
+    expect(
+      buildAgentMailRuntimeKeyPermissions({
+        inboundEnabled: true,
+        processSpam: false,
+        processBlocked: true,
+      }),
+    ).toEqual({
+      inbox_read: true,
+      message_send: true,
+      message_read: true,
+      label_blocked_read: true,
+    });
+  });
+
+  test("rejects label visibility when inbound is disabled", () => {
+    expect(() =>
+      buildAgentMailRuntimeKeyPermissions({ inboundEnabled: false, processSpam: true }),
+    ).toThrow(/require inbound delivery/);
+  });
+});
 
 describe("createAgentMailProvisioningClient transport policy", () => {
   test("rejects non-loopback plaintext before provisioning can issue credentials", () => {

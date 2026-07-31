@@ -85,11 +85,17 @@ export interface AgentMailListMessagesInput {
   after?: string;
   pageToken?: string;
   limit?: number;
+  /**
+   * Received classifications the caller will process. Readers use this to
+   * avoid requesting provider-only classification buckets unnecessarily.
+   * Omission preserves the legacy all-classifications scan.
+   */
+  processedEventTypes?: readonly AgentMailReceivedEventType[];
 }
 
 /**
- * Catch-up contract. Implementations must list oldest-first and include spam,
- * blocked, and unauthenticated messages so policy can decide their fate.
+ * Catch-up contract. Implementations must list oldest-first and honor the
+ * requested received-classification subset.
  */
 export interface AgentMailCatchUpReader {
   listMessages(input: AgentMailListMessagesInput): Promise<AgentMailMessagePage>;
