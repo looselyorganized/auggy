@@ -7,8 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0-rc.5] - 2026-07-31
+
+This fifth public candidate hardens AgentMail into a bounded, recoverable
+inbound operating surface and makes distinct inboxes independently manageable
+from one authenticated Console.
+
 ### Added
 
+- **Canonical AgentMail inbox identity.** Setup resolves and records the
+  provider-confirmed inbox address separately from the provider inbox ID. The
+  runtime reports authoritative mismatch as a startup error, preserves a
+  setup-verified address through transient provider health failures, and can
+  expose enabled, disabled, or degraded availability without elevating sender
+  trust.
 - **Bounded public AgentMail ingress.** An enabled inbox can now choose either
   an exact/domain sender allowlist or the explicit `allowAnySender` policy.
   Public admission requires durable rolling global and per-sender limits;
@@ -20,6 +32,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   fetched only on demand through creator-authenticated, no-store routes; the
   operator can approve, revise and send, reject, or dismiss the exact current
   row.
+- **Reviewed inbound replies and creator attention.** Enabled inbound defaults
+  to creator review for the exact admitted email turn without granting general
+  public outbound authority. Durable, versioned attention state makes pending
+  replies and incidents visible without exposing content in dashboard
+  projections.
+- **Durable creator attention digests.** AgentMail can submit a bounded,
+  metadata-only creator digest through one uniquely named, creator-authorized
+  Notify destination. Notify now reserves quota and immutable delivery state in
+  its `NTFY/v2` ledger, fences ambiguous outcomes, and requires evidence-bound
+  compare-and-set recovery instead of blind retries.
 
 ### Changed
 
@@ -33,6 +55,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Target-aware Console actions.** Admin actions and CSRF tokens now bind to
   the mounted augment, action, and optional row. The legacy action endpoint
   remains available only for an action ID with one mounted owner.
+- **Notify destination names are unique identifiers.** Duplicate names within
+  direct `notify(...)` construction and across mounted Notify augments now fail
+  before construction instead of resolving last-wins or by configuration
+  order. Rename duplicates, update every `notify(to: ...)` caller and AgentMail
+  `creatorDigest.destination`, and reconcile unsettled durable operations
+  before changing a bound destination.
+
+### Fixed
+
+- **AgentMail provider preflight, reconciliation, and health.** Setup now mints
+  inbox-scoped runtime keys with only the permissions required by enabled
+  classifications, while manual and environment credentials must already carry
+  those permissions. Provider reads remain classification-scoped. Polling,
+  WebSocket, and webhook modes all run one periodic single-flight REST repair
+  loop with durable overlap and deduplication. Network failures, `408`, `425`,
+  `429`, and `5xx` health checks degrade transiently; deterministic
+  configuration or identity failures still fail closed.
+- **Authenticated Console Mail details.** The Console now loads sensitive Mail
+  detail through a bounded, no-store same-origin proxy that exchanges the
+  creator's Console session server-side. Browser JavaScript never receives the
+  permanent bearer, and password or one-time-ticket sessions can approve the
+  exact fingerprinted row.
+- **Bounded SQLite WAL admission.** Hardened persistent SQLite opens now retry
+  transient `SQLITE_BUSY` failures while entering WAL mode with bounded backoff,
+  then fail rather than spinning indefinitely when contention persists.
 
 ### Security
 
@@ -530,7 +577,8 @@ Initial tagged release. The kernel and built-in augments described in `docs/02-a
 - **CLI** — `aug1 create / add / dev / start / stop / restart / status` with launchd installation on macOS and PID-manifest tracking under `~/.auggy/`.
 - **Reference documentation** — `docs/01-philosophy.md` through `docs/11-skills.md`.
 
-[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.4...HEAD
+[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.5...HEAD
+[0.5.0-rc.5]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.4...v0.5.0-rc.5
 [0.5.0-rc.4]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.3...v0.5.0-rc.4
 [0.5.0-rc.3]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.2...v0.5.0-rc.3
 [0.5.0-rc.2]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.1...v0.5.0-rc.2
