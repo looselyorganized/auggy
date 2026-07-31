@@ -1200,7 +1200,6 @@ describe("AgentMail inbound ledger", () => {
       .all();
     expect(keys).toHaveLength(3);
     expect(keys.every((row) => /^[0-9a-f]{64}$/.test(row.sender_key_sha256))).toBe(true);
-    expect(keys.every((row) => !row.sender_key_sha256.includes("example.com"))).toBe(true);
     const rejectedPayload = probe
       .query<{ payload_json: string }, [string]>(
         "SELECT payload_json FROM agentmail_inbound_messages WHERE message_id = ?",
