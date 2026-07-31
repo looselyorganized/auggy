@@ -813,6 +813,226 @@ describe("agentmail setup command", () => {
     }
   });
 
+  test("preflights creator digest Notify policy before provider or local side effects", async () => {
+    const cases: Array<{
+      name: string;
+      configure: (configPath: string) => void;
+      expected: RegExp;
+    }> = [
+      {
+        name: "missing",
+        configure: () => {},
+        expected: /does not match any notify destination/,
+      },
+      {
+        name: "inline-authority",
+        configure: (configPath) =>
+          addNotify(configPath, "notify-inline", {
+            destinations: [
+              {
+                name: "creator",
+                transport: "log-to-file",
+                path: "./notifications.jsonl",
+                allowedTrustLevels: ["agent"],
+              },
+            ],
+          }),
+        expected: /must allow creator trust/,
+      },
+      {
+        name: "referenced-rate-policy",
+        configure: (configPath) =>
+          addNotify(
+            configPath,
+            "notify-ref",
+            {
+              destinations: [
+                {
+                  name: "creator",
+                  transport: "log-to-file",
+                  path: "./notifications.jsonl",
+                },
+              ],
+              rateLimit: { enabled: false },
+            },
+            true,
+          ),
+        expected: /rateLimit\.enabled to remain true/,
+      },
+      {
+        name: "ambiguous",
+        configure: (configPath) => {
+          addNotify(configPath, "notify-inline", {
+            destinations: [
+              {
+                name: "creator",
+                transport: "log-to-file",
+                path: "./inline.jsonl",
+              },
+            ],
+          });
+          addNotify(
+            configPath,
+            "notify-ref",
+            {
+              destinations: [
+                {
+                  name: "creator",
+                  transport: "log-to-file",
+                  path: "./referenced.jsonl",
+                },
+              ],
+            },
+            true,
+          );
+        },
+        expected: /destination names must be unique across the agent/,
+      },
+    ];
+
+    for (const testCase of cases) {
+      const root = mkdtempSync(join(tmpdir(), `agentmail-digest-preflight-${testCase.name}-`));
+      try {
+        const paths = writeAgentMailAgent(root);
+        setAgentMailInbound(paths.augmentPath, {
+          mode: "polling",
+          allowedSenders: ["sender@example.com"],
+          replies: { mode: "disabled" },
+          creatorDigest: { enabled: true, destination: "creator" },
+        });
+        testCase.configure(paths.configPath);
+        const originalEnv = readFileSync(paths.envPath, "utf-8");
+        const originalAugment = readFileSync(paths.augmentPath, "utf-8");
+        const getInbox = mock(async () => {
+          throw new Error("must not contact provider");
+        });
+
+        await expect(
+          runAgentMailSetup(
+            "agentMail",
+            {
+              config: paths.configPath,
+              mode: "manual",
+              apiKey: "am_secret_runtime",
+              inboxId: "inb_x",
+            },
+            { provisioner: unusedProvisioner({ getInbox }) },
+          ),
+        ).rejects.toThrow(testCase.expected);
+
+        expect(getInbox).not.toHaveBeenCalled();
+        expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
+        expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("accepts a referenced creator-authorized Notify destination during setup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-digest-preflight-valid-"));
+    try {
+      const paths = writeAgentMailAgent(root);
+      setAgentMailInbound(paths.augmentPath, {
+        mode: "polling",
+        allowedSenders: ["sender@example.com"],
+        replies: { mode: "disabled" },
+        creatorDigest: { enabled: true, destination: "creator" },
+      });
+      addNotify(
+        paths.configPath,
+        "notify",
+        {
+          destinations: [
+            {
+              name: "creator",
+              transport: "log-to-file",
+              path: "./notifications.jsonl",
+            },
+          ],
+        },
+        true,
+      );
+      const getInbox = mock(async () => ({
+        inboxId: "inb_x",
+        email: "agent@example.com",
+      }));
+
+      await expect(
+        runAgentMailSetup(
+          "agentMail",
+          {
+            config: paths.configPath,
+            mode: "manual",
+            apiKey: "am_runtime",
+            inboxId: "inb_x",
+          },
+          { provisioner: unusedProvisioner({ getInbox }) },
+        ),
+      ).resolves.toMatchObject({ inboxEmail: "agent@example.com" });
+      expect(getInbox).toHaveBeenCalledTimes(1);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects unsafe or malformed augment references without leaking source lines", async () => {
+    for (const malformed of ["unsafe-id", "invalid-metadata"] as const) {
+      const root = mkdtempSync(join(tmpdir(), `agentmail-topology-safety-${malformed}-`));
+      try {
+        const paths = writeAgentMailAgent(root);
+        setAgentMailInbound(paths.augmentPath, {
+          mode: "polling",
+          allowedSenders: ["sender@example.com"],
+          replies: { mode: "disabled" },
+          creatorDigest: { enabled: true, destination: "creator" },
+        });
+        const agentConfig = parseYaml(readFileSync(paths.configPath, "utf-8")) as {
+          augments?: unknown[];
+        };
+        if (malformed === "unsafe-id") {
+          agentConfig.augments = [...(agentConfig.augments ?? []), "../outside"];
+        } else {
+          const notifyDir = join(root, "augments", "notify");
+          mkdirSync(notifyDir, { recursive: true });
+          agentConfig.augments = [...(agentConfig.augments ?? []), "notify"];
+          writeFileSync(
+            join(notifyDir, "augment.yaml"),
+            "type: notify\nconfig:\n  destinations: [\n  apiKey: am_super_secret\n",
+          );
+        }
+        writeFileSync(paths.configPath, stringifyYaml(agentConfig));
+        const getInbox = mock(async () => {
+          throw new Error("must not contact provider");
+        });
+
+        let error: Error | undefined;
+        try {
+          await runAgentMailSetup(
+            "agentMail",
+            {
+              config: paths.configPath,
+              mode: "manual",
+              apiKey: "am_runtime",
+              inboxId: "inb_x",
+            },
+            { provisioner: unusedProvisioner({ getInbox }) },
+          );
+        } catch (caught) {
+          error = caught as Error;
+        }
+
+        expect(error?.message).toMatch(
+          malformed === "unsafe-id" ? /safe augment id/ : /invalid augment metadata/,
+        );
+        expect(error?.message).not.toContain("am_super_secret");
+        expect(getInbox).not.toHaveBeenCalled();
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
   test("restores .env when the augment YAML commit fails", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-rollback-"));
     let augmentDir: string | undefined;
@@ -1131,6 +1351,41 @@ function addWebTransport(configPath: string, adminRoute = true): void {
     stringifyYaml({
       type: "webTransport",
       config: { port: 8080, ...(adminRoute ? {} : { adminRoute: false }) },
+    }),
+  );
+}
+
+function addNotify(
+  configPath: string,
+  name: string,
+  options: Record<string, unknown>,
+  referenced = false,
+): void {
+  const parsed = parseYaml(readFileSync(configPath, "utf-8")) as {
+    augments?: unknown[];
+  };
+  if (!referenced) {
+    parsed.augments = [
+      ...(parsed.augments ?? []),
+      {
+        name,
+        type: "notify",
+        options,
+      },
+    ];
+    writeFileSync(configPath, stringifyYaml(parsed));
+    return;
+  }
+
+  const augmentDir = join(dirname(configPath), "augments", name);
+  mkdirSync(augmentDir, { recursive: true });
+  parsed.augments = [...(parsed.augments ?? []), name];
+  writeFileSync(configPath, stringifyYaml(parsed));
+  writeFileSync(
+    join(augmentDir, "augment.yaml"),
+    stringifyYaml({
+      type: "notify",
+      config: options,
     }),
   );
 }

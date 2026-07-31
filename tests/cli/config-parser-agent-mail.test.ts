@@ -442,6 +442,168 @@ describe("config-parser: agentMail validation", () => {
     expect(() => parseConfig(path)).not.toThrow();
   });
 
+  test("keeps creator digest default-off without a Notify dependency", () => {
+    const omitted = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        inbound: { mode: "none" },
+      }),
+    );
+    expect(() => parseConfig(omitted)).not.toThrow();
+
+    const disabled = writeYaml(
+      configWithAgentMail({
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        inbound: {
+          mode: "none",
+          creatorDigest: { enabled: false, destination: "creator" },
+        },
+      }),
+    );
+    expect(() => parseConfig(disabled)).not.toThrow();
+  });
+
+  test("resolves an enabled creator digest to a bounded creator Notify destination", () => {
+    const agentMail = {
+      apiKey: "am_x",
+      inboxId: "inb_x",
+      inbound: {
+        mode: "polling",
+        allowedSenders: ["sender@example.com"],
+        replies: { mode: "disabled" },
+        creatorDigest: { enabled: true, destination: "creator" },
+      },
+    };
+    const validNotify = {
+      name: "notify",
+      type: "notify",
+      options: {
+        destinations: [
+          {
+            name: "creator",
+            transport: "log-to-file",
+            path: "./notifications.jsonl",
+          },
+        ],
+      },
+    };
+    expect(() =>
+      parseConfig(writeYaml(configWithAgentMail(agentMail, [validNotify]))),
+    ).not.toThrow();
+
+    for (const notifyOptions of [
+      undefined,
+      {
+        destinations: [
+          {
+            name: "creator",
+            transport: "log-to-file",
+            path: "./notifications.jsonl",
+            allowedTrustLevels: ["agent"],
+          },
+        ],
+      },
+      {
+        destinations: [
+          {
+            name: "creator",
+            transport: "log-to-file",
+            path: "./notifications.jsonl",
+          },
+        ],
+        rateLimit: { enabled: false },
+      },
+      {
+        destinations: [
+          {
+            name: "creator",
+            transport: "log-to-file",
+            path: "./notifications.jsonl",
+            rateLimit: { maxPerHour: 0 },
+          },
+        ],
+      },
+    ]) {
+      const notifyAugments = notifyOptions
+        ? [{ name: "notify", type: "notify", options: notifyOptions }]
+        : [];
+      expect(() => parseConfig(writeYaml(configWithAgentMail(agentMail, notifyAugments)))).toThrow(
+        /creator digest destination/,
+      );
+    }
+  });
+
+  test("rejects duplicate Notify destination names across mounted augments", () => {
+    const path = writeYaml(
+      configWithAgentMail(
+        { apiKey: "am_x", inboxId: "inb_x" },
+        ["notify-a", "notify-b"].map((name) => ({
+          name,
+          type: "notify",
+          options: {
+            destinations: [
+              {
+                name: "creator",
+                transport: "log-to-file",
+                path: `./${name}.jsonl`,
+              },
+            ],
+          },
+        })),
+      ),
+    );
+    expect(() => parseConfig(path)).toThrow(
+      /destination "creator".*declared by both "notify-a" and "notify-b"/,
+    );
+  });
+
+  test("validates creator digest dependencies after folder augment expansion", () => {
+    mkdirSync(join(TMP, "augments", "mail"), { recursive: true });
+    mkdirSync(join(TMP, "augments", "notifications"), { recursive: true });
+    writeFileSync(
+      join(TMP, "augments", "mail", "augment.yaml"),
+      stringify({
+        type: "agentMail",
+        config: {
+          apiKey: "am_x",
+          inboxId: "inb_x",
+          inbound: {
+            mode: "polling",
+            allowedSenders: ["sender@example.com"],
+            replies: { mode: "disabled" },
+            creatorDigest: { enabled: true, destination: "creator" },
+          },
+        },
+      }),
+    );
+    writeFileSync(
+      join(TMP, "augments", "notifications", "augment.yaml"),
+      stringify({
+        type: "notify",
+        config: {
+          destinations: [
+            {
+              name: "creator",
+              transport: "log-to-file",
+              path: "./notifications.jsonl",
+            },
+          ],
+        },
+      }),
+    );
+    const path = writeYaml(
+      stringify({
+        id: "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+        name: "test-agent",
+        engine: { provider: "anthropic", model: "claude-sonnet-4-6" },
+        augments: ["mail", "notifications"],
+      }),
+    );
+    expect(() => parseConfig(path)).not.toThrow();
+  });
+
   test("rejects non-positive maxRecipients", () => {
     const path = writeYaml(
       configWithAgentMail({

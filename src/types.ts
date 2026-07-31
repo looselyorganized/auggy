@@ -1871,6 +1871,24 @@ export interface AgentMailInboundReplyOptions {
   allowReplyAll?: boolean;
 }
 
+/**
+ * Optional bridge from durable inbound creator-attention state to a named
+ * Notify destination. Omitted or disabled means no background notification
+ * behavior and no Notify dependency.
+ */
+export interface AgentMailCreatorDigestOptions {
+  /** Master opt-in. Default false. */
+  enabled?: boolean;
+  /** Named Notify destination. Required when enabled. */
+  destination?: string;
+  /** Digest cadence in milliseconds. Default 15 minutes. */
+  intervalMs?: number;
+  /** Maximum attention items captured in one immutable digest batch. Default 20. */
+  maxItems?: number;
+  /** Maximum settled delivery attempts for one digest batch. Default 5. */
+  maxAttempts?: number;
+}
+
 /** Who may learn the canonical inbox address through model context. */
 export type AgentMailAddressVisibility = "creator" | "public";
 
@@ -1946,6 +1964,12 @@ export interface AgentMailInboundConfig {
   };
   /** Action-specific authority for replies to the triggering inbound message. */
   replies?: AgentMailInboundReplyOptions;
+  /**
+   * Optional creator notification digest. This remains off unless
+   * `enabled: true` is explicitly configured and a compatible Notify
+   * destination exists.
+   */
+  creatorDigest?: AgentMailCreatorDigestOptions;
   /** Poll/reconciliation cadence. Default 60 seconds; range 1 second to 24 hours. */
   pollIntervalMs?: number;
   /** Max bytes rendered into the untrusted email prompt. Default 100 KiB; max 1 MiB. */

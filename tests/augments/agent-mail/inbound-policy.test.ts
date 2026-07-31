@@ -16,6 +16,18 @@ import {
   validateAgentMailInboundConfig,
   validateAgentMailInboundBounds,
 } from "../../../src/augments/agentMail/inbound-policy";
+import {
+  AGENTMAIL_CREATOR_DIGEST_DEFAULT_INTERVAL_MS,
+  AGENTMAIL_CREATOR_DIGEST_DEFAULT_MAX_ATTEMPTS,
+  AGENTMAIL_CREATOR_DIGEST_DEFAULT_MAX_ITEMS,
+  AGENTMAIL_CREATOR_DIGEST_MAX_INTERVAL_MS,
+  AGENTMAIL_CREATOR_DIGEST_MAX_ITEMS,
+  AGENTMAIL_CREATOR_DIGEST_MIN_INTERVAL_MS,
+  collectNotifyDestinationPolicyBindings,
+  resolveAgentMailCreatorDigestConfig,
+  resolveCreatorDigestNotifyBinding,
+  validateUniqueNotifyDestinationNames,
+} from "../../../src/augments/agentMail/creator-digest-policy";
 
 describe("AgentMail inbound sender policy", () => {
   test("canonicalizes exact addresses and exact-domain globs", () => {
@@ -143,6 +155,159 @@ describe("AgentMail inbound resource bounds", () => {
     ]) {
       expect(() => validateAgentMailInboundConfig(inbound)).toThrow();
     }
+  });
+});
+
+describe("AgentMail creator digest policy", () => {
+  test("is default-off and resolves bounded defaults without a destination dependency", () => {
+    expect(resolveAgentMailCreatorDigestConfig(undefined, "none")).toEqual({
+      enabled: false,
+      intervalMs: AGENTMAIL_CREATOR_DIGEST_DEFAULT_INTERVAL_MS,
+      maxItems: AGENTMAIL_CREATOR_DIGEST_DEFAULT_MAX_ITEMS,
+      maxAttempts: AGENTMAIL_CREATOR_DIGEST_DEFAULT_MAX_ATTEMPTS,
+    });
+    expect(
+      validateAgentMailInboundConfig({
+        mode: "none",
+        creatorDigest: { enabled: false, destination: "creator" },
+      }).creatorDigest.enabled,
+    ).toBe(false);
+  });
+
+  test("accepts enabled bounded configuration only while inbound is active", () => {
+    expect(
+      validateAgentMailInboundConfig({
+        mode: "polling",
+        allowedSenders: ["sender@example.com"],
+        creatorDigest: {
+          enabled: true,
+          destination: "creator",
+          intervalMs: AGENTMAIL_CREATOR_DIGEST_MIN_INTERVAL_MS,
+          maxItems: AGENTMAIL_CREATOR_DIGEST_MAX_ITEMS,
+          maxAttempts: 1,
+        },
+      }).creatorDigest,
+    ).toEqual({
+      enabled: true,
+      destination: "creator",
+      intervalMs: AGENTMAIL_CREATOR_DIGEST_MIN_INTERVAL_MS,
+      maxItems: AGENTMAIL_CREATOR_DIGEST_MAX_ITEMS,
+      maxAttempts: 1,
+    });
+
+    expect(() =>
+      validateAgentMailInboundConfig({
+        mode: "none",
+        creatorDigest: { enabled: true, destination: "creator" },
+      }),
+    ).toThrow(/cannot be enabled.*inbound\.mode is "none"/);
+  });
+
+  test("rejects malformed, unknown, and unbounded creator digest settings", () => {
+    for (const creatorDigest of [
+      [],
+      { enabled: "yes" },
+      { enabled: true },
+      { enabled: true, destination: " creator " },
+      { enabled: true, destination: "creator\nops" },
+      { intervalMs: AGENTMAIL_CREATOR_DIGEST_MIN_INTERVAL_MS - 1 },
+      { intervalMs: AGENTMAIL_CREATOR_DIGEST_MAX_INTERVAL_MS + 1 },
+      { maxItems: 0 },
+      { maxItems: AGENTMAIL_CREATOR_DIGEST_MAX_ITEMS + 1 },
+      { maxAttempts: 0 },
+      { maxAttempts: 21 },
+      { typo: true },
+    ]) {
+      expect(() =>
+        validateAgentMailInboundConfig({
+          mode: "polling",
+          allowedSenders: ["sender@example.com"],
+          creatorDigest,
+        }),
+      ).toThrow(/creatorDigest/);
+    }
+  });
+
+  test("requires one unique creator-authorized bounded Notify destination", () => {
+    const digest = resolveAgentMailCreatorDigestConfig(
+      { enabled: true, destination: "creator" },
+      "polling",
+    );
+    const bindings = collectNotifyDestinationPolicyBindings([
+      {
+        augmentName: "notify",
+        destinations: [{ name: "creator", transport: "log-to-file" }],
+      },
+    ]);
+    expect(resolveCreatorDigestNotifyBinding(digest, bindings)).toEqual({
+      augmentName: "notify",
+      destinationName: "creator",
+    });
+
+    expect(() => resolveCreatorDigestNotifyBinding(digest, [])).toThrow(/does not match/);
+    expect(() =>
+      resolveCreatorDigestNotifyBinding(
+        digest,
+        collectNotifyDestinationPolicyBindings([
+          {
+            augmentName: "notify",
+            destinations: [
+              {
+                name: "creator",
+                allowedTrustLevels: ["agent"],
+              },
+            ],
+          },
+        ]),
+      ),
+    ).toThrow(/must allow creator trust/);
+    expect(() =>
+      resolveCreatorDigestNotifyBinding(
+        digest,
+        collectNotifyDestinationPolicyBindings([
+          {
+            augmentName: "notify",
+            destinations: [
+              {
+                name: "creator",
+                allowedTrustLevels: ["creator", "invalid"],
+              },
+            ],
+          },
+        ]),
+      ),
+    ).toThrow(/invalid Notify authority policy/);
+
+    for (const source of [
+      {
+        augmentName: "notify",
+        destinations: [{ name: "creator" }],
+        rateLimit: { enabled: false },
+      },
+      {
+        augmentName: "notify",
+        destinations: [{ name: "creator" }],
+        rateLimit: { globalMaxPerHour: 0 },
+      },
+      {
+        augmentName: "notify",
+        destinations: [{ name: "creator", rateLimit: { maxPerHour: 0 } }],
+      },
+    ]) {
+      expect(() =>
+        resolveCreatorDigestNotifyBinding(digest, collectNotifyDestinationPolicyBindings([source])),
+      ).toThrow(/requires/);
+    }
+  });
+
+  test("rejects duplicate destination names across Notify augments", () => {
+    const bindings = collectNotifyDestinationPolicyBindings([
+      { augmentName: "notify-a", destinations: [{ name: "creator" }] },
+      { augmentName: "notify-b", destinations: [{ name: "creator" }] },
+    ]);
+    expect(() => validateUniqueNotifyDestinationNames(bindings)).toThrow(
+      /declared by both "notify-a" and "notify-b"/,
+    );
   });
 });
 
