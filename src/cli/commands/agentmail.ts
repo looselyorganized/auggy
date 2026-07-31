@@ -26,6 +26,11 @@ import {
   validateAgentMailInboundConfig,
   type ValidatedAgentMailInboundConfig,
 } from "../../augments/agentMail/inbound-policy";
+import {
+  collectNotifyDestinationPolicyBindings,
+  resolveCreatorDigestNotifyBinding,
+  validateUniqueNotifyDestinationNames,
+} from "../../augments/agentMail/creator-digest-policy";
 import type { AgentMailOutboundOptions } from "../../types";
 
 export type AgentMailSetupTarget = "visitorAuth" | "agentMail";
@@ -129,15 +134,41 @@ export async function runAgentMailSetup(
     );
   }
   const configPlan = planAgentMailConfig(target, augmentPath);
-  if (configPlan.requiresWebTransport && !agentConfigHasAugmentType(configPath, "webTransport")) {
+  const mountedAugments = readMountedAugmentConfigs(configPath);
+  if (
+    configPlan.requiresWebTransport &&
+    !mountedAugments.some((augment) => augment.type === "webTransport")
+  ) {
     throw new Error(
       `${displayPath(augmentPath)} config.inbound.mode webhook requires a webTransport augment before AgentMail setup can provision resources.`,
     );
   }
-  if (configPlan.requiresAdminWebTransport && !agentConfigHasAdminWebTransport(configPath)) {
+  if (
+    configPlan.requiresAdminWebTransport &&
+    !mountedAugments.some(
+      (augment) => augment.type === "webTransport" && augment.options.adminRoute !== false,
+    )
+  ) {
     throw new Error(
       `${displayPath(augmentPath)} config.inbound.replies.mode ${configPlan.inboundReplyMode} requires a webTransport augment with adminRoute enabled before AgentMail setup can provision resources.`,
     );
+  }
+  if (configPlan.creatorDigest?.enabled) {
+    const notifyBindings = collectNotifyDestinationPolicyBindings(
+      mountedAugments.flatMap((augment) =>
+        augment.type === "notify"
+          ? [
+              {
+                augmentName: augment.name,
+                destinations: augment.options.destinations,
+                rateLimit: augment.options.rateLimit,
+              },
+            ]
+          : [],
+      ),
+    );
+    validateUniqueNotifyDestinationNames(notifyBindings);
+    resolveCreatorDigestNotifyBinding(configPlan.creatorDigest, notifyBindings);
   }
 
   const provisioner =
@@ -344,6 +375,7 @@ interface AgentMailConfigPlan {
   requiresWebTransport: boolean;
   requiresAdminWebTransport: boolean;
   inboundReplyMode?: ValidatedAgentMailInboundConfig["replies"]["mode"];
+  creatorDigest?: ValidatedAgentMailInboundConfig["creatorDigest"];
 }
 
 function planAgentMailConfig(
@@ -420,47 +452,73 @@ function planAgentMailConfig(
     requiresAdminWebTransport:
       validatedInbound !== undefined && agentMailInboundRequiresAdminRoute(validatedInbound),
     ...(validatedInbound ? { inboundReplyMode: validatedInbound.replies.mode } : {}),
+    ...(validatedInbound ? { creatorDigest: validatedInbound.creatorDigest } : {}),
   };
 }
 
-function agentConfigHasAugmentType(configPath: string, type: string): boolean {
-  const raw = parseYaml(readFileSync(configPath, "utf-8"));
-  if (!isRecord(raw) || !Array.isArray(raw.augments)) return false;
-  const agentDir = dirname(configPath);
-  return raw.augments.some((entry) => {
-    if (isRecord(entry)) return entry.type === type;
-    if (typeof entry !== "string") return false;
-    const referencedPath = join(agentDir, "augments", entry, "augment.yaml");
-    if (!existsSync(referencedPath)) return false;
-    try {
-      const referenced = parseYaml(readFileSync(referencedPath, "utf-8"));
-      return isRecord(referenced) && referenced.type === type;
-    } catch {
-      return false;
-    }
-  });
+interface MountedAugmentConfig {
+  name: string;
+  type: unknown;
+  options: Record<string, unknown>;
 }
 
-function agentConfigHasAdminWebTransport(configPath: string): boolean {
+/**
+ * Read only non-secret augment topology needed by setup preflight. This path
+ * intentionally does not interpolate environment variables because setup is
+ * responsible for creating the AgentMail credentials that may still be absent.
+ */
+function readMountedAugmentConfigs(configPath: string): MountedAugmentConfig[] {
   const raw = parseYaml(readFileSync(configPath, "utf-8"));
-  if (!isRecord(raw) || !Array.isArray(raw.augments)) return false;
+  if (!isRecord(raw) || !Array.isArray(raw.augments)) {
+    throw new Error(`${displayPath(configPath)} must contain an augments array.`);
+  }
   const agentDir = dirname(configPath);
-  return raw.augments.some((entry) => {
+  return raw.augments.map((entry, index) => {
     if (isRecord(entry)) {
-      if (entry.type !== "webTransport") return false;
-      const options = isRecord(entry.options) ? entry.options : {};
-      return options.adminRoute === undefined || options.adminRoute === true;
+      const type = entry.type;
+      const name =
+        typeof entry.name === "string" && entry.name.length > 0
+          ? entry.name
+          : typeof type === "string"
+            ? type
+            : `augments[${index}]`;
+      if (entry.options !== undefined && !isRecord(entry.options)) {
+        throw new Error(`${displayPath(configPath)} augments[${index}].options must be an object.`);
+      }
+      return {
+        name,
+        type,
+        options: isRecord(entry.options) ? entry.options : {},
+      };
     }
-    if (typeof entry !== "string") return false;
+    if (typeof entry !== "string" || !VALID_NAME_RE.test(entry)) {
+      throw new Error(
+        `${displayPath(configPath)} augments[${index}] must be an inline augment or a safe augment id.`,
+      );
+    }
     const referencedPath = join(agentDir, "augments", entry, "augment.yaml");
-    if (!existsSync(referencedPath)) return false;
+    if (!existsSync(referencedPath)) {
+      throw new Error(
+        `${displayPath(configPath)} augments[${index}] is missing ${displayPath(referencedPath)}.`,
+      );
+    }
     try {
       const referenced = parseYaml(readFileSync(referencedPath, "utf-8"));
-      if (!isRecord(referenced) || referenced.type !== "webTransport") return false;
-      const config = isRecord(referenced.config) ? referenced.config : {};
-      return config.adminRoute === undefined || config.adminRoute === true;
+      if (!isRecord(referenced)) {
+        throw new Error("metadata must be an object");
+      }
+      if (referenced.config !== undefined && !isRecord(referenced.config)) {
+        throw new Error("config must be an object");
+      }
+      return {
+        name: entry,
+        type: referenced.type,
+        options: isRecord(referenced.config) ? referenced.config : {},
+      };
     } catch {
-      return false;
+      // YAML parser diagnostics can quote source lines, which may contain
+      // credentials. Setup only needs a classified topology error here.
+      throw new Error(`${displayPath(referencedPath)} is invalid augment metadata.`);
     }
   });
 }

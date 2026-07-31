@@ -682,8 +682,9 @@ export function buildRuntimeStateInventory(
             namespace,
             path,
             runtimeDataRoot,
-            schema: "AMIL/v2",
-            retention: "terminal inbound work retained according to ledger policy",
+            schema: "AMIL/v4",
+            retention:
+              "terminal inbound work and unresolved creator-digest batches retained according to ledger policy",
             restoreOrder: 50,
             replayCritical: true,
             required:
@@ -764,9 +765,9 @@ export function buildRuntimeStateInventory(
             namespace,
             path: deliveryPath,
             runtimeDataRoot,
-            schema: "NTFY/v1",
+            schema: "NTFY/v2",
             retention:
-              "up to 30 days and 10000 terminal attempts; unresolved outcome-unknown incidents require operator recovery",
+              "ordinary terminal attempts up to 30 days; replay-protected internal operations retained within the 10000-record capacity; unresolved incidents require operator recovery",
             restoreOrder: 50,
             replayCritical: true,
             required: true,

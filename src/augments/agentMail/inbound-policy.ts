@@ -5,6 +5,10 @@ import type {
 } from "../../types";
 import { isWellFormedEmail } from "../visitorAuth/email-validation";
 import type { AgentMailReceivedEventType } from "./provider";
+import {
+  resolveAgentMailCreatorDigestConfig,
+  type ResolvedAgentMailCreatorDigestConfig,
+} from "./creator-digest-policy";
 
 export const AGENTMAIL_MIN_POLL_INTERVAL_MS = 1_000;
 export const AGENTMAIL_MAX_POLL_INTERVAL_MS = 24 * 60 * 60_000;
@@ -23,6 +27,7 @@ export interface ValidatedAgentMailInboundConfig {
   config: AgentMailInboundConfig;
   processedEventTypes: AgentMailReceivedEventType[];
   replies: ResolvedAgentMailInboundReplies;
+  creatorDigest: ResolvedAgentMailCreatorDigestConfig;
 }
 
 const CLASSIFICATION_FIELDS = ["received", "spam", "blocked", "unauthenticated"] as const;
@@ -48,6 +53,7 @@ const INBOUND_FIELDS = new Set([
   "allowedSenders",
   "classifications",
   "replies",
+  "creatorDigest",
   "pollIntervalMs",
   "maxPromptBytes",
   "maxAttempts",
@@ -329,6 +335,7 @@ export function validateAgentMailInboundConfig(
   const processedEventTypes =
     mode === "none" ? [] : processedAgentMailEventTypes(config.classifications);
   const replies = resolveAgentMailInboundReplies(mode, config.replies, outbound);
+  const creatorDigest = resolveAgentMailCreatorDigestConfig(config.creatorDigest, mode);
 
   if (config.websocketBaseUrl !== undefined) {
     if (typeof config.websocketBaseUrl !== "string") {
@@ -382,5 +389,5 @@ export function validateAgentMailInboundConfig(
     throw new Error('agentMail: inbound.webhook is only valid when inbound.mode is "webhook"');
   }
 
-  return { config, processedEventTypes, replies };
+  return { config, processedEventTypes, replies, creatorDigest };
 }

@@ -928,7 +928,7 @@ Rate limiting is stateful and in-memory (resets on restart). Checks in order:
 
 Creator-class senders (and null peers / scheduled triggers) bypass quota checks,
 but not the durable pre-dispatch and outcome-unknown fence. Quota reservations
-and exact dedup state live in the `NTFY/v1` SQLite ledger; fuzzy word-overlap
+and exact dedup state live in the `NTFY/v2` SQLite ledger; fuzzy word-overlap
 dedup remains an additional process-local suppression.
 
 ### Outbound messaging history

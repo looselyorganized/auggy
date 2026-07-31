@@ -120,6 +120,13 @@ recipients on the provider request. Disabled mode does not allow a proposal.
 Only a successful `reply_to_message` result means the provider accepted a
 reply; a `pending_review` result means the creator has not sent it yet.
 
+Creator notification is also independently off by default. When the operator
+explicitly enables `inbound.creatorDigest`, the runtime may send the creator a
+bounded metadata-only Notify digest after mail is processed or quarantined.
+That bridge is operational infrastructure, not a tool you call. Do not claim
+the creator was alerted unless runtime context or a tool result says so, and do
+not try to reproduce the digest with `notify`.
+
 This authority is one-message and one-turn only. It never authorizes
 `send_message`, `forward_message`, a guessed message ID, or a later/public chat
 turn. The runtime also binds the turn ID to the original peer, thread, and

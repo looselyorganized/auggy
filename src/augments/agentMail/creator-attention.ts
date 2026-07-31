@@ -279,6 +279,15 @@ export function createAgentMailCreatorAttentionStore(
            WHERE quarantine.inbox_id = attention.inbox_id
              AND quarantine.message_id = attention.message_id
         )
+        AND NOT EXISTS (
+          SELECT 1
+            FROM agentmail_creator_digest_items AS digest_item
+            JOIN agentmail_creator_digest_watermarks AS digest_watermark
+              ON digest_watermark.batch_id = digest_item.batch_id
+           WHERE digest_watermark.disposition IN ('presented', 'dismissed')
+             AND digest_item.inbox_id = attention.inbox_id
+             AND digest_item.message_id = attention.message_id
+        )
       ORDER BY attention.terminal_at ASC, attention.inbox_id ASC, attention.message_id ASC`,
   );
   const oldestTerminal = db.prepare<{ inbox_id: string; message_id: string }, [number]>(
@@ -289,6 +298,15 @@ export function createAgentMailCreatorAttentionStore(
           SELECT 1 FROM agentmail_inbound_quarantines AS quarantine
            WHERE quarantine.inbox_id = attention.inbox_id
              AND quarantine.message_id = attention.message_id
+        )
+        AND NOT EXISTS (
+          SELECT 1
+            FROM agentmail_creator_digest_items AS digest_item
+            JOIN agentmail_creator_digest_watermarks AS digest_watermark
+              ON digest_watermark.batch_id = digest_item.batch_id
+           WHERE digest_watermark.disposition IN ('presented', 'dismissed')
+             AND digest_item.inbox_id = attention.inbox_id
+             AND digest_item.message_id = attention.message_id
         )
       ORDER BY attention.terminal_at ASC, attention.inbox_id ASC, attention.message_id ASC
       LIMIT ?`,

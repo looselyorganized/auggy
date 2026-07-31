@@ -23,9 +23,15 @@ import {
   type AgentMailCreatorAttentionStore,
   validateStoredCreatorAttentionRows,
 } from "./creator-attention";
+import {
+  AGENTMAIL_CREATOR_DIGEST_SCHEMA,
+  createAgentMailCreatorDigestStore,
+  type AgentMailCreatorDigestStore,
+  validateStoredCreatorDigestRows,
+} from "./creator-digest";
 
 export const AGENTMAIL_LEDGER_APPLICATION_ID = 0x414d494c; // "AMIL"
-export const AGENTMAIL_LEDGER_SCHEMA_VERSION = 3;
+export const AGENTMAIL_LEDGER_SCHEMA_VERSION = 4;
 const DEFAULT_INITIAL_LOOKBACK_MS = 24 * 60 * 60_000;
 const DEFAULT_CHECKPOINT_OVERLAP_MS = 60_000;
 const MAX_LEASE_MS = 60 * 60_000;
@@ -124,6 +130,7 @@ const SCHEMA_STATEMENTS = [
      ON agentmail_creator_attention(state, updated_at DESC, inbox_id, message_id)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_agentmail_creator_attention_review
      ON agentmail_creator_attention(review_id) WHERE review_id IS NOT NULL`,
+  ...AGENTMAIL_CREATOR_DIGEST_SCHEMA,
 ];
 
 const EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map([
@@ -138,6 +145,17 @@ const EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map([
   ["agentmail_creator_attention", SCHEMA_STATEMENTS[8]!],
   ["idx_agentmail_creator_attention_queue", SCHEMA_STATEMENTS[9]!],
   ["idx_agentmail_creator_attention_review", SCHEMA_STATEMENTS[10]!],
+  ["agentmail_creator_digest_batches", SCHEMA_STATEMENTS[11]!],
+  ["agentmail_creator_digest_items", SCHEMA_STATEMENTS[12]!],
+  ["agentmail_creator_digest_watermarks", SCHEMA_STATEMENTS[13]!],
+  ["agentmail_creator_digest_retirement_ranges", SCHEMA_STATEMENTS[14]!],
+  ["idx_agentmail_creator_digest_item_source", SCHEMA_STATEMENTS[15]!],
+  ["idx_agentmail_creator_digest_watermark_time", SCHEMA_STATEMENTS[16]!],
+  ["idx_agentmail_creator_digest_retirement_end", SCHEMA_STATEMENTS[17]!],
+  ["trg_agentmail_creator_digest_batches_immutable", SCHEMA_STATEMENTS[18]!],
+  ["trg_agentmail_creator_digest_items_immutable", SCHEMA_STATEMENTS[19]!],
+  ["trg_agentmail_creator_digest_watermarks_immutable", SCHEMA_STATEMENTS[20]!],
+  ["trg_agentmail_creator_digest_retirement_ranges_immutable", SCHEMA_STATEMENTS[21]!],
 ] as const);
 
 const V1_EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map([
@@ -157,6 +175,20 @@ const V2_EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map([
   ["agentmail_inbound_quarantines", SCHEMA_STATEMENTS[5]!],
   ["idx_agentmail_inbound_quarantine_time", SCHEMA_STATEMENTS[6]!],
   ["agentmail_inbound_recoveries", SCHEMA_STATEMENTS[7]!],
+] as const);
+
+const V3_EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map([
+  ["agentmail_inbound_meta", SCHEMA_STATEMENTS[0]!],
+  ["agentmail_inbound_messages", SCHEMA_STATEMENTS[1]!],
+  ["idx_agentmail_inbound_claim", SCHEMA_STATEMENTS[2]!],
+  ["idx_agentmail_inbound_thread", SCHEMA_STATEMENTS[3]!],
+  ["agentmail_inbound_checkpoints", SCHEMA_STATEMENTS[4]!],
+  ["agentmail_inbound_quarantines", SCHEMA_STATEMENTS[5]!],
+  ["idx_agentmail_inbound_quarantine_time", SCHEMA_STATEMENTS[6]!],
+  ["agentmail_inbound_recoveries", SCHEMA_STATEMENTS[7]!],
+  ["agentmail_creator_attention", SCHEMA_STATEMENTS[8]!],
+  ["idx_agentmail_creator_attention_queue", SCHEMA_STATEMENTS[9]!],
+  ["idx_agentmail_creator_attention_review", SCHEMA_STATEMENTS[10]!],
 ] as const);
 
 function canonicalSchemaSql(sql: string): string {
@@ -390,6 +422,7 @@ function validateStoredRows(db: Database): void {
     }
   }
   validateStoredCreatorAttentionRows(db);
+  validateStoredCreatorDigestRows(db);
 }
 
 function prepareAgentMailDatabase(db: Database): void {
@@ -450,6 +483,18 @@ function prepareAgentMailDatabase(db: Database): void {
     db.prepare("UPDATE agentmail_inbound_meta SET value = ? WHERE key = 'schema_version'").run(
       String(AGENTMAIL_LEDGER_SCHEMA_VERSION),
     );
+  } else if (
+    (applicationId === AGENTMAIL_LEDGER_APPLICATION_ID && userVersion === 3) ||
+    (applicationId === 0 && userVersion === 0 && metadataVersion === 3)
+  ) {
+    validateExactSchema(db, V3_EXPECTED_SCHEMA, 3);
+    for (const statement of SCHEMA_STATEMENTS.slice(11)) db.run(statement);
+    const updated = db
+      .prepare("UPDATE agentmail_inbound_meta SET value = ? WHERE key = 'schema_version'")
+      .run(String(AGENTMAIL_LEDGER_SCHEMA_VERSION));
+    if (updated.changes !== 1) {
+      throw new Error("agentMail ledger: schema version metadata changed during migration");
+    }
   } else {
     if (
       (applicationId === 0 && userVersion !== 0) ||
@@ -533,6 +578,8 @@ export interface AgentMailInboundIncident {
 export interface AgentMailInboundLedger {
   /** Durable creator-attention state sharing this ledger's admitted message identity. */
   readonly creatorAttention: AgentMailCreatorAttentionStore;
+  /** Immutable creator-digest batches and append-only settlement watermarks. */
+  readonly creatorDigest: AgentMailCreatorDigestStore;
   enqueue(envelope: AgentMailInboundEnvelope): AgentMailLedgerEnqueueResult;
   /** Atomically persist a REST page's received mail and its fully scanned watermark. */
   recordCatchUpBatch(
@@ -584,6 +631,8 @@ export interface AgentMailInboundLedgerOptions {
   leaseToken?: () => string;
   /** Test-only incident-id seam. */
   incidentId?: () => string;
+  /** Test-only creator-digest batch-id seam. */
+  digestBatchId?: () => string;
   /**
    * Maximum creator-attention records retained in this ledger. Default 1000.
    * Terminal rows for unresolved inbound incidents never become reclaimable
@@ -595,6 +644,12 @@ export interface AgentMailInboundLedgerOptions {
    * incidents retain their linked replay evidence beyond this horizon.
    */
   attentionRetentionMs?: number;
+  /** Maximum retained immutable creator-digest batches. Default 1000. */
+  digestMaxBatches?: number;
+  /** Maximum retained creator-digest items. Default 10000. */
+  digestMaxItems?: number;
+  /** Settled creator-digest retention. Default 30 days. */
+  digestRetentionMs?: number;
 }
 
 export class AgentMailLedgerConflictError extends Error {
@@ -1013,6 +1068,16 @@ export function createAgentMailInboundLedger(
     maxRecords: options.attentionMaxRecords,
     retentionMs: options.attentionRetentionMs,
   });
+  const creatorDigest = createAgentMailCreatorDigestStore({
+    db,
+    now: clock,
+    assertOpen,
+    immediate,
+    batchId: options.digestBatchId,
+    maxBatches: options.digestMaxBatches,
+    maxItems: options.digestMaxItems,
+    retentionMs: options.digestRetentionMs,
+  });
 
   function prepareEnvelope(envelope: AgentMailInboundEnvelope): PreparedEnvelope {
     if (!(["rest", "websocket", "webhook"] as const).includes(envelope.source)) {
@@ -1216,6 +1281,7 @@ export function createAgentMailInboundLedger(
 
   return {
     creatorAttention,
+    creatorDigest,
 
     enqueue(envelope) {
       assertOpen();

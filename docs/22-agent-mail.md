@@ -57,6 +57,7 @@ nothing. A domain pattern matches that exact domain, not its subdomains.
 augments:
   - webTransport
   - agentMail
+  - notify
 
 # augments/agentMail/augment.yaml
 type: agentMail
@@ -109,6 +110,14 @@ config:
       mode: review
       # Default false. Applies only to the exact message in the current email turn.
       allowReplyAll: false
+    creatorDigest:
+      # Explicit opt-in. Omit this block to keep creator push disabled.
+      enabled: true
+      # Must uniquely match a creator-authorized, rate-limited Notify destination.
+      destination: creator
+      intervalMs: 900000
+      maxItems: 20
+      maxAttempts: 5
     classifications:
       received: process
       spam: discard
@@ -141,6 +150,33 @@ still say when inbound monitoring is disabled or degraded.
 Only one enabled inbound `agentMail` augment may own a given inbox. Multiple
 outbound-only instances can coexist, but two workers must not compete for the
 same inbound stream.
+
+`inbound.creatorDigest` is independently disabled by default. When enabled,
+Auggy requires exactly one matching `notify` destination that allows creator
+trust and retains a positive durable quota. Every interval, a synthetic bridge
+batches only durable creator-attention metadata: counts of open,
+pending-review, ambiguous, or quarantined mail. It never places sender,
+recipient, subject, body, draft, message/review identifiers, visitor identity,
+or provider errors in the notification. The creator opens the authenticated
+console to inspect the underlying review or attention records.
+
+Digest delivery uses Notify's normal durable quota and replay ledger; creator
+origin does not bypass those controls. A crash after provider acceptance
+replays as already sent rather than sending twice. An unknown outcome remains
+fenced for operator reconciliation, and definitive failures retry only up to
+`maxAttempts`. After exhaustion, the creator may authorize one CAS-bound
+attempt or dismiss only that digest generation. Dismissal does not change the
+email, reply review, or creator-attention state. Changing the Notify augment or
+destination while a batch is pending fails closed until that batch is
+reconciled.
+
+Settled digest batches use compact retirement ranges, so one still-current
+presented item cannot pin every later generation or exhaust batch capacity.
+Exact current presented/dismissed snapshots remain until their source state
+changes. On boot, the bridge scans the bounded live settlement set and
+idempotently acknowledges each matching Notify operation before preparing new
+work; this closes a crash between provider delivery and the two durable
+settlements without weakening replay protection.
 
 `auggy augment setup agentMail` reads this inbound block before it creates an
 inbox-scoped runtime key. The key always receives `inbox_read` and
@@ -190,7 +226,7 @@ classification; that event is durably discarded before kernel admission.
 
 Definitively failed turns are retried. After `maxAttempts` (default 5), the
 message is durably discarded rather than looping forever. A turn whose effects
-are outcome-unknown is never retried: `AMIL/v3` creates a server-minted
+are outcome-unknown is never retried: `AMIL/v4` creates a server-minted
 incident, blocks every later message in that provider thread, and restores the
 kernel thread quarantine after process restart. `pollIntervalMs` ranges from
 one second to 24 hours, `maxPromptBytes` ranges from 512 bytes to 1 MiB, and
@@ -216,7 +252,8 @@ is independently disabled by default; when enabled it deduplicates recipients
 and removes the verified canonical inbox email. If that identity is
 unavailable, reply-all fails closed. `disabled` prevents even a review
 proposal. `notify` remains a separate augment; no external creator alert is
-sent merely because inbound is enabled.
+sent merely because inbound is enabled unless
+`inbound.creatorDigest.enabled` is explicitly true.
 
 Every newly queued reply, including creator-originated replies, stores its
 explicit recipients. A legacy pending reply review without that binding is
@@ -340,6 +377,8 @@ The creator-authenticated admin surface reports:
 - the canonical inbox email, its source, and model-context visibility;
 - inbound mode and live state;
 - pending, processing, processed, discarded, and outcome-unknown ledger counts;
+- creator-digest state, pending metadata item count, bounded attempts, and last
+  successful presentation;
 - catch-up checkpoint, last catch-up summary, last inbound event, and last
   worker outcome;
 - last provider error;
@@ -361,6 +400,9 @@ The creator-authenticated admin surface reports:
 | Human review says the admin route is required | Enable `webTransport.adminRoute` or change review/allowed trust levels |
 | A reply says the message was not delivered this turn | Reply only from the turn triggered by that inbound message |
 | Inbound attention is at capacity | Resolve or dismiss creator-attention items; the exact message remains pending without consuming delivery attempts and resumes after capacity is available |
+| Creator digest says outcome unknown | Do not retry or dismiss it; reconcile the exact Notify incident after independently verifying provider delivery |
+| Creator digest attempts are exhausted | Inspect the destination, then authorize one evidence-bound retry or dismiss only the failed digest generation |
+| Creator digest target changed | Restore the prior Notify binding or reconcile the pending digest before moving it; Auggy will not re-key and resend it blindly |
 | A send outcome is ambiguous | Do not retry; verify with AgentMail and use the admin reconciliation action |
 | An inbound turn is outcome-unknown | Verify downstream effects, then reconcile the exact incident/version as handled or no-effect; the runtime thread remains blocked until every AgentMail, Notify, or other durable incident authority is clear |
 | Mail vanishes after Railway redeploy | Confirm the volume is mounted at exactly `/app/data`; admission should fail before boot if it is not durable |

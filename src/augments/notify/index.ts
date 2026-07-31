@@ -22,6 +22,7 @@ import type {
   NotifyAugmentOptions,
   NotifyDeliveryResult,
   NotifyDestination,
+  NotifyPayload,
   TrustLevel,
   ToolExecuteContext,
 } from "../../types";
@@ -75,9 +76,127 @@ export interface NotifyAugmentInternalOptions extends NotifyAugmentOptions {
   }>;
 }
 
-export function notify(opts: NotifyAugmentInternalOptions): Augment {
+export type NotifyInternalSource = "agentmail.creator-digest";
+
+export interface NotifyInternalDispatchInput {
+  source: NotifyInternalSource;
+  /** Stable, non-secret caller identity for this logical notification. */
+  operationKey: string;
+  destination: string;
+  threadId: string;
+  payload: NotifyPayload;
+  /** Provider attempts, including definitive failures. Range 1–20. */
+  maxAttempts: number;
+  signal?: AbortSignal;
+}
+
+export type NotifyInternalDispatchResult =
+  | { status: "sent"; replayed: boolean; attemptCount: number }
+  | {
+      status: "failed";
+      reason:
+        | "invalid_request"
+        | "destination_unavailable"
+        | "destination_forbidden"
+        | "adapter_unavailable"
+        | "canceled"
+        | "durable_state_unavailable"
+        | "operation_conflict"
+        | "delivery_failed";
+      retryable: boolean;
+      attemptCount: number;
+    }
+  | { status: "rate_limited"; message: string; attemptCount: number }
+  | { status: "in_flight"; attemptCount: number }
+  | { status: "attempts_exhausted"; attemptCount: number }
+  | {
+      status: "outcome_unknown";
+      attemptCount: number;
+      incidentId?: string;
+      incidentVersion?: number;
+    };
+
+export interface NotifyInternalRetryAuthorizationInput {
+  source: NotifyInternalSource;
+  operationKey: string;
+  expectedAttemptCount: number;
+  evidence: string;
+}
+
+export interface NotifyInternalAcknowledgementInput {
+  source: NotifyInternalSource;
+  operationKey: string;
+  /** Hash of the caller's durable source settlement; raw evidence stays source-local. */
+  settlementSha256: string;
+}
+
+export type NotifyInternalAcknowledgementResult =
+  | { status: "acknowledged" | "already_acknowledged" }
+  | {
+      status:
+        | "invalid_request"
+        | "not_found"
+        | "not_terminal"
+        | "operation_conflict"
+        | "durable_state_unavailable";
+    };
+
+export type NotifyInternalRetryAuthorizationResult =
+  | { status: "authorized"; attemptCount: number; authorizedAttempt: number }
+  | {
+      status:
+        | "invalid_request"
+        | "not_found"
+        | "operation_conflict"
+        | "not_exhausted"
+        | "not_definitively_failed"
+        | "attempt_limit_reached"
+        | "durable_state_unavailable";
+      attemptCount: number;
+    };
+
+export type NotifyInternalInspectionResult =
+  | { status: "not_found"; attemptCount: 0 }
+  | { status: "sent"; attemptCount: number }
+  | { status: "failed"; attemptCount: number }
+  | { status: "in_flight"; attemptCount: number }
+  | { status: "attempts_exhausted"; attemptCount: number }
+  | { status: "operation_conflict"; attemptCount: number }
+  | {
+      status: "outcome_unknown";
+      attemptCount: number;
+      incidentId?: string;
+      incidentVersion?: number;
+    }
+  | { status: "invalid_request" | "durable_state_unavailable"; attemptCount: 0 };
+
+export interface NotifyDispatchHost {
+  /** Hash of the effective destination configuration; secrets never leave this boundary. */
+  destinationBindingSha256(destination: string): string | undefined;
+  /** Inspect one protected operation without quota reservation or provider dispatch. */
+  inspectInternal(input: NotifyInternalDispatchInput): NotifyInternalInspectionResult;
+  dispatchInternal(input: NotifyInternalDispatchInput): Promise<NotifyInternalDispatchResult>;
+  /** Release active capacity only after the source durably settles its generation. */
+  acknowledgeInternalSettlement(
+    input: NotifyInternalAcknowledgementInput,
+  ): NotifyInternalAcknowledgementResult;
+  authorizeInternalRetry(
+    input: NotifyInternalRetryAuthorizationInput,
+  ): NotifyInternalRetryAuthorizationResult;
+}
+
+export type NotifyAugment = Augment & { dispatchHost: NotifyDispatchHost };
+
+export function notify(opts: NotifyAugmentInternalOptions): NotifyAugment {
   const overrideDir = opts.overrideDir ?? opts.agentDir;
   let overrideRootRetained = false;
+  const destinationsByName = new Map<string, NotifyDestination>();
+  for (const destination of opts.destinations) {
+    if (destinationsByName.has(destination.name)) {
+      throw new Error(`notify: duplicate destination name "${destination.name}"`);
+    }
+    destinationsByName.set(destination.name, destination);
+  }
   const defaults = {
     webhook: createWebhookAdapter(),
     telegram: createTelegramAdapter(),
@@ -105,9 +224,6 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
   };
   let deliveryStore = opts._deliveryStore ?? createNotifyDeliveryStore(deliveryStoreOptions);
   let ownedDeliveryStoreClosed = false;
-
-  const destinationsByName = new Map<string, NotifyDestination>();
-  for (const d of opts.destinations) destinationsByName.set(d.name, d);
 
   const rl = opts.rateLimit ?? {};
   const enabled = rl.enabled !== false;
@@ -240,6 +356,361 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
       ]),
     );
   }
+
+  function hasControlCharacters(value: string): boolean {
+    for (const character of value) {
+      const codePoint = character.codePointAt(0) ?? 0;
+      if (codePoint <= 31 || codePoint === 127) return true;
+    }
+    return false;
+  }
+
+  function validInternalInput(input: NotifyInternalDispatchInput): boolean {
+    if (input.source !== "agentmail.creator-digest") return false;
+    if (
+      typeof input.operationKey !== "string" ||
+      input.operationKey.length < 1 ||
+      input.operationKey.length > 512 ||
+      hasControlCharacters(input.operationKey)
+    ) {
+      return false;
+    }
+    if (
+      typeof input.destination !== "string" ||
+      input.destination.length < 1 ||
+      input.destination.length > 256 ||
+      hasControlCharacters(input.destination) ||
+      typeof input.threadId !== "string" ||
+      input.threadId.length < 1 ||
+      input.threadId.length > 256 ||
+      hasControlCharacters(input.threadId)
+    ) {
+      return false;
+    }
+    if (
+      !Number.isSafeInteger(input.maxAttempts) ||
+      input.maxAttempts < 1 ||
+      input.maxAttempts > 20 ||
+      typeof input.payload !== "object" ||
+      input.payload === null ||
+      typeof input.payload.summary !== "string" ||
+      input.payload.summary.trim().length === 0 ||
+      Buffer.byteLength(input.payload.summary, "utf8") > 8_192
+    ) {
+      return false;
+    }
+    if (
+      input.payload.reason !== undefined &&
+      (typeof input.payload.reason !== "string" ||
+        Buffer.byteLength(input.payload.reason, "utf8") > 102_400)
+    ) {
+      return false;
+    }
+    return !(
+      input.payload.visitor !== undefined &&
+      (typeof input.payload.visitor !== "string" ||
+        Buffer.byteLength(input.payload.visitor, "utf8") > 1_024)
+    );
+  }
+
+  function validRetryAuthorizationInput(input: NotifyInternalRetryAuthorizationInput): boolean {
+    return (
+      input.source === "agentmail.creator-digest" &&
+      typeof input.operationKey === "string" &&
+      input.operationKey.length >= 1 &&
+      input.operationKey.length <= 512 &&
+      !hasControlCharacters(input.operationKey) &&
+      Number.isSafeInteger(input.expectedAttemptCount) &&
+      input.expectedAttemptCount >= 1 &&
+      input.expectedAttemptCount <= 20 &&
+      typeof input.evidence === "string" &&
+      input.evidence.trim().length >= 1 &&
+      input.evidence.trim().length <= 400 &&
+      !hasControlCharacters(input.evidence.trim())
+    );
+  }
+
+  function validInternalAcknowledgementInput(input: NotifyInternalAcknowledgementInput): boolean {
+    return (
+      input.source === "agentmail.creator-digest" &&
+      typeof input.operationKey === "string" &&
+      input.operationKey.length >= 1 &&
+      input.operationKey.length <= 512 &&
+      !hasControlCharacters(input.operationKey) &&
+      /^[a-f0-9]{64}$/.test(input.settlementSha256)
+    );
+  }
+
+  function internalOperationHash(source: NotifyInternalSource, operationKey: string): string {
+    return hash(JSON.stringify(["notify-internal/v1", source, operationKey]));
+  }
+
+  function internalPayloadHash(input: NotifyInternalDispatchInput): string {
+    return hash(
+      JSON.stringify([
+        "notify-internal-payload/v1",
+        input.payload.summary,
+        input.payload.reason ?? null,
+        input.payload.visitor ?? null,
+      ]),
+    );
+  }
+
+  function quotaPolicyFor(destination: NotifyDestination) {
+    const destinationExplicit =
+      destination.rateLimit?.maxPerHour !== undefined ||
+      destination.rateLimit?.cooldownMs !== undefined;
+    return {
+      globalMaxPerHour,
+      perPeerCooldownMs,
+      dedupWindowMs,
+      destinationExplicit,
+      destinationMaxPerHour: destination.rateLimit?.maxPerHour,
+      destinationCooldownMs: destination.rateLimit?.cooldownMs,
+    };
+  }
+
+  function canonicalJsonValue(value: unknown): unknown {
+    if (Array.isArray(value)) return value.map(canonicalJsonValue);
+    if (typeof value !== "object" || value === null) return value;
+    return Object.fromEntries(
+      Object.entries(value)
+        .filter(([, entry]) => entry !== undefined)
+        .sort(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+        .map(([key, entry]) => [key, canonicalJsonValue(entry)]),
+    );
+  }
+
+  const dispatchHost: NotifyDispatchHost = {
+    destinationBindingSha256(destinationName) {
+      const destination = destinationsByName.get(destinationName);
+      if (!destination) return undefined;
+      if (
+        !enabled ||
+        !Number.isSafeInteger(globalMaxPerHour) ||
+        globalMaxPerHour < 1 ||
+        checkDestinationAuthority(destination, "creator", undefined) !== null ||
+        (destination.rateLimit?.maxPerHour !== undefined &&
+          (!Number.isSafeInteger(destination.rateLimit.maxPerHour) ||
+            destination.rateLimit.maxPerHour < 1))
+      ) {
+        return undefined;
+      }
+      return hash(
+        JSON.stringify(["notify-destination-binding/v1", canonicalJsonValue(destination)]),
+      );
+    },
+    inspectInternal(input) {
+      if (!validInternalInput(input)) return { status: "invalid_request", attemptCount: 0 };
+      try {
+        const inspected = deliveryStore.inspectInternal({
+          operationHash: internalOperationHash(input.source, input.operationKey),
+          payloadHash: internalPayloadHash(input),
+          maxAttempts: input.maxAttempts,
+          threadId: input.threadId,
+          destination: input.destination,
+        });
+        if (inspected.status === "already_sent") {
+          return { status: "sent", attemptCount: inspected.attemptCount };
+        }
+        return inspected;
+      } catch {
+        return { status: "durable_state_unavailable", attemptCount: 0 };
+      }
+    },
+    acknowledgeInternalSettlement(input) {
+      if (!validInternalAcknowledgementInput(input)) {
+        return { status: "invalid_request" };
+      }
+      try {
+        const result = deliveryStore.acknowledgeInternal({
+          operationHash: internalOperationHash(input.source, input.operationKey),
+          settlementSha256: input.settlementSha256,
+        });
+        return {
+          status: result === "conflict" ? "operation_conflict" : result,
+        };
+      } catch {
+        return { status: "durable_state_unavailable" };
+      }
+    },
+    async dispatchInternal(input) {
+      if (!validInternalInput(input)) {
+        return {
+          status: "failed",
+          reason: "invalid_request",
+          retryable: false,
+          attemptCount: 0,
+        };
+      }
+      const destination = destinationsByName.get(input.destination);
+      if (!destination) {
+        return {
+          status: "failed",
+          reason: "destination_unavailable",
+          retryable: false,
+          attemptCount: 0,
+        };
+      }
+      if (checkDestinationAuthority(destination, "creator", input.payload.reason)) {
+        return {
+          status: "failed",
+          reason: "destination_forbidden",
+          retryable: false,
+          attemptCount: 0,
+        };
+      }
+      const adapter = adapters[destination.transport];
+      if (!adapter) {
+        return {
+          status: "failed",
+          reason: "adapter_unavailable",
+          retryable: false,
+          attemptCount: 0,
+        };
+      }
+      if (input.signal?.aborted) {
+        return {
+          status: "failed",
+          reason: "canceled",
+          retryable: true,
+          attemptCount: 0,
+        };
+      }
+
+      let reservation: ReturnType<NotifyDeliveryStore["reserveInternal"]>;
+      try {
+        reservation = deliveryStore.reserveInternal({
+          operationHash: internalOperationHash(input.source, input.operationKey),
+          payloadHash: internalPayloadHash(input),
+          maxAttempts: input.maxAttempts,
+          threadId: input.threadId,
+          peerHash: hash(JSON.stringify(["notify-internal-peer/v1", input.source])),
+          destination: destination.name,
+          summaryHash: hash(input.payload.summary),
+          policy: quotaPolicyFor(destination),
+        });
+      } catch {
+        return {
+          status: "failed",
+          reason: "durable_state_unavailable",
+          retryable: true,
+          attemptCount: 0,
+        };
+      }
+      if (reservation.status === "rate_limited") return reservation;
+      if (reservation.status === "in_flight") return reservation;
+      if (reservation.status === "already_sent") {
+        return { status: "sent", replayed: true, attemptCount: reservation.attemptCount };
+      }
+      if (reservation.status === "attempts_exhausted") return reservation;
+      if (reservation.status === "operation_conflict") {
+        return {
+          status: "failed",
+          reason: "operation_conflict",
+          retryable: false,
+          attemptCount: reservation.attemptCount,
+        };
+      }
+      if (reservation.status === "outcome_unknown") return reservation;
+
+      let result: NotifyDeliveryResult;
+      try {
+        result = await adapter.deliver(destination, input.payload, { signal: input.signal });
+      } catch {
+        let incident: ReturnType<NotifyDeliveryStore["settle"]> = null;
+        try {
+          incident = deliveryStore.settle(
+            reservation.attemptId,
+            "outcome_unknown",
+            "internal-adapter-threw",
+          );
+        } catch {
+          // The durable pending attempt remains replay-fenced and is promoted on restart.
+        }
+        recordDispatch({
+          timestamp: new Date().toISOString().slice(11, 19),
+          destination: destination.name,
+          status: "failed",
+          summary: input.payload.summary,
+        });
+        return {
+          status: "outcome_unknown",
+          attemptCount: reservation.attemptCount,
+          ...(incident ? { incidentId: incident.id, incidentVersion: incident.version } : {}),
+        };
+      }
+
+      recordDispatch({
+        timestamp: new Date().toISOString().slice(11, 19),
+        destination: destination.name,
+        status: result.status === "sent" || result.status === "failed" ? result.status : "failed",
+        summary: input.payload.summary,
+      });
+      if (result.status !== "sent" && result.status !== "failed") {
+        let incident: ReturnType<NotifyDeliveryStore["settle"]> = null;
+        try {
+          incident = deliveryStore.settle(
+            reservation.attemptId,
+            "outcome_unknown",
+            "internal-invalid-adapter-result",
+          );
+        } catch {
+          // The durable pending attempt remains replay-fenced and is promoted on restart.
+        }
+        return {
+          status: "outcome_unknown",
+          attemptCount: reservation.attemptCount,
+          ...(incident ? { incidentId: incident.id, incidentVersion: incident.version } : {}),
+        };
+      }
+
+      let incident: ReturnType<NotifyDeliveryStore["settle"]> = null;
+      try {
+        incident = deliveryStore.settle(
+          reservation.attemptId,
+          result.outcomeUnknown ? "outcome_unknown" : result.status,
+          result.outcomeUnknown ? "internal-adapter-reported-unknown" : undefined,
+        );
+      } catch {
+        return { status: "outcome_unknown", attemptCount: reservation.attemptCount };
+      }
+      if (result.outcomeUnknown) {
+        return {
+          status: "outcome_unknown",
+          attemptCount: reservation.attemptCount,
+          ...(incident ? { incidentId: incident.id, incidentVersion: incident.version } : {}),
+        };
+      }
+      if (result.status === "sent") {
+        return { status: "sent", replayed: false, attemptCount: reservation.attemptCount };
+      }
+      if (reservation.attemptCount >= input.maxAttempts) {
+        return { status: "attempts_exhausted", attemptCount: reservation.attemptCount };
+      }
+      return {
+        status: "failed",
+        reason: "delivery_failed",
+        retryable: true,
+        attemptCount: reservation.attemptCount,
+      };
+    },
+
+    authorizeInternalRetry(input) {
+      if (!validRetryAuthorizationInput(input)) {
+        return { status: "invalid_request", attemptCount: 0 };
+      }
+      try {
+        return deliveryStore.authorizeInternalRetry({
+          operationHash: internalOperationHash(input.source, input.operationKey),
+          expectedAttemptCount: input.expectedAttemptCount,
+          evidence: input.evidence.trim(),
+        });
+      } catch {
+        return { status: "durable_state_unavailable", attemptCount: 0 };
+      }
+    },
+  };
 
   function unknownDelivery(incidentId?: string) {
     return {
@@ -795,6 +1266,7 @@ export function notify(opts: NotifyAugmentInternalOptions): Augment {
     name: "notify",
     type: "notify",
     category: "transports",
+    dispatchHost,
     tools: [notifyTool],
     adminInfo,
     adminActions,

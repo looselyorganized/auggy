@@ -121,6 +121,7 @@ describe("runtime state inventory", () => {
     expect(byId.get("agentmail-ledger:mail-a")?.relativePath).toBe(
       "agent-mail/mail-a/agent-mail.db",
     );
+    expect(byId.get("agentmail-ledger:mail-a")?.schema).toBe("AMIL/v4");
     expect(byId.get("agent-mail-rate/v2:mail-a")?.relativePath).toBe(
       "agent-mail/mail-a/agent-mail-state.json",
     );
@@ -128,7 +129,7 @@ describe("runtime state inventory", () => {
       "agent-mail/mail-a/agent-mail-reviews.json",
     );
     expect(byId.get("notify-delivery:notify")?.relativePath).toBe("notify-notify.db");
-    expect(byId.get("notify-delivery:notify")?.schema).toBe("NTFY/v1");
+    expect(byId.get("notify-delivery:notify")?.schema).toBe("NTFY/v2");
     expect(byId.get("notify-delivery:notify")?.replayCritical).toBe(true);
     expect(byId.get("durable-jobs")).toMatchObject({
       relativePath: "durable-jobs.sqlite",

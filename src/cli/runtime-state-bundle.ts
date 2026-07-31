@@ -619,10 +619,13 @@ function assertInventorySqliteCompatibility(
     }
     if (!file.sqlite) throw contextualError(`declared SQLite state is not SQLite: ${store.id}`);
     const expected = store.schema ? RUNTIME_STATE_SQLITE_IDENTITIES[store.schema] : undefined;
+    const compatibleVersions = expected
+      ? (expected.compatibleUserVersions ?? [expected.userVersion])
+      : [];
     if (
       expected &&
       (file.sqlite.applicationId !== expected.applicationId ||
-        file.sqlite.userVersion !== expected.userVersion)
+        !compatibleVersions.includes(file.sqlite.userVersion))
     ) {
       throw contextualError(`SQLite identity is incompatible for ${store.id}`);
     }

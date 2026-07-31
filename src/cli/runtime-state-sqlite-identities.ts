@@ -32,6 +32,8 @@ import { DURABLE_JOBS_APPLICATION_ID, DURABLE_JOBS_SCHEMA_VERSION } from "../job
 export interface RuntimeStateSqliteIdentity {
   applicationId: number;
   userVersion: number;
+  /** Historical versions emitted under the same inventory schema label. */
+  compatibleUserVersions?: readonly number[];
 }
 
 export const RUNTIME_STATE_SQLITE_IDENTITIES: Readonly<Record<string, RuntimeStateSqliteIdentity>> =
@@ -60,13 +62,26 @@ export const RUNTIME_STATE_SQLITE_IDENTITIES: Readonly<Record<string, RuntimeSta
       applicationId: TELEGRAM_REPLAY_APPLICATION_ID,
       userVersion: TELEGRAM_REPLAY_SCHEMA_VERSION,
     },
-    "AMIL/v2": {
+    "AMIL/v4": {
       applicationId: AGENTMAIL_LEDGER_APPLICATION_ID,
       userVersion: AGENTMAIL_LEDGER_SCHEMA_VERSION,
     },
-    "NTFY/v1": {
+    "AMIL/v3": {
+      applicationId: AGENTMAIL_LEDGER_APPLICATION_ID,
+      userVersion: 3,
+    },
+    "AMIL/v2": {
+      applicationId: AGENTMAIL_LEDGER_APPLICATION_ID,
+      userVersion: 2,
+      compatibleUserVersions: [2, 3],
+    },
+    "NTFY/v2": {
       applicationId: NOTIFY_DELIVERY_APPLICATION_ID,
       userVersion: NOTIFY_DELIVERY_SCHEMA_VERSION,
+    },
+    "NTFY/v1": {
+      applicationId: NOTIFY_DELIVERY_APPLICATION_ID,
+      userVersion: 1,
     },
     "DJOB/v2": {
       applicationId: DURABLE_JOBS_APPLICATION_ID,
