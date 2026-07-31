@@ -169,6 +169,26 @@ quarantined/`NULL`. A missing column fails through PostgREST; there is no
 prefix-only compatibility fallback. Rolling back to a binary that ignores
 `namespace_key` can reopen cross-namespace access and is unsafe.
 
+### Notify destination-name upgrade
+
+RC.5 treats every Notify destination name as an agent-wide identifier. RC.4 CLI
+configuration validation already rejected duplicates within one Notify augment,
+but direct `notify(...)` construction used last-wins behavior and CLI
+configurations could mount separate Notify augments with the same destination
+name. The effective destination then depended on construction and lookup order.
+The new runtime rejects both forms before constructing an augment.
+
+While the agent is stopped, inspect every mounted Notify augment and every
+direct `notify(...)` destination array, then give each destination a unique
+name. Preserve the name of the destination that existing callers are intended
+to reach, rename the others, and update every
+`notify(to: ...)` caller, `budgets.notifications.destination`, and AgentMail
+`inbound.creatorDigest.destination` reference. Reconcile pending, in-flight,
+exhausted, or outcome-unknown Notify and creator-digest operations against the
+old binding before renaming it; the runtime does not rewrite durable operation
+identity or infer which duplicate an old call meant. Back up the complete
+runtime state before reopening ingress.
+
 ## Rollback
 
 Code-only rollback is unsafe after a persisted migration. Stop the agent,

@@ -1,7 +1,8 @@
 # `agentMail` augment
 
-**Availability:** outbound email and the durable inbound/review foundation ship
-in the `0.5.0-rc.4` release line. Inbound remains an explicit opt-in.
+**Availability:** outbound email shipped before RC.5; the current hardened
+inbound, reviewed-reply, digest, and multi-inbox action-center contract is in
+the `0.5.0-rc.5` candidate. Inbound remains an explicit opt-in.
 
 `agentMail` gives an agent a policy-gated AgentMail inbox. It exposes
 `send_message`, `reply_to_message`, and `forward_message`, and can turn admitted
