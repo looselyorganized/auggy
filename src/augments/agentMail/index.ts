@@ -82,7 +82,6 @@ import type { AgentMailEventSubscription } from "./provider";
 import {
   AGENTMAIL_MAX_AUTOMATIC_REPLIES_PER_HOUR,
   processedAgentMailEventTypes,
-  resolveAgentMailInboundReplies,
   validateAgentMailEffectiveHourlyCap,
   validateAgentMailInboundConfig,
 } from "./inbound-policy";
@@ -98,6 +97,11 @@ import {
   type AgentMailReviewRecord,
   type AgentMailReviewRequest,
 } from "./review-queue";
+import {
+  AGENTMAIL_CREATOR_DIGEST_SOURCE,
+  type AgentMailCreatorDigestController,
+  type AgentMailCreatorDigestSource,
+} from "./creator-digest-bridge";
 
 const DEFAULT_ALLOWED_TRUST_LEVELS: TrustLevel[] = ["creator"];
 const DEFAULT_REVIEW_TRUST_LEVELS: TrustLevel[] = ["public"];
@@ -455,11 +459,12 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   }
 
   const inboundMode = opts.inbound?.mode ?? "none";
-  const inboundReplies = resolveAgentMailInboundReplies(
-    inboundMode,
-    opts.inbound?.replies,
+  const validatedInbound = validateAgentMailInboundConfig(
+    opts.inbound ?? { mode: "none" },
     outboundOpts,
   );
+  const inboundReplies = validatedInbound.replies;
+  const creatorDigestConfig = validatedInbound.creatorDigest;
   if (inboundReplies.mode !== "disabled" && !stateDir && opts._reviewQueue === undefined) {
     throw new Error(
       "agentMail: enabled inbound replies require durable review storage; set agentDir/stateDir or provide the test-only _reviewQueue seam",
@@ -563,6 +568,27 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   let lastInboundEventAt: number | undefined;
   let lastWorkerOutcome: string | undefined;
   let lastProviderError: string | undefined;
+  let creatorDigestController: AgentMailCreatorDigestController | undefined;
+
+  const creatorDigestSource: AgentMailCreatorDigestSource = {
+    inboxId: opts.inboxId,
+    config: creatorDigestConfig,
+    attach: (controller) => {
+      if (!creatorDigestConfig.enabled) {
+        throw new Error("agentMail: creator digest is disabled");
+      }
+      if (creatorDigestController) {
+        throw new Error("agentMail: creator digest is already attached to a Notify bridge");
+      }
+      creatorDigestController = controller;
+    },
+    store: () => {
+      if (!inboundLedger) {
+        throw new Error("agentMail: creator digest store is unavailable before inbound boot");
+      }
+      return inboundLedger.creatorDigest;
+    },
+  };
 
   function recordProviderError(error: unknown): void {
     lastProviderError = (error instanceof Error ? error.message : String(error)).slice(0, 500);
@@ -2079,6 +2105,11 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   // Lifecycle
   // ---------------------------------------------------------------------------
   async function onBoot(): Promise<void> {
+    if (creatorDigestConfig.enabled && !creatorDigestController) {
+      throw new Error(
+        "agentMail: inbound.creatorDigest is enabled but no Notify bridge is mounted",
+      );
+    }
     dispatches.clear();
     for (const status of Object.keys(dispatchCounts) as DispatchRecord["status"][]) {
       dispatchCounts[status] = 0;
@@ -2447,6 +2478,16 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         `${attentionCounts.open + attentionCounts.pendingReview + attentionCounts.ambiguous} inbound item(s) need creator attention`,
       );
     }
+    const creatorDigestStatus = creatorDigestController?.status() ?? {
+      state: creatorDigestConfig.enabled ? "degraded" : "disabled",
+    };
+    if (
+      creatorDigestStatus.state === "outcome_unknown" ||
+      creatorDigestStatus.state === "attempts_exhausted" ||
+      creatorDigestStatus.state === "degraded"
+    ) {
+      operationalWarnings.push(`creator digest: ${creatorDigestStatus.state.replaceAll("_", " ")}`);
+    }
 
     return {
       augmentName: "agent-mail",
@@ -2523,6 +2564,29 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             { label: "Attention open", value: String(attentionCounts.open) },
             { label: "Attention pending review", value: String(attentionCounts.pendingReview) },
             { label: "Attention ambiguous", value: String(attentionCounts.ambiguous) },
+            {
+              label: "Creator digest",
+              value: creatorDigestConfig.enabled ? creatorDigestStatus.state : "disabled",
+              source: "yaml",
+            },
+            {
+              label: "Creator digest pending items",
+              value: String(creatorDigestStatus.pendingItems ?? 0),
+            },
+            {
+              label: "Creator digest pending batch",
+              value: creatorDigestStatus.pendingBatchId ?? "(none)",
+            },
+            {
+              label: "Creator digest attempts",
+              value: String(creatorDigestStatus.attemptCount ?? 0),
+            },
+            {
+              label: "Creator digest last presented",
+              value: creatorDigestStatus.lastPresentedAt
+                ? new Date(creatorDigestStatus.lastPresentedAt).toISOString()
+                : "(never)",
+            },
             { label: "Catch-up checkpoint", value: checkpoint ?? "(none)" },
             {
               label: "Last catch-up",
@@ -2750,6 +2814,58 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             },
           ],
         },
+        ...(creatorDigestConfig.enabled
+          ? [
+              {
+                id: "agentmail-creator-digest-retry",
+                label: "Authorize one creator digest retry",
+                confirmRequired: true,
+                inputs: [
+                  {
+                    name: "batchId",
+                    label: "Pending digest batch ID",
+                    type: "text" as const,
+                    required: true,
+                  },
+                  {
+                    name: "expectedAttemptCount",
+                    label: "Expected attempt count",
+                    type: "number" as const,
+                    required: true,
+                  },
+                  {
+                    name: "evidence",
+                    label: "Retry evidence",
+                    type: "text" as const,
+                    required: true,
+                    helpText:
+                      "Explain why one more attempt is appropriate. Only its SHA-256 digest is retained.",
+                  },
+                ],
+              },
+              {
+                id: "agentmail-creator-digest-dismiss",
+                label: "Dismiss failed creator digest",
+                confirmRequired: true,
+                inputs: [
+                  {
+                    name: "batchId",
+                    label: "Pending digest batch ID",
+                    type: "text" as const,
+                    required: true,
+                  },
+                  {
+                    name: "evidence",
+                    label: "Dismissal evidence",
+                    type: "text" as const,
+                    required: true,
+                    helpText:
+                      "Dismisses only this metadata digest generation; it does not change email attention or reviews.",
+                  },
+                ],
+              },
+            ]
+          : []),
       ],
     };
   }
@@ -3162,6 +3278,53 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         return { ok: false, message: (error as Error).message };
       }
     },
+    "agentmail-creator-digest-retry": async (params) => {
+      if (!creatorDigestController) {
+        return { ok: false, message: "Creator digest bridge is not available" };
+      }
+      const batchId = typeof params.batchId === "string" ? params.batchId.trim() : "";
+      const expectedAttemptCount =
+        typeof params.expectedAttemptCount === "number"
+          ? params.expectedAttemptCount
+          : Number(params.expectedAttemptCount);
+      const evidence = typeof params.evidence === "string" ? params.evidence.trim() : "";
+      if (!batchId || batchId.length > 128 || /\p{Cc}/u.test(batchId)) {
+        return { ok: false, message: "A valid pending digest batch ID is required" };
+      }
+      if (!Number.isSafeInteger(expectedAttemptCount) || expectedAttemptCount < 1) {
+        return { ok: false, message: "A valid expected attempt count is required" };
+      }
+      if (!evidence || evidence.length > 400) {
+        return { ok: false, message: "Retry evidence must contain 1 to 400 characters" };
+      }
+      try {
+        return creatorDigestController.authorizeRetry({
+          batchId,
+          expectedAttemptCount,
+          evidence,
+        });
+      } catch (error) {
+        return { ok: false, message: (error as Error).message };
+      }
+    },
+    "agentmail-creator-digest-dismiss": async (params) => {
+      if (!creatorDigestController) {
+        return { ok: false, message: "Creator digest bridge is not available" };
+      }
+      const batchId = typeof params.batchId === "string" ? params.batchId.trim() : "";
+      const evidence = typeof params.evidence === "string" ? params.evidence.trim() : "";
+      if (!batchId || batchId.length > 128 || /\p{Cc}/u.test(batchId)) {
+        return { ok: false, message: "A valid pending digest batch ID is required" };
+      }
+      if (!evidence || evidence.length > 400) {
+        return { ok: false, message: "Dismissal evidence must contain 1 to 400 characters" };
+      }
+      try {
+        return creatorDigestController.dismiss({ batchId, evidence });
+      } catch (error) {
+        return { ok: false, message: (error as Error).message };
+      }
+    },
   };
 
   // ---------------------------------------------------------------------------
@@ -3169,6 +3332,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   // the per-turn map populated by onTurnPrepared above.
   // ---------------------------------------------------------------------------
   const aug: Augment & {
+    [AGENTMAIL_CREATOR_DIGEST_SOURCE]: AgentMailCreatorDigestSource;
     _markSeenForTest?: (messageId: string, meta: { from: string; replyAllTo?: string[] }) => void;
   } = {
     name: "agent-mail",
@@ -3198,6 +3362,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     onTurnEnd: async (result) => {
       seenMessagesByTurn.delete(result.turnId);
     },
+    [AGENTMAIL_CREATOR_DIGEST_SOURCE]: creatorDigestSource,
     _markSeenForTest: (messageId, meta) => legacySeenMessages.set(messageId, meta),
   };
 

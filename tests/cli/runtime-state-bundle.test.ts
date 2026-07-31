@@ -432,6 +432,39 @@ describe("runtime state bundle", () => {
     expect(readdirSync(paths.backups)).toEqual([]);
   });
 
+  test("admits exact legacy inventory identities, including the historical AMIL/v2 label", () => {
+    const paths = fixture();
+    for (const [filename, schema, applicationId, userVersion] of [
+      ["agent-mail-v2-label.db", "AMIL/v2", 0x414d494c, 3],
+      ["notify-v1.db", "NTFY/v1", 0x4e544659, 1],
+    ] as const) {
+      const db = new Database(join(paths.source, filename));
+      db.run(`PRAGMA application_id = ${applicationId}`);
+      db.run(`PRAGMA user_version = ${userVersion}`);
+      db.run("CREATE TABLE exact_legacy_state (id TEXT PRIMARY KEY)");
+      db.close();
+
+      const legacyInventory = inventory();
+      legacyInventory.stores = [
+        {
+          ...legacyInventory.stores[0]!,
+          id: `legacy:${schema}`,
+          relativePath: filename,
+          schema,
+          required: true,
+        },
+      ];
+      expect(() =>
+        createRuntimeStateBundle({
+          sourceRoot: paths.source,
+          bundlePath: join(paths.backups, `${schema.replace("/", "-")}.auggy-state`),
+          inventory: legacyInventory,
+          confirmStopped: true,
+        }),
+      ).not.toThrow();
+    }
+  });
+
   test("validates the durable-jobs v2 identity before backup succeeds", () => {
     const paths = fixture();
     const databasePath = join(paths.source, "durable-jobs.sqlite");

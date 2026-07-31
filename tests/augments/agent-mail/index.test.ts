@@ -256,6 +256,27 @@ describe("agentMail factory", () => {
     ).not.toThrow();
   });
 
+  test("fails boot before provider or ledger effects when an enabled digest is unattached", async () => {
+    const { client, log } = fakeClient();
+    const aug = agentMail({
+      ...baseOpts,
+      _client: client,
+      agentDir: makeTmpDir(),
+      inbound: {
+        mode: "polling",
+        allowedSenders: ["*@example.com"],
+        replies: { mode: "disabled" },
+        creatorDigest: {
+          enabled: true,
+          destination: "creator",
+        },
+      },
+    });
+
+    await expect(aug.onBoot?.()).rejects.toThrow(/no Notify bridge is mounted/);
+    expect(log.inbox).toHaveLength(0);
+  });
+
   test("requires webhook configuration for webhook mode", () => {
     expect(() =>
       agentMail({

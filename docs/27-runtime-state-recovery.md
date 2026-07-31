@@ -51,10 +51,10 @@ The initial catalog covers:
 | Durable jobs and schedules | `DJOB/v2` | 30-day terminal jobs and 90-day reconciliation audit by default | Job leases, attempt history, schedule occurrences, cancellation, and outcome-unknown incidents |
 | Console chat/history | `CCHT/v4` | Until authenticated deletion | Ownership, history, runs, tombstones |
 | Telegram replay | `TGRP/v2` | 30 days and configured entry cap | Claims, conflicts, discard decisions |
-| AgentMail inbound | `AMIL/v2` | Ledger policy | Inbound leases, outcome-unknown incidents, recovery evidence hashes, and terminal work |
+| AgentMail inbound | `AMIL/v4` | Ledger policy; current suppression snapshots plus compact retired-generation ranges | Inbound leases, outcome-unknown incidents, creator attention, immutable digest batches, recovery evidence hashes, and terminal work |
 | AgentMail rate state | `agent-mail-rate/v2` | Bounded rate/dedup windows | Reservations and accounted attempts |
 | AgentMail review queue | `agent-mail-reviews/v1` | Bounded terminal retention | Pending and ambiguous sends |
-| Notify delivery | `NTFY/v1` | Up to 30 days and 10,000 terminal attempts; unresolved incidents retained | Atomic quota reservations, delivery ambiguity, canonical thread fences, evidence hashes, and recovery decisions |
+| Notify delivery | `NTFY/v2` | Ordinary terminals up to 30 days; unresolved protected operations consume the 10,000-record active cap; source-acknowledged operations retain replay evidence without consuming that cap | Atomic quota and payload reservations, bounded internal retries, source-settlement acknowledgements, delivery ambiguity, canonical thread fences, evidence hashes, and recovery decisions |
 | Link task store | Package-owned | Package-owned | External package state; semantically opaque to core |
 | Writable filesystem mounts | `opaque-files/v1` | Operator/application managed | Durable agent-created artifacts |
 | Log-to-file notify | `jsonl/v1` | Unbounded | Operational delivery record, not a send ledger |

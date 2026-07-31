@@ -91,12 +91,28 @@ function ledgerAt(
 
 function downgradeToV1(dbPath: string, unbranded = false): void {
   const db = new Database(dbPath, { readwrite: true });
+  db.run("DROP TABLE agentmail_creator_digest_retirement_ranges");
+  db.run("DROP TABLE agentmail_creator_digest_watermarks");
+  db.run("DROP TABLE agentmail_creator_digest_items");
+  db.run("DROP TABLE agentmail_creator_digest_batches");
   db.run("DROP TABLE agentmail_creator_attention");
   db.run("DROP TABLE agentmail_inbound_recoveries");
   db.run("DROP TABLE agentmail_inbound_quarantines");
   db.run("UPDATE agentmail_inbound_meta SET value = '1' WHERE key = 'schema_version'");
   db.run(`PRAGMA application_id = ${unbranded ? 0 : AGENTMAIL_LEDGER_APPLICATION_ID}`);
   db.run(`PRAGMA user_version = ${unbranded ? 0 : 1}`);
+  db.close();
+}
+
+function downgradeToV3(dbPath: string, unbranded = false): void {
+  const db = new Database(dbPath, { readwrite: true });
+  db.run("DROP TABLE agentmail_creator_digest_retirement_ranges");
+  db.run("DROP TABLE agentmail_creator_digest_watermarks");
+  db.run("DROP TABLE agentmail_creator_digest_items");
+  db.run("DROP TABLE agentmail_creator_digest_batches");
+  db.run("UPDATE agentmail_inbound_meta SET value = '3' WHERE key = 'schema_version'");
+  db.run(`PRAGMA application_id = ${unbranded ? 0 : AGENTMAIL_LEDGER_APPLICATION_ID}`);
+  db.run(`PRAGMA user_version = ${unbranded ? 0 : 3}`);
   db.close();
 }
 
@@ -280,6 +296,78 @@ describe("AgentMail inbound ledger", () => {
       ).toBe(AGENTMAIL_LEDGER_SCHEMA_VERSION);
       probe.close();
     }
+  });
+
+  test("migrates exact branded and unbranded v3 ledgers without losing attention", () => {
+    for (const unbranded of [false, true]) {
+      const dbPath = tempDb();
+      let ledger = createAgentMailInboundLedger({
+        dbPath,
+        now: () => 10_000,
+        leaseToken: () => "legacy_v3_lease",
+      });
+      ledger.enqueue(restEnvelope(`legacy_v3_${unbranded}`));
+      const claim = ledger.claimNext({ workerId: "worker", leaseMs: 1_000 })!;
+      const attention = ledger.creatorAttention.reserve({
+        inboxId: "support@agentmail.to",
+        messageId: `legacy_v3_${unbranded}`,
+        allowReopen: false,
+      }).record;
+      expect(ledger.complete(claim)).toBe(true);
+      ledger.close();
+      downgradeToV3(dbPath, unbranded);
+
+      ledger = createAgentMailInboundLedger({ dbPath, now: () => 10_001 });
+      expect(ledger.creatorAttention.get("support@agentmail.to", `legacy_v3_${unbranded}`)).toEqual(
+        attention,
+      );
+      expect(ledger.creatorDigest.counts()).toEqual({ batches: 0, items: 0, pending: 0 });
+      ledger.close();
+
+      const probe = new Database(dbPath, { readonly: true });
+      expect(
+        probe.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version,
+      ).toBe(AGENTMAIL_LEDGER_SCHEMA_VERSION);
+      expect(
+        probe
+          .query<{ value: string }, []>(
+            "SELECT value FROM agentmail_inbound_meta WHERE key = 'schema_version'",
+          )
+          .get()?.value,
+      ).toBe(String(AGENTMAIL_LEDGER_SCHEMA_VERSION));
+      probe.close();
+    }
+  });
+
+  test("rejects modified v3 schema before adding any digest objects", () => {
+    const dbPath = tempDb();
+    const ledger = createAgentMailInboundLedger({ dbPath });
+    ledger.close();
+    downgradeToV3(dbPath);
+    const seed = new Database(dbPath, { readwrite: true });
+    seed.run("DROP INDEX idx_agentmail_creator_attention_queue");
+    seed.run(
+      `CREATE INDEX idx_agentmail_creator_attention_queue
+         ON agentmail_creator_attention(state, updated_at ASC, inbox_id, message_id)`,
+    );
+    seed.close();
+    const bytes = readFileSync(dbPath);
+
+    expect(() => createAgentMailInboundLedger({ dbPath })).toThrow(/object is incompatible/i);
+    expect(readFileSync(dbPath)).toEqual(bytes);
+    const probe = new Database(dbPath, { readonly: true });
+    expect(
+      probe
+        .query<{ count: number }, []>(
+          `SELECT COUNT(*) AS count FROM sqlite_schema
+            WHERE name LIKE 'agentmail_creator_digest_%'`,
+        )
+        .get()?.count,
+    ).toBe(0);
+    expect(
+      probe.query<{ user_version: number }, []>("PRAGMA user_version").get()?.user_version,
+    ).toBe(3);
+    probe.close();
   });
 
   test("rejects an otherwise exact legacy ledger with an unexpected object", () => {

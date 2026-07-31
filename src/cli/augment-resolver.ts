@@ -27,6 +27,16 @@ import { bash } from "../augments/bash";
 import { notify } from "../augments/notify";
 import { mcp } from "../augments/mcp";
 import { agentMail } from "../augments/agentMail";
+import {
+  agentMailCreatorDigestBridgeName,
+  createAgentMailCreatorDigestBridge,
+} from "../augments/agentMail/creator-digest-bridge";
+import { validateAgentMailInboundConfig } from "../augments/agentMail/inbound-policy";
+import {
+  collectNotifyDestinationPolicyBindings,
+  resolveCreatorDigestNotifyBinding,
+  validateUniqueNotifyDestinationNames,
+} from "../augments/agentMail/creator-digest-policy";
 import { telegramTransport } from "../augments/telegramTransport";
 import { turnControl, type TurnControlOptions } from "../augments/turnControl";
 import { visitorAuth } from "../augments/visitorAuth";
@@ -678,9 +688,44 @@ export async function resolveAugments(
   }
 
   const inboundInboxOwners = new Map<string, string>();
+  const notifyBindings = collectNotifyDestinationPolicyBindings(
+    configs.flatMap((config) =>
+      config.type === "notify"
+        ? [
+            {
+              augmentName: config.name,
+              destinations: config.options?.destinations,
+              rateLimit: config.options?.rateLimit,
+            },
+          ]
+        : [],
+    ),
+  );
+  validateUniqueNotifyDestinationNames(notifyBindings);
+  const creatorDigestBindings: Array<{
+    agentMailAugmentName: string;
+    notifyAugmentName: string;
+  }> = [];
+
   for (const config of configs) {
     if (config.type !== "agentMail") continue;
     const inbound = config.options?.inbound as Record<string, unknown> | undefined;
+    if (inbound !== undefined) {
+      const validatedInbound = validateAgentMailInboundConfig(
+        inbound,
+        config.options?.outbound as AgentMailAugmentOptions["outbound"],
+      );
+      const binding = resolveCreatorDigestNotifyBinding(
+        validatedInbound.creatorDigest,
+        notifyBindings,
+      );
+      if (binding) {
+        creatorDigestBindings.push({
+          agentMailAugmentName: config.name,
+          notifyAugmentName: binding.augmentName,
+        });
+      }
+    }
     if ((inbound?.mode ?? "none") === "none") continue;
     const inboxId = config.options?.inboxId;
     if (typeof inboxId !== "string") continue;
@@ -698,13 +743,8 @@ export async function resolveAugments(
   const notifyDestinationNames = new Set<string>();
   const notifyExecutorsByDestination = new Map<string, NotifyToolExecute>();
 
-  for (const config of configs) {
-    if (config.type !== "notify") continue;
-    const destinations =
-      (config.options?.destinations as Array<Record<string, unknown>> | undefined) ?? [];
-    for (const destination of destinations) {
-      if (typeof destination.name === "string") notifyDestinationNames.add(destination.name);
-    }
+  for (const binding of notifyBindings) {
+    notifyDestinationNames.add(binding.destinationName);
   }
 
   const dispatchBudgetNotification: BudgetsAugmentOptions["notificationDispatcher"] = async (
@@ -1196,6 +1236,35 @@ export async function resolveAugments(
           agent: resolverOpts.selfInspection,
           configs,
           augments,
+        }),
+      );
+    }
+
+    // Optional creator digests are explicit cross-augment composition. Append
+    // each bridge last so it boots after AgentMail and Notify, then shuts down
+    // before either durable store closes.
+    for (const binding of creatorDigestBindings) {
+      const agentMailIndex = configs.findIndex(
+        (config) => config.name === binding.agentMailAugmentName,
+      );
+      const notifyIndex = configs.findIndex((config) => config.name === binding.notifyAugmentName);
+      const agentMailAugment = agentMailIndex >= 0 ? augments[agentMailIndex] : undefined;
+      const notifyAugment = notifyIndex >= 0 ? augments[notifyIndex] : undefined;
+      if (!agentMailAugment || !notifyAugment) {
+        throw new Error(
+          `[augment-resolver] creator digest binding for "${binding.agentMailAugmentName}" could not be mounted`,
+        );
+      }
+      const bridgeName = agentMailCreatorDigestBridgeName(agentMailAugment.name);
+      if (augments.some((augment) => augment.name === bridgeName)) {
+        throw new Error(
+          `[augment-resolver] creator digest bridge name "${bridgeName}" collides with an existing augment`,
+        );
+      }
+      augments.push(
+        createAgentMailCreatorDigestBridge({
+          agentMail: agentMailAugment,
+          notify: notifyAugment,
         }),
       );
     }

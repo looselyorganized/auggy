@@ -180,8 +180,10 @@ export type { WebFetchOptions, WebFetchResult } from "./augments/webFetch";
 
 // === Built-in augments (mail) ===
 export { agentMail } from "./augments/agentMail";
+export { createAgentMailCreatorDigestBridge } from "./augments/agentMail/creator-digest-bridge";
 export type {
   AgentMailAugmentOptions,
+  AgentMailCreatorDigestOptions,
   AgentMailOutboundOptions,
   AgentMailRateLimitOptions,
   AgentMailInboundConfig,

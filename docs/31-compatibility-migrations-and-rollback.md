@@ -46,8 +46,8 @@ tampered, or newer database fails without stamping or mutating it.
 | Web idempotency and rate limits | `AUID/v2` | Exact v1 migration fixture | Restore bundle; do not roll back terminal request evidence independently |
 | Console chat/history | `CCHT/v4` | Exact v2 and v3 fixtures migrate to v4 | Restore bundle with matching thread ownership/history state |
 | Telegram replay/conflicts | `TGRP/v2` | Exact prior replay fixture | Restore bundle and reconcile provider offsets/conflicts before ingress |
-| AgentMail inbound ledger | `AMIL/v2` | Exact v1 and recognized legacy fixtures | Restore bundle and reconcile mailbox/downstream delivery state |
-| Notify delivery incidents/quotas | `NTFY/v1` | Exact recognized legacy shape only | Restore bundle and reconcile outcome-unknown notifications |
+| AgentMail inbound ledger | `AMIL/v4` | Exact v1, v2, and v3 fixtures | Restore bundle and reconcile mailbox/downstream delivery and pending digest state |
+| Notify delivery incidents/quotas | `NTFY/v2` | Exact v1 migration fixture | Restore bundle and reconcile outcome-unknown notifications and internal retry authorizations |
 | Durable jobs and schedules | `DJOB/v2` | Exact branded `DJOB/v1` migrates atomically to v2; lookalikes fail before DDL | Restore the complete pre-upgrade bundle to roll back; reconcile every ambiguous downstream effect before enabling schedules or ingress |
 | Local runtime claims and launchd generations | `AUCL/v2` | Exact branded v1 claim table migrates to v2 | Local CLI control state, not runtime-volume state; stop and unload every local agent before restoring the matching registry |
 

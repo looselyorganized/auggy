@@ -596,6 +596,10 @@ describe("AgentMail creator attention", () => {
       original.close();
 
       const legacy = new Database(dbPath, { readwrite: true });
+      legacy.run("DROP TABLE agentmail_creator_digest_retirement_ranges");
+      legacy.run("DROP TABLE agentmail_creator_digest_watermarks");
+      legacy.run("DROP TABLE agentmail_creator_digest_items");
+      legacy.run("DROP TABLE agentmail_creator_digest_batches");
       legacy.run("DROP TABLE agentmail_creator_attention");
       legacy.run("UPDATE agentmail_inbound_meta SET value = '2' WHERE key = 'schema_version'");
       legacy.run(`PRAGMA application_id = ${unbranded ? 0 : AGENTMAIL_LEDGER_APPLICATION_ID}`);

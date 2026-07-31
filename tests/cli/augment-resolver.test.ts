@@ -1390,6 +1390,112 @@ describe("resolveAugments — budgets", () => {
 // agentMail runtime state paths
 // ---------------------------------------------------------------------------
 
+describe("resolveAugments — AgentMail creator digest preflight", () => {
+  function notifyConfig(
+    name: string,
+    destination: Record<string, unknown>,
+    rateLimit?: Record<string, unknown>,
+  ): AugmentConfig {
+    return {
+      name,
+      type: "notify",
+      options: {
+        destinations: [
+          {
+            transport: "log-to-file",
+            path: `./${name}.jsonl`,
+            ...destination,
+          },
+        ],
+        ...(rateLimit ? { rateLimit } : {}),
+      },
+    };
+  }
+
+  function enableDigest(config: AugmentConfig): AugmentConfig {
+    const inbound = config.options!.inbound as Record<string, unknown>;
+    inbound.replies = { mode: "disabled" };
+    inbound.creatorDigest = { enabled: true, destination: "creator" };
+    return config;
+  }
+
+  test("rejects duplicate Notify destination names before constructing augments", async () => {
+    await expect(
+      resolveAugments(
+        [
+          notifyConfig("notify-a", { name: "creator" }),
+          notifyConfig("notify-b", { name: "creator" }),
+        ],
+        TMP,
+      ),
+    ).rejects.toThrow(/destination names must be unique across the agent/);
+  });
+
+  test("rejects missing, unauthorized, and unbounded digest destinations", async () => {
+    await expect(resolveAugments([enableDigest(agentMailConfig("support"))], TMP)).rejects.toThrow(
+      /does not match any notify destination/,
+    );
+
+    await expect(
+      resolveAugments(
+        [
+          enableDigest(agentMailConfig("support")),
+          notifyConfig("notify", {
+            name: "creator",
+            allowedTrustLevels: ["agent"],
+          }),
+        ],
+        TMP,
+      ),
+    ).rejects.toThrow(/must allow creator trust/);
+
+    await expect(
+      resolveAugments(
+        [
+          notifyConfig("notify", { name: "creator" }, { enabled: false }),
+          enableDigest(agentMailConfig("support")),
+        ],
+        TMP,
+      ),
+    ).rejects.toThrow(/rateLimit\.enabled to remain true/);
+  });
+
+  test("accepts a creator-authorized destination regardless of declaration order", async () => {
+    for (const mailFirst of [true, false]) {
+      const mail = enableDigest(agentMailConfig(mailFirst ? "mail-first" : "mail-last"));
+      const notifications = notifyConfig(mailFirst ? "notify-last" : "notify-first", {
+        name: "creator",
+      });
+      const configs = mailFirst ? [mail, notifications] : [notifications, mail];
+      const augments = await resolveAugments(configs, TMP);
+      try {
+        expect(augments.slice(0, configs.length).map((augment) => augment.name)).toEqual(
+          configs.map((config) => config.name),
+        );
+        expect(augments).toHaveLength(configs.length + 1);
+        expect(augments.at(-1)).toMatchObject({
+          type: "agentMailCreatorDigestBridge",
+          synthetic: true,
+        });
+      } finally {
+        for (const augment of [...augments].reverse()) await augment.onShutdown?.();
+      }
+    }
+  });
+
+  test("rejects a configured augment that collides with the synthetic bridge identity", async () => {
+    await expect(
+      resolveAugments(
+        [
+          enableDigest(agentMailConfig("support")),
+          notifyConfig("agent-mail-creator-digest-support", { name: "creator" }),
+        ],
+        TMP,
+      ),
+    ).rejects.toThrow(/creator digest bridge name .* collides with an existing augment/i);
+  });
+});
+
 describe("resolveAugments — agentMail runtime state paths", () => {
   test("rejects a relative runtime data root", async () => {
     await expect(
