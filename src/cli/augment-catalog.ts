@@ -283,7 +283,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     label: "Agent Mail",
     tagline: "send and receive email through AgentMail",
     description:
-      "Policy-gated AgentMail transport with durable polling, WebSocket, or Svix webhook inbound plus send / reply / forward tools. Inbound is disabled by default and requires an explicit sender allowlist.",
+      "Policy-gated AgentMail transport with durable polling, WebSocket, or Svix webhook inbound plus send / reply / forward tools. Inbound is disabled by default; enabling it requires an explicit allowlist or deliberately public, rate-limited sender policy.",
     type: "agentMail",
     defaultName: "agentMail",
     defaultOptions: {

@@ -127,6 +127,16 @@ export interface MailInstanceProjection {
   inbound: {
     mode: string;
     state: string;
+    senderPolicy?: "disabled" | "allowlist" | "any";
+    allowedSenderCount?: number;
+    rateLimit?: {
+      globalMaxPerHour: number;
+      perSenderMaxPerHour: number;
+      rollingGlobalUsage: number;
+      globalRejections: number;
+      perSenderRejections: number;
+      lastRejectedAt?: string;
+    };
   };
   reviews: MailReviewProjection[];
   attention: MailAttentionProjection[];

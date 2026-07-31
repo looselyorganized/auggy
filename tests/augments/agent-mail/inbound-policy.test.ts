@@ -3,6 +3,8 @@ import {
   AGENTMAIL_MAX_ALLOWED_SENDERS,
   AGENTMAIL_MAX_ATTEMPTS,
   AGENTMAIL_MAX_AUTOMATIC_REPLIES_PER_HOUR,
+  AGENTMAIL_MAX_INBOUND_GLOBAL_PER_HOUR,
+  AGENTMAIL_MAX_INBOUND_PER_SENDER_PER_HOUR,
   AGENTMAIL_MAX_POLL_INTERVAL_MS,
   AGENTMAIL_MAX_PROMPT_BYTES,
   AGENTMAIL_MIN_POLL_INTERVAL_MS,
@@ -15,6 +17,7 @@ import {
   validateAgentMailEffectiveHourlyCap,
   validateAgentMailInboundConfig,
   validateAgentMailInboundBounds,
+  validateAgentMailInboundRateLimit,
 } from "../../../src/augments/agentMail/inbound-policy";
 import {
   AGENTMAIL_CREATOR_DIGEST_DEFAULT_INTERVAL_MS,
@@ -47,8 +50,16 @@ describe("AgentMail inbound sender policy", () => {
       "alice\n@example.com",
       "*.example.com",
     ]) {
-      expect(() => normalizeAgentMailAllowedSenders([pattern])).toThrow(/sender pattern|control/);
+      expect(() => normalizeAgentMailAllowedSenders([pattern])).toThrow(
+        /sender pattern|control|allowAnySender/,
+      );
     }
+  });
+
+  test("points a wildcard policy toward explicit bounded public admission", () => {
+    expect(() => normalizeAgentMailAllowedSenders(["*"])).toThrow(
+      /allowAnySender: true.*inbound\.rateLimit/,
+    );
   });
 
   test("rejects empty and duplicate policies after case normalization", () => {
@@ -64,6 +75,121 @@ describe("AgentMail inbound sender policy", () => {
         ),
       ),
     ).toThrow(/at most/);
+  });
+});
+
+describe("AgentMail inbound public admission policy", () => {
+  test("accepts explicit bounded public admission", () => {
+    const inbound = {
+      mode: "websocket",
+      allowAnySender: true,
+      rateLimit: { globalMaxPerHour: 100, perSenderMaxPerHour: 5 },
+    } as const;
+    expect(validateAgentMailInboundConfig(inbound).config).toEqual(inbound);
+    expect(validateAgentMailInboundRateLimit(inbound.rateLimit)).toEqual(inbound.rateLimit);
+  });
+
+  test("keeps existing allowlisted admission compatible without inbound limits", () => {
+    expect(() =>
+      validateAgentMailInboundConfig({
+        mode: "polling",
+        allowedSenders: ["*@company.example"],
+      }),
+    ).not.toThrow();
+  });
+
+  test("requires exactly one enabled admission strategy", () => {
+    expect(() => validateAgentMailInboundConfig({ mode: "websocket" })).toThrow(
+      /either non-empty inbound\.allowedSenders or inbound\.allowAnySender: true/,
+    );
+    expect(() =>
+      validateAgentMailInboundConfig({
+        mode: "websocket",
+        allowedSenders: ["sender@example.com"],
+        allowAnySender: true,
+        rateLimit: { globalMaxPerHour: 10, perSenderMaxPerHour: 5 },
+      }),
+    ).toThrow(/cannot be combined/);
+    expect(() =>
+      validateAgentMailInboundConfig({
+        mode: "websocket",
+        allowedSenders: ["sender@example.com"],
+        allowAnySender: false,
+      }),
+    ).toThrow(/cannot be combined/);
+  });
+
+  test("requires bounded quotas whenever public admission is selected", () => {
+    expect(() =>
+      validateAgentMailInboundConfig({ mode: "websocket", allowAnySender: true }),
+    ).toThrow(/allowAnySender requires.*rateLimit/);
+
+    for (const rateLimit of [
+      undefined,
+      null,
+      [],
+      {},
+      { globalMaxPerHour: 10 },
+      { perSenderMaxPerHour: 5 },
+      { globalMaxPerHour: 10, perSenderMaxPerHour: 5, typo: true },
+    ]) {
+      expect(() =>
+        validateAgentMailInboundConfig({
+          mode: "none",
+          allowAnySender: true,
+          ...(rateLimit === undefined ? {} : { rateLimit }),
+        }),
+      ).toThrow(/inbound\.(allowAnySender|rateLimit)/);
+    }
+  });
+
+  test("strictly validates quota types, boundaries, and ordering", () => {
+    for (const rateLimit of [
+      { globalMaxPerHour: 0, perSenderMaxPerHour: 1 },
+      { globalMaxPerHour: AGENTMAIL_MAX_INBOUND_GLOBAL_PER_HOUR + 1, perSenderMaxPerHour: 1 },
+      { globalMaxPerHour: 1.5, perSenderMaxPerHour: 1 },
+      { globalMaxPerHour: "10", perSenderMaxPerHour: 1 },
+      { globalMaxPerHour: 10, perSenderMaxPerHour: 0 },
+      {
+        globalMaxPerHour: AGENTMAIL_MAX_INBOUND_GLOBAL_PER_HOUR,
+        perSenderMaxPerHour: AGENTMAIL_MAX_INBOUND_PER_SENDER_PER_HOUR + 1,
+      },
+      { globalMaxPerHour: 10, perSenderMaxPerHour: 1.5 },
+      { globalMaxPerHour: 10, perSenderMaxPerHour: "5" },
+      { globalMaxPerHour: 4, perSenderMaxPerHour: 5 },
+    ]) {
+      expect(() => validateAgentMailInboundRateLimit(rateLimit)).toThrow(
+        /inbound\.rateLimit\.(globalMaxPerHour|perSenderMaxPerHour)/,
+      );
+    }
+    expect(() =>
+      validateAgentMailInboundRateLimit({
+        globalMaxPerHour: AGENTMAIL_MAX_INBOUND_GLOBAL_PER_HOUR,
+        perSenderMaxPerHour: AGENTMAIL_MAX_INBOUND_PER_SENDER_PER_HOUR,
+      }),
+    ).not.toThrow();
+  });
+
+  test("strictly validates dormant public-policy fields", () => {
+    for (const inbound of [
+      { mode: "none", allowAnySender: "yes" },
+      { mode: "none", rateLimit: false },
+      {
+        mode: "none",
+        rateLimit: { globalMaxPerHour: 10, perSenderMaxPerHour: 5, unknown: true },
+      },
+    ]) {
+      expect(() => validateAgentMailInboundConfig(inbound)).toThrow(
+        /inbound\.(allowAnySender|rateLimit)/,
+      );
+    }
+    expect(() =>
+      validateAgentMailInboundConfig({
+        mode: "none",
+        allowAnySender: true,
+        rateLimit: { globalMaxPerHour: 100, perSenderMaxPerHour: 5 },
+      }),
+    ).not.toThrow();
   });
 });
 

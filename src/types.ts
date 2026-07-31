@@ -1342,6 +1342,16 @@ export interface AdminMailInstanceProjection {
   inbound: {
     mode: AgentMailInboundMode;
     state: "disabled" | "starting" | "ready" | "subscribed" | "degraded" | "stopped";
+    senderPolicy?: "disabled" | "allowlist" | "any";
+    allowedSenderCount?: number;
+    rateLimit?: {
+      globalMaxPerHour: number;
+      perSenderMaxPerHour: number;
+      rollingGlobalUsage: number;
+      globalRejections: number;
+      perSenderRejections: number;
+      lastRejectedAt?: string;
+    };
   };
   reviews: AdminMailReviewProjection[];
   attention: AdminMailAttentionProjection[];
@@ -1963,6 +1973,14 @@ export interface AgentMailInboundReplyOptions {
   allowReplyAll?: boolean;
 }
 
+/** Durable admission limits for inbound AgentMail messages. */
+export interface AgentMailInboundRateLimitOptions {
+  /** Maximum unique inbound messages processed across all senders per rolling hour. */
+  globalMaxPerHour: number;
+  /** Maximum unique inbound messages processed from one normalized sender per rolling hour. */
+  perSenderMaxPerHour: number;
+}
+
 /**
  * Optional bridge from durable inbound creator-attention state to a named
  * Notify destination. Omitted or disabled means no background notification
@@ -2041,12 +2059,24 @@ export interface AgentMailInboundConfig {
   /** Inbound delivery channel. */
   mode: AgentMailInboundMode;
   /**
-   * Exact sender addresses or `*@domain` patterns. Required when inbound is
-   * enabled. Patterns are ASCII, case-insensitive, and match one exact domain;
-   * `*@example.com` does not match a subdomain. This is admission policy, not
-   * sender authentication: admitted mail remains public/anonymous.
+   * Exact sender addresses or `*@domain` patterns. One sender policy is
+   * required when inbound is enabled: this non-empty list or
+   * `allowAnySender: true`. Patterns are ASCII, case-insensitive, and match one
+   * exact domain; `*@example.com` does not match a subdomain. This is admission
+   * policy, not sender authentication: admitted mail remains public/anonymous.
    */
   allowedSenders?: string[];
+  /**
+   * Explicitly admit any well-formed sender address. Mutually exclusive with
+   * `allowedSenders` and accepted only with a bounded inbound `rateLimit`.
+   * This is admission policy, not sender authentication.
+   */
+  allowAnySender?: boolean;
+  /**
+   * Optional durable inbound admission limits. Both limits are required when
+   * this block is present, and the block is mandatory with `allowAnySender`.
+   */
+  rateLimit?: AgentMailInboundRateLimitOptions;
   /** Classification gates. Only ordinary received mail is processed by default. */
   classifications?: {
     received?: "process" | "discard";

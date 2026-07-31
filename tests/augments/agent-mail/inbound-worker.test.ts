@@ -138,6 +138,172 @@ describe("AgentMail inbound turn worker", () => {
     }
   });
 
+  test("admits any well-formed sender only through explicit bounded public policy", async () => {
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:", now: () => 1_000 });
+    const calls: TurnTrigger[] = [];
+    try {
+      ledger.enqueue(messageEnvelope("message_public", " Customer@Example.COM "));
+      const worker = createAgentMailInboundWorker({
+        ledger,
+        kernel: fakeKernel(calls),
+        inboxId,
+        sourceAugment: "agent-mail",
+        policy: {
+          allowedSenders: [],
+          allowAnySender: true,
+          rateLimit: { globalMaxPerHour: 100, perSenderMaxPerHour: 5 },
+        },
+        now: () => 1_000,
+      });
+
+      expect((await worker.processNext()).status).toBe("processed");
+      expect(calls[0]?.peer).toMatchObject({
+        displayName: "customer@example.com",
+        trustLevel: "public",
+        publicSubstate: "anonymous",
+      });
+      const prompt = (calls[0]!.payload as { parts: Array<{ text: string }> }).parts[0]?.text ?? "";
+      expect(prompt).toContain("customer@example.com");
+      expect(prompt).not.toContain("Customer@Example.COM");
+    } finally {
+      ledger.close();
+    }
+  });
+
+  test("discards malformed public senders before quota, attention, or model effects", async () => {
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:", now: () => 1_000 });
+    const calls: TurnTrigger[] = [];
+    let prepared = 0;
+    try {
+      ledger.enqueue(messageEnvelope("message_malformed", "Display Name <user@example.com>"));
+      const worker = createAgentMailInboundWorker({
+        ledger,
+        kernel: fakeKernel(calls),
+        inboxId,
+        sourceAugment: "agent-mail",
+        policy: {
+          allowedSenders: [],
+          allowAnySender: true,
+          rateLimit: { globalMaxPerHour: 100, perSenderMaxPerHour: 5 },
+        },
+        now: () => 1_000,
+        onTurnPrepared: () => {
+          prepared++;
+          return undefined;
+        },
+      });
+
+      expect(await worker.processNext()).toEqual({
+        status: "discarded",
+        messageId: "message_malformed",
+        reason: "policy-sender-invalid",
+      });
+      expect(calls).toHaveLength(0);
+      expect(prepared).toBe(0);
+      expect(ledger.inboundQuotaStatus(inboxId).rollingGlobalUsage).toBe(0);
+      expect(ledger.get(inboxId, "message_malformed")).toMatchObject({
+        state: "discarded",
+        discardReason: "policy-sender-invalid",
+        envelope: {
+          message: {
+            from: "policy-rejected@redacted.invalid",
+            subject: "",
+            text: undefined,
+            labels: ["received"],
+          },
+        },
+      });
+    } finally {
+      ledger.close();
+    }
+  });
+
+  test("terminally discards excess mail before attention or model effects", async () => {
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:", now: () => 1_000 });
+    const calls: TurnTrigger[] = [];
+    let prepared = 0;
+    try {
+      ledger.enqueue(messageEnvelope("message_first", "customer@example.com"));
+      ledger.enqueue(messageEnvelope("message_second", "CUSTOMER@example.com"));
+      const worker = createAgentMailInboundWorker({
+        ledger,
+        kernel: fakeKernel(calls),
+        inboxId,
+        sourceAugment: "agent-mail",
+        policy: {
+          allowedSenders: [],
+          allowAnySender: true,
+          rateLimit: { globalMaxPerHour: 10, perSenderMaxPerHour: 1 },
+        },
+        now: () => 1_000,
+        onTurnPrepared: () => {
+          prepared++;
+          return undefined;
+        },
+      });
+
+      expect((await worker.processNext()).status).toBe("processed");
+      expect(await worker.processNext()).toEqual({
+        status: "discarded",
+        messageId: "message_second",
+        reason: "policy-rate-limit-per-sender",
+      });
+      expect(calls).toHaveLength(1);
+      expect(prepared).toBe(1);
+      expect(ledger.inboundQuotaStatus(inboxId)).toMatchObject({
+        rollingGlobalUsage: 1,
+        perSenderRejections: 1,
+      });
+    } finally {
+      ledger.close();
+    }
+  });
+
+  test("fails closed before dispatch when durable quota authority is unavailable", async () => {
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:", now: () => 1_000 });
+    const calls: TurnTrigger[] = [];
+    try {
+      ledger.enqueue(messageEnvelope("message_storage_failure", "customer@example.com"));
+      ledger.reserveInboundQuota = () => {
+        throw new Error("quota storage unavailable");
+      };
+      const worker = createAgentMailInboundWorker({
+        ledger,
+        kernel: fakeKernel(calls),
+        inboxId,
+        sourceAugment: "agent-mail",
+        policy: {
+          allowedSenders: [],
+          allowAnySender: true,
+          rateLimit: { globalMaxPerHour: 100, perSenderMaxPerHour: 5 },
+        },
+        now: () => 1_000,
+      });
+
+      await expect(worker.processNext()).rejects.toThrow("quota storage unavailable");
+      expect(calls).toHaveLength(0);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  test("rejects direct public worker construction without durable rate caps", () => {
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:" });
+    try {
+      expect(() =>
+        createAgentMailInboundWorker({
+          ledger,
+          kernel: fakeKernel([]),
+          inboxId,
+          sourceAugment: "agent-mail",
+          policy: { allowedSenders: [], allowAnySender: true },
+        }),
+      ).toThrow(/allowAnySender requires durable rateLimit/i);
+    } finally {
+      ledger.close();
+    }
+  });
+
   test("retries rejected turns with bounded backoff, then discards exhausted work", async () => {
     let now = 1_000;
     const ledger = createAgentMailInboundLedger({ dbPath: ":memory:", now: () => now });
@@ -603,6 +769,17 @@ function envelope(
       updatedAt: undefined,
       ...overrides,
     },
+  };
+}
+
+function messageEnvelope(messageId: string, from: string): AgentMailInboundEnvelope {
+  return {
+    ...envelope("message.received", {
+      messageId,
+      threadId: `thread_${messageId}`,
+      from,
+    }),
+    providerEventId: `event_${messageId}`,
   };
 }
 

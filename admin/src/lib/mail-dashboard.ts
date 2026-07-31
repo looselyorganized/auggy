@@ -16,6 +16,9 @@ import { isSafeMailDetailPath } from "./mail-path";
 const MAX_INSTANCES = 32;
 const MAX_QUEUE_ITEMS = 100;
 const MAX_METADATA_LENGTH = 1_000;
+const MAX_ALLOWED_SENDERS = 1_000;
+const MAX_GLOBAL_INBOUND_PER_HOUR = 10_000;
+const MAX_INBOUND_PER_SENDER_PER_HOUR = 1_000;
 const REVIEW_STATES = new Set<MailReviewStatus>(["pending", "sending"]);
 const ATTENTION_STATES = new Set<MailAttentionStatus>([
   "open",
@@ -23,6 +26,7 @@ const ATTENTION_STATES = new Set<MailAttentionStatus>([
   "ambiguous",
 ]);
 const STATUS_LEVELS = new Set<MailStatusLevel>(["ok", "warn", "error"]);
+const SENDER_POLICIES = new Set(["disabled", "allowlist", "any"] as const);
 
 /**
  * Select the typed Mail feature envelope without trusting the dashboard cast.
@@ -87,12 +91,38 @@ function parseMailInstance(value: unknown): MailInstanceProjection | null {
   const statusMessage = requiredText(value.status.message);
   const inboundMode = requiredText(value.inbound.mode, 64);
   const inboundState = requiredText(value.inbound.state, 64);
+  const senderPolicy = value.inbound.senderPolicy;
+  const allowedSenderCount = value.inbound.allowedSenderCount;
+  const rateLimit = parseInboundRateLimit(value.inbound.rateLimit);
+  const hasInboundPolicyMetadata =
+    senderPolicy !== undefined ||
+    allowedSenderCount !== undefined ||
+    value.inbound.rateLimit !== undefined;
   if (
     typeof level !== "string" ||
     !STATUS_LEVELS.has(level as MailStatusLevel) ||
     !statusMessage ||
     !inboundMode ||
     !inboundState ||
+    (senderPolicy !== undefined &&
+      (typeof senderPolicy !== "string" ||
+        !SENDER_POLICIES.has(senderPolicy as "disabled" | "allowlist" | "any"))) ||
+    (allowedSenderCount !== undefined &&
+      (!Number.isSafeInteger(allowedSenderCount) ||
+        (allowedSenderCount as number) < 0 ||
+        (allowedSenderCount as number) > MAX_ALLOWED_SENDERS)) ||
+    rateLimit === null ||
+    (hasInboundPolicyMetadata &&
+      (typeof senderPolicy !== "string" || typeof allowedSenderCount !== "number")) ||
+    (senderPolicy === "any" && (allowedSenderCount !== 0 || rateLimit === undefined)) ||
+    (senderPolicy === "allowlist" &&
+      (typeof allowedSenderCount !== "number" || allowedSenderCount < 1)) ||
+    (senderPolicy === "disabled" && (allowedSenderCount !== 0 || rateLimit !== undefined)) ||
+    (senderPolicy === "disabled" && inboundMode !== "none") ||
+    ((senderPolicy === "allowlist" || senderPolicy === "any") &&
+      inboundMode !== "websocket" &&
+      inboundMode !== "polling" &&
+      inboundMode !== "webhook") ||
     !Array.isArray(value.reviews) ||
     !Array.isArray(value.attention)
   ) {
@@ -113,7 +143,15 @@ function parseMailInstance(value: unknown): MailInstanceProjection | null {
     inboxId,
     ...(inboxEmail ? { inboxEmail } : {}),
     status: { level: level as MailStatusLevel, message: statusMessage },
-    inbound: { mode: inboundMode, state: inboundState },
+    inbound: {
+      mode: inboundMode,
+      state: inboundState,
+      ...(typeof senderPolicy === "string"
+        ? { senderPolicy: senderPolicy as "disabled" | "allowlist" | "any" }
+        : {}),
+      ...(typeof allowedSenderCount === "number" ? { allowedSenderCount } : {}),
+      ...(rateLimit ? { rateLimit } : {}),
+    },
     reviews,
     attention,
   };
@@ -347,6 +385,51 @@ function columnReader(columns: string[]) {
 
 function safeDetailPath(value: unknown): string | null {
   return isSafeMailDetailPath(value) ? value : null;
+}
+
+function parseInboundRateLimit(
+  value: unknown,
+): MailInstanceProjection["inbound"]["rateLimit"] | null | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) return null;
+  const numericFields = [
+    "globalMaxPerHour",
+    "perSenderMaxPerHour",
+    "rollingGlobalUsage",
+    "globalRejections",
+    "perSenderRejections",
+  ] as const;
+  for (const field of numericFields) {
+    if (!Number.isSafeInteger(value[field]) || (value[field] as number) < 0) return null;
+  }
+  if (
+    (value.globalMaxPerHour as number) < 1 ||
+    (value.globalMaxPerHour as number) > MAX_GLOBAL_INBOUND_PER_HOUR ||
+    (value.perSenderMaxPerHour as number) < 1 ||
+    (value.perSenderMaxPerHour as number) > MAX_INBOUND_PER_SENDER_PER_HOUR ||
+    (value.perSenderMaxPerHour as number) > (value.globalMaxPerHour as number)
+  ) {
+    return null;
+  }
+  const lastRejectedAt = optionalIsoTimestamp(value.lastRejectedAt);
+  if (lastRejectedAt === null) return null;
+  return {
+    globalMaxPerHour: value.globalMaxPerHour as number,
+    perSenderMaxPerHour: value.perSenderMaxPerHour as number,
+    rollingGlobalUsage: value.rollingGlobalUsage as number,
+    globalRejections: value.globalRejections as number,
+    perSenderRejections: value.perSenderRejections as number,
+    ...(lastRejectedAt ? { lastRejectedAt } : {}),
+  };
+}
+
+function optionalIsoTimestamp(value: unknown): string | null | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "string" || value.length > 64) return null;
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) return null;
+  const normalized = new Date(timestamp).toISOString();
+  return normalized === value ? normalized : null;
 }
 
 function optionalText(value: unknown, max = MAX_METADATA_LENGTH): string | undefined {

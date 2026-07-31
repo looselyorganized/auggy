@@ -596,6 +596,10 @@ describe("AgentMail creator attention", () => {
       original.close();
 
       const legacy = new Database(dbPath, { readwrite: true });
+      legacy.run("DROP TABLE agentmail_inbound_quota_rejections");
+      legacy.run("DROP INDEX idx_agentmail_inbound_quota_sender_window");
+      legacy.run("DROP INDEX idx_agentmail_inbound_quota_window");
+      legacy.run("DROP TABLE agentmail_inbound_quota_reservations");
       legacy.run("DROP TABLE agentmail_creator_digest_retirement_ranges");
       legacy.run("DROP TABLE agentmail_creator_digest_watermarks");
       legacy.run("DROP TABLE agentmail_creator_digest_items");

@@ -9,6 +9,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Bounded public AgentMail ingress.** An enabled inbox can now choose either
+  an exact/domain sender allowlist or the explicit `allowAnySender` policy.
+  Public admission requires durable rolling global and per-sender limits;
+  allowlisted inboxes may opt into the same controls without changing their
+  existing default behavior.
 - **Creator-reviewed Mail action center.** The authenticated Console now shows
   one conditional Mail surface across mounted AgentMail inboxes, with
   metadata-only review and attention queues. Message and draft bodies are
@@ -31,6 +36,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Security
 
+- **Fail-closed inbound email quotas.** Malformed senders and exhausted quotas
+  stop before model, reply, review, attention, or notification effects. Durable
+  inbox-scoped accounting deduplicates provider delivery paths and exposes only
+  aggregate metadata to the Console. Every pre-model policy rejection becomes
+  a bounded, content-free local tombstone backed by a fixed-size fail-closed
+  replay filter; quota counters remain constant-time. Public admission cannot
+  start without finite global and per-sender caps.
 - **Fail-closed mail review authority.** Every mutation requires the exact
   mailbox and row; send-capable decisions additionally require the current
   fingerprint, and attention/incident decisions require the current version.

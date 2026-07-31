@@ -10,6 +10,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import type { Database } from "bun:sqlite";
 import { openHardenedSqlite } from "../../lib/sqlite";
+import { canonicalizeEmail, isWellFormedEmail } from "../visitorAuth/email-validation";
 import {
   normalizeAgentMailMessage,
   receivedEventTypeForLabels,
@@ -29,11 +30,16 @@ import {
   type AgentMailCreatorDigestStore,
   validateStoredCreatorDigestRows,
 } from "./creator-digest";
+import { validateAgentMailInboundRateLimit } from "./inbound-policy";
 
 export const AGENTMAIL_LEDGER_APPLICATION_ID = 0x414d494c; // "AMIL"
-export const AGENTMAIL_LEDGER_SCHEMA_VERSION = 4;
+export const AGENTMAIL_LEDGER_SCHEMA_VERSION = 5;
 const DEFAULT_INITIAL_LOOKBACK_MS = 24 * 60 * 60_000;
 const DEFAULT_CHECKPOINT_OVERLAP_MS = 60_000;
+const INBOUND_QUOTA_WINDOW_MS = 60 * 60_000;
+export const AGENTMAIL_MAX_POLICY_TOMBSTONES_PER_INBOX = 1_000;
+const POLICY_REJECTION_FILTER_BYTES = 256 * 1024;
+const POLICY_REJECTION_FILTER_HASHES = 4;
 const MAX_LEASE_MS = 60 * 60_000;
 const MAX_ANNOTATION_CHARS = 500;
 
@@ -131,6 +137,33 @@ const SCHEMA_STATEMENTS = [
   `CREATE UNIQUE INDEX IF NOT EXISTS idx_agentmail_creator_attention_review
      ON agentmail_creator_attention(review_id) WHERE review_id IS NOT NULL`,
   ...AGENTMAIL_CREATOR_DIGEST_SCHEMA,
+  `CREATE TABLE IF NOT EXISTS agentmail_inbound_quota_reservations (
+    inbox_id          TEXT NOT NULL,
+    message_id        TEXT NOT NULL,
+    sender_key_sha256 TEXT NOT NULL CHECK (
+      length(sender_key_sha256) = 64
+      AND sender_key_sha256 = lower(sender_key_sha256)
+      AND sender_key_sha256 NOT GLOB '*[^0-9a-f]*'
+    ),
+    admitted_at       INTEGER NOT NULL CHECK (admitted_at >= 0),
+    PRIMARY KEY (inbox_id, message_id),
+    FOREIGN KEY (inbox_id, message_id)
+      REFERENCES agentmail_inbound_messages(inbox_id, message_id)
+      ON DELETE CASCADE
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_agentmail_inbound_quota_window
+     ON agentmail_inbound_quota_reservations(inbox_id, admitted_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_agentmail_inbound_quota_sender_window
+     ON agentmail_inbound_quota_reservations(inbox_id, sender_key_sha256, admitted_at)`,
+  `CREATE TABLE IF NOT EXISTS agentmail_inbound_quota_rejections (
+    inbox_id              TEXT PRIMARY KEY,
+    global_rejections     INTEGER NOT NULL DEFAULT 0 CHECK (global_rejections >= 0),
+    per_sender_rejections INTEGER NOT NULL DEFAULT 0 CHECK (per_sender_rejections >= 0),
+    last_rejected_at      INTEGER CHECK (last_rejected_at IS NULL OR last_rejected_at >= 0),
+    rejection_filter      BLOB NOT NULL CHECK (
+      typeof(rejection_filter) = 'blob' AND length(rejection_filter) = 262144
+    )
+  )`,
 ];
 
 const EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map([
@@ -156,7 +189,21 @@ const EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map([
   ["trg_agentmail_creator_digest_items_immutable", SCHEMA_STATEMENTS[19]!],
   ["trg_agentmail_creator_digest_watermarks_immutable", SCHEMA_STATEMENTS[20]!],
   ["trg_agentmail_creator_digest_retirement_ranges_immutable", SCHEMA_STATEMENTS[21]!],
+  ["agentmail_inbound_quota_reservations", SCHEMA_STATEMENTS[22]!],
+  ["idx_agentmail_inbound_quota_window", SCHEMA_STATEMENTS[23]!],
+  ["idx_agentmail_inbound_quota_sender_window", SCHEMA_STATEMENTS[24]!],
+  ["agentmail_inbound_quota_rejections", SCHEMA_STATEMENTS[25]!],
 ] as const);
+
+const V4_EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map(
+  [...EXPECTED_SCHEMA].filter(
+    ([name]) =>
+      name !== "agentmail_inbound_quota_reservations" &&
+      name !== "idx_agentmail_inbound_quota_window" &&
+      name !== "idx_agentmail_inbound_quota_sender_window" &&
+      name !== "agentmail_inbound_quota_rejections",
+  ),
+);
 
 const V1_EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map([
   ["agentmail_inbound_meta", SCHEMA_STATEMENTS[0]!],
@@ -421,11 +468,246 @@ function validateStoredRows(db: Database): void {
       throw new Error("agentMail ledger: stored checkpoint timestamp is inconsistent");
     }
   }
+
+  const quotaReservations = db
+    .query<Record<string, unknown>, []>("SELECT * FROM agentmail_inbound_quota_reservations")
+    .all();
+  for (const row of quotaReservations) {
+    storedText(row.inbox_id, "quota inbox_id", 256);
+    storedText(row.message_id, "quota message_id", 256);
+    const senderKey = storedText(row.sender_key_sha256, "quota sender key", 64);
+    if (!/^[0-9a-f]{64}$/.test(senderKey)) {
+      throw new Error("agentMail ledger: stored quota sender key is invalid");
+    }
+    safeStoredInteger(row.admitted_at, "quota admitted_at");
+  }
+  const quotaRejections = db
+    .query<Record<string, unknown>, []>("SELECT * FROM agentmail_inbound_quota_rejections")
+    .all();
+  for (const row of quotaRejections) {
+    storedText(row.inbox_id, "quota rejection inbox_id", 256);
+    safeStoredInteger(row.global_rejections, "global quota rejections");
+    safeStoredInteger(row.per_sender_rejections, "per-sender quota rejections");
+    if (row.last_rejected_at !== null) {
+      safeStoredInteger(row.last_rejected_at, "last quota rejection timestamp");
+    }
+    policyRejectionFilter(row.rejection_filter as Uint8Array);
+  }
   validateStoredCreatorAttentionRows(db);
   validateStoredCreatorDigestRows(db);
 }
 
-function prepareAgentMailDatabase(db: Database): void {
+function quotaSenderKey(inboxId: string, canonicalSender: string): string {
+  return createHash("sha256")
+    .update(inboxId, "utf8")
+    .update("\0", "utf8")
+    .update(canonicalSender, "utf8")
+    .digest("hex");
+}
+
+function policyRejectionFilter(value?: Uint8Array): Uint8Array {
+  if (value === undefined) return new Uint8Array(POLICY_REJECTION_FILTER_BYTES);
+  if (!(value instanceof Uint8Array) || value.byteLength !== POLICY_REJECTION_FILTER_BYTES) {
+    throw new Error("agentMail ledger: stored policy rejection filter is invalid");
+  }
+  return new Uint8Array(value);
+}
+
+function policyRejectionFilterPositions(inboxId: string, messageId: string): number[] {
+  const digest = createHash("sha256")
+    .update(inboxId, "utf8")
+    .update("\0", "utf8")
+    .update(messageId, "utf8")
+    .digest();
+  const bitCount = POLICY_REJECTION_FILTER_BYTES * 8;
+  return Array.from(
+    { length: POLICY_REJECTION_FILTER_HASHES },
+    (_, index) => digest.readUInt32BE(index * 4) % bitCount,
+  );
+}
+
+function policyRejectionFilterHas(filter: Uint8Array, inboxId: string, messageId: string): boolean {
+  return policyRejectionFilterPositions(inboxId, messageId).every(
+    (position) => (filter[position >>> 3]! & (1 << (position & 7))) !== 0,
+  );
+}
+
+function addPolicyRejectionFilter(filter: Uint8Array, inboxId: string, messageId: string): void {
+  for (const position of policyRejectionFilterPositions(inboxId, messageId)) {
+    filter[position >>> 3] = filter[position >>> 3]! | (1 << (position & 7));
+  }
+}
+
+function classificationLabel(eventType: AgentMailReceivedEventType): string {
+  switch (eventType) {
+    case "message.received":
+      return "received";
+    case "message.received.spam":
+      return "spam";
+    case "message.received.blocked":
+      return "blocked";
+    case "message.received.unauthenticated":
+      return "unauthenticated";
+  }
+}
+
+function policyRejectionPayloadForIdentity(
+  message: Pick<AgentMailInboundMessage, "inboxId" | "threadId" | "messageId" | "timestamp">,
+  eventType: AgentMailReceivedEventType,
+): string {
+  return JSON.stringify({
+    inboxId: message.inboxId,
+    threadId: message.threadId,
+    messageId: message.messageId,
+    labels: [classificationLabel(eventType)],
+    timestamp: message.timestamp,
+    from: "policy-rejected@redacted.invalid",
+    to: [],
+    cc: [],
+    bcc: [],
+    replyTo: [],
+    subject: "",
+    preview: undefined,
+    text: undefined,
+    html: undefined,
+    extractedText: undefined,
+    extractedHtml: undefined,
+    size: 0,
+    attachments: [],
+    inReplyTo: undefined,
+    references: [],
+    createdAt: undefined,
+    updatedAt: undefined,
+  } satisfies AgentMailInboundMessage);
+}
+
+function policyRejectionPayload(
+  message: AgentMailInboundMessage,
+  eventType: AgentMailReceivedEventType,
+): string {
+  return policyRejectionPayloadForIdentity(message, eventType);
+}
+
+function backfillQuotaReservations(db: Database, migratedAt: number): void {
+  if (!Number.isSafeInteger(migratedAt) || migratedAt < 0) {
+    throw new Error("agentMail ledger: migration clock returned an invalid timestamp");
+  }
+  const cutoff = Math.max(0, migratedAt - INBOUND_QUOTA_WINDOW_MS);
+  const rows = db
+    .query<
+      {
+        inbox_id: string;
+        message_id: string;
+        payload_json: string;
+        admitted_at: number;
+      },
+      [number]
+    >(
+      `SELECT inbox_id, message_id, payload_json,
+              COALESCE(processed_at, last_seen_at) AS admitted_at
+         FROM agentmail_inbound_messages
+        WHERE state IN ('processing', 'processed')
+          AND COALESCE(processed_at, last_seen_at) > ?`,
+    )
+    .all(cutoff);
+  const insert = db.prepare(
+    `INSERT INTO agentmail_inbound_quota_reservations
+       (inbox_id, message_id, sender_key_sha256, admitted_at)
+     VALUES (?, ?, ?, ?)`,
+  );
+  for (const row of rows) {
+    const message = normalizeAgentMailMessage(JSON.parse(row.payload_json), row.inbox_id);
+    const canonicalSender = canonicalizeEmail(message.from);
+    if (!canonicalSender) {
+      throw new Error("agentMail ledger: cannot safely migrate sender identity");
+    }
+    insert.run(
+      row.inbox_id,
+      row.message_id,
+      quotaSenderKey(row.inbox_id, canonicalSender),
+      safeStoredInteger(row.admitted_at, "migration admitted_at"),
+    );
+  }
+}
+
+function compactLegacyPolicyRejections(db: Database): void {
+  // Validate before redaction so migration cannot hide a corrupt legacy payload.
+  validateStoredRows(db);
+  const inboxes = db
+    .query<{ inbox_id: string }, []>(
+      `SELECT DISTINCT inbox_id
+         FROM agentmail_inbound_messages
+        WHERE state = 'discarded' AND discard_reason LIKE 'policy-%'
+        ORDER BY inbox_id`,
+    )
+    .all();
+  const selectRows = db.query<
+    {
+      inbox_id: string;
+      message_id: string;
+      thread_id: string;
+      event_type: AgentMailReceivedEventType;
+      message_timestamp: string;
+    },
+    [string]
+  >(
+    `SELECT inbox_id, message_id, thread_id, event_type, message_timestamp
+       FROM agentmail_inbound_messages
+      WHERE inbox_id = ? AND state = 'discarded' AND discard_reason LIKE 'policy-%'
+      ORDER BY processed_at DESC, message_id DESC`,
+  );
+  const compact = db.prepare(
+    `UPDATE agentmail_inbound_messages
+        SET payload_json = ?
+      WHERE inbox_id = ? AND message_id = ?
+        AND state = 'discarded' AND discard_reason LIKE 'policy-%'`,
+  );
+  const insertFilter = db.prepare(
+    `INSERT INTO agentmail_inbound_quota_rejections (
+       inbox_id, global_rejections, per_sender_rejections, last_rejected_at, rejection_filter
+     ) VALUES (?, 0, 0, NULL, ?)`,
+  );
+  const prune = db.prepare(
+    `DELETE FROM agentmail_inbound_messages
+      WHERE inbox_id = ?
+        AND state = 'discarded'
+        AND discard_reason LIKE 'policy-%'
+        AND rowid NOT IN (
+          SELECT rowid
+            FROM agentmail_inbound_messages
+           WHERE inbox_id = ?
+             AND state = 'discarded'
+             AND discard_reason LIKE 'policy-%'
+           ORDER BY processed_at DESC, message_id DESC
+           LIMIT ?
+        )`,
+  );
+
+  for (const inbox of inboxes) {
+    const inboxId = storedText(inbox.inbox_id, "legacy policy inbox_id", 256);
+    const filter = policyRejectionFilter();
+    for (const row of selectRows.all(inboxId)) {
+      const messageId = storedText(row.message_id, "legacy policy message_id", 256);
+      const payload = policyRejectionPayloadForIdentity(
+        {
+          inboxId,
+          threadId: storedText(row.thread_id, "legacy policy thread_id", 256),
+          messageId,
+          timestamp: storedText(row.message_timestamp, "legacy policy timestamp", 128),
+        },
+        row.event_type,
+      );
+      addPolicyRejectionFilter(filter, inboxId, messageId);
+      if (compact.run(payload, inboxId, messageId).changes !== 1) {
+        throw new Error("agentMail ledger: legacy policy rejection changed during migration");
+      }
+    }
+    insertFilter.run(inboxId, filter);
+    prune.run(inboxId, inboxId, AGENTMAIL_MAX_POLICY_TOMBSTONES_PER_INBOX);
+  }
+}
+
+function prepareAgentMailDatabase(db: Database, migratedAt: number): void {
   const applicationId = pragmaInteger(db, "application_id");
   const userVersion = pragmaInteger(db, "user_version");
   const objects = schemaObjects(db);
@@ -471,6 +753,8 @@ function prepareAgentMailDatabase(db: Database): void {
   ) {
     validateExactSchema(db, V1_EXPECTED_SCHEMA, 1);
     for (const statement of SCHEMA_STATEMENTS.slice(5)) db.run(statement);
+    backfillQuotaReservations(db, migratedAt);
+    compactLegacyPolicyRejections(db);
     db.prepare("UPDATE agentmail_inbound_meta SET value = ? WHERE key = 'schema_version'").run(
       String(AGENTMAIL_LEDGER_SCHEMA_VERSION),
     );
@@ -480,6 +764,8 @@ function prepareAgentMailDatabase(db: Database): void {
   ) {
     validateExactSchema(db, V2_EXPECTED_SCHEMA, 2);
     for (const statement of SCHEMA_STATEMENTS.slice(8)) db.run(statement);
+    backfillQuotaReservations(db, migratedAt);
+    compactLegacyPolicyRejections(db);
     db.prepare("UPDATE agentmail_inbound_meta SET value = ? WHERE key = 'schema_version'").run(
       String(AGENTMAIL_LEDGER_SCHEMA_VERSION),
     );
@@ -489,6 +775,22 @@ function prepareAgentMailDatabase(db: Database): void {
   ) {
     validateExactSchema(db, V3_EXPECTED_SCHEMA, 3);
     for (const statement of SCHEMA_STATEMENTS.slice(11)) db.run(statement);
+    backfillQuotaReservations(db, migratedAt);
+    compactLegacyPolicyRejections(db);
+    const updated = db
+      .prepare("UPDATE agentmail_inbound_meta SET value = ? WHERE key = 'schema_version'")
+      .run(String(AGENTMAIL_LEDGER_SCHEMA_VERSION));
+    if (updated.changes !== 1) {
+      throw new Error("agentMail ledger: schema version metadata changed during migration");
+    }
+  } else if (
+    (applicationId === AGENTMAIL_LEDGER_APPLICATION_ID && userVersion === 4) ||
+    (applicationId === 0 && userVersion === 0 && metadataVersion === 4)
+  ) {
+    validateExactSchema(db, V4_EXPECTED_SCHEMA, 4);
+    for (const statement of SCHEMA_STATEMENTS.slice(22)) db.run(statement);
+    backfillQuotaReservations(db, migratedAt);
+    compactLegacyPolicyRejections(db);
     const updated = db
       .prepare("UPDATE agentmail_inbound_meta SET value = ? WHERE key = 'schema_version'")
       .run(String(AGENTMAIL_LEDGER_SCHEMA_VERSION));
@@ -565,6 +867,35 @@ export interface AgentMailLedgerCounts {
   outcomeUnknown: number;
 }
 
+export interface AgentMailInboundQuotaLimits {
+  /** Lowercase sender mailbox, revalidated against the exact stored claim. */
+  canonicalSender: string;
+  globalMaxPerHour: number;
+  perSenderMaxPerHour: number;
+}
+
+export type AgentMailInboundRateLimitReason =
+  | "policy-rate-limit-per-sender"
+  | "policy-rate-limit-global";
+
+export type AgentMailInboundQuotaDecision =
+  | {
+      status: "admitted";
+      reservation: "created" | "existing";
+      reservedAt: number;
+    }
+  | {
+      status: "discarded";
+      reason: AgentMailInboundRateLimitReason;
+    };
+
+export interface AgentMailInboundQuotaStatus {
+  rollingGlobalUsage: number;
+  globalRejections: number;
+  perSenderRejections: number;
+  lastRejectedAt: number | undefined;
+}
+
 export interface AgentMailInboundIncident {
   id: string;
   version: number;
@@ -605,6 +936,19 @@ export interface AgentMailInboundLedger {
     /** Restrict the atomic claim to one configured inbox. */
     inboxId?: string;
   }): AgentMailLedgerClaim | null;
+  /**
+   * Atomically reserve one rolling-hour quota slot for an exact live claim.
+   * Existing reservations survive retries and are admitted idempotently.
+   * A rejected claim is terminally discarded in the same transaction.
+   */
+  reserveInboundQuota(
+    claim: AgentMailLedgerClaim,
+    input: AgentMailInboundQuotaLimits,
+  ): AgentMailInboundQuotaDecision;
+  /** Atomically compact and terminally retain a pre-model policy rejection. */
+  discardInboundPolicy(claim: AgentMailLedgerClaim, reason: string): boolean;
+  /** Metadata-only quota diagnostics; never returns sender identities or digests. */
+  inboundQuotaStatus(inboxId: string): AgentMailInboundQuotaStatus;
   renew(claim: AgentMailLedgerClaim, leaseMs: number): boolean;
   complete(claim: AgentMailLedgerClaim): boolean;
   /**
@@ -710,6 +1054,18 @@ interface IncidentRow {
   quarantined_at: number;
 }
 
+interface QuotaReservationRow {
+  sender_key_sha256: string;
+  admitted_at: number;
+}
+
+interface QuotaRejectionRow {
+  global_rejections: number;
+  per_sender_rejections: number;
+  last_rejected_at: number | null;
+  rejection_filter: Uint8Array;
+}
+
 interface PreparedEnvelope {
   envelope: AgentMailInboundEnvelope;
   payloadJson: string;
@@ -780,7 +1136,7 @@ export function createAgentMailInboundLedger(
     label: "agentMail ledger",
     foreignKeys: true,
     synchronous: "FULL",
-    prepare: prepareAgentMailDatabase,
+    prepare: (db) => prepareAgentMailDatabase(db, now()),
   });
   const db = database.db;
   let closed = false;
@@ -951,6 +1307,87 @@ export function createAgentMailInboundLedger(
           WHERE q.inbox_id = agentmail_inbound_messages.inbox_id
             AND q.message_id = agentmail_inbound_messages.message_id
        )`,
+  );
+  const discardPolicyClaim = db.prepare(
+    `UPDATE agentmail_inbound_messages
+       SET payload_json = ?, state = 'discarded', processed_at = ?, last_seen_at = ?,
+           discard_reason = ?, lease_owner = NULL, lease_token = NULL,
+           lease_expires_at = NULL, last_error = NULL
+     WHERE inbox_id = ? AND message_id = ?
+       AND state = 'processing' AND lease_token = ? AND lease_expires_at > ?
+       AND NOT EXISTS (
+         SELECT 1 FROM agentmail_inbound_quarantines q
+          WHERE q.inbox_id = agentmail_inbound_messages.inbox_id
+            AND q.message_id = agentmail_inbound_messages.message_id
+       )`,
+  );
+  const selectQuotaReservation = db.prepare<QuotaReservationRow, [string, string]>(
+    `SELECT sender_key_sha256, admitted_at
+       FROM agentmail_inbound_quota_reservations
+      WHERE inbox_id = ? AND message_id = ?`,
+  );
+  const deleteExpiredQuotaReservations = db.prepare(
+    `DELETE FROM agentmail_inbound_quota_reservations
+      WHERE inbox_id = ? AND admitted_at <= ?
+        AND EXISTS (
+          SELECT 1 FROM agentmail_inbound_messages m
+           WHERE m.inbox_id = agentmail_inbound_quota_reservations.inbox_id
+             AND m.message_id = agentmail_inbound_quota_reservations.message_id
+             AND m.state IN ('processed', 'discarded')
+        )`,
+  );
+  const countSenderQuotaReservations = db.prepare<{ count: number }, [string, string, number]>(
+    `SELECT COUNT(*) AS count
+       FROM agentmail_inbound_quota_reservations
+      WHERE inbox_id = ? AND sender_key_sha256 = ? AND admitted_at > ?`,
+  );
+  const countGlobalQuotaReservations = db.prepare<{ count: number }, [string, number]>(
+    `SELECT COUNT(*) AS count
+       FROM agentmail_inbound_quota_reservations
+      WHERE inbox_id = ? AND admitted_at > ?`,
+  );
+  const insertQuotaReservation = db.prepare(
+    `INSERT INTO agentmail_inbound_quota_reservations
+       (inbox_id, message_id, sender_key_sha256, admitted_at)
+     VALUES (?, ?, ?, ?)`,
+  );
+  const writePolicyRejectionState = db.prepare(
+    `INSERT INTO agentmail_inbound_quota_rejections (
+       inbox_id, global_rejections, per_sender_rejections, last_rejected_at, rejection_filter
+     ) VALUES (?, ?, ?, ?, ?)
+     ON CONFLICT(inbox_id) DO UPDATE SET
+       global_rejections = excluded.global_rejections,
+       per_sender_rejections = excluded.per_sender_rejections,
+       last_rejected_at = excluded.last_rejected_at,
+       rejection_filter = excluded.rejection_filter`,
+  );
+  const prunePolicyTombstones = db.prepare(
+    `DELETE FROM agentmail_inbound_messages
+      WHERE inbox_id = ?
+        AND state = 'discarded'
+        AND discard_reason LIKE 'policy-%'
+        AND rowid NOT IN (
+          SELECT rowid
+            FROM agentmail_inbound_messages
+           WHERE inbox_id = ?
+             AND state = 'discarded'
+             AND discard_reason LIKE 'policy-%'
+           ORDER BY processed_at DESC, message_id DESC
+           LIMIT ?
+        )`,
+  );
+  const selectPolicyRejectionState = db.prepare<QuotaRejectionRow, [string]>(
+    `SELECT global_rejections, per_sender_rejections, last_rejected_at, rejection_filter
+       FROM agentmail_inbound_quota_rejections
+      WHERE inbox_id = ?`,
+  );
+  const selectQuotaRejectionStatus = db.prepare<
+    Omit<QuotaRejectionRow, "rejection_filter">,
+    [string]
+  >(
+    `SELECT global_rejections, per_sender_rejections, last_rejected_at
+       FROM agentmail_inbound_quota_rejections
+      WHERE inbox_id = ?`,
   );
   const countStates = db.prepare<{ state: AgentMailLedgerState; count: number }, []>(
     `SELECT state, COUNT(*) AS count FROM agentmail_inbound_messages GROUP BY state`,
@@ -1152,6 +1589,39 @@ export function createAgentMailInboundLedger(
     }
   }
 
+  function recordPolicyRejection(
+    inboxId: string,
+    messageId: string,
+    reason: string,
+    rejectedAt: number,
+  ): void {
+    const stored = selectPolicyRejectionState.get(inboxId);
+    const globalRejections = safeStoredInteger(
+      stored?.global_rejections ?? 0,
+      "global quota rejection count",
+    );
+    const perSenderRejections = safeStoredInteger(
+      stored?.per_sender_rejections ?? 0,
+      "per-sender quota rejection count",
+    );
+    const nextGlobal = globalRejections + (reason === "policy-rate-limit-global" ? 1 : 0);
+    const nextPerSender = perSenderRejections + (reason === "policy-rate-limit-per-sender" ? 1 : 0);
+    if (!Number.isSafeInteger(nextGlobal) || !Number.isSafeInteger(nextPerSender)) {
+      throw new Error("agentMail ledger: quota rejection counter exceeds safe integer range");
+    }
+    const filter = policyRejectionFilter(stored?.rejection_filter);
+    addPolicyRejectionFilter(filter, inboxId, messageId);
+    const quotaRejection =
+      reason === "policy-rate-limit-global" || reason === "policy-rate-limit-per-sender";
+    writePolicyRejectionState.run(
+      inboxId,
+      nextGlobal,
+      nextPerSender,
+      quotaRejection ? rejectedAt : (stored?.last_rejected_at ?? null),
+      filter,
+    );
+  }
+
   const creatorAttention = createAgentMailCreatorAttentionStore({
     db,
     now: clock,
@@ -1276,6 +1746,17 @@ export function createAgentMailInboundLedger(
 
     const existing = selectMessage.get(message.inboxId, message.messageId);
     if (!existing) {
+      const rejection = selectPolicyRejectionState.get(message.inboxId);
+      if (
+        rejection &&
+        policyRejectionFilterHas(
+          policyRejectionFilter(rejection.rejection_filter),
+          message.inboxId,
+          message.messageId,
+        )
+      ) {
+        return { status: "duplicate", state: "discarded" };
+      }
       insertMessage.run(
         message.inboxId,
         message.messageId,
@@ -1295,10 +1776,12 @@ export function createAgentMailInboundLedger(
     }
 
     const existingMessage = rowMessage(existing);
+    const policyTombstone =
+      existing.state === "discarded" && existing.discard_reason?.startsWith("policy-");
     if (
       existing.thread_id !== message.threadId ||
       existing.message_ts_ms !== timestampMs ||
-      existingMessage.from !== message.from ||
+      (!policyTombstone && existingMessage.from !== message.from) ||
       existing.event_type !== envelope.eventType
     ) {
       throw new AgentMailLedgerConflictError(
@@ -1329,6 +1812,7 @@ export function createAgentMailInboundLedger(
   function validateClaim(claim: AgentMailLedgerClaim): void {
     requireText(claim.envelope.message.inboxId, "claim inboxId");
     requireText(claim.envelope.message.messageId, "claim messageId");
+    requireText(claim.workerId, "claim workerId", 128);
     requireText(claim.leaseToken, "claim leaseToken");
   }
 
@@ -1485,6 +1969,173 @@ export function createAgentMailInboundLedger(
         workerId,
         leaseToken: token,
         leaseExpiresAt: expiresAt,
+      };
+    },
+
+    reserveInboundQuota(claim, input) {
+      assertOpen();
+      validateClaim(claim);
+      const inboxId = requireText(claim.envelope.message.inboxId, "claim inboxId");
+      const messageId = requireText(claim.envelope.message.messageId, "claim messageId");
+      const canonicalSender = requireText(input.canonicalSender, "canonicalSender", 254);
+      if (
+        canonicalSender !== canonicalizeEmail(input.canonicalSender) ||
+        !isWellFormedEmail(canonicalSender)
+      ) {
+        throw new Error(
+          "agentMail ledger: canonicalSender must be a trimmed, lowercase, well-formed email address",
+        );
+      }
+      const { globalMaxPerHour, perSenderMaxPerHour } = validateAgentMailInboundRateLimit({
+        globalMaxPerHour: input.globalMaxPerHour,
+        perSenderMaxPerHour: input.perSenderMaxPerHour,
+      });
+
+      const decision = immediate(() => {
+        const admittedAt = clock();
+        const cutoff = admittedAt - INBOUND_QUOTA_WINDOW_MS;
+        const liveClaim = selectMessage.get(inboxId, messageId);
+        if (
+          liveClaim?.state !== "processing" ||
+          liveClaim.incident_id ||
+          liveClaim.lease_owner !== claim.workerId ||
+          liveClaim.lease_token !== claim.leaseToken ||
+          liveClaim.lease_expires_at === null ||
+          liveClaim.lease_expires_at <= admittedAt
+        ) {
+          throw new AgentMailLedgerConflictError("quota reservation requires the exact live claim");
+        }
+        const liveMessage = rowMessage(liveClaim);
+        const storedSender = canonicalizeEmail(liveMessage.from);
+        if (!isWellFormedEmail(storedSender) || canonicalSender !== storedSender) {
+          throw new AgentMailLedgerConflictError("quota sender does not match the claimed message");
+        }
+        const senderKey = quotaSenderKey(inboxId, canonicalSender);
+
+        const existing = selectQuotaReservation.get(inboxId, messageId);
+        if (existing) {
+          if (existing.sender_key_sha256 !== senderKey) {
+            throw new AgentMailLedgerConflictError("stored quota sender does not match the claim");
+          }
+          return {
+            status: "admitted",
+            reservation: "existing",
+            reservedAt: safeStoredInteger(existing.admitted_at, "quota admitted_at"),
+          } as const;
+        }
+
+        deleteExpiredQuotaReservations.run(inboxId, cutoff);
+        const perSenderUsage = safeStoredInteger(
+          countSenderQuotaReservations.get(inboxId, senderKey, cutoff)?.count ?? 0,
+          "per-sender quota count",
+        );
+        const reason: AgentMailInboundRateLimitReason | undefined =
+          perSenderUsage >= perSenderMaxPerHour
+            ? "policy-rate-limit-per-sender"
+            : safeStoredInteger(
+                  countGlobalQuotaReservations.get(inboxId, cutoff)?.count ?? 0,
+                  "global quota count",
+                ) >= globalMaxPerHour
+              ? "policy-rate-limit-global"
+              : undefined;
+        if (reason) {
+          const discarded = discardPolicyClaim.run(
+            policyRejectionPayload(liveMessage, liveClaim.event_type),
+            admittedAt,
+            admittedAt,
+            reason,
+            inboxId,
+            messageId,
+            claim.leaseToken,
+            admittedAt,
+          );
+          if (discarded.changes !== 1) {
+            throw new AgentMailLedgerConflictError("rate-limited claim changed before discard");
+          }
+          recordPolicyRejection(inboxId, messageId, reason, admittedAt);
+          prunePolicyTombstones.run(inboxId, inboxId, AGENTMAIL_MAX_POLICY_TOMBSTONES_PER_INBOX);
+          return { status: "discarded", reason } as const;
+        }
+
+        insertQuotaReservation.run(inboxId, messageId, senderKey, admittedAt);
+        return {
+          status: "admitted",
+          reservation: "created",
+          reservedAt: admittedAt,
+        } as const;
+      });
+      secureAfterWrite();
+      return decision;
+    },
+
+    discardInboundPolicy(claim, reasonInput) {
+      assertOpen();
+      validateClaim(claim);
+      if (
+        typeof reasonInput !== "string" ||
+        !/^policy-[a-z0-9.-]+$/.test(reasonInput) ||
+        reasonInput.length > MAX_ANNOTATION_CHARS
+      ) {
+        throw new Error("agentMail ledger: inbound policy reason is invalid");
+      }
+      const inboxId = requireText(claim.envelope.message.inboxId, "claim inboxId");
+      const messageId = requireText(claim.envelope.message.messageId, "claim messageId");
+      const discarded = immediate(() => {
+        const discardedAt = clock();
+        const liveClaim = selectMessage.get(inboxId, messageId);
+        if (
+          liveClaim?.state !== "processing" ||
+          liveClaim.incident_id ||
+          liveClaim.lease_owner !== claim.workerId ||
+          liveClaim.lease_token !== claim.leaseToken ||
+          liveClaim.lease_expires_at === null ||
+          liveClaim.lease_expires_at <= discardedAt
+        ) {
+          return false;
+        }
+        const changed = discardPolicyClaim.run(
+          policyRejectionPayload(rowMessage(liveClaim), liveClaim.event_type),
+          discardedAt,
+          discardedAt,
+          reasonInput,
+          inboxId,
+          messageId,
+          claim.leaseToken,
+          discardedAt,
+        );
+        if (changed.changes !== 1) return false;
+        recordPolicyRejection(inboxId, messageId, reasonInput, discardedAt);
+        prunePolicyTombstones.run(inboxId, inboxId, AGENTMAIL_MAX_POLICY_TOMBSTONES_PER_INBOX);
+        return true;
+      });
+      secureAfterWrite();
+      return discarded;
+    },
+
+    inboundQuotaStatus(inboxIdInput) {
+      assertOpen();
+      const inboxId = requireText(inboxIdInput, "inboxId");
+      const timestamp = clock();
+      const cutoff = timestamp - INBOUND_QUOTA_WINDOW_MS;
+      const rejection = selectQuotaRejectionStatus.get(inboxId);
+      const lastRejectedAt =
+        rejection?.last_rejected_at === null || rejection?.last_rejected_at === undefined
+          ? undefined
+          : safeStoredInteger(rejection.last_rejected_at, "last rejected timestamp");
+      return {
+        rollingGlobalUsage: safeStoredInteger(
+          countGlobalQuotaReservations.get(inboxId, cutoff)?.count ?? 0,
+          "global quota count",
+        ),
+        globalRejections: safeStoredInteger(
+          rejection?.global_rejections ?? 0,
+          "global quota rejection count",
+        ),
+        perSenderRejections: safeStoredInteger(
+          rejection?.per_sender_rejections ?? 0,
+          "per-sender quota rejection count",
+        ),
+        lastRejectedAt,
       };
     },
 

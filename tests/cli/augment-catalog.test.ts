@@ -48,6 +48,9 @@ describe("augment catalog", () => {
     expect(entry?.envVars).toEqual(
       expect.arrayContaining(["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID"]),
     );
+    expect(entry?.defaultOptions.inbound).toEqual({ mode: "none" });
+    expect(entry?.description).toContain("disabled by default");
+    expect(entry?.description).toContain("deliberately public, rate-limited sender policy");
     expect(entry?.hasSkill).toBe(true);
   });
 
