@@ -34,7 +34,7 @@ describe("Mail API", () => {
       },
     });
     expect(requested).toBe(
-      "https://console.example.test/agentmail/mail-west/reviews/review_1",
+      "https://console.example.test/console/api/mail-detail?path=%2Fagentmail%2Fmail-west%2Freviews%2Freview_1",
     );
     expect(detail).toMatchObject({
       kind: "review",

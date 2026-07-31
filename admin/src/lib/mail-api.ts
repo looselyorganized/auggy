@@ -75,7 +75,7 @@ export async function fetchMailDetail(
   let response: Response;
   try {
     response = await adminFetch(
-      path,
+      `/console/api/mail-detail?path=${encodeURIComponent(path)}`,
       {
         headers: { accept: "application/json" },
         cache: "no-store",
