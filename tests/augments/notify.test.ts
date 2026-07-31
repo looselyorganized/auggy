@@ -81,6 +81,16 @@ describe("notify augment", () => {
       }),
     ).toThrow(/dbPath is required.*durable delivery state/i);
   });
+  it("rejects duplicate direct destination names before opening durable state", () => {
+    expect(() =>
+      notify({
+        destinations: [
+          { name: "creator", transport: "log-to-file", path: "./one.jsonl" },
+          { name: "creator", transport: "log-to-file", path: "./two.jsonl" },
+        ],
+      }),
+    ).toThrow(/duplicate destination name "creator"/);
+  });
   it("delivers to named destination", async () => {
     const deliveries: Array<{ destination: string; result: "sent" | "failed" }> = [];
     const aug = notify({
@@ -704,5 +714,398 @@ describe("notify augment", () => {
       await first.onShutdown?.();
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+
+  test("internal dispatch sends once, replays sent, and rejects changed payload", async () => {
+    let deliveryAttempts = 0;
+    const aug = notify({
+      destinations: [
+        {
+          name: "creator",
+          transport: "webhook",
+          url: "https://example.com/notify",
+          allowedTrustLevels: ["creator"],
+        },
+      ],
+      rateLimit: { cooldownMs: 0, dedupWindowMs: 0, globalMaxPerHour: 10 },
+      adapters: {
+        webhook: {
+          async deliver() {
+            deliveryAttempts++;
+            return { status: "sent" };
+          },
+        },
+      },
+    });
+    const input = {
+      source: "agentmail.creator-digest" as const,
+      operationKey: "digest-batch-1",
+      destination: "creator",
+      threadId: "agentmail-digest-thread",
+      payload: { summary: "One email needs attention" },
+      maxAttempts: 3,
+    };
+
+    expect(await aug.dispatchHost.dispatchInternal(input)).toEqual({
+      status: "sent",
+      replayed: false,
+      attemptCount: 1,
+    });
+    expect(
+      aug.dispatchHost.acknowledgeInternalSettlement({
+        source: "agentmail.creator-digest",
+        operationKey: input.operationKey,
+        settlementSha256: "a".repeat(64),
+      }),
+    ).toEqual({ status: "acknowledged" });
+    expect(
+      aug.dispatchHost.acknowledgeInternalSettlement({
+        source: "agentmail.creator-digest",
+        operationKey: input.operationKey,
+        settlementSha256: "a".repeat(64),
+      }),
+    ).toEqual({ status: "already_acknowledged" });
+    expect(await aug.dispatchHost.dispatchInternal(input)).toEqual({
+      status: "sent",
+      replayed: true,
+      attemptCount: 1,
+    });
+    expect(
+      await aug.dispatchHost.dispatchInternal({
+        ...input,
+        payload: { summary: "Changed digest content" },
+      }),
+    ).toEqual({
+      status: "failed",
+      reason: "operation_conflict",
+      retryable: false,
+      attemptCount: 1,
+    });
+    expect(deliveryAttempts).toBe(1);
+    expect(
+      aug.dispatchHost.acknowledgeInternalSettlement({
+        source: "agentmail.creator-digest",
+        operationKey: input.operationKey,
+        settlementSha256: "not-a-hash",
+      }),
+    ).toEqual({ status: "invalid_request" });
+  });
+
+  test("internal destination binding changes when effective delivery config changes", async () => {
+    const first = notify({
+      destinations: [
+        {
+          name: "creator",
+          transport: "webhook",
+          url: "https://example.com/first",
+          headers: { "X-Tenant": "one" },
+        },
+      ],
+      adapters: { webhook: mockAdapter() },
+    });
+    const reordered = notify({
+      destinations: [
+        {
+          headers: { "X-Tenant": "one" },
+          url: "https://example.com/first",
+          transport: "webhook",
+          name: "creator",
+        },
+      ],
+      adapters: { webhook: mockAdapter() },
+    });
+    const redirected = notify({
+      destinations: [
+        {
+          name: "creator",
+          transport: "webhook",
+          url: "https://example.com/second",
+          headers: { "X-Tenant": "one" },
+        },
+      ],
+      adapters: { webhook: mockAdapter() },
+    });
+
+    expect(first.dispatchHost.destinationBindingSha256("creator")).toBe(
+      reordered.dispatchHost.destinationBindingSha256("creator"),
+    );
+    expect(first.dispatchHost.destinationBindingSha256("creator")).not.toBe(
+      redirected.dispatchHost.destinationBindingSha256("creator"),
+    );
+    expect(first.dispatchHost.destinationBindingSha256("missing")).toBeUndefined();
+
+    const unsafe = notify({
+      destinations: [
+        {
+          name: "creator",
+          transport: "webhook",
+          url: "https://example.com/first",
+          allowedTrustLevels: ["agent"],
+        },
+      ],
+      rateLimit: { enabled: false, globalMaxPerHour: 5 },
+      adapters: { webhook: mockAdapter() },
+    });
+    expect(unsafe.dispatchHost.destinationBindingSha256("creator")).toBeUndefined();
+  });
+
+  test("internal dispatch rechecks creator destination authority before replay", async () => {
+    let deliveryAttempts = 0;
+    const destination: NotifyDestination = {
+      name: "creator",
+      transport: "webhook",
+      url: "https://example.com/notify",
+      allowedTrustLevels: ["creator"],
+    };
+    const aug = notify({
+      destinations: [destination],
+      rateLimit: { cooldownMs: 0, dedupWindowMs: 0, globalMaxPerHour: 10 },
+      adapters: {
+        webhook: {
+          async deliver() {
+            deliveryAttempts++;
+            return { status: "sent" };
+          },
+        },
+      },
+    });
+    const input = {
+      source: "agentmail.creator-digest" as const,
+      operationKey: "authority-replay",
+      destination: "creator",
+      threadId: "agentmail-digest-thread",
+      payload: { summary: "Creator-only digest" },
+      maxAttempts: 1,
+    };
+    expect(await aug.dispatchHost.dispatchInternal(input)).toMatchObject({ status: "sent" });
+    destination.allowedTrustLevels = ["public"];
+    expect(await aug.dispatchHost.dispatchInternal(input)).toEqual({
+      status: "failed",
+      reason: "destination_forbidden",
+      retryable: false,
+      attemptCount: 0,
+    });
+    expect(deliveryAttempts).toBe(1);
+  });
+
+  test("internal dispatch forces normal quota even when model-tool limits are disabled", async () => {
+    let deliveryAttempts = 0;
+    const aug = notify({
+      destinations: [
+        {
+          name: "creator",
+          transport: "webhook",
+          url: "https://example.com/notify",
+          allowedTrustLevels: ["creator"],
+        },
+      ],
+      rateLimit: {
+        enabled: false,
+        cooldownMs: 0,
+        dedupWindowMs: 0,
+        globalMaxPerHour: 1,
+      },
+      adapters: {
+        webhook: {
+          async deliver() {
+            deliveryAttempts++;
+            return { status: "sent" };
+          },
+        },
+      },
+    });
+    const input = {
+      source: "agentmail.creator-digest" as const,
+      destination: "creator",
+      threadId: "agentmail-digest-thread",
+      payload: { summary: "First digest" },
+      maxAttempts: 1,
+    };
+    expect(
+      await aug.dispatchHost.dispatchInternal({ ...input, operationKey: "quota-one" }),
+    ).toMatchObject({ status: "sent" });
+    expect(
+      await aug.dispatchHost.dispatchInternal({
+        ...input,
+        operationKey: "quota-two",
+        payload: { summary: "Second digest" },
+      }),
+    ).toMatchObject({ status: "rate_limited", attemptCount: 0 });
+    expect(deliveryAttempts).toBe(1);
+  });
+
+  test("cooldown-only destinations still inherit the global hourly cap", async () => {
+    let deliveryAttempts = 0;
+    const aug = notify({
+      destinations: [
+        {
+          name: "creator",
+          transport: "webhook",
+          url: "https://example.com/notify",
+          allowedTrustLevels: ["creator"],
+          rateLimit: { cooldownMs: 0 },
+        },
+      ],
+      rateLimit: { cooldownMs: 0, dedupWindowMs: 0, globalMaxPerHour: 1 },
+      adapters: {
+        webhook: {
+          async deliver() {
+            deliveryAttempts++;
+            return { status: "sent" };
+          },
+        },
+      },
+    });
+    const input = {
+      source: "agentmail.creator-digest" as const,
+      destination: "creator",
+      threadId: "agentmail-digest-thread",
+      payload: { summary: "First digest" },
+      maxAttempts: 1,
+    };
+
+    expect(
+      await aug.dispatchHost.dispatchInternal({ ...input, operationKey: "cooldown-only-one" }),
+    ).toMatchObject({ status: "sent" });
+    expect(
+      await aug.dispatchHost.dispatchInternal({
+        ...input,
+        operationKey: "cooldown-only-two",
+        payload: { summary: "Second digest" },
+      }),
+    ).toMatchObject({ status: "rate_limited", attemptCount: 0 });
+    expect(deliveryAttempts).toBe(1);
+  });
+
+  test("internal dispatch exposes exhaustion and exact one-shot creator recovery", async () => {
+    let deliveryAttempts = 0;
+    const aug = notify({
+      destinations: [
+        {
+          name: "creator",
+          transport: "webhook",
+          url: "https://example.com/notify",
+          allowedTrustLevels: ["creator"],
+        },
+      ],
+      rateLimit: { cooldownMs: 0, dedupWindowMs: 0, globalMaxPerHour: 10 },
+      adapters: {
+        webhook: {
+          async deliver() {
+            deliveryAttempts++;
+            return { status: "failed", detail: "definitive refusal" };
+          },
+        },
+      },
+    });
+    const input = {
+      source: "agentmail.creator-digest" as const,
+      operationKey: "exhausted-digest",
+      destination: "creator",
+      threadId: "agentmail-digest-thread",
+      payload: { summary: "Digest delivery" },
+      maxAttempts: 1,
+    };
+
+    expect(await aug.dispatchHost.dispatchInternal(input)).toEqual({
+      status: "attempts_exhausted",
+      attemptCount: 1,
+    });
+    expect(await aug.dispatchHost.dispatchInternal(input)).toEqual({
+      status: "attempts_exhausted",
+      attemptCount: 1,
+    });
+    expect(
+      aug.dispatchHost.authorizeInternalRetry({
+        source: input.source,
+        operationKey: input.operationKey,
+        expectedAttemptCount: 2,
+        evidence: "Creator verified a retry is appropriate",
+      }),
+    ).toEqual({ status: "operation_conflict", attemptCount: 1 });
+    expect(
+      aug.dispatchHost.authorizeInternalRetry({
+        source: input.source,
+        operationKey: input.operationKey,
+        expectedAttemptCount: 1,
+        evidence: "Creator verified a retry is appropriate",
+      }),
+    ).toEqual({ status: "authorized", attemptCount: 1, authorizedAttempt: 2 });
+    expect(await aug.dispatchHost.dispatchInternal(input)).toEqual({
+      status: "attempts_exhausted",
+      attemptCount: 2,
+    });
+    expect(deliveryAttempts).toBe(2);
+  });
+
+  test("internal dispatch fences concurrent and ambiguous provider attempts", async () => {
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let mode: "pending" | "throw" = "pending";
+    let deliveryAttempts = 0;
+    const aug = notify({
+      destinations: [
+        {
+          name: "creator",
+          transport: "webhook",
+          url: "https://example.com/notify",
+          allowedTrustLevels: ["creator"],
+        },
+      ],
+      rateLimit: { cooldownMs: 0, dedupWindowMs: 0, globalMaxPerHour: 10 },
+      adapters: {
+        webhook: {
+          async deliver() {
+            deliveryAttempts++;
+            if (mode === "throw") throw new Error("ambiguous provider boundary");
+            await pending;
+            return { status: "sent" };
+          },
+        },
+      },
+    });
+    const base = {
+      source: "agentmail.creator-digest" as const,
+      destination: "creator",
+      threadId: "agentmail-digest-thread",
+      maxAttempts: 2,
+    };
+    const concurrentInput = {
+      ...base,
+      operationKey: "concurrent-digest",
+      payload: { summary: "Concurrent digest" },
+    };
+    const first = aug.dispatchHost.dispatchInternal(concurrentInput);
+    expect(await aug.dispatchHost.dispatchInternal(concurrentInput)).toEqual({
+      status: "in_flight",
+      attemptCount: 1,
+    });
+    release();
+    expect(await first).toMatchObject({ status: "sent", replayed: false });
+
+    mode = "throw";
+    const ambiguousInput = {
+      ...base,
+      operationKey: "ambiguous-digest",
+      payload: { summary: "Ambiguous digest" },
+    };
+    const ambiguous = await aug.dispatchHost.dispatchInternal(ambiguousInput);
+    expect(ambiguous).toMatchObject({
+      status: "outcome_unknown",
+      attemptCount: 1,
+      incidentVersion: 1,
+    });
+    expect(await aug.dispatchHost.dispatchInternal(ambiguousInput)).toEqual(ambiguous);
+    expect(
+      aug.dispatchHost.authorizeInternalRetry({
+        source: base.source,
+        operationKey: ambiguousInput.operationKey,
+        expectedAttemptCount: 1,
+        evidence: "Creator requested another attempt",
+      }),
+    ).toEqual({ status: "not_definitively_failed", attemptCount: 1 });
+    expect(deliveryAttempts).toBe(2);
   });
 });

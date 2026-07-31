@@ -32,7 +32,9 @@ What it does **not** do:
 - No inbound handling — `notify` is outbound only. Use `telegramTransport` for bidirectional Telegram.
 - No provider delivery receipts beyond `sent` / `failed` — no automatic retry
   queue. Ambiguous attempts require operator reconciliation.
-- No batching — each `notify` call is a single delivery attempt.
+- Model `notify` calls are not batched. AgentMail's separately enabled creator
+  digest may submit one metadata-only aggregate through Notify's internal
+  durable dispatch boundary.
 
 ## 2. Configuration
 
@@ -130,7 +132,7 @@ const notifyAugment = notify({
 |---|---|---|---|---|
 | `destinations` | `NotifyDestination[]` | yes | — | One or more named delivery targets. |
 | `rateLimit` | `NotifyRateLimitOptions` | no | See §5 | Rate limit configuration. |
-| `dbPath` | `string` | direct API: unless `agentDir`; CLI: no | CLI-managed | Durable `NTFY/v1` ledger. Direct construction never silently falls back to memory. |
+| `dbPath` | `string` | direct API: unless `agentDir`; CLI: no | CLI-managed | Durable `NTFY/v2` ledger. Direct construction never silently falls back to memory. |
 | `agentDir` | `string` | no | — | Programmatic project/state root used to derive `notify-delivery.db` when `dbPath` is omitted. |
 
 ### Common destination authority fields
@@ -237,6 +239,29 @@ The webhook adapter POSTs a JSON body to the configured URL using the shared `sr
 
 `reason` and `visitor` are omitted from the body when not provided by the caller. The `channel` field is always `"notify"` — it lets the receiving endpoint distinguish `notify` POSTs from other augment traffic if the endpoint is shared.
 
+## AgentMail creator-digest dispatch
+
+An AgentMail augment with `inbound.creatorDigest.enabled: true` composes with
+one uniquely named Notify destination. This is not a model tool call: a
+synthetic lifecycle bridge submits a stable operation key, aggregate
+metadata-only summary, bounded attempt count, and creator authority. Notify
+still enforces its global and destination quotas for this internal source.
+
+`NTFY/v2` binds the operation key to an immutable payload hash and maximum
+attempt count. A sent operation replays as sent; a pending operation stays
+in-flight; an ambiguous operation stays fenced; and a definitive failure can
+retry only within its bound. A creator-authorized retry adds one durable,
+CAS-bound attempt authorization and stores only a SHA-256 evidence digest. It
+cannot reset a pending, sent, or outcome-unknown operation.
+
+Ordinary terminal Notify attempts age out after 30 days. Internal operations
+remain replay-protected, but once AgentMail durably settles the matching digest
+generation it records a hashed source acknowledgement in `NTFY/v2`. The
+attempt and replay evidence remain readable while that acknowledged operation
+stops consuming the 10,000-record active terminal capacity. Unacknowledged
+protected operations still fail closed at capacity instead of risking a
+duplicate creator digest.
+
 **Response:** Any `2xx` status is treated as success. Any other status code is a
 `failed` delivery with a stable status-only detail. Destination URLs, response
 bodies, and network exception text are never returned to the model.
@@ -325,7 +350,7 @@ Optional fields on the destination:
 
 ## 5. Durable delivery state and rate limiting
 
-Every delivery is reserved in the `NTFY/v1` SQLite ledger before the adapter
+Every delivery is reserved in the `NTFY/v2` SQLite ledger before the adapter
 is called. Quotas, exact-summary dedup, in-flight attempts, and ambiguous
 outcomes survive restart. A process that stops with a pending attempt promotes
 it to `outcome_unknown` during the next admitted runtime startup; merely
@@ -346,10 +371,13 @@ check. A started attempt retains its reservation on success, failure, abort, or
 timeout because remote delivery may already have occurred. Only failures before
 dispatch avoid consuming quota.
 
-Resolved attempts and recovery records are retained for up to 30 days. The
-ledger also caps terminal attempts at 10,000 and performs bounded cleanup on
-open and before reservations. When bounded cleanup cannot restore capacity,
-new dispatch fails closed for operator maintenance. Policy changes apply
+Resolved ordinary attempts and recovery records are retained for up to 30
+days. The ledger caps active terminal attempts at 10,000 and performs bounded
+cleanup on open and before reservations. A replay-protected internal operation
+leaves active capacity only after the source records its own durable settlement
+and supplies a hashed acknowledgement; the operation remains sealed against
+retry. When bounded cleanup and acknowledgements cannot restore capacity, new
+dispatch fails closed for operator maintenance. Policy changes apply
 prospectively; extending a window cannot recreate already-expired evidence.
 
 ### Rate limit checks (in order)
