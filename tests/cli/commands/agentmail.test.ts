@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import type { AgentMailProvisioningClient } from "../../../src/cli/agentmail-provisioning";
 import { formatAgentMailSetupResult, runAgentMailSetup } from "../../../src/cli/commands/agentmail";
@@ -103,6 +103,7 @@ describe("agentmail setup command", () => {
           unauthenticated: "discard",
         },
       });
+      addWebTransport(paths.configPath);
       const order: string[] = [];
       const provisioner: AgentMailProvisioningClient = {
         signUp: mock(async () => ({
@@ -290,6 +291,7 @@ describe("agentmail setup command", () => {
         },
       };
       setAgentMailInbound(paths.augmentPath, inbound);
+      addWebTransport(paths.configPath);
       const createInboxApiKey = mock(
         async (input: Parameters<AgentMailProvisioningClient["createInboxApiKey"]>[0]) => {
           expect(input.permissions).toEqual({
@@ -605,12 +607,24 @@ describe("agentmail setup command", () => {
   });
 
   test("rejects invalid inbound permission policy before provider side effects", async () => {
-    const cases: Array<{ inbound: Record<string, unknown>; expected: RegExp }> = [
+    const cases: Array<{
+      inbound: Record<string, unknown>;
+      outbound?: Record<string, unknown>;
+      expected: RegExp;
+    }> = [
       { inbound: { mode: "smtp" }, expected: /inbound\.mode/ },
       { inbound: { mode: "websocket" }, expected: /allowedSenders/ },
       {
         inbound: { mode: "websocket", allowedSenders: ["*"] },
         expected: /sender pattern/,
+      },
+      {
+        inbound: {
+          mode: "websocket",
+          allowedSenders: ["sender@example.com"],
+          autoReply: "am_secret_ignored_setting",
+        },
+        expected: /unsupported inbound field "autoReply"/,
       },
       {
         inbound: {
@@ -672,6 +686,33 @@ describe("agentmail setup command", () => {
         },
         expected: /unsupported.*typo/,
       },
+      {
+        inbound: {
+          mode: "websocket",
+          allowedSenders: ["sender@example.com"],
+          replies: { mode: "automatic" },
+        },
+        outbound: { rateLimit: { enabled: false } },
+        expected: /automatic inbound replies require outbound\.rateLimit\.enabled/,
+      },
+      {
+        inbound: {
+          mode: "websocket",
+          allowedSenders: ["sender@example.com"],
+          replies: { mode: "automatic" },
+        },
+        outbound: { rateLimit: [] },
+        expected: /automatic inbound replies require outbound\.rateLimit to be an object/,
+      },
+      {
+        inbound: {
+          mode: "websocket",
+          allowedSenders: ["sender@example.com"],
+          replies: { mode: "automatic" },
+        },
+        outbound: { rateLimit: { globalMaxPerHour: 101 } },
+        expected: /automatic inbound replies require outbound\.rateLimit\.globalMaxPerHour/,
+      },
     ];
 
     for (const [index, testCase] of cases.entries()) {
@@ -679,6 +720,7 @@ describe("agentmail setup command", () => {
       try {
         const paths = writeAgentMailAgent(root);
         setAgentMailInbound(paths.augmentPath, testCase.inbound);
+        if (testCase.outbound) setAgentMailOutbound(paths.augmentPath, testCase.outbound);
         const originalEnv = readFileSync(paths.envPath, "utf-8");
         const originalAugment = readFileSync(paths.augmentPath, "utf-8");
         const signUp = mock(async () => {
@@ -704,11 +746,69 @@ describe("agentmail setup command", () => {
 
         expect(error?.message).toMatch(testCase.expected);
         expect(error?.message).not.toContain("am_secret_classification");
+        expect(error?.message).not.toContain("am_secret_ignored_setting");
         expect(signUp).not.toHaveBeenCalled();
         expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
         expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
       } finally {
         rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("requires creator review routes before provisioning reviewed inbound replies", async () => {
+    const cases = [
+      { replies: undefined },
+      { replies: { mode: "review" } },
+      { replies: { mode: "automatic" } },
+    ] as const;
+
+    for (const [index, testCase] of cases.entries()) {
+      for (const adminRoute of ["missing", "disabled"] as const) {
+        const root = mkdtempSync(
+          join(tmpdir(), `agentmail-setup-review-route-${index}-${adminRoute}-`),
+        );
+        try {
+          const paths = writeAgentMailAgent(root);
+          setAgentMailInbound(paths.augmentPath, {
+            mode: "websocket",
+            allowedSenders: ["sender@example.com"],
+            ...(testCase.replies ? { replies: testCase.replies } : {}),
+          });
+          if (testCase.replies?.mode === "automatic") {
+            setAgentMailOutbound(paths.augmentPath, {
+              rateLimit: { enabled: true, globalMaxPerHour: 10 },
+            });
+          }
+          if (adminRoute === "disabled") addWebTransport(paths.configPath, false);
+          const originalEnv = readFileSync(paths.envPath, "utf-8");
+          const originalAugment = readFileSync(paths.augmentPath, "utf-8");
+          const signUp = mock(async () => {
+            throw new Error("must not provision");
+          });
+
+          await expect(
+            runAgentMailSetup(
+              "agentMail",
+              {
+                config: paths.configPath,
+                mode: "signup",
+                humanEmail: "human@example.com",
+                username: "agent",
+                otp: "123456",
+              },
+              { provisioner: unusedProvisioner({ signUp }) },
+            ),
+          ).rejects.toThrow(
+            /inbound\.replies\.mode (review|automatic) requires.*adminRoute.*before AgentMail setup/,
+          );
+
+          expect(signUp).not.toHaveBeenCalled();
+          expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
+          expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
+        } finally {
+          rmSync(root, { recursive: true, force: true });
+        }
       }
     }
   });
@@ -1007,4 +1107,30 @@ function setAgentMailInbound(augmentPath: string, inbound: Record<string, unknow
   };
   parsed.config = { ...(parsed.config ?? {}), inbound };
   writeFileSync(augmentPath, stringifyYaml(parsed));
+}
+
+function setAgentMailOutbound(augmentPath: string, outbound: Record<string, unknown>): void {
+  const parsed = parseYaml(readFileSync(augmentPath, "utf-8")) as {
+    config?: Record<string, unknown>;
+  };
+  parsed.config = { ...(parsed.config ?? {}), outbound };
+  writeFileSync(augmentPath, stringifyYaml(parsed));
+}
+
+function addWebTransport(configPath: string, adminRoute = true): void {
+  const agentDir = dirname(configPath);
+  const augmentDir = join(agentDir, "augments", "webTransport");
+  mkdirSync(augmentDir, { recursive: true });
+  const parsed = parseYaml(readFileSync(configPath, "utf-8")) as {
+    augments?: unknown[];
+  };
+  parsed.augments = [...(parsed.augments ?? []), "webTransport"];
+  writeFileSync(configPath, stringifyYaml(parsed));
+  writeFileSync(
+    join(augmentDir, "augment.yaml"),
+    stringifyYaml({
+      type: "webTransport",
+      config: { port: 8080, ...(adminRoute ? {} : { adminRoute: false }) },
+    }),
+  );
 }

@@ -186,6 +186,8 @@ export type {
   AgentMailRateLimitOptions,
   AgentMailInboundConfig,
   AgentMailInboundMode,
+  AgentMailInboundReplyMode,
+  AgentMailInboundReplyOptions,
   AgentMailAddressVisibility,
 } from "./types";
 

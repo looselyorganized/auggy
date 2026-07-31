@@ -1854,6 +1854,23 @@ export interface NotifyAdapter {
  */
 export type AgentMailInboundMode = "none" | "websocket" | "polling" | "webhook";
 
+/** Runtime authority granted to replies originating from admitted inbound mail. */
+export type AgentMailInboundReplyMode = "disabled" | "review" | "automatic";
+
+export interface AgentMailInboundReplyOptions {
+  /**
+   * Reply authority for admitted inbound turns. Enabled inbound defaults to
+   * `"review"`; dormant inbound defaults to `"disabled"`. `"automatic"` is
+   * accepted only while a bounded outbound rate policy remains enabled.
+   */
+  mode?: AgentMailInboundReplyMode;
+  /**
+   * Permit an inbound turn to request reply-all. Default false. This never
+   * bypasses the outbound recipient allowlist or recipient-count cap.
+   */
+  allowReplyAll?: boolean;
+}
+
 /** Who may learn the canonical inbox address through model context. */
 export type AgentMailAddressVisibility = "creator" | "public";
 
@@ -1927,6 +1944,8 @@ export interface AgentMailInboundConfig {
     blocked?: "process" | "discard";
     unauthenticated?: "process" | "discard";
   };
+  /** Action-specific authority for replies to the triggering inbound message. */
+  replies?: AgentMailInboundReplyOptions;
   /** Poll/reconciliation cadence. Default 60 seconds; range 1 second to 24 hours. */
   pollIntervalMs?: number;
   /** Max bytes rendered into the untrusted email prompt. Default 100 KiB; max 1 MiB. */

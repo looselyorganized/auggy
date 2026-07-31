@@ -1,4 +1,8 @@
-import type { AgentMailInboundConfig } from "../../types";
+import type {
+  AgentMailInboundConfig,
+  AgentMailInboundReplyMode,
+  AgentMailOutboundOptions,
+} from "../../types";
 import { isWellFormedEmail } from "../visitorAuth/email-validation";
 import type { AgentMailReceivedEventType } from "./provider";
 
@@ -8,10 +12,17 @@ export const AGENTMAIL_MIN_PROMPT_BYTES = 512;
 export const AGENTMAIL_MAX_PROMPT_BYTES = 1024 * 1024;
 export const AGENTMAIL_MAX_ATTEMPTS = 20;
 export const AGENTMAIL_MAX_ALLOWED_SENDERS = 1_000;
+export const AGENTMAIL_MAX_AUTOMATIC_REPLIES_PER_HOUR = 100;
+
+export interface ResolvedAgentMailInboundReplies {
+  mode: AgentMailInboundReplyMode;
+  allowReplyAll: boolean;
+}
 
 export interface ValidatedAgentMailInboundConfig {
   config: AgentMailInboundConfig;
   processedEventTypes: AgentMailReceivedEventType[];
+  replies: ResolvedAgentMailInboundReplies;
 }
 
 const CLASSIFICATION_FIELDS = ["received", "spam", "blocked", "unauthenticated"] as const;
@@ -30,6 +41,49 @@ const DEFAULT_CLASSIFICATION_ACTIONS = {
   blocked: "discard",
   unauthenticated: "discard",
 } as const satisfies Required<NonNullable<AgentMailInboundConfig["classifications"]>>;
+
+const REPLY_FIELDS = new Set(["mode", "allowReplyAll"]);
+const INBOUND_FIELDS = new Set([
+  "mode",
+  "allowedSenders",
+  "classifications",
+  "replies",
+  "pollIntervalMs",
+  "maxPromptBytes",
+  "maxAttempts",
+  "websocketBaseUrl",
+  "webhook",
+]);
+
+/**
+ * Validate the effective runtime hourly cap, including mutable admin
+ * overrides. Config admission alone is insufficient because an override can
+ * replace the YAML value after startup.
+ */
+export function validateAgentMailEffectiveHourlyCap(
+  value: unknown,
+  replyMode: AgentMailInboundReplyMode,
+  label = "effective outbound.rateLimit.globalMaxPerHour",
+): number {
+  const maximum =
+    replyMode === "automatic" ? AGENTMAIL_MAX_AUTOMATIC_REPLIES_PER_HOUR : Number.MAX_SAFE_INTEGER;
+  if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 1 || value > maximum) {
+    if (replyMode === "automatic") {
+      throw new Error(
+        `agentMail: automatic inbound replies require ${label} between 1 and ${AGENTMAIL_MAX_AUTOMATIC_REPLIES_PER_HOUR}`,
+      );
+    }
+    throw new Error(`agentMail: ${label} must be a positive safe integer`);
+  }
+  return value;
+}
+
+/** Whether this validated inbound policy can ever enqueue creator review. */
+export function agentMailInboundRequiresAdminRoute(
+  inbound: Pick<ValidatedAgentMailInboundConfig, "config" | "replies">,
+): boolean {
+  return inbound.config.mode !== "none" && inbound.replies.mode !== "disabled";
+}
 
 /**
  * Canonicalize the legacy sender allowlist while rejecting patterns that
@@ -163,12 +217,98 @@ export function validateAgentMailInboundBounds(config: AgentMailInboundConfig): 
   }
 }
 
+/**
+ * Resolve action-specific inbound reply authority.
+ *
+ * Automatic replies fail closed unless the existing outbound rate limiter is
+ * enabled with a finite global cap. The default outbound policy resolves to
+ * 10/hour; explicit automatic mode permits at most 100/hour.
+ */
+export function resolveAgentMailInboundReplies(
+  inboundMode: AgentMailInboundConfig["mode"],
+  value: AgentMailInboundConfig["replies"] | undefined,
+  outbound: AgentMailOutboundOptions | undefined,
+): ResolvedAgentMailInboundReplies {
+  if (
+    value !== undefined &&
+    (typeof value !== "object" || value === null || Array.isArray(value))
+  ) {
+    throw new Error("agentMail: inbound.replies must be an object");
+  }
+  for (const field of Object.keys(value ?? {})) {
+    if (!REPLY_FIELDS.has(field)) {
+      throw new Error(`agentMail: unsupported inbound.replies field ${JSON.stringify(field)}`);
+    }
+  }
+
+  const defaultMode: AgentMailInboundReplyMode = inboundMode === "none" ? "disabled" : "review";
+  const mode = value?.mode ?? defaultMode;
+  if (mode !== "disabled" && mode !== "review" && mode !== "automatic") {
+    throw new Error('agentMail: inbound.replies.mode must be "disabled", "review", or "automatic"');
+  }
+  if (value?.allowReplyAll !== undefined && typeof value.allowReplyAll !== "boolean") {
+    throw new Error("agentMail: inbound.replies.allowReplyAll must be a boolean");
+  }
+  const allowReplyAll = value?.allowReplyAll ?? false;
+
+  if (inboundMode === "none" && mode !== "disabled") {
+    throw new Error(
+      'agentMail: inbound.replies.mode must be "disabled" when inbound.mode is "none"',
+    );
+  }
+  if (mode === "disabled" && allowReplyAll) {
+    throw new Error(
+      "agentMail: inbound.replies.allowReplyAll cannot be true when replies are disabled",
+    );
+  }
+
+  if (mode === "automatic") {
+    const rateLimitValue: unknown = outbound?.rateLimit;
+    if (
+      rateLimitValue !== undefined &&
+      (typeof rateLimitValue !== "object" ||
+        rateLimitValue === null ||
+        Array.isArray(rateLimitValue))
+    ) {
+      throw new Error(
+        "agentMail: automatic inbound replies require outbound.rateLimit to be an object",
+      );
+    }
+    const rateLimit = rateLimitValue as Record<string, unknown> | undefined;
+    if (rateLimit?.enabled === false) {
+      throw new Error(
+        "agentMail: automatic inbound replies require outbound.rateLimit.enabled to remain true",
+      );
+    }
+    if (rateLimit?.enabled !== undefined && rateLimit.enabled !== true) {
+      throw new Error(
+        "agentMail: automatic inbound replies require outbound.rateLimit.enabled to be a boolean",
+      );
+    }
+    validateAgentMailEffectiveHourlyCap(
+      rateLimit?.globalMaxPerHour ?? 10,
+      mode,
+      "outbound.rateLimit.globalMaxPerHour",
+    );
+  }
+
+  return { mode, allowReplyAll };
+}
+
 /** Shared admission boundary used by YAML parsing, setup, and direct factories. */
-export function validateAgentMailInboundConfig(value: unknown): ValidatedAgentMailInboundConfig {
+export function validateAgentMailInboundConfig(
+  value: unknown,
+  outbound?: AgentMailOutboundOptions,
+): ValidatedAgentMailInboundConfig {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new Error("agentMail: inbound must be an object");
   }
   const inbound = value as Record<string, unknown>;
+  for (const field of Object.keys(inbound)) {
+    if (!INBOUND_FIELDS.has(field)) {
+      throw new Error(`agentMail: unsupported inbound field ${JSON.stringify(field)}`);
+    }
+  }
   const mode = inbound.mode;
   if (mode !== "none" && mode !== "websocket" && mode !== "polling" && mode !== "webhook") {
     throw new Error('agentMail: inbound.mode must be "none", "websocket", "polling", or "webhook"');
@@ -188,6 +328,7 @@ export function validateAgentMailInboundConfig(value: unknown): ValidatedAgentMa
   validateAgentMailClassificationActions(config.classifications);
   const processedEventTypes =
     mode === "none" ? [] : processedAgentMailEventTypes(config.classifications);
+  const replies = resolveAgentMailInboundReplies(mode, config.replies, outbound);
 
   if (config.websocketBaseUrl !== undefined) {
     if (typeof config.websocketBaseUrl !== "string") {
@@ -241,5 +382,5 @@ export function validateAgentMailInboundConfig(value: unknown): ValidatedAgentMa
     throw new Error('agentMail: inbound.webhook is only valid when inbound.mode is "webhook"');
   }
 
-  return { config, processedEventTypes };
+  return { config, processedEventTypes, replies };
 }

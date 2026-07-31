@@ -142,14 +142,148 @@ describe("config-parser: agentMail validation", () => {
       },
     ]) {
       const path = writeYaml(
+        configWithAgentMail({ apiKey: "am_x", inboxId: "inb_x", inbound }, [
+          { name: "web", type: "webTransport", options: { port: 18_080 } },
+        ]),
+      );
+      expect(() => parseConfig(path)).not.toThrow();
+    }
+  });
+
+  test("accepts action-specific disabled, reviewed, and bounded automatic replies", () => {
+    for (const testCase of [
+      {
+        options: {
+          inbound: {
+            mode: "polling",
+            allowedSenders: ["sender@example.com"],
+            replies: { mode: "disabled", allowReplyAll: false },
+          },
+        },
+        needsAdmin: false,
+      },
+      {
+        options: {
+          inbound: {
+            mode: "websocket",
+            allowedSenders: ["sender@example.com"],
+            replies: { mode: "review", allowReplyAll: true },
+          },
+        },
+        needsAdmin: true,
+      },
+      {
+        options: {
+          inbound: {
+            mode: "polling",
+            allowedSenders: ["sender@example.com"],
+            replies: { mode: "automatic" },
+          },
+          outbound: { rateLimit: { enabled: true, globalMaxPerHour: 25 } },
+        },
+        needsAdmin: true,
+      },
+    ]) {
+      const path = writeYaml(
         configWithAgentMail(
-          { apiKey: "am_x", inboxId: "inb_x", inbound },
-          inbound.mode === "webhook"
+          { apiKey: "am_x", inboxId: "inb_x", ...testCase.options },
+          testCase.needsAdmin
             ? [{ name: "web", type: "webTransport", options: { port: 18_080 } }]
             : [],
         ),
       );
       expect(() => parseConfig(path)).not.toThrow();
+    }
+  });
+
+  test("requires creator admin review for default review and automatic sensitive fallback", () => {
+    for (const replies of [undefined, { mode: "review" }, { mode: "automatic" }] as const) {
+      const options = {
+        apiKey: "am_x",
+        inboxId: "inb_x",
+        inbound: {
+          mode: "websocket",
+          allowedSenders: ["sender@example.com"],
+          ...(replies ? { replies } : {}),
+        },
+        ...(replies?.mode === "automatic"
+          ? { outbound: { rateLimit: { enabled: true, globalMaxPerHour: 10 } } }
+          : {}),
+      };
+      const missing = writeYaml(configWithAgentMail(options));
+      expect(() => parseConfig(missing)).toThrow(/human review requires a webTransport/);
+
+      const disabledAdmin = writeYaml(
+        configWithAgentMail(options, [
+          {
+            name: "web",
+            type: "webTransport",
+            options: { port: 18_080, adminRoute: false },
+          },
+        ]),
+      );
+      expect(() => parseConfig(disabledAdmin)).toThrow(/adminRoute enabled/);
+    }
+  });
+
+  test("rejects unsafe or malformed inbound reply policy", () => {
+    for (const options of [
+      {
+        inbound: {
+          mode: "polling",
+          allowedSenders: ["sender@example.com"],
+          replies: { mode: "sometimes" },
+        },
+      },
+      {
+        inbound: {
+          mode: "polling",
+          allowedSenders: ["sender@example.com"],
+          autoReply: true,
+        },
+      },
+      {
+        inbound: {
+          mode: "none",
+          replies: { mode: "review" },
+        },
+      },
+      {
+        inbound: {
+          mode: "polling",
+          allowedSenders: ["sender@example.com"],
+          replies: { mode: "disabled", allowReplyAll: true },
+        },
+      },
+      {
+        inbound: {
+          mode: "polling",
+          allowedSenders: ["sender@example.com"],
+          replies: { mode: "automatic" },
+        },
+        outbound: { rateLimit: { enabled: false } },
+      },
+      {
+        inbound: {
+          mode: "polling",
+          allowedSenders: ["sender@example.com"],
+          replies: { mode: "automatic" },
+        },
+        outbound: { rateLimit: [] },
+      },
+      {
+        inbound: {
+          mode: "polling",
+          allowedSenders: ["sender@example.com"],
+          replies: { mode: "automatic" },
+        },
+        outbound: { rateLimit: { globalMaxPerHour: 101 } },
+      },
+    ]) {
+      const path = writeYaml(configWithAgentMail({ apiKey: "am_x", inboxId: "inb_x", ...options }));
+      expect(() => parseConfig(path)).toThrow(
+        /inbound\.replies|automatic inbound replies|unsupported inbound field/,
+      );
     }
   });
 

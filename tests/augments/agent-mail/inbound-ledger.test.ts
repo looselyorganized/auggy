@@ -91,6 +91,7 @@ function ledgerAt(
 
 function downgradeToV1(dbPath: string, unbranded = false): void {
   const db = new Database(dbPath, { readwrite: true });
+  db.run("DROP TABLE agentmail_creator_attention");
   db.run("DROP TABLE agentmail_inbound_recoveries");
   db.run("DROP TABLE agentmail_inbound_quarantines");
   db.run("UPDATE agentmail_inbound_meta SET value = '1' WHERE key = 'schema_version'");
@@ -632,6 +633,30 @@ describe("AgentMail inbound ledger", () => {
       discardReason: "inbound policy: spam",
       lastError: undefined,
     });
+    ledger.close();
+  });
+
+  test("pre-model defer returns only the exact live claim without charging its attempt", () => {
+    const clock = { now: 52_000 };
+    const ledger = ledgerAt(tempDb(), clock);
+    ledger.enqueue(restEnvelope("message_deferred"));
+    const claim = ledger.claimNext({ workerId: "worker", leaseMs: 1_000 })!;
+
+    expect(
+      ledger.defer(claim, {
+        reason: "creator-attention-capacity",
+      }),
+    ).toBe(true);
+    expect(ledger.defer(claim, { reason: "stale duplicate" })).toBe(false);
+    expect(ledger.get("support@agentmail.to", "message_deferred")).toMatchObject({
+      state: "pending",
+      attemptCount: 0,
+      lastError: "creator-attention-capacity",
+    });
+
+    const next = ledger.claimNext({ workerId: "worker-next", leaseMs: 1_000 })!;
+    expect(next.attemptCount).toBe(1);
+    expect(ledger.complete(next)).toBe(true);
     ledger.close();
   });
 

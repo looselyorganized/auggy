@@ -22,9 +22,11 @@ import {
 } from "../augment-catalog";
 import { isWellFormedEmail } from "../../augments/visitorAuth/email-validation";
 import {
+  agentMailInboundRequiresAdminRoute,
   validateAgentMailInboundConfig,
   type ValidatedAgentMailInboundConfig,
 } from "../../augments/agentMail/inbound-policy";
+import type { AgentMailOutboundOptions } from "../../types";
 
 export type AgentMailSetupTarget = "visitorAuth" | "agentMail";
 export type AgentMailSetupMode = "signup" | "existing" | "manual" | "env";
@@ -130,6 +132,11 @@ export async function runAgentMailSetup(
   if (configPlan.requiresWebTransport && !agentConfigHasAugmentType(configPath, "webTransport")) {
     throw new Error(
       `${displayPath(augmentPath)} config.inbound.mode webhook requires a webTransport augment before AgentMail setup can provision resources.`,
+    );
+  }
+  if (configPlan.requiresAdminWebTransport && !agentConfigHasAdminWebTransport(configPath)) {
+    throw new Error(
+      `${displayPath(augmentPath)} config.inbound.replies.mode ${configPlan.inboundReplyMode} requires a webTransport augment with adminRoute enabled before AgentMail setup can provision resources.`,
     );
   }
 
@@ -335,6 +342,8 @@ interface AgentMailConfigPlan {
   updatedAugmentConfig: string;
   runtimeKeyPermissions: AgentMailRuntimeKeyPermissions;
   requiresWebTransport: boolean;
+  requiresAdminWebTransport: boolean;
+  inboundReplyMode?: ValidatedAgentMailInboundConfig["replies"]["mode"];
 }
 
 function planAgentMailConfig(
@@ -357,7 +366,12 @@ function planAgentMailConfig(
   let validatedInbound: ValidatedAgentMailInboundConfig | undefined;
   if (target === "agentMail" && config.inbound !== undefined) {
     try {
-      validatedInbound = validateAgentMailInboundConfig(config.inbound);
+      validatedInbound = validateAgentMailInboundConfig(
+        config.inbound,
+        config.outbound && typeof config.outbound === "object" && !Array.isArray(config.outbound)
+          ? (config.outbound as AgentMailOutboundOptions)
+          : undefined,
+      );
     } catch (error) {
       throw new Error(
         `${displayPath(augmentPath)} config.inbound is invalid: ${(error as Error).message}`,
@@ -403,6 +417,9 @@ function planAgentMailConfig(
     updatedAugmentConfig: stringifyYaml(doc),
     runtimeKeyPermissions,
     requiresWebTransport: validatedInbound?.config.mode === "webhook",
+    requiresAdminWebTransport:
+      validatedInbound !== undefined && agentMailInboundRequiresAdminRoute(validatedInbound),
+    ...(validatedInbound ? { inboundReplyMode: validatedInbound.replies.mode } : {}),
   };
 }
 
@@ -418,6 +435,30 @@ function agentConfigHasAugmentType(configPath: string, type: string): boolean {
     try {
       const referenced = parseYaml(readFileSync(referencedPath, "utf-8"));
       return isRecord(referenced) && referenced.type === type;
+    } catch {
+      return false;
+    }
+  });
+}
+
+function agentConfigHasAdminWebTransport(configPath: string): boolean {
+  const raw = parseYaml(readFileSync(configPath, "utf-8"));
+  if (!isRecord(raw) || !Array.isArray(raw.augments)) return false;
+  const agentDir = dirname(configPath);
+  return raw.augments.some((entry) => {
+    if (isRecord(entry)) {
+      if (entry.type !== "webTransport") return false;
+      const options = isRecord(entry.options) ? entry.options : {};
+      return options.adminRoute === undefined || options.adminRoute === true;
+    }
+    if (typeof entry !== "string") return false;
+    const referencedPath = join(agentDir, "augments", entry, "augment.yaml");
+    if (!existsSync(referencedPath)) return false;
+    try {
+      const referenced = parseYaml(readFileSync(referencedPath, "utf-8"));
+      if (!isRecord(referenced) || referenced.type !== "webTransport") return false;
+      const config = isRecord(referenced.config) ? referenced.config : {};
+      return config.adminRoute === undefined || config.adminRoute === true;
     } catch {
       return false;
     }

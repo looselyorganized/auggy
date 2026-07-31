@@ -27,6 +27,7 @@ const DEFAULT_MAX_ATTEMPTS = 5;
 const DEFAULT_RETRY_BASE_MS = 5_000;
 const DEFAULT_RETRY_MAX_MS = 15 * 60_000;
 const DEFAULT_MAX_PROMPT_BYTES = 100 * 1024;
+const PRE_MODEL_DEFER_MS = 5_000;
 
 export type AgentMailInboundClassificationAction = "process" | "discard";
 
@@ -43,6 +44,10 @@ export interface AgentMailInboundTurnPolicy {
   leaseMs?: number;
 }
 
+export type AgentMailInboundPreparationResult =
+  | { status: "ready" }
+  | { status: "deferred"; reason: string };
+
 export interface AgentMailInboundWorkerOptions {
   ledger: AgentMailInboundLedger;
   kernel: TransportKernel;
@@ -55,6 +60,37 @@ export interface AgentMailInboundWorkerOptions {
   onTurnPrepared?: (input: {
     envelope: AgentMailInboundEnvelope;
     trigger: TurnTrigger;
+  }) =>
+    | undefined
+    | AgentMailInboundPreparationResult
+    | Promise<undefined | AgentMailInboundPreparationResult>;
+  /**
+   * Finalize any tool/review effects after a dispatched turn returns or
+   * throws. Returning true prevents a failed turn from being replayed.
+   */
+  onTurnEffectsObserved?: (input: {
+    envelope: AgentMailInboundEnvelope;
+    trigger: TurnTrigger;
+    turn?: TurnResult;
+  }) => boolean | Promise<boolean>;
+  /**
+   * Runs after the admitted model/tool turn succeeds but before the claim is
+   * durably completed. A failure here is outcome-unknown: model/tool effects
+   * may already exist, so the worker quarantines instead of retrying.
+   */
+  onTurnCompleted?: (input: {
+    envelope: AgentMailInboundEnvelope;
+    trigger: TurnTrigger;
+    turn: TurnResult;
+  }) => void | Promise<void>;
+  /**
+   * Finalizes attention after a definitive failure exhausts retries, before
+   * the live claim is durably discarded.
+   */
+  onTerminalFailure?: (input: {
+    envelope: AgentMailInboundEnvelope;
+    trigger: TurnTrigger;
+    reason: string;
   }) => void | Promise<void>;
   onTurnSettled?: (input: { trigger: TurnTrigger }) => void | Promise<void>;
 }
@@ -63,6 +99,7 @@ export type AgentMailInboundWorkerResult =
   | { status: "idle" }
   | { status: "processed"; messageId: string; turn: TurnResult }
   | { status: "discarded"; messageId: string; reason: string }
+  | { status: "deferred"; messageId: string; reason: string; availableAt: number }
   | { status: "retried"; messageId: string; availableAt: number }
   | { status: "quarantined"; messageId: string; incidentId: string }
   | { status: "lease-lost"; messageId: string };
@@ -100,6 +137,36 @@ export function createAgentMailInboundWorker(
     }
   }
 
+  async function retryOrDiscardWithAttention(
+    claim: AgentMailLedgerClaim,
+    trigger: TurnTrigger,
+    error: string,
+  ): Promise<AgentMailInboundWorkerResult> {
+    const messageId = claim.envelope.message.messageId;
+    if (claim.attemptCount >= policy.maxAttempts) {
+      const reason = "delivery-attempts-exhausted";
+      try {
+        await options.onTerminalFailure?.({
+          envelope: claim.envelope,
+          trigger,
+          reason,
+        });
+      } catch {
+        const incident = quarantineOrHalt(
+          claim,
+          "terminal-attention-not-recorded",
+          trigger.threadId!,
+        );
+        return { status: "quarantined", messageId, incidentId: incident.id };
+      }
+      if (!options.ledger.discard(claim, reason)) {
+        return { status: "lease-lost", messageId };
+      }
+      return { status: "discarded", messageId, reason };
+    }
+    return retryDefinitiveFailure(options.ledger, claim, policy, now(), error);
+  }
+
   return {
     async processNext() {
       if (halted) throw halted;
@@ -127,15 +194,41 @@ export function createAgentMailInboundWorker(
         now(),
         nextTurnId(),
       );
+      let preparation: undefined | AgentMailInboundPreparationResult;
       try {
-        await options.onTurnPrepared?.({ envelope: claim.envelope, trigger });
+        preparation = await options.onTurnPrepared?.({
+          envelope: claim.envelope,
+          trigger,
+        });
       } catch {
         try {
           await options.onTurnSettled?.({ trigger });
         } catch {
           // Cleanup hooks cannot change durable retry semantics.
         }
-        return retryOrDiscard(options.ledger, claim, policy, now(), "turn-preparation-failed");
+        return retryOrDiscardWithAttention(claim, trigger, "turn-preparation-failed");
+      }
+      if (preparation?.status === "deferred") {
+        try {
+          await options.onTurnSettled?.({ trigger });
+        } catch {
+          // Cleanup hooks cannot change durable backpressure semantics.
+        }
+        const availableAt = now() + PRE_MODEL_DEFER_MS;
+        if (
+          !options.ledger.defer(claim, {
+            reason: preparation.reason,
+            availableAt,
+          })
+        ) {
+          return { status: "lease-lost", messageId };
+        }
+        return {
+          status: "deferred",
+          messageId,
+          reason: preparation.reason,
+          availableAt,
+        };
       }
 
       let leaseLost = false;
@@ -156,6 +249,29 @@ export function createAgentMailInboundWorker(
         try {
           turn = await options.kernel.handleInbound(trigger);
         } catch (error) {
+          let effectsObserved = false;
+          try {
+            effectsObserved =
+              (await options.onTurnEffectsObserved?.({
+                envelope: claim.envelope,
+                trigger,
+              })) ?? false;
+          } catch {
+            const incident = quarantineOrHalt(
+              claim,
+              "post-turn-attention-not-recorded",
+              trigger.threadId!,
+            );
+            return { status: "quarantined", messageId, incidentId: incident.id };
+          }
+          if (effectsObserved) {
+            const incident = quarantineOrHalt(
+              claim,
+              "turn-effects-observed-before-failure",
+              trigger.threadId!,
+            );
+            return { status: "quarantined", messageId, incidentId: incident.id };
+          }
           if (isOutcomeUnknownError(error)) {
             const incident = quarantineOrHalt(
               claim,
@@ -165,9 +281,39 @@ export function createAgentMailInboundWorker(
             return { status: "quarantined", messageId, incidentId: incident.id };
           }
           if (leaseLost) return { status: "lease-lost", messageId };
-          return retryOrDiscard(options.ledger, claim, policy, now(), "turn-dispatch-failed");
+          return retryOrDiscardWithAttention(claim, trigger, "turn-dispatch-failed");
+        }
+        let effectsObserved = false;
+        try {
+          effectsObserved =
+            (await options.onTurnEffectsObserved?.({
+              envelope: claim.envelope,
+              trigger,
+              turn,
+            })) ?? false;
+        } catch {
+          const incident = quarantineOrHalt(
+            claim,
+            "post-turn-attention-not-recorded",
+            trigger.threadId!,
+          );
+          return { status: "quarantined", messageId, incidentId: incident.id };
         }
         if (turn.success) {
+          try {
+            await options.onTurnCompleted?.({
+              envelope: claim.envelope,
+              trigger,
+              turn,
+            });
+          } catch {
+            const incident = quarantineOrHalt(
+              claim,
+              "post-turn-attention-not-recorded",
+              trigger.threadId!,
+            );
+            return { status: "quarantined", messageId, incidentId: incident.id };
+          }
           if (!options.ledger.complete(claim)) {
             const incident = quarantineOrHalt(
               claim,
@@ -178,12 +324,20 @@ export function createAgentMailInboundWorker(
           }
           return { status: "processed", messageId, turn };
         }
+        if (effectsObserved) {
+          const incident = quarantineOrHalt(
+            claim,
+            "turn-effects-observed-before-failure",
+            trigger.threadId!,
+          );
+          return { status: "quarantined", messageId, incidentId: incident.id };
+        }
         if (turn.outcomeUnknown) {
           const incident = quarantineOrHalt(claim, "turn-outcome-unknown", trigger.threadId!);
           return { status: "quarantined", messageId, incidentId: incident.id };
         }
         if (leaseLost) return { status: "lease-lost", messageId };
-        return retryOrDiscard(options.ledger, claim, policy, now(), `turn-${turn.status}`);
+        return retryOrDiscardWithAttention(claim, trigger, `turn-${turn.status}`);
       } finally {
         clearInterval(heartbeat);
         try {
@@ -256,7 +410,7 @@ function decideInbound(
   return { process: true };
 }
 
-function retryOrDiscard(
+function retryDefinitiveFailure(
   ledger: AgentMailInboundLedger,
   claim: AgentMailLedgerClaim,
   policy: NormalizedPolicy,
@@ -264,11 +418,6 @@ function retryOrDiscard(
   error: string,
 ): AgentMailInboundWorkerResult {
   const messageId = claim.envelope.message.messageId;
-  if (claim.attemptCount >= policy.maxAttempts) {
-    const reason = "delivery-attempts-exhausted";
-    if (!ledger.discard(claim, reason)) return { status: "lease-lost", messageId };
-    return { status: "discarded", messageId, reason };
-  }
   const delay = Math.min(
     policy.retryMaxMs,
     policy.retryBaseMs * 2 ** Math.max(0, claim.attemptCount - 1),
