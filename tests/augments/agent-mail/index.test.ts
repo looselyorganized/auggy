@@ -1959,7 +1959,7 @@ describe("onBoot", () => {
     }
   }
 
-  test("isolates a transiently degraded inbox from another healthy inbox", async () => {
+  test("keeps inbox identity and health status isolated between instances", async () => {
     const support = agentMail({
       ...baseOpts,
       instanceId: "support",
