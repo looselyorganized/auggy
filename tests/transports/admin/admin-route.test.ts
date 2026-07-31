@@ -88,6 +88,11 @@ describe("admin-coerce", () => {
     const r = coerceInputs([textInput], {});
     expect(r.ok).toBe(true);
   });
+
+  it("rejects undeclared input fields", () => {
+    const r = coerceInputs([textInput], { msg: "ok", injected: "no" });
+    expect(r).toEqual({ ok: false, field: "injected", reason: "unexpected input" });
+  });
 });
 
 async function makeCtx(
@@ -1512,6 +1517,84 @@ describe("handleAdminRoute — static console", () => {
 });
 
 describe("handleAdminRoute — POST action dispatch", () => {
+  it("dashboard exposes augment targets on actions and CSRF tokens", async () => {
+    const aug: Augment = {
+      name: "mail-west",
+      adminInfo: async () => ({
+        augmentName: "mail-west",
+        title: "Mail",
+        sections: [
+          {
+            kind: "table",
+            columns: ["Review"],
+            rows: [["review-1"]],
+            rowActions: [
+              {
+                id: "review-approve",
+                label: "Approve",
+                confirmRequired: true,
+                rowKeyColumn: 0,
+              },
+            ],
+          },
+        ],
+        actions: [{ id: "sync", label: "Sync", confirmRequired: false }],
+      }),
+      adminActions: {
+        sync: async () => ({ ok: true, message: "ok" }),
+        "review-approve": async () => ({ ok: true, message: "ok" }),
+      },
+    };
+    const res = await handleAdminRoute(
+      new Request("http://127.0.0.1:8080/console/api/dashboard", {
+        headers: { authorization: basicHeader("test-bearer") },
+      }),
+      await makeCtx({ augments: [aug] }),
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      blocks: Array<{
+        augmentName: string;
+        actions?: Array<{ augmentName?: string; id: string }>;
+        sections: Array<{
+          kind: string;
+          rowActions?: Array<{ augmentName?: string; id: string }>;
+        }>;
+      }>;
+      csrfTokens: Array<{
+        augmentName?: string;
+        actionId: string;
+        rowKey?: string;
+        token: string;
+      }>;
+    };
+    expect(body.blocks[0]?.actions?.[0]).toMatchObject({
+      augmentName: "mail-west",
+      id: "sync",
+    });
+    expect(body.blocks[0]?.sections[0]?.rowActions?.[0]).toMatchObject({
+      augmentName: "mail-west",
+      id: "review-approve",
+    });
+    expect(body.csrfTokens).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          augmentName: "mail-west",
+          actionId: "sync",
+        }),
+        expect.objectContaining({
+          augmentName: "mail-west",
+          actionId: "review-approve",
+          rowKey: "review-1",
+        }),
+      ]),
+    );
+    const syncTokens = body.csrfTokens.filter((token) => token.actionId === "sync");
+    expect(syncTokens).toHaveLength(2);
+    expect(syncTokens[0]?.augmentName).toBeUndefined();
+    expect(syncTokens[1]?.augmentName).toBe("mail-west");
+  });
+
   it("POST /console/action/<id> without CSRF → 403", async () => {
     const aug: Augment = {
       name: "test",
@@ -1567,6 +1650,184 @@ describe("handleAdminRoute — POST action dispatch", () => {
     expect(res.status).toBe(303);
     expect(res.headers.get("location")).toContain("/console?msg=");
     expect(res.headers.get("location")).toContain(encodeURIComponent("fired"));
+  });
+
+  it("dispatches duplicate action ids independently through targeted routes", async () => {
+    const dispatched: string[] = [];
+    const makeAugment = (name: string): Augment => ({
+      name,
+      adminInfo: async () => ({
+        augmentName: name,
+        title: name,
+        sections: [],
+        actions: [{ id: "shared-action", label: "Run", confirmRequired: false }],
+      }),
+      adminActions: {
+        "shared-action": async () => {
+          dispatched.push(name);
+          return { ok: true, message: name };
+        },
+      },
+    });
+    const augments = [makeAugment("mail west"), makeAugment("mail-east")];
+    const ctx = await makeCtx({ augments });
+    const dashboard = await handleAdminRoute(
+      new Request("http://127.0.0.1:8080/console/api/dashboard", {
+        headers: { authorization: basicHeader("test-bearer") },
+      }),
+      ctx,
+    );
+    const dashboardBody = (await dashboard.json()) as {
+      csrfTokens: Array<{ augmentName?: string; actionId: string }>;
+    };
+    const sharedTokens = dashboardBody.csrfTokens.filter(
+      (token) => token.actionId === "shared-action",
+    );
+    expect(sharedTokens).toHaveLength(2);
+    expect(sharedTokens.every((token) => token.augmentName !== undefined)).toBe(true);
+
+    const westCsrf = await generateCsrfToken({
+      bearer: "test-bearer",
+      agentName: "zip",
+      augmentName: "mail west",
+      actionId: "shared-action",
+    });
+    const west = await handleAdminRoute(
+      new Request(
+        `http://127.0.0.1:8080/console/action/${encodeURIComponent("mail west")}/shared-action`,
+        {
+          method: "POST",
+          headers: {
+            authorization: basicHeader("test-bearer"),
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({ _csrf: westCsrf }),
+        },
+      ),
+      ctx,
+    );
+    expect(west.status).toBe(303);
+    expect(dispatched).toEqual(["mail west"]);
+
+    const eastCsrf = await generateCsrfToken({
+      bearer: "test-bearer",
+      agentName: "zip",
+      augmentName: "mail-east",
+      actionId: "shared-action",
+    });
+    const east = await handleAdminRoute(
+      new Request("http://127.0.0.1:8080/console/action/mail-east/shared-action", {
+        method: "POST",
+        headers: {
+          authorization: basicHeader("test-bearer"),
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ _csrf: eastCsrf }),
+      }),
+      ctx,
+    );
+    expect(east.status).toBe(303);
+    expect(dispatched).toEqual(["mail west", "mail-east"]);
+  });
+
+  it("rejects cross-target CSRF replay before dispatch", async () => {
+    const dispatched: string[] = [];
+    const makeAugment = (name: string): Augment => ({
+      name,
+      adminInfo: async () => ({
+        augmentName: name,
+        title: name,
+        sections: [],
+        actions: [{ id: "shared-action", label: "Run", confirmRequired: false }],
+      }),
+      adminActions: {
+        "shared-action": async () => {
+          dispatched.push(name);
+          return { ok: true, message: name };
+        },
+      },
+    });
+    const augments = [makeAugment("mail-west"), makeAugment("mail-east")];
+    const westCsrf = await generateCsrfToken({
+      bearer: "test-bearer",
+      agentName: "zip",
+      augmentName: "mail-west",
+      actionId: "shared-action",
+    });
+    const res = await handleAdminRoute(
+      new Request("http://127.0.0.1:8080/console/action/mail-east/shared-action", {
+        method: "POST",
+        headers: {
+          authorization: basicHeader("test-bearer"),
+          accept: "application/json",
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ _csrf: westCsrf }),
+      }),
+      await makeCtx({ augments }),
+    );
+    expect(res.status).toBe(403);
+    expect(dispatched).toEqual([]);
+  });
+
+  it("rejects ambiguous legacy action-only dispatch deterministically", async () => {
+    const dispatched: string[] = [];
+    const makeAugment = (name: string): Augment => ({
+      name,
+      adminInfo: async () => ({
+        augmentName: name,
+        title: name,
+        sections: [],
+        actions: [{ id: "shared-action", label: "Run", confirmRequired: false }],
+      }),
+      adminActions: {
+        "shared-action": async () => {
+          dispatched.push(name);
+          return { ok: true, message: name };
+        },
+      },
+    });
+    const res = await handleAdminRoute(
+      new Request("http://127.0.0.1:8080/console/action/shared-action", {
+        method: "POST",
+        headers: {
+          authorization: basicHeader("test-bearer"),
+          accept: "application/json",
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: "",
+      }),
+      await makeCtx({ augments: [makeAugment("first"), makeAugment("second")] }),
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      ok: false,
+      message: "Action target is ambiguous; refresh and retry the targeted action.",
+      csrfExpired: false,
+    });
+    expect(dispatched).toEqual([]);
+  });
+
+  it("rejects malformed and unsafe targeted path segments", async () => {
+    const ctx = await makeCtx();
+    for (const path of [
+      "/console/action/%ZZ/action",
+      "/console/action/%2Fescaped/action",
+      "/console/action/target/%5Caction",
+    ]) {
+      const res = await handleAdminRoute(
+        new Request(`http://127.0.0.1:8080${path}`, {
+          method: "POST",
+          headers: {
+            authorization: basicHeader("test-bearer"),
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          body: "",
+        }),
+        ctx,
+      );
+      expect(res.status).toBe(400);
+    }
   });
 
   it("releases a scheduler lane only after a successful durable recovery action", async () => {
@@ -1669,7 +1930,7 @@ describe("handleAdminRoute — POST action dispatch", () => {
     expect(res.status).toBe(404);
   });
 
-  it("POST /console/action/<id>/row/<rowKey> dispatches with rowKey", async () => {
+  it("POST targeted /console/action/<augment>/<id>/row/<rowKey> dispatches with rowKey", async () => {
     let receivedParams: Record<string, string> = {};
     const aug: Augment = {
       name: "memory",
@@ -1682,7 +1943,20 @@ describe("handleAdminRoute — POST action dispatch", () => {
             columns: ["peer"],
             rows: [["vis_abc"]],
             rowActions: [
-              { id: "memory-erase", label: "Erase", confirmRequired: true, rowKeyColumn: 0 },
+              {
+                id: "memory-erase",
+                label: "Erase",
+                confirmRequired: true,
+                rowKeyColumn: 0,
+                inputs: [
+                  {
+                    name: "expectedVersion",
+                    label: "Expected version",
+                    type: "number",
+                    required: true,
+                  },
+                ],
+              },
             ],
           },
         ],
@@ -1697,20 +1971,249 @@ describe("handleAdminRoute — POST action dispatch", () => {
     const csrf = await generateCsrfToken({
       bearer: "test-bearer",
       agentName: "zip",
+      augmentName: "memory",
       actionId: "memory-erase",
       rowKey: "vis_abc",
     });
-    const req = new Request("http://127.0.0.1:8080/console/action/memory-erase/row/vis_abc", {
-      method: "POST",
-      headers: {
-        authorization: basicHeader("test-bearer"),
-        "content-type": "application/x-www-form-urlencoded",
+    const req = new Request(
+      "http://127.0.0.1:8080/console/action/memory/memory-erase/row/vis_abc",
+      {
+        method: "POST",
+        headers: {
+          authorization: basicHeader("test-bearer"),
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({ _csrf: csrf, expectedVersion: "7" }).toString(),
       },
-      body: new URLSearchParams({ _csrf: csrf }).toString(),
-    });
+    );
     const res = await handleAdminRoute(req, await makeCtx({ augments: [aug] }));
     expect(res.status).toBe(303);
-    expect(receivedParams.rowKey).toBe("vis_abc");
+    expect(receivedParams).toEqual({ expectedVersion: "7", rowKey: "vis_abc" });
+  });
+
+  it("admits bounded large AgentMail revisions without widening other action bodies", async () => {
+    let receivedLength = 0;
+    const aug: Augment = {
+      name: "mail",
+      adminInfo: async () => ({
+        augmentName: "mail",
+        title: "Mail",
+        sections: [
+          {
+            kind: "table",
+            columns: ["review"],
+            rows: [["review_1"]],
+            rowActions: [
+              {
+                id: "agentmail-review-revise",
+                label: "Revise",
+                confirmRequired: true,
+                rowKeyColumn: 0,
+                inputs: [
+                  { name: "fingerprint", label: "Fingerprint", type: "text", required: true },
+                  { name: "text", label: "Text", type: "text", required: true },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+      adminActions: {
+        "agentmail-review-revise": async (params) => {
+          receivedLength = params.text?.length ?? 0;
+          return { ok: true, message: "revised" };
+        },
+      },
+    };
+    const csrf = await generateCsrfToken({
+      bearer: "test-bearer",
+      agentName: "zip",
+      augmentName: "mail",
+      actionId: "agentmail-review-revise",
+      rowKey: "review_1",
+    });
+    const text = ` ${"x".repeat(70 * 1024)} `;
+    const res = await handleAdminRoute(
+      new Request(
+        "http://127.0.0.1:8080/console/action/mail/agentmail-review-revise/row/review_1",
+        {
+          method: "POST",
+          headers: {
+            authorization: basicHeader("test-bearer"),
+            accept: "application/json",
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          body: new URLSearchParams({ _csrf: csrf, fingerprint: "sha256:test", text }),
+        },
+      ),
+      await makeCtx({ augments: [aug] }),
+    );
+    expect(res.status).toBe(200);
+    expect(receivedLength).toBe(text.length);
+  });
+
+  it("rejects undeclared fields on targeted row actions without dispatch", async () => {
+    let dispatched = false;
+    const aug: Augment = {
+      name: "memory",
+      adminInfo: async () => ({
+        augmentName: "memory",
+        title: "Memory",
+        sections: [
+          {
+            kind: "table",
+            columns: ["peer"],
+            rows: [["vis_abc"]],
+            rowActions: [
+              {
+                id: "memory-erase",
+                label: "Erase",
+                confirmRequired: true,
+                rowKeyColumn: 0,
+                inputs: [
+                  {
+                    name: "expectedVersion",
+                    label: "Expected version",
+                    type: "number",
+                    required: true,
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      }),
+      adminActions: {
+        "memory-erase": async () => {
+          dispatched = true;
+          return { ok: true, message: "erased" };
+        },
+      },
+    };
+    const csrf = await generateCsrfToken({
+      bearer: "test-bearer",
+      agentName: "zip",
+      augmentName: "memory",
+      actionId: "memory-erase",
+      rowKey: "vis_abc",
+    });
+    const res = await handleAdminRoute(
+      new Request("http://127.0.0.1:8080/console/action/memory/memory-erase/row/vis_abc", {
+        method: "POST",
+        headers: {
+          authorization: basicHeader("test-bearer"),
+          accept: "application/json",
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: new URLSearchParams({
+          _csrf: csrf,
+          expectedVersion: "7",
+          reviewId: "injected-target",
+        }),
+      }),
+      await makeCtx({ augments: [aug] }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      ok: false,
+      message: "invalid reviewId: unexpected input",
+    });
+    expect(dispatched).toBe(false);
+  });
+
+  it("rejects duplicate action fields before CSRF validation or dispatch", async () => {
+    let dispatched = false;
+    const aug: Augment = {
+      name: "mail",
+      adminInfo: async () => ({
+        augmentName: "mail",
+        title: "Mail",
+        sections: [],
+        actions: [
+          {
+            id: "set-value",
+            label: "Set value",
+            confirmRequired: false,
+            inputs: [{ name: "value", label: "Value", type: "text", required: true }],
+          },
+        ],
+      }),
+      adminActions: {
+        "set-value": async () => {
+          dispatched = true;
+          return { ok: true, message: "set" };
+        },
+      },
+    };
+    const csrf = await generateCsrfToken({
+      bearer: "test-bearer",
+      agentName: "zip",
+      augmentName: "mail",
+      actionId: "set-value",
+    });
+    const body = new URLSearchParams({ _csrf: csrf, value: "first" });
+    body.append("value", "second");
+    const res = await handleAdminRoute(
+      new Request("http://127.0.0.1:8080/console/action/mail/set-value", {
+        method: "POST",
+        headers: {
+          authorization: basicHeader("test-bearer"),
+          accept: "application/json",
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body,
+      }),
+      await makeCtx({ augments: [aug] }),
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toMatchObject({ ok: false, message: "duplicate form field" });
+    expect(dispatched).toBe(false);
+  });
+
+  it("enforces row-action route shape and bounded row keys", async () => {
+    const aug: Augment = {
+      name: "target",
+      adminInfo: async () => ({
+        augmentName: "target",
+        title: "Target",
+        sections: [
+          {
+            kind: "table",
+            columns: ["id"],
+            rows: [["row-1"]],
+            rowActions: [
+              { id: "row-action", label: "Row", confirmRequired: true, rowKeyColumn: 0 },
+            ],
+          },
+        ],
+        actions: [{ id: "top-action", label: "Top", confirmRequired: false }],
+      }),
+      adminActions: {
+        "row-action": async () => ({ ok: true, message: "row" }),
+        "top-action": async () => ({ ok: true, message: "top" }),
+      },
+    };
+    const ctx = await makeCtx({ augments: [aug] });
+    const paths = [
+      "/console/action/target/row-action",
+      "/console/action/target/top-action/row/row-1",
+      "/console/action/target/row-action/row/%00",
+      `/console/action/target/row-action/row/${"x".repeat(1025)}`,
+    ];
+    for (const path of paths) {
+      const res = await handleAdminRoute(
+        new Request(`http://127.0.0.1:8080${path}`, {
+          method: "POST",
+          headers: {
+            authorization: basicHeader("test-bearer"),
+            "content-type": "application/x-www-form-urlencoded",
+          },
+          body: "",
+        }),
+        ctx,
+      );
+      expect(res.status).toBe(400);
+    }
   });
 
   it("action handler throws → caught, returns ok=false flash", async () => {

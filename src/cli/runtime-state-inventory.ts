@@ -285,6 +285,9 @@ export function buildRuntimeStateInventory(
   const stores: RuntimeStateStoreInventoryEntry[] = [];
   const externalPrerequisites: RuntimeStateExternalPrerequisite[] = [];
   const namespace = config.id;
+  const agentMailInstanceCount = config.augments.filter(
+    (augment) => augment.type === "agentMail",
+  ).length;
 
   addStore(stores, {
     id: "runtime-identity",
@@ -321,7 +324,7 @@ export function buildRuntimeStateInventory(
     kind: "json",
     backupPlane: runtimeDataRoot ? "runtime-volume" : "project-source",
     ...(runtimeDataRoot ? { relativePath: "admin-overrides.json" } : {}),
-    schema: "admin-overrides/v1",
+    schema: "admin-overrides/v2",
     retention: "until replaced by an authenticated operator action",
     restoreOrder: 10,
     replayCritical: true,
@@ -660,7 +663,9 @@ export function buildRuntimeStateInventory(
         }
         const stateDir = runtimeDataRoot
           ? join(runtimeDataRoot, "agent-mail", augment.name)
-          : agentDir;
+          : agentMailInstanceCount > 1
+            ? join(agentDir, "data", "agent-mail", augment.name)
+            : agentDir;
         const path = runtimeDataRoot
           ? resolveRuntimeStatePath(
               String(opts.dbPath ?? "./agent-mail.db"),
@@ -668,12 +673,19 @@ export function buildRuntimeStateInventory(
               stateDir,
               `agentMail ${augment.name} dbPath`,
             )
-          : resolveRuntimeStatePath(
-              String(opts.dbPath ?? "./agent-mail.db"),
-              agentDir,
-              ownedStateRoot,
-              `agentMail ${augment.name} dbPath`,
-            );
+          : agentMailInstanceCount > 1 && opts.dbPath === undefined
+            ? resolveRuntimeStatePath(
+                "./agent-mail.db",
+                stateDir,
+                ownedStateRoot,
+                `agentMail ${augment.name} dbPath`,
+              )
+            : resolveRuntimeStatePath(
+                String(opts.dbPath ?? "./agent-mail.db"),
+                agentDir,
+                ownedStateRoot,
+                `agentMail ${augment.name} dbPath`,
+              );
         addStore(
           stores,
           sqliteEntry({

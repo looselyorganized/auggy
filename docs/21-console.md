@@ -5,8 +5,10 @@ The per-agent browser surface served at `GET /console` by agents that mount
 
 ## V1 Contract
 
-`/console` is the fastest path to talking with one running agent. It is not a
-dashboard, config editor, augment workbench, process manager, or fleet view.
+`/console` is the fastest path to talking with one running agent. It also
+provides a focused Mail action center when one or more `agentMail` instances
+are mounted. It is not a general config editor, augment workbench, process
+manager, or fleet view.
 
 The default route redirects to `/console/chat`.
 
@@ -18,6 +20,17 @@ Primary surfaces:
     emphasis
   - Copyable Markdown transcript for debugging the visible conversation,
     including rendered messages, visible tool calls, and assistant errors
+- Mail action center, present only when AgentMail reports a supported
+  metadata projection
+  - One explicit mailbox selector when multiple instances are mounted
+  - Inbox address, inbound/runtime posture, pending review, and
+    creator-attention queues
+  - Creator-authenticated, on-demand detail drawers for message and draft
+    content; bodies and approval fingerprints are not embedded in the
+    dashboard snapshot
+  - Row-bound approve/send, revise/send, reject, and dismiss decisions, plus
+    explicit sent/not-sent and handled/no-effect reconciliation for ambiguous
+    outcomes, with stale-state handling
 - Integrations view organized by caller
   - **Browser application** first, with posture-aware authentication guidance,
     a browser-safe AG-UI example, CORS state, and browser-callable app routes
@@ -111,9 +124,12 @@ origin automatically. Forwarding headers are accepted only from an immediate
 peer in `trustedProxies`; deployment-platform environment variables never grant
 proxy trust.
 
-State-mutating endpoints additionally require a CSRF token bound to the
-specific action. Chat uses a dedicated `console-chat` CSRF token because the
-server attaches the bearer when proxying to `/agent/run`.
+State-mutating endpoints additionally require a CSRF token bound to the exact
+augment instance, action, and row identity. The legacy action-only endpoint
+remains usable only when an action ID has one mounted owner; collisions fail
+with a conflict instead of dispatching by registration order. Chat uses a
+dedicated `console-chat` CSRF token because the server attaches the bearer when
+proxying to `/agent/run`.
 
 All console responses deny framing with CSP `frame-ancestors 'none'` and
 `X-Frame-Options: DENY`. Logout is POST-only and requires authentication,
@@ -206,12 +222,18 @@ Radix primitives. Source: `admin/`. Build output: `admin/dist/`.
 
 The runtime serves static assets from `admin/dist/` via
 `src/transports/admin/admin-static.ts`. The current SPA exposes Chat,
-Integrations, and Capabilities as top-level sections.
+Integrations, and Capabilities as top-level sections, plus Mail when the
+dashboard contains at least one supported AgentMail projection.
 
 `/console/api/dashboard` returns the agent card, agent metadata, augment
 summaries, tool inventory, web posture state, the live route manifest
-summary/entries, CSRF tokens, skill snapshots, and raw admin blocks used by
-current or future developer tools.
+summary/entries, target-aware CSRF tokens, skill snapshots, and admin blocks.
+AgentMail blocks may add a versioned `projection.kind: "mail"` list view.
+That projection is intentionally content-minimized: it can contain bounded
+sender/correspondent, subject, timestamps, status, and same-origin detail
+paths, but not a message body, draft body, HTML, or approval fingerprint.
+Detail endpoints require creator authentication and return `Cache-Control:
+no-store`.
 
 Skill snapshots report content provenance separately from installation state
 and owning augment:

@@ -109,6 +109,7 @@ describe("runtime state inventory", () => {
       replayCritical: false,
       required: false,
     });
+    expect(byId.get("admin-overrides")?.schema).toBe("admin-overrides/v2");
     expect(byId.get("file-memory:learned")?.relativePath).toBe("file-memory/learned.md");
     expect(byId.get("filesystem:workspace:workspace")?.relativePath).toBe("workspace");
     expect(byId.get("layered-memory:memory")?.schema).toBe("LMEM/v1");

@@ -1226,7 +1226,9 @@ describe("resolveAugments — budgets", () => {
       }
       expect(parsed.overrides.budgets?.dailyBudgetUsd).toBe(9);
       expect(parsed.overrides.notify?.globalMaxPerHour).toBe(11);
-      expect(parsed.overrides.agentMail?.globalMaxPerHour).toBe(13);
+      expect(parsed.version).toBe(2);
+      if (parsed.version !== 2) throw new Error("expected v2 instance-scoped overrides");
+      expect(parsed.overrides.agentMail?.instances?.mail?.globalMaxPerHour).toBe(13);
       expect(parsed.overrides.webTransport?.allowAnonymous).toBe(true);
     } finally {
       for (const augment of augments) await augment.onShutdown?.();
@@ -1548,9 +1550,88 @@ describe("resolveAugments — agentMail runtime state paths", () => {
       expect(existsSync(join(runtimeDataRoot, "agent-mail", "billing", "agent-mail.db"))).toBe(
         true,
       );
+      expect(augments.map((augment) => augment.name)).toEqual(["support", "billing"]);
+      expect(augments.flatMap((augment) => augment.tools?.map((tool) => tool.name) ?? [])).toEqual([
+        "send_message__support",
+        "reply_to_message__support",
+        "forward_message__support",
+        "send_message__billing",
+        "reply_to_message__billing",
+        "forward_message__billing",
+      ]);
+      expect(
+        augments.flatMap((augment) => augment.httpRoutes?.map((route) => route.path) ?? []),
+      ).toEqual([
+        "/agentmail/support/reviews/:reviewId",
+        "/agentmail/support/messages/:messageId",
+        "/agentmail/billing/reviews/:reviewId",
+        "/agentmail/billing/messages/:messageId",
+      ]);
+      expect(
+        await Promise.all(
+          augments.map(async (augment) => (await augment.adminInfo?.())?.augmentName),
+        ),
+      ).toEqual(["support", "billing"]);
     } finally {
       for (const augment of augments) await augment.onShutdown?.();
     }
+  });
+
+  test("isolates local sidecars and default ledgers when two AgentMail instances are mounted", async () => {
+    const augments = await resolveAugments(
+      [agentMailConfig("support"), agentMailConfig("billing")],
+      TMP,
+    );
+
+    try {
+      await bootAgentMailAugments(augments);
+      for (const name of ["support", "billing"]) {
+        expect(existsSync(join(TMP, "data", "agent-mail", name, "agent-mail.db"))).toBe(true);
+      }
+      expect(existsSync(join(TMP, "agent-mail.db"))).toBe(false);
+    } finally {
+      for (const augment of augments) await augment.onShutdown?.();
+    }
+  });
+
+  test("fails closed instead of assigning legacy singleton state to a new local mailbox", async () => {
+    writeFileSync(join(TMP, "agent-mail-state.json"), "{}");
+    writeFileSync(join(TMP, "agent-mail-reviews.json"), "{}");
+    writeFileSync(join(TMP, "agent-mail.db-wal"), "legacy");
+    writeFileSync(join(TMP, "agent-mail.db-journal"), "legacy rollback journal");
+
+    await expect(
+      resolveAugments([agentMailConfig("support"), agentMailConfig("billing")], TMP),
+    ).rejects.toThrow(
+      /multiple local AgentMail instances.*agent-mail-state\.json.*agent-mail-reviews\.json.*agent-mail\.db-wal.*agent-mail\.db-journal.*explicitly migrate\/archive/s,
+    );
+  });
+
+  test("allows an operator to retain a legacy inbox-scoped ledger through explicit dbPath ownership", async () => {
+    writeFileSync(join(TMP, "agent-mail.db"), "opened only after onBoot");
+    writeFileSync(join(TMP, "agent-mail.db-wal"), "paired SQLite artifact");
+    const support = agentMailConfig("support", "./agent-mail.db");
+    const augments = await resolveAugments([support, agentMailConfig("billing")], TMP);
+
+    try {
+      expect(augments.map((augment) => augment.name)).toEqual(["support", "billing"]);
+    } finally {
+      for (const augment of augments) await augment.onShutdown?.();
+    }
+  });
+
+  test("rejects two AgentMail instances that resolve to the same SQLite database", async () => {
+    await expect(
+      resolveAugments(
+        [
+          agentMailConfig("support", "./shared-agent-mail.db"),
+          agentMailConfig("billing", "./shared-agent-mail.db"),
+        ],
+        TMP,
+      ),
+    ).rejects.toThrow(
+      /AgentMail dbPath .* configured by both "support" and "billing".*isolated database/i,
+    );
   });
 
   test("rejects two inbound AgentMail instances consuming the same inbox", async () => {
@@ -1628,6 +1709,11 @@ describe("resolveAugments — agentMail runtime state paths", () => {
     try {
       await bootAgentMailAugments(augments);
       expect(existsSync(join(TMP, "agent-mail.db"))).toBe(true);
+      expect(augments[0]?.tools?.map((tool) => tool.name)).toEqual([
+        "send_message",
+        "reply_to_message",
+        "forward_message",
+      ]);
     } finally {
       await augments[0]?.onShutdown?.();
     }

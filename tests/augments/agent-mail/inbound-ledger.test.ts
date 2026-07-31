@@ -951,6 +951,78 @@ describe("AgentMail inbound ledger", () => {
     secondLedger.close();
   });
 
+  test("scopes claims, recovery, incidents, threads, and counts to one inbox", () => {
+    const clock = { now: 60_000 };
+    const ledger = ledgerAt(tempDb(), clock);
+    ledger.enqueue(restEnvelope("support_message"));
+    ledger.enqueue(
+      restEnvelope("billing_message", {
+        inbox_id: "billing@agentmail.to",
+        to: ["billing@agentmail.to"],
+        thread_id: "billing_thread",
+      }),
+    );
+
+    const supportClaim = ledger.claimNext({
+      workerId: "support-worker",
+      leaseMs: 1_000,
+      inboxId: "support@agentmail.to",
+    });
+    expect(supportClaim?.envelope.message.messageId).toBe("support_message");
+    expect(ledger.counts("support@agentmail.to").processing).toBe(1);
+    expect(ledger.counts("billing@agentmail.to")).toMatchObject({
+      pending: 1,
+      processing: 0,
+      outcomeUnknown: 0,
+    });
+
+    const billingClaim = ledger.claimNext({
+      workerId: "billing-worker",
+      leaseMs: 1_000,
+      inboxId: "billing@agentmail.to",
+    });
+    expect(billingClaim?.envelope.message.messageId).toBe("billing_message");
+
+    const supportIncidents = ledger.fenceInterruptedClaims({
+      inboxId: "support@agentmail.to",
+    });
+    expect(supportIncidents).toHaveLength(1);
+    expect(supportIncidents[0]?.inboxId).toBe("support@agentmail.to");
+    expect(ledger.listIncidents(50, "billing@agentmail.to")).toEqual([]);
+    expect(ledger.listIncidentThreads("support@agentmail.to")).toEqual(["thread_1"]);
+    expect(ledger.hasIncidentThread("thread_1", "billing@agentmail.to")).toBe(false);
+    expect(ledger.counts("support@agentmail.to")).toMatchObject({
+      processing: 0,
+      outcomeUnknown: 1,
+    });
+    expect(ledger.counts("billing@agentmail.to")).toMatchObject({
+      processing: 1,
+      outcomeUnknown: 0,
+    });
+
+    const incident = supportIncidents[0]!;
+    expect(
+      ledger.reconcileIncident({
+        incidentId: incident.id,
+        expectedVersion: incident.version,
+        disposition: "confirmed-handled",
+        evidence: "wrong inbox must not resolve",
+        inboxId: "billing@agentmail.to",
+      }).resolved,
+    ).toBe(false);
+    expect(
+      ledger.reconcileIncident({
+        incidentId: incident.id,
+        expectedVersion: incident.version,
+        disposition: "confirmed-handled",
+        evidence: "confirmed in provider logs",
+        inboxId: "support@agentmail.to",
+      }).resolved,
+    ).toBe(true);
+    expect(ledger.complete(billingClaim!)).toBe(true);
+    ledger.close();
+  });
+
   test("atomically records a catch-up page and advances an overlapped checkpoint", () => {
     const clock = { now: Date.parse("2026-07-15T00:00:00.000Z") };
     const ledger = createAgentMailInboundLedger({

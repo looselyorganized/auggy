@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { agentMail } from "../../../src/augments/agentMail";
@@ -157,6 +157,112 @@ describe("agentMail factory", () => {
     expect(names).toEqual(["forward_message", "reply_to_message", "send_message"]);
   });
 
+  test("namespaces tools for multi-instance routing without lossy instance normalization", () => {
+    const support = agentMail({
+      ...baseOpts,
+      instanceId: "support-mail",
+      namespaceTools: true,
+      _client: fakeClient().client,
+    });
+    const billing = agentMail({
+      ...baseOpts,
+      inboxId: "inb_billing",
+      instanceId: "billing_mail",
+      namespaceTools: true,
+      _client: fakeClient().client,
+    });
+    expect(support.tools?.map((candidate) => candidate.name).sort()).toEqual([
+      "forward_message__support-mail",
+      "reply_to_message__support-mail",
+      "send_message__support-mail",
+    ]);
+    expect(billing.tools?.map((candidate) => candidate.name).sort()).toEqual([
+      "forward_message__billing_mail",
+      "reply_to_message__billing_mail",
+      "send_message__billing_mail",
+    ]);
+    expect(
+      new Set(
+        [...(support.tools ?? []), ...(billing.tools ?? [])].map((candidate) => candidate.name),
+      ).size,
+    ).toBe(6);
+  });
+
+  test("keeps every namespaced tool name within the provider's 64-character limit", () => {
+    const longestSafeId = "a".repeat(46);
+    const safe = agentMail({
+      ...baseOpts,
+      instanceId: longestSafeId,
+      namespaceTools: true,
+      _client: fakeClient().client,
+    });
+    expect(safe.tools?.map((candidate) => candidate.name.length).sort((a, b) => a - b)).toEqual([
+      60, 63, 64,
+    ]);
+    expect(() =>
+      agentMail({
+        ...baseOpts,
+        instanceId: "a".repeat(47),
+        namespaceTools: true,
+        _client: fakeClient().client,
+      }),
+    ).toThrow(/at most 46 characters.*tool name.*at most 64/i);
+  });
+
+  test("publishes provider-compatible structural bounds in every tool input schema", () => {
+    const aug = agentMail({ ...baseOpts, _client: fakeClient().client });
+    const send = tool(aug, "send_message").input;
+    const reply = tool(aug, "reply_to_message").input;
+    const forward = tool(aug, "forward_message").input;
+    const recipients = Array.from({ length: 50 }, (_, index) => `user${index}@example.com`);
+    const labels = Array.from({ length: 100 }, (_, index) => `label-${index}`);
+    const maxBody = "x".repeat(1024 * 1024);
+
+    expect(
+      send.safeParse({
+        to: recipients,
+        subject: "s".repeat(1_000),
+        text: maxBody,
+        html: "",
+        labels,
+      }).success,
+    ).toBe(true);
+    expect(
+      send.safeParse({ to: [...recipients, "overflow@example.com"], subject: "s", text: "" })
+        .success,
+    ).toBe(false);
+    expect(
+      send.safeParse({ to: [`${"a".repeat(309)}@example.com`], subject: "s", text: "" }).success,
+    ).toBe(false);
+    expect(
+      send.safeParse({ to: ["a@example.com"], subject: "s".repeat(1_001), text: "" }).success,
+    ).toBe(false);
+    expect(
+      send.safeParse({ to: ["a@example.com"], subject: "s", text: `${maxBody}x` }).success,
+    ).toBe(false);
+    expect(
+      send.safeParse({
+        to: ["a@example.com"],
+        subject: "s",
+        text: "",
+        labels: [...labels, "overflow"],
+      }).success,
+    ).toBe(false);
+    expect(
+      reply.safeParse({
+        messageId: "m".repeat(257),
+        text: "",
+      }).success,
+    ).toBe(false);
+    expect(
+      forward.safeParse({
+        messageId: "m",
+        to: ["a@example.com"],
+        labels: ["l".repeat(201)],
+      }).success,
+    ).toBe(false);
+  });
+
   test("throws on missing apiKey", () => {
     expect(() => agentMail({ apiKey: "", inboxId: "inb" } as never)).toThrow(/apiKey/);
   });
@@ -172,6 +278,16 @@ describe("agentMail factory", () => {
         outbound: { subjectPrefix: "" },
       }),
     ).toThrow(/subjectPrefix/);
+  });
+
+  test("bounds the configured outbound body cap at the direct factory boundary", () => {
+    expect(() =>
+      agentMail({
+        ...baseOpts,
+        _client: fakeClient().client,
+        outbound: { bodyMaxBytes: 1024 * 1024 + 1 },
+      }),
+    ).toThrow(/bodyMaxBytes.*between 1 and 1048576/);
   });
 
   test("rejects malformed canonical inbox identity options", () => {
@@ -1885,13 +2001,13 @@ describe("inbound lifecycle", () => {
     });
 
     try {
-      expect(aug.httpRoutes).toHaveLength(1);
+      expect(aug.httpRoutes).toHaveLength(2);
       const reviewRoute = aug.httpRoutes!.find(
         (route) => route.path === "/agentmail/reviews/:reviewId",
       );
       expect(reviewRoute).toMatchObject({ method: "GET", auth: "creator" });
       await aug.onBoot!();
-      expect(aug.httpRoutes).toHaveLength(2);
+      expect(aug.httpRoutes).toHaveLength(3);
       const webhookRoute = aug.httpRoutes!.find((route) => route.path === "/webhooks/agentmail");
       expect(webhookRoute?.policy).toMatchObject({
         kind: "webhook.signature",
@@ -1978,7 +2094,7 @@ describe("inbound lifecycle", () => {
       });
       const redactedAdmin = JSON.stringify(await aug.adminInfo!());
       expect(redactedAdmin).not.toContain("Thanks");
-      expect(redactedAdmin).not.toContain("customer@example.com");
+      expect(redactedAdmin).toContain("customer@example.com");
       expect(redactedAdmin).toContain(`/agentmail/reviews/${reviewId}`);
       const rejectedFingerprint = await aug.adminActions!["agentmail-review-approve"]!({
         reviewId,
@@ -2021,6 +2137,8 @@ describe("inbound lifecycle", () => {
         { signal: AbortSignal.timeout(1_000), params: { reviewId } },
       );
       expect(terminalInspection.status).toBe(410);
+      expect(terminalInspection.headers.get("cache-control")).toBe("no-store");
+      expect(terminalInspection.headers.get("x-content-type-options")).toBe("nosniff");
 
       const outOfTurn = JSON.parse(
         await asStr(tool(aug, "reply_to_message")).execute(
@@ -2252,7 +2370,7 @@ describe("inbound lifecycle", () => {
           "manager@example.com",
         ],
       });
-      expect((review!.request as { replyAll?: boolean }).replyAll).toBeUndefined();
+      expect((review!.request as { replyAll?: boolean }).replyAll).toBe(true);
 
       const approved = await aug.adminActions!["agentmail-review-approve"]!({
         reviewId: review!.id,
@@ -3968,6 +4086,451 @@ describe("adminInfo", () => {
       const capRow = kv.rows.find((r) => r.label === "Global cap (per hour)");
       expect(capRow!.source).toBe("yaml");
     }
+  });
+
+  test("uses stable instance identity for admin metadata and namespaced routes", async () => {
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:" });
+    const aug = agentMail({
+      ...baseOpts,
+      instanceId: "support-mail",
+      _client: fakeClient().client,
+      _reviewQueue: createAgentMailReviewQueue(),
+      _inboundLedger: ledger,
+      _sdkAdapters: emptySdkAdapters(),
+      inbound: {
+        mode: "webhook",
+        allowedSenders: ["customer@example.com"],
+        webhook: {},
+      },
+    });
+    expect(aug.name).toBe("support-mail");
+    expect(aug.type).toBe("agentMail");
+    expect((await aug.adminInfo!()).augmentName).toBe("support-mail");
+    expect(aug.httpRoutes?.map((route) => route.path)).toEqual([
+      "/agentmail/support-mail/reviews/:reviewId",
+      "/agentmail/support-mail/messages/:messageId",
+    ]);
+    try {
+      await aug.onBoot!();
+      expect(aug.httpRoutes?.map((route) => route.path)).toContain(
+        "/webhooks/agentmail/support-mail",
+      );
+    } finally {
+      await aug.onShutdown!();
+      ledger.close();
+    }
+
+    const compatibleSingle = agentMail({
+      ...baseOpts,
+      instanceId: "configured-support",
+      legacySingletonCompatibility: true,
+      _client: fakeClient().client,
+    });
+    expect(compatibleSingle.httpRoutes?.map((route) => route.path)).toEqual([
+      "/agentmail/reviews/:reviewId",
+      "/agentmail/messages/:messageId",
+    ]);
+  });
+
+  test("projects only mail metadata and serves inbound bodies on demand", async () => {
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:" });
+    ledger.enqueue(receivedEnvelope("message_metadata_projection"));
+    ledger.creatorAttention.reserve({
+      inboxId: baseOpts.inboxId,
+      messageId: "message_metadata_projection",
+      allowReopen: false,
+    });
+    const aug = agentMail({
+      ...baseOpts,
+      instanceId: "support",
+      _client: fakeClient().client,
+      _inboundLedger: ledger,
+    });
+    const info = await aug.adminInfo!();
+    expect(info.projection).toMatchObject({
+      kind: "mail",
+      schemaVersion: 1,
+      augmentName: "support",
+      inboxId: baseOpts.inboxId,
+      attention: [
+        {
+          rowKey: "message_metadata_projection",
+          messageId: "message_metadata_projection",
+          status: "open",
+          version: 1,
+          sender: "customer@example.com",
+          subject: "Need help",
+          detailPath: "/agentmail/support/messages/message_metadata_projection",
+        },
+      ],
+    });
+    expect(JSON.stringify(info.projection)).not.toContain("Can you help?");
+
+    const route = aug.httpRoutes!.find(
+      (candidate) => candidate.path === "/agentmail/support/messages/:messageId",
+    )!;
+    const response = await route.handler(
+      new Request("https://example.test/agentmail/support/messages/message_metadata_projection"),
+      {
+        signal: AbortSignal.timeout(1_000),
+        params: { messageId: "message_metadata_projection" },
+      },
+    );
+    expect(response.status).toBe(200);
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(await response.json()).toMatchObject({
+      instanceId: "support",
+      inboxId: baseOpts.inboxId,
+      messageId: "message_metadata_projection",
+      from: "customer@example.com",
+      subject: "Need help",
+      text: "Can you help?",
+    });
+    expect(
+      await aug.adminActions!["agentmail-attention-dismiss"]!({
+        rowKey: "message_metadata_projection",
+        expectedVersion: "1",
+      }),
+    ).toMatchObject({ ok: true });
+    const staleDetail = await route.handler(
+      new Request("https://example.test/agentmail/support/messages/message_metadata_projection"),
+      {
+        signal: AbortSignal.timeout(1_000),
+        params: { messageId: "message_metadata_projection" },
+      },
+    );
+    expect(staleDetail.status).toBe(410);
+    expect(staleDetail.headers.get("cache-control")).toBe("no-store");
+    expect(staleDetail.headers.get("x-content-type-options")).toBe("nosniff");
+    ledger.close();
+  });
+
+  test("projects creator reconciliation actions with the registered optimistic inputs", async () => {
+    const ledger = createAgentMailInboundLedger({
+      dbPath: ":memory:",
+      now: () => 1_000,
+      incidentId: () => "incident_projection",
+    });
+    ledger.enqueue(receivedEnvelope("message_incident_projection"));
+    expect(
+      ledger.claimNext({
+        workerId: "interrupted-worker",
+        leaseMs: 5_000,
+        inboxId: baseOpts.inboxId,
+      }),
+    ).not.toBeNull();
+    expect(ledger.fenceInterruptedClaims({ inboxId: baseOpts.inboxId })).toHaveLength(1);
+
+    const queue = createAgentMailReviewQueue();
+    const aug = agentMail({
+      ...baseOpts,
+      instanceId: "support",
+      _client: fakeClient({
+        async send() {
+          throw new Error("provider outcome unknown");
+        },
+      }).client,
+      _reviewQueue: queue,
+      _inboundLedger: ledger,
+      outbound: {
+        allowedTrustLevels: ["agent"],
+        rateLimit: { globalMaxPerHour: 100, perRecipientCooldownMs: 0, dedupWindowMs: 0 },
+      },
+    });
+    await executeParsed(
+      tool(aug, "send_message"),
+      { to: ["customer@example.com"], subject: "Ambiguous", text: "Body" },
+      ctx(peer("agent")),
+    );
+    const sending = queue.list().find((review) => review.state === "sending")!;
+    const info = await aug.adminInfo!();
+    expect(info.projection?.reviews).toContainEqual(
+      expect.objectContaining({
+        rowKey: sending.id,
+        reviewId: sending.id,
+        status: "sending",
+        actions: {
+          reconcileSent: { actionId: "agentmail-review-reconcile-sent" },
+          reconcileFailed: { actionId: "agentmail-review-reconcile-failed" },
+        },
+      }),
+    );
+    expect(
+      info.projection?.attention.filter((item) => item.messageId === "message_incident_projection"),
+    ).toEqual([
+      expect.objectContaining({
+        rowKey: "incident_projection",
+        messageId: "message_incident_projection",
+        status: "ambiguous",
+        version: 1,
+        actions: {
+          reconcileProcessed: { actionId: "agentmail-inbound-reconcile-handled" },
+          reconcilePending: { actionId: "agentmail-inbound-reconcile-no-effect" },
+        },
+      }),
+    ]);
+    expect(JSON.stringify(info.projection)).not.toContain(sending.fingerprint);
+    expect(JSON.stringify(info.projection)).not.toContain("Body");
+    const incidentDetailRoute = aug.httpRoutes!.find(
+      (candidate) => candidate.path === "/agentmail/support/messages/:messageId",
+    )!;
+    const incidentDetail = await incidentDetailRoute.handler(
+      new Request("https://example.test/agentmail/support/messages/message_incident_projection"),
+      {
+        signal: AbortSignal.timeout(1_000),
+        params: { messageId: "message_incident_projection" },
+      },
+    );
+    expect(incidentDetail.status).toBe(200);
+
+    const rowActions = info.sections.flatMap((section) =>
+      section.kind === "table" ? (section.rowActions ?? []) : [],
+    );
+    const inputContract = (actionId: string) =>
+      rowActions
+        .find((action) => action.id === actionId)
+        ?.inputs?.map(({ name, type, required }) => ({ name, type, required }));
+    expect(inputContract("agentmail-review-reconcile-sent")).toEqual([
+      { name: "fingerprint", type: "text", required: true },
+      { name: "messageId", type: "text", required: true },
+      { name: "threadId", type: "text", required: false },
+      { name: "evidence", type: "text", required: true },
+    ]);
+    expect(inputContract("agentmail-review-reconcile-failed")).toEqual([
+      { name: "fingerprint", type: "text", required: true },
+      { name: "reason", type: "text", required: true },
+    ]);
+    expect(inputContract("agentmail-inbound-reconcile-handled")).toEqual([
+      { name: "version", type: "number", required: true },
+      { name: "evidence", type: "text", required: true },
+    ]);
+    expect(inputContract("agentmail-inbound-reconcile-no-effect")).toEqual([
+      { name: "version", type: "number", required: true },
+      { name: "evidence", type: "text", required: true },
+    ]);
+
+    expect(
+      await aug.adminActions!["agentmail-review-reconcile-failed"]!({
+        rowKey: sending.id,
+        fingerprint: sending.fingerprint,
+        reason: "provider search found no matching message",
+      }),
+    ).toMatchObject({ ok: true });
+    expect(
+      await aug.adminActions!["agentmail-inbound-reconcile-handled"]!({
+        rowKey: "incident_projection",
+        version: "1",
+        evidence: "verified the interrupted turn completed",
+      }),
+    ).toMatchObject({ ok: true });
+    ledger.close();
+  });
+
+  test("serves a bounded exact review DTO without internal queue bindings", async () => {
+    const queue = createAgentMailReviewQueue();
+    const aug = agentMail({
+      ...baseOpts,
+      instanceId: "support",
+      emailAddress: "agent@example.com",
+      _client: fakeClient().client,
+      _reviewQueue: queue,
+      outbound: {
+        allowedTrustLevels: ["public"],
+        allowedRecipients: ["customer@example.com", "teammate@example.com"],
+        allowHtml: true,
+      },
+    }) as ReturnType<typeof agentMail> & {
+      _markSeenForTest: (id: string, meta: { from: string; replyAllTo?: string[] }) => void;
+    };
+    aug._markSeenForTest("message_exact_review", {
+      from: "customer@example.com",
+      replyAllTo: ["teammate@example.com"],
+    });
+    const proposal = await executeParsed(
+      tool(aug, "reply_to_message"),
+      {
+        messageId: "message_exact_review",
+        text: "Queued reply",
+        html: "<p>Queued reply</p>",
+        replyAll: true,
+        labels: ["customer-support"],
+      },
+      ctx(peer("public")),
+    );
+    expect(proposal.status).toBe("pending_review");
+    expect(typeof proposal.reviewId).toBe("string");
+    const reviewId = String(proposal.reviewId);
+    expect(queue.get(reviewId)?.state).toBe("pending");
+    const route = aug.httpRoutes!.find(
+      (candidate) => candidate.path === "/agentmail/support/reviews/:reviewId",
+    )!;
+    const response = await route.handler(
+      new Request(`https://example.test/agentmail/support/reviews/${reviewId}`),
+      { signal: AbortSignal.timeout(1_000), params: { reviewId } },
+    );
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      kind: "review",
+      reviewId,
+      recipients: ["customer@example.com", "teammate@example.com"],
+      subject: "(reply)",
+      request: {
+        kind: "reply",
+        messageId: "message_exact_review",
+        text: "Queued reply",
+        html: "<p>Queued reply</p>",
+        replyAll: true,
+        labels: ["customer-support"],
+      },
+    });
+    const detail = await route.handler(
+      new Request(`https://example.test/agentmail/support/reviews/${reviewId}`),
+      { signal: AbortSignal.timeout(1_000), params: { reviewId } },
+    );
+    const exact = (await detail.json()) as { request: Record<string, unknown> };
+    expect(exact.request).not.toHaveProperty("to");
+    expect(exact.request).not.toHaveProperty("subject");
+    expect(exact.request).not.toHaveProperty("attentionVersion");
+  });
+
+  test("revises and sends a pending review with row-bound fingerprint CAS", async () => {
+    const { client, log } = fakeClient();
+    const aug = agentMail({
+      ...baseOpts,
+      instanceId: "support",
+      _client: client,
+      outbound: { allowedTrustLevels: ["public"] },
+    });
+    const proposal = await executeParsed(
+      tool(aug, "send_message"),
+      { to: ["customer@example.com"], subject: "Draft", text: "Original body" },
+      ctx(peer("public")),
+    );
+    const reviewId = String(proposal.reviewId);
+    const detailRoute = aug.httpRoutes!.find(
+      (candidate) => candidate.path === "/agentmail/support/reviews/:reviewId",
+    )!;
+    const detail = await detailRoute.handler(
+      new Request(`https://example.test/agentmail/support/reviews/${reviewId}`),
+      { signal: AbortSignal.timeout(1_000), params: { reviewId } },
+    );
+    const inspected = (await detail.json()) as { fingerprint: string };
+
+    expect(
+      await aug.adminActions!["agentmail-review-revise"]!({
+        rowKey: reviewId,
+        reviewId: "different-review",
+        fingerprint: inspected.fingerprint,
+        text: "Revised body",
+      }),
+    ).toMatchObject({ ok: false, message: expect.stringContaining("authorized row") });
+    expect(log.send).toHaveLength(0);
+
+    expect(
+      await aug.adminActions!["agentmail-review-revise"]!({
+        rowKey: reviewId,
+        fingerprint: inspected.fingerprint,
+        text: "Revised body",
+      }),
+    ).toEqual({ ok: true, message: `Review ${reviewId} approved and sent` });
+    expect(log.send).toHaveLength(1);
+    expect(log.send[0]).toMatchObject({
+      inboxId: baseOpts.inboxId,
+      to: ["customer@example.com"],
+      text: "Revised body",
+    });
+    expect(log.send[0]).not.toHaveProperty("html");
+    expect(
+      await aug.adminActions!["agentmail-review-revise"]!({
+        rowKey: reviewId,
+        fingerprint: inspected.fingerprint,
+        text: "Stale replay",
+      }),
+    ).toMatchObject({ ok: false, message: expect.stringContaining("not pending") });
+    expect(log.send).toHaveLength(1);
+  });
+
+  test("isolates named cap overrides and migrates a single legacy override to v2", async () => {
+    const overrideDir = makeTmpDir();
+    const legacy = {
+      version: 1,
+      lastModified: new Date().toISOString(),
+      lastModifiedBy: "creator",
+      overrides: { agentMail: { globalMaxPerHour: 23 } },
+    };
+    writeFileSync(join(overrideDir, "admin-overrides.json"), JSON.stringify(legacy));
+
+    const support = agentMail({
+      ...baseOpts,
+      instanceId: "support",
+      legacySingletonCompatibility: true,
+      overrideDir,
+      _client: fakeClient().client,
+      outbound: { rateLimit: { globalMaxPerHour: 10 } },
+    });
+    const supportInfo = await support.adminInfo!();
+    const supportRows = supportInfo.sections.find((section) => section.kind === "keyValue");
+    expect(
+      supportRows?.kind === "keyValue"
+        ? supportRows.rows.find((row) => row.label === "Global cap (per hour)")?.value
+        : undefined,
+    ).toBe("23");
+    expect(await support.adminActions!["agentmail-cap-adjust"]!({ value: "31" })).toMatchObject({
+      ok: true,
+    });
+    const migrated = JSON.parse(readFileSync(join(overrideDir, "admin-overrides.json"), "utf8"));
+    expect(migrated).toMatchObject({
+      version: 2,
+      overrides: { agentMail: { instances: { support: { globalMaxPerHour: 31 } } } },
+    });
+    expect(migrated.overrides.agentMail).not.toHaveProperty("globalMaxPerHour");
+
+    const billing = agentMail({
+      ...baseOpts,
+      inboxId: "inb_billing",
+      instanceId: "billing",
+      legacySingletonCompatibility: false,
+      overrideDir,
+      _client: fakeClient().client,
+      outbound: { rateLimit: { globalMaxPerHour: 7 } },
+    });
+    let billingInfo = await billing.adminInfo!();
+    let billingRows = billingInfo.sections.find((section) => section.kind === "keyValue");
+    expect(
+      billingRows?.kind === "keyValue"
+        ? billingRows.rows.find((row) => row.label === "Global cap (per hour)")?.value
+        : undefined,
+    ).toBe("7");
+    await billing.adminActions!["agentmail-cap-adjust"]!({ value: "11" });
+    const restartedSupport = agentMail({
+      ...baseOpts,
+      instanceId: "support",
+      legacySingletonCompatibility: false,
+      overrideDir,
+      _client: fakeClient().client,
+      outbound: { rateLimit: { globalMaxPerHour: 10 } },
+    });
+    const restartedRows = (await restartedSupport.adminInfo!()).sections.find(
+      (section) => section.kind === "keyValue",
+    );
+    expect(
+      restartedRows?.kind === "keyValue"
+        ? restartedRows.rows.find((row) => row.label === "Global cap (per hour)")?.value
+        : undefined,
+    ).toBe("31");
+    billingInfo = await billing.adminInfo!();
+    billingRows = billingInfo.sections.find((section) => section.kind === "keyValue");
+    expect(
+      billingRows?.kind === "keyValue"
+        ? billingRows.rows.find((row) => row.label === "Global cap (per hour)")?.value
+        : undefined,
+    ).toBe("11");
+    await Promise.all([
+      support.onShutdown!(),
+      billing.onShutdown!(),
+      restartedSupport.onShutdown!(),
+    ]);
   });
 });
 

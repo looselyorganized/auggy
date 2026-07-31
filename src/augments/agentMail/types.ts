@@ -13,6 +13,24 @@ import type { AgentMailReviewQueue } from "./review-queue";
  * Internal test seams. Production callers do not pass these.
  */
 export interface AgentMailAugmentInternalOptions extends AgentMailAugmentOptions {
+  /**
+   * Stable mounted augment identity supplied by the resolver. Defaults to the
+   * legacy single-instance name `agent-mail` for direct callers.
+   */
+  instanceId?: string;
+  /**
+   * Resolver-owned migration signal. True only when exactly one AgentMail
+   * instance is mounted, allowing that named instance to inherit legacy
+   * singleton policy before its next v2 write.
+   */
+  legacySingletonCompatibility?: boolean;
+  /**
+   * Resolver-owned signal to prevent cross-instance tool-name collisions.
+   * Namespaced instances are limited to 46 characters because
+   * `reply_to_message__${instanceId}` must remain within the provider's
+   * 64-character tool-name limit.
+   */
+  namespaceTools?: boolean;
   /** Deployment-owned directory for durable AgentMail state. Defaults to agentDir locally. */
   stateDir?: string;
   /** Canonical shared directory for admin-overrides.json. Defaults to agentDir locally. */

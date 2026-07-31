@@ -193,50 +193,128 @@ function readWebDashboardState(blocks: AdminInfoBlock[]) {
 }
 
 /**
- * Build a map of CSRF tokens, one per (actionId, rowKey?) tuple present
+ * Build CSRF tokens, one per (augmentName, actionId, rowKey?) tuple present
  * in the collected admin blocks. The SPA reads `/console/api/dashboard`
  * to fetch blocks + tokens together; each form posts with the token
- * matching its (id, rowKey) pair. Page-shared tokens fail validation
- * because the dispatcher binds the check to the POSTed actionId.
+ * matching its target tuple. Page-shared tokens fail validation because the
+ * dispatcher binds the check to the POSTed augment, action, and row.
  */
+interface TargetedAdminCsrfToken {
+  augmentName: string;
+  actionId: string;
+  rowKey?: string;
+  token: string;
+}
+
 async function buildCsrfTokenMap(
   blocks: AdminInfoBlock[],
   bearer: string,
   agentName: string,
-): Promise<Map<string, string>> {
-  const tokens = new Map<string, string>();
-  const mintIfMissing = async (actionId: string, rowKey?: string): Promise<void> => {
-    const key = csrfMapKey(actionId, rowKey);
+): Promise<TargetedAdminCsrfToken[]> {
+  const tokens = new Map<string, TargetedAdminCsrfToken>();
+  const mintIfMissing = async (
+    augmentName: string,
+    actionId: string,
+    rowKey?: string,
+  ): Promise<void> => {
+    const key = adminActionTargetKey(augmentName, actionId, rowKey);
     if (tokens.has(key)) return;
-    tokens.set(key, await generateCsrfToken({ bearer, agentName, actionId, rowKey }));
+    tokens.set(key, {
+      augmentName,
+      actionId,
+      rowKey,
+      token: await generateCsrfToken({ bearer, agentName, augmentName, actionId, rowKey }),
+    });
   };
 
   for (const block of blocks) {
     for (const action of block.actions ?? []) {
-      await mintIfMissing(action.id);
+      await mintIfMissing(block.augmentName, action.id);
     }
     for (const section of block.sections) {
       if (section.kind === "keyValue") {
         for (const row of section.rows) {
-          if (row.resetAction) await mintIfMissing(row.resetAction.id);
+          if (row.resetAction) {
+            await mintIfMissing(block.augmentName, row.resetAction.id);
+          }
         }
       }
       if (section.kind === "table" && section.rowActions) {
         for (const rowAction of section.rowActions) {
           for (const row of section.rows) {
             const rowKey = row[rowAction.rowKeyColumn];
-            if (rowKey) await mintIfMissing(rowAction.id, rowKey);
+            if (rowKey) {
+              await mintIfMissing(block.augmentName, rowAction.id, rowKey);
+            }
           }
         }
       }
     }
   }
 
-  return tokens;
+  return Array.from(tokens.values());
 }
 
-function csrfMapKey(actionId: string, rowKey?: string): string {
-  return `${actionId}\x00${rowKey ?? ""}`;
+async function buildLegacyActionCsrfTokens(
+  targetedTokens: TargetedAdminCsrfToken[],
+  actionRegistry: AdminActionRegistry,
+  bearer: string,
+  agentName: string,
+): Promise<Array<{ actionId: string; rowKey?: string; token: string }>> {
+  const tokens = new Map<string, { actionId: string; rowKey?: string; token: string }>();
+  for (const targeted of targetedTokens) {
+    if (adminActionOwners(actionRegistry, targeted.actionId).length !== 1) continue;
+    const key = JSON.stringify([targeted.actionId, targeted.rowKey ?? null]);
+    if (tokens.has(key)) continue;
+    tokens.set(key, {
+      actionId: targeted.actionId,
+      rowKey: targeted.rowKey,
+      token: await generateCsrfToken({
+        bearer,
+        agentName,
+        actionId: targeted.actionId,
+        rowKey: targeted.rowKey,
+      }),
+    });
+  }
+  return Array.from(tokens.values());
+}
+
+function adminActionTargetKey(augmentName: string, actionId: string, rowKey?: string): string {
+  return JSON.stringify([augmentName, actionId, rowKey ?? null]);
+}
+
+function exposeAdminActionTargets(blocks: AdminInfoBlock[]): AdminInfoBlock[] {
+  return blocks.map((block) => ({
+    ...block,
+    actions: block.actions?.map((action) => ({
+      ...action,
+      augmentName: block.augmentName,
+    })),
+    sections: block.sections.map((section) => {
+      if (section.kind === "keyValue") {
+        return {
+          ...section,
+          rows: section.rows.map((row) => ({
+            ...row,
+            resetAction: row.resetAction
+              ? { ...row.resetAction, augmentName: block.augmentName }
+              : undefined,
+          })),
+        };
+      }
+      if (section.kind === "table") {
+        return {
+          ...section,
+          rowActions: section.rowActions?.map((action) => ({
+            ...action,
+            augmentName: block.augmentName,
+          })),
+        };
+      }
+      return section;
+    }),
+  }));
 }
 
 /**
@@ -248,6 +326,7 @@ function csrfMapKey(actionId: string, rowKey?: string): string {
  */
 export interface AdminActionRegistryEntry {
   augmentName: string;
+  actionId: string;
   handler: AdminActionHandler;
   inputs: AdminActionInput[];
   /** True for row-scoped actions (table rowActions). Affects URL parsing. */
@@ -255,6 +334,11 @@ export interface AdminActionRegistryEntry {
 }
 
 export type AdminActionRegistry = ReadonlyMap<string, AdminActionRegistryEntry>;
+
+/** Collision-free key for a target-aware action-registry entry. */
+export function adminActionRegistryKey(augmentName: string, actionId: string): string {
+  return JSON.stringify([augmentName, actionId]);
+}
 
 export interface AdminRouteContext {
   kernel: TransportKernel;
@@ -301,7 +385,8 @@ export interface AdminRouteContext {
   } | null>;
 }
 
-const ACTION_ROUTE_RE = /^\/console\/action\/([^/]+)(?:\/row\/([^/]+))?$/;
+const TARGETED_ACTION_ROUTE_RE = /^\/console\/action\/([^/]+)\/([^/]+)(?:\/row\/([^/]+))?$/;
+const LEGACY_ACTION_ROUTE_RE = /^\/console\/action\/([^/]+)(?:\/row\/([^/]+))?$/;
 
 /**
  * Skills CSRF actions — mint a token per (action, folder) pair so the SPA's
@@ -433,20 +518,31 @@ async function dispatchAdminRoute(req: Request, ctx: AdminRouteContext): Promise
     req = bounded;
   }
 
-  // POST /console/action/<id>[/row/<rowKey>] — dispatch action handlers
-  const actionMatch = url.pathname.match(ACTION_ROUTE_RE);
-  if (req.method === "POST" && actionMatch) {
-    // Decode rowKey — the SPA URL-encodes it so values like email addresses
-    // (`foo@example.com` → `foo%40example.com`) round-trip.
-    let rowKey: string | undefined;
-    if (actionMatch[2]) {
-      try {
-        rowKey = decodeURIComponent(actionMatch[2]);
-      } catch {
-        return new Response(null, { status: 400 });
-      }
+  // Target-aware augment action endpoint. Both target segments are decoded
+  // exactly once and validated before registry lookup; encoded slashes and
+  // traversal-like names are never accepted as target aliases.
+  const targetedActionMatch = url.pathname.match(TARGETED_ACTION_ROUTE_RE);
+  if (req.method === "POST" && targetedActionMatch) {
+    const augmentName = decodeAdminActionTargetSegment(targetedActionMatch[1]!);
+    const actionId = decodeAdminActionTargetSegment(targetedActionMatch[2]!);
+    if (augmentName === null || actionId === null) {
+      return new Response(null, { status: 400 });
     }
-    return handleActionPost(req, ctx, actionMatch[1]!, rowKey, agentName);
+    const rowKey = decodeAdminActionRowKey(targetedActionMatch[3]);
+    if (rowKey === null) return new Response(null, { status: 400 });
+    return handleActionPost(req, ctx, actionId, rowKey, agentName, augmentName);
+  }
+
+  // Compatibility endpoint. It dispatches only when the action id has one
+  // registry owner; duplicate ids get a deterministic 409 rather than an
+  // order-dependent first match.
+  const legacyActionMatch = url.pathname.match(LEGACY_ACTION_ROUTE_RE);
+  if (req.method === "POST" && legacyActionMatch) {
+    const actionId = decodeAdminActionTargetSegment(legacyActionMatch[1]!);
+    if (actionId === null) return new Response(null, { status: 400 });
+    const rowKey = decodeAdminActionRowKey(legacyActionMatch[2]);
+    if (rowKey === null) return new Response(null, { status: 400 });
+    return handleActionPost(req, ctx, actionId, rowKey, agentName);
   }
 
   // GET /console/api/dashboard — JSON payload for the SPA
@@ -642,7 +738,16 @@ async function handleLogoutPost(
 
 function adminBodyLimit(pathname: string): number {
   if (pathname === "/console/logout") return 4 * 1024;
-  if (pathname.startsWith("/console/action/")) return 64 * 1024;
+  if (pathname.startsWith("/console/action/")) {
+    const segments = pathname.split("/");
+    // A valid 1 MiB UTF-8 revision may expand to roughly 3 MiB when form
+    // encoded. Keep the larger authenticated bound specific to this action;
+    // every other admin action retains the tighter generic limit.
+    if (segments[3] === "agentmail-review-revise" || segments[4] === "agentmail-review-revise") {
+      return 4 * 1024 * 1024;
+    }
+    return 64 * 1024;
+  }
   if (pathname === "/console/api/chat") return 17 * 1024 * 1024;
   if (pathname.startsWith("/console/api/credentials/")) return 1100 * 1024;
   if (pathname === "/console/api/identity" || pathname.startsWith("/console/api/skills/")) {
@@ -893,13 +998,22 @@ function fallbackLoginDocument(variant: ConsoleLoginVariant): string {
 
 async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): Promise<Response> {
   const blocks = await collectAdminInfoBlocks(ctx.kernel);
-  const tokenMap = await buildCsrfTokenMap(blocks, ctx.bearer, agentName);
-  // Serialize the token map as a flat array so the SPA can index it without
-  // reproducing the `\x00`-delimited key encoding.
-  const csrfTokens = Array.from(tokenMap.entries()).map(([key, token]) => {
-    const [actionId, rowKey] = key.split("\x00");
-    return { actionId, rowKey: rowKey || undefined, token };
-  });
+  const targetedCsrfTokens = await buildCsrfTokenMap(blocks, ctx.bearer, agentName);
+  // Keep legacy tokens first so a cached pre-targeting SPA that keys only by
+  // actionId continues to work for uniquely owned actions. Ambiguous action
+  // ids intentionally receive no action-only token.
+  const csrfTokens: Array<
+    TargetedAdminCsrfToken | { actionId: string; rowKey?: string; token: string }
+  > = [
+    ...(await buildLegacyActionCsrfTokens(
+      targetedCsrfTokens,
+      ctx.actionRegistry,
+      ctx.bearer,
+      agentName,
+    )),
+    ...targetedCsrfTokens,
+  ];
+  const targetedBlocks = exposeAdminActionTargets(blocks);
   const augments = collectAugmentSummaries(ctx.kernel);
   const tools = collectToolSummaries(ctx.kernel);
   const agentMeta = readAgentMeta(ctx.agentDir);
@@ -997,7 +1111,7 @@ async function handleDashboardJson(ctx: AdminRouteContext, agentName: string): P
       tools,
       routes,
       web,
-      blocks,
+      blocks: targetedBlocks,
       csrfTokens,
       skills,
     }),
@@ -1091,14 +1205,88 @@ function hasUnsafeStaticSegment(segment: string): boolean {
   );
 }
 
+function decodeAdminActionTargetSegment(encoded: string): string | null {
+  try {
+    const decoded = decodeURIComponent(encoded);
+    if (decoded.length === 0 || decoded.length > 256 || hasUnsafeStaticSegment(decoded)) {
+      return null;
+    }
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+function decodeAdminActionRowKey(encoded: string | undefined): string | undefined | null {
+  if (encoded === undefined) return undefined;
+  try {
+    const decoded = decodeURIComponent(encoded);
+    const hasControlCharacter = Array.from(decoded).some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 0x1f || codePoint === 0x7f;
+    });
+    if (decoded.length === 0 || decoded.length > 1024 || hasControlCharacter) return null;
+    return decoded;
+  } catch {
+    return null;
+  }
+}
+
+function adminActionOwners(
+  registry: AdminActionRegistry,
+  actionId: string,
+): AdminActionRegistryEntry[] {
+  return Array.from(registry.values()).filter((entry) => entry.actionId === actionId);
+}
+
 async function handleActionPost(
   req: Request,
   ctx: AdminRouteContext,
   actionId: string,
   rowKey: string | undefined,
   agentName: string,
+  augmentName?: string,
 ): Promise<Response> {
   const wantsJson = req.headers.get("accept")?.includes("application/json") === true;
+  let entry: AdminActionRegistryEntry | undefined;
+  if (augmentName !== undefined) {
+    entry = ctx.actionRegistry.get(adminActionRegistryKey(augmentName, actionId));
+  } else {
+    const owners = adminActionOwners(ctx.actionRegistry, actionId);
+    if (owners.length > 1) {
+      return wantsJson
+        ? actionJson(
+            {
+              ok: false,
+              message: "Action target is ambiguous; refresh and retry the targeted action.",
+              csrfExpired: false,
+            },
+            409,
+          )
+        : new Response(null, { status: 409 });
+    }
+    entry = owners[0];
+  }
+  if (!entry) {
+    return wantsJson
+      ? actionJson({ ok: false, message: "Action not found", csrfExpired: false }, 404)
+      : new Response(null, { status: 404 });
+  }
+  if (entry.isRowAction !== (rowKey !== undefined)) {
+    return wantsJson
+      ? actionJson(
+          {
+            ok: false,
+            message: entry.isRowAction
+              ? "Row-scoped action requires a row target."
+              : "Action does not accept a row target.",
+            csrfExpired: false,
+          },
+          400,
+        )
+      : new Response(null, { status: 400 });
+  }
+
   let form: URLSearchParams;
   try {
     const text = await req.text();
@@ -1106,6 +1294,12 @@ async function handleActionPost(
   } catch {
     return wantsJson
       ? actionJson({ ok: false, message: "invalid form body", csrfExpired: false }, 400)
+      : new Response(null, { status: 400 });
+  }
+  const keys = [...form.keys()];
+  if (new Set(keys).size !== keys.length) {
+    return wantsJson
+      ? actionJson({ ok: false, message: "duplicate form field", csrfExpired: false }, 400)
       : new Response(null, { status: 400 });
   }
 
@@ -1116,6 +1310,7 @@ async function handleActionPost(
     token: csrfToken,
     bearer: ctx.bearer,
     agentName,
+    augmentName,
     actionId,
     rowKey,
   });
@@ -1143,15 +1338,6 @@ async function handleActionPost(
       : new Response(null, { status: 403 });
   }
 
-  // S8 — registry lookup replaces (a) the iterate-augments-for-handler
-  // search and (b) the second adminInfo() call to retrieve input declarations.
-  const entry = ctx.actionRegistry.get(actionId);
-  if (!entry) {
-    return wantsJson
-      ? actionJson({ ok: false, message: "Action not found", csrfExpired: false }, 404)
-      : new Response(null, { status: 404 });
-  }
-
   // Coerce inputs using the registered declaration
   const rawInputs: Record<string, string | undefined> = {};
   for (const [k, v] of form.entries()) {
@@ -1177,13 +1363,13 @@ async function handleActionPost(
     }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    console.error(`[admin] action ${actionId} threw: ${message}`);
+    console.error(`[admin] augment=${entry.augmentName} action=${actionId} threw: ${message}`);
     result = { ok: false, message: "internal error" };
   }
 
   // Audit log
   console.log(
-    `[admin] actor=creator action=${actionId} rowKey=${rowKey ?? "-"} result=${
+    `[admin] actor=creator augment=${entry.augmentName} action=${actionId} rowKey=${rowKey ?? "-"} result=${
       result.ok ? "ok" : "fail"
     } message=${JSON.stringify(result.message)}`,
   );
@@ -1216,7 +1402,7 @@ function actionJson(
 /**
  * S8 — Build the action-declaration registry at boot. Combines:
  *   1. Validation that every declared action has a matching handler
- *   2. Action-id uniqueness check across augments
+ *   2. Target-aware (augmentName, actionId) identity
  *   3. Registry construction so the request-time dispatcher doesn't need
  *      to re-call adminInfo() to find input declarations
  */
@@ -1224,6 +1410,13 @@ export async function buildAdminActionRegistry(
   augments: readonly Augment[],
 ): Promise<AdminActionRegistry> {
   const registry = new Map<string, AdminActionRegistryEntry>();
+  const mountedNames = new Set<string>();
+  for (const aug of augments) {
+    if (mountedNames.has(aug.name)) {
+      throw new Error(`[admin] duplicate mounted augment name "${aug.name}"`);
+    }
+    mountedNames.add(aug.name);
+  }
 
   function register(
     augName: string,
@@ -1237,14 +1430,22 @@ export async function buildAdminActionRegistry(
         `[admin] augment "${augName}" declares action "${actionId}" but does not provide an adminActions handler`,
       );
     }
-    if (registry.has(actionId)) {
-      const existing = registry.get(actionId)!;
-      throw new Error(
-        `[admin] action id "${actionId}" declared by multiple augments ("${existing.augmentName}" and "${augName}"); action ids must be globally unique`,
-      );
+    const key = adminActionRegistryKey(augName, actionId);
+    const existing = registry.get(key);
+    if (existing) {
+      if (
+        existing.isRowAction !== isRowAction ||
+        JSON.stringify(existing.inputs) !== JSON.stringify(inputs)
+      ) {
+        throw new Error(
+          `[admin] augment "${augName}" declares action "${actionId}" more than once with incompatible metadata`,
+        );
+      }
+      return;
     }
-    registry.set(actionId, {
+    registry.set(key, {
       augmentName: augName,
+      actionId,
       handler: augActions[actionId],
       inputs,
       isRowAction,
@@ -1277,12 +1478,15 @@ export async function buildAdminActionRegistry(
     for (const section of block.sections) {
       if (section.kind === "table" && section.rowActions) {
         for (const ra of section.rowActions) {
-          register(aug.name, aug.adminActions, ra.id, [], true);
+          register(aug.name, aug.adminActions, ra.id, ra.inputs ?? [], true);
         }
       }
       if (section.kind === "keyValue") {
         for (const row of section.rows) {
-          if (row.resetAction && !registry.has(row.resetAction.id)) {
+          if (
+            row.resetAction &&
+            !registry.has(adminActionRegistryKey(aug.name, row.resetAction.id))
+          ) {
             register(aug.name, aug.adminActions, row.resetAction.id, [], false);
           }
         }

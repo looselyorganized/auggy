@@ -7,6 +7,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Creator-reviewed Mail action center.** The authenticated Console now shows
+  one conditional Mail surface across mounted AgentMail inboxes, with
+  metadata-only review and attention queues. Message and draft bodies are
+  fetched only on demand through creator-authenticated, no-store routes; the
+  operator can approve, revise and send, reject, or dismiss the exact current
+  row.
+
+### Changed
+
+- **Multi-inbox AgentMail isolation.** Mounted AgentMail instances now bind
+  routes, model tools, inbound ledger operations, durable local sidecars,
+  runtime cap overrides, dashboard projections, and action targets to the
+  configured augment name. A single instance retains legacy route and tool
+  names; multi-instance local startup refuses ambiguous singleton artifacts
+  until an operator migrates or archives them, and duplicate AgentMail database
+  ownership is rejected.
+- **Target-aware Console actions.** Admin actions and CSRF tokens now bind to
+  the mounted augment, action, and optional row. The legacy action endpoint
+  remains available only for an action ID with one mounted owner.
+
+### Security
+
+- **Fail-closed mail review authority.** Every mutation requires the exact
+  mailbox and row; send-capable decisions additionally require the current
+  fingerprint, and attention/incident decisions require the current version.
+  The dashboard excludes bodies, recipients, drafts, and fingerprints; bounded
+  untrusted content is rendered only as text/source after an authenticated
+  detail request.
+
 ## [0.5.0-rc.4] - 2026-07-30
 
 This fourth public candidate hardens Console behavior under authentication and

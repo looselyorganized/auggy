@@ -730,22 +730,26 @@ describe("telegramTransport — polling lifecycle", () => {
   });
 
   it("scopes recovery action ids per replay namespace", async () => {
-    const augments = ["801:first", "802:second"].map((botToken) =>
-      telegramTransport({
+    const augments = ["801:first", "802:second"].map((botToken, index) => ({
+      ...telegramTransport({
         botToken,
         inbound: { mode: "polling", polling: { timeoutSec: 0 } },
         auth: {},
         _clientFactory: () => makeMockClient([[]]).client,
       } as unknown as Parameters<typeof telegramTransport>[0]),
-    );
+      // Resolver-mounted augments always carry their configured unique name.
+      name: `telegram-${index + 1}`,
+    }));
 
     try {
       for (const augment of augments) await augment.onBoot?.();
       const registry = await buildAdminActionRegistry(augments);
       expect(registry.size).toBe(2);
-      expect([...registry.keys()].every((id) => id.startsWith("telegram-conflict-recover-"))).toBe(
-        true,
-      );
+      expect(
+        [...registry.values()].every((entry) =>
+          entry.actionId.startsWith("telegram-conflict-recover-"),
+        ),
+      ).toBe(true);
     } finally {
       for (const augment of augments) await augment.onShutdown?.();
     }

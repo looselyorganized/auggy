@@ -29,7 +29,7 @@
 import { z } from "zod";
 import { createHash } from "node:crypto";
 import { join } from "node:path";
-import { defineRoute, defineTool, json } from "../../helpers";
+import { defineRoute, defineTool } from "../../helpers";
 import {
   createAgentMailClient,
   type AgentMailClient,
@@ -43,6 +43,7 @@ import {
   releaseAdminOverrideRoot,
   retainAdminOverrideRoot,
   writeOverrides,
+  type AdminOverrides,
 } from "../../lib/admin-overrides";
 import type {
   AdminActionResult,
@@ -108,6 +109,28 @@ const DEFAULT_REVIEW_TRUST_LEVELS: TrustLevel[] = ["public"];
 const DEFAULT_REVIEW_EXPIRY_MS = 24 * 60 * 60_000;
 const MAX_REVIEW_EXPIRY_MS = 30 * 24 * 60 * 60_000;
 const RING_BUFFER_SIZE = 100;
+const DEFAULT_INSTANCE_ID = "agent-mail";
+const SAFE_INSTANCE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
+const MAX_MAIL_BODY_BYTES = 1024 * 1024;
+const MAX_MAIL_BODY_CHARS = 1024 * 1024;
+const MAX_INBOUND_DETAIL_BYTES = MAX_MAIL_BODY_BYTES;
+const MAX_TOOL_NAME_LENGTH = 64;
+const LONGEST_AGENTMAIL_TOOL_NAME = "reply_to_message";
+const MAX_NAMESPACED_INSTANCE_ID_LENGTH =
+  MAX_TOOL_NAME_LENGTH - LONGEST_AGENTMAIL_TOOL_NAME.length - "__".length;
+const MAX_RECIPIENTS = 50;
+const MAX_EMAIL_CHARS = 320;
+const MAX_SUBJECT_CHARS = 1_000;
+const MAX_MESSAGE_ID_CHARS = 256;
+const MAX_LABELS = 100;
+const MAX_LABEL_CHARS = 200;
+
+const toolRecipientsSchema = z
+  .array(z.string().min(1).max(MAX_EMAIL_CHARS))
+  .min(1)
+  .max(MAX_RECIPIENTS);
+const toolBodySchema = z.string().max(MAX_MAIL_BODY_CHARS);
+const toolLabelsSchema = z.array(z.string().min(1).max(MAX_LABEL_CHARS)).max(MAX_LABELS);
 
 function looksLikePlaceholder(value: string): boolean {
   return /^\$\{[A-Z0-9_]+\}$/.test(value);
@@ -119,6 +142,25 @@ function validateOptions(opts: AgentMailAugmentInternalOptions): void {
   }
   if (!opts.inboxId || typeof opts.inboxId !== "string") {
     throw new Error("agentMail: inboxId is required (set AGENTMAIL_INBOX_ID in .env)");
+  }
+  if (
+    opts.instanceId !== undefined &&
+    (typeof opts.instanceId !== "string" ||
+      !SAFE_INSTANCE_ID.test(opts.instanceId) ||
+      opts.instanceId.length > 128)
+  ) {
+    throw new Error(
+      "agentMail: instanceId must be 1 to 128 alphanumeric, hyphen, or underscore characters",
+    );
+  }
+  if (
+    opts.namespaceTools &&
+    opts.instanceId !== undefined &&
+    opts.instanceId.length > MAX_NAMESPACED_INSTANCE_ID_LENGTH
+  ) {
+    throw new Error(
+      `agentMail: instanceId must be at most ${MAX_NAMESPACED_INSTANCE_ID_LENGTH} characters when namespaceTools is enabled so every provider tool name is at most ${MAX_TOOL_NAME_LENGTH} characters`,
+    );
   }
   if (
     opts.emailAddress !== undefined &&
@@ -137,6 +179,15 @@ function validateOptions(opts: AgentMailAugmentInternalOptions): void {
   // Subject prefix non-empty when explicitly set.
   if (opts.outbound?.subjectPrefix !== undefined && opts.outbound.subjectPrefix.length === 0) {
     throw new Error("agentMail: outbound.subjectPrefix cannot be the empty string");
+  }
+  const bodyMaxBytes = opts.outbound?.bodyMaxBytes;
+  if (
+    bodyMaxBytes !== undefined &&
+    (!Number.isSafeInteger(bodyMaxBytes) || bodyMaxBytes <= 0 || bodyMaxBytes > MAX_MAIL_BODY_BYTES)
+  ) {
+    throw new Error(
+      `agentMail: outbound.bodyMaxBytes must be an integer between 1 and ${MAX_MAIL_BODY_BYTES}`,
+    );
   }
   const inbound = opts.inbound;
   if (inbound !== undefined) {
@@ -163,6 +214,40 @@ function isToolResult(value: unknown): value is { error: string } {
   return typeof value === "object" && value !== null && "error" in value;
 }
 
+function privateJsonResponse(value: unknown, status = 200): Response {
+  return new Response(JSON.stringify(value), {
+    status,
+    headers: {
+      "content-type": "application/json; charset=utf-8",
+      "cache-control": "no-store",
+      "x-content-type-options": "nosniff",
+    },
+  });
+}
+
+function reviewDetailRequest(request: AgentMailReviewRequest) {
+  return {
+    kind: request.kind,
+    ...("text" in request && request.text !== undefined
+      ? { text: request.text.slice(0, MAX_MAIL_BODY_CHARS) }
+      : {}),
+    ...(request.html !== undefined ? { html: request.html.slice(0, MAX_MAIL_BODY_CHARS) } : {}),
+    ...("messageId" in request
+      ? { messageId: request.messageId.slice(0, MAX_MESSAGE_ID_CHARS) }
+      : {}),
+    ...(request.kind === "reply" && request.replyAll !== undefined
+      ? { replyAll: request.replyAll }
+      : {}),
+    ...(request.labels
+      ? {
+          labels: request.labels
+            .slice(0, MAX_LABELS)
+            .map((label) => label.slice(0, MAX_LABEL_CHARS)),
+        }
+      : {}),
+  };
+}
+
 export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   const shutdownTimeoutMs = opts._shutdownTimeoutMs ?? 4_000;
   if (
@@ -174,6 +259,14 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   }
   validateOptions(opts);
 
+  const instanceId = opts.instanceId ?? DEFAULT_INSTANCE_ID;
+  const hasExplicitInstanceId = opts.instanceId !== undefined;
+  const legacySingletonCompatibility = opts.legacySingletonCompatibility ?? !hasExplicitInstanceId;
+  const instanceRouteBase = legacySingletonCompatibility
+    ? "/agentmail"
+    : `/agentmail/${instanceId}`;
+  const toolName = (base: "send_message" | "reply_to_message" | "forward_message") =>
+    opts.namespaceTools ? `${base}__${instanceId}` : base;
   const now = opts._now ?? (() => Date.now());
   const stateDir = opts.stateDir ?? opts.agentDir;
   const overrideDir = opts.overrideDir ?? opts.agentDir;
@@ -482,7 +575,13 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     overrideRootRetained = retainAdminOverrideRoot(overrideDir);
     try {
       const overrides = readOverrides(overrideDir);
-      const overrideVal = overrides?.overrides.agentMail?.globalMaxPerHour;
+      const overrideVal =
+        (overrides?.version === 2
+          ? overrides.overrides.agentMail?.instances?.[instanceId]?.globalMaxPerHour
+          : undefined) ??
+        (legacySingletonCompatibility
+          ? overrides?.overrides.agentMail?.globalMaxPerHour
+          : undefined);
       if (overrideVal !== undefined) {
         globalMaxPerHour = validateAgentMailEffectiveHourlyCap(
           overrideVal,
@@ -509,25 +608,87 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     ? "configured"
     : "unavailable";
   const agentMailRoutes: NonNullable<Augment["httpRoutes"]> = [
-    defineRoute.get("/agentmail/reviews/:reviewId", {
+    defineRoute.get(`${instanceRouteBase}/reviews/:reviewId`, {
       auth: "creator",
       params: z.object({ reviewId: z.string().min(1).max(128) }),
       handler: ({ params }) => {
         const record = reviewQueue.get(params.reviewId);
-        if (!record) return json({ error: "review-not-found" }, 404);
+        if (!record) return privateJsonResponse({ error: "review-not-found" }, 404);
         if (record.state !== "pending" && record.state !== "sending") {
-          return json({ error: "review-no-longer-inspectable", state: record.state }, 410);
+          return privateJsonResponse(
+            { error: "review-no-longer-inspectable", state: record.state },
+            410,
+          );
         }
+        return privateJsonResponse({
+          kind: "review",
+          reviewId: record.id,
+          fingerprint: record.fingerprint,
+          state: record.state,
+          trustLevel: record.trustLevel,
+          expiresAt: new Date(record.expiresAt).toISOString(),
+          recipients: record.recipients
+            .slice(0, MAX_RECIPIENTS)
+            .map((recipient) => recipient.slice(0, MAX_EMAIL_CHARS)),
+          subject: record.subject.slice(0, MAX_SUBJECT_CHARS),
+          request: reviewDetailRequest(record.request),
+        });
+      },
+    }),
+    defineRoute.get(`${instanceRouteBase}/messages/:messageId`, {
+      auth: "creator",
+      params: z.object({ messageId: z.string().min(1).max(256) }),
+      handler: ({ params }) => {
+        if (!inboundLedger) return privateJsonResponse({ error: "inbound-not-ready" }, 503);
+        const attention = inboundLedger.creatorAttention.get(opts.inboxId, params.messageId);
+        const activeIncident = inboundLedger
+          .listIncidents(100, opts.inboxId)
+          .some((incident) => incident.messageId === params.messageId);
+        if (!attention && !activeIncident) {
+          return privateJsonResponse({ error: "attention-not-found" }, 404);
+        }
+        if (
+          !activeIncident &&
+          attention?.state !== "open" &&
+          attention?.state !== "pending_review" &&
+          attention?.state !== "ambiguous"
+        ) {
+          return privateJsonResponse(
+            { error: "attention-no-longer-inspectable", state: attention?.state },
+            410,
+          );
+        }
+        const record = inboundLedger.get(opts.inboxId, params.messageId);
+        if (!record) return privateJsonResponse({ error: "message-not-found" }, 404);
+        const message = record.envelope.message;
+        const sourceText =
+          message.extractedText ?? message.text ?? message.preview ?? "(no plain-text body)";
+        const bodyBytes = Buffer.from(sourceText, "utf8");
+        const truncated = bodyBytes.byteLength > MAX_INBOUND_DETAIL_BYTES;
+        const textBody = truncated
+          ? bodyBytes.subarray(0, MAX_INBOUND_DETAIL_BYTES).toString("utf8")
+          : sourceText;
         return new Response(
           JSON.stringify({
-            reviewId: record.id,
-            fingerprint: record.fingerprint,
+            instanceId,
+            inboxId: opts.inboxId,
+            messageId: message.messageId,
+            threadId: message.threadId,
+            classification: record.envelope.eventType,
             state: record.state,
-            trustLevel: record.trustLevel,
-            expiresAt: new Date(record.expiresAt).toISOString(),
-            recipients: record.recipients,
-            subject: record.subject,
-            request: record.request,
+            from: message.from.slice(0, 320),
+            to: message.to.slice(0, 100),
+            cc: message.cc.slice(0, 100),
+            subject: message.subject.slice(0, 500),
+            receivedAt: message.timestamp,
+            text: textBody,
+            truncated,
+            attachments: message.attachments.slice(0, 100).map((attachment) => ({
+              attachmentId: attachment.attachmentId,
+              filename: attachment.filename.slice(0, 500),
+              contentType: attachment.contentType.slice(0, 200),
+              size: attachment.size,
+            })),
           }),
           {
             status: 200,
@@ -546,7 +707,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   let ownsInboundLedger = false;
   let sdkAdapters: AgentMailSdkAdapters | undefined = opts._sdkAdapters;
   let inboundKernel: TransportKernel | undefined;
-  let inboundRegisteredName = "agent-mail";
+  let inboundRegisteredName = instanceId;
   let inboundWorker: AgentMailInboundWorker | undefined;
   let liveSubscription: AgentMailEventSubscription | undefined;
   let reconciliationTimer: ReturnType<typeof setInterval> | undefined;
@@ -868,7 +1029,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             if (!inboundKernel || !inboundLedger || !sdkAdapters) {
               throw new Error("agentMail: inbound transport was not registered or booted");
             }
-            const incidentThreads = inboundLedger.listIncidentThreads();
+            const incidentThreads = inboundLedger.listIncidentThreads(opts.inboxId);
             for (const providerThreadId of incidentThreads) {
               inboundKernel.quarantineThread(
                 agentMailRuntimeThreadId(opts.inboxId, providerThreadId),
@@ -1199,7 +1360,15 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       return client.send({ inboxId: opts.inboxId, ...input });
     }
     if (request.kind === "reply") {
-      const { kind: _, ...input } = request;
+      // Recipients were already resolved, authorized, and durably bound.
+      // Keep replyAll/attentionVersion as review evidence, never as provider
+      // authority that could expand the reviewed recipient set.
+      const {
+        kind: _,
+        attentionVersion: _attentionVersion,
+        replyAll: _replyAll,
+        ...input
+      } = request;
       return client.reply({ inboxId: opts.inboxId, ...input });
     }
     const { kind: _, ...input } = request;
@@ -1339,6 +1508,76 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     };
   }
 
+  async function reviseAndApproveReview(
+    id: string,
+    expectedFingerprint: string,
+    text: string,
+  ): Promise<AdminActionResult> {
+    const pending = reviewQueue.get(id);
+    if (!pending) return { ok: false, message: `Unknown review id "${id}"` };
+    if (pending.state !== "pending") {
+      return { ok: false, message: `Review ${id} is ${pending.state}, not pending` };
+    }
+    if (pending.fingerprint !== expectedFingerprint) {
+      return {
+        ok: false,
+        message: `Review ${id} fingerprint mismatch; inspect the exact queued action again`,
+      };
+    }
+    // A plain-text revision must not retain stale HTML carrying the old
+    // draft. Operators can inspect the exact revised request before future
+    // HTML editing is introduced.
+    const { html: _html, ...requestBinding } = pending.request;
+    const revisedRequest = { ...requestBinding, text } as AgentMailReviewRequest;
+    const validation = validateOutbound(
+      {
+        recipients: pending.recipients,
+        subject: pending.subject,
+        text,
+        // The queued subject was already normalized and is immutable.
+        skipSubjectPrefix: true,
+      },
+      outboundOpts,
+    );
+    if (!validation.ok) return { ok: false, message: validation.reason };
+    const fingerprint = reviewFingerprint({
+      trustLevel: pending.trustLevel,
+      recipients: pending.recipients,
+      rateKey: pending.rateKey,
+      request: revisedRequest,
+    });
+    try {
+      reviewQueue.revise({
+        id,
+        expectedFingerprint,
+        request: revisedRequest,
+        fingerprint,
+      });
+    } catch (error) {
+      return { ok: false, message: (error as Error).message };
+    }
+    return approveReview(id, fingerprint);
+  }
+
+  function rowBoundId(
+    params: Record<string, unknown>,
+    field: "reviewId" | "messageId" | "incidentId",
+  ): { ok: true; id: string } | { ok: false; result: AdminActionResult } {
+    const rowKey = typeof params.rowKey === "string" ? params.rowKey.trim() : "";
+    const supplied = typeof params[field] === "string" ? params[field].trim() : "";
+    if (rowKey && supplied && rowKey !== supplied) {
+      return {
+        ok: false,
+        result: { ok: false, message: `${field} conflicts with the authorized row` },
+      };
+    }
+    const id = rowKey || supplied;
+    if (!id) {
+      return { ok: false, result: { ok: false, message: `${field} is required` } };
+    }
+    return { ok: true, id };
+  }
+
   function requireAmbiguousReview(
     id: string,
     expectedFingerprint: string,
@@ -1458,22 +1697,21 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   // send_message
   // ---------------------------------------------------------------------------
   const sendMessageTool = defineTool({
-    name: "send_message",
+    name: toolName("send_message"),
     description:
       "Send a new email from the configured AgentMail inbox. Use for proactive outreach, transactional notices, or replies to conversations the agent did not originate. Subject prefix is applied automatically; HTML bodies are disabled by default.",
     category: "communication",
     input: z.object({
-      to: z.array(z.string()).min(1).describe("One or more recipient email addresses."),
+      to: toolRecipientsSchema.describe("One or more recipient email addresses."),
       subject: z
         .string()
+        .max(MAX_SUBJECT_CHARS)
         .describe("Subject line. Operator-configured prefix is applied automatically."),
-      text: z.string().describe("Plain-text body of the message."),
-      html: z
-        .string()
+      text: toolBodySchema.describe("Plain-text body of the message."),
+      html: toolBodySchema
         .optional()
         .describe("HTML body. Off by default; operator must opt in via outbound.allowHtml."),
-      labels: z
-        .array(z.string())
+      labels: toolLabelsSchema
         .optional()
         .describe("AgentMail labels applied to the sent message (e.g., ['outreach'])."),
     }),
@@ -1612,19 +1850,23 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   // reply_to_message
   // ---------------------------------------------------------------------------
   const replyToMessageTool = defineTool({
-    name: "reply_to_message",
+    name: toolName("reply_to_message"),
     description:
       "Reply to an inbound email by its message_id (received via the agent's inbound trigger). The reply is threaded automatically by AgentMail. Use only with message_ids the agent has been shown this turn.",
     category: "communication",
     input: z.object({
-      messageId: z.string().describe("AgentMail message_id of the message being replied to."),
-      text: z.string().describe("Plain-text body of the reply."),
-      html: z.string().optional().describe("HTML body (off by default — operator opts in)."),
+      messageId: z
+        .string()
+        .min(1)
+        .max(MAX_MESSAGE_ID_CHARS)
+        .describe("AgentMail message_id of the message being replied to."),
+      text: toolBodySchema.describe("Plain-text body of the reply."),
+      html: toolBodySchema.optional().describe("HTML body (off by default — operator opts in)."),
       replyAll: z
         .boolean()
         .optional()
         .describe("If true, reply to all original recipients. Default false."),
-      labels: z.array(z.string()).optional(),
+      labels: toolLabelsSchema.optional(),
     }),
     execute: async (input, context) => {
       if (mismatchedClaimedInboundTurn(context, input.messageId)) {
@@ -1794,6 +2036,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         ...(inboundScope ? { attentionVersion: inboundScope.attentionVersion } : {}),
         text: input.text,
         ...(validation.value.html ? { html: validation.value.html } : {}),
+        ...(input.replyAll !== undefined ? { replyAll: input.replyAll } : {}),
         ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
       };
 
@@ -1846,7 +2089,12 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
       let result: SendMessageResult | SendMessageError;
       try {
-        const { kind: _, ...replyInput } = request;
+        const {
+          kind: _,
+          attentionVersion: _attentionVersion,
+          replyAll: _replyAll,
+          ...replyInput
+        } = request;
         result = await client.reply({
           inboxId: opts.inboxId,
           ...replyInput,
@@ -1922,20 +2170,27 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   // forward_message
   // ---------------------------------------------------------------------------
   const forwardMessageTool = defineTool({
-    name: "forward_message",
+    name: toolName("forward_message"),
     description:
       "Forward an inbound message to additional recipient(s). Use when handing a thread to a teammate, escalating to an operator, or copying the operator on a thread the agent is handling.",
     category: "communication",
     input: z.object({
-      messageId: z.string().describe("AgentMail message_id of the message being forwarded."),
-      to: z.array(z.string()).min(1).describe("Forward recipient(s)."),
-      text: z.string().optional().describe("Optional commentary prepended to the forwarded body."),
-      html: z.string().optional().describe("HTML commentary (off by default)."),
+      messageId: z
+        .string()
+        .min(1)
+        .max(MAX_MESSAGE_ID_CHARS)
+        .describe("AgentMail message_id of the message being forwarded."),
+      to: toolRecipientsSchema.describe("Forward recipient(s)."),
+      text: toolBodySchema
+        .optional()
+        .describe("Optional commentary prepended to the forwarded body."),
+      html: toolBodySchema.optional().describe("HTML commentary (off by default)."),
       subject: z
         .string()
+        .max(MAX_SUBJECT_CHARS)
         .optional()
         .describe('Subject override. Default: AgentMail prepends "Fwd: " to original.'),
-      labels: z.array(z.string()).optional(),
+      labels: toolLabelsSchema.optional(),
     }),
     execute: async (input, context) => {
       if (mismatchedClaimedInboundTurn(context, input.messageId)) {
@@ -2154,7 +2409,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       // Runtime startup is the single-replica ownership boundary. A retained
       // claim may already have caused external effects, so it becomes a
       // durable incident and is never silently replayed.
-      inboundLedger.fenceInterruptedClaims();
+      inboundLedger.fenceInterruptedClaims({ inboxId: opts.inboxId });
       reconcileLinkedReviewAttention();
       sdkAdapters ??= createAgentMailSdkAdapters({
         apiKey: opts.apiKey,
@@ -2171,7 +2426,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
               if (!inboundLedger) throw new Error("agentMail: inbound runtime is not booted");
               return inboundLedger;
             },
-            path: webhookOptions?.path,
+            path:
+              webhookOptions?.path ??
+              (legacySingletonCompatibility ? undefined : `/webhooks/agentmail/${instanceId}`),
             secretEnv: webhookOptions?.secretEnv,
             timestampToleranceSeconds: webhookOptions?.timestampToleranceSeconds,
             onAccepted: () => {
@@ -2233,9 +2490,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
     return [
       {
-        source: "agent-mail-identity",
+        source: `agent-mail-identity:${instanceId}`,
         content:
-          `AgentMail inbox ${opts.inboxId} uses the canonical email address ${resolvedInboxEmail}. ${monitoring} ` +
+          `AgentMail instance ${instanceId} (inbox ${opts.inboxId}) uses the canonical email address ${resolvedInboxEmail}. ${monitoring} ` +
+          `Its mail tools are ${toolName("send_message")}, ${toolName("reply_to_message")}, and ${toolName("forward_message")}. ` +
           "Provide the address when someone reasonably asks how to contact you or email is the appropriate channel. Do not volunteer it indiscriminately or promise an immediate response.",
         placement: "preamble",
         provenance: "augment",
@@ -2453,8 +2711,8 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     if (inboundLedger) {
       try {
         reconcileLinkedReviewAttention();
-        ledgerCounts = inboundLedger.counts();
-        inboundIncidents = inboundLedger.listIncidents(50);
+        ledgerCounts = inboundLedger.counts(opts.inboxId);
+        inboundIncidents = inboundLedger.listIncidents(50, opts.inboxId);
         attentionRecords = inboundLedger.creatorAttention.list({
           inboxId: opts.inboxId,
           limit: 50,
@@ -2488,20 +2746,109 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     ) {
       operationalWarnings.push(`creator digest: ${creatorDigestStatus.state.replaceAll("_", " ")}`);
     }
+    const statusLevel = operationalWarnings.length === 0 ? "ok" : "warn";
+    const statusMessage =
+      operationalWarnings.length === 0
+        ? inboundMode === "none"
+          ? "Outbound ready; inbound disabled"
+          : `Inbound ${inboundMode} ready`
+        : operationalWarnings.join("; ");
+    const attentionMetadata = new Map(
+      attentionRecords.map((record) => {
+        const message = inboundLedger?.get(opts.inboxId, record.messageId)?.envelope.message;
+        return [record.messageId, message] as const;
+      }),
+    );
+    const projectedReviews = [...pendingReviews, ...ambiguousReviews]
+      .sort((left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id))
+      .map((review) => ({
+        rowKey: review.id,
+        reviewId: review.id,
+        status: review.state as "pending" | "sending",
+        subject: review.subject.slice(0, 200),
+        correspondent: redactRecipients(review.recipients),
+        updatedAt: new Date(review.attemptedAt ?? review.createdAt).toISOString(),
+        expiresAt: new Date(review.expiresAt).toISOString(),
+        detailPath: `${instanceRouteBase}/reviews/${encodeURIComponent(review.id)}`,
+        actions:
+          review.state === "pending"
+            ? {
+                approve: { actionId: "agentmail-review-approve" },
+                revise: { actionId: "agentmail-review-revise" },
+                reject: { actionId: "agentmail-review-reject" },
+              }
+            : {
+                reconcileSent: { actionId: "agentmail-review-reconcile-sent" },
+                reconcileFailed: { actionId: "agentmail-review-reconcile-failed" },
+              },
+      }));
+    const incidentMessageIds = new Set(inboundIncidents.map((incident) => incident.messageId));
+    const projectedCreatorAttention = attentionRecords
+      .filter(
+        (
+          record,
+        ): record is AgentMailCreatorAttentionRecord & {
+          state: "open" | "pending_review" | "ambiguous";
+        } =>
+          (record.state === "open" ||
+            record.state === "pending_review" ||
+            record.state === "ambiguous") &&
+          !incidentMessageIds.has(record.messageId),
+      )
+      .map((record) => {
+        const message = attentionMetadata.get(record.messageId);
+        return {
+          rowKey: record.messageId,
+          messageId: record.messageId,
+          status: record.state,
+          version: record.version,
+          ...(message
+            ? {
+                subject: message.subject.slice(0, 200),
+                sender: message.from.slice(0, 320),
+                receivedAt: message.timestamp,
+              }
+            : {}),
+          updatedAt: new Date(record.updatedAt).toISOString(),
+          detailPath: `${instanceRouteBase}/messages/${encodeURIComponent(record.messageId)}`,
+          actions: { dismiss: { actionId: "agentmail-attention-dismiss" } },
+        };
+      });
+    const projectedIncidents = inboundIncidents.map((incident) => {
+      const message = inboundLedger?.get(opts.inboxId, incident.messageId)?.envelope.message;
+      return {
+        rowKey: incident.id,
+        messageId: incident.messageId,
+        status: "ambiguous" as const,
+        version: incident.version,
+        ...(message
+          ? {
+              subject: message.subject.slice(0, 200),
+              sender: message.from.slice(0, 320),
+              receivedAt: message.timestamp,
+            }
+          : {}),
+        updatedAt: new Date(incident.quarantinedAt).toISOString(),
+        detailPath: `${instanceRouteBase}/messages/${encodeURIComponent(incident.messageId)}`,
+        actions: {
+          reconcileProcessed: { actionId: "agentmail-inbound-reconcile-handled" },
+          reconcilePending: { actionId: "agentmail-inbound-reconcile-no-effect" },
+        },
+      };
+    });
+    const projectedAttention = [...projectedCreatorAttention, ...projectedIncidents].sort(
+      (left, right) =>
+        left.updatedAt.localeCompare(right.updatedAt) || left.rowKey.localeCompare(right.rowKey),
+    );
 
     return {
-      augmentName: "agent-mail",
-      title: "AgentMail",
+      augmentName: instanceId,
+      title: hasExplicitInstanceId ? `AgentMail · ${instanceId}` : "AgentMail",
       sections: [
         {
           kind: "status",
-          level: operationalWarnings.length === 0 ? "ok" : "warn",
-          message:
-            operationalWarnings.length === 0
-              ? inboundMode === "none"
-                ? "Outbound ready; inbound disabled"
-                : `Inbound ${inboundMode} ready`
-              : operationalWarnings.join("; "),
+          level: statusLevel,
+          message: statusMessage,
         },
         {
           kind: "keyValue",
@@ -2626,8 +2973,103 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
               redactRecipients(review.recipients),
               review.subject.slice(0, 80),
               new Date(review.expiresAt).toISOString(),
-              `/agentmail/reviews/${encodeURIComponent(review.id)}`,
+              `${instanceRouteBase}/reviews/${encodeURIComponent(review.id)}`,
             ]),
+          rowActions: [
+            {
+              id: "agentmail-review-approve",
+              label: "Approve",
+              confirmRequired: true,
+              rowKeyColumn: 0,
+              inputs: [
+                {
+                  name: "fingerprint",
+                  label: "Inspection fingerprint",
+                  type: "text",
+                  required: true,
+                },
+              ],
+            },
+            {
+              id: "agentmail-review-revise",
+              label: "Revise and send",
+              confirmRequired: true,
+              rowKeyColumn: 0,
+              inputs: [
+                {
+                  name: "fingerprint",
+                  label: "Inspection fingerprint",
+                  type: "text",
+                  required: true,
+                },
+                {
+                  name: "text",
+                  label: "Revised plain-text body",
+                  type: "text",
+                  required: true,
+                },
+              ],
+            },
+            {
+              id: "agentmail-review-reject",
+              label: "Reject",
+              confirmRequired: true,
+              rowKeyColumn: 0,
+              inputs: [{ name: "reason", label: "Reason", type: "text", required: false }],
+            },
+            {
+              id: "agentmail-review-reconcile-sent",
+              label: "Confirm sent",
+              confirmRequired: true,
+              rowKeyColumn: 0,
+              inputs: [
+                {
+                  name: "fingerprint",
+                  label: "Inspection fingerprint",
+                  type: "text",
+                  required: true,
+                },
+                {
+                  name: "messageId",
+                  label: "Provider message ID",
+                  type: "text",
+                  required: true,
+                },
+                {
+                  name: "threadId",
+                  label: "Provider thread ID",
+                  type: "text",
+                  required: false,
+                },
+                {
+                  name: "evidence",
+                  label: "Verification evidence",
+                  type: "text",
+                  required: true,
+                },
+              ],
+            },
+            {
+              id: "agentmail-review-reconcile-failed",
+              label: "Confirm not sent",
+              confirmRequired: true,
+              rowKeyColumn: 0,
+              inputs: [
+                {
+                  name: "fingerprint",
+                  label: "Inspection fingerprint",
+                  type: "text",
+                  required: true,
+                },
+                {
+                  name: "reason",
+                  label: "Verification evidence",
+                  type: "text",
+                  required: true,
+                },
+              ],
+            },
+          ],
           caption: `Outbound reviews (${reviews.length}) — list is redacted; exact content requires creator auth`,
         },
         {
@@ -2640,24 +3082,75 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             String(incident.version),
             new Date(incident.quarantinedAt).toISOString(),
           ]),
+          rowActions: [
+            {
+              id: "agentmail-inbound-reconcile-handled",
+              label: "Confirm handled",
+              confirmRequired: true,
+              rowKeyColumn: 0,
+              inputs: inboundRecoveryInputs(
+                "Use after confirming the ambiguous turn's external effects already occurred.",
+                false,
+              ),
+            },
+            {
+              id: "agentmail-inbound-reconcile-no-effect",
+              label: "Confirm no effect",
+              confirmRequired: true,
+              rowKeyColumn: 0,
+              inputs: inboundRecoveryInputs(
+                "Use only after confirming no external effect occurred; a later worker may retry.",
+                false,
+              ),
+            },
+          ],
           caption:
             "Inbound outcome-unknown incidents. Verify downstream effects before reconciliation.",
         },
         {
           kind: "table",
-          columns: ["Message", "State", "Version", "Review", "Updated"],
+          columns: ["Message", "State", "Version", "Sender", "Subject", "Review", "Updated"],
           rows: attentionRecords.map((record) => [
             record.messageId,
             record.state,
             String(record.version),
+            attentionMetadata.get(record.messageId)?.from.slice(0, 320) ?? "(unavailable)",
+            attentionMetadata.get(record.messageId)?.subject.slice(0, 200) ?? "(unavailable)",
             record.reviewId
-              ? `/agentmail/reviews/${encodeURIComponent(record.reviewId)}`
+              ? `${instanceRouteBase}/reviews/${encodeURIComponent(record.reviewId)}`
               : "(none)",
             new Date(record.updatedAt).toISOString(),
           ]),
+          rowActions: [
+            {
+              id: "agentmail-attention-dismiss",
+              label: "Dismiss",
+              confirmRequired: true,
+              rowKeyColumn: 0,
+              inputs: [
+                {
+                  name: "expectedVersion",
+                  label: "Expected attention version",
+                  type: "number",
+                  required: true,
+                },
+              ],
+            },
+          ],
           caption: "Creator attention (assistant response previews are intentionally omitted).",
         },
       ],
+      projection: {
+        kind: "mail",
+        schemaVersion: 1,
+        augmentName: instanceId,
+        inboxId: opts.inboxId,
+        ...(resolvedInboxEmail ? { inboxEmail: resolvedInboxEmail } : {}),
+        status: { level: statusLevel, message: statusMessage },
+        inbound: { mode: inboundMode, state: liveState },
+        reviews: projectedReviews,
+        attention: projectedAttention,
+      },
       actions: [
         {
           id: "agentmail-test-send",
@@ -2692,125 +3185,6 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
               type: "number",
               required: true,
               helpText: "Persists across restart via admin-overrides.json.",
-            },
-          ],
-        },
-        {
-          id: "agentmail-review-approve",
-          label: "Approve queued email",
-          confirmRequired: true,
-          inputs: [
-            {
-              name: "reviewId",
-              label: "Review ID",
-              type: "text",
-              required: true,
-              helpText: "Sends the exact queued action after rechecking current rate limits.",
-            },
-            {
-              name: "fingerprint",
-              label: "Inspection fingerprint",
-              type: "text",
-              required: true,
-              helpText:
-                "Copy from the creator-authenticated review detail route to bind approval to the reviewed content.",
-            },
-          ],
-        },
-        {
-          id: "agentmail-review-reject",
-          label: "Reject queued email",
-          confirmRequired: true,
-          inputs: [
-            { name: "reviewId", label: "Review ID", type: "text", required: true },
-            { name: "reason", label: "Reason", type: "text", required: false },
-          ],
-        },
-        {
-          id: "agentmail-review-reconcile-sent",
-          label: "Confirm ambiguous email was sent",
-          confirmRequired: true,
-          inputs: [
-            { name: "reviewId", label: "Review ID", type: "text", required: true },
-            {
-              name: "fingerprint",
-              label: "Inspection fingerprint",
-              type: "text",
-              required: true,
-              helpText:
-                "Use only after confirming delivery with AgentMail; this closes the durable attempt without resending it.",
-            },
-            {
-              name: "messageId",
-              label: "Provider message ID",
-              type: "text",
-              required: true,
-            },
-            {
-              name: "threadId",
-              label: "Provider thread ID",
-              type: "text",
-              required: false,
-            },
-            {
-              name: "evidence",
-              label: "Verification evidence",
-              type: "text",
-              required: true,
-              helpText: "Record how the provider-confirmed message ID was verified.",
-            },
-          ],
-        },
-        {
-          id: "agentmail-review-reconcile-failed",
-          label: "Confirm ambiguous email was not sent",
-          confirmRequired: true,
-          inputs: [
-            { name: "reviewId", label: "Review ID", type: "text", required: true },
-            {
-              name: "fingerprint",
-              label: "Inspection fingerprint",
-              type: "text",
-              required: true,
-            },
-            {
-              name: "reason",
-              label: "Verification evidence",
-              type: "text",
-              required: true,
-              helpText:
-                "Record how non-delivery was verified; only this outcome permits a later retry.",
-            },
-          ],
-        },
-        {
-          id: "agentmail-inbound-reconcile-handled",
-          label: "Confirm inbound incident was handled",
-          confirmRequired: true,
-          inputs: inboundRecoveryInputs(
-            "Use after confirming the ambiguous turn's external effects already occurred.",
-          ),
-        },
-        {
-          id: "agentmail-inbound-reconcile-no-effect",
-          label: "Confirm inbound incident had no external effect",
-          confirmRequired: true,
-          inputs: inboundRecoveryInputs(
-            "Use only after confirming no external effect occurred; a later worker may retry.",
-          ),
-        },
-        {
-          id: "agentmail-attention-dismiss",
-          label: "Dismiss creator attention",
-          confirmRequired: true,
-          inputs: [
-            { name: "messageId", label: "Message ID", type: "text", required: true },
-            {
-              name: "expectedVersion",
-              label: "Expected attention version",
-              type: "number",
-              required: true,
-              helpText: "Copy the current version from the creator attention table.",
             },
           ],
         },
@@ -2870,9 +3244,11 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     };
   }
 
-  function inboundRecoveryInputs(helpText: string) {
+  function inboundRecoveryInputs(helpText: string, includeIncidentId = true) {
     return [
-      { name: "incidentId", label: "Incident ID", type: "text" as const, required: true },
+      ...(includeIncidentId
+        ? [{ name: "incidentId", label: "Incident ID", type: "text" as const, required: true }]
+        : []),
       { name: "version", label: "Expected version", type: "number" as const, required: true },
       {
         name: "evidence",
@@ -2888,26 +3264,71 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     if (!overrideDir) {
       throw new Error("override storage not configured; admin overrides cannot persist");
     }
-    const current = readOverrides(overrideDir) ?? {
-      version: 1 as const,
+    const current = readOverrides(overrideDir);
+    if (!hasExplicitInstanceId && instanceId === DEFAULT_INSTANCE_ID) {
+      const compatible: AdminOverrides =
+        current ??
+        ({
+          version: 1,
+          lastModified: new Date().toISOString(),
+          lastModifiedBy: "creator",
+          overrides: {},
+        } satisfies AdminOverrides);
+      compatible.lastModified = new Date().toISOString();
+      compatible.lastModifiedBy = "creator";
+      compatible.overrides.agentMail = {
+        ...compatible.overrides.agentMail,
+        globalMaxPerHour: value,
+      };
+      writeOverrides(overrideDir, compatible);
+      return;
+    }
+    const migrated: Extract<AdminOverrides, { version: 2 }> = {
+      version: 2,
       lastModified: new Date().toISOString(),
       lastModifiedBy: "creator",
-      overrides: {},
+      overrides: {
+        ...(current?.overrides.webTransport
+          ? { webTransport: current.overrides.webTransport }
+          : {}),
+        ...(current?.overrides.budgets ? { budgets: current.overrides.budgets } : {}),
+        ...(current?.overrides.notify ? { notify: current.overrides.notify } : {}),
+        agentMail: {
+          ...(!legacySingletonCompatibility && current?.overrides.agentMail?.globalMaxPerHour
+            ? { globalMaxPerHour: current.overrides.agentMail.globalMaxPerHour }
+            : {}),
+          ...(current?.version === 2 && current.overrides.agentMail?.instances
+            ? { instances: current.overrides.agentMail.instances }
+            : {}),
+        },
+      },
     };
-    current.lastModified = new Date().toISOString();
-    current.lastModifiedBy = "creator";
-    current.overrides.agentMail = {
-      ...current.overrides.agentMail,
-      globalMaxPerHour: value,
+    migrated.overrides.agentMail = {
+      ...migrated.overrides.agentMail,
+      instances: {
+        ...migrated.overrides.agentMail?.instances,
+        [instanceId]: { globalMaxPerHour: value },
+      },
     };
-    writeOverrides(overrideDir, current);
+    writeOverrides(overrideDir, migrated);
   }
 
   async function clearCapOverride(): Promise<void> {
     if (!overrideDir) return;
     const current = readOverrides(overrideDir);
     if (!current) return;
-    if (current.overrides.agentMail) {
+    if (hasExplicitInstanceId && current.version === 2) {
+      const instances = current.overrides.agentMail?.instances;
+      if (instances?.[instanceId]) {
+        delete instances[instanceId];
+        if (Object.keys(instances).length === 0 && current.overrides.agentMail) {
+          delete current.overrides.agentMail.instances;
+        }
+        if (current.overrides.agentMail && Object.keys(current.overrides.agentMail).length === 0) {
+          delete current.overrides.agentMail;
+        }
+      }
+    } else if (current.overrides.agentMail) {
       delete (current.overrides.agentMail as Record<string, unknown>).globalMaxPerHour;
       if (Object.keys(current.overrides.agentMail).length === 0) {
         delete (current.overrides as Record<string, unknown>).agentMail;
@@ -2923,7 +3344,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     disposition: "confirmed-handled" | "confirmed-no-effect",
   ): AdminActionResult {
     if (!inboundLedger) return { ok: false, message: "Inbound ledger is not available" };
-    const incidentId = typeof params.incidentId === "string" ? params.incidentId.trim() : "";
+    const boundIncident = rowBoundId(params, "incidentId");
+    if (!boundIncident.ok) return boundIncident.result;
+    const incidentId = boundIncident.id;
     const version = typeof params.version === "number" ? params.version : Number(params.version);
     const evidence = typeof params.evidence === "string" ? params.evidence.trim() : "";
     if (!incidentId || !/^[A-Za-z0-9_-]{1,128}$/.test(incidentId)) {
@@ -2942,7 +3365,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       try {
         reconcileLinkedReviewAttention();
         const incident = inboundLedger
-          .listIncidents(100)
+          .listIncidents(100, opts.inboxId)
           .find((candidate) => candidate.id === incidentId);
         if (!incident || incident.version !== version) {
           return { ok: false, message: "Incident is stale, resolved, or does not match" };
@@ -3032,6 +3455,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       expectedVersion: version,
       disposition,
       evidence,
+      inboxId: opts.inboxId,
     });
     if (!resolved.resolved || !resolved.threadId) {
       return { ok: false, message: "Incident is stale, resolved, or does not match" };
@@ -3175,15 +3599,25 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       return { ok: true, message: "globalMaxPerHour reset to yaml value" };
     },
     "agentmail-review-approve": async (params) => {
-      const reviewId = typeof params.reviewId === "string" ? params.reviewId.trim() : "";
-      if (!reviewId) return { ok: false, message: "Review ID is required" };
+      const boundReview = rowBoundId(params, "reviewId");
+      if (!boundReview.ok) return boundReview.result;
       const fingerprint = typeof params.fingerprint === "string" ? params.fingerprint.trim() : "";
       if (!fingerprint) return { ok: false, message: "Inspection fingerprint is required" };
-      return approveReview(reviewId, fingerprint);
+      return approveReview(boundReview.id, fingerprint);
+    },
+    "agentmail-review-revise": async (params) => {
+      const boundReview = rowBoundId(params, "reviewId");
+      if (!boundReview.ok) return boundReview.result;
+      const fingerprint = typeof params.fingerprint === "string" ? params.fingerprint.trim() : "";
+      if (!fingerprint) return { ok: false, message: "Inspection fingerprint is required" };
+      const text = typeof params.text === "string" ? params.text : "";
+      if (!text.trim()) return { ok: false, message: "Revised plain-text body is required" };
+      return reviseAndApproveReview(boundReview.id, fingerprint, text);
     },
     "agentmail-review-reject": async (params) => {
-      const reviewId = typeof params.reviewId === "string" ? params.reviewId.trim() : "";
-      if (!reviewId) return { ok: false, message: "Review ID is required" };
+      const boundReview = rowBoundId(params, "reviewId");
+      if (!boundReview.ok) return boundReview.result;
+      const reviewId = boundReview.id;
       const review = reviewQueue.get(reviewId);
       if (!review) return { ok: false, message: `Unknown review id "${reviewId}"` };
       const reason =
@@ -3204,8 +3638,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       return { ok: true, message: `Review ${reviewId} rejected` };
     },
     "agentmail-review-reconcile-sent": async (params) => {
-      const reviewId = typeof params.reviewId === "string" ? params.reviewId.trim() : "";
-      if (!reviewId) return { ok: false, message: "Review ID is required" };
+      const boundReview = rowBoundId(params, "reviewId");
+      if (!boundReview.ok) return boundReview.result;
+      const reviewId = boundReview.id;
       const fingerprint = typeof params.fingerprint === "string" ? params.fingerprint.trim() : "";
       if (!fingerprint) return { ok: false, message: "Inspection fingerprint is required" };
       const messageId = typeof params.messageId === "string" ? params.messageId.trim() : "";
@@ -3226,8 +3661,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       });
     },
     "agentmail-review-reconcile-failed": async (params) => {
-      const reviewId = typeof params.reviewId === "string" ? params.reviewId.trim() : "";
-      if (!reviewId) return { ok: false, message: "Review ID is required" };
+      const boundReview = rowBoundId(params, "reviewId");
+      if (!boundReview.ok) return boundReview.result;
+      const reviewId = boundReview.id;
       const fingerprint = typeof params.fingerprint === "string" ? params.fingerprint.trim() : "";
       if (!fingerprint) return { ok: false, message: "Inspection fingerprint is required" };
       const reason = typeof params.reason === "string" ? params.reason.trim() : "";
@@ -3243,7 +3679,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       reconcileInboundIncident(params, "confirmed-no-effect"),
     "agentmail-attention-dismiss": async (params) => {
       if (!inboundLedger) return { ok: false, message: "Creator attention is not available" };
-      const messageId = typeof params.messageId === "string" ? params.messageId.trim() : "";
+      const boundMessage = rowBoundId(params, "messageId");
+      if (!boundMessage.ok) return boundMessage.result;
+      const messageId = boundMessage.id;
       if (!messageId || messageId.length > 256) {
         return { ok: false, message: "A valid message ID is required" };
       }
@@ -3335,7 +3773,8 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     [AGENTMAIL_CREATOR_DIGEST_SOURCE]: AgentMailCreatorDigestSource;
     _markSeenForTest?: (messageId: string, meta: { from: string; replyAllTo?: string[] }) => void;
   } = {
-    name: "agent-mail",
+    name: instanceId,
+    type: "agentMail",
     context,
     tools: [sendMessageTool, replyToMessageTool, forwardMessageTool],
     ...(inboundTransport ? { transport: inboundTransport } : {}),
@@ -3348,11 +3787,11 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       ? {
           durableThreadQuarantine: {
             listThreadIds: () =>
-              (inboundLedger?.listIncidentThreads() ?? []).map((providerThreadId) =>
+              (inboundLedger?.listIncidentThreads(opts.inboxId) ?? []).map((providerThreadId) =>
                 agentMailRuntimeThreadId(opts.inboxId, providerThreadId),
               ),
             hasThread: (runtimeThreadId: string) =>
-              (inboundLedger?.listIncidentThreads() ?? []).some(
+              (inboundLedger?.listIncidentThreads(opts.inboxId) ?? []).some(
                 (providerThreadId) =>
                   agentMailRuntimeThreadId(opts.inboxId, providerThreadId) === runtimeThreadId,
               ),

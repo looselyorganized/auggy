@@ -17,6 +17,19 @@ You have an email inbox of your own, connected via the `agentMail` augment. You 
 
 `reply_to_message` and `forward_message` only work on `messageId` values that this turn received via your inbound trigger. You cannot reply to arbitrary IDs.
 
+When more than one AgentMail instance is mounted, each tool is namespaced by
+the exact configured instance ID so one inbox cannot silently capture another
+inbox's sends:
+
+- `send_message__<instanceId>`
+- `reply_to_message__<instanceId>`
+- `forward_message__<instanceId>`
+
+Use the names supplied in that instance's runtime context. Do not remove or
+normalize hyphens/underscores in the instance ID, and do not substitute a
+different inbox's tool. A single AgentMail instance keeps the canonical tool
+names in the table above.
+
 ## Choosing the right channel
 
 Email is one of several ways you can communicate. Pick the right one.
@@ -211,7 +224,9 @@ BAD:
 
 ## What you cannot do
 
-- Send from an inbox other than the one configured (you have exactly one).
+- Send from an inbox other than the one bound to the selected tool. A runtime
+  may mount several isolated AgentMail instances; each namespaced tool remains
+  bound to exactly one.
 - Email attachments — outbound is text + optional HTML only.
 - Verify whether a recipient read your message — AgentMail does not surface read receipts to this augment.
 - Retract a sent message — `status: "sent"` is final.

@@ -17,6 +17,11 @@ import { assertSecureCredentialTransport } from "./engines/_shared/credential-tr
 
 const DEFAULT_BASE_URL = "https://api.agentmail.to/v0";
 const MAX_RECIPIENTS = 50;
+const MAX_PROVIDER_ID_CHARS = 256;
+
+function isBoundedProviderId(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0 && value.length <= MAX_PROVIDER_ID_CHARS;
+}
 
 export interface AgentMailClientOptions {
   apiKey: string;
@@ -173,9 +178,9 @@ export function createAgentMailClient(opts: AgentMailClientOptions): AgentMailCl
           "AgentMail accepted a send request but returned an unreadable response; delivery outcome is unknown",
         );
       }
-      if (typeof parsed.message_id !== "string" || typeof parsed.thread_id !== "string") {
+      if (!isBoundedProviderId(parsed.message_id) || !isBoundedProviderId(parsed.thread_id)) {
         throw new OutcomeUnknownError(
-          "AgentMail accepted a send request but returned an incomplete response; delivery outcome is unknown",
+          "AgentMail accepted a send request but returned invalid message identity data; delivery outcome is unknown",
         );
       }
       return { status: "sent", messageId: parsed.message_id, threadId: parsed.thread_id };

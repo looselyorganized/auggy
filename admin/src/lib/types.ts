@@ -9,7 +9,7 @@ export interface KeyValueRow {
   label: string;
   value: string;
   source?: string;
-  resetAction?: { id: string; label: string };
+  resetAction?: { id: string; label: string; augmentName?: string };
 }
 
 export type AdminSection =
@@ -42,6 +42,7 @@ export interface AdminAction {
   label: string;
   confirmRequired: boolean;
   inputs?: AdminActionInput[];
+  augmentName?: string;
 }
 
 export interface AdminRowAction {
@@ -49,6 +50,8 @@ export interface AdminRowAction {
   label: string;
   confirmRequired: boolean;
   rowKeyColumn: number;
+  inputs?: AdminActionInput[];
+  augmentName?: string;
 }
 
 export interface AdminInfoBlock {
@@ -56,12 +59,87 @@ export interface AdminInfoBlock {
   title: string;
   sections: AdminSection[];
   actions?: AdminAction[];
+  /** Optional typed feature projection. Unknown projections remain ignorable. */
+  projection?: MailAdminProjection | { kind: string; [key: string]: unknown };
 }
 
 export interface CsrfToken {
+  /** Present for augment-owned actions. Omitted only for built-in console actions. */
+  augmentName?: string;
   actionId: string;
   rowKey?: string;
   token: string;
+}
+
+export type MailStatusLevel = "ok" | "warn" | "error";
+export type MailReviewStatus = "pending" | "sending";
+export type MailAttentionStatus = "open" | "pending_review" | "ambiguous";
+
+export interface MailActionTarget {
+  actionId: string;
+}
+
+/** Metadata-only summary. Exact message content is available only from detailPath. */
+export interface MailReviewProjection {
+  rowKey: string;
+  reviewId: string;
+  status: MailReviewStatus;
+  subject: string;
+  correspondent: string;
+  updatedAt?: string;
+  expiresAt: string;
+  detailPath: string;
+  actions: {
+    approve?: MailActionTarget;
+    revise?: MailActionTarget;
+    reject?: MailActionTarget;
+    reconcileSent?: MailActionTarget;
+    reconcileFailed?: MailActionTarget;
+  };
+}
+
+/** Metadata-only summary. Message bodies and model output must never appear here. */
+export interface MailAttentionProjection {
+  rowKey: string;
+  messageId: string;
+  status: MailAttentionStatus;
+  version: number;
+  subject?: string;
+  sender?: string;
+  receivedAt?: string;
+  updatedAt: string;
+  detailPath?: string;
+  actions: {
+    dismiss?: MailActionTarget;
+    reconcileProcessed?: MailActionTarget;
+    reconcilePending?: MailActionTarget;
+  };
+}
+
+export interface MailInstanceProjection {
+  augmentName: string;
+  inboxId: string;
+  inboxEmail?: string;
+  status: {
+    level: MailStatusLevel;
+    message: string;
+  };
+  inbound: {
+    mode: string;
+    state: string;
+  };
+  reviews: MailReviewProjection[];
+  attention: MailAttentionProjection[];
+}
+
+export interface MailDashboardProjection {
+  schemaVersion: 1;
+  instances: MailInstanceProjection[];
+}
+
+export interface MailAdminProjection extends MailInstanceProjection {
+  kind: "mail";
+  schemaVersion: 1;
 }
 
 export interface AgentCardLite {
@@ -310,6 +388,8 @@ export interface DashboardData {
   runtime?: RuntimeOperationalState | null;
   blocks: AdminInfoBlock[];
   csrfTokens: CsrfToken[];
+  /** Optional typed Mail action-center envelope. AdminInfoBlock projections are also accepted. */
+  mail?: MailDashboardProjection;
   /** Skills snapshot — installed + available Auggy-provided skills. */
   skills: SkillsInfo;
 }

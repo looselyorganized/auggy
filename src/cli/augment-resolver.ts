@@ -14,7 +14,7 @@
  *    operator's chosen instance name from the config.
  */
 
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { fileMemory } from "../augments/fileMemory";
 import { supabaseMemory } from "../augments/supabaseMemory";
@@ -121,6 +121,38 @@ function resolveSqlitePath(
   return resolveOwnedStatePath(dbPath, agentDir, runtimeDataRoot, label, {
     createParents: true,
   });
+}
+
+/**
+ * The former local single-instance layout has no owner field in its JSON
+ * review/rate records. Never guess which newly configured mailbox owns them.
+ * A legacy SQLite ledger does carry inbox identity and may be retained only
+ * when an operator explicitly points an AgentMail instance at that exact path.
+ */
+function assertNoAmbiguousLocalAgentMailState(
+  configs: readonly AugmentConfig[],
+  agentDir: string,
+): void {
+  const legacyDbPath = resolve(agentDir, "agent-mail.db");
+  const legacyDbExplicitlyClaimed = configs.some((config) => {
+    if (config.type !== "agentMail") return false;
+    const configured = config.options?.dbPath;
+    return typeof configured === "string" && resolvePath(configured, agentDir) === legacyDbPath;
+  });
+  const ambiguous = [
+    "agent-mail-state.json",
+    "agent-mail-reviews.json",
+    ...(!legacyDbExplicitlyClaimed
+      ? ["agent-mail.db", "agent-mail.db-wal", "agent-mail.db-shm", "agent-mail.db-journal"]
+      : []),
+  ].filter((name) => lstatSync(resolve(agentDir, name), { throwIfNoEntry: false }) !== undefined);
+
+  if (ambiguous.length === 0) return;
+  throw new Error(
+    `[augment-resolver] multiple local AgentMail instances cannot adopt legacy singleton state (${ambiguous.join(
+      ", ",
+    )}). Reconcile pending or ambiguous work with the prior single-instance configuration, then explicitly migrate/archive these artifacts. A legacy agent-mail.db may be retained only by configuring its owning instance with dbPath: ./agent-mail.db.`,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -661,6 +693,11 @@ export async function resolveAugments(
   const overrideDir = resolverOpts.runtimeDataRoot ?? agentDir;
   const ownedStateRoot =
     resolverOpts.runtimeDataRoot ?? (resolverOpts.agentId ? resolve(agentDir) : undefined);
+  const agentMailInstanceCount = configs.filter((config) => config.type === "agentMail").length;
+  const agentMailDbOwners = new Map<string, string>();
+  if (resolverOpts.runtimeDataRoot === undefined && agentMailInstanceCount > 1) {
+    assertNoAmbiguousLocalAgentMailState(configs, agentDir);
+  }
 
   if (resolverOpts.agentId) {
     for (const config of configs) {
@@ -1036,6 +1073,25 @@ export async function resolveAugments(
               `agentMail "${config.name}" state path`,
               { createParents: true },
             );
+          } else if (agentMailInstanceCount > 1) {
+            // Preserve the project-root layout for one local mailbox. Multiple
+            // instances get isolated sidecars and a namespaced default ledger.
+            stateDir = resolve(agentDir, "data", "agent-mail", config.name);
+            dbPath =
+              opts.dbPath === undefined
+                ? resolveOwnedStatePath(
+                    resolve(stateDir, "agent-mail.db"),
+                    agentDir,
+                    ownedStateRoot ?? resolve(agentDir),
+                    `agentMail "${config.name}" dbPath`,
+                    { createParents: true },
+                  )
+                : resolveSqlitePath(
+                    rawDbPath,
+                    agentDir,
+                    ownedStateRoot,
+                    `agentMail "${config.name}" dbPath`,
+                  );
           } else {
             // Locally, keep state beside agent.yaml and root relative database
             // paths at that same agent project directory.
@@ -1047,7 +1103,18 @@ export async function resolveAugments(
             );
           }
 
+          const existingDbOwner = agentMailDbOwners.get(resolve(dbPath));
+          if (existingDbOwner) {
+            throw new Error(
+              `[augment-resolver] AgentMail dbPath "${dbPath}" is configured by both "${existingDbOwner}" and "${config.name}"; every AgentMail instance requires an isolated database`,
+            );
+          }
+          agentMailDbOwners.set(resolve(dbPath), config.name);
+
           augment = agentMail({
+            instanceId: config.name,
+            legacySingletonCompatibility: agentMailInstanceCount === 1,
+            namespaceTools: agentMailInstanceCount > 1,
             apiKey: opts.apiKey as string,
             inboxId: opts.inboxId as string,
             emailAddress: opts.emailAddress as string | undefined,

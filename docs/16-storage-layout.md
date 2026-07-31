@@ -67,6 +67,12 @@ variable names and placeholders and remains normally readable.
   `/app/data/.auggy-runtime-singleton.lock` for the process lifetime; its
   contents are non-authoritative and it is safe to preserve in a stopped
   backup. See [18-deploy.md](./18-deploy.md).
+- One local AgentMail instance retains the historical project-root state
+  layout. With multiple instances, default ledgers and JSON sidecars move under
+  `data/agent-mail/<augment-name>/`; startup refuses unowned root-level
+  singleton artifacts until they are explicitly reconciled and migrated or
+  archived. Each mounted instance must own a distinct SQLite database; duplicate
+  resolved `dbPath` ownership is a startup error.
 - The filesystem augment catalogs bounded metadata from `data/workspace` on
   creator and agent turns. This makes durable artifacts visible without
   automatically loading their contents; the model still uses `fs_search`,

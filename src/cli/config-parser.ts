@@ -1503,14 +1503,22 @@ function validateAgentMailOptions(
         }
       }
 
-      const numericFields = ["maxRecipients", "bodyMaxBytes"] as const;
-      for (const field of numericFields) {
-        if (
-          out[field] !== undefined &&
-          (typeof out[field] !== "number" || (out[field] as number) <= 0)
-        ) {
-          errors.push(`${prefix}.outbound.${field}: must be a positive number`);
-        }
+      if (
+        out.maxRecipients !== undefined &&
+        (typeof out.maxRecipients !== "number" ||
+          !Number.isSafeInteger(out.maxRecipients) ||
+          out.maxRecipients <= 0)
+      ) {
+        errors.push(`${prefix}.outbound.maxRecipients: must be a positive integer`);
+      }
+      if (
+        out.bodyMaxBytes !== undefined &&
+        (typeof out.bodyMaxBytes !== "number" ||
+          !Number.isSafeInteger(out.bodyMaxBytes) ||
+          out.bodyMaxBytes <= 0 ||
+          out.bodyMaxBytes > 1024 * 1024)
+      ) {
+        errors.push(`${prefix}.outbound.bodyMaxBytes: must be an integer between 1 and 1048576`);
       }
 
       if (out.subjectPrefix !== undefined) {

@@ -40,6 +40,7 @@ tampered, or newer database fails without stamping or mutating it.
 
 | Store | Current schema | Supported predecessor evidence | Rollback boundary |
 | --- | --- | --- | --- |
+| Admin overrides | `admin-overrides/v2` | Exact v1 remains readable; a named singleton may inherit the legacy AgentMail cap and rewrites it into its instance namespace on the next AgentMail cap change | Restore the complete matching policy file; v1 code must not read a v2 file |
 | Layered memory | `LMEM/v1` | Recognized unstamped legacy facts migrate to v1; migration tests prove preservation and idempotence | Restore the immutable pre-upgrade bundle before running older code |
 | Budgets | `BUDG/v1` | Exact recognized legacy shape only | Restore bundle; reconcile quota and downstream usage first |
 | Visitor auth | `VAUT/v1` | Exact recognized legacy shape only | Restore bundle plus the matching auth/revocation recovery point |
@@ -51,12 +52,11 @@ tampered, or newer database fails without stamping or mutating it.
 | Durable jobs and schedules | `DJOB/v2` | Exact branded `DJOB/v1` migrates atomically to v2; lookalikes fail before DDL | Restore the complete pre-upgrade bundle to roll back; reconcile every ambiguous downstream effect before enabling schedules or ingress |
 | Local runtime claims and launchd generations | `AUCL/v2` | Exact branded v1 claim table migrates to v2 | Local CLI control state, not runtime-volume state; stop and unload every local agent before restoring the matching registry |
 
-Admin overrides (`admin-overrides/v1`), thread-history snapshots (`version: 1`),
-anonymous-session proofs (`version: 1`), Link provenance (`version: 1`), and
-model snapshots (`schemaVersion: 1`) have local readers that validate their
-own shape. Model registry caches are advisory and may be discarded on an
-unsupported cache schema; replay, authorization, quota, and delivery stores
-may not.
+Thread-history snapshots (`version: 1`), anonymous-session proofs
+(`version: 1`), Link provenance (`version: 1`), and model snapshots
+(`schemaVersion: 1`) have local readers that validate their own shape. Model
+registry caches are advisory and may be discarded on an unsupported cache
+schema; replay, authorization, quota, and delivery stores may not.
 
 Supabase tables, downstream provider state, package-owned Link/AgentMail
 files, and custom augment persistence are external prerequisites. Core can

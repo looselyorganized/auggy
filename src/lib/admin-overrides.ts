@@ -27,9 +27,37 @@ import { openAbsoluteDirectoryNoFollow, openAt, renameAt, tryOpenAt, unlinkAt } 
  *   - notify.globalMaxPerHour
  *   - agentMail.globalMaxPerHour
  *
- * Adding a new override field is a schema migration — bump the version
- * number and add a per-version branch here.
+ *
+ * v2 adds AgentMail instance-scoped caps. The legacy singleton field remains
+ * valid only as the `agent-mail` compatibility instance; named instances
+ * read and write `agentMail.instances[instanceId]`.
  */
+const webTransportOverrideSchema = z
+  .object({
+    allowAnonymous: z.boolean().optional(),
+    publicIntegration: z.boolean().optional(),
+  })
+  .strict();
+const budgetOverrideSchema = z
+  .object({ dailyBudgetUsd: z.number().positive().optional() })
+  .strict();
+const hourlyCapOverrideSchema = z
+  .object({ globalMaxPerHour: z.number().int().positive().optional() })
+  .strict();
+const agentMailInstancesSchema = z
+  .record(z.string(), hourlyCapOverrideSchema)
+  .superRefine((instances, ctx) => {
+    for (const instanceId of Object.keys(instances)) {
+      if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(instanceId) || instanceId.length > 128) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: [instanceId],
+          message: "unsafe AgentMail instance ID",
+        });
+      }
+    }
+  });
+
 const AdminOverridesV1Schema = z
   .object({
     version: z.literal(1),
@@ -37,20 +65,31 @@ const AdminOverridesV1Schema = z
     lastModifiedBy: z.string(),
     overrides: z
       .object({
-        webTransport: z
-          .object({
-            allowAnonymous: z.boolean().optional(),
-            publicIntegration: z.boolean().optional(),
-          })
-          .strict()
-          .optional(),
-        budgets: z.object({ dailyBudgetUsd: z.number().positive().optional() }).strict().optional(),
-        notify: z
-          .object({ globalMaxPerHour: z.number().int().positive().optional() })
-          .strict()
-          .optional(),
+        webTransport: webTransportOverrideSchema.optional(),
+        budgets: budgetOverrideSchema.optional(),
+        notify: hourlyCapOverrideSchema.optional(),
+        agentMail: hourlyCapOverrideSchema.optional(),
+      })
+      .strict(),
+  })
+  .strict();
+
+const AdminOverridesV2Schema = z
+  .object({
+    version: z.literal(2),
+    lastModified: z.string().datetime(),
+    lastModifiedBy: z.string(),
+    overrides: z
+      .object({
+        webTransport: webTransportOverrideSchema.optional(),
+        budgets: budgetOverrideSchema.optional(),
+        notify: hourlyCapOverrideSchema.optional(),
         agentMail: z
-          .object({ globalMaxPerHour: z.number().int().positive().optional() })
+          .object({
+            /** Legacy/default `agent-mail` compatibility instance. */
+            globalMaxPerHour: z.number().int().positive().optional(),
+            instances: agentMailInstancesSchema.optional(),
+          })
           .strict()
           .optional(),
       })
@@ -58,7 +97,12 @@ const AdminOverridesV1Schema = z
   })
   .strict();
 
-export type AdminOverrides = z.infer<typeof AdminOverridesV1Schema>;
+const AdminOverridesSchema = z.discriminatedUnion("version", [
+  AdminOverridesV1Schema,
+  AdminOverridesV2Schema,
+]);
+
+export type AdminOverrides = z.infer<typeof AdminOverridesSchema>;
 
 const OVERRIDE_FILE = "admin-overrides.json";
 const MAX_OVERRIDE_BYTES = 1024 * 1024;
@@ -270,7 +314,7 @@ export function readOverrides(agentDir: string | undefined): AdminOverrides | nu
   const parsed = readOverrideJson(root);
   if (parsed === null) return null;
 
-  const result = AdminOverridesV1Schema.safeParse(parsed);
+  const result = AdminOverridesSchema.safeParse(parsed);
   if (!result.success) {
     throw new Error(
       `[admin-overrides] ${path} failed validation; refusing to reset runtime policy: ${result.error.issues
@@ -292,7 +336,7 @@ export function readOverrides(agentDir: string | undefined): AdminOverrides | nu
  * protects the operator's runtime knob state on multi-user hosts.
  */
 export function writeOverrides(agentDir: string, overrides: AdminOverrides): void {
-  const parsed = AdminOverridesV1Schema.parse(overrides);
+  const parsed = AdminOverridesSchema.parse(overrides);
   const root = overrideRoot(agentDir, false);
   if (!root) throw new Error("[admin-overrides] policy root is unavailable");
   writeOverrideJson(root, parsed);

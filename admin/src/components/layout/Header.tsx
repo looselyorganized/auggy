@@ -211,7 +211,9 @@ function AgentDetailsButton({
 export function selectAgentMailInboxEmail(blocks: DashboardData["blocks"]): string | undefined {
   const emails = new Set<string>();
   for (const block of blocks) {
-    if (block.augmentName !== "agent-mail") continue;
+    const isMailProjection =
+      block.projection?.kind === "mail" && block.projection.schemaVersion === 1;
+    if (!isMailProjection && block.augmentName !== "agent-mail") continue;
 
     for (const section of block.sections) {
       if (section.kind !== "keyValue") continue;
