@@ -261,6 +261,51 @@ describe("validateOutbound", () => {
     const r = validateOutbound({ recipients: ["a@x.com"], subject: "", text: "t" }, {});
     expect(r.ok).toBe(false);
   });
+  test("caps the final normalized subject after applying the configured prefix", () => {
+    const accepted = validateOutbound(
+      { recipients: ["a@x.com"], subject: "s".repeat(992), text: "t" },
+      {},
+    );
+    expect(accepted.ok).toBe(true);
+    if (accepted.ok) expect(accepted.value.subject.length).toBe(1_000);
+
+    const rejected = validateOutbound(
+      { recipients: ["a@x.com"], subject: "s".repeat(993), text: "t" },
+      {},
+    );
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) expect(rejected.reason).toMatch(/normalized subject.*1001.*cap of 1000/);
+  });
+  test("allows exactly 1000 characters without double-counting an existing prefix", () => {
+    const subject = `[Auggy] ${"s".repeat(992)}`;
+    const r = validateOutbound({ recipients: ["a@x.com"], subject, text: "t" }, {});
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.subject).toBe(subject);
+  });
+  test("enforces the subject cap when prefixing is intentionally skipped", () => {
+    const accepted = validateOutbound(
+      {
+        recipients: ["a@x.com"],
+        subject: "s".repeat(1_000),
+        text: "t",
+        skipSubjectPrefix: true,
+      },
+      {},
+    );
+    expect(accepted.ok).toBe(true);
+
+    const rejected = validateOutbound(
+      {
+        recipients: ["a@x.com"],
+        subject: "s".repeat(1_001),
+        text: "t",
+        skipSubjectPrefix: true,
+      },
+      {},
+    );
+    expect(rejected.ok).toBe(false);
+    if (!rejected.ok) expect(rejected.reason).toMatch(/normalized subject.*1001.*cap of 1000/);
+  });
   test("rejects body exceeding byte cap", () => {
     const big = "x".repeat(10);
     const r = validateOutbound(

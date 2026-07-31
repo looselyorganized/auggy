@@ -1,10 +1,12 @@
 import { useCallback, useState } from "react";
-import { findCsrfToken, postAction } from "@/lib/api";
+import { findCsrfToken, findUniqueActionAugment, postAction } from "@/lib/api";
 import { useToast } from "@/lib/toast";
 import { useConfirm } from "@/lib/confirm";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
 
 export interface DispatchOpts {
+  /** Exact augment owner for augment actions. Built-in console actions omit it. */
+  augmentName?: string;
   actionId: string;
   rowKey?: string;
   values?: Record<string, string>;
@@ -51,7 +53,10 @@ export function useActionDispatcher(): UseActionDispatcher {
         });
         if (!ok) return false;
       }
-      const csrf = findCsrfToken(data?.csrfTokens ?? [], opts.actionId, opts.rowKey);
+      const tokens = data?.csrfTokens ?? [];
+      const augmentName =
+        opts.augmentName ?? findUniqueActionAugment(tokens, opts.actionId, opts.rowKey);
+      const csrf = findCsrfToken(tokens, opts.actionId, opts.rowKey, augmentName);
       if (!csrf) {
         push(
           "error",
@@ -63,7 +68,13 @@ export function useActionDispatcher(): UseActionDispatcher {
       }
       setBusy(true);
       try {
-        const result = await postAction(opts.actionId, csrf, opts.values, opts.rowKey);
+        const result = await postAction(
+          opts.actionId,
+          csrf,
+          opts.values,
+          opts.rowKey,
+          augmentName,
+        );
         if (result.csrfExpired) {
           push(
             "warn",

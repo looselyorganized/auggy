@@ -206,6 +206,42 @@ describe("createAgentMailClient", () => {
     }
   });
 
+  test("accepts provider message and thread IDs at the 256-character boundary", async () => {
+    const messageId = "m".repeat(256);
+    const threadId = "t".repeat(256);
+    const client = createAgentMailClient({
+      apiKey: "am_test",
+      http: mockHttp(() => ({
+        status: 200,
+        body: JSON.stringify({ message_id: messageId, thread_id: threadId }),
+      })),
+    });
+
+    await expect(
+      client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" }),
+    ).resolves.toEqual({ status: "sent", messageId, threadId });
+  });
+
+  test("classifies empty or oversized provider IDs after a successful send as outcome unknown", async () => {
+    const invalidIdentities = [
+      { message_id: "", thread_id: "thread_1" },
+      { message_id: "message_1", thread_id: "" },
+      { message_id: "m".repeat(257), thread_id: "thread_1" },
+      { message_id: "message_1", thread_id: "t".repeat(257) },
+    ];
+
+    for (const identity of invalidIdentities) {
+      const client = createAgentMailClient({
+        apiKey: "am_test",
+        http: mockHttp(() => ({ status: 200, body: JSON.stringify(identity) })),
+      });
+
+      await expect(
+        client.send({ inboxId: "inb_x", to: ["a@b.com"], subject: "s", text: "t" }),
+      ).rejects.toMatchObject({ outcomeUnknown: true });
+    }
+  });
+
   test("preserves an outcome-unknown HTTP failure", async () => {
     const client = createAgentMailClient({
       apiKey: "am_test",

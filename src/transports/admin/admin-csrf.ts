@@ -1,11 +1,12 @@
 /**
  * G36 CSRF token scheme. Format:
  *
- *   base64url(HMAC-SHA256(bearer, agentName + "|" + ts + "|" + actionId + "|" + rowKey?)) + "." + ts
+ *   base64url(HMAC-SHA256(bearer, canonical action target)) + "." + ts
  *
  * Binds the token to:
  *   - bearer  → can't reuse tokens after AUGGY_WEB_TOKEN is rotated
  *   - agentName → can't reuse tokens across different agents on the same browser
+ *   - augmentName (when present) → a targeted token cannot cross augment instances
  *   - actionId → token for `notify-test` can't be replayed against `posture-flip`
  *   - rowKey (when present) → token for `memory-erase` on `vis_abc` can't be
  *     replayed against `vis_xyz` (closes the adversarial-review M1 finding)
@@ -18,6 +19,8 @@ const CSRF_TTL_SECONDS = 24 * 3600;
 export interface CsrfGenerateOpts {
   bearer: string;
   agentName: string;
+  /** Runtime augment instance targeted by an augment-admin action. */
+  augmentName?: string;
   actionId: string;
   rowKey?: string;
   /** Internal: override timestamp (used by tests). */
@@ -28,6 +31,8 @@ export interface CsrfValidateOpts {
   token: string;
   bearer: string;
   agentName: string;
+  /** Runtime augment instance targeted by an augment-admin action. */
+  augmentName?: string;
   actionId: string;
   rowKey?: string;
 }
@@ -47,7 +52,7 @@ export type CsrfValidateResult =
 
 export async function generateCsrfToken(opts: CsrfGenerateOpts): Promise<string> {
   const ts = opts._timestamp ?? Math.floor(Date.now() / 1000);
-  const message = `${opts.agentName}|${ts}|${opts.actionId}|${opts.rowKey ?? ""}`;
+  const message = csrfMessage(opts, ts);
   const signature = await hmacSha256Base64Url(opts.bearer, message);
   return `${signature}.${ts}`;
 }
@@ -68,13 +73,34 @@ export async function validateCsrfToken(opts: CsrfValidateOpts): Promise<CsrfVal
   // as tampering (an attacker fabricated a future timestamp to extend TTL).
   if (ts > now + 60) return { valid: false, reason: "tampered" };
 
-  const message = `${opts.agentName}|${ts}|${opts.actionId}|${opts.rowKey ?? ""}`;
+  const message = csrfMessage(opts, ts);
   const expected = await hmacSha256Base64Url(opts.bearer, message);
 
   if (!timingSafeStringEqual(signature, expected)) {
     return { valid: false, reason: "tampered" };
   }
   return { valid: true };
+}
+
+function csrfMessage(
+  opts: Pick<CsrfGenerateOpts, "agentName" | "augmentName" | "actionId" | "rowKey">,
+  timestamp: number,
+): string {
+  if (opts.augmentName === undefined) {
+    // Preserve the v1 message exactly for non-augment console actions and the
+    // uniqueness-checked legacy /console/action/:actionId compatibility route.
+    return `${opts.agentName}|${timestamp}|${opts.actionId}|${opts.rowKey ?? ""}`;
+  }
+
+  // JSON array framing prevents delimiter-confusion aliases when third-party
+  // augment or action names contain punctuation.
+  return `target-v2:${JSON.stringify([
+    opts.agentName,
+    timestamp,
+    opts.augmentName,
+    opts.actionId,
+    opts.rowKey ?? null,
+  ])}`;
 }
 
 const enc = new TextEncoder();

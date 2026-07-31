@@ -122,6 +122,19 @@ describe("admin-collector", () => {
     expect(blocks[0]?.title).toBe("Test");
   });
 
+  it("uses the mounted runtime name as the dashboard action target", async () => {
+    const aug = mockAugment({
+      name: "mail-west",
+      adminInfo: async () => ({
+        augmentName: "agent-mail",
+        title: "Mail",
+        sections: [],
+      }),
+    });
+    const blocks = await collectAdminInfoBlocks(mockKernel([aug]));
+    expect(blocks[0]?.augmentName).toBe("mail-west");
+  });
+
   it("preserves augment registration order", async () => {
     const a = mockAugment({
       name: "a",

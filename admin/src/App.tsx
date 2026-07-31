@@ -13,7 +13,7 @@ import {
   useLocation,
   useNavigate,
 } from "react-router";
-import { LoaderCircle, MessageSquare, Network, Plug } from "lucide-react";
+import { LoaderCircle, Mail, MessageSquare, Network, Plug } from "lucide-react";
 import { ChatThreadNav } from "@/components/admin/ChatThreadNav";
 import {
   ChatWorkspaceProvider,
@@ -35,6 +35,7 @@ import {
 import { getMobileChatNavigationState } from "@/lib/chat-run-state";
 import { ChatRoute } from "@/routes/ChatRoute";
 import { cn } from "@/lib/utils";
+import { hasMailDashboard } from "@/lib/mail-dashboard";
 
 const IntegrationsTab = lazy(() =>
   import("@/routes/IntegrationsTab").then((m) => ({
@@ -44,6 +45,11 @@ const IntegrationsTab = lazy(() =>
 const CapabilitiesTab = lazy(() =>
   import("@/routes/CapabilitiesTab").then((m) => ({
     default: m.CapabilitiesTab,
+  })),
+);
+const MailRoute = lazy(() =>
+  import("@/routes/MailRoute").then((module) => ({
+    default: module.MailRoute,
   })),
 );
 
@@ -124,6 +130,7 @@ function ConsoleShell({
     state.durableThreads,
     chatRouteActive,
   );
+  const mailAvailable = hasMailDashboard(dashboard);
   useEffect(
     () => setChatVisible(visibleChatTarget),
     [setChatVisible, visibleChatTarget],
@@ -190,6 +197,11 @@ function ConsoleShell({
               className="mt-3 grid gap-1 border-t pt-3"
               aria-label="Console sections"
             >
+              {mailAvailable && (
+                <ConsoleNavLink to="/mail" icon={<Mail className="size-4" />}>
+                  Mail
+                </ConsoleNavLink>
+              )}
               <ConsoleNavLink
                 to="/integrations"
                 icon={<Plug className="size-4" />}
@@ -236,6 +248,11 @@ function ConsoleShell({
               Chat: {mobileChatNavigation.statusMessage}
             </span>
           )}
+          {mailAvailable && (
+            <ConsoleNavLink to="/mail" icon={<Mail className="size-4" />}>
+              Mail
+            </ConsoleNavLink>
+          )}
           <ConsoleNavLink to="/integrations" icon={<Plug className="size-4" />}>
             Integrations
           </ConsoleNavLink>
@@ -253,6 +270,18 @@ function ConsoleShell({
               <Route path={CHAT_WELCOME_PATH} element={<ChatRoute />} />
               <Route path="/chat/new" element={<ChatRoute />} />
               <Route path="/chat/:threadId" element={<ChatRoute />} />
+              <Route
+                path="/mail"
+                element={
+                  !dashboard ? (
+                    <ConsoleRouteFallback />
+                  ) : mailAvailable ? (
+                    <MailRoute />
+                  ) : (
+                    <Navigate to={CHAT_WELCOME_PATH} replace />
+                  )
+                }
+              />
               <Route path="/integrations" element={<IntegrationsTab />} />
               <Route path="/capabilities" element={<CapabilitiesTab />} />
               <Route path="*" element={<Navigate to={CHAT_WELCOME_PATH} replace />} />

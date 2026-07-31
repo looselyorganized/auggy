@@ -170,12 +170,19 @@ export function createAgentMailInboundWorker(
   return {
     async processNext() {
       if (halted) throw halted;
-      for (const incident of options.ledger.fenceInterruptedClaims({ expiredOnly: true })) {
+      for (const incident of options.ledger.fenceInterruptedClaims({
+        expiredOnly: true,
+        inboxId,
+      })) {
         options.kernel.quarantineThread(
           agentMailRuntimeThreadId(incident.inboxId, incident.threadId),
         );
       }
-      const claim = options.ledger.claimNext({ workerId, leaseMs: policy.leaseMs });
+      const claim = options.ledger.claimNext({
+        workerId,
+        leaseMs: policy.leaseMs,
+        inboxId,
+      });
       if (!claim) return { status: "idle" };
 
       const messageId = claim.envelope.message.messageId;
@@ -368,6 +375,7 @@ export function agentMailEnvelopeToTrigger(
     contextId: threadId,
     metadata: {
       agentMail: {
+        instanceId: sourceAugment,
         inboxId: message.inboxId,
         threadId: message.threadId,
         messageId: message.messageId,

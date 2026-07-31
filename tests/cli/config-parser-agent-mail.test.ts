@@ -615,6 +615,19 @@ describe("config-parser: agentMail validation", () => {
     expect(() => parseConfig(path)).toThrow(/maxRecipients/);
   });
 
+  test("rejects non-integer and oversized outbound body limits", () => {
+    for (const bodyMaxBytes of [1.5, 1024 * 1024 + 1]) {
+      const path = writeYaml(
+        configWithAgentMail({
+          apiKey: "am_x",
+          inboxId: "inb_x",
+          outbound: { bodyMaxBytes },
+        }),
+      );
+      expect(() => parseConfig(path)).toThrow(/bodyMaxBytes.*between 1 and 1048576/);
+    }
+  });
+
   test("accepts explicit outbound human-review policy", () => {
     const path = writeYaml(
       configWithAgentMail(

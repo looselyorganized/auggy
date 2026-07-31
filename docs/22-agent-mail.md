@@ -148,8 +148,23 @@ model may provide the address when email is contextually appropriate. It must
 still say when inbound monitoring is disabled or degraded.
 
 Only one enabled inbound `agentMail` augment may own a given inbox. Multiple
-outbound-only instances can coexist, but two workers must not compete for the
-same inbound stream.
+instances with different inboxes can coexist, including inbound workers. The
+runtime binds routes, review decisions, creator-attention state, rate state,
+admin overrides, dashboard actions, and durable storage to the configured
+augment name. Every instance must resolve to a distinct SQLite database;
+startup rejects duplicate database ownership. Two workers must also never
+compete for the same inbound stream, so duplicate enabled inbox ownership is a
+startup error.
+
+With one mounted instance, the model tools retain the canonical names
+`send_message`, `reply_to_message`, and `forward_message`. With multiple
+instances they become `send_message__<augment-name>`,
+`reply_to_message__<augment-name>`, and
+`forward_message__<augment-name>` so the model and kernel cannot silently
+dispatch through the wrong mailbox. Runtime context names the exact tools and
+inbox. In a multi-instance configuration, each augment name is limited to 46
+characters so every namespaced tool name stays within the common 64-character
+provider limit.
 
 `inbound.creatorDigest` is independently disabled by default. When enabled,
 Auggy requires exactly one matching `notify` destination that allows creator
@@ -315,7 +330,7 @@ Every outbound action passes these checks before AgentMail is called:
 | --- | --- |
 | Trust | Only `outbound.allowedTrustLevels`; creator/system calls remain the strict default |
 | Recipients | Optional exact/domain allowlist, valid email syntax, 10-recipient default, 50 hard maximum |
-| Content | 100 KiB default body cap, HTML opt-in, mandatory subject prefix, control-character and SMTP envelope checks |
+| Content | 100 KiB default body cap (configurable to 1 MiB), HTML opt-in, mandatory subject prefix, control-character and SMTP envelope checks |
 | Rate and dedup | Global hourly cap, per-recipient cooldown, and subject-hash duplicate window |
 | Sensitive scan | Token-shaped strings are flagged; automatic inbound replies fall back to review rather than sending |
 | Human review | Configured trust levels receive `pending_review` instead of immediate delivery |
@@ -324,7 +339,14 @@ A pending action is stored durably with an immutable content fingerprint and a
 24-hour default expiry. The admin list redacts recipients; the exact request is
 available only from the creator-authenticated, `no-store` review detail route.
 Approval requires that inspection fingerprint, rechecks current rate limits,
-and sends the exact queued request. Rejection records an operator reason.
+and sends the exact queued request. A revise-and-send decision may replace the
+body while preserving the reviewed operation kind, provider message binding,
+and policy-validated recipients; it creates and checks a new exact fingerprint
+before dispatch. Rejection records an operator reason and cannot send mail.
+Every mutation is bound to the augment instance and row identity. Send-capable
+review mutations additionally require the current inspection fingerprint, and
+versioned attention/incident mutations require the current generation, so a
+stale browser or another mailbox's token cannot act on it.
 
 Because AgentMail does not expose an idempotency key for sends, a connection
 failure after the provider may have accepted a request is treated as
@@ -334,8 +356,9 @@ duplicate real email.
 
 ## Webhook verification
 
-Webhook mode mounts `POST /webhooks/agentmail` by default. The shared route
-policy verifies the Svix signature against the raw request body before JSON
+Webhook mode mounts `POST /webhooks/agentmail` by default for one mailbox and
+`POST /webhooks/agentmail/<augment-name>` when multiple instances are mounted.
+The shared route policy verifies the Svix signature against the raw request body before JSON
 parsing, uses `AGENTMAIL_WEBHOOK_SECRET` unless configured otherwise, and
 defaults to a 300-second timestamp tolerance. Generated browser clients omit
 webhook-policy routes.
@@ -354,8 +377,20 @@ depend on the enabled send, receive, and live-subscription paths.
 
 ## State and Railway durability
 
-Locally, a relative `dbPath` is resolved from the agent project. On Railway,
-AgentMail state is always rooted under:
+Locally, one AgentMail instance retains the historical project-root layout. If
+multiple instances are mounted, each instance's default ledger and JSON
+sidecars are rooted under `data/agent-mail/<augment-name>/`. An explicit local
+`dbPath` keeps its configured location, but it must remain unique to that
+instance; sharing one AgentMail database across mounted instances is rejected.
+
+Legacy singleton review and rate files cannot be assigned safely when a local
+configuration expands to multiple mailboxes: review records do not contain
+enough inbox ownership evidence. Startup fails closed with an explicit
+migration error instead of guessing which mailbox owns an unsent or ambiguous
+action. Reconcile or archive that state while running the prior single-instance
+configuration before enabling multiple instances.
+
+On Railway, AgentMail state is always rooted under:
 
 ```text
 /app/data/agent-mail/<augment-name>/
@@ -384,9 +419,12 @@ The creator-authenticated admin surface reports:
 - last provider error;
 - outbound sent, blocked, rate-limited, pending-review, and ambiguous attempts;
 - redacted recent dispatches and review rows;
-- test-send, cap adjustment, approve/reject, ambiguous-send reconciliation,
-  and versioned inbound-incident reconciliation actions. Inbound evidence is
-  stored only as SHA-256; raw evidence is never written to the ledger.
+- a conditional `/console/mail` action center with an explicit instance
+  selector, metadata-only queues, and on-demand creator-authenticated details;
+- test-send, cap adjustment, approve/revise/reject, ambiguous-send
+  reconciliation, and versioned inbound-incident reconciliation actions.
+  Inbound evidence is stored only as SHA-256; raw evidence is never written to
+  the ledger.
 
 ## Common failures
 

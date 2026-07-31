@@ -1272,6 +1272,87 @@ export interface AugmentConstraints {
 // See docs/21-console.md for the current operator-surface contract.
 // ===========================================================================
 
+/** One target-aware action exposed by a structured admin projection. */
+export interface AdminProjectionAction {
+  actionId: string;
+}
+
+/**
+ * Metadata-only review row for the creator Mail action center.
+ *
+ * Exact recipients, draft bodies, HTML, and approval fingerprints are fetched
+ * on demand from the creator-authenticated `detailPath`; they must never be
+ * embedded in the dashboard snapshot.
+ */
+export interface AdminMailReviewProjection {
+  /** Opaque row identity used for both targeted CSRF and action dispatch. */
+  rowKey: string;
+  reviewId: string;
+  status: "pending" | "sending";
+  subject: string;
+  /** Bounded/redacted correspondent summary suitable for the list view. */
+  correspondent: string;
+  updatedAt?: string;
+  expiresAt: string;
+  /** Same-origin, creator-authenticated, no-store JSON endpoint. */
+  detailPath: string;
+  actions: {
+    approve?: AdminProjectionAction;
+    revise?: AdminProjectionAction;
+    reject?: AdminProjectionAction;
+    /** Creator-only confirmation that an ambiguous provider mutation was sent. */
+    reconcileSent?: AdminProjectionAction;
+    /** Creator-only confirmation that an ambiguous provider mutation was not sent. */
+    reconcileFailed?: AdminProjectionAction;
+  };
+}
+
+/** Metadata-only inbound item requiring creator attention. */
+export interface AdminMailAttentionProjection {
+  /** Opaque row identity used for both targeted CSRF and action dispatch. */
+  rowKey: string;
+  messageId: string;
+  status: "open" | "pending_review" | "ambiguous";
+  /** Compare-and-set generation required by attention mutations. */
+  version: number;
+  subject?: string;
+  sender?: string;
+  receivedAt?: string;
+  updatedAt: string;
+  /** Same-origin, creator-authenticated, no-store JSON endpoint when inspectable. */
+  detailPath?: string;
+  actions: {
+    dismiss?: AdminProjectionAction;
+    /** Creator-only confirmation that an outcome-unknown inbound turn completed. */
+    reconcileProcessed?: AdminProjectionAction;
+    /** Creator-only confirmation that no external effect occurred and retry is safe. */
+    reconcilePending?: AdminProjectionAction;
+  };
+}
+
+/** Safe projection for one mounted AgentMail instance. */
+export interface AdminMailInstanceProjection {
+  augmentName: string;
+  inboxId: string;
+  inboxEmail?: string;
+  status: {
+    level: "ok" | "warn" | "error";
+    message: string;
+  };
+  inbound: {
+    mode: AgentMailInboundMode;
+    state: "disabled" | "starting" | "ready" | "subscribed" | "degraded" | "stopped";
+  };
+  reviews: AdminMailReviewProjection[];
+  attention: AdminMailAttentionProjection[];
+}
+
+/** Versioned structured views understood by the creator console. */
+export type AdminInfoProjection = AdminMailInstanceProjection & {
+  kind: "mail";
+  schemaVersion: 1;
+};
+
 /** A typed render block for an augment's section on /admin. */
 export interface AdminInfoBlock {
   /** Stable identifier; used in audit logs + action dispatch. */
@@ -1282,6 +1363,11 @@ export interface AdminInfoBlock {
   sections: AdminSection[];
   /** Optional augment-level actions (rendered as forms at the bottom). */
   actions?: AdminAction[];
+  /**
+   * Optional structured, content-minimized projection for a purpose-built
+   * creator-console surface. Generic block rendering remains the fallback.
+   */
+  projection?: AdminInfoProjection;
 }
 
 /** Section variants. The four primitives v1.0 supports. */
@@ -1294,7 +1380,7 @@ export type AdminSection =
         /** Optional annotation, e.g. "source: yaml". */
         source?: string;
         /** Optional reset-to-yaml affordance for rows with /admin-override source. */
-        resetAction?: { id: string; label: string };
+        resetAction?: { id: string; label: string; augmentName?: string };
       }>;
     }
   | {
@@ -1323,6 +1409,8 @@ export interface AdminAction {
   label: string;
   confirmRequired: boolean;
   inputs?: AdminActionInput[];
+  /** Dashboard wire target; the collector sets this from the mounted runtime. */
+  augmentName?: string;
 }
 
 /** Form input declaration on an AdminAction. */
@@ -1342,6 +1430,10 @@ export interface AdminRowAction {
   confirmRequired: boolean;
   /** Which column's value to pass as `rowKey` to the action handler. */
   rowKeyColumn: number;
+  /** Additional typed values accepted alongside the authoritative rowKey. */
+  inputs?: AdminActionInput[];
+  /** Dashboard wire target; the collector sets this from the mounted runtime. */
+  augmentName?: string;
 }
 
 /** Result returned by an AdminActionHandler. */
@@ -1920,7 +2012,7 @@ export interface AgentMailOutboundOptions {
   allowedRecipients?: string[];
   /** Max recipients per send (combined to/cc/bcc). Default 10. Hard ceiling 50 per AgentMail. */
   maxRecipients?: number;
-  /** Hard cap on text body size in bytes. Default 102400 (100KB). */
+  /** Hard cap on text body size in bytes. Default 102400 (100 KiB); configurable up to 1 MiB. */
   bodyMaxBytes?: number;
   /** Permit HTML body in send/reply/forward. Default false. */
   allowHtml?: boolean;

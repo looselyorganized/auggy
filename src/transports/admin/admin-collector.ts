@@ -192,7 +192,13 @@ export async function collectAdminInfoBlocks(kernel: TransportKernel): Promise<A
     if (!aug.adminInfo) continue;
     try {
       const block = await aug.adminInfo();
-      if (block) blocks.push(block);
+      if (block) {
+        // The mounted runtime name is the dispatch identity. An augment's
+        // presentation block may carry a type-oriented fallback (especially
+        // before register()), but the dashboard must never mint action targets
+        // for a name that is not present in the runtime registry.
+        blocks.push({ ...block, augmentName: aug.name });
+      }
     } catch {
       console.error(`[admin] augment "${aug.name}" adminInfo() failed`);
       blocks.push({

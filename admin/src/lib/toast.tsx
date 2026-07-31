@@ -46,3 +46,8 @@ export function useToast(): ToastContextValue {
 export const NoopToast: ToastContextValue = {
   push: () => {},
 };
+
+/** Test/embedded boundary that keeps action components independent of Sonner's DOM effects. */
+export function NoopToastProvider({ children }: { children: ReactNode }) {
+  return <ToastContext.Provider value={NoopToast}>{children}</ToastContext.Provider>;
+}

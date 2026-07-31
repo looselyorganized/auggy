@@ -57,13 +57,31 @@ describe("selectAgentMailInboxEmail", () => {
   });
 
   it("renders every distinct AgentMail inbox address without singular ambiguity", () => {
-    const blocks: DashboardData["blocks"] = ["one@example.com", "two@example.com", "one@example.com"].map(
-      (value) => ({
+    const blocks: DashboardData["blocks"] = [
+      {
+        augmentName: "support",
+        title: "AgentMail · support",
+        projection: { kind: "mail", schemaVersion: 1, inboxEmail: "one@example.com" },
+        sections: [
+          { kind: "keyValue", rows: [{ label: "Inbox email", value: "one@example.com" }] },
+        ],
+      },
+      {
+        augmentName: "billing",
+        title: "AgentMail · billing",
+        projection: { kind: "mail", schemaVersion: 1, inboxEmail: "two@example.com" },
+        sections: [
+          { kind: "keyValue", rows: [{ label: "Inbox email", value: "two@example.com" }] },
+        ],
+      },
+      {
         augmentName: "agent-mail",
         title: "AgentMail",
-        sections: [{ kind: "keyValue", rows: [{ label: "Inbox email", value }] }],
-      }),
-    );
+        sections: [
+          { kind: "keyValue", rows: [{ label: "Inbox email", value: "one@example.com" }] },
+        ],
+      },
+    ];
 
     expect(selectAgentMailInboxEmail(blocks)).toBe("one@example.com, two@example.com");
   });

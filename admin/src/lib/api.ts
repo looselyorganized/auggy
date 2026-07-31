@@ -52,17 +52,38 @@ export function findCsrfToken(
   tokens: CsrfToken[],
   actionId: string,
   rowKey?: string,
+  augmentName?: string,
 ): string | null {
   const match = tokens.find(
-    (t) => t.actionId === actionId && (t.rowKey ?? undefined) === rowKey,
+    (t) =>
+      (t.augmentName ?? undefined) === augmentName &&
+      t.actionId === actionId &&
+      (t.rowKey ?? undefined) === rowKey,
   );
   return match?.token ?? null;
+}
+
+export function findUniqueActionAugment(
+  tokens: CsrfToken[],
+  actionId: string,
+  rowKey?: string,
+): string | undefined {
+  const names = new Set(
+    tokens
+      .filter((token) => token.actionId === actionId && token.rowKey === rowKey)
+      .map((token) => token.augmentName)
+      .filter((name): name is string => typeof name === "string"),
+  );
+  return names.size === 1 ? [...names][0] : undefined;
 }
 
 export interface ActionPostResult {
   message: string;
   ok: boolean;
   csrfExpired: boolean;
+  /** HTTP conflict, distinct from a domain-level stale result returned as 200. */
+  conflict?: boolean;
+  status?: number;
 }
 
 /**
@@ -74,22 +95,36 @@ export async function postAction(
   csrfToken: string,
   values: Record<string, string> = {},
   rowKey?: string,
+  augmentName?: string,
+  dependencies: AdminFetchDependencies = {},
 ): Promise<ActionPostResult> {
-  const path = rowKey
-    ? `/console/action/${encodeURIComponent(actionId)}/row/${encodeURIComponent(rowKey)}`
+  const actionPath = augmentName
+    ? `/console/action/${encodeURIComponent(augmentName)}/${encodeURIComponent(actionId)}`
     : `/console/action/${encodeURIComponent(actionId)}`;
+  const path = rowKey
+    ? `${actionPath}/row/${encodeURIComponent(rowKey)}`
+    : actionPath;
   const body = new URLSearchParams({ _csrf: csrfToken, ...values }).toString();
-  const res = await adminFetch(path, {
-    method: "POST",
-    headers: {
-      accept: "application/json",
-      "content-type": "application/x-www-form-urlencoded",
+  const res = await adminFetch(
+    path,
+    {
+      method: "POST",
+      headers: {
+        accept: "application/json",
+        "content-type": "application/x-www-form-urlencoded",
+      },
+      body,
     },
-    body,
-  });
+    dependencies,
+  );
 
   if (res.headers.get("content-type")?.includes("application/json")) {
-    return (await res.json()) as ActionPostResult;
+    const result = (await res.json()) as ActionPostResult;
+    return {
+      ...result,
+      status: res.status,
+      conflict: res.status === 409,
+    };
   }
 
   if (res.status === 403) {

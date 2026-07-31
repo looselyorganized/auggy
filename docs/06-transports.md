@@ -1171,7 +1171,14 @@ interface Augment {
 
 `adminActions[id]` is the handler invoked on POST. Returns `{ok, message}` for the redirect's flash.
 
-At boot, `buildAdminActionRegistry` walks every mounted augment's `adminInfo()` declarations and constructs a global action registry. **Action ids must be globally unique across augments** — collisions throw at boot. Declared actions without a matching handler also throw at boot — the runtime-bomb pattern (handlers missing, only discovered at first POST) cannot occur.
+At boot, `buildAdminActionRegistry` walks every mounted augment's `adminInfo()`
+declarations and constructs a registry keyed by exact
+`(augmentName, actionId)`. Mounted augment names must be unique, and repeated
+declarations within one augment must have compatible row/input metadata.
+Declared actions without a matching handler also throw at boot. Action IDs may
+be shared by different augment instances; targeted routes and CSRF tokens keep
+their authority separate. The legacy action-only route remains available only
+when that action ID has one mounted owner and otherwise returns a conflict.
 
 ### Persistence — `admin-overrides.json`
 
@@ -1183,8 +1190,17 @@ Runtime-mutable knobs persist across restart via `<agentDir>/admin-overrides.jso
 | `publicIntegration` | `webTransport` | `posture-public-integration-set` | n/a |
 | `dailyBudgetUsd` | `budgets` | `budget-cap-adjust` | `budget-cap-reset` |
 | `globalMaxPerHour` | `notify` | `notify-cap-adjust` | `notify-cap-reset` |
+| `globalMaxPerHour` | each `agentMail` instance | `agentmail-cap-adjust` | `agentmail-cap-reset` |
 
-Schema is Zod-validated (`{version: 1, lastModified, lastModifiedBy, overrides: {...}}`). File is written atomically (temp + rename) with `0o600` mode. Each augment reads its override at construction time and applies it on top of yaml + env precedence; subsequent admin POSTs persist back via `writeOverrides()` BEFORE mutating the closure — S7 ordering ensures a write failure leaves agent state unchanged.
+Schema v2 is Zod-validated
+(`{version: 2, lastModified, lastModifiedBy, overrides: {...}}`) and stores
+AgentMail caps below `agentMail.instances[augmentName]`. The exact v1
+predecessor remains readable; a named singleton may inherit its legacy
+AgentMail cap and migrates the file on its next AgentMail cap write. The file is
+written atomically (temp + rename) with `0o600` mode. Each augment reads its
+override at construction time and applies it on top of yaml + env precedence;
+subsequent admin POSTs persist back via `writeOverrides()` before mutating the
+closure, so a write failure leaves agent state unchanged.
 
 Resets clear the relevant field from the file (and the augment object key if the field was the last child); the augment re-resolves from yaml/env/default.
 

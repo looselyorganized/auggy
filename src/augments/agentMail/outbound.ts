@@ -36,6 +36,7 @@ const DEFAULT_MAX_RECIPIENTS = 10;
 const ABSOLUTE_MAX_RECIPIENTS = 50; // AgentMail's combined to/cc/bcc cap
 const DEFAULT_BODY_MAX_BYTES = 102_400; // 100KB
 const DEFAULT_SUBJECT_PREFIX = "[Auggy] ";
+const MAX_SUBJECT_CHARS = 1_000;
 
 /** Apply subject prefix + sanitization. Throws no errors — only returns. */
 export function normalizeSubject(rawSubject: string, opts: AgentMailOutboundOptions): string {
@@ -134,13 +135,17 @@ export function validateOutbound(
   }
 
   // 4. Subject
-  if (input.skipSubjectPrefix) {
-    // Reply / forward — subject is determined server-side by AgentMail.
-    // We just verify the field, when present, is non-empty.
-  } else {
-    if (typeof input.subject !== "string" || input.subject.trim().length === 0) {
-      return { ok: false, reason: "subject: required and must be non-empty" };
-    }
+  if (typeof input.subject !== "string" || input.subject.trim().length === 0) {
+    return { ok: false, reason: "subject: required and must be non-empty" };
+  }
+  const normalizedSubject = input.skipSubjectPrefix
+    ? input.subject
+    : normalizeSubject(input.subject, opts);
+  if (normalizedSubject.length > MAX_SUBJECT_CHARS) {
+    return {
+      ok: false,
+      reason: `subject: normalized subject is ${normalizedSubject.length} characters, exceeding the cap of ${MAX_SUBJECT_CHARS}`,
+    };
   }
 
   // 5. Body cap (text + html combined — Codex #4: HTML must count toward the cap too)
@@ -171,10 +176,6 @@ export function validateOutbound(
       reason: "html: HTML bodies are disabled by default; set outbound.allowHtml=true to enable",
     };
   }
-
-  const normalizedSubject = input.skipSubjectPrefix
-    ? input.subject
-    : normalizeSubject(input.subject, opts);
 
   return {
     ok: true,

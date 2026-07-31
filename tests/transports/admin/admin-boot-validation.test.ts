@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test";
-import { buildAdminActionRegistry } from "@/transports/admin/index";
+import { adminActionRegistryKey, buildAdminActionRegistry } from "@/transports/admin/index";
 import type { Augment } from "@/types";
 
 describe("buildAdminActionRegistry", () => {
@@ -26,8 +26,8 @@ describe("buildAdminActionRegistry", () => {
     ];
     const registry = await buildAdminActionRegistry(augments);
     expect(registry.size).toBe(1);
-    expect(registry.get("test-action")?.augmentName).toBe("test");
-    expect(registry.get("test-action")?.isRowAction).toBe(false);
+    expect(registry.get(adminActionRegistryKey("test", "test-action"))?.augmentName).toBe("test");
+    expect(registry.get(adminActionRegistryKey("test", "test-action"))?.isRowAction).toBe(false);
   });
 
   it("registers inputs from the action declaration", async () => {
@@ -51,8 +51,8 @@ describe("buildAdminActionRegistry", () => {
       },
     ];
     const registry = await buildAdminActionRegistry(augments);
-    expect(registry.get("act")?.inputs).toHaveLength(1);
-    expect(registry.get("act")?.inputs[0]?.name).toBe("n");
+    expect(registry.get(adminActionRegistryKey("test", "act"))?.inputs).toHaveLength(1);
+    expect(registry.get(adminActionRegistryKey("test", "act"))?.inputs[0]?.name).toBe("n");
   });
 
   it("registers row actions with isRowAction=true", async () => {
@@ -67,7 +67,22 @@ describe("buildAdminActionRegistry", () => {
               kind: "table",
               columns: ["peer"],
               rows: [["a"]],
-              rowActions: [{ id: "erase", label: "Erase", confirmRequired: true, rowKeyColumn: 0 }],
+              rowActions: [
+                {
+                  id: "erase",
+                  label: "Erase",
+                  confirmRequired: true,
+                  rowKeyColumn: 0,
+                  inputs: [
+                    {
+                      name: "expectedVersion",
+                      label: "Version",
+                      type: "number",
+                      required: true,
+                    },
+                  ],
+                },
+              ],
             },
           ],
         }),
@@ -75,7 +90,10 @@ describe("buildAdminActionRegistry", () => {
       },
     ];
     const registry = await buildAdminActionRegistry(augments);
-    expect(registry.get("erase")?.isRowAction).toBe(true);
+    expect(registry.get(adminActionRegistryKey("memory", "erase"))?.isRowAction).toBe(true);
+    expect(registry.get(adminActionRegistryKey("memory", "erase"))?.inputs[0]?.name).toBe(
+      "expectedVersion",
+    );
   });
 
   it("throws when adminInfo declares an action with no matching handler", async () => {
@@ -122,7 +140,7 @@ describe("buildAdminActionRegistry", () => {
     );
   });
 
-  it("throws when two augments declare the same action id (O12 uniqueness)", async () => {
+  it("registers the same action id independently for two augment targets", async () => {
     const augments: Augment[] = [
       {
         name: "first",
@@ -145,9 +163,35 @@ describe("buildAdminActionRegistry", () => {
         adminActions: { shared: async () => ({ ok: true, message: "" }) },
       },
     ];
+    const registry = await buildAdminActionRegistry(augments);
+    expect(registry.size).toBe(2);
+    expect(registry.get(adminActionRegistryKey("first", "shared"))?.augmentName).toBe("first");
+    expect(registry.get(adminActionRegistryKey("second", "shared"))?.augmentName).toBe("second");
+  });
+
+  it("rejects duplicate mounted augment names before action registration", async () => {
+    const augments: Augment[] = [{ name: "duplicate" }, { name: "duplicate" }];
     await expect(buildAdminActionRegistry(augments)).rejects.toThrow(
-      /action id "shared" declared by multiple augments/,
+      /duplicate mounted augment name "duplicate"/,
     );
+  });
+
+  it("keys renamed augments by mounted runtime name instead of presentation fallback", async () => {
+    const augments: Augment[] = [
+      {
+        name: "mail-west",
+        adminInfo: async () => ({
+          augmentName: "agent-mail",
+          title: "Mail",
+          sections: [],
+          actions: [{ id: "sync", label: "Sync", confirmRequired: false }],
+        }),
+        adminActions: { sync: async () => ({ ok: true, message: "ok" }) },
+      },
+    ];
+    const registry = await buildAdminActionRegistry(augments);
+    expect(registry.has(adminActionRegistryKey("mail-west", "sync"))).toBe(true);
+    expect(registry.has(adminActionRegistryKey("agent-mail", "sync"))).toBe(false);
   });
 
   it("registers reset actions from keyValue sections", async () => {
@@ -174,7 +218,9 @@ describe("buildAdminActionRegistry", () => {
       },
     ];
     const registry = await buildAdminActionRegistry(augments);
-    expect(registry.get("budget-reset")?.augmentName).toBe("budgets");
+    expect(registry.get(adminActionRegistryKey("budgets", "budget-reset"))?.augmentName).toBe(
+      "budgets",
+    );
   });
 
   it("skips augment whose adminInfo throws (logs warning, doesn't fail boot)", async () => {
@@ -198,6 +244,6 @@ describe("buildAdminActionRegistry", () => {
       },
     ];
     const registry = await buildAdminActionRegistry(augments);
-    expect(registry.has("ok-action")).toBe(true);
+    expect(registry.has(adminActionRegistryKey("ok", "ok-action"))).toBe(true);
   });
 });

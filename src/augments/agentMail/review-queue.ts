@@ -16,40 +16,48 @@ const REVIEW_FILE = "agent-mail-reviews.json";
 const REVIEW_VERSION = 1;
 const MAX_RECORDS = 1_000;
 const TERMINAL_RETENTION_MS = 30 * 24 * 60 * 60_000;
+const MAX_REVIEW_FILE_BYTES = 120 * 1024 * 1024;
+const MAX_BODY_CHARS = 1024 * 1024;
+const recipientSchema = z.string().min(1).max(320);
+const recipientsSchema = z.array(recipientSchema).min(1).max(50);
+const subjectSchema = z.string().max(1_000);
+const messageIdSchema = z.string().min(1).max(256);
+const labelsSchema = z.array(z.string().min(1).max(200)).max(100);
+const bodySchema = z.string().max(MAX_BODY_CHARS);
 
 const sendRequestSchema = z.object({
   kind: z.literal("send"),
-  to: z.array(z.string()).min(1),
-  subject: z.string(),
-  text: z.string(),
-  html: z.string().optional(),
-  labels: z.array(z.string()).optional(),
+  to: recipientsSchema,
+  subject: subjectSchema,
+  text: bodySchema,
+  html: bodySchema.optional(),
+  labels: labelsSchema.optional(),
 });
 
 const replyRequestSchema = z.object({
   kind: z.literal("reply"),
-  messageId: z.string().min(1),
+  messageId: messageIdSchema,
   /**
    * Explicit recipient binding for inbound replies. Legacy persisted reviews
    * may omit this and retain AgentMail's server-derived reply behavior.
    */
-  to: z.array(z.string()).min(1).optional(),
+  to: recipientsSchema.optional(),
   /** Exact creator-attention generation that authorized an inbound reply. */
   attentionVersion: z.number().int().positive().optional(),
-  text: z.string(),
-  html: z.string().optional(),
+  text: bodySchema,
+  html: bodySchema.optional(),
   replyAll: z.boolean().optional(),
-  labels: z.array(z.string()).optional(),
+  labels: labelsSchema.optional(),
 });
 
 const forwardRequestSchema = z.object({
   kind: z.literal("forward"),
-  messageId: z.string().min(1),
-  to: z.array(z.string()).min(1),
-  subject: z.string().optional(),
-  text: z.string().optional(),
-  html: z.string().optional(),
-  labels: z.array(z.string()).optional(),
+  messageId: messageIdSchema,
+  to: recipientsSchema,
+  subject: subjectSchema.optional(),
+  text: bodySchema.optional(),
+  html: bodySchema.optional(),
+  labels: labelsSchema.optional(),
 });
 
 export const agentMailReviewRequestSchema = z.discriminatedUnion("kind", [
@@ -68,27 +76,27 @@ export type AgentMailReviewState =
   | "failed";
 
 const recordSchema = z.object({
-  id: z.string().min(1),
+  id: z.string().min(1).max(128),
   state: z.enum(["pending", "sending", "approved", "rejected", "expired", "failed"]),
   trustLevel: z.enum(["creator", "agent", "public"]),
   createdAt: z.number().int().nonnegative(),
   attemptedAt: z.number().int().nonnegative().optional(),
   expiresAt: z.number().int().nonnegative(),
   resolvedAt: z.number().int().nonnegative().optional(),
-  recipients: z.array(z.string()).min(1),
-  subject: z.string(),
-  rateKey: z.string(),
-  fingerprint: z.string().min(1),
+  recipients: recipientsSchema,
+  subject: subjectSchema,
+  rateKey: z.string().min(1).max(4_096),
+  fingerprint: z.string().min(1).max(256),
   request: agentMailReviewRequestSchema,
-  detail: z.string().optional(),
-  providerMessageId: z.string().optional(),
-  providerThreadId: z.string().optional(),
+  detail: z.string().max(500).optional(),
+  providerMessageId: z.string().min(1).max(256).optional(),
+  providerThreadId: z.string().min(1).max(256).optional(),
 });
 
 const fileSchema = z.object({
   version: z.literal(REVIEW_VERSION),
-  savedAt: z.string(),
-  records: z.array(recordSchema),
+  savedAt: z.string().max(64),
+  records: z.array(recordSchema).max(MAX_RECORDS),
 });
 
 export interface AgentMailReviewRecord {
@@ -122,6 +130,17 @@ export interface AgentMailReviewQueue {
   }): { record: AgentMailReviewRecord; duplicate: boolean };
   list(): AgentMailReviewRecord[];
   get(id: string): AgentMailReviewRecord | undefined;
+  /**
+   * Compare-and-set a pending draft body. Recipient, kind, and provider
+   * message bindings are immutable; callers must supply a new fingerprint
+   * covering the revised request.
+   */
+  revise(input: {
+    id: string;
+    expectedFingerprint: string;
+    request: AgentMailReviewRequest;
+    fingerprint: string;
+  }): AgentMailReviewRecord;
   beginApproval(id: string): AgentMailReviewRecord;
   approve(
     id: string,
@@ -145,6 +164,11 @@ function clone(record: AgentMailReviewRecord): AgentMailReviewRecord {
   return structuredClone(record);
 }
 
+function immutableRequestBinding(request: AgentMailReviewRequest): string {
+  const { text: _text, html: _html, ...binding } = request;
+  return JSON.stringify(binding);
+}
+
 function reviewPath(agentDir: string): string {
   return join(agentDir, REVIEW_FILE);
 }
@@ -159,7 +183,7 @@ export function createAgentMailReviewQueue(
   let records: AgentMailReviewRecord[] = [];
 
   if (path) {
-    const raw = readDurableJson(path, "agentMail review queue");
+    const raw = readDurableJson(path, "agentMail review queue", MAX_REVIEW_FILE_BYTES);
     if (raw !== null) {
       const parsed = fileSchema.safeParse(raw);
       if (!parsed.success) {
@@ -177,17 +201,19 @@ export function createAgentMailReviewQueue(
     return value;
   }
 
-  function persist(): void {
+  function persist(nextRecords = records): void {
     if (!path) return;
-    writeDurableJson(
-      path,
-      {
-        version: REVIEW_VERSION,
-        savedAt: new Date(clock()).toISOString(),
-        records,
-      },
-      "agentMail review queue",
-    );
+    const payload = {
+      version: REVIEW_VERSION,
+      savedAt: new Date(clock()).toISOString(),
+      records: nextRecords,
+    };
+    if (Buffer.byteLength(JSON.stringify(payload), "utf8") > MAX_REVIEW_FILE_BYTES) {
+      throw new Error(
+        `agentMail review queue: durable payload exceeds ${MAX_REVIEW_FILE_BYTES} bytes; resolve pending reviews before adding mail`,
+      );
+    }
+    writeDurableJson(path, payload, "agentMail review queue");
   }
 
   function expire(): void {
@@ -270,20 +296,21 @@ export function createAgentMailReviewQueue(
         throw new Error("agentMail review queue: expiresAt must be in the future");
       }
       const request = agentMailReviewRequestSchema.parse(input.request);
-      const record: AgentMailReviewRecord = {
+      const record = recordSchema.parse({
         id: nextId(),
         state: "pending",
         trustLevel: input.trustLevel,
         createdAt,
         expiresAt: input.expiresAt,
-        recipients: [...input.recipients],
+        recipients: input.recipients,
         subject: input.subject,
         rateKey: input.rateKey,
         fingerprint: input.fingerprint,
         request,
-      };
-      records.push(record);
-      persist();
+      }) as AgentMailReviewRecord;
+      const nextRecords = [...records, record];
+      persist(nextRecords);
+      records = nextRecords;
       return { record: clone(record), duplicate: false };
     },
 
@@ -299,6 +326,35 @@ export function createAgentMailReviewQueue(
       return clone(record);
     },
 
+    revise(input) {
+      const record = requireState(input.id, "pending");
+      if (record.fingerprint !== input.expectedFingerprint) {
+        throw new Error(
+          `agentMail review queue: review "${input.id}" fingerprint changed before revision`,
+        );
+      }
+      const request = agentMailReviewRequestSchema.parse(input.request);
+      if (immutableRequestBinding(record.request) !== immutableRequestBinding(request)) {
+        throw new Error(
+          `agentMail review queue: review "${input.id}" immutable delivery binding changed`,
+        );
+      }
+      if (!input.fingerprint) {
+        throw new Error("agentMail review queue: revised fingerprint is required");
+      }
+      const revised = {
+        ...record,
+        request,
+        fingerprint: z.string().min(1).max(256).parse(input.fingerprint),
+      };
+      const nextRecords = records.map((candidate) =>
+        candidate.id === record.id ? revised : candidate,
+      );
+      persist(nextRecords);
+      records = nextRecords;
+      return clone(revised);
+    },
+
     beginApproval(id) {
       const record = requireState(id, "pending");
       record.state = "sending";
@@ -311,8 +367,12 @@ export function createAgentMailReviewQueue(
       const record = requireState(id, "sending");
       record.state = "approved";
       record.resolvedAt = clock();
-      record.providerMessageId = result.messageId;
-      record.providerThreadId = result.threadId;
+      record.providerMessageId = result.messageId
+        ? messageIdSchema.parse(result.messageId)
+        : undefined;
+      record.providerThreadId = result.threadId
+        ? messageIdSchema.parse(result.threadId)
+        : undefined;
       record.detail = result.detail?.slice(0, 500);
       persist();
       return clone(record);

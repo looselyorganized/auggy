@@ -19,6 +19,12 @@ export function coerceInputs(
   raw: Record<string, string | undefined>,
 ): CoerceResult {
   const values: Record<string, string> = {};
+  const declaredNames = new Set(inputs.map((input) => input.name));
+  for (const name of Object.keys(raw)) {
+    if (!declaredNames.has(name)) {
+      return { ok: false, field: name, reason: "unexpected input" };
+    }
+  }
 
   for (const input of inputs) {
     const v = raw[input.name];

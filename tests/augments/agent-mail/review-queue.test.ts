@@ -69,6 +69,33 @@ describe("AgentMail outbound review queue", () => {
     expect(queue.list()).toHaveLength(1);
   });
 
+  test("bounds durable review metadata and request fields", () => {
+    const queue = createAgentMailReviewQueue({ now: () => 1_000, id: () => "r1" });
+    expect(() => queue.enqueue({ ...proposal(), subject: "s".repeat(1_001) })).toThrow();
+    expect(() =>
+      queue.enqueue({
+        ...proposal(),
+        request: {
+          kind: "reply",
+          messageId: "message_1",
+          text: "Thanks",
+          labels: Array.from({ length: 101 }, (_, index) => `label-${index}`),
+        },
+      }),
+    ).toThrow();
+    expect(() =>
+      queue.enqueue({
+        ...proposal(),
+        request: {
+          kind: "reply",
+          messageId: "m".repeat(257),
+          text: "Thanks",
+        },
+      }),
+    ).toThrow();
+    expect(queue.list()).toEqual([]);
+  });
+
   test("requires the pending -> sending -> approved transition", () => {
     let now = 1_000;
     const queue = createAgentMailReviewQueue({ now: () => now, id: () => "r1" });
@@ -84,6 +111,50 @@ describe("AgentMail outbound review queue", () => {
       },
     );
     expect(() => queue.beginApproval("r1")).toThrow(/approved/);
+  });
+
+  test("revises only the pending body with fingerprint CAS and immutable bindings", () => {
+    const queue = createAgentMailReviewQueue({ now: () => 1_000, id: () => "r1" });
+    queue.enqueue(proposal());
+    expect(() =>
+      queue.revise({
+        id: "r1",
+        expectedFingerprint: "stale",
+        request: { kind: "reply", messageId: "message_1", text: "Revised" },
+        fingerprint: "fingerprint-2",
+      }),
+    ).toThrow(/fingerprint changed/);
+    expect(() =>
+      queue.revise({
+        id: "r1",
+        expectedFingerprint: "fingerprint-1",
+        request: { kind: "reply", messageId: "other_message", text: "Revised" },
+        fingerprint: "fingerprint-2",
+      }),
+    ).toThrow(/immutable delivery binding changed/);
+
+    expect(
+      queue.revise({
+        id: "r1",
+        expectedFingerprint: "fingerprint-1",
+        request: { kind: "reply", messageId: "message_1", text: "Revised" },
+        fingerprint: "fingerprint-2",
+      }),
+    ).toMatchObject({
+      state: "pending",
+      fingerprint: "fingerprint-2",
+      recipients: ["customer@example.com"],
+      request: { kind: "reply", messageId: "message_1", text: "Revised" },
+    });
+    queue.beginApproval("r1");
+    expect(() =>
+      queue.revise({
+        id: "r1",
+        expectedFingerprint: "fingerprint-2",
+        request: { kind: "reply", messageId: "message_1", text: "Again" },
+        fingerprint: "fingerprint-3",
+      }),
+    ).toThrow(/expected pending/);
   });
 
   test("rejects a pending action without exposing it for approval again", () => {

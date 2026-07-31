@@ -32,6 +32,26 @@ describe("admin-csrf — generate + validate roundtrip", () => {
     });
     expect(result.valid).toBe(true);
   });
+
+  it("validates a targeted token only for the same augment instance", async () => {
+    const token = await generateCsrfToken({
+      bearer,
+      agentName,
+      augmentName: "mail-west",
+      actionId: "review-approve",
+      rowKey: "review-1",
+    });
+    expect(
+      await validateCsrfToken({
+        token,
+        bearer,
+        agentName,
+        augmentName: "mail-west",
+        actionId: "review-approve",
+        rowKey: "review-1",
+      }),
+    ).toEqual({ valid: true });
+  });
 });
 
 describe("admin-csrf — binding enforcement (returns reason: tampered)", () => {
@@ -45,6 +65,44 @@ describe("admin-csrf — binding enforcement (returns reason: tampered)", () => 
     });
     expect(result.valid).toBe(false);
     if (!result.valid) expect(result.reason).toBe("tampered");
+  });
+
+  it("rejects cross-target replay for the same action and row", async () => {
+    const token = await generateCsrfToken({
+      bearer,
+      agentName,
+      augmentName: "mail-west",
+      actionId: "review-approve",
+      rowKey: "review-1",
+    });
+    const result = await validateCsrfToken({
+      token,
+      bearer,
+      agentName,
+      augmentName: "mail-east",
+      actionId: "review-approve",
+      rowKey: "review-1",
+    });
+    expect(result.valid).toBe(false);
+    if (!result.valid) expect(result.reason).toBe("tampered");
+  });
+
+  it("does not accept a legacy token on a targeted augment action", async () => {
+    const token = await generateCsrfToken({
+      bearer,
+      agentName,
+      actionId: "review-approve",
+      rowKey: "review-1",
+    });
+    const result = await validateCsrfToken({
+      token,
+      bearer,
+      agentName,
+      augmentName: "mail-west",
+      actionId: "review-approve",
+      rowKey: "review-1",
+    });
+    expect(result.valid).toBe(false);
   });
 
   it("rejects a token for a different bearer (after rotation)", async () => {

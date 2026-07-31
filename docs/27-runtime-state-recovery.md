@@ -42,7 +42,7 @@ The initial catalog covers:
 | --- | --- | --- | --- |
 | Runtime identity | `runtime-state-identity/v1` | Lifetime of the logical agent volume | Binds the bundle to one server-minted agent id |
 | Runtime singleton anchor | `posix-flock-anchor/v1` | Lifetime of the logical agent volume | Content-free lock inode; authority exists only while a live process holds the kernel lock |
-| Admin overrides | `admin-overrides/v1` | Until operator replacement | Runtime security and budget policy |
+| Admin overrides | `admin-overrides/v2` | Until operator replacement | Runtime security and budget policy, including per-AgentMail-instance caps |
 | Mutable file memory | `utf8-text/v1` | Until creator replacement | Creator-approved learned behavior |
 | Layered memory SQLite | `LMEM/v1` | Configured expiry, 30 days by default | Peer memory and erasure state |
 | Budgets | `BUDG/v1` | Unbounded unless `retentionDays` is set | Reservations, counts, and cost |
