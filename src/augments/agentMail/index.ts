@@ -33,6 +33,7 @@ import { defineRoute, defineTool } from "../../helpers";
 import {
   createAgentMailClient,
   type AgentMailClient,
+  type AgentMailInboxError,
   type SendMessageResult,
   type SendMessageError,
 } from "../../agentmail-client";
@@ -134,6 +135,13 @@ const toolLabelsSchema = z.array(z.string().min(1).max(MAX_LABEL_CHARS)).max(MAX
 
 function looksLikePlaceholder(value: string): boolean {
   return /^\$\{[A-Z0-9_]+\}$/.test(value);
+}
+
+const TRANSIENT_INBOX_HEALTH_STATUSES = new Set([408, 425, 429]);
+
+function isTransientInboxHealthFailure(failure: AgentMailInboxError): boolean {
+  if (failure.httpStatus === undefined) return true;
+  return failure.httpStatus >= 500 || TRANSIENT_INBOX_HEALTH_STATUSES.has(failure.httpStatus);
 }
 
 function validateOptions(opts: AgentMailAugmentInternalOptions): void {
@@ -2451,9 +2459,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       }
     }
 
-    // Best-effort inbox healthcheck. Warn-and-continue on failure (transient
-    // outage shouldn't block agent boot; the first real send surfaces the
-    // same error). 4xx is a config error and DOES throw.
+    // Best-effort inbox healthcheck. Network failures, 5xx, request timeouts,
+    // early-data retries, and provider rate limits are transient. Every other
+    // provider rejection is deterministic and fails closed so an unverified
+    // inbox identity cannot be published.
     const health = await client.getInbox(opts.inboxId);
     if (health.status === "failed") {
       if (health.failureKind === "invalid-response") {
@@ -2462,12 +2471,13 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         );
       }
       const httpStatus = health.httpStatus;
-      if (httpStatus !== undefined && httpStatus >= 400 && httpStatus < 500) {
+      if (!isTransientInboxHealthFailure(health)) {
         throw new Error(
-          `agentMail: inbox "${opts.inboxId}" healthcheck failed with HTTP ${httpStatus}: ${health.detail}. Check AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID in .env and restart.`,
+          `agentMail: inbox "${opts.inboxId}" healthcheck failed${httpStatus === undefined ? "" : ` with HTTP ${httpStatus}`}: ${health.detail}. Check AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID in .env and restart.`,
         );
       }
-      // 5xx or network — warn and continue.
+      // Transient failure — retain a setup-verified configured address when
+      // available, otherwise leave the canonical identity unavailable.
       console.warn(
         `[agent-mail] inbox "${opts.inboxId}" healthcheck failed: ${health.detail}. Continuing boot — first real send will surface the same error.`,
       );
