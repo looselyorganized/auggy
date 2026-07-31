@@ -29,6 +29,13 @@ const sendRequestSchema = z.object({
 const replyRequestSchema = z.object({
   kind: z.literal("reply"),
   messageId: z.string().min(1),
+  /**
+   * Explicit recipient binding for inbound replies. Legacy persisted reviews
+   * may omit this and retain AgentMail's server-derived reply behavior.
+   */
+  to: z.array(z.string()).min(1).optional(),
+  /** Exact creator-attention generation that authorized an inbound reply. */
+  attentionVersion: z.number().int().positive().optional(),
   text: z.string(),
   html: z.string().optional(),
   replyAll: z.boolean().optional(),
@@ -121,6 +128,8 @@ export interface AgentMailReviewQueue {
     result: { messageId?: string; threadId?: string; detail?: string },
   ): AgentMailReviewRecord;
   reject(id: string, detail?: string): AgentMailReviewRecord;
+  /** Cancel a still-pending action before an operator-approved inbound retry. */
+  cancel(id: string, detail: string): AgentMailReviewRecord;
   fail(id: string, detail: string): AgentMailReviewRecord;
 }
 
@@ -312,6 +321,15 @@ export function createAgentMailReviewQueue(
     reject(id, detail = "rejected by operator") {
       const record = requireState(id, "pending");
       record.state = "rejected";
+      record.resolvedAt = clock();
+      record.detail = detail.slice(0, 500);
+      persist();
+      return clone(record);
+    },
+
+    cancel(id, detail) {
+      const record = requireState(id, "pending");
+      record.state = "failed";
       record.resolvedAt = clock();
       record.detail = detail.slice(0, 500);
       persist();

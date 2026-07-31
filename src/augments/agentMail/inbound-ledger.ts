@@ -18,9 +18,14 @@ import {
   type AgentMailInboundSource,
   type AgentMailReceivedEventType,
 } from "./provider";
+import {
+  createAgentMailCreatorAttentionStore,
+  type AgentMailCreatorAttentionStore,
+  validateStoredCreatorAttentionRows,
+} from "./creator-attention";
 
 export const AGENTMAIL_LEDGER_APPLICATION_ID = 0x414d494c; // "AMIL"
-export const AGENTMAIL_LEDGER_SCHEMA_VERSION = 2;
+export const AGENTMAIL_LEDGER_SCHEMA_VERSION = 3;
 const DEFAULT_INITIAL_LOOKBACK_MS = 24 * 60 * 60_000;
 const DEFAULT_CHECKPOINT_OVERLAP_MS = 60_000;
 const MAX_LEASE_MS = 60 * 60_000;
@@ -93,6 +98,32 @@ const SCHEMA_STATEMENTS = [
     evidence_sha256   TEXT NOT NULL,
     resolved_at       INTEGER NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS agentmail_creator_attention (
+    inbox_id          TEXT NOT NULL,
+    message_id        TEXT NOT NULL,
+    state             TEXT NOT NULL CHECK (state IN (
+      'open', 'pending_review', 'sent', 'rejected', 'failed', 'ambiguous', 'dismissed'
+    )),
+    record_version     INTEGER NOT NULL DEFAULT 1 CHECK (record_version >= 1),
+    review_id          TEXT,
+    created_at         INTEGER NOT NULL,
+    updated_at         INTEGER NOT NULL,
+    terminal_at        INTEGER,
+    PRIMARY KEY (inbox_id, message_id),
+    FOREIGN KEY (inbox_id, message_id)
+      REFERENCES agentmail_inbound_messages(inbox_id, message_id)
+      ON DELETE CASCADE,
+    CHECK (state != 'pending_review' OR review_id IS NOT NULL),
+    CHECK (
+      (state IN ('sent', 'rejected', 'failed', 'dismissed') AND terminal_at IS NOT NULL)
+      OR
+      (state IN ('open', 'pending_review', 'ambiguous') AND terminal_at IS NULL)
+    )
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_agentmail_creator_attention_queue
+     ON agentmail_creator_attention(state, updated_at DESC, inbox_id, message_id)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_agentmail_creator_attention_review
+     ON agentmail_creator_attention(review_id) WHERE review_id IS NOT NULL`,
 ];
 
 const EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map([
@@ -104,6 +135,9 @@ const EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map([
   ["agentmail_inbound_quarantines", SCHEMA_STATEMENTS[5]!],
   ["idx_agentmail_inbound_quarantine_time", SCHEMA_STATEMENTS[6]!],
   ["agentmail_inbound_recoveries", SCHEMA_STATEMENTS[7]!],
+  ["agentmail_creator_attention", SCHEMA_STATEMENTS[8]!],
+  ["idx_agentmail_creator_attention_queue", SCHEMA_STATEMENTS[9]!],
+  ["idx_agentmail_creator_attention_review", SCHEMA_STATEMENTS[10]!],
 ] as const);
 
 const V1_EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map([
@@ -112,6 +146,17 @@ const V1_EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map([
   ["idx_agentmail_inbound_claim", SCHEMA_STATEMENTS[2]!],
   ["idx_agentmail_inbound_thread", SCHEMA_STATEMENTS[3]!],
   ["agentmail_inbound_checkpoints", SCHEMA_STATEMENTS[4]!],
+] as const);
+
+const V2_EXPECTED_SCHEMA: ReadonlyMap<string, string> = new Map([
+  ["agentmail_inbound_meta", SCHEMA_STATEMENTS[0]!],
+  ["agentmail_inbound_messages", SCHEMA_STATEMENTS[1]!],
+  ["idx_agentmail_inbound_claim", SCHEMA_STATEMENTS[2]!],
+  ["idx_agentmail_inbound_thread", SCHEMA_STATEMENTS[3]!],
+  ["agentmail_inbound_checkpoints", SCHEMA_STATEMENTS[4]!],
+  ["agentmail_inbound_quarantines", SCHEMA_STATEMENTS[5]!],
+  ["idx_agentmail_inbound_quarantine_time", SCHEMA_STATEMENTS[6]!],
+  ["agentmail_inbound_recoveries", SCHEMA_STATEMENTS[7]!],
 ] as const);
 
 function canonicalSchemaSql(sql: string): string {
@@ -344,6 +389,7 @@ function validateStoredRows(db: Database): void {
       throw new Error("agentMail ledger: stored checkpoint timestamp is inconsistent");
     }
   }
+  validateStoredCreatorAttentionRows(db);
 }
 
 function prepareAgentMailDatabase(db: Database): void {
@@ -392,6 +438,15 @@ function prepareAgentMailDatabase(db: Database): void {
   ) {
     validateExactSchema(db, V1_EXPECTED_SCHEMA, 1);
     for (const statement of SCHEMA_STATEMENTS.slice(5)) db.run(statement);
+    db.prepare("UPDATE agentmail_inbound_meta SET value = ? WHERE key = 'schema_version'").run(
+      String(AGENTMAIL_LEDGER_SCHEMA_VERSION),
+    );
+  } else if (
+    (applicationId === AGENTMAIL_LEDGER_APPLICATION_ID && userVersion === 2) ||
+    (applicationId === 0 && userVersion === 0 && metadataVersion === 2)
+  ) {
+    validateExactSchema(db, V2_EXPECTED_SCHEMA, 2);
+    for (const statement of SCHEMA_STATEMENTS.slice(8)) db.run(statement);
     db.prepare("UPDATE agentmail_inbound_meta SET value = ? WHERE key = 'schema_version'").run(
       String(AGENTMAIL_LEDGER_SCHEMA_VERSION),
     );
@@ -476,6 +531,8 @@ export interface AgentMailInboundIncident {
 }
 
 export interface AgentMailInboundLedger {
+  /** Durable creator-attention state sharing this ledger's admitted message identity. */
+  readonly creatorAttention: AgentMailCreatorAttentionStore;
   enqueue(envelope: AgentMailInboundEnvelope): AgentMailLedgerEnqueueResult;
   /** Atomically persist a REST page's received mail and its fully scanned watermark. */
   recordCatchUpBatch(
@@ -494,6 +551,11 @@ export interface AgentMailInboundLedger {
   claimNext(input: { workerId: string; leaseMs: number }): AgentMailLedgerClaim | null;
   renew(claim: AgentMailLedgerClaim, leaseMs: number): boolean;
   complete(claim: AgentMailLedgerClaim): boolean;
+  /**
+   * Return a pre-model claim to pending without charging the claim attempt.
+   * This is exclusively for typed backpressure before any model/tool effect.
+   */
+  defer(claim: AgentMailLedgerClaim, input: { reason: string; availableAt?: number }): boolean;
   retry(claim: AgentMailLedgerClaim, input: { error: string; availableAt?: number }): boolean;
   discard(claim: AgentMailLedgerClaim, reason: string): boolean;
   quarantine(claim: AgentMailLedgerClaim, reasonCode: string): AgentMailInboundIncident | null;
@@ -522,6 +584,17 @@ export interface AgentMailInboundLedgerOptions {
   leaseToken?: () => string;
   /** Test-only incident-id seam. */
   incidentId?: () => string;
+  /**
+   * Maximum creator-attention records retained in this ledger. Default 1000.
+   * Terminal rows for unresolved inbound incidents never become reclaimable
+   * capacity until that incident is reconciled.
+   */
+  attentionMaxRecords?: number;
+  /**
+   * Terminal creator-attention retention. Default 30 days. Unresolved inbound
+   * incidents retain their linked replay evidence beyond this horizon.
+   */
+  attentionRetentionMs?: number;
 }
 
 export class AgentMailLedgerConflictError extends Error {
@@ -754,6 +827,20 @@ export function createAgentMailInboundLedger(
             AND q.message_id = agentmail_inbound_messages.message_id
        )`,
   );
+  const deferClaim = db.prepare(
+    `UPDATE agentmail_inbound_messages
+       SET state = 'pending', attempt_count = attempt_count - 1,
+           available_at = ?, last_seen_at = ?, last_error = ?,
+           lease_owner = NULL, lease_token = NULL, lease_expires_at = NULL
+     WHERE inbox_id = ? AND message_id = ?
+       AND state = 'processing' AND lease_token = ? AND lease_expires_at > ?
+       AND attempt_count = ? AND attempt_count > 0
+       AND NOT EXISTS (
+         SELECT 1 FROM agentmail_inbound_quarantines q
+          WHERE q.inbox_id = agentmail_inbound_messages.inbox_id
+            AND q.message_id = agentmail_inbound_messages.message_id
+       )`,
+  );
   const discardClaim = db.prepare(
     `UPDATE agentmail_inbound_messages
        SET state = 'discarded', processed_at = ?, last_seen_at = ?, discard_reason = ?,
@@ -917,6 +1004,15 @@ export function createAgentMailInboundLedger(
       throw error;
     }
   }
+
+  const creatorAttention = createAgentMailCreatorAttentionStore({
+    db,
+    now: clock,
+    assertOpen,
+    immediate,
+    maxRecords: options.attentionMaxRecords,
+    retentionMs: options.attentionRetentionMs,
+  });
 
   function prepareEnvelope(envelope: AgentMailInboundEnvelope): PreparedEnvelope {
     if (!(["rest", "websocket", "webhook"] as const).includes(envelope.source)) {
@@ -1119,6 +1215,8 @@ export function createAgentMailInboundLedger(
   }
 
   return {
+    creatorAttention,
+
     enqueue(envelope) {
       assertOpen();
       const prepared = prepareEnvelope(envelope);
@@ -1248,6 +1346,28 @@ export function createAgentMailInboundLedger(
         claim.envelope.message.messageId,
         claim.leaseToken,
         completedAt,
+      );
+      secureAfterWrite();
+      return result.changes === 1;
+    },
+
+    defer(claim, input) {
+      assertOpen();
+      validateClaim(claim);
+      const deferredAt = clock();
+      const availableAt = Math.max(deferredAt, input.availableAt ?? deferredAt);
+      if (!Number.isSafeInteger(availableAt)) {
+        throw new Error("agentMail ledger: defer availableAt must be a safe integer");
+      }
+      const result = deferClaim.run(
+        availableAt,
+        deferredAt,
+        annotation(input.reason, "defer reason"),
+        claim.envelope.message.inboxId,
+        claim.envelope.message.messageId,
+        claim.leaseToken,
+        deferredAt,
+        claim.attemptCount,
       );
       secureAfterWrite();
       return result.changes === 1;

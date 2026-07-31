@@ -79,7 +79,18 @@ import {
   type AgentMailSdkAdapters,
 } from "./sdk-provider";
 import type { AgentMailEventSubscription } from "./provider";
-import { processedAgentMailEventTypes, validateAgentMailInboundConfig } from "./inbound-policy";
+import {
+  AGENTMAIL_MAX_AUTOMATIC_REPLIES_PER_HOUR,
+  processedAgentMailEventTypes,
+  resolveAgentMailInboundReplies,
+  validateAgentMailEffectiveHourlyCap,
+  validateAgentMailInboundConfig,
+} from "./inbound-policy";
+import type {
+  AgentMailCreatorAttentionRecord,
+  AgentMailCreatorAttentionState,
+} from "./creator-attention";
+import { AgentMailCreatorAttentionCapacityError } from "./creator-attention";
 import { createAgentMailWebhookRoute } from "./webhook-provider";
 import {
   createAgentMailReviewQueue,
@@ -125,7 +136,7 @@ function validateOptions(opts: AgentMailAugmentInternalOptions): void {
   }
   const inbound = opts.inbound;
   if (inbound !== undefined) {
-    validateAgentMailInboundConfig(inbound);
+    validateAgentMailInboundConfig(inbound, opts.outbound);
   }
   const reviewExpiry = opts.outbound?.humanReview?.expiresAfterMs;
   if (
@@ -193,6 +204,16 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     opts._reviewQueue ?? createAgentMailReviewQueue({ stateDir, now });
   let ratePersistenceFailure: string | undefined;
 
+  // AMIL/v1 reply reviews could delegate recipient expansion to the provider.
+  // New replies are always explicitly bound. A pending legacy action has not
+  // reached the provider and is therefore safe to fail closed; a `sending`
+  // record remains ambiguous and must be operator-reconciled.
+  for (const record of reviewQueue.list()) {
+    if (record.state === "pending" && record.request.kind === "reply" && !record.request.to) {
+      reviewQueue.cancel(record.id, "legacy reply review has no explicit recipient binding");
+    }
+  }
+
   /**
    * Persist rate-limit state after a successful send. No-op when no
    * `stateDir` is configured (the augment is running in a test fixture
@@ -218,6 +239,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   function checkOutboundRateLimit(
     recipients: string[],
     rateKey: string,
+    hardGlobalMaxPerHour?: number,
   ): ReturnType<typeof checkRateLimit> {
     if (ratePersistenceFailure) {
       return {
@@ -226,7 +248,19 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
           "agentMail: durable rate-limit state is unavailable; non-creator mail is blocked until restart/operator repair.",
       };
     }
-    return checkRateLimit(rateState, recipients, rateKey, effectiveRateLimit(), now());
+    const effective = effectiveRateLimit();
+    return checkRateLimit(
+      rateState,
+      recipients,
+      rateKey,
+      hardGlobalMaxPerHour === undefined
+        ? effective
+        : {
+            ...effective,
+            globalMaxPerHour: Math.min(effective.globalMaxPerHour, hardGlobalMaxPerHour),
+          },
+      now(),
+    );
   }
 
   function attemptUsesRate(record: AgentMailReviewRecord): boolean {
@@ -302,14 +336,134 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   interface SeenMessageMeta {
     /** Original sender email — primary reply recipient. */
     from: string;
+    /** Provider-normalized Reply-To recipients, if the message supplied them. */
+    replyTo?: string[];
     /** Other original recipients — used when the model passes replyAll: true. */
     replyAllTo?: string[];
   }
   const legacySeenMessages = new Map<string, SeenMessageMeta>();
   const seenMessagesByTurn = new Map<string, Map<string, SeenMessageMeta>>();
+  interface InboundTurnScope {
+    inboxId: string;
+    messageId: string;
+    threadId: string;
+    peerId: string;
+    sourceAugment: string;
+    attentionVersion: number;
+    replyAttempted: boolean;
+    outcome?:
+      | { state: "pending_review"; reviewId: string }
+      | { state: "sent" | "failed" | "ambiguous"; reviewId?: string };
+  }
+  const inboundTurnsByTurn = new Map<string, InboundTurnScope>();
 
   function seenMessagesFor(context: ToolExecuteContext | undefined): Map<string, SeenMessageMeta> {
     return (context ? seenMessagesByTurn.get(context.turnId) : undefined) ?? legacySeenMessages;
+  }
+
+  function uniqueReplyRecipients(values: readonly string[], exclude?: string): string[] {
+    const excluded = exclude?.toLowerCase();
+    const seen = new Set<string>();
+    const recipients: string[] = [];
+    for (const value of values) {
+      const key = value.toLowerCase();
+      if (key === excluded || seen.has(key)) continue;
+      seen.add(key);
+      recipients.push(value);
+    }
+    return recipients;
+  }
+
+  function replyRecipients(
+    meta: SeenMessageMeta,
+    replyAll: boolean,
+  ): { ok: true; recipients: string[]; replyToMismatch: boolean } | { ok: false; reason: string } {
+    const replyTo = uniqueReplyRecipients(
+      meta.replyTo && meta.replyTo.length > 0 ? meta.replyTo : [meta.from],
+    );
+    const sender = meta.from.toLowerCase();
+    const replyToMismatch = replyTo.length !== 1 || replyTo[0]?.toLowerCase() !== sender;
+
+    if (!replyAll) {
+      if (replyTo.length === 0) {
+        return { ok: false, reason: "agentMail: inbound message has no valid reply recipient." };
+      }
+      return { ok: true, recipients: replyTo, replyToMismatch };
+    }
+    if (!resolvedInboxEmail) {
+      return {
+        ok: false,
+        reason:
+          "agentMail: replyAll is unavailable until the canonical inbox email has been verified.",
+      };
+    }
+    const recipients = uniqueReplyRecipients(
+      [...replyTo, meta.from, ...(meta.replyAllTo ?? [])],
+      resolvedInboxEmail,
+    );
+    if (recipients.length === 0) {
+      return {
+        ok: false,
+        reason: "agentMail: replyAll produced no external recipients after removing this inbox.",
+      };
+    }
+    return { ok: true, recipients, replyToMismatch };
+  }
+
+  function exactInboundTurn(
+    context: ToolExecuteContext | undefined,
+    messageId: string,
+  ): InboundTurnScope | undefined {
+    if (inboundStopping || !context?.peer) return undefined;
+    const scope = inboundTurnsByTurn.get(context.turnId);
+    if (
+      !scope ||
+      scope.messageId !== messageId ||
+      scope.threadId !== context.threadId ||
+      scope.peerId !== context.peer.id ||
+      scope.sourceAugment !== context.peer.sourceAugment
+    ) {
+      return undefined;
+    }
+    return scope;
+  }
+
+  function mismatchedClaimedInboundTurn(
+    context: ToolExecuteContext | undefined,
+    messageId: string,
+  ): boolean {
+    if (!context) return false;
+    const scope = inboundTurnsByTurn.get(context.turnId);
+    if (!scope) return false;
+    return (
+      inboundStopping ||
+      scope.messageId !== messageId ||
+      scope.threadId !== context.threadId ||
+      scope.peerId !== context.peer?.id ||
+      scope.sourceAugment !== context.peer?.sourceAugment
+    );
+  }
+
+  function setInboundReplyOutcome(
+    scope: InboundTurnScope | undefined,
+    outcome: NonNullable<InboundTurnScope["outcome"]>,
+  ): void {
+    if (!scope) return;
+    // One admitted message may yield at most one actionable reply. Preserve
+    // the first provider/review outcome even if the model loops again.
+    scope.outcome ??= outcome;
+  }
+
+  const inboundMode = opts.inbound?.mode ?? "none";
+  const inboundReplies = resolveAgentMailInboundReplies(
+    inboundMode,
+    opts.inbound?.replies,
+    outboundOpts,
+  );
+  if (inboundReplies.mode !== "disabled" && !stateDir && opts._reviewQueue === undefined) {
+    throw new Error(
+      "agentMail: enabled inbound replies require durable review storage; set agentDir/stateDir or provide the test-only _reviewQueue seam",
+    );
   }
 
   const client: AgentMailClient =
@@ -324,8 +478,12 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     try {
       const overrides = readOverrides(overrideDir);
       const overrideVal = overrides?.overrides.agentMail?.globalMaxPerHour;
-      if (typeof overrideVal === "number" && Number.isFinite(overrideVal) && overrideVal > 0) {
-        globalMaxPerHour = overrideVal;
+      if (overrideVal !== undefined) {
+        globalMaxPerHour = validateAgentMailEffectiveHourlyCap(
+          overrideVal,
+          inboundReplies.mode,
+          "admin override globalMaxPerHour",
+        );
         globalMaxSource = "override";
       }
     } catch (error) {
@@ -337,7 +495,6 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     }
   }
 
-  const inboundMode = opts.inbound?.mode ?? "none";
   const addressVisibility = opts.addressVisibility ?? "creator";
   let resolvedInboxEmail =
     opts.emailAddress && !looksLikePlaceholder(opts.emailAddress)
@@ -390,11 +547,14 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   let reconciliationTimer: ReturnType<typeof setInterval> | undefined;
   let drainTimer: ReturnType<typeof setInterval> | undefined;
   let drainKickTimer: ReturnType<typeof setTimeout> | undefined;
+  let drainKickAt: number | undefined;
   let reconciliationController: AbortController | undefined;
   let shutdownPromise: Promise<void> | undefined;
+  let deferredInboundRelease: Promise<void> | undefined;
   let activeCatchUp: Promise<void> | undefined;
   let activeDrain: Promise<void> | undefined;
   let drainScheduled = false;
+  let inboundStopping = false;
   let inboundReady = false;
   let liveState: "disabled" | "starting" | "ready" | "subscribed" | "degraded" | "stopped" =
     inboundMode === "none" ? "disabled" : "stopped";
@@ -406,6 +566,149 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
   function recordProviderError(error: unknown): void {
     lastProviderError = (error instanceof Error ? error.message : String(error)).slice(0, 500);
+  }
+
+  function reviewAttentionState(
+    review: AgentMailReviewRecord,
+  ): Exclude<AgentMailCreatorAttentionState, "open" | "dismissed"> {
+    if (review.state === "pending") return "pending_review";
+    if (review.state === "sending") return "ambiguous";
+    if (review.state === "approved") return "sent";
+    if (review.state === "rejected") return "rejected";
+    return "failed";
+  }
+
+  function ensureAttentionState(
+    current: AgentMailCreatorAttentionRecord,
+    state: AgentMailCreatorAttentionState,
+    reviewId?: string,
+  ): AgentMailCreatorAttentionRecord {
+    if (current.state === state && (reviewId === undefined || current.reviewId === reviewId)) {
+      return current;
+    }
+    const transitioned = inboundLedger!.creatorAttention.transition({
+      inboxId: current.inboxId,
+      messageId: current.messageId,
+      expectedVersion: current.version,
+      state,
+      ...(reviewId ? { reviewId } : {}),
+    });
+    if (
+      transitioned.record?.state === state &&
+      (reviewId === undefined || transitioned.record.reviewId === reviewId)
+    ) {
+      return transitioned.record;
+    }
+    throw new Error(
+      `agentMail: creator attention changed while transitioning ${current.messageId} to ${state}`,
+    );
+  }
+
+  function finalizeCreatorAttention(scope: InboundTurnScope): void {
+    const ledger = inboundLedger;
+    if (!ledger) throw new Error("agentMail: inbound attention ledger is unavailable");
+
+    let desiredState: AgentMailCreatorAttentionState = scope.outcome?.state ?? "open";
+    const linkedReviewId = scope.outcome?.reviewId;
+    if (linkedReviewId) {
+      const review = reviewQueue.get(linkedReviewId);
+      if (
+        review?.request.kind !== "reply" ||
+        review.request.messageId !== scope.messageId ||
+        review.request.attentionVersion !== scope.attentionVersion
+      ) {
+        throw new Error("agentMail: creator attention references an invalid reply review");
+      }
+      desiredState = reviewAttentionState(review);
+    }
+
+    let current = ledger.creatorAttention.get(scope.inboxId, scope.messageId);
+    if (!current || current.version !== scope.attentionVersion) {
+      throw new Error("agentMail: reserved creator attention changed before turn completion");
+    }
+    // Review IDs may only be introduced while entering pending_review. Stage
+    // that durable link first even when the provider attempt already reached a
+    // terminal state during the model turn.
+    if (linkedReviewId && current.reviewId === undefined) {
+      current = ensureAttentionState(current, "pending_review", linkedReviewId);
+    }
+    ensureAttentionState(current, desiredState, linkedReviewId);
+  }
+
+  function transitionReviewAttention(
+    review: AgentMailReviewRecord,
+    state: AgentMailCreatorAttentionState,
+  ): boolean {
+    if (review.request.kind !== "reply" || !inboundLedger) return true;
+    const current = inboundLedger.creatorAttention.getByReviewId(review.id);
+    // Review approval can race the still-running inbound turn. The successful
+    // post-turn callback reconciles the queue's current state before completing
+    // the ledger claim, so absence here is safe and expected.
+    if (!current) return true;
+    // Dismissal acknowledges the creator-attention item; it does not cancel or
+    // mutate a separately queued review. Preserve that terminal acknowledgement
+    // while allowing the review queue to complete its own state transition.
+    if (current.state === "dismissed") return true;
+    try {
+      const transitioned = inboundLedger.creatorAttention.transitionByReviewId({
+        reviewId: review.id,
+        expectedVersion: current.version,
+        state,
+      });
+      const updated =
+        transitioned.record?.state === state || transitioned.record?.state === "dismissed";
+      if (updated && state !== "pending_review" && state !== "ambiguous" && state !== "open") {
+        scheduleDrain();
+      }
+      return updated;
+    } catch (error) {
+      recordProviderError(error);
+      return false;
+    }
+  }
+
+  function reconcileLinkedReviewAttention(): void {
+    for (const review of reviewQueue.list()) {
+      if (review.request.kind !== "reply") continue;
+      let current = inboundLedger?.creatorAttention.getByReviewId(review.id);
+      // New inbound replies persist the exact creator-attention generation
+      // that authorized them. If the process stopped after queue persistence
+      // but before the post-turn link, repair only that one generation.
+      // Legacy and non-inbound reviews omit the generation and never auto-link.
+      if (!current && review.request.attentionVersion !== undefined) {
+        const unlinked = inboundLedger?.creatorAttention.get(
+          opts.inboxId,
+          review.request.messageId,
+        );
+        if (
+          unlinked?.state === "open" &&
+          unlinked.reviewId === undefined &&
+          unlinked.version === review.request.attentionVersion
+        ) {
+          const linked = inboundLedger!.creatorAttention.transition({
+            inboxId: unlinked.inboxId,
+            messageId: unlinked.messageId,
+            expectedVersion: unlinked.version,
+            state: "pending_review",
+            reviewId: review.id,
+          });
+          current = linked.record;
+        }
+      }
+      if (!current || current.state === "dismissed") continue;
+      const expected = reviewAttentionState(review);
+      if (current.state === expected) continue;
+      const transitioned = inboundLedger!.creatorAttention.transitionByReviewId({
+        reviewId: review.id,
+        expectedVersion: current.version,
+        state: expected,
+      });
+      if (transitioned.record?.state !== expected) {
+        throw new Error(
+          `agentMail: creator attention for review ${review.id} could not be reconciled`,
+        );
+      }
+    }
   }
 
   function inboundPolicy() {
@@ -488,6 +791,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
           if (result.status !== "idle") {
             lastWorkerOutcome = `${result.status}:${result.messageId}`;
           }
+          if (result.status === "deferred") {
+            scheduleDrain(Math.max(0, result.availableAt - now()));
+            return;
+          }
           if (
             result.status === "idle" ||
             result.status === "retried" ||
@@ -506,14 +813,20 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     return drain;
   }
 
-  function scheduleDrain(): void {
-    if (!inboundReady || reconciliationController?.signal.aborted || drainScheduled) return;
+  function scheduleDrain(delayMs = 0): void {
+    if (!inboundReady || reconciliationController?.signal.aborted) return;
+    const boundedDelay = Math.max(0, Math.min(delayMs, 60_000));
+    const targetAt = Date.now() + boundedDelay;
+    if (drainScheduled && drainKickAt !== undefined && drainKickAt <= targetAt) return;
+    if (drainKickTimer) clearTimeout(drainKickTimer);
     drainScheduled = true;
+    drainKickAt = targetAt;
     drainKickTimer = setTimeout(() => {
       drainScheduled = false;
       drainKickTimer = undefined;
+      drainKickAt = undefined;
       void drainInbound();
-    }, 0);
+    }, boundedDelay);
   }
 
   const inboundTransport: Augment["transport"] =
@@ -541,7 +854,40 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
               inboxId: opts.inboxId,
               sourceAugment: inboundRegisteredName,
               policy: inboundPolicy(),
+              now,
               onTurnPrepared: ({ envelope, trigger }) => {
+                reconcileLinkedReviewAttention();
+                const ledgerRecord = inboundLedger!.get(
+                  envelope.message.inboxId,
+                  envelope.message.messageId,
+                );
+                const allowReopen =
+                  ledgerRecord?.state === "processing" &&
+                  ledgerRecord.lastError === "operator confirmed no external effect";
+                let reservation: ReturnType<AgentMailInboundLedger["creatorAttention"]["reserve"]>;
+                try {
+                  reservation = inboundLedger!.creatorAttention.reserve({
+                    inboxId: envelope.message.inboxId,
+                    messageId: envelope.message.messageId,
+                    allowReopen,
+                  });
+                } catch (error) {
+                  if (error instanceof AgentMailCreatorAttentionCapacityError) {
+                    return {
+                      status: "deferred" as const,
+                      reason: "creator-attention-capacity",
+                    };
+                  }
+                  throw error;
+                }
+                if (
+                  reservation.status === "active_duplicate" &&
+                  reservation.record.state !== "open"
+                ) {
+                  throw new Error(
+                    `agentMail: active ${reservation.record.state} creator attention prevents replay`,
+                  );
+                }
                 seenMessagesByTurn.set(
                   trigger.turnId,
                   new Map([
@@ -549,16 +895,55 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
                       envelope.message.messageId,
                       {
                         from: envelope.message.from,
-                        replyAllTo: [...envelope.message.to, ...envelope.message.cc].filter(
-                          (address) => address.toLowerCase() !== opts.inboxId.toLowerCase(),
-                        ),
+                        replyTo: [...envelope.message.replyTo],
+                        replyAllTo: [...envelope.message.to, ...envelope.message.cc],
                       },
                     ],
                   ]),
                 );
+                const peer = trigger.peer;
+                if (!peer || !trigger.threadId) {
+                  throw new Error("agentMail: inbound trigger is missing its resolved identity");
+                }
+                inboundTurnsByTurn.set(trigger.turnId, {
+                  inboxId: envelope.message.inboxId,
+                  messageId: envelope.message.messageId,
+                  threadId: trigger.threadId,
+                  peerId: peer.id,
+                  sourceAugment: peer.sourceAugment,
+                  attentionVersion: reservation.record.version,
+                  replyAttempted: false,
+                });
+              },
+              onTurnEffectsObserved: ({ trigger }) => {
+                const scope = inboundTurnsByTurn.get(trigger.turnId);
+                if (!scope) {
+                  throw new Error("agentMail: inbound creator-attention scope is unavailable");
+                }
+                finalizeCreatorAttention(scope);
+                return scope.outcome !== undefined;
+              },
+              onTerminalFailure: ({ envelope }) => {
+                const current = inboundLedger!.creatorAttention.get(
+                  envelope.message.inboxId,
+                  envelope.message.messageId,
+                );
+                if (current?.state !== "open") return;
+                const transitioned = inboundLedger!.creatorAttention.transition({
+                  inboxId: current.inboxId,
+                  messageId: current.messageId,
+                  expectedVersion: current.version,
+                  state: "failed",
+                });
+                if (transitioned.record?.state !== "failed") {
+                  throw new Error(
+                    "agentMail: terminal inbound failure could not finalize creator attention",
+                  );
+                }
               },
               onTurnSettled: ({ trigger }) => {
                 seenMessagesByTurn.delete(trigger.turnId);
+                inboundTurnsByTurn.delete(trigger.turnId);
               },
             });
 
@@ -660,9 +1045,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     rateKey: string;
     request: AgentMailReviewRequest;
     flaggedSensitive?: boolean;
-  }): string | undefined {
+    force?: boolean;
+  }): { envelope: string; record: AgentMailReviewRecord } | undefined {
     const trustLevel = trustLevelOf(input.context);
-    if (!reviewTrustLevels.includes(trustLevel)) return undefined;
+    if (!input.force && !reviewTrustLevels.includes(trustLevel)) return undefined;
     const fingerprint = reviewFingerprint({
       trustLevel,
       recipients: input.recipients,
@@ -689,12 +1075,15 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         ? `duplicate proposal reused review ${queued.record.id}`
         : `queued for operator review as ${queued.record.id}`,
     });
-    return JSON.stringify({
-      status: "pending_review",
-      reviewId: queued.record.id,
-      expiresAt: new Date(queued.record.expiresAt).toISOString(),
-      duplicate: queued.duplicate || undefined,
-    });
+    return {
+      record: queued.record,
+      envelope: JSON.stringify({
+        status: "pending_review",
+        reviewId: queued.record.id,
+        expiresAt: new Date(queued.record.expiresAt).toISOString(),
+        duplicate: queued.duplicate || undefined,
+      }),
+    };
   }
 
   function beginDurableDirectAttempt(input: {
@@ -806,6 +1195,17 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         message: `Review ${id} fingerprint mismatch; inspect the exact queued action again`,
       };
     }
+    if (pending.request.kind === "reply" && !pending.request.to) {
+      const cancelled = reviewQueue.cancel(
+        pending.id,
+        "legacy reply review has no explicit recipient binding",
+      );
+      transitionReviewAttention(cancelled, "failed");
+      return {
+        ok: false,
+        message: `Review ${id} was cancelled because its reply recipients were not durably bound`,
+      };
+    }
     if (pending.trustLevel !== "creator") {
       const decision = checkOutboundRateLimit(pending.recipients, pending.rateKey);
       if (!decision.allowed) {
@@ -823,6 +1223,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       return { ok: false, message: (error as Error).message };
     }
     if (!reserveRateForAttempt(sending)) {
+      transitionReviewAttention(sending, "ambiguous");
       return {
         ok: false,
         message: `Review ${id} was not sent because durable rate reservation is unavailable; operator reconciliation is required`,
@@ -833,6 +1234,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     try {
       result = await sendReviewedAction(sending);
     } catch {
+      transitionReviewAttention(sending, "ambiguous");
       return {
         ok: false,
         message: `Review ${id} has an ambiguous delivery outcome; operator reconciliation is required`,
@@ -851,6 +1253,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       // the durable `sending` marker so a restart or repeated proposal cannot
       // send the same reviewed action again.
       if (result.httpStatus === undefined || isAmbiguousMutationStatus(result.httpStatus)) {
+        transitionReviewAttention(sending, "ambiguous");
         return {
           ok: false,
           message: `Review ${id} has an ambiguous delivery outcome; operator reconciliation is required`,
@@ -863,6 +1266,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         };
       }
       reviewQueue.fail(id, result.detail);
+      const attentionUpdated = transitionReviewAttention(sending, "failed");
       recordDispatch({
         timestamp: timestampHHMMSS(now()),
         tool,
@@ -874,7 +1278,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       });
       return {
         ok: false,
-        message: `Review ${id} failed${result.httpStatus ? ` (HTTP ${result.httpStatus})` : ""}`,
+        message:
+          `Review ${id} failed${result.httpStatus ? ` (HTTP ${result.httpStatus})` : ""}` +
+          (attentionUpdated ? "" : "; creator-attention state requires operator repair"),
       };
     }
 
@@ -882,6 +1288,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     if (rateStateDurable) {
       reviewQueue.approve(id, result);
     }
+    const attentionUpdated = transitionReviewAttention(
+      sending,
+      rateStateDurable ? "sent" : "ambiguous",
+    );
     const body = "text" in sending.request ? (sending.request.text ?? "") : "";
     const scan = body ? scanForSensitive(body) : { flagged: false, hits: [] };
     recordDispatch({
@@ -894,10 +1304,12 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       detail: `approved review ${id}${scan.flagged ? `; sensitive content (${scan.hits.join(", ")})` : ""}`,
     });
     return {
-      ok: true,
-      message: rateStateDurable
-        ? `Review ${id} approved and sent`
-        : `Review ${id} was sent but remains in reconciliation because rate state was not durable`,
+      ok: rateStateDurable && attentionUpdated,
+      message: !rateStateDurable
+        ? `Review ${id} was sent but remains in reconciliation because rate state was not durable`
+        : attentionUpdated
+          ? `Review ${id} approved and sent`
+          : `Review ${id} was sent, but creator-attention state requires operator repair`,
     };
   }
 
@@ -955,6 +1367,12 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     } catch (error) {
       return { ok: false, message: (error as Error).message };
     }
+    if (!transitionReviewAttention(ambiguous.record, "sent")) {
+      return {
+        ok: false,
+        message: `Review ${id} was reconciled as sent, but creator-attention state requires repair`,
+      };
+    }
     return { ok: true, message: `Review ${id} reconciled as sent` };
   }
 
@@ -975,6 +1393,12 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       reviewQueue.fail(id, `operator confirmed not sent: ${reason}`);
     } catch (error) {
       return { ok: false, message: (error as Error).message };
+    }
+    if (!transitionReviewAttention(ambiguous.record, "failed")) {
+      return {
+        ok: false,
+        message: `Review ${id} was reconciled as not sent, but creator-attention state requires repair`,
+      };
     }
     return { ok: true, message: `Review ${id} reconciled as not sent` };
   }
@@ -1089,7 +1513,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         request,
         flaggedSensitive: scan.flagged,
       });
-      if (review) return review;
+      if (review) return review.envelope;
 
       const attempt = beginDurableDirectAttempt({
         trustLevel,
@@ -1177,8 +1601,38 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       labels: z.array(z.string()).optional(),
     }),
     execute: async (input, context) => {
-      const gate = gateTrustLevel(context, "reply_to_message");
-      if (!gate.allowed) return gate.envelope;
+      if (mismatchedClaimedInboundTurn(context, input.messageId)) {
+        const detail =
+          "agentMail: inbound turn identity does not match the reserved message authority.";
+        recordDispatch({
+          timestamp: timestampHHMMSS(now()),
+          tool: "reply_to_message",
+          status: "blocked",
+          recipients: "(blocked before reply)",
+          subject: "(reply)",
+          detail,
+        });
+        return JSON.stringify({ status: "failed", message: detail });
+      }
+      const inboundScope = exactInboundTurn(context, input.messageId);
+      if (inboundScope) {
+        if (inboundReplies.mode === "disabled") {
+          const detail =
+            "agentMail: replies from inbound email turns are disabled by inbound.replies.mode.";
+          recordDispatch({
+            timestamp: timestampHHMMSS(now()),
+            tool: "reply_to_message",
+            status: "blocked",
+            recipients: "(blocked before reply)",
+            subject: "(reply)",
+            detail,
+          });
+          return JSON.stringify({ status: "failed", message: detail });
+        }
+      } else {
+        const gate = gateTrustLevel(context, "reply_to_message");
+        if (!gate.allowed) return gate.envelope;
+      }
 
       const meta = seenMessagesFor(context).get(input.messageId);
       if (!meta) {
@@ -1193,16 +1647,45 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         });
         return JSON.stringify({ status: "failed", message: detail });
       }
+      if (input.replyAll && inboundScope && !inboundReplies.allowReplyAll) {
+        const detail =
+          "agentMail: replyAll is disabled for inbound email turns; reply only to the sender.";
+        recordDispatch({
+          timestamp: timestampHHMMSS(now()),
+          tool: "reply_to_message",
+          status: "blocked",
+          recipients: redactRecipients([meta.from]),
+          subject: "(reply)",
+          detail,
+        });
+        return JSON.stringify({ status: "failed", message: detail });
+      }
 
-      // Resolve the REAL recipients the reply will reach. Codex #1:
-      // previously we ran validation against a placeholder address so the
-      // allowlist + cooldown were never applied to the actual envelope.
-      const recipients = input.replyAll
-        ? [
-            meta.from,
-            ...(meta.replyAllTo ?? []).filter((r) => r.toLowerCase() !== meta.from.toLowerCase()),
-          ]
-        : [meta.from];
+      // Resolve and pin the exact provider recipients. Inbound replies honor
+      // Reply-To, and reply-all removes this inbox by its verified canonical
+      // email before validation. We never rely on provider-side expansion for
+      // newly admitted inbound mail.
+      const resolvedTargets = inboundScope
+        ? replyRecipients(meta, input.replyAll === true)
+        : {
+            ok: true as const,
+            recipients: input.replyAll
+              ? uniqueReplyRecipients([meta.from, ...(meta.replyAllTo ?? [])])
+              : [meta.from],
+            replyToMismatch: false,
+          };
+      if (!resolvedTargets.ok) {
+        recordDispatch({
+          timestamp: timestampHHMMSS(now()),
+          tool: "reply_to_message",
+          status: "blocked",
+          recipients: "(unresolved reply recipients)",
+          subject: "(reply)",
+          detail: resolvedTargets.reason,
+        });
+        return JSON.stringify({ status: "failed", message: resolvedTargets.reason });
+      }
+      const recipients = resolvedTargets.recipients;
 
       // Validate against the real envelope, applying the same outboundOpts
       // (incl. allowlist + maxRecipients) as send_message.
@@ -1229,6 +1712,19 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         });
         return JSON.stringify({ status: "failed", message: validation.reason });
       }
+      if (inboundScope?.replyAttempted) {
+        const detail = "agentMail: this inbound message already has a reply action for this turn.";
+        recordDispatch({
+          timestamp: timestampHHMMSS(now()),
+          tool: "reply_to_message",
+          status: "blocked",
+          recipients: redactRecipients(validation.value.recipients),
+          subject: "(reply)",
+          detail,
+        });
+        return JSON.stringify({ status: "failed", message: detail });
+      }
+      if (inboundScope) inboundScope.replyAttempted = true;
 
       // Rate-limit the reply with the SAME state as send_message. The
       // subject-hash dedup uses a stable marker per inbound thread so the
@@ -1237,8 +1733,15 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       const trustLevel = trustLevelOf(context);
       const replyDedupKey = `reply:${input.messageId}`;
       if (trustLevel !== "creator") {
-        const decision = checkOutboundRateLimit(validation.value.recipients, replyDedupKey);
+        const decision = checkOutboundRateLimit(
+          validation.value.recipients,
+          replyDedupKey,
+          inboundScope && inboundReplies.mode === "automatic"
+            ? AGENTMAIL_MAX_AUTOMATIC_REPLIES_PER_HOUR
+            : undefined,
+        );
         if (!decision.allowed) {
+          setInboundReplyOutcome(inboundScope, { state: "failed" });
           recordDispatch({
             timestamp: timestampHHMMSS(now()),
             tool: "reply_to_message",
@@ -1255,26 +1758,53 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         }
       }
 
-      const scan = scanForSensitive(input.text);
+      const scan = scanForSensitive(
+        validation.value.html ? `${input.text}\n${validation.value.html}` : input.text,
+      );
       const request: AgentMailReviewRequest = {
         kind: "reply",
         messageId: input.messageId,
+        to: validation.value.recipients,
+        ...(inboundScope ? { attentionVersion: inboundScope.attentionVersion } : {}),
         text: input.text,
         ...(validation.value.html ? { html: validation.value.html } : {}),
-        ...(input.replyAll ? { replyAll: true } : {}),
         ...(input.labels && input.labels.length > 0 ? { labels: input.labels } : {}),
       };
 
-      const review = queueForHumanReview({
-        context,
-        tool: "reply_to_message",
-        recipients: validation.value.recipients,
-        subject: "(reply)",
-        rateKey: replyDedupKey,
-        request,
-        flaggedSensitive: scan.flagged,
-      });
-      if (review) return review;
+      const inboundMustReview =
+        inboundScope &&
+        (inboundReplies.mode === "review" ||
+          (inboundReplies.mode === "automatic" &&
+            (scan.flagged || resolvedTargets.replyToMismatch)));
+      const review = inboundScope
+        ? inboundMustReview
+          ? queueForHumanReview({
+              context,
+              tool: "reply_to_message",
+              recipients: validation.value.recipients,
+              subject: "(reply)",
+              rateKey: replyDedupKey,
+              request,
+              flaggedSensitive: scan.flagged,
+              force: true,
+            })
+          : undefined
+        : queueForHumanReview({
+            context,
+            tool: "reply_to_message",
+            recipients: validation.value.recipients,
+            subject: "(reply)",
+            rateKey: replyDedupKey,
+            request,
+            flaggedSensitive: scan.flagged,
+          });
+      if (review) {
+        setInboundReplyOutcome(inboundScope, {
+          state: "pending_review",
+          reviewId: review.record.id,
+        });
+        return review.envelope;
+      }
 
       const attempt = beginDurableDirectAttempt({
         trustLevel,
@@ -1283,7 +1813,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         rateKey: replyDedupKey,
         request,
       });
-      if (!attempt.ok) return attempt.envelope;
+      if (!attempt.ok) {
+        setInboundReplyOutcome(inboundScope, { state: "ambiguous" });
+        return attempt.envelope;
+      }
 
       let result: SendMessageResult | SendMessageError;
       try {
@@ -1294,11 +1827,19 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
           signal: context?.signal,
         });
       } catch {
+        setInboundReplyOutcome(inboundScope, {
+          state: "ambiguous",
+          ...(attempt.record ? { reviewId: attempt.record.id } : {}),
+        });
         return ambiguousDeliveryResult();
       }
 
       if (result.status === "sent") {
         markDirectAttemptSent(attempt.record, result, true);
+        setInboundReplyOutcome(inboundScope, {
+          state: "sent",
+          ...(attempt.record ? { reviewId: attempt.record.id } : {}),
+        });
         recordDispatch({
           timestamp: timestampHHMMSS(now()),
           tool: "reply_to_message",
@@ -1329,8 +1870,16 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         detail: result.detail,
       });
       if (result.httpStatus === undefined || isAmbiguousMutationStatus(result.httpStatus)) {
+        setInboundReplyOutcome(inboundScope, {
+          state: "ambiguous",
+          ...(attempt.record ? { reviewId: attempt.record.id } : {}),
+        });
         return ambiguousDeliveryResult();
       }
+      setInboundReplyOutcome(inboundScope, {
+        state: "failed",
+        ...(attempt.record ? { reviewId: attempt.record.id } : {}),
+      });
       return JSON.stringify({
         status: "failed",
         message:
@@ -1363,6 +1912,19 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       labels: z.array(z.string()).optional(),
     }),
     execute: async (input, context) => {
+      if (mismatchedClaimedInboundTurn(context, input.messageId)) {
+        const detail =
+          "agentMail: inbound turn identity does not match the reserved message authority.";
+        recordDispatch({
+          timestamp: timestampHHMMSS(now()),
+          tool: "forward_message",
+          status: "blocked",
+          recipients: "(blocked before forward)",
+          subject: input.subject?.slice(0, 80) ?? "(forward)",
+          detail,
+        });
+        return JSON.stringify({ status: "failed", message: detail });
+      }
       const gate = gateTrustLevel(context, "forward_message");
       if (!gate.allowed) return gate.envelope;
 
@@ -1444,7 +2006,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         request,
         flaggedSensitive: scan.flagged,
       });
-      if (review) return review;
+      if (review) return review.envelope;
 
       const attempt = beginDurableDirectAttempt({
         trustLevel,
@@ -1527,9 +2089,10 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     lastWorkerOutcome = undefined;
     lastProviderError = undefined;
     liveState = inboundMode === "none" ? "disabled" : "stopped";
-    if (activeCatchUp) {
-      throw new Error("agentMail: previous inbound reconciliation has not stopped");
+    if (activeCatchUp || activeDrain || deferredInboundRelease) {
+      throw new Error("agentMail: previous inbound runtime has not stopped");
     }
+    inboundStopping = false;
     reconciliationController = inboundMode === "none" ? undefined : new AbortController();
 
     // Placeholder-resolution check — same pattern as visitor-auth.
@@ -1561,6 +2124,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       // claim may already have caused external effects, so it becomes a
       // durable incident and is never silently replayed.
       inboundLedger.fenceInterruptedClaims();
+      reconcileLinkedReviewAttention();
       sdkAdapters ??= createAgentMailSdkAdapters({
         apiKey: opts.apiKey,
         apiBaseUrl: opts.apiBaseUrl,
@@ -1655,6 +2219,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
   async function onShutdown(): Promise<void> {
     if (shutdownPromise) return shutdownPromise;
     shutdownPromise = (async () => {
+      inboundStopping = true;
       const deadline = Date.now() + shutdownTimeoutMs;
       async function withinDeadline<T>(promise: Promise<T>, label: string): Promise<T> {
         const remaining = deadline - Date.now();
@@ -1681,6 +2246,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       reconciliationTimer = undefined;
       drainTimer = undefined;
       drainKickTimer = undefined;
+      drainKickAt = undefined;
       drainScheduled = false;
       inboundReady = false;
 
@@ -1689,6 +2255,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
 
       let failure: unknown;
       let subscriptionClose: Promise<void> | undefined;
+      let subscriptionQuiesced = true;
       try {
         subscriptionClose = subscription?.close();
       } catch (error) {
@@ -1696,9 +2263,23 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       }
       try {
         if (subscriptionClose) {
+          subscriptionQuiesced = false;
           await withinDeadline(subscriptionClose, "subscription shutdown");
+          subscriptionQuiesced = true;
         }
       } catch (error) {
+        // A provider rejection is settled and safe to release; a timeout is
+        // not. Attach a settlement observer so the latter can release later.
+        if (subscriptionClose) {
+          void subscriptionClose.then(
+            () => {
+              subscriptionQuiesced = true;
+            },
+            () => {
+              subscriptionQuiesced = true;
+            },
+          );
+        }
         failure ??= error;
       }
 
@@ -1730,33 +2311,66 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       }
 
       liveSubscription = undefined;
-      inboundLedger = opts._inboundLedger;
-      ownsInboundLedger = false;
       reconciliationController = undefined;
       liveState = inboundMode === "none" ? "disabled" : "stopped";
-      inboundWorker = undefined;
-      inboundKernel = undefined;
-      seenMessagesByTurn.clear();
-      if (catchUpQuiesced) {
+
+      const catchUpUser = activeCatchUp;
+      const drainUser = activeDrain;
+      const usersRemain =
+        !subscriptionQuiesced || catchUpUser !== undefined || drainUser !== undefined;
+      const releaseInboundResources = () => {
+        if (ownedLedger) {
+          try {
+            ownedLedger.close();
+          } catch (error) {
+            console.warn(
+              `[agent-mail] deferred inbound ledger shutdown failed: ${(error as Error).message}`,
+            );
+          }
+        }
+        if (inboundLedger === ownedLedger || !ownedLedger) {
+          inboundLedger = opts._inboundLedger;
+        }
+        ownsInboundLedger = false;
+        inboundWorker = undefined;
+        inboundKernel = undefined;
+        seenMessagesByTurn.clear();
+        inboundTurnsByTurn.clear();
+      };
+
+      if (!usersRemain && catchUpQuiesced) {
         try {
           ownedLedger?.close();
         } catch (error) {
           failure ??= error;
         }
-      } else if (ownedLedger && catchUp) {
-        // The deadline expired while a provider request ignored cancellation.
-        // Never close SQLite under that request; release it once the request
-        // settles, while still reporting the bounded-shutdown failure.
-        void catchUp
-          .catch(() => undefined)
-          .then(() => {
-            try {
-              ownedLedger.close();
-            } catch (error) {
-              console.warn(
-                `[agent-mail] deferred inbound ledger shutdown failed: ${(error as Error).message}`,
-              );
-            }
+        inboundLedger = opts._inboundLedger;
+        ownsInboundLedger = false;
+        inboundWorker = undefined;
+        inboundKernel = undefined;
+        seenMessagesByTurn.clear();
+        inboundTurnsByTurn.clear();
+      } else {
+        // A timed-out subscription/catch-up/turn may still touch SQLite and
+        // turn-scoped reply authority. Fence new tool calls immediately, but
+        // retain both until every captured and late drain user has quiesced.
+        const pendingUsers = [
+          ...(!subscriptionQuiesced && subscriptionClose ? [subscriptionClose] : []),
+          ...(catchUpUser ? [catchUpUser] : []),
+          ...(drainUser ? [drainUser] : []),
+        ];
+        deferredInboundRelease ??= Promise.allSettled(pendingUsers)
+          .then(async () => {
+            const lateCatchUp = activeCatchUp;
+            const lateDrain = activeDrain;
+            await Promise.allSettled([
+              ...(lateCatchUp ? [lateCatchUp] : []),
+              ...(lateDrain ? [lateDrain] : []),
+            ]);
+            releaseInboundResources();
+          })
+          .finally(() => {
+            deferredInboundRelease = undefined;
           });
       }
       if (overrideRootRetained) {
@@ -1794,11 +2408,27 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       outcomeUnknown: 0,
     };
     let inboundIncidents: ReturnType<AgentMailInboundLedger["listIncidents"]> = [];
+    let attentionRecords: AgentMailCreatorAttentionRecord[] = [];
+    let attentionCounts = {
+      open: 0,
+      pendingReview: 0,
+      sent: 0,
+      rejected: 0,
+      failed: 0,
+      ambiguous: 0,
+      dismissed: 0,
+    };
     let checkpoint: string | undefined;
     if (inboundLedger) {
       try {
+        reconcileLinkedReviewAttention();
         ledgerCounts = inboundLedger.counts();
         inboundIncidents = inboundLedger.listIncidents(50);
+        attentionRecords = inboundLedger.creatorAttention.list({
+          inboxId: opts.inboxId,
+          limit: 50,
+        });
+        attentionCounts = inboundLedger.creatorAttention.counts(opts.inboxId);
         checkpoint = inboundLedger.checkpoint(opts.inboxId);
       } catch (error) {
         recordProviderError(error);
@@ -1810,6 +2440,11 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     if (ambiguousReviews.length > 0) {
       operationalWarnings.push(
         `${ambiguousReviews.length} review(s) stopped in ambiguous sending state`,
+      );
+    }
+    if (attentionCounts.open + attentionCounts.pendingReview + attentionCounts.ambiguous > 0) {
+      operationalWarnings.push(
+        `${attentionCounts.open + attentionCounts.pendingReview + attentionCounts.ambiguous} inbound item(s) need creator attention`,
       );
     }
 
@@ -1885,6 +2520,9 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             { label: "Inbound processed", value: String(ledgerCounts.processed) },
             { label: "Inbound discarded", value: String(ledgerCounts.discarded) },
             { label: "Inbound outcome unknown", value: String(ledgerCounts.outcomeUnknown) },
+            { label: "Attention open", value: String(attentionCounts.open) },
+            { label: "Attention pending review", value: String(attentionCounts.pendingReview) },
+            { label: "Attention ambiguous", value: String(attentionCounts.ambiguous) },
             { label: "Catch-up checkpoint", value: checkpoint ?? "(none)" },
             {
               label: "Last catch-up",
@@ -1940,6 +2578,20 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
           ]),
           caption:
             "Inbound outcome-unknown incidents. Verify downstream effects before reconciliation.",
+        },
+        {
+          kind: "table",
+          columns: ["Message", "State", "Version", "Review", "Updated"],
+          rows: attentionRecords.map((record) => [
+            record.messageId,
+            record.state,
+            String(record.version),
+            record.reviewId
+              ? `/agentmail/reviews/${encodeURIComponent(record.reviewId)}`
+              : "(none)",
+            new Date(record.updatedAt).toISOString(),
+          ]),
+          caption: "Creator attention (assistant response previews are intentionally omitted).",
         },
       ],
       actions: [
@@ -2083,6 +2735,21 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
             "Use only after confirming no external effect occurred; a later worker may retry.",
           ),
         },
+        {
+          id: "agentmail-attention-dismiss",
+          label: "Dismiss creator attention",
+          confirmRequired: true,
+          inputs: [
+            { name: "messageId", label: "Message ID", type: "text", required: true },
+            {
+              name: "expectedVersion",
+              label: "Expected attention version",
+              type: "number",
+              required: true,
+              helpText: "Copy the current version from the creator attention table.",
+            },
+          ],
+        },
       ],
     };
   }
@@ -2155,6 +2822,95 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         message: "Verification evidence must contain 1 to 400 characters",
       };
     }
+    if (disposition === "confirmed-no-effect") {
+      try {
+        reconcileLinkedReviewAttention();
+        const incident = inboundLedger
+          .listIncidents(100)
+          .find((candidate) => candidate.id === incidentId);
+        if (!incident || incident.version !== version) {
+          return { ok: false, message: "Incident is stale, resolved, or does not match" };
+        }
+        const replyReviews = reviewQueue
+          .list()
+          .filter(
+            (review) =>
+              review.request.kind === "reply" && review.request.messageId === incident.messageId,
+          );
+        const durableBlocker = replyReviews.find(
+          (review) =>
+            review.state === "sending" ||
+            review.state === "approved" ||
+            review.state === "rejected",
+        );
+        if (durableBlocker) {
+          const evidence =
+            durableBlocker.state === "sending"
+              ? "ambiguous sending"
+              : durableBlocker.state === "approved"
+                ? "sent"
+                : "operator rejection";
+          return {
+            ok: false,
+            message:
+              `Inbound retry is blocked by ${evidence} reply review ` +
+              `${durableBlocker.id}, even without creator-attention metadata`,
+          };
+        }
+        for (const pendingReview of replyReviews.filter((review) => review.state === "pending")) {
+          const cancelled = reviewQueue.cancel(
+            pendingReview.id,
+            "cancelled before operator-confirmed inbound retry",
+          );
+          if (!transitionReviewAttention(cancelled, "failed")) {
+            return {
+              ok: false,
+              message:
+                "Inbound retry is blocked because linked creator attention could not be cancelled",
+            };
+          }
+        }
+        let attention = inboundLedger.creatorAttention.get(incident.inboxId, incident.messageId);
+        if (attention?.state === "pending_review") {
+          const review = attention.reviewId ? reviewQueue.get(attention.reviewId) : undefined;
+          if (review?.state !== "pending") {
+            return {
+              ok: false,
+              message:
+                "Inbound retry is blocked until the linked review has an explicitly reconciled outcome",
+            };
+          }
+          const cancelled = reviewQueue.cancel(
+            review.id,
+            "cancelled before operator-confirmed inbound retry",
+          );
+          if (!transitionReviewAttention(cancelled, "failed")) {
+            return {
+              ok: false,
+              message:
+                "Inbound retry is blocked because linked creator attention could not be cancelled",
+            };
+          }
+          attention = inboundLedger.creatorAttention.get(incident.inboxId, incident.messageId);
+        }
+        if (
+          attention &&
+          attention.state !== "open" &&
+          attention.state !== "failed" &&
+          attention.state !== "dismissed"
+        ) {
+          return {
+            ok: false,
+            message: `Inbound retry is blocked while creator attention is ${attention.state}`,
+          };
+        }
+      } catch (error) {
+        return {
+          ok: false,
+          message: `Inbound retry safety check failed: ${(error as Error).message}`,
+        };
+      }
+    }
     const resolved = inboundLedger.reconcileIncident({
       incidentId,
       expectedVersion: version,
@@ -2164,6 +2920,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     if (!resolved.resolved || !resolved.threadId) {
       return { ok: false, message: "Incident is stale, resolved, or does not match" };
     }
+    if (disposition === "confirmed-no-effect") scheduleDrain();
     return {
       ok: true,
       message:
@@ -2274,6 +3031,15 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         };
       }
       try {
+        validateAgentMailEffectiveHourlyCap(
+          value,
+          inboundReplies.mode,
+          "admin override globalMaxPerHour",
+        );
+      } catch (error) {
+        return { ok: false, message: (error as Error).message };
+      }
+      try {
         await persistCapOverride(value);
       } catch (err) {
         return { ok: false, message: `could not persist override: ${(err as Error).message}` };
@@ -2302,6 +3068,8 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
     "agentmail-review-reject": async (params) => {
       const reviewId = typeof params.reviewId === "string" ? params.reviewId.trim() : "";
       if (!reviewId) return { ok: false, message: "Review ID is required" };
+      const review = reviewQueue.get(reviewId);
+      if (!review) return { ok: false, message: `Unknown review id "${reviewId}"` };
       const reason =
         typeof params.reason === "string" && params.reason.trim()
           ? params.reason.trim()
@@ -2310,6 +3078,12 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         reviewQueue.reject(reviewId, reason);
       } catch (error) {
         return { ok: false, message: (error as Error).message };
+      }
+      if (!transitionReviewAttention(review, "rejected")) {
+        return {
+          ok: false,
+          message: `Review ${reviewId} was rejected, but creator-attention state requires repair`,
+        };
       }
       return { ok: true, message: `Review ${reviewId} rejected` };
     },
@@ -2351,6 +3125,43 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
       reconcileInboundIncident(params, "confirmed-handled"),
     "agentmail-inbound-reconcile-no-effect": async (params) =>
       reconcileInboundIncident(params, "confirmed-no-effect"),
+    "agentmail-attention-dismiss": async (params) => {
+      if (!inboundLedger) return { ok: false, message: "Creator attention is not available" };
+      const messageId = typeof params.messageId === "string" ? params.messageId.trim() : "";
+      if (!messageId || messageId.length > 256) {
+        return { ok: false, message: "A valid message ID is required" };
+      }
+      const expectedVersion =
+        typeof params.expectedVersion === "number"
+          ? params.expectedVersion
+          : Number(params.expectedVersion);
+      if (!Number.isSafeInteger(expectedVersion) || expectedVersion < 1) {
+        return { ok: false, message: "A valid expected attention version is required" };
+      }
+      try {
+        const result = inboundLedger.creatorAttention.transition({
+          inboxId: opts.inboxId,
+          messageId,
+          expectedVersion,
+          state: "dismissed",
+        });
+        if (!result.updated) {
+          return {
+            ok: false,
+            message: result.record
+              ? `Creator attention changed; current state is ${result.record.state} at version ${result.record.version}`
+              : "Creator attention was not found",
+          };
+        }
+        scheduleDrain();
+        return {
+          ok: true,
+          message: `Creator attention for ${messageId} dismissed`,
+        };
+      } catch (error) {
+        return { ok: false, message: (error as Error).message };
+      }
+    },
   };
 
   // ---------------------------------------------------------------------------

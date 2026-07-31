@@ -32,7 +32,11 @@ import { DEFAULT_EXTRACTION_BUFFER_LIMITS } from "../augments/layeredMemory/extr
 import { MAX_PROVIDER_REQUEST_TIMEOUT_MS } from "../engines/_shared/provider-resilience";
 import { parseUtcCron } from "../jobs/cron";
 import { isWellFormedEmail } from "../augments/visitorAuth/email-validation";
-import { validateAgentMailInboundConfig } from "../augments/agentMail/inbound-policy";
+import {
+  agentMailInboundRequiresAdminRoute,
+  validateAgentMailInboundConfig,
+} from "../augments/agentMail/inbound-policy";
+import type { AgentMailOutboundOptions } from "../types";
 
 // ---------------------------------------------------------------------------
 // .env loading
@@ -1579,7 +1583,12 @@ function validateAgentMailOptions(
 
   if (opts.inbound !== undefined) {
     try {
-      validateAgentMailInboundConfig(opts.inbound);
+      validateAgentMailInboundConfig(
+        opts.inbound,
+        opts.outbound && typeof opts.outbound === "object" && !Array.isArray(opts.outbound)
+          ? (opts.outbound as AgentMailOutboundOptions)
+          : undefined,
+      );
     } catch (error) {
       errors.push(`${prefix}.inbound: ${(error as Error).message}`);
     }
@@ -2306,6 +2315,20 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       if (augment.type !== "agentMail") return false;
       const options = augment.options as Record<string, unknown> | undefined;
       const outbound = options?.outbound as Record<string, unknown> | undefined;
+      if (options?.inbound !== undefined) {
+        try {
+          const validatedInbound = validateAgentMailInboundConfig(
+            options.inbound,
+            outbound && !Array.isArray(outbound)
+              ? (outbound as AgentMailOutboundOptions)
+              : undefined,
+          );
+          if (agentMailInboundRequiresAdminRoute(validatedInbound)) return true;
+        } catch {
+          // AgentMail option validation above reports the precise malformed
+          // inbound/outbound field. Dependency analysis must not mask it.
+        }
+      }
       const allowed = Array.isArray(outbound?.allowedTrustLevels)
         ? outbound.allowedTrustLevels
         : ["creator"];
@@ -2336,7 +2359,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
     }
     if (agentMailReviewConfigured && !hasAdminWebTransport) {
       errors.push(
-        "agentMail outbound human review requires a webTransport augment with adminRoute enabled for review decisions",
+        "agentMail human review requires a webTransport augment with adminRoute enabled for review decisions",
       );
     }
   }

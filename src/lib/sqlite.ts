@@ -17,6 +17,7 @@ const DEFAULT_WAL_AUTOCHECKPOINT_PAGES = 1_000;
 const DEFAULT_JOURNAL_SIZE_LIMIT_BYTES = 64 * 1024 * 1024;
 const SQLITE_ARTIFACT_SUFFIXES = ["", "-wal", "-shm", "-journal"] as const;
 const ownedPathRoots = new Map<string, string>();
+const sqliteBusyWaiter = new Int32Array(new SharedArrayBuffer(Int32Array.BYTES_PER_ELEMENT));
 
 /** Register the containment root expected by a later CLI-resolved SQLite open. */
 export function registerOwnedSqlitePath(path: string, root: string): void {
@@ -125,6 +126,39 @@ function contextualError(label: string, message: string, error?: unknown): Error
   return new Error(`${label}: ${message}${error ? `: ${(error as Error).message}` : ""}`, {
     cause: error,
   });
+}
+
+function isSqliteBusy(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "SQLITE_BUSY"
+  );
+}
+
+function enableWalWithBusyRetry(
+  db: Database,
+  busyTimeoutMs: number,
+): { journal_mode?: unknown } | null {
+  const deadline = Date.now() + busyTimeoutMs;
+  let delayMs = 1;
+  while (true) {
+    try {
+      return db.query("PRAGMA journal_mode = WAL").get() as {
+        journal_mode?: unknown;
+      } | null;
+    } catch (error) {
+      const remainingMs = deadline - Date.now();
+      if (!isSqliteBusy(error) || remainingMs <= 0) throw error;
+      // SQLite's busy handler does not reliably cover journal-mode changes.
+      // Another admitted process may begin its schema transaction immediately
+      // after this connection commits. Retry only SQLITE_BUSY, within the
+      // caller's existing busy-timeout budget.
+      Atomics.wait(sqliteBusyWaiter, 0, 0, Math.min(delayMs, remainingMs));
+      delayMs = Math.min(delayMs * 2, 25);
+    }
+  }
 }
 
 function validateOptions(options: HardenedSqliteOptions): {
@@ -438,9 +472,7 @@ export function openHardenedSqlite(options: HardenedSqliteOptions): HardenedSqli
     }
 
     if (!readonly && persistent) {
-      const row = db.query("PRAGMA journal_mode = WAL").get() as {
-        journal_mode?: unknown;
-      } | null;
+      const row = enableWalWithBusyRetry(db, busyTimeoutMs);
       if (row?.journal_mode !== "wal") {
         throw contextualError(
           options.label,

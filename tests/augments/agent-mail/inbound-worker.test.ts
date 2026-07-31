@@ -141,6 +141,7 @@ describe("AgentMail inbound turn worker", () => {
   test("retries rejected turns with bounded backoff, then discards exhausted work", async () => {
     let now = 1_000;
     const ledger = createAgentMailInboundLedger({ dbPath: ":memory:", now: () => now });
+    const terminalFailures: string[] = [];
     try {
       ledger.enqueue(envelope());
       const worker = createAgentMailInboundWorker({
@@ -155,6 +156,9 @@ describe("AgentMail inbound turn worker", () => {
           retryMaxMs: 100,
         },
         now: () => now,
+        onTerminalFailure: ({ envelope: failedEnvelope }) => {
+          terminalFailures.push(failedEnvelope.message.messageId);
+        },
       });
 
       expect(await worker.processNext()).toEqual({
@@ -170,6 +174,50 @@ describe("AgentMail inbound turn worker", () => {
         messageId: "message_1",
         reason: "delivery-attempts-exhausted",
       });
+      expect(terminalFailures).toEqual(["message_1"]);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  test("quarantines the live terminal claim when attention finalization fails", async () => {
+    const ledger = createAgentMailInboundLedger({
+      dbPath: ":memory:",
+      now: () => 1_000,
+      incidentId: () => "incident_terminal_attention",
+    });
+    const calls: TurnTrigger[] = [];
+    try {
+      ledger.enqueue(envelope());
+      const worker = createAgentMailInboundWorker({
+        ledger,
+        kernel: fakeKernel(calls, failedTurn()),
+        inboxId,
+        sourceAugment: "agent-mail",
+        policy: {
+          allowedSenders: ["customer@example.com"],
+          maxAttempts: 1,
+        },
+        now: () => 1_000,
+        onTerminalFailure: () => {
+          throw new Error("attention commit failed");
+        },
+      });
+
+      expect(await worker.processNext()).toEqual({
+        status: "quarantined",
+        messageId: "message_1",
+        incidentId: "incident_terminal_attention",
+      });
+      expect(ledger.get(inboxId, "message_1")).toMatchObject({
+        state: "outcome_unknown",
+        discardReason: undefined,
+      });
+      expect(ledger.listIncidents()[0]).toMatchObject({
+        reasonCode: "terminal-attention-not-recorded",
+      });
+      expect(await worker.processNext()).toEqual({ status: "idle" });
+      expect(calls).toHaveLength(1);
     } finally {
       ledger.close();
     }
@@ -193,6 +241,97 @@ describe("AgentMail inbound turn worker", () => {
       });
       expect(await worker.processNext()).toMatchObject({ status: "retried", availableAt: 1_100 });
       expect(calls).toHaveLength(0);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  test("defers pre-model backpressure without consuming an attempt or losing the message", async () => {
+    let now = 1_000;
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:", now: () => now });
+    const calls: TurnTrigger[] = [];
+    let blocked = true;
+    try {
+      ledger.enqueue(envelope());
+      const worker = createAgentMailInboundWorker({
+        ledger,
+        kernel: fakeKernel(calls),
+        inboxId,
+        sourceAugment: "agent-mail",
+        policy: {
+          allowedSenders: ["customer@example.com"],
+          maxAttempts: 1,
+        },
+        now: () => now,
+        onTurnPrepared: () =>
+          blocked
+            ? { status: "deferred", reason: "creator-attention-capacity" }
+            : { status: "ready" },
+      });
+
+      expect(await worker.processNext()).toEqual({
+        status: "deferred",
+        messageId: "message_1",
+        reason: "creator-attention-capacity",
+        availableAt: 6_000,
+      });
+      expect(ledger.get(inboxId, "message_1")).toMatchObject({
+        state: "pending",
+        attemptCount: 0,
+        lastError: "creator-attention-capacity",
+      });
+      expect(calls).toHaveLength(0);
+
+      blocked = false;
+      now = 6_000;
+      expect(await worker.processNext()).toMatchObject({
+        status: "processed",
+        messageId: "message_1",
+      });
+      expect(ledger.get(inboxId, "message_1")).toMatchObject({
+        state: "processed",
+        attemptCount: 1,
+      });
+      expect(calls).toHaveLength(1);
+    } finally {
+      ledger.close();
+    }
+  });
+
+  test("quarantines when post-turn attention persistence fails and never replays", async () => {
+    const ledger = createAgentMailInboundLedger({
+      dbPath: ":memory:",
+      now: () => 1_000,
+      incidentId: () => "incident_attention",
+    });
+    const calls: TurnTrigger[] = [];
+    const completed: string[] = [];
+    try {
+      ledger.enqueue(envelope());
+      const worker = createAgentMailInboundWorker({
+        ledger,
+        kernel: fakeKernel(calls),
+        inboxId,
+        sourceAugment: "agent-mail",
+        policy: { allowedSenders: ["customer@example.com"] },
+        now: () => 1_000,
+        onTurnCompleted: ({ envelope: completedEnvelope }) => {
+          completed.push(completedEnvelope.message.messageId);
+          throw new Error("attention storage unavailable");
+        },
+      });
+
+      expect(await worker.processNext()).toEqual({
+        status: "quarantined",
+        messageId: "message_1",
+        incidentId: "incident_attention",
+      });
+      expect(calls).toHaveLength(1);
+      expect(completed).toEqual(["message_1"]);
+      expect(ledger.get(inboxId, "message_1")?.state).toBe("outcome_unknown");
+      expect(ledger.listIncidents()[0]?.reasonCode).toBe("post-turn-attention-not-recorded");
+      expect(await worker.processNext()).toEqual({ status: "idle" });
+      expect(calls).toHaveLength(1);
     } finally {
       ledger.close();
     }

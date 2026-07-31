@@ -104,6 +104,11 @@ config:
     pollIntervalMs: 60000
     maxPromptBytes: 102400
     maxAttempts: 5
+    replies:
+      # disabled | review | automatic. Enabled inbound defaults to review.
+      mode: review
+      # Default false. Applies only to the exact message in the current email turn.
+      allowReplyAll: false
     classifications:
       received: process
       spam: discard
@@ -185,7 +190,7 @@ classification; that event is durably discarded before kernel admission.
 
 Definitively failed turns are retried. After `maxAttempts` (default 5), the
 message is durably discarded rather than looping forever. A turn whose effects
-are outcome-unknown is never retried: `AMIL/v2` creates a server-minted
+are outcome-unknown is never retried: `AMIL/v3` creates a server-minted
 incident, blocks every later message in that provider thread, and restores the
 kernel thread quarantine after process restart. `pollIntervalMs` ranges from
 one second to 24 hours, `maxPromptBytes` ranges from 512 bytes to 1 MiB, and
@@ -193,17 +198,62 @@ one second to 24 hours, `maxPromptBytes` ranges from 512 bytes to 1 MiB, and
 
 Inbound delivery does not imply automatic replies or creator push. A plain
 assistant response produced by an inbound turn is not sent as email. The agent
-must call `reply_to_message`, and public-originated mail remains subject to the
-configured outbound trust and durable human-review policy. `notify` is a
-separate augment; no external creator alert is sent merely because inbound is
-enabled.
+must call `reply_to_message`. Enabled inbound defaults `inbound.replies.mode` to
+`review`, which lets the exact admitted AgentMail turn propose one reply even
+when general public outbound is disabled. The proposal is durably queued for
+creator approval; this narrow authority never enables a new `send_message`,
+`forward_message`, another message ID, another turn, or another source augment.
+Any enabled reply mode requires durable review storage; runtime construction
+fails closed instead of silently keeping approvals in memory.
+
+`automatic` is an explicit opt-in and requires the durable outbound rate limit
+to remain enabled with an effective global cap of 1–100 per hour, including
+persisted and live admin overrides. It sends only the exact current reply;
+sensitive/token-shaped content and a Reply-To address that differs from From
+fall back to review. New inbound replies pin an explicit, policy-validated
+recipient list rather than asking the provider to derive it again. `replyAll`
+is independently disabled by default; when enabled it deduplicates recipients
+and removes the verified canonical inbox email. If that identity is
+unavailable, reply-all fails closed. `disabled` prevents even a review
+proposal. `notify` remains a separate augment; no external creator alert is
+sent merely because inbound is enabled.
+
+Every newly queued reply, including creator-originated replies, stores its
+explicit recipients. A legacy pending reply review without that binding is
+cancelled rather than approved with provider-derived recipients. A legacy
+`sending` record remains ambiguous and requires operator reconciliation.
+
+Before an admitted model turn starts, the runtime reserves a bounded durable
+creator-attention metadata record. It tracks open, pending-review, sent,
+rejected, failed, ambiguous, and dismissed states across restart. The generic
+admin table shows only message ID, state, version, review link, and timestamp;
+no model response or provider error text is persisted there. Dismissal is
+creator-only and requires the current record version so a stale console cannot
+overwrite a concurrent send or review transition. Startup and admin reads
+reconcile linked review state after expiry or a crash between durable writes.
+Each exact inbound reply review carries the creator-attention version that
+authorized it; restart repair links only that generation, independent of record
+timestamps. Legacy and non-inbound reviews without a generation never
+auto-link.
+The default capacity is 1,000 active plus retained records; exhaustion stops
+before model or tool effects. The exact inbound claim returns to pending with
+its attempt count unchanged, and is never discarded for attention pressure.
+Periodic capacity rechecks wait five seconds; resolving or dismissing attention
+wakes the drain immediately. Terminal surrounding rows may then be pruned and
+the same message continues. Terminal rows become eligible for pruning after 30
+days.
 
 A processing lease is a liveness heartbeat, not permission to replay after
 expiry. Runtime startup fences every retained processing claim as ambiguous;
 live workers atomically fence expired claims before seeking pending work. An
 old worker cannot complete, retry, discard, or renew a fenced claim. Recovery
 is explicit even when a process stopped before the operator can tell whether
-model or tool execution began.
+model or tool execution began. “Confirmed no effect” retry cancels a still
+pending reply review and reopens only failed or dismissed attention. This check
+independently scans durable reply reviews for the incident message even if its
+attention metadata is absent: sent/approved, sending/ambiguous, and rejected
+evidence blocks retry; failed and expired reviews may be safe. Those outcomes
+must be explicitly reconciled and cannot be silently replayed.
 
 ## Model-facing tools
 
@@ -216,7 +266,9 @@ model or tool execution began.
 `reply_to_message` and `forward_message` accept only a message ID delivered to
 the agent in the current inbound turn. This prevents a prompt from guessing or
 supplying an arbitrary provider message ID. The turn-scoped record also gives a
-reply enough trusted envelope metadata to re-run recipient policy.
+reply enough trusted envelope metadata to honor Reply-To, remove the verified
+inbox from reply-all, and re-run recipient policy against the exact list sent
+to AgentMail.
 
 ## Outbound guards and human review
 
@@ -228,7 +280,7 @@ Every outbound action passes these checks before AgentMail is called:
 | Recipients | Optional exact/domain allowlist, valid email syntax, 10-recipient default, 50 hard maximum |
 | Content | 100 KiB default body cap, HTML opt-in, mandatory subject prefix, control-character and SMTP envelope checks |
 | Rate and dedup | Global hourly cap, per-recipient cooldown, and subject-hash duplicate window |
-| Sensitive scan | Token-shaped strings are flagged in the operator audit surface; the send is not silently rewritten |
+| Sensitive scan | Token-shaped strings are flagged; automatic inbound replies fall back to review rather than sending |
 | Human review | Configured trust levels receive `pending_review` instead of immediate delivery |
 
 A pending action is stored durably with an immutable content fingerprint and a
@@ -308,6 +360,7 @@ The creator-authenticated admin surface reports:
 | Webhook mode says `webTransport` is required | Mount `webTransport` so the verified route can be served |
 | Human review says the admin route is required | Enable `webTransport.adminRoute` or change review/allowed trust levels |
 | A reply says the message was not delivered this turn | Reply only from the turn triggered by that inbound message |
+| Inbound attention is at capacity | Resolve or dismiss creator-attention items; the exact message remains pending without consuming delivery attempts and resumes after capacity is available |
 | A send outcome is ambiguous | Do not retry; verify with AgentMail and use the admin reconciliation action |
 | An inbound turn is outcome-unknown | Verify downstream effects, then reconcile the exact incident/version as handled or no-effect; the runtime thread remains blocked until every AgentMail, Notify, or other durable incident authority is clear |
 | Mail vanishes after Railway redeploy | Confirm the volume is mounted at exactly `/app/data`; admission should fail before boot if it is not durable |
