@@ -4381,7 +4381,7 @@ describe("adminInfo", () => {
         },
       ],
     });
-    expect(JSON.stringify(info.projection)).not.toContain("Can you help?");
+    expect(JSON.stringify(info)).not.toContain("Can you help?");
 
     const route = aug.httpRoutes!.find(
       (candidate) => candidate.path === "/agentmail/support/messages/:messageId",
@@ -4457,7 +4457,11 @@ describe("adminInfo", () => {
     });
     await executeParsed(
       tool(aug, "send_message"),
-      { to: ["customer@example.com"], subject: "Ambiguous", text: "Body" },
+      {
+        to: ["customer@example.com"],
+        subject: "Ambiguous",
+        text: "Exact sensitive queued body",
+      },
       ctx(peer("agent")),
     );
     const sending = queue.list().find((review) => review.state === "sending")!;
@@ -4487,8 +4491,8 @@ describe("adminInfo", () => {
         },
       }),
     ]);
-    expect(JSON.stringify(info.projection)).not.toContain(sending.fingerprint);
-    expect(JSON.stringify(info.projection)).not.toContain("Body");
+    expect(JSON.stringify(info)).not.toContain(sending.fingerprint);
+    expect(JSON.stringify(info)).not.toContain("Exact sensitive queued body");
     const incidentDetailRoute = aug.httpRoutes!.find(
       (candidate) => candidate.path === "/agentmail/support/messages/:messageId",
     )!;

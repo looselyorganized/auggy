@@ -70,6 +70,7 @@ import {
   readRequestBodyText,
   RequestBodyTooLargeError,
 } from "../request-body";
+import { handleMailDetailProxy } from "./mail-detail-proxy";
 
 const AUGGY_VERSION = readPackageVersion();
 
@@ -562,6 +563,14 @@ async function dispatchAdminRoute(req: Request, ctx: AdminRouteContext): Promise
   if (url.pathname === "/console/api/visitor-identity") {
     if (req.method !== "POST") return methodNotAllowed("POST");
     return handleConsoleVisitorIdentity(req, ctx, agentName);
+  }
+
+  // Creator-authenticated AgentMail detail proxy -------------------------
+  // Console sessions are intentionally scoped to /console. Resolve the
+  // narrow, canonical AgentMail detail surface through a loopback bearer
+  // fetch so the browser never receives the permanent credential.
+  if (url.pathname === "/console/api/mail-detail") {
+    return handleMailDetailProxy(req, ctx);
   }
 
   // Chat SSE proxy --------------------------------------------------------
