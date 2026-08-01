@@ -53,6 +53,14 @@ kernel edits require a concrete bug or boundary reason. Keep reference docs and
 examples aligned with public behavior. Do not bump package versions or publish
 npm packages outside a release PR.
 
+Treat AgentMail as a cross-repository contract surface. Changes to its public
+configuration, sender admission, inbox identity, durable schema, admin
+projection, or Console actions must audit `README.md`, `docs/22-agent-mail.md`,
+`docs/21-console.md`, the recovery/compatibility docs, examples, and the sibling
+`auggy-site` AgentMail page plus contract tests. Public inbound examples must
+use explicit `allowAnySender: true` with finite global and per-sender hourly
+limits; never document `allowedSenders: ["*"]` as a wildcard shortcut.
+
 Preserve the product promise: “Turn business operations into agent-ready
 capabilities.” Describe Auggy as replacing one-off integration glue with
 TypeScript augments—controlled, predictable interfaces that bundle identity,

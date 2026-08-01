@@ -93,7 +93,7 @@ Use this order when documentation disagrees:
 | [19 Visitor Auth](./19-visitor-auth.md) | Email magic-link recognition |
 | [20 Embedding](./20-embedding.md) | Browser and AG-UI integration |
 | [21 Console](./21-console.md) | Creator console |
-| [22 Agent Mail](./22-agent-mail.md) | AgentMail augment |
+| [22 Agent Mail](./22-agent-mail.md) | Inbox identity, sender admission, replies, digests, multi-inbox operation, and recovery |
 | [24 MCP](./24-mcp.md) | Local and remote MCP servers |
 | [25 Generated Route Clients](./25-generated-route-clients.md) | Preview route manifests and clients |
 | [26 Delegated Authorization](./26-delegated-authorization.md) | Preview app-session authorization bridge |

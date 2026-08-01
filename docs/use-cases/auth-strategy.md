@@ -308,8 +308,10 @@ defineRoute.post("/webhooks/stripe", {
 Stripe and Svix verification have shipped because they force raw-body
 signature handling and replay-age checks. GitHub-style verification can follow
 without becoming peer identity. AgentMail webhook inbound uses the Svix policy
-and still admits email senders through the `agentMail` augment's separate
-sender/classification rules.
+and still admits email senders through the `agentMail` augment's separate sender
+policy (a nonempty allowlist or explicit bounded-public admission) and
+classification rules. Webhook authenticity never authenticates the email sender
+as a peer.
 
 Keep webhook auth separate from route identity:
 

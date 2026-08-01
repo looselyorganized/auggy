@@ -88,8 +88,9 @@ Pieces that already support this direction:
 - `fileMemory` and `layeredMemory` give the site persistent identity and visitor memory.
 - `knowledge` lets the site answer from operator-owned docs and API-backed sources.
 - `notify` escalates to the operator or staff.
-- `agentMail` sends and receives email with trust/sender policy, durable inbound
-  recovery, outbound review, rate limits, and operator audit.
+- `agentMail` sends and receives email with allowlisted or bounded-public sender
+  admission, durable inbound recovery, reviewed replies, rate limits, creator
+  digests, and operator audit.
 - `telegramTransport` gives the owner or staff a mobile operator channel.
 - `budgets` constrains spend by trust level.
 - `turnControl` lets the agent ask for missing user input instead of guessing.
