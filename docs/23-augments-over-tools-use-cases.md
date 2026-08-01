@@ -54,8 +54,9 @@ MCP is mostly pull-oriented: the model or client calls tools and reads resources
 Examples:
 
 - `telegramTransport` receives Telegram messages and creates `TurnTrigger`s.
-- `agentMail` receives admitted email through polling, WebSocket, or verified
-  webhook delivery and invokes the model only when its durable ledger has work.
+- `agentMail` receives allowlisted or explicitly bounded-public email through
+  polling, WebSocket, or verified webhook delivery and invokes the model only
+  when its durable ledger has admitted work.
 - Future Slack, SMS, voice, or queue transports can wake the agent on real events.
 
 This avoids expensive empty polling loops. For email, for example, a scheduler-driven "check inbox" loop through MCP can run full LLM turns just to discover there is no mail. An augment can listen at the REST, webhook, or WebSocket layer and invoke the model only when there is work.
@@ -69,7 +70,8 @@ callers, staff, and agent peers.
 
 Examples:
 
-- `agentMail` can allow only `creator` peers to send email.
+- `agentMail` can keep new sends and forwards creator-only while granting an
+  exact admitted public email turn one creator-reviewed reply proposal.
 - `budgets` can apply different spend ceilings by trust tier.
 - `visitorAuth` can promote a public anonymous visitor to `public` + `recognized`.
 - `filesystem` and `bash` can be scoped more tightly for public users than creators.

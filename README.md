@@ -225,7 +225,7 @@ Core augments make the default agent work and are installed by `auggy create`.
 | `knowledge` | Local Markdown or API-backed reference material |
 | `layeredMemory` | Peer-scoped episodic memory backed by SQLite |
 | `visitorAuth` | Email magic-link recognition for returning visitors |
-| `agentMail` | Policy-gated send/receive email with durable inbound recovery and outbound review |
+| `agentMail` | Canonical inbox identity, allowlisted or bounded-public inbound, reviewed replies, durable recovery, and multi-inbox operations |
 | `notify` | Outbound alerts through file, webhook, Telegram, or AgentMail |
 | `telegramTransport` | Bidirectional Telegram conversations |
 | `mcp` | Tools exposed by local or remote MCP servers |
@@ -294,6 +294,9 @@ top-level surfaces are:
 
 - **Chat** for Markdown conversations, visible tool activity, and copyable
   transcripts,
+- **Mail** for per-inbox identity and health, inbound quota posture, metadata-only
+  attention/review queues, creator decisions, and recovery actions when one or
+  more supported AgentMail instances are mounted,
 - **Integrations** for browser, server, authentication, CORS, route, and
   generated-client guidance,
 - **Capabilities** for an observed runtime map of mounted augments, routes,
@@ -383,13 +386,44 @@ The default notification destination writes JSON Lines locally with no secrets.
 Configure a webhook, Telegram, or AgentMail destination when you need real
 delivery.
 
-For model-callable email and the durable inbound/review foundation in the 0.5
-public-preview line:
+For model-callable email and the durable inbound/review foundation in the
+`0.5.0-rc.5` candidate:
 
 ```bash
 auggy augment add agentMail
 auggy augment setup agentMail
 ```
+
+Inbound is off by default. Enable polling, WebSocket, or verified webhook
+delivery with exactly one sender policy: a non-empty exact/domain
+`allowedSenders` list, or explicit public admission with bounded local quotas.
+For a public company inbox, start with:
+
+```yaml
+# augments/agentMail/augment.yaml
+type: agentMail
+config:
+  apiKey: ${AGENTMAIL_API_KEY}
+  inboxId: ${AGENTMAIL_INBOX_ID}
+  emailAddress: ${AGENTMAIL_INBOX_EMAIL}
+  addressVisibility: public
+  inbound:
+    mode: websocket
+    allowAnySender: true
+    rateLimit:
+      globalMaxPerHour: 100
+      perSenderMaxPerHour: 5
+```
+
+`allowedSenders` and `allowAnySender` are mutually exclusive; `"*"` is not a
+valid sender pattern. Public email remains `public` + `anonymous`, enabled
+inbound defaults replies to creator review, and these caps protect Auggy's
+local model-admission boundary rather than rejecting SMTP delivery upstream.
+Setup records the canonical inbox address so a publicly visible agent can
+provide its email contextually while reporting whether inbound monitoring is
+enabled, disabled, or degraded. See [the AgentMail guide](docs/22-agent-mail.md)
+for allowlisted inboxes, automatic-reply safeguards, creator digests, and
+multi-inbox operation.
 
 ## Advanced Preview: Routes And App Integration
 

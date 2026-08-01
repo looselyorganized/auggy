@@ -7,14 +7,15 @@ the compact feature/status matrix.
 ## Release Framing
 
 - **Latest stable release:** `0.4.4`.
-- **Public-preview candidate:** `0.5.0-rc.1`, distributed through npm's `next`
+- **Public-preview candidate:** `0.5.0-rc.5`, distributed through npm's `next`
   tag. It includes the
   app-backend foundation, durable AgentMail inbound/review, the security-audit
-  remediation, keyed turn scheduling, Telegram conflict recovery, CI
-  test-surface enforcement, and a fail-closed distributed-coordination
-  foundation.
-- **Immediate release plan:** publish one `0.5.0-rc.1` under npm's `next`
-  dist-tag, validate the public OSS path, then publish final `0.5.0`. See the
+  remediation, keyed turn scheduling, Telegram conflict recovery, durable
+  Notify delivery, canonical and multi-inbox AgentMail operations, bounded
+  public email admission, CI test-surface enforcement, and a fail-closed
+  distributed-coordination foundation.
+- **Immediate release plan:** validate the published `0.5.0-rc.5` public OSS
+  path under npm's `next` dist-tag, then publish final `0.5.0`. See the
   [OSS Production Release Plan](./plans/production-readiness-roadmap-2026-07-24.md).
 - **Pre-1.0 cadence:** do not jump straight from `0.5.x` to `1.0.0`. Ship useful
   `0.x` releases as the app-backend surface hardens.
@@ -33,7 +34,7 @@ completed plans are removed once their durable decisions reach reference docs.
 
 ## 0.5.0 Candidate — OSS Production Preview
 
-Status: **public release candidate (`0.5.0-rc.1`)**.
+Status: **public release candidate (`0.5.0-rc.5`)**.
 
 The candidate includes:
 
@@ -60,8 +61,10 @@ The candidate includes:
 - Portable Auggy builder skill sources and evals for coding-agent guidance.
 - Basic `auggy augment create <name>` scaffolding with a typed tool, test, and
   optional skill.
-- Durable AgentMail inbound catch-up, outbound review, reconciliation, and
-  persistent-volume admission.
+- Durable AgentMail inbound catch-up, canonical inbox identity, allowlisted or
+  bounded-public sender admission, reviewed inbound replies, metadata-only
+  creator digests, distinct-inbox isolation, Console operations, outbound
+  reconciliation, and persistent-volume admission.
 - Repository-wide security remediation, bounded turn scheduling, Telegram
   conflict recovery, and complete tracked-test inventory enforcement.
 - A fail-closed PostgreSQL coordination foundation that remains disabled until

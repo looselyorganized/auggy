@@ -51,7 +51,7 @@ When this file disagrees with code, code wins.
 | Visitor auth | Published | [`19`](./19-visitor-auth.md) | Email magic-link recognition and visitor tokens |
 | Notify | Published | [`13`](./13-notify.md) | File, webhook, Telegram, and AgentMail destinations |
 | AgentMail outbound | Published | [`22`](./22-agent-mail.md) | Trust-gated model-callable send, reply, and forward tools |
-| AgentMail inbound and outbound review | RC | [`22`](./22-agent-mail.md) | Polling/WebSocket/Svix delivery, REST catch-up, durable ledger, and creator review |
+| AgentMail inbound and operations | RC | [`22`](./22-agent-mail.md), [`21`](./21-console.md) | Canonical inbox identity, polling/WebSocket/Svix catch-up, allowlisted or bounded-public admission, reviewed replies, metadata-only creator digests, distinct-inbox isolation, and the Mail action center |
 | Telegram transport | Published | [`14`](./14-telegram-transport.md) | Bidirectional Telegram conversations |
 | MCP | Published | [`24`](./24-mcp.md) | Local stdio and remote HTTP MCP servers |
 | Budgets | Preview | [`12`](./12-budgets.md) | Turn and spend guardrails, not billing control |
