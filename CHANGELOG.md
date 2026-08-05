@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0-rc.6] - 2026-08-05
+
+This sixth public candidate adds a safe handoff from Auggy's authenticated Mail
+surface to AgentMail's hosted inbox and refreshes the release dependency floor
+against newly disclosed advisories.
+
+### Added
+
+- **AgentMail Console handoff.** Mail and matching capability views can open
+  AgentMail's official Console root for the selected inbox. Older runtimes
+  remain compatible and simply omit the action when the projection is absent.
+
+### Changed
+
+- **Explicit mail ownership boundary.** Runtime and site documentation now
+  distinguish AgentMail's provider-owned inbox, history, and provider drafts
+  from Auggy's local reply proposals, approvals, policy, quota, and
+  reconciliation state.
+
+### Security
+
+- **Strict provider-link validation.** The Console accepts only the exact
+  credential-free `https://console.agentmail.to/` root. It rejects HTTP,
+  credentials, attacker-controlled subdomains, query strings, fragments, and
+  unsupported guessed inbox paths.
+- **Audited dependency refresh.** Reviewed fixed versions of `fast-uri`,
+  `hono`, `brace-expansion`, `ip-address`, `postcss`, and `undici` now govern
+  the workspace and packed consumers; the isolated Temporal example also pins
+  its fixed `fast-uri` release. Root and Temporal audits are empty.
+
+### Process
+
+- **Collision-safe Telegram webhook tests.** Webhook lifecycle coverage now
+  requests OS-assigned loopback ports and retries the exact bind boundary,
+  removing a random-port race from release rehearsal.
+
 ## [0.5.0-rc.5] - 2026-07-31
 
 This fifth public candidate hardens AgentMail into a bounded, recoverable
@@ -577,7 +613,8 @@ Initial tagged release. The kernel and built-in augments described in `docs/02-a
 - **CLI** — `aug1 create / add / dev / start / stop / restart / status` with launchd installation on macOS and PID-manifest tracking under `~/.auggy/`.
 - **Reference documentation** — `docs/01-philosophy.md` through `docs/11-skills.md`.
 
-[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.5...HEAD
+[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.6...HEAD
+[0.5.0-rc.6]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.5...v0.5.0-rc.6
 [0.5.0-rc.5]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.4...v0.5.0-rc.5
 [0.5.0-rc.4]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.3...v0.5.0-rc.4
 [0.5.0-rc.3]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.2...v0.5.0-rc.3

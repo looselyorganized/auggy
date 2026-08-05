@@ -1,6 +1,6 @@
 {
   "name": "@auggy/openrouter",
-  "version": "0.5.0-rc.5",
+  "version": "0.5.0-rc.6",
   "description": "OpenRouter engine adapter for Auggy, using OpenRouter's OpenAI-compatible API.",
   "keywords": [
     "auggy",
@@ -35,7 +35,7 @@
   },
   "private": false,
   "peerDependencies": {
-    "auggy": "^0.5.0-rc.5"
+    "auggy": "^0.5.0-rc.6"
   },
   "peerDependenciesMeta": {
     "auggy": {
@@ -43,7 +43,7 @@
     }
   },
   "dependencies": {
-    "@auggy/openai": "^0.5.0-rc.5",
+    "@auggy/openai": "^0.5.0-rc.6",
     "openai": "^6.34.0"
   }
 }
