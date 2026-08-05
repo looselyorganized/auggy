@@ -45,6 +45,26 @@ augment is the stronger fit when email must live inside the agent runtime:
 If you need only occasional operator-driven mail actions, the MCP server may be
 simpler.
 
+## Provider inbox and Auggy review
+
+AgentMail remains the source of truth for inbox messages, threads, sent history,
+and provider-native drafts. The Auggy Console intentionally does not reproduce
+that mailbox UI. Its Mail action center owns a narrower operational surface:
+Auggy's durable reply proposals, creator approvals, policy posture, quota
+evidence, and ambiguous-outcome reconciliation.
+
+**Open in AgentMail** appears for the selected mounted mailbox in both the Mail
+action center and its Capabilities identity card. It opens AgentMail's official
+Console root in a new tab. AgentMail does not document a stable inbox-specific
+Console URL, so Auggy does not guess one; the selected inbox address and ID stay
+visible for identification. The link contains no API key, Auggy Console token,
+message data, or review data.
+
+An Auggy `pending_review` record is not an AgentMail draft. Keeping the proposal
+inside Auggy preserves the exact authorization, fingerprint, quota, and
+reconciliation boundary until the creator approves or rejects it. AgentMail is
+called only after that decision.
+
 ## Configuration
 
 Inbound is disabled by default. Enabling it requires exactly one sender policy:
@@ -523,6 +543,7 @@ restart to adjust inbound limits.
 - [`25-generated-route-clients.md`](./25-generated-route-clients.md) — route
   policy and generated-client behavior.
 - AgentMail documentation: [API](https://docs.agentmail.to/api-reference),
+  [Console](https://console.agentmail.to),
   [permissions](https://docs.agentmail.to/permissions),
   [WebSockets](https://docs.agentmail.to/websockets), and
   [webhook verification](https://docs.agentmail.to/webhook-verification).
