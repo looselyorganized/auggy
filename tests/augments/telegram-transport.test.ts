@@ -1,5 +1,6 @@
 import { describe, it, expect } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { resolveTelegramIdentity } from "../../src/augments/telegramTransport";
@@ -330,6 +331,40 @@ function makeMockKernel(opts: { handleInbound?: TransportKernel["handleInbound"]
     getAugments: () => [],
   };
   return { kernel, handleInboundCalls, outboundCallbacks };
+}
+
+function isAddressInUse(error: unknown): boolean {
+  return (
+    (typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "EADDRINUSE") ||
+    (error instanceof Error && /address already in use|port .* in use/i.test(error.message))
+  );
+}
+
+async function withAvailableWebhookPort<T>(run: (port: number) => Promise<T>): Promise<T> {
+  let collision: unknown;
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    try {
+      const reservation = createServer();
+      await new Promise<void>((resolve, reject) => {
+        reservation.once("error", reject);
+        reservation.listen(0, "127.0.0.1", resolve);
+      });
+      const address = reservation.address();
+      const port = typeof address === "object" && address ? address.port : undefined;
+      await new Promise<void>((resolve, reject) =>
+        reservation.close((error) => (error ? reject(error) : resolve())),
+      );
+      if (port === undefined) throw new Error("Telegram webhook port reservation did not bind");
+      return await run(port);
+    } catch (error) {
+      if (!isAddressInUse(error)) throw error;
+      collision = error;
+    }
+  }
+  throw collision ?? new Error("could not allocate a Telegram webhook test port");
 }
 
 describe("telegramTransport — polling lifecycle", () => {
@@ -1314,24 +1349,34 @@ describe("telegramTransport — polling lifecycle", () => {
   });
 
   it("quarantines webhook conflicts until exact operator recovery", async () => {
-    const port = 31_000 + Math.floor(Math.random() * 5_000);
     const replayStore = createInMemoryTelegramReplayStore();
     const { client } = makeMockClient([]);
     const setup = makeMockKernel();
-    const aug = telegramTransport({
-      botToken: "803:test-token",
-      inbound: {
-        mode: "webhook",
-        webhook: {
-          publicUrl: "https://example.test/telegram",
-          port,
-          secretToken: "secret",
+    const { aug, port } = await withAvailableWebhookPort(async (candidatePort) => {
+      const candidate = telegramTransport({
+        botToken: "803:test-token",
+        inbound: {
+          mode: "webhook",
+          webhook: {
+            publicUrl: "https://example.test/telegram",
+            port: candidatePort,
+            secretToken: "secret",
+          },
         },
-      },
-      auth: {},
-      replay: { store: replayStore },
-      _clientFactory: () => client,
-    } as unknown as Parameters<typeof telegramTransport>[0]);
+        auth: {},
+        replay: { store: replayStore },
+        _clientFactory: () => client,
+      } as unknown as Parameters<typeof telegramTransport>[0]);
+      try {
+        await candidate.transport!.register(setup.kernel, "telegram-primary");
+        await candidate.onBoot?.();
+        await candidate.transport!.ready?.();
+        return { aug: candidate, port: candidatePort };
+      } catch (error) {
+        await candidate.onShutdown?.();
+        throw error;
+      }
+    });
     const canonical: TelegramUpdate = {
       update_id: 40,
       message: {
@@ -1361,9 +1406,6 @@ describe("telegramTransport — polling lifecycle", () => {
         body: JSON.stringify(body),
       });
 
-    await aug.transport!.register(setup.kernel, "telegram-primary");
-    await aug.onBoot?.();
-    await aug.transport!.ready?.();
     try {
       expect((await deliver(canonical)).status).toBe(200);
       expect((await deliver(conflicting)).status).toBe(409);
@@ -1391,7 +1433,6 @@ describe("telegramTransport — polling lifecycle", () => {
   });
 
   it("keeps concurrent same-chat reply routing until both turns settle", async () => {
-    const port = 31_000 + Math.floor(Math.random() * 5_000);
     const { client, sent } = makeMockClient([]);
     let outboundCallbacks: Array<(peer: PeerIdentity, msg: OutboundMessage) => Promise<void>> = [];
     let started = 0;
@@ -1418,22 +1459,30 @@ describe("telegramTransport — polling lifecycle", () => {
       },
     });
     outboundCallbacks = setup.outboundCallbacks;
-    const aug = telegramTransport({
-      botToken: "T",
-      inbound: {
-        mode: "webhook",
-        webhook: {
-          publicUrl: "https://example.test/telegram",
-          port,
-          secretToken: "secret",
+    const { aug, port } = await withAvailableWebhookPort(async (candidatePort) => {
+      const candidate = telegramTransport({
+        botToken: "T",
+        inbound: {
+          mode: "webhook",
+          webhook: {
+            publicUrl: "https://example.test/telegram",
+            port: candidatePort,
+            secretToken: "secret",
+          },
         },
-      },
-      auth: {},
-      _clientFactory: () => client,
-    } as unknown as Parameters<typeof telegramTransport>[0]);
-    await aug.transport!.register(setup.kernel, "telegram-transport");
-    await aug.onBoot?.();
-    await aug.transport!.ready?.();
+        auth: {},
+        _clientFactory: () => client,
+      } as unknown as Parameters<typeof telegramTransport>[0]);
+      try {
+        await candidate.transport!.register(setup.kernel, "telegram-transport");
+        await candidate.onBoot?.();
+        await candidate.transport!.ready?.();
+        return { aug: candidate, port: candidatePort };
+      } catch (error) {
+        await candidate.onShutdown?.();
+        throw error;
+      }
+    });
     try {
       const update = (update_id: number) => ({
         update_id,
@@ -1478,7 +1527,6 @@ describe("telegramTransport — polling lifecycle", () => {
   });
 
   it("rolls back the local webhook listener when Telegram webhook setup fails", async () => {
-    const port = 31_000 + Math.floor(Math.random() * 5_000);
     let deleteCalls = 0;
     const client: TelegramBotClient = {
       async sendMessage(chatId) {
@@ -1498,23 +1546,37 @@ describe("telegramTransport — polling lifecycle", () => {
       },
     };
     const { kernel } = makeMockKernel();
-    const aug = telegramTransport({
-      botToken: "T",
-      inbound: {
-        mode: "webhook",
-        webhook: {
-          publicUrl: "https://example.test/telegram",
-          port,
-          secretToken: "secret",
+    const { aug, port, readyError } = await withAvailableWebhookPort(async (candidatePort) => {
+      const candidate = telegramTransport({
+        botToken: "T",
+        inbound: {
+          mode: "webhook",
+          webhook: {
+            publicUrl: "https://example.test/telegram",
+            port: candidatePort,
+            secretToken: "secret",
+          },
         },
-      },
-      auth: {},
-      _clientFactory: () => client,
-    } as unknown as Parameters<typeof telegramTransport>[0]);
+        auth: {},
+        _clientFactory: () => client,
+      } as unknown as Parameters<typeof telegramTransport>[0]);
+      await candidate.onBoot?.();
+      await candidate.transport!.register(kernel, "telegram-transport");
+      try {
+        await candidate.transport!.ready?.();
+        return { aug: candidate, port: candidatePort, readyError: undefined };
+      } catch (error) {
+        if (isAddressInUse(error)) {
+          await candidate.onShutdown?.();
+          throw error;
+        }
+        return { aug: candidate, port: candidatePort, readyError: error };
+      }
+    });
 
-    await aug.onBoot?.();
-    await aug.transport!.register(kernel, "telegram-transport");
-    await expect(aug.transport!.ready?.()).rejects.toThrow("telegram unavailable");
+    expect(() => {
+      throw readyError;
+    }).toThrow("telegram unavailable");
     expect(deleteCalls).toBe(1);
 
     const replacement = Bun.serve({ port, fetch: () => new Response("ok") });
