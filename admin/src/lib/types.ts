@@ -120,6 +120,7 @@ export interface MailInstanceProjection {
   augmentName: string;
   inboxId: string;
   inboxEmail?: string;
+  externalConsoleUrl?: string;
   status: {
     level: MailStatusLevel;
     message: string;

@@ -51,6 +51,10 @@ describe("MailActionCenter", () => {
     expect(html).toContain("5 per sender");
     expect(html).toContain("1 global / 2 per-sender rejected");
     expect(html).toContain("Last rejection:");
+    expect(html).toContain('href="https://console.agentmail.to"');
+    expect(html).toContain('target="_blank"');
+    expect(html).toContain('rel="noopener noreferrer"');
+    expect(html).toContain("Open west@example.com in AgentMail (opens in a new tab)");
     expect(html).not.toContain("private body");
   });
 
@@ -93,6 +97,26 @@ describe("MailActionCenter", () => {
     );
     expect(nodeText(renderer!.root)).toContain("east@example.com");
     expect(nodeText(renderer!.root)).toContain("East coast message");
+    expect(
+      renderer!.root.findByType("a").props["aria-label"],
+    ).toBe("Open east@example.com in AgentMail (opens in a new tab)");
+  });
+
+  it("omits the provider action when the runtime does not supply a safe URL", () => {
+    const data = projection();
+    delete data.instances[0]!.externalConsoleUrl;
+    const html = renderToStaticMarkup(
+      <Providers>
+        <MailActionCenter
+          projection={{ schemaVersion: 1, instances: [data.instances[0]!] }}
+          csrfTokens={[]}
+          refresh={async () => undefined}
+        />
+      </Providers>,
+    );
+
+    expect(html).not.toContain("Open in AgentMail");
+    expect(html).not.toContain("console.agentmail.to");
   });
 
   it("renders stale action feedback as an accessible alert", () => {
@@ -208,6 +232,7 @@ function projection(): MailDashboardProjection {
         augmentName: "mail-west",
         inboxId: "ibx_west",
         inboxEmail: "west@example.com",
+        externalConsoleUrl: "https://console.agentmail.to",
         status: { level: "ok", message: "Inbound websocket ready" },
         inbound: {
           mode: "websocket",
@@ -260,6 +285,7 @@ function projection(): MailDashboardProjection {
         augmentName: "mail-east",
         inboxId: "ibx_east",
         inboxEmail: "east@example.com",
+        externalConsoleUrl: "https://console.agentmail.to",
         status: { level: "warn", message: "Polling delayed" },
         inbound: { mode: "polling", state: "degraded" },
         reviews: [

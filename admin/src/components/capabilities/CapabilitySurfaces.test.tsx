@@ -45,6 +45,63 @@ describe("CapabilityDetail", () => {
     });
   });
 
+  it("opens the matching AgentMail instance from its capability identity", async () => {
+    const data = dashboard();
+    data.augments = [
+      {
+        type: "agentMail",
+        name: "support",
+        required: false,
+        category: "capabilities",
+        hasContext: true,
+        usesSharedMemoryTools: false,
+        toolCount: 3,
+        isTransport: false,
+        isMemoryProvider: false,
+        httpRouteCount: 2,
+        hasAdminInfo: true,
+        lifecycleHooks: ["onBoot", "onShutdown"],
+        handlesInternalTurns: true,
+        hasTurnGate: false,
+      },
+    ];
+    data.mail = {
+      schemaVersion: 1,
+      instances: [
+        {
+          augmentName: "support",
+          inboxId: "inb_support",
+          inboxEmail: "support@agentmail.to",
+          externalConsoleUrl: "https://console.agentmail.to",
+          status: { level: "ok", message: "Inbound websocket ready" },
+          inbound: { mode: "websocket", state: "ready" },
+          reviews: [],
+          attention: [],
+        },
+      ],
+    };
+
+    let renderer: ReturnType<typeof create> | undefined;
+    await act(async () => {
+      renderer = create(
+        <MemoryRouter>
+          <CapabilityDetail
+            data={data}
+            model={buildCapabilityModel(data, { selectedAugmentName: "support" })}
+          />
+        </MemoryRouter>,
+      );
+    });
+
+    const externalLink = renderer?.root.findByType("a");
+    expect(externalLink?.props.href).toBe("https://console.agentmail.to");
+    expect(externalLink?.props.target).toBe("_blank");
+    expect(externalLink?.props.rel).toBe("noopener noreferrer");
+    expect(externalLink?.props["aria-label"]).toBe(
+      "Open support@agentmail.to in AgentMail (opens in a new tab)",
+    );
+  });
+
   it("renders semantic provenance for every installed skill state", async () => {
     const data = dashboard();
     data.skills = {

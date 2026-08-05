@@ -27,6 +27,7 @@ const ATTENTION_STATES = new Set<MailAttentionStatus>([
 ]);
 const STATUS_LEVELS = new Set<MailStatusLevel>(["ok", "warn", "error"]);
 const SENDER_POLICIES = new Set(["disabled", "allowlist", "any"] as const);
+const AGENTMAIL_CONSOLE_ORIGIN = "https://console.agentmail.to";
 
 /**
  * Select the typed Mail feature envelope without trusting the dashboard cast.
@@ -84,6 +85,7 @@ function parseMailInstance(value: unknown): MailInstanceProjection | null {
   const augmentName = requiredText(value.augmentName, 128);
   const inboxId = requiredText(value.inboxId, 256);
   const inboxEmail = optionalText(value.inboxEmail, 320);
+  const externalConsoleUrl = parseExternalConsoleUrl(value.externalConsoleUrl);
   if (!augmentName || !inboxId || !isRecord(value.status) || !isRecord(value.inbound)) {
     return null;
   }
@@ -142,6 +144,7 @@ function parseMailInstance(value: unknown): MailInstanceProjection | null {
     augmentName,
     inboxId,
     ...(inboxEmail ? { inboxEmail } : {}),
+    ...(externalConsoleUrl ? { externalConsoleUrl } : {}),
     status: { level: level as MailStatusLevel, message: statusMessage },
     inbound: {
       mode: inboundMode,
@@ -155,6 +158,26 @@ function parseMailInstance(value: unknown): MailInstanceProjection | null {
     reviews,
     attention,
   };
+}
+
+function parseExternalConsoleUrl(value: unknown): string | undefined {
+  if (typeof value !== "string" || value.length > 2_048) return undefined;
+  try {
+    const url = new URL(value);
+    if (
+      url.origin !== AGENTMAIL_CONSOLE_ORIGIN ||
+      url.pathname !== "/" ||
+      url.search ||
+      url.hash ||
+      url.username ||
+      url.password
+    ) {
+      return undefined;
+    }
+    return AGENTMAIL_CONSOLE_ORIGIN;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseReview(value: unknown): MailReviewProjection | null {

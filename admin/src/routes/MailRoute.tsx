@@ -6,6 +6,7 @@ import {
 } from "react";
 import { AlertTriangle, Clock3, Inbox, Mail, Send, UserRound } from "lucide-react";
 import { useDashboardContext } from "@/components/admin/DashboardContext";
+import { AgentMailConsoleLink } from "@/components/mail/AgentMailConsoleLink";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
@@ -110,23 +111,26 @@ export function MailActionCenter({
               Review proposed replies and messages that need creator attention.
             </p>
           </div>
-          {projection.instances.length > 1 && (
-            <label className="grid min-w-56 gap-1 text-xs font-medium" htmlFor="mail-instance">
-              Inbox
-              <select
-                id="mail-instance"
-                className="h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50"
-                value={selected.augmentName}
-                onChange={(event) => setSelectedName(event.currentTarget.value)}
-              >
-                {projection.instances.map((instance) => (
-                  <option key={instance.augmentName} value={instance.augmentName}>
-                    {instance.inboxEmail ?? instance.inboxId} · {instance.augmentName}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
+            {projection.instances.length > 1 && (
+              <label className="grid min-w-56 gap-1 text-xs font-medium" htmlFor="mail-instance">
+                Inbox
+                <select
+                  id="mail-instance"
+                  className="h-9 rounded-md border border-input bg-background px-3 text-sm outline-none focus-visible:border-ring focus-visible:ring-2 focus-visible:ring-ring/50"
+                  value={selected.augmentName}
+                  onChange={(event) => setSelectedName(event.currentTarget.value)}
+                >
+                  {projection.instances.map((instance) => (
+                    <option key={instance.augmentName} value={instance.augmentName}>
+                      {instance.inboxEmail ?? instance.inboxId} · {instance.augmentName}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            <AgentMailConsoleLink instance={selected} />
+          </div>
         </section>
 
         <InboxSummary instance={selected} activeCount={activeCount} />
