@@ -111,6 +111,7 @@ const DEFAULT_REVIEW_EXPIRY_MS = 24 * 60 * 60_000;
 const MAX_REVIEW_EXPIRY_MS = 30 * 24 * 60 * 60_000;
 const RING_BUFFER_SIZE = 100;
 const DEFAULT_INSTANCE_ID = "agent-mail";
+const AGENTMAIL_CONSOLE_URL = "https://console.agentmail.to";
 const SAFE_INSTANCE_ID = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const MAX_MAIL_BODY_BYTES = 1024 * 1024;
 const MAX_MAIL_BODY_CHARS = 1024 * 1024;
@@ -3215,6 +3216,7 @@ export function agentMail(opts: AgentMailAugmentInternalOptions): Augment {
         augmentName: instanceId,
         inboxId: opts.inboxId,
         ...(resolvedInboxEmail ? { inboxEmail: resolvedInboxEmail } : {}),
+        externalConsoleUrl: AGENTMAIL_CONSOLE_URL,
         status: { level: statusLevel, message: statusMessage },
         inbound: {
           mode: inboundMode,

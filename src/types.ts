@@ -1335,6 +1335,8 @@ export interface AdminMailInstanceProjection {
   augmentName: string;
   inboxId: string;
   inboxEmail?: string;
+  /** Fixed, credential-free provider Console entry point. */
+  externalConsoleUrl?: string;
   status: {
     level: "ok" | "warn" | "error";
     message: string;
