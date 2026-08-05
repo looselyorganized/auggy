@@ -31,12 +31,15 @@ git push origin vX.Y.Z
 
 ## Current release state
 
-As of 2026-07-31, npm's stable `latest` version for all six packages is `0.4.4`
+As of 2026-08-05, npm's stable `latest` version for all six packages is `0.4.4`
 and `next` is `0.5.0-rc.5` for all six. The `v0.5.0-rc.1` through
 `v0.5.0-rc.5` tags are published, immutable release candidates. The RC.5
 GitHub prerelease contains all six verified package tarballs and `SHA256SUMS`.
-Registry metadata and the corresponding Git tag—not a working-tree
-version—remain the authority for release state.
+`0.5.0-rc.6` is the pending release-PR candidate; it is not published and must
+not be described as available from `next` until its exact merged commit has
+been tagged and the publish workflow has completed. Registry metadata and the
+corresponding Git tag—not a working-tree version—remain the authority for
+release state.
 
 The next release follows the
 [OSS Production Release Plan](./plans/production-readiness-roadmap-2026-07-24.md).
@@ -292,8 +295,9 @@ the workflow will not assemble a release from mixed package bytes.
 
 The source repository is public and the release workflow is configured for npm
 trusted publishing. npm's generated SLSA provenance attestation is present for
-all six `0.5.0-rc.5` packages, so the RC.5 provenance gate is complete. Stable
-`0.5.0` requires fresh attestation checks on its own exact package artifacts.
+all six `0.5.0-rc.5` packages, so the RC.5 provenance gate is complete. RC.6
+and stable `0.5.0` each require fresh attestation checks on their own exact
+package artifacts.
 
 The publish workflow separates uncredentialed verification from publication.
 Repository and dependency code runs in `verify`, which has neither
@@ -333,7 +337,8 @@ candidate verification, published six verified tarballs plus `SHA256SUMS` in
 the GitHub prerelease, and produced fresh attestations for all six packages.
 Confirm the obsolete npm account token remains revoked and recheck
 configuration before every tag; configuration drift makes publication fail
-closed.
+closed. RC.6 requires fresh attestations for its exact six artifacts; prior
+candidates are not evidence for it.
 
 Current npm trusted publishing automatically generates provenance for public
 packages published from public GitHub repositories; no `--provenance` flag is
