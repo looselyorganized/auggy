@@ -1,5 +1,6 @@
 import { AlertTriangle, BookOpen, Brain, Info, Network, Route, Shield, Wrench } from "lucide-react";
 import { Link } from "react-router";
+import { AgentMailConsoleLink } from "@/components/mail/AgentMailConsoleLink";
 import type {
   AugmentCapabilityModel,
   CapabilityBadge,
@@ -10,7 +11,8 @@ import type {
   ToolCapabilityView,
 } from "@/lib/capability-model";
 import { presentAugment } from "@/lib/capability-presenters";
-import type { AugmentSummary, DashboardData } from "@/lib/types";
+import { selectMailDashboard } from "@/lib/mail-dashboard";
+import type { AugmentSummary, DashboardData, MailInstanceProjection } from "@/lib/types";
 import {
   CapabilityEmptyState,
   type CapabilityField,
@@ -30,6 +32,11 @@ export function CapabilityDetail({
   const selectedNode = model.scope.selectedAugmentName
     ? model.augmentNodes.find((node) => node.augment.name === model.scope.selectedAugmentName)
     : undefined;
+  const selectedMailInstance = selectedNode
+    ? selectMailDashboard(data)?.instances.find(
+        (instance) => instance.augmentName === selectedNode.augment.name,
+      )
+    : undefined;
   const showConversation = shouldShowConversation(selectedNode?.augment);
   const hasScopedSurface =
     showConversation ||
@@ -42,7 +49,7 @@ export function CapabilityDetail({
 
   return (
     <div className="grid gap-5">
-      {selectedNode && <AugmentIdentity node={selectedNode} />}
+      {selectedNode && <AugmentIdentity node={selectedNode} mailInstance={selectedMailInstance} />}
       {!hasScopedSurface ? (
         <CapabilityEmptyState
           title="No runtime surfaces"
@@ -80,7 +87,13 @@ export function CapabilityDetail({
   );
 }
 
-function AugmentIdentity({ node }: { node: AugmentCapabilityModel }) {
+function AugmentIdentity({
+  node,
+  mailInstance,
+}: {
+  node: AugmentCapabilityModel;
+  mailInstance?: MailInstanceProjection;
+}) {
   const { augment } = node;
   const presentation = presentAugment(augment);
   const fields: CapabilityField[] = [
@@ -101,16 +114,19 @@ function AugmentIdentity({ node }: { node: AugmentCapabilityModel }) {
 
   return (
     <section className="grid gap-3 rounded-md border bg-muted/20 p-4">
-      <div>
-        <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-          {capitalize(augment.category)}
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <div className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            {capitalize(augment.category)}
+          </div>
+          <h4 className="mt-1 break-words text-base font-semibold" title={presentation.title}>
+            {presentation.title}
+          </h4>
+          {presentation.detail && (
+            <p className="mt-1 text-xs leading-5 text-muted-foreground">{presentation.detail}</p>
+          )}
         </div>
-        <h4 className="mt-1 break-words text-base font-semibold" title={presentation.title}>
-          {presentation.title}
-        </h4>
-        {presentation.detail && (
-          <p className="mt-1 text-xs leading-5 text-muted-foreground">{presentation.detail}</p>
-        )}
+        {mailInstance && <AgentMailConsoleLink instance={mailInstance} />}
       </div>
       <dl className="grid gap-x-5 gap-y-1.5 text-xs sm:grid-cols-2">
         {fields.map((field) => (

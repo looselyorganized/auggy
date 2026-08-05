@@ -125,6 +125,35 @@ describe("Mail dashboard projection", () => {
     );
   });
 
+  it("accepts only the credential-free AgentMail Console root", () => {
+    const valid = instance("mail-west", "west@example.com");
+    valid.externalConsoleUrl = "https://console.agentmail.to/";
+    expect(
+      selectMailDashboard(
+        baseDashboard({ mail: { schemaVersion: 1, instances: [valid] } }),
+      )?.instances[0]?.externalConsoleUrl,
+    ).toBe("https://console.agentmail.to");
+
+    const unsafeUrls = [
+      "http://console.agentmail.to",
+      "https://console.agentmail.to.evil.example",
+      "https://user:password@console.agentmail.to",
+      "https://console.agentmail.to/inboxes/west@example.com",
+      "https://console.agentmail.to/?token=secret",
+      "https://console.agentmail.to/#inbox",
+      "not a URL",
+    ];
+    for (const externalConsoleUrl of unsafeUrls) {
+      const candidate = instance("mail-west", "west@example.com");
+      candidate.externalConsoleUrl = externalConsoleUrl;
+      const selected = selectMailDashboard(
+        baseDashboard({ mail: { schemaVersion: 1, instances: [candidate] } }),
+      )?.instances[0];
+      expect(selected?.augmentName).toBe("mail-west");
+      expect(selected?.externalConsoleUrl).toBeUndefined();
+    }
+  });
+
   it("preserves only the exact projected recovery action contracts", () => {
     const valid = instance("mail-west", "west@example.com");
     valid.reviews[0] = {

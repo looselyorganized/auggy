@@ -4369,6 +4369,7 @@ describe("adminInfo", () => {
       schemaVersion: 1,
       augmentName: "support",
       inboxId: baseOpts.inboxId,
+      externalConsoleUrl: "https://console.agentmail.to",
       attention: [
         {
           rowKey: "message_metadata_projection",
@@ -4381,6 +4382,7 @@ describe("adminInfo", () => {
         },
       ],
     });
+    expect(info.projection?.externalConsoleUrl).not.toContain(baseOpts.apiKey);
     expect(JSON.stringify(info)).not.toContain("Can you help?");
 
     const route = aug.httpRoutes!.find(
