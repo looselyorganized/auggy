@@ -140,8 +140,12 @@ writeFileSync(
     overrides: {
       "@hono/node-server": "2.0.11",
       "body-parser": "2.3.0",
-      "fast-uri": "3.1.4",
-      "hono": "4.12.31",
+      "brace-expansion": "5.0.9",
+      "fast-uri": "3.1.5",
+      "hono": "4.12.34",
+      "ip-address": "10.4.0",
+      "postcss": "8.5.25",
+      "undici": "7.29.0",
     },
   }, null, 2)}\n`,
 );
@@ -191,8 +195,12 @@ NODE
       const expected = {
         "@hono/node-server": "2.0.11",
         "body-parser": "2.3.0",
-        "fast-uri": "3.1.4",
-        hono: "4.12.31",
+        "brace-expansion": "5.0.9",
+        "fast-uri": "3.1.5",
+        hono: "4.12.34",
+        "ip-address": "10.4.0",
+        postcss: "8.5.25",
+        undici: "7.29.0",
       };
       const coreDirectory = dirname(Bun.resolveSync("auggy", process.cwd()));
       for (const [name, version] of Object.entries(expected)) {
@@ -240,8 +248,12 @@ writeFileSync(
     overrides: {
       "@hono/node-server": "2.0.11",
       "body-parser": "2.3.0",
-      "fast-uri": "3.1.4",
-      "hono": "4.12.31",
+      "brace-expansion": "5.0.9",
+      "fast-uri": "3.1.5",
+      "hono": "4.12.34",
+      "ip-address": "10.4.0",
+      "postcss": "8.5.25",
+      "undici": "7.29.0",
     },
   }, null, 2)}\n`,
 );
