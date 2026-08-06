@@ -226,6 +226,7 @@ async function handleStrictRequest(
       inbox_id: "inb_test_agent",
       email: "test-agent@agentmail.to",
       display_name: "Test Agent",
+      client_id: CLIENT_ID,
     };
     inboxesByClientId.set(clientId, inbox);
     state.inboxResources += 1;
@@ -256,6 +257,8 @@ async function handleStrictRequest(
       api_key_id: "key_runtime",
       api_key: RUNTIME_KEY,
       name: "test-agent agentMail",
+      inbox_id: "inb_test_agent",
+      permissions: { inbox_read: true, message_send: true },
     });
     return;
   }

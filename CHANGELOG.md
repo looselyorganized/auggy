@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   target, validates the provider's echoed identity, and recovers the same inbox
   on retry. The CLI distinguishes new-account, existing-account,
   existing-inbox, and environment modes; refuses ambiguous shared credentials;
-  and stores only the scoped runtime key needed by the agent.
+  stores only the scoped key it provisions; and reuses operator-supplied
+  manual or environment credentials unchanged.
 
 ## [0.5.0-rc.6] - 2026-08-05
 

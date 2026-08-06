@@ -18,6 +18,10 @@
  */
 
 import { ENV_KEY_RE, parseEnvFile, serializeEnv, type EnvLine } from "../../cli/env-parse";
+import {
+  AgentEnvMutationLockError,
+  withAgentEnvMutationLockSync,
+} from "../../cli/env-mutation-lock";
 import { readManagedText, resolveManagedPath, writeManagedText } from "./admin-managed-files";
 
 export type { EnvLine } from "../../cli/env-parse";
@@ -100,13 +104,11 @@ const MASK_HIDDEN_KEYS_BUT_ENV = new Set([
 export function listCredentials(agentDir: string | undefined): CredentialsList | { error: string } {
   const result = readEnvFile(agentDir);
   if ("error" in result) return result;
-  const entries: CredentialsEntry[] = result.lines
-    .filter((l): l is Extract<EnvLine, { kind: "kv" }> => l.kind === "kv")
-    .map((l) => ({
-      key: l.key,
-      length: l.value.length,
-      empty: l.value.length === 0,
-    }));
+  const entries: CredentialsEntry[] = [...effectiveEnvValues(result.lines)].map(([key, value]) => ({
+    key,
+    length: value.length,
+    empty: value.length === 0,
+  }));
   return {
     path: result.path,
     exists: result.exists,
@@ -122,11 +124,7 @@ export function revealCredential(
   if (!KEY_RE.test(key)) return { error: "invalid key" };
   const result = readEnvFile(agentDir);
   if ("error" in result) return result;
-  // Last write wins — match the runtime's loadEnvFile behavior.
-  let value: string | undefined;
-  for (const line of result.lines) {
-    if (line.kind === "kv" && line.key === key) value = line.value;
-  }
+  const value = effectiveEnvValues(result.lines).get(key);
   if (value === undefined) return { error: "key not found" };
   return { value };
 }
@@ -152,34 +150,29 @@ export function setCredential(
   if (value.includes("\0")) return { ok: false, message: "value contains a null byte" };
   if (value.length > 64 * 1024) return { ok: false, message: "value exceeds 64 KiB" };
 
-  const result = readEnvFile(agentDir);
-  if ("error" in result) return { ok: false, message: result.error };
-  const lines: EnvLine[] = [...result.lines];
-  let replaced = false;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (line.kind === "kv" && line.key === key) {
-      lines[i] = { kind: "kv", key, value, raw: `${key}=${value}` };
-      replaced = true;
-      break;
+  return withCredentialMutationLock(agentDir, () => {
+    const result = readEnvFile(agentDir);
+    if ("error" in result) return { ok: false, message: result.error };
+    const replacement = replaceAndCollapseEnvKey(result.lines, key, key, value);
+    const lines = replacement.lines;
+    const replaced = replacement.found;
+    if (!replaced) {
+      // New key: ensure a blank line separates it from prior content for
+      // readability, but only when the file isn't empty AND the last line
+      // isn't already blank.
+      if (lines.length > 0 && lines[lines.length - 1]!.kind !== "blank") {
+        lines.push({ kind: "blank" });
+      }
+      lines.push({ kind: "kv", key, value, raw: `${key}=${value}` });
     }
-  }
-  if (!replaced) {
-    // New key: ensure a blank line separates it from prior content for
-    // readability, but only when the file isn't empty AND the last line
-    // isn't already blank.
-    if (lines.length > 0 && lines[lines.length - 1]!.kind !== "blank") {
-      lines.push({ kind: "blank" });
-    }
-    lines.push({ kind: "kv", key, value, raw: `${key}=${value}` });
-  }
-  const w = writeEnvFile(agentDir, lines);
-  if (!w.ok) return { ok: false, message: w.message };
-  return {
-    ok: true,
-    message: replaced ? `Updated ${key}` : `Added ${key}`,
-    modifiedIso: w.modifiedIso,
-  };
+    const w = writeEnvFile(agentDir, lines);
+    if (!w.ok) return { ok: false, message: w.message };
+    return {
+      ok: true,
+      message: replaced ? `Updated ${key}` : `Added ${key}`,
+      modifiedIso: w.modifiedIso,
+    };
+  });
 }
 
 /**
@@ -211,35 +204,28 @@ export function renameCredential(
   if (value.includes("\0")) return { ok: false, message: "value contains a null byte" };
   if (value.length > 64 * 1024) return { ok: false, message: "value exceeds 64 KiB" };
 
-  const result = readEnvFile(agentDir);
-  if ("error" in result) return { ok: false, message: result.error };
-  const lines: EnvLine[] = [...result.lines];
+  return withCredentialMutationLock(agentDir, () => {
+    const result = readEnvFile(agentDir);
+    if ("error" in result) return { ok: false, message: result.error };
+    const keys = new Set(result.lines.flatMap((line) => (line.kind === "kv" ? [line.key] : [])));
+    if (!keys.has(oldKey)) return { ok: false, message: `key not found: ${oldKey}` };
+    if (oldKey !== newKey && keys.has(newKey)) {
+      return { ok: false, message: `destination key already exists: ${newKey}` };
+    }
 
-  let oldIdx = -1;
-  let newIdx = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
-    if (line.kind !== "kv") continue;
-    if (line.key === oldKey) oldIdx = i;
-    if (line.key === newKey) newIdx = i;
-  }
-  if (oldIdx === -1) return { ok: false, message: `key not found: ${oldKey}` };
-  if (oldKey !== newKey && newIdx !== -1) {
-    return { ok: false, message: `destination key already exists: ${newKey}` };
-  }
+    // Replace the first source definition in place and remove later source
+    // duplicates. When oldKey===newKey this is the same deterministic collapse
+    // used by setCredential.
+    const lines = replaceAndCollapseEnvKey(result.lines, oldKey, newKey, value).lines;
 
-  // Replace in place at the old key's position so ordering and surrounding
-  // comments are preserved. When oldKey===newKey we still want a value
-  // update; the in-place replace handles both.
-  lines[oldIdx] = { kind: "kv", key: newKey, value, raw: `${newKey}=${value}` };
-
-  const w = writeEnvFile(agentDir, lines);
-  if (!w.ok) return { ok: false, message: w.message };
-  return {
-    ok: true,
-    message: oldKey === newKey ? `Updated ${newKey}` : `Renamed ${oldKey} → ${newKey}`,
-    modifiedIso: w.modifiedIso,
-  };
+    const w = writeEnvFile(agentDir, lines);
+    if (!w.ok) return { ok: false, message: w.message };
+    return {
+      ok: true,
+      message: oldKey === newKey ? `Updated ${newKey}` : `Renamed ${oldKey} → ${newKey}`,
+      modifiedIso: w.modifiedIso,
+    };
+  });
 }
 
 export function deleteCredential(
@@ -247,15 +233,75 @@ export function deleteCredential(
   key: string,
 ): CredentialMutationResult {
   if (!KEY_RE.test(key)) return { ok: false, message: "invalid key" };
-  const result = readEnvFile(agentDir);
-  if ("error" in result) return { ok: false, message: result.error };
-  const filtered = result.lines.filter((l) => !(l.kind === "kv" && l.key === key));
-  if (filtered.length === result.lines.length) {
-    return { ok: false, message: "key not found" };
+  return withCredentialMutationLock(agentDir, () => {
+    const result = readEnvFile(agentDir);
+    if ("error" in result) return { ok: false, message: result.error };
+    const filtered = result.lines.filter((l) => !(l.kind === "kv" && l.key === key));
+    if (filtered.length === result.lines.length) {
+      return { ok: false, message: "key not found" };
+    }
+    const w = writeEnvFile(agentDir, filtered);
+    if (!w.ok) return { ok: false, message: w.message };
+    return { ok: true, message: `Removed ${key}`, modifiedIso: w.modifiedIso };
+  });
+}
+
+/**
+ * Resolve one effective value per key using the runtime loader's semantics:
+ * the first nonempty definition wins, while an all-empty key remains visible
+ * to the Console as an empty credential. Map insertion order preserves the
+ * position of each key's first definition.
+ */
+function effectiveEnvValues(lines: readonly EnvLine[]): Map<string, string> {
+  const values = new Map<string, string>();
+  for (const line of lines) {
+    if (line.kind !== "kv") continue;
+    const current = values.get(line.key);
+    if (current === undefined || (current.length === 0 && line.value.length > 0)) {
+      values.set(line.key, line.value);
+    }
   }
-  const w = writeEnvFile(agentDir, filtered);
-  if (!w.ok) return { ok: false, message: w.message };
-  return { ok: true, message: `Removed ${key}`, modifiedIso: w.modifiedIso };
+  return values;
+}
+
+function replaceAndCollapseEnvKey(
+  lines: readonly EnvLine[],
+  sourceKey: string,
+  destinationKey: string,
+  value: string,
+): { lines: EnvLine[]; found: boolean } {
+  const updated: EnvLine[] = [];
+  let found = false;
+  for (const line of lines) {
+    if (line.kind !== "kv" || line.key !== sourceKey) {
+      updated.push(line);
+      continue;
+    }
+    if (found) continue;
+    found = true;
+    updated.push({
+      kind: "kv",
+      key: destinationKey,
+      value,
+      raw: `${destinationKey}=${value}`,
+    });
+  }
+  return { lines: updated, found };
+}
+
+function withCredentialMutationLock(
+  agentDir: string | undefined,
+  mutation: () => CredentialMutationResult,
+): CredentialMutationResult {
+  if (!agentDir) return { ok: false, message: "agent directory not configured" };
+  try {
+    return withAgentEnvMutationLockSync(agentDir, mutation);
+  } catch (error) {
+    if (error instanceof AgentEnvMutationLockError) {
+      return { ok: false, message: error.message };
+    }
+    throw error;
+  }
 }
 
 // Exposed for tests + future code that wants to know which keys never get

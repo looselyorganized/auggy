@@ -56,6 +56,14 @@ fails closed for inline mounts, custom names, custom AgentMail-compatible
 augments, or multiple mounts of the same type. Configure those instances
 manually; setup will not guess which file or credentials it owns.
 
+Automatic credential mutation is supported on macOS and Linux. It uses one
+cross-process agent-directory lease and compares the exact `agent.yaml` and
+`.env` and augment sources again before commit, so Console edits, `augment add`, or direct
+operator edits cannot be silently overwritten during a provider request. On
+Windows, configure `.env` and the referenced `augment.yaml` with ordinary
+project tooling; automatic setup fails closed without changing files because
+the required POSIX descriptor lock is unavailable.
+
 ### Setup modes
 
 | Mode | Provider ownership and effects | Credential input |
@@ -69,6 +77,15 @@ Interactive setup presents those four choices with the same ownership
 language. Signup asks for the OTP only after the signup request has created the
 challenge; there is intentionally no pre-supplied OTP or non-interactive signup
 path. For automation, use `existing`, `manual`, or `env`.
+
+Setup never silently replaces runtime credentials already assigned to the
+agent. Use `--mode env` to reuse the values in `.env`. To deliberately
+reprovision or attach a different inbox, first revoke the old inbox-scoped key
+in AgentMail, then remove the old `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID`, and
+`AGENTMAIL_INBOX_EMAIL` entries from the agent's `.env` and unset any exported
+variables with those names before running `signup`, `existing`, or `manual`.
+Revoke before deleting local credentials so the retired provider key is not
+orphaned.
 
 The account API key is provisioning authority. Auggy uses it only to create the
 inbox and its least-privilege runtime key; it never writes that account key to

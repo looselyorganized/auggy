@@ -52,8 +52,11 @@ describe("AgentMail provisioning success-response contracts", () => {
       { ...valid, inbox_id: undefined },
       { ...valid, api_key: undefined },
       { ...valid, organization_id: "org\ninvalid" },
+      { ...valid, organization_id: "org invalid" },
       { ...valid, inbox_id: "inb\u001binvalid" },
+      { ...valid, inbox_id: "inb invalid" },
       { ...valid, api_key: "am_raw_secret\ninvalid" },
+      { ...valid, api_key: "am invalid" },
       { ...valid, organization_id: "o".repeat(257) },
       { ...valid, inbox_id: "i".repeat(257) },
       { ...valid, api_key: "a".repeat(4097) },
@@ -97,6 +100,7 @@ describe("AgentMail provisioning success-response contracts", () => {
       { ...valid, inbox_id: undefined },
       { ...valid, email: undefined },
       { ...valid, inbox_id: "inb\ninvalid" },
+      { ...valid, inbox_id: "inb invalid" },
       { ...valid, inbox_id: "i".repeat(257) },
       { ...valid, email: "not-an-email" },
       { ...valid, email: "test\nagent@agentmail.to" },
@@ -129,8 +133,63 @@ describe("AgentMail provisioning success-response contracts", () => {
     ).rejects.toThrow(/client_id did not match the requested idempotency identity/);
   });
 
+  test("createInbox requires the provider to echo a requested idempotency identity", async () => {
+    const client = clientFor({
+      inbox_id: "inb_1",
+      email: "agent@agentmail.to",
+    });
+
+    const error = await rejected(
+      client.createInbox({
+        apiKey: "am_parent",
+        clientId: "auggy.v1.inbox.aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c.agentMail",
+      }),
+    );
+    expect(error.message).toMatch(/client_id did not match the requested idempotency identity/);
+    expect(error).toMatchObject({ outcomeUnknown: true });
+  });
+
+  test("createInbox rejects idempotent replay drift from the requested inbox address", async () => {
+    const client = clientFor({
+      inbox_id: "inb_support",
+      email: "support@agentmail.to",
+      client_id: "auggy.v1.inbox.aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c.agentMail",
+    });
+
+    await expect(
+      client.createInbox({
+        apiKey: "am_parent",
+        username: "billing",
+        clientId: "auggy.v1.inbox.aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c.agentMail",
+      }),
+    ).rejects.toThrow(/email did not match the requested inbox identity/);
+  });
+
+  test("createInbox binds custom domains case-insensitively", async () => {
+    const client = clientFor({
+      inbox_id: "inb_billing",
+      email: "Billing@Mail.Example",
+      client_id: "auggy.v1.inbox.aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c.agentMail",
+    });
+
+    await expect(
+      client.createInbox({
+        apiKey: "am_parent",
+        username: "billing",
+        domain: "mail.example",
+        clientId: "auggy.v1.inbox.aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c.agentMail",
+      }),
+    ).resolves.toMatchObject({ inboxId: "inb_billing" });
+  });
+
   test("createInboxApiKey rejects missing, control-bearing, and oversized credentials", async () => {
-    const valid = { api_key_id: "key_valid", api_key: "am_runtime_valid" };
+    const valid = {
+      api_key_id: "key_valid",
+      api_key: "am_runtime_valid",
+      name: "test-agent agentMail",
+      inbox_id: "inb_valid",
+      permissions: { inbox_read: true, message_send: true },
+    };
     const malformed: unknown[] = [
       null,
       [],
@@ -138,9 +197,14 @@ describe("AgentMail provisioning success-response contracts", () => {
       { ...valid, api_key_id: undefined },
       { ...valid, api_key: undefined },
       { ...valid, api_key_id: "key\ninvalid" },
+      { ...valid, api_key_id: "key invalid" },
       { ...valid, api_key_id: "k".repeat(257) },
       { ...valid, api_key: "am_raw_secret\u001binvalid" },
+      { ...valid, api_key: "am runtime invalid" },
       { ...valid, api_key: "a".repeat(4097) },
+      { ...valid, name: undefined },
+      { ...valid, inbox_id: undefined },
+      { ...valid, permissions: undefined },
     ];
 
     for (const body of malformed) {
@@ -157,6 +221,48 @@ describe("AgentMail provisioning success-response contracts", () => {
       );
       expect(error.message).not.toContain("am_raw_secret");
       expect(error).not.toHaveProperty("body");
+    }
+  });
+
+  test("createInboxApiKey binds returned identity and least-privilege permissions", async () => {
+    const request = {
+      apiKey: "am_parent",
+      inboxId: "inb_valid",
+      name: "test-agent agentMail",
+      permissions: { inbox_read: true, message_send: true, message_read: false },
+    };
+    const valid = {
+      api_key_id: "key_valid",
+      api_key: "am_runtime_valid",
+      name: request.name,
+      inbox_id: request.inboxId,
+      permissions: {
+        inbox_read: true,
+        message_send: true,
+        message_read: false,
+        label_spam_read: false,
+      },
+    };
+
+    await expect(clientFor(valid).createInboxApiKey(request)).resolves.toEqual({
+      apiKeyId: "key_valid",
+      apiKey: "am_runtime_valid",
+      name: request.name,
+    });
+
+    for (const body of [
+      { ...valid, name: "another key" },
+      { ...valid, inbox_id: "inb_other" },
+      { ...valid, permissions: { inbox_read: true } },
+      {
+        ...valid,
+        permissions: { inbox_read: true, message_send: true, organization_admin: true },
+      },
+      { ...valid, permissions: { inbox_read: true, message_send: "true" } },
+      { ...valid, permissions: { "bad-permission": false, inbox_read: true, message_send: true } },
+    ]) {
+      const error = await rejected(clientFor(body).createInboxApiKey(request));
+      expect(error).toMatchObject({ outcomeUnknown: true });
     }
   });
 });

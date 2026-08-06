@@ -93,7 +93,7 @@ inventory requires a complete checkout, so source archives and sparse
 checkouts should use direct `bun test` commands for local exploration rather
 than claiming the release gate passed.
 
-### Optional AgentMail provider canary
+### AgentMail provider canary gate
 
 The manual `agentmail-provider-canary.yml` workflow verifies the real
 existing-account provisioning contract without making a PR check depend on an
@@ -102,17 +102,33 @@ external paid service. Before its first use:
 1. Create the protected `agentmail-provider-canary` GitHub Environment.
 2. Allow deployments from `main` only and require a reviewer.
 3. Add `AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY` to that Environment only.
-   Use a dedicated AgentMail account key capable of creating the canary inbox;
-   do not add a repository-level secret with the same or unsuffixed name.
+   Use a dedicated AgentMail account key capable of creating the canary inbox
+   and listing, creating, and deleting that inbox's API keys; do not add a
+   repository-level secret with the same or unsuffixed name.
 
 Dispatch the workflow manually from canonical `looselyorganized/auggy` `main`
 only. Never run it from a PR or fork. The first approved run creates one
 persistent canary inbox; later runs submit the same stable `client_id` twice and
-must resolve that same inbox. This bounded persistence is intentional because
-Auggy's provisioning client has no verified inbox-deletion contract. The
-canary sends no mail, creates no scoped runtime key, and logs neither
-credentials nor provider response data. It is optional release evidence, not a
-publishing trigger.
+must resolve that same inbox. Each run first reconciles stale keys under the
+reserved canary prefix, creates one least-privilege inbox-scoped key with a
+bounded name derived from `GITHUB_RUN_ID`, validates the same create response
+used by CLI setup, and reconciles the key through AgentMail's official
+inbox-scoped list/delete endpoints. The persistent inbox is intentional; the
+runtime key is disposable. The canary sends no mail, retains no scoped key, and
+logs neither credentials, key identifiers, nor provider response data. A
+cleanup failure is a hard failure and requires inspecting the protected canary
+inbox before retrying.
+
+When a release changes AgentMail provisioning requests or responses, the
+provisioning client, or CLI setup behavior, this canary is mandatory pre-tag
+evidence. After the release PR merges to `main`, dispatch it for that exact main
+SHA, wait for the protected-Environment approval and green result, and record
+the Actions run URL **and its `headSha`** in the merged release PR or release
+record. The release tag must point to that same SHA. If the intended tag commit
+changes, rerun the canary for the replacement SHA and replace the recorded
+evidence before tagging. For releases unrelated to AgentMail provisioning, the
+canary remains optional. It never publishes packages or replaces the normal
+release gates.
 
 ## Cutting a new release
 
@@ -261,6 +277,9 @@ cd ..
 
 ```bash
 git checkout main && git pull
+# For an AgentMail-provisioning release, this must equal the recorded green
+# canary run's `headSha` (inspect it with `gh run view <run-id> --json headSha`).
+git rev-parse HEAD
 git tag v<major>.<minor>.<patch>[-<prerelease>] # MUST match all package versions
 git push origin v<major>.<minor>.<patch>[-<prerelease>]
 ```

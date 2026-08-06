@@ -97,7 +97,6 @@
     "test:temporal-example": "bash scripts/test-temporal-example.sh",
     "test:watch": "bun test --watch ./tests ./examples ./packages",
     "dx:agent": "bash scripts/dx-lab-agent.sh",
-    "canary:agentmail": "bun scripts/agentmail-provider-canary.ts",
     "smoke:release": "bash scripts/release-smoke.sh",
     "build:admin": "bun run --cwd admin build",
     "verify:admin": "bun run --cwd admin verify:build",

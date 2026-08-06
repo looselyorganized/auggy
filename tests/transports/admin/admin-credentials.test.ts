@@ -14,6 +14,7 @@ import { describe, expect, it, beforeEach, afterEach } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { acquireAgentEnvMutationLock } from "@/cli/env-mutation-lock";
 import {
   deleteCredential,
   listCredentials,
@@ -21,6 +22,40 @@ import {
   revealCredential,
   setCredential,
 } from "@/transports/admin/admin-credentials";
+
+describe("admin-credentials — shared mutation lock", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "cred-lock-"));
+    writeFileSync(join(dir, ".env"), "ALPHA=one\nBETA=two\n");
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("rejects set, rename, and delete during CLI setup without mutating disk", () => {
+    const before = readFileSync(join(dir, ".env"), "utf-8");
+    const lease = acquireAgentEnvMutationLock(dir);
+    try {
+      for (const result of [
+        setCredential(dir, "GAMMA", "three"),
+        renameCredential(dir, "ALPHA", "GAMMA", "one"),
+        deleteCredential(dir, "BETA"),
+      ]) {
+        expect(result.ok).toBe(false);
+        expect(result.message).toMatch(/being updated by another Auggy operation[\s\S]*retry/);
+      }
+      expect(readFileSync(join(dir, ".env"), "utf-8")).toBe(before);
+    } finally {
+      lease.release();
+    }
+
+    expect(setCredential(dir, "GAMMA", "three")).toMatchObject({ ok: true });
+    expect(revealCredential(dir, "GAMMA")).toEqual({ value: "three" });
+  });
+});
 
 describe("admin-credentials — renameCredential atomicity", () => {
   let dir: string;
@@ -134,6 +169,110 @@ describe("admin-credentials — setCredential round-trips multiline", () => {
     expect(r.ok).toBe(true);
     const body = readFileSync(join(dir, ".env"), "utf-8");
     expect(body).toBe(`${["# head", "# tail"].join("\n")}\n`);
+  });
+});
+
+describe("admin-credentials — duplicate key semantics", () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), "cred-duplicates-"));
+  });
+
+  afterEach(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("lists and reveals one effective first-nonempty value per key", () => {
+    writeFileSync(
+      join(dir, ".env"),
+      `${[
+        "# head",
+        "AGENTMAIL_API_KEY=",
+        "OTHER=preserved",
+        "AGENTMAIL_API_KEY=am_effective",
+        "AGENTMAIL_API_KEY=am_stale",
+        "EMPTY=",
+        "EMPTY=",
+      ].join("\n")}\n`,
+    );
+
+    const list = listCredentials(dir);
+    if ("error" in list) throw new Error(list.error);
+    expect(list.entries).toEqual([
+      { key: "AGENTMAIL_API_KEY", length: "am_effective".length, empty: false },
+      { key: "OTHER", length: "preserved".length, empty: false },
+      { key: "EMPTY", length: 0, empty: true },
+    ]);
+    expect(revealCredential(dir, "AGENTMAIL_API_KEY")).toEqual({ value: "am_effective" });
+    expect(revealCredential(dir, "EMPTY")).toEqual({ value: "" });
+  });
+
+  it("set collapses duplicates at the first definition without disturbing unrelated lines", () => {
+    writeFileSync(
+      join(dir, ".env"),
+      `${[
+        "# head",
+        "AGENTMAIL_API_KEY=am_old",
+        "OTHER=preserved",
+        "# between duplicates",
+        "AGENTMAIL_API_KEY=am_stale",
+        "# tail",
+      ].join("\n")}\n`,
+    );
+
+    expect(setCredential(dir, "AGENTMAIL_API_KEY", "am_current")).toMatchObject({ ok: true });
+    expect(readFileSync(join(dir, ".env"), "utf-8")).toBe(
+      `${[
+        "# head",
+        "AGENTMAIL_API_KEY=am_current",
+        "OTHER=preserved",
+        "# between duplicates",
+        "# tail",
+      ].join("\n")}\n`,
+    );
+  });
+
+  it("rename replaces the first source slot and removes every source duplicate", () => {
+    writeFileSync(
+      join(dir, ".env"),
+      `${[
+        "# head",
+        "AGENTMAIL_API_KEY=",
+        "OTHER=preserved",
+        "AGENTMAIL_API_KEY=am_effective",
+        "# tail",
+      ].join("\n")}\n`,
+    );
+
+    expect(
+      renameCredential(dir, "AGENTMAIL_API_KEY", "AGENTMAIL_RUNTIME_KEY", "am_effective"),
+    ).toMatchObject({ ok: true });
+    expect(readFileSync(join(dir, ".env"), "utf-8")).toBe(
+      `${["# head", "AGENTMAIL_RUNTIME_KEY=am_effective", "OTHER=preserved", "# tail"].join(
+        "\n",
+      )}\n`,
+    );
+    expect(revealCredential(dir, "AGENTMAIL_API_KEY")).toEqual({ error: "key not found" });
+    expect(revealCredential(dir, "AGENTMAIL_RUNTIME_KEY")).toEqual({ value: "am_effective" });
+  });
+
+  it("delete removes every duplicate without disturbing unrelated lines", () => {
+    writeFileSync(
+      join(dir, ".env"),
+      `${[
+        "# head",
+        "AGENTMAIL_API_KEY=am_effective",
+        "OTHER=preserved",
+        "AGENTMAIL_API_KEY=am_stale",
+        "# tail",
+      ].join("\n")}\n`,
+    );
+
+    expect(deleteCredential(dir, "AGENTMAIL_API_KEY")).toMatchObject({ ok: true });
+    expect(readFileSync(join(dir, ".env"), "utf-8")).toBe(
+      `${["# head", "OTHER=preserved", "# tail"].join("\n")}\n`,
+    );
   });
 });
 

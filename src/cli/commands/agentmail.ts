@@ -14,9 +14,10 @@ import {
 } from "../agentmail-provisioning";
 import { successMark } from "../_shared/styles";
 import { displayPath } from "../display-path";
+import { withAgentEnvMutationLock } from "../env-mutation-lock";
 import { parseEnvFile } from "../env-parse";
 import { upsertEnvValues } from "../env-writer";
-import { readAgentName, resolveConfigPath } from "../resolve-config";
+import { resolveConfigPath } from "../resolve-config";
 import { VALID_NAME_RE } from "../config-parser";
 import { writeFileSafely } from "../safe-write";
 import {
@@ -39,6 +40,38 @@ import type { AgentMailOutboundOptions } from "../../types";
 export type AgentMailSetupTarget = AgentMailProvisioningTarget;
 export type AgentMailSetupMode = "signup" | "existing" | "manual" | "env";
 const IMMUTABLE_AGENT_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const AGENTMAIL_OTP_MAX_ATTEMPTS = 3;
+const AGENTMAIL_RUNTIME_ENV_KEYS = [
+  "AGENTMAIL_API_KEY",
+  "AGENTMAIL_INBOX_ID",
+  "AGENTMAIL_INBOX_EMAIL",
+] as const;
+
+type AgentMailRuntimeEnvKey = (typeof AGENTMAIL_RUNTIME_ENV_KEYS)[number];
+
+interface ScopedRuntimeKeyEvidence {
+  id: string;
+  name: string;
+}
+
+interface AgentMailSetupCredentials {
+  inboxId: string;
+  apiKey: string;
+  email?: string;
+  scopedRuntimeKey?: ScopedRuntimeKeyEvidence;
+  deferredTermination?: DeferredSetupTermination;
+}
+
+interface DeferredSetupTermination {
+  close(): NodeJS.Signals | undefined;
+}
+
+type AgentMailDiskEnv = Partial<Record<AgentMailRuntimeEnvKey, string>>;
+
+interface AgentMailEnvSnapshot {
+  existed: boolean;
+  source?: string;
+}
 
 type PromptSelect = typeof select;
 type PromptInput = typeof input;
@@ -81,6 +114,8 @@ export interface AgentMailSetupResult {
   augmentPath: string;
   envKeys: string[];
   requiredPermissions?: string[];
+  runtimeKeyId?: string;
+  runtimeKeyName?: string;
 }
 
 export function agentMailCommand(deps: AgentMailCommandDeps = {}): Command {
@@ -132,8 +167,21 @@ export async function runAgentMailSetup(
     cwd: deps.cwd,
   });
   const agentDir = dirname(configPath);
-  const agentName = readAgentName(configPath);
-  const agentId = readAgentId(configPath);
+  return withAgentEnvMutationLock(agentDir, () =>
+    runAgentMailSetupLocked(targetArg, opts, deps, configPath, agentDir),
+  );
+}
+
+async function runAgentMailSetupLocked(
+  targetArg: string | undefined,
+  opts: AgentMailSetupOptions,
+  deps: AgentMailCommandDeps,
+  configPath: string,
+  agentDir: string,
+): Promise<AgentMailSetupResult> {
+  const expectedAgentConfig = readFileSync(configPath, "utf-8");
+  const agentName = readAgentNameSnapshot(configPath, expectedAgentConfig);
+  const agentId = readAgentIdSnapshot(expectedAgentConfig);
   const prompts = {
     select: deps.promptSelect ?? select,
     input: deps.promptInput ?? input,
@@ -149,12 +197,12 @@ export async function runAgentMailSetup(
         deps.promptConfirm ??
         process.stdin.isTTY,
     );
-  const mountedAugments = readMountedAugmentConfigs(configPath);
+  const mountedAugments = readMountedAugmentConfigs(configPath, expectedAgentConfig);
   const target = resolveSetupTarget(targetArg, agentDir, mountedAugments);
   const augmentPath = join(agentDir, "augments", target, "augment.yaml");
   if (!isCanonicalSetupTargetInstalled(target, agentDir, mountedAugments)) {
     if (mountedAugments.some((augment) => augment.type === target)) {
-      throw unsupportedSetupMountError(target);
+      throw unsupportedSetupMountError(target, mountedAugments);
     }
     throw new Error(
       `${target} is not installed for ${agentName}.\n\n` +
@@ -205,7 +253,9 @@ export async function runAgentMailSetup(
       allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials,
     });
   const envPath = join(agentDir, ".env");
-  const envCredentials = readExistingEnvCredentials(envPath);
+  const expectedEnv = readAgentMailEnvSnapshot(envPath);
+  const diskEnv = readEffectiveAgentMailDiskEnv(expectedEnv);
+  const envCredentials = readExistingEnvCredentials(diskEnv);
   const otherTarget: AgentMailSetupTarget = target === "agentMail" ? "visitorAuth" : "agentMail";
   const otherConsumers = mountedAugments.filter((augment) => augment.type === otherTarget);
   if (
@@ -216,16 +266,6 @@ export async function runAgentMailSetup(
       `Automatic setup cannot safely change shared AGENTMAIL_* credentials while a custom, inline, or additional ${otherTarget} instance is mounted. Configure all AgentMail consumers manually.`,
     );
   }
-  if (
-    target === "visitorAuth" &&
-    otherConsumers.length > 0 &&
-    (opts.mode !== "env" || !hasUsableEnvInboxEmail(envPath))
-  ) {
-    throw new Error(
-      "agentMail and visitorAuth share one AgentMail inbox and runtime key. Configure agentMail first, " +
-        "then run `auggy agentmail setup visitorAuth --mode env` so visitorAuth reuses those credentials.",
-    );
-  }
   let mode: AgentMailSetupMode = await resolveMode(
     opts.mode,
     prompts.select,
@@ -234,6 +274,12 @@ export async function runAgentMailSetup(
   );
   assertModeOptionCompatibility(mode, opts);
   assertNonInteractiveSetupInputs(mode, opts, interactive);
+  assertSharedCredentialMode(target, mode, otherConsumers, diskEnv);
+  if (mode === "signup" || mode === "existing") {
+    assertNoAutomaticRuntimeCredentialRotation(diskEnv);
+  } else {
+    assertAmbientDiskEnvParity(diskEnv);
+  }
   if (
     (mode === "signup" || mode === "existing") &&
     runtimeKeyName(agentName, target).length > 256
@@ -242,7 +288,7 @@ export async function runAgentMailSetup(
       "Agent name is too long for an AgentMail runtime-key name (maximum 256 characters).",
     );
   }
-  let credentials: { inboxId: string; apiKey: string; email?: string };
+  let credentials: AgentMailSetupCredentials;
   if (mode === "env") {
     credentials = envCredentials ?? missingEnvCredentials();
   } else if (mode === "signup") {
@@ -290,21 +336,59 @@ export async function runAgentMailSetup(
   } else {
     credentials = await runManualFlow(opts, prompts);
   }
-  const resolvedCredentials: { inboxId: string; apiKey: string; email?: string } =
-    target === "agentMail" ? await ensureInboxEmail(credentials, provisioner) : credentials;
-
-  const envKeys = commitAgentMailSetup({
-    envPath,
-    augmentPath,
-    updatedAugmentConfig: configPlan.updatedAugmentConfig,
-    envValues: {
+  if (mode === "manual") {
+    assertSelectedCredentialsMatchAmbientEnv(diskEnv, {
+      AGENTMAIL_API_KEY: credentials.apiKey,
+      AGENTMAIL_INBOX_ID: credentials.inboxId,
+    });
+  }
+  let resolvedCredentials: AgentMailSetupCredentials = credentials;
+  let envKeys: string[] | undefined;
+  let setupError: unknown;
+  try {
+    resolvedCredentials =
+      target === "agentMail" ? await ensureInboxEmail(credentials, provisioner) : credentials;
+    const envValues = {
       AGENTMAIL_API_KEY: resolvedCredentials.apiKey,
       AGENTMAIL_INBOX_ID: resolvedCredentials.inboxId,
       ...(target === "agentMail"
         ? { AGENTMAIL_INBOX_EMAIL: requireInboxEmail(resolvedCredentials.email) }
         : {}),
-    },
-  });
+    };
+    if (mode === "manual") assertSelectedCredentialsMatchAmbientEnv(diskEnv, envValues);
+    envKeys = commitAgentMailSetup({
+      configPath,
+      expectedAgentConfig,
+      envPath,
+      expectedEnv,
+      augmentPath,
+      expectedAugmentConfig: configPlan.expectedAugmentConfig,
+      updatedAugmentConfig: configPlan.updatedAugmentConfig,
+      envValues,
+    });
+  } catch (error) {
+    setupError = error;
+  }
+  const deferredSignal = credentials.deferredTermination?.close();
+  if (setupError) {
+    if (!credentials.scopedRuntimeKey) throw setupError;
+    const key = credentials.scopedRuntimeKey;
+    throw new Error(
+      `AgentMail created scoped runtime key "${key.name}" (${key.id}), but local setup did not commit. ` +
+        "Review and revoke that orphaned key in AgentMail before retrying. " +
+        `Local commit error: ${safeErrorMessage(setupError)}${
+          deferredSignal
+            ? ` Setup also received ${deferredSignal} while reconciling the mutation.`
+            : ""
+        }`,
+    );
+  }
+  if (deferredSignal) {
+    throw new Error(
+      `AgentMail setup received ${deferredSignal} while creating the scoped runtime key. ` +
+        "The provider mutation and local credential commit completed safely; inspect .env before retrying.",
+    );
+  }
 
   return {
     agentName,
@@ -314,8 +398,14 @@ export async function runAgentMailSetup(
     inboxEmail: resolvedCredentials.email,
     envPath,
     augmentPath,
-    envKeys,
+    envKeys: envKeys!,
     requiredPermissions: enabledPermissionNames(configPlan.runtimeKeyPermissions),
+    ...(resolvedCredentials.scopedRuntimeKey
+      ? {
+          runtimeKeyId: resolvedCredentials.scopedRuntimeKey.id,
+          runtimeKeyName: resolvedCredentials.scopedRuntimeKey.name,
+        }
+      : {}),
   };
 }
 
@@ -330,7 +420,7 @@ async function runSignupFlow(
     confirm: PromptConfirm;
   },
   runtimeKeyPermissions: AgentMailRuntimeKeyPermissions,
-): Promise<{ inboxId: string; apiKey: string; email?: string }> {
+): Promise<AgentMailSetupCredentials> {
   const humanEmail =
     (usableOption(opts.humanEmail) ? opts.humanEmail : undefined) ??
     (await prompts.input({
@@ -354,24 +444,27 @@ async function runSignupFlow(
     source: "auggy-cli",
     referrer: `auggy ${target} setup`,
   });
-  const otpCode = await prompts.input({
-    message: "AgentMail verification code:",
-    validate: (value) => value.trim().length > 0 || "verification code required",
-  });
-  const verified = await provisioner.verify(signup.apiKey, otpCode.trim());
-  if (!verified.verified) throw new Error("AgentMail verification did not complete.");
+  await verifyAgentMailSignup(target, signup.apiKey, provisioner, prompts.input);
 
   const inbox =
     target === "agentMail"
       ? await lookupCanonicalInbox(provisioner, signup.apiKey, signup.inboxId)
       : undefined;
-  const runtimeKey = await provisioner.createInboxApiKey({
-    apiKey: signup.apiKey,
+  const runtimeKey = await createScopedRuntimeKey(
+    target,
+    agentName,
+    signup.apiKey,
+    signup.inboxId,
+    runtimeKeyPermissions,
+    provisioner,
+  );
+  return {
     inboxId: signup.inboxId,
-    name: runtimeKeyName(agentName, target),
-    permissions: runtimeKeyPermissions,
-  });
-  return { inboxId: signup.inboxId, apiKey: runtimeKey.apiKey, email: inbox?.email };
+    apiKey: runtimeKey.apiKey,
+    email: inbox?.email,
+    scopedRuntimeKey: runtimeKey.evidence,
+    deferredTermination: runtimeKey.deferredTermination,
+  };
 }
 
 async function runExistingAccountFlow(
@@ -386,7 +479,7 @@ async function runExistingAccountFlow(
   },
   runtimeKeyPermissions: AgentMailRuntimeKeyPermissions,
   interactive: boolean,
-): Promise<{ inboxId: string; apiKey: string; email?: string }> {
+): Promise<AgentMailSetupCredentials> {
   const parentApiKey =
     firstUsableOption(opts.apiKey, process.env.AGENTMAIL_ACCOUNT_API_KEY) ??
     (await prompts.password({
@@ -417,13 +510,21 @@ async function runExistingAccountFlow(
     clientId: buildAgentMailClientId(agentId, target),
     metadata: { source: "auggy-cli", agent: agentName, augment: target },
   });
-  const runtimeKey = await provisioner.createInboxApiKey({
-    apiKey: parentApiKey.trim(),
+  const runtimeKey = await createScopedRuntimeKey(
+    target,
+    agentName,
+    parentApiKey.trim(),
+    inbox.inboxId,
+    runtimeKeyPermissions,
+    provisioner,
+  );
+  return {
     inboxId: inbox.inboxId,
-    name: runtimeKeyName(agentName, target),
-    permissions: runtimeKeyPermissions,
-  });
-  return { inboxId: inbox.inboxId, apiKey: runtimeKey.apiKey, email: inbox.email };
+    apiKey: runtimeKey.apiKey,
+    email: inbox.email,
+    scopedRuntimeKey: runtimeKey.evidence,
+    deferredTermination: runtimeKey.deferredTermination,
+  };
 }
 
 async function runManualFlow(
@@ -432,7 +533,7 @@ async function runManualFlow(
     input: PromptInput;
     password: PromptPassword;
   },
-): Promise<{ inboxId: string; apiKey: string; email?: string }> {
+): Promise<AgentMailSetupCredentials> {
   const apiKey =
     firstUsableOption(opts.apiKey, process.env.AGENTMAIL_API_KEY) ??
     (await prompts.password({
@@ -449,7 +550,105 @@ async function runManualFlow(
   return { inboxId: inboxId.trim(), apiKey: apiKey.trim() };
 }
 
+async function verifyAgentMailSignup(
+  target: AgentMailSetupTarget,
+  signupApiKey: string,
+  provisioner: AgentMailProvisioningClient,
+  promptInput: PromptInput,
+): Promise<void> {
+  for (let attempt = 1; attempt <= AGENTMAIL_OTP_MAX_ATTEMPTS; attempt += 1) {
+    let otpCode: string;
+    try {
+      otpCode = await promptInput({
+        message:
+          attempt === 1
+            ? "AgentMail verification code:"
+            : `AgentMail verification code (attempt ${attempt} of ${AGENTMAIL_OTP_MAX_ATTEMPTS}):`,
+        validate: (value) => value.trim().length > 0 || "verification code required",
+      });
+    } catch (error) {
+      if (isPromptCancellation(error)) throw signupVerificationRecoveryError(target);
+      throw error;
+    }
+
+    try {
+      const verified = await provisioner.verify(signupApiKey, otpCode.trim());
+      if (verified.verified) return;
+    } catch (error) {
+      if (!isDefinitiveInvalidVerificationCode(error)) throw error;
+    }
+  }
+  throw signupVerificationRecoveryError(target);
+}
+
+async function createScopedRuntimeKey(
+  target: AgentMailSetupTarget,
+  agentName: string,
+  parentApiKey: string,
+  inboxId: string,
+  permissions: AgentMailRuntimeKeyPermissions,
+  provisioner: AgentMailProvisioningClient,
+): Promise<{
+  apiKey: string;
+  evidence: ScopedRuntimeKeyEvidence;
+  deferredTermination: DeferredSetupTermination;
+}> {
+  const name = runtimeKeyName(agentName, target);
+  const deferredTermination = deferSetupTermination();
+  try {
+    const key = await provisioner.createInboxApiKey({
+      apiKey: parentApiKey,
+      inboxId,
+      name,
+      permissions,
+    });
+    return {
+      apiKey: key.apiKey,
+      evidence: { id: key.apiKeyId, name },
+      deferredTermination,
+    };
+  } catch (error) {
+    const deferredSignal = deferredTermination.close();
+    if (!hasOutcomeUnknown(error)) {
+      if (!deferredSignal) throw error;
+      throw new Error(
+        `${safeErrorMessage(error)} Setup also received ${deferredSignal} while reconciling the failed mutation.`,
+      );
+    }
+    throw new Error(
+      `${safeErrorMessage(error)} Review AgentMail for a scoped key named "${name}" and revoke ` +
+        `any orphan before retrying setup.${
+          deferredSignal
+            ? ` Setup also received ${deferredSignal} while reconciling the mutation.`
+            : ""
+        }`,
+    );
+  }
+}
+
+function deferSetupTermination(): DeferredSetupTermination {
+  let deferredSignal: NodeJS.Signals | undefined;
+  let closed = false;
+  const handlers = new Map<NodeJS.Signals, () => void>();
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    const handler = (): void => {
+      deferredSignal ??= signal;
+    };
+    handlers.set(signal, handler);
+    process.prependListener(signal, handler);
+  }
+  return {
+    close(): NodeJS.Signals | undefined {
+      if (closed) return deferredSignal;
+      closed = true;
+      for (const [signal, handler] of handlers) process.removeListener(signal, handler);
+      return deferredSignal;
+    },
+  };
+}
+
 interface AgentMailConfigPlan {
+  expectedAugmentConfig: string;
   updatedAugmentConfig: string;
   runtimeKeyPermissions: AgentMailRuntimeKeyPermissions;
   requiresWebTransport: boolean;
@@ -462,7 +661,8 @@ function planAgentMailConfig(
   target: AgentMailSetupTarget,
   augmentPath: string,
 ): AgentMailConfigPlan {
-  const raw = parseYaml(readFileSync(augmentPath, "utf-8"));
+  const expectedAugmentConfig = readFileSync(augmentPath, "utf-8");
+  const raw = parseYaml(expectedAugmentConfig);
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
     throw new Error(`${displayPath(augmentPath)} is not a valid augment.yaml object.`);
   }
@@ -526,6 +726,7 @@ function planAgentMailConfig(
 
   doc.config = config;
   return {
+    expectedAugmentConfig,
     updatedAugmentConfig: stringifyYaml(doc),
     runtimeKeyPermissions,
     requiresWebTransport: validatedInbound?.config.mode === "webhook",
@@ -548,8 +749,11 @@ interface MountedAugmentConfig {
  * intentionally does not interpolate environment variables because setup is
  * responsible for creating the AgentMail credentials that may still be absent.
  */
-function readMountedAugmentConfigs(configPath: string): MountedAugmentConfig[] {
-  const raw = parseYaml(readFileSync(configPath, "utf-8"));
+function readMountedAugmentConfigs(
+  configPath: string,
+  expectedAgentConfig: string,
+): MountedAugmentConfig[] {
+  const raw = parseYaml(expectedAgentConfig);
   if (!isRecord(raw) || !Array.isArray(raw.augments)) {
     throw new Error(`${displayPath(configPath)} must contain an augments array.`);
   }
@@ -607,22 +811,35 @@ function readMountedAugmentConfigs(configPath: string): MountedAugmentConfig[] {
 }
 
 function commitAgentMailSetup(input: {
+  configPath: string;
+  expectedAgentConfig: string;
   envPath: string;
+  expectedEnv: AgentMailEnvSnapshot;
   augmentPath: string;
+  expectedAugmentConfig: string;
   updatedAugmentConfig: string;
   envValues: Record<string, string>;
 }): string[] {
-  const envExisted = existsSync(input.envPath);
-  const originalEnv = envExisted ? readFileSync(input.envPath, "utf-8") : undefined;
+  assertSetupInputUnchanged(
+    input.configPath,
+    input.expectedAgentConfig,
+    "agent.yaml changed while AgentMail setup was running",
+  );
+  assertSetupInputUnchanged(
+    input.augmentPath,
+    input.expectedAugmentConfig,
+    "augment.yaml changed while AgentMail setup was running",
+  );
+  assertEnvInputUnchanged(input.envPath, input.expectedEnv);
   const envKeys = upsertEnvValues(input.envPath, input.envValues);
   try {
     writeFileSafely(input.augmentPath, input.updatedAugmentConfig);
   } catch (writeError) {
     try {
-      if (originalEnv === undefined) {
+      if (!input.expectedEnv.existed) {
         rmSync(input.envPath, { force: true });
       } else {
-        writeFileSafely(input.envPath, originalEnv, { mode: 0o600 });
+        writeFileSafely(input.envPath, input.expectedEnv.source!, { mode: 0o600 });
       }
     } catch (rollbackError) {
       throw new Error(
@@ -634,6 +851,31 @@ function commitAgentMailSetup(input: {
     throw writeError;
   }
   return envKeys;
+}
+
+function assertEnvInputUnchanged(path: string, expected: AgentMailEnvSnapshot): void {
+  const exists = existsSync(path);
+  if (exists !== expected.existed) {
+    throw new Error(
+      `${displayPath(path)} changed while AgentMail setup was running; no files were overwritten.`,
+    );
+  }
+  if (!exists) return;
+  assertSetupInputUnchanged(path, expected.source!, "changed while AgentMail setup was running");
+}
+
+function assertSetupInputUnchanged(path: string, expected: string, reason: string): void {
+  let current: string;
+  try {
+    current = readFileSync(path, "utf-8");
+  } catch {
+    throw new Error(
+      `${displayPath(path)} could not be re-read safely before commit; setup did not change local files.`,
+    );
+  }
+  if (current !== expected) {
+    throw new Error(`${displayPath(path)} ${reason}; setup did not overwrite the newer file.`);
+  }
 }
 
 function isExactRecord(value: unknown, expected: Readonly<Record<string, number>>): boolean {
@@ -737,7 +979,47 @@ function isCanonicalSetupTargetInstalled(
   );
 }
 
-function unsupportedSetupMountError(target: AgentMailSetupTarget): Error {
+function assertSharedCredentialMode(
+  target: AgentMailSetupTarget,
+  mode: AgentMailSetupMode,
+  otherConsumers: readonly MountedAugmentConfig[],
+  diskEnv: AgentMailDiskEnv,
+): void {
+  if (otherConsumers.length === 0) return;
+  if (target === "visitorAuth") {
+    if (
+      mode === "env" &&
+      usableInboxEmail(usableEnvValue(diskEnv.AGENTMAIL_INBOX_EMAIL) ?? undefined)
+    ) {
+      return;
+    }
+    throw new Error(
+      "agentMail and visitorAuth share one AgentMail inbox and runtime key. Configure agentMail first, " +
+        "then run `auggy agentmail setup visitorAuth --mode env` so visitorAuth reuses those credentials.",
+    );
+  }
+
+  const visitorUsesAgentMail = otherConsumers.some((augment) => {
+    const agentMail = isRecord(augment.options.agentMail) ? augment.options.agentMail : undefined;
+    return agentMail?.transport !== "console";
+  });
+  if (visitorUsesAgentMail && mode !== "env") {
+    throw new Error(
+      "visitorAuth already uses the shared AgentMail inbox and runtime key. Reuse those credentials with " +
+        "`auggy agentmail setup agentMail --mode env`; automatic setup will not replace them.",
+    );
+  }
+}
+
+function unsupportedSetupMountError(
+  target: AgentMailSetupTarget,
+  mountedAugments: readonly MountedAugmentConfig[],
+): Error {
+  if (mountedAugments.filter((augment) => augment.type === target).length > 1) {
+    return new Error(
+      `Automatic AgentMail setup found multiple ${target} instances. Shared AGENTMAIL_* credentials cannot be assigned safely; configure every instance manually.`,
+    );
+  }
   return new Error(
     `${target} is mounted inline or under a custom name. Automatic AgentMail setup only updates the canonical referenced ` +
       `augments/${target}/augment.yaml mount; configure this instance manually or migrate it first.`,
@@ -758,6 +1040,43 @@ function existingAccountSetupError(target: AgentMailSetupTarget): Error {
     "This email already has an AgentMail account, so new-account signup cannot claim it. " +
       "No existing inbox was adopted and no local credentials were changed.\n\n" +
       `  Run \`auggy agentmail setup ${target} --mode existing\` with an account API key.`,
+  );
+}
+
+function signupVerificationRecoveryError(target: AgentMailSetupTarget): Error {
+  return new Error(
+    "AgentMail verification did not complete after the available attempts. No local credentials were changed. " +
+      "Sign in to AgentMail to confirm the account and obtain an account API key, then run:\n\n" +
+      `  auggy agentmail setup ${target} --mode existing`,
+  );
+}
+
+function isPromptCancellation(error: unknown): boolean {
+  return error instanceof Error && error.name === "ExitPromptError";
+}
+
+function isDefinitiveInvalidVerificationCode(error: unknown): boolean {
+  if (
+    !(error instanceof AgentMailProvisioningApiError) ||
+    error.operation !== "/agent/verify" ||
+    error.outcomeUnknown ||
+    ![400, 401, 403, 422].includes(error.status)
+  ) {
+    return false;
+  }
+  const code = error.providerCode?.toLowerCase() ?? "";
+  if (/^(invalid|incorrect)_(otp|code)$/.test(code) || code === "verification_failed") {
+    return true;
+  }
+  return error.issues.some((issue) => issue.path.at(-1) === "otp_code");
+}
+
+function hasOutcomeUnknown(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "outcomeUnknown" in error &&
+    (error as { outcomeUnknown?: unknown }).outcomeUnknown === true
   );
 }
 
@@ -901,8 +1220,14 @@ function runtimeKeyName(agentName: string, target: AgentMailSetupTarget): string
   return `${agentName} ${target}`;
 }
 
-function readAgentId(configPath: string): string | null {
-  const raw = parseYaml(readFileSync(configPath, "utf-8")) as { id?: unknown } | null;
+function readAgentNameSnapshot(configPath: string, source: string): string {
+  const raw = parseYaml(source) as { name?: unknown } | null;
+  if (typeof raw?.name === "string" && raw.name.trim().length > 0) return raw.name.trim();
+  throw new Error(`agent.yaml at ${configPath} is missing a non-empty name.`);
+}
+
+function readAgentIdSnapshot(source: string): string | null {
+  const raw = parseYaml(source) as { id?: unknown } | null;
   if (typeof raw?.id === "string" && raw.id.length > 0) return raw.id;
   return null;
 }
@@ -914,31 +1239,102 @@ function requireAgentMailProvisioningAgentId(agentId: string | null, configPath:
   );
 }
 
-function readExistingEnvCredentials(envPath: string): { inboxId: string; apiKey: string } | null {
-  if (!existsSync(envPath)) return null;
-  const values: Record<string, string> = {};
-  for (const line of parseEnvFile(readFileSync(envPath, "utf-8"))) {
-    if (line.kind === "kv") values[line.key] = line.value;
+function readAgentMailEnvSnapshot(envPath: string): AgentMailEnvSnapshot {
+  if (!existsSync(envPath)) return { existed: false };
+  return { existed: true, source: readFileSync(envPath, "utf-8") };
+}
+
+function readEffectiveAgentMailDiskEnv(snapshot: AgentMailEnvSnapshot): AgentMailDiskEnv {
+  if (!snapshot.existed) return {};
+  const values: AgentMailDiskEnv = {};
+  const keys = new Set<string>(AGENTMAIL_RUNTIME_ENV_KEYS);
+  for (const line of parseEnvFile(snapshot.source!)) {
+    if (line.kind !== "kv" || !keys.has(line.key) || values[line.key as AgentMailRuntimeEnvKey]) {
+      continue;
+    }
+    // Match loadEnvFile: an empty first definition is skipped, then the first
+    // nonempty value wins for the lifetime of the runtime process.
+    if (line.value) values[line.key as AgentMailRuntimeEnvKey] = line.value;
   }
+  return values;
+}
+
+function readExistingEnvCredentials(
+  values: AgentMailDiskEnv,
+): { inboxId: string; apiKey: string } | null {
   const apiKey = usableEnvValue(values.AGENTMAIL_API_KEY);
   const inboxId = usableEnvValue(values.AGENTMAIL_INBOX_ID);
   if (!apiKey || !inboxId) return null;
   return { apiKey, inboxId };
 }
 
-function hasUsableEnvInboxEmail(envPath: string): boolean {
-  if (!existsSync(envPath)) return false;
-  const values: Record<string, string> = {};
-  for (const line of parseEnvFile(readFileSync(envPath, "utf-8"))) {
-    if (line.kind === "kv") values[line.key] = line.value;
+function assertAmbientDiskEnvParity(diskEnv: AgentMailDiskEnv): void {
+  for (const key of AGENTMAIL_RUNTIME_ENV_KEYS) {
+    const ambient = usableEnvValue(process.env[key]);
+    const disk = usableEnvValue(diskEnv[key]);
+    if (ambient && disk && ambient !== disk) throw ambientEnvConflictError(key);
   }
-  return usableInboxEmail(usableEnvValue(values.AGENTMAIL_INBOX_EMAIL) ?? undefined) !== null;
+}
+
+function assertNoAutomaticRuntimeCredentialRotation(diskEnv: AgentMailDiskEnv): void {
+  const existingKeys = AGENTMAIL_RUNTIME_ENV_KEYS.filter(
+    (key) => usableEnvValue(diskEnv[key]) || usableEnvValue(process.env[key]),
+  );
+  if (existingKeys.length > 0) {
+    throw new Error(
+      `Existing AgentMail runtime credentials (${existingKeys.join(", ")}) will not be rotated automatically. ` +
+        "Reuse the current inbox and runtime key with --mode env. To provision replacements, first revoke the old " +
+        "runtime key, remove the AGENTMAIL_* values from .env, and unset exported AGENTMAIL_* values before retrying; " +
+        "setup did not contact AgentMail or change local files.",
+    );
+  }
+}
+
+function assertSelectedCredentialsMatchAmbientEnv(
+  diskEnv: AgentMailDiskEnv,
+  selected: Partial<Record<AgentMailRuntimeEnvKey, string>>,
+): void {
+  for (const key of AGENTMAIL_RUNTIME_ENV_KEYS) {
+    const value = usableEnvValue(selected[key]);
+    if (!value) continue;
+    const ambient = usableEnvValue(process.env[key]);
+    const priorDisk = usableEnvValue(diskEnv[key]);
+    const comparableValue = comparableRuntimeCredential(key, value);
+    if (
+      (ambient && comparableRuntimeCredential(key, ambient) !== comparableValue) ||
+      (priorDisk && comparableRuntimeCredential(key, priorDisk) !== comparableValue)
+    ) {
+      throw existingRuntimeCredentialMismatchError(key);
+    }
+  }
+}
+
+function comparableRuntimeCredential(key: AgentMailRuntimeEnvKey, value: string): string {
+  return key === "AGENTMAIL_INBOX_EMAIL" ? value.toLowerCase() : value;
+}
+
+function existingRuntimeCredentialMismatchError(key: AgentMailRuntimeEnvKey): Error {
+  return new Error(
+    `Manual AgentMail setup cannot replace the existing ${key} runtime credential. ` +
+      "Reuse the exact existing credentials or use --mode env. To intentionally replace them, first revoke the old " +
+      "runtime key, remove the AGENTMAIL_* values from .env, and unset exported AGENTMAIL_* values before retrying; " +
+      "setup did not change local files.",
+  );
+}
+
+function ambientEnvConflictError(key: AgentMailRuntimeEnvKey): Error {
+  return new Error(
+    `${key} exported in the setup process conflicts with the agent's .env credentials. ` +
+      `Make it match .env and reuse the credentials with --mode env. To replace them, first revoke the old runtime ` +
+      `key, remove the AGENTMAIL_* values from .env, and unset exported AGENTMAIL_* values before retrying; ` +
+      "setup did not change local files.",
+  );
 }
 
 async function ensureInboxEmail(
-  credentials: { inboxId: string; apiKey: string; email?: string },
+  credentials: AgentMailSetupCredentials,
   provisioner: AgentMailProvisioningClient,
-): Promise<{ inboxId: string; apiKey: string; email: string }> {
+): Promise<AgentMailSetupCredentials & { email: string }> {
   const email = usableInboxEmail(credentials.email);
   if (email) return { ...credentials, email };
 

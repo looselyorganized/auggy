@@ -209,6 +209,12 @@ omission fails closed and prints the safe shared-credential sequence below. A
 custom-named, inline, or additional same-type mount is never selected or
 rewritten automatically.
 
+Automatic credential mutation is supported on macOS and Linux. It serializes
+Auggy `.env` writers and rechecks the exact agent, `.env`, and augment sources before
+commit. On Windows, configure `.env` and `augment.yaml` with ordinary project
+tooling; setup fails closed without mutation because its POSIX descriptor lock
+is unavailable.
+
 ### Setup modes and inputs
 
 Run the command interactively to choose among these modes:
@@ -222,7 +228,7 @@ Run the command interactively to choose among these modes:
 - `existing` — creates a new inbox in an existing AgentMail account. It needs
   an account-level API key that can create inboxes plus an inbox username. In
   non-interactive use, pass `--mode existing --username <name>` and supply the
-  account key with a secure `--api-key` value or
+  account key with `--api-key` or, preferably,
   `AGENTMAIL_ACCOUNT_API_KEY`. `--display-name` is optional.
 - `manual` — connects an inbox that already exists. Supply its inbox ID and an
   inbox-scoped runtime key using secure prompts, `--inbox-id` / `--api-key`, or
@@ -236,6 +242,15 @@ Non-interactive invocations must include `--mode`; missing required inputs and
 flags that a mode would ignore are rejected before provider or local side
 effects. Prefer the masked prompt or environment variables over `--api-key` so
 credentials do not enter shell history.
+
+Setup never silently replaces runtime credentials already assigned to the
+agent. Use `--mode env` to reuse the values in `.env`. To deliberately
+reprovision or attach a different inbox, first revoke the old inbox-scoped key
+in AgentMail, then remove the old `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID`, and
+`AGENTMAIL_INBOX_EMAIL` entries from the agent's `.env` and unset any exported
+variables with those names before running `signup`, `existing`, or `manual`.
+Revoke before deleting local credentials so the retired provider key is not
+orphaned.
 
 The `existing` flow uses the account key only to create the inbox and mint a
 least-privilege inbox-scoped runtime key. The account key is never written to

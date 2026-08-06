@@ -269,9 +269,18 @@ describe("createAgentMailProvisioningClient.createInbox client_id contract", () 
     let dispatches = 0;
     const client = createAgentMailProvisioningClient({
       http: {
-        post: async (url) => {
+        post: async (url, opts) => {
           dispatches += 1;
-          return response(url, 200, JSON.stringify({ inbox_id: "inb_x", email: "x@example.com" }));
+          const request = JSON.parse(String(opts?.body)) as { client_id?: string };
+          return response(
+            url,
+            200,
+            JSON.stringify({
+              inbox_id: "inb_x",
+              email: "x@example.com",
+              client_id: request.client_id,
+            }),
+          );
         },
         get: async () => {
           throw new Error("unused");
@@ -303,7 +312,11 @@ describe("createAgentMailProvisioningClient.createInbox client_id contract", () 
           return response(
             url,
             200,
-            JSON.stringify({ inbox_id: "inb_x", email: "test-agent@agentmail.to" }),
+            JSON.stringify({
+              inbox_id: "inb_x",
+              email: "test-agent@agentmail.to",
+              client_id: (JSON.parse(body) as { client_id: string }).client_id,
+            }),
           );
         },
         get: async () => {
@@ -349,8 +362,12 @@ describe("createAgentMailProvisioningClient.createInbox client_id contract", () 
     );
     for (const metadata of [
       tooMany,
+      { "": "value" },
       { ["k".repeat(257)]: "value" },
+      { "bad\u001bkey": "value" },
+      { key: "" },
       { key: "v".repeat(257) },
+      { key: "bad\u001bvalue" },
       { key: Number.NaN },
     ]) {
       await expect(client.createInbox({ apiKey: "am_parent", metadata })).rejects.toThrow(
@@ -358,6 +375,153 @@ describe("createAgentMailProvisioningClient.createInbox client_id contract", () 
       );
     }
     expect(dispatches).toBe(1);
+  });
+
+  test("validates every provider-bound inbox and key field before transport", async () => {
+    let dispatches = 0;
+    const client = createAgentMailProvisioningClient({
+      http: {
+        post: async (url, opts) => {
+          dispatches += 1;
+          const body = JSON.parse(String(opts?.body)) as Record<string, unknown>;
+          if (url.endsWith("/api-keys")) {
+            return response(
+              url,
+              200,
+              JSON.stringify({
+                api_key_id: "key_valid",
+                api_key: "am_runtime_valid",
+                name: body.name,
+                inbox_id: "inb_valid",
+                permissions: body.permissions,
+              }),
+            );
+          }
+          return response(
+            url,
+            200,
+            JSON.stringify({
+              inbox_id: "inb_valid",
+              email: `${body.username}@${body.domain ?? "agentmail.to"}`,
+              client_id: body.client_id,
+            }),
+          );
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+    });
+
+    await expect(
+      client.createInbox({
+        apiKey: "am_parent",
+        username: "u".repeat(64),
+        domain: "mail.example",
+        displayName: "d".repeat(256),
+        clientId: "valid",
+      }),
+    ).resolves.toMatchObject({ email: `${"u".repeat(64)}@mail.example` });
+    await expect(
+      client.createInboxApiKey({
+        apiKey: "am_parent",
+        inboxId: "inb_valid",
+        name: "n".repeat(256),
+        permissions: { inbox_read: true, message_send: true },
+      }),
+    ).resolves.toMatchObject({ apiKeyId: "key_valid" });
+    expect(dispatches).toBe(2);
+
+    const invalidInboxInputs = [
+      { apiKey: "am_parent", username: "u".repeat(65) },
+      { apiKey: "am_parent", username: "-leading" },
+      { apiKey: "am_parent", username: "has.dot" },
+      { apiKey: "am_parent", username: "valid", domain: "invalid_domain" },
+      { apiKey: "am_parent", username: "valid", domain: "d".repeat(254) },
+      { apiKey: "am_parent", username: "valid", displayName: "bad\u001bname" },
+      { apiKey: "am_parent", username: "valid", displayName: "d".repeat(257) },
+      { apiKey: "am parent", username: "valid" },
+    ];
+    for (const input of invalidInboxInputs) {
+      await expect(client.createInbox(input)).rejects.toThrow(/AgentMail/);
+    }
+
+    const validKeyInput = {
+      apiKey: "am_parent",
+      inboxId: "inb_valid",
+      name: "runtime key",
+      permissions: { inbox_read: true, message_send: true },
+    };
+    for (const input of [
+      { ...validKeyInput, apiKey: "am parent" },
+      { ...validKeyInput, inboxId: "inb invalid" },
+      { ...validKeyInput, name: "bad\u001bname" },
+      { ...validKeyInput, name: "n".repeat(257) },
+      { ...validKeyInput, permissions: {} },
+      { ...validKeyInput, permissions: { "bad-permission": true } },
+    ]) {
+      await expect(
+        client.createInboxApiKey(input as Parameters<typeof client.createInboxApiKey>[0]),
+      ).rejects.toThrow(/AgentMail/);
+    }
+    expect(dispatches).toBe(2);
+  });
+
+  test("validates signup and verification fields before transport", async () => {
+    let dispatches = 0;
+    const client = createAgentMailProvisioningClient({
+      http: {
+        post: async (url) => {
+          dispatches += 1;
+          return response(url, 500, "unexpected");
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+    });
+
+    for (const input of [
+      { humanEmail: "not-an-email", username: "valid" },
+      { humanEmail: "owner@example.com", username: "u".repeat(65) },
+      { humanEmail: "owner@example.com", username: "valid", source: "bad\u001bsource" },
+      { humanEmail: "owner@example.com", username: "valid", referrer: "r".repeat(2_049) },
+    ]) {
+      await expect(client.signUp(input)).rejects.toThrow(/AgentMail/);
+    }
+    await expect(client.verify("am parent", "123456")).rejects.toThrow(/AgentMail/);
+    await expect(client.verify("am_parent", "1 2")).rejects.toThrow(/AgentMail/);
+    expect(dispatches).toBe(0);
+  });
+
+  test("accepts documented 2048-character source and referrer boundaries", async () => {
+    let requestBody: Record<string, unknown> = {};
+    const client = createAgentMailProvisioningClient({
+      http: {
+        post: async (url, opts) => {
+          requestBody = JSON.parse(String(opts?.body)) as Record<string, unknown>;
+          return response(
+            url,
+            200,
+            JSON.stringify({ organization_id: "org_1", inbox_id: "inb_1", api_key: "am_key" }),
+          );
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+    });
+
+    await expect(
+      client.signUp({
+        humanEmail: "owner@example.com",
+        username: "valid",
+        source: "s".repeat(2_048),
+        referrer: "r".repeat(2_048),
+      }),
+    ).resolves.toMatchObject({ inboxId: "inb_1" });
+    expect(requestBody.source).toBe("s".repeat(2_048));
+    expect(requestBody.referrer).toBe("r".repeat(2_048));
   });
 });
 
@@ -409,6 +573,203 @@ describe("createAgentMailProvisioningClient provider failures", () => {
     expect(String(error)).not.toContain(apiKey);
     expect(JSON.stringify(error)).not.toContain(apiKey);
     expect(error).not.toHaveProperty("body");
+  });
+
+  test("redacts provider-returned AgentMail credentials and short OTP request values", async () => {
+    const providerToken = "am_new_provider_secret";
+    const tokenClient = createAgentMailProvisioningClient({
+      http: {
+        post: async (url) =>
+          response(
+            url,
+            400,
+            JSON.stringify({
+              code: "provider_error",
+              message: `Debug generated key ${providerToken}`,
+            }),
+          ),
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+    });
+    const tokenError = await rejection(
+      tokenClient.createInbox({ apiKey: "am_parent", clientId: "valid" }),
+    );
+    expect(String(tokenError)).not.toContain(providerToken);
+    expect(tokenError).toMatchObject({ providerMessage: "Debug generated key [redacted]" });
+
+    const otp = "123";
+    const otpClient = createAgentMailProvisioningClient({
+      http: {
+        post: async (url) =>
+          response(
+            url,
+            400,
+            JSON.stringify({ code: "invalid_otp", message: `OTP ${otp} was rejected` }),
+          ),
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+    });
+    const otpError = await rejection(otpClient.verify("am_parent", otp));
+    expect(String(otpError)).not.toContain(otp);
+    expect(otpError).toMatchObject({ providerMessage: "OTP [redacted] was rejected" });
+  });
+
+  test("drops secret-bearing structured provider identifiers and issue paths", async () => {
+    const apiKey = "am_parent_structured_secret";
+    const client = createAgentMailProvisioningClient({
+      http: {
+        post: async (url) =>
+          response(
+            url,
+            400,
+            JSON.stringify({
+              name: `Error_${apiKey}`,
+              code: `failure_${apiKey}`,
+              message: "Request rejected",
+              errors: [
+                {
+                  code: `invalid_${apiKey}`,
+                  path: [apiKey],
+                  message: "Invalid request",
+                },
+                {
+                  code: "whsec_provider_generated_secret",
+                  path: ["api_key"],
+                  message: "Provider rejected the request",
+                },
+              ],
+            }),
+          ),
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+    });
+
+    const error = await rejection(client.createInbox({ apiKey, username: "support" }));
+    expect(error).toMatchObject({
+      providerName: undefined,
+      providerCode: undefined,
+      providerMessage: "Request rejected",
+      issues: [{ path: ["api_key"], message: "Provider rejected the request" }],
+    });
+    expect((error as AgentMailProvisioningApiError).issues[0]).not.toHaveProperty("code");
+    expect(String(error)).not.toContain(apiKey);
+    expect(String(error)).not.toContain("whsec_provider_generated_secret");
+    expect(JSON.stringify(error)).not.toContain(apiKey);
+    expect(JSON.stringify(error)).not.toContain("whsec_provider_generated_secret");
+  });
+
+  test("redacts raw sensitive values before provider diagnostic normalization", async () => {
+    const displayName = "Top  Secret";
+    const client = createAgentMailProvisioningClient({
+      http: {
+        post: async (url) =>
+          response(
+            url,
+            400,
+            JSON.stringify({
+              code: "validation_error",
+              message: `Rejected display name ${displayName}`,
+            }),
+          ),
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+    });
+
+    const error = await rejection(
+      client.createInbox({ apiKey: "am_parent", username: "support", displayName }),
+    );
+    expect(error).toMatchObject({
+      providerCode: "validation_error",
+      providerMessage: "Rejected display name [redacted]",
+    });
+    for (const serialized of [String(error), JSON.stringify(error)]) {
+      expect(serialized).not.toContain(displayName);
+      expect(serialized).not.toContain("Top Secret");
+    }
+  });
+
+  test("redacts one-to-three-character sensitive fields from every retained error surface", async () => {
+    for (const username of ["a", "id", "abc"]) {
+      const client = createAgentMailProvisioningClient({
+        http: {
+          post: async (url) =>
+            response(
+              url,
+              400,
+              JSON.stringify({
+                name: `Error_${username}`,
+                code: "validation_error",
+                message: `Rejected ${username}`,
+                errors: [
+                  {
+                    code: `invalid_${username}`,
+                    path: [username],
+                    message: `Invalid ${username}`,
+                  },
+                ],
+              }),
+            ),
+          get: async () => {
+            throw new Error("unused");
+          },
+        },
+      });
+
+      const error = await rejection(client.createInbox({ apiKey: "am_parent", username }));
+      expect(error).toMatchObject({
+        providerName: undefined,
+        providerCode: "validation_error",
+        providerMessage: "Rejected [redacted]",
+        issues: [],
+      });
+      for (const serialized of [String(error), JSON.stringify(error)]) {
+        expect(serialized).not.toContain(`Error_${username}`);
+        expect(serialized).not.toContain(`Rejected ${username}`);
+        expect(serialized).not.toContain(`invalid_${username}`);
+        expect(serialized).not.toContain(`Invalid ${username}`);
+      }
+    }
+  });
+
+  test("fully scrubs embedded am_ and whsec_ credential variants", async () => {
+    const apiCredential = "am_generated+/=tail";
+    const webhookCredential = "whsec_generated+/=tail";
+    const client = createAgentMailProvisioningClient({
+      http: {
+        post: async (url) =>
+          response(
+            url,
+            400,
+            JSON.stringify({
+              code: "provider_error",
+              message: `generated x${apiCredential} and prefix${webhookCredential}`,
+            }),
+          ),
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+    });
+
+    const error = await rejection(client.createInbox({ apiKey: "am_parent", username: "safe" }));
+    expect(error).toMatchObject({
+      providerCode: "provider_error",
+      providerMessage: "generated x[redacted] and prefix[redacted]",
+    });
+    for (const serialized of [String(error), JSON.stringify(error)]) {
+      expect(serialized).not.toContain(apiCredential);
+      expect(serialized).not.toContain(webhookCredential);
+      expect(serialized).not.toContain("am_generated");
+      expect(serialized).not.toContain("whsec_generated");
+    }
   });
 
   test("exposes AlreadyExists as structured status and provider identity", async () => {

@@ -8,27 +8,31 @@ export function upsertEnvValues(
   opts: { header?: string } = {},
 ): string[] {
   const lines: EnvLine[] = readEnvLines(envPath, opts.header);
+  const replacements = new Map(Object.entries(values));
+  const replaced = new Set<string>();
+  const updated: EnvLine[] = [];
 
-  const existing = new Map<string, number>();
-  lines.forEach((line, index) => {
-    if (line.kind === "kv") existing.set(line.key, index);
-  });
-
-  const written: string[] = [];
-  for (const [key, value] of Object.entries(values)) {
-    const index = existing.get(key);
-    const line: EnvLine = { kind: "kv", key, value, raw: `${key}=${value}` };
-    if (index === undefined) {
-      lines.push(line);
-      existing.set(key, lines.length - 1);
-    } else {
-      lines[index] = line;
+  for (const line of lines) {
+    if (line.kind !== "kv" || !replacements.has(line.key)) {
+      updated.push(line);
+      continue;
     }
-    written.push(key);
+    // Keep one definition at the first existing position and remove later
+    // duplicates. Runtime .env loading is first-definition-wins, so leaving a
+    // stale earlier value would make the successful write ineffective.
+    if (replaced.has(line.key)) continue;
+    const value = replacements.get(line.key)!;
+    updated.push({ kind: "kv", key: line.key, value, raw: `${line.key}=${value}` });
+    replaced.add(line.key);
   }
 
-  writeFileSafely(envPath, serializeEnv(lines), { mode: 0o600 });
-  return written;
+  for (const [key, value] of replacements) {
+    if (replaced.has(key)) continue;
+    updated.push({ kind: "kv", key, value, raw: `${key}=${value}` });
+  }
+
+  writeFileSafely(envPath, serializeEnv(updated), { mode: 0o600 });
+  return [...replacements.keys()];
 }
 
 function readEnvLines(envPath: string, header?: string): EnvLine[] {

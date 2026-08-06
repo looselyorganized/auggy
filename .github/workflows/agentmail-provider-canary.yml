@@ -4,7 +4,8 @@ name: AgentMail provider canary
 # trigger. Dispatch it manually from canonical main only after the protected
 # agentmail-provider-canary Environment is configured and approved.
 # The first approved run creates one persistent canary inbox in that
-# Environment's AgentMail account; every later run reuses the same inbox.
+# Environment's AgentMail account; every later run reuses the same inbox. Each
+# run creates, validates, and deletes one reserved least-privilege scoped key.
 on:
   workflow_dispatch:
 
@@ -24,10 +25,12 @@ jobs:
     environment: agentmail-provider-canary
 
     steps:
-      - name: Checkout trusted default branch
+      - name: Checkout approved dispatch commit
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ github.event.repository.default_branch }}
+          # Pin the exact commit selected at dispatch so Environment approval
+          # cannot be followed by a moving-main checkout.
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Setup Bun
@@ -38,9 +41,9 @@ jobs:
       - name: Install trusted dependencies
         run: bun install --frozen-lockfile
 
-      - name: Create or reuse one persistent canary inbox twice
+      - name: Verify persistent inbox and disposable scoped-key contracts
         env:
           # Configure this name only on the protected Environment. Do not add
           # a repository-level fallback secret with the same name.
           AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY: ${{ secrets.AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY }}
-        run: bun run canary:agentmail
+        run: bun scripts/agentmail-provider-canary.ts

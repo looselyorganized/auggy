@@ -74,6 +74,13 @@ not written to the project. Existing-account retries derive one provider-valid
 `client_id` from the immutable agent ID and target, so the same logical setup
 recovers the same inbox instead of creating duplicates.
 
+Setup never silently rotates credentials that are already assigned to the
+agent. Reuse them with `--mode env`. To attach a replacement inbox or key,
+first have the creator revoke the old scoped key in AgentMail, then remove the
+old `AGENTMAIL_*` values from `.env` and unset exported copies before running
+`signup`, `existing`, or `manual`. Never delete the local key before its
+provider credential is revoked.
+
 If signup reports that the owner email already has an account, switch to
 `existing` mode. The failed signup does not adopt an arbitrary inbox or change
 local credentials. For non-interactive automation, pass an explicit mode and
@@ -93,7 +100,8 @@ runtime key. The second updates `visitorAuth` to reuse them without creating or
 replacing provider resources. Omitting the target when both are installed
 fails closed instead of guessing. Automatic setup also refuses inline,
 custom-named, or additional AgentMail consumers; configure those topologies
-manually.
+manually. Automatic credential mutation requires macOS or Linux; on Windows,
+configure `.env` and the referenced augment YAML with ordinary project tooling.
 
 ## Run Locally
 
