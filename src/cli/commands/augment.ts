@@ -159,9 +159,11 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
     .option("--human-email <email>", "human owner email for AgentMail signup")
     .option("--username <username>", "external-service username or inbox name")
     .option("--display-name <name>", "external-service display name")
-    .option("--api-key <key>", "external-service API key")
+    .option(
+      "--api-key <key>",
+      "external-service API key (prefer a secure prompt or provider environment variable)",
+    )
     .option("--inbox-id <id>", "existing AgentMail inbox ID for manual mode")
-    .option("--otp <code>", "AgentMail signup OTP code")
     .option("--base-url <url>", "external-service API base URL")
     .action(async (augment: string, opts: AugmentSetupOptions) => {
       try {

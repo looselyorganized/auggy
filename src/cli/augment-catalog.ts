@@ -421,19 +421,48 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
 ];
 
 /**
+ * Built-in augment names are CLI conveniences, so accept their canonical
+ * identifiers without making operators remember internal camel-casing. Keep
+ * the index catalog-only: custom augment and package identifiers are resolved
+ * elsewhere and remain case-sensitive.
+ *
+ * Building this eagerly also makes a future case-only catalog collision fail
+ * closed at startup instead of resolving to whichever entry happens to be
+ * listed first.
+ */
+const BUILTIN_SPECIFIER_INDEX = buildBuiltinSpecifierIndex(AUGMENT_CATALOG);
+
+function buildBuiltinSpecifierIndex(catalog: readonly CatalogEntry[]): Map<string, CatalogEntry> {
+  const index = new Map<string, CatalogEntry>();
+
+  for (const entry of catalog) {
+    for (const specifier of new Set([entry.type, entry.defaultName])) {
+      const key = specifier.toLowerCase();
+      const existing = index.get(key);
+      if (existing && existing !== entry) {
+        throw new Error(
+          `Built-in augment specifiers "${specifier}" and "${existing.defaultName}" differ only by case. Catalog specifiers must be case-insensitively unique.`,
+        );
+      }
+      index.set(key, entry);
+    }
+  }
+
+  return index;
+}
+
+/**
  * Resolve an augment specifier to a catalog entry. Augment commands use one
  * code vocabulary: the YAML `type:`/`name:` identifier (`webFetch`,
- * `visitorAuth`, etc.). Human labels are display-only.
+ * `visitorAuth`, etc.). Built-in identifiers are matched case-insensitively,
+ * while human labels are display-only. The returned entry always carries the
+ * canonical casing that will be written to disk and shown in output.
  */
 export function resolveCatalogEntry(specifier: string): CatalogEntry | null {
   const normalized = specifier.trim();
   if (!normalized) return null;
 
-  return (
-    AUGMENT_CATALOG.find(
-      (entry) => entry.type === normalized || entry.defaultName === normalized,
-    ) ?? null
-  );
+  return BUILTIN_SPECIFIER_INDEX.get(normalized.toLowerCase()) ?? null;
 }
 
 export function validAugmentSpecifiers(): string[] {

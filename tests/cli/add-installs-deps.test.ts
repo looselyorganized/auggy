@@ -586,7 +586,7 @@ describe("runAdd no-op cases", () => {
     expect(output).toContain("TELEGRAM_CREATOR_USER_IDS=");
   });
 
-  test("adding agentMail explains email setup", async () => {
+  test("adding agentMail accepts lowercase input and emits canonical identifiers", async () => {
     const dir = setupAgent("with-agent-mail");
     const originalLog = console.log;
     const logs: string[] = [];
@@ -598,7 +598,7 @@ describe("runAdd no-op cases", () => {
       await runAdd("with-agent-mail", {
         config: join(dir, "agent.yaml"),
         auggyDir,
-        augment: "agentMail",
+        augment: "agentmail",
         yes: true,
         bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
       });

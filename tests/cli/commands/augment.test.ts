@@ -68,7 +68,6 @@ describe("auggy augment command", () => {
         displayName: undefined,
         apiKey: "am_x",
         inboxId: "inb_x",
-        otp: undefined,
         baseUrl: undefined,
       },
       { auggyDir: "/tmp/auggy" },
