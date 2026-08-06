@@ -319,6 +319,7 @@ reject_pack_pattern() {
 }
 
 require_pack_entry "src/cli/index.ts"
+require_pack_entry "src/cli/agentmail-provisioning.ts"
 require_pack_entry "src/jobs/index.ts"
 require_pack_entry "src/jobs/runtime.ts"
 require_pack_entry "src/jobs/sqlite-store.ts"
@@ -398,6 +399,15 @@ npm_config_cache="$INSTALL_CACHE" npm install -g --prefix "$GLOBAL_PREFIX" "$TAR
 CLI="$GLOBAL_PREFIX/bin/auggy"
 "$CLI" --version | grep -qx "$(node -p "require('$ROOT/package.json').version")" \
   || fail "installed CLI version does not match package.json"
+
+info "verify packed AgentMail CLI contract"
+bun "$ROOT/scripts/release-smoke-agentmail-cli.ts" \
+  "$CLI" \
+  "$GLOBAL_PREFIX/lib/node_modules/auggy" \
+  "$SMOKE_DIR/packed-agentmail-cli" \
+  "$SMOKE_HOME" \
+  >"$LOG_DIR/packed-agentmail-cli.log" 2>&1 \
+  || fail "packed AgentMail CLI contract failed"
 
 info "verify non-TTY create fails clearly"
 if HOME="$SMOKE_HOME" "$CLI" create no-tty-agent --skip-install >"$LOG_DIR/no-tty-create.log" 2>&1; then
