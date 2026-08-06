@@ -4,9 +4,11 @@ import { existsSync, readFileSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
+  buildAgentMailClientId,
   buildAgentMailRuntimeKeyPermissions,
   createAgentMailProvisioningClient,
   type AgentMailProvisioningClient,
+  type AgentMailProvisioningTarget,
   type AgentMailRuntimeKeyPermissions,
 } from "../agentmail-provisioning";
 import { successMark } from "../_shared/styles";
@@ -33,8 +35,9 @@ import {
 } from "../../augments/agentMail/creator-digest-policy";
 import type { AgentMailOutboundOptions } from "../../types";
 
-export type AgentMailSetupTarget = "visitorAuth" | "agentMail";
+export type AgentMailSetupTarget = AgentMailProvisioningTarget;
 export type AgentMailSetupMode = "signup" | "existing" | "manual" | "env";
+const IMMUTABLE_AGENT_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 type PromptSelect = typeof select;
 type PromptInput = typeof input;
@@ -125,7 +128,7 @@ export async function runAgentMailSetup(
   });
   const agentDir = dirname(configPath);
   const agentName = readAgentName(configPath);
-  const agentId = readAgentId(configPath) ?? agentName;
+  const agentId = readAgentId(configPath);
   const augmentPath = join(agentDir, "augments", target, "augment.yaml");
   if (!existsSync(augmentPath)) {
     throw new Error(
@@ -214,7 +217,7 @@ export async function runAgentMailSetup(
           ? await runExistingAccountFlow(
               target,
               agentName,
-              agentId,
+              requireAgentMailProvisioningAgentId(agentId, configPath),
               opts,
               provisioner,
               prompts,
@@ -334,7 +337,7 @@ async function runExistingAccountFlow(
     apiKey: parentApiKey.trim(),
     username,
     displayName: displayName.trim() || agentName,
-    clientId: agentMailClientId(agentId, target),
+    clientId: buildAgentMailClientId(agentId, target),
     metadata: { source: "auggy-cli", agent: agentName, augment: target },
   });
   const runtimeKey = await provisioner.createInboxApiKey({
@@ -663,14 +666,17 @@ function runtimeKeyName(agentName: string, target: AgentMailSetupTarget): string
   return `${agentName} ${target}`;
 }
 
-function agentMailClientId(agentId: string, target: AgentMailSetupTarget): string {
-  return `auggy:${agentId}:${target}`;
-}
-
 function readAgentId(configPath: string): string | null {
   const raw = parseYaml(readFileSync(configPath, "utf-8")) as { id?: unknown } | null;
-  if (typeof raw?.id === "string" && raw.id.trim().length > 0) return raw.id.trim();
+  if (typeof raw?.id === "string" && raw.id.length > 0) return raw.id;
   return null;
+}
+
+function requireAgentMailProvisioningAgentId(agentId: string | null, configPath: string): string {
+  if (agentId && IMMUTABLE_AGENT_ID_RE.test(agentId)) return agentId;
+  throw new Error(
+    `${displayPath(configPath)} must contain a valid immutable aug1_ UUID before AgentMail can create an inbox.`,
+  );
 }
 
 function readExistingEnvCredentials(envPath: string): { inboxId: string; apiKey: string } | null {

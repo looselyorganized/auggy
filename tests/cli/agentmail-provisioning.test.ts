@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import {
+  buildAgentMailClientId,
   buildAgentMailRuntimeKeyPermissions,
   createAgentMailProvisioningClient,
 } from "../../src/cli/agentmail-provisioning";
@@ -15,6 +16,32 @@ function response(url: string, status: number, body: string): HttpResponse {
     body,
   };
 }
+
+describe("buildAgentMailClientId", () => {
+  const agentId = "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c";
+
+  test("builds deterministic, provider-valid, resource-scoped inbox identifiers", () => {
+    const clientId = buildAgentMailClientId(agentId, "agentMail");
+
+    expect(clientId).toBe("auggy.v1.inbox.aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c.agentMail");
+    expect(buildAgentMailClientId(agentId, "agentMail")).toBe(clientId);
+    expect(clientId).toMatch(/^[A-Za-z0-9._~-]{1,256}$/);
+  });
+
+  test("uses distinct idempotency identities for each setup target", () => {
+    expect(buildAgentMailClientId(agentId, "agentMail")).not.toBe(
+      buildAgentMailClientId(agentId, "visitorAuth"),
+    );
+  });
+
+  test("requires the immutable canonical agent identity", () => {
+    for (const invalid of ["", "dx-agent", "agent:id", "aug1_not-a-uuid"]) {
+      expect(() => buildAgentMailClientId(invalid, "agentMail")).toThrow(
+        /valid immutable aug1_ UUID/,
+      );
+    }
+  });
+});
 
 describe("buildAgentMailRuntimeKeyPermissions", () => {
   test("uses the outbound-only permission set when inbound is disabled", () => {
@@ -194,5 +221,91 @@ describe("createAgentMailProvisioningClient.getInbox", () => {
     await expect(client.getInbox("am_test", "inb_x")).rejects.toThrow(
       "AgentMail /inboxes/inb_x failed (403)",
     );
+  });
+});
+
+describe("createAgentMailProvisioningClient.createInbox client_id contract", () => {
+  test("rejects an invalid client_id before dispatch without exposing credentials", async () => {
+    let dispatched = false;
+    const client = createAgentMailProvisioningClient({
+      http: {
+        post: async (url) => {
+          dispatched = true;
+          return response(url, 500, "unexpected");
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+    });
+
+    const apiKey = "am_secret_parent_key";
+    let message = "";
+    try {
+      await client.createInbox({ apiKey, username: "test-agent", clientId: "auggy:bad:id" });
+    } catch (error) {
+      message = (error as Error).message;
+    }
+
+    expect(dispatched).toBe(false);
+    expect(message).toMatch(/AgentMail client_id must be 1-256 characters/);
+    expect(message).not.toContain(apiKey);
+  });
+
+  test("accepts exact minimum and maximum lengths and rejects every invalid boundary or character", async () => {
+    let dispatches = 0;
+    const client = createAgentMailProvisioningClient({
+      http: {
+        post: async (url) => {
+          dispatches += 1;
+          return response(url, 200, JSON.stringify({ inbox_id: "inb_x", email: "x@example.com" }));
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+    });
+
+    for (const valid of ["a", "x".repeat(256), "letters.NUMBERS-1_2~3"]) {
+      await expect(
+        client.createInbox({ apiKey: "am_parent", clientId: valid }),
+      ).resolves.toMatchObject({ inboxId: "inb_x" });
+    }
+    expect(dispatches).toBe(3);
+
+    for (const invalid of ["", "x".repeat(257), "has:colon", "has space", "has@at", "unicode-é"]) {
+      await expect(client.createInbox({ apiKey: "am_parent", clientId: invalid })).rejects.toThrow(
+        /AgentMail client_id must be 1-256 characters/,
+      );
+    }
+    expect(dispatches).toBe(3);
+  });
+
+  test("passes a valid client_id to the provider unchanged", async () => {
+    let body = "";
+    const client = createAgentMailProvisioningClient({
+      http: {
+        post: async (url, opts) => {
+          body = typeof opts?.body === "string" ? opts.body : "";
+          return response(
+            url,
+            200,
+            JSON.stringify({ inbox_id: "inb_x", email: "test-agent@agentmail.to" }),
+          );
+        },
+        get: async () => {
+          throw new Error("unused");
+        },
+      },
+    });
+    const clientId = buildAgentMailClientId(
+      "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+      "agentMail",
+    );
+
+    await expect(
+      client.createInbox({ apiKey: "am_parent", username: "test-agent", clientId }),
+    ).resolves.toMatchObject({ inboxId: "inb_x" });
+    expect(JSON.parse(body)).toMatchObject({ client_id: clientId });
   });
 });

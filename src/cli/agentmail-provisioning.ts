@@ -2,6 +2,29 @@ import { createHttpClient, type HttpClient } from "../http";
 import { assertSecureCredentialTransport } from "../engines/_shared/credential-transport";
 
 export const AGENTMAIL_DEFAULT_BASE_URL = "https://api.agentmail.to/v0";
+const AGENTMAIL_CLIENT_ID_RE = /^[A-Za-z0-9._~-]{1,256}$/;
+const AUGGY_AGENT_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+export type AgentMailProvisioningTarget = "agentMail" | "visitorAuth";
+
+/**
+ * Build the stable, resource-scoped idempotency key used for inbox creation.
+ * Keep this versioned so future provider resources cannot accidentally share
+ * an idempotency namespace with inboxes created by this contract.
+ */
+export function buildAgentMailClientId(
+  agentId: string,
+  target: AgentMailProvisioningTarget,
+): string {
+  if (!AUGGY_AGENT_ID_RE.test(agentId)) {
+    throw new Error(
+      "AgentMail inbox provisioning requires a valid immutable aug1_ UUID from agent.yaml.",
+    );
+  }
+  const clientId = `auggy.v1.inbox.${agentId}.${target}`;
+  assertAgentMailClientId(clientId);
+  return clientId;
+}
 
 export interface AgentMailProvisioningClientOptions {
   apiBaseUrl?: string;
@@ -183,13 +206,16 @@ export function createAgentMailProvisioningClient(
     },
 
     async createInbox(input) {
+      if (input.clientId !== undefined) {
+        assertAgentMailClientId(input.clientId);
+      }
       const raw = await postJson<Record<string, unknown>>(
         "/inboxes",
         {
           ...(input.username ? { username: input.username } : {}),
           ...(input.domain ? { domain: input.domain } : {}),
           ...(input.displayName ? { display_name: input.displayName } : {}),
-          ...(input.clientId ? { client_id: input.clientId } : {}),
+          ...(input.clientId !== undefined ? { client_id: input.clientId } : {}),
           ...(input.metadata ? { metadata: input.metadata } : {}),
         },
         input.apiKey,
@@ -234,6 +260,14 @@ export function createAgentMailProvisioningClient(
       };
     },
   };
+}
+
+function assertAgentMailClientId(clientId: string): void {
+  if (!AGENTMAIL_CLIENT_ID_RE.test(clientId)) {
+    throw new Error(
+      "AgentMail client_id must be 1-256 characters using only letters, numbers, periods, hyphens, underscores, or tildes.",
+    );
+  }
 }
 
 function stringField(value: unknown): string | null {

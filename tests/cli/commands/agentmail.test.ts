@@ -169,7 +169,7 @@ describe("agentmail setup command", () => {
             apiKey: "am_parent",
             username: "support",
             displayName: "Support Agent",
-            clientId: "auggy:aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c:visitorAuth",
+            clientId: "auggy.v1.inbox.aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c.visitorAuth",
             metadata: { source: "auggy-cli", agent: "dx-agent", augment: "visitorAuth" },
           });
           return { inboxId: "inb_support", email: "support@agentmail.to" };
@@ -208,6 +208,35 @@ describe("agentmail setup command", () => {
     }
   });
 
+  test("existing mode requires an immutable agent id before provider side effects", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-id-"));
+    try {
+      const paths = writeVisitorAuthAgent(root);
+      writeFileSync(
+        paths.configPath,
+        readFileSync(paths.configPath, "utf-8").replace(/^id:.*\n/m, ""),
+      );
+      let dispatched = false;
+      const provisioner = unusedProvisioner({
+        createInbox: async () => {
+          dispatched = true;
+          return { inboxId: "inb_unexpected", email: "unexpected@example.com" };
+        },
+      });
+
+      await expect(
+        runAgentMailSetup(
+          "visitorAuth",
+          { config: paths.configPath, mode: "existing", apiKey: "am_parent", username: "support" },
+          { provisioner },
+        ),
+      ).rejects.toThrow(/must contain a valid immutable aug1_ UUID/);
+      expect(dispatched).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("existing mode configures the agentMail augment itself", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-augment-"));
     try {
@@ -229,7 +258,7 @@ describe("agentmail setup command", () => {
             apiKey: "am_parent",
             username: "outbound",
             displayName: "Outbound Mail",
-            clientId: "auggy:aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c:agentMail",
+            clientId: "auggy.v1.inbox.aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c.agentMail",
             metadata: { source: "auggy-cli", agent: "dx-agent", augment: "agentMail" },
           });
           return { inboxId: "inb_outbound", email: "outbound@agentmail.to" };
