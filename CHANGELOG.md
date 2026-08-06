@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Idempotent AgentMail setup.** Existing-account provisioning now derives a
+  provider-valid stable `client_id` from the immutable agent identity and setup
+  target, validates the provider's echoed identity, and recovers the same inbox
+  on retry. The CLI distinguishes new-account, existing-account,
+  existing-inbox, and environment modes; refuses ambiguous shared credentials;
+  and stores only the scoped runtime key needed by the agent.
+
 ## [0.5.0-rc.6] - 2026-08-05
 
 This sixth public candidate adds a safe handoff from Auggy's authenticated Mail

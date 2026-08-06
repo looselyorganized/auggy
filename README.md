@@ -328,8 +328,13 @@ recognized identity across sessions:
 
 ```bash
 auggy augment add visitorAuth
-auggy augment setup visitorAuth
+auggy agentmail setup visitorAuth
 ```
+
+The setup wizard separates new-account signup, existing-account provisioning,
+existing-inbox connection, and `.env` reuse. See the
+[`visitorAuth` operator reference](./docs/19-visitor-auth.md#agentmail-setup)
+for inputs, key scope, shared-inbox sequencing, and recovery.
 
 ## Connect External Tools With MCP
 
@@ -388,8 +393,11 @@ public-preview line:
 
 ```bash
 auggy augment add agentMail
-auggy augment setup agentMail
+auggy agentmail setup agentMail
 ```
+
+See the [`agentMail` operator reference](./docs/22-agent-mail.md) for inbox,
+runtime-key, and inbound-policy configuration.
 
 ## Advanced Preview: Routes And App Integration
 
@@ -483,6 +491,7 @@ is unavailable, it opens the password screen and points to the applicable
 | `auggy chat [name]` | Open a running agent's browser chat |
 | `auggy augment list` | Show core, stable, and preview augments |
 | `auggy augment add [name...]` | Select or add built-in augments |
+| `auggy agentmail setup [target]` | Configure AgentMail for a canonical `agentMail` or `visitorAuth` mount |
 | `auggy augment setup <name>` | Run a supported augment setup recipe |
 | `auggy augment create <name>` | Create and register a custom augment in the current agent |
 | `auggy augment install <agent> <path>` | Import a custom augment authored elsewhere |

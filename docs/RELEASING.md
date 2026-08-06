@@ -93,6 +93,27 @@ inventory requires a complete checkout, so source archives and sparse
 checkouts should use direct `bun test` commands for local exploration rather
 than claiming the release gate passed.
 
+### Optional AgentMail provider canary
+
+The manual `agentmail-provider-canary.yml` workflow verifies the real
+existing-account provisioning contract without making a PR check depend on an
+external paid service. Before its first use:
+
+1. Create the protected `agentmail-provider-canary` GitHub Environment.
+2. Allow deployments from `main` only and require a reviewer.
+3. Add `AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY` to that Environment only.
+   Use a dedicated AgentMail account key capable of creating the canary inbox;
+   do not add a repository-level secret with the same or unsuffixed name.
+
+Dispatch the workflow manually from canonical `looselyorganized/auggy` `main`
+only. Never run it from a PR or fork. The first approved run creates one
+persistent canary inbox; later runs submit the same stable `client_id` twice and
+must resolve that same inbox. This bounded persistence is intentional because
+Auggy's provisioning client has no verified inbox-deletion contract. The
+canary sends no mail, creates no scoped runtime key, and logs neither
+credentials nor provider response data. It is optional release evidence, not a
+publishing trigger.
+
 ## Cutting a new release
 
 ### 0. Between releases (feature PRs)

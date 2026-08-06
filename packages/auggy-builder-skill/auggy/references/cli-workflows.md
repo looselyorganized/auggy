@@ -44,6 +44,57 @@ auggy doctor
 If `doctor` reports a missing provider key, help the creator identify the env
 var name. Do not ask them to paste the secret value into chat.
 
+## Configure AgentMail
+
+Install the canonical target before setup:
+
+```bash
+auggy augment add agentMail
+auggy agentmail setup agentMail
+```
+
+With an interactive terminal, the second command offers four explicit modes:
+
+| Mode | Use when | Behavior |
+| --- | --- | --- |
+| `signup` | The creator is new to AgentMail | Creates an account and first inbox through email verification, then stores only an inbox-scoped runtime key locally |
+| `existing` | The creator already has an AgentMail account | Uses a masked account-key prompt to create or recover this agent's stable inbox, then stores only a scoped runtime key locally |
+| `manual` | The creator already has an inbox and scoped runtime key | Connects the exact inbox ID and runtime key without provisioning provider resources |
+| `env` | Complete `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` credentials are already in `.env` | Reuses them without provisioning another inbox or key |
+
+For an existing account, the direct command is:
+
+```bash
+auggy agentmail setup agentMail --mode existing
+```
+
+Use the masked prompt or an ephemeral `AGENTMAIL_ACCOUNT_API_KEY`; do not put an
+account-level key in chat. The account key is used only for provisioning and is
+not written to the project. Existing-account retries derive one provider-valid
+`client_id` from the immutable agent ID and target, so the same logical setup
+recovers the same inbox instead of creating duplicates.
+
+If signup reports that the owner email already has an account, switch to
+`existing` mode. The failed signup does not adopt an arbitrary inbox or change
+local credentials. For non-interactive automation, pass an explicit mode and
+its required inputs; `signup` remains interactive because it requires the
+verification code issued during the flow.
+
+`agentMail` and `visitorAuth` use the same `AGENTMAIL_*` credentials. When both
+canonical augments are installed, preserve that boundary with this sequence:
+
+```bash
+auggy agentmail setup agentMail
+auggy agentmail setup visitorAuth --mode env
+```
+
+The first command establishes the provider-confirmed inbox address and scoped
+runtime key. The second updates `visitorAuth` to reuse them without creating or
+replacing provider resources. Omitting the target when both are installed
+fails closed instead of guessing. Automatic setup also refuses inline,
+custom-named, or additional AgentMail consumers; configure those topologies
+manually.
+
 ## Run Locally
 
 ```bash

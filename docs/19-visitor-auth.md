@@ -26,7 +26,7 @@ For a production visitor-auth experience:
 ```bash
 auggy augment add layeredMemory
 auggy augment add visitorAuth
-auggy augment setup visitorAuth
+auggy agentmail setup visitorAuth
 auggy doctor --cloud
 ```
 
@@ -193,19 +193,101 @@ For production email delivery, prefer the setup command over hand-editing secret
 
 ```bash
 auggy augment add visitorAuth
-auggy augment setup visitorAuth
+auggy agentmail setup visitorAuth
 ```
 
-The setup command has four modes:
+`auggy augment setup visitorAuth` is the generic equivalent. The direct
+`agentmail` command may omit its target only when exactly one canonical,
+referenced `augments/agentMail` or `augments/visitorAuth` mount is installed:
 
-- `signup` — first AgentMail inbox, with a human email OTP.
-- `existing` — create a new inbox in an existing AgentMail account.
-- `manual` — use an existing inbox ID and runtime key.
-- `env` — reuse `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` already in `.env`.
+```bash
+auggy agentmail setup
+```
 
-The command writes `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` to `.env`, switches
-`augments/visitorAuth/augment.yaml` to `agentMail.transport: agentmail`, and creates
-an inbox-scoped runtime key with only `inbox_read` and `message_send`.
+Always name the target in scripts. If both canonical consumers are installed,
+omission fails closed and prints the safe shared-credential sequence below. A
+custom-named, inline, or additional same-type mount is never selected or
+rewritten automatically.
+
+### Setup modes and inputs
+
+Run the command interactively to choose among these modes:
+
+- `signup` — for someone new to AgentMail. This creates an account and first
+  inbox, sends a verification code to the human owner email, and prompts for
+  that code. Signup is interactive-only. If AgentMail reports that the account
+  already exists, an interactively selected signup can offer to continue with
+  the existing-account flow. An explicit `--mode signup` never switches modes
+  or adopts an existing inbox on its own.
+- `existing` — creates a new inbox in an existing AgentMail account. It needs
+  an account-level API key that can create inboxes plus an inbox username. In
+  non-interactive use, pass `--mode existing --username <name>` and supply the
+  account key with a secure `--api-key` value or
+  `AGENTMAIL_ACCOUNT_API_KEY`. `--display-name` is optional.
+- `manual` — connects an inbox that already exists. Supply its inbox ID and an
+  inbox-scoped runtime key using secure prompts, `--inbox-id` / `--api-key`, or
+  `AGENTMAIL_INBOX_ID` / `AGENTMAIL_API_KEY`. Setup does not widen or replace
+  this key, so it must already grant `inbox_read` and `message_send`.
+- `env` — reuses usable `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` values
+  already in the agent's `.env`. It accepts no provisioning inputs and does
+  not change the existing key's permissions.
+
+Non-interactive invocations must include `--mode`; missing required inputs and
+flags that a mode would ignore are rejected before provider or local side
+effects. Prefer the masked prompt or environment variables over `--api-key` so
+credentials do not enter shell history.
+
+The `existing` flow uses the account key only to create the inbox and mint a
+least-privilege inbox-scoped runtime key. The account key is never written to
+the agent. On success, setup writes only the scoped key and inbox ID as
+`AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID`, switches
+`augments/visitorAuth/augment.yaml` to `agentMail.transport: agentmail`, and
+keeps the runtime permissions to `inbox_read` and `message_send`.
+
+### Sharing credentials with the `agentMail` augment
+
+The canonical `agentMail` and `visitorAuth` mounts currently reference the same
+global `AGENTMAIL_*` variables. When both are installed, configure the
+model-facing mail augment first, then make visitor auth reuse that inbox and
+scoped key:
+
+```bash
+auggy agentmail setup agentMail
+auggy agentmail setup visitorAuth --mode env
+```
+
+This order lets `agentMail` mint the complete permission set required by its
+configured inbound policy and record `AGENTMAIL_INBOX_EMAIL`; `visitorAuth`
+then reuses those credentials without overwriting them with a narrower key.
+Automatic setup refuses custom, inline, renamed, or additional AgentMail
+consumers because changing the shared globals could silently retarget another
+augment. Configure those consumers manually with distinct environment
+references, or isolate them in separate agents, and run `auggy doctor` before
+starting the runtime.
+
+### Failure recovery
+
+Setup commits `.env` and augment YAML only after the provider flow has returned
+a valid inbox identity and runtime key; a local write failure rolls the pair
+back. Provider mutations are different: an inbox can exist remotely even when
+a later scoped-key request or response fails.
+
+- For an existing owner email, rerun with
+  `auggy agentmail setup visitorAuth --mode existing`; do not retry signup or
+  claim an arbitrary existing inbox.
+- For a definite validation or authorization error, correct the named input or
+  permission before explicitly retrying.
+- If the CLI says a mutation's outcome is unknown, do **not** retry blindly.
+  Inspect the intended AgentMail account for the requested inbox and key. If
+  the inbox exists but no usable key was returned, create a fresh scoped key in
+  AgentMail and connect it with `--mode manual`. If the provider confirms that
+  nothing was created, rerun the original command.
+
+The existing-account inbox request carries a stable, provider-valid
+idempotency identity derived from the immutable agent ID and target. That makes
+provider reconciliation possible; it is not permission to auto-retry a
+timeout, malformed success response, or other ambiguous mutation. Setup never
+silently adopts or deletes a provider resource.
 
 After a visitor clicks the verification link, the success page stores the signed
 visitor token in browser localStorage. `/console/chat` and public frontends should
