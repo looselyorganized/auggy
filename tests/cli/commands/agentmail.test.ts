@@ -11,7 +11,11 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
-import type { AgentMailProvisioningClient } from "../../../src/cli/agentmail-provisioning";
+import {
+  AgentMailProvisioningApiError,
+  type AgentMailProvisioningClient,
+  AgentMailProvisioningResponseError,
+} from "../../../src/cli/agentmail-provisioning";
 import { formatAgentMailSetupResult, runAgentMailSetup } from "../../../src/cli/commands/agentmail";
 import { parseEnvFile } from "../../../src/cli/env-parse";
 
@@ -232,6 +236,196 @@ describe("agentmail setup command", () => {
         ),
       ).rejects.toThrow(/must contain a valid immutable aug1_ UUID/);
       expect(dispatched).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("existing mode leaves local state unchanged across provider inbox failures", async () => {
+    for (const status of [400, 401, 403, 409, 429]) {
+      const root = mkdtempSync(join(tmpdir(), `agentmail-setup-inbox-failure-${status}-`));
+      try {
+        const paths = writeVisitorAuthAgent(root);
+        const originalConfig = readFileSync(paths.configPath, "utf-8");
+        const originalEnv = readFileSync(paths.envPath, "utf-8");
+        const originalAugment = readFileSync(paths.augmentPath, "utf-8");
+        const parentApiKey = `am_parent_secret_${status}`;
+        const createInbox = mock(async () => {
+          throw new AgentMailProvisioningApiError({
+            operation: "/inboxes",
+            status,
+            providerCode: "request_failed",
+            providerMessage: "The inbox could not be created.",
+          });
+        });
+        const createInboxApiKey = mock(async () => {
+          throw new Error("must not create a scoped key");
+        });
+
+        let error: Error | undefined;
+        try {
+          await runAgentMailSetup(
+            "visitorAuth",
+            {
+              config: paths.configPath,
+              mode: "existing",
+              apiKey: parentApiKey,
+              username: "support",
+              displayName: "Support",
+            },
+            {
+              provisioner: unusedProvisioner({ createInbox, createInboxApiKey }),
+            },
+          );
+        } catch (caught) {
+          error = caught as Error;
+        }
+
+        expect(error?.message).toContain(String(status));
+        expect(error?.message).not.toContain(parentApiKey);
+        expect(createInbox).toHaveBeenCalledTimes(1);
+        expect(createInboxApiKey).not.toHaveBeenCalled();
+        expect(readFileSync(paths.configPath, "utf-8")).toBe(originalConfig);
+        expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
+        expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
+      } finally {
+        rmSync(root, { recursive: true, force: true });
+      }
+    }
+  });
+
+  test("existing mode reuses the same deterministic client id after an explicit retry", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-idempotent-retry-"));
+    try {
+      const paths = writeVisitorAuthAgent(root);
+      const originalConfig = readFileSync(paths.configPath, "utf-8");
+      const originalEnv = readFileSync(paths.envPath, "utf-8");
+      const originalAugment = readFileSync(paths.augmentPath, "utf-8");
+      const clientIds: Array<string | undefined> = [];
+      const createInbox = mock(
+        async (input: Parameters<AgentMailProvisioningClient["createInbox"]>[0]) => {
+          clientIds.push(input.clientId);
+          throw new Error("AgentMail /inboxes failed (503): retry later");
+        },
+      );
+      const options = {
+        config: paths.configPath,
+        mode: "existing" as const,
+        apiKey: "am_parent",
+        username: "support",
+        displayName: "Support",
+      };
+
+      await expect(
+        runAgentMailSetup("visitorAuth", options, {
+          provisioner: unusedProvisioner({ createInbox }),
+        }),
+      ).rejects.toThrow(/503/);
+      await expect(
+        runAgentMailSetup("visitorAuth", options, {
+          provisioner: unusedProvisioner({ createInbox }),
+        }),
+      ).rejects.toThrow(/503/);
+
+      expect(clientIds).toEqual([
+        "auggy.v1.inbox.aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c.visitorAuth",
+        "auggy.v1.inbox.aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c.visitorAuth",
+      ]);
+      expect(readFileSync(paths.configPath, "utf-8")).toBe(originalConfig);
+      expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
+      expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("existing mode leaves local state unchanged when scoped-key creation fails", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-scoped-key-failure-"));
+    try {
+      const paths = writeAgentMailAgent(root);
+      const originalConfig = readFileSync(paths.configPath, "utf-8");
+      const originalEnv = readFileSync(paths.envPath, "utf-8");
+      const originalAugment = readFileSync(paths.augmentPath, "utf-8");
+      const parentApiKey = "am_parent_secret_scoped_key";
+      const createInbox = mock(async () => ({
+        inboxId: "inb_created",
+        email: "support@agentmail.to",
+      }));
+      const createInboxApiKey = mock(async () => {
+        throw new AgentMailProvisioningApiError({
+          operation: "/inboxes/inb_created/api-keys",
+          status: 429,
+          providerCode: "rate_limited",
+          providerMessage: "Try again later.",
+        });
+      });
+
+      let error: Error | undefined;
+      try {
+        await runAgentMailSetup(
+          "agentMail",
+          {
+            config: paths.configPath,
+            mode: "existing",
+            apiKey: parentApiKey,
+            username: "support",
+            displayName: "Support",
+          },
+          {
+            provisioner: unusedProvisioner({ createInbox, createInboxApiKey }),
+          },
+        );
+      } catch (caught) {
+        error = caught as Error;
+      }
+
+      expect(error?.message).toContain("429");
+      expect(error?.message).not.toContain(parentApiKey);
+      expect(createInbox).toHaveBeenCalledTimes(1);
+      expect(createInboxApiKey).toHaveBeenCalledTimes(1);
+      expect(readFileSync(paths.configPath, "utf-8")).toBe(originalConfig);
+      expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
+      expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("existing mode leaves local state unchanged for a malformed provider response", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-malformed-response-"));
+    try {
+      const paths = writeVisitorAuthAgent(root);
+      const originalConfig = readFileSync(paths.configPath, "utf-8");
+      const originalEnv = readFileSync(paths.envPath, "utf-8");
+      const originalAugment = readFileSync(paths.augmentPath, "utf-8");
+      const parentApiKey = "am_parent_secret_malformed";
+      const createInbox = mock(async () => {
+        throw new AgentMailProvisioningResponseError("/inboxes", "inbox_id or email was missing");
+      });
+
+      let error: Error | undefined;
+      try {
+        await runAgentMailSetup(
+          "visitorAuth",
+          {
+            config: paths.configPath,
+            mode: "existing",
+            apiKey: parentApiKey,
+            username: "support",
+            displayName: "Support",
+          },
+          { provisioner: unusedProvisioner({ createInbox }) },
+        );
+      } catch (caught) {
+        error = caught as Error;
+      }
+
+      expect(error).toBeInstanceOf(AgentMailProvisioningResponseError);
+      expect(error?.message).toContain("invalid response");
+      expect(error?.message).not.toContain(parentApiKey);
+      expect(readFileSync(paths.configPath, "utf-8")).toBe(originalConfig);
+      expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
+      expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -560,6 +754,7 @@ describe("agentmail setup command", () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-email-failure-"));
     try {
       const paths = writeAgentMailAgent(root);
+      const originalConfig = readFileSync(paths.configPath, "utf-8");
       const originalEnv = readFileSync(paths.envPath, "utf-8");
       const originalAugment = readFileSync(paths.augmentPath, "utf-8");
       const provisioner: AgentMailProvisioningClient = {
@@ -599,6 +794,7 @@ describe("agentmail setup command", () => {
       expect(error?.message).toContain("Could not resolve the canonical email");
       expect(error?.message).toContain("retry setup");
       expect(error?.message).not.toContain("am_super_secret");
+      expect(readFileSync(paths.configPath, "utf-8")).toBe(originalConfig);
       expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
       expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
     } finally {
@@ -1031,6 +1227,9 @@ describe("agentmail setup command", () => {
           );
         }
         writeFileSync(paths.configPath, stringifyYaml(agentConfig));
+        const originalConfig = readFileSync(paths.configPath, "utf-8");
+        const originalEnv = readFileSync(paths.envPath, "utf-8");
+        const originalAugment = readFileSync(paths.augmentPath, "utf-8");
         const getInbox = mock(async () => {
           throw new Error("must not contact provider");
         });
@@ -1056,6 +1255,9 @@ describe("agentmail setup command", () => {
         );
         expect(error?.message).not.toContain("am_super_secret");
         expect(getInbox).not.toHaveBeenCalled();
+        expect(readFileSync(paths.configPath, "utf-8")).toBe(originalConfig);
+        expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
+        expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
