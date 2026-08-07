@@ -2,6 +2,7 @@ import { describe, it, expect } from "bun:test";
 import {
   AUGMENT_CATALOG,
   resolveCatalogEntry,
+  type CatalogEntry,
   validAugmentSpecifiers,
 } from "../../src/cli/augment-catalog";
 
@@ -111,11 +112,35 @@ describe("augment catalog", () => {
     expect(resolveCatalogEntry("mcp")?.type).toBe("mcp");
   });
 
+  it("resolves built-in specifiers case-insensitively to canonical entries", () => {
+    expect(resolveCatalogEntry("agentmail")?.type).toBe("agentMail");
+    expect(resolveCatalogEntry("AgEnTmAiL")?.defaultName).toBe("agentMail");
+    expect(resolveCatalogEntry(" WEBFETCH ")?.type).toBe("webFetch");
+    expect(resolveCatalogEntry("layeredmemory")?.defaultName).toBe("layeredMemory");
+  });
+
+  it("keeps catalog specifiers case-insensitively unambiguous", () => {
+    const owners = new Map<string, CatalogEntry>();
+
+    for (const entry of AUGMENT_CATALOG) {
+      for (const specifier of new Set([entry.type, entry.defaultName])) {
+        const key = specifier.toLowerCase();
+        const existing = owners.get(key);
+        expect(existing === undefined || existing === entry).toBe(true);
+        owners.set(key, entry);
+      }
+    }
+  });
+
   it("returns null for unknown or legacy augment specifiers", () => {
     expect(resolveCatalogEntry("not-real")).toBeNull();
     expect(resolveCatalogEntry("web-fetch")).toBeNull();
     expect(resolveCatalogEntry("memory")).toBeNull();
+    expect(resolveCatalogEntry("@acme/agentMail")).toBeNull();
+    expect(resolveCatalogEntry("customAgentMail")).toBeNull();
     expect(validAugmentSpecifiers()).not.toContain("web-fetch");
     expect(validAugmentSpecifiers()).toContain("webFetch");
+    expect(validAugmentSpecifiers()).not.toContain("agentmail");
+    expect(validAugmentSpecifiers()).toContain("agentMail");
   });
 });

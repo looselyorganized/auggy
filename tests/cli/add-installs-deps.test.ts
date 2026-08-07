@@ -20,6 +20,7 @@ mockInquirerPrompts(() => answers);
 
 const { runAdd, buildAddChoices } = await import("../../src/cli/commands/add");
 const { AUGMENT_CATALOG } = await import("../../src/cli/augment-catalog");
+const { acquireAgentEnvMutationLock } = await import("../../src/cli/env-mutation-lock");
 
 let auggyDir: string;
 let agentParent: string;
@@ -150,6 +151,29 @@ describe("runAdd mutates per-agent package.json", () => {
 });
 
 describe("runAdd no-op cases", () => {
+  test("fails before any mutation when AgentMail setup holds the shared env lease", async () => {
+    const dir = setupAgent("locked-add");
+    const originalConfig = readFileSync(join(dir, "agent.yaml"), "utf-8");
+    const originalEnv = readFileSync(join(dir, ".env"), "utf-8");
+    const lease = acquireAgentEnvMutationLock(dir);
+    try {
+      await expect(
+        runAdd("locked-add", {
+          config: join(dir, "agent.yaml"),
+          auggyDir,
+          augment: "visitorAuth",
+          bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+        }),
+      ).rejects.toThrow(/being updated by another Auggy operation/);
+    } finally {
+      lease.release();
+    }
+
+    expect(readFileSync(join(dir, "agent.yaml"), "utf-8")).toBe(originalConfig);
+    expect(readFileSync(join(dir, ".env"), "utf-8")).toBe(originalEnv);
+    expect(existsSync(join(dir, "augments", "visitorAuth"))).toBe(false);
+  });
+
   test("augment picker groups stable choices before preview choices with compact labels", () => {
     const choices = buildAddChoices(AUGMENT_CATALOG);
     const labels = choices.flatMap((choice) => ("value" in choice ? [choice.name] : []));
@@ -586,7 +610,7 @@ describe("runAdd no-op cases", () => {
     expect(output).toContain("TELEGRAM_CREATOR_USER_IDS=");
   });
 
-  test("adding agentMail explains email setup", async () => {
+  test("adding agentMail accepts lowercase input and emits canonical identifiers", async () => {
     const dir = setupAgent("with-agent-mail");
     const originalLog = console.log;
     const logs: string[] = [];
@@ -598,7 +622,7 @@ describe("runAdd no-op cases", () => {
       await runAdd("with-agent-mail", {
         config: join(dir, "agent.yaml"),
         auggyDir,
-        augment: "agentMail",
+        augment: "agentmail",
         yes: true,
         bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
       });

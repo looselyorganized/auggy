@@ -21,6 +21,39 @@ afterEach(() => {
 });
 
 describe("upsertEnvValues", () => {
+  test("collapses duplicate keys at their first position while preserving unrelated lines", () => {
+    const root = mkdtempSync(join(tmpdir(), "auggy-env-writer-"));
+    roots.push(root);
+    const envPath = join(root, ".env");
+    writeFileSync(
+      envPath,
+      [
+        "# existing comment",
+        "AGENTMAIL_API_KEY=am_stale_first",
+        "UNRELATED=preserved",
+        "AGENTMAIL_API_KEY=am_stale_last",
+        "",
+      ].join("\n"),
+    );
+
+    upsertEnvValues(envPath, {
+      AGENTMAIL_API_KEY: "am_current",
+      AGENTMAIL_INBOX_ID: "inb_current",
+    });
+
+    const written = readFileSync(envPath, "utf-8");
+    expect(written).toBe(
+      [
+        "# existing comment",
+        "AGENTMAIL_API_KEY=am_current",
+        "UNRELATED=preserved",
+        "AGENTMAIL_INBOX_ID=inb_current",
+        "",
+      ].join("\n"),
+    );
+    expect(written.match(/^AGENTMAIL_API_KEY=/gm)).toHaveLength(1);
+  });
+
   test("repairs an existing permissive env file to owner-only mode", () => {
     const root = mkdtempSync(join(tmpdir(), "auggy-env-writer-"));
     roots.push(root);

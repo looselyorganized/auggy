@@ -47,7 +47,7 @@ Read the matching reference before answering in depth:
 | Creator asks about | Read |
 | --- | --- |
 | What Auggy is, why it matters, kernel and augment model | `skills/auggy/references/mental-model.md` |
-| Install, create/init, provider keys, run, doctor, deploy | `skills/auggy/references/cli-workflows.md` |
+| Install, create/init, provider keys, AgentMail setup, run, doctor, deploy | `skills/auggy/references/cli-workflows.md` |
 | Custom augments, `httpRoutes`, `defineRoute`, `defineTool` | `skills/auggy/references/routes-tools-augments.md` |
 | Generated browser/server route clients | `skills/auggy/references/generated-clients.md` |
 | Creator/public/agent trust, visitor auth, Supabase/Clerk/custom app auth, memory placement | `skills/auggy/references/authz-memory-trust.md` |
@@ -166,6 +166,33 @@ trust, learned behavior, or app auth.
 Existing projects can refresh this general guide with `auggy skill add auggy`.
 The augment-specific memory teaching can be refreshed with
 `auggy skill add layeredMemory` after that augment is installed.
+
+### "I want the agent to use email"
+
+Inspect live inventory first. If `agentMail` is not installed, use the canonical
+add command, then run its dedicated setup command:
+
+```bash
+auggy augment add agentMail
+auggy agentmail setup agentMail
+```
+
+The interactive setup distinguishes a new AgentMail account, an existing
+account that should create an inbox, an existing inbox with a scoped runtime
+key, and complete credentials already present in `.env`. Never ask the creator
+to paste an AgentMail key into chat; let the CLI's masked prompt read it.
+
+If both `agentMail` and `visitorAuth` are installed, they deliberately share
+one inbox and scoped runtime key. Configure `agentMail` first, then reuse those
+credentials without provisioning another inbox:
+
+```bash
+auggy agentmail setup agentMail
+auggy agentmail setup visitorAuth --mode env
+```
+
+Read `skills/auggy/references/cli-workflows.md` before explaining setup modes,
+automation, retries, or shared credentials in more detail.
 
 ### "I want a new route, API call, or app-specific tool"
 
