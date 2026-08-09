@@ -171,6 +171,32 @@ These should be ordered by adopter signal after GA.
   model.
 - Research augment and other higher-level integration augments.
 
+### Tenant-Sharded Agent Fleets — after Horizontal Replica Readiness
+
+Goal: let platforms provision one isolated logical Auggy per tenant, store, or
+other trust boundary, while allowing each logical agent to run on one or more
+replicas.
+
+- Add a fleet registry with immutable agent IDs, tenant bindings, deployment
+  status, version, and replica posture.
+- Add authenticated APIs and CLI workflows to provision, configure, suspend,
+  upgrade, and retire fleet members.
+- Add deterministic tenant-to-agent routing metadata without sharing state or
+  credentials across tenant boundaries.
+- Add a reference fleet-management UI for aggregate health, readiness, spend,
+  incidents, rollout state, and links into each agent's existing console.
+- Preserve the current one-agent console as the detailed operational surface;
+  the fleet UI manages and observes the collection rather than merging agents
+  into one runtime.
+- Support staged rollouts, drains, and compatibility checks across a fleet.
+
+This is tenant sharding, not agent-to-agent task delegation. Horizontal
+replication remains an inner capability of each shard: a lightly used store may
+run one replica, while a busy store may run several. Auggy should provide the
+open control-plane contracts, CLI, and reference UI; deployers remain
+responsible for hosted infrastructure such as load balancers, TLS, PostgreSQL,
+autoscaling, backups, billing, and tenant identity.
+
 ---
 
 ## 2.0+ — Directional Vision
