@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0-rc.7] - 2026-08-09
+
+This seventh public candidate makes AgentMail setup safe to retry across
+provider provisioning, CLI processes, and Console credential updates.
+
 ### Fixed
 
 - **Idempotent AgentMail setup.** Existing-account provisioning now derives a
@@ -16,6 +21,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   existing-inbox, and environment modes; refuses ambiguous shared credentials;
   stores only the scoped key it provisions; and reuses operator-supplied
   manual or environment credentials unchanged.
+
+### Security
+
+- **Least-privilege credential handoff.** Setup never persists an AgentMail
+  account key, creates an inbox-scoped runtime key, redacts provider credential
+  material from failures, and never silently rotates an existing runtime key.
+- **Serialized configuration commits.** CLI and Console environment mutations
+  use descriptor-anchored locking and compare-and-swap checks so concurrent or
+  interrupted setup cannot silently overwrite a newer local configuration.
+- **Audited build-tool transitive dependencies.** Workspace overrides now pin
+  `js-yaml` and `nanoid` to advisory-fixed releases; the root audit is empty.
+
+### Process
+
+- **Provider-contract release gates.** Packed-release smoke now exercises the
+  AgentMail CLI setup contract, and a protected real-provider canary verifies
+  stable inbox idempotency plus disposable scoped-key reconciliation before a
+  provisioning release is tagged.
 
 ## [0.5.0-rc.6] - 2026-08-05
 
@@ -623,7 +646,8 @@ Initial tagged release. The kernel and built-in augments described in `docs/02-a
 - **CLI** — `aug1 create / add / dev / start / stop / restart / status` with launchd installation on macOS and PID-manifest tracking under `~/.auggy/`.
 - **Reference documentation** — `docs/01-philosophy.md` through `docs/11-skills.md`.
 
-[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.6...HEAD
+[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.7...HEAD
+[0.5.0-rc.7]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.6...v0.5.0-rc.7
 [0.5.0-rc.6]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.5...v0.5.0-rc.6
 [0.5.0-rc.5]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.4...v0.5.0-rc.5
 [0.5.0-rc.4]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.3...v0.5.0-rc.4
