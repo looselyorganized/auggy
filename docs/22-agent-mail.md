@@ -728,6 +728,143 @@ The goal recipes above are the copyable configurations. Start with one recipe
 and add only fields whose behavior you need; combining every optional block at
 once makes permission changes and security consequences harder to review.
 
+### Complete configuration reference
+
+Every YAML change below takes effect after an agent restart. The **New key**
+column calls out the smaller set of changes that also require a replacement
+inbox-scoped AgentMail key. Save the intended YAML before provisioning a new
+key so setup can calculate its least-privilege permissions.
+
+#### Top-level `config`
+
+| Field | Type and allowed values | Default or requirement | New key |
+| --- | --- | --- | --- |
+| `apiKey` | Non-empty string; normally `${AGENTMAIL_API_KEY}` | Required inbox-scoped runtime key | The changed value is the replacement key; restart after changing it |
+| `inboxId` | Non-empty string; normally `${AGENTMAIL_INBOX_ID}` | Required | Yes when moving to another inbox; the key must authorize that inbox |
+| `emailAddress` | Well-formed email address; normally `${AGENTMAIL_INBOX_EMAIL}` | Optional in the factory, but setup records the provider-verified canonical address | No permission change; rerun setup rather than editing it when moving inboxes |
+| `addressVisibility` | `creator` or `public` | `creator` | No |
+| `apiBaseUrl` | AgentMail API URL string | AgentMail's production API; override only for a test or sandbox provider | No scope change, but the credentials must be valid for the selected provider |
+| `allowInsecureHttpWithCredentials` | Boolean | `false`; non-loopback plaintext also requires `NODE_ENV=development` | No |
+| `dbPath` | Non-empty SQLite path | `./agent-mail.db` for one local instance; deployment and multi-instance resolution may namespace it | No; stop the agent and migrate durable state before changing it |
+| `outbound` | Object; fields are listed below | `{}` with the strict outbound defaults below | No |
+| `inbound` | Object; fields are listed below | Omitted is equivalent to `mode: none` | Yes only when moving from `none` to an enabled mode, or when a classification adds a provider permission |
+
+`agentDir` also exists on the programmatic factory type, but the CLI resolver
+owns and supplies it. Do not put `agentDir` in `augment.yaml`.
+
+#### `outbound`
+
+| Field | Type and allowed values | Default or requirement | New key |
+| --- | --- | --- | --- |
+| `allowedTrustLevels` | Array containing `creator`, `agent`, or `public` | `[creator]`; creator-originated calls remain permitted | No |
+| `allowedRecipients` | Array of exact addresses or exact-domain patterns such as `*@example.com` | Omitted allows any well-formed recipient; matching is case-insensitive and does not include subdomains | No |
+| `maxRecipients` | Positive safe integer; the provider hard ceiling is always 50 | `10`; values above 50 are effectively capped at 50 | No |
+| `bodyMaxBytes` | Safe integer from 1 through 1,048,576; counts text and HTML together | `102400` (100 KiB) | No |
+| `allowHtml` | Boolean | `false` | No |
+| `subjectPrefix` | Non-empty string | `[Auggy] `; the final normalized subject may contain at most 1,000 characters | No |
+| `rateLimit` | Object; fields are listed below | Enabled with the defaults below | No |
+| `humanReview` | Object; fields are listed below | Public-trust outbound actions require review | No |
+
+`public` in `outbound.allowedTrustLevels` is an authorization class for a
+public or anonymous peer. It does not publish the inbox address or open inbound
+sender admission.
+
+#### `outbound.rateLimit` and `outbound.humanReview`
+
+| Field | Type and allowed values | Default or requirement | New key |
+| --- | --- | --- | --- |
+| `rateLimit.enabled` | Boolean | `true` | No |
+| `rateLimit.globalMaxPerHour` | Non-negative number under YAML validation | `10`; automatic inbound replies impose the stricter effective requirement of a safe integer from 1 through 100 | No |
+| `rateLimit.perRecipientCooldownMs` | Non-negative number | `300000` (5 minutes) | No |
+| `rateLimit.dedupWindowMs` | Non-negative number | `300000` (5 minutes); `0` disables subject-hash deduplication | No |
+| `humanReview.requiredForTrustLevels` | Array containing `creator`, `agent`, or `public`; an empty array explicitly disables this review gate | `[public]` | No |
+| `humanReview.expiresAfterMs` | Safe integer from 1 through 2,592,000,000 | `86400000` (24 hours) | No |
+
+Outbound rate fields intentionally have no general parser-enforced upper
+bounds beyond the automatic-reply rule above. Use finite operational values;
+do not interpret parser acceptance as a recommended capacity. Any executable
+trust level covered by `requiredForTrustLevels` requires `webTransport` with
+`adminRoute: true` so a creator can decide the review.
+
+#### `inbound` delivery and sender admission
+
+| Field | Type and allowed values | Default or requirement | New key |
+| --- | --- | --- | --- |
+| `mode` | `none`, `polling`, `websocket`, or `webhook` | Required when the block is present; omit the block to use `none` | Yes for `none` to any enabled mode (`message_read`); no between enabled modes; rotate after disabling if least privilege should remove `message_read` |
+| `allowedSenders` | 1–1,000 unique exact addresses or exact-domain patterns such as `*@example.com`; case-insensitive, no surrounding whitespace, control characters, bare `*`, partial wildcard, or subdomain expansion | Exactly one sender policy is required when inbound is enabled | No |
+| `allowAnySender` | Boolean | Omitted; `true` requires `rateLimit` and cannot coexist with `allowedSenders` (even as `false`) | No |
+| `rateLimit.globalMaxPerHour` | Safe integer from 1 through 10,000 | Both inbound rate fields are required when the block is present and the block is required with `allowAnySender: true` | No |
+| `rateLimit.perSenderMaxPerHour` | Safe integer from 1 through 1,000 and no greater than the global limit | Required with `rateLimit.globalMaxPerHour` | No |
+| `pollIntervalMs` | Safe integer from 1,000 through 86,400,000 | `60000` (60 seconds); also controls REST reconciliation for enabled live modes | No |
+| `maxPromptBytes` | Safe integer from 512 through 1,048,576 | `102400` (100 KiB) | No |
+| `maxAttempts` | Safe integer from 1 through 20 | `5` | No |
+| `websocketBaseUrl` | `ws://` or `wss://` URL without embedded credentials | AgentMail's production WebSocket origin; sandbox override only | No |
+| `classifications` | Object; fields are listed below | Ordinary received mail is processed and restricted classifications are discarded | Sometimes; see below |
+| `replies` | Object; fields are listed below | `disabled` with `mode: none`, otherwise `review` | No |
+| `webhook` | Object; fields are listed below | Required only with `mode: webhook`; rejected in other modes | No |
+| `creatorDigest` | Object; fields are listed below | Disabled | No |
+
+`allowAnySender: true` makes the inbox open to any well-formed sender at
+Auggy's local admission boundary. It does not change address visibility and it
+does not upgrade an admitted sender's trust.
+
+#### `inbound.classifications` and `inbound.replies`
+
+| Field | Type and allowed values | Default or requirement | New key |
+| --- | --- | --- | --- |
+| `classifications.received` | `process` or `discard` | `process` | No |
+| `classifications.spam` | `process` or `discard` | `discard` | Yes when changed to `process` (`label_spam_read`) |
+| `classifications.blocked` | `process` or `discard` | `discard` | Yes when changed to `process` (`label_blocked_read`) |
+| `classifications.unauthenticated` | `process` or `discard` | `discard` | No additional provider permission beyond enabled inbound |
+| `replies.mode` | `disabled`, `review`, or `automatic` | `disabled` when inbound is `none`; `review` when inbound is enabled | No |
+| `replies.allowReplyAll` | Boolean | `false`; cannot be `true` when replies are disabled | No |
+
+At least one classification must remain `process` when inbound is enabled.
+Any enabled reply mode requires durable review storage and `webTransport` with
+`adminRoute: true`. `automatic` also requires
+`outbound.rateLimit.enabled: true` and an effective
+`outbound.rateLimit.globalMaxPerHour` safe integer from 1 through 100. Sensitive
+content and a Reply-To address that differs from From still fall back to
+creator review. Reply-all remains subject to the outbound recipient allowlist
+and recipient cap.
+
+#### `inbound.webhook`
+
+| Field | Type and allowed values | Default or requirement | New key |
+| --- | --- | --- | --- |
+| `path` | String beginning with `/` | `/webhooks/agentmail` for the legacy singleton; `/webhooks/agentmail/<augment-name>` for a named multi-inbox instance | No |
+| `secretEnv` | Non-empty environment-variable name | `AGENTMAIL_WEBHOOK_SECRET` | No; update the provider callback secret and restart Auggy together |
+| `timestampToleranceSeconds` | Finite number greater than 0 and at most 300 | `300` | No |
+
+Webhook mode requires `webTransport`, a stable HTTPS deployment, and the same
+callback path and Svix secret on both sides. The secret is not required for
+outbound, polling, or WebSocket use.
+
+#### `inbound.creatorDigest`
+
+| Field | Type and allowed values | Default or requirement | New key |
+| --- | --- | --- | --- |
+| `enabled` | Boolean | `false`; cannot be enabled with `inbound.mode: none` | No |
+| `destination` | Trimmed Notify destination name, 1–128 characters, with no control characters | Required when enabled; must uniquely match a Notify destination that permits creator trust and has a positive durable quota | No |
+| `intervalMs` | Safe integer from 60,000 through 86,400,000 | `900000` (15 minutes) | No |
+| `maxItems` | Safe integer from 1 through 100 | `20` | No |
+| `maxAttempts` | Safe integer from 1 through 20 | `5` | No |
+
+The three similarly named public controls are independent:
+
+| Control | Meaning |
+| --- | --- |
+| `addressVisibility: public` | The model may tell a contextually appropriate peer the canonical inbox address |
+| `inbound.allowAnySender: true` | Any well-formed sender may reach inbound admission, subject to the required quotas |
+| Trust level `public` | The runtime identity and authorization class assigned to anonymous/public peers, including admitted email senders |
+
+None of these controls implies either of the others. In particular, sender
+allowlisting is admission policy, not authentication; admitted email remains
+`public` + `anonymous` unless another explicit runtime boundary establishes a
+different identity.
+
+### Advanced policy and runtime behavior
+
 For a deliberately open inbox, `100` globally and `5` per sender is the
 recommended starting posture. `globalMaxPerHour` accepts 1–10,000,
 `perSenderMaxPerHour` accepts 1–1,000, and the per-sender limit cannot exceed
