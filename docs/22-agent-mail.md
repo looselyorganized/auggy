@@ -694,25 +694,56 @@ augment is the stronger fit when email must live inside the agent runtime:
 If you need only occasional operator-driven mail actions, the MCP server may be
 simpler.
 
-## Provider inbox and Auggy review
+## Where to read mail and review replies
 
-AgentMail remains the source of truth for inbox messages, threads, sent history,
-and provider-native drafts. The Auggy Console intentionally does not reproduce
-that mailbox UI. Its Mail action center owns a narrower operational surface:
-Auggy's durable reply proposals, creator approvals, policy posture, quota
-evidence, and ambiguous-outcome reconciliation.
+Use the two consoles for different jobs:
 
-**Open in AgentMail** appears for the selected mounted mailbox in both the Mail
-action center and its Capabilities identity card. It opens AgentMail's official
-Console root in a new tab. AgentMail does not document a stable inbox-specific
-Console URL, so Auggy does not guess one; the selected inbox address and ID stay
-visible for identification. The link contains no API key, Auggy Console token,
-message data, or review data.
+| Surface | Use it for |
+| --- | --- |
+| AgentMail | Reading the inbox, browsing threads and sent mail, and managing drafts created in AgentMail |
+| Auggy Console → Mail | Reviewing send, reply, and forward actions proposed by the agent; checking inbound status and limits; and resolving mail actions whose outcome is uncertain |
 
-An Auggy `pending_review` record is not an AgentMail draft. Keeping the proposal
-inside Auggy preserves the exact authorization, fingerprint, quota, and
-reconciliation boundary until the creator approves or rejects it. AgentMail is
-called only after that decision.
+Auggy Console is not a second inbox. It shows only the AgentMail work that
+needs an Auggy operator decision or status check. AgentMail remains the place
+to read the complete mailbox.
+
+The **Mail** navigation item appears only when the currently running agent has
+the `agentMail` augment mounted and reports a supported Mail view. It does not
+appear merely because:
+
+- `visitorAuth` uses AgentMail to send magic links;
+- `notify` has an outbound AgentMail destination;
+- an AgentMail inbox exists at the provider; or
+- `agentMail` was added to the project but the running agent has not been
+  restarted.
+
+If `agentMail` is mounted but **Mail** is missing, confirm `webTransport` is
+serving the Console with its admin route enabled, restart the agent, reload the
+dashboard, and confirm the AgentMail capability is present. A still-missing
+item means the running runtime did not return a usable Mail view; inspect its
+startup and AgentMail status errors before relying on Console review.
+
+**Open in AgentMail** appears for the selected mailbox in Auggy's Mail view and
+on its Capabilities card. It opens AgentMail's console in a new tab so you can
+read the inbox. AgentMail does not provide Auggy with a stable link directly to
+one inbox, so use the inbox address or ID shown in Auggy to select the matching
+mailbox there. It does not sign you into AgentMail or select an inbox for you.
+The link never includes an API key, Auggy Console token, message content, or
+review content.
+
+### A reply proposal is not an AgentMail draft
+
+When an admitted email wakes the agent, the agent may propose a reply. With
+`inbound.replies.mode: review`, that proposal waits in **Auggy Console → Mail**
+until a creator approves, edits and sends, or rejects it. Nothing is sent to
+AgentMail for that proposed reply before approval.
+
+That proposal is stored by Auggy and does not appear in AgentMail's drafts.
+Likewise, a draft created in AgentMail does not become an Auggy review item.
+This separation keeps Auggy's authorization, recipient checks, rate limits,
+and approval decision attached to the exact proposed action. After approval,
+Auggy asks AgentMail to send the message; the sent message then belongs to the
+AgentMail thread and sent history.
 
 ## Configuration
 
@@ -1078,18 +1109,34 @@ must be explicitly reconciled and cannot be silently replayed.
 
 ## Model-facing tools
 
-| Tool | Important inputs | Result statuses |
-| --- | --- | --- |
-| `send_message` | `to[]`, `subject`, `text`, optional `html`, `labels` | `sent`, `pending_review`, `rate_limited`, `failed` |
-| `reply_to_message` | `messageId`, `text`, optional `html`, `replyAll`, `labels` | same |
-| `forward_message` | `messageId`, `to[]`, optional `text`, `html`, `subject`, `labels` | same |
+The tools have intentionally different scopes:
 
-`reply_to_message` and `forward_message` accept only a message ID delivered to
-the agent in the current inbound turn. This prevents a prompt from guessing or
-supplying an arbitrary provider message ID. The turn-scoped record also gives a
-reply enough trusted envelope metadata to honor Reply-To, remove the verified
-inbox from reply-all, and re-run recipient policy against the exact list sent
-to AgentMail.
+| Tool | What the agent can do | Where it can be used |
+| --- | --- | --- |
+| `send_message` | Start a new email to allowed recipients with a subject and plain-text body; HTML and labels are optional when policy permits them | Any turn whose trust level and outbound policy allow sending |
+| `reply_to_message` | Reply in the thread of the email that started this turn; `replyAll` is optional and separately controlled | Only the turn triggered by that incoming email |
+| `forward_message` | Forward the email that started this turn to allowed recipients, optionally with an introduction or subject override | Only the turn triggered by that incoming email |
+
+When an incoming email starts a turn, Auggy gives that turn an internal
+reference to that one email. The model supplies that reference as `messageId`
+when it calls `reply_to_message` or `forward_message`; users do not need to find,
+copy, or type it. Auggy rejects references to a different email, references
+copied into a later turn, and IDs merely written in a prompt. In practical
+terms, the agent can reply to or forward the email it is handling now, but it
+cannot use these tools to browse the inbox, fetch an older thread, or act on an
+arbitrary message.
+
+For a reply, Auggy uses the trusted sender and Reply-To information captured
+with that incoming email. Reply-all also removes the agent's own verified inbox
+address and must be enabled by policy. Reply mode does not authorize forwarding:
+the operator's normal outbound trust, recipient, rate, and review policy applies.
+Inbound email runs as public trust while outbound defaults to creator-only, so
+forwarding from an inbound turn is blocked by default until the operator
+explicitly authorizes public outbound actions.
+
+All three tools return `sent`, `pending_review`, `rate_limited`, or `failed`.
+`pending_review` means the proposed action is waiting in **Auggy Console →
+Mail**; it is not an AgentMail draft.
 
 ## Outbound guards and human review
 
@@ -1216,7 +1263,8 @@ restart to adjust inbound limits.
 | Inbound setup/runtime returns 403 | Rotate or replace the scoped key with `message_read`; processing spam/blocked also needs its matching label-read permission |
 | Webhook mode says `webTransport` is required | Mount `webTransport` so the verified route can be served |
 | Human review says the admin route is required | Enable `webTransport.adminRoute` or change review/allowed trust levels |
-| A reply says the message was not delivered this turn | Reply only from the turn triggered by that inbound message |
+| **Mail** is missing from Console navigation | The running agent must mount `agentMail` and report a supported Mail view. `visitorAuth`, a Notify destination, or a provider inbox alone does not add it. Restart after installing `agentMail`, reload Console, and inspect startup or AgentMail status errors if it remains absent. |
+| Reply or forward is rejected as unavailable in this turn | The agent tried to act on an email other than the one that started the current turn, or tried again from a later turn. Reply or forward while handling the triggering email; use `send_message` for a separate follow-up. |
 | Inbound attention is at capacity | Resolve or dismiss creator-attention items; the exact message remains pending without consuming delivery attempts and resumes after capacity is available |
 | Creator digest says outcome unknown | Do not retry or dismiss it; reconcile the exact Notify incident after independently verifying provider delivery |
 | Creator digest attempts are exhausted | Inspect the destination, then authorize one evidence-bound retry or dismiss only the failed digest generation |
