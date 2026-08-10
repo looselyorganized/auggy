@@ -61,6 +61,21 @@ if (setup.output.includes("missing required argument")) {
   throw new Error("packed AgentMail setup still requires an explicit target");
 }
 
+const addVisitorAuth = await runCli(["augment", "add", "visitorAuth", "--skip-install", "--yes"]);
+if (addVisitorAuth.exitCode !== 0) {
+  throw new Error(`packed CLI could not add visitorAuth:\n${addVisitorAuth.output}`);
+}
+const sharedAgentYaml = readFileSync(join(consumerDir, "agent.yaml"), "utf8");
+const visitorAuthYaml = join(consumerDir, "augments", "visitorAuth", "augment.yaml");
+if (
+  !sharedAgentYaml.includes("  - agentMail") ||
+  !sharedAgentYaml.includes("  - visitorAuth") ||
+  !existsSync(visitorAuthYaml) ||
+  !readFileSync(visitorAuthYaml, "utf8").startsWith("type: visitorAuth")
+) {
+  throw new Error("packed CLI did not install both canonical shared AgentMail consumers");
+}
+
 const provider = await startStrictProvider();
 try {
   const configured = await runCli(
@@ -84,6 +99,37 @@ try {
   }
   if (configured.output.includes(ACCOUNT_KEY) || configured.output.includes(RUNTIME_KEY)) {
     throw new Error("packed AgentMail setup printed a provisioning credential");
+  }
+
+  const callsAfterProvisioning = {
+    inboxPosts: provider.state.inboxPosts,
+    inboxResources: provider.state.inboxResources,
+    keyPosts: provider.state.keyPosts,
+  };
+  const configuredVisitorAuth = await runCli([
+    "agentmail",
+    "setup",
+    "visitorAuth",
+    "--mode",
+    "env",
+  ]);
+  if (configuredVisitorAuth.exitCode !== 0) {
+    throw new Error(
+      `packed shared visitorAuth credential reuse failed:\n${configuredVisitorAuth.output}`,
+    );
+  }
+  if (
+    configuredVisitorAuth.output.includes(ACCOUNT_KEY) ||
+    configuredVisitorAuth.output.includes(RUNTIME_KEY)
+  ) {
+    throw new Error("packed shared visitorAuth setup printed a provisioning credential");
+  }
+  if (
+    provider.state.inboxPosts !== callsAfterProvisioning.inboxPosts ||
+    provider.state.inboxResources !== callsAfterProvisioning.inboxResources ||
+    provider.state.keyPosts !== callsAfterProvisioning.keyPosts
+  ) {
+    throw new Error("packed visitorAuth env setup made an unexpected provider mutation");
   }
 } finally {
   await provider.close();
@@ -112,6 +158,20 @@ for (const expected of [
 }
 if (configuredEnv.includes(ACCOUNT_KEY) || configuredEnv.includes("AGENTMAIL_ACCOUNT_API_KEY")) {
   throw new Error("packed AgentMail setup persisted the account-level provisioning credential");
+}
+
+const configuredVisitorAuth = readFileSync(visitorAuthYaml, "utf8");
+for (const expected of [
+  "type: visitorAuth",
+  "transport: agentmail",
+  "apiKey: ${AGENTMAIL_API_KEY}",
+  "inboxId: ${AGENTMAIL_INBOX_ID}",
+  "perHour: 1",
+  "perDay: 3",
+]) {
+  if (!configuredVisitorAuth.includes(expected)) {
+    throw new Error(`packed visitorAuth setup did not reuse shared credentials: ${expected}`);
+  }
 }
 
 const configuredAugment = readFileSync(augmentYaml, "utf8");
