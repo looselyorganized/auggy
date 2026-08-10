@@ -30,7 +30,10 @@ export type EnvLine =
   | { kind: "comment"; raw: string }
   | { kind: "blank" };
 
-const KV_LINE_RE = /^\s*([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/;
+// Bun accepts shell-compatible `export KEY=value` declarations in dotenv
+// files. Treat the prefix as syntax, not as part of the key, so every shared
+// dotenv consumer sees the same effective environment.
+const KV_LINE_RE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/;
 export const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
 export function parseEnvFile(text: string): EnvLine[] {

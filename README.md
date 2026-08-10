@@ -28,7 +28,7 @@ npm's `next` tag; pin its exact version for production-like evaluation until
 ## Quick Start
 
 ```bash
-bun add --global auggy@0.5.0-rc.5
+bun add --global auggy@0.5.0-rc.7
 auggy create my-agent
 cd my-agent
 auggy doctor
@@ -336,6 +336,20 @@ existing-inbox connection, and `.env` reuse. See the
 [`visitorAuth` operator reference](./docs/19-visitor-auth.md#agentmail-setup)
 for inputs, key scope, shared-inbox sequencing, and recovery.
 
+When the agent also needs its own mailbox, add both canonical augments in one
+interactive command:
+
+```bash
+auggy augment add agentMail visitorAuth
+```
+
+The post-add flow uses one shared setup confirmation and one provider-credential
+and provisioning flow. It configures `agentMail` first, then attaches `visitorAuth`
+to the same inbox and runtime key through environment reuse without asking for
+credentials again. The result is independent of argument or picker order.
+`--yes` deliberately skips optional post-add setup, so use the manual sequence
+in the operator references when automating installation.
+
 ## Connect External Tools With MCP
 
 ```bash
@@ -398,6 +412,11 @@ auggy agentmail setup agentMail
 
 See the [`agentMail` operator reference](./docs/22-agent-mail.md) for inbox,
 runtime-key, and inbound-policy configuration.
+
+Removing `agentMail` or `visitorAuth` never revokes AgentMail resources or
+deletes shared `AGENTMAIL_*` values automatically. Revoke an unused scoped key
+in AgentMail before removing its local values; preserve both until every
+remaining shared consumer has been checked.
 
 ## Advanced Preview: Routes And App Integration
 

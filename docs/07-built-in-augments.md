@@ -1443,6 +1443,31 @@ auggy augment setup visitorAuth
 Deploy preflight rejects console magic links on public Railway deploys unless
 the operator explicitly acknowledges that links will appear in service logs.
 
+When both canonical `agentMail` and `visitorAuth` augments are selected in one
+interactive `auggy augment add`, the CLI uses one setup confirmation and
+credential flow, configures `agentMail` first, and attaches `visitorAuth`
+through `--mode env` without asking for credentials again, regardless of
+selection order. For standalone installation or recovery, preserve the same
+boundary:
+
+```bash
+auggy augment setup agentMail
+auggy augment setup visitorAuth --mode env
+```
+
+Existing-account provisioning rejects an account key loaded from project
+dotenv files. Prefer the masked prompt or a genuinely process-scoped secret;
+controlled automation may pass `--api-key`, with the normal shell-history and
+process-inspection risks. Project dotenv files may contain only the
+inbox-scoped runtime key. A definitive provider
+`403 resource_taken` permits only proven, confirmed reuse of the exact
+Auggy-owned inbox or a bounded alternate-username flow—never arbitrary inbox
+adoption. Removing either shared consumer retains the inbox, key, and local
+`AGENTMAIL_*` values until the operator verifies that no remaining consumer
+uses them; revoke an unused scoped key manually before deleting those values.
+`AGENTMAIL_WEBHOOK_SECRET` is needed only for Svix webhook inbound mode, not
+default outbound delivery.
+
 ### Key constraint
 
 `visitorAuth.signingKey` and `webTransport.visitorTokens.signingKey` MUST be the same value. If they drift, visitor tokens minted by visitorAuth will fail webTransport's verification on the next request.

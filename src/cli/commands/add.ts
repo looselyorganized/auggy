@@ -37,6 +37,7 @@ import { ensureMcpConfig } from "../mcp-config";
 import { writeFileSafely } from "../safe-write";
 import { acquireAgentEnvMutationLock } from "../env-mutation-lock";
 import { errorLabel, infoLabel } from "../_shared/styles";
+import { isWellFormedEmail } from "../../augments/visitorAuth/email-validation";
 import { formatAgentMailSetupResult, runAgentMailSetup } from "./agentmail";
 
 export interface AddOpts {
@@ -55,12 +56,14 @@ export interface AddOpts {
   auggyDir?: string;
   /** Test seam: override process.cwd() for project-local resolution. */
   cwd?: string;
-  /** Skip preview augment confirmation prompts. */
+  /** Skip preview confirmation and optional post-add setup prompts. */
   yes?: boolean;
   /** Test seam: override whether post-install setup prompts are shown. */
   interactive?: boolean;
   /** Test seam: inject the post-install setup confirmation prompt. */
   confirmSetup?: (message: string, defaultValue: boolean) => Promise<boolean>;
+  /** Test seam: inject AgentMail setup without reaching the provider. */
+  runAgentMailSetup?: typeof runAgentMailSetup;
 }
 
 export async function runAdd(target: string | undefined, opts: AddOpts): Promise<void> {
@@ -270,7 +273,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log();
     console.log("Use AgentMail:");
     console.log("  - Run setup: auggy augment setup agentMail");
-    console.log("  - Or set AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID in .env");
+    console.log(
+      "  - Or set AGENTMAIL_API_KEY, AGENTMAIL_INBOX_ID, and AGENTMAIL_INBOX_EMAIL in .env",
+    );
     console.log("  - Configure mail policy in augments/agentMail/augment.yaml");
     console.log("  - Default mode: outbound email only, creator trust required");
     console.log("  - For simple operator alerts, notify + Agent Mail is usually simpler");
@@ -370,14 +375,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     }
   }
 
-  // Collect any new env vars needed.
-  if (envUpdate.placeholders.length > 0) {
-    console.log();
-    console.log("Add these to your .env:");
-    for (const v of envUpdate.placeholders) {
-      console.log(`  ${v}=`);
-    }
-  }
+  // Generated local values do not depend on an optional provider setup.
   if (envUpdate.generated.length > 0) {
     console.log();
     console.log("Generated local .env values:");
@@ -386,17 +384,40 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     }
   }
 
+  let setupOk = true;
+  if (installOk) {
+    setupOk = await offerSetupForAddedAugments(selected, currentAugments, configPath, opts);
+  }
+
+  // Setup can resolve placeholders written during the add. Report only values
+  // that are still unresolved after the complete post-add flow.
+  const unresolvedPlaceholders = unresolvedEnvVars(agentDir, envUpdate.placeholders);
+  if (unresolvedPlaceholders.length > 0) {
+    console.log();
+    console.log("Add these to your .env:");
+    for (const v of unresolvedPlaceholders) {
+      console.log(`  ${v}=`);
+    }
+  }
+
+  if (!installOk || !setupOk) return;
+
   console.log();
   if (opts.skipInstall && pkgUpdate) {
     console.log(`Run \`cd ${displayPath(agentDir, opts.cwd)} && bun install\`.`);
-    console.log(formatApplyInstructions(name, agentDir, opts.cwd));
-  } else if (installOk) {
-    console.log(formatApplyInstructions(name, agentDir, opts.cwd));
   }
-
-  if (installOk) {
-    await offerSetupForAddedAugments(selected, configPath, opts);
+  const agentMailInstalled =
+    agentMailAdded || currentAugments.some((augment) => augment.type === "agentMail");
+  if (agentMailInstalled && !hasAgentMailRuntimeCredentials(agentDir)) {
+    console.log(
+      `${infoLabel()} agentMail is installed, but its required credentials are unresolved.`,
+    );
+    console.log("     Before starting or restarting the agent, choose one:");
+    console.log("       - Configure it: `auggy augment setup agentMail`");
+    console.log("       - Remove it: `auggy augment remove agentMail`");
+    return;
   }
+  console.log(formatApplyInstructions(name, agentDir, opts.cwd));
 }
 
 async function confirmPreviewAugments(selected: CatalogEntry[], yes: boolean | undefined) {
@@ -432,49 +453,205 @@ function previewCaveat(entry: CatalogEntry): string {
 
 async function offerSetupForAddedAugments(
   selected: CatalogEntry[],
+  previouslyInstalled: InstalledAugment[],
   configPath: string,
   opts: AddOpts,
-): Promise<void> {
-  if (opts.yes || !(opts.interactive ?? process.stdin.isTTY)) return;
+): Promise<boolean> {
+  if (opts.yes || !(opts.interactive ?? process.stdin.isTTY)) return true;
 
-  const targets = selected
-    .map((entry) => entry.type)
-    .filter(
-      (type): type is "agentMail" | "visitorAuth" => type === "agentMail" || type === "visitorAuth",
-    );
-  for (const target of targets) {
-    const message =
-      target === "agentMail"
-        ? "Set up AgentMail inbox credentials now?"
-        : "Set up AgentMail delivery for visitorAuth magic links now?";
-    const proceed = opts.confirmSetup
-      ? await opts.confirmSetup(message, target === "agentMail")
-      : await confirm({
-          message,
-          default: target === "agentMail",
-        });
-    if (!proceed) {
-      if (target === "visitorAuth") {
-        console.log();
-        console.log(`${infoLabel()} visitorAuth will use local console delivery for magic links.`);
-        console.log("     Set up AgentMail later: `auggy augment setup visitorAuth`.");
-      }
-      continue;
-    }
+  const addedAgentMail = selected.some((entry) => entry.type === "agentMail");
+  const addedVisitorAuth = selected.some((entry) => entry.type === "visitorAuth");
+  if (!addedAgentMail && !addedVisitorAuth) return true;
 
+  const hadAgentMail = previouslyInstalled.some((entry) => entry.type === "agentMail");
+  const hadVisitorAuth = previouslyInstalled.some((entry) => entry.type === "visitorAuth");
+  const agentDir = dirname(configPath);
+  const setup = opts.runAgentMailSetup ?? runAgentMailSetup;
+
+  const ask = async (
+    message: string,
+    defaultValue: boolean,
+    cancellationRecovery: readonly string[],
+  ): Promise<boolean | null> => {
     try {
-      const result = await runAgentMailSetup(target, { config: configPath }, { cwd: opts.cwd });
+      return opts.confirmSetup
+        ? await opts.confirmSetup(message, defaultValue)
+        : await confirm({ message, default: defaultValue });
+    } catch (error) {
+      if (!isPromptCancellation(error)) throw error;
+      process.exitCode = 1;
+      console.error();
+      console.error(
+        `${errorLabel({ color: Boolean(process.stderr.isTTY) })} AgentMail post-add setup was cancelled.`,
+      );
+      for (const line of cancellationRecovery) console.error(`      ${line}`);
+      return null;
+    }
+  };
+
+  const runSetup = async (target: "agentMail" | "visitorAuth", mode?: "env"): Promise<boolean> => {
+    try {
+      const result = await setup(
+        target,
+        { config: configPath, ...(mode ? { mode } : {}) },
+        { cwd: opts.cwd },
+      );
       console.log();
-      console.log(formatAgentMailSetupResult(result));
+      console.log(formatEmbeddedAgentMailSetupResult(result));
+      return true;
     } catch (err) {
+      process.exitCode = 1;
       console.error();
       console.error(
         `${errorLabel({ color: Boolean(process.stderr.isTTY) })} AgentMail setup did not complete: ${(err as Error).message}`,
       );
       console.error(`      Local ${target} install is still applied.`);
-      console.error(`      Retry when ready: auggy augment setup ${target}`);
+      console.error(
+        `      Retry when ready: auggy augment setup ${target}${mode === "env" ? " --mode env" : ""}`,
+      );
+      console.error(
+        "      Do not restart the agent until setup succeeds or the augment is removed.",
+      );
+      return false;
     }
+  };
+
+  const explainConsoleFallback = () => {
+    console.log();
+    console.log(`${infoLabel()} visitorAuth will use local console delivery for magic links.`);
+    console.log("     Set up AgentMail later: `auggy augment setup visitorAuth`.");
+  };
+
+  // A batch containing both consumers is one shared setup operation regardless
+  // of picker/argument order: provision agentMail first, then attach
+  // visitorAuth to the resulting runtime credentials without another prompt.
+  if (addedAgentMail && addedVisitorAuth) {
+    const proceed = await ask(
+      "Set up one shared AgentMail inbox for agentMail and visitorAuth now?",
+      true,
+      [
+        "Both augments remain installed, but agentMail credentials are unresolved.",
+        "Before restarting, run:",
+        "  auggy augment setup agentMail",
+        "  auggy augment setup visitorAuth --mode env",
+        "Or remove agentMail if this agent should not use email.",
+      ],
+    );
+    if (proceed === null) return false;
+    if (!proceed) {
+      explainConsoleFallback();
+      return true;
+    }
+    if (!(await runSetup("agentMail"))) return false;
+    return runSetup("visitorAuth", "env");
   }
+
+  if (addedVisitorAuth) {
+    const proceed = await ask("Set up AgentMail delivery for visitorAuth magic links now?", false, [
+      "visitorAuth remains installed with local console delivery.",
+      "Configure production delivery later: auggy augment setup visitorAuth",
+    ]);
+    if (proceed === null) return false;
+    if (!proceed) {
+      explainConsoleFallback();
+      return true;
+    }
+
+    if (hadAgentMail) {
+      // Reuse an already-configured consumer directly. If agentMail is only
+      // installed, configure it first and then attach visitorAuth.
+      if (!hasAgentMailRuntimeCredentials(agentDir) && !(await runSetup("agentMail"))) return false;
+      return runSetup("visitorAuth", "env");
+    }
+    return runSetup("visitorAuth");
+  }
+
+  const visitorAlreadyUsesAgentMail = hadVisitorAuth && visitorAuthUsesAgentMail(agentDir);
+  const proceed = await ask(
+    visitorAlreadyUsesAgentMail
+      ? "Use visitorAuth's AgentMail inbox for agentMail too?"
+      : "Set up AgentMail inbox credentials now?",
+    true,
+    [
+      "agentMail remains installed, but its required credentials are unresolved.",
+      `Before restarting, run: auggy augment setup agentMail${visitorAlreadyUsesAgentMail ? " --mode env" : ""}`,
+      "Or remove it: auggy augment remove agentMail",
+    ],
+  );
+  if (proceed === null) return false;
+  if (!proceed) return true;
+  if (!(await runSetup("agentMail", visitorAlreadyUsesAgentMail ? "env" : undefined))) return false;
+
+  // Adding agentMail beside an existing console-only visitorAuth is a useful
+  // opportunity to share the new inbox, but remains an explicit policy change.
+  if (hadVisitorAuth && !visitorAlreadyUsesAgentMail) {
+    const attach = await ask("Use this AgentMail inbox for visitorAuth magic links too?", true, [
+      "agentMail is configured; visitorAuth remains on local console delivery.",
+      "Attach it later: auggy augment setup visitorAuth --mode env",
+    ]);
+    if (attach === null) return false;
+    if (attach) return runSetup("visitorAuth", "env");
+    explainConsoleFallback();
+  }
+  return true;
+}
+
+function formatEmbeddedAgentMailSetupResult(
+  result: Awaited<ReturnType<typeof runAgentMailSetup>>,
+): string {
+  // The standalone setup command owns its own "Run" footer. During a batch
+  // add, that footer would tell the operator to start the agent before the
+  // second shared consumer has been attached. runAdd prints one final apply
+  // block only after the entire orchestration succeeds.
+  return formatAgentMailSetupResult(result).split("\n\nRun:\n", 1)[0]!;
+}
+
+function readEnvValues(agentDir: string): Map<string, string> {
+  const envPath = join(agentDir, ".env");
+  if (!existsSync(envPath)) return new Map();
+  const values = new Map<string, string>();
+  for (const line of parseEnvFile(readFileSync(envPath, "utf-8"))) {
+    if (line.kind !== "kv" || values.has(line.key) || line.value.trim().length === 0) continue;
+    values.set(line.key, line.value);
+  }
+  return values;
+}
+
+function hasAgentMailRuntimeCredentials(agentDir: string): boolean {
+  const env = readEnvValues(agentDir);
+  const apiKey = resolvedEnvValue(env.get("AGENTMAIL_API_KEY"));
+  const inboxId = resolvedEnvValue(env.get("AGENTMAIL_INBOX_ID"));
+  const inboxEmail = resolvedEnvValue(env.get("AGENTMAIL_INBOX_EMAIL"));
+  return (
+    apiKey !== null && inboxId !== null && inboxEmail !== null && isWellFormedEmail(inboxEmail)
+  );
+}
+
+function resolvedEnvValue(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  if (!trimmed || /^\$\{[A-Z0-9_]+\}$/.test(trimmed)) return null;
+  return trimmed;
+}
+
+function unresolvedEnvVars(agentDir: string, candidates: string[]): string[] {
+  const env = readEnvValues(agentDir);
+  return candidates.filter((key) => (env.get(key)?.trim().length ?? 0) === 0);
+}
+
+function visitorAuthUsesAgentMail(agentDir: string): boolean {
+  const augmentPath = join(agentDir, "augments", "visitorAuth", "augment.yaml");
+  if (!existsSync(augmentPath)) return false;
+  const metadata = parseYaml(readFileSync(augmentPath, "utf-8"));
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
+  const config = (metadata as Record<string, unknown>).config;
+  if (!config || typeof config !== "object" || Array.isArray(config)) return false;
+  const agentMail = (config as Record<string, unknown>).agentMail;
+  if (!agentMail || typeof agentMail !== "object" || Array.isArray(agentMail)) return false;
+  return (agentMail as Record<string, unknown>).transport !== "console";
+}
+
+function isPromptCancellation(error: unknown): boolean {
+  return error instanceof Error && error.name === "ExitPromptError";
 }
 
 type AddChoice = {

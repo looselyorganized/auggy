@@ -118,6 +118,13 @@ describe("env-parse — parseEnvFile + serializeEnv", () => {
     expect(kvLines(reparsed)).toEqual({ PEM: "line-a\nline-b" });
   });
 
+  it("recognizes Bun-compatible export declarations and normalizes them on write", () => {
+    const lines = parseEnvFile('export EXPORTED_SECRET="value with spaces"\n');
+
+    expect(kvLines(lines)).toEqual({ EXPORTED_SECRET: "value with spaces" });
+    expect(serializeEnv(lines)).toBe('EXPORTED_SECRET="value with spaces"\n');
+  });
+
   it("non-kv lines (unrecognized) are preserved as comments", () => {
     const text = "not a valid line\nKEY=value\n";
     const lines = parseEnvFile(text);
@@ -174,5 +181,12 @@ describe("env-parse — runtime loader agrees with UI parser", () => {
     writeFileSync(join(dir, ".env"), 'TEST_PREEXISTING="file-value"\n');
     loadEnvFile(dir);
     expect(process.env.TEST_PREEXISTING).toBe("shell-value");
+  });
+
+  it("loads Bun-compatible export declarations", () => {
+    recordedKeys.push("TEST_EXPORTED_VALUE");
+    writeFileSync(join(dir, ".env"), "export TEST_EXPORTED_VALUE=from-file\n");
+    loadEnvFile(dir);
+    expect(process.env.TEST_EXPORTED_VALUE).toBe("from-file");
   });
 });

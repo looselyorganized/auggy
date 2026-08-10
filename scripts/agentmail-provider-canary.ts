@@ -50,7 +50,10 @@ export interface AgentMailCanaryKeyAdmin {
 export interface AgentMailCanaryDependencies {
   accountApiKey?: string;
   runId?: string;
-  provisioner?: Pick<AgentMailProvisioningClient, "createInbox" | "createInboxApiKey">;
+  provisioner?: Pick<
+    AgentMailProvisioningClient,
+    "createInbox" | "createInboxApiKey" | "listInboxes"
+  >;
   keyAdmin?: AgentMailCanaryKeyAdmin;
 }
 
@@ -107,6 +110,23 @@ export async function runAgentMailProviderCanary(
       "AgentMail returned an unexpected address for the fixed canary username.",
     );
   }
+  if (!provisioner.listInboxes) {
+    throw new AgentMailCanaryError(
+      "The AgentMail inbox ownership-list contract is unavailable; refusing to continue.",
+    );
+  }
+  const listedInboxes = await provisioner.listInboxes(accountApiKey);
+  const ownedMatches = listedInboxes.filter(
+    (inbox) =>
+      inbox.inboxId === first.inboxId &&
+      inbox.email === CANARY_EMAIL &&
+      inbox.clientId === CANARY_CLIENT_ID,
+  );
+  if (ownedMatches.length !== 1) {
+    throw new AgentMailCanaryError(
+      "The AgentMail account inventory did not contain exactly one matching fixed canary inbox/client_id.",
+    );
+  }
 
   await reconcileCanaryKeys(keyAdmin, first.inboxId);
 
@@ -141,6 +161,7 @@ export async function runAgentMailProviderCanary(
   if (createError !== undefined) throw createError;
 
   console.log("AgentMail provider canary passed: stable client_id reused one inbox.");
+  console.log("The read-only account inventory proved ownership of the fixed canary inbox.");
   console.log("The disposable scoped-key contract passed and reserved canary keys were removed.");
   console.log("No mail was sent and no scoped runtime key was retained.");
 }

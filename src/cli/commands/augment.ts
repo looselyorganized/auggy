@@ -72,6 +72,7 @@ export interface RemoveAugmentResult {
   name: string;
   type: string;
   skillRemoved: string | null;
+  warnings: string[];
 }
 
 export interface AugmentSetupOptions extends AgentMailSetupOptions {
@@ -127,7 +128,7 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
     .option("--agent <name>", "agent project name when running from a parent directory")
     .option("--config <path>", "path to agent.yaml")
     .option("--skip-install", "mutate package.json but don't run bun install")
-    .option("--yes", "skip preview augment confirmation prompts")
+    .option("--yes", "skip preview confirmations and optional post-add setup prompts")
     .action(
       async (
         augments: string[],
@@ -211,6 +212,7 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
           `Removed augment "${result.name}" (${result.type}) from ${displayPath(result.configPath)}.`,
         );
         if (result.skillRemoved) console.log(`Removed skill ${result.skillRemoved}.`);
+        for (const warning of result.warnings) console.warn(`Warning: ${warning}`);
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
         exit(1);
@@ -474,7 +476,29 @@ export function removeAugment(opts: RemoveAugmentOptions): RemoveAugmentResult {
 
   const skillRemoved = removeSkillForAugment(agentDir, removedName, removedType);
   removeAugmentFolder(agentDir, removedName, removedType);
-  return { configPath, name: removedName, type: removedType, skillRemoved };
+  const warnings = agentMailRemovalWarnings(removedType, augments, index);
+  return { configPath, name: removedName, type: removedType, skillRemoved, warnings };
+}
+
+function agentMailRemovalWarnings(
+  removedType: string,
+  augments: readonly AugmentRecord[],
+  removedIndex: number,
+): string[] {
+  if (removedType !== "agentMail" && removedType !== "visitorAuth") return [];
+
+  const remainingSharedConsumer = augments.some(
+    (augment, index) =>
+      index !== removedIndex && (augment.type === "agentMail" || augment.type === "visitorAuth"),
+  );
+  if (remainingSharedConsumer) {
+    return [
+      "AGENTMAIL_* values and the remote AgentMail inbox/key were retained because another shared mail consumer is still installed.",
+    ];
+  }
+  return [
+    "Auggy did not remove AGENTMAIL_* values or revoke the remote AgentMail inbox/key. Other configuration may still reference them; if nothing does, revoke the scoped key in AgentMail before removing the local values.",
+  ];
 }
 
 function readAgentYaml(configPath: string): Record<string, unknown> {

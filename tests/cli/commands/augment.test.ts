@@ -137,6 +137,36 @@ describe("auggy augment command", () => {
     });
   });
 
+  test("remove prints lifecycle warnings returned by the remover", async () => {
+    const warnings: string[] = [];
+    const logs: string[] = [];
+    const originalWarn = console.warn;
+    const originalLog = console.log;
+    console.warn = (message: unknown) => warnings.push(String(message));
+    console.log = (message: unknown) => logs.push(String(message));
+
+    try {
+      const cmd = augmentCommand({
+        removeAugment: () => ({
+          configPath: "/tmp/agent.yaml",
+          name: "agentMail",
+          type: "agentMail",
+          skillRemoved: null,
+          warnings: ["revoke the remote scoped key before deleting local values"],
+        }),
+      });
+      await cmd.parseAsync(["remove", "agentMail"], { from: "user" });
+    } finally {
+      console.warn = originalWarn;
+      console.log = originalLog;
+    }
+
+    expect(logs.join("\n")).toContain('Removed augment "agentMail"');
+    expect(warnings).toEqual([
+      "Warning: revoke the remote scoped key before deleting local values",
+    ]);
+  });
+
   test("create scaffolds, registers, and optionally creates a runtime skill", async () => {
     const root = mkdtempSync(join(tmpdir(), "augment-create-command-"));
     writeFileSync(
@@ -484,12 +514,46 @@ describe("listAugments and removeAugment", () => {
         type: "visitorAuth",
         skillRemoved: join("skills", "visitorAuth"),
       });
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]).toContain("did not remove AGENTMAIL_*");
       expect(existsSync(join(agentDir, "skills", "visitorAuth"))).toBe(false);
       expect(existsSync(join(agentDir, "augments", "visitorAuth"))).toBe(false);
       const parsed = parseYaml(readFileSync(join(agentDir, "agent.yaml"), "utf-8")) as {
         augments: string[];
       };
       expect(parsed.augments).toEqual(["webTransport"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("retains shared AgentMail credentials when another canonical consumer remains", () => {
+    const root = mkdtempSync(join(tmpdir(), "augment-remove-shared-mail-"));
+    try {
+      const auggyDir = join(root, "auggy");
+      const agentDir = seedAgentForTest("zip", {
+        auggyDir,
+        yaml: [
+          "id: aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
+          "name: zip",
+          "engine:",
+          "  provider: anthropic",
+          "  model: claude-sonnet-4-6",
+          "augments:",
+          "  - agentMail",
+          "  - visitorAuth",
+          "",
+        ].join("\n"),
+      });
+      for (const type of ["agentMail", "visitorAuth"]) {
+        mkdirSync(join(agentDir, "augments", type), { recursive: true });
+        writeFileSync(join(agentDir, "augments", type, "augment.yaml"), `type: ${type}\n`);
+      }
+
+      const result = removeAugment({ agentName: "zip", augment: "visitorAuth", auggyDir });
+
+      expect(result.warnings).toHaveLength(1);
+      expect(result.warnings[0]).toContain("another shared mail consumer");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

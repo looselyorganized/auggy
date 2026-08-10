@@ -183,13 +183,30 @@ key, and complete credentials already present in `.env`. Never ask the creator
 to paste an AgentMail key into chat; let the CLI's masked prompt read it.
 
 If both `agentMail` and `visitorAuth` are installed, they deliberately share
-one inbox and scoped runtime key. Configure `agentMail` first, then reuse those
-credentials without provisioning another inbox:
+one inbox and scoped runtime key. When both are new, one interactive add uses
+one shared setup confirmation and credential flow regardless of selection
+order:
+
+```bash
+auggy augment add agentMail visitorAuth
+```
+
+For standalone adds, non-interactive or `--yes` installs, automation, or
+recovery, configure `agentMail` first and then reuse those credentials without
+provisioning another inbox:
 
 ```bash
 auggy agentmail setup agentMail
 auggy agentmail setup visitorAuth --mode env
 ```
+
+Never store the provisioning-only `AGENTMAIL_ACCOUNT_API_KEY` in a project
+dotenv file. A provider `403 resource_taken` permits only confirmed reuse of
+an inbox proven by its exact address and Auggy identity, or a bounded alternate
+username flow—not arbitrary inbox adoption. Removing either consumer preserves
+the shared local credentials and provider resources; revoke an unused scoped
+key in AgentMail before deleting local values. `AGENTMAIL_WEBHOOK_SECRET` is
+needed only for Svix webhook inbound mode.
 
 Read `skills/auggy/references/cli-workflows.md` before explaining setup modes,
 automation, retries, or shared credentials in more detail.
