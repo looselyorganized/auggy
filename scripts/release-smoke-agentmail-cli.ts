@@ -217,7 +217,7 @@ for (const expected of [
   "apiKey: ${AGENTMAIL_API_KEY}",
   "inboxId: ${AGENTMAIL_INBOX_ID}",
   "emailAddress: ${AGENTMAIL_INBOX_EMAIL}",
-  "addressVisibility: public",
+  "addressVisibility: creator",
 ]) {
   if (!configuredAugment.includes(expected)) {
     throw new Error(`packed AgentMail setup did not commit canonical augment config: ${expected}`);
