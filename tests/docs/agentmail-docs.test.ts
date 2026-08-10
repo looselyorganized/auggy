@@ -14,6 +14,7 @@ import {
   AGENTMAIL_MIN_POLL_INTERVAL_MS,
   AGENTMAIL_MIN_PROMPT_BYTES,
   resolveAgentMailInboundReplies,
+  validateAgentMailInboundConfig,
 } from "../../src/augments/agentMail/inbound-policy";
 import {
   AGENTMAIL_CREATOR_DIGEST_DEFAULT_INTERVAL_MS,
@@ -25,6 +26,12 @@ import {
   AGENTMAIL_CREATOR_DIGEST_MIN_INTERVAL_MS,
   resolveAgentMailCreatorDigestConfig,
 } from "../../src/augments/agentMail/creator-digest-policy";
+import { normalizeSubject, validateOutbound } from "../../src/augments/agentMail/outbound";
+import {
+  checkRateLimit,
+  createRateLimitState,
+  recordSend,
+} from "../../src/augments/agentMail/rate-limit";
 import type { AgentMailProvisioningClient } from "../../src/cli/agentmail-provisioning";
 import { formatAgentMailSetupResult, runAgentMailSetup } from "../../src/cli/commands/agentmail";
 import { parseConfig } from "../../src/cli/config-parser";
@@ -252,6 +259,7 @@ function writeRecipeProject(
   agentMailYaml: string,
   companions: readonly Companion[],
   companionYaml: Readonly<Record<Companion, string>>,
+  options: { runtimeCredentials?: boolean } = {},
 ): string {
   const mounts = ["agentMail", ...companions];
   writeFileSync(
@@ -269,12 +277,17 @@ function writeRecipeProject(
       "",
     ].join("\n"),
   );
+  const runtimeCredentials = options.runtimeCredentials ?? true;
   writeFileSync(
     join(root, ".env"),
     [
-      "AGENTMAIL_API_KEY=am_docs_contract_runtime",
-      `AGENTMAIL_INBOX_ID=${INBOX_ID}`,
-      `AGENTMAIL_INBOX_EMAIL=${INBOX_EMAIL}`,
+      ...(runtimeCredentials
+        ? [
+            "AGENTMAIL_API_KEY=am_docs_contract_runtime",
+            `AGENTMAIL_INBOX_ID=${INBOX_ID}`,
+            `AGENTMAIL_INBOX_EMAIL=${INBOX_EMAIL}`,
+          ]
+        : []),
       "AGENTMAIL_WEBHOOK_SECRET=whsec_docs_contract_secret",
       "AUGGY_PUBLIC_URL=https://agent.example.test",
       `AUGGY_AGENT_ID=${AGENT_ID}`,
@@ -372,7 +385,7 @@ const INBOUND_REFERENCE_ROWS = {
   mode: "mode",
   allowedSenders: "allowedSenders",
   allowAnySender: "allowAnySender",
-  rateLimit: "rateLimit.globalMaxPerHour",
+  rateLimit: "rateLimit",
   classifications: "classifications",
   replies: "replies",
   creatorDigest: "creatorDigest",
@@ -441,7 +454,7 @@ describe("AgentMail operator guide contracts", () => {
     }
   });
 
-  test("publishes exactly eight independently valid AgentMail recipes", async () => {
+  test("publishes exactly eight config-valid AgentMail recipes with expected key plans", async () => {
     const markedAgentMailBlocks = fencedYaml(source).filter((yaml) =>
       yaml.startsWith("# augments/agentMail/augment.yaml\n"),
     );
@@ -479,22 +492,124 @@ describe("AgentMail operator guide contracts", () => {
           expect(setup.requiredPermissions, recipe.heading).toEqual([...recipe.permissions]);
 
           const formatted = formatAgentMailSetupResult(setup);
+          expect(formatted).toContain("AgentMail inbox configured:");
+          expect(formatted).toContain("Setup did not change the existing runtime key");
           if (setup.requiredPermissions?.includes("message_read")) {
             expect(formatted).toContain(
-              "AgentMail is ready for outbound email and inbound processing.",
+              "AgentMail is configured for outbound email and inbound processing.",
+            );
+            expect(formatted).toContain(
+              "Rely on incoming processing only after you confirm those permissions",
             );
             expect(formatted).not.toContain("won't read or act on it by default");
           } else {
             expect(formatted).toContain(
-              "AgentMail is ready for outbound email, including visitorAuth magic links.",
+              "AgentMail is configured for outbound email, including visitorAuth magic links.",
             );
             expect(formatted).toContain("won't read or act on it by default");
           }
+          expect(formatted).not.toContain("AgentMail is ready");
         } finally {
           rmSync(root, { recursive: true, force: true });
         }
       }
     });
+  });
+
+  test("runs the documented fresh agentMail then visitorAuth shared-credential sequence", async () => {
+    const section = markdownSection(
+      source,
+      "Send `visitorAuth` magic links through the shared inbox",
+    );
+    const agentMailSetup = section.indexOf("auggy agentmail setup agentMail");
+    const visitorAuthSetup = section.indexOf("auggy agentmail setup visitorAuth --mode env");
+    expect(agentMailSetup).toBeGreaterThan(0);
+    expect(visitorAuthSetup).toBeGreaterThan(agentMailSetup);
+
+    const visitorAuthYaml = yamlForPath(section, "augments/visitorAuth/augment.yaml");
+    const documentedVisitorAuth = parseYaml(visitorAuthYaml) as {
+      config: { agentMail: Record<string, unknown> };
+    };
+    expect(documentedVisitorAuth.config.agentMail).toEqual({
+      transport: "console",
+      subjectPrefix: "[Verify] ",
+    });
+
+    const root = mkdtempSync(join(tmpdir(), "auggy-agentmail-docs-shared-fresh-"));
+    try {
+      const configPath = writeRecipeProject(
+        root,
+        yamlForPath(section, "augments/agentMail/augment.yaml"),
+        ["visitorAuth", "webTransport"],
+        companionYaml,
+        { runtimeCredentials: false },
+      );
+      const visitorAuthPath = join(root, "augments", "visitorAuth", "augment.yaml");
+
+      await withIsolatedAgentMailEnv(async () => {
+        const minted = await runAgentMailSetup(
+          "agentMail",
+          {
+            config: configPath,
+            mode: "existing",
+            apiKey: "am_docs_account",
+            username: "docs-contract",
+            displayName: "Docs Contract",
+          },
+          {
+            interactive: false,
+            provisioner: {
+              signUp: async () => {
+                throw new Error("not used");
+              },
+              verify: async () => {
+                throw new Error("not used");
+              },
+              createInbox: async () => ({ inboxId: INBOX_ID, email: INBOX_EMAIL }),
+              listInboxes: async () => [],
+              createInboxApiKey: async (input) => {
+                expect(input.permissions).toEqual({ inbox_read: true, message_send: true });
+                return { apiKeyId: "key_docs_contract", apiKey: "am_docs_contract_runtime" };
+              },
+              getInbox: async () => ({ inboxId: INBOX_ID, email: INBOX_EMAIL }),
+            },
+          },
+        );
+        expect(minted.mode).toBe("existing");
+        expect(minted.runtimeKeyId).toBe("key_docs_contract");
+        expect(
+          (parseYaml(readFileSync(visitorAuthPath, "utf-8")) as typeof documentedVisitorAuth).config
+            .agentMail,
+        ).toEqual({ transport: "console", subjectPrefix: "[Verify] " });
+
+        const attached = await runAgentMailSetup(
+          "visitorAuth",
+          { config: configPath, mode: "env" },
+          { interactive: false, provisioner: docsProvisioner() },
+        );
+        expect(attached.mode).toBe("env");
+        expect(
+          (parseYaml(readFileSync(visitorAuthPath, "utf-8")) as typeof documentedVisitorAuth).config
+            .agentMail,
+        ).toEqual({
+          transport: "agentmail",
+          apiKey: "${AGENTMAIL_API_KEY}",
+          inboxId: "${AGENTMAIL_INBOX_ID}",
+          subjectPrefix: "[Verify] ",
+        });
+        const parsed = parseConfig(configPath);
+        expect(parsed.augments.map((augment) => augment.type)).toEqual([
+          "agentMail",
+          "visitorAuth",
+          "webTransport",
+        ]);
+        expect(
+          parsed.augments.find((augment) => augment.type === "agentMail")?.options,
+        ).toMatchObject({ addressVisibility: "creator" });
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   test("derives conditional label-read permissions from the documented classification policy", async () => {
@@ -620,5 +735,80 @@ describe("AgentMail operator guide contracts", () => {
     expect(digest).toContain(`from 1 through ${AGENTMAIL_CREATOR_DIGEST_MAX_ATTEMPTS}`);
     expect(digest).toContain(`\`${digestDefaults.maxAttempts}\``);
     expect(digestDefaults.maxAttempts).toBe(AGENTMAIL_CREATOR_DIGEST_DEFAULT_MAX_ATTEMPTS);
+  });
+
+  test("binds important outbound and enabled-inbound defaults to runtime behavior", () => {
+    const outbound = markdownSubsection(source, "`outbound`").replaceAll(",", "");
+    expect(normalizeSubject("Status", {})).toBe("[Auggy] Status");
+    expect(outbound).toContain("`[Auggy] `");
+
+    const tenRecipients = Array.from({ length: 10 }, (_, index) => `person${index}@example.com`);
+    expect(
+      validateOutbound({ recipients: tenRecipients, subject: "Status", text: "ok" }, {}).ok,
+    ).toBe(true);
+    expect(
+      validateOutbound(
+        {
+          recipients: [...tenRecipients, "overflow@example.com"],
+          subject: "Status",
+          text: "ok",
+        },
+        {},
+      ),
+    ).toMatchObject({ ok: false, reason: expect.stringContaining("configured cap of 10") });
+    expect(
+      validateOutbound(
+        { recipients: ["person@example.com"], subject: "Status", text: "a".repeat(102_401) },
+        {},
+      ),
+    ).toMatchObject({ ok: false, reason: expect.stringContaining("102400 bytes") });
+    expect(
+      validateOutbound(
+        {
+          recipients: ["person@example.com"],
+          subject: "Status",
+          text: "plain",
+          html: "<p>html</p>",
+        },
+        {},
+      ),
+    ).toMatchObject({ ok: false, reason: expect.stringContaining("disabled by default") });
+
+    const now = 1_000_000;
+    const globalState = createRateLimitState();
+    for (let index = 0; index < 10; index += 1) {
+      recordSend(globalState, [`person${index}@example.com`], `Subject ${index}`, now, {});
+    }
+    expect(checkRateLimit(globalState, ["next@example.com"], "Next", {}, now)).toMatchObject({
+      allowed: false,
+      reason: expect.stringContaining("10/hour"),
+    });
+    const cooldownState = createRateLimitState();
+    recordSend(cooldownState, ["person@example.com"], "First", now, {});
+    expect(
+      checkRateLimit(cooldownState, ["person@example.com"], "Different", {}, now + 1),
+    ).toMatchObject({ allowed: false, retryAfterSec: 300 });
+    expect(
+      checkRateLimit(cooldownState, ["other@example.com"], "First", {}, now + 1),
+    ).toMatchObject({ allowed: false, retryAfterSec: 300 });
+
+    const inboundDefaults = validateAgentMailInboundConfig({
+      mode: "websocket",
+      allowedSenders: ["operator@example.com"],
+    });
+    expect(inboundDefaults.processedEventTypes).toEqual(["message.received"]);
+    expect(inboundDefaults.replies).toEqual({ mode: "review", allowReplyAll: false });
+    expect(inboundDefaults.creatorDigest).toMatchObject({ enabled: false });
+    const classificationReference = markdownSubsection(
+      source,
+      "`inbound.classifications` and `inbound.replies`",
+    );
+    expect(classificationReference).toContain(
+      "| `classifications.received` | `process` or `discard` | `process` |",
+    );
+    expect(classificationReference).toContain("`review` when inbound is enabled");
+    expect(markdownSubsection(source, "`inbound.creatorDigest`")).toContain(
+      "| `enabled` | Boolean | `false`",
+    );
   });
 });

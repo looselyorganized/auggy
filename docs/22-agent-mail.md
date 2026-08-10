@@ -42,6 +42,13 @@ the runtime key from the policy already stored in
 `augments/agentMail/augment.yaml`; it does not automatically widen that key
 afterward. In every recipe, save the YAML **before** running setup.
 
+Every recipe below keeps `addressVisibility: creator`. Auggy exposes the
+canonical inbox address to the creator's model context, but not to public or
+anonymous peers. Change this to `public` only when those peers genuinely need
+the address; doing so lets the model disclose the canonical inbox address when
+it considers the conversation context appropriate. It does not enable inbound
+processing or admit any sender by itself.
+
 ### Send email only
 
 **Use this when:** the agent should compose new outbound messages but should
@@ -63,7 +70,7 @@ config:
   apiKey: ${AGENTMAIL_API_KEY}
   inboxId: ${AGENTMAIL_INBOX_ID}
   emailAddress: ${AGENTMAIL_INBOX_EMAIL}
-  addressVisibility: public
+  addressVisibility: creator
   inbound:
     mode: none
 ```
@@ -95,8 +102,9 @@ and `AUGGY_PUBLIC_URL` points at that reachable HTTPS deployment.
 auggy augment add agentMail visitorAuth --yes
 ```
 
-Keep `agentMail` outbound-only and configure `visitorAuth` to reuse its local
-credentials:
+Keep `agentMail` outbound-only. Leave the generated `visitorAuth` delivery
+block on `console` while the shared inbox and runtime key are provisioned; it
+must not reference `AGENTMAIL_*` yet:
 
 ```yaml
 # augments/agentMail/augment.yaml
@@ -105,7 +113,7 @@ config:
   apiKey: ${AGENTMAIL_API_KEY}
   inboxId: ${AGENTMAIL_INBOX_ID}
   emailAddress: ${AGENTMAIL_INBOX_EMAIL}
-  addressVisibility: public
+  addressVisibility: creator
   inbound:
     mode: none
 ```
@@ -117,9 +125,7 @@ config:
   publicUrl: ${AUGGY_PUBLIC_URL}
   dbPath: ./visitor-auth.db
   agentMail:
-    transport: agentmail
-    apiKey: ${AGENTMAIL_API_KEY}
-    inboxId: ${AGENTMAIL_INBOX_ID}
+    transport: console
     subjectPrefix: "[Verify] "
   signingKey: ${VISITOR_SIGNING_KEY}
   agentBinding: ${AUGGY_AGENT_ID}
@@ -133,7 +139,11 @@ auggy restart <agent-name>
 
 **Expected result:** both augments use one inbox-scoped runtime key.
 `visitorAuth` sends magic links; clicking a link reaches Auggy over HTTPS and
-does not create an inbound AgentMail turn.
+does not create an inbound AgentMail turn. The first setup writes the shared
+`AGENTMAIL_*` values. The second verifies those local values and changes the
+`visitorAuth` delivery block to `transport: agentmail` with the shared key and
+inbox references. Do not switch that block manually before the first setup;
+the CLI refuses to replace credentials already claimed by `visitorAuth`.
 
 **Restart and reprovision:** restart after both setup steps succeed. Attaching
 `visitorAuth` with `--mode env` does not require a new key. If `agentMail` will
@@ -158,7 +168,7 @@ config:
   apiKey: ${AGENTMAIL_API_KEY}
   inboxId: ${AGENTMAIL_INBOX_ID}
   emailAddress: ${AGENTMAIL_INBOX_EMAIL}
-  addressVisibility: public
+  addressVisibility: creator
   inbound:
     mode: websocket
     allowedSenders:
@@ -201,7 +211,7 @@ config:
   apiKey: ${AGENTMAIL_API_KEY}
   inboxId: ${AGENTMAIL_INBOX_ID}
   emailAddress: ${AGENTMAIL_INBOX_EMAIL}
-  addressVisibility: public
+  addressVisibility: creator
   inbound:
     mode: websocket
     allowAnySender: true
@@ -253,7 +263,7 @@ config:
   apiKey: ${AGENTMAIL_API_KEY}
   inboxId: ${AGENTMAIL_INBOX_ID}
   emailAddress: ${AGENTMAIL_INBOX_EMAIL}
-  addressVisibility: public
+  addressVisibility: creator
   inbound:
     mode: webhook
     allowedSenders:
@@ -318,7 +328,7 @@ config:
   apiKey: ${AGENTMAIL_API_KEY}
   inboxId: ${AGENTMAIL_INBOX_ID}
   emailAddress: ${AGENTMAIL_INBOX_EMAIL}
-  addressVisibility: public
+  addressVisibility: creator
   inbound:
     mode: websocket
     allowedSenders:
@@ -365,7 +375,7 @@ config:
   apiKey: ${AGENTMAIL_API_KEY}
   inboxId: ${AGENTMAIL_INBOX_ID}
   emailAddress: ${AGENTMAIL_INBOX_EMAIL}
-  addressVisibility: public
+  addressVisibility: creator
   outbound:
     rateLimit:
       enabled: true
@@ -435,7 +445,7 @@ config:
   apiKey: ${AGENTMAIL_API_KEY}
   inboxId: ${AGENTMAIL_INBOX_ID}
   emailAddress: ${AGENTMAIL_INBOX_EMAIL}
-  addressVisibility: public
+  addressVisibility: creator
   inbound:
     mode: websocket
     allowedSenders:
@@ -554,22 +564,45 @@ runtime key:
 1. Stop the agent so the old key cannot remain active during replacement.
 2. Save the intended policy in `augments/agentMail/augment.yaml`. Setup reads
    this file to determine the least-privilege permission set.
-3. In AgentMail, revoke the old inbox-scoped runtime key. Do not delete the
-   inbox.
-4. Remove every `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID`, and
+3. If `visitorAuth` shares this inbox, preserve its other settings but
+   temporarily replace only `config.agentMail` in
+   `augments/visitorAuth/augment.yaml` with:
+
+   ```yaml
+   agentMail:
+     transport: console
+     subjectPrefix: "[Verify] "
+   ```
+
+   Do not leave `apiKey` or `inboxId` in that temporary block. Keep the agent
+   stopped: this establishes a safe Console-only configuration for the next
+   boot and lets setup prove that `visitorAuth` no longer claims the old
+   runtime key.
+4. In [AgentMail](https://console.agentmail.to), revoke the old inbox-scoped
+   runtime key. Do not delete the inbox.
+5. Remove every `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID`, and
    `AGENTMAIL_INBOX_EMAIL` entry from the agent's `.env`.
-5. Remove exported copies from the current shell:
+6. Remove exported copies from the current shell:
 
    ```bash
    unset AGENTMAIL_API_KEY AGENTMAIL_INBOX_ID AGENTMAIL_INBOX_EMAIL
    ```
 
-6. Run `auggy agentmail setup agentMail` and choose `existing` to mint a
+7. Run `auggy agentmail setup agentMail` and choose `existing` to mint a
    correctly scoped replacement key in an existing AgentMail account. Use
    `signup` only when creating the person's first AgentMail account and inbox.
    Choose `manual` only if you already created a replacement key with every
    permission required by the saved policy.
-7. Confirm setup reports the expected permissions, then restart the agent.
+8. If `visitorAuth` shares the inbox, reattach it only after step 7 succeeds:
+
+   ```bash
+   auggy agentmail setup visitorAuth --mode env
+   ```
+
+   This command restores `transport: agentmail` and the shared credential
+   references without minting another key.
+9. Run `auggy doctor`, confirm setup reports the expected permissions, and
+   restart the agent.
 
 Revoke before deleting local credentials so the retired provider key is not
 orphaned. If `AGENTMAIL_*` values remain in either `.env` or the process
@@ -788,7 +821,7 @@ owns and supplies it. Do not put `agentDir` in `augment.yaml`.
 | Field | Type and allowed values | Default or requirement | New key |
 | --- | --- | --- | --- |
 | `allowedTrustLevels` | Array containing `creator`, `agent`, or `public` | `[creator]`; creator-originated calls remain permitted | No |
-| `allowedRecipients` | Array of exact addresses or exact-domain patterns such as `*@example.com` | Omitted allows any well-formed recipient; matching is case-insensitive and does not include subdomains | No |
+| `allowedRecipients` | Array of non-empty strings; use exact addresses or exact-domain patterns such as `*@example.com` | Omitted allows any well-formed recipient; matching is case-insensitive and an exact-domain pattern does not include subdomains | No |
 | `maxRecipients` | Positive safe integer; the provider hard ceiling is always 50 | `10`; values above 50 are effectively capped at 50 | No |
 | `bodyMaxBytes` | Safe integer from 1 through 1,048,576; counts text and HTML together | `102400` (100 KiB) | No |
 | `allowHtml` | Boolean | `false` | No |
@@ -799,6 +832,14 @@ owns and supplies it. Do not put `agentDir` in `augment.yaml`.
 `public` in `outbound.allowedTrustLevels` is an authorization class for a
 public or anonymous peer. It does not publish the inbox address or open inbound
 sender admission.
+
+`allowedRecipients` is an enforcement matcher, not currently a syntax-checked
+address-pattern field. Auggy validates each actual recipient as an email, then
+compares it case insensitively with each configured string; only strings that
+begin with `*@` receive domain-pattern behavior. Use exact email addresses or
+the shown exact-domain form. A malformed configured entry normally matches
+nothing instead of producing a startup validation error, so verify this policy
+with an intended recipient and an intended rejection.
 
 #### `outbound.rateLimit` and `outbound.humanReview`
 
@@ -817,6 +858,13 @@ do not interpret parser acceptance as a recommended capacity. Any executable
 trust level covered by `requiredForTrustLevels` requires `webTransport` with
 `adminRoute: true` so a creator can decide the review.
 
+These are Auggy-local outbound rate, cooldown, and duplicate limits.
+Creator-class calls and system-triggered calls with no peer (which resolve as
+creator) bypass those local limits for new sends, replies, forwards, and review
+approval. They do not bypass recipient/body/HTML policy, configured or
+sensitive-content review, or AgentMail's own provider quotas. Inbound sender
+admission limits are separate and are not bypassed by who later reviews mail.
+
 #### `inbound` delivery and sender admission
 
 | Field | Type and allowed values | Default or requirement | New key |
@@ -824,6 +872,7 @@ trust level covered by `requiredForTrustLevels` requires `webTransport` with
 | `mode` | `none`, `polling`, `websocket`, or `webhook` | Required when the block is present; omit the block to use `none` | Yes for `none` to any enabled mode (`message_read`); no between enabled modes; rotate after disabling if least privilege should remove `message_read` |
 | `allowedSenders` | 1–1,000 unique exact addresses or exact-domain patterns such as `*@example.com`; case-insensitive, no surrounding whitespace, control characters, bare `*`, partial wildcard, or subdomain expansion | Exactly one sender policy is required when inbound is enabled | No |
 | `allowAnySender` | Boolean | Omitted; `true` requires `rateLimit` and cannot coexist with `allowedSenders` (even as `false`) | No |
+| `rateLimit` | Object; both fields are listed below | Optional with `allowedSenders`; required with `allowAnySender: true` | No |
 | `rateLimit.globalMaxPerHour` | Safe integer from 1 through 10,000 | Both inbound rate fields are required when the block is present and the block is required with `allowAnySender: true` | No |
 | `rateLimit.perSenderMaxPerHour` | Safe integer from 1 through 1,000 and no greater than the global limit | Required with `rateLimit.globalMaxPerHour` | No |
 | `pollIntervalMs` | Safe integer from 1,000 through 86,400,000 | `60000` (60 seconds); also controls REST reconciliation for enabled live modes | No |
@@ -1339,6 +1388,7 @@ below call out those cases.
   policy and generated-client behavior.
 - AgentMail documentation: [API](https://docs.agentmail.to/api-reference),
   [Console](https://console.agentmail.to),
+  [inboxes and scoped keys](https://docs.agentmail.to/inboxes),
   [permissions](https://docs.agentmail.to/permissions),
   [WebSockets](https://docs.agentmail.to/websockets), and
   [webhook verification](https://docs.agentmail.to/webhook-verification).

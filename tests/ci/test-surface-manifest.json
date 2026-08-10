@@ -166,6 +166,10 @@
         {
           "kind": "tree",
           "path": "tests/evals"
+        },
+        {
+          "kind": "tree",
+          "path": "tests/docs"
         }
       ]
     },

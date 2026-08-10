@@ -871,7 +871,7 @@ function planAgentMailConfig(
     config.apiKey = "${AGENTMAIL_API_KEY}";
     config.inboxId = "${AGENTMAIL_INBOX_ID}";
     config.emailAddress = "${AGENTMAIL_INBOX_EMAIL}";
-    config.addressVisibility = "public";
+    config.addressVisibility ??= "public";
   }
 
   doc.config = config;
@@ -1396,27 +1396,49 @@ function validAgentMailUsername(value: string): boolean {
 export function formatAgentMailSetupResult(result: AgentMailSetupResult): string {
   const inbox = result.inboxEmail ? `${result.inboxEmail} (${result.inboxId})` : result.inboxId;
   const permissions = (result.requiredPermissions ?? ["inbox_read", "message_send"]).join(", ");
-  const permissionText =
-    result.mode === "manual" || result.mode === "env"
-      ? `Warning: Setup did not change the existing runtime key. It must grant: ${permissions}.`
-      : `${successMark()} Runtime key permissions: ${permissions}`;
+  const permissionsVerified = result.mode === "signup" || result.mode === "existing";
+  const inboxStatus = permissionsVerified ? "ready" : "configured";
+  const permissionText = !permissionsVerified
+    ? `Warning: Setup did not change the existing runtime key. It must grant: ${permissions}.`
+    : `${successMark()} Runtime key permissions: ${permissions}`;
   const inboundEnabled = result.requiredPermissions?.includes("message_read") ?? false;
   const readyText =
     result.target === "visitorAuth"
-      ? ["visitorAuth will now send magic links with AgentMail."]
-      : inboundEnabled
+      ? permissionsVerified
+        ? ["visitorAuth is ready to send magic links with AgentMail."]
+        : [
+            "visitorAuth is configured to use AgentMail for magic links.",
+            `Before relying on delivery, verify that the existing runtime key grants: ${permissions}.`,
+          ]
+      : permissionsVerified && inboundEnabled
         ? [
             "AgentMail is ready for outbound email and inbound processing.",
             "Incoming email will be processed according to augments/agentMail/augment.yaml.",
             "Review inbound, reply, and forwarding behavior:",
             "  https://auggy.dev/docs/augment-agentmail",
           ]
-        : [
-            "AgentMail is ready for outbound email, including visitorAuth magic links.",
-            "Incoming email is stored in AgentMail, but Auggy won't read or act on it by default.",
-            "To receive, reply to, or forward email with Auggy, enable inbound processing:",
-            "  https://auggy.dev/docs/augment-agentmail",
-          ];
+        : permissionsVerified
+          ? [
+              "AgentMail is ready for outbound email, including visitorAuth magic links.",
+              "Incoming email is stored in AgentMail, but Auggy won't read or act on it by default.",
+              "To receive, reply to, or forward email with Auggy, enable inbound processing:",
+              "  https://auggy.dev/docs/augment-agentmail",
+            ]
+          : inboundEnabled
+            ? [
+                "AgentMail is configured for outbound email and inbound processing.",
+                `Before relying on it, verify that the existing runtime key grants: ${permissions}.`,
+                "Rely on incoming processing only after you confirm those permissions in AgentMail.",
+                "Review inbound, reply, and forwarding behavior:",
+                "  https://auggy.dev/docs/augment-agentmail",
+              ]
+            : [
+                "AgentMail is configured for outbound email, including visitorAuth magic links.",
+                `Before relying on delivery, verify that the existing runtime key grants: ${permissions}.`,
+                "Incoming email is stored in AgentMail, but Auggy won't read or act on it by default.",
+                "To receive, reply to, or forward email with Auggy, enable inbound processing:",
+                "  https://auggy.dev/docs/augment-agentmail",
+              ];
   const reuseNotice = result.reusedExistingInbox
     ? [
         "Warning: Reused an existing AgentMail inbox and minted a new scoped runtime key.",
@@ -1424,7 +1446,7 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
       ]
     : [];
   return [
-    `${successMark()} AgentMail inbox ready: ${inbox}`,
+    `${successMark()} AgentMail inbox ${inboxStatus}: ${inbox}`,
     `${successMark()} Wrote .env: ${result.envKeys.join(", ")}`,
     `${successMark()} Updated ${displayPath(result.augmentPath)}`,
     permissionText,
