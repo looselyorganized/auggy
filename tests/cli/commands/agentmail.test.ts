@@ -13,6 +13,7 @@ import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
   AgentMailProvisioningApiError,
+  createAgentMailProvisioningClient,
   type AgentMailProvisioningClient,
   AgentMailProvisioningResponseError,
 } from "../../../src/cli/agentmail-provisioning";
@@ -239,7 +240,10 @@ describe("agentmail setup command", () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-account-dotenv-"));
     try {
       const paths = writeVisitorAuthAgent(root);
-      writeFileSync(join(root, ".env.local"), "AGENTMAIL_ACCOUNT_API_KEY=am_project_secret\n");
+      writeFileSync(
+        join(root, ".env.local"),
+        "export AGENTMAIL_ACCOUNT_API_KEY=am_project_secret\n",
+      );
       process.env.AGENTMAIL_ACCOUNT_API_KEY = "am_project_secret";
       const createInbox = mock(async () => {
         throw new Error("must not contact AgentMail");
@@ -267,6 +271,41 @@ describe("agentmail setup command", () => {
       expect(readFileSync(paths.envPath, "utf-8")).not.toContain("AGENTMAIL_ACCOUNT_API_KEY");
     } finally {
       restoreProcessEnv("AGENTMAIL_ACCOUNT_API_KEY", previous);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a persisted provisioning key even when an explicit key is also supplied", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-account-dotenv-explicit-"));
+    try {
+      const paths = writeVisitorAuthAgent(root);
+      writeFileSync(
+        join(root, ".env.local"),
+        "export AGENTMAIL_ACCOUNT_API_KEY=am_project_secret\n",
+      );
+      const createInbox = mock(async () => {
+        throw new Error("must not contact AgentMail");
+      });
+
+      const error = (await runAgentMailSetup(
+        "visitorAuth",
+        {
+          config: paths.configPath,
+          mode: "existing",
+          apiKey: "am_explicit_secret",
+          username: "env-agent",
+        },
+        {
+          cwd: root,
+          interactive: false,
+          provisioner: unusedProvisioner({ createInbox }),
+        },
+      ).catch((caught) => caught as Error)) as Error;
+      expect(error.message).toContain("provisioning-only account credential");
+      expect(error.message).not.toContain("am_project_secret");
+      expect(error.message).not.toContain("am_explicit_secret");
+      expect(createInbox).not.toHaveBeenCalled();
+    } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -1253,6 +1292,68 @@ describe("agentmail setup command", () => {
     }
   });
 
+  test("classifies a raw provider 403 resource_taken response into safe command recovery", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-raw-resource-taken-"));
+    try {
+      const paths = writeVisitorAuthAgent(root);
+      const originalEnv = readFileSync(paths.envPath, "utf-8");
+      let posts = 0;
+      let gets = 0;
+      const provisioner = createAgentMailProvisioningClient({
+        http: {
+          post: async (url) => {
+            posts += 1;
+            return {
+              finalUrl: url,
+              status: 403,
+              statusText: "Forbidden",
+              contentType: "application/json",
+              headers: new Headers({ "content-type": "application/json" }),
+              body: JSON.stringify({
+                name: "ResourceTakenError",
+                code: "resource_taken",
+                message: "Inbox is taken",
+              }),
+            };
+          },
+          get: async (url) => {
+            gets += 1;
+            return {
+              finalUrl: url,
+              status: 200,
+              statusText: "OK",
+              contentType: "application/json",
+              headers: new Headers({ "content-type": "application/json" }),
+              body: JSON.stringify({ inboxes: [] }),
+            };
+          },
+        },
+      });
+
+      const error = (await runAgentMailSetup(
+        "visitorAuth",
+        {
+          config: paths.configPath,
+          mode: "existing",
+          apiKey: "am_parent_secret",
+          username: "support",
+          displayName: "Support",
+        },
+        { provisioner, interactive: false },
+      ).catch((caught) => caught as Error)) as Error;
+
+      expect(error.message).toContain("support@agentmail.to is already taken");
+      expect(error.message).toContain("No inbox was adopted");
+      expect(error.message).toContain("no runtime key was created");
+      expect(error.message).not.toContain("am_parent_secret");
+      expect(posts).toBe(1);
+      expect(gets).toBe(1);
+      expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("existing mode explicitly reuses a compatible account-owned inbox after resource_taken", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-owned-collision-"));
     try {
@@ -1298,6 +1399,7 @@ describe("agentmail setup command", () => {
 
       expect(result.inboxId).toBe("inb_existing");
       expect(result.inboxEmail).toBe("support@agentmail.to");
+      expect(result.reusedExistingInbox).toBe(true);
       expect(passwordPrompt).toHaveBeenCalledTimes(1);
       expect(createInbox).toHaveBeenCalledTimes(1);
       expect(listInboxes).toHaveBeenCalledTimes(1);
@@ -1308,6 +1410,70 @@ describe("agentmail setup command", () => {
         AGENTMAIL_INBOX_ID: "inb_existing",
         AGENTMAIL_INBOX_EMAIL: "support@agentmail.to",
       });
+      const output = formatAgentMailSetupResult(result);
+      expect(output).toContain("minted a new scoped runtime key");
+      expect(output).toContain("Review and revoke obsolete scoped keys");
+      expect(output).not.toContain("am_runtime_scoped");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("cancelling proven-owned inbox reuse creates no scoped key or local mutation", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-owned-reuse-cancel-"));
+    try {
+      const paths = writeAgentMailAgent(root);
+      const originalConfig = readFileSync(paths.configPath, "utf-8");
+      const originalEnv = readFileSync(paths.envPath, "utf-8");
+      const originalAugment = readFileSync(paths.augmentPath, "utf-8");
+      const createInboxApiKey = mock(async () => {
+        throw new Error("must not create a scoped key");
+      });
+      const promptCancellation = new Error("cancelled");
+      promptCancellation.name = "ExitPromptError";
+
+      const error = (await runAgentMailSetup(
+        "agentMail",
+        {
+          config: paths.configPath,
+          mode: "existing",
+          apiKey: "am_parent_secret",
+          username: "support",
+          displayName: "Support",
+        },
+        {
+          provisioner: unusedProvisioner({
+            createInbox: async () => {
+              throw new AgentMailProvisioningApiError({
+                operation: "/inboxes",
+                status: 403,
+                providerCode: "resource_taken",
+              });
+            },
+            listInboxes: async () => [
+              {
+                inboxId: "inb_existing",
+                email: "support@agentmail.to",
+                clientId: "auggy.v1.inbox.aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c.agentMail",
+              },
+            ],
+            createInboxApiKey,
+          }),
+          promptConfirm: (async () => {
+            throw promptCancellation;
+          }) as never,
+          interactive: true,
+        },
+      ).catch((caught) => caught as Error)) as Error;
+
+      expect(error.message).toContain("inbox reuse confirmation was cancelled");
+      expect(error.message).toContain("No scoped runtime key was created");
+      expect(error.message).toContain("no local credentials were changed");
+      expect(error.message).not.toContain("am_parent_secret");
+      expect(createInboxApiKey).not.toHaveBeenCalled();
+      expect(readFileSync(paths.configPath, "utf-8")).toBe(originalConfig);
+      expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
+      expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

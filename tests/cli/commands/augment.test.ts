@@ -137,6 +137,36 @@ describe("auggy augment command", () => {
     });
   });
 
+  test("remove prints lifecycle warnings returned by the remover", async () => {
+    const warnings: string[] = [];
+    const logs: string[] = [];
+    const originalWarn = console.warn;
+    const originalLog = console.log;
+    console.warn = (message: unknown) => warnings.push(String(message));
+    console.log = (message: unknown) => logs.push(String(message));
+
+    try {
+      const cmd = augmentCommand({
+        removeAugment: () => ({
+          configPath: "/tmp/agent.yaml",
+          name: "agentMail",
+          type: "agentMail",
+          skillRemoved: null,
+          warnings: ["revoke the remote scoped key before deleting local values"],
+        }),
+      });
+      await cmd.parseAsync(["remove", "agentMail"], { from: "user" });
+    } finally {
+      console.warn = originalWarn;
+      console.log = originalLog;
+    }
+
+    expect(logs.join("\n")).toContain('Removed augment "agentMail"');
+    expect(warnings).toEqual([
+      "Warning: revoke the remote scoped key before deleting local values",
+    ]);
+  });
+
   test("create scaffolds, registers, and optionally creates a runtime skill", async () => {
     const root = mkdtempSync(join(tmpdir(), "augment-create-command-"));
     writeFileSync(

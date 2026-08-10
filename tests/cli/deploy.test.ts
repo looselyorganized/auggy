@@ -846,6 +846,55 @@ describe("runDeploy", () => {
     expect(calls.up).toBe(0);
   });
 
+  test("does not recommend canonical automatic setup for a renamed AgentMail mount", async () => {
+    appendAugmentId(agentDir, "mail");
+    appendAugmentId(agentDir, "visitorAuth");
+    writeWebTransportWithVisitorBinding(agentDir);
+    writeAugmentMetadata(agentDir, "mail", {
+      type: "agentMail",
+      config: {
+        apiKey: "am_deploy_test",
+        inboxId: "inbox_deploy_test",
+        inbound: { mode: "none" },
+      },
+    });
+    writeAugmentMetadata(agentDir, "visitorAuth", {
+      type: "visitorAuth",
+      config: {
+        publicUrl: "${AUGGY_PUBLIC_URL}",
+        dbPath: "./visitor-auth.db",
+        agentMail: { transport: "console" },
+        signingKey: "${VISITOR_SIGNING_KEY}",
+        agentBinding: "${AUGGY_AGENT_ID}",
+      },
+    });
+    writeFileSync(
+      join(agentDir, ".env"),
+      [
+        "ANTHROPIC_API_KEY=sk-test",
+        "AUGGY_WEB_TOKEN=tok-1",
+        "AUGGY_PUBLIC_URL=http://localhost:8080",
+        "VISITOR_SIGNING_KEY=signing-test",
+        "AUGGY_AGENT_ID=zip",
+        "",
+      ].join("\n"),
+    );
+
+    const { cli, calls } = mockRailwayCli();
+    let error: Error | undefined;
+    try {
+      await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+    } catch (caught) {
+      error = caught as Error;
+    }
+
+    expect(error?.message).toContain("inline, renamed, or additional agentMail mount");
+    expect(error?.message).toContain("Configure distinct");
+    expect(error?.message).not.toContain("auggy augment setup agentMail\n");
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.up).toBe(0);
+  });
+
   test("allows visitorAuth console mail deploy when explicitly acknowledged", async () => {
     appendAugmentId(agentDir, "visitorAuth");
     writeWebTransportWithVisitorBinding(agentDir);

@@ -34,6 +34,7 @@ import {
 } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parse as parseYaml } from "yaml";
 import { getAgentFromDir, readBoundCloudRecord, setCloudForDir } from "../agent-index";
 import { parseConfig } from "../config-parser";
 import { formatDoctorChecks, hasDoctorFailures, runDoctor } from "./doctor";
@@ -709,19 +710,25 @@ function assertRailwayDeploySafeConfig(configPath: string): ReturnType<typeof pa
   if (agentMail?.transport !== "console") return config;
   if (options.allowConsoleInProduction === true) return config;
 
-  const modelFacingAgentMailInstalled = config.augments.some(
-    (augment) => augment.type === "agentMail",
-  );
-  const recommendedSetup = modelFacingAgentMailInstalled
+  const canonicalSharedAgentMail = hasCanonicalSingletonAgentMail(configPath, config);
+  const anyAgentMailInstalled = config.augments.some((augment) => augment.type === "agentMail");
+  const recommendedSetup = canonicalSharedAgentMail
     ? [
         "  - Recommended: reuse the installed AgentMail inbox:",
         "      auggy augment setup agentMail",
         "      auggy augment setup visitorAuth --mode env",
       ]
-    : [
-        "  - Recommended: run `auggy augment setup visitorAuth`.",
-        "    This provisions/configures AgentMail and writes the needed .env values.",
-      ];
+    : anyAgentMailInstalled
+      ? [
+          "  - This agent has an inline, renamed, or additional agentMail mount.",
+          "    Automatic shared setup is unavailable for that topology. Configure distinct",
+          "    credentials manually, or migrate to one canonical augments/agentMail mount",
+          "    and then attach visitorAuth with `auggy augment setup visitorAuth --mode env`.",
+        ]
+      : [
+          "  - Recommended: run `auggy augment setup visitorAuth`.",
+          "    This provisions/configures AgentMail and writes the needed .env values.",
+        ];
 
   throw new Error(
     [
@@ -739,6 +746,18 @@ function assertRailwayDeploySafeConfig(configPath: string): ReturnType<typeof pa
       "    This acknowledges that magic links will appear in Railway logs.",
     ].join("\n"),
   );
+}
+
+function hasCanonicalSingletonAgentMail(
+  configPath: string,
+  config: ReturnType<typeof parseConfig>,
+): boolean {
+  const resolved = config.augments.filter((augment) => augment.type === "agentMail");
+  if (resolved.length !== 1 || resolved[0]?.name !== "agentMail") return false;
+
+  const raw = parseYaml(readFileSync(configPath, "utf-8")) as Record<string, unknown> | null;
+  if (!raw || !Array.isArray(raw.augments)) return false;
+  return raw.augments.filter((augment) => augment === "agentMail").length === 1;
 }
 
 function assertRailwayDatabasePaths(config: ReturnType<typeof parseConfig>): void {

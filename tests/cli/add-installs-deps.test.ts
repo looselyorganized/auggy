@@ -685,7 +685,9 @@ describe("runAdd no-op cases", () => {
     const output = logs.join("\n");
     expect(output).toContain("Use AgentMail:");
     expect(output).toContain("Run setup: auggy augment setup agentMail");
-    expect(output).toContain("Or set AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID in .env");
+    expect(output).toContain(
+      "Or set AGENTMAIL_API_KEY, AGENTMAIL_INBOX_ID, and AGENTMAIL_INBOX_EMAIL in .env",
+    );
     expect(output).toContain("Configure mail policy in augments/agentMail/augment.yaml");
     expect(output).toContain("Default mode: outbound email only, creator trust required");
     expect(output).toContain("notify + Agent Mail is usually simpler");
@@ -762,6 +764,86 @@ describe("runAdd no-op cases", () => {
     expect(output).not.toContain("Apply changes:");
     expect(output).toContain("agentMail is installed, but its required credentials are unresolved");
     expect(output).toContain("Before starting or restarting the agent, choose one:");
+  });
+
+  test("restart readiness uses the first nonempty dotenv definition", async () => {
+    const dir = setupAgent("agent-mail-duplicate-env");
+    setReferencedAugments(dir, ["agentMail"]);
+    writeFileSync(
+      join(dir, ".env"),
+      [
+        "AGENTMAIL_API_KEY=",
+        "AGENTMAIL_API_KEY=am_runtime_first",
+        "AGENTMAIL_API_KEY=${AGENTMAIL_API_KEY}",
+        "AGENTMAIL_INBOX_ID=inb_first",
+        "AGENTMAIL_INBOX_ID=inb_later",
+        "AGENTMAIL_INBOX_EMAIL=first@agentmail.to",
+        "AGENTMAIL_INBOX_EMAIL=not-an-email",
+        "",
+      ].join("\n"),
+    );
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+
+    try {
+      await runAdd("agent-mail-duplicate-env", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: "webFetch",
+        skipInstall: true,
+        interactive: false,
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    expect(logs.join("\n")).toContain("Apply changes:");
+  });
+
+  test("restart readiness rejects placeholders and malformed inbox email", async () => {
+    for (const [index, envLines] of [
+      [
+        "AGENTMAIL_API_KEY=${AGENTMAIL_API_KEY}",
+        "AGENTMAIL_INBOX_ID=inb_ready",
+        "AGENTMAIL_INBOX_EMAIL=ready@agentmail.to",
+      ],
+      [
+        "AGENTMAIL_API_KEY=am_runtime",
+        "AGENTMAIL_INBOX_ID=${AGENTMAIL_INBOX_ID}",
+        "AGENTMAIL_INBOX_EMAIL=ready@agentmail.to",
+      ],
+      [
+        "AGENTMAIL_API_KEY=am_runtime",
+        "AGENTMAIL_INBOX_ID=inb_ready",
+        "AGENTMAIL_INBOX_EMAIL=not-an-email",
+      ],
+    ].entries()) {
+      const dir = setupAgent(`agent-mail-invalid-env-${index}`);
+      setReferencedAugments(dir, ["agentMail"]);
+      writeFileSync(join(dir, ".env"), `${envLines.join("\n")}\n`);
+      const logs: string[] = [];
+      const originalLog = console.log;
+      console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+
+      try {
+        await runAdd(`agent-mail-invalid-env-${index}`, {
+          config: join(dir, "agent.yaml"),
+          auggyDir,
+          augment: "webFetch",
+          skipInstall: true,
+          interactive: false,
+          bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+        });
+      } finally {
+        console.log = originalLog;
+      }
+
+      const output = logs.join("\n");
+      expect(output).not.toContain("Apply changes:");
+      expect(output).toContain("required credentials are unresolved");
+    }
   });
 
   test("adding visitorAuth generates VISITOR_SIGNING_KEY in .env", async () => {
@@ -894,6 +976,66 @@ describe("runAdd no-op cases", () => {
     }
   });
 
+  test("declining combined setup leaves visitorAuth local and agentMail explicitly unresolved", async () => {
+    const dir = setupAgent("shared-mail-declined");
+    const logs: string[] = [];
+    const originalLog = console.log;
+    console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+
+    try {
+      await runAdd("shared-mail-declined", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: ["visitorAuth", "agentMail"],
+        skipInstall: true,
+        interactive: true,
+        confirmSetup: async () => false,
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+    } finally {
+      console.log = originalLog;
+    }
+
+    const output = logs.join("\n");
+    expect(output).toContain("visitorAuth will use local console delivery");
+    expect(output).toContain("agentMail is installed, but its required credentials are unresolved");
+    expect(output).not.toContain("Apply changes:");
+  });
+
+  test("shared setup cancellation exits nonzero with exact partial-install recovery", async () => {
+    const dir = setupAgent("shared-mail-cancelled");
+    const errors: string[] = [];
+    const originalError = console.error;
+    const originalExitCode = process.exitCode;
+    console.error = (...args: unknown[]) => errors.push(args.map(String).join(" "));
+    const cancellation = new Error("cancelled");
+    cancellation.name = "ExitPromptError";
+
+    try {
+      await runAdd("shared-mail-cancelled", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: ["visitorAuth", "agentMail"],
+        skipInstall: true,
+        interactive: true,
+        confirmSetup: async () => {
+          throw cancellation;
+        },
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+
+      expect(process.exitCode).toBe(1);
+      expect(readAgentAugments(dir)).toEqual(expect.arrayContaining(["agentMail", "visitorAuth"]));
+      const output = errors.join("\n");
+      expect(output).toContain("post-add setup was cancelled");
+      expect(output).toContain("auggy augment setup agentMail");
+      expect(output).toContain("auggy augment setup visitorAuth --mode env");
+    } finally {
+      console.error = originalError;
+      process.exitCode = originalExitCode ?? 0;
+    }
+  });
+
   test("reuses configured agentMail credentials when visitorAuth is added later", async () => {
     const dir = setupAgent("attach-auth");
     setReferencedAugments(dir, ["agentMail"]);
@@ -977,6 +1119,93 @@ describe("runAdd no-op cases", () => {
     ]);
   });
 
+  test("reuses an already AgentMail-backed visitorAuth inbox when agentMail is added later", async () => {
+    const dir = setupAgent("attach-backed-mail");
+    setReferencedAugments(dir, ["visitorAuth"]);
+    const visitorPath = join(dir, "augments", "visitorAuth", "augment.yaml");
+    writeFileSync(
+      visitorPath,
+      stringifyYaml({
+        type: "visitorAuth",
+        config: {
+          agentMail: {
+            transport: "agentmail",
+            apiKey: "${AGENTMAIL_API_KEY}",
+            inboxId: "${AGENTMAIL_INBOX_ID}",
+          },
+        },
+      }),
+    );
+    writeAgentMailRuntimeEnv(dir);
+    const calls: Array<{ target: string | undefined; mode: string | undefined }> = [];
+    const confirmations: string[] = [];
+
+    await runAdd("attach-backed-mail", {
+      config: join(dir, "agent.yaml"),
+      auggyDir,
+      augment: "agentMail",
+      skipInstall: true,
+      interactive: true,
+      confirmSetup: async (message) => {
+        confirmations.push(message);
+        return true;
+      },
+      runAgentMailSetup: async (target, setupOpts) => {
+        calls.push({ target, mode: setupOpts?.mode });
+        return agentMailSetupResult(dir, target as "agentMail" | "visitorAuth");
+      },
+      bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+    });
+
+    expect(confirmations).toEqual(["Use visitorAuth's AgentMail inbox for agentMail too?"]);
+    expect(calls).toEqual([{ target: "agentMail", mode: "env" }]);
+  });
+
+  test("cancelling visitorAuth attachment reports the configured and deferred states", async () => {
+    const dir = setupAgent("attach-mail-cancelled");
+    setReferencedAugments(dir, ["visitorAuth"]);
+    let confirmation = 0;
+    const errors: string[] = [];
+    const logs: string[] = [];
+    const originalError = console.error;
+    const originalLog = console.log;
+    const originalExitCode = process.exitCode;
+    console.error = (...args: unknown[]) => errors.push(args.map(String).join(" "));
+    console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+    const cancellation = new Error("cancelled");
+    cancellation.name = "ExitPromptError";
+
+    try {
+      await runAdd("attach-mail-cancelled", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: "agentMail",
+        skipInstall: true,
+        interactive: true,
+        confirmSetup: async () => {
+          confirmation += 1;
+          if (confirmation === 1) return true;
+          throw cancellation;
+        },
+        runAgentMailSetup: async (target) => {
+          writeAgentMailRuntimeEnv(dir);
+          return agentMailSetupResult(dir, target as "agentMail" | "visitorAuth");
+        },
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+
+      expect(process.exitCode).toBe(1);
+      expect(logs.join("\n")).not.toContain("Apply changes:");
+      const output = errors.join("\n");
+      expect(output).toContain("agentMail is configured; visitorAuth remains on local console");
+      expect(output).toContain("auggy augment setup visitorAuth --mode env");
+    } finally {
+      console.error = originalError;
+      console.log = originalLog;
+      process.exitCode = originalExitCode ?? 0;
+    }
+  });
+
   test("fails the command and does not suggest restart when accepted shared setup fails", async () => {
     const dir = setupAgent("shared-mail-failure");
     const calls: Array<string | undefined> = [];
@@ -1013,6 +1242,49 @@ describe("runAdd no-op cases", () => {
     } finally {
       console.log = originalLog;
       console.error = originalError;
+      process.exitCode = originalExitCode ?? 0;
+    }
+  });
+
+  test("reports exact env-mode recovery when the second shared setup stage fails", async () => {
+    const dir = setupAgent("shared-mail-attach-failure");
+    const calls: Array<string | undefined> = [];
+    const errors: string[] = [];
+    const logs: string[] = [];
+    const originalError = console.error;
+    const originalLog = console.log;
+    const originalExitCode = process.exitCode;
+    console.error = (...args: unknown[]) => errors.push(args.map(String).join(" "));
+    console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
+
+    try {
+      await runAdd("shared-mail-attach-failure", {
+        config: join(dir, "agent.yaml"),
+        auggyDir,
+        augment: ["agentMail", "visitorAuth"],
+        skipInstall: true,
+        interactive: true,
+        confirmSetup: async () => true,
+        runAgentMailSetup: async (target) => {
+          calls.push(target);
+          if (target === "agentMail") {
+            writeAgentMailRuntimeEnv(dir);
+            return agentMailSetupResult(dir, "agentMail");
+          }
+          throw new Error("visitor config changed concurrently");
+        },
+        bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
+      });
+
+      expect(process.exitCode).toBe(1);
+      expect(calls).toEqual(["agentMail", "visitorAuth"]);
+      expect(logs.join("\n")).not.toContain("Apply changes:");
+      expect(errors.join("\n")).toContain(
+        "Retry when ready: auggy augment setup visitorAuth --mode env",
+      );
+    } finally {
+      console.error = originalError;
+      console.log = originalLog;
       process.exitCode = originalExitCode ?? 0;
     }
   });

@@ -62,6 +62,7 @@ interface AgentMailSetupCredentials {
   email?: string;
   scopedRuntimeKey?: ScopedRuntimeKeyEvidence;
   deferredTermination?: DeferredSetupTermination;
+  reusedExistingInbox?: boolean;
 }
 
 interface DeferredSetupTermination {
@@ -118,6 +119,7 @@ export interface AgentMailSetupResult {
   requiredPermissions?: string[];
   runtimeKeyId?: string;
   runtimeKeyName?: string;
+  reusedExistingInbox?: boolean;
 }
 
 export function agentMailCommand(deps: AgentMailCommandDeps = {}): Command {
@@ -414,6 +416,7 @@ async function runAgentMailSetupLocked(
           runtimeKeyName: resolvedCredentials.scopedRuntimeKey.name,
         }
       : {}),
+    ...(resolvedCredentials.reusedExistingInbox ? { reusedExistingInbox: true } : {}),
   };
 }
 
@@ -513,7 +516,7 @@ async function runExistingAccountFlow(
     );
   }
 
-  const inbox = await resolveExistingAccountInbox({
+  const inboxResolution = await resolveExistingAccountInbox({
     target,
     agentName,
     agentId,
@@ -525,6 +528,7 @@ async function runExistingAccountFlow(
     promptConfirm,
     interactive,
   });
+  const { inbox } = inboxResolution;
   const runtimeKey = await createScopedRuntimeKey(
     target,
     agentName,
@@ -539,7 +543,13 @@ async function runExistingAccountFlow(
     email: inbox.email,
     scopedRuntimeKey: runtimeKey.evidence,
     deferredTermination: runtimeKey.deferredTermination,
+    ...(inboxResolution.reusedExistingInbox ? { reusedExistingInbox: true } : {}),
   };
+}
+
+interface ExistingAccountInboxResolution {
+  inbox: AgentMailOwnedInbox;
+  reusedExistingInbox: boolean;
 }
 
 async function resolveExistingAccountInbox(input: {
@@ -553,18 +563,21 @@ async function resolveExistingAccountInbox(input: {
   promptInput: PromptInput;
   promptConfirm: PromptConfirm;
   interactive: boolean;
-}): Promise<AgentMailOwnedInbox> {
+}): Promise<ExistingAccountInboxResolution> {
   const clientId = buildAgentMailClientId(input.agentId, input.target);
   let username = input.initialUsername;
   for (let attempt = 1; attempt <= AGENTMAIL_USERNAME_MAX_ATTEMPTS; attempt += 1) {
     try {
-      return await input.provisioner.createInbox({
-        apiKey: input.parentApiKey,
-        username,
-        displayName: input.displayName,
-        clientId,
-        metadata: { source: "auggy-cli", agent: input.agentName, augment: input.target },
-      });
+      return {
+        inbox: await input.provisioner.createInbox({
+          apiKey: input.parentApiKey,
+          username,
+          displayName: input.displayName,
+          clientId,
+          metadata: { source: "auggy-cli", agent: input.agentName, augment: input.target },
+        }),
+        reusedExistingInbox: false,
+      };
     } catch (error) {
       if (!isDefinitiveInboxAddressCollision(error)) throw error;
 
@@ -576,11 +589,19 @@ async function resolveExistingAccountInbox(input: {
         `${username}@agentmail.to`,
       );
       if (reusable && input.interactive) {
-        const reuse = await input.promptConfirm({
-          message: `${reusable.email} already belongs to this Auggy agent in your AgentMail account. Reuse it?`,
-          default: true,
-        });
-        if (reuse) return reusable;
+        let reuse: boolean;
+        try {
+          reuse = await input.promptConfirm({
+            message: `${reusable.email} already belongs to this Auggy agent in your AgentMail account. Reuse it?`,
+            default: true,
+          });
+        } catch (promptError) {
+          if (!isPromptCancellation(promptError)) throw promptError;
+          throw new Error(
+            "AgentMail inbox reuse confirmation was cancelled. No scoped runtime key was created and no local credentials were changed.",
+          );
+        }
+        if (reuse) return { inbox: reusable, reusedExistingInbox: true };
       }
 
       if (!input.interactive || attempt === AGENTMAIL_USERNAME_MAX_ATTEMPTS) {
@@ -1294,20 +1315,19 @@ async function resolveProvisioningAccountApiKey(
   agentDir: string,
   invocationDir: string,
 ): Promise<string> {
+  const dotenvSources = findProjectDotenvProvisioningKeySources(agentDir, invocationDir);
+  if (dotenvSources.length > 0) {
+    throw new Error(
+      "AGENTMAIL_ACCOUNT_API_KEY is a provisioning-only account credential and must not be stored in project dotenv files. " +
+        `Remove it from ${dotenvSources.map((path) => displayPath(path)).join(", ")}, then use the masked prompt or a genuinely process-scoped environment variable. ` +
+        "Setup did not contact AgentMail or change local files.",
+    );
+  }
+
   if (usableOption(explicit)) return explicit!.trim();
 
   const ambient = usableEnvValue(process.env.AGENTMAIL_ACCOUNT_API_KEY);
-  if (ambient) {
-    const dotenvSources = findProjectDotenvProvisioningKeySources(agentDir, invocationDir);
-    if (dotenvSources.length > 0) {
-      throw new Error(
-        "AGENTMAIL_ACCOUNT_API_KEY is a provisioning-only account credential and must not be stored in project dotenv files. " +
-          `Remove it from ${dotenvSources.map((path) => displayPath(path)).join(", ")}, then use the masked prompt or a genuinely process-scoped environment variable. ` +
-          "Setup did not contact AgentMail or change local files.",
-      );
-    }
-    return ambient;
-  }
+  if (ambient) return ambient;
 
   const prompted = await promptPassword({
     message: "AgentMail API key that can create inboxes:",
@@ -1389,11 +1409,18 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
     result.target === "visitorAuth"
       ? "visitorAuth will now send magic links with AgentMail."
       : "agentMail will now send outbound email with AgentMail.";
+  const reuseNotice = result.reusedExistingInbox
+    ? [
+        "Warning: Reused an existing AgentMail inbox and minted a new scoped runtime key.",
+        "Review and revoke obsolete scoped keys for this inbox in AgentMail.",
+      ]
+    : [];
   return [
     `${successMark()} AgentMail inbox ready: ${inbox}`,
     `${successMark()} Wrote .env: ${result.envKeys.join(", ")}`,
     `${successMark()} Updated ${displayPath(result.augmentPath)}`,
     permissionText,
+    ...reuseNotice,
     "",
     readyText,
     "",
