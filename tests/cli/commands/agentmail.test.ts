@@ -3276,7 +3276,16 @@ describe("agentmail setup command", () => {
     expect(text).toContain(
       "Wrote .env: AGENTMAIL_API_KEY, AGENTMAIL_INBOX_ID, AGENTMAIL_INBOX_EMAIL",
     );
-    expect(text).toContain("agentMail will now send outbound email with AgentMail");
+    expect(text).toContain(
+      "AgentMail is ready for outbound email, including visitorAuth magic links.",
+    );
+    expect(text).toContain(
+      "Incoming email is stored in AgentMail, but Auggy won't read or act on it by default.",
+    );
+    expect(text).toContain(
+      "To receive, reply to, or forward email with Auggy, enable inbound processing:",
+    );
+    expect(text).toContain("https://auggy.dev/docs/augment-agentmail");
     expect(text).toContain("Runtime key permissions: inbox_read, message_send");
     expect(text).not.toContain("am_");
   });
