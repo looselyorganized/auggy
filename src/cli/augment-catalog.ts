@@ -312,12 +312,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     },
     required: false,
     stability: "stable",
-    envVars: [
-      "AGENTMAIL_API_KEY",
-      "AGENTMAIL_INBOX_ID",
-      "AGENTMAIL_INBOX_EMAIL",
-      "AGENTMAIL_WEBHOOK_SECRET",
-    ],
+    envVars: ["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID", "AGENTMAIL_INBOX_EMAIL"],
     hasSkill: true,
   },
   {

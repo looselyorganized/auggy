@@ -709,6 +709,20 @@ function assertRailwayDeploySafeConfig(configPath: string): ReturnType<typeof pa
   if (agentMail?.transport !== "console") return config;
   if (options.allowConsoleInProduction === true) return config;
 
+  const modelFacingAgentMailInstalled = config.augments.some(
+    (augment) => augment.type === "agentMail",
+  );
+  const recommendedSetup = modelFacingAgentMailInstalled
+    ? [
+        "  - Recommended: reuse the installed AgentMail inbox:",
+        "      auggy augment setup agentMail",
+        "      auggy augment setup visitorAuth --mode env",
+      ]
+    : [
+        "  - Recommended: run `auggy augment setup visitorAuth`.",
+        "    This provisions/configures AgentMail and writes the needed .env values.",
+      ];
+
   throw new Error(
     [
       "Deploy preflight failed:",
@@ -719,8 +733,7 @@ function assertRailwayDeploySafeConfig(configPath: string): ReturnType<typeof pa
       "or log shipping.",
       "",
       "Fix one of these before deploying:",
-      "  - Recommended: run `auggy augment setup visitorAuth`.",
-      "    This provisions/configures AgentMail and writes the needed .env values.",
+      ...recommendedSetup,
       "  - Smoke test only: add this under config in augments/visitorAuth/augment.yaml:",
       "      allowConsoleInProduction: true",
       "    This acknowledges that magic links will appear in Railway logs.",

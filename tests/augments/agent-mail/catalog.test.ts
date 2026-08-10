@@ -12,12 +12,11 @@ describe("agentMail catalog entry", () => {
     expect(entry!.defaultName).toBe("agentMail");
   });
 
-  test("declares AgentMail identity and optional webhook secret env vars", () => {
+  test("declares only credentials required by the default outbound setup", () => {
     expect(entry!.envVars).toEqual([
       "AGENTMAIL_API_KEY",
       "AGENTMAIL_INBOX_ID",
       "AGENTMAIL_INBOX_EMAIL",
-      "AGENTMAIL_WEBHOOK_SECRET",
     ]);
   });
 
