@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0-rc.8] - 2026-08-10
+
+This eighth public candidate makes the shared AgentMail and visitorAuth setup
+path deterministic, recoverable, and safe to repeat after provider conflicts.
+
 ### Changed
 
 - **One shared AgentMail post-add flow.** An interactive add containing both
@@ -675,7 +680,8 @@ Initial tagged release. The kernel and built-in augments described in `docs/02-a
 - **CLI** — `aug1 create / add / dev / start / stop / restart / status` with launchd installation on macOS and PID-manifest tracking under `~/.auggy/`.
 - **Reference documentation** — `docs/01-philosophy.md` through `docs/11-skills.md`.
 
-[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.7...HEAD
+[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.8...HEAD
+[0.5.0-rc.8]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.7...v0.5.0-rc.8
 [0.5.0-rc.7]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.6...v0.5.0-rc.7
 [0.5.0-rc.6]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.5...v0.5.0-rc.6
 [0.5.0-rc.5]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.4...v0.5.0-rc.5
