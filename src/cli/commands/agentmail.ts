@@ -1402,8 +1402,13 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
       : `${successMark()} Runtime key permissions: ${permissions}`;
   const readyText =
     result.target === "visitorAuth"
-      ? "visitorAuth will now send magic links with AgentMail."
-      : "agentMail will now send outbound email with AgentMail.";
+      ? ["visitorAuth will now send magic links with AgentMail."]
+      : [
+          "AgentMail is ready for outbound email, including visitorAuth magic links.",
+          "Incoming email is stored in AgentMail, but Auggy won't read or act on it by default.",
+          "To receive, reply to, or forward email with Auggy, enable inbound processing:",
+          "  https://auggy.dev/docs/augment-agentmail",
+        ];
   const reuseNotice = result.reusedExistingInbox
     ? [
         "Warning: Reused an existing AgentMail inbox and minted a new scoped runtime key.",
@@ -1417,7 +1422,7 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
     permissionText,
     ...reuseNotice,
     "",
-    readyText,
+    ...readyText,
     "",
     "Run:",
     "  auggy doctor",
