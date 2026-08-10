@@ -29,7 +29,7 @@ describe("agentMail catalog entry", () => {
     expect(opts.apiKey).toBe("${AGENTMAIL_API_KEY}");
     expect(opts.inboxId).toBe("${AGENTMAIL_INBOX_ID}");
     expect(opts.emailAddress).toBe("${AGENTMAIL_INBOX_EMAIL}");
-    expect(opts.addressVisibility).toBe("public");
+    expect(opts.addressVisibility).toBe("creator");
     const inbound = opts.inbound as Record<string, unknown>;
     expect(inbound.mode).toBe("none");
     const outbound = opts.outbound as Record<string, unknown>;

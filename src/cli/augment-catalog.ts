@@ -290,7 +290,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       apiKey: "${AGENTMAIL_API_KEY}",
       inboxId: "${AGENTMAIL_INBOX_ID}",
       emailAddress: "${AGENTMAIL_INBOX_EMAIL}",
-      addressVisibility: "public",
+      addressVisibility: "creator",
       dbPath: "./agent-mail.db",
       outbound: {
         allowedTrustLevels: ["creator"],

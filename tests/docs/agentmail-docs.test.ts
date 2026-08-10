@@ -35,6 +35,7 @@ import {
 import type { AgentMailProvisioningClient } from "../../src/cli/agentmail-provisioning";
 import { formatAgentMailSetupResult, runAgentMailSetup } from "../../src/cli/commands/agentmail";
 import { parseConfig } from "../../src/cli/config-parser";
+import { AUGMENT_CATALOG } from "../../src/cli/augment-catalog";
 import type {
   AgentMailAugmentOptions,
   AgentMailCreatorDigestOptions,
@@ -58,10 +59,24 @@ const RECIPES = [
     optionPaths: [
       "addressVisibility",
       "apiKey",
+      "dbPath",
       "emailAddress",
       "inbound",
       "inbound.mode",
       "inboxId",
+      "outbound",
+      "outbound.allowHtml",
+      "outbound.allowedTrustLevels",
+      "outbound.bodyMaxBytes",
+      "outbound.humanReview",
+      "outbound.humanReview.expiresAfterMs",
+      "outbound.humanReview.requiredForTrustLevels",
+      "outbound.maxRecipients",
+      "outbound.rateLimit",
+      "outbound.rateLimit.dedupWindowMs",
+      "outbound.rateLimit.globalMaxPerHour",
+      "outbound.rateLimit.perRecipientCooldownMs",
+      "outbound.subjectPrefix",
     ],
   },
   {
@@ -513,6 +528,23 @@ describe("AgentMail operator guide contracts", () => {
           rmSync(root, { recursive: true, force: true });
         }
       }
+    });
+  });
+
+  test("keeps the first recipe identical to the generated AgentMail policy", () => {
+    const section = markdownSection(source, "Send email only");
+    const documented = parseYaml(yamlForPath(section, "augments/agentMail/augment.yaml")) as {
+      type: string;
+      config: Record<string, unknown>;
+    };
+    const catalog = AUGMENT_CATALOG.find((entry) => entry.type === "agentMail");
+    expect(catalog).toBeDefined();
+    expect(documented).toEqual({
+      type: "agentMail",
+      config: {
+        ...structuredClone(catalog?.defaultOptions ?? {}),
+        dbPath: "./data/agent-mail.db",
+      },
     });
   });
 

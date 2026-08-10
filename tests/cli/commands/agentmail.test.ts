@@ -2054,7 +2054,7 @@ describe("agentmail setup command", () => {
         apiKey: "${AGENTMAIL_API_KEY}",
         inboxId: "${AGENTMAIL_INBOX_ID}",
         emailAddress: "${AGENTMAIL_INBOX_EMAIL}",
-        addressVisibility: "public",
+        addressVisibility: "creator",
         inbound: disabledInbound,
       });
     } finally {
@@ -2488,7 +2488,7 @@ describe("agentmail setup command", () => {
       expect(readEnv(paths.envPath).AGENTMAIL_INBOX_EMAIL).toBe("canonical@custom.example");
       expect(readAgentMailConfig(paths.augmentPath)).toMatchObject({
         emailAddress: "${AGENTMAIL_INBOX_EMAIL}",
-        addressVisibility: "public",
+        addressVisibility: "creator",
       });
     } finally {
       rmSync(root, { recursive: true, force: true });

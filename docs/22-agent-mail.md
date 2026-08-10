@@ -61,7 +61,9 @@ through interactive `signup`.
 auggy augment add agentMail --yes
 ```
 
-Keep the generated file at this minimal policy:
+The CLI generates this explicit outbound-only policy. These values are written
+so the operator can inspect the active limits without knowing the runtime's
+implicit defaults:
 
 ```yaml
 # augments/agentMail/augment.yaml
@@ -71,6 +73,22 @@ config:
   inboxId: ${AGENTMAIL_INBOX_ID}
   emailAddress: ${AGENTMAIL_INBOX_EMAIL}
   addressVisibility: creator
+  dbPath: ./data/agent-mail.db
+  outbound:
+    allowedTrustLevels:
+      - creator
+    humanReview:
+      requiredForTrustLevels:
+        - public
+      expiresAfterMs: 86400000
+    subjectPrefix: "[Auggy] "
+    maxRecipients: 10
+    bodyMaxBytes: 102400
+    allowHtml: false
+    rateLimit:
+      globalMaxPerHour: 10
+      perRecipientCooldownMs: 300000
+      dedupWindowMs: 300000
   inbound:
     mode: none
 ```

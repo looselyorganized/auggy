@@ -871,7 +871,7 @@ function planAgentMailConfig(
     config.apiKey = "${AGENTMAIL_API_KEY}";
     config.inboxId = "${AGENTMAIL_INBOX_ID}";
     config.emailAddress = "${AGENTMAIL_INBOX_EMAIL}";
-    config.addressVisibility ??= "public";
+    config.addressVisibility ??= "creator";
   }
 
   doc.config = config;
