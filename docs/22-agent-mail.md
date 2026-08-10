@@ -4,11 +4,21 @@
 inbound, reviewed-reply, digest, and multi-inbox action-center contract is in
 the published `0.5.0-rc.8` candidate. Inbound remains an explicit opt-in.
 
-`agentMail` gives an agent a policy-gated AgentMail inbox. It exposes
-`send_message`, `reply_to_message`, and `forward_message`, and can turn admitted
-inbound email into normal Auggy turns through polling, WebSocket, or verified
-webhook delivery. Every enabled inbound mode also uses REST catch-up and a
-durable SQLite ledger, so a live connection is never the only record of mail.
+`agentMail` gives an agent a policy-gated AgentMail inbox.
+
+**What works by default:** after setup, the agent can send outbound email.
+`visitorAuth` can use the same outbound connection to send magic links; magic
+link verification does not require inbound email processing. AgentMail still
+stores incoming messages in its own inbox, but Auggy does not read them, wake
+the agent, propose replies, or let the agent use reply/forward successfully while
+`inbound.mode: none` remains configured.
+
+Receiving email is a separate, explicit opt-in. Configure the inbound policy
+**before** provisioning credentials so setup can mint a runtime key with the
+required permissions. Once enabled, admitted email can become normal Auggy
+turns through polling, WebSocket, or verified webhook delivery. Every enabled
+inbound mode also uses REST catch-up and a durable SQLite ledger, so a live
+connection is never the only record of mail.
 
 ## When to use
 
@@ -20,10 +30,96 @@ Two related features have narrower jobs:
 
 - `notify` sends outbound alerts to operator-configured destinations. Its
   AgentMail adapter is outbound-only and does not make email a conversation.
-- `visitorAuth` sends magic links through its own AgentMail configuration. You
-  do not need the `agentMail` augment just to recognize returning visitors.
+- `visitorAuth` sends magic links using outbound AgentMail access. It does not
+  need inbound processing, and you do not need the `agentMail` augment just to
+  send or redeem magic links. When both augments are installed, they can share
+  one inbox and runtime key.
 
 ## Install and setup
+
+Choose the path that matches what this agent should do. Setup scopes the
+runtime key from the policy currently stored in
+`augments/agentMail/augment.yaml`; it does not automatically widen that key
+afterward.
+
+### Send email only
+
+The generated configuration uses `inbound.mode: none`, so the ordinary
+interactive flow is safe for outbound-only use:
+
+```bash
+auggy augment add agentMail
+```
+
+Accept the setup prompt and choose `signup`, `existing`, or `manual`. Setup
+writes an inbox-scoped runtime key to `.env`. With `signup` or `existing`, the
+minted key receives `inbox_read` and `message_send`; it cannot read incoming
+messages. With `manual`, the supplied key must already have those permissions.
+Restart the agent after setup succeeds.
+
+### Send `visitorAuth` magic links
+
+`visitorAuth` is also an outbound-only path. If it is the only AgentMail
+consumer, install and set it up directly:
+
+```bash
+auggy augment add visitorAuth
+```
+
+Accept the setup prompt and restart only after it succeeds.
+If the agent also needs `agentMail`, follow
+[Sharing one inbox with `visitorAuth`](#sharing-one-inbox-with-visitorauth).
+Inbound processing is not required for a visitor to receive or redeem a magic
+link.
+
+### Receive email
+
+Do not accept post-add setup before the inbound policy exists. Install without
+running optional setup, edit the generated YAML, and only then provision the
+runtime key:
+
+```bash
+auggy augment add agentMail --yes
+```
+
+For an inbox that admits only known senders, start with:
+
+```yaml
+# augments/agentMail/augment.yaml
+type: agentMail
+config:
+  apiKey: ${AGENTMAIL_API_KEY}
+  inboxId: ${AGENTMAIL_INBOX_ID}
+  emailAddress: ${AGENTMAIL_INBOX_EMAIL}
+  addressVisibility: public
+  inbound:
+    mode: websocket
+    allowedSenders:
+      - operator@example.com
+      - "*@trusted.example"
+```
+
+Then run setup. For a foreground agent, stop it with Ctrl-C and run
+`auggy run` again. For a background agent, restart it by name:
+
+```bash
+auggy agentmail setup agentMail
+auggy restart <agent-name>
+```
+
+With `signup` or `existing`, setup now includes `message_read` in the new
+runtime key. If `classifications.spam` or `classifications.blocked` is set to
+`process`, it also includes the matching label-read permission. With `manual`,
+the supplied key must already have those permissions. See
+[Configuration](#configuration) for public-inbox, polling, webhook,
+reply-review, and automatic-reply policy.
+
+If outbound setup already succeeded, do not merely change `inbound.mode` and
+restart: the existing key is too narrow. Follow
+[Replace runtime credentials safely](#replace-runtime-credentials-safely),
+then run setup again with the inbound policy already saved.
+
+### Command names
 
 Built-in augment names are case-insensitive at the CLI boundary. Both of these
 install the canonical `agentMail` augment and mount its skill:
@@ -50,21 +146,26 @@ auggy augment setup agentMail
 the target. If neither is installed, setup tells you which augment to add.
 Non-interactive use must also pass an explicit `--mode`.
 
-If both canonical augments are new, the shortest safe path is one interactive
-add:
+If both canonical augments are new and outbound-only behavior is sufficient,
+the shortest safe path is one interactive add:
 
 ```bash
 auggy augment add agentMail visitorAuth
 ```
 
 The post-add flow uses one shared setup confirmation and one provider-credential
-and provisioning flow. It provisions `agentMail` first, then attaches `visitorAuth`
-with `--mode env` without asking for credentials again. This is true regardless
-of argument or picker order. It prints start/restart guidance only after both
-steps succeed. If an accepted setup fails, the command exits nonzero, leaves
-the installed files in place, and tells you to finish setup or remove the
-unresolved augment before restarting. `--yes` skips optional post-add setup
-rather than provisioning non-interactively.
+and provisioning flow. It provisions `agentMail` first, then attaches
+`visitorAuth` with `--mode env` without asking for credentials again. This is
+true regardless of argument or picker order. It prints start/restart guidance
+only after both steps succeed. If an accepted setup fails, the command exits
+nonzero, leaves the installed files in place, and tells you to finish setup or
+remove the unresolved augment before restarting. `--yes` skips optional
+post-add setup rather than provisioning non-interactively.
+
+That combined interactive flow provisions from the generated outbound-only
+policy. If `agentMail` should receive email, instead run the combined add with
+`--yes`, configure `augments/agentMail/augment.yaml`, then set up `agentMail`
+before attaching `visitorAuth` with `--mode env`.
 
 Automatic setup deliberately supports only one canonical referenced mount at
 `augments/agentMail/augment.yaml` or `augments/visitorAuth/augment.yaml`. It
@@ -95,13 +196,40 @@ challenge; there is intentionally no pre-supplied OTP or non-interactive signup
 path. For automation, use `existing`, `manual`, or `env`.
 
 Setup never silently replaces runtime credentials already assigned to the
-agent. Use `--mode env` to reuse the values in `.env`. To deliberately
-reprovision or attach a different inbox, first revoke the old inbox-scoped key
-in AgentMail, then remove the old `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID`, and
-`AGENTMAIL_INBOX_EMAIL` entries from the agent's `.env` and unset any exported
-variables with those names before running `signup`, `existing`, or `manual`.
+agent. Use `--mode env` to reuse the values in `.env`; Auggy verifies the inbox
+identity and reachability, not the key's permission scope, and does not add
+permissions. `manual` likewise stores the runtime key supplied by the operator
+without widening or verifying its permission scope.
+
+### Replace runtime credentials safely
+
+Use this procedure when enabling inbound after outbound-only setup, enabling
+spam/blocked processing, moving to another inbox, or otherwise replacing the
+runtime key:
+
+1. Stop the agent so the old key cannot remain active during replacement.
+2. Save the intended policy in `augments/agentMail/augment.yaml`. Setup reads
+   this file to determine the least-privilege permission set.
+3. In AgentMail, revoke the old inbox-scoped runtime key. Do not delete the
+   inbox.
+4. Remove every `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID`, and
+   `AGENTMAIL_INBOX_EMAIL` entry from the agent's `.env`.
+5. Remove exported copies from the current shell:
+
+   ```bash
+   unset AGENTMAIL_API_KEY AGENTMAIL_INBOX_ID AGENTMAIL_INBOX_EMAIL
+   ```
+
+6. Run `auggy agentmail setup agentMail` and choose `existing` to mint a
+   correctly scoped replacement key in an existing AgentMail account. Use
+   `signup` only when creating the person's first AgentMail account and inbox.
+   Choose `manual` only if you already created a replacement key with every
+   permission required by the saved policy.
+7. Confirm setup reports the expected permissions, then restart the agent.
+
 Revoke before deleting local credentials so the retired provider key is not
-orphaned.
+orphaned. If `AGENTMAIL_*` values remain in either `.env` or the process
+environment, automatic setup fails closed rather than replacing them.
 
 The account API key is provisioning authority. Auggy uses it only to create the
 inbox and its least-privilege runtime key; it never writes that account key to
@@ -158,26 +286,43 @@ configuration unchanged.
 ### Sharing one inbox with `visitorAuth`
 
 The canonical `agentMail` and `visitorAuth` setups intentionally share one
-AgentMail inbox and runtime key. Configure `agentMail` first so setup mints the
-permissions required by its complete inbound/outbound policy, then attach
-`visitorAuth` to those local credentials:
+AgentMail inbox and runtime key. Configure the complete `agentMail` policy
+first, then set up `agentMail` so the minted key includes every permission that
+policy requires. Finally, attach `visitorAuth` to those local credentials:
 
 ```bash
-auggy augment add agentmail
-auggy augment add visitorAuth
+auggy augment add agentMail visitorAuth --yes
+# For inbound use, edit augments/agentMail/augment.yaml now.
 auggy agentmail setup agentMail
 auggy agentmail setup visitorAuth --mode env
 ```
 
 Reversing this order fails closed instead of replacing shared credentials with
-a key that may be too narrow for `agentMail`. Custom, inline, additional, or
-multiple AgentMail consumers must be assigned credentials manually rather than
-passing through this shared singleton setup path.
+a key that may be too narrow for `agentMail`. `visitorAuth --mode env` reuses
+the existing inbox and runtime key; it does not widen them. Custom, inline,
+additional, or multiple AgentMail consumers must be assigned credentials
+manually rather than passing through this shared singleton setup path.
 
-An interactive `auggy augment add agentMail visitorAuth` performs that exact
-sequence through one setup confirmation and credential flow. The two-command
-sequence above remains the recovery path for standalone adds, skipped setup,
-automation, or a partial post-add failure.
+An interactive `auggy augment add agentMail visitorAuth` performs the two setup
+steps through one confirmation and credential flow for the generated
+outbound-only policy. The explicit `--yes` sequence above is required when
+inbound policy must be saved before provisioning. It is also the recovery path
+for standalone adds, skipped setup, automation, or a partial post-add failure.
+
+### What changes require setup again?
+
+| Change | Restart | New runtime key |
+| --- | --- | --- |
+| Sender allowlist, bounded inbound rates, reply mode, polling interval, or other policy-only setting while inbound remains enabled | Yes | No |
+| `inbound.mode: none` to any enabled mode | Yes | Yes: add `message_read` |
+| Change spam or blocked classification from `discard` to `process` | Yes | Yes: add the matching label-read permission |
+| Change between polling, WebSocket, and webhook while inbound remains enabled | Yes | No; webhook also requires its secret and `webTransport` |
+| Disable inbound | Yes | Not required to boot, but rotate if least privilege requires removing `message_read` |
+| Add `visitorAuth` to a correctly scoped `agentMail` inbox | Yes | No; attach with `--mode env` |
+| Change inbox or replace/revoke its runtime key | Yes | Yes |
+
+Editing YAML never changes provider permissions. When the table requires a new
+key, save the YAML first and use the replacement procedure above.
 
 ### Removal and provider cleanup
 
@@ -426,7 +571,7 @@ Auggy, so the supplied key must already have the same permissions.
 
 ## Choosing an inbound mode
 
-| Mode | Arrival path | Recovery behavior | Use it when |
+| Mode | How Auggy receives email | Recovery behavior | Use it when |
 | --- | --- | --- | --- |
 | `none` | No inbound turns | No ledger worker | The agent only sends mail |
 | `polling` | Periodic AgentMail REST reads | Single-flight reads advance a durable checkpoint | Simplicity is more important than immediate delivery |
