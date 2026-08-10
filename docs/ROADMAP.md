@@ -7,14 +7,14 @@ the compact feature/status matrix.
 ## Release Framing
 
 - **Latest stable release:** `0.4.4`.
-- **Public-preview candidate:** `0.5.0-rc.1`, distributed through npm's `next`
+- **Public-preview candidate:** `0.5.0-rc.7`, distributed through npm's `next`
   tag. It includes the
   app-backend foundation, durable AgentMail inbound/review, the security-audit
   remediation, keyed turn scheduling, Telegram conflict recovery, CI
   test-surface enforcement, and a fail-closed distributed-coordination
   foundation.
-- **Immediate release plan:** publish one `0.5.0-rc.1` under npm's `next`
-  dist-tag, validate the public OSS path, then publish final `0.5.0`. See the
+- **Immediate release plan:** validate the published `0.5.0-rc.7` public OSS
+  path, harden any remaining candidate issues, then publish final `0.5.0`. See the
   [OSS Production Release Plan](./plans/production-readiness-roadmap-2026-07-24.md).
 - **Pre-1.0 cadence:** do not jump straight from `0.5.x` to `1.0.0`. Ship useful
   `0.x` releases as the app-backend surface hardens.
@@ -33,7 +33,7 @@ completed plans are removed once their durable decisions reach reference docs.
 
 ## 0.5.0 Candidate — OSS Production Preview
 
-Status: **public release candidate (`0.5.0-rc.1`)**.
+Status: **public release candidate (`0.5.0-rc.7`)**.
 
 The candidate includes:
 

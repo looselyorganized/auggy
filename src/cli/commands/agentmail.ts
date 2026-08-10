@@ -1,6 +1,6 @@
 import { confirm, input, password, select } from "@inquirer/prompts";
 import { Command } from "commander";
-import { existsSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
@@ -1341,16 +1341,11 @@ function findProjectDotenvProvisioningKeySources(
   agentDir: string,
   invocationDir: string,
 ): string[] {
-  const nodeEnv = process.env.NODE_ENV;
-  const names = [
-    ".env",
-    ".env.local",
-    ...(nodeEnv && /^[A-Za-z0-9_-]+$/.test(nodeEnv)
-      ? [`.env.${nodeEnv}`, `.env.${nodeEnv}.local`]
-      : []),
-  ];
   const paths = new Set<string>();
   for (const directory of new Set([agentDir, invocationDir])) {
+    const names = readdirSync(directory)
+      .filter((name) => /^\.env(?:\.[A-Za-z0-9_-]+)+$/.test(name) || name === ".env")
+      .sort();
     for (const name of names) {
       const path = join(directory, name);
       if (!existsSync(path)) continue;

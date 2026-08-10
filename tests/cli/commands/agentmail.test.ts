@@ -310,6 +310,40 @@ describe("agentmail setup command", () => {
     }
   });
 
+  test("rejects provisioning keys in inactive environment-specific dotenv files", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-account-inactive-dotenv-"));
+    try {
+      const paths = writeVisitorAuthAgent(root);
+      writeFileSync(join(root, ".env.production"), "AGENTMAIL_ACCOUNT_API_KEY=am_prod_secret\n");
+      const createInbox = mock(async () => {
+        throw new Error("must not contact AgentMail");
+      });
+
+      const error = (await runAgentMailSetup(
+        "visitorAuth",
+        {
+          config: paths.configPath,
+          mode: "existing",
+          apiKey: "am_explicit_secret",
+          username: "env-agent",
+        },
+        {
+          cwd: root,
+          interactive: false,
+          provisioner: unusedProvisioner({ createInbox }),
+        },
+      ).catch((caught) => caught as Error)) as Error;
+
+      expect(error.message).toContain("provisioning-only account credential");
+      expect(error.message).toContain(".env.production");
+      expect(error.message).not.toContain("am_prod_secret");
+      expect(error.message).not.toContain("am_explicit_secret");
+      expect(createInbox).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("allows a process-scoped account key when the project dotenv placeholder is blank", async () => {
     const previous = process.env.AGENTMAIL_ACCOUNT_API_KEY;
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-account-process-env-"));
