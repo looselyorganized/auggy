@@ -2,7 +2,7 @@
 
 **Availability:** outbound email shipped before RC.5; the current hardened
 inbound, reviewed-reply, digest, and multi-inbox action-center contract is in
-the `0.5.0-rc.5` candidate. Inbound remains an explicit opt-in.
+the published `0.5.0-rc.7` candidate. Inbound remains an explicit opt-in.
 
 `agentMail` gives an agent a policy-gated AgentMail inbox. It exposes
 `send_message`, `reply_to_message`, and `forward_message`, and can turn admitted
@@ -50,6 +50,22 @@ auggy augment setup agentMail
 the target. If neither is installed, setup tells you which augment to add.
 Non-interactive use must also pass an explicit `--mode`.
 
+If both canonical augments are new, the shortest safe path is one interactive
+add:
+
+```bash
+auggy augment add agentMail visitorAuth
+```
+
+The post-add flow uses one shared setup confirmation and one provider-credential
+and provisioning flow. It provisions `agentMail` first, then attaches `visitorAuth`
+with `--mode env` without asking for credentials again. This is true regardless
+of argument or picker order. It prints start/restart guidance only after both
+steps succeed. If an accepted setup fails, the command exits nonzero, leaves
+the installed files in place, and tells you to finish setup or remove the
+unresolved augment before restarting. `--yes` skips optional post-add setup
+rather than provisioning non-interactively.
+
 Automatic setup deliberately supports only one canonical referenced mount at
 `augments/agentMail/augment.yaml` or `augments/visitorAuth/augment.yaml`. It
 fails closed for inline mounts, custom names, custom AgentMail-compatible
@@ -91,7 +107,10 @@ The account API key is provisioning authority. Auggy uses it only to create the
 inbox and its least-privilege runtime key; it never writes that account key to
 the agent's `.env`. Prefer the masked prompt. For non-interactive existing
 account setup, inject `AGENTMAIL_ACCOUNT_API_KEY` through the operator's secret
-manager or process environment, not the agent's runtime `.env`.
+manager or a genuinely process-scoped environment, not a project `.env`,
+`.env.local`, or environment-specific dotenv file. Because Bun may load those
+files into `process.env`, setup checks the agent and invocation directories and
+fails before contacting AgentMail when it finds the provisioning key there.
 
 The inbox-scoped key is runtime authority. Setup writes only that key as
 `AGENTMAIL_API_KEY`, together with `AGENTMAIL_INBOX_ID` and, for `agentMail`,
@@ -115,9 +134,17 @@ auggy agentmail setup agentMail --mode existing
 ```
 
 Use an AgentMail account key when prompted. Do not use an inbox runtime key for
-this mode. A username collision during inbox creation remains a hard failure;
-select the intended existing inbox in `manual` mode or choose another username
-after verifying ownership in AgentMail.
+this mode. On a definitive `403 resource_taken`, Auggy lists the account's
+inboxes and may offer reuse only when exactly one inbox has both the requested
+address and this agent's compatible Auggy `client_id`. That interactive reuse
+still requires confirmation. If ownership cannot be proved, interactive setup
+asks for another username with at most three create attempts total; cancellation
+or exhaustion leaves local credentials unchanged. Non-interactive setup does
+not choose another name or adopt the collision: retry with a different
+`--username`, or connect a known inbox and scoped runtime key with
+`--mode manual`. Confirmed reuse mints a new scoped runtime key because the old
+key is not available locally; setup does not revoke earlier keys, so review the
+inbox in AgentMail and revoke obsolete scoped keys after the new key is saved.
 
 Provisioning mutations are never retried automatically when the provider
 outcome is unknown. For an interrupted inbox-create request, an operator may
@@ -146,6 +173,22 @@ Reversing this order fails closed instead of replacing shared credentials with
 a key that may be too narrow for `agentMail`. Custom, inline, additional, or
 multiple AgentMail consumers must be assigned credentials manually rather than
 passing through this shared singleton setup path.
+
+An interactive `auggy augment add agentMail visitorAuth` performs that exact
+sequence through one setup confirmation and credential flow. The two-command
+sequence above remains the recovery path for standalone adds, skipped setup,
+automation, or a partial post-add failure.
+
+### Removal and provider cleanup
+
+`auggy augment remove agentMail` and `auggy augment remove visitorAuth` remove
+the local augment mount and its copied skill, not provider resources. If the
+other shared consumer remains, Auggy retains the `AGENTMAIL_*` values and
+remote inbox/key because removal alone cannot prove that they are unused.
+Removing the final canonical consumer also retains them and prints a warning:
+confirm that no other local configuration uses the inbox, revoke the scoped
+key in AgentMail first, and only then remove the local runtime values. Auggy
+never auto-revokes or deletes an AgentMail inbox.
 
 ## Why an augment instead of AgentMail MCP
 
@@ -551,13 +594,15 @@ Webhook mode mounts `POST /webhooks/agentmail` by default for one mailbox and
 The shared route policy verifies the Svix signature against the raw request body before JSON
 parsing, uses `AGENTMAIL_WEBHOOK_SECRET` unless configured otherwise, and
 defaults to a 300-second timestamp tolerance. Generated browser clients omit
-webhook-policy routes.
+webhook-policy routes. This secret is required only when inbound delivery uses
+Svix webhook mode; default outbound use, polling, and WebSocket delivery do not
+need it, so a normal `auggy augment add agentMail` does not scaffold the value.
 
 ## Environment variables
 
 | Variable | Required when | Purpose |
 | --- | --- | --- |
-| `AGENTMAIL_ACCOUNT_API_KEY` | Optional secure input for `--mode existing` | Provisioning-only account key; read from the setup process environment and never written to the agent's `.env` |
+| `AGENTMAIL_ACCOUNT_API_KEY` | Optional secure input for `--mode existing` | Provisioning-only account key; use a masked prompt or genuinely process-scoped secret, never a project dotenv file |
 | `AGENTMAIL_API_KEY` | Always | AgentMail bearer key (`am_...`) |
 | `AGENTMAIL_INBOX_ID` | Always | Inbox used for send and receive |
 | `AGENTMAIL_INBOX_EMAIL` | Model-facing `agentMail` setup | Setup-verified canonical inbox address |

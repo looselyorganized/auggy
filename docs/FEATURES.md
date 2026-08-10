@@ -6,7 +6,7 @@ It is a status index, not a roadmap.
 Status values:
 
 - **Published** — available in the latest stable npm release.
-- **RC** — included in the `0.5.0-rc.5` candidate source.
+- **RC** — included in the published `0.5.0-rc.7` candidate source.
 - **Preview** — implemented for deliberate experimentation; its API or
   production posture may still change.
 - **Unsupported** — deliberately unavailable; nearby foundations must not be
@@ -77,7 +77,7 @@ checkpoint or orchestrate multi-step business workflows.
 ## Package Snapshot
 
 - Latest stable package: `0.4.4`.
-- Published release candidate: `0.5.0-rc.5` on npm's `next` tag for all six
+- Published release candidate: `0.5.0-rc.7` on npm's `next` tag for all six
   packages.
 - Release plan: [`plans/production-readiness-roadmap-2026-07-24.md`](./plans/production-readiness-roadmap-2026-07-24.md).
 - Source of truth: code in `src/`, followed by the numbered reference docs.

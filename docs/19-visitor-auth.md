@@ -42,6 +42,19 @@ prints magic links to the running agent's terminal. Do not use console magic
 links on public Railway deploys unless you explicitly accept that verification
 links will be visible in service logs.
 
+If the same agent also needs model-callable email, install both canonical
+consumers together in an interactive terminal:
+
+```bash
+auggy augment add agentMail visitorAuth
+```
+
+The post-add flow uses one setup confirmation and credential flow, provisions
+`agentMail`, and attaches `visitorAuth` to that inbox with environment reuse
+without asking for credentials again, regardless of selection order. `--yes`
+skips this optional setup flow; use the manual shared sequence below for
+automation or recovery.
+
 ## App-backend magic link request
 
 Use the deterministic route when a frontend owns the sign-in form and should not
@@ -254,8 +267,12 @@ orphaned.
 
 The `existing` flow uses the account key only to create the inbox and mint a
 least-privilege inbox-scoped runtime key. The account key is never written to
-the agent. On success, setup writes only the scoped key and inbox ID as
-`AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID`, switches
+the agent. Setup rejects `AGENTMAIL_ACCOUNT_API_KEY` in project `.env`,
+`.env.local`, and environment-specific dotenv files before contacting
+AgentMail. Prefer the masked prompt or a genuinely process-scoped secret;
+controlled automation can pass `--api-key` but should account for shell-history
+and process-inspection exposure. On success, setup writes only the scoped key
+and inbox ID as `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID`, switches
 `augments/visitorAuth/augment.yaml` to `agentMail.transport: agentmail`, and
 keeps the runtime permissions to `inbox_read` and `message_send`.
 
@@ -274,11 +291,21 @@ auggy agentmail setup visitorAuth --mode env
 This order lets `agentMail` mint the complete permission set required by its
 configured inbound policy and record `AGENTMAIL_INBOX_EMAIL`; `visitorAuth`
 then reuses those credentials without overwriting them with a narrower key.
+An interactive add containing both augments performs this same sequence after
+one shared confirmation and credential flow. The explicit commands remain the
+supported path after a skipped setup or partial failure.
 Automatic setup refuses custom, inline, renamed, or additional AgentMail
 consumers because changing the shared globals could silently retarget another
 augment. Configure those consumers manually with distinct environment
 references, or isolate them in separate agents, and run `auggy doctor` before
 starting the runtime.
+
+Removing either augment does not revoke the remote inbox/key or delete
+`AGENTMAIL_*`. Auggy retains them while another shared consumer is installed
+because removal alone cannot prove that they are unused. After checking the
+remaining topology—or removing the last consumer—verify that nothing else uses
+the inbox, revoke its scoped key in AgentMail, and only then remove the local
+values.
 
 ### Failure recovery
 
@@ -292,6 +319,14 @@ a later scoped-key request or response fails.
   claim an arbitrary existing inbox.
 - For a definite validation or authorization error, correct the named input or
   permission before explicitly retrying.
+- For a definitive `403 resource_taken`, interactive setup reuses an inbox only
+  when its exact address and Auggy `client_id` prove it belongs to this agent,
+  and asks before doing so. Otherwise it offers another username for at most
+  three create attempts total. Non-interactive setup fails without choosing a
+  new name or adopting the colliding inbox; supply a different `--username` or
+  connect a verified inbox with `--mode manual`. Confirmed reuse mints a new
+  scoped runtime key and leaves earlier keys untouched; review the inbox in
+  AgentMail and revoke obsolete scoped keys after setup succeeds.
 - If the CLI says a mutation's outcome is unknown, do **not** retry blindly.
   Inspect the intended AgentMail account for the requested inbox and key. If
   the inbox exists but no usable key was returned, create a fresh scoped key in

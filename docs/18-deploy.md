@@ -379,6 +379,30 @@ This provisions or configures the AgentMail inbox used by `visitorAuth`, writes
 `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` to `.env`, and updates
 `augments/visitorAuth/augment.yaml` to use `agentMail.transport: agentmail`.
 
+When the agent also mounts `agentMail`, both augments share one inbox and
+runtime key. A single interactive add coordinates that topology with one setup
+confirmation and credential flow:
+
+```bash
+auggy augment add agentMail visitorAuth
+```
+
+It configures `agentMail` first and attaches `visitorAuth` through environment
+reuse, independent of selection order. If setup was skipped, the augments were
+added separately, or a provider step failed, recover explicitly before deploy:
+
+```bash
+auggy augment setup agentMail
+auggy augment setup visitorAuth --mode env
+```
+
+Use the account provisioning key only through the masked prompt or a
+process-scoped secret. Setup rejects `AGENTMAIL_ACCOUNT_API_KEY` in project
+dotenv files; it belongs neither in the deployed runtime nor Railway service
+variables. Removing either augment also leaves provider resources and shared
+runtime values intact. Revoke an unused scoped key in AgentMail before deleting
+its local or Railway value.
+
 Console magic links are local-only. Deploy preflight fails if `visitorAuth` is
 still configured with `agentMail.transport: console`, unless
 `allowConsoleInProduction: true` is set under the `visitorAuth` config block to
@@ -477,7 +501,7 @@ contract connects them to a common bounded signal boundary.
 | Deploy preflight fails because webTransport is not on 8080 | Set `port: 8080` under `config` in `augments/webTransport/augment.yaml`. |
 | Health check does not pass after deploy | Run `auggy logs` and inspect the boot error. The cloud record is still written, so redeploy with `auggy deploy --yes` after fixing. |
 | visitorAuth refuses to boot — "publicUrl required" | Check that `augments/visitorAuth/augment.yaml` has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy` to refresh. |
-| Deploy preflight fails because visitorAuth uses console mail | Run `auggy augment setup visitorAuth`, or set `allowConsoleInProduction: true` only for smoke tests where log-visible magic links are acceptable. |
+| Deploy preflight fails because visitorAuth uses console mail | If `agentMail` is installed, run `auggy augment setup agentMail` followed by `auggy augment setup visitorAuth --mode env`; otherwise run `auggy augment setup visitorAuth`. Set `allowConsoleInProduction: true` only for smoke tests where log-visible magic links are acceptable. |
 | Deploy preflight fails because MCP has an enabled `stdio` server | Use a remote HTTPS MCP server for cloud, or mark the local server `cloud: "disabled"` in `.mcp.json`. |
 | Runtime refuses to start with a volume-admission error | Confirm Railway mounted a real volume at exactly `/app/data`, exposes `RAILWAY_VOLUME_MOUNT_PATH=/app/data`, and permits the generated entrypoint to set the root to mode `0700`. Remove symlinked state directories; the startup probe intentionally fails before state can fall back to ephemeral disk. |
 | Memory disappears after redeploy | Check Railway dashboard → service → Volumes and confirm the mount is `/app/data`. Core SQLite augments resolve directly to that root; do not repair this by adding an `/app/*.db` symlink. |

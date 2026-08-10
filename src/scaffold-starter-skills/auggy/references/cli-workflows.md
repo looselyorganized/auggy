@@ -70,7 +70,9 @@ auggy agentmail setup agentMail --mode existing
 
 Use the masked prompt or an ephemeral `AGENTMAIL_ACCOUNT_API_KEY`; do not put an
 account-level key in chat. The account key is used only for provisioning and is
-not written to the project. Existing-account retries derive one provider-valid
+not written to the project. It must not be stored in `.env`, `.env.local`, or
+an environment-specific project dotenv file; setup rejects those sources
+before contacting AgentMail. Existing-account retries derive one provider-valid
 `client_id` from the immutable agent ID and target, so the same logical setup
 recovers the same inbox instead of creating duplicates.
 
@@ -87,8 +89,28 @@ local credentials. For non-interactive automation, pass an explicit mode and
 its required inputs; `signup` remains interactive because it requires the
 verification code issued during the flow.
 
+If AgentMail returns a definitive `403 resource_taken`, reuse is safe only
+when the exact inbox address and compatible Auggy `client_id` prove one owned
+match; interactive setup still asks for confirmation. Otherwise it offers a
+different username for at most three create attempts total. Non-interactive
+setup fails without adopting the collision; pass another `--username` or use
+`--mode manual` with a verified inbox and scoped runtime key. Confirmed reuse
+mints a new scoped runtime key and does not revoke older keys; review the inbox
+in AgentMail and revoke obsolete scoped keys after setup succeeds.
+
 `agentMail` and `visitorAuth` use the same `AGENTMAIL_*` credentials. When both
-canonical augments are installed, preserve that boundary with this sequence:
+canonical augments are being added interactively, one command coordinates the
+complete flow regardless of selection order:
+
+```bash
+auggy augment add agentMail visitorAuth
+```
+
+The CLI uses one shared setup confirmation and credential flow, provisions
+`agentMail`, and attaches `visitorAuth` through environment reuse without
+asking for credentials again. `--yes` skips optional post-add setup. For
+standalone adds, automation, skipped setup, or recovery, preserve the same
+boundary with this sequence:
 
 ```bash
 auggy agentmail setup agentMail
@@ -102,6 +124,13 @@ fails closed instead of guessing. Automatic setup also refuses inline,
 custom-named, or additional AgentMail consumers; configure those topologies
 manually. Automatic credential mutation requires macOS or Linux; on Windows,
 configure `.env` and the referenced augment YAML with ordinary project tooling.
+
+Removing either shared augment retains the remote inbox/key and local
+`AGENTMAIL_*` values. Keep them while the other consumer remains. After
+removing the last consumer, revoke the unused scoped key in AgentMail before
+removing local values. `AGENTMAIL_WEBHOOK_SECRET` is optional and belongs only
+to Svix webhook inbound mode; default outbound, polling, and WebSocket use do
+not require it.
 
 ## Run Locally
 

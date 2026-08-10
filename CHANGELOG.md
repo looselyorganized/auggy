@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **One shared AgentMail post-add flow.** An interactive add containing both
+  `agentMail` and `visitorAuth` now uses one setup confirmation and credential
+  flow, provisions `agentMail` first, and attaches `visitorAuth` through
+  environment reuse regardless of selection order. Accepted setup failures
+  exit nonzero and withhold restart guidance until the operator completes
+  setup or removes the unresolved augment.
+- **Explicit AgentMail lifecycle ownership.** Default outbound installs no
+  longer scaffold the webhook-only `AGENTMAIL_WEBHOOK_SECRET`. Removing either
+  shared consumer preserves local credentials and remote resources and tells
+  the operator when manual provider revocation is required.
+
+### Fixed
+
+- **Owned inbox collision recovery.** A definitive AgentMail
+  `403 resource_taken` response may reuse only one inbox whose exact address
+  and Auggy `client_id` prove that it belongs to this agent. Otherwise the
+  interactive flow offers a bounded alternate-username path; non-interactive
+  setup fails without adopting or mutating an arbitrary inbox.
+
+### Security
+
+- **Provisioning key placement guard.** Existing-account setup rejects
+  `AGENTMAIL_ACCOUNT_API_KEY` loaded from project dotenv files before provider
+  or local side effects. Account authority must come from the masked prompt or
+  a genuinely process-scoped secret; only the inbox-scoped runtime key belongs
+  in the agent's `.env`.
+
 ## [0.5.0-rc.7] - 2026-08-09
 
 This seventh public candidate makes AgentMail setup safe to retry across
