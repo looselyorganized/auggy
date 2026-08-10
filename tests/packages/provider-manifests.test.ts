@@ -79,6 +79,8 @@ describe("published provider package contracts", () => {
       "fast-uri": "3.1.5",
       hono: "4.12.34",
       "ip-address": "10.4.0",
+      "js-yaml": "4.3.1",
+      nanoid: "3.3.17",
       postcss: "8.5.25",
       undici: "7.29.0",
     });
