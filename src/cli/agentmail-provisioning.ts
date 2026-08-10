@@ -8,6 +8,8 @@ const AGENTMAIL_USERNAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const AGENTMAIL_CREDENTIAL_RE = /(?:am|whsec)_[A-Za-z0-9._~+/=-]+/gi;
 const AGENTMAIL_CREDENTIAL_TEST_RE = /(?:am|whsec)_[A-Za-z0-9._~+/=-]+/i;
 const AUGGY_AGENT_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const AGENTMAIL_INBOX_LIST_LIMIT = 100;
+const AGENTMAIL_INBOX_LIST_MAX_PAGES = 5;
 
 export type AgentMailProvisioningTarget = "agentMail" | "visitorAuth";
 
@@ -164,6 +166,11 @@ export interface AgentMailInboxResult {
   displayName?: string;
 }
 
+export interface AgentMailOwnedInbox extends AgentMailInboxResult {
+  /** Stable provider identity used to prove this inbox belongs to an Auggy resource. */
+  clientId?: string;
+}
+
 export type AgentMailApiKeyPermissions = Record<string, boolean>;
 
 export type AgentMailRuntimeKeyPermissions = AgentMailApiKeyPermissions & {
@@ -202,6 +209,11 @@ export interface AgentMailProvisioningClient {
   verify(apiKey: string, otpCode: string): Promise<{ verified: boolean }>;
   createInbox(input: AgentMailCreateInboxInput): Promise<AgentMailInboxResult>;
   getInbox(apiKey: string, inboxId: string): Promise<AgentMailInboxResult>;
+  /**
+   * List a bounded set of inboxes visible to an account key. Optional for
+   * injected legacy/test clients; the production client always implements it.
+   */
+  listInboxes?(apiKey: string): Promise<AgentMailOwnedInbox[]>;
   createInboxApiKey(input: AgentMailCreateInboxApiKeyInput): Promise<AgentMailApiKeyResult>;
 }
 
@@ -393,6 +405,48 @@ export function createAgentMailProvisioningClient(
       const path = `/inboxes/${encodeURIComponent(inboxId)}`;
       const raw = await getJson(path, apiKey);
       return parseInboxResult(raw, inboxId, path, false);
+    },
+
+    async listInboxes(apiKey) {
+      assertAgentMailCredential(apiKey, "apiKey");
+      const inboxes: AgentMailOwnedInbox[] = [];
+      const seenPageTokens = new Set<string>();
+      let pageToken: string | undefined;
+      for (let page = 0; page < AGENTMAIL_INBOX_LIST_MAX_PAGES; page += 1) {
+        const query = new URLSearchParams({ limit: String(AGENTMAIL_INBOX_LIST_LIMIT) });
+        if (pageToken) query.set("page_token", pageToken);
+        const path = `/inboxes?${query.toString()}`;
+        const raw = await getJson(path, apiKey);
+        if (!isRecord(raw) || !Array.isArray(raw.inboxes)) {
+          throw new AgentMailProvisioningResponseError(
+            path,
+            "inboxes was missing or was not an array",
+          );
+        }
+        if (raw.inboxes.length > AGENTMAIL_INBOX_LIST_LIMIT) {
+          throw new AgentMailProvisioningResponseError(
+            path,
+            `inboxes exceeded the requested page limit of ${AGENTMAIL_INBOX_LIST_LIMIT}`,
+          );
+        }
+        for (const value of raw.inboxes) {
+          inboxes.push(parseOwnedInboxResult(value, path));
+        }
+        const nextPageToken = optionalToken(raw.next_page_token, 256);
+        if (nextPageToken === null) {
+          throw new AgentMailProvisioningResponseError(path, "next_page_token was invalid");
+        }
+        if (!nextPageToken) return inboxes;
+        if (seenPageTokens.has(nextPageToken)) {
+          throw new AgentMailProvisioningResponseError(path, "next_page_token repeated");
+        }
+        seenPageTokens.add(nextPageToken);
+        pageToken = nextPageToken;
+      }
+      throw new AgentMailProvisioningResponseError(
+        "/inboxes",
+        `pagination exceeded ${AGENTMAIL_INBOX_LIST_MAX_PAGES} pages`,
+      );
     },
 
     async createInboxApiKey(input) {
@@ -779,6 +833,21 @@ function parseInboxResult(
     inboxId,
     email,
     ...(displayName === undefined ? {} : { displayName }),
+  };
+}
+
+function parseOwnedInboxResult(value: unknown, operation: string): AgentMailOwnedInbox {
+  if (!isRecord(value)) {
+    throw new AgentMailProvisioningResponseError(operation, "an inbox was not an object");
+  }
+  const parsed = parseInboxResult(value, undefined, operation, false);
+  const clientId = optionalClientId(value.client_id);
+  if (clientId === null) {
+    throw new AgentMailProvisioningResponseError(operation, "an inbox client_id was invalid");
+  }
+  return {
+    ...parsed,
+    ...(clientId === undefined ? {} : { clientId }),
   };
 }
 

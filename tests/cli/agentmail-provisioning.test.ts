@@ -237,6 +237,87 @@ describe("createAgentMailProvisioningClient.getInbox", () => {
   });
 });
 
+describe("createAgentMailProvisioningClient.listInboxes", () => {
+  test("lists bounded account-owned inboxes across pages with client identities", async () => {
+    const urls: string[] = [];
+    const auth: string[] = [];
+    const client = createAgentMailProvisioningClient({
+      http: {
+        post: async () => {
+          throw new Error("unused");
+        },
+        get: async (url, opts) => {
+          urls.push(url);
+          auth.push(opts?.headers?.authorization ?? "");
+          if (urls.length === 1) {
+            return response(
+              url,
+              200,
+              JSON.stringify({
+                inboxes: [
+                  {
+                    inbox_id: "inb_visitor",
+                    email: "support@agentmail.to",
+                    client_id:
+                      "auggy.v1.inbox.aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c.visitorAuth",
+                  },
+                ],
+                next_page_token: "page_2",
+              }),
+            );
+          }
+          return response(
+            url,
+            200,
+            JSON.stringify({
+              inboxes: [{ inbox_id: "inb_other", email: "other@agentmail.to" }],
+            }),
+          );
+        },
+      },
+    });
+
+    await expect(client.listInboxes?.("am_account")).resolves.toEqual([
+      {
+        inboxId: "inb_visitor",
+        email: "support@agentmail.to",
+        clientId: "auggy.v1.inbox.aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c.visitorAuth",
+      },
+      { inboxId: "inb_other", email: "other@agentmail.to" },
+    ]);
+    expect(urls).toEqual([
+      "https://api.agentmail.to/v0/inboxes?limit=100",
+      "https://api.agentmail.to/v0/inboxes?limit=100&page_token=page_2",
+    ]);
+    expect(auth).toEqual(["Bearer am_account", "Bearer am_account"]);
+  });
+
+  test("fails closed on malformed or looping inbox pagination", async () => {
+    for (const body of [
+      { inboxes: [{ inbox_id: "inb_1", email: "one@agentmail.to", client_id: "bad:id" }] },
+      { inboxes: [], next_page_token: "repeat" },
+    ]) {
+      let calls = 0;
+      const client = createAgentMailProvisioningClient({
+        http: {
+          post: async () => {
+            throw new Error("unused");
+          },
+          get: async (url) => {
+            calls += 1;
+            return response(url, 200, JSON.stringify(body));
+          },
+        },
+      });
+
+      await expect(client.listInboxes?.("am_account")).rejects.toBeInstanceOf(
+        AgentMailProvisioningResponseError,
+      );
+      expect(calls).toBe(body.next_page_token ? 2 : 1);
+    }
+  });
+});
+
 describe("createAgentMailProvisioningClient.createInbox client_id contract", () => {
   test("rejects an invalid client_id before dispatch without exposing credentials", async () => {
     let dispatched = false;

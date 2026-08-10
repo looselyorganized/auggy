@@ -8,6 +8,7 @@ import {
   buildAgentMailClientId,
   buildAgentMailRuntimeKeyPermissions,
   createAgentMailProvisioningClient,
+  type AgentMailOwnedInbox,
   type AgentMailProvisioningClient,
   type AgentMailProvisioningTarget,
   type AgentMailRuntimeKeyPermissions,
@@ -41,6 +42,7 @@ export type AgentMailSetupTarget = AgentMailProvisioningTarget;
 export type AgentMailSetupMode = "signup" | "existing" | "manual" | "env";
 const IMMUTABLE_AGENT_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const AGENTMAIL_OTP_MAX_ATTEMPTS = 3;
+const AGENTMAIL_USERNAME_MAX_ATTEMPTS = 3;
 const AGENTMAIL_RUNTIME_ENV_KEYS = [
   "AGENTMAIL_API_KEY",
   "AGENTMAIL_INBOX_ID",
@@ -320,6 +322,9 @@ async function runAgentMailSetupLocked(
         prompts,
         configPlan.runtimeKeyPermissions,
         interactive,
+        prompts.confirm,
+        agentDir,
+        deps.cwd ?? process.cwd(),
       );
     }
   } else if (mode === "existing") {
@@ -332,6 +337,9 @@ async function runAgentMailSetupLocked(
       prompts,
       configPlan.runtimeKeyPermissions,
       interactive,
+      prompts.confirm,
+      agentDir,
+      deps.cwd ?? process.cwd(),
     );
   } else {
     credentials = await runManualFlow(opts, prompts);
@@ -479,15 +487,17 @@ async function runExistingAccountFlow(
   },
   runtimeKeyPermissions: AgentMailRuntimeKeyPermissions,
   interactive: boolean,
+  promptConfirm: PromptConfirm,
+  agentDir: string,
+  invocationDir: string,
 ): Promise<AgentMailSetupCredentials> {
-  const parentApiKey =
-    firstUsableOption(opts.apiKey, process.env.AGENTMAIL_ACCOUNT_API_KEY) ??
-    (await prompts.password({
-      message: "AgentMail API key that can create inboxes:",
-      mask: "*",
-      validate: (value) => value.trim().length > 0 || "AgentMail API key required",
-    }));
-  const username = await resolveUsername(agentName, opts.username, prompts.input);
+  const parentApiKey = await resolveProvisioningAccountApiKey(
+    opts.apiKey,
+    prompts.password,
+    agentDir,
+    invocationDir,
+  );
+  const initialUsername = await resolveUsername(agentName, opts.username, prompts.input);
   const displayName =
     (usableOption(opts.displayName) ? opts.displayName : undefined) ??
     (interactive
@@ -503,17 +513,22 @@ async function runExistingAccountFlow(
     );
   }
 
-  const inbox = await provisioner.createInbox({
-    apiKey: parentApiKey.trim(),
-    username,
+  const inbox = await resolveExistingAccountInbox({
+    target,
+    agentName,
+    agentId,
+    parentApiKey,
+    initialUsername,
     displayName: normalizedDisplayName,
-    clientId: buildAgentMailClientId(agentId, target),
-    metadata: { source: "auggy-cli", agent: agentName, augment: target },
+    provisioner,
+    promptInput: prompts.input,
+    promptConfirm,
+    interactive,
   });
   const runtimeKey = await createScopedRuntimeKey(
     target,
     agentName,
-    parentApiKey.trim(),
+    parentApiKey,
     inbox.inboxId,
     runtimeKeyPermissions,
     provisioner,
@@ -525,6 +540,120 @@ async function runExistingAccountFlow(
     scopedRuntimeKey: runtimeKey.evidence,
     deferredTermination: runtimeKey.deferredTermination,
   };
+}
+
+async function resolveExistingAccountInbox(input: {
+  target: AgentMailSetupTarget;
+  agentName: string;
+  agentId: string;
+  parentApiKey: string;
+  initialUsername: string;
+  displayName: string;
+  provisioner: AgentMailProvisioningClient;
+  promptInput: PromptInput;
+  promptConfirm: PromptConfirm;
+  interactive: boolean;
+}): Promise<AgentMailOwnedInbox> {
+  const clientId = buildAgentMailClientId(input.agentId, input.target);
+  let username = input.initialUsername;
+  for (let attempt = 1; attempt <= AGENTMAIL_USERNAME_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await input.provisioner.createInbox({
+        apiKey: input.parentApiKey,
+        username,
+        displayName: input.displayName,
+        clientId,
+        metadata: { source: "auggy-cli", agent: input.agentName, augment: input.target },
+      });
+    } catch (error) {
+      if (!isDefinitiveInboxAddressCollision(error)) throw error;
+
+      const reusable = await findCompatibleOwnedInbox(
+        input.provisioner,
+        input.parentApiKey,
+        input.agentId,
+        input.target,
+        `${username}@agentmail.to`,
+      );
+      if (reusable && input.interactive) {
+        const reuse = await input.promptConfirm({
+          message: `${reusable.email} already belongs to this Auggy agent in your AgentMail account. Reuse it?`,
+          default: true,
+        });
+        if (reuse) return reusable;
+      }
+
+      if (!input.interactive || attempt === AGENTMAIL_USERNAME_MAX_ATTEMPTS) {
+        throw inboxAddressCollisionRecoveryError(username);
+      }
+      try {
+        const nextUsername = await input.promptInput({
+          message: `${username}@agentmail.to is taken. Choose another inbox username:`,
+          default: `${slugForAgentMail(input.agentName)}-${attempt + 1}`,
+          validate: (candidate) =>
+            validAgentMailUsername(candidate.trim()) ||
+            "use letters, numbers, hyphens, or underscores",
+        });
+        username = slugForAgentMail(nextUsername);
+        if (!validAgentMailUsername(username)) {
+          throw new Error(`Invalid AgentMail username "${nextUsername}".`);
+        }
+      } catch (promptError) {
+        if (!isPromptCancellation(promptError)) throw promptError;
+        throw new Error(
+          "AgentMail inbox selection was cancelled. No inbox was adopted, no runtime key was created, and no local credentials were changed.",
+        );
+      }
+    }
+  }
+  throw inboxAddressCollisionRecoveryError(username);
+}
+
+async function findCompatibleOwnedInbox(
+  provisioner: AgentMailProvisioningClient,
+  accountApiKey: string,
+  agentId: string,
+  target: AgentMailSetupTarget,
+  expectedEmail: string,
+): Promise<AgentMailOwnedInbox | undefined> {
+  if (!provisioner.listInboxes) return undefined;
+  let inboxes: AgentMailOwnedInbox[];
+  try {
+    inboxes = await provisioner.listInboxes(accountApiKey);
+  } catch {
+    // A failed read cannot prove ownership. A different username remains a
+    // safe recovery path because the failed create was a definitive collision.
+    return undefined;
+  }
+  const otherTarget: AgentMailSetupTarget = target === "agentMail" ? "visitorAuth" : "agentMail";
+  const compatibleClientIds = new Set([
+    buildAgentMailClientId(agentId, target),
+    buildAgentMailClientId(agentId, otherTarget),
+  ]);
+  const matches = inboxes.filter(
+    (inbox) =>
+      inbox.email.toLowerCase() === expectedEmail.toLowerCase() &&
+      inbox.clientId !== undefined &&
+      compatibleClientIds.has(inbox.clientId),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
+}
+
+function isDefinitiveInboxAddressCollision(error: unknown): boolean {
+  return (
+    error instanceof AgentMailProvisioningApiError &&
+    error.operation === "/inboxes" &&
+    error.status === 403 &&
+    error.providerCode === "resource_taken" &&
+    !error.outcomeUnknown
+  );
+}
+
+function inboxAddressCollisionRecoveryError(username: string): Error {
+  return new Error(
+    `AgentMail inbox ${username}@agentmail.to is already taken. No inbox was adopted, no runtime key was created, and no local credentials were changed. ` +
+      "Retry with a different --username, or connect an existing inbox explicitly with --mode manual.",
+  );
 }
 
 async function runManualFlow(
@@ -1159,6 +1288,64 @@ function firstUsableOption(...values: Array<string | undefined>): string | undef
   return values.find((value): value is string => usableOption(value));
 }
 
+async function resolveProvisioningAccountApiKey(
+  explicit: string | undefined,
+  promptPassword: PromptPassword,
+  agentDir: string,
+  invocationDir: string,
+): Promise<string> {
+  if (usableOption(explicit)) return explicit!.trim();
+
+  const ambient = usableEnvValue(process.env.AGENTMAIL_ACCOUNT_API_KEY);
+  if (ambient) {
+    const dotenvSources = findProjectDotenvProvisioningKeySources(agentDir, invocationDir);
+    if (dotenvSources.length > 0) {
+      throw new Error(
+        "AGENTMAIL_ACCOUNT_API_KEY is a provisioning-only account credential and must not be stored in project dotenv files. " +
+          `Remove it from ${dotenvSources.map((path) => displayPath(path)).join(", ")}, then use the masked prompt or a genuinely process-scoped environment variable. ` +
+          "Setup did not contact AgentMail or change local files.",
+      );
+    }
+    return ambient;
+  }
+
+  const prompted = await promptPassword({
+    message: "AgentMail API key that can create inboxes:",
+    mask: "*",
+    validate: (value) => value.trim().length > 0 || "AgentMail API key required",
+  });
+  return prompted.trim();
+}
+
+function findProjectDotenvProvisioningKeySources(
+  agentDir: string,
+  invocationDir: string,
+): string[] {
+  const nodeEnv = process.env.NODE_ENV;
+  const names = [
+    ".env",
+    ".env.local",
+    ...(nodeEnv && /^[A-Za-z0-9_-]+$/.test(nodeEnv)
+      ? [`.env.${nodeEnv}`, `.env.${nodeEnv}.local`]
+      : []),
+  ];
+  const paths = new Set<string>();
+  for (const directory of new Set([agentDir, invocationDir])) {
+    for (const name of names) {
+      const path = join(directory, name);
+      if (!existsSync(path)) continue;
+      const containsProvisioningKey = parseEnvFile(readFileSync(path, "utf-8")).some(
+        (line) =>
+          line.kind === "kv" &&
+          line.key === "AGENTMAIL_ACCOUNT_API_KEY" &&
+          usableOption(line.value),
+      );
+      if (containsProvisioningKey) paths.add(path);
+    }
+  }
+  return [...paths].sort();
+}
+
 async function resolveUsername(
   agentName: string,
   explicit: string | undefined,
@@ -1188,7 +1375,7 @@ function slugForAgentMail(value: string): string {
 }
 
 function validAgentMailUsername(value: string): boolean {
-  return VALID_NAME_RE.test(value);
+  return value.length <= 64 && VALID_NAME_RE.test(value);
 }
 
 export function formatAgentMailSetupResult(result: AgentMailSetupResult): string {
