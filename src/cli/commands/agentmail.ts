@@ -1400,15 +1400,23 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
     result.mode === "manual" || result.mode === "env"
       ? `Warning: Setup did not change the existing runtime key. It must grant: ${permissions}.`
       : `${successMark()} Runtime key permissions: ${permissions}`;
+  const inboundEnabled = result.requiredPermissions?.includes("message_read") ?? false;
   const readyText =
     result.target === "visitorAuth"
       ? ["visitorAuth will now send magic links with AgentMail."]
-      : [
-          "AgentMail is ready for outbound email, including visitorAuth magic links.",
-          "Incoming email is stored in AgentMail, but Auggy won't read or act on it by default.",
-          "To receive, reply to, or forward email with Auggy, enable inbound processing:",
-          "  https://auggy.dev/docs/augment-agentmail",
-        ];
+      : inboundEnabled
+        ? [
+            "AgentMail is ready for outbound email and inbound processing.",
+            "Incoming email will be processed according to augments/agentMail/augment.yaml.",
+            "Review inbound, reply, and forwarding behavior:",
+            "  https://auggy.dev/docs/augment-agentmail",
+          ]
+        : [
+            "AgentMail is ready for outbound email, including visitorAuth magic links.",
+            "Incoming email is stored in AgentMail, but Auggy won't read or act on it by default.",
+            "To receive, reply to, or forward email with Auggy, enable inbound processing:",
+            "  https://auggy.dev/docs/augment-agentmail",
+          ];
   const reuseNotice = result.reusedExistingInbox
     ? [
         "Warning: Reused an existing AgentMail inbox and minted a new scoped runtime key.",

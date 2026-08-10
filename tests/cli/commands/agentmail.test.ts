@@ -3305,6 +3305,11 @@ describe("agentmail setup command", () => {
 
     expect(text).toContain("Warning: Setup did not change the existing runtime key");
     expect(text).toContain("inbox_read, message_send, message_read, label_spam_read");
+    expect(text).toContain("AgentMail is ready for outbound email and inbound processing.");
+    expect(text).toContain(
+      "Incoming email will be processed according to augments/agentMail/augment.yaml.",
+    );
+    expect(text).not.toContain("Auggy won't read or act on it by default");
     expect(text).not.toContain("am_super_secret");
   });
 });

@@ -35,54 +35,121 @@ Two related features have narrower jobs:
   send or redeem magic links. When both augments are installed, they can share
   one inbox and runtime key.
 
-## Install and setup
+## Goal recipes
 
-Choose the path that matches what this agent should do. Setup scopes the
-runtime key from the policy currently stored in
+Choose the smallest recipe that matches what this agent should do. Setup scopes
+the runtime key from the policy already stored in
 `augments/agentMail/augment.yaml`; it does not automatically widen that key
-afterward.
+afterward. In every recipe, save the YAML **before** running setup.
 
 ### Send email only
 
-The generated configuration uses `inbound.mode: none`, so the ordinary
-interactive flow is safe for outbound-only use:
+**Use this when:** the agent should compose new outbound messages but should
+not read incoming mail.
 
-```bash
-auggy augment add agentMail
-```
-
-Accept the setup prompt and choose `signup`, `existing`, or `manual`. Setup
-writes an inbox-scoped runtime key to `.env`. With `signup` or `existing`, the
-minted key receives `inbox_read` and `message_send`; it cannot read incoming
-messages. With `manual`, the supplied key must already have those permissions.
-Restart the agent after setup succeeds.
-
-### Send `visitorAuth` magic links
-
-`visitorAuth` is also an outbound-only path. If it is the only AgentMail
-consumer, install and set it up directly:
-
-```bash
-auggy augment add visitorAuth
-```
-
-Accept the setup prompt and restart only after it succeeds.
-If the agent also needs `agentMail`, follow
-[Sharing one inbox with `visitorAuth`](#sharing-one-inbox-with-visitorauth).
-Inbound processing is not required for a visitor to receive or redeem a magic
-link.
-
-### Receive email
-
-Do not accept post-add setup before the inbound policy exists. Install without
-running optional setup, edit the generated YAML, and only then provision the
-runtime key:
+**Prerequisite:** an AgentMail account, or an email address that can create one
+through interactive `signup`.
 
 ```bash
 auggy augment add agentMail --yes
 ```
 
-For an inbox that admits only known senders, start with:
+Keep the generated file at this minimal policy:
+
+```yaml
+# augments/agentMail/augment.yaml
+type: agentMail
+config:
+  apiKey: ${AGENTMAIL_API_KEY}
+  inboxId: ${AGENTMAIL_INBOX_ID}
+  emailAddress: ${AGENTMAIL_INBOX_EMAIL}
+  addressVisibility: public
+  inbound:
+    mode: none
+```
+
+```bash
+auggy agentmail setup agentMail
+auggy restart <agent-name>
+```
+
+**Expected result:** the agent can use `send_message`. AgentMail stores incoming
+mail, but Auggy does not read it; reply and forward tools cannot use it. Setup
+mints `inbox_read` and `message_send` permissions.
+
+**Restart and reprovision:** restart after setup. Changing policy while inbound
+remains `none` needs only a restart. Enabling inbound later requires a new
+runtime key; follow
+[Replace runtime credentials safely](#replace-runtime-credentials-safely).
+
+### Send `visitorAuth` magic links through the shared inbox
+
+**Use this when:** one agent needs both ordinary outbound AgentMail and
+production `visitorAuth` magic links. Receiving and redeeming a magic link does
+not require inbound email processing.
+
+**Prerequisites:** `webTransport` is configured with the agent's public URL,
+and `AUGGY_PUBLIC_URL` points at that reachable HTTPS deployment.
+
+```bash
+auggy augment add agentMail visitorAuth --yes
+```
+
+Keep `agentMail` outbound-only and configure `visitorAuth` to reuse its local
+credentials:
+
+```yaml
+# augments/agentMail/augment.yaml
+type: agentMail
+config:
+  apiKey: ${AGENTMAIL_API_KEY}
+  inboxId: ${AGENTMAIL_INBOX_ID}
+  emailAddress: ${AGENTMAIL_INBOX_EMAIL}
+  addressVisibility: public
+  inbound:
+    mode: none
+```
+
+```yaml
+# augments/visitorAuth/augment.yaml
+type: visitorAuth
+config:
+  publicUrl: ${AUGGY_PUBLIC_URL}
+  dbPath: ./visitor-auth.db
+  agentMail:
+    transport: agentmail
+    apiKey: ${AGENTMAIL_API_KEY}
+    inboxId: ${AGENTMAIL_INBOX_ID}
+    subjectPrefix: "[Verify] "
+  signingKey: ${VISITOR_SIGNING_KEY}
+  agentBinding: ${AUGGY_AGENT_ID}
+```
+
+```bash
+auggy agentmail setup agentMail
+auggy agentmail setup visitorAuth --mode env
+auggy restart <agent-name>
+```
+
+**Expected result:** both augments use one inbox-scoped runtime key.
+`visitorAuth` sends magic links; clicking a link reaches Auggy over HTTPS and
+does not create an inbound AgentMail turn.
+
+**Restart and reprovision:** restart after both setup steps succeed. Attaching
+`visitorAuth` with `--mode env` does not require a new key. If `agentMail` will
+also receive mail, start from an inbound recipe below before the first setup.
+
+### Receive allowlisted email over WebSocket, with replies disabled
+
+**Use this when:** known people or exact trusted domains should be able to wake
+the agent, but the agent must not send a reply from an inbound turn.
+
+**Prerequisite:** decide the exact sender addresses or domains. A pattern such
+as `*@trusted.example` matches only that domain, not its subdomains.
+
+```bash
+auggy augment add agentMail --yes
+```
 
 ```yaml
 # augments/agentMail/augment.yaml
@@ -97,27 +164,304 @@ config:
     allowedSenders:
       - operator@example.com
       - "*@trusted.example"
+    replies:
+      mode: disabled
 ```
-
-Then run setup. For a foreground agent, stop it with Ctrl-C and run
-`auggy run` again. For a background agent, restart it by name:
 
 ```bash
 auggy agentmail setup agentMail
 auggy restart <agent-name>
 ```
 
-With `signup` or `existing`, setup now includes `message_read` in the new
-runtime key. If `classifications.spam` or `classifications.blocked` is set to
-`process`, it also includes the matching label-read permission. With `manual`,
-the supplied key must already have those permissions. See
-[Configuration](#configuration) for public-inbox, polling, webhook,
-reply-review, and automatic-reply policy.
+**Expected result:** admitted messages become Auggy turns. Other senders are
+discarded before a model turn. The agent cannot propose, approve, or send a
+reply from those turns. Setup adds `message_read` to the runtime key.
 
-If outbound setup already succeeded, do not merely change `inbound.mode` and
-restart: the existing key is too narrow. Follow
-[Replace runtime credentials safely](#replace-runtime-credentials-safely),
-then run setup again with the inbound policy already saved.
+**Restart and reprovision:** restart after setup and after later policy edits.
+Changing sender patterns does not need a new key. Enabling this recipe after
+outbound-only setup does; use the credential-replacement procedure.
+
+### Receive email from anyone, with bounded admission
+
+**Use this when:** the inbox address is intentionally open to any well-formed
+sender. The limits bound Auggy's model-processing load; AgentMail may still
+accept and store mail above them.
+
+**Prerequisite:** choose finite global and per-sender hourly limits. The
+per-sender limit cannot exceed the global limit.
+
+```bash
+auggy augment add agentMail --yes
+```
+
+```yaml
+# augments/agentMail/augment.yaml
+type: agentMail
+config:
+  apiKey: ${AGENTMAIL_API_KEY}
+  inboxId: ${AGENTMAIL_INBOX_ID}
+  emailAddress: ${AGENTMAIL_INBOX_EMAIL}
+  addressVisibility: public
+  inbound:
+    mode: websocket
+    allowAnySender: true
+    rateLimit:
+      globalMaxPerHour: 100
+      perSenderMaxPerHour: 5
+    replies:
+      mode: disabled
+```
+
+```bash
+auggy agentmail setup agentMail
+auggy restart <agent-name>
+```
+
+**Expected result:** any well-formed sender may create a turn until either
+rolling hourly limit is reached. Rate-limited mail remains in AgentMail but
+does not create an Auggy turn.
+
+**Restart and reprovision:** restart after setup and policy edits. The initial
+inbound setup needs `message_read`; changing only the limits does not require a
+new runtime key.
+
+### Receive email through a verified webhook
+
+**Use this when:** the agent has a stable public HTTPS URL and should receive
+low-latency callbacks. Auggy also runs REST catch-up, so the callback is not the
+only recovery path.
+
+**Prerequisites:** install `webTransport`, expose it over HTTPS, and generate a
+strong secret in `AGENTMAIL_WEBHOOK_SECRET`. Configure the same callback path
+and signing secret in AgentMail.
+
+```bash
+auggy augment add webTransport agentMail --yes
+```
+
+```yaml
+# agent.yaml (relevant mounts)
+augments:
+  - webTransport
+  - agentMail
+```
+
+```yaml
+# augments/agentMail/augment.yaml
+type: agentMail
+config:
+  apiKey: ${AGENTMAIL_API_KEY}
+  inboxId: ${AGENTMAIL_INBOX_ID}
+  emailAddress: ${AGENTMAIL_INBOX_EMAIL}
+  addressVisibility: public
+  inbound:
+    mode: webhook
+    allowedSenders:
+      - operator@example.com
+    replies:
+      mode: disabled
+    webhook:
+      path: /webhooks/agentmail
+      secretEnv: AGENTMAIL_WEBHOOK_SECRET
+      timestampToleranceSeconds: 300
+```
+
+```bash
+auggy agentmail setup agentMail
+auggy restart <agent-name>
+```
+
+**Expected result:** a correctly signed callback at
+`/webhooks/agentmail` is admitted once; invalid signatures and disallowed
+senders do not create turns.
+
+**Restart and reprovision:** restart after setup, route, secret, or policy
+changes. Switching from another enabled inbound mode does not need a new key.
+Switching from `none` does.
+
+### Require creator review before replying
+
+**Use this when:** admitted email should wake the agent and let it draft one
+reply, but a creator must approve that proposal in Auggy Console before it is
+sent.
+
+**Prerequisites:** `webTransport` must be installed with its Console/admin route
+enabled. The AgentMail provider inbox and Auggy's reply-review queue are
+different surfaces.
+
+```bash
+auggy augment add webTransport agentMail --yes
+```
+
+```yaml
+# agent.yaml (relevant mounts)
+augments:
+  - webTransport
+  - agentMail
+```
+
+```yaml
+# augments/webTransport/augment.yaml (relevant option)
+type: webTransport
+config:
+  port: 8080
+  adminRoute: true
+  auth:
+    type: bearer
+    token: ${AUGGY_WEB_TOKEN}
+```
+
+```yaml
+# augments/agentMail/augment.yaml
+type: agentMail
+config:
+  apiKey: ${AGENTMAIL_API_KEY}
+  inboxId: ${AGENTMAIL_INBOX_ID}
+  emailAddress: ${AGENTMAIL_INBOX_EMAIL}
+  addressVisibility: public
+  inbound:
+    mode: websocket
+    allowedSenders:
+      - operator@example.com
+    replies:
+      mode: review
+      allowReplyAll: false
+```
+
+```bash
+auggy agentmail setup agentMail
+auggy restart <agent-name>
+```
+
+**Expected result:** `reply_to_message` creates a durable Auggy reply proposal.
+The creator approves or rejects it in Console → Mail; the proposal is not a
+provider-native AgentMail draft.
+
+**Restart and reprovision:** restart after setup or reply-policy changes.
+Changing `disabled` to `review` while inbound is already enabled does not need
+a new key.
+
+### Send automatic replies within a hard hourly cap
+
+**Use this when:** trusted admitted senders may receive an immediate reply
+without creator approval. Sensitive output or a Reply-To address that differs
+from From still falls back to review.
+
+**Prerequisites:** `webTransport` with its Console/admin route enabled is still
+required for fallback review and reconciliation. Choose an outbound global cap
+between 1 and 100 per hour.
+
+```bash
+auggy augment add webTransport agentMail --yes
+```
+
+Keep the generated `webTransport` file with `adminRoute: true`, as shown in the
+reviewed-reply recipe above.
+
+```yaml
+# augments/agentMail/augment.yaml
+type: agentMail
+config:
+  apiKey: ${AGENTMAIL_API_KEY}
+  inboxId: ${AGENTMAIL_INBOX_ID}
+  emailAddress: ${AGENTMAIL_INBOX_EMAIL}
+  addressVisibility: public
+  outbound:
+    rateLimit:
+      enabled: true
+      globalMaxPerHour: 10
+      perRecipientCooldownMs: 300000
+      dedupWindowMs: 300000
+  inbound:
+    mode: websocket
+    allowedSenders:
+      - operator@example.com
+    replies:
+      mode: automatic
+      allowReplyAll: false
+```
+
+```bash
+auggy agentmail setup agentMail
+auggy restart <agent-name>
+```
+
+**Expected result:** the exact admitted inbound turn may send one reply within
+the durable cap. Token-shaped content or a different Reply-To address falls
+back to creator review instead of sending automatically.
+
+**Restart and reprovision:** restart after setup and reply/rate-limit edits.
+Changing from reviewed to automatic replies does not require a new key while
+inbound remains enabled.
+
+### Send a creator digest for outstanding mail work
+
+**Use this when:** the creator should receive a periodic metadata-only summary
+of open, pending-review, ambiguous, or quarantined mail. This does not include
+message content and does not enable inbound by itself.
+
+**Prerequisites:** install `notify` and configure exactly one matching
+creator-authorized destination with a positive durable quota. This example
+uses Notify's generated local JSONL destination.
+
+```bash
+auggy augment add agentMail notify --yes
+```
+
+```yaml
+# agent.yaml (relevant mounts)
+augments:
+  - agentMail
+  - notify
+```
+
+```yaml
+# augments/notify/augment.yaml
+type: notify
+config:
+  destinations:
+    - name: creator
+      transport: log-to-file
+      path: ./notifications.jsonl
+      allowedTrustLevels: [creator]
+  rateLimit:
+    globalMaxPerHour: 5
+```
+
+```yaml
+# augments/agentMail/augment.yaml
+type: agentMail
+config:
+  apiKey: ${AGENTMAIL_API_KEY}
+  inboxId: ${AGENTMAIL_INBOX_ID}
+  emailAddress: ${AGENTMAIL_INBOX_EMAIL}
+  addressVisibility: public
+  inbound:
+    mode: websocket
+    allowedSenders:
+      - operator@example.com
+    replies:
+      mode: disabled
+    creatorDigest:
+      enabled: true
+      destination: creator
+      intervalMs: 900000
+      maxItems: 20
+      maxAttempts: 5
+```
+
+```bash
+auggy agentmail setup agentMail
+auggy restart <agent-name>
+```
+
+**Expected result:** every 15 minutes, outstanding mail state may produce one
+bounded summary in `notifications.jsonl`. The digest contains counts and state,
+not sender, subject, body, message IDs, or provider errors.
+
+**Restart and reprovision:** restart after setup or digest/Notify policy
+changes. Enabling a digest does not change AgentMail key permissions, but its
+inbound mode does.
 
 ### Command names
 
@@ -380,102 +724,12 @@ email/domain forms; broad or partial wildcards such as `*` and `foo*` remain
 invalid. Use `allowAnySender: true` when every well-formed sender should be
 eligible. A domain pattern matches that exact domain, not its subdomains.
 
-```yaml
-# agent.yaml
-augments:
-  - webTransport
-  - agentMail
-  - notify
+The goal recipes above are the copyable configurations. Start with one recipe
+and add only fields whose behavior you need; combining every optional block at
+once makes permission changes and security consequences harder to review.
 
-# augments/agentMail/augment.yaml
-type: agentMail
-config:
-  apiKey: ${AGENTMAIL_API_KEY}
-  inboxId: ${AGENTMAIL_INBOX_ID}
-  emailAddress: ${AGENTMAIL_INBOX_EMAIL}
-  # creator | public. Setup uses public for a model-facing AgentMail inbox.
-  addressVisibility: public
-  # apiBaseUrl: https://api.agentmail.to/v0
-  # dbPath: ./agent-mail.db
-
-  outbound:
-    # Default: [creator]
-    allowedTrustLevels: [creator]
-
-    # Optional. If present, every recipient must match.
-    allowedRecipients:
-      - operator@example.com
-      - "*@trusted.example"
-
-    maxRecipients: 10
-    bodyMaxBytes: 102400
-    allowHtml: false
-    subjectPrefix: "[Auggy] "
-
-    rateLimit:
-      enabled: true
-      globalMaxPerHour: 10
-      perRecipientCooldownMs: 300000
-      dedupWindowMs: 300000
-
-    humanReview:
-      # Default: [public]. A reviewed trust level must also be allowed above
-      # before it can propose an outbound action.
-      requiredForTrustLevels: [public]
-      expiresAfterMs: 86400000
-
-  inbound:
-    # none | polling | websocket | webhook
-    mode: websocket
-    allowedSenders:
-      - support@example.com
-      - "*@customer.example"
-    # Optional for an allowlisted inbox. The window is a rolling local hour.
-    rateLimit:
-      globalMaxPerHour: 100
-      perSenderMaxPerHour: 5
-    pollIntervalMs: 60000
-    maxPromptBytes: 102400
-    maxAttempts: 5
-    replies:
-      # disabled | review | automatic. Enabled inbound defaults to review.
-      mode: review
-      # Default false. Applies only to the exact message in the current email turn.
-      allowReplyAll: false
-    creatorDigest:
-      # Explicit opt-in. Omit this block to keep creator push disabled.
-      enabled: true
-      # Must uniquely match a creator-authorized, rate-limited Notify destination.
-      destination: creator
-      intervalMs: 900000
-      maxItems: 20
-      maxAttempts: 5
-    classifications:
-      received: process
-      spam: discard
-      blocked: discard
-      unauthenticated: discard
-    # websocketBaseUrl: wss://api.agentmail.to/v0
-    # webhook:
-    #   path: /webhooks/agentmail
-    #   secretEnv: AGENTMAIL_WEBHOOK_SECRET
-    #   timestampToleranceSeconds: 300
-```
-
-For a deliberately public inbox, replace `allowedSenders` with
-`allowAnySender: true`. Public admission must always have both finite limits:
-
-```yaml
-inbound:
-  mode: websocket
-  allowAnySender: true
-  rateLimit:
-    globalMaxPerHour: 100
-    perSenderMaxPerHour: 5
-```
-
-`100` globally and `5` per sender is the recommended starting posture for a
-public inbox. `globalMaxPerHour` accepts 1–10,000,
+For a deliberately open inbox, `100` globally and `5` per sender is the
+recommended starting posture. `globalMaxPerHour` accepts 1–10,000,
 `perSenderMaxPerHour` accepts 1–1,000, and the per-sender limit cannot exceed
 the global limit. Allowlisted inboxes may omit `rateLimit` to preserve their
 existing behavior, or configure the same bounded fields for defense in depth.
