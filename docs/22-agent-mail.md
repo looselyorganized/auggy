@@ -2,7 +2,7 @@
 
 **Availability:** outbound email shipped before RC.5; the current hardened
 inbound, reviewed-reply, digest, and multi-inbox action-center contract is in
-the published `0.5.0-rc.8` candidate. Inbound remains an explicit opt-in.
+the published `0.5.0-rc.9` candidate. Inbound remains an explicit opt-in.
 
 `agentMail` gives an agent a policy-gated AgentMail inbox.
 
