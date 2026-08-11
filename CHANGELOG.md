@@ -28,9 +28,10 @@ credential end to end and makes inbound delivery compatible with Bun.
 
 - **AgentMail WebSocket startup on Bun.** The runtime configures the public
   AgentMail SDK reconnecting socket for `arraybuffer` delivery before it opens,
-  preventing Bun from rejecting the SDK's `blob` default. Missing or
-  incompatible SDK boundaries fail closed with a sanitized, non-retryable
-  startup error.
+  preventing Bun from rejecting the SDK's `blob` default. It accepts the
+  provider's documented bare subscription acknowledgement while strictly
+  validating optional echoed filters. Missing or incompatible SDK boundaries
+  fail closed with a sanitized, non-retryable startup error.
 
 ## [0.5.0-rc.9] - 2026-08-10
 

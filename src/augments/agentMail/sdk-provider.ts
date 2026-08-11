@@ -277,13 +277,17 @@ function validateSubscribedAck(
 ): void {
   const inboxIds = eventField(event, "inboxIds", "inbox_ids");
   const eventTypes = eventField(event, "eventTypes", "event_types");
-  if (!Array.isArray(inboxIds) || inboxIds.length !== 1 || inboxIds[0] !== inboxId) {
+  if (
+    inboxIds !== undefined &&
+    (!Array.isArray(inboxIds) || inboxIds.length !== 1 || inboxIds[0] !== inboxId)
+  ) {
     throw new AgentMailPayloadError(
       "WebSocket subscription ack did not exactly match the configured inbox",
     );
   }
+  if (eventTypes === undefined) return;
   if (!Array.isArray(eventTypes)) {
-    throw new AgentMailPayloadError("WebSocket subscription ack is missing event types");
+    throw new AgentMailPayloadError("WebSocket subscription ack contains invalid event types");
   }
   let acknowledgedEventTypes: AgentMailReceivedEventType[];
   try {
