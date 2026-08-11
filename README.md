@@ -35,6 +35,11 @@ auggy doctor
 auggy run
 ```
 
+The command above installs the published RC.9 package. This source branch may
+contain unreleased changes. In particular, operator-owned AgentMail key
+lifecycle and the Bun WebSocket compatibility fix described in the source docs
+ship in the next release candidate; they are not present in RC.9.
+
 `auggy create` walks through the model provider, model, and agent identity,
 adds the core augments, then installs the agent's local dependencies. Choose Anthropic, OpenAI,
 OpenRouter, or a local/remote Ollama instance.
@@ -332,7 +337,10 @@ auggy agentmail setup visitorAuth
 ```
 
 The setup wizard separates new-account signup, existing-account provisioning,
-existing-inbox connection, and `.env` reuse. See the
+existing-inbox connection, and `.env` reuse. Key-accepting modes preserve the
+supplied key unchanged; signup stores AgentMail's provider-returned key under
+canonical `AGENTMAIL_API_KEY`. Auggy does not create a second key or narrow,
+rotate, or revoke provider keys. See the
 [`visitorAuth` operator reference](./docs/19-visitor-auth.md#agentmail-setup)
 for inputs, key scope, shared-inbox sequencing, and recovery.
 
@@ -345,7 +353,7 @@ auggy augment add agentMail visitorAuth
 
 The post-add flow uses one shared setup confirmation and one provider-credential
 and provisioning flow. It configures `agentMail` first, then attaches `visitorAuth`
-to the same inbox and runtime key through environment reuse without asking for
+to the same inbox and API key through environment reuse without asking for
 credentials again. The result is independent of argument or picker order.
 `--yes` deliberately skips optional post-add setup, so use the manual sequence
 in the operator references when automating installation.
@@ -411,12 +419,12 @@ auggy agentmail setup agentMail
 ```
 
 See the [`agentMail` operator reference](./docs/22-agent-mail.md) for inbox,
-runtime-key, and inbound-policy configuration.
+API-key, and inbound-policy configuration.
 
 Removing `agentMail` or `visitorAuth` never revokes AgentMail resources or
-deletes shared `AGENTMAIL_*` values automatically. Revoke an unused scoped key
-in AgentMail before removing its local values; preserve both until every
-remaining shared consumer has been checked.
+deletes shared `AGENTMAIL_*` values automatically. Confirm every shared
+consumer before removing local values, and revoke an unused key directly in
+AgentMail when your own credential policy requires it.
 
 ## Advanced Preview: Routes And App Integration
 

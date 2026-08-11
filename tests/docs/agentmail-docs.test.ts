@@ -531,6 +531,13 @@ describe("AgentMail operator guide contracts", () => {
     notify: yamlForPath(digestSection, "augments/notify/augment.yaml"),
   };
 
+  test("separates published RC.9 behavior from the next candidate", () => {
+    expect(source).toContain("not present in RC.9");
+    expect(source).toContain("Invalid binaryType: blob");
+    expect(source).toContain("Use `inbound.mode: polling` on RC.9");
+    expect(source).toContain("signup instead stores the provider-returned key");
+  });
+
   test("every published YAML fence is syntactically valid", () => {
     const blocks = fencedYaml(source);
     expect(blocks.length).toBeGreaterThanOrEqual(8);
@@ -579,7 +586,7 @@ describe("AgentMail operator guide contracts", () => {
           const formatted = formatAgentMailSetupResult(setup);
           expect(formatted).toContain("AgentMail inbox configured:");
           expect(formatted).toContain("Required AgentMail key capabilities:");
-          expect(formatted).toContain("Confirm that the supplied key grants:");
+          expect(formatted).toContain("Confirm that the configured key grants:");
           if (setup.requiredPermissions?.includes("message_read")) {
             expect(formatted).toContain(
               "AgentMail is configured for outbound email and inbound processing.",

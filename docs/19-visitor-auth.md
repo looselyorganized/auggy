@@ -239,14 +239,16 @@ Run the command interactively to choose among these modes:
   the existing-account flow. An explicit `--mode signup` never switches modes
   or adopts an existing inbox on its own.
 - `existing` — creates a new inbox in an existing AgentMail account. It needs
-  an account-level API key that can create inboxes plus an inbox username. In
+  an API key that can create inboxes plus an inbox username. That exact key is
+  retained for runtime use; Auggy does not derive a child key. In
   non-interactive use, pass `--mode existing --username <name>` and supply the
-  account key with `--api-key` or, preferably,
-  `AGENTMAIL_ACCOUNT_API_KEY`. `--display-name` is optional.
+  key with `--api-key` or, preferably, `AGENTMAIL_API_KEY`. `--display-name`
+  is optional.
 - `manual` — connects an inbox that already exists. Supply its inbox ID and an
-  inbox-scoped runtime key using secure prompts, `--inbox-id` / `--api-key`, or
-  `AGENTMAIL_INBOX_ID` / `AGENTMAIL_API_KEY`. Setup does not widen or replace
-  this key, so it must already grant `inbox_read` and `message_send`.
+  API key using secure prompts, `--inbox-id` / `--api-key`, or
+  `AGENTMAIL_INBOX_ID` / `AGENTMAIL_API_KEY`. Setup does not change the
+  provider key or its permissions, so it must already grant `inbox_read` and
+  `message_send`.
 - `env` — reuses usable `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` values
   already in the agent's `.env`. It accepts no provisioning inputs and does
   not change the existing key's permissions.
@@ -257,40 +259,42 @@ effects. Prefer the masked prompt or environment variables over `--api-key` so
 credentials do not enter shell history.
 
 Setup never silently replaces runtime credentials already assigned to the
-agent. Use `--mode env` to reuse the values in `.env`. To deliberately
-reprovision or attach a different inbox, first revoke the old inbox-scoped key
-in AgentMail, then remove the old `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID`, and
-`AGENTMAIL_INBOX_EMAIL` entries from the agent's `.env` and unset any exported
-variables with those names before running `signup`, `existing`, or `manual`.
-Revoke before deleting local credentials so the retired provider key is not
-orphaned.
+agent. Use `--mode env` to reuse the values in `.env`. To replace only the key
+for the existing inbox, run
+`auggy augment setup visitorAuth --mode manual --replace-key`; the CLI verifies
+the new key against that inbox, preserves the inbox ID, asks for confirmation,
+and does not revoke the previous provider key. Non-interactive replacement
+also requires `--yes`.
 
-The `existing` flow uses the account key only to create the inbox and mint a
-least-privilege inbox-scoped runtime key. The account key is never written to
-the agent. Setup rejects `AGENTMAIL_ACCOUNT_API_KEY` in project `.env`,
-`.env.local`, and environment-specific dotenv files before contacting
-AgentMail. Prefer the masked prompt or a genuinely process-scoped secret;
-controlled automation can pass `--api-key` but should account for shell-history
-and process-inspection exposure. On success, setup writes only the scoped key
+`AGENTMAIL_API_KEY` is the canonical stored and runtime variable. Every setup
+mode that accepts a key uses it; signup instead stores the provider-returned key
+under that canonical name. For one RC,
+`AGENTMAIL_ACCOUNT_API_KEY` remains a deprecated process-only alias. Setup
+rejects that alias in project dotenv files and never persists or deploys the
+legacy variable name. If accepted from the process environment, its exact value
+is stored as `AGENTMAIL_API_KEY`.
+Prefer the masked prompt or canonical environment variable; controlled
+automation can pass `--api-key` but should account for shell-history and
+process-inspection exposure. On success, setup writes the exact selected key
 and inbox ID as `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID`, switches
 `augments/visitorAuth/augment.yaml` to `agentMail.transport: agentmail`, and
-keeps the runtime permissions to `inbox_read` and `message_send`.
+reports that `inbox_read` was exercised. `visitorAuth` also requires
+`message_send`, but setup does not claim that permission is verified.
 
 ### Sharing credentials with the `agentMail` augment
 
 The canonical `agentMail` and `visitorAuth` mounts currently reference the same
 global `AGENTMAIL_*` variables. When both are installed, configure the
 model-facing mail augment first, then make visitor auth reuse that inbox and
-scoped key:
+API key:
 
 ```bash
 auggy agentmail setup agentMail
 auggy agentmail setup visitorAuth --mode env
 ```
 
-This order lets `agentMail` mint the complete permission set required by its
-configured inbound policy and record `AGENTMAIL_INBOX_EMAIL`; `visitorAuth`
-then reuses those credentials without overwriting them with a narrower key.
+This order lets `agentMail` record `AGENTMAIL_INBOX_EMAIL`; `visitorAuth` then
+reuses the same supplied credentials without changing provider permissions.
 An interactive add containing both augments performs this same sequence after
 one shared confirmation and credential flow. The explicit commands remain the
 supported path after a skipped setup or partial failure.
@@ -304,15 +308,15 @@ Removing either augment does not revoke the remote inbox/key or delete
 `AGENTMAIL_*`. Auggy retains them while another shared consumer is installed
 because removal alone cannot prove that they are unused. After checking the
 remaining topology—or removing the last consumer—verify that nothing else uses
-the inbox, revoke its scoped key in AgentMail, and only then remove the local
-values.
+the inbox, revoke its key in AgentMail if appropriate, and only then remove the
+local values. Auggy never revokes it automatically.
 
 ### Failure recovery
 
 Setup commits `.env` and augment YAML only after the provider flow has returned
-a valid inbox identity and runtime key; a local write failure rolls the pair
-back. Provider mutations are different: an inbox can exist remotely even when
-a later scoped-key request or response fails.
+a valid inbox identity for the selected key; a local write failure rolls local
+changes back. Provider mutations are different: an inbox can exist remotely
+even when the final local commit fails.
 
 - For an existing owner email, rerun with
   `auggy agentmail setup visitorAuth --mode existing`; do not retry signup or
@@ -324,14 +328,12 @@ a later scoped-key request or response fails.
   and asks before doing so. Otherwise it offers another username for at most
   three create attempts total. Non-interactive setup fails without choosing a
   new name or adopting the colliding inbox; supply a different `--username` or
-  connect a verified inbox with `--mode manual`. Confirmed reuse mints a new
-  scoped runtime key and leaves earlier keys untouched; review the inbox in
-  AgentMail and revoke obsolete scoped keys after setup succeeds.
+  connect a verified inbox with `--mode manual`. Confirmed reuse keeps the
+  selected key unchanged.
 - If the CLI says a mutation's outcome is unknown, do **not** retry blindly.
-  Inspect the intended AgentMail account for the requested inbox and key. If
-  the inbox exists but no usable key was returned, create a fresh scoped key in
-  AgentMail and connect it with `--mode manual`. If the provider confirms that
-  nothing was created, rerun the original command.
+  Inspect the intended AgentMail account for the requested inbox. If the inbox
+  exists, connect it with the selected key through `--mode manual`. If the
+  provider confirms that nothing was created, rerun the original command.
 
 The existing-account inbox request carries a stable, provider-valid
 idempotency identity derived from the immutable agent ID and target. That makes
@@ -432,7 +434,7 @@ The `notifyOnFirstVerify` option (operator-alert email on each new visitor) cann
 
 | Variable | Why |
 |---|---|
-| `AGENTMAIL_API_KEY` | AgentMail bearer token (`am_*`). Prefer an inbox-scoped, permission-whitelisted key with `inbox_read` and `message_send`. |
+| `AGENTMAIL_API_KEY` | AgentMail bearer token (`am_*`), used unchanged. It needs `inbox_read` and `message_send` for visitorAuth. |
 | `AGENTMAIL_INBOX_ID` | Inbox the verify email is sent FROM |
 | `AUGGY_PUBLIC_URL` | Base URL operators reach the agent at; embedded in the magic link |
 | `VISITOR_SIGNING_KEY` | HMAC key for visitor tokens; set only in `visitorAuth` — auto-injected into webTransport |
@@ -441,7 +443,10 @@ The `notifyOnFirstVerify` option (operator-alert email on each new visitor) cann
 ## Key constraints
 
 - Set `signingKey` only in `visitorAuth`. The augment-resolver auto-injects it into `webTransport.visitorTokens` at boot. Setting it in both places triggers a warning and `visitorAuth`'s value takes precedence. If they differ, visitor tokens minted by visitorAuth will fail webTransport's verification.
-- AgentMail keys should be least-privilege. visitorAuth uses `inbox_read` during boot healthcheck and `message_send` for verification delivery, so a permission-whitelisted key needs both.
+- AgentMail keys should be least-privilege. visitorAuth uses `inbox_read` during
+  setup and boot healthchecks and `message_send` for verification delivery.
+  Setup proves only inbox access; the first delivery exercises `message_send`.
+  A broad account key remains broad because Auggy never narrows it.
 - `publicUrl` MUST point to a host where the agent's `/visitor-auth/verify` route is reachable from the public internet. If you're running behind a tunnel (ngrok, Cloudflare), use the tunnel URL; if you're running on Railway, use the Railway domain.
 - Per-email rate limits are **in-memory only** — restart resets state.
   Verification tokens and visitors live in the schema-branded SQLite store;
@@ -517,5 +522,5 @@ lookups trim and lowercase operator input just like enrollment.
 | Verify link returns 410 "expired" | More than 15 minutes between send and click | Re-issue |
 | Verify link returns 410 "consumed" | Token was already used (visitor double-clicked, or someone with the link beat them) | Re-issue |
 | Visitor verifies but agent doesn't recognize them next visit | Cleared localStorage, or `VISITOR_SIGNING_KEY` rotated | Re-verify |
-| AgentMail healthcheck returns 403 | API key lacks access to the configured inbox, or a permission whitelist omitted `inbox_read` | Use an inbox-scoped key for `AGENTMAIL_INBOX_ID` with `inbox_read` and `message_send` |
+| AgentMail healthcheck returns 403 | API key lacks access to the configured inbox, or a permission whitelist omitted `inbox_read` | Update the selected key's permissions or explicitly replace it with one that has `inbox_read` and `message_send`; restart |
 | `auggy visitors --revoke` reports `memory.db` missing | layeredMemory has not created its DB yet, or a local custom path differs | Check `layeredMemoryDbPath` in `augments/visitorAuth/augment.yaml`. Portable catalog defaults use `./memory.db`; Railway resolves it directly under `/app/data`. |

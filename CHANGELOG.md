@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Operator-owned AgentMail credentials.** Setup now uses the exact
+  operator-supplied `AGENTMAIL_API_KEY` for inbox provisioning and runtime
+  access. Auggy no longer creates a narrower child key and never rotates or
+  revokes provider keys. `AGENTMAIL_ACCOUNT_API_KEY` remains a deprecated,
+  process-only alias for one RC; it is never persisted or deployed.
+- **Explicit AgentMail key replacement.** Existing agents can replace only the
+  stored key with `auggy augment setup agentMail --mode manual --replace-key`.
+  The flow verifies access to the existing inbox, preserves its identity, and
+  requires confirmation without revoking the previous provider key.
+
+### Fixed
+
+- **AgentMail WebSocket startup on Bun.** The runtime configures the public
+  AgentMail SDK reconnecting socket for `arraybuffer` delivery before it opens,
+  preventing Bun from rejecting the SDK's `blob` default. Missing or
+  incompatible SDK boundaries fail closed with a sanitized, non-retryable
+  startup error.
+
 ## [0.5.0-rc.9] - 2026-08-10
 
 This ninth public candidate makes AgentMail setup outcomes and its complete

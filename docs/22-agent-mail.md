@@ -1,8 +1,11 @@
 # `agentMail` augment
 
-**Availability:** outbound email shipped before RC.5; the current hardened
-inbound, reviewed-reply, digest, and multi-inbox action-center contract is in
-the published `0.5.0-rc.9` candidate. Inbound remains an explicit opt-in.
+**Availability:** outbound email shipped before RC.5; hardened inbound,
+reviewed replies, digests, and the multi-inbox action center are in the
+published `0.5.0-rc.9` candidate. The operator-owned key lifecycle and Bun
+WebSocket compatibility fix documented on this source branch ship in the next
+release candidate; they are not present in RC.9. Inbound remains an explicit
+opt-in.
 
 `agentMail` gives an agent a policy-gated AgentMail inbox.
 
@@ -14,8 +17,9 @@ the agent, propose replies, or let the agent use reply/forward successfully whil
 `inbound.mode: none` remains configured.
 
 Receiving email is a separate, explicit opt-in. Configure the inbound policy
-**before** provisioning credentials so setup can mint a runtime key with the
-required permissions. Once enabled, admitted email can become normal Auggy
+in YAML, then restart the agent. You do not rerun setup when enabling inbound
+or changing reply policy. The operator-supplied key must already allow the
+required provider actions. Once enabled, admitted email can become normal Auggy
 turns through polling, WebSocket, or verified webhook delivery. Every enabled
 inbound mode also uses REST catch-up and a durable SQLite ledger, so a live
 connection is never the only record of mail.
@@ -33,14 +37,16 @@ Two related features have narrower jobs:
 - `visitorAuth` sends magic links using outbound AgentMail access. It does not
   need inbound processing, and you do not need the `agentMail` augment just to
   send or redeem magic links. When both augments are installed, they can share
-  one inbox and runtime key.
+  one inbox and API key.
 
 ## Goal recipes
 
-Choose the smallest recipe that matches what this agent should do. Setup scopes
-the runtime key from the policy already stored in
-`augments/agentMail/augment.yaml`; it does not automatically widen that key
-afterward. In every recipe, save the YAML **before** running setup.
+Choose the smallest recipe that matches what this agent should do. Auggy uses
+the exact `AGENTMAIL_API_KEY` selected during setup for provisioning and at
+runtime. It never creates a child key, changes that key's permissions, rotates
+it, or revokes it. The operator owns its provider scope: use the narrowest key
+that still covers every enabled recipe, and treat a broad account key as broad
+authority over the AgentMail account.
 
 Every recipe below keeps `addressVisibility: creator`. Auggy exposes the
 canonical inbox address to the creator's model context, but not to public or
@@ -98,14 +104,15 @@ auggy agentmail setup agentMail
 auggy restart <agent-name>
 ```
 
-**Expected result:** the agent can use `send_message`. AgentMail stores incoming
-mail, but Auggy does not read it; reply and forward tools cannot use it. Setup
-mints `inbox_read` and `message_send` permissions.
+**Expected result:** the agent can use `send_message` when the supplied key has
+`message_send`. AgentMail stores incoming mail, but Auggy does not read it;
+reply and forward tools cannot use it. Setup verifies access to the selected
+inbox; it does not prove `message_send` until a send is attempted.
 
-**Restart and reprovision:** restart after setup. Changing policy while inbound
-remains `none` needs only a restart. Enabling inbound later requires a new
-runtime key; follow
-[Replace runtime credentials safely](#replace-runtime-credentials-safely).
+**Restart:** restart after setup or any YAML edit. Enabling inbound later is a
+YAML edit plus restart, not another setup run. If the selected key lacks the
+required capability, update that key's AgentMail permissions or replace it
+explicitly before restarting.
 
 ### Send `visitorAuth` magic links through the shared inbox
 
@@ -121,7 +128,7 @@ auggy augment add agentMail visitorAuth --yes
 ```
 
 Keep `agentMail` outbound-only. Leave the generated `visitorAuth` delivery
-block on `console` while the shared inbox and runtime key are provisioned; it
+block on `console` while the shared inbox and API key are configured; it
 must not reference `AGENTMAIL_*` yet:
 
 ```yaml
@@ -155,7 +162,7 @@ auggy agentmail setup visitorAuth --mode env
 auggy restart <agent-name>
 ```
 
-**Expected result:** both augments use one inbox-scoped runtime key.
+**Expected result:** both augments use one inbox and the same supplied API key.
 `visitorAuth` sends magic links; clicking a link reaches Auggy over HTTPS and
 does not create an inbound AgentMail turn. The first setup writes the shared
 `AGENTMAIL_*` values. The second verifies those local values and changes the
@@ -163,9 +170,9 @@ does not create an inbound AgentMail turn. The first setup writes the shared
 inbox references. Do not switch that block manually before the first setup;
 the CLI refuses to replace credentials already claimed by `visitorAuth`.
 
-**Restart and reprovision:** restart after both setup steps succeed. Attaching
-`visitorAuth` with `--mode env` does not require a new key. If `agentMail` will
-also receive mail, start from an inbound recipe below before the first setup.
+**Restart:** restart after both setup steps succeed. Attaching `visitorAuth`
+with `--mode env` reuses the configured key. If `agentMail` will also receive
+mail, its YAML and the key's provider permissions must allow inbound processing.
 
 ### Receive allowlisted email over WebSocket, with replies disabled
 
@@ -203,11 +210,12 @@ auggy restart <agent-name>
 
 **Expected result:** admitted messages become Auggy turns. Other senders are
 discarded before a model turn. The agent cannot propose, approve, or send a
-reply from those turns. Setup adds `message_read` to the runtime key.
+reply from those turns. The supplied key must have `message_read`; setup does
+not add or verify that permission.
 
-**Restart and reprovision:** restart after setup and after later policy edits.
-Changing sender patterns does not need a new key. Enabling this recipe after
-outbound-only setup does; use the credential-replacement procedure.
+**Restart:** restart after setup and after later policy edits. Enabling this
+recipe after outbound-only setup does not require another setup run. Replace
+or update the key only when its existing provider scope lacks `message_read`.
 
 ### Receive email from anyone, with bounded admission
 
@@ -249,9 +257,8 @@ auggy restart <agent-name>
 rolling hourly limit is reached. Rate-limited mail remains in AgentMail but
 does not create an Auggy turn.
 
-**Restart and reprovision:** restart after setup and policy edits. The initial
-inbound setup needs `message_read`; changing only the limits does not require a
-new runtime key.
+**Restart:** restart after setup and policy edits. Inbound runtime access needs
+`message_read`; changing only the limits does not change key requirements.
 
 ### Receive email through a verified webhook
 
@@ -303,9 +310,9 @@ auggy restart <agent-name>
 `/webhooks/agentmail` is admitted once; invalid signatures and disallowed
 senders do not create turns.
 
-**Restart and reprovision:** restart after setup, route, secret, or policy
-changes. Switching from another enabled inbound mode does not need a new key.
-Switching from `none` does.
+**Restart:** restart after setup, route, secret, or policy changes. Switching
+delivery modes or enabling webhook does not require another setup run; the key
+must already allow `message_read`.
 
 ### Require creator review before replying
 
@@ -365,9 +372,8 @@ auggy restart <agent-name>
 The creator approves or rejects it in Console → Mail; the proposal is not a
 provider-native AgentMail draft.
 
-**Restart and reprovision:** restart after setup or reply-policy changes.
-Changing `disabled` to `review` while inbound is already enabled does not need
-a new key.
+**Restart:** restart after setup or reply-policy changes. Changing `disabled`
+to `review` is a YAML edit plus restart, not another setup run.
 
 ### Send automatic replies within a hard hourly cap
 
@@ -418,9 +424,8 @@ auggy restart <agent-name>
 the durable cap. Token-shaped content or a different Reply-To address falls
 back to creator review instead of sending automatically.
 
-**Restart and reprovision:** restart after setup and reply/rate-limit edits.
-Changing from reviewed to automatic replies does not require a new key while
-inbound remains enabled.
+**Restart:** restart after setup and reply/rate-limit edits. Changing from
+reviewed to automatic replies is a YAML edit plus restart.
 
 ### Send a creator digest for outstanding mail work
 
@@ -487,9 +492,9 @@ auggy restart <agent-name>
 bounded summary in `notifications.jsonl`. The digest contains counts and state,
 not sender, subject, body, message IDs, or provider errors.
 
-**Restart and reprovision:** restart after setup or digest/Notify policy
-changes. Enabling a digest does not change AgentMail key permissions, but its
-inbound mode does.
+**Restart:** restart after setup or digest/Notify policy changes. A digest does
+not add provider permissions; the enabled inbound mode still requires
+`message_read` on the supplied key.
 
 ### Command names
 
@@ -557,10 +562,10 @@ the required POSIX descriptor lock is unavailable.
 
 | Mode | Provider ownership and effects | Credential input |
 | --- | --- | --- |
-| `signup` | For a person new to AgentMail. Creates the account and first inbox, verifies the human owner, and mints an inbox-scoped runtime key. Interactive only. | Human email and inbox username, followed by an interactive OTP prompt after AgentMail sends the challenge |
-| `existing` | For an existing AgentMail account. Creates or resolves this agent's deterministic inbox, then mints an inbox-scoped runtime key. | Account API key from the masked prompt or `AGENTMAIL_ACCOUNT_API_KEY` |
-| `manual` | Connects an existing inbox and existing scoped runtime key. It does not create or widen provider resources. | Inbox ID and runtime key from masked prompts or `AGENTMAIL_INBOX_ID` and `AGENTMAIL_API_KEY` |
-| `env` | Reuses the runtime inbox ID and key already stored in the agent's `.env`; `agentMail` also verifies and records the canonical inbox email. | Existing local `AGENTMAIL_INBOX_ID` and `AGENTMAIL_API_KEY` |
+| `signup` | For a person new to AgentMail. Creates the account and first inbox, verifies the human owner, and stores the API key returned by signup unchanged. Interactive only. | Human email and inbox username, followed by an interactive OTP prompt after AgentMail sends the challenge |
+| `existing` | For an existing AgentMail account. Uses the supplied key unchanged to create or resolve this agent's deterministic inbox, then stores that same key for runtime use. | API key from the masked prompt, `--api-key`, or `AGENTMAIL_API_KEY` |
+| `manual` | Connects an existing inbox with the supplied key. It does not create an inbox or change provider key permissions. | Inbox ID and API key from masked prompts, flags, or `AGENTMAIL_INBOX_ID` and `AGENTMAIL_API_KEY` |
+| `env` | Reuses the inbox ID and key already stored in the agent's `.env`; `agentMail` also verifies and records the canonical inbox email. | Existing local `AGENTMAIL_INBOX_ID` and `AGENTMAIL_API_KEY` |
 
 Interactive setup presents those four choices with the same ownership
 language. Signup asks for the OTP only after the signup request has created the
@@ -569,78 +574,56 @@ path. For automation, use `existing`, `manual`, or `env`.
 
 Setup never silently replaces runtime credentials already assigned to the
 agent. Use `--mode env` to reuse the values in `.env`; Auggy verifies the inbox
-identity and reachability, not the key's permission scope, and does not add
-permissions. `manual` likewise stores the runtime key supplied by the operator
-without widening or verifying its permission scope.
+identity and reachability, not the key's complete permission scope. It can
+prove `inbox_read` through that lookup. It cannot claim `message_send`,
+`message_read`, or classification-label permissions are working until the
+corresponding runtime operation succeeds.
 
-### Replace runtime credentials safely
+`AGENTMAIL_API_KEY` is the canonical stored and runtime variable. Every setup
+mode that accepts a key uses it; signup instead stores the provider-returned key
+under that canonical name. For one RC,
+`AGENTMAIL_ACCOUNT_API_KEY` remains a deprecated process-only alias. Rename it
+now: Auggy rejects that alias in project dotenv files and never persists or
+deploys the legacy variable name. If accepted from the process environment,
+its exact value is stored as `AGENTMAIL_API_KEY`.
 
-Use this procedure when enabling inbound after outbound-only setup, enabling
-spam/blocked processing, moving to another inbox, or otherwise replacing the
-runtime key:
+### Replace the key explicitly
 
-1. Stop the agent so the old key cannot remain active during replacement.
-2. Save the intended policy in `augments/agentMail/augment.yaml`. Setup reads
-   this file to determine the least-privilege permission set.
-3. If `visitorAuth` shares this inbox, preserve its other settings but
-   temporarily replace only `config.agentMail` in
-   `augments/visitorAuth/augment.yaml` with:
+You do not rerun setup after an inbound, sender, reply, classification, or rate
+policy edit. Save the YAML and restart. If the existing key lacks a required
+provider capability and you prefer not to update it, create or select a
+replacement in AgentMail, then run:
 
-   ```yaml
-   agentMail:
-     transport: console
-     subjectPrefix: "[Verify] "
-   ```
+```bash
+auggy augment setup agentMail --mode manual --replace-key
+```
 
-   Do not leave `apiKey` or `inboxId` in that temporary block. Keep the agent
-   stopped: this establishes a safe Console-only configuration for the next
-   boot and lets setup prove that `visitorAuth` no longer claims the old
-   runtime key.
-4. In [AgentMail](https://console.agentmail.to), revoke the old inbox-scoped
-   runtime key. Do not delete the inbox.
-5. Remove every `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID`, and
-   `AGENTMAIL_INBOX_EMAIL` entry from the agent's `.env`.
-6. Remove exported copies from the current shell:
+The command:
 
-   ```bash
-   unset AGENTMAIL_API_KEY AGENTMAIL_INBOX_ID AGENTMAIL_INBOX_EMAIL
-   ```
+- requires an existing `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` in the
+  agent's `.env`;
+- preserves the inbox ID and canonical email;
+- verifies that the new key can read that exact inbox before writing it;
+- asks for confirmation and says that Auggy will not revoke the previous key;
+- atomically replaces only `AGENTMAIL_API_KEY`; and
+- leaves the old key active in AgentMail until the operator revokes it there.
 
-7. Run `auggy agentmail setup agentMail` and choose `existing` to mint a
-   correctly scoped replacement key in an existing AgentMail account. Use
-   `signup` only when creating the person's first AgentMail account and inbox.
-   Choose `manual` only if you already created a replacement key with every
-   permission required by the saved policy.
-8. If `visitorAuth` shares the inbox, reattach it only after step 7 succeeds:
+For controlled non-interactive replacement, provide the new key through the
+process environment or `--api-key` and add `--yes`:
 
-   ```bash
-   auggy agentmail setup visitorAuth --mode env
-   ```
+```bash
+AGENTMAIL_API_KEY=<new-key> \
+  auggy augment setup agentMail --mode manual --replace-key --yes
+```
 
-   This command restores `transport: agentmail` and the shared credential
-   references without minting another key.
-9. Run `auggy doctor`, confirm setup reports the expected permissions, and
-   restart the agent.
+Avoid `--api-key` in ordinary shell use because command arguments may enter
+shell history or process listings. A shared canonical `visitorAuth` mount uses
+the same environment reference, so key replacement updates both consumers;
+you do not reattach it. Restart after replacement.
 
-Revoke before deleting local credentials so the retired provider key is not
-orphaned. If `AGENTMAIL_*` values remain in either `.env` or the process
-environment, automatic setup fails closed rather than replacing them.
-
-The account API key is provisioning authority. Auggy uses it only to create the
-inbox and its least-privilege runtime key; it never writes that account key to
-the agent's `.env`. Prefer the masked prompt. For non-interactive existing
-account setup, inject `AGENTMAIL_ACCOUNT_API_KEY` through the operator's secret
-manager or a genuinely process-scoped environment, not a project `.env`,
-`.env.local`, or environment-specific dotenv file. Because Bun may load those
-files into `process.env`, setup checks the agent and invocation directories and
-fails before contacting AgentMail when it finds the provisioning key there.
-
-The inbox-scoped key is runtime authority. Setup writes only that key as
-`AGENTMAIL_API_KEY`, together with `AGENTMAIL_INBOX_ID` and, for `agentMail`,
-the verified `AGENTMAIL_INBOX_EMAIL`. Avoid `--api-key` for either kind of key:
-although supported for controlled automation, command-line arguments can be
-retained in shell history or exposed through process inspection. Use the
-masked prompt or the matching environment variable instead.
+Replacement cannot move the agent to another inbox. It also does not narrow,
+rotate, or revoke a provider key. The operator owns those AgentMail operations
+and must confirm every other consumer before revoking the previous key.
 
 Existing-account inbox creation carries a deterministic, provider-valid
 idempotency identity derived from the immutable agent ID and setup target. An
@@ -656,68 +639,62 @@ stops without changing local credentials; rerun with:
 auggy agentmail setup agentMail --mode existing
 ```
 
-Use an AgentMail account key when prompted. Do not use an inbox runtime key for
-this mode. On a definitive `403 resource_taken`, Auggy lists the account's
+Use the key you want Auggy to retain at runtime; it must also be allowed to
+create and list inboxes for this mode. On a definitive `403 resource_taken`,
+Auggy lists the account's
 inboxes and may offer reuse only when exactly one inbox has both the requested
 address and this agent's compatible Auggy `client_id`. That interactive reuse
 still requires confirmation. If ownership cannot be proved, interactive setup
 asks for another username with at most three create attempts total; cancellation
 or exhaustion leaves local credentials unchanged. Non-interactive setup does
 not choose another name or adopt the collision: retry with a different
-`--username`, or connect a known inbox and scoped runtime key with
-`--mode manual`. Confirmed reuse mints a new scoped runtime key because the old
-key is not available locally; setup does not revoke earlier keys, so review the
-inbox in AgentMail and revoke obsolete scoped keys after the new key is saved.
+`--username`, or connect a known inbox and key with `--mode manual`. Confirmed
+reuse retains the selected key unchanged.
 
 Provisioning mutations are never retried automatically when the provider
 outcome is unknown. For an interrupted inbox-create request, an operator may
 explicitly retry after checking AgentMail; the deterministic identity targets
-the same logical inbox. Scoped API-key creation has no equivalent idempotency
-guarantee. If that request times out or returns an ambiguous server failure,
-inspect the inbox's keys in AgentMail and revoke any orphan with the setup key
-name before retrying. Provider failures leave the local `.env` and augment
-configuration unchanged.
+the same logical inbox. Auggy performs no provider API-key mutation, so there
+is no child-key outcome to reconcile. Provider failures leave the local `.env`
+and augment configuration unchanged.
 
 ### Sharing one inbox with `visitorAuth`
 
 The canonical `agentMail` and `visitorAuth` setups intentionally share one
-AgentMail inbox and runtime key. Configure the complete `agentMail` policy
-first, then set up `agentMail` so the minted key includes every permission that
-policy requires. Finally, attach `visitorAuth` to those local credentials:
+AgentMail inbox and API key. Configure `agentMail` first, then attach
+`visitorAuth` to those local credentials:
 
 ```bash
 auggy augment add agentMail visitorAuth --yes
-# For inbound use, edit augments/agentMail/augment.yaml now.
 auggy agentmail setup agentMail
 auggy agentmail setup visitorAuth --mode env
 ```
 
-Reversing this order fails closed instead of replacing shared credentials with
-a key that may be too narrow for `agentMail`. `visitorAuth --mode env` reuses
-the existing inbox and runtime key; it does not widen them. Custom, inline,
+Reversing this order fails closed instead of replacing shared credentials.
+`visitorAuth --mode env` reuses the existing inbox and API key; it does not
+change provider permissions. Custom, inline,
 additional, or multiple AgentMail consumers must be assigned credentials
 manually rather than passing through this shared singleton setup path.
 
 An interactive `auggy augment add agentMail visitorAuth` performs the two setup
-steps through one confirmation and credential flow for the generated
-outbound-only policy. The explicit `--yes` sequence above is required when
-inbound policy must be saved before provisioning. It is also the recovery path
-for standalone adds, skipped setup, automation, or a partial post-add failure.
+steps through one confirmation and credential flow. The explicit `--yes`
+sequence above is also the recovery path for standalone adds, skipped setup,
+automation, or a partial post-add failure.
 
-### What changes require setup again?
+### What requires setup again?
 
-| Change | Restart | New runtime key |
+| Change | Restart | Setup again? |
 | --- | --- | --- |
-| Sender allowlist, bounded inbound rates, reply mode, polling interval, or other policy-only setting while inbound remains enabled | Yes | No |
-| `inbound.mode: none` to any enabled mode | Yes | Yes: add `message_read` |
-| Change spam or blocked classification from `discard` to `process` | Yes | Yes: add the matching label-read permission |
-| Change between polling, WebSocket, and webhook while inbound remains enabled | Yes | No; webhook also requires its secret and `webTransport` |
-| Disable inbound | Yes | Not required to boot, but rotate if least privilege requires removing `message_read` |
-| Add `visitorAuth` to a correctly scoped `agentMail` inbox | Yes | No; attach with `--mode env` |
-| Change inbox or replace/revoke its runtime key | Yes | Yes |
+| Sender allowlist, inbound rates, reply mode, polling interval, or classifications | Yes | No. The existing key must already allow the selected provider reads. |
+| `inbound.mode: none` to polling, WebSocket, or webhook | Yes | No. Requires `message_read` on the existing key. |
+| Change between polling, WebSocket, and webhook | Yes | No. Webhook also requires its secret and `webTransport`. |
+| Disable inbound | Yes | No. Narrow or rotate the provider key yourself if desired. |
+| Add `visitorAuth` to the shared inbox | Yes | Yes, once: attach it with `--mode env`. |
+| Replace the key for the existing inbox | Yes | Yes: use `--mode manual --replace-key`. |
 
-Editing YAML never changes provider permissions. When the table requires a new
-key, save the YAML first and use the replacement procedure above.
+Editing YAML never changes provider permissions. If the current key is too
+narrow, update that key's AgentMail permissions or replace it explicitly. Do
+not expect setup to create or widen one.
 
 ### Removal and provider cleanup
 
@@ -726,8 +703,8 @@ the local augment mount and its copied skill, not provider resources. If the
 other shared consumer remains, Auggy retains the `AGENTMAIL_*` values and
 remote inbox/key because removal alone cannot prove that they are unused.
 Removing the final canonical consumer also retains them and prints a warning:
-confirm that no other local configuration uses the inbox, revoke the scoped
-key in AgentMail first, and only then remove the local runtime values. Auggy
+confirm that no other local configuration uses the inbox, revoke the key in
+AgentMail if appropriate, and only then remove the local runtime values. Auggy
 never auto-revokes or deletes an AgentMail inbox.
 
 ## Why an augment instead of AgentMail MCP
@@ -824,23 +801,23 @@ Every YAML change below requires an agent restart. Auggy does not hot-reload
 AgentMail YAML. The Console can persist a live override for only
 `outbound.rateLimit.globalMaxPerHour`; that separate override does not reload
 the YAML and continues to take precedence until the creator resets it. The
-**New key** column calls out the smaller set of YAML changes that also require
-a replacement inbox-scoped AgentMail key. Save the intended YAML before
-provisioning a new key so setup can calculate its least-privilege permissions.
+**Additional provider capability** column identifies permissions the selected
+key must already have for that behavior. Auggy reports these requirements but
+does not inspect the complete provider scope, change it, or create another key.
 
 #### Top-level `config`
 
-| Field | Type and allowed values | Default or requirement | New key |
+| Field | Type and allowed values | Default or requirement | Additional provider capability |
 | --- | --- | --- | --- |
-| `apiKey` | Non-empty string; normally `${AGENTMAIL_API_KEY}` | Required inbox-scoped runtime key | The changed value is the replacement key; restart after changing it |
-| `inboxId` | Non-empty string; normally `${AGENTMAIL_INBOX_ID}` | Required | Yes when moving to another inbox; the key must authorize that inbox |
-| `emailAddress` | Well-formed email address; normally `${AGENTMAIL_INBOX_EMAIL}` | Optional in the factory, but setup records the provider-verified canonical address | No permission change; rerun setup rather than editing it when moving inboxes |
+| `apiKey` | Non-empty string; normally `${AGENTMAIL_API_KEY}` | Required operator-supplied key, used unchanged | `inbox_read` for setup and boot; enabled mail operations need the capabilities below |
+| `inboxId` | Non-empty string; normally `${AGENTMAIL_INBOX_ID}` | Required | `inbox_read` for this exact inbox |
+| `emailAddress` | Well-formed email address; normally `${AGENTMAIL_INBOX_EMAIL}` | Optional in the factory, but setup records the provider-confirmed canonical address | No additional capability |
 | `addressVisibility` | `creator` or `public` | `creator` | No |
 | `apiBaseUrl` | AgentMail API URL string | AgentMail's production API; override only for a test or sandbox provider | No scope change, but the credentials must be valid for the selected provider |
 | `allowInsecureHttpWithCredentials` | Boolean | `false`; non-loopback plaintext also requires `NODE_ENV=development` | No |
 | `dbPath` | Non-empty SQLite path | `./agent-mail.db` for one local instance; deployment and multi-instance resolution may namespace it | No; stop the agent and migrate durable state before changing it |
-| `outbound` | Object; fields are listed below | `{}` with the strict outbound defaults below | No |
-| `inbound` | Object; fields are listed below | Omitted is equivalent to `mode: none` | Yes only when moving from `none` to an enabled mode, or when a classification adds a provider permission |
+| `outbound` | Object; fields are listed below | `{}` with the strict outbound defaults below | `message_send` when a send, reply, or forward executes |
+| `inbound` | Object; fields are listed below | Omitted is equivalent to `mode: none` | `message_read` when enabled, plus selected classification reads below |
 
 `agentDir` is programmatic-only. It exists on the TypeScript factory type, but
 the CLI resolver owns and supplies it. It is not one of the 42 YAML settings;
@@ -848,7 +825,7 @@ do not put it in `augment.yaml`.
 
 #### `outbound`
 
-| Field | Type and allowed values | Default or requirement | New key |
+| Field | Type and allowed values | Default or requirement | Additional provider capability |
 | --- | --- | --- | --- |
 | `allowedTrustLevels` | Array containing `creator`, `agent`, or `public` | `[creator]`; creator-originated calls remain permitted | No |
 | `allowedRecipients` | Array of non-empty strings; use exact addresses or exact-domain patterns such as `*@example.com` | Omitted allows any well-formed recipient; matching is case-insensitive and an exact-domain pattern does not include subdomains | No |
@@ -873,7 +850,7 @@ with an intended recipient and an intended rejection.
 
 #### `outbound.rateLimit` and `outbound.humanReview`
 
-| Field | Type and allowed values | Default or requirement | New key |
+| Field | Type and allowed values | Default or requirement | Additional provider capability |
 | --- | --- | --- | --- |
 | `rateLimit.enabled` | Boolean | `true` | No |
 | `rateLimit.globalMaxPerHour` | Non-negative number under YAML validation | `10`; automatic inbound replies impose the stricter effective requirement of a safe integer from 1 through 100 | No |
@@ -913,9 +890,9 @@ admission limits are separate and are not bypassed by who later reviews mail.
 
 #### `inbound` delivery and sender admission
 
-| Field | Type and allowed values | Default or requirement | New key |
+| Field | Type and allowed values | Default or requirement | Additional provider capability |
 | --- | --- | --- | --- |
-| `mode` | `none`, `polling`, `websocket`, or `webhook` | Required when the block is present; omit the block to use `none` | Yes for `none` to any enabled mode (`message_read`); no between enabled modes; rotate after disabling if least privilege should remove `message_read` |
+| `mode` | `none`, `polling`, `websocket`, or `webhook` | Required when the block is present; omit the block to use `none` | `message_read` for polling, WebSocket, or webhook; none for `none` |
 | `allowedSenders` | 1–1,000 unique exact addresses or exact-domain patterns such as `*@example.com`; case-insensitive, no surrounding whitespace, control characters, bare `*`, partial wildcard, or subdomain expansion | Exactly one sender policy is required when inbound is enabled | No |
 | `allowAnySender` | Boolean | Omitted; `true` requires `rateLimit` and cannot coexist with `allowedSenders` (even as `false`) | No |
 | `rateLimit` | Object; both fields are listed below | Optional with `allowedSenders`; required with `allowAnySender: true` | No |
@@ -936,11 +913,11 @@ does not upgrade an admitted sender's trust.
 
 #### `inbound.classifications` and `inbound.replies`
 
-| Field | Type and allowed values | Default or requirement | New key |
+| Field | Type and allowed values | Default or requirement | Additional provider capability |
 | --- | --- | --- | --- |
 | `classifications.received` | `process` or `discard` | `process` | No |
-| `classifications.spam` | `process` or `discard` | `discard` | Yes when changed to `process` (`label_spam_read`) |
-| `classifications.blocked` | `process` or `discard` | `discard` | Yes when changed to `process` (`label_blocked_read`) |
+| `classifications.spam` | `process` or `discard` | `discard` | `label_spam_read` when set to `process` |
+| `classifications.blocked` | `process` or `discard` | `discard` | `label_blocked_read` when set to `process` |
 | `classifications.unauthenticated` | `process` or `discard` | `discard` | No additional provider permission beyond enabled inbound |
 | `replies.mode` | `disabled`, `review`, or `automatic` | `disabled` when inbound is `none`; `review` when inbound is enabled | No |
 | `replies.allowReplyAll` | Boolean | `false`; cannot be `true` when replies are disabled | No |
@@ -969,7 +946,7 @@ grant general outbound or forwarding authority.
 
 #### `inbound.webhook`
 
-| Field | Type and allowed values | Default or requirement | New key |
+| Field | Type and allowed values | Default or requirement | Additional provider capability |
 | --- | --- | --- | --- |
 | `path` | String beginning with `/` | `/webhooks/agentmail` for the legacy singleton; `/webhooks/agentmail/<augment-name>` for a named multi-inbox instance | No |
 | `secretEnv` | Non-empty environment-variable name | `AGENTMAIL_WEBHOOK_SECRET` | No; update the provider callback secret and restart Auggy together |
@@ -981,7 +958,7 @@ outbound, polling, or WebSocket use.
 
 #### `inbound.creatorDigest`
 
-| Field | Type and allowed values | Default or requirement | New key |
+| Field | Type and allowed values | Default or requirement | Additional provider capability |
 | --- | --- | --- | --- |
 | `enabled` | Boolean | `false`; cannot be enabled with `inbound.mode: none` | No |
 | `destination` | Trimmed Notify destination name, 1–128 characters, with no control characters | Required when enabled; must uniquely match a Notify destination that permits creator trust and has a positive durable quota | No |
@@ -1033,6 +1010,15 @@ Credential-bearing AgentMail endpoints require HTTPS/WSS. Plaintext HTTP/WS is
 accepted only for loopback development. A remote sandbox that cannot use TLS
 requires both `allowInsecureHttpWithCredentials: true` and
 `NODE_ENV=development`; never enable that override in a deployed agent.
+
+The published RC.9 can fail during WebSocket startup on Bun with
+`Invalid binaryType: blob`. Use `inbound.mode: polling` on RC.9. The next
+release candidate configures the AgentMail SDK's public reconnecting socket for
+`arraybuffer` delivery before the connection opens. That avoids the SDK's
+incompatible `blob` default and remains in effect across reconnects. If a
+future SDK no longer exposes that public boundary, rejects the setting, or
+cannot read it back, inbound startup fails closed before listener registration
+or subscription with a sanitized, non-retryable compatibility error.
 
 `webTransport` is required for `inbound.mode: webhook`. It is also required
 with `adminRoute` enabled whenever an executable trust level requires outbound
@@ -1092,12 +1078,13 @@ idempotently acknowledges each matching Notify operation before preparing new
 work; this closes a crash between provider delivery and the two durable
 settlements without weakening replay protection.
 
-Setup reads this inbound block before it creates an inbox-scoped runtime key.
-`visitorAuth` and outbound-only `agentMail` receive exactly `inbox_read` and
-`message_send`. Enabled `agentMail` inbound adds `message_read`; setup adds
-`label_spam_read` or `label_blocked_read` only when the matching classification
-is explicitly set to `process`. Manual or `.env` credentials are not widened by
-Auggy, so the supplied key must already have the same permissions.
+Setup reads this block to report the provider capabilities the selected key
+will need. `visitorAuth` and outbound-only `agentMail` require `inbox_read` and
+`message_send`. Enabled inbound also requires `message_read`; processing spam
+or blocked classifications adds `label_spam_read` or `label_blocked_read`.
+Auggy does not create, widen, or inspect the complete permission set. Setup's
+inbox lookup proves only that the key can read the selected inbox; runtime
+operations fail closed if another required capability is absent.
 
 ## Choosing an inbound mode
 
@@ -1144,8 +1131,10 @@ spam, blocked, and unauthenticated classifications are discarded unless the
 operator deliberately overrides that posture. WebSocket subscribes only to
 classifications configured as `process`; REST opts into only the selected
 restricted spam/blocked/unauthenticated buckets and filters ordinary results
-locally. This keeps scoped keys least privileged. A verified webhook may still deliver another received
-classification; that event is durably discarded before kernel admission.
+locally. This bounds runtime reads to the configured classifications; the
+operator must scope the supplied key separately. A verified webhook may still
+deliver another received classification; that event is durably discarded
+before kernel admission.
 
 A malformed `From` address is rejected before model admission. Sender quota
 keys are case-insensitive, but plus-address aliases remain distinct addresses;
@@ -1301,14 +1290,15 @@ need it, so a normal `auggy augment add agentMail` does not scaffold the value.
 
 | Variable | Required when | Purpose |
 | --- | --- | --- |
-| `AGENTMAIL_ACCOUNT_API_KEY` | Optional secure input for `--mode existing` | Provisioning-only account key; use a masked prompt or genuinely process-scoped secret, never a project dotenv file |
-| `AGENTMAIL_API_KEY` | Always | AgentMail bearer key (`am_...`) |
+| `AGENTMAIL_API_KEY` | Always | Canonical AgentMail bearer key (`am_...`), used unchanged for provisioning and runtime |
+| `AGENTMAIL_ACCOUNT_API_KEY` | Deprecated for one RC | Process-only alias for `AGENTMAIL_API_KEY`; the legacy name is rejected in project dotenv files and never persisted or deployed, while an accepted value is stored canonically as `AGENTMAIL_API_KEY` |
 | `AGENTMAIL_INBOX_ID` | Always | Inbox used for send and receive |
 | `AGENTMAIL_INBOX_EMAIL` | Model-facing `agentMail` setup | Setup-verified canonical inbox address |
 | `AGENTMAIL_WEBHOOK_SECRET` | Webhook mode, unless `secretEnv` changes | Svix signing secret (`whsec_...`) |
 
-Prefer an inbox-scoped, least-privilege key. The exact AgentMail permissions
-depend on the enabled send, receive, and live-subscription paths.
+Prefer the narrowest key that supports the enabled send, receive, and
+live-subscription paths. If you use a broad account key, Auggy retains that
+broad authority unchanged; it does not derive a safer child credential.
 
 ## State and Railway durability
 
@@ -1419,29 +1409,30 @@ Setup commits local credentials atomically. A failed setup does not partially
 rewrite `.env` or an augment file, but `auggy augment add` intentionally leaves
 the installed augment files in place so the operator can retry setup or remove
 the unresolved augment. A provider request may already have created an inbox
-or scoped key before a timeout or response-validation failure; the entries
-below call out those cases.
+before a timeout or response-validation failure. Auggy does not create an API
+key, so there is no child-key mutation to reconcile.
 
 | Symptom | Cause | Safe fix | What changed |
 | --- | --- | --- | --- |
 | `Unknown augment "agentmail"` or setup says lowercase `agentmail` is unsupported | The installed CLI predates case-insensitive built-in resolution. Current builds accept `agentmail` and canonicalize it to `agentMail`. | Check `auggy --version`, install the current candidate, then rerun `auggy augment add agentMail` or `auggy agentmail setup agentMail`. | The rejected command changes nothing. |
 | `missing required argument 'target'` or setup asks which target to use | Both `agentMail` and `visitorAuth` are installed, so Auggy will not guess which policy owns setup. | Run `auggy agentmail setup agentMail`; after it succeeds, run `auggy agentmail setup visitorAuth --mode env` to reuse the same credentials. | The rejected command changes nothing. |
 | The combined add asks for AgentMail credentials twice | An older CLI ran two independent post-add setup flows, or the augments were set up separately in the wrong order. | Upgrade first. For a new outbound-only install, run one interactive `auggy augment add agentMail visitorAuth`. For recovery or inbound use, configure `agentMail`, set it up once, then attach `visitorAuth` with `--mode env`. | Installed augment files may already exist. Failed setup does not write new local credentials; inspect AgentMail for resources created by an earlier successful prompt. |
-| Signup returns `403 already_exists` and says the human already has an AgentMail account | `signup` is only for a person's first AgentMail account. | Continue with or rerun `auggy agentmail setup agentMail --mode existing`, then provide an **account** API key. | The rejected request changes no provider resource and writes no local credentials. |
-| Signup OTP is cancelled, rejected three times, or expires | Signup created the owner-verification challenge but verification did not finish. | Sign into AgentMail, create an account API key, then continue with `--mode existing`; do not repeat signup blindly. | The account and first inbox may exist. No scoped runtime key or local credentials were created. |
+| Signup returns `403 already_exists` and says the human already has an AgentMail account | `signup` is only for a person's first AgentMail account. | Continue with or rerun `auggy agentmail setup agentMail --mode existing`, then provide the API key Auggy should use unchanged. | The rejected request changes no provider resource and writes no local credentials. |
+| Signup OTP is cancelled, rejected three times, or expires | Signup created the owner-verification challenge but verification did not finish. | Sign into AgentMail, obtain the key you want Auggy to use, then continue with `--mode existing`; do not repeat signup blindly. | The account and first inbox may exist. No local credentials were written. |
 | Inbox creation returns `400 validation_error` for `client_id` | The installed CLI is from the pre-fix RC that sent a provider-invalid idempotency identity. This is not caused by the API key or inbox username. | Upgrade the CLI, confirm `auggy --version`, and rerun setup. Do not keep changing keys or usernames to work around it. | Provider validation rejects the create request, so no inbox is created by that request and local credentials remain unchanged. The augment files installed before setup remain. |
-| Inbox creation returns `403 resource_taken` or repeatedly says an address is taken | AgentMail inbox addresses are globally unique. The requested address may belong to another account; it will not necessarily appear in the current account's inbox list. | Accept a different username, or use `--mode manual` only when you already own the exact inbox and have its scoped runtime key. Adopt a collision only when Auggy proves the address and compatible `client_id` match and asks for confirmation. | A collision does not create, adopt, overwrite, or delete an inbox. Local credentials remain unchanged. Earlier successful setup attempts or provider resources are separate and must be inspected directly. |
-| Inbox creation returns a definite `401`, `403`, `409`, or `429` | The account key lacks provisioning authority, the request conflicts, or the provider quota is exhausted. | Correct the account key or quota, honor any retry window, then explicitly retry. | That create request did not create an inbox and local credentials remain unchanged. |
-| Scoped runtime-key creation returns a definite `401`, `403`, `409`, or `429` | The inbox was already created or resolved, but the account key cannot mint the scoped key or a provider limit intervened. | Inspect the inbox, fix the account-key authority or quota, then rerun `existing`; deterministic inbox identity lets setup resolve the same owned inbox. | The inbox exists. No scoped key is proven created and local credentials remain unchanged. |
-| Setup refuses because `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID`, or `AGENTMAIL_INBOX_EMAIL` already exists | Setup never silently rotates the runtime identity. A value may come from `.env` or the invoking process. | To reuse it, choose `--mode env`. To replace it, stop the agent and follow [Replace runtime credentials safely](#replace-runtime-credentials-safely), including revoking the old key before removing local values. | The refusal occurs before replacement; existing local values and provider resources remain unchanged. |
-| Setup refuses because `AGENTMAIL_ACCOUNT_API_KEY` is in a dotenv file | The provisioning-level account key was found in a persistent project file. | Remove it from every project dotenv file. Use the masked prompt, or inject it through a process-scoped secret manager for non-interactive `--mode existing`. | Setup stops before contacting AgentMail or changing local files. Remove the exposed persistent copy and rotate it if its storage was not trusted. |
-| Setup times out, loses the connection, or rejects an unexpected provider response after provisioning starts | Provider acceptance may have occurred even though Auggy could not prove the final result. Inbox creation is retryable only after inspection; scoped-key creation is not safely idempotent. | Check AgentMail first. A deterministic inbox-create retry targets the same logical inbox. Before retrying scoped-key creation, revoke any orphan key with the setup key name. | Local `.env` and augment configuration remain unchanged. The provider may contain the inbox or an orphan scoped key. |
-| Setup reports that a scoped key was created but local commit failed | A concurrent edit, compare-and-swap check, or local write failed after provider provisioning. | Preserve the newer local edit, revoke the orphan key named by the error, correct the conflict, and rerun setup. | The inbox and named scoped key exist remotely. Local `.env` and augment configuration were rolled back or left at the concurrent version. |
-| `manual` or `env` cannot resolve the canonical inbox | The supplied inbox ID/runtime key pair is wrong, revoked, or temporarily unreachable. | Verify the exact runtime key and inbox ID, restore provider reachability, then retry the same mode. Do not substitute an account key. | Only a provider read was attempted; provider resources and local credentials remain unchanged. |
-| `AGENTMAIL_API_KEY is unresolved` at startup | The referenced runtime key is absent from the agent's environment. | Complete setup, or set the inbox-scoped runtime key in the agent's `.env`, then restart. Do not put the account API key there. | Startup fails before mail is used; provider state and local durable mail state are unchanged. |
-| Inbox healthcheck returns a definite `401`, `403`, `404`, or the provider email does not match | The runtime key is invalid, revoked, scoped to another inbox, lacks `inbox_read`, or the configured inbox email is wrong. | Rerun setup with the exact inbox/key pair. Do not hand-edit the setup-verified email. | The healthcheck does not mutate provider or local configuration. Startup fails closed. |
+| Inbox creation returns `403 resource_taken` or repeatedly says an address is taken | AgentMail inbox addresses are globally unique. The requested address may belong to another account; it will not necessarily appear in the current account's inbox list. | Accept a different username, or use `--mode manual` only when you already own the exact inbox and have a key that can read it. Adopt a collision only when Auggy proves the address and compatible `client_id` match and asks for confirmation. | A collision does not create, adopt, overwrite, or delete an inbox. Local credentials remain unchanged. Earlier successful setup attempts or provider resources are separate and must be inspected directly. |
+| Inbox creation returns a definite `401`, `403`, `409`, or `429` | The supplied key lacks inbox-provisioning authority, the request conflicts, or the provider quota is exhausted. | Correct that key's permissions, use a different key, or fix the quota; then honor any retry window and retry explicitly. | That create request did not create an inbox and local credentials remain unchanged. |
+| Setup refuses because `AGENTMAIL_API_KEY`, `AGENTMAIL_INBOX_ID`, or `AGENTMAIL_INBOX_EMAIL` already exists | Setup never silently changes the configured identity or key. A value may come from `.env` or the invoking process. | To reuse it, choose `--mode env`. To replace only the key for the existing inbox, use `--mode manual --replace-key`. | The refusal occurs before replacement; existing local values and provider resources remain unchanged. |
+| Setup refuses because `AGENTMAIL_ACCOUNT_API_KEY` is in a dotenv file | The deprecated alias was found in a persistent project file. | Rename it to `AGENTMAIL_API_KEY`. The legacy variable name is accepted only as process input for one RC and is never persisted or deployed; its value is stored under `AGENTMAIL_API_KEY` when accepted. | Setup stops before contacting AgentMail or changing local files. |
+| Setup times out, loses the connection, or rejects an unexpected provider response after provisioning starts | Provider acceptance may have occurred even though Auggy could not prove the final result. | Check AgentMail first. A deterministic inbox-create retry targets the same logical inbox. | Local `.env` and augment configuration remain unchanged. The provider may contain the inbox; no API key was created or changed by Auggy. |
+| Local commit fails after inbox provisioning | A concurrent edit, compare-and-swap check, or local write failed after the provider returned. | Preserve the newer local edit, inspect the deterministic inbox, correct the conflict, and rerun setup. | The inbox may exist remotely. The operator-supplied key is unchanged; local configuration was rolled back or left at the concurrent version. |
+| `manual` or `env` cannot resolve the canonical inbox | The supplied inbox ID/key pair is wrong, revoked, missing `inbox_read`, or temporarily unreachable. | Verify the exact key and inbox ID, restore provider reachability, then retry the same mode. | Only a provider read was attempted; provider resources and local credentials remain unchanged. |
+| `AGENTMAIL_API_KEY is unresolved` at startup | The configured key is absent from the agent's environment. | Complete setup or set `AGENTMAIL_API_KEY` in the agent's `.env`, then restart. | Startup fails before mail is used; provider state and local durable mail state are unchanged. |
+| Inbox healthcheck returns a definite `401`, `403`, `404`, or the provider email does not match | The configured key is invalid, revoked, scoped to another inbox, lacks `inbox_read`, or the configured inbox email is wrong. | Rerun setup with the exact inbox/key pair. Do not hand-edit the setup-confirmed email. | The healthcheck does not mutate provider or local configuration. Startup fails closed. |
 | Inbox healthcheck times out or returns `425`, `429`, `5xx`, or a network error | The read-only provider health request is temporarily unavailable. | Check provider/network status and Console health before sending. Restart after connectivity recovers if inbound readiness never completed. | No provider mutation occurs. The runtime may continue degraded with its setup-verified email, or without a publishable address when none was configured. |
-| Inbound setup or runtime returns `403` after inbound was enabled | YAML was changed after an outbound-only key was minted. Enabled inbound requires `message_read`; processing spam or blocked mail adds the matching label-read permission. | Stop the agent and use the credential-replacement procedure. Save the complete inbound policy before provisioning the replacement key. | The failed provider read does not widen the key or process the email. Existing provider mail remains in AgentMail; local policy stays as edited. |
+| Inbound runtime returns `403` after inbound was enabled | The selected key lacks `message_read`, or a processed spam/blocked classification lacks its label-read capability. | Update that key's AgentMail permissions or replace it explicitly, then restart. Do not rerun ordinary setup for a YAML change. | The failed provider read does not widen the key or process the email. Existing provider mail remains in AgentMail; local policy stays as edited. |
+| RC.9 WebSocket startup reports `Invalid binaryType: blob` on Bun | RC.9 uses the AgentMail SDK's incompatible `blob` default. | Use `inbound.mode: polling` on RC.9, then upgrade to the next release candidate when published. Do not rotate the API key or patch `node_modules`. | Startup fails before subscription and processes no inbound email. |
+| WebSocket startup reports a non-retryable binary-transport compatibility error after RC.9 | The installed AgentMail SDK no longer exposes or accepts its public reconnecting-socket `arraybuffer` setting. | Install a matching Auggy release and its pinned dependencies; do not patch `node_modules` or retry-loop the process. | Startup fails before subscription and processes no inbound email. |
 | Inbound config rejects its sender policy | Enabled inbound requires exactly one of a non-empty `allowedSenders` list or `allowAnySender: true`. Bare `"*"`, partial wildcards, and combining both controls are invalid. | Use exact addresses, exact-domain entries such as `"*@example.com"`, or the explicit public-inbox switch. Restart after saving valid YAML. | Validation fails before the inbound worker starts; no messages are admitted or discarded by Auggy. |
 | Public inbound says bounded rate limits are required | `allowAnySender: true` must have finite global and per-sender hourly limits, and the per-sender value cannot exceed the global value. | Set both `inbound.rateLimit.globalMaxPerHour` and `perSenderMaxPerHour`, then restart. | Validation changes nothing. AgentMail may still store incoming provider mail while Auggy remains stopped. |
 | Webhook mode says `webTransport` or a webhook secret is required | The verified callback cannot be mounted, or `secretEnv` does not resolve to the same Svix secret configured in AgentMail. | Mount `webTransport`, expose the route through HTTPS, set the configured secret environment variable, configure the same callback in AgentMail, and restart. | Auggy does not accept unverified callbacks. Changing the provider callback is a separate AgentMail-side mutation. |
@@ -1451,7 +1442,7 @@ below call out those cases.
 | Send, reply, or forward is rejected by Auggy policy | Trust, recipient, count, body, HTML, reply mode, reply-all, or current-turn checks rejected the action before dispatch. | Correct the request or change only the narrow policy that should allow it; restart after YAML edits. | AgentMail was not called, so no provider message or draft exists. |
 | Auggy reports rate-limited, cooldown, or duplicate | A durable local outbound limit rejected the action before provider dispatch. | Honor `retryAfter`, confirm the action is still intended, and repair durable rate state if Console reports storage failure. Do not paraphrase a duplicate merely to bypass policy. | AgentMail was not called. Local counters or reservations may have advanced. |
 | A runtime provider send fails definitively | AgentMail rejected the mutation with a settled error such as `4xx`/`429`. | Correct the credential, input, or quota and honor any retry window before one deliberate retry. | Auggy records a failed attempt; no successful provider send is proven. This differs from an ambiguous outcome. |
-| WebSocket or REST catch-up is degraded or not ready | The subscription/read path lost connectivity or the runtime key cannot read the inbox. | Inspect inbound health and the last provider error in Console, repair connectivity or key scope, then restart if initial readiness never completed. | Provider mail remains in AgentMail. The local ledger/checkpoint retains only progress it already confirmed. |
+| WebSocket or REST catch-up is degraded or not ready | The subscription/read path lost connectivity or the configured key cannot read the inbox. | Inspect inbound health and the last provider error in Console, repair connectivity or key scope, then restart if initial readiness never completed. | Provider mail remains in AgentMail. The local ledger/checkpoint retains only progress it already confirmed. |
 | Inbound attention is at capacity | The bounded creator-attention queue has no safe slot for another active item. | Resolve or dismiss existing attention items in Console. | The exact email remains pending without consuming a delivery attempt; it resumes when capacity is available. |
 | Creator digest says outcome unknown | Notify may have delivered the digest, but Auggy cannot prove the result. | Verify the destination independently, then reconcile the exact Notify incident. Do not retry or dismiss it first. | The ambiguous generation remains fenced and is not resent automatically. |
 | Creator digest attempts are exhausted | Bounded definitive delivery failures reached `maxAttempts`. | Inspect and repair the Notify destination, then authorize one evidence-bound retry or dismiss only that digest generation. | Email and reply state are unchanged; only the digest generation is failed. |
@@ -1478,7 +1469,7 @@ below call out those cases.
   policy and generated-client behavior.
 - AgentMail documentation: [API](https://docs.agentmail.to/api-reference),
   [Console](https://console.agentmail.to),
-  [inboxes and scoped keys](https://docs.agentmail.to/inboxes),
+  [inboxes and key management](https://docs.agentmail.to/inboxes),
   [permissions](https://docs.agentmail.to/permissions),
   [WebSockets](https://docs.agentmail.to/websockets), and
   [webhook verification](https://docs.agentmail.to/webhook-verification).

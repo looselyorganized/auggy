@@ -42,6 +42,13 @@ ownership of that Telegram bot before polling or webhook startup.
 | Secrets | Separate `.env` files with owner-only permissions | Separate service secret sets and least-privilege provider credentials |
 | Backup/restore/delete | Operate on one identity-bound state root | Operate on one dedicated volume and its matching external recovery points |
 
+For AgentMail, `AGENTMAIL_API_KEY` is operator-owned authority. Auggy uses that
+exact key unchanged for setup and runtime; it does not derive a per-agent child
+key. Sharing one broad account key across independent agents therefore shares
+its full provider scope. Prefer separate keys with only the inbox and message
+capabilities each logical agent needs, and rotate or revoke them directly in
+AgentMail.
+
 Local `auggy dev` acquires atomic, owner-only resource claims before transports
 start. Within one OS user's `~/.auggy` registry, it rejects duplicate immutable
 IDs, canonical agent state roots, ports, Telegram bots, and inbound AgentMail

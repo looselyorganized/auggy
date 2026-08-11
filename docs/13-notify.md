@@ -308,7 +308,10 @@ config:
 
 Required env vars:
 
-- `AGENTMAIL_API_KEY` — bearer token from AgentMail (prefix `am_`). Use a per-inbox key with the minimum permission set: `message_send`. Org-scoped keys are over-broad — see [security note](#agentmail-key-scoping).
+- `AGENTMAIL_API_KEY` — bearer token from AgentMail (prefix `am_`), used
+  unchanged. It needs `message_send` for this destination. Prefer the narrowest
+  key that authorizes the configured source inbox; a broad account key remains
+  broad.
 - `AGENTMAIL_INBOX_ID` — the AgentMail inbox the message is sent **from**.
 
 Optional fields on the destination:
@@ -334,7 +337,10 @@ Optional fields on the destination:
 #### AgentMail-specific gotchas {#agentmail-key-scoping}
 
 - **Suppression list is permanent.** A bounced or complained address is suppressed by AgentMail with no documented removal API. Test with a real recipient before pinning a destination in production.
-- **Key scoping.** The OTP-issued key from `agent.sign_up` is org-scoped (full access). Mint an inbox-scoped key with whitelist permissions (`message_send` only) and use that in `.env`. The org-scoped key should be rotated or kept for console use only.
+- **Key ownership.** Auggy and Notify do not create, narrow, rotate, or revoke
+  AgentMail keys. The operator owns provider scope. Prefer a key limited to the
+  source inbox and `message_send`; if you supply a broad account key, every
+  consumer holding it receives that broader authority.
 - **Recipient cap.** AgentMail supports at most 50 recipients across an email send/reply/forward. Auggy rejects explicit recipient arrays over that cap before making the network request; `replyAll` can still expand server-side and may be rejected by AgentMail.
 - **No provider idempotency on send.** AgentMail's `messages.send` does not
   accept an idempotency key as of this writing. Auggy reserves its local dedup

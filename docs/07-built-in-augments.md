@@ -1455,18 +1455,28 @@ auggy augment setup agentMail
 auggy augment setup visitorAuth --mode env
 ```
 
-Existing-account provisioning rejects an account key loaded from project
-dotenv files. Prefer the masked prompt or a genuinely process-scoped secret;
-controlled automation may pass `--api-key`, with the normal shell-history and
-process-inspection risks. Project dotenv files may contain only the
-inbox-scoped runtime key. A definitive provider
+`AGENTMAIL_API_KEY` is the canonical stored and runtime variable. Key-accepting
+modes preserve the supplied key; signup stores AgentMail's provider-returned
+key under that canonical name. Auggy never creates, narrows, rotates, or
+revokes another key. For one RC, `AGENTMAIL_ACCOUNT_API_KEY` remains a
+deprecated process-only alias; its legacy name is rejected in project dotenv
+files and never persisted or deployed, while an accepted value is stored under
+`AGENTMAIL_API_KEY`.
+Prefer the masked prompt or canonical environment variable. Controlled
+automation may pass `--api-key`, with the normal shell-history and
+process-inspection risks. A definitive provider
 `403 resource_taken` permits only proven, confirmed reuse of the exact
 Auggy-owned inbox or a bounded alternate-username flow—never arbitrary inbox
 adoption. Removing either shared consumer retains the inbox, key, and local
 `AGENTMAIL_*` values until the operator verifies that no remaining consumer
-uses them; revoke an unused scoped key manually before deleting those values.
+uses them; provider key cleanup remains the operator's responsibility.
 `AGENTMAIL_WEBHOOK_SECRET` is needed only for Svix webhook inbound mode, not
 default outbound delivery.
+
+After setup, enabling AgentMail inbound or changing reply policy requires only
+the YAML edit and a restart. The supplied key must already have the needed
+provider permissions; setup verifies inbox access but does not claim send or
+inbound permissions are working.
 
 ### Key constraint
 

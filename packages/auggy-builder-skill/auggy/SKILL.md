@@ -178,14 +178,24 @@ auggy agentmail setup agentMail
 ```
 
 The interactive setup distinguishes a new AgentMail account, an existing
-account that should create an inbox, an existing inbox with a scoped runtime
-key, and complete credentials already present in `.env`. Never ask the creator
-to paste an AgentMail key into chat; let the CLI's masked prompt read it.
+account that should create an inbox, an existing inbox with a supplied API
+key, and complete credentials already present in `.env`. Key-accepting modes
+preserve the supplied key unchanged; signup stores AgentMail's
+provider-returned key under canonical `AGENTMAIL_API_KEY`. Auggy uses that
+stored key at runtime and does not create a narrower child key or rotate or
+revoke provider keys. Never
+ask the creator to paste an AgentMail key into chat; let the CLI's masked
+prompt read it.
+
+Setup verifies only that the selected key can access the configured inbox. It
+reports the capabilities the key still needs for the configured policy, but it
+does not prove outbound send or inbound read capability. The creator remains
+responsible for the key's AgentMail permissions.
 
 If both `agentMail` and `visitorAuth` are installed, they deliberately share
-one inbox and scoped runtime key. When both are new, one interactive add uses
-one shared setup confirmation and credential flow regardless of selection
-order:
+one inbox and the same supplied API key. When both are new, one interactive
+add uses one shared setup confirmation and credential flow regardless of
+selection order:
 
 ```bash
 auggy augment add agentMail visitorAuth
@@ -200,13 +210,31 @@ auggy agentmail setup agentMail
 auggy agentmail setup visitorAuth --mode env
 ```
 
-Never store the provisioning-only `AGENTMAIL_ACCOUNT_API_KEY` in a project
-dotenv file. A provider `403 resource_taken` permits only confirmed reuse of
-an inbox proven by its exact address and Auggy identity, or a bounded alternate
-username flow—not arbitrary inbox adoption. Removing either consumer preserves
-the shared local credentials and provider resources; revoke an unused scoped
-key in AgentMail before deleting local values. `AGENTMAIL_WEBHOOK_SECRET` is
-needed only for Svix webhook inbound mode.
+`AGENTMAIL_ACCOUNT_API_KEY` is a deprecated, one-RC compatibility alias accepted
+only from the setup process environment. Do not use it for new setup, and never
+put it in a project dotenv file. Auggy never persists or deploys that legacy
+variable name; when accepted, its exact value is stored under canonical
+`AGENTMAIL_API_KEY`. Rename the input variable now.
+
+Enabling inbound mail after setup is a configuration change: edit
+`augments/agentMail/augment.yaml`, make sure the same key has the required
+inbound capabilities such as `message_read`, and restart the agent. Do not run
+setup again merely to activate inbound processing.
+
+To replace only the API key for an existing inbox, use the explicit manual
+flow. It preserves the stored inbox ID and email, verifies the new key's inbox
+access before writing, and does not revoke the previous provider key:
+
+```bash
+auggy agentmail setup agentMail --mode manual --replace-key
+```
+
+A provider `403 resource_taken` permits only confirmed reuse of an inbox
+proven by its exact address and Auggy identity, or a bounded alternate username
+flow—not arbitrary inbox adoption. Removing either shared consumer preserves
+the local credentials and provider resources. After the last consumer is
+removed, revoke a truly unused key in AgentMail before deleting its local
+value. `AGENTMAIL_WEBHOOK_SECRET` is needed only for Svix webhook inbound mode.
 
 Read `skills/auggy/references/cli-workflows.md` before explaining setup modes,
 automation, retries, or shared credentials in more detail.
