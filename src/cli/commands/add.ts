@@ -286,7 +286,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("Use visitorAuth:");
     console.log("  - Local testing uses console magic links");
     console.log("  - Production email: auggy augment setup visitorAuth");
-    console.log("  - This provisions AgentMail and updates augments/visitorAuth/augment.yaml");
+    console.log(
+      "  - This configures the supplied AgentMail key and updates augments/visitorAuth/augment.yaml",
+    );
   }
 
   if (layeredMemoryAdded) {
@@ -523,8 +525,8 @@ async function offerSetupForAddedAugments(
   };
 
   // A batch containing both consumers is one shared setup operation regardless
-  // of picker/argument order: provision agentMail first, then attach
-  // visitorAuth to the resulting runtime credentials without another prompt.
+  // of picker/argument order: configure agentMail first, then attach
+  // visitorAuth to the same API key and inbox without another credential prompt.
   if (addedAgentMail && addedVisitorAuth) {
     const proceed = await ask(
       "Set up one shared AgentMail inbox for agentMail and visitorAuth now?",

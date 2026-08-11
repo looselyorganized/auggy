@@ -493,11 +493,11 @@ function agentMailRemovalWarnings(
   );
   if (remainingSharedConsumer) {
     return [
-      "AGENTMAIL_* values and the remote AgentMail inbox/key were retained because another shared mail consumer is still installed.",
+      "AGENTMAIL_* values and the supplied AgentMail key were retained because another shared mail consumer is still installed.",
     ];
   }
   return [
-    "Auggy did not remove AGENTMAIL_* values or revoke the remote AgentMail inbox/key. Other configuration may still reference them; if nothing does, revoke the scoped key in AgentMail before removing the local values.",
+    "Auggy did not remove AGENTMAIL_* values or change the supplied AgentMail key. Review every AgentMail consumer before removing local values or changing the key in AgentMail.",
   ];
 }
 

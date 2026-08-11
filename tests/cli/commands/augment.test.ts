@@ -152,7 +152,7 @@ describe("auggy augment command", () => {
           name: "agentMail",
           type: "agentMail",
           skillRemoved: null,
-          warnings: ["revoke the remote scoped key before deleting local values"],
+          warnings: ["review other consumers before changing the supplied key"],
         }),
       });
       await cmd.parseAsync(["remove", "agentMail"], { from: "user" });
@@ -162,9 +162,7 @@ describe("auggy augment command", () => {
     }
 
     expect(logs.join("\n")).toContain('Removed augment "agentMail"');
-    expect(warnings).toEqual([
-      "Warning: revoke the remote scoped key before deleting local values",
-    ]);
+    expect(warnings).toEqual(["Warning: review other consumers before changing the supplied key"]);
   });
 
   test("create scaffolds, registers, and optionally creates a runtime skill", async () => {
@@ -516,6 +514,8 @@ describe("listAugments and removeAugment", () => {
       });
       expect(result.warnings).toHaveLength(1);
       expect(result.warnings[0]).toContain("did not remove AGENTMAIL_*");
+      expect(result.warnings[0]).toContain("did not");
+      expect(result.warnings[0]).not.toMatch(/revoke .*key/i);
       expect(existsSync(join(agentDir, "skills", "visitorAuth"))).toBe(false);
       expect(existsSync(join(agentDir, "augments", "visitorAuth"))).toBe(false);
       const parsed = parseYaml(readFileSync(join(agentDir, "agent.yaml"), "utf-8")) as {
@@ -554,6 +554,7 @@ describe("listAugments and removeAugment", () => {
 
       expect(result.warnings).toHaveLength(1);
       expect(result.warnings[0]).toContain("another shared mail consumer");
+      expect(result.warnings[0]).not.toMatch(/revoke .*key/i);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

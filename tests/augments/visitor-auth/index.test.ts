@@ -360,7 +360,7 @@ describe("visitorAuth (skeleton)", () => {
     });
   }
 
-  test("onBoot 403 points permission-whitelisted AgentMail keys at inbox_read + message_send", async () => {
+  test("onBoot 403 identifies the supplied key and required capabilities", async () => {
     const aug = visitorAuth({
       publicUrl: "https://example.com",
       dbPath,
@@ -374,7 +374,9 @@ describe("visitorAuth (skeleton)", () => {
         }),
       }),
     });
-    await expect(aug.onBoot?.()).rejects.toThrow(/inbox_read.*message_send/);
+    await expect(aug.onBoot?.()).rejects.toThrow(
+      /supplied AgentMail key.*inbox_read.*message_send/,
+    );
   });
 
   for (const httpStatus of [500, 502, 503, 504, 429] as const) {

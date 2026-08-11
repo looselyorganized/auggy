@@ -20,9 +20,8 @@ Creates a disposable full-featured Auggy agent under .auggy-dx-lab/ and runs it.
 
 Secrets are reused from .env.dx.local when present. Useful keys:
   ANTHROPIC_API_KEY=...
-  AGENTMAIL_PARENT_API_KEY=...     # creates a fresh AgentMail inbox for visitorAuth
-  AGENTMAIL_API_KEY=...            # existing runtime key, use with AGENTMAIL_INBOX_ID
-  AGENTMAIL_INBOX_ID=...
+  AGENTMAIL_API_KEY=...            # exact key Auggy will use; can create an inbox
+  AGENTMAIL_INBOX_ID=...           # optional existing inbox for that key
   TELEGRAM_BOT_TOKEN=...
   TELEGRAM_CHAT_ID=...             # notify destination
   TELEGRAM_CREATOR_USER_IDS=...    # telegramTransport creator IDs
@@ -91,27 +90,7 @@ require_cmd script
 read_env_value() {
   local key="$1"
   [[ -f "$SECRETS_FILE" ]] || return 0
-  node - "$SECRETS_FILE" "$key" <<'NODE'
-const fs = require("node:fs");
-const [file, key] = process.argv.slice(2);
-const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-for (const raw of text.split(/\r?\n/)) {
-  const line = raw.trim();
-  if (!line || line.startsWith("#")) continue;
-  const idx = line.indexOf("=");
-  if (idx === -1) continue;
-  if (line.slice(0, idx).trim() !== key) continue;
-  let value = line.slice(idx + 1).trim();
-  if (
-    (value.startsWith('"') && value.endsWith('"')) ||
-    (value.startsWith("'") && value.endsWith("'"))
-  ) {
-    value = value.slice(1, -1);
-  }
-  process.stdout.write(value);
-  break;
-}
-NODE
+  bun "$ROOT/scripts/dx-lab-env.ts" "$SECRETS_FILE" "$key"
 }
 
 merge_env_file() {
@@ -131,7 +110,7 @@ function parse(text) {
     if (idx === -1) continue;
     const key = line.slice(0, idx).trim();
     if (!/^[A-Z0-9_]+$/.test(key)) continue;
-    if (key === "AGENTMAIL_PARENT_API_KEY") continue;
+    if (key.startsWith("AGENTMAIL_")) continue;
     if (key.startsWith("AUGGY_DX_")) continue;
     const value = line.slice(idx + 1).trim();
     if (value === "") continue;
@@ -198,31 +177,28 @@ add_augment_if_missing() {
 }
 
 configure_agentmail_if_possible() {
-  local runtime_key inbox_id parent_key username
-  runtime_key="$(read_env_value AGENTMAIL_API_KEY)"
+  local api_key inbox_id username
+  api_key="$(read_env_value AGENTMAIL_API_KEY)"
   inbox_id="$(read_env_value AGENTMAIL_INBOX_ID)"
-  parent_key="$(read_env_value AGENTMAIL_PARENT_API_KEY)"
 
-  if [[ -n "$runtime_key" && -n "$inbox_id" ]]; then
-    info "configure visitorAuth AgentMail from existing runtime credentials"
+  if [[ -n "$api_key" && -n "$inbox_id" ]]; then
+    info "configure visitorAuth AgentMail with the supplied key and existing inbox"
     (
       cd "$AGENT_DIR"
-      "$CLI" agentmail setup visitorAuth \
+      AGENTMAIL_API_KEY="$api_key" "$CLI" agentmail setup visitorAuth \
         --mode manual \
-        --api-key "$runtime_key" \
         --inbox-id "$inbox_id"
     )
     return 0
   fi
 
-  if [[ -n "$parent_key" ]]; then
-    info "create visitorAuth AgentMail inbox"
+  if [[ -n "$api_key" ]]; then
+    info "create a visitorAuth AgentMail inbox with the supplied key"
     username="${AGENT_NAME}-$(date +%Y%m%d%H%M%S)"
     (
       cd "$AGENT_DIR"
-      "$CLI" agentmail setup visitorAuth \
+      AGENTMAIL_API_KEY="$api_key" "$CLI" agentmail setup visitorAuth \
         --mode existing \
-        --api-key "$parent_key" \
         --username "$username" \
         --display-name "$AGENT_NAME DX Lab"
     )
@@ -233,8 +209,7 @@ configure_agentmail_if_possible() {
 }
 
 has_agentmail_credentials() {
-  [[ -n "$(read_env_value AGENTMAIL_PARENT_API_KEY)" ]] && return 0
-  [[ -n "$(read_env_value AGENTMAIL_API_KEY)" && -n "$(read_env_value AGENTMAIL_INBOX_ID)" ]]
+  [[ -n "$(read_env_value AGENTMAIL_API_KEY)" ]]
 }
 
 mkdir -p "$LAB_ROOT/home" "$LAB_ROOT/npm-global" "$LAB_ROOT/npm-cache" "$LAB_ROOT/bun-cache" "$LAB_ROOT/packs" "$LAB_ROOT/tmp"

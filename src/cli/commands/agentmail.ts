@@ -56,6 +56,8 @@ interface AgentMailSetupCredentials {
   apiKey: string;
   email?: string;
   reusedExistingInbox?: boolean;
+  usedDeprecatedApiKeyAlias?: boolean;
+  providerMutated?: boolean;
 }
 
 type AgentMailDiskEnv = Partial<Record<AgentMailRuntimeEnvKey, string>>;
@@ -92,6 +94,8 @@ export interface AgentMailSetupOptions {
   displayName?: string;
   apiKey?: string;
   inboxId?: string;
+  replaceKey?: boolean;
+  yes?: boolean;
   baseUrl?: string;
   allowInsecureHttpWithCredentials?: boolean;
 }
@@ -107,6 +111,8 @@ export interface AgentMailSetupResult {
   envKeys: string[];
   requiredPermissions?: string[];
   reusedExistingInbox?: boolean;
+  replacedApiKey?: boolean;
+  usedDeprecatedApiKeyAlias?: boolean;
 }
 
 export function agentMailCommand(deps: AgentMailCommandDeps = {}): Command {
@@ -125,11 +131,10 @@ export function agentMailCommand(deps: AgentMailCommandDeps = {}): Command {
     .option("--human-email <email>", "human owner email for AgentMail signup")
     .option("--username <username>", "AgentMail inbox username")
     .option("--display-name <name>", "AgentMail inbox display name")
-    .option(
-      "--api-key <key>",
-      "AgentMail key (prefer the secure prompt or AGENTMAIL_ACCOUNT_API_KEY/AGENTMAIL_API_KEY)",
-    )
+    .option("--api-key <key>", "AgentMail API key (prefer the secure prompt or AGENTMAIL_API_KEY)")
     .option("--inbox-id <id>", "existing AgentMail inbox ID for manual mode")
+    .option("--replace-key", "replace only the stored API key for the existing inbox (manual mode)")
+    .option("--yes", "confirm a non-interactive --replace-key operation")
     .option("--base-url <url>", "AgentMail API base URL")
     .option(
       "--allow-insecure-http-with-credentials",
@@ -264,13 +269,24 @@ async function runAgentMailSetupLocked(
     interactive,
   );
   assertModeOptionCompatibility(mode, opts);
-  assertNonInteractiveSetupInputs(mode, opts, interactive);
-  assertSharedCredentialMode(target, mode, otherConsumers, diskEnv);
+  assertNonInteractiveSetupInputs(mode, opts, interactive, diskEnv);
+  assertSharedCredentialMode(target, mode, otherConsumers, diskEnv, opts.replaceKey === true);
   if (mode === "signup" || mode === "existing") {
-    assertNoAutomaticRuntimeCredentialRotation(diskEnv);
+    assertNoAutomaticRuntimeCredentialRotation(diskEnv, mode);
+  } else if (mode === "manual" && opts.replaceKey) {
+    assertReplacementAmbientEnvSafe(diskEnv);
   } else {
     assertAmbientDiskEnvParity(diskEnv);
   }
+  const replacement =
+    mode === "manual" && opts.replaceKey
+      ? await confirmApiKeyReplacement({
+          opts,
+          diskEnv,
+          interactive,
+          promptConfirm: prompts.confirm,
+        })
+      : null;
   let credentials: AgentMailSetupCredentials;
   if (mode === "env") {
     credentials = envCredentials ?? missingEnvCredentials();
@@ -298,6 +314,7 @@ async function runAgentMailSetupLocked(
         prompts.confirm,
         agentDir,
         deps.cwd ?? process.cwd(),
+        diskEnv.AGENTMAIL_API_KEY,
       );
     }
   } else if (mode === "existing") {
@@ -312,11 +329,27 @@ async function runAgentMailSetupLocked(
       prompts.confirm,
       agentDir,
       deps.cwd ?? process.cwd(),
+      diskEnv.AGENTMAIL_API_KEY,
     );
   } else {
-    credentials = await runManualFlow(opts, prompts);
+    credentials = await runManualFlow(opts, prompts, {
+      agentDir,
+      invocationDir: deps.cwd ?? process.cwd(),
+      replacementInboxId: replacement?.inboxId,
+      replacementCurrentApiKey: replacement
+        ? (runtimeEnvValue("AGENTMAIL_API_KEY", diskEnv.AGENTMAIL_API_KEY) ?? undefined)
+        : undefined,
+    });
+    if (
+      replacement &&
+      credentials.apiKey === runtimeEnvValue("AGENTMAIL_API_KEY", diskEnv.AGENTMAIL_API_KEY)
+    ) {
+      throw new Error(
+        "AgentMail --replace-key received the currently stored API key. Supply a different key; setup did not contact AgentMail or change local files.",
+      );
+    }
   }
-  if (mode === "manual") {
+  if (mode === "manual" && !replacement) {
     assertSelectedCredentialsMatchAmbientEnv(diskEnv, {
       AGENTMAIL_API_KEY: credentials.apiKey,
       AGENTMAIL_INBOX_ID: credentials.inboxId,
@@ -324,9 +357,8 @@ async function runAgentMailSetupLocked(
   }
   let resolvedCredentials: AgentMailSetupCredentials = credentials;
   let envKeys: string[] | undefined;
+  resolvedCredentials = await verifySelectedInbox(credentials, provisioner, replacement?.email);
   try {
-    resolvedCredentials =
-      target === "agentMail" ? await ensureInboxEmail(credentials, provisioner) : credentials;
     const envValues = {
       AGENTMAIL_API_KEY: resolvedCredentials.apiKey,
       AGENTMAIL_INBOX_ID: resolvedCredentials.inboxId,
@@ -334,7 +366,9 @@ async function runAgentMailSetupLocked(
         ? { AGENTMAIL_INBOX_EMAIL: requireInboxEmail(resolvedCredentials.email) }
         : {}),
     };
-    if (mode === "manual") assertSelectedCredentialsMatchAmbientEnv(diskEnv, envValues);
+    if (mode === "manual" && !replacement) {
+      assertSelectedCredentialsMatchAmbientEnv(diskEnv, envValues);
+    }
     envKeys = commitAgentMailSetup({
       configPath,
       expectedAgentConfig,
@@ -346,7 +380,9 @@ async function runAgentMailSetupLocked(
       envValues,
     });
   } catch (error) {
-    if (mode !== "signup" && mode !== "existing") throw error;
+    if (!resolvedCredentials.providerMutated || (mode !== "signup" && mode !== "existing")) {
+      throw error;
+    }
     throw providerMutationRecoveryError(mode, target, safeErrorMessage(error));
   }
 
@@ -361,6 +397,8 @@ async function runAgentMailSetupLocked(
     envKeys: envKeys!,
     requiredPermissions: enabledPermissionNames(configPlan.requiredPermissions),
     ...(resolvedCredentials.reusedExistingInbox ? { reusedExistingInbox: true } : {}),
+    ...(replacement ? { replacedApiKey: true } : {}),
+    ...(resolvedCredentials.usedDeprecatedApiKeyAlias ? { usedDeprecatedApiKeyAlias: true } : {}),
   };
 }
 
@@ -415,14 +453,10 @@ async function runSignupFlow(
   });
   await verifyAgentMailSignup(target, signup.apiKey, provisioner, prompts.input);
 
-  const inbox =
-    target === "agentMail"
-      ? await lookupCanonicalInbox(provisioner, signup.apiKey, signup.inboxId)
-      : undefined;
   return {
     inboxId: signup.inboxId,
     apiKey: signup.apiKey,
-    email: inbox?.email,
+    providerMutated: true,
   };
 }
 
@@ -440,13 +474,16 @@ async function runExistingAccountFlow(
   promptConfirm: PromptConfirm,
   agentDir: string,
   invocationDir: string,
+  diskApiKey?: string,
 ): Promise<AgentMailSetupCredentials> {
-  const parentApiKey = await resolveProvisioningAccountApiKey(
+  const selectedApiKey = await resolveSetupApiKey(
     opts.apiKey,
     prompts.password,
     agentDir,
     invocationDir,
+    diskApiKey,
   );
+  const parentApiKey = selectedApiKey.apiKey;
   const initialUsername = await resolveUsername(agentName, opts.username, prompts.input);
   const displayName =
     (usableOption(opts.displayName) ? opts.displayName : undefined) ??
@@ -481,6 +518,8 @@ async function runExistingAccountFlow(
     apiKey: parentApiKey,
     email: inbox.email,
     ...(inboxResolution.reusedExistingInbox ? { reusedExistingInbox: true } : {}),
+    ...(selectedApiKey.usedDeprecatedAlias ? { usedDeprecatedApiKeyAlias: true } : {}),
+    ...(!inboxResolution.reusedExistingInbox ? { providerMutated: true } : {}),
   };
 }
 
@@ -620,21 +659,37 @@ async function runManualFlow(
     input: PromptInput;
     password: PromptPassword;
   },
+  context: {
+    agentDir: string;
+    invocationDir: string;
+    replacementInboxId?: string;
+    replacementCurrentApiKey?: string;
+  },
 ): Promise<AgentMailSetupCredentials> {
-  const apiKey =
-    firstUsableOption(opts.apiKey, process.env.AGENTMAIL_API_KEY) ??
-    (await prompts.password({
-      message: "AgentMail runtime API key:",
-      mask: "*",
-      validate: (value) => value.trim().length > 0 || "AgentMail API key required",
-    }));
+  const selectedApiKey = await resolveSetupApiKey(
+    opts.apiKey,
+    prompts.password,
+    context.agentDir,
+    context.invocationDir,
+    undefined,
+    context.replacementCurrentApiKey,
+  );
   const inboxId =
-    firstUsableOption(opts.inboxId, process.env.AGENTMAIL_INBOX_ID) ??
+    context.replacementInboxId ??
+    exactInboxId(opts.inboxId, "--inbox-id") ??
+    exactInboxId(process.env.AGENTMAIL_INBOX_ID, "AGENTMAIL_INBOX_ID") ??
     (await prompts.input({
       message: "AgentMail inbox ID:",
-      validate: (value) => value.trim().length > 0 || "inbox ID required",
+      validate: (value) =>
+        /^[\x21-\x7e]{1,256}$/.test(value)
+          ? true
+          : "use 1 to 256 printable ASCII characters without whitespace",
     }));
-  return { inboxId: inboxId.trim(), apiKey: apiKey.trim() };
+  return {
+    inboxId: exactInboxId(inboxId, "AgentMail inbox ID")!,
+    apiKey: selectedApiKey.apiKey,
+    ...(selectedApiKey.usedDeprecatedAlias ? { usedDeprecatedApiKeyAlias: true } : {}),
+  };
 }
 
 async function verifyAgentMailSignup(
@@ -1005,6 +1060,7 @@ function assertSharedCredentialMode(
   mode: AgentMailSetupMode,
   otherConsumers: readonly MountedAugmentConfig[],
   diskEnv: AgentMailDiskEnv,
+  replacingKey: boolean,
 ): void {
   if (otherConsumers.length === 0) return;
   if (target === "visitorAuth") {
@@ -1024,7 +1080,7 @@ function assertSharedCredentialMode(
     const agentMail = isRecord(augment.options.agentMail) ? augment.options.agentMail : undefined;
     return agentMail?.transport !== "console";
   });
-  if (visitorUsesAgentMail && mode !== "env") {
+  if (visitorUsesAgentMail && mode !== "env" && !(mode === "manual" && replacingKey)) {
     throw new Error(
       "visitorAuth already uses the shared AgentMail inbox and API key. Reuse those credentials with " +
         "`auggy agentmail setup agentMail --mode env`; automatic setup will not replace them.",
@@ -1113,7 +1169,7 @@ function assertModeOptionCompatibility(
   const allowedByMode: Record<AgentMailSetupMode, ReadonlySet<keyof AgentMailSetupOptions>> = {
     signup: new Set(["humanEmail", "username"]),
     existing: new Set(["apiKey", "username", "displayName"]),
-    manual: new Set(["apiKey", "inboxId"]),
+    manual: new Set(["apiKey", "inboxId", "replaceKey", "yes"]),
     env: new Set(),
   };
   const setupFlags: Array<[keyof AgentMailSetupOptions, string]> = [
@@ -1122,6 +1178,8 @@ function assertModeOptionCompatibility(
     ["displayName", "--display-name"],
     ["apiKey", "--api-key"],
     ["inboxId", "--inbox-id"],
+    ["replaceKey", "--replace-key"],
+    ["yes", "--yes"],
   ];
   const ignored = setupFlags.flatMap(([key, flag]) =>
     opts[key] !== undefined && !allowedByMode[mode].has(key) ? [flag] : [],
@@ -1131,12 +1189,16 @@ function assertModeOptionCompatibility(
       `AgentMail --mode ${mode} does not use ${ignored.join(", ")}; remove unused setup flags before retrying.`,
     );
   }
+  if (opts.yes && !opts.replaceKey) {
+    throw new Error("AgentMail --yes is only valid with --mode manual --replace-key.");
+  }
 }
 
 function assertNonInteractiveSetupInputs(
   mode: AgentMailSetupMode,
   opts: AgentMailSetupOptions,
   interactive: boolean,
+  diskEnv: AgentMailDiskEnv,
 ): void {
   if (interactive || mode === "env") return;
   const missing: string[] = [];
@@ -1146,17 +1208,37 @@ function assertNonInteractiveSetupInputs(
         "For automation, use existing, manual, or env mode.",
     );
   } else if (mode === "existing") {
-    if (!usableOption(opts.apiKey ?? process.env.AGENTMAIL_ACCOUNT_API_KEY)) {
-      missing.push("--api-key or AGENTMAIL_ACCOUNT_API_KEY");
+    if (
+      !exactApiKey(opts.apiKey, "--api-key") &&
+      !exactApiKey(process.env.AGENTMAIL_API_KEY, "AGENTMAIL_API_KEY") &&
+      !exactApiKey(diskEnv.AGENTMAIL_API_KEY, ".env AGENTMAIL_API_KEY") &&
+      !exactApiKey(process.env.AGENTMAIL_ACCOUNT_API_KEY, "AGENTMAIL_ACCOUNT_API_KEY")
+    ) {
+      missing.push("--api-key or AGENTMAIL_API_KEY");
     }
     if (!usableOption(opts.username)) missing.push("--username");
   } else {
-    if (!usableOption(opts.apiKey ?? process.env.AGENTMAIL_API_KEY)) {
+    const hasSelectedApiKey = opts.replaceKey
+      ? Boolean(
+          exactApiKey(opts.apiKey, "--api-key") ??
+            exactApiKey(process.env.AGENTMAIL_ACCOUNT_API_KEY, "AGENTMAIL_ACCOUNT_API_KEY"),
+        )
+      : Boolean(
+          exactApiKey(opts.apiKey, "--api-key") ??
+            exactApiKey(process.env.AGENTMAIL_API_KEY, "AGENTMAIL_API_KEY") ??
+            exactApiKey(process.env.AGENTMAIL_ACCOUNT_API_KEY, "AGENTMAIL_ACCOUNT_API_KEY"),
+        );
+    if (!hasSelectedApiKey) {
       missing.push("--api-key or AGENTMAIL_API_KEY");
     }
-    if (!usableOption(opts.inboxId ?? process.env.AGENTMAIL_INBOX_ID)) {
+    if (
+      !opts.replaceKey &&
+      !exactInboxId(opts.inboxId, "--inbox-id") &&
+      !exactInboxId(process.env.AGENTMAIL_INBOX_ID, "AGENTMAIL_INBOX_ID")
+    ) {
       missing.push("--inbox-id or AGENTMAIL_INBOX_ID");
     }
+    if (opts.replaceKey && !opts.yes) missing.push("--yes to confirm key replacement");
   }
   if (missing.length > 0) {
     throw new Error(`AgentMail --mode ${mode} needs ${missing.join(", ")} in non-interactive use.`);
@@ -1167,36 +1249,100 @@ function usableOption(value: unknown): boolean {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function firstUsableOption(...values: Array<string | undefined>): string | undefined {
-  return values.find((value): value is string => usableOption(value));
+interface ResolvedSetupApiKey {
+  apiKey: string;
+  usedDeprecatedAlias: boolean;
 }
 
-async function resolveProvisioningAccountApiKey(
+async function resolveSetupApiKey(
   explicit: string | undefined,
   promptPassword: PromptPassword,
   agentDir: string,
   invocationDir: string,
-): Promise<string> {
+  diskApiKey?: string,
+  replacementCurrentApiKey?: string,
+): Promise<ResolvedSetupApiKey> {
   const dotenvSources = findProjectDotenvProvisioningKeySources(agentDir, invocationDir);
   if (dotenvSources.length > 0) {
     throw new Error(
-      "AGENTMAIL_ACCOUNT_API_KEY is a provisioning-only account credential and must not be stored in project dotenv files. " +
-        `Remove it from ${dotenvSources.map((path) => displayPath(path)).join(", ")}, then use the masked prompt or a genuinely process-scoped environment variable. ` +
+      "AGENTMAIL_ACCOUNT_API_KEY is deprecated. " +
+        `Rename it to AGENTMAIL_API_KEY in ${dotenvSources.map((path) => displayPath(path)).join(", ")}, then retry. ` +
         "Setup did not contact AgentMail or change local files.",
     );
   }
 
-  if (usableOption(explicit)) return explicit!.trim();
-
-  const ambient = usableEnvValue(process.env.AGENTMAIL_ACCOUNT_API_KEY);
-  if (ambient) return ambient;
+  const explicitKey = exactApiKey(explicit, "--api-key");
+  const canonicalAmbient = exactApiKey(process.env.AGENTMAIL_API_KEY, "AGENTMAIL_API_KEY");
+  const canonicalDisk = exactApiKey(diskApiKey, ".env AGENTMAIL_API_KEY");
+  const replacementCurrent = exactApiKey(replacementCurrentApiKey, ".env AGENTMAIL_API_KEY");
+  const deprecatedAmbient = exactApiKey(
+    process.env.AGENTMAIL_ACCOUNT_API_KEY,
+    "AGENTMAIL_ACCOUNT_API_KEY",
+  );
+  const candidates = [
+    ...(explicitKey === null ? [] : [{ source: "--api-key", value: explicitKey }]),
+    ...(canonicalAmbient === null || canonicalAmbient === replacementCurrent
+      ? []
+      : [{ source: "AGENTMAIL_API_KEY", value: canonicalAmbient }]),
+    ...(canonicalDisk === null || canonicalDisk === replacementCurrent
+      ? []
+      : [{ source: ".env AGENTMAIL_API_KEY", value: canonicalDisk }]),
+    ...(deprecatedAmbient === null
+      ? []
+      : [{ source: "AGENTMAIL_ACCOUNT_API_KEY", value: deprecatedAmbient }]),
+  ];
+  const values = new Set(candidates.map((candidate) => candidate.value));
+  if (values.size > 1) {
+    throw new Error(
+      `Conflicting AgentMail API keys were supplied by ${candidates.map((candidate) => candidate.source).join(", ")}. ` +
+        "Use exactly one value; setup did not contact AgentMail or change local files.",
+    );
+  }
+  const selected = candidates[0]?.value;
+  if (selected) {
+    return {
+      apiKey: selected,
+      usedDeprecatedAlias: deprecatedAmbient !== null,
+    };
+  }
 
   const prompted = await promptPassword({
-    message: "AgentMail API key that can create inboxes:",
+    message: "AgentMail API key:",
     mask: "*",
-    validate: (value) => value.trim().length > 0 || "AgentMail API key required",
+    validate: (value) =>
+      value.trim().length === 0
+        ? "AgentMail API key required"
+        : value !== value.trim()
+          ? "remove leading or trailing whitespace"
+          : true,
   });
-  return prompted.trim();
+  return { apiKey: requireExactApiKey(prompted, "AgentMail API key"), usedDeprecatedAlias: false };
+}
+
+function exactApiKey(value: string | undefined, source: string): string | null {
+  if (value === undefined || value.length === 0) return null;
+  return requireExactApiKey(value!, source);
+}
+
+function requireExactApiKey(value: string, source: string): string {
+  if (value.trim().length === 0) {
+    throw new Error(`${source} must not be blank or whitespace-only.`);
+  }
+  if (value !== value.trim()) {
+    throw new Error(`${source} must not contain leading or trailing whitespace.`);
+  }
+  if (!/^[\x21-\x7e]{1,4096}$/.test(value)) {
+    throw new Error(`${source} must be 1 to 4096 printable ASCII characters without whitespace.`);
+  }
+  return value;
+}
+
+function exactInboxId(value: string | undefined, source: string): string | null {
+  if (value === undefined || value.length === 0) return null;
+  if (!/^[\x21-\x7e]{1,256}$/.test(value)) {
+    throw new Error(`${source} must be 1 to 256 printable ASCII characters without whitespace.`);
+  }
+  return value;
 }
 
 function findProjectDotenvProvisioningKeySources(
@@ -1259,37 +1405,49 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
   const inbox = result.inboxEmail ? `${result.inboxEmail} (${result.inboxId})` : result.inboxId;
   const permissions = (result.requiredPermissions ?? ["inbox_read", "message_send"]).join(", ");
   const permissionText = `Required AgentMail key capabilities: ${permissions}.`;
+  const verificationText = `Verified that the configured key can access inbox ${result.inboxId}.`;
   const inboundEnabled = result.requiredPermissions?.includes("message_read") ?? false;
   const readyText =
     result.target === "visitorAuth"
       ? [
           "visitorAuth is configured to use AgentMail for magic links.",
-          `Confirm that the supplied key grants: ${permissions}.`,
+          `Confirm that the configured key grants: ${permissions}.`,
         ]
       : inboundEnabled
         ? [
             "AgentMail is configured for outbound email and inbound processing.",
-            `Confirm that the supplied key grants: ${permissions}.`,
+            `Confirm that the configured key grants: ${permissions}.`,
             "Incoming email will be processed according to augments/agentMail/augment.yaml.",
             "Review inbound, reply, and forwarding behavior:",
             "  https://auggy.dev/docs/augment-agentmail",
           ]
         : [
             "AgentMail is configured for outbound email, including visitorAuth magic links.",
-            `Confirm that the supplied key grants: ${permissions}.`,
+            `Confirm that the configured key grants: ${permissions}.`,
             "Incoming email is stored in AgentMail, but Auggy won't read or act on it by default.",
             "To receive, reply to, or forward email with Auggy, enable inbound processing:",
             "  https://auggy.dev/docs/augment-agentmail",
           ];
   const reuseNotice = result.reusedExistingInbox
-    ? ["Reused the existing AgentMail inbox with the supplied key."]
+    ? ["Reused the existing AgentMail inbox with the selected key."]
+    : [];
+  const replacementNotice = result.replacedApiKey
+    ? ["Replaced the stored API key for this inbox. The previous provider key was not revoked."]
+    : [];
+  const deprecationNotice = result.usedDeprecatedApiKeyAlias
+    ? [
+        "Warning: AGENTMAIL_ACCOUNT_API_KEY is deprecated. Rename it to AGENTMAIL_API_KEY before the next release.",
+      ]
     : [];
   return [
     `${successMark()} AgentMail inbox configured: ${inbox}`,
     `${successMark()} Wrote .env: ${result.envKeys.join(", ")}`,
     `${successMark()} Updated ${displayPath(result.augmentPath)}`,
+    verificationText,
     permissionText,
     ...reuseNotice,
+    ...replacementNotice,
+    ...deprecationNotice,
     "",
     ...readyText,
     "",
@@ -1341,24 +1499,41 @@ function readEffectiveAgentMailDiskEnv(snapshot: AgentMailEnvSnapshot): AgentMai
 function readExistingEnvCredentials(
   values: AgentMailDiskEnv,
 ): { inboxId: string; apiKey: string } | null {
-  const apiKey = usableEnvValue(values.AGENTMAIL_API_KEY);
-  const inboxId = usableEnvValue(values.AGENTMAIL_INBOX_ID);
+  const apiKey = runtimeEnvValue("AGENTMAIL_API_KEY", values.AGENTMAIL_API_KEY);
+  const inboxId = runtimeEnvValue("AGENTMAIL_INBOX_ID", values.AGENTMAIL_INBOX_ID);
   if (!apiKey || !inboxId) return null;
   return { apiKey, inboxId };
 }
 
 function assertAmbientDiskEnvParity(diskEnv: AgentMailDiskEnv): void {
   for (const key of AGENTMAIL_RUNTIME_ENV_KEYS) {
-    const ambient = usableEnvValue(process.env[key]);
-    const disk = usableEnvValue(diskEnv[key]);
+    const ambient = runtimeEnvValue(key, process.env[key]);
+    const disk = runtimeEnvValue(key, diskEnv[key]);
     if (ambient && disk && ambient !== disk) throw ambientEnvConflictError(key);
   }
 }
 
-function assertNoAutomaticRuntimeCredentialRotation(diskEnv: AgentMailDiskEnv): void {
-  const existingKeys = AGENTMAIL_RUNTIME_ENV_KEYS.filter(
-    (key) => usableEnvValue(diskEnv[key]) || usableEnvValue(process.env[key]),
+function assertNoAutomaticRuntimeCredentialRotation(
+  diskEnv: AgentMailDiskEnv,
+  mode: "signup" | "existing",
+): void {
+  const diskKeys = AGENTMAIL_RUNTIME_ENV_KEYS.filter((key) => runtimeEnvValue(key, diskEnv[key]));
+  const ambientKeys = AGENTMAIL_RUNTIME_ENV_KEYS.filter((key) =>
+    runtimeEnvValue(key, process.env[key]),
   );
+  const diskIsFreshExistingInput =
+    mode === "existing" && diskKeys.length === 1 && diskKeys[0] === "AGENTMAIL_API_KEY";
+  const existingKeys = [
+    ...diskKeys.filter((key) => !(diskIsFreshExistingInput && key === "AGENTMAIL_API_KEY")),
+    ...ambientKeys.filter(
+      (key) =>
+        !(
+          mode === "existing" &&
+          key === "AGENTMAIL_API_KEY" &&
+          (diskKeys.length === 0 || diskIsFreshExistingInput)
+        ),
+    ),
+  ].filter((key, index, values) => values.indexOf(key) === index);
   if (existingKeys.length > 0) {
     throw new Error(
       `Existing AgentMail runtime credentials (${existingKeys.join(", ")}) will not be rotated automatically. ` +
@@ -1369,15 +1544,81 @@ function assertNoAutomaticRuntimeCredentialRotation(diskEnv: AgentMailDiskEnv): 
   }
 }
 
+function assertReplacementAmbientEnvSafe(diskEnv: AgentMailDiskEnv): void {
+  const diskApiKey = runtimeEnvValue("AGENTMAIL_API_KEY", diskEnv.AGENTMAIL_API_KEY);
+  const ambientApiKey = runtimeEnvValue("AGENTMAIL_API_KEY", process.env.AGENTMAIL_API_KEY);
+  if (ambientApiKey && diskApiKey && ambientApiKey !== diskApiKey) {
+    throw ambientEnvConflictError("AGENTMAIL_API_KEY");
+  }
+  for (const key of ["AGENTMAIL_INBOX_ID", "AGENTMAIL_INBOX_EMAIL"] as const) {
+    const ambient = runtimeEnvValue(key, process.env[key]);
+    const disk = runtimeEnvValue(key, diskEnv[key]);
+    if (
+      ambient &&
+      disk &&
+      comparableRuntimeCredential(key, ambient) !== comparableRuntimeCredential(key, disk)
+    ) {
+      throw ambientEnvConflictError(key);
+    }
+  }
+}
+
+interface AgentMailKeyReplacement {
+  inboxId: string;
+  email?: string;
+}
+
+async function confirmApiKeyReplacement(input: {
+  opts: AgentMailSetupOptions;
+  diskEnv: AgentMailDiskEnv;
+  interactive: boolean;
+  promptConfirm: PromptConfirm;
+}): Promise<AgentMailKeyReplacement> {
+  const storedApiKey = runtimeEnvValue("AGENTMAIL_API_KEY", input.diskEnv.AGENTMAIL_API_KEY);
+  const inboxId = exactInboxId(input.diskEnv.AGENTMAIL_INBOX_ID, ".env AGENTMAIL_INBOX_ID");
+  if (!storedApiKey || !inboxId) {
+    throw new Error(
+      "AgentMail --replace-key requires an existing AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID in the agent's .env. Setup did not contact AgentMail or change local files.",
+    );
+  }
+  const requestedInboxId = exactInboxId(input.opts.inboxId, "--inbox-id");
+  if (requestedInboxId && requestedInboxId !== inboxId) {
+    throw new Error(
+      "AgentMail --replace-key preserves the configured inbox. Remove --inbox-id or make it match AGENTMAIL_INBOX_ID; setup did not contact AgentMail or change local files.",
+    );
+  }
+  if (!input.interactive && !input.opts.yes) {
+    throw new Error(
+      "Non-interactive AgentMail key replacement requires --yes. Setup did not contact AgentMail or change local files.",
+    );
+  }
+  if (input.interactive && !input.opts.yes) {
+    const approved = await input.promptConfirm({
+      message: `Replace the stored AgentMail API key for inbox ${inboxId}? Auggy will not revoke the previous key.`,
+      default: false,
+    });
+    if (!approved) {
+      throw new Error(
+        "AgentMail API key replacement cancelled. No local credentials were changed.",
+      );
+    }
+  }
+  const email = usableInboxEmail(input.diskEnv.AGENTMAIL_INBOX_EMAIL);
+  return {
+    inboxId,
+    ...(email ? { email } : {}),
+  };
+}
+
 function assertSelectedCredentialsMatchAmbientEnv(
   diskEnv: AgentMailDiskEnv,
   selected: Partial<Record<AgentMailRuntimeEnvKey, string>>,
 ): void {
   for (const key of AGENTMAIL_RUNTIME_ENV_KEYS) {
-    const value = usableEnvValue(selected[key]);
+    const value = runtimeEnvValue(key, selected[key]);
     if (!value) continue;
-    const ambient = usableEnvValue(process.env[key]);
-    const priorDisk = usableEnvValue(diskEnv[key]);
+    const ambient = runtimeEnvValue(key, process.env[key]);
+    const priorDisk = runtimeEnvValue(key, diskEnv[key]);
     const comparableValue = comparableRuntimeCredential(key, value);
     if (
       (ambient && comparableRuntimeCredential(key, ambient) !== comparableValue) ||
@@ -1410,14 +1651,26 @@ function ambientEnvConflictError(key: AgentMailRuntimeEnvKey): Error {
   );
 }
 
-async function ensureInboxEmail(
+async function verifySelectedInbox(
   credentials: AgentMailSetupCredentials,
   provisioner: AgentMailProvisioningClient,
+  expectedStoredEmail?: string,
 ): Promise<AgentMailSetupCredentials & { email: string }> {
-  const email = usableInboxEmail(credentials.email);
-  if (email) return { ...credentials, email };
-
-  const inbox = await lookupCanonicalInbox(provisioner, credentials.apiKey, credentials.inboxId);
+  const inboxId = exactInboxId(credentials.inboxId, "AgentMail inbox ID");
+  if (!inboxId) throw new Error("AgentMail inbox ID is required.");
+  const inbox = await lookupCanonicalInbox(provisioner, credentials.apiKey, inboxId);
+  const claimedEmail = usableInboxEmail(credentials.email);
+  if (claimedEmail && claimedEmail !== inbox.email) {
+    throw new Error(
+      `AgentMail returned a different email while verifying inbox ${credentials.inboxId}; setup was not saved.`,
+    );
+  }
+  const storedEmail = usableInboxEmail(expectedStoredEmail);
+  if (storedEmail && storedEmail !== inbox.email) {
+    throw new Error(
+      `AgentMail --replace-key cannot change the configured inbox email for ${credentials.inboxId}; setup was not saved.`,
+    );
+  }
   return { ...credentials, email: inbox.email };
 }
 
@@ -1429,13 +1682,19 @@ async function lookupCanonicalInbox(
   let inbox: { inboxId: string; email: string; displayName?: string };
   try {
     inbox = await provisioner.getInbox(apiKey, inboxId);
-  } catch {
+  } catch (error) {
+    const detail =
+      error instanceof AgentMailProvisioningApiError
+        ? ` AgentMail returned ${error.status}${error.providerCode ? ` ${error.providerCode}` : ""}.`
+        : "";
     throw new Error(
-      `Could not resolve the canonical email for AgentMail inbox ${inboxId}. ` +
-        "Check the supplied API key and inbox ID, then retry setup.",
+      `Could not verify access to AgentMail inbox ${inboxId}.${detail} ` +
+        "Check the configured API key's inbox_read capability and inbox ID, then retry setup.",
     );
   }
-  if (inbox.inboxId !== inboxId) {
+  const returnedInboxId = exactInboxId(inbox.inboxId, "AgentMail response inbox ID");
+  if (!returnedInboxId) throw new Error("AgentMail response inbox ID is required.");
+  if (returnedInboxId !== inboxId) {
     throw new Error(
       `AgentMail returned inbox ${inbox.inboxId} while resolving ${inboxId}; setup was not saved.`,
     );
@@ -1476,6 +1735,18 @@ function usableEnvValue(value: string | undefined): string | null {
   const trimmed = value?.trim();
   if (!trimmed || trimmed.startsWith("${")) return null;
   return trimmed;
+}
+
+function runtimeEnvValue(key: AgentMailRuntimeEnvKey, value: string | undefined): string | null {
+  if (key === "AGENTMAIL_API_KEY") {
+    if (value?.startsWith("${")) return null;
+    return exactApiKey(value, key);
+  }
+  if (key === "AGENTMAIL_INBOX_ID") {
+    if (value?.startsWith("${")) return null;
+    return exactInboxId(value, key);
+  }
+  return usableEnvValue(value);
 }
 
 function missingEnvCredentials(): never {

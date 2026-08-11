@@ -727,7 +727,7 @@ function assertRailwayDeploySafeConfig(configPath: string): ReturnType<typeof pa
         ]
       : [
           "  - Recommended: run `auggy augment setup visitorAuth`.",
-          "    This provisions/configures AgentMail and writes the needed .env values.",
+          "    This configures the supplied AgentMail key and writes the needed .env values.",
         ];
 
   throw new Error(

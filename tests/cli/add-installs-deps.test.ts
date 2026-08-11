@@ -89,7 +89,7 @@ function writeAgentMailRuntimeEnv(dir: string): void {
   const envPath = join(dir, ".env");
   let source = readFileSync(envPath, "utf-8");
   const values = {
-    AGENTMAIL_API_KEY: "scoped-test-key",
+    AGENTMAIL_API_KEY: "operator-supplied-test-key",
     AGENTMAIL_INBOX_ID: "inbox-test",
     AGENTMAIL_INBOX_EMAIL: "test-agent@agentmail.to",
   };
@@ -974,6 +974,9 @@ describe("runAdd no-op cases", () => {
         { target: "agentMail", mode: undefined },
         { target: "visitorAuth", mode: "env" },
       ]);
+      expect(readFileSync(join(dir, ".env"), "utf-8")).toContain(
+        "AGENTMAIL_API_KEY=operator-supplied-test-key",
+      );
       const output = logs.join("\n");
       expect(output).not.toContain("AGENTMAIL_API_KEY=");
       expect(output.match(/Apply changes:/g)).toHaveLength(1);

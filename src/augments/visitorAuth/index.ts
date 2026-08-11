@@ -1262,11 +1262,11 @@ export function visitorAuth(opts: VisitorAuthInternalOptions): Augment & Visitor
         if (httpStatus === 401 || httpStatus === 403 || httpStatus === 404) {
           const permissionHint =
             httpStatus === 403
-              ? " If this is a permission-whitelisted AgentMail key, include inbox_read for boot healthcheck and message_send for verification delivery."
+              ? " Confirm that the supplied AgentMail key grants inbox_read for the boot healthcheck and message_send for verification delivery."
               : "";
           throw new Error(
             `visitorAuth: AgentMail inbox "${mailInboxId}" healthcheck failed with HTTP ${httpStatus}: ${health.detail}. ` +
-              `Check the AgentMail env vars referenced by augments/visitorAuth/augment.yaml and restart.${permissionHint}`,
+              `Check the configured AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID, then restart.${permissionHint}`,
           );
         }
         console.warn(
