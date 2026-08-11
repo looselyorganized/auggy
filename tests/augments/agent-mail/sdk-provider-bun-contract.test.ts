@@ -19,7 +19,7 @@ async function runWithTimeout(
       timer = setTimeout(() => {
         child.kill("SIGKILL");
         reject(new Error("timed out waiting for AgentMail WebSocket contract child"));
-      }, 3_000);
+      }, 15_000);
     }),
   ]).finally(() => clearTimeout(timer));
   const [exitCode, stdout, stderr] = await Promise.all([
@@ -30,7 +30,7 @@ async function runWithTimeout(
   return { exitCode, stdout, stderr };
 }
 
-test("documents the pinned AgentMail SDK blob binary type failure on Bun", async () => {
+test("certifies the pinned AgentMail SDK WebSocket path on Bun", async () => {
   const child = Bun.spawn([process.execPath, CHILD], {
     cwd: process.cwd(),
     env: { PATH: process.env.PATH ?? "" },
@@ -39,8 +39,26 @@ test("documents the pinned AgentMail SDK blob binary type failure on Bun", async
   });
   const result = await runWithTimeout(child);
 
-  expect(result.stdout).toContain('"event":"LOOPBACK_READY"');
-  expect(result.stdout).not.toContain('"event":"SUBSCRIBED"');
-  expect(result.exitCode).not.toBe(0);
-  expect(result.stderr).toContain("Invalid binaryType: blob");
-}, 5_000);
+  expect(result.exitCode).toBe(0);
+  expect(result.stderr).toBe("");
+  expect(result.stderr).not.toContain("Invalid binaryType: blob");
+  expect(result.stderr).not.toContain("UnhandledPromiseRejection");
+
+  const ready = result.stdout.indexOf('"event":"LOOPBACK_READY"');
+  const firstSubscribe = result.stdout.indexOf('"event":"SERVER_SUBSCRIBE","generation":1');
+  const initialAck = result.stdout.indexOf('"event":"SUBSCRIBED","reconnected":false');
+  const firstEvent = result.stdout.indexOf('"event":"EVENT_RECEIVED","messageId":"message_1"');
+  const secondSubscribe = result.stdout.indexOf('"event":"SERVER_SUBSCRIBE","generation":2');
+  const reconnectAck = result.stdout.indexOf('"event":"SUBSCRIBED","reconnected":true');
+  const secondEvent = result.stdout.indexOf('"event":"EVENT_RECEIVED","messageId":"message_2"');
+  const closed = result.stdout.indexOf('"event":"CLOSED"');
+
+  expect(ready).toBeGreaterThanOrEqual(0);
+  expect(firstSubscribe).toBeGreaterThan(ready);
+  expect(initialAck).toBeGreaterThan(firstSubscribe);
+  expect(firstEvent).toBeGreaterThan(initialAck);
+  expect(secondSubscribe).toBeGreaterThan(initialAck);
+  expect(reconnectAck).toBeGreaterThan(secondSubscribe);
+  expect(secondEvent).toBeGreaterThan(reconnectAck);
+  expect(closed).toBeGreaterThan(Math.max(reconnectAck, secondEvent));
+}, 20_000);
