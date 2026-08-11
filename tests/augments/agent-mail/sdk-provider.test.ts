@@ -773,6 +773,27 @@ describe("AgentMail SDK WebSocket source", () => {
     await subscription.close();
   });
 
+  test("accepts the documented bare subscribed acknowledgement", async () => {
+    const fake = fakeSdk({});
+    const adapters = createAgentMailSdkAdapters({
+      apiKey: "am_test",
+      handshakeTimeoutMs: 1_000,
+      _sdk: fake.sdk as never,
+    });
+    const subscribing = adapters.live.subscribe({
+      inboxId: "support@agentmail.to",
+      eventTypes: ["message.received"],
+      async onEvent() {},
+      onError() {},
+    });
+    await nextTask();
+    fake.socket.emit("open");
+    fake.socket.emit("message", { type: "subscribed" });
+
+    const subscription = await subscribing;
+    await subscription.close();
+  });
+
   test("waits for a full ack, runs catch-up first, and serializes received events", async () => {
     const connectArgs: Record<string, unknown>[] = [];
     const fake = fakeSdk({ onConnect: (args) => connectArgs.push(args) });

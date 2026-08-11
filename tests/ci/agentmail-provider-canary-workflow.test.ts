@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
+import { AgentMailPayloadError } from "../../src/augments/agentMail/provider";
 import {
   runAgentMailProviderCanary,
   type AgentMailCanaryDependencies,
@@ -217,6 +218,26 @@ describe("AgentMail provider canary trust boundary", () => {
     expect(fixture.closeCalls).toEqual(["close"]);
   });
 
+  test.each([
+    { phase: "REST message-list", option: "restError" as const },
+    { phase: "WebSocket subscription", option: "subscribeError" as const },
+  ])(
+    "classifies $phase payload failures without exposing provider detail",
+    async ({ phase, option }) => {
+      const sentinel = "PROVIDER_PAYLOAD_DETAIL_MUST_NOT_ESCAPE";
+      const fixture = fakeCanary({ [option]: new AgentMailPayloadError(sentinel) });
+
+      let error: unknown;
+      try {
+        await runAgentMailProviderCanary(fixture.dependencies);
+      } catch (caught) {
+        error = caught;
+      }
+      expect(String(error)).toContain(`runtime ${phase} payload did not satisfy`);
+      expect(String(error)).not.toContain(sentinel);
+    },
+  );
+
   test("fails closed when read-only account inventory cannot prove the fixed inbox identity", async () => {
     const fixture = fakeCanary();
     const provisioner = fixture.dependencies.provisioner!;
@@ -239,7 +260,14 @@ describe("AgentMail provider canary trust boundary", () => {
   });
 });
 
-function fakeCanary(options: { acknowledge?: boolean; reportLiveError?: boolean } = {}): {
+function fakeCanary(
+  options: {
+    acknowledge?: boolean;
+    reportLiveError?: boolean;
+    restError?: Error;
+    subscribeError?: Error;
+  } = {},
+): {
   dependencies: AgentMailCanaryDependencies;
   inboxRequests: unknown[];
   inboxListRequests: string[];
@@ -290,6 +318,7 @@ function fakeCanary(options: { acknowledge?: boolean; reportLiveError?: boolean 
           catchUp: {
             async listMessages(request) {
               restRequests.push(request);
+              if (options.restError) throw options.restError;
               return { messages: [], nextPageToken: undefined };
             },
             async getMessage() {
@@ -299,6 +328,7 @@ function fakeCanary(options: { acknowledge?: boolean; reportLiveError?: boolean 
           live: {
             async subscribe(input) {
               liveRequests.push({ inboxId: input.inboxId, eventTypes: [...input.eventTypes] });
+              if (options.subscribeError) throw options.subscribeError;
               if (options.acknowledge !== false) {
                 await input.onSubscribed?.({ reconnected: false });
               }

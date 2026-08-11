@@ -12,6 +12,7 @@ import {
   type AgentMailSdkAdapters,
   type AgentMailSdkProviderOptions,
 } from "../src/augments/agentMail/sdk-provider";
+import { AgentMailPayloadError } from "../src/augments/agentMail/provider";
 
 /**
  * Protected real-provider canary for the existing-account AgentMail flow.
@@ -120,11 +121,15 @@ export async function runAgentMailProviderCanary(
 
   // Exercise the shipped runtime REST normalizer without fetching message
   // bodies or performing a provider mutation.
-  await adapters.catchUp.listMessages({
-    inboxId: first.inboxId,
-    limit: 1,
-    processedEventTypes: [...RUNTIME_EVENT_TYPES],
-  });
+  try {
+    await adapters.catchUp.listMessages({
+      inboxId: first.inboxId,
+      limit: 1,
+      processedEventTypes: [...RUNTIME_EVENT_TYPES],
+    });
+  } catch (error) {
+    throw classifyRuntimeFailure("REST message-list", error);
+  }
 
   let subscription: Awaited<ReturnType<AgentMailSdkAdapters["live"]["subscribe"]>> | undefined;
   let subscriptionAcknowledged = false;
@@ -170,7 +175,7 @@ export async function runAgentMailProviderCanary(
       }
     }
   }
-  if (failure) throw failure;
+  if (failure) throw classifyRuntimeFailure("WebSocket subscription", failure);
   if (!subscriptionAcknowledged) {
     throw new AgentMailCanaryError(
       "The AgentMail runtime WebSocket did not acknowledge the canary subscription.",
@@ -232,6 +237,15 @@ function safeCanaryFailure(error: unknown): string {
     return error.message;
   }
   return "Unexpected failure; details were suppressed to protect provider credentials and responses.";
+}
+
+function classifyRuntimeFailure(operation: string, error: unknown): unknown {
+  if (error instanceof AgentMailPayloadError) {
+    return new AgentMailCanaryError(
+      `The AgentMail runtime ${operation} payload did not satisfy the shipped adapter contract.`,
+    );
+  }
+  return error;
 }
 
 if (import.meta.main) {
