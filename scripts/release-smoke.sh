@@ -288,6 +288,31 @@ NODE
     || fail "packed @auggy/evals consumer failed"
 }
 
+verify_agentmail_packed_runtime_consumer() {
+  local consumer_dir="$SMOKE_DIR/agentmail-runtime-consumer"
+  mkdir -p "$consumer_dir"
+  node - "$consumer_dir/package.json" <<'NODE'
+const { writeFileSync } = require("node:fs");
+writeFileSync(
+  process.argv[2],
+  `${JSON.stringify({
+    name: "packed-agentmail-runtime-consumer",
+    private: true,
+    type: "module",
+  }, null, 2)}\n`,
+);
+NODE
+  cp "$ROOT/scripts/release-smoke-agentmail-packed-runtime.ts" "$consumer_dir/contract.ts"
+  (
+    cd "$consumer_dir"
+    bun add --offline --no-summary "$TARBALL"
+    AUGGY_PACKED_CONSUMER_ROOT="$consumer_dir" \
+      AUGGY_SOURCE_ROOT="$ROOT" \
+      bun contract.ts
+  ) >"$LOG_DIR/agentmail-packed-runtime.log" 2>&1 \
+    || fail "packed AgentMail runtime WebSocket contract failed"
+}
+
 info "verify packed provider contracts and isolated imports"
 verify_adapter_manifest "$ANTHROPIC_TARBALL" "@auggy/anthropic"
 verify_adapter_manifest "$OPENAI_TARBALL" "@auggy/openai"
@@ -303,6 +328,7 @@ verify_adapter_consumer \
 verify_adapter_consumer \
   "ollama" "@auggy/ollama" "createOllamaEngine" "$OLLAMA_TARBALL"
 verify_evals_consumer
+verify_agentmail_packed_runtime_consumer
 
 info "verify package contents"
 PACK_LIST="$LOG_DIR/tarball-files.txt"
