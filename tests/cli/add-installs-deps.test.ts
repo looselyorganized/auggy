@@ -681,6 +681,14 @@ describe("runAdd no-op cases", () => {
 
     expect(readAgentAugments(dir)).toContain("agentMail");
     expect(existsSync(join(dir, "skills", "agentMail", "SKILL.md"))).toBe(true);
+    expect(readAugmentMetadata(dir, "agentMail")).toMatchObject({
+      type: "agentMail",
+      config: {
+        addressVisibility: "creator",
+        dbPath: "./data/agent-mail.db",
+        inbound: { mode: "none" },
+      },
+    });
 
     const output = logs.join("\n");
     expect(output).toContain("Use AgentMail:");
