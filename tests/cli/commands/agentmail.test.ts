@@ -2361,9 +2361,46 @@ describe("agentmail setup command", () => {
           },
           { interactive: false, provisioner: unusedProvisioner({ getInbox }) },
         ),
-      ).rejects.toThrow(/AGENTMAIL_API_KEY exported[\s\S]*conflicts/);
+      ).rejects.toThrow(/Conflicting AgentMail API keys[\s\S]*--api-key[\s\S]*AGENTMAIL_API_KEY/);
       expect(promptPassword).not.toHaveBeenCalled();
       expect(getInbox).not.toHaveBeenCalled();
+    } finally {
+      restoreAgentMailRuntimeEnv(previous);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts a command-scoped canonical key for non-interactive replacement", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-replace-canonical-env-"));
+    const previous = snapshotAgentMailRuntimeEnv();
+    try {
+      clearAgentMailRuntimeEnv();
+      const paths = writeAgentMailAgent(root);
+      writeFileSync(
+        paths.envPath,
+        "AGENTMAIL_API_KEY=am_old\nAGENTMAIL_INBOX_ID=inb_existing\nAGENTMAIL_INBOX_EMAIL=support@agentmail.to\n",
+      );
+      process.env.AGENTMAIL_API_KEY = "am_new_from_process";
+      const getInbox = mock(async (apiKey: string, inboxId: string) => {
+        expect(apiKey).toBe("am_new_from_process");
+        expect(inboxId).toBe("inb_existing");
+        return { inboxId, email: "support@agentmail.to" };
+      });
+
+      const result = await runAgentMailSetup(
+        "agentMail",
+        {
+          config: paths.configPath,
+          mode: "manual",
+          replaceKey: true,
+          yes: true,
+        },
+        { interactive: false, provisioner: unusedProvisioner({ getInbox }) },
+      );
+
+      expect(result.replacedApiKey).toBe(true);
+      expect(getInbox).toHaveBeenCalledTimes(1);
+      expect(readEnv(paths.envPath).AGENTMAIL_API_KEY).toBe("am_new_from_process");
     } finally {
       restoreAgentMailRuntimeEnv(previous);
       rmSync(root, { recursive: true, force: true });

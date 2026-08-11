@@ -50,6 +50,9 @@ describe("auggy augment command", () => {
           "am_x",
           "--inbox-id",
           "inb_x",
+          "--replace-key",
+          "--yes",
+          "--allow-insecure-http-with-credentials",
         ],
         { from: "user" },
       );
@@ -68,7 +71,10 @@ describe("auggy augment command", () => {
         displayName: undefined,
         apiKey: "am_x",
         inboxId: "inb_x",
+        replaceKey: true,
+        yes: true,
         baseUrl: undefined,
+        allowInsecureHttpWithCredentials: true,
       },
       { auggyDir: "/tmp/auggy" },
     );

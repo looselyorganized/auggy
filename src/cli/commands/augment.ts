@@ -165,7 +165,13 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
       "external-service API key (prefer a secure prompt or provider environment variable)",
     )
     .option("--inbox-id <id>", "existing AgentMail inbox ID for manual mode")
+    .option("--replace-key", "replace only the stored API key for the existing inbox (manual mode)")
+    .option("--yes", "confirm a non-interactive --replace-key operation")
     .option("--base-url <url>", "external-service API base URL")
+    .option(
+      "--allow-insecure-http-with-credentials",
+      "allow plaintext remote AgentMail only when NODE_ENV=development",
+    )
     .action(async (augment: string, opts: AugmentSetupOptions) => {
       try {
         const result = await setup(augment, opts, { auggyDir: deps.auggyDir });

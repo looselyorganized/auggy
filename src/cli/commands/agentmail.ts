@@ -274,7 +274,7 @@ async function runAgentMailSetupLocked(
   if (mode === "signup" || mode === "existing") {
     assertNoAutomaticRuntimeCredentialRotation(diskEnv, mode);
   } else if (mode === "manual" && opts.replaceKey) {
-    assertReplacementAmbientEnvSafe(diskEnv);
+    assertReplacementInboxEnvSafe(diskEnv);
   } else {
     assertAmbientDiskEnvParity(diskEnv);
   }
@@ -1218,9 +1218,20 @@ function assertNonInteractiveSetupInputs(
     }
     if (!usableOption(opts.username)) missing.push("--username");
   } else {
+    const replacementCurrentApiKey = exactApiKey(
+      diskEnv.AGENTMAIL_API_KEY,
+      ".env AGENTMAIL_API_KEY",
+    );
+    const canonicalReplacementApiKey = exactApiKey(
+      process.env.AGENTMAIL_API_KEY,
+      "AGENTMAIL_API_KEY",
+    );
     const hasSelectedApiKey = opts.replaceKey
       ? Boolean(
           exactApiKey(opts.apiKey, "--api-key") ??
+            (canonicalReplacementApiKey !== replacementCurrentApiKey
+              ? canonicalReplacementApiKey
+              : null) ??
             exactApiKey(process.env.AGENTMAIL_ACCOUNT_API_KEY, "AGENTMAIL_ACCOUNT_API_KEY"),
         )
       : Boolean(
@@ -1544,12 +1555,7 @@ function assertNoAutomaticRuntimeCredentialRotation(
   }
 }
 
-function assertReplacementAmbientEnvSafe(diskEnv: AgentMailDiskEnv): void {
-  const diskApiKey = runtimeEnvValue("AGENTMAIL_API_KEY", diskEnv.AGENTMAIL_API_KEY);
-  const ambientApiKey = runtimeEnvValue("AGENTMAIL_API_KEY", process.env.AGENTMAIL_API_KEY);
-  if (ambientApiKey && diskApiKey && ambientApiKey !== diskApiKey) {
-    throw ambientEnvConflictError("AGENTMAIL_API_KEY");
-  }
+function assertReplacementInboxEnvSafe(diskEnv: AgentMailDiskEnv): void {
   for (const key of ["AGENTMAIL_INBOX_ID", "AGENTMAIL_INBOX_EMAIL"] as const) {
     const ambient = runtimeEnvValue(key, process.env[key]);
     const disk = runtimeEnvValue(key, diskEnv[key]);
