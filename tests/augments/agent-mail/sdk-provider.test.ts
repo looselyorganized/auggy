@@ -491,6 +491,37 @@ describe("runAgentMailCatchUp", () => {
 });
 
 describe("AgentMail SDK WebSocket source", () => {
+  test("does not leak an unhandled rejection when SDK connection fails", async () => {
+    const fake = fakeSdk({});
+    fake.sdk.websockets.connect = async () => {
+      throw new Error("connection failed");
+    };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      const adapters = createAgentMailSdkAdapters({ apiKey: "am_test", _sdk: fake.sdk as never });
+      await expect(
+        adapters.live.subscribe({
+          inboxId: "support@agentmail.to",
+          eventTypes: ["message.received"],
+          async onEvent() {},
+          onError() {},
+        }),
+      ).rejects.toMatchObject({
+        operation: "connect WebSocket",
+        retryable: true,
+      });
+      await nextTask();
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
   test("configures the public reconnecting socket before listeners and subscription", async () => {
     const fake = fakeSdk({});
     let binaryType = "blob";

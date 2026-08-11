@@ -460,6 +460,7 @@ function createLiveSource(
       } catch (error) {
         const wrapped = requestError("connect WebSocket", error);
         closePermanently(wrapped);
+        await initial.catch(() => undefined);
         throw wrapped;
       }
 
