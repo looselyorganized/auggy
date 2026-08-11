@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0-rc.10] - 2026-08-11
+
+This tenth public candidate preserves the operator's chosen AgentMail
+credential end to end and makes inbound delivery compatible with Bun.
+
 ### Changed
 
 - **Operator-owned AgentMail credentials.** Setup now uses the exact
@@ -722,7 +727,8 @@ Initial tagged release. The kernel and built-in augments described in `docs/02-a
 - **CLI** — `aug1 create / add / dev / start / stop / restart / status` with launchd installation on macOS and PID-manifest tracking under `~/.auggy/`.
 - **Reference documentation** — `docs/01-philosophy.md` through `docs/11-skills.md`.
 
-[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.9...HEAD
+[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.10...HEAD
+[0.5.0-rc.10]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.9...v0.5.0-rc.10
 [0.5.0-rc.9]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.8...v0.5.0-rc.9
 [0.5.0-rc.8]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.7...v0.5.0-rc.8
 [0.5.0-rc.7]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.6...v0.5.0-rc.7
