@@ -17,6 +17,15 @@ import {
   validateAgentMailInboundConfig,
 } from "../../src/augments/agentMail/inbound-policy";
 import {
+  AGENTMAIL_ATTENTION_DEFAULT_MAX_RECORDS,
+  AGENTMAIL_ATTENTION_DEFAULT_RETENTION_MS,
+} from "../../src/augments/agentMail/creator-attention";
+import {
+  AGENTMAIL_DIGEST_DEFAULT_MAX_BATCHES,
+  AGENTMAIL_DIGEST_DEFAULT_MAX_ITEMS,
+  AGENTMAIL_DIGEST_DEFAULT_RETENTION_MS,
+} from "../../src/augments/agentMail/creator-digest";
+import {
   AGENTMAIL_CREATOR_DIGEST_DEFAULT_INTERVAL_MS,
   AGENTMAIL_CREATOR_DIGEST_DEFAULT_MAX_ATTEMPTS,
   AGENTMAIL_CREATOR_DIGEST_DEFAULT_MAX_ITEMS,
@@ -26,12 +35,17 @@ import {
   AGENTMAIL_CREATOR_DIGEST_MIN_INTERVAL_MS,
   resolveAgentMailCreatorDigestConfig,
 } from "../../src/augments/agentMail/creator-digest-policy";
+import {
+  AGENTMAIL_MAX_POLICY_TOMBSTONES_PER_INBOX,
+  createAgentMailInboundLedger,
+} from "../../src/augments/agentMail/inbound-ledger";
 import { normalizeSubject, validateOutbound } from "../../src/augments/agentMail/outbound";
 import {
   checkRateLimit,
   createRateLimitState,
   recordSend,
 } from "../../src/augments/agentMail/rate-limit";
+import { createAgentMailReviewQueue } from "../../src/augments/agentMail/review-queue";
 import type { AgentMailProvisioningClient } from "../../src/cli/agentmail-provisioning";
 import { formatAgentMailSetupResult, runAgentMailSetup } from "../../src/cli/commands/agentmail";
 import { parseConfig } from "../../src/cli/config-parser";
@@ -50,6 +64,63 @@ const DOC_PATH = resolve(import.meta.dir, "../../docs/22-agent-mail.md");
 const AGENT_ID = "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c";
 const INBOX_ID = "inb_docs_contract";
 const INBOX_EMAIL = "docs-contract@agentmail.to";
+
+const AGENTMAIL_YAML_CONTAINERS = [
+  "outbound",
+  "outbound.rateLimit",
+  "outbound.humanReview",
+  "inbound",
+  "inbound.rateLimit",
+  "inbound.classifications",
+  "inbound.replies",
+  "inbound.webhook",
+  "inbound.creatorDigest",
+] as const;
+
+const AGENTMAIL_YAML_SETTINGS = [
+  "apiKey",
+  "inboxId",
+  "emailAddress",
+  "addressVisibility",
+  "apiBaseUrl",
+  "allowInsecureHttpWithCredentials",
+  "dbPath",
+  "outbound.allowedTrustLevels",
+  "outbound.allowedRecipients",
+  "outbound.maxRecipients",
+  "outbound.bodyMaxBytes",
+  "outbound.allowHtml",
+  "outbound.subjectPrefix",
+  "outbound.rateLimit.enabled",
+  "outbound.rateLimit.globalMaxPerHour",
+  "outbound.rateLimit.perRecipientCooldownMs",
+  "outbound.rateLimit.dedupWindowMs",
+  "outbound.humanReview.requiredForTrustLevels",
+  "outbound.humanReview.expiresAfterMs",
+  "inbound.mode",
+  "inbound.allowedSenders",
+  "inbound.allowAnySender",
+  "inbound.rateLimit.globalMaxPerHour",
+  "inbound.rateLimit.perSenderMaxPerHour",
+  "inbound.pollIntervalMs",
+  "inbound.maxPromptBytes",
+  "inbound.maxAttempts",
+  "inbound.websocketBaseUrl",
+  "inbound.classifications.received",
+  "inbound.classifications.spam",
+  "inbound.classifications.blocked",
+  "inbound.classifications.unauthenticated",
+  "inbound.replies.mode",
+  "inbound.replies.allowReplyAll",
+  "inbound.webhook.path",
+  "inbound.webhook.secretEnv",
+  "inbound.webhook.timestampToleranceSeconds",
+  "inbound.creatorDigest.enabled",
+  "inbound.creatorDigest.destination",
+  "inbound.creatorDigest.intervalMs",
+  "inbound.creatorDigest.maxItems",
+  "inbound.creatorDigest.maxAttempts",
+] as const;
 
 const RECIPES = [
   {
@@ -693,7 +764,7 @@ describe("AgentMail operator guide contracts", () => {
   test("references every public AgentMail configuration field exactly once", () => {
     expectReferenceRows(source, "Top-level `config`", TOP_LEVEL_REFERENCE_ROWS);
     expect(markdownSubsection(source, "Top-level `config`")).toContain(
-      "`agentDir` also exists on the programmatic factory type",
+      "`agentDir` is programmatic-only",
     );
     expectReferenceRows(source, "`outbound`", OUTBOUND_REFERENCE_ROWS);
     expectReferenceRows(
@@ -724,6 +795,75 @@ describe("AgentMail operator guide contracts", () => {
     );
     expectReferenceRows(source, "`inbound.webhook`", WEBHOOK_REFERENCE_ROWS);
     expectReferenceRows(source, "`inbound.creatorDigest`", CREATOR_DIGEST_REFERENCE_ROWS);
+  });
+
+  test("separates 42 YAML settings, nine containers, and programmatic-only agentDir", () => {
+    expect(AGENTMAIL_YAML_SETTINGS).toHaveLength(42);
+    expect(new Set(AGENTMAIL_YAML_SETTINGS).size).toBe(42);
+    expect(AGENTMAIL_YAML_CONTAINERS).toHaveLength(9);
+    expect(new Set(AGENTMAIL_YAML_CONTAINERS).size).toBe(9);
+    expect(
+      AGENTMAIL_YAML_SETTINGS.filter((path) =>
+        AGENTMAIL_YAML_CONTAINERS.includes(path as (typeof AGENTMAIL_YAML_CONTAINERS)[number]),
+      ),
+    ).toEqual([]);
+
+    const reference = source.slice(source.indexOf("### Complete configuration reference"));
+    expect(reference).toContain("**42 YAML settings**");
+    expect(reference).toContain("grouped under nine object containers");
+    for (const container of AGENTMAIL_YAML_CONTAINERS) {
+      expect(reference).toContain(`\`${container}\``);
+    }
+    expect(reference).toContain("`agentDir` is programmatic-only");
+    expect(reference).toContain("It is not one of the 42 YAML settings");
+    expect(reference).not.toMatch(/^\| `agentDir` \|/m);
+  });
+
+  test("documents restart-only YAML and the persisted review-expiry lifecycle", () => {
+    const reference = source
+      .slice(source.indexOf("### Complete configuration reference"))
+      .replace(/\s+/g, " ");
+    for (const statement of [
+      "Every YAML change below requires an agent restart",
+      "does not hot-reload AgentMail YAML",
+      "applies only to newly queued reviews",
+      "there is no background expiration timer",
+      "becomes `expired`",
+      "does not immediately delete the record",
+      "eligible for pruning after 30 days",
+      "already in `sending` does not expire",
+    ]) {
+      expect(reference).toContain(statement);
+    }
+
+    let now = 1_000;
+    let nextId = 0;
+    const queue = createAgentMailReviewQueue({
+      now: () => now,
+      id: () => `review-${++nextId}`,
+    });
+    const enqueue = (fingerprint: string, expiresAt: number) =>
+      queue.enqueue({
+        trustLevel: "public",
+        recipients: ["customer@example.com"],
+        subject: fingerprint,
+        rateKey: fingerprint,
+        fingerprint,
+        request: {
+          kind: "send",
+          to: ["customer@example.com"],
+          subject: fingerprint,
+          text: "Review me",
+        },
+        expiresAt,
+      }).record;
+
+    const original = enqueue("original-24-hour-policy", now + 86_400_000);
+    const newer = enqueue("new-one-hour-policy", now + 3_600_000);
+    now += 3_600_000;
+    expect(queue.get(newer.id)).toMatchObject({ state: "expired", resolvedAt: now });
+    expect(queue.get(original.id)).toMatchObject({ state: "pending", expiresAt: 86_401_000 });
+    expect(() => queue.beginApproval(newer.id)).toThrow(/expired/);
   });
 
   test("binds documented inbound ranges and defaults to exported runtime contracts", () => {
@@ -805,6 +945,21 @@ describe("AgentMail operator guide contracts", () => {
         {},
       ),
     ).toMatchObject({ ok: false, reason: expect.stringContaining("disabled by default") });
+    expect(
+      validateOutbound(
+        {
+          recipients: ["person@example.com"],
+          subject: "Status",
+          text: "a".repeat(102_400),
+          html: "b",
+        },
+        { allowHtml: true },
+      ),
+    ).toMatchObject({
+      ok: false,
+      reason: expect.stringContaining("102401 bytes (text + html)"),
+    });
+    expect(outbound).toContain("combined UTF-8 byte length of the plain-text and HTML bodies");
 
     const now = 1_000_000;
     const globalState = createRateLimitState();
@@ -842,5 +997,133 @@ describe("AgentMail operator guide contracts", () => {
     expect(markdownSubsection(source, "`inbound.creatorDigest`")).toContain(
       "| `enabled` | Boolean | `false`",
     );
+  });
+
+  test("binds the documented inbound and reply modes to effective runtime policy", () => {
+    expect(validateAgentMailInboundConfig({ mode: "none" })).toMatchObject({
+      processedEventTypes: [],
+      replies: { mode: "disabled", allowReplyAll: false },
+    });
+
+    for (const mode of ["polling", "websocket"] as const) {
+      expect(
+        validateAgentMailInboundConfig({
+          mode,
+          allowedSenders: ["operator@example.com"],
+        }),
+      ).toMatchObject({
+        processedEventTypes: ["message.received"],
+        replies: { mode: "review", allowReplyAll: false },
+      });
+    }
+    expect(
+      validateAgentMailInboundConfig({
+        mode: "webhook",
+        allowedSenders: ["operator@example.com"],
+        webhook: {},
+      }),
+    ).toMatchObject({
+      processedEventTypes: ["message.received"],
+      replies: { mode: "review", allowReplyAll: false },
+    });
+    expect(
+      validateAgentMailInboundConfig({
+        mode: "websocket",
+        allowedSenders: ["operator@example.com"],
+        replies: { mode: "automatic", allowReplyAll: true },
+      }).replies,
+    ).toEqual({ mode: "automatic", allowReplyAll: true });
+
+    const modeSection = source.slice(
+      source.indexOf("## Choosing an inbound mode"),
+      source.indexOf("## Inbound trust and prompt shape"),
+    );
+    expect(modeSection).toContain("AgentMail can still receive and store mail upstream");
+    expect(modeSection).toContain("REST catch-up");
+    expect(modeSection).toContain("every `pollIntervalMs`");
+    expect(modeSection).toContain("durably enqueued before success");
+
+    const replyReference = markdownSubsection(
+      source,
+      "`inbound.classifications` and `inbound.replies`",
+    ).replace(/\s+/g, " ");
+    for (const statement of [
+      "A normal assistant response is not emailed",
+      "may propose one reply to the message that triggered it",
+      "may send one reply to its triggering message",
+      "does not authorize a new",
+      "does not grant general outbound or forwarding authority",
+    ]) {
+      expect(replyReference).toContain(statement);
+    }
+    expect(source).toContain(
+      "an outcome-unknown turn is quarantined after the first uncertain outcome instead of being retried",
+    );
+  });
+
+  test("binds the retention reference to durable ledger behavior and exported capacities", () => {
+    const retention = source.slice(
+      source.indexOf("### Retention behavior"),
+      source.indexOf("## Operator visibility"),
+    );
+    expect(retention).toContain(
+      "ordinary terminal rows currently have no time-based pruning and remain",
+    );
+    expect(retention).toContain(
+      `Each inbox retains at most ${AGENTMAIL_MAX_POLICY_TOMBSTONES_PER_INBOX.toLocaleString("en-US")}`,
+    );
+    expect(retention).toContain(
+      `At most ${AGENTMAIL_ATTENTION_DEFAULT_MAX_RECORDS.toLocaleString("en-US")}`,
+    );
+    expect(retention).toContain(
+      `At most ${AGENTMAIL_DIGEST_DEFAULT_MAX_BATCHES.toLocaleString("en-US")} immutable batches and ${AGENTMAIL_DIGEST_DEFAULT_MAX_ITEMS.toLocaleString("en-US")} items`,
+    );
+    expect(AGENTMAIL_ATTENTION_DEFAULT_RETENTION_MS).toBe(30 * 24 * 60 * 60_000);
+    expect(AGENTMAIL_DIGEST_DEFAULT_RETENTION_MS).toBe(30 * 24 * 60 * 60_000);
+
+    let now = Date.parse("2026-01-01T00:00:00.000Z");
+    const inboxId = "retention-contract@agentmail.to";
+    const ledger = createAgentMailInboundLedger({ dbPath: ":memory:", now: () => now });
+    try {
+      ledger.enqueue({
+        source: "rest",
+        eventType: "message.received",
+        providerEventId: undefined,
+        message: {
+          inboxId,
+          threadId: "thread_retention_contract",
+          messageId: "message_retention_contract",
+          labels: ["received"],
+          timestamp: new Date(now).toISOString(),
+          from: "customer@example.com",
+          to: [inboxId],
+          cc: [],
+          bcc: [],
+          replyTo: [],
+          subject: "Retain this",
+          preview: "Durable body",
+          text: "Durable body",
+          html: undefined,
+          extractedText: undefined,
+          extractedHtml: undefined,
+          size: 12,
+          attachments: [],
+          inReplyTo: undefined,
+          references: [],
+          createdAt: undefined,
+          updatedAt: undefined,
+        },
+      });
+      const claim = ledger.claimNext({ workerId: "docs-retention", leaseMs: 60_000 });
+      expect(claim).not.toBeNull();
+      expect(ledger.complete(claim!)).toBe(true);
+      now += 365 * 24 * 60 * 60_000;
+      expect(ledger.get(inboxId, "message_retention_contract")).toMatchObject({
+        state: "processed",
+        envelope: { message: { text: "Durable body" } },
+      });
+    } finally {
+      ledger.close();
+    }
   });
 });

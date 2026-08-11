@@ -812,10 +812,21 @@ once makes permission changes and security consequences harder to review.
 
 ### Complete configuration reference
 
-Every YAML change below takes effect after an agent restart. The **New key**
-column calls out the smaller set of changes that also require a replacement
-inbox-scoped AgentMail key. Save the intended YAML before provisioning a new
-key so setup can calculate its least-privilege permissions.
+AgentMail has **42 YAML settings**, grouped under nine object containers:
+`outbound`, `outbound.rateLimit`, `outbound.humanReview`, `inbound`,
+`inbound.rateLimit`, `inbound.classifications`, `inbound.replies`,
+`inbound.webhook`, and `inbound.creatorDigest`. The containers organize the
+settings; they are not additional settings themselves. The surrounding
+`type: agentMail` and `config:` keys identify the augment and are not AgentMail
+settings.
+
+Every YAML change below requires an agent restart. Auggy does not hot-reload
+AgentMail YAML. The Console can persist a live override for only
+`outbound.rateLimit.globalMaxPerHour`; that separate override does not reload
+the YAML and continues to take precedence until the creator resets it. The
+**New key** column calls out the smaller set of YAML changes that also require
+a replacement inbox-scoped AgentMail key. Save the intended YAML before
+provisioning a new key so setup can calculate its least-privilege permissions.
 
 #### Top-level `config`
 
@@ -831,8 +842,9 @@ key so setup can calculate its least-privilege permissions.
 | `outbound` | Object; fields are listed below | `{}` with the strict outbound defaults below | No |
 | `inbound` | Object; fields are listed below | Omitted is equivalent to `mode: none` | Yes only when moving from `none` to an enabled mode, or when a classification adds a provider permission |
 
-`agentDir` also exists on the programmatic factory type, but the CLI resolver
-owns and supplies it. Do not put `agentDir` in `augment.yaml`.
+`agentDir` is programmatic-only. It exists on the TypeScript factory type, but
+the CLI resolver owns and supplies it. It is not one of the 42 YAML settings;
+do not put it in `augment.yaml`.
 
 #### `outbound`
 
@@ -841,7 +853,7 @@ owns and supplies it. Do not put `agentDir` in `augment.yaml`.
 | `allowedTrustLevels` | Array containing `creator`, `agent`, or `public` | `[creator]`; creator-originated calls remain permitted | No |
 | `allowedRecipients` | Array of non-empty strings; use exact addresses or exact-domain patterns such as `*@example.com` | Omitted allows any well-formed recipient; matching is case-insensitive and an exact-domain pattern does not include subdomains | No |
 | `maxRecipients` | Positive safe integer; the provider hard ceiling is always 50 | `10`; values above 50 are effectively capped at 50 | No |
-| `bodyMaxBytes` | Safe integer from 1 through 1,048,576; counts text and HTML together | `102400` (100 KiB) | No |
+| `bodyMaxBytes` | Safe integer from 1 through 1,048,576; limits the combined UTF-8 byte length of the plain-text and HTML bodies | `102400` (100 KiB) | No |
 | `allowHtml` | Boolean | `false` | No |
 | `subjectPrefix` | Non-empty string | `[Auggy] `; the final normalized subject may contain at most 1,000 characters | No |
 | `rateLimit` | Object; fields are listed below | Enabled with the defaults below | No |
@@ -870,6 +882,22 @@ with an intended recipient and an intended rejection.
 | `humanReview.requiredForTrustLevels` | Array containing `creator`, `agent`, or `public`; an empty array explicitly disables this review gate | `[public]` | No |
 | `humanReview.expiresAfterMs` | Safe integer from 1 through 2,592,000,000 | `86400000` (24 hours) | No |
 
+`humanReview.expiresAfterMs` is the approval lifetime of one newly queued,
+exact outbound action: a new message, reply, or forward. Its timer starts when
+Auggy creates the durable review record. The record stores an absolute
+`expiresAt`, so a later YAML change does not shorten or extend reviews that
+already exist; after restart, the new value applies only to newly queued
+reviews. `0` is invalid and does not disable expiration.
+
+Expiration is fail-closed and evaluated when the queue is next read, listed,
+or changed; there is no background expiration timer. A pending record whose
+deadline has passed becomes `expired`, records when it was resolved, and can no
+longer be approved, revised, or rejected as pending. Auggy does not send it.
+Expiration does not immediately delete the record: terminal review rows become
+eligible for pruning after 30 days and are pruned during a later enqueue. A
+record already in `sending` does not expire because AgentMail may have accepted
+it; it remains ambiguous until the creator reconciles the provider outcome.
+
 Outbound rate fields intentionally have no general parser-enforced upper
 bounds beyond the automatic-reply rule above. Use finite operational values;
 do not interpret parser acceptance as a recommended capacity. Any executable
@@ -895,7 +923,7 @@ admission limits are separate and are not bypassed by who later reviews mail.
 | `rateLimit.perSenderMaxPerHour` | Safe integer from 1 through 1,000 and no greater than the global limit | Required with `rateLimit.globalMaxPerHour` | No |
 | `pollIntervalMs` | Safe integer from 1,000 through 86,400,000 | `60000` (60 seconds); also controls REST reconciliation for enabled live modes | No |
 | `maxPromptBytes` | Safe integer from 512 through 1,048,576 | `102400` (100 KiB) | No |
-| `maxAttempts` | Safe integer from 1 through 20 | `5` | No |
+| `maxAttempts` | Safe integer from 1 through 20 | `5` total attempts for definitive processing failures; an outcome-unknown turn is quarantined after the first uncertain outcome instead of being retried | No |
 | `websocketBaseUrl` | `ws://` or `wss://` URL without embedded credentials | AgentMail's production WebSocket origin; sandbox override only | No |
 | `classifications` | Object; fields are listed below | Ordinary received mail is processed and restricted classifications are discarded | Sometimes; see below |
 | `replies` | Object; fields are listed below | `disabled` with `mode: none`, otherwise `review` | No |
@@ -925,6 +953,19 @@ Any enabled reply mode requires durable review storage and `webTransport` with
 content and a Reply-To address that differs from From still fall back to
 creator review. Reply-all remains subject to the outbound recipient allowlist
 and recipient cap.
+
+The reply modes grant different authority to the exact inbound turn:
+
+| Mode | What Auggy does |
+| --- | --- |
+| `disabled` | The turn cannot send or propose an email reply. A normal assistant response is not emailed. |
+| `review` | The turn may propose one reply to the message that triggered it. Auggy stores that exact proposal for creator approval; it does not appear as an AgentMail draft. |
+| `automatic` | The turn may send one reply to its triggering message without prior approval, subject to outbound recipient and rate policy. Sensitive content or a Reply-To address that differs from From falls back to creator review. |
+
+This is narrow, turn-scoped authority. It does not authorize a new
+`send_message`, a forward, another message ID, a later turn, or another
+augment. `replies.allowReplyAll` changes only that inbound reply: it does not
+grant general outbound or forwarding authority.
 
 #### `inbound.webhook`
 
@@ -1062,10 +1103,10 @@ Auggy, so the supplied key must already have the same permissions.
 
 | Mode | How Auggy receives email | Recovery behavior | Use it when |
 | --- | --- | --- | --- |
-| `none` | No inbound turns | No ledger worker | The agent only sends mail |
-| `polling` | Periodic AgentMail REST reads | Single-flight reads advance a durable checkpoint | Simplicity is more important than immediate delivery |
-| `websocket` | AgentMail live subscription | REST catch-up runs after subscription/reconnect and periodically repairs silent gaps | You want low latency without a public callback URL |
-| `webhook` | Svix-verified HTTP callback | Periodic REST catch-up repairs missed callbacks; all arrivals deduplicate in the ledger | The agent has a stable public URL |
+| `none` | Auggy performs no inbound reads and creates no email-triggered turns. AgentMail can still receive and store mail upstream. | No inbound worker or local ledger processing | The agent only sends mail |
+| `polling` | Auggy reads AgentMail through REST at `pollIntervalMs` | Single-flight reads advance a durable checkpoint | Simplicity is more important than immediate delivery |
+| `websocket` | AgentMail pushes live events over WebSocket | REST catch-up runs after subscription or reconnect and every `pollIntervalMs` to repair silent gaps | You want low latency without a public callback URL |
+| `webhook` | AgentMail sends a Svix-signed HTTP callback to the configured route | The verified event is durably enqueued before success; REST catch-up every `pollIntervalMs` repairs missed callbacks, and all arrivals deduplicate in the ledger | The agent has a stable public HTTPS URL |
 
 All enabled modes run one managed REST reconciliation loop and drain the same
 SQLite ledger. Catch-up is single-flight even when a provider request exceeds
@@ -1076,6 +1117,14 @@ message to one worker, retries failed turns with bounded backoff, and durably
 marks processed or discarded mail. The default first-run lookback is 24 hours;
 checkpoint reads overlap by one minute to avoid boundary loss, with duplicates
 removed by the ledger.
+
+Webhook admission accepts at most 1 MiB of encoded request body. The route has
+no Console-session authentication because AgentMail calls it directly; the
+Svix signature, timestamp tolerance, configured inbox identity, and durable
+ledger are its admission boundary. Invalid signatures never reach the
+AgentMail handler. Valid duplicate deliveries are acknowledged without adding
+another message, and valid non-received AgentMail events are acknowledged
+without creating work.
 
 ## Inbound trust and prompt shape
 
@@ -1290,6 +1339,29 @@ agent starts. A relative `dbPath` cannot escape its per-augment namespace.
 Other core SQLite stores also resolve directly onto the volume. Do not rely on
 root-level compatibility symlinks for AgentMail, memory, budgets, or
 visitor-auth state; only Link retains its legacy symlink path.
+
+### Retention behavior
+
+AgentMail itself remains the upstream mailbox and applies its own provider
+retention. Auggy separately stores the durable local evidence needed for
+deduplication, recovery, authorization, and review:
+
+| Local state | What is retained |
+| --- | --- |
+| Inbound message ledger | Pending messages and ordinary processed or non-policy-discarded messages retain their normalized email payload in SQLite. These ordinary terminal rows currently have no time-based pruning and remain until the database is deliberately removed or migrated. |
+| Pre-model policy rejections | Auggy replaces sender, recipients, subject, body, attachment metadata, and labels with a content-free tombstone. Each inbox retains at most 1,000 such tombstones plus bounded aggregate rejection evidence. |
+| Outbound review queue | Pending reviews remain until resolved or expired; ambiguous `sending` rows require creator reconciliation. Terminal rows become eligible for pruning after 30 days, during a later enqueue. |
+| Creator-attention state | At most 1,000 active and retained records by default. Terminal rows become eligible after 30 days, while evidence linked to an unresolved incident is retained until reconciliation. |
+| Creator-digest state | At most 1,000 immutable batches and 10,000 items by default. Settled rows become eligible after 30 days; unresolved delivery evidence remains fail-closed. |
+| Outbound rate and duplicate state | Recent committed sends and in-flight reservations persist across restart. Accounted attempt IDs are retained for at least 30 days and longer when a configured cooldown or duplicate window requires it. |
+| Recent dispatch display | A 100-entry in-memory ring is reset at boot; it is operational visibility, not durable mail history. |
+
+`dbPath` selects the inbound SQLite ledger. Review, rate, and override sidecars
+live in the resolved per-instance AgentMail state directory. Changing
+`dbPath` does not migrate any of these files automatically: stop the agent,
+move the intended durable state deliberately, update YAML, and restart. A
+fresh path starts a distinct inbound ledger and therefore loses the old local
+deduplication and recovery history unless that database is migrated.
 
 ## Operator visibility
 
