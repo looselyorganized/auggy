@@ -89,6 +89,153 @@ describe("agentmail setup command", () => {
     }
   });
 
+  test("direct Commander replaces a key through the masked interactive confirmation path", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-command-replace-interactive-"));
+    const previous = snapshotAgentMailRuntimeEnv();
+    const originalLog = console.log;
+    try {
+      clearAgentMailRuntimeEnv();
+      const paths = writeAgentMailAgent(root);
+      writeFileSync(
+        paths.envPath,
+        "AGENTMAIL_API_KEY=am_old\nAGENTMAIL_INBOX_ID=inb_existing\nAGENTMAIL_INBOX_EMAIL=support@agentmail.to\n",
+      );
+      writeFileSync(
+        paths.augmentPath,
+        [
+          "type: agentMail",
+          "config:",
+          "  apiKey: ${AGENTMAIL_API_KEY}",
+          "  inboxId: ${AGENTMAIL_INBOX_ID}",
+          "  outbound:",
+          "    allowedTrustLevels:",
+          "      - creator",
+          "  emailAddress: ${AGENTMAIL_INBOX_EMAIL}",
+          "  addressVisibility: creator",
+          "",
+        ].join("\n"),
+      );
+      const originalAgent = readFileSync(paths.configPath, "utf8");
+      const originalAugment = readFileSync(paths.augmentPath, "utf8");
+      const logs: string[] = [];
+      console.log = (...args: unknown[]) => logs.push(args.join(" "));
+      const promptPassword = mock(async (prompt: { message?: string }) => {
+        expect(prompt.message).toBe("AgentMail API key:");
+        return "am_interactive_replacement";
+      });
+      const promptConfirm = mock(async (prompt: { message?: string; default?: boolean }) => {
+        expect(prompt.message).toContain(
+          "Replace the stored AgentMail API key for inbox inb_existing",
+        );
+        expect(prompt.default).toBe(false);
+        return true;
+      });
+      const getInbox = mock(async (apiKey: string, inboxId: string) => {
+        expect(apiKey).toBe("am_interactive_replacement");
+        expect(inboxId).toBe("inb_existing");
+        return { inboxId, email: "support@agentmail.to" };
+      });
+      const command = agentMailCommand({
+        interactive: true,
+        promptPassword: promptPassword as never,
+        promptConfirm: promptConfirm as never,
+        provisioner: unusedProvisioner({ getInbox }),
+        exit: (code) => {
+          throw new Error(`unexpected exit ${code}`);
+        },
+      });
+
+      await command.parseAsync([
+        "node",
+        "auggy-agentmail",
+        "setup",
+        "agentMail",
+        "--config",
+        paths.configPath,
+        "--mode",
+        "manual",
+        "--replace-key",
+      ]);
+
+      expect(promptPassword).toHaveBeenCalledTimes(1);
+      expect(promptConfirm).toHaveBeenCalledTimes(1);
+      expect(getInbox).toHaveBeenCalledTimes(1);
+      expect(readEnv(paths.envPath)).toEqual({
+        AGENTMAIL_API_KEY: "am_interactive_replacement",
+        AGENTMAIL_INBOX_ID: "inb_existing",
+        AGENTMAIL_INBOX_EMAIL: "support@agentmail.to",
+      });
+      expect(readFileSync(paths.configPath, "utf8")).toBe(originalAgent);
+      expect(readFileSync(paths.augmentPath, "utf8")).toBe(originalAugment);
+      expect(logs.join("\n")).toContain("Replaced the stored API key for this inbox");
+      expect(logs.join("\n")).not.toContain("am_interactive_replacement");
+    } finally {
+      console.log = originalLog;
+      restoreAgentMailRuntimeEnv(previous);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("direct Commander cancellation preserves files before provider access", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-command-replace-cancel-"));
+    const previous = snapshotAgentMailRuntimeEnv();
+    const originalError = console.error;
+    try {
+      clearAgentMailRuntimeEnv();
+      const paths = writeAgentMailAgent(root);
+      writeFileSync(
+        paths.envPath,
+        "AGENTMAIL_API_KEY=am_old\nAGENTMAIL_INBOX_ID=inb_existing\nAGENTMAIL_INBOX_EMAIL=support@agentmail.to\n",
+      );
+      const originalEnv = readFileSync(paths.envPath, "utf8");
+      const originalAgent = readFileSync(paths.configPath, "utf8");
+      const originalAugment = readFileSync(paths.augmentPath, "utf8");
+      const errors: string[] = [];
+      console.error = (...args: unknown[]) => errors.push(args.join(" "));
+      const promptPassword = mock(async () => "am_cancelled_replacement");
+      const promptConfirm = mock(async () => false);
+      const getInbox = mock(async () => {
+        throw new Error("must not contact AgentMail after cancellation");
+      });
+      const command = agentMailCommand({
+        interactive: true,
+        promptPassword: promptPassword as never,
+        promptConfirm: promptConfirm as never,
+        provisioner: unusedProvisioner({ getInbox }),
+        exit: (code) => {
+          throw new Error(`expected command exit ${code}`);
+        },
+      });
+
+      await expect(
+        command.parseAsync([
+          "node",
+          "auggy-agentmail",
+          "setup",
+          "agentMail",
+          "--config",
+          paths.configPath,
+          "--mode",
+          "manual",
+          "--replace-key",
+        ]),
+      ).rejects.toThrow("expected command exit 1");
+
+      expect(promptPassword).not.toHaveBeenCalled();
+      expect(promptConfirm).toHaveBeenCalledTimes(1);
+      expect(getInbox).not.toHaveBeenCalled();
+      expect(readFileSync(paths.envPath, "utf8")).toBe(originalEnv);
+      expect(readFileSync(paths.configPath, "utf8")).toBe(originalAgent);
+      expect(readFileSync(paths.augmentPath, "utf8")).toBe(originalAugment);
+      expect(errors.join("\n")).toContain("AgentMail API key replacement cancelled");
+      expect(errors.join("\n")).not.toContain("am_cancelled_replacement");
+    } finally {
+      console.error = originalError;
+      restoreAgentMailRuntimeEnv(previous);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("fails closed when an omitted target would choose between shared credentials", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-target-choice-"));
     try {
