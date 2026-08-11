@@ -110,6 +110,26 @@ describe("auggy builder skill mirrors", () => {
     expect(reference).toContain("`NOT_PERSISTED`");
     expect(reference).toContain("`PERSISTENCE_UNKNOWN`");
   });
+
+  test("AgentMail guidance pins the operator-owned API key lifecycle", () => {
+    const skill = readFileSync(join(CANONICAL_SKILL, "SKILL.md"), "utf-8");
+    const workflows = readFileSync(
+      join(CANONICAL_SKILL, "references", "cli-workflows.md"),
+      "utf-8",
+    );
+    const compactSkill = skill.replace(/\s+/g, " ");
+    const compactWorkflows = workflows.replace(/\s+/g, " ");
+
+    expect(compactSkill).toContain("Key-accepting modes preserve the supplied key unchanged");
+    expect(compactSkill).toContain("signup stores AgentMail's provider-returned key");
+    expect(compactSkill).toContain("does not prove outbound send or inbound read capability");
+    expect(compactWorkflows).toContain("does not mint a child key");
+    expect(compactWorkflows).toContain("deprecated compatibility alias for one RC");
+    expect(compactWorkflows).toContain("--mode manual --replace-key");
+    expect(compactWorkflows).toContain("Do not run AgentMail setup again merely because");
+    expect(compactWorkflows).not.toContain("mints a new scoped runtime key");
+    expect(compactWorkflows).not.toContain("stores only an inbox-scoped runtime key");
+  });
 });
 
 function listFiles(root: string): string[] {

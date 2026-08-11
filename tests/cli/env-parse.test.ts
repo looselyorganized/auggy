@@ -21,6 +21,7 @@ import {
   type EnvLine,
 } from "@/cli/env-parse";
 import { loadEnvFile } from "@/cli/config-parser";
+import { readDxLabEnvValue } from "../../scripts/dx-lab-env";
 
 function kvLines(lines: EnvLine[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -130,6 +131,37 @@ describe("env-parse — parseEnvFile + serializeEnv", () => {
     const lines = parseEnvFile(text);
     expect(lines[0]?.kind).toBe("comment");
     expect(lines[1]?.kind).toBe("kv");
+  });
+
+  it("DX lab reads serialized AgentMail keys without changing printable bytes", () => {
+    const exact = `am_!@#$%^&*()[]{};:'"\\|,./<>?~`;
+    const dxDir = mkdtempSync(join(tmpdir(), "dx-env-exact-"));
+    const path = join(dxDir, ".env.dx.local");
+    try {
+      writeFileSync(
+        path,
+        serializeEnv([{ kind: "kv", key: "AGENTMAIL_API_KEY", value: exact, raw: "" }]),
+      );
+      expect(readDxLabEnvValue(path, "AGENTMAIL_API_KEY")).toBe(exact);
+    } finally {
+      rmSync(dxDir, { recursive: true, force: true });
+    }
+  });
+
+  it("DX lab rejects multiline secrets instead of letting shell substitution change them", () => {
+    const dxDir = mkdtempSync(join(tmpdir(), "dx-env-multiline-"));
+    const path = join(dxDir, ".env.dx.local");
+    try {
+      writeFileSync(
+        path,
+        serializeEnv([
+          { kind: "kv", key: "AGENTMAIL_API_KEY", value: "line-one\nline-two", raw: "" },
+        ]),
+      );
+      expect(() => readDxLabEnvValue(path, "AGENTMAIL_API_KEY")).toThrow(/single-line/);
+    } finally {
+      rmSync(dxDir, { recursive: true, force: true });
+    }
   });
 });
 

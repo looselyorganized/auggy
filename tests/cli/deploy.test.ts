@@ -14,6 +14,7 @@ import { dirname, join } from "node:path";
 import { stringify } from "yaml";
 import { getAgent, seedAgentForTest, setCloud } from "../../src/cli/agent-index";
 import { type DeployOptions, runDeploy } from "../../src/cli/commands/deploy";
+import { serializeEnv } from "../../src/cli/env-parse";
 import { RailwayWorkspaceRequiredError, type RailwayCli } from "../../src/cli/deploy/railway-cli";
 import { getAuggyVersion } from "../../src/cli/scaffold-package-json";
 
@@ -297,6 +298,48 @@ describe("runDeploy", () => {
       url: "https://zip-production-abcd.up.railway.app",
       volumeId: "zip-data",
     });
+  });
+
+  test("pushes the exact serialized AgentMail key and no legacy key aliases", async () => {
+    const exact = `am_!@#$%^&*()[]{};:'"\\|,./<>?~`;
+    const agentMailEnvKeys = [
+      "AGENTMAIL_API_KEY",
+      "AGENTMAIL_ACCOUNT_API_KEY",
+      "AGENTMAIL_PARENT_API_KEY",
+      "AGENTMAIL_INBOX_ID",
+      "AGENTMAIL_INBOX_EMAIL",
+    ] as const;
+    const previous = new Map(agentMailEnvKeys.map((key) => [key, process.env[key]]));
+    for (const key of agentMailEnvKeys) delete process.env[key];
+
+    try {
+      writeFileSync(
+        join(agentDir, ".env"),
+        serializeEnv([
+          { kind: "kv", key: "ANTHROPIC_API_KEY", value: "sk-test", raw: "" },
+          { kind: "kv", key: "AUGGY_WEB_TOKEN", value: "tok-1", raw: "" },
+          { kind: "kv", key: "AGENTMAIL_API_KEY", value: exact, raw: "" },
+          {
+            kind: "kv",
+            key: "AGENTMAIL_ACCOUNT_API_KEY",
+            value: "must-not-deploy",
+            raw: "",
+          },
+        ]),
+      );
+
+      const { cli, calls } = mockRailwayCli();
+      await runDeploy("zip", baseDeployOptions(cli, auggyDir));
+
+      expect(calls.setVariable.find(({ key }) => key === "AGENTMAIL_API_KEY")?.value).toBe(exact);
+      expect(calls.setVariable.some(({ key }) => key === "AGENTMAIL_ACCOUNT_API_KEY")).toBe(false);
+    } finally {
+      for (const key of agentMailEnvKeys) {
+        const value = previous.get(key);
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 
   test("rejects deployment metadata bound to another immutable agent before Railway access", async () => {

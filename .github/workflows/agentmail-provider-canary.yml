@@ -5,7 +5,8 @@ name: AgentMail provider canary
 # agentmail-provider-canary Environment is configured and approved.
 # The first approved run creates one persistent canary inbox in that
 # Environment's AgentMail account; every later run reuses the same inbox. Each
-# run creates, validates, and deletes one reserved least-privilege scoped key.
+# run uses the protected supplied key unchanged for provisioning and the shipped
+# runtime REST/WebSocket adapters. It does not send mail or mutate API keys.
 on:
   workflow_dispatch:
 
@@ -18,7 +19,7 @@ permissions:
 
 jobs:
   canary:
-    name: Existing-account idempotency canary
+    name: Existing-account runtime-path canary
     if: github.repository == 'looselyorganized/auggy' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -41,9 +42,10 @@ jobs:
       - name: Install trusted dependencies
         run: bun install --frozen-lockfile
 
-      - name: Verify persistent inbox and disposable scoped-key contracts
+      - name: Verify persistent inbox and runtime adapters with the supplied key
         env:
-          # Configure this name only on the protected Environment. Do not add
-          # a repository-level fallback secret with the same name.
-          AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY: ${{ secrets.AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY }}
+          # Configure AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY only on the
+          # protected Environment. Do not add a repository-level fallback.
+          # Its value is passed unchanged through the canonical runtime name.
+          AGENTMAIL_API_KEY: ${{ secrets.AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY }}
         run: bun scripts/agentmail-provider-canary.ts

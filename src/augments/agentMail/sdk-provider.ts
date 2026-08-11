@@ -36,6 +36,10 @@ interface SdkMessagesClient {
 }
 
 interface SdkSocket {
+  /** Public AgentMail SDK reconnecting-socket boundary. */
+  readonly socket?: {
+    binaryType: string;
+  };
   readonly readyState?: number;
   on(event: "open" | "message" | "close" | "error", callback: (value?: unknown) => void): void;
   sendSubscribe(message: {
@@ -44,6 +48,18 @@ interface SdkSocket {
     eventTypes: AgentMailReceivedEventType[];
   }): void;
   close(): void;
+}
+
+function configureWebSocketBinaryTransport(socket: SdkSocket | undefined): void {
+  try {
+    if (!socket?.socket) throw new Error("missing AgentMail WebSocket facade");
+    socket.socket.binaryType = "arraybuffer";
+    if (socket.socket.binaryType !== "arraybuffer") {
+      throw new Error("AgentMail WebSocket rejected the binary type");
+    }
+  } catch {
+    throw new AgentMailProviderRequestError("configure WebSocket binary transport", false);
+  }
 }
 
 interface SdkClientBoundary {
@@ -444,6 +460,19 @@ function createLiveSource(
       } catch (error) {
         const wrapped = requestError("connect WebSocket", error);
         closePermanently(wrapped);
+        await initial.catch(() => undefined);
+        throw wrapped;
+      }
+
+      try {
+        configureWebSocketBinaryTransport(socket);
+      } catch (error) {
+        const wrapped =
+          error instanceof AgentMailProviderRequestError
+            ? error
+            : new AgentMailProviderRequestError("configure WebSocket binary transport", false);
+        closePermanently(wrapped);
+        await initial;
         throw wrapped;
       }
 

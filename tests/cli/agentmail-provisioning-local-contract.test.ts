@@ -5,12 +5,10 @@ import {
   AgentMailProvisioningApiError,
   AgentMailProvisioningResponseError,
   buildAgentMailClientId,
-  buildAgentMailRuntimeKeyPermissions,
   createAgentMailProvisioningClient,
 } from "../../src/cli/agentmail-provisioning";
 
 const PARENT_KEY = "am_parent_contract_secret";
-const RUNTIME_KEY = "am_runtime_scoped_secret";
 const AGENT_ID = "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c";
 const CLIENT_ID = buildAgentMailClientId(AGENT_ID, "agentMail");
 const CLIENT_ID_RE = /^[A-Za-z0-9._~-]{1,256}$/;
@@ -21,7 +19,6 @@ interface StrictServer {
   state: {
     inboxPosts: number;
     inboxResources: number;
-    keyPosts: number;
     violations: string[];
   };
 }
@@ -55,22 +52,7 @@ describe("AgentMail provisioning strict local provider contract", () => {
       expect(provider.state.inboxPosts).toBe(2);
       expect(provider.state.inboxResources).toBe(1);
 
-      const permissions = buildAgentMailRuntimeKeyPermissions({ inboundEnabled: false });
-      const runtimeKey = await client.createInboxApiKey({
-        apiKey: PARENT_KEY,
-        inboxId: first.inboxId,
-        name: "test-agent agentMail",
-        permissions,
-      });
-      expect(runtimeKey).toEqual({
-        apiKeyId: "key_runtime",
-        apiKey: RUNTIME_KEY,
-        name: "test-agent agentMail",
-      });
-      expect(permissions).toEqual({ inbox_read: true, message_send: true });
-      expect(provider.state.keyPosts).toBe(1);
-
-      await expect(client.getInbox(RUNTIME_KEY, first.inboxId)).resolves.toEqual(first);
+      await expect(client.getInbox(PARENT_KEY, first.inboxId)).resolves.toEqual(first);
       expect(provider.state.violations).toEqual([]);
     } finally {
       await provider.close();
@@ -119,7 +101,6 @@ async function startStrictServer(): Promise<StrictServer> {
   const state = {
     inboxPosts: 0,
     inboxResources: 0,
-    keyPosts: 0,
     violations: [] as string[],
   };
   const inboxesByClientId = new Map<string, Record<string, unknown>>();
@@ -234,37 +215,8 @@ async function handleStrictRequest(
     return;
   }
 
-  if (request.method === "POST" && path === "/v0/inboxes/inb_test_agent/api-keys") {
-    state.keyPosts += 1;
-    if (!requireBearer(request, response, PARENT_KEY, state)) return;
-    if (!requireJsonContentType(request, response, state)) return;
-    const body = await readJsonObject(request, response, state);
-    if (!body) return;
-    if (
-      !requireExactBody(
-        body,
-        {
-          name: "test-agent agentMail",
-          permissions: { inbox_read: true, message_send: true },
-        },
-        response,
-        state,
-      )
-    ) {
-      return;
-    }
-    sendJson(response, 200, {
-      api_key_id: "key_runtime",
-      api_key: RUNTIME_KEY,
-      name: "test-agent agentMail",
-      inbox_id: "inb_test_agent",
-      permissions: { inbox_read: true, message_send: true },
-    });
-    return;
-  }
-
   if (request.method === "GET" && path === "/v0/inboxes/inb_test_agent") {
-    if (!requireBearer(request, response, RUNTIME_KEY, state)) return;
+    if (!requireBearer(request, response, PARENT_KEY, state)) return;
     sendJson(response, 200, {
       inbox_id: "inb_test_agent",
       email: "test-agent@agentmail.to",

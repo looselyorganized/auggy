@@ -171,9 +171,13 @@ export interface AgentMailOwnedInbox extends AgentMailInboxResult {
   clientId?: string;
 }
 
-export type AgentMailApiKeyPermissions = Record<string, boolean>;
-
-export type AgentMailRuntimeKeyPermissions = AgentMailApiKeyPermissions & {
+/**
+ * AgentMail permissions required by the active Auggy configuration.
+ *
+ * This is advisory configuration metadata. Auggy does not create, narrow, or
+ * otherwise mutate the operator-supplied AgentMail API key.
+ */
+export type AgentMailRequiredPermissions = Record<string, boolean> & {
   inbox_read: true;
   message_send: true;
   message_read?: true;
@@ -181,27 +185,13 @@ export type AgentMailRuntimeKeyPermissions = AgentMailApiKeyPermissions & {
   label_blocked_read?: true;
 };
 
-export interface AgentMailRuntimePermissionRequirements {
+export interface AgentMailCapabilityRequirements {
   /** Whether the agentMail augment will admit inbound messages. */
   inboundEnabled: boolean;
   /** Whether spam-classified messages are intentionally processed. */
   processSpam?: boolean;
   /** Whether blocked-classified messages are intentionally processed. */
   processBlocked?: boolean;
-}
-
-export interface AgentMailCreateInboxApiKeyInput {
-  apiKey: string;
-  inboxId: string;
-  name: string;
-  permissions: AgentMailApiKeyPermissions;
-}
-
-export interface AgentMailApiKeyResult {
-  apiKeyId: string;
-  apiKey: string;
-  prefix?: string;
-  name?: string;
 }
 
 export interface AgentMailProvisioningClient {
@@ -214,12 +204,11 @@ export interface AgentMailProvisioningClient {
    * injected legacy/test clients; the production client always implements it.
    */
   listInboxes?(apiKey: string): Promise<AgentMailOwnedInbox[]>;
-  createInboxApiKey(input: AgentMailCreateInboxApiKeyInput): Promise<AgentMailApiKeyResult>;
 }
 
-export function buildAgentMailRuntimeKeyPermissions(
-  requirements: AgentMailRuntimePermissionRequirements,
-): AgentMailRuntimeKeyPermissions {
+export function buildAgentMailRequiredPermissions(
+  requirements: AgentMailCapabilityRequirements,
+): AgentMailRequiredPermissions {
   if (!requirements.inboundEnabled && (requirements.processSpam || requirements.processBlocked)) {
     throw new Error("AgentMail label-read permissions require inbound delivery to be enabled.");
   }
@@ -232,8 +221,8 @@ export function buildAgentMailRuntimeKeyPermissions(
   };
 }
 
-/** Backward-compatible outbound-only permission set. */
-export const AGENTMAIL_RUNTIME_KEY_PERMISSIONS = buildAgentMailRuntimeKeyPermissions({
+/** Permissions required by the default outbound-only configuration. */
+export const AGENTMAIL_REQUIRED_PERMISSIONS = buildAgentMailRequiredPermissions({
   inboundEnabled: false,
 });
 
@@ -448,62 +437,6 @@ export function createAgentMailProvisioningClient(
         `pagination exceeded ${AGENTMAIL_INBOX_LIST_MAX_PAGES} pages`,
       );
     },
-
-    async createInboxApiKey(input) {
-      assertAgentMailCredential(input.apiKey, "apiKey");
-      assertAgentMailIdentifier(input.inboxId, "inboxId");
-      assertAgentMailDisplayField(input.name, "name");
-      assertAgentMailPermissions(input.permissions);
-      const path = `/inboxes/${encodeURIComponent(input.inboxId)}/api-keys`;
-      const raw = await postJson(
-        path,
-        {
-          name: input.name,
-          permissions: input.permissions,
-        },
-        input.apiKey,
-        collectSensitiveValues(input.name),
-      );
-      if (!isRecord(raw)) {
-        throw new AgentMailProvisioningResponseError(path, "the body was not an object", true);
-      }
-      const apiKeyId = strictToken(raw.api_key_id, 256);
-      const apiKey = strictToken(raw.api_key, 4_096);
-      const name = strictBoundedString(raw.name, 256);
-      const inboxId = strictToken(raw.inbox_id, 256);
-      const permissions = strictAgentMailPermissions(raw.permissions);
-      if (!apiKeyId || !apiKey || !name || !inboxId || !permissions) {
-        throw new AgentMailProvisioningResponseError(
-          path,
-          "api_key_id, api_key, name, inbox_id, or permissions was invalid",
-          true,
-        );
-      }
-      const prefix = optionalToken(raw.prefix, 256);
-      if (prefix === null) {
-        throw new AgentMailProvisioningResponseError(path, "prefix was invalid", true);
-      }
-      if (name !== input.name || inboxId !== input.inboxId) {
-        throw new AgentMailProvisioningResponseError(
-          path,
-          "name or inbox_id did not match the requested scoped key",
-          true,
-        );
-      }
-      if (!returnedPermissionsMatchRequest(permissions, input.permissions)) {
-        throw new AgentMailProvisioningResponseError(
-          path,
-          "permissions did not match the requested least-privilege scope",
-          true,
-        );
-      }
-      return {
-        apiKeyId,
-        apiKey,
-        ...(prefix === undefined ? {} : { prefix }),
-        name,
-      };
-    },
   };
 }
 
@@ -716,41 +649,6 @@ function assertAgentMailIdentifier(value: string, field: string): void {
       `AgentMail ${field} must be a non-empty ASCII token of at most 256 characters.`,
     );
   }
-}
-
-function assertAgentMailPermissions(permissions: AgentMailApiKeyPermissions): void {
-  const parsed = strictAgentMailPermissions(permissions);
-  if (!parsed || Object.keys(parsed).length === 0) {
-    throw new Error("AgentMail permissions must contain 1-64 entries.");
-  }
-}
-
-function strictAgentMailPermissions(value: unknown): AgentMailApiKeyPermissions | null {
-  if (!isRecord(value)) return null;
-  const entries = Object.entries(value);
-  if (entries.length > 64) return null;
-  if (
-    entries.some(
-      ([name, enabled]) =>
-        !/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(name) || typeof enabled !== "boolean",
-    )
-  ) {
-    return null;
-  }
-  return Object.fromEntries(entries) as AgentMailApiKeyPermissions;
-}
-
-function returnedPermissionsMatchRequest(
-  returned: AgentMailApiKeyPermissions,
-  requested: AgentMailApiKeyPermissions,
-): boolean {
-  for (const [name, enabled] of Object.entries(requested)) {
-    if (enabled && returned[name] !== true) return false;
-  }
-  for (const [name, enabled] of Object.entries(returned)) {
-    if (enabled && requested[name] !== true) return false;
-  }
-  return true;
 }
 
 function assertAgentMailMetadata(metadata: Record<string, string | number | boolean>): void {

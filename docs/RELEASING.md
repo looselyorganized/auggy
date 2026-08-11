@@ -102,22 +102,22 @@ external paid service. Before its first use:
 1. Create the protected `agentmail-provider-canary` GitHub Environment.
 2. Allow deployments from `main` only and require a reviewer.
 3. Add `AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY` to that Environment only.
-   Use a dedicated AgentMail account key capable of creating the canary inbox
-   and listing, creating, and deleting that inbox's API keys; do not add a
-   repository-level secret with the same or unsuffixed name.
+   Use a dedicated key capable of creating and listing the canary inbox,
+   reading its messages, and opening its WebSocket subscription. Do not add a
+   repository-level secret with the same or unsuffixed name. The workflow maps
+   its exact value to canonical `AGENTMAIL_API_KEY` only for the canary step.
 
 Dispatch the workflow manually from canonical `looselyorganized/auggy` `main`
 only. Never run it from a PR or fork. The first approved run creates one
 persistent canary inbox; later runs submit the same stable `client_id` twice and
-must resolve that same inbox. Each run first reconciles stale keys under the
-reserved canary prefix, creates one least-privilege inbox-scoped key with a
-bounded name derived from `GITHUB_RUN_ID`, validates the same create response
-used by CLI setup, and reconciles the key through AgentMail's official
-inbox-scoped list/delete endpoints. The persistent inbox is intentional; the
-runtime key is disposable. The canary sends no mail, retains no scoped key, and
-logs neither credentials, key identifiers, nor provider response data. A
-cleanup failure is a hard failure and requires inspecting the protected canary
-inbox before retrying.
+must resolve that same inbox. Each run uses the protected key unchanged for
+both create requests, proves exactly one matching inbox in account inventory,
+then exercises the shipped runtime REST message-list normalizer and WebSocket
+subscribe/ack/close path. The persistent inbox is intentional. The canary
+sends no mail and never creates, lists, deletes, replaces, narrows, rotates, or
+revokes an API key. It logs neither credentials, inbox identity, message data,
+nor provider responses. A runtime error, missing subscription acknowledgement,
+or bounded-close failure is a hard failure.
 
 When a release changes AgentMail provisioning requests or responses, the
 provisioning client, or CLI setup behavior, this canary is mandatory pre-tag

@@ -3,13 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
 import {
-  AgentMailProvisioningResponseError,
-  AgentMailProvisioningTransportError,
-} from "../../src/cli/agentmail-provisioning";
-import {
   runAgentMailProviderCanary,
   type AgentMailCanaryDependencies,
-  type AgentMailCanaryKeyAdmin,
 } from "../../scripts/agentmail-provider-canary";
 
 const ROOT = join(import.meta.dir, "..", "..");
@@ -84,7 +79,7 @@ describe("AgentMail provider canary trust boundary", () => {
     expect(setupBun?.uses).toMatch(/^oven-sh\/setup-bun@[0-9a-f]{40}$/);
   });
 
-  test("exposes the environment-only account key only to the final canary step", () => {
+  test("maps the environment-only secret to the canonical runtime key only in the canary step", () => {
     const { source, workflow } = readCanaryWorkflow();
     const steps = workflow.jobs?.canary?.steps ?? [];
     const finalStep = steps.at(-1);
@@ -92,10 +87,11 @@ describe("AgentMail provider canary trust boundary", () => {
 
     expect(finalStep?.run).toBe("bun scripts/agentmail-provider-canary.ts");
     expect(finalStep?.env).toEqual({
-      AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY: secretReference,
+      AGENTMAIL_API_KEY: secretReference,
     });
     expect(steps.slice(0, -1).every((step) => step.env === undefined)).toBe(true);
     expect(source.match(/secrets\.AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY/g)).toHaveLength(1);
+    expect(source.match(/^\s+AGENTMAIL_API_KEY:/gm)).toHaveLength(1);
     expect(source).not.toMatch(/secrets\.AGENTMAIL_CANARY_ACCOUNT_API_KEY(?:\s|})/);
     expect(source).not.toContain("secrets: inherit");
   });
@@ -110,7 +106,7 @@ describe("AgentMail provider canary trust boundary", () => {
     expect(packageJson.files).not.toContain("scripts");
   });
 
-  test("uses one stable client_id and a disposable least-privilege scoped key", () => {
+  test("uses one stable client_id, shipped adapters, and no API-key mutation path", () => {
     const source = readFileSync(CANARY_PATH, "utf8");
 
     expect(source).toContain(
@@ -119,63 +115,106 @@ describe("AgentMail provider canary trust boundary", () => {
     expect(source).toContain('const CANARY_EMAIL = "auggy-release-canary-7d2c91f4@agentmail.to";');
     expect(source.match(/provisioner\.createInbox\(request\)/g)).toHaveLength(2);
     expect(source).toContain("first.email !== CANARY_EMAIL");
-    expect(source).toContain("provisioner.listInboxes(accountApiKey)");
+    expect(source).toContain("provisioner.listInboxes(apiKey)");
     expect(source).toContain("inbox.clientId === CANARY_CLIENT_ID");
-    expect(source.match(/provisioner\.createInboxApiKey\(/g)).toHaveLength(1);
-    expect(source).toContain("permissions: CANARY_KEY_PERMISSIONS");
-    expect(source).toContain("client.inboxes.apiKeys.list");
-    expect(source).toContain("client.inboxes.apiKeys.delete");
+    expect(source).toContain("createAgentMailSdkAdapters");
+    expect(source).toContain("adapters.catchUp.listMessages");
+    expect(source).toContain("adapters.live.subscribe");
+    expect(source).not.toContain("createInboxApiKey");
+    expect(source).not.toContain("inboxes.apiKeys");
     expect(source).not.toContain("client.inboxes.delete");
     expect(source).not.toMatch(/\.(?:sendMessage|sendMail|createRuntimeKey)\s*\(/);
     expect(source).not.toContain("error.providerCode");
     expect(source).not.toMatch(/console\.(?:log|error)\([^\n]*CANARY_EMAIL/);
   });
 
-  test("removes stale and newly created reserved keys while preserving unrelated keys", async () => {
+  test("uses the exact supplied key for provisioning and shipped runtime adapters", async () => {
     const fixture = fakeCanary();
-    fixture.keys.set("key_stale", "auggy-release-canary-scoped-key-stale");
-    fixture.keys.set("key_unrelated", "operator-runtime-key");
 
     await runAgentMailProviderCanary(fixture.dependencies);
 
     expect(fixture.inboxRequests).toHaveLength(2);
     expect(fixture.inboxRequests[0]).toEqual(fixture.inboxRequests[1]);
+    expect(fixture.inboxRequests).toEqual([
+      expect.objectContaining({ apiKey: "am_account_canary_not_real" }),
+      expect.objectContaining({ apiKey: "am_account_canary_not_real" }),
+    ]);
     expect(fixture.inboxListRequests).toEqual(["am_account_canary_not_real"]);
-    expect(fixture.keyRequest).toMatchObject({
-      inboxId: "inb_canary",
-      name: "auggy-release-canary-scoped-key-123456789",
-      permissions: { inbox_read: true, message_send: true },
-    });
-    expect([...fixture.keys.entries()]).toEqual([["key_unrelated", "operator-runtime-key"]]);
-    expect(fixture.deleted).toContain("key_stale");
-    expect(fixture.deleted).toContain("key_created");
+    expect(fixture.sdkOptions).toEqual([
+      {
+        apiKey: "am_account_canary_not_real",
+        timeoutMs: 15_000,
+        handshakeTimeoutMs: 15_000,
+        connectionTimeoutMs: 15_000,
+      },
+    ]);
+    expect(fixture.restRequests).toEqual([
+      {
+        inboxId: "inb_canary",
+        limit: 1,
+        processedEventTypes: ["message.received"],
+      },
+    ]);
+    expect(fixture.liveRequests).toEqual([
+      {
+        inboxId: "inb_canary",
+        eventTypes: ["message.received"],
+      },
+    ]);
+    expect(fixture.closeCalls).toEqual(["close"]);
   });
 
-  test("reconciles a reserved key after ambiguous create and response-validation failures", async () => {
-    for (const createError of [
-      new AgentMailProvisioningTransportError("/inboxes/inb_canary/api-keys", "network", true),
-      new AgentMailProvisioningResponseError(
-        "/inboxes/inb_canary/api-keys",
-        "permissions did not match",
-        true,
-      ),
-    ]) {
-      const fixture = fakeCanary(createError);
-      let caught: unknown;
-      try {
-        await runAgentMailProviderCanary(fixture.dependencies);
-      } catch (error) {
-        caught = error;
-      }
-
-      expect(caught).toBe(createError);
-      expect(
-        [...fixture.keys.values()].filter((name) =>
-          name.startsWith("auggy-release-canary-scoped-key-"),
-        ),
-      ).toEqual([]);
-      expect(fixture.deleted).toContain("key_created");
+  test("preserves every printable byte of AGENTMAIL_API_KEY", async () => {
+    const fixture = fakeCanary();
+    fixture.dependencies.apiKey = undefined;
+    const previous = process.env.AGENTMAIL_API_KEY;
+    process.env.AGENTMAIL_API_KEY = "am_exact+/=._~-";
+    try {
+      await runAgentMailProviderCanary(fixture.dependencies);
+    } finally {
+      if (previous === undefined) delete process.env.AGENTMAIL_API_KEY;
+      else process.env.AGENTMAIL_API_KEY = previous;
     }
+
+    expect(fixture.inboxRequests[0]).toMatchObject({ apiKey: "am_exact+/=._~-" });
+    expect(fixture.inboxListRequests).toEqual(["am_exact+/=._~-"]);
+    expect(fixture.sdkOptions[0]?.apiKey).toBe("am_exact+/=._~-");
+  });
+
+  test("rejects whitespace-bearing AGENTMAIL_API_KEY instead of trimming it", async () => {
+    const fixture = fakeCanary();
+    fixture.dependencies.apiKey = undefined;
+    const previous = process.env.AGENTMAIL_API_KEY;
+    process.env.AGENTMAIL_API_KEY = " am_must_not_be_trimmed ";
+    try {
+      await expect(runAgentMailProviderCanary(fixture.dependencies)).rejects.toThrow(
+        /AGENTMAIL_API_KEY is malformed/,
+      );
+    } finally {
+      if (previous === undefined) delete process.env.AGENTMAIL_API_KEY;
+      else process.env.AGENTMAIL_API_KEY = previous;
+    }
+
+    expect(fixture.inboxRequests).toEqual([]);
+    expect(fixture.sdkOptions).toEqual([]);
+  });
+
+  test("closes the runtime subscription before failing on a reported live error", async () => {
+    const fixture = fakeCanary({ reportLiveError: true });
+
+    await expect(runAgentMailProviderCanary(fixture.dependencies)).rejects.toThrow(
+      /runtime WebSocket reported an error/,
+    );
+    expect(fixture.closeCalls).toEqual(["close"]);
+  });
+
+  test("requires an acknowledged runtime subscription and still closes cleanly", async () => {
+    const fixture = fakeCanary({ acknowledge: false });
+
+    await expect(runAgentMailProviderCanary(fixture.dependencies)).rejects.toThrow(
+      /did not acknowledge the canary subscription/,
+    );
+    expect(fixture.closeCalls).toEqual(["close"]);
   });
 
   test("fails closed when read-only account inventory cannot prove the fixed inbox identity", async () => {
@@ -197,60 +236,24 @@ describe("AgentMail provider canary trust boundary", () => {
     await expect(runAgentMailProviderCanary(fixture.dependencies)).rejects.toThrow(
       /did not contain exactly one matching fixed canary inbox\/client_id/,
     );
-    expect(fixture.keyRequest).toBeUndefined();
-    expect(fixture.deleted).toEqual([]);
-  });
-
-  test("fails closed without provider details when post-create reconciliation is unprovable", async () => {
-    const fixture = fakeCanary();
-    const baseAdmin = fixture.dependencies.keyAdmin as AgentMailCanaryKeyAdmin;
-    let listCalls = 0;
-    fixture.dependencies.keyAdmin = {
-      ...baseAdmin,
-      async list(inboxId, pageToken) {
-        listCalls += 1;
-        if (listCalls > 1) throw new Error("provider response am_secret_must_not_escape");
-        return baseAdmin.list(inboxId, pageToken);
-      },
-    };
-
-    let caught: unknown;
-    try {
-      await runAgentMailProviderCanary(fixture.dependencies);
-    } catch (error) {
-      caught = error;
-    }
-
-    expect(caught).toBeInstanceOf(Error);
-    expect((caught as Error).message).toContain("cleanup could not prove");
-    expect((caught as Error).message).not.toContain("am_secret_must_not_escape");
   });
 });
 
-function fakeCanary(createError?: Error): {
+function fakeCanary(options: { acknowledge?: boolean; reportLiveError?: boolean } = {}): {
   dependencies: AgentMailCanaryDependencies;
-  keys: Map<string, string>;
-  deleted: string[];
   inboxRequests: unknown[];
   inboxListRequests: string[];
-  keyRequest: Record<string, unknown> | undefined;
+  sdkOptions: Array<Record<string, unknown>>;
+  restRequests: unknown[];
+  liveRequests: unknown[];
+  closeCalls: string[];
 } {
-  const keys = new Map<string, string>();
-  const deleted: string[] = [];
   const inboxRequests: unknown[] = [];
   const inboxListRequests: string[] = [];
-  let keyRequest: Record<string, unknown> | undefined;
-  const keyAdmin: AgentMailCanaryKeyAdmin = {
-    async list() {
-      return {
-        apiKeys: [...keys].map(([apiKeyId, name]) => ({ apiKeyId, name })),
-      };
-    },
-    async delete(_inboxId, apiKeyId) {
-      deleted.push(apiKeyId);
-      keys.delete(apiKeyId);
-    },
-  };
+  const sdkOptions: Array<Record<string, unknown>> = [];
+  const restRequests: unknown[] = [];
+  const liveRequests: unknown[] = [];
+  const closeCalls: string[] = [];
   const provisioner: NonNullable<AgentMailCanaryDependencies["provisioner"]> = {
     async createInbox(input) {
       inboxRequests.push(input);
@@ -258,16 +261,6 @@ function fakeCanary(createError?: Error): {
         inboxId: "inb_canary",
         email: "auggy-release-canary-7d2c91f4@agentmail.to",
         displayName: "Auggy release provider canary",
-      };
-    },
-    async createInboxApiKey(input) {
-      keyRequest = { ...input, apiKey: "[redacted]" };
-      keys.set("key_created", input.name);
-      if (createError) throw createError;
-      return {
-        apiKeyId: "key_created",
-        apiKey: "am_disposable_canary_not_real",
-        name: input.name,
       };
     },
     async listInboxes(apiKey) {
@@ -289,17 +282,44 @@ function fakeCanary(createError?: Error): {
 
   return {
     dependencies: {
-      accountApiKey: "am_account_canary_not_real",
-      runId: "123456789",
+      apiKey: "am_account_canary_not_real",
       provisioner,
-      keyAdmin,
+      createSdkAdapters(input) {
+        sdkOptions.push(input as unknown as Record<string, unknown>);
+        return {
+          catchUp: {
+            async listMessages(request) {
+              restRequests.push(request);
+              return { messages: [], nextPageToken: undefined };
+            },
+            async getMessage() {
+              throw new Error("The canary must not fetch message bodies");
+            },
+          },
+          live: {
+            async subscribe(input) {
+              liveRequests.push({ inboxId: input.inboxId, eventTypes: [...input.eventTypes] });
+              if (options.acknowledge !== false) {
+                await input.onSubscribed?.({ reconnected: false });
+              }
+              if (options.reportLiveError) input.onError(new Error("provider detail"));
+              const closed = Promise.resolve();
+              return {
+                closed,
+                async close() {
+                  closeCalls.push("close");
+                },
+              };
+            },
+          },
+        };
+      },
     },
-    keys,
-    deleted,
     inboxRequests,
     inboxListRequests,
-    get keyRequest() {
-      return keyRequest;
-    },
+    sdkOptions,
+    restRequests,
+    liveRequests,
+    closeCalls,
   };
 }

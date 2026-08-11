@@ -4,8 +4,9 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { isDeepStrictEqual } from "node:util";
 
-const ACCOUNT_KEY = "am_packed_parent_not_real";
-const RUNTIME_KEY = "am_packed_runtime_not_real";
+const SUPPLIED_KEY = "am_packed_supplied_not_real";
+const REPLACEMENT_KEY = "am_packed_replacement_not_real";
+const REJECTED_REPLACEMENT_KEY = "am_packed_rejected_replacement_not_real";
 const AGENT_ID = "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c";
 const CLIENT_ID = `auggy.v1.inbox.${AGENT_ID}.agentMail`;
 const INBOX_ID = "inb_packed_agentmail";
@@ -91,12 +92,12 @@ try {
             ? {
                 ...options,
                 mode: "existing",
-                apiKey: ACCOUNT_KEY,
+                apiKey: SUPPLIED_KEY,
                 username: "packed-agentmail",
                 displayName: "Packed AgentMail",
                 baseUrl: provider.baseUrl,
               }
-            : options,
+            : { ...options, baseUrl: provider.baseUrl },
           {
             ...deps,
             cwd: consumerDir,
@@ -117,7 +118,7 @@ try {
           },
         );
         if (target === "visitorAuth" && callsBeforeVisitorAuth) {
-          assertProviderStateUnchanged(provider.state, callsBeforeVisitorAuth);
+          assertVisitorAuthReadinessOnly(provider.state, callsBeforeVisitorAuth);
         }
         return result;
       },
@@ -127,8 +128,13 @@ try {
   await provider.close();
 }
 
-if (combinedOutput.includes(ACCOUNT_KEY) || combinedOutput.includes(RUNTIME_KEY)) {
-  throw new Error("packed shared add printed a provisioning credential");
+if (combinedOutput.includes(SUPPLIED_KEY)) {
+  throw new Error("packed shared add printed the supplied AgentMail credential");
+}
+for (const staleClaim of ["scoped runtime key", "child API key", "new runtime key"]) {
+  if (combinedOutput.toLowerCase().includes(staleClaim.toLowerCase())) {
+    throw new Error(`packed shared add emitted a stale key-lifecycle claim: ${staleClaim}`);
+  }
 }
 if (
   setupConfirmations.length !== 1 ||
@@ -148,7 +154,9 @@ if (
   throw new Error("packed resource_taken recovery did not require explicit owned-inbox reuse");
 }
 if ((combinedOutput.match(/Apply changes:/g) ?? []).length !== 1) {
-  throw new Error("packed shared add did not emit exactly one final apply block");
+  throw new Error(
+    `packed shared add did not emit exactly one final apply block:\n${combinedOutput}`,
+  );
 }
 
 const agentYaml = readFileSync(join(consumerDir, "agent.yaml"), "utf8");
@@ -174,8 +182,10 @@ if (
 if (
   provider.state.inboxPosts !== 1 ||
   provider.state.inboxLists !== 1 ||
-  provider.state.inboxResources !== 0 ||
-  provider.state.keyPosts !== 1 ||
+  provider.state.inboxResources !== 2 ||
+  provider.state.replacementInboxReads !== 0 ||
+  provider.state.rejectedReplacementReads !== 0 ||
+  provider.state.apiKeyRequests !== 0 ||
   provider.state.violations.length > 0
 ) {
   throw new Error(
@@ -185,7 +195,7 @@ if (
 
 const configuredEnv = readFileSync(join(consumerDir, ".env"), "utf8");
 for (const expected of [
-  `AGENTMAIL_API_KEY=${RUNTIME_KEY}`,
+  `AGENTMAIL_API_KEY=${SUPPLIED_KEY}`,
   `AGENTMAIL_INBOX_ID=${INBOX_ID}`,
   `AGENTMAIL_INBOX_EMAIL=${INBOX_EMAIL}`,
 ]) {
@@ -193,8 +203,12 @@ for (const expected of [
     throw new Error(`packed AgentMail setup did not persist ${expected.split("=")[0]}`);
   }
 }
-if (configuredEnv.includes(ACCOUNT_KEY) || configuredEnv.includes("AGENTMAIL_ACCOUNT_API_KEY")) {
-  throw new Error("packed AgentMail setup persisted the account-level provisioning credential");
+if (
+  configuredEnv.split("\n").filter((line) => line.startsWith("AGENTMAIL_API_KEY=")).length !== 1 ||
+  configuredEnv.includes("AGENTMAIL_ACCOUNT_API_KEY") ||
+  configuredEnv.includes("AGENTMAIL_PARENT_API_KEY")
+) {
+  throw new Error("packed AgentMail setup did not persist one canonical supplied-key binding");
 }
 
 const configuredVisitorAuth = readFileSync(visitorAuthYaml, "utf8");
@@ -222,6 +236,101 @@ for (const expected of [
   if (!configuredAugment.includes(expected)) {
     throw new Error(`packed AgentMail setup did not commit canonical augment config: ${expected}`);
   }
+}
+
+const replacementProvider = await startStrictProvider();
+const configPath = join(consumerDir, "agent.yaml");
+const beforeReplacement = snapshotConfiguredFiles(
+  consumerDir,
+  configPath,
+  augmentYaml,
+  visitorAuthYaml,
+);
+try {
+  const replacement = await runCli(
+    [
+      "agentmail",
+      "setup",
+      "agentMail",
+      "--config",
+      configPath,
+      "--mode",
+      "manual",
+      "--replace-key",
+      "--yes",
+      "--base-url",
+      replacementProvider.baseUrl,
+    ],
+    { AGENTMAIL_API_KEY: REPLACEMENT_KEY },
+  );
+  if (replacement.exitCode !== 0) {
+    throw new Error(`packed direct AgentMail key replacement failed:\n${replacement.output}`);
+  }
+  assertNoCredentialOutput(replacement.output);
+
+  const afterReplacement = snapshotConfiguredFiles(
+    consumerDir,
+    configPath,
+    augmentYaml,
+    visitorAuthYaml,
+  );
+  const expectedEnv = replaceExactEnvValue(
+    beforeReplacement.env,
+    "AGENTMAIL_API_KEY",
+    REPLACEMENT_KEY,
+  );
+  if (afterReplacement.env !== expectedEnv) {
+    throw new Error("packed direct replacement changed more than the stored AgentMail API key");
+  }
+  assertIdentityFilesUnchanged(beforeReplacement, afterReplacement, "successful replacement");
+  assertReplacementProviderState(replacementProvider.state, {
+    inboxResources: 1,
+    replacementInboxReads: 1,
+    rejectedReplacementReads: 0,
+    operation: "successful replacement",
+  });
+
+  const rejected = await runCli(
+    [
+      "agentmail",
+      "setup",
+      "agentMail",
+      "--config",
+      configPath,
+      "--mode",
+      "manual",
+      "--replace-key",
+      "--yes",
+      "--base-url",
+      replacementProvider.baseUrl,
+    ],
+    { AGENTMAIL_API_KEY: REJECTED_REPLACEMENT_KEY },
+  );
+  if (rejected.exitCode === 0 || !rejected.output.includes("403 missing_permission")) {
+    throw new Error(
+      `packed direct replacement did not fail closed on forbidden inbox access:\n${rejected.output}`,
+    );
+  }
+  assertNoCredentialOutput(rejected.output);
+
+  const afterRejectedReplacement = snapshotConfiguredFiles(
+    consumerDir,
+    configPath,
+    augmentYaml,
+    visitorAuthYaml,
+  );
+  if (afterRejectedReplacement.env !== afterReplacement.env) {
+    throw new Error("failed packed direct replacement changed the stored AgentMail API key");
+  }
+  assertIdentityFilesUnchanged(afterReplacement, afterRejectedReplacement, "failed replacement");
+  assertReplacementProviderState(replacementProvider.state, {
+    inboxResources: 2,
+    replacementInboxReads: 1,
+    rejectedReplacementReads: 1,
+    operation: "failed replacement",
+  });
+} finally {
+  await replacementProvider.close();
 }
 
 const provisioningPath = join(packedRoot, "src", "cli", "agentmail-provisioning.ts");
@@ -267,7 +376,9 @@ interface StrictProvider {
     inboxPosts: number;
     inboxLists: number;
     inboxResources: number;
-    keyPosts: number;
+    replacementInboxReads: number;
+    rejectedReplacementReads: number;
+    apiKeyRequests: number;
     violations: string[];
   };
 }
@@ -277,7 +388,9 @@ async function startStrictProvider(): Promise<StrictProvider> {
     inboxPosts: 0,
     inboxLists: 0,
     inboxResources: 0,
-    keyPosts: 0,
+    replacementInboxReads: 0,
+    rejectedReplacementReads: 0,
+    apiKeyRequests: 0,
     violations: [],
   };
   let server: Server | undefined;
@@ -322,7 +435,7 @@ async function handleStrictRequest(
   const path = url.pathname;
   if (request.method === "POST" && path === "/v0/inboxes") {
     state.inboxPosts += 1;
-    if (!requireBearer(request, response, ACCOUNT_KEY, state)) return;
+    if (!requireBearer(request, response, SUPPLIED_KEY, state)) return;
     const body = await readJsonObject(request, response, state);
     if (!body) return;
     if (
@@ -354,7 +467,7 @@ async function handleStrictRequest(
 
   if (request.method === "GET" && path === "/v0/inboxes") {
     state.inboxLists += 1;
-    if (!requireBearer(request, response, ACCOUNT_KEY, state)) return;
+    if (!requireBearer(request, response, SUPPLIED_KEY, state)) return;
     if (url.search !== "?limit=100") {
       failContract(response, state, "inbox ownership lookup must use the bounded first page");
       return;
@@ -372,31 +485,35 @@ async function handleStrictRequest(
     return;
   }
 
-  if (request.method === "POST" && path === `/v0/inboxes/${INBOX_ID}/api-keys`) {
-    state.keyPosts += 1;
-    if (!requireBearer(request, response, ACCOUNT_KEY, state)) return;
-    const body = await readJsonObject(request, response, state);
-    if (
-      !body ||
-      !requireExactBody(
-        body,
-        {
-          name: "packed-agentmail agentMail",
-          permissions: { inbox_read: true, message_send: true },
-        },
-        response,
-        state,
-      )
-    ) {
+  if (request.method === "GET" && path === `/v0/inboxes/${INBOX_ID}`) {
+    state.inboxResources += 1;
+    const authorization = request.headers.authorization;
+    if (authorization === `Bearer ${REPLACEMENT_KEY}`) {
+      state.replacementInboxReads += 1;
+    } else if (authorization === `Bearer ${REJECTED_REPLACEMENT_KEY}`) {
+      state.rejectedReplacementReads += 1;
+      sendJson(response, 403, {
+        name: "ForbiddenError",
+        code: "missing_permission",
+        message: "Forbidden",
+      });
+      return;
+    } else if (authorization !== `Bearer ${SUPPLIED_KEY}`) {
+      failContract(response, state, "incorrect or missing bearer authorization");
       return;
     }
     sendJson(response, 200, {
-      api_key_id: "key_packed_runtime",
-      api_key: RUNTIME_KEY,
-      name: "packed-agentmail agentMail",
       inbox_id: INBOX_ID,
-      permissions: { inbox_read: true, message_send: true },
+      email: INBOX_EMAIL,
+      display_name: "Packed AgentMail",
+      client_id: CLIENT_ID,
     });
+    return;
+  }
+
+  if (path.includes("/api-keys")) {
+    state.apiKeyRequests += 1;
+    failContract(response, state, "Auggy must not create, narrow, or rotate AgentMail API keys");
     return;
   }
 
@@ -528,14 +645,91 @@ async function captureConsoleOutput(action: () => Promise<void>): Promise<string
   return lines.join("\n");
 }
 
-function assertProviderStateUnchanged(
+function assertVisitorAuthReadinessOnly(
   current: StrictProvider["state"],
   expected: StrictProvider["state"],
 ): void {
-  if (!isDeepStrictEqual(current, expected)) {
+  if (
+    current.inboxResources !== expected.inboxResources + 1 ||
+    current.inboxPosts !== expected.inboxPosts ||
+    current.inboxLists !== expected.inboxLists ||
+    current.replacementInboxReads !== expected.replacementInboxReads ||
+    current.rejectedReplacementReads !== expected.rejectedReplacementReads ||
+    current.apiKeyRequests !== expected.apiKeyRequests ||
+    !isDeepStrictEqual(current.violations, expected.violations)
+  ) {
     throw new Error(
-      `packed visitorAuth env setup made an unexpected provider call: ${JSON.stringify(current)}`,
+      `packed visitorAuth env setup did more than verify the shared inbox: ${JSON.stringify(current)}`,
     );
+  }
+}
+
+function snapshotConfiguredFiles(
+  consumerRoot: string,
+  configPath: string,
+  agentMailPath: string,
+  visitorAuthPath: string,
+): { env: string; agent: string; agentMail: string; visitorAuth: string } {
+  return {
+    env: readFileSync(join(consumerRoot, ".env"), "utf8"),
+    agent: readFileSync(configPath, "utf8"),
+    agentMail: readFileSync(agentMailPath, "utf8"),
+    visitorAuth: readFileSync(visitorAuthPath, "utf8"),
+  };
+}
+
+function replaceExactEnvValue(source: string, key: string, value: string): string {
+  const pattern = new RegExp(`^${key}=.*$`, "gm");
+  const matches = source.match(pattern) ?? [];
+  if (matches.length !== 1) {
+    throw new Error(`packed replacement expected exactly one ${key} binding`);
+  }
+  return source.replace(pattern, `${key}=${value}`);
+}
+
+function assertIdentityFilesUnchanged(
+  before: { agent: string; agentMail: string; visitorAuth: string },
+  after: { agent: string; agentMail: string; visitorAuth: string },
+  operation: string,
+): void {
+  if (
+    before.agent !== after.agent ||
+    before.agentMail !== after.agentMail ||
+    before.visitorAuth !== after.visitorAuth
+  ) {
+    throw new Error(`packed direct ${operation} changed AgentMail inbox identity or augment YAML`);
+  }
+}
+
+function assertReplacementProviderState(
+  state: StrictProvider["state"],
+  expected: {
+    inboxResources: number;
+    replacementInboxReads: number;
+    rejectedReplacementReads: number;
+    operation: string;
+  },
+): void {
+  if (
+    state.inboxPosts !== 0 ||
+    state.inboxLists !== 0 ||
+    state.inboxResources !== expected.inboxResources ||
+    state.replacementInboxReads !== expected.replacementInboxReads ||
+    state.rejectedReplacementReads !== expected.rejectedReplacementReads ||
+    state.apiKeyRequests !== 0 ||
+    state.violations.length > 0
+  ) {
+    throw new Error(
+      `packed direct ${expected.operation} violated the strict provider contract: ${JSON.stringify(state)}`,
+    );
+  }
+}
+
+function assertNoCredentialOutput(output: string): void {
+  for (const credential of [SUPPLIED_KEY, REPLACEMENT_KEY, REJECTED_REPLACEMENT_KEY]) {
+    if (output.includes(credential)) {
+      throw new Error("packed direct replacement printed an AgentMail credential");
+    }
   }
 }
 

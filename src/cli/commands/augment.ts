@@ -165,7 +165,13 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
       "external-service API key (prefer a secure prompt or provider environment variable)",
     )
     .option("--inbox-id <id>", "existing AgentMail inbox ID for manual mode")
+    .option("--replace-key", "replace only the stored API key for the existing inbox (manual mode)")
+    .option("--yes", "confirm a non-interactive --replace-key operation")
     .option("--base-url <url>", "external-service API base URL")
+    .option(
+      "--allow-insecure-http-with-credentials",
+      "allow plaintext remote AgentMail only when NODE_ENV=development",
+    )
     .action(async (augment: string, opts: AugmentSetupOptions) => {
       try {
         const result = await setup(augment, opts, { auggyDir: deps.auggyDir });
@@ -493,11 +499,11 @@ function agentMailRemovalWarnings(
   );
   if (remainingSharedConsumer) {
     return [
-      "AGENTMAIL_* values and the remote AgentMail inbox/key were retained because another shared mail consumer is still installed.",
+      "AGENTMAIL_* values and the supplied AgentMail key were retained because another shared mail consumer is still installed.",
     ];
   }
   return [
-    "Auggy did not remove AGENTMAIL_* values or revoke the remote AgentMail inbox/key. Other configuration may still reference them; if nothing does, revoke the scoped key in AgentMail before removing the local values.",
+    "Auggy did not remove AGENTMAIL_* values or change the supplied AgentMail key. Review every AgentMail consumer before removing local values or changing the key in AgentMail.",
   ];
 }
 

@@ -79,10 +79,159 @@ describe("agentmail setup command", () => {
         "inb_existing",
       ]);
 
-      expect(logs.join("\n")).toContain("AgentMail inbox configured: inb_existing");
+      expect(logs.join("\n")).toContain(
+        "AgentMail inbox configured: support@agentmail.to (inb_existing)",
+      );
       expect(logs.join("\n")).not.toContain("am_runtime");
     } finally {
       console.log = originalLog;
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("direct Commander replaces a key through the masked interactive confirmation path", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-command-replace-interactive-"));
+    const previous = snapshotAgentMailRuntimeEnv();
+    const originalLog = console.log;
+    try {
+      clearAgentMailRuntimeEnv();
+      const paths = writeAgentMailAgent(root);
+      writeFileSync(
+        paths.envPath,
+        "AGENTMAIL_API_KEY=am_old\nAGENTMAIL_INBOX_ID=inb_existing\nAGENTMAIL_INBOX_EMAIL=support@agentmail.to\n",
+      );
+      writeFileSync(
+        paths.augmentPath,
+        [
+          "type: agentMail",
+          "config:",
+          "  apiKey: ${AGENTMAIL_API_KEY}",
+          "  inboxId: ${AGENTMAIL_INBOX_ID}",
+          "  outbound:",
+          "    allowedTrustLevels:",
+          "      - creator",
+          "  emailAddress: ${AGENTMAIL_INBOX_EMAIL}",
+          "  addressVisibility: creator",
+          "",
+        ].join("\n"),
+      );
+      const originalAgent = readFileSync(paths.configPath, "utf8");
+      const originalAugment = readFileSync(paths.augmentPath, "utf8");
+      const logs: string[] = [];
+      console.log = (...args: unknown[]) => logs.push(args.join(" "));
+      const promptPassword = mock(async (prompt: { message?: string }) => {
+        expect(prompt.message).toBe("AgentMail API key:");
+        return "am_interactive_replacement";
+      });
+      const promptConfirm = mock(async (prompt: { message?: string; default?: boolean }) => {
+        expect(prompt.message).toContain(
+          "Replace the stored AgentMail API key for inbox inb_existing",
+        );
+        expect(prompt.default).toBe(false);
+        return true;
+      });
+      const getInbox = mock(async (apiKey: string, inboxId: string) => {
+        expect(apiKey).toBe("am_interactive_replacement");
+        expect(inboxId).toBe("inb_existing");
+        return { inboxId, email: "support@agentmail.to" };
+      });
+      const command = agentMailCommand({
+        interactive: true,
+        promptPassword: promptPassword as never,
+        promptConfirm: promptConfirm as never,
+        provisioner: unusedProvisioner({ getInbox }),
+        exit: (code) => {
+          throw new Error(`unexpected exit ${code}`);
+        },
+      });
+
+      await command.parseAsync([
+        "node",
+        "auggy-agentmail",
+        "setup",
+        "agentMail",
+        "--config",
+        paths.configPath,
+        "--mode",
+        "manual",
+        "--replace-key",
+      ]);
+
+      expect(promptPassword).toHaveBeenCalledTimes(1);
+      expect(promptConfirm).toHaveBeenCalledTimes(1);
+      expect(getInbox).toHaveBeenCalledTimes(1);
+      expect(readEnv(paths.envPath)).toEqual({
+        AGENTMAIL_API_KEY: "am_interactive_replacement",
+        AGENTMAIL_INBOX_ID: "inb_existing",
+        AGENTMAIL_INBOX_EMAIL: "support@agentmail.to",
+      });
+      expect(readFileSync(paths.configPath, "utf8")).toBe(originalAgent);
+      expect(readFileSync(paths.augmentPath, "utf8")).toBe(originalAugment);
+      expect(logs.join("\n")).toContain("Replaced the stored API key for this inbox");
+      expect(logs.join("\n")).not.toContain("am_interactive_replacement");
+    } finally {
+      console.log = originalLog;
+      restoreAgentMailRuntimeEnv(previous);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("direct Commander cancellation preserves files before provider access", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-command-replace-cancel-"));
+    const previous = snapshotAgentMailRuntimeEnv();
+    const originalError = console.error;
+    try {
+      clearAgentMailRuntimeEnv();
+      const paths = writeAgentMailAgent(root);
+      writeFileSync(
+        paths.envPath,
+        "AGENTMAIL_API_KEY=am_old\nAGENTMAIL_INBOX_ID=inb_existing\nAGENTMAIL_INBOX_EMAIL=support@agentmail.to\n",
+      );
+      const originalEnv = readFileSync(paths.envPath, "utf8");
+      const originalAgent = readFileSync(paths.configPath, "utf8");
+      const originalAugment = readFileSync(paths.augmentPath, "utf8");
+      const errors: string[] = [];
+      console.error = (...args: unknown[]) => errors.push(args.join(" "));
+      const promptPassword = mock(async () => "am_cancelled_replacement");
+      const promptConfirm = mock(async () => false);
+      const getInbox = mock(async () => {
+        throw new Error("must not contact AgentMail after cancellation");
+      });
+      const command = agentMailCommand({
+        interactive: true,
+        promptPassword: promptPassword as never,
+        promptConfirm: promptConfirm as never,
+        provisioner: unusedProvisioner({ getInbox }),
+        exit: (code) => {
+          throw new Error(`expected command exit ${code}`);
+        },
+      });
+
+      await expect(
+        command.parseAsync([
+          "node",
+          "auggy-agentmail",
+          "setup",
+          "agentMail",
+          "--config",
+          paths.configPath,
+          "--mode",
+          "manual",
+          "--replace-key",
+        ]),
+      ).rejects.toThrow("expected command exit 1");
+
+      expect(promptPassword).not.toHaveBeenCalled();
+      expect(promptConfirm).toHaveBeenCalledTimes(1);
+      expect(getInbox).not.toHaveBeenCalled();
+      expect(readFileSync(paths.envPath, "utf8")).toBe(originalEnv);
+      expect(readFileSync(paths.configPath, "utf8")).toBe(originalAgent);
+      expect(readFileSync(paths.augmentPath, "utf8")).toBe(originalAugment);
+      expect(errors.join("\n")).toContain("AgentMail API key replacement cancelled");
+      expect(errors.join("\n")).not.toContain("am_cancelled_replacement");
+    } finally {
+      console.error = originalError;
+      restoreAgentMailRuntimeEnv(previous);
       rmSync(root, { recursive: true, force: true });
     }
   });
@@ -178,24 +327,23 @@ describe("agentmail setup command", () => {
     }
   });
 
-  test("uses the secure account-key environment variable with argv precedence", async () => {
+  test("accepts the deprecated process-only account-key alias without changing its value", async () => {
     const previous = process.env.AGENTMAIL_ACCOUNT_API_KEY;
+    const previousCanonical = process.env.AGENTMAIL_API_KEY;
+    delete process.env.AGENTMAIL_API_KEY;
     process.env.AGENTMAIL_ACCOUNT_API_KEY = "am_account_from_env";
     try {
-      for (const [explicit, expected] of [
-        [undefined, "am_account_from_env"],
-        ["am_account_from_argv", "am_account_from_argv"],
-      ] as const) {
+      for (const explicit of [undefined, "am_account_from_env"] as const) {
         const root = mkdtempSync(join(tmpdir(), "agentmail-setup-account-env-"));
         try {
           const paths = writeVisitorAuthAgent(root);
           const createInbox = mock(
             async (input: Parameters<AgentMailProvisioningClient["createInbox"]>[0]) => {
-              expect(input.apiKey).toBe(expected);
+              expect(input.apiKey).toBe("am_account_from_env");
               return { inboxId: "inb_env", email: "env@agentmail.to" };
             },
           );
-          await runAgentMailSetup(
+          const result = await runAgentMailSetup(
             "visitorAuth",
             {
               config: paths.configPath,
@@ -205,13 +353,12 @@ describe("agentmail setup command", () => {
             },
             {
               interactive: false,
-              provisioner: unusedProvisioner({
-                createInbox,
-                createInboxApiKey: async () => ({ apiKeyId: "key_1", apiKey: "am_runtime" }),
-              }),
+              provisioner: unusedProvisioner({ createInbox }),
             },
           );
           expect(createInbox).toHaveBeenCalledTimes(1);
+          expect(result.usedDeprecatedApiKeyAlias).toBe(true);
+          expect(readEnv(paths.envPath).AGENTMAIL_API_KEY).toBe("am_account_from_env");
         } finally {
           rmSync(root, { recursive: true, force: true });
         }
@@ -226,12 +373,13 @@ describe("agentmail setup command", () => {
             { config: paths.configPath, mode: "existing", username: "env-agent" },
             { interactive: false, provisioner: unusedProvisioner() },
           ),
-        ).rejects.toThrow(/AGENTMAIL_ACCOUNT_API_KEY/);
+        ).rejects.toThrow(/AGENTMAIL_ACCOUNT_API_KEY must not be blank or whitespace-only/);
       } finally {
         rmSync(root, { recursive: true, force: true });
       }
     } finally {
       restoreProcessEnv("AGENTMAIL_ACCOUNT_API_KEY", previous);
+      restoreProcessEnv("AGENTMAIL_API_KEY", previousCanonical);
     }
   });
 
@@ -264,7 +412,8 @@ describe("agentmail setup command", () => {
         error = caught as Error;
       }
 
-      expect(error?.message).toContain("provisioning-only account credential");
+      expect(error?.message).toContain("AGENTMAIL_ACCOUNT_API_KEY is deprecated");
+      expect(error?.message).toContain("Rename it to AGENTMAIL_API_KEY");
       expect(error?.message).toContain(".env.local");
       expect(error?.message).not.toContain("am_project_secret");
       expect(createInbox).not.toHaveBeenCalled();
@@ -301,7 +450,7 @@ describe("agentmail setup command", () => {
           provisioner: unusedProvisioner({ createInbox }),
         },
       ).catch((caught) => caught as Error)) as Error;
-      expect(error.message).toContain("provisioning-only account credential");
+      expect(error.message).toContain("AGENTMAIL_ACCOUNT_API_KEY is deprecated");
       expect(error.message).not.toContain("am_project_secret");
       expect(error.message).not.toContain("am_explicit_secret");
       expect(createInbox).not.toHaveBeenCalled();
@@ -334,7 +483,7 @@ describe("agentmail setup command", () => {
         },
       ).catch((caught) => caught as Error)) as Error;
 
-      expect(error.message).toContain("provisioning-only account credential");
+      expect(error.message).toContain("AGENTMAIL_ACCOUNT_API_KEY is deprecated");
       expect(error.message).toContain(".env.production");
       expect(error.message).not.toContain("am_prod_secret");
       expect(error.message).not.toContain("am_explicit_secret");
@@ -362,10 +511,7 @@ describe("agentmail setup command", () => {
         {
           cwd: root,
           interactive: false,
-          provisioner: unusedProvisioner({
-            createInbox,
-            createInboxApiKey: async () => ({ apiKeyId: "key_1", apiKey: "am_runtime" }),
-          }),
+          provisioner: unusedProvisioner({ createInbox }),
         },
       );
 
@@ -553,16 +699,12 @@ describe("agentmail setup command", () => {
                 clientId: "auggy.v1.inbox.aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c.agentMail",
               },
             ],
-            createInboxApiKey: async () => ({
-              apiKeyId: "key_replacement",
-              apiKey: "am_new_runtime",
-            }),
           }),
         },
       );
-      expect(replacement.runtimeKeyId).toBe("key_replacement");
+      expect(replacement.reusedExistingInbox).toBe(true);
       expect(readEnv(paths.envPath)).toMatchObject({
-        AGENTMAIL_API_KEY: "am_new_runtime",
+        AGENTMAIL_API_KEY: "am_parent",
         AGENTMAIL_INBOX_ID: "inb_shared",
         AGENTMAIL_INBOX_EMAIL: "shared@agentmail.to",
       });
@@ -638,10 +780,7 @@ describe("agentmail setup command", () => {
           username: "outbound",
         },
         {
-          provisioner: unusedProvisioner({
-            createInbox,
-            createInboxApiKey: async () => ({ apiKeyId: "key_outbound", apiKey: "am_runtime" }),
-          }),
+          provisioner: unusedProvisioner({ createInbox }),
         },
       );
 
@@ -652,7 +791,7 @@ describe("agentmail setup command", () => {
         transport: "console",
       });
       expect(readEnv(paths.envPath)).toMatchObject({
-        AGENTMAIL_API_KEY: "am_runtime",
+        AGENTMAIL_API_KEY: "am_parent",
         AGENTMAIL_INBOX_ID: "inb_outbound",
         AGENTMAIL_INBOX_EMAIL: "outbound@agentmail.to",
       });
@@ -845,7 +984,7 @@ describe("agentmail setup command", () => {
       expect(choiceNames).toEqual([
         "New to AgentMail — create an account and first inbox",
         "Existing AgentMail account — create an inbox with an account API key",
-        "Existing AgentMail inbox — connect its ID and scoped runtime key",
+        "Existing AgentMail inbox — connect its ID and API key",
       ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -870,10 +1009,6 @@ describe("agentmail setup command", () => {
         inboxId: "inb_existing_account",
         email: "support@agentmail.to",
       }));
-      const createInboxApiKey = mock(async () => ({
-        apiKeyId: "key_runtime",
-        apiKey: "am_runtime_scoped",
-      }));
       const confirmations: string[] = [];
 
       const result = await runAgentMailSetup(
@@ -884,7 +1019,7 @@ describe("agentmail setup command", () => {
           username: "support",
         },
         {
-          provisioner: unusedProvisioner({ signUp, createInbox, createInboxApiKey }),
+          provisioner: unusedProvisioner({ signUp, createInbox }),
           promptSelect: (async () => "signup") as never,
           promptConfirm: (async (prompt: { message?: string }) => {
             confirmations.push(prompt.message ?? "");
@@ -899,12 +1034,11 @@ describe("agentmail setup command", () => {
       expect(result.inboxId).toBe("inb_existing_account");
       expect(signUp).toHaveBeenCalledTimes(1);
       expect(createInbox).toHaveBeenCalledTimes(1);
-      expect(createInboxApiKey).toHaveBeenCalledTimes(1);
       expect(
         confirmations.some((message) => message.includes("already has an AgentMail account")),
       ).toBe(true);
       expect(readEnv(paths.envPath)).toMatchObject({
-        AGENTMAIL_API_KEY: "am_runtime_scoped",
+        AGENTMAIL_API_KEY: "am_parent_account",
         AGENTMAIL_INBOX_ID: "inb_existing_account",
       });
       expect(readFileSync(paths.configPath, "utf-8")).toBe(originalConfig);
@@ -956,53 +1090,7 @@ describe("agentmail setup command", () => {
     }
   });
 
-  test("does not misclassify an AlreadyExists failure after signup as an account collision", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-key-collision-"));
-    try {
-      const paths = writeVisitorAuthAgent(root);
-      let confirmations = 0;
-
-      const error = await runAgentMailSetup(
-        "visitorAuth",
-        {
-          config: paths.configPath,
-          humanEmail: "owner@example.com",
-          username: "support",
-        },
-        {
-          provisioner: unusedProvisioner({
-            signUp: async () => ({
-              organizationId: "org_1",
-              inboxId: "inb_1",
-              apiKey: "am_parent",
-            }),
-            verify: async () => ({ verified: true }),
-            createInboxApiKey: async () => {
-              throw new AgentMailProvisioningApiError({
-                operation: "/inboxes/inb_1/api-keys",
-                status: 409,
-                providerCode: "already_exists",
-              });
-            },
-          }),
-          promptSelect: (async () => "signup") as never,
-          promptInput: (async () => "123456") as never,
-          promptConfirm: (async () => {
-            confirmations += 1;
-            return true;
-          }) as never,
-        },
-      ).catch((caught) => caught);
-
-      expect(error).toBeInstanceOf(AgentMailProvisioningApiError);
-      expect((error as AgentMailProvisioningApiError).operation).toBe("/inboxes/inb_1/api-keys");
-      expect(confirmations).toBe(1);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  test("signup mode verifies owner email, creates a scoped runtime key, and patches visitorAuth", async () => {
+  test("signup mode verifies owner email, persists the returned key, and patches visitorAuth", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-signup-"));
     try {
       const paths = writeVisitorAuthAgent(root);
@@ -1024,18 +1112,10 @@ describe("agentmail setup command", () => {
         createInbox: mock(async () => {
           throw new Error("not used");
         }),
-        createInboxApiKey: mock(async (input) => {
-          expect(input).toEqual({
-            apiKey: "am_parent",
-            inboxId: "inb_1",
-            name: "dx-agent visitorAuth",
-            permissions: { inbox_read: true, message_send: true },
-          });
-          return { apiKeyId: "key_1", apiKey: "am_runtime" };
-        }),
-        getInbox: mock(async () => {
-          throw new Error("not used");
-        }),
+        getInbox: mock(async (_apiKey, inboxId) => ({
+          inboxId,
+          email: "signup@agentmail.to",
+        })),
       };
 
       const result = await runAgentMailSetup(
@@ -1054,9 +1134,9 @@ describe("agentmail setup command", () => {
       );
 
       expect(result.inboxId).toBe("inb_1");
-      expect(result.inboxEmail).toBeUndefined();
+      expect(result.inboxEmail).toBe("signup@agentmail.to");
       expect(readEnv(paths.envPath)).toMatchObject({
-        AGENTMAIL_API_KEY: "am_runtime",
+        AGENTMAIL_API_KEY: "am_parent",
         AGENTMAIL_INBOX_ID: "inb_1",
       });
       expect(readEnv(paths.envPath).AGENTMAIL_INBOX_EMAIL).toBeUndefined();
@@ -1110,7 +1190,6 @@ describe("agentmail setup command", () => {
               apiKey: "am_parent",
             }),
             verify,
-            createInboxApiKey: async () => ({ apiKeyId: "key_1", apiKey: "am_runtime" }),
           }),
           promptConfirm: (async () => true) as never,
           promptInput: (async (prompt: { message?: string }) => {
@@ -1262,7 +1341,7 @@ describe("agentmail setup command", () => {
     }
   });
 
-  test("agentMail signup verifies identity before minting the one-time runtime key", async () => {
+  test("agentMail signup verifies identity and persists the returned key", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-signup-identity-"));
     try {
       const paths = writeAgentMailAgent(root);
@@ -1293,16 +1372,6 @@ describe("agentmail setup command", () => {
           expect(apiKey).toBe("am_parent");
           return { inboxId, email: "Agent@Custom.Example" };
         }),
-        createInboxApiKey: mock(async (input) => {
-          order.push("runtime-key");
-          expect(input.apiKey).toBe("am_parent");
-          expect(input.permissions).toEqual({
-            inbox_read: true,
-            message_send: true,
-            message_read: true,
-          });
-          return { apiKeyId: "key_1", apiKey: "am_runtime" };
-        }),
       };
 
       const result = await runAgentMailSetup(
@@ -1320,16 +1389,17 @@ describe("agentmail setup command", () => {
         },
       );
 
-      expect(order).toEqual(["identity", "runtime-key"]);
+      expect(order).toEqual(["identity"]);
       expect(result.inboxEmail).toBe("agent@custom.example");
       expect(result.requiredPermissions).toEqual(["inbox_read", "message_send", "message_read"]);
+      expect(readEnv(paths.envPath).AGENTMAIL_API_KEY).toBe("am_parent");
       expect(readEnv(paths.envPath).AGENTMAIL_INBOX_EMAIL).toBe("agent@custom.example");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  test("existing mode creates a new inbox in an existing account and writes only the scoped key", async () => {
+  test("existing mode creates a new inbox and persists the supplied key", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-existing-"));
     try {
       const paths = writeVisitorAuthAgent(root);
@@ -1350,15 +1420,10 @@ describe("agentmail setup command", () => {
           });
           return { inboxId: "inb_support", email: "support@agentmail.to" };
         }),
-        createInboxApiKey: mock(async (input) => {
-          expect(input.apiKey).toBe("am_parent");
-          expect(input.inboxId).toBe("inb_support");
-          expect(input.permissions).toEqual({ inbox_read: true, message_send: true });
-          return { apiKeyId: "key_support", apiKey: "am_runtime_support" };
-        }),
-        getInbox: mock(async () => {
-          throw new Error("not used");
-        }),
+        getInbox: mock(async (_apiKey, inboxId) => ({
+          inboxId,
+          email: "support@agentmail.to",
+        })),
       };
 
       const result = await runAgentMailSetup(
@@ -1375,7 +1440,7 @@ describe("agentmail setup command", () => {
 
       expect(result.inboxEmail).toBe("support@agentmail.to");
       expect(readEnv(paths.envPath)).toMatchObject({
-        AGENTMAIL_API_KEY: "am_runtime_support",
+        AGENTMAIL_API_KEY: "am_parent",
         AGENTMAIL_INBOX_ID: "inb_support",
       });
       expect(readEnv(paths.envPath).AGENTMAIL_INBOX_EMAIL).toBeUndefined();
@@ -1430,10 +1495,6 @@ describe("agentmail setup command", () => {
             providerMessage: "The inbox could not be created.",
           });
         });
-        const createInboxApiKey = mock(async () => {
-          throw new Error("must not create a scoped key");
-        });
-
         let error: Error | undefined;
         try {
           await runAgentMailSetup(
@@ -1446,7 +1507,7 @@ describe("agentmail setup command", () => {
               displayName: "Support",
             },
             {
-              provisioner: unusedProvisioner({ createInbox, createInboxApiKey }),
+              provisioner: unusedProvisioner({ createInbox }),
             },
           );
         } catch (caught) {
@@ -1456,7 +1517,6 @@ describe("agentmail setup command", () => {
         expect(error?.message).toContain(String(status));
         expect(error?.message).not.toContain(parentApiKey);
         expect(createInbox).toHaveBeenCalledTimes(1);
-        expect(createInboxApiKey).not.toHaveBeenCalled();
         expect(readFileSync(paths.configPath, "utf-8")).toBe(originalConfig);
         expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
         expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
@@ -1518,7 +1578,7 @@ describe("agentmail setup command", () => {
 
       expect(error.message).toContain("support@agentmail.to is already taken");
       expect(error.message).toContain("No inbox was adopted");
-      expect(error.message).toContain("no runtime key was created");
+      expect(error.message).toContain("no local credentials were changed");
       expect(error.message).not.toContain("am_parent_secret");
       expect(posts).toBe(1);
       expect(gets).toBe(1);
@@ -1550,11 +1610,6 @@ describe("agentmail setup command", () => {
           clientId: "auggy.v1.inbox.aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c.visitorAuth",
         },
       ]);
-      const createInboxApiKey = mock(async () => ({
-        apiKeyId: "key_runtime",
-        apiKey: "am_runtime_scoped",
-      }));
-
       const result = await runAgentMailSetup(
         "agentMail",
         {
@@ -1564,7 +1619,7 @@ describe("agentmail setup command", () => {
           displayName: "Support",
         },
         {
-          provisioner: unusedProvisioner({ createInbox, listInboxes, createInboxApiKey }),
+          provisioner: unusedProvisioner({ createInbox, listInboxes }),
           promptPassword: passwordPrompt as never,
           promptConfirm: confirmPrompt as never,
           interactive: true,
@@ -1578,31 +1633,26 @@ describe("agentmail setup command", () => {
       expect(createInbox).toHaveBeenCalledTimes(1);
       expect(listInboxes).toHaveBeenCalledTimes(1);
       expect(confirmPrompt).toHaveBeenCalledTimes(1);
-      expect(createInboxApiKey).toHaveBeenCalledTimes(1);
       expect(readEnv(paths.envPath)).toMatchObject({
-        AGENTMAIL_API_KEY: "am_runtime_scoped",
+        AGENTMAIL_API_KEY: "am_parent_account",
         AGENTMAIL_INBOX_ID: "inb_existing",
         AGENTMAIL_INBOX_EMAIL: "support@agentmail.to",
       });
       const output = formatAgentMailSetupResult(result);
-      expect(output).toContain("minted a new scoped runtime key");
-      expect(output).toContain("Review and revoke obsolete scoped keys");
-      expect(output).not.toContain("am_runtime_scoped");
+      expect(output).toContain("Reused the existing AgentMail inbox with the selected key");
+      expect(output).not.toContain("am_parent_account");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  test("cancelling proven-owned inbox reuse creates no scoped key or local mutation", async () => {
+  test("cancelling proven-owned inbox reuse leaves local state unchanged", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-owned-reuse-cancel-"));
     try {
       const paths = writeAgentMailAgent(root);
       const originalConfig = readFileSync(paths.configPath, "utf-8");
       const originalEnv = readFileSync(paths.envPath, "utf-8");
       const originalAugment = readFileSync(paths.augmentPath, "utf-8");
-      const createInboxApiKey = mock(async () => {
-        throw new Error("must not create a scoped key");
-      });
       const promptCancellation = new Error("cancelled");
       promptCancellation.name = "ExitPromptError";
 
@@ -1631,7 +1681,6 @@ describe("agentmail setup command", () => {
                 clientId: "auggy.v1.inbox.aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c.agentMail",
               },
             ],
-            createInboxApiKey,
           }),
           promptConfirm: (async () => {
             throw promptCancellation;
@@ -1641,10 +1690,8 @@ describe("agentmail setup command", () => {
       ).catch((caught) => caught as Error)) as Error;
 
       expect(error.message).toContain("inbox reuse confirmation was cancelled");
-      expect(error.message).toContain("No scoped runtime key was created");
-      expect(error.message).toContain("no local credentials were changed");
+      expect(error.message).toContain("No local credentials were changed");
       expect(error.message).not.toContain("am_parent_secret");
-      expect(createInboxApiKey).not.toHaveBeenCalled();
       expect(readFileSync(paths.configPath, "utf-8")).toBe(originalConfig);
       expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
       expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
@@ -1671,10 +1718,6 @@ describe("agentmail setup command", () => {
           return { inboxId: "inb_support_2", email: "support-2@agentmail.to" };
         },
       );
-      const createInboxApiKey = mock(async () => ({
-        apiKeyId: "key_runtime",
-        apiKey: "am_runtime_scoped",
-      }));
       const listInboxes = mock(async () => [
         {
           inboxId: "inb_unrelated",
@@ -1692,7 +1735,7 @@ describe("agentmail setup command", () => {
           displayName: "Support",
         },
         {
-          provisioner: unusedProvisioner({ createInbox, listInboxes, createInboxApiKey }),
+          provisioner: unusedProvisioner({ createInbox, listInboxes }),
           promptPassword: passwordPrompt as never,
           promptInput: usernamePrompt as never,
           promptConfirm: (async () => {
@@ -1710,22 +1753,18 @@ describe("agentmail setup command", () => {
         "am_parent_account",
         "am_parent_account",
       ]);
-      expect(createInboxApiKey).toHaveBeenCalledTimes(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
   });
 
-  test("resource_taken cancellation creates no scoped key and leaves local state unchanged", async () => {
+  test("resource_taken cancellation leaves local state unchanged", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-collision-cancel-"));
     try {
       const paths = writeVisitorAuthAgent(root);
       const originalConfig = readFileSync(paths.configPath, "utf-8");
       const originalEnv = readFileSync(paths.envPath, "utf-8");
       const originalAugment = readFileSync(paths.augmentPath, "utf-8");
-      const createInboxApiKey = mock(async () => {
-        throw new Error("must not create a scoped key");
-      });
       const promptCancellation = new Error("cancelled");
       promptCancellation.name = "ExitPromptError";
 
@@ -1749,7 +1788,6 @@ describe("agentmail setup command", () => {
                 });
               },
               listInboxes: async () => [],
-              createInboxApiKey,
             }),
             promptInput: (async () => {
               throw promptCancellation;
@@ -1757,8 +1795,7 @@ describe("agentmail setup command", () => {
             interactive: true,
           },
         ),
-      ).rejects.toThrow(/selection was cancelled[\s\S]*no runtime key[\s\S]*no local credentials/);
-      expect(createInboxApiKey).not.toHaveBeenCalled();
+      ).rejects.toThrow(/selection was cancelled[\s\S]*no local credentials/);
       expect(readFileSync(paths.configPath, "utf-8")).toBe(originalConfig);
       expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
       expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
@@ -1767,7 +1804,7 @@ describe("agentmail setup command", () => {
     }
   });
 
-  test("resource_taken stops after three username attempts without creating a scoped key", async () => {
+  test("resource_taken stops after three username attempts without local mutation", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-collision-bound-"));
     try {
       const paths = writeVisitorAuthAgent(root);
@@ -1778,9 +1815,6 @@ describe("agentmail setup command", () => {
           status: 403,
           providerCode: "resource_taken",
         });
-      });
-      const createInboxApiKey = mock(async () => {
-        throw new Error("must not create a scoped key");
       });
       let retry = 1;
 
@@ -1798,15 +1832,13 @@ describe("agentmail setup command", () => {
             provisioner: unusedProvisioner({
               createInbox,
               listInboxes: async () => [],
-              createInboxApiKey,
             }),
             promptInput: (async () => `support-${++retry}`) as never,
             interactive: true,
           },
         ),
-      ).rejects.toThrow(/support-3@agentmail\.to is already taken[\s\S]*no runtime key/);
+      ).rejects.toThrow(/support-3@agentmail\.to is already taken[\s\S]*no local credentials/);
       expect(createInbox).toHaveBeenCalledTimes(3);
-      expect(createInboxApiKey).not.toHaveBeenCalled();
       expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -1853,102 +1885,6 @@ describe("agentmail setup command", () => {
       expect(readFileSync(paths.configPath, "utf-8")).toBe(originalConfig);
       expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
       expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  test("existing mode leaves local state unchanged when scoped-key creation fails", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-scoped-key-failure-"));
-    try {
-      const paths = writeAgentMailAgent(root);
-      const originalConfig = readFileSync(paths.configPath, "utf-8");
-      const originalEnv = readFileSync(paths.envPath, "utf-8");
-      const originalAugment = readFileSync(paths.augmentPath, "utf-8");
-      const parentApiKey = "am_parent_secret_scoped_key";
-      const createInbox = mock(async () => ({
-        inboxId: "inb_created",
-        email: "support@agentmail.to",
-      }));
-      const createInboxApiKey = mock(async () => {
-        throw new AgentMailProvisioningApiError({
-          operation: "/inboxes/inb_created/api-keys",
-          status: 429,
-          providerCode: "rate_limited",
-          providerMessage: "Try again later.",
-        });
-      });
-
-      let error: Error | undefined;
-      try {
-        await runAgentMailSetup(
-          "agentMail",
-          {
-            config: paths.configPath,
-            mode: "existing",
-            apiKey: parentApiKey,
-            username: "support",
-            displayName: "Support",
-          },
-          {
-            provisioner: unusedProvisioner({ createInbox, createInboxApiKey }),
-          },
-        );
-      } catch (caught) {
-        error = caught as Error;
-      }
-
-      expect(error?.message).toContain("429");
-      expect(error?.message).not.toContain(parentApiKey);
-      expect(createInbox).toHaveBeenCalledTimes(1);
-      expect(createInboxApiKey).toHaveBeenCalledTimes(1);
-      expect(readFileSync(paths.configPath, "utf-8")).toBe(originalConfig);
-      expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
-      expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
-    } finally {
-      rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  test("outcome-unknown scoped-key creation names the possible orphan without leaking secrets", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-scoped-key-unknown-"));
-    try {
-      const paths = writeVisitorAuthAgent(root);
-      const originalEnv = readFileSync(paths.envPath, "utf-8");
-      const parentApiKey = "am_parent_secret_unknown";
-      const createInboxApiKey = mock(async () => {
-        throw new AgentMailProvisioningApiError({
-          operation: "/inboxes/inb_created/api-keys",
-          status: 503,
-          providerCode: "unavailable",
-          outcomeUnknown: true,
-        });
-      });
-
-      const error = (await runAgentMailSetup(
-        "visitorAuth",
-        {
-          config: paths.configPath,
-          mode: "existing",
-          apiKey: parentApiKey,
-          username: "support",
-        },
-        {
-          provisioner: unusedProvisioner({
-            createInbox: async () => ({
-              inboxId: "inb_created",
-              email: "support@agentmail.to",
-            }),
-            createInboxApiKey,
-          }),
-        },
-      ).catch((caught) => caught as Error)) as Error;
-
-      expect(error.message).toContain('scoped key named "dx-agent visitorAuth"');
-      expect(error.message).toContain("revoke any orphan before retrying");
-      expect(error.message).not.toContain(parentApiKey);
-      expect(createInboxApiKey).toHaveBeenCalledTimes(1);
-      expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -2020,16 +1956,10 @@ describe("agentmail setup command", () => {
           });
           return { inboxId: "inb_outbound", email: "outbound@agentmail.to" };
         }),
-        createInboxApiKey: mock(async (input) => {
-          expect(input.apiKey).toBe("am_parent");
-          expect(input.inboxId).toBe("inb_outbound");
-          expect(input.name).toBe("dx-agent agentMail");
-          expect(input.permissions).toEqual({ inbox_read: true, message_send: true });
-          return { apiKeyId: "key_outbound", apiKey: "am_runtime_outbound" };
-        }),
-        getInbox: mock(async () => {
-          throw new Error("not used");
-        }),
+        getInbox: mock(async (_apiKey, inboxId) => ({
+          inboxId,
+          email: "outbound@agentmail.to",
+        })),
       };
 
       const result = await runAgentMailSetup(
@@ -2046,7 +1976,7 @@ describe("agentmail setup command", () => {
 
       expect(result.target).toBe("agentMail");
       expect(readEnv(paths.envPath)).toMatchObject({
-        AGENTMAIL_API_KEY: "am_runtime_outbound",
+        AGENTMAIL_API_KEY: "am_parent",
         AGENTMAIL_INBOX_ID: "inb_outbound",
         AGENTMAIL_INBOX_EMAIL: "outbound@agentmail.to",
       });
@@ -2062,7 +1992,7 @@ describe("agentmail setup command", () => {
     }
   });
 
-  test("existing mode mints only the label permissions explicitly processed by inbound policy", async () => {
+  test("existing mode reports only capabilities required by inbound policy", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-inbound-permissions-"));
     try {
       const paths = writeAgentMailAgent(root);
@@ -2078,24 +2008,11 @@ describe("agentmail setup command", () => {
       };
       setAgentMailInbound(paths.augmentPath, inbound);
       addWebTransport(paths.configPath);
-      const createInboxApiKey = mock(
-        async (input: Parameters<AgentMailProvisioningClient["createInboxApiKey"]>[0]) => {
-          expect(input.permissions).toEqual({
-            inbox_read: true,
-            message_send: true,
-            message_read: true,
-            label_spam_read: true,
-            label_blocked_read: true,
-          });
-          return { apiKeyId: "key_inbound", apiKey: "am_runtime_inbound" };
-        },
-      );
       const provisioner = unusedProvisioner({
         createInbox: mock(async () => ({
           inboxId: "inb_inbound",
           email: "inbound@example.com",
         })),
-        createInboxApiKey,
       });
 
       const result = await runAgentMailSetup(
@@ -2110,7 +2027,6 @@ describe("agentmail setup command", () => {
         { provisioner },
       );
 
-      expect(createInboxApiKey).toHaveBeenCalledTimes(1);
       expect(result.requiredPermissions).toEqual([
         "inbox_read",
         "message_send",
@@ -2197,7 +2113,7 @@ describe("agentmail setup command", () => {
             },
           ),
         ).rejects.toThrow(
-          /will not be rotated automatically[\s\S]*--mode env[\s\S]*revoke[\s\S]*remove[\s\S]*unset/,
+          /will not be rotated automatically[\s\S]*--mode env[\s\S]*remove[\s\S]*unset/,
         );
         expect(signUp).not.toHaveBeenCalled();
         expect(createInbox).not.toHaveBeenCalled();
@@ -2239,7 +2155,7 @@ describe("agentmail setup command", () => {
                 provisioner: unusedProvisioner({ signUp, createInbox }),
               },
             ),
-          ).rejects.toThrow(/will not be rotated automatically[\s\S]*unset exported/);
+          ).rejects.toThrow(/will not be rotated automatically|Conflicting AgentMail API keys/);
           expect(signUp).not.toHaveBeenCalled();
           expect(createInbox).not.toHaveBeenCalled();
         } finally {
@@ -2275,9 +2191,7 @@ describe("agentmail setup command", () => {
           },
           { interactive: false, provisioner: unusedProvisioner({ getInbox }) },
         ),
-      ).rejects.toThrow(
-        /AGENTMAIL_API_KEY[\s\S]*--mode env[\s\S]*revoke[\s\S]*remove[\s\S]*unset exported/,
-      );
+      ).rejects.toThrow(/Conflicting AgentMail API keys[\s\S]*--api-key[\s\S]*AGENTMAIL_API_KEY/);
       expect(getInbox).not.toHaveBeenCalled();
       expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
       expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
@@ -2335,7 +2249,7 @@ describe("agentmail setup command", () => {
     }
   });
 
-  test("manual mode refuses to replace a stored runtime key before provider access", async () => {
+  test("manual mode refuses to replace a stored API key before provider access", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-manual-disk-conflict-"));
     try {
       const paths = writeAgentMailAgent(root);
@@ -2359,9 +2273,360 @@ describe("agentmail setup command", () => {
           },
           { interactive: false, provisioner: unusedProvisioner({ getInbox }) },
         ),
-      ).rejects.toThrow(/cannot replace[\s\S]*AGENTMAIL_API_KEY[\s\S]*revoke/);
+      ).rejects.toThrow(/cannot replace[\s\S]*AGENTMAIL_API_KEY[\s\S]*remove/);
       expect(getInbox).not.toHaveBeenCalled();
       expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fresh existing setup persists the canonical process key byte-for-byte", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-canonical-key-"));
+    const previous = process.env.AGENTMAIL_API_KEY;
+    const previousLegacy = process.env.AGENTMAIL_ACCOUNT_API_KEY;
+    const apiKey = "am_=+/~$#token";
+    try {
+      process.env.AGENTMAIL_API_KEY = apiKey;
+      delete process.env.AGENTMAIL_ACCOUNT_API_KEY;
+      const paths = writeVisitorAuthAgent(root);
+      const createInbox = mock(async (input) => {
+        expect(input.apiKey).toBe(apiKey);
+        return { inboxId: "inb_special", email: "special@agentmail.to" };
+      });
+      const getInbox = mock(async (selectedKey: string, inboxId: string) => {
+        expect(selectedKey).toBe(apiKey);
+        return { inboxId, email: "special@agentmail.to" };
+      });
+
+      await runAgentMailSetup(
+        "visitorAuth",
+        {
+          config: paths.configPath,
+          mode: "existing",
+          username: "special",
+        },
+        {
+          interactive: false,
+          provisioner: unusedProvisioner({ createInbox, getInbox }),
+        },
+      );
+
+      expect(createInbox).toHaveBeenCalledTimes(1);
+      expect(getInbox).toHaveBeenCalledTimes(1);
+      expect(readEnv(paths.envPath).AGENTMAIL_API_KEY).toBe(apiKey);
+    } finally {
+      restoreProcessEnv("AGENTMAIL_API_KEY", previous);
+      restoreProcessEnv("AGENTMAIL_ACCOUNT_API_KEY", previousLegacy);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fresh existing setup accepts a key-only agent .env without ambient process state", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-disk-key-"));
+    const previous = process.env.AGENTMAIL_API_KEY;
+    const previousLegacy = process.env.AGENTMAIL_ACCOUNT_API_KEY;
+    const apiKey = "am_disk=+/~$#";
+    try {
+      delete process.env.AGENTMAIL_API_KEY;
+      delete process.env.AGENTMAIL_ACCOUNT_API_KEY;
+      const paths = writeVisitorAuthAgent(root);
+      writeFileSync(paths.envPath, `ANTHROPIC_API_KEY=sk-test\nAGENTMAIL_API_KEY=${apiKey}\n`);
+      const createInbox = mock(async (input) => {
+        expect(input.apiKey).toBe(apiKey);
+        return { inboxId: "inb_disk", email: "disk@agentmail.to" };
+      });
+      const getInbox = mock(async (selectedKey: string, inboxId: string) => {
+        expect(selectedKey).toBe(apiKey);
+        return { inboxId, email: "disk@agentmail.to" };
+      });
+
+      await runAgentMailSetup(
+        "visitorAuth",
+        { config: paths.configPath, mode: "existing", username: "disk" },
+        {
+          interactive: false,
+          provisioner: unusedProvisioner({ createInbox, getInbox }),
+        },
+      );
+
+      expect(createInbox).toHaveBeenCalledTimes(1);
+      expect(getInbox).toHaveBeenCalledTimes(1);
+      expect(readEnv(paths.envPath).AGENTMAIL_API_KEY).toBe(apiKey);
+      expect(readEnv(paths.envPath).AGENTMAIL_INBOX_ID).toBe("inb_disk");
+    } finally {
+      restoreProcessEnv("AGENTMAIL_API_KEY", previous);
+      restoreProcessEnv("AGENTMAIL_ACCOUNT_API_KEY", previousLegacy);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects conflicting canonical, deprecated, and explicit key sources before provider access", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-key-conflict-"));
+    const previous = process.env.AGENTMAIL_API_KEY;
+    const previousLegacy = process.env.AGENTMAIL_ACCOUNT_API_KEY;
+    try {
+      process.env.AGENTMAIL_API_KEY = "am_canonical";
+      process.env.AGENTMAIL_ACCOUNT_API_KEY = "am_deprecated";
+      const paths = writeVisitorAuthAgent(root);
+      const createInbox = mock(async () => {
+        throw new Error("must not contact AgentMail");
+      });
+
+      await expect(
+        runAgentMailSetup(
+          "visitorAuth",
+          {
+            config: paths.configPath,
+            mode: "existing",
+            apiKey: "am_explicit",
+            username: "conflict",
+          },
+          {
+            interactive: false,
+            provisioner: unusedProvisioner({ createInbox }),
+          },
+        ),
+      ).rejects.toThrow(
+        /Conflicting AgentMail API keys[\s\S]*--api-key[\s\S]*AGENTMAIL_API_KEY[\s\S]*AGENTMAIL_ACCOUNT_API_KEY/,
+      );
+      expect(createInbox).not.toHaveBeenCalled();
+    } finally {
+      restoreProcessEnv("AGENTMAIL_API_KEY", previous);
+      restoreProcessEnv("AGENTMAIL_ACCOUNT_API_KEY", previousLegacy);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("replaces only the shared stored key after verifying the existing inbox", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-replace-key-"));
+    const previous = snapshotAgentMailRuntimeEnv();
+    try {
+      clearAgentMailRuntimeEnv();
+      process.env.AGENTMAIL_API_KEY = "am_old";
+      const paths = writeAgentMailAgent(root);
+      addVisitorAuth(paths.configPath);
+      const visitorAuthPath = join(root, "augments", "visitorAuth", "augment.yaml");
+      setVisitorAuthTransport(visitorAuthPath, "agentmail");
+      writeFileSync(
+        paths.envPath,
+        [
+          "ANTHROPIC_API_KEY=sk-test",
+          "AGENTMAIL_API_KEY=am_old",
+          "AGENTMAIL_INBOX_ID=inb_shared",
+          "AGENTMAIL_INBOX_EMAIL=shared@agentmail.to",
+          "",
+        ].join("\n"),
+      );
+      const createInbox = mock(async () => {
+        throw new Error("must not create an inbox during key replacement");
+      });
+      const getInbox = mock(async (apiKey: string, inboxId: string) => {
+        expect(apiKey).toBe("am_new=+/~$#");
+        expect(inboxId).toBe("inb_shared");
+        return { inboxId, email: "shared@agentmail.to" };
+      });
+
+      const result = await runAgentMailSetup(
+        "agentMail",
+        {
+          config: paths.configPath,
+          mode: "manual",
+          apiKey: "am_new=+/~$#",
+          replaceKey: true,
+          yes: true,
+        },
+        {
+          interactive: false,
+          provisioner: unusedProvisioner({ createInbox, getInbox }),
+        },
+      );
+
+      expect(result.replacedApiKey).toBe(true);
+      expect(getInbox).toHaveBeenCalledTimes(1);
+      expect(createInbox).not.toHaveBeenCalled();
+      expect(readEnv(paths.envPath)).toMatchObject({
+        AGENTMAIL_API_KEY: "am_new=+/~$#",
+        AGENTMAIL_INBOX_ID: "inb_shared",
+        AGENTMAIL_INBOX_EMAIL: "shared@agentmail.to",
+      });
+      expect(readVisitorAuthAgentMail(visitorAuthPath).transport).toBe("agentmail");
+    } finally {
+      restoreAgentMailRuntimeEnv(previous);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("key replacement rejects missing confirmation, inbox changes, and no-op keys before provider access", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-replace-preflight-"));
+    const previous = snapshotAgentMailRuntimeEnv();
+    try {
+      clearAgentMailRuntimeEnv();
+      const paths = writeAgentMailAgent(root);
+      writeFileSync(
+        paths.envPath,
+        "AGENTMAIL_API_KEY=am_old\nAGENTMAIL_INBOX_ID=inb_existing\nAGENTMAIL_INBOX_EMAIL=support@agentmail.to\n",
+      );
+      const getInbox = mock(async () => {
+        throw new Error("must not contact AgentMail");
+      });
+      const promptPassword = mock(async () => {
+        throw new Error("must not prompt");
+      });
+      const cases: Array<[Partial<Parameters<typeof runAgentMailSetup>[1]>, RegExp]> = [
+        [{ replaceKey: true, yes: true }, /needs --api-key or AGENTMAIL_API_KEY/],
+        [{ apiKey: "am_new", replaceKey: true }, /--yes to confirm/],
+        [
+          { apiKey: "am_new", inboxId: "inb_other", replaceKey: true, yes: true },
+          /preserves the configured inbox/,
+        ],
+        [{ apiKey: "am_old", replaceKey: true, yes: true }, /currently stored API key/],
+      ];
+      for (const [options, expected] of cases) {
+        await expect(
+          runAgentMailSetup(
+            "agentMail",
+            { config: paths.configPath, mode: "manual", ...options },
+            {
+              interactive: false,
+              promptPassword: promptPassword as never,
+              provisioner: unusedProvisioner({ getInbox }),
+            },
+          ),
+        ).rejects.toThrow(expected);
+      }
+      process.env.AGENTMAIL_API_KEY = "am_conflicting_export";
+      await expect(
+        runAgentMailSetup(
+          "agentMail",
+          {
+            config: paths.configPath,
+            mode: "manual",
+            apiKey: "am_new",
+            replaceKey: true,
+            yes: true,
+          },
+          { interactive: false, provisioner: unusedProvisioner({ getInbox }) },
+        ),
+      ).rejects.toThrow(/Conflicting AgentMail API keys[\s\S]*--api-key[\s\S]*AGENTMAIL_API_KEY/);
+      expect(promptPassword).not.toHaveBeenCalled();
+      expect(getInbox).not.toHaveBeenCalled();
+    } finally {
+      restoreAgentMailRuntimeEnv(previous);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("accepts a command-scoped canonical key for non-interactive replacement", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-replace-canonical-env-"));
+    const previous = snapshotAgentMailRuntimeEnv();
+    try {
+      clearAgentMailRuntimeEnv();
+      const paths = writeAgentMailAgent(root);
+      writeFileSync(
+        paths.envPath,
+        "AGENTMAIL_API_KEY=am_old\nAGENTMAIL_INBOX_ID=inb_existing\nAGENTMAIL_INBOX_EMAIL=support@agentmail.to\n",
+      );
+      process.env.AGENTMAIL_API_KEY = "am_new_from_process";
+      const getInbox = mock(async (apiKey: string, inboxId: string) => {
+        expect(apiKey).toBe("am_new_from_process");
+        expect(inboxId).toBe("inb_existing");
+        return { inboxId, email: "support@agentmail.to" };
+      });
+
+      const result = await runAgentMailSetup(
+        "agentMail",
+        {
+          config: paths.configPath,
+          mode: "manual",
+          replaceKey: true,
+          yes: true,
+        },
+        { interactive: false, provisioner: unusedProvisioner({ getInbox }) },
+      );
+
+      expect(result.replacedApiKey).toBe(true);
+      expect(getInbox).toHaveBeenCalledTimes(1);
+      expect(readEnv(paths.envPath).AGENTMAIL_API_KEY).toBe("am_new_from_process");
+    } finally {
+      restoreAgentMailRuntimeEnv(previous);
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("key replacement preserves local state when inbox access is forbidden", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-replace-forbidden-"));
+    try {
+      const paths = writeAgentMailAgent(root);
+      writeFileSync(
+        paths.envPath,
+        "AGENTMAIL_API_KEY=am_old\nAGENTMAIL_INBOX_ID=inb_existing\nAGENTMAIL_INBOX_EMAIL=support@agentmail.to\n",
+      );
+      const originalEnv = readFileSync(paths.envPath, "utf-8");
+      const getInbox = mock(async () => {
+        throw new AgentMailProvisioningApiError({
+          operation: "/inboxes/:id",
+          status: 403,
+          providerName: "Forbidden",
+          providerCode: "missing_permission",
+        });
+      });
+
+      await expect(
+        runAgentMailSetup(
+          "agentMail",
+          {
+            config: paths.configPath,
+            mode: "manual",
+            apiKey: "am_new",
+            replaceKey: true,
+            yes: true,
+          },
+          { interactive: false, provisioner: unusedProvisioner({ getInbox }) },
+        ),
+      ).rejects.toThrow(/403 missing_permission[\s\S]*inbox_read/);
+      expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rejects a control-bearing stored inbox ID without echoing, prompting, or provider access", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-invalid-inbox-id-"));
+    try {
+      const paths = writeAgentMailAgent(root);
+      const invalidInboxId = "inb_bad\u0007value";
+      writeFileSync(
+        paths.envPath,
+        `AGENTMAIL_API_KEY=am_old\nAGENTMAIL_INBOX_ID=${invalidInboxId}\n`,
+      );
+      const getInbox = mock(async () => {
+        throw new Error("must not contact AgentMail");
+      });
+      const promptConfirm = mock(async () => {
+        throw new Error("must not prompt");
+      });
+
+      const error = (await runAgentMailSetup(
+        "agentMail",
+        {
+          config: paths.configPath,
+          mode: "manual",
+          apiKey: "am_new",
+          replaceKey: true,
+          yes: true,
+        },
+        {
+          interactive: false,
+          promptConfirm: promptConfirm as never,
+          provisioner: unusedProvisioner({ getInbox }),
+        },
+      ).catch((caught) => caught as Error)) as Error;
+
+      expect(error.message).toContain("AGENTMAIL_INBOX_ID must be 1 to 256 printable ASCII");
+      expect(error.message).not.toContain(invalidInboxId);
+      expect(promptConfirm).not.toHaveBeenCalled();
+      expect(getInbox).not.toHaveBeenCalled();
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -2411,12 +2676,10 @@ describe("agentmail setup command", () => {
         createInbox: mock(async () => {
           throw new Error("not used");
         }),
-        createInboxApiKey: mock(async () => {
-          throw new Error("not used");
-        }),
-        getInbox: mock(async () => {
-          throw new Error("not used");
-        }),
+        getInbox: mock(async (_apiKey, inboxId) => ({
+          inboxId,
+          email: `${inboxId}@agentmail.to`,
+        })),
       };
 
       const result = await runAgentMailSetup(
@@ -2426,7 +2689,7 @@ describe("agentmail setup command", () => {
       );
 
       expect(result.mode).toBe("env");
-      expect(result.inboxEmail).toBeUndefined();
+      expect(result.inboxEmail).toBe("inb_env@agentmail.to");
       expect(readEnv(paths.envPath)).toMatchObject({
         AGENTMAIL_API_KEY: "am_env",
         AGENTMAIL_INBOX_ID: "inb_env",
@@ -2469,9 +2732,6 @@ describe("agentmail setup command", () => {
           throw new Error("not used");
         }),
         createInbox: mock(async () => {
-          throw new Error("not used");
-        }),
-        createInboxApiKey: mock(async () => {
           throw new Error("not used");
         }),
         getInbox,
@@ -2538,7 +2798,7 @@ describe("agentmail setup command", () => {
     }
   });
 
-  test("manual mode resolves an existing inbox with its runtime key", async () => {
+  test("manual mode resolves an existing inbox with its supplied API key", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-manual-"));
     try {
       const paths = writeVisitorAuthAgent(root);
@@ -2552,12 +2812,10 @@ describe("agentmail setup command", () => {
         createInbox: mock(async () => {
           throw new Error("not used");
         }),
-        createInboxApiKey: mock(async () => {
-          throw new Error("not used");
-        }),
-        getInbox: mock(async () => {
-          throw new Error("not used");
-        }),
+        getInbox: mock(async (_apiKey, inboxId) => ({
+          inboxId,
+          email: `${inboxId}@agentmail.to`,
+        })),
       };
 
       await runAgentMailSetup(
@@ -2600,9 +2858,6 @@ describe("agentmail setup command", () => {
         createInbox: mock(async () => {
           throw new Error("not used");
         }),
-        createInboxApiKey: mock(async () => {
-          throw new Error("not used");
-        }),
         getInbox,
       };
 
@@ -2642,9 +2897,6 @@ describe("agentmail setup command", () => {
         createInbox: mock(async () => {
           throw new Error("not used");
         }),
-        createInboxApiKey: mock(async () => {
-          throw new Error("not used");
-        }),
         getInbox: mock(async () => {
           throw new Error("provider rejected am_super_secret");
         }),
@@ -2666,7 +2918,7 @@ describe("agentmail setup command", () => {
         error = caught as Error;
       }
 
-      expect(error?.message).toContain("Could not resolve the canonical email");
+      expect(error?.message).toContain("Could not verify access to AgentMail inbox");
       expect(error?.message).toContain("retry setup");
       expect(error?.message).not.toContain("am_super_secret");
       expect(readFileSync(paths.configPath, "utf-8")).toBe(originalConfig);
@@ -3225,7 +3477,7 @@ describe("agentmail setup command", () => {
     }
   });
 
-  test("reports scoped-key evidence and rolls back local files when commit fails", async () => {
+  test("reports provider recovery and rolls back local files when commit fails", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-setup-scoped-key-rollback-"));
     let augmentDir: string | undefined;
     try {
@@ -3249,18 +3501,13 @@ describe("agentmail setup command", () => {
               inboxId: "inb_outbound",
               email: "outbound@agentmail.to",
             }),
-            createInboxApiKey: async () => ({
-              apiKeyId: "key_runtime_123",
-              apiKey: "am_runtime",
-            }),
           }),
         },
       ).catch((caught) => caught as Error)) as Error;
 
-      expect(error.message).toContain('scoped runtime key "dx-agent agentMail"');
-      expect(error.message).toContain("key_runtime_123");
-      expect(error.message).toContain("Review and revoke that orphaned key");
-      expect(error.message).not.toContain("am_runtime");
+      expect(error.message).toContain("provider setup, but local configuration did not commit");
+      expect(error.message).toContain("Retry the same setup command with the same API key");
+      expect(error.message).not.toContain("am_parent");
       expect(readFileSync(paths.envPath, "utf-8")).toBe(originalEnv);
       expect(readFileSync(paths.augmentPath, "utf-8")).toBe(originalAugment);
     } finally {
@@ -3293,13 +3540,12 @@ describe("agentmail setup command", () => {
           },
           {
             provisioner: unusedProvisioner({
-              createInbox: async () => ({
-                inboxId: "inb_outbound",
-                email: "outbound@agentmail.to",
-              }),
-              createInboxApiKey: async () => {
+              createInbox: async () => {
                 writeFileSync(changedPath, concurrentEdit);
-                return { apiKeyId: "key_concurrent", apiKey: "am_runtime" };
+                return {
+                  inboxId: "inb_outbound",
+                  email: "outbound@agentmail.to",
+                };
               },
             }),
           },
@@ -3307,8 +3553,8 @@ describe("agentmail setup command", () => {
 
         expect(error.message).toContain("did not commit");
         expect(error.message).toContain("changed while AgentMail setup was running");
-        expect(error.message).toContain("key_concurrent");
-        expect(error.message).not.toContain("am_runtime");
+        expect(error.message).toContain("Retry the same setup command with the same API key");
+        expect(error.message).not.toContain("am_parent");
         expect(readFileSync(changedPath, "utf-8")).toBe(concurrentEdit);
         expect(readFileSync(paths.envPath, "utf-8")).toBe(
           changedFile === ".env" ? concurrentEdit : originalEnv,
@@ -3319,13 +3565,13 @@ describe("agentmail setup command", () => {
     });
   }
 
-  test("defers termination until a created scoped key is committed or reconciled", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-deferred-signal-"));
+  test("setup does not install process signal listeners", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-setup-signal-listeners-"));
     const initialSigintListeners = process.listenerCount("SIGINT");
     const initialSigtermListeners = process.listenerCount("SIGTERM");
     try {
       const paths = writeAgentMailAgent(root);
-      const error = (await runAgentMailSetup(
+      const result = await runAgentMailSetup(
         "agentMail",
         {
           config: paths.configPath,
@@ -3339,18 +3585,15 @@ describe("agentmail setup command", () => {
               inboxId: "inb_outbound",
               email: "outbound@agentmail.to",
             }),
-            createInboxApiKey: async () => {
-              process.emit("SIGINT", "SIGINT");
-              return { apiKeyId: "key_signal", apiKey: "am_runtime" };
-            },
           }),
         },
-      ).catch((caught) => caught as Error)) as Error;
+      );
 
-      expect(error.message).toContain("received SIGINT");
-      expect(error.message).toContain("local credential commit completed safely");
+      expect(result.inboxId).toBe("inb_outbound");
+      expect(process.listenerCount("SIGINT")).toBe(initialSigintListeners);
+      expect(process.listenerCount("SIGTERM")).toBe(initialSigtermListeners);
       expect(readEnv(paths.envPath)).toMatchObject({
-        AGENTMAIL_API_KEY: "am_runtime",
+        AGENTMAIL_API_KEY: "am_parent",
         AGENTMAIL_INBOX_ID: "inb_outbound",
         AGENTMAIL_INBOX_EMAIL: "outbound@agentmail.to",
       });
@@ -3391,12 +3634,10 @@ describe("agentmail setup command", () => {
         createInbox: mock(async () => {
           throw new Error("not used");
         }),
-        createInboxApiKey: mock(async () => {
-          throw new Error("not used");
-        }),
-        getInbox: mock(async () => {
-          throw new Error("not used");
-        }),
+        getInbox: mock(async (_apiKey, inboxId) => ({
+          inboxId,
+          email: `${inboxId}@agentmail.to`,
+        })),
       };
 
       await runAgentMailSetup(
@@ -3455,12 +3696,12 @@ describe("agentmail setup command", () => {
       requiredPermissions: ["inbox_read", "message_send"],
     });
 
-    expect(text).toContain("AgentMail inbox ready: dx-agent@agentmail.to (inb_1)");
+    expect(text).toContain("AgentMail inbox configured: dx-agent@agentmail.to (inb_1)");
     expect(text).toContain(
       "Wrote .env: AGENTMAIL_API_KEY, AGENTMAIL_INBOX_ID, AGENTMAIL_INBOX_EMAIL",
     );
     expect(text).toContain(
-      "AgentMail is ready for outbound email, including visitorAuth magic links.",
+      "AgentMail is configured for outbound email, including visitorAuth magic links.",
     );
     expect(text).toContain(
       "Incoming email is stored in AgentMail, but Auggy won't read or act on it by default.",
@@ -3469,11 +3710,11 @@ describe("agentmail setup command", () => {
       "To receive, reply to, or forward email with Auggy, enable inbound processing:",
     );
     expect(text).toContain("https://auggy.dev/docs/augment-agentmail");
-    expect(text).toContain("Runtime key permissions: inbox_read, message_send");
+    expect(text).toContain("Required AgentMail key capabilities: inbox_read, message_send");
     expect(text).not.toContain("am_");
   });
 
-  test("warns when setup cannot change permissions on an existing runtime key", () => {
+  test("reports required capabilities without claiming they were verified", () => {
     const text = formatAgentMailSetupResult({
       agentName: "dx-agent",
       target: "agentMail",
@@ -3487,19 +3728,18 @@ describe("agentmail setup command", () => {
     });
 
     expect(text).toContain("AgentMail inbox configured: dx-agent@agentmail.to (inb_1)");
-    expect(text).toContain("Warning: Setup did not change the existing runtime key");
+    expect(text).toContain("Required AgentMail key capabilities:");
     expect(text).toContain("inbox_read, message_send, message_read, label_spam_read");
     expect(text).toContain("AgentMail is configured for outbound email and inbound processing.");
     expect(text).toContain(
-      "verify that the existing runtime key grants: inbox_read, message_send, message_read, label_spam_read",
+      "Confirm that the configured key grants: inbox_read, message_send, message_read, label_spam_read",
     );
-    expect(text).toContain("Rely on incoming processing only after you confirm those permissions");
     expect(text).not.toContain("AgentMail is ready");
     expect(text).not.toContain("Auggy won't read or act on it by default");
     expect(text).not.toContain("am_super_secret");
   });
 
-  test("distinguishes minted from unverified visitorAuth runtime keys", () => {
+  test("does not claim supplied visitorAuth keys were verified", () => {
     const base = {
       agentName: "dx-agent",
       target: "visitorAuth" as const,
@@ -3510,18 +3750,15 @@ describe("agentmail setup command", () => {
       requiredPermissions: ["inbox_read", "message_send"],
     };
 
-    const minted = formatAgentMailSetupResult({ ...base, mode: "existing" });
-    expect(minted).toContain("Runtime key permissions: inbox_read, message_send");
-    expect(minted).toContain("visitorAuth is ready to send magic links with AgentMail.");
-    expect(minted).not.toContain("did not verify");
+    const supplied = formatAgentMailSetupResult({ ...base, mode: "existing" });
+    expect(supplied).toContain("Required AgentMail key capabilities: inbox_read, message_send");
+    expect(supplied).toContain("visitorAuth is configured to use AgentMail for magic links.");
+    expect(supplied).toContain("Confirm that the configured key grants: inbox_read, message_send");
 
     const reused = formatAgentMailSetupResult({ ...base, mode: "env" });
     expect(reused).toContain("AgentMail inbox configured: inb_1");
-    expect(reused).toContain("Setup did not change the existing runtime key");
     expect(reused).toContain("visitorAuth is configured to use AgentMail for magic links.");
-    expect(reused).toContain(
-      "verify that the existing runtime key grants: inbox_read, message_send",
-    );
+    expect(reused).toContain("Confirm that the configured key grants: inbox_read, message_send");
     expect(reused).not.toContain("visitorAuth is ready");
     expect(reused).not.toContain("AgentMail inbox ready");
   });
@@ -3530,6 +3767,17 @@ describe("agentmail setup command", () => {
 function unusedProvisioner(
   overrides: Partial<AgentMailProvisioningClient> = {},
 ): AgentMailProvisioningClient {
+  const fixtureEmails: Record<string, string> = {
+    inb_env: "env@agentmail.to",
+    inb_process: "process@agentmail.to",
+    inb_shared: "shared@agentmail.to",
+    inb_outbound: "outbound@agentmail.to",
+    inb_existing_account: "support@agentmail.to",
+    inb_existing: "support@agentmail.to",
+    inb_support: "support@agentmail.to",
+    inb_support_2: "support-2@agentmail.to",
+    inb_inbound: "inbound@example.com",
+  };
   return {
     signUp: async () => {
       throw new Error("not used");
@@ -3540,12 +3788,10 @@ function unusedProvisioner(
     createInbox: async () => {
       throw new Error("not used");
     },
-    getInbox: async () => {
-      throw new Error("not used");
-    },
-    createInboxApiKey: async () => {
-      throw new Error("not used");
-    },
+    getInbox: async (_apiKey, inboxId) => ({
+      inboxId,
+      email: fixtureEmails[inboxId] ?? `${inboxId}@agentmail.to`,
+    }),
     ...overrides,
   };
 }

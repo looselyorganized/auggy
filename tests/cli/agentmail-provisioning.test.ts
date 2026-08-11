@@ -4,7 +4,7 @@ import {
   AgentMailProvisioningResponseError,
   AgentMailProvisioningTransportError,
   buildAgentMailClientId,
-  buildAgentMailRuntimeKeyPermissions,
+  buildAgentMailRequiredPermissions,
   createAgentMailProvisioningClient,
 } from "../../src/cli/agentmail-provisioning";
 import { HttpTimeoutError, type HttpRequestInit, type HttpResponse } from "../../src/http";
@@ -56,16 +56,16 @@ describe("buildAgentMailClientId", () => {
   });
 });
 
-describe("buildAgentMailRuntimeKeyPermissions", () => {
+describe("buildAgentMailRequiredPermissions", () => {
   test("uses the outbound-only permission set when inbound is disabled", () => {
-    expect(buildAgentMailRuntimeKeyPermissions({ inboundEnabled: false })).toEqual({
+    expect(buildAgentMailRequiredPermissions({ inboundEnabled: false })).toEqual({
       inbox_read: true,
       message_send: true,
     });
   });
 
   test("adds only message_read for ordinary inbound mail", () => {
-    expect(buildAgentMailRuntimeKeyPermissions({ inboundEnabled: true })).toEqual({
+    expect(buildAgentMailRequiredPermissions({ inboundEnabled: true })).toEqual({
       inbox_read: true,
       message_send: true,
       message_read: true,
@@ -74,7 +74,7 @@ describe("buildAgentMailRuntimeKeyPermissions", () => {
 
   test("adds label visibility only for classifications that are processed", () => {
     expect(
-      buildAgentMailRuntimeKeyPermissions({
+      buildAgentMailRequiredPermissions({
         inboundEnabled: true,
         processSpam: true,
         processBlocked: true,
@@ -87,7 +87,7 @@ describe("buildAgentMailRuntimeKeyPermissions", () => {
       label_blocked_read: true,
     });
     expect(
-      buildAgentMailRuntimeKeyPermissions({
+      buildAgentMailRequiredPermissions({
         inboundEnabled: true,
         processSpam: false,
         processBlocked: true,
@@ -102,7 +102,7 @@ describe("buildAgentMailRuntimeKeyPermissions", () => {
 
   test("rejects label visibility when inbound is disabled", () => {
     expect(() =>
-      buildAgentMailRuntimeKeyPermissions({ inboundEnabled: false, processSpam: true }),
+      buildAgentMailRequiredPermissions({ inboundEnabled: false, processSpam: true }),
     ).toThrow(/require inbound delivery/);
   });
 });
@@ -458,26 +458,13 @@ describe("createAgentMailProvisioningClient.createInbox client_id contract", () 
     expect(dispatches).toBe(1);
   });
 
-  test("validates every provider-bound inbox and key field before transport", async () => {
+  test("validates every provider-bound inbox field before transport", async () => {
     let dispatches = 0;
     const client = createAgentMailProvisioningClient({
       http: {
         post: async (url, opts) => {
           dispatches += 1;
           const body = JSON.parse(String(opts?.body)) as Record<string, unknown>;
-          if (url.endsWith("/api-keys")) {
-            return response(
-              url,
-              200,
-              JSON.stringify({
-                api_key_id: "key_valid",
-                api_key: "am_runtime_valid",
-                name: body.name,
-                inbox_id: "inb_valid",
-                permissions: body.permissions,
-              }),
-            );
-          }
           return response(
             url,
             200,
@@ -503,15 +490,7 @@ describe("createAgentMailProvisioningClient.createInbox client_id contract", () 
         clientId: "valid",
       }),
     ).resolves.toMatchObject({ email: `${"u".repeat(64)}@mail.example` });
-    await expect(
-      client.createInboxApiKey({
-        apiKey: "am_parent",
-        inboxId: "inb_valid",
-        name: "n".repeat(256),
-        permissions: { inbox_read: true, message_send: true },
-      }),
-    ).resolves.toMatchObject({ apiKeyId: "key_valid" });
-    expect(dispatches).toBe(2);
+    expect(dispatches).toBe(1);
 
     const invalidInboxInputs = [
       { apiKey: "am_parent", username: "u".repeat(65) },
@@ -527,25 +506,7 @@ describe("createAgentMailProvisioningClient.createInbox client_id contract", () 
       await expect(client.createInbox(input)).rejects.toThrow(/AgentMail/);
     }
 
-    const validKeyInput = {
-      apiKey: "am_parent",
-      inboxId: "inb_valid",
-      name: "runtime key",
-      permissions: { inbox_read: true, message_send: true },
-    };
-    for (const input of [
-      { ...validKeyInput, apiKey: "am parent" },
-      { ...validKeyInput, inboxId: "inb invalid" },
-      { ...validKeyInput, name: "bad\u001bname" },
-      { ...validKeyInput, name: "n".repeat(257) },
-      { ...validKeyInput, permissions: {} },
-      { ...validKeyInput, permissions: { "bad-permission": true } },
-    ]) {
-      await expect(
-        client.createInboxApiKey(input as Parameters<typeof client.createInboxApiKey>[0]),
-      ).rejects.toThrow(/AgentMail/);
-    }
-    expect(dispatches).toBe(2);
+    expect(dispatches).toBe(1);
   });
 
   test("validates signup and verification fields before transport", async () => {

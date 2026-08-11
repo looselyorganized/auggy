@@ -378,9 +378,11 @@ auggy augment setup visitorAuth
 This provisions or configures the AgentMail inbox used by `visitorAuth`, writes
 `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` to `.env`, and updates
 `augments/visitorAuth/augment.yaml` to use `agentMail.transport: agentmail`.
+The exact supplied key is retained for runtime use; Auggy does not create,
+narrow, rotate, or revoke another key.
 
 When the agent also mounts `agentMail`, both augments share one inbox and
-runtime key. A single interactive add coordinates that topology with one setup
+API key. A single interactive add coordinates that topology with one setup
 confirmation and credential flow:
 
 ```bash
@@ -396,12 +398,18 @@ auggy augment setup agentMail
 auggy augment setup visitorAuth --mode env
 ```
 
-Use the account provisioning key only through the masked prompt or a
-process-scoped secret. Setup rejects `AGENTMAIL_ACCOUNT_API_KEY` in project
-dotenv files; it belongs neither in the deployed runtime nor Railway service
-variables. Removing either augment also leaves provider resources and shared
-runtime values intact. Revoke an unused scoped key in AgentMail before deleting
-its local or Railway value.
+Use `AGENTMAIL_API_KEY` as the canonical setup and runtime input. For one RC,
+`AGENTMAIL_ACCOUNT_API_KEY` remains a deprecated process-only alias; setup
+rejects it in project dotenv files, and deploy never sends it to Railway.
+Removing either augment leaves provider resources and shared runtime values
+intact. Confirm every consumer before deleting the local or Railway value;
+Auggy never revokes the provider key.
+
+After setup, enabling inbound or changing reply policy is a YAML edit plus
+restart/redeploy. Do not rerun setup unless attaching another canonical
+consumer or explicitly replacing the key. If the selected key is too narrow,
+update its AgentMail permissions or run
+`auggy augment setup agentMail --mode manual --replace-key` before redeploying.
 
 Console magic links are local-only. Deploy preflight fails if `visitorAuth` is
 still configured with `agentMail.transport: console`, unless

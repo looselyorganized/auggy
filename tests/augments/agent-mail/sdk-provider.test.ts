@@ -68,20 +68,37 @@ type SocketEvent = "open" | "message" | "close" | "error";
 class FakeSocket {
   readyState = 0;
   readonly subscriptions: unknown[] = [];
+  readonly operations: string[] = [];
   closeCalls = 0;
+  socket: { binaryType: string } | undefined;
   private readonly handlers = new Map<SocketEvent, Array<(value?: unknown) => void>>();
 
+  constructor() {
+    let binaryType = "blob";
+    this.socket = {
+      get binaryType() {
+        return binaryType;
+      },
+      set binaryType(value: string) {
+        binaryType = value;
+      },
+    };
+  }
+
   on(event: SocketEvent, callback: (value?: unknown) => void): void {
+    this.operations.push(`on:${event}`);
     const callbacks = this.handlers.get(event) ?? [];
     callbacks.push(callback);
     this.handlers.set(event, callbacks);
   }
 
   sendSubscribe(message: unknown): void {
+    this.operations.push("subscribe");
     this.subscriptions.push(message);
   }
 
   close(): void {
+    this.operations.push("close");
     this.closeCalls++;
     this.readyState = 3;
   }
@@ -474,6 +491,232 @@ describe("runAgentMailCatchUp", () => {
 });
 
 describe("AgentMail SDK WebSocket source", () => {
+  test("does not leak an unhandled rejection when SDK connection fails", async () => {
+    const fake = fakeSdk({});
+    fake.sdk.websockets.connect = async () => {
+      throw new Error("connection failed");
+    };
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+
+    try {
+      const adapters = createAgentMailSdkAdapters({ apiKey: "am_test", _sdk: fake.sdk as never });
+      await expect(
+        adapters.live.subscribe({
+          inboxId: "support@agentmail.to",
+          eventTypes: ["message.received"],
+          async onEvent() {},
+          onError() {},
+        }),
+      ).rejects.toMatchObject({
+        operation: "connect WebSocket",
+        retryable: true,
+      });
+      await nextTask();
+      expect(unhandled).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+    }
+  });
+
+  test("configures the public reconnecting socket before listeners and subscription", async () => {
+    const fake = fakeSdk({});
+    let binaryType = "blob";
+    fake.socket.socket = {
+      get binaryType() {
+        fake.socket.operations.push("get:binaryType");
+        return binaryType;
+      },
+      set binaryType(value: string) {
+        fake.socket.operations.push(`set:binaryType:${value}`);
+        binaryType = value;
+      },
+    };
+    fake.socket.readyState = 1;
+    const adapters = createAgentMailSdkAdapters({
+      apiKey: "am_test",
+      handshakeTimeoutMs: 1_000,
+      _sdk: fake.sdk as never,
+    });
+
+    const subscribing = adapters.live.subscribe({
+      inboxId: "support@agentmail.to",
+      eventTypes: ["message.received"],
+      async onEvent() {},
+      onError() {},
+    });
+    await nextTask();
+
+    expect(fake.socket.operations).toEqual([
+      "set:binaryType:arraybuffer",
+      "get:binaryType",
+      "on:open",
+      "on:error",
+      "on:close",
+      "on:message",
+      "subscribe",
+    ]);
+    fake.socket.emit("message", subscribedAck(["message.received"]));
+    const subscription = await subscribing;
+    await subscription.close();
+  });
+
+  test("fails closed when the public reconnecting socket boundary is missing", async () => {
+    let connectSignal: AbortSignal | undefined;
+    const fake = fakeSdk({
+      onConnect: (args) => (connectSignal = args.abortSignal as AbortSignal),
+    });
+    fake.socket.socket = undefined;
+    const errors: Error[] = [];
+    const adapters = createAgentMailSdkAdapters({ apiKey: "am_test", _sdk: fake.sdk as never });
+
+    const subscribing = adapters.live.subscribe({
+      inboxId: "support@agentmail.to",
+      eventTypes: ["message.received"],
+      async onEvent() {},
+      onError(error) {
+        errors.push(error);
+      },
+    });
+
+    await expect(subscribing).rejects.toMatchObject({
+      operation: "configure WebSocket binary transport",
+      retryable: false,
+    });
+    expect(fake.socket.closeCalls).toBe(1);
+    expect(fake.socket.subscriptions).toEqual([]);
+    expect(fake.socket.operations).toEqual(["close"]);
+    expect(errors).toHaveLength(1);
+    expect(connectSignal?.aborted).toBe(true);
+  });
+
+  test("fails closed when the SDK returns no WebSocket facade", async () => {
+    let connectSignal: AbortSignal | undefined;
+    const fake = fakeSdk({
+      onConnect: (args) => (connectSignal = args.abortSignal as AbortSignal),
+    });
+    fake.sdk.websockets.connect = async (args: Record<string, unknown>) => {
+      connectSignal = args.abortSignal as AbortSignal;
+      return undefined as never;
+    };
+    const adapters = createAgentMailSdkAdapters({ apiKey: "am_test", _sdk: fake.sdk as never });
+
+    const subscribing = adapters.live.subscribe({
+      inboxId: "support@agentmail.to",
+      eventTypes: ["message.received"],
+      async onEvent() {},
+      onError() {},
+    });
+
+    await expect(subscribing).rejects.toMatchObject({
+      operation: "configure WebSocket binary transport",
+      retryable: false,
+    });
+    expect(connectSignal?.aborted).toBe(true);
+    expect(fake.socket.closeCalls).toBe(0);
+    expect(fake.socket.subscriptions).toEqual([]);
+    expect(fake.socket.operations).toEqual([]);
+  });
+
+  test.each([
+    {
+      name: "setter throws",
+      rawSocket: {
+        get binaryType() {
+          return "blob";
+        },
+        set binaryType(_value: string) {
+          throw new Error("secret provider detail");
+        },
+      },
+    },
+    {
+      name: "readback differs",
+      rawSocket: {
+        get binaryType() {
+          return "blob";
+        },
+        set binaryType(_value: string) {},
+      },
+    },
+    {
+      name: "getter throws",
+      rawSocket: {
+        get binaryType(): string {
+          throw new Error("secret provider detail");
+        },
+        set binaryType(_value: string) {},
+      },
+    },
+  ])("fails closed when binary-type $name", async ({ rawSocket }) => {
+    let connectSignal: AbortSignal | undefined;
+    const fake = fakeSdk({
+      onConnect: (args) => (connectSignal = args.abortSignal as AbortSignal),
+    });
+    fake.socket.socket = rawSocket;
+    const errors: Error[] = [];
+    const adapters = createAgentMailSdkAdapters({ apiKey: "am_test", _sdk: fake.sdk as never });
+
+    const subscribing = adapters.live.subscribe({
+      inboxId: "support@agentmail.to",
+      eventTypes: ["message.received"],
+      async onEvent() {},
+      onError(error) {
+        errors.push(error);
+      },
+    });
+
+    await expect(subscribing).rejects.toMatchObject({
+      operation: "configure WebSocket binary transport",
+      retryable: false,
+    });
+    expect(String(errors[0])).not.toContain("secret provider detail");
+    expect(fake.socket.closeCalls).toBe(1);
+    expect(fake.socket.subscriptions).toEqual([]);
+    expect(fake.socket.operations).toEqual(["close"]);
+    expect(connectSignal?.aborted).toBe(true);
+  });
+
+  test("preserves the compatibility error when best-effort close throws", async () => {
+    let connectSignal: AbortSignal | undefined;
+    const fake = fakeSdk({
+      onConnect: (args) => (connectSignal = args.abortSignal as AbortSignal),
+    });
+    fake.socket.socket = undefined;
+    fake.socket.close = () => {
+      fake.socket.operations.push("close");
+      fake.socket.closeCalls++;
+      throw new Error("secret close detail");
+    };
+    const adapters = createAgentMailSdkAdapters({ apiKey: "am_test", _sdk: fake.sdk as never });
+
+    const subscribing = adapters.live.subscribe({
+      inboxId: "support@agentmail.to",
+      eventTypes: ["message.received"],
+      async onEvent() {},
+      onError() {},
+    });
+
+    let error: unknown;
+    try {
+      await subscribing;
+    } catch (caught) {
+      error = caught;
+    }
+    expect(error).toMatchObject({
+      operation: "configure WebSocket binary transport",
+      retryable: false,
+    });
+    expect(String(error)).not.toContain("secret close detail");
+    expect(connectSignal?.aborted).toBe(true);
+    expect(fake.socket.closeCalls).toBe(1);
+    expect(fake.socket.subscriptions).toEqual([]);
+    expect(fake.socket.operations).toEqual(["close"]);
+  });
+
   test("requires a non-empty duplicate-free supported subscription subset", async () => {
     const fake = fakeSdk({});
     const adapters = createAgentMailSdkAdapters({ apiKey: "am_test", _sdk: fake.sdk as never });

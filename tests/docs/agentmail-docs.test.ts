@@ -402,7 +402,6 @@ function docsProvisioner(): AgentMailProvisioningClient {
     verify: unused,
     createInbox: unused,
     listInboxes: unused,
-    createInboxApiKey: unused,
     getInbox: async (_apiKey, inboxId) => ({ inboxId, email: INBOX_EMAIL }),
   };
 }
@@ -532,6 +531,13 @@ describe("AgentMail operator guide contracts", () => {
     notify: yamlForPath(digestSection, "augments/notify/augment.yaml"),
   };
 
+  test("separates published RC.9 behavior from the next candidate", () => {
+    expect(source).toContain("not present in RC.9");
+    expect(source).toContain("Invalid binaryType: blob");
+    expect(source).toContain("Use `inbound.mode: polling` on RC.9");
+    expect(source).toContain("signup instead stores the provider-returned key");
+  });
+
   test("every published YAML fence is syntactically valid", () => {
     const blocks = fencedYaml(source);
     expect(blocks.length).toBeGreaterThanOrEqual(8);
@@ -579,13 +585,11 @@ describe("AgentMail operator guide contracts", () => {
 
           const formatted = formatAgentMailSetupResult(setup);
           expect(formatted).toContain("AgentMail inbox configured:");
-          expect(formatted).toContain("Setup did not change the existing runtime key");
+          expect(formatted).toContain("Required AgentMail key capabilities:");
+          expect(formatted).toContain("Confirm that the configured key grants:");
           if (setup.requiredPermissions?.includes("message_read")) {
             expect(formatted).toContain(
               "AgentMail is configured for outbound email and inbound processing.",
-            );
-            expect(formatted).toContain(
-              "Rely on incoming processing only after you confirm those permissions",
             );
             expect(formatted).not.toContain("won't read or act on it by default");
           } else {
@@ -650,7 +654,7 @@ describe("AgentMail operator guide contracts", () => {
       const visitorAuthPath = join(root, "augments", "visitorAuth", "augment.yaml");
 
       await withIsolatedAgentMailEnv(async () => {
-        const minted = await runAgentMailSetup(
+        const configured = await runAgentMailSetup(
           "agentMail",
           {
             config: configPath,
@@ -670,16 +674,14 @@ describe("AgentMail operator guide contracts", () => {
               },
               createInbox: async () => ({ inboxId: INBOX_ID, email: INBOX_EMAIL }),
               listInboxes: async () => [],
-              createInboxApiKey: async (input) => {
-                expect(input.permissions).toEqual({ inbox_read: true, message_send: true });
-                return { apiKeyId: "key_docs_contract", apiKey: "am_docs_contract_runtime" };
-              },
               getInbox: async () => ({ inboxId: INBOX_ID, email: INBOX_EMAIL }),
             },
           },
         );
-        expect(minted.mode).toBe("existing");
-        expect(minted.runtimeKeyId).toBe("key_docs_contract");
+        expect(configured.mode).toBe("existing");
+        expect(readFileSync(join(root, ".env"), "utf-8")).toContain(
+          "AGENTMAIL_API_KEY=am_docs_account",
+        );
         expect(
           (parseYaml(readFileSync(visitorAuthPath, "utf-8")) as typeof documentedVisitorAuth).config
             .agentMail,
