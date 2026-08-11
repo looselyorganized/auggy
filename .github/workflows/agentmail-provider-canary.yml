@@ -5,7 +5,7 @@ name: AgentMail provider canary
 # agentmail-provider-canary Environment is configured and approved.
 # The first approved run creates one persistent canary inbox in that
 # Environment's AgentMail account; every later run reuses the same inbox. Each
-# run creates, validates, and deletes one reserved least-privilege scoped key.
+# run uses the protected supplied key directly and does not mutate API keys.
 on:
   workflow_dispatch:
 
@@ -41,7 +41,7 @@ jobs:
       - name: Install trusted dependencies
         run: bun install --frozen-lockfile
 
-      - name: Verify persistent inbox and disposable scoped-key contracts
+      - name: Verify persistent inbox with the supplied key
         env:
           # Configure this name only on the protected Environment. Do not add
           # a repository-level fallback secret with the same name.
