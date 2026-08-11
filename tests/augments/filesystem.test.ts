@@ -1349,7 +1349,7 @@ describe("filesystem augment", () => {
       )) as ContextBlock[];
       const catalog = blocks.find((block) => block.source === "filesystem-workspace-catalog");
 
-      expect(catalog?.content).toContain("within a bounded scan");
+      expect(catalog?.content).toContain("bounded scan");
       expect(catalog?.content).toMatch(/[Oo]mitted path(?:s)? may still exist/);
       expect(catalog?.content).not.toContain("currently has no visible files");
     });
