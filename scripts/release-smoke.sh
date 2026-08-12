@@ -346,6 +346,15 @@ reject_pack_pattern() {
 
 require_pack_entry "src/cli/index.ts"
 require_pack_entry "src/cli/agentmail-capabilities.ts"
+require_pack_entry "src/cli/commands/agentmail.ts"
+require_pack_entry "src/augments/agentMail/index.ts"
+require_pack_entry "src/augments/agentMail/config.ts"
+require_pack_entry "src/augments/agentMail/provider.ts"
+require_pack_entry "src/augments/agentMail/inbound.ts"
+require_pack_entry "src/augments/agentMail/policy.ts"
+require_pack_entry "src/augments/agentMail/runtime.ts"
+require_pack_entry "src/augments/agentMail/store.ts"
+require_pack_entry "src/augments/agentMail/skill/SKILL.md"
 require_pack_entry "src/jobs/index.ts"
 require_pack_entry "src/jobs/runtime.ts"
 require_pack_entry "src/jobs/sqlite-store.ts"
@@ -374,6 +383,10 @@ grep -Eq '^package/admin/dist/assets/.+\.css$' "$PACK_LIST" \
   || fail "tarball missing built console CSS"
 reject_pack_pattern '^package/admin/dist/login/.*\.(js|mjs|cjs|map)$' \
   "tarball includes executable Console login output or source maps"
+reject_pack_pattern '^package/src/cli/agentmail-provisioning\.ts$' \
+  "tarball includes removed AgentMail provisioning implementation"
+reject_pack_pattern '^package/src/augments/agentMail/(creator-attention|creator-digest-bridge|creator-digest-policy|creator-digest|inbound-ledger|inbound-policy|inbound-worker|outbound|persist-state|rate-limit|review-queue|sdk-provider|types|webhook-provider)\.ts$' \
+  "tarball includes a removed pre-rebuild AgentMail runtime module"
 reject_pack_pattern '\.map$' "tarball includes source maps"
 reject_pack_pattern '^package/(\.env|node_modules/|\.git/|\.auggy/|docs/|tests/)' \
   "tarball includes local-only files"
@@ -432,6 +445,8 @@ bun "$ROOT/scripts/release-smoke-agentmail-cli.ts" \
   "$GLOBAL_PREFIX/lib/node_modules/auggy" \
   "$SMOKE_DIR/packed-agentmail-cli" \
   "$SMOKE_HOME" \
+  "$TARBALL" \
+  "$ANTHROPIC_TARBALL" \
   >"$LOG_DIR/packed-agentmail-cli.log" 2>&1 \
   || fail "packed AgentMail CLI contract failed"
 

@@ -11,10 +11,18 @@ const AGENT_ID = "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c";
 const INBOX_ID = "packed-agentmail@agentmail.to";
 const INBOX_EMAIL = INBOX_ID;
 
-const [cliPath, packedRoot, consumerDir, smokeHome] = process.argv.slice(2);
-if (!cliPath || !packedRoot || !consumerDir || !smokeHome) {
+const [cliPath, packedRoot, consumerDir, smokeHome, packedTarball, packedEngineTarball] =
+  process.argv.slice(2);
+if (
+  !cliPath ||
+  !packedRoot ||
+  !consumerDir ||
+  !smokeHome ||
+  !packedTarball ||
+  !packedEngineTarball
+) {
   throw new Error(
-    "usage: release-smoke-agentmail-cli.ts <cli> <packed-root> <consumer-dir> <home>",
+    "usage: release-smoke-agentmail-cli.ts <cli> <packed-root> <consumer-dir> <home> <auggy-tarball> <engine-tarball>",
   );
 }
 
@@ -31,6 +39,49 @@ const optionalAdd = await runCli(
 );
 if (optionalAdd.exitCode !== 0) {
   throw new Error(`packed CLI could not add lowercase agentmail:\n${optionalAdd.output}`);
+}
+const setupHelp = await runCli(["agentmail", "setup", "--help"], {}, optionalTargetDir);
+if (
+  setupHelp.exitCode !== 0 ||
+  !setupHelp.output.includes("connect an existing inbox, or env to verify saved credentials")
+) {
+  throw new Error(`packed AgentMail help omitted the supported setup modes:\n${setupHelp.output}`);
+}
+for (const removedFlag of ["--username", "--display-name", "--human-email", "--replace-key"]) {
+  if (setupHelp.output.includes(removedFlag)) {
+    throw new Error(`packed AgentMail help still advertises removed option ${removedFlag}`);
+  }
+}
+const optionalConfigPath = join(optionalTargetDir, "agent.yaml");
+const optionalAugmentPath = join(optionalTargetDir, "augments", "agentMail", "augment.yaml");
+const beforeRemovedModes = snapshotAgentMailFiles(
+  optionalTargetDir,
+  optionalConfigPath,
+  optionalAugmentPath,
+);
+for (const removedMode of ["signup", "existing", "manual"]) {
+  const removed = await runCli(
+    ["augment", "setup", "agentmail", "--mode", removedMode],
+    {},
+    optionalTargetDir,
+  );
+  if (
+    removed.exitCode === 0 ||
+    !removed.output.includes(`setup mode "${removedMode}" was removed`) ||
+    !removed.output.includes("does not create accounts, inboxes, or API keys")
+  ) {
+    throw new Error(
+      `packed AgentMail CLI did not reject removed mode ${removedMode}:\n${removed.output}`,
+    );
+  }
+  if (
+    !isDeepStrictEqual(
+      beforeRemovedModes,
+      snapshotAgentMailFiles(optionalTargetDir, optionalConfigPath, optionalAugmentPath),
+    )
+  ) {
+    throw new Error(`packed AgentMail removed mode ${removedMode} changed local state`);
+  }
 }
 const invalidMode = await runCli(
   ["agentmail", "setup", "--mode", "packed-smoke-invalid"],
@@ -92,6 +143,8 @@ if (
 if (setupTargets.join(",") !== "agentMail:connect,visitorAuth:env") {
   throw new Error(`packed shared setup order was incorrect: ${JSON.stringify(setupTargets)}`);
 }
+
+await installPackedAgentDependencies();
 
 const configPath = join(consumerDir, "agent.yaml");
 const agentMailPath = join(consumerDir, "augments", "agentMail", "augment.yaml");
@@ -187,6 +240,35 @@ try {
   );
   if (!isDeepStrictEqual(beforeRerun, afterRerun)) {
     throw new Error("packed AgentMail env rerun was not byte-idempotent");
+  }
+
+  const beforeDoctor = snapshotConfiguredFiles(
+    consumerDir,
+    configPath,
+    agentMailPath,
+    visitorAuthPath,
+  );
+  configureReadOnlyDoctorFixture(configPath, agentMailPath, provider.baseUrl);
+  try {
+    const doctor = await runCli(["doctor", "--config", configPath], {}, consumerDir);
+    if (doctor.exitCode !== 0) {
+      throw new Error(`packed AgentMail doctor failed after connect/env setup:\n${doctor.output}`);
+    }
+    if (
+      !doctor.output.includes("AgentMail policy agentMail") ||
+      !doctor.output.includes("inbound disabled; replies disabled") ||
+      !doctor.output.includes("inbox_read") ||
+      !doctor.output.includes("message_send")
+    ) {
+      throw new Error(`packed AgentMail doctor omitted the connected policy:\n${doctor.output}`);
+    }
+  } finally {
+    if (readFileSync(join(consumerDir, ".env"), "utf8") !== beforeDoctor.env) {
+      throw new Error("packed AgentMail doctor changed the connected credential file");
+    }
+    writeFileSync(configPath, beforeDoctor.agent);
+    writeFileSync(agentMailPath, beforeDoctor.agentMail);
+    writeFileSync(visitorAuthPath, beforeDoctor.visitorAuth);
   }
 
   const rejectedDir = join(consumerDir, ".rejected-connect-check");
@@ -368,7 +450,11 @@ function assertReadOnlyProviderState(state: ReadOnlyProvider["state"]): void {
     state.inboxReads !== 3 ||
     state.messageReads !== 2 ||
     state.draftReads !== 2 ||
-    state.rejectedReads !== 1 ||
+    // verifyAccess probes auth identity and the configured inbox concurrently.
+    // Depending on request cancellation timing, the strict mock observes one
+    // or both rejected reads; either outcome must still fail before mutation.
+    state.rejectedReads < 1 ||
+    state.rejectedReads > 2 ||
     state.mutations !== 0 ||
     state.violations.length > 0
   ) {
@@ -388,6 +474,24 @@ function enableInboundReview(path: string): void {
   };
   config.replies = { mode: "review", allowReplyAll: false };
   writeFileSync(path, stringifyYaml(value));
+}
+
+function configureReadOnlyDoctorFixture(
+  configPath: string,
+  agentMailPath: string,
+  providerBaseUrl: string,
+): void {
+  const agent = parseYaml(readFileSync(configPath, "utf8")) as Record<string, unknown>;
+  agent.augments = (agent.augments as unknown[]).filter((augment) => augment !== "visitorAuth");
+  writeFileSync(configPath, stringifyYaml(agent));
+
+  const augment = parseYaml(readFileSync(agentMailPath, "utf8")) as Record<string, unknown>;
+  const config = augment.config as Record<string, unknown>;
+  delete config.inbound;
+  delete config.replies;
+  config.apiBaseUrl = providerBaseUrl;
+  config.allowInsecureHttpWithCredentials = true;
+  writeFileSync(agentMailPath, stringifyYaml(augment));
 }
 
 function assertPermissionEvidence(result: {
@@ -507,6 +611,27 @@ function writeAgentFixture(dir: string, name: string): void {
     `${JSON.stringify({ name: `${name}-consumer`, private: true, type: "module" }, null, 2)}\n`,
   );
   writeFileSync(join(dir, ".env"), "ANTHROPIC_API_KEY=smoke-not-real\n");
+}
+
+async function installPackedAgentDependencies(): Promise<void> {
+  const child = Bun.spawn(
+    ["bun", "add", "--offline", "--no-summary", packedTarball, packedEngineTarball],
+    {
+      cwd: consumerDir,
+      env: { ...process.env, HOME: smokeHome },
+      stdin: "ignore",
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
+  const [stdout, stderr, exitCode] = await Promise.all([
+    new Response(child.stdout).text(),
+    new Response(child.stderr).text(),
+    child.exited,
+  ]);
+  if (exitCode !== 0) {
+    throw new Error(`could not install packed AgentMail fixture dependencies:\n${stdout}${stderr}`);
+  }
 }
 
 async function captureConsoleOutput(action: () => Promise<void>): Promise<string> {

@@ -21,7 +21,6 @@ import type {
   AgentMailMessage,
   AgentMailMessageSummary,
   AgentMailProvider,
-  AgentMailProviderEvent,
 } from "../../../src/augments/agentMail/provider";
 import {
   createAgentMailOrchestrationStore,
@@ -98,6 +97,7 @@ function draft(overrides: Partial<AgentMailDraft> = {}): AgentMailDraft {
 }
 
 class FakeProvider implements AgentMailProvider {
+  sequence: string[] = [];
   pages: AgentMailMessageSummary[][] = [];
   messages = new Map<string, AgentMailMessage>();
   drafts = new Map<string, AgentMailDraft>();
@@ -105,9 +105,10 @@ class FakeProvider implements AgentMailProvider {
   sentDrafts: Array<Parameters<AgentMailProvider["sendDraft"]>[0]> = [];
   sentMessages: Array<Parameters<AgentMailProvider["sendMessage"]>[0]> = [];
   getMessageCalls = 0;
-  handlers?: { onEvent(event: AgentMailProviderEvent): void | Promise<void> };
+  handlers?: Parameters<AgentMailProvider["connect"]>[0];
 
   async verifyAccess() {
+    this.sequence.push("verify");
     return {
       scopeType: "organization",
       scopeId: "org_1",
@@ -117,6 +118,7 @@ class FakeProvider implements AgentMailProvider {
     };
   }
   async listMessages(input: { pageToken?: string } = {}) {
+    this.sequence.push("list");
     const index = input.pageToken ? Number(input.pageToken) : 0;
     return {
       messages: this.pages[index] ?? [],
@@ -177,7 +179,8 @@ class FakeProvider implements AgentMailProvider {
     this.sentMessages.push(input);
     return { messageId: "sent_direct_1", threadId: "thread_direct_1" };
   }
-  async connect(handlers: { onEvent(event: AgentMailProviderEvent): void | Promise<void> }) {
+  async connect(handlers: Parameters<AgentMailProvider["connect"]>[0]) {
+    this.sequence.push("connect");
     this.handlers = handlers;
     return { close() {} };
   }
@@ -440,6 +443,130 @@ describe("AgentMail provider-native runtime", () => {
     const bytes = readFileSync(join(f.root, "orchestration.db"));
     expect(bytes.includes(Buffer.from("Please help with order 42."))).toBe(false);
     expect(bytes.includes(Buffer.from("We can help with order 42."))).toBe(false);
+    expect(bytes.includes(Buffer.from("am_test"))).toBe(false);
+  });
+
+  test("completes offline recovery through provider-native creator review, revision, and exact send", async () => {
+    const provider = new FakeProvider();
+    const incoming = message({ text: "E2E private inbound body for order 42." });
+    provider.messages.set(incoming.messageId, incoming);
+    provider.pages = [[summary(incoming)]];
+    const f = fixture({ inbound: true, provider });
+
+    await f.augment.onBoot?.();
+    await f.augment.transport?.register(
+      kernel(async () => "E2E private first draft."),
+      "agentMail",
+    );
+    await f.augment.transport?.ready?.();
+    await waitFor(() => provider.created.length === 1);
+
+    expect(provider.sequence.indexOf("connect")).toBeLessThan(provider.sequence.indexOf("list"));
+    expect(f.store.getMessage(incoming.messageId)?.state).toBe("draft_ready");
+
+    await provider.handlers?.onEvent({
+      type: "message.received",
+      eventId: "event_duplicate_after_catchup",
+      classification: incoming.classification,
+      message: summary(incoming),
+    });
+    provider.handlers?.onClose?.({ code: 1006 });
+    provider.handlers?.onOpen?.();
+    await waitFor(() => provider.sequence.filter((item) => item === "list").length === 2);
+    expect(provider.created).toHaveLength(1);
+
+    const list = requireTool(f.augment, "list_mail_drafts");
+    const show = requireTool(f.augment, "show_mail_draft");
+    const revise = requireTool(f.augment, "revise_mail_draft");
+    const send = requireTool(f.augment, "send_mail_draft");
+    expect(JSON.parse(String(await list.execute({ limit: 20 }, toolContext())))).toMatchObject({
+      status: "ok",
+      drafts: [{ draftId: "draft_1", state: "ready" }],
+    });
+
+    await f.augment.onTurnStart?.(creatorTurn("show_e2e", "console_e2e", "show draft draft_1"));
+    const firstReview = JSON.parse(
+      String(
+        await show.execute(
+          { draftId: "draft_1" },
+          toolContext({ turnId: "show_e2e", threadId: "console_e2e" }),
+        ),
+      ),
+    );
+    expect(firstReview).toMatchObject({
+      status: "review",
+      text: "E2E private first draft.",
+      providerUpdatedAt: 2_000,
+    });
+    await f.augment.onTurnEnd?.({ turnId: "show_e2e" } as TurnResult);
+
+    await f.augment.onTurnStart?.(creatorTurn("revise_e2e", "console_e2e", "revise draft draft_1"));
+    const revised = JSON.parse(
+      String(
+        await revise.execute(
+          {
+            draftId: "draft_1",
+            expectedUpdatedAt: firstReview.providerUpdatedAt,
+            text: "E2E private revised draft.",
+          },
+          toolContext({ turnId: "revise_e2e", threadId: "console_e2e" }),
+        ),
+      ),
+    );
+    expect(revised).toMatchObject({ status: "revised", providerUpdatedAt: 2_001 });
+    await f.augment.onTurnEnd?.({ turnId: "revise_e2e" } as TurnResult);
+
+    await f.augment.onTurnStart?.(
+      creatorTurn("show_revised_e2e", "console_e2e", "show draft draft_1"),
+    );
+    const finalReview = JSON.parse(
+      String(
+        await show.execute(
+          { draftId: "draft_1" },
+          toolContext({ turnId: "show_revised_e2e", threadId: "console_e2e" }),
+        ),
+      ),
+    );
+    expect(finalReview).toMatchObject({
+      status: "review",
+      text: "E2E private revised draft.",
+      providerUpdatedAt: 2_001,
+    });
+    await f.augment.onTurnEnd?.({ turnId: "show_revised_e2e" } as TurnResult);
+
+    await f.augment.onTurnStart?.(creatorTurn("send_e2e", "console_e2e", "send it"));
+    const sendContext = toolContext({ turnId: "send_e2e", threadId: "console_e2e" });
+    expect(
+      JSON.parse(
+        String(
+          await send.execute(
+            { draftId: "draft_1", expectedUpdatedAt: finalReview.providerUpdatedAt },
+            sendContext,
+          ),
+        ),
+      ),
+    ).toMatchObject({ status: "sent", messageId: "sent_reply_1" });
+    expect(
+      JSON.parse(
+        String(
+          await send.execute(
+            { draftId: "draft_1", expectedUpdatedAt: finalReview.providerUpdatedAt },
+            sendContext,
+          ),
+        ),
+      ),
+    ).toMatchObject({ status: "sent", messageId: "sent_reply_1" });
+    expect(provider.sentDrafts).toEqual([
+      { draftId: "draft_1", idempotencyKey: "auggy-test-send-key" },
+    ]);
+    await f.augment.onTurnEnd?.({ turnId: "send_e2e" } as TurnResult);
+
+    await f.augment.onShutdown?.();
+    f.store.close();
+    const bytes = readFileSync(join(f.root, "orchestration.db"));
+    expect(bytes.includes(Buffer.from("E2E private inbound body for order 42."))).toBe(false);
+    expect(bytes.includes(Buffer.from("E2E private first draft."))).toBe(false);
+    expect(bytes.includes(Buffer.from("E2E private revised draft."))).toBe(false);
     expect(bytes.includes(Buffer.from("am_test"))).toBe(false);
   });
 
