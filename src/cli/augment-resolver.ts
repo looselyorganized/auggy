@@ -25,18 +25,13 @@ import { knowledgeRoot } from "../augments/knowledge";
 import { skills } from "../augments/skills";
 import { bash } from "../augments/bash";
 import { notify } from "../augments/notify";
-import { mcp } from "../augments/mcp";
-import { agentMail } from "../augments/agentMail";
-import {
-  agentMailCreatorDigestBridgeName,
-  createAgentMailCreatorDigestBridge,
-} from "../augments/agentMail/creator-digest-bridge";
-import { validateAgentMailInboundConfig } from "../augments/agentMail/inbound-policy";
 import {
   collectNotifyDestinationPolicyBindings,
-  resolveCreatorDigestNotifyBinding,
   validateUniqueNotifyDestinationNames,
-} from "../augments/agentMail/creator-digest-policy";
+} from "../augments/notify/destination-policy";
+import { mcp } from "../augments/mcp";
+import { agentMail } from "../augments/agentMail";
+import { validateAgentMailInboundConfig } from "../augments/agentMail/config";
 import { telegramTransport } from "../augments/telegramTransport";
 import { turnControl, type TurnControlOptions } from "../augments/turnControl";
 import { visitorAuth } from "../augments/visitorAuth";
@@ -129,29 +124,21 @@ function resolveSqlitePath(
  * A legacy SQLite ledger does carry inbox identity and may be retained only
  * when an operator explicitly points an AgentMail instance at that exact path.
  */
-function assertNoAmbiguousLocalAgentMailState(
-  configs: readonly AugmentConfig[],
-  agentDir: string,
-): void {
-  const legacyDbPath = resolve(agentDir, "agent-mail.db");
-  const legacyDbExplicitlyClaimed = configs.some((config) => {
-    if (config.type !== "agentMail") return false;
-    const configured = config.options?.dbPath;
-    return typeof configured === "string" && resolvePath(configured, agentDir) === legacyDbPath;
-  });
+function assertNoUnsupportedAgentMailState(agentDir: string): void {
   const ambiguous = [
     "agent-mail-state.json",
     "agent-mail-reviews.json",
-    ...(!legacyDbExplicitlyClaimed
-      ? ["agent-mail.db", "agent-mail.db-wal", "agent-mail.db-shm", "agent-mail.db-journal"]
-      : []),
+    "agent-mail.db",
+    "agent-mail.db-wal",
+    "agent-mail.db-shm",
+    "agent-mail.db-journal",
   ].filter((name) => lstatSync(resolve(agentDir, name), { throwIfNoEntry: false }) !== undefined);
 
   if (ambiguous.length === 0) return;
   throw new Error(
-    `[augment-resolver] multiple local AgentMail instances cannot adopt legacy singleton state (${ambiguous.join(
+    `[augment-resolver] unsupported pre-rebuild AgentMail state exists (${ambiguous.join(
       ", ",
-    )}). Reconcile pending or ambiguous work with the prior single-instance configuration, then explicitly migrate/archive these artifacts. A legacy agent-mail.db may be retained only by configuring its owning instance with dbPath: ./agent-mail.db.`,
+    )}). Stop the agent, inspect and archive these files, then remove them explicitly before starting the replacement runtime. Auggy will not read, migrate, or delete them.`,
   );
 }
 
@@ -695,8 +682,8 @@ export async function resolveAugments(
     resolverOpts.runtimeDataRoot ?? (resolverOpts.agentId ? resolve(agentDir) : undefined);
   const agentMailInstanceCount = configs.filter((config) => config.type === "agentMail").length;
   const agentMailDbOwners = new Map<string, string>();
-  if (resolverOpts.runtimeDataRoot === undefined && agentMailInstanceCount > 1) {
-    assertNoAmbiguousLocalAgentMailState(configs, agentDir);
+  if (resolverOpts.runtimeDataRoot === undefined && agentMailInstanceCount > 0) {
+    assertNoUnsupportedAgentMailState(agentDir);
   }
 
   if (resolverOpts.agentId) {
@@ -739,29 +726,14 @@ export async function resolveAugments(
     ),
   );
   validateUniqueNotifyDestinationNames(notifyBindings);
-  const creatorDigestBindings: Array<{
-    agentMailAugmentName: string;
-    notifyAugmentName: string;
-  }> = [];
-
   for (const config of configs) {
     if (config.type !== "agentMail") continue;
     const inbound = config.options?.inbound as Record<string, unknown> | undefined;
     if (inbound !== undefined) {
-      const validatedInbound = validateAgentMailInboundConfig(
+      validateAgentMailInboundConfig(
         inbound,
         config.options?.outbound as AgentMailAugmentOptions["outbound"],
       );
-      const binding = resolveCreatorDigestNotifyBinding(
-        validatedInbound.creatorDigest,
-        notifyBindings,
-      );
-      if (binding) {
-        creatorDigestBindings.push({
-          agentMailAugmentName: config.name,
-          notifyAugmentName: binding.augmentName,
-        });
-      }
     }
     if ((inbound?.mode ?? "none") === "none") continue;
     const inboxId = config.options?.inboxId;
@@ -1112,9 +1084,6 @@ export async function resolveAugments(
           agentMailDbOwners.set(resolve(dbPath), config.name);
 
           augment = agentMail({
-            instanceId: config.name,
-            legacySingletonCompatibility: agentMailInstanceCount === 1,
-            namespaceTools: agentMailInstanceCount > 1,
             apiKey: opts.apiKey as string,
             inboxId: opts.inboxId as string,
             emailAddress: opts.emailAddress as string | undefined,
@@ -1129,8 +1098,6 @@ export async function resolveAugments(
             outbound: opts.outbound as AgentMailAugmentOptions["outbound"],
             inbound: opts.inbound as AgentMailAugmentOptions["inbound"],
             agentDir,
-            stateDir,
-            overrideDir,
           });
           break;
         }
@@ -1303,35 +1270,6 @@ export async function resolveAugments(
           agent: resolverOpts.selfInspection,
           configs,
           augments,
-        }),
-      );
-    }
-
-    // Optional creator digests are explicit cross-augment composition. Append
-    // each bridge last so it boots after AgentMail and Notify, then shuts down
-    // before either durable store closes.
-    for (const binding of creatorDigestBindings) {
-      const agentMailIndex = configs.findIndex(
-        (config) => config.name === binding.agentMailAugmentName,
-      );
-      const notifyIndex = configs.findIndex((config) => config.name === binding.notifyAugmentName);
-      const agentMailAugment = agentMailIndex >= 0 ? augments[agentMailIndex] : undefined;
-      const notifyAugment = notifyIndex >= 0 ? augments[notifyIndex] : undefined;
-      if (!agentMailAugment || !notifyAugment) {
-        throw new Error(
-          `[augment-resolver] creator digest binding for "${binding.agentMailAugmentName}" could not be mounted`,
-        );
-      }
-      const bridgeName = agentMailCreatorDigestBridgeName(agentMailAugment.name);
-      if (augments.some((augment) => augment.name === bridgeName)) {
-        throw new Error(
-          `[augment-resolver] creator digest bridge name "${bridgeName}" collides with an existing augment`,
-        );
-      }
-      augments.push(
-        createAgentMailCreatorDigestBridge({
-          agentMail: agentMailAugment,
-          notify: notifyAugment,
         }),
       );
     }

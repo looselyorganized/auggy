@@ -1,8 +1,4 @@
 import {
-  AGENTMAIL_LEDGER_APPLICATION_ID,
-  AGENTMAIL_LEDGER_SCHEMA_VERSION,
-} from "../augments/agentMail/inbound-ledger";
-import {
   NOTIFY_DELIVERY_APPLICATION_ID,
   NOTIFY_DELIVERY_SCHEMA_VERSION,
 } from "../augments/notify/delivery-store";
@@ -61,23 +57,6 @@ export const RUNTIME_STATE_SQLITE_IDENTITIES: Readonly<Record<string, RuntimeSta
     "TGRP/v2": {
       applicationId: TELEGRAM_REPLAY_APPLICATION_ID,
       userVersion: TELEGRAM_REPLAY_SCHEMA_VERSION,
-    },
-    "AMIL/v5": {
-      applicationId: AGENTMAIL_LEDGER_APPLICATION_ID,
-      userVersion: AGENTMAIL_LEDGER_SCHEMA_VERSION,
-    },
-    "AMIL/v4": {
-      applicationId: AGENTMAIL_LEDGER_APPLICATION_ID,
-      userVersion: 4,
-    },
-    "AMIL/v3": {
-      applicationId: AGENTMAIL_LEDGER_APPLICATION_ID,
-      userVersion: 3,
-    },
-    "AMIL/v2": {
-      applicationId: AGENTMAIL_LEDGER_APPLICATION_ID,
-      userVersion: 2,
-      compatibleUserVersions: [2, 3],
     },
     "NTFY/v2": {
       applicationId: NOTIFY_DELIVERY_APPLICATION_ID,

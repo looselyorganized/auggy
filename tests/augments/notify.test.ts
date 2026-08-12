@@ -738,7 +738,7 @@ describe("notify augment", () => {
       },
     });
     const input = {
-      source: "agentmail.creator-digest" as const,
+      source: "agentmail.review-ready" as const,
       operationKey: "digest-batch-1",
       destination: "creator",
       threadId: "agentmail-digest-thread",
@@ -753,14 +753,14 @@ describe("notify augment", () => {
     });
     expect(
       aug.dispatchHost.acknowledgeInternalSettlement({
-        source: "agentmail.creator-digest",
+        source: "agentmail.review-ready",
         operationKey: input.operationKey,
         settlementSha256: "a".repeat(64),
       }),
     ).toEqual({ status: "acknowledged" });
     expect(
       aug.dispatchHost.acknowledgeInternalSettlement({
-        source: "agentmail.creator-digest",
+        source: "agentmail.review-ready",
         operationKey: input.operationKey,
         settlementSha256: "a".repeat(64),
       }),
@@ -784,7 +784,7 @@ describe("notify augment", () => {
     expect(deliveryAttempts).toBe(1);
     expect(
       aug.dispatchHost.acknowledgeInternalSettlement({
-        source: "agentmail.creator-digest",
+        source: "agentmail.review-ready",
         operationKey: input.operationKey,
         settlementSha256: "not-a-hash",
       }),
@@ -870,7 +870,7 @@ describe("notify augment", () => {
       },
     });
     const input = {
-      source: "agentmail.creator-digest" as const,
+      source: "agentmail.review-ready" as const,
       operationKey: "authority-replay",
       destination: "creator",
       threadId: "agentmail-digest-thread",
@@ -915,7 +915,7 @@ describe("notify augment", () => {
       },
     });
     const input = {
-      source: "agentmail.creator-digest" as const,
+      source: "agentmail.review-ready" as const,
       destination: "creator",
       threadId: "agentmail-digest-thread",
       payload: { summary: "First digest" },
@@ -957,7 +957,7 @@ describe("notify augment", () => {
       },
     });
     const input = {
-      source: "agentmail.creator-digest" as const,
+      source: "agentmail.review-ready" as const,
       destination: "creator",
       threadId: "agentmail-digest-thread",
       payload: { summary: "First digest" },
@@ -999,7 +999,7 @@ describe("notify augment", () => {
       },
     });
     const input = {
-      source: "agentmail.creator-digest" as const,
+      source: "agentmail.review-ready" as const,
       operationKey: "exhausted-digest",
       destination: "creator",
       threadId: "agentmail-digest-thread",
@@ -1067,7 +1067,7 @@ describe("notify augment", () => {
       },
     });
     const base = {
-      source: "agentmail.creator-digest" as const,
+      source: "agentmail.review-ready" as const,
       destination: "creator",
       threadId: "agentmail-digest-thread",
       maxAttempts: 2,

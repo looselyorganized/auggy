@@ -76,7 +76,7 @@ export interface NotifyAugmentInternalOptions extends NotifyAugmentOptions {
   }>;
 }
 
-export type NotifyInternalSource = "agentmail.creator-digest";
+export type NotifyInternalSource = "agentmail.review-ready";
 
 export interface NotifyInternalDispatchInput {
   source: NotifyInternalSource;
@@ -366,7 +366,7 @@ export function notify(opts: NotifyAugmentInternalOptions): NotifyAugment {
   }
 
   function validInternalInput(input: NotifyInternalDispatchInput): boolean {
-    if (input.source !== "agentmail.creator-digest") return false;
+    if (input.source !== "agentmail.review-ready") return false;
     if (
       typeof input.operationKey !== "string" ||
       input.operationKey.length < 1 ||
@@ -415,7 +415,7 @@ export function notify(opts: NotifyAugmentInternalOptions): NotifyAugment {
 
   function validRetryAuthorizationInput(input: NotifyInternalRetryAuthorizationInput): boolean {
     return (
-      input.source === "agentmail.creator-digest" &&
+      input.source === "agentmail.review-ready" &&
       typeof input.operationKey === "string" &&
       input.operationKey.length >= 1 &&
       input.operationKey.length <= 512 &&
@@ -432,7 +432,7 @@ export function notify(opts: NotifyAugmentInternalOptions): NotifyAugment {
 
   function validInternalAcknowledgementInput(input: NotifyInternalAcknowledgementInput): boolean {
     return (
-      input.source === "agentmail.creator-digest" &&
+      input.source === "agentmail.review-ready" &&
       typeof input.operationKey === "string" &&
       input.operationKey.length >= 1 &&
       input.operationKey.length <= 512 &&

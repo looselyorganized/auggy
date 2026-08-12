@@ -285,9 +285,6 @@ export function buildRuntimeStateInventory(
   const stores: RuntimeStateStoreInventoryEntry[] = [];
   const externalPrerequisites: RuntimeStateExternalPrerequisite[] = [];
   const namespace = config.id;
-  const agentMailInstanceCount = config.augments.filter(
-    (augment) => augment.type === "agentMail",
-  ).length;
 
   addStore(stores, {
     id: "runtime-identity",
@@ -656,83 +653,11 @@ export function buildRuntimeStateInventory(
         break;
       }
       case "agentMail": {
-        if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(augment.name)) {
-          throw new Error(
-            `[runtime-state] agentMail name "${augment.name}" is not a safe namespace`,
-          );
-        }
-        const stateDir = runtimeDataRoot
-          ? join(runtimeDataRoot, "agent-mail", augment.name)
-          : agentMailInstanceCount > 1
-            ? join(agentDir, "data", "agent-mail", augment.name)
-            : agentDir;
-        const path = runtimeDataRoot
-          ? resolveRuntimeStatePath(
-              String(opts.dbPath ?? "./agent-mail.db"),
-              stateDir,
-              stateDir,
-              `agentMail ${augment.name} dbPath`,
-            )
-          : agentMailInstanceCount > 1 && opts.dbPath === undefined
-            ? resolveRuntimeStatePath(
-                "./agent-mail.db",
-                stateDir,
-                ownedStateRoot,
-                `agentMail ${augment.name} dbPath`,
-              )
-            : resolveRuntimeStatePath(
-                String(opts.dbPath ?? "./agent-mail.db"),
-                agentDir,
-                ownedStateRoot,
-                `agentMail ${augment.name} dbPath`,
-              );
-        addStore(
-          stores,
-          sqliteEntry({
-            id: `agentmail-ledger:${augment.name}`,
-            owner,
-            namespace,
-            path,
-            runtimeDataRoot,
-            schema: "AMIL/v5",
-            retention:
-              "terminal inbound work, bounded content-free policy tombstones, fail-closed rejection filter, quota aggregates, and unresolved creator-digest batches retained according to ledger policy",
-            restoreOrder: 50,
-            replayCritical: true,
-            required:
-              ((opts.inbound as Record<string, unknown> | undefined)?.mode ?? "none") !== "none",
-          }),
-        );
-        for (const [filename, schema] of [
-          ["agent-mail-state.json", "agent-mail-rate/v2"],
-          ["agent-mail-reviews.json", "agent-mail-reviews/v1"],
-        ] as const) {
-          addStore(stores, {
-            id: `${schema}:${augment.name}`,
-            owner,
-            namespace,
-            kind: "json",
-            backupPlane: runtimeDataRoot ? "runtime-volume" : "project-source",
-            ...(runtimeDataRoot
-              ? {
-                  relativePath: runtimeVolumeRelativePath(
-                    runtimeDataRoot,
-                    join(stateDir, filename),
-                    `${schema}:${augment.name}`,
-                  ),
-                }
-              : {}),
-            schema,
-            retention: "bounded runtime policy; ambiguous attempts retained for reconciliation",
-            restoreOrder: 50,
-            replayCritical: true,
-            required: false,
-          });
-        }
         externalPrerequisites.push({
           id: `agentmail-provider:${augment.name}`,
           owner,
-          reason: "the provider mailbox and already-sent messages are outside the runtime volume",
+          reason:
+            "AgentMail owns the provider mailbox, messages, threads, drafts, and delivery state",
         });
         break;
       }

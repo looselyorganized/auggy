@@ -30,12 +30,7 @@ import {
   agentMailInboundRequiresAdminRoute,
   validateAgentMailInboundConfig,
   type ValidatedAgentMailInboundConfig,
-} from "../../augments/agentMail/inbound-policy";
-import {
-  collectNotifyDestinationPolicyBindings,
-  resolveCreatorDigestNotifyBinding,
-  validateUniqueNotifyDestinationNames,
-} from "../../augments/agentMail/creator-digest-policy";
+} from "../../augments/agentMail/config";
 import type { AgentMailOutboundOptions } from "../../types";
 
 export type AgentMailSetupTarget = AgentMailProvisioningTarget;
@@ -224,24 +219,6 @@ async function runAgentMailSetupLocked(
       `${displayPath(augmentPath)} config.inbound.replies.mode ${configPlan.inboundReplyMode} requires a webTransport augment with adminRoute enabled before AgentMail setup can provision resources.`,
     );
   }
-  if (configPlan.creatorDigest?.enabled) {
-    const notifyBindings = collectNotifyDestinationPolicyBindings(
-      mountedAugments.flatMap((augment) =>
-        augment.type === "notify"
-          ? [
-              {
-                augmentName: augment.name,
-                destinations: augment.options.destinations,
-                rateLimit: augment.options.rateLimit,
-              },
-            ]
-          : [],
-      ),
-    );
-    validateUniqueNotifyDestinationNames(notifyBindings);
-    resolveCreatorDigestNotifyBinding(configPlan.creatorDigest, notifyBindings);
-  }
-
   const provisioner =
     deps.provisioner ??
     createAgentMailProvisioningClient({
@@ -730,7 +707,6 @@ interface AgentMailConfigPlan {
   requiresWebTransport: boolean;
   requiresAdminWebTransport: boolean;
   inboundReplyMode?: ValidatedAgentMailInboundConfig["replies"]["mode"];
-  creatorDigest?: ValidatedAgentMailInboundConfig["creatorDigest"];
 }
 
 function planAgentMailConfig(
@@ -809,7 +785,6 @@ function planAgentMailConfig(
     requiresAdminWebTransport:
       validatedInbound !== undefined && agentMailInboundRequiresAdminRoute(validatedInbound),
     ...(validatedInbound ? { inboundReplyMode: validatedInbound.replies.mode } : {}),
-    ...(validatedInbound ? { creatorDigest: validatedInbound.creatorDigest } : {}),
   };
 }
 

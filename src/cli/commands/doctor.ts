@@ -101,6 +101,7 @@ export async function runDoctor(
   checks.push(checkPackageManifest(agentDir));
   checks.push(...checkConfigEnvReferences(configPath, agentDir));
   checks.push(...checkLearnedBehaviorFiles(agentDir, config));
+  checks.push(...checkUnsupportedAgentMailState(agentDir, config));
   checks.push(...checkProviderEnv(agentDir, config));
   checks.push(...checkAgentDependencies(agentDir, config));
   checks.push(...checkRuntimeSource(agentDir));
@@ -112,6 +113,32 @@ export async function runDoctor(
   checks.push(...checkMcp(agentDir, config, opts.cloud ?? false));
 
   return checks;
+}
+
+export function checkUnsupportedAgentMailState(
+  agentDir: string,
+  config: ParsedConfig,
+): DoctorCheck[] {
+  if (!config.augments.some((augment) => augment.type === "agentMail")) return [];
+  const legacy = [
+    "agent-mail.db",
+    "agent-mail.db-wal",
+    "agent-mail.db-shm",
+    "agent-mail.db-journal",
+    "agent-mail-state.json",
+    "agent-mail-reviews.json",
+  ].filter((name) => existsSync(join(agentDir, name)));
+  const legacyInstances = join(agentDir, "data", "agent-mail");
+  if (existsSync(legacyInstances)) legacy.push("data/agent-mail/");
+  if (legacy.length === 0) return [];
+  return [
+    {
+      name: "AgentMail old state",
+      status: "fail",
+      message: `unsupported pre-rebuild state: ${legacy.join(", ")}`,
+      fix: "Stop the agent. Inspect and archive these artifacts outside the agent project, then remove them explicitly. Auggy will not read, migrate, or delete them.",
+    },
+  ];
 }
 
 function checkModelSnapshot(agentDir: string, config: ParsedConfig): DoctorCheck[] {

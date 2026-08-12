@@ -119,15 +119,9 @@ describe("runtime state inventory", () => {
     expect(byId.get("console-chat:web")?.relativePath).toBe("console-chat.db");
     expect(byId.get("telegram-replay:telegram")?.schema).toBe("TGRP/v2");
     expect(byId.get("telegram-replay:telegram")?.namespace).toBe("telegram:bot-123456");
-    expect(byId.get("agentmail-ledger:mail-a")?.relativePath).toBe(
-      "agent-mail/mail-a/agent-mail.db",
-    );
-    expect(byId.get("agentmail-ledger:mail-a")?.schema).toBe("AMIL/v5");
-    expect(byId.get("agent-mail-rate/v2:mail-a")?.relativePath).toBe(
-      "agent-mail/mail-a/agent-mail-state.json",
-    );
-    expect(byId.get("agent-mail-reviews/v1:mail-a")?.relativePath).toBe(
-      "agent-mail/mail-a/agent-mail-reviews.json",
+    expect([...byId.keys()].some((id) => id.startsWith("agentmail"))).toBe(false);
+    expect(inventory.externalPrerequisites).toContainEqual(
+      expect.objectContaining({ id: "agentmail-provider:mail-a" }),
     );
     expect(byId.get("notify-delivery:notify")?.relativePath).toBe("notify-notify.db");
     expect(byId.get("notify-delivery:notify")?.schema).toBe("NTFY/v2");

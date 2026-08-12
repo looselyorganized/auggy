@@ -35,12 +35,11 @@ import { isWellFormedEmail } from "../augments/visitorAuth/email-validation";
 import {
   agentMailInboundRequiresAdminRoute,
   validateAgentMailInboundConfig,
-} from "../augments/agentMail/inbound-policy";
+} from "../augments/agentMail/config";
 import {
   collectNotifyDestinationPolicyBindings,
-  resolveCreatorDigestNotifyBinding,
   validateUniqueNotifyDestinationNames,
-} from "../augments/agentMail/creator-digest-policy";
+} from "../augments/notify/destination-policy";
 import type { AgentMailOutboundOptions } from "../types";
 
 // ---------------------------------------------------------------------------
@@ -2342,32 +2341,6 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       validateUniqueNotifyDestinationNames(notifyBindings);
     } catch (error) {
       errors.push((error as Error).message);
-    }
-
-    for (const entry of augments) {
-      if (typeof entry !== "object" || entry === null) continue;
-      const augment = entry as Record<string, unknown>;
-      if (augment.type !== "agentMail") continue;
-      const options = augment.options as Record<string, unknown> | undefined;
-      const outbound = options?.outbound as Record<string, unknown> | undefined;
-      if (options?.inbound === undefined) continue;
-      try {
-        const validatedInbound = validateAgentMailInboundConfig(
-          options.inbound,
-          outbound && !Array.isArray(outbound) ? (outbound as AgentMailOutboundOptions) : undefined,
-        );
-        resolveCreatorDigestNotifyBinding(validatedInbound.creatorDigest, notifyBindings);
-      } catch (error) {
-        // `validateAgentMailOptions` already reports malformed inbound fields.
-        // Only add dependency-policy failures here.
-        const message = (error as Error).message;
-        if (
-          message.includes("creator digest destination") ||
-          message.includes("notify destination")
-        ) {
-          errors.push(message);
-        }
-      }
     }
 
     const agentMailWebhookConfigured = augments.some((entry) => {
