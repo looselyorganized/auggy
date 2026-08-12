@@ -19,8 +19,8 @@ Fourteen augments ship in `src/augments/` (plus `webTransport` under `src/transp
 - **`notify`** — outbound messaging to operator-configured destinations
 - **`mcp`** — external MCP server tools bridged into Auggy tools with
   allow/block lists and per-server/per-tool trust policy
-- **`agentMail`** — policy-gated AgentMail send/receive, durable inbound
-  polling/WebSocket/Svix delivery, outbound review, and operator audit
+- **`agentMail`** — provider-native AgentMail inboxes and drafts, WebSocket
+  wake-up, durable message catch-up, creator review, and operator audit
 - **`turnControl`** — `request_input` for hand-off prompts
 - **`visitorAuth`** — email magic-link verification; promotes anonymous → recognized
 - **`link`** — legacy A2A-v0.2 peer transport (preview only; not current A2A)
@@ -1437,46 +1437,41 @@ Local testing uses `agentMail.transport: console`, which prints magic links to
 stdout. Production email should be configured with:
 
 ```bash
-auggy augment setup visitorAuth
+auggy augment setup visitorAuth --mode connect
 ```
 
 Deploy preflight rejects console magic links on public Railway deploys unless
 the operator explicitly acknowledges that links will appear in service logs.
 
+Create the inbox and API key in AgentMail before setup. Auggy verifies the
+supplied key against that exact inbox and stores it unchanged. It never creates,
+narrows, rotates, replaces, or revokes a provider key.
+
 When both canonical `agentMail` and `visitorAuth` augments are selected in one
-interactive `auggy augment add`, the CLI uses one setup confirmation and
-credential flow, configures `agentMail` first, and attaches `visitorAuth`
-through `--mode env` without asking for credentials again, regardless of
-selection order. For standalone installation or recovery, preserve the same
-boundary:
+interactive `auggy augment add`, the CLI uses one setup confirmation, connects
+`agentMail` first, and attaches `visitorAuth` through `--mode env` without
+asking for credentials again. For standalone installation or recovery, use the
+same sequence:
 
 ```bash
-auggy augment setup agentMail
+auggy augment setup agentMail --mode connect
 auggy augment setup visitorAuth --mode env
 ```
 
-`AGENTMAIL_API_KEY` is the canonical stored and runtime variable. Key-accepting
-modes preserve the supplied key; signup stores AgentMail's provider-returned
-key under that canonical name. Auggy never creates, narrows, rotates, or
-revokes another key. For one RC, `AGENTMAIL_ACCOUNT_API_KEY` remains a
-deprecated process-only alias; its legacy name is rejected in project dotenv
-files and never persisted or deployed, while an accepted value is stored under
-`AGENTMAIL_API_KEY`.
-Prefer the masked prompt or canonical environment variable. Controlled
-automation may pass `--api-key`, with the normal shell-history and
-process-inspection risks. A definitive provider
-`403 resource_taken` permits only proven, confirmed reuse of the exact
-Auggy-owned inbox or a bounded alternate-username flow—never arbitrary inbox
-adoption. Removing either shared consumer retains the inbox, key, and local
-`AGENTMAIL_*` values until the operator verifies that no remaining consumer
-uses them; provider key cleanup remains the operator's responsibility.
-`AGENTMAIL_WEBHOOK_SECRET` is needed only for Svix webhook inbound mode, not
-default outbound delivery.
+`visitorAuth` is an independent outbound consumer: it sends magic links through
+the configured inbox, but it does not receive mail, create reply drafts, or
+participate in the `agentMail` mailbox lifecycle. Sharing environment values
+does not couple those runtime behaviors. A visitor's click returns directly to
+Auggy's public verification route, so mailbox inbound processing is not needed
+for magic links.
 
 After setup, enabling AgentMail inbound or changing reply policy requires only
-the YAML edit and a restart. The supplied key must already have the needed
-provider permissions; setup verifies inbox access but does not claim send or
-inbound permissions are working.
+the YAML edit and a restart; do not rerun setup. The supplied key must already
+have the permissions required by the active configuration. See
+[22-agent-mail.md](./22-agent-mail.md) for the exact permission matrix,
+provider-native draft workflow, offline recovery boundary, and one-consumer
+topology. Removing either shared consumer retains provider resources and local
+`AGENTMAIL_*` values until the operator confirms they are no longer used.
 
 ### Key constraint
 

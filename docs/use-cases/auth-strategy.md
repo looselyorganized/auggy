@@ -112,7 +112,7 @@ Examples:
 - Stripe webhook signature
 - Shopify webhook signature
 - GitHub webhook signature
-- AgentMail/Svix webhook verification
+- provider webhooks verified through Svix
 
 Webhook auth should be route policy owned by the relevant augment or route helper. It should not resolve to a normal human peer unless the webhook is explicitly tied to one.
 
@@ -307,9 +307,10 @@ defineRoute.post("/webhooks/stripe", {
 
 Stripe and Svix verification have shipped because they force raw-body
 signature handling and replay-age checks. GitHub-style verification can follow
-without becoming peer identity. AgentMail webhook inbound uses the Svix policy
-and still admits email senders through the `agentMail` augment's separate
-sender/classification rules.
+without becoming peer identity. The current `agentMail` augment receives over
+its own AgentMail WebSocket and REST catch-up path, then applies separate
+sender-admission and classification rules; it is not a `webTransport` webhook
+route.
 
 Keep webhook auth separate from route identity:
 

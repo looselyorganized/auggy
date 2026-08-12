@@ -33,8 +33,8 @@ What it does **not** do:
 - No provider delivery receipts beyond `sent` / `failed` — no automatic retry
   queue. Ambiguous attempts require operator reconciliation.
 - Model `notify` calls are not batched. AgentMail's separately enabled creator
-  digest may submit one metadata-only aggregate through Notify's internal
-  durable dispatch boundary.
+  attention may submit one metadata-only draft-ready or delivery-failure alert
+  through Notify's internal durable dispatch boundary.
 
 ## 2. Configuration
 
@@ -239,28 +239,29 @@ The webhook adapter POSTs a JSON body to the configured URL using the shared `sr
 
 `reason` and `visitor` are omitted from the body when not provided by the caller. The `channel` field is always `"notify"` — it lets the receiving endpoint distinguish `notify` POSTs from other augment traffic if the endpoint is shared.
 
-## AgentMail creator-digest dispatch
+## AgentMail creator-attention dispatch
 
-An AgentMail augment with `inbound.creatorDigest.enabled: true` composes with
-one uniquely named Notify destination. This is not a model tool call: a
-synthetic lifecycle bridge submits a stable operation key, aggregate
-metadata-only summary, bounded attempt count, and creator authority. Notify
-still enforces its global and destination quotas for this internal source.
+An AgentMail augment with `notifications.destination` composes with one
+uniquely named Notify destination. This is not a model tool call: a synthetic
+lifecycle bridge submits a stable operation key and a fixed metadata-only
+summary when a provider-native draft is ready or a live delivery-failure event
+is observed for an Auggy-managed send. Notify still enforces its global and
+destination quotas for this internal source.
 
 `NTFY/v2` binds the operation key to an immutable payload hash and maximum
 attempt count. A sent operation replays as sent; a pending operation stays
 in-flight; an ambiguous operation stays fenced; and a definitive failure can
 retry only within its bound. A creator-authorized retry adds one durable,
-CAS-bound attempt authorization and stores only a SHA-256 evidence digest. It
+CAS-bound attempt authorization and stores only a SHA-256 evidence hash. It
 cannot reset a pending, sent, or outcome-unknown operation.
 
 Ordinary terminal Notify attempts age out after 30 days. Internal operations
-remain replay-protected, but once AgentMail durably settles the matching digest
-generation it records a hashed source acknowledgement in `NTFY/v2`. The
-attempt and replay evidence remain readable while that acknowledged operation
-stops consuming the 10,000-record active terminal capacity. Unacknowledged
-protected operations still fail closed at capacity instead of risking a
-duplicate creator digest.
+remain replay-protected, but once AgentMail durably settles the matching
+creator-attention item it records a hashed source acknowledgement in `NTFY/v2`.
+The attempt and replay evidence remain readable while that acknowledged
+operation stops consuming the 10,000-record active terminal capacity.
+Unacknowledged protected operations still fail closed at capacity instead of
+risking duplicate creator attention.
 
 **Response:** Any `2xx` status is treated as success. Any other status code is a
 `failed` delivery with a stable status-only detail. Destination URLs, response

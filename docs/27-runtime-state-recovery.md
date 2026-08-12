@@ -17,7 +17,7 @@ agent backup.
 | --- | --- | --- |
 | Project/source | `agent.yaml`, identity, skills, immutable knowledge, package lock | Source control and deploy pipeline |
 | Secrets | provider keys, console credentials, signing keys | Deployment secret manager |
-| Runtime volume | SQLite stores, admin overrides, mutable file memory, workspace artifacts, AgentMail JSON state, local notification log | Auggy defines the format; deployer stores backups |
+| Runtime volume | SQLite stores, admin overrides, mutable file memory, workspace artifacts, AgentMail orchestration state, local notification log | Auggy defines the format; deployer stores backups |
 | External systems | Supabase, optional PostgreSQL coordination, provider mailboxes, downstream side effects | Deployer and provider |
 | Process-local | queues, waiters, counters, in-memory throttles | Not recoverable; reset on restart |
 
@@ -51,9 +51,7 @@ The initial catalog covers:
 | Durable jobs and schedules | `DJOB/v2` | 30-day terminal jobs and 90-day reconciliation audit by default | Job leases, attempt history, schedule occurrences, cancellation, and outcome-unknown incidents |
 | Console chat/history | `CCHT/v4` | Until authenticated deletion | Ownership, history, runs, tombstones |
 | Telegram replay | `TGRP/v2` | 30 days and configured entry cap | Claims, conflicts, discard decisions |
-| AgentMail inbound | `AMIL/v5` | Ledger policy; at most 1,000 content-free policy tombstones per inbox, a fixed-size fail-closed rejection filter, lifetime quota aggregates, current suppression snapshots, and compact retired-generation ranges | Inbound leases, outcome-unknown incidents, creator attention, immutable digest batches, durable inbound quota evidence, recovery evidence hashes, and terminal work |
-| AgentMail rate state | `agent-mail-rate/v2` | Bounded rate/dedup windows | Reservations and accounted attempts |
-| AgentMail review queue | `agent-mail-reviews/v1` | Bounded terminal retention | Pending and ambiguous sends |
+| AgentMail orchestration | `AMOR/v1` | Orchestration identifiers and replay evidence until operator maintenance | Inbound checkpoints and claims, rate evidence, provider-native draft references, send idempotency, ambiguity fences, and creator-attention delivery; message and draft bodies remain in AgentMail |
 | Notify delivery | `NTFY/v2` | Ordinary terminals up to 30 days; unresolved protected operations consume the 10,000-record active cap; source-acknowledged operations retain replay evidence without consuming that cap | Atomic quota and payload reservations, bounded internal retries, source-settlement acknowledgements, delivery ambiguity, canonical thread fences, evidence hashes, and recovery decisions |
 | Link task store | Package-owned | Package-owned | External package state; semantically opaque to core |
 | Writable filesystem mounts | `opaque-files/v1` | Operator/application managed | Durable agent-created artifacts |
@@ -65,8 +63,8 @@ volume bundle cannot claim to contain them.
 
 ## Railway path behavior
 
-Railway runtime state is rooted at `/app/data`. In addition to SQLite and
-AgentMail state, mutable `fileMemory` is seeded once from the deployed project
+Railway runtime state is rooted at `/app/data`. In addition to SQLite-backed
+AgentMail orchestration state, mutable `fileMemory` is seeded once from the deployed project
 and then written under `/app/data/file-memory/<augment-name>.md`. A
 `log-to-file` notification destination with a relative path is also rooted
 under `/app/data`. Redeploying a new image does not overwrite either durable

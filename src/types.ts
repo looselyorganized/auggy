@@ -1938,7 +1938,7 @@ export interface AgentMailOutboundRateLimitOptions {
   globalMaxPerHour?: number;
   /** Cooldown between sends to the same recipient (ms). Default 300000 (5min). */
   perRecipientCooldownMs?: number;
-  /** Subject-hash dedup window (ms). Default 300000 (5min). 0 disables dedup. */
+  /** Message-fingerprint dedup window (ms). Default 300000 (5min). 0 disables dedup. */
   dedupWindowMs?: number;
 }
 
@@ -1988,7 +1988,8 @@ export interface AgentMailInboundConfig {
   allowAnySender?: boolean;
   /**
    * Optional durable inbound admission limits. Both limits are required when
-   * this block is present, and the block is mandatory with `allowAnySender`.
+   * this block is present. Defaults: 100 messages/hour globally and 5 per
+   * sender/hour, including when `allowAnySender` is enabled.
    */
   rateLimit?: AgentMailInboundRateLimitOptions;
 }

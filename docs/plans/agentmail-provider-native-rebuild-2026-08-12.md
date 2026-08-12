@@ -236,9 +236,26 @@ config:
       perRecipientCooldownMs: 300000
 ```
 
-Exact public field names may be narrowed during implementation, but a field
-cannot ship without validation, documented allowed values/defaults, runtime
-tests, and a clear restart/apply contract.
+Every public field must have validation, documented allowed values and
+defaults, runtime tests, and a clear restart/apply contract.
+
+## CLI connection boundary
+
+`auggy augment setup agentMail` and `auggy augment setup visitorAuth` connect
+resources that already exist in AgentMail. The supported modes are:
+
+- `connect`: collect an existing inbox ID and the exact API key the operator
+  chose for runtime use; and
+- `env`: revalidate the existing `AGENTMAIL_API_KEY` and
+  `AGENTMAIL_INBOX_ID` values without changing their identity.
+
+Setup never signs up an AgentMail account, creates or adopts an inbox, or
+creates, scopes, rotates, replaces, or revokes an API key. It validates the
+configured inbox identity and exercises required read operations without
+provider mutations. Output separates reads that were verified from write
+permissions that are required but cannot be safely probed during setup. The
+real-provider release canary exercises the same exact key and pre-provisioned
+inbox without mutating provider state.
 
 ## Explicitly unsupported
 

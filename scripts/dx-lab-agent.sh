@@ -20,8 +20,8 @@ Creates a disposable full-featured Auggy agent under .auggy-dx-lab/ and runs it.
 
 Secrets are reused from .env.dx.local when present. Useful keys:
   ANTHROPIC_API_KEY=...
-  AGENTMAIL_API_KEY=...            # exact key Auggy will use; can create an inbox
-  AGENTMAIL_INBOX_ID=...           # optional existing inbox for that key
+  AGENTMAIL_API_KEY=...            # exact runtime key for an existing inbox
+  AGENTMAIL_INBOX_ID=...           # required existing inbox for that key
   TELEGRAM_BOT_TOKEN=...
   TELEGRAM_CHAT_ID=...             # notify destination
   TELEGRAM_CREATOR_USER_IDS=...    # telegramTransport creator IDs
@@ -177,39 +177,31 @@ add_augment_if_missing() {
 }
 
 configure_agentmail_if_possible() {
-  local api_key inbox_id username
+  local api_key inbox_id
   api_key="$(read_env_value AGENTMAIL_API_KEY)"
   inbox_id="$(read_env_value AGENTMAIL_INBOX_ID)"
 
   if [[ -n "$api_key" && -n "$inbox_id" ]]; then
-    info "configure visitorAuth AgentMail with the supplied key and existing inbox"
+    info "connect agentMail to the supplied existing inbox"
     (
       cd "$AGENT_DIR"
-      AGENTMAIL_API_KEY="$api_key" "$CLI" agentmail setup visitorAuth \
-        --mode manual \
+      AGENTMAIL_API_KEY="$api_key" "$CLI" augment setup agentMail \
+        --mode connect \
         --inbox-id "$inbox_id"
+      "$CLI" augment setup visitorAuth --mode env
     )
     return 0
   fi
 
-  if [[ -n "$api_key" ]]; then
-    info "create a visitorAuth AgentMail inbox with the supplied key"
-    username="${AGENT_NAME}-$(date +%Y%m%d%H%M%S)"
-    (
-      cd "$AGENT_DIR"
-      AGENTMAIL_API_KEY="$api_key" "$CLI" agentmail setup visitorAuth \
-        --mode existing \
-        --username "$username" \
-        --display-name "$AGENT_NAME DX Lab"
-    )
-    return 0
+  if [[ -n "$api_key" || -n "$inbox_id" ]]; then
+    fail "AgentMail DX setup requires both AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID for one existing inbox"
   fi
 
   info "skip AgentMail setup (no AGENTMAIL_* credentials in $SECRETS_FILE)"
 }
 
 has_agentmail_credentials() {
-  [[ -n "$(read_env_value AGENTMAIL_API_KEY)" ]]
+  [[ -n "$(read_env_value AGENTMAIL_API_KEY)" && -n "$(read_env_value AGENTMAIL_INBOX_ID)" ]]
 }
 
 mkdir -p "$LAB_ROOT/home" "$LAB_ROOT/npm-global" "$LAB_ROOT/npm-cache" "$LAB_ROOT/bun-cache" "$LAB_ROOT/packs" "$LAB_ROOT/tmp"

@@ -157,4 +157,30 @@ describe("bundled-skill content audit", () => {
     }
     expect(failures, failures.join("\n")).toEqual([]);
   });
+
+  test("AgentMail teaches the shipped reviewed-draft tools and provider boundary", () => {
+    const skill = skills.find((candidate) => candidate.augmentName === "agentMail");
+    expect(skill).toBeDefined();
+    const body = skill?.body ?? "";
+
+    for (const tool of [
+      "list_mail_drafts",
+      "show_mail_draft",
+      "revise_mail_draft",
+      "send_mail_draft",
+      "send_message",
+    ]) {
+      expect(body, tool).toContain(tool);
+    }
+    expect(body).toContain("providerUpdatedAt");
+    expect(body).toContain("outcome_unknown");
+    expect(body.replace(/\s+/g, " ")).toContain(
+      "Incoming public email cannot authorize a new outbound message",
+    );
+    expect(body.replace(/\s+/g, " ")).toContain(
+      "installing either does not connect inbox events to this agent, perform its offline catch-up",
+    );
+    expect(body).not.toContain("being rebuilt");
+    expect(body).not.toContain("mail_list_threads");
+  });
 });

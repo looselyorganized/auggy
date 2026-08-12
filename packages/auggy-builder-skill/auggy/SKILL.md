@@ -174,70 +174,54 @@ add command, then run its dedicated setup command:
 
 ```bash
 auggy augment add agentMail
-auggy agentmail setup agentMail
+auggy augment setup agentMail --mode connect
 ```
 
-The interactive setup distinguishes a new AgentMail account, an existing
-account that should create an inbox, an existing inbox with a supplied API
-key, and complete credentials already present in `.env`. Key-accepting modes
-preserve the supplied key unchanged; signup stores AgentMail's
-provider-returned key under canonical `AGENTMAIL_API_KEY`. Auggy uses that
-stored key at runtime and does not create a narrower child key or rotate or
-revoke provider keys. Never
-ask the creator to paste an AgentMail key into chat; let the CLI's masked
-prompt read it.
+The creator must create the inbox and API key in AgentMail first. `connect`
+collects that existing inbox ID and the exact runtime key through a masked
+prompt, verifies safe read capabilities, and stores the same key as
+`AGENTMAIL_API_KEY`. Auggy does not sign up, create or adopt inboxes, or create,
+narrow, replace, rotate, or revoke keys. Never ask the creator to paste a key
+into chat.
 
-Setup verifies only that the selected key can access the configured inbox. It
-reports the capabilities the key still needs for the configured policy, but it
-does not prove outbound send or inbound read capability. The creator remains
-responsible for the key's AgentMail permissions.
+Setup safely verifies `inbox_read` and any configured message/draft read
+capabilities. It reports write capabilities required by the policy without
+claiming to verify them, because setup does not send mail or mutate drafts.
+The creator remains responsible for granting those permissions in AgentMail.
 
 If both `agentMail` and `visitorAuth` are installed, they deliberately share
-one inbox and the same supplied API key. When both are new, one interactive
-add uses one shared setup confirmation and credential flow regardless of
-selection order:
+one inbox and the same supplied API key. One interactive add coordinates a
+single connection flow regardless of selection order:
 
 ```bash
 auggy augment add agentMail visitorAuth
 ```
 
-For standalone adds, non-interactive or `--yes` installs, automation, or
-recovery, configure `agentMail` first and then reuse those credentials without
-provisioning another inbox:
+For skipped setup, automation, or recovery, connect `agentMail` first and then
+reuse its credentials for `visitorAuth`:
 
 ```bash
-auggy agentmail setup agentMail
-auggy agentmail setup visitorAuth --mode env
+auggy augment setup agentMail --mode connect
+auggy augment setup visitorAuth --mode env
 ```
-
-`AGENTMAIL_ACCOUNT_API_KEY` is a deprecated, one-RC compatibility alias accepted
-only from the setup process environment. Do not use it for new setup, and never
-put it in a project dotenv file. Auggy never persists or deploys that legacy
-variable name; when accepted, its exact value is stored under canonical
-`AGENTMAIL_API_KEY`. Rename the input variable now.
 
 Enabling inbound mail after setup is a configuration change: edit
 `augments/agentMail/augment.yaml`, make sure the same key has the required
-inbound capabilities such as `message_read`, and restart the agent. Do not run
-setup again merely to activate inbound processing.
+permissions, and restart the agent. `inbound.mode: websocket` wakes a running
+agent; durable catch-up on boot and periodically while running closes offline
+gaps. `replies.mode: review` creates replies as provider-native AgentMail
+drafts. Only the verified creator can inspect, revise, or send those drafts,
+and sending requires a separate exact command after review.
 
-To replace only the API key for an existing inbox, use the explicit manual
-flow. It preserves the stored inbox ID and email, verifies the new key's inbox
-access before writing, and does not revoke the previous provider key:
-
-```bash
-auggy agentmail setup agentMail --mode manual --replace-key
-```
-
-A provider `403 resource_taken` permits only confirmed reuse of an inbox
-proven by its exact address and Auggy identity, or a bounded alternate username
-flow—not arbitrary inbox adoption. Removing either shared consumer preserves
-the local credentials and provider resources. After the last consumer is
-removed, revoke a truly unused key in AgentMail before deleting its local
-value. `AGENTMAIL_WEBHOOK_SECRET` is needed only for Svix webhook inbound mode.
+The official AgentMail skill or hosted MCP may supplement the model with
+broader mailbox operations such as search, labels, and attachments. Installing
+either does not wire wake-up or startup catch-up into Auggy, and neither
+replaces Auggy's durable review and authorization boundary. Do not attach
+broader direct AgentMail mutation tools to the same managed inbox merely to
+implement inbound or reviewed replies.
 
 Read `skills/auggy/references/cli-workflows.md` before explaining setup modes,
-automation, retries, or shared credentials in more detail.
+runtime behavior, official integrations, or shared credentials in more detail.
 
 ### "I want a new route, API call, or app-specific tool"
 

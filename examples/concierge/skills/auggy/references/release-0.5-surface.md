@@ -12,7 +12,7 @@ now, but not a `1.0` stability promise.
 - typed tools,
 - identity, learned behavior, skills, and scoped filesystem access,
 - knowledge, web fetch, layered memory, and visitor recognition,
-- notify, published AgentMail outbound, MCP, and Telegram,
+- notify, MCP, and Telegram,
 - Railway deployment.
 
 ## Advanced Preview
@@ -22,9 +22,9 @@ now, but not a `1.0` stability promise.
 - generated TypeScript route clients,
 - delegated app authorization,
 - Stripe webhook signature policy.
-- current-source AgentMail inbound (polling, WebSocket, or Svix webhook),
-  durable catch-up, and outbound human review; these are not in the published
-  `0.5.0` package yet.
+- provider-native AgentMail drafts, WebSocket wake-up, paginated offline
+  message catch-up, exact-key existing-inbox connection, and explicit creator
+  review; confirm the installed release candidate contains this surface.
 
 These capabilities are optional and do not make Auggy a general app backend.
 
@@ -45,7 +45,7 @@ These capabilities are optional and do not make Auggy a general app backend.
 ## Launch Posture
 
 - npm package is public preview software.
-- Source may remain private during preview.
+- Source is public at `looselyorganized/auggy`.
 - License is Apache-2.0.
 - Public docs and support live on `auggy.dev`.
 - Pin exact versions for production work.

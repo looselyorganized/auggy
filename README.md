@@ -36,9 +36,7 @@ auggy run
 ```
 
 The command above installs the published RC.9 package. This source branch may
-contain unreleased changes. In particular, operator-owned AgentMail key
-lifecycle and the Bun WebSocket compatibility fix described in the source docs
-ship in the next release candidate; they are not present in RC.9.
+contain unreleased changes.
 
 `auggy create` walks through the model provider, model, and agent identity,
 adds the core augments, then installs the agent's local dependencies. Choose Anthropic, OpenAI,
@@ -230,7 +228,7 @@ Core augments make the default agent work and are installed by `auggy create`.
 | `knowledge` | Local Markdown or API-backed reference material |
 | `layeredMemory` | Peer-scoped episodic memory backed by SQLite |
 | `visitorAuth` | Email magic-link recognition for returning visitors |
-| `agentMail` | Policy-gated send/receive email with durable inbound recovery and outbound review |
+| `agentMail` | Provider-native inboxes and drafts with durable inbound catch-up and creator review |
 | `notify` | Outbound alerts through file, webhook, Telegram, or AgentMail |
 | `telegramTransport` | Bidirectional Telegram conversations |
 | `mcp` | Tools exposed by local or remote MCP servers |
@@ -333,16 +331,14 @@ recognized identity across sessions:
 
 ```bash
 auggy augment add visitorAuth
-auggy agentmail setup visitorAuth
+auggy agentmail setup visitorAuth --mode connect
 ```
 
-The setup wizard separates new-account signup, existing-account provisioning,
-existing-inbox connection, and `.env` reuse. Key-accepting modes preserve the
-supplied key unchanged; signup stores AgentMail's provider-returned key under
-canonical `AGENTMAIL_API_KEY`. Auggy does not create a second key or narrow,
-rotate, or revoke provider keys. See the
+Create the inbox and API key in AgentMail, then connect their exact values.
+Auggy verifies access and stores that key unchanged; it does not create,
+narrow, rotate, or revoke provider keys. See the
 [`visitorAuth` operator reference](./docs/19-visitor-auth.md#agentmail-setup)
-for inputs, key scope, shared-inbox sequencing, and recovery.
+for inputs, permissions, shared-inbox sequencing, and recovery.
 
 When the agent also needs its own mailbox, add both canonical augments in one
 interactive command:
@@ -351,12 +347,11 @@ interactive command:
 auggy augment add agentMail visitorAuth
 ```
 
-The post-add flow uses one shared setup confirmation and one provider-credential
-and provisioning flow. It configures `agentMail` first, then attaches `visitorAuth`
-to the same inbox and API key through environment reuse without asking for
-credentials again. The result is independent of argument or picker order.
-`--yes` deliberately skips optional post-add setup, so use the manual sequence
-in the operator references when automating installation.
+The post-add flow uses one shared setup confirmation. It connects `agentMail`
+to an existing inbox and exact API key, then configures `visitorAuth` to reuse
+the same environment values without asking again. The result is independent
+of argument or picker order. `--yes` skips optional post-add setup, so use the
+explicit sequence in the operator references when automating installation.
 
 ## Connect External Tools With MCP
 
@@ -415,11 +410,13 @@ public-preview line:
 
 ```bash
 auggy augment add agentMail
-auggy agentmail setup agentMail
+auggy agentmail setup agentMail --mode connect
 ```
 
 See the [`agentMail` operator reference](./docs/22-agent-mail.md) for inbox,
-API-key, and inbound-policy configuration.
+API-key, inbound-policy, provider-draft review, and recovery configuration.
+Run one live Auggy consumer per logical inbox. WebSocket delivery wakes a live
+agent; paginated catch-up reconciles messages missed while it was offline.
 
 Removing `agentMail` or `visitorAuth` never revokes AgentMail resources or
 deletes shared `AGENTMAIL_*` values automatically. Confirm every shared
@@ -518,7 +515,7 @@ is unavailable, it opens the password screen and points to the applicable
 | `auggy chat [name]` | Open a running agent's browser chat |
 | `auggy augment list` | Show core, stable, and preview augments |
 | `auggy augment add [name...]` | Select or add built-in augments |
-| `auggy agentmail setup [target]` | Configure AgentMail for a canonical `agentMail` or `visitorAuth` mount |
+| `auggy agentmail setup [target]` | Connect an existing AgentMail inbox and exact API key to `agentMail` or `visitorAuth` |
 | `auggy augment setup <name>` | Run a supported augment setup recipe |
 | `auggy augment create <name>` | Create and register a custom augment in the current agent |
 | `auggy augment install <agent> <path>` | Import a custom augment authored elsewhere |

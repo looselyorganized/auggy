@@ -247,8 +247,8 @@ volume even when an agent's portable config uses a project-relative default:
 - `/app/data/telegram-replay.db` (`telegramTransport` update-claim ledger)
 - `/app/data/durable-jobs.sqlite` (optional `DJOB/v2` jobs, schedules, leases,
   and incident history)
-- `/app/data/agent-mail/<augment-name>/agent-mail.db` (`agentMail`; each
-  instance receives an isolated state namespace)
+- `/app/data/agent-mail/<augment-name>/orchestration.db` (`agentMail`; provider
+  references, catch-up cursor, review state, and operator audit)
 - `/app/data/file-memory/<augment-name>.md` (mutable `fileMemory`; seeded once
   from the image-owned source)
 - `/app/data/notifications.jsonl` (the scaffolded relative `log-to-file`
@@ -372,14 +372,15 @@ triggers `railway up`.
 For production magic-link email, run:
 
 ```bash
-auggy augment setup visitorAuth
+auggy augment setup visitorAuth --mode connect
 ```
 
-This provisions or configures the AgentMail inbox used by `visitorAuth`, writes
-`AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` to `.env`, and updates
+Create the inbox and API key in AgentMail first. Setup verifies that exact key
+against that exact inbox, writes `AGENTMAIL_API_KEY` and
+`AGENTMAIL_INBOX_ID` to `.env`, and updates
 `augments/visitorAuth/augment.yaml` to use `agentMail.transport: agentmail`.
-The exact supplied key is retained for runtime use; Auggy does not create,
-narrow, rotate, or revoke another key.
+Auggy retains the supplied key unchanged and never creates, narrows, rotates,
+replaces, or revokes a provider key.
 
 When the agent also mounts `agentMail`, both augments share one inbox and
 API key. A single interactive add coordinates that topology with one setup
@@ -389,27 +390,33 @@ confirmation and credential flow:
 auggy augment add agentMail visitorAuth
 ```
 
-It configures `agentMail` first and attaches `visitorAuth` through environment
-reuse, independent of selection order. If setup was skipped, the augments were
-added separately, or a provider step failed, recover explicitly before deploy:
+It connects `agentMail` first and attaches `visitorAuth` through environment
+reuse, independent of selection order. If setup was skipped or the augments
+were added separately, connect them explicitly before deploy:
 
 ```bash
-auggy augment setup agentMail
+auggy augment setup agentMail --mode connect
 auggy augment setup visitorAuth --mode env
 ```
 
-Use `AGENTMAIL_API_KEY` as the canonical setup and runtime input. For one RC,
-`AGENTMAIL_ACCOUNT_API_KEY` remains a deprecated process-only alias; setup
-rejects it in project dotenv files, and deploy never sends it to Railway.
 Removing either augment leaves provider resources and shared runtime values
 intact. Confirm every consumer before deleting the local or Railway value;
 Auggy never revokes the provider key.
 
-After setup, enabling inbound or changing reply policy is a YAML edit plus
-restart/redeploy. Do not rerun setup unless attaching another canonical
-consumer or explicitly replacing the key. If the selected key is too narrow,
-update its AgentMail permissions or run
-`auggy augment setup agentMail --mode manual --replace-key` before redeploying.
+`visitorAuth` only sends magic links; it does not depend on `agentMail` inbound
+processing. The visitor's click returns to Auggy's public verification route.
+Enabling mailbox inbound or changing reply policy is a YAML edit plus
+restart/redeploy, not another setup run. If the selected key lacks a required
+permission, update it in AgentMail or intentionally connect a different exact
+key.
+
+Run one live Auggy replica per logical AgentMail inbox. A live WebSocket wakes
+the agent for new mail, while paginated provider catch-up reconciles messages
+missed during disconnects and restarts. The orchestration database must stay on
+the Railway volume. Provider delivery-lifecycle events missed while the agent
+is offline cannot be reconstructed per message; see
+[AgentMail](./22-agent-mail.md#recovery-and-errors) for the complete recovery
+boundary.
 
 Console magic links are local-only. Deploy preflight fails if `visitorAuth` is
 still configured with `agentMail.transport: console`, unless
@@ -509,7 +516,7 @@ contract connects them to a common bounded signal boundary.
 | Deploy preflight fails because webTransport is not on 8080 | Set `port: 8080` under `config` in `augments/webTransport/augment.yaml`. |
 | Health check does not pass after deploy | Run `auggy logs` and inspect the boot error. The cloud record is still written, so redeploy with `auggy deploy --yes` after fixing. |
 | visitorAuth refuses to boot — "publicUrl required" | Check that `augments/visitorAuth/augment.yaml` has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy` to refresh. |
-| Deploy preflight fails because visitorAuth uses console mail | If `agentMail` is installed, run `auggy augment setup agentMail` followed by `auggy augment setup visitorAuth --mode env`; otherwise run `auggy augment setup visitorAuth`. Set `allowConsoleInProduction: true` only for smoke tests where log-visible magic links are acceptable. |
+| Deploy preflight fails because visitorAuth uses console mail | If `agentMail` is installed, run `auggy augment setup agentMail --mode connect` followed by `auggy augment setup visitorAuth --mode env`; otherwise run `auggy augment setup visitorAuth --mode connect`. Set `allowConsoleInProduction: true` only for smoke tests where log-visible magic links are acceptable. |
 | Deploy preflight fails because MCP has an enabled `stdio` server | Use a remote HTTPS MCP server for cloud, or mark the local server `cloud: "disabled"` in `.mcp.json`. |
 | Runtime refuses to start with a volume-admission error | Confirm Railway mounted a real volume at exactly `/app/data`, exposes `RAILWAY_VOLUME_MOUNT_PATH=/app/data`, and permits the generated entrypoint to set the root to mode `0700`. Remove symlinked state directories; the startup probe intentionally fails before state can fall back to ephemeral disk. |
 | Memory disappears after redeploy | Check Railway dashboard → service → Volumes and confirm the mount is `/app/data`. Core SQLite augments resolve directly to that root; do not repair this by adding an `/app/*.db` symlink. |
