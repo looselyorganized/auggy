@@ -26,12 +26,10 @@ describe("agentMail replacement boundary", () => {
       agentMail({
         apiKey: "am_test",
         inboxId: "support@agentmail.to",
-        inbound: {
-          mode: "none",
-          creatorDigest: { enabled: true, destination: "creator" },
-        } as never,
-      }),
-    ).toThrow('unsupported inbound field "creatorDigest"');
+        inbound: { mode: "none" },
+        creatorDigest: { enabled: true, destination: "creator" },
+      } as never),
+    ).toThrow('unsupported config field "creatorDigest"');
   });
 
   test("fails with actionable required-credential errors", () => {

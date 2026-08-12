@@ -31,16 +31,11 @@ import {
 import { DEFAULT_EXTRACTION_BUFFER_LIMITS } from "../augments/layeredMemory/extractor/buffer";
 import { MAX_PROVIDER_REQUEST_TIMEOUT_MS } from "../engines/_shared/provider-resilience";
 import { parseUtcCron } from "../jobs/cron";
-import { isWellFormedEmail } from "../augments/visitorAuth/email-validation";
-import {
-  agentMailInboundRequiresAdminRoute,
-  validateAgentMailInboundConfig,
-} from "../augments/agentMail/config";
+import { validateAgentMailConfig } from "../augments/agentMail/config";
 import {
   collectNotifyDestinationPolicyBindings,
   validateUniqueNotifyDestinationNames,
 } from "../augments/notify/destination-policy";
-import type { AgentMailOutboundOptions } from "../types";
 
 // ---------------------------------------------------------------------------
 // .env loading
@@ -1440,170 +1435,15 @@ function validateNotifyOptions(
   }
 }
 
-const VALID_TRUST_LEVELS = new Set(["creator", "agent", "public"]);
-
 function validateAgentMailOptions(
   opts: Record<string, unknown>,
   prefix: string,
   errors: string[],
 ): void {
-  if (typeof opts.apiKey !== "string" || !opts.apiKey) {
-    errors.push(`${prefix}.apiKey: required string (set AGENTMAIL_API_KEY in .env)`);
-  }
-  if (typeof opts.inboxId !== "string" || !opts.inboxId) {
-    errors.push(`${prefix}.inboxId: required string (set AGENTMAIL_INBOX_ID in .env)`);
-  }
-  if (opts.emailAddress !== undefined) {
-    if (typeof opts.emailAddress !== "string" || !isWellFormedEmail(opts.emailAddress)) {
-      errors.push(`${prefix}.emailAddress: must be a well-formed email address`);
-    }
-  }
-  if (
-    opts.addressVisibility !== undefined &&
-    opts.addressVisibility !== "creator" &&
-    opts.addressVisibility !== "public"
-  ) {
-    errors.push(`${prefix}.addressVisibility: must be "creator" or "public"`);
-  }
-
-  if (opts.outbound !== undefined) {
-    if (typeof opts.outbound !== "object" || opts.outbound === null) {
-      errors.push(`${prefix}.outbound: must be an object`);
-    } else {
-      const out = opts.outbound as Record<string, unknown>;
-
-      if (out.allowedTrustLevels !== undefined) {
-        if (!Array.isArray(out.allowedTrustLevels)) {
-          errors.push(`${prefix}.outbound.allowedTrustLevels: must be an array`);
-        } else {
-          for (let i = 0; i < out.allowedTrustLevels.length; i++) {
-            const lvl = out.allowedTrustLevels[i];
-            if (typeof lvl !== "string" || !VALID_TRUST_LEVELS.has(lvl)) {
-              errors.push(
-                `${prefix}.outbound.allowedTrustLevels[${i}]: must be one of "creator", "agent", "public" (got ${JSON.stringify(lvl)})`,
-              );
-            }
-          }
-        }
-      }
-
-      if (out.allowedRecipients !== undefined) {
-        if (!Array.isArray(out.allowedRecipients)) {
-          errors.push(`${prefix}.outbound.allowedRecipients: must be an array`);
-        } else {
-          for (let i = 0; i < out.allowedRecipients.length; i++) {
-            const r = out.allowedRecipients[i];
-            if (typeof r !== "string" || r.length === 0) {
-              errors.push(
-                `${prefix}.outbound.allowedRecipients[${i}]: must be a non-empty string (email or "*@domain")`,
-              );
-            }
-          }
-        }
-      }
-
-      if (
-        out.maxRecipients !== undefined &&
-        (typeof out.maxRecipients !== "number" ||
-          !Number.isSafeInteger(out.maxRecipients) ||
-          out.maxRecipients <= 0)
-      ) {
-        errors.push(`${prefix}.outbound.maxRecipients: must be a positive integer`);
-      }
-      if (
-        out.bodyMaxBytes !== undefined &&
-        (typeof out.bodyMaxBytes !== "number" ||
-          !Number.isSafeInteger(out.bodyMaxBytes) ||
-          out.bodyMaxBytes <= 0 ||
-          out.bodyMaxBytes > 1024 * 1024)
-      ) {
-        errors.push(`${prefix}.outbound.bodyMaxBytes: must be an integer between 1 and 1048576`);
-      }
-
-      if (out.subjectPrefix !== undefined) {
-        if (typeof out.subjectPrefix !== "string") {
-          errors.push(`${prefix}.outbound.subjectPrefix: must be a string`);
-        } else if (out.subjectPrefix.length === 0) {
-          errors.push(`${prefix}.outbound.subjectPrefix: cannot be the empty string`);
-        }
-      }
-
-      if (out.allowHtml !== undefined && typeof out.allowHtml !== "boolean") {
-        errors.push(`${prefix}.outbound.allowHtml: must be a boolean`);
-      }
-
-      if (out.rateLimit !== undefined) {
-        if (typeof out.rateLimit !== "object" || out.rateLimit === null) {
-          errors.push(`${prefix}.outbound.rateLimit: must be an object`);
-        } else {
-          const rl = out.rateLimit as Record<string, unknown>;
-          const rlNumeric = [
-            "globalMaxPerHour",
-            "perRecipientCooldownMs",
-            "dedupWindowMs",
-          ] as const;
-          for (const field of rlNumeric) {
-            if (
-              rl[field] !== undefined &&
-              (typeof rl[field] !== "number" || (rl[field] as number) < 0)
-            ) {
-              errors.push(`${prefix}.outbound.rateLimit.${field}: must be a non-negative number`);
-            }
-          }
-          if (rl.enabled !== undefined && typeof rl.enabled !== "boolean") {
-            errors.push(`${prefix}.outbound.rateLimit.enabled: must be a boolean`);
-          }
-        }
-      }
-
-      if (out.humanReview !== undefined) {
-        if (typeof out.humanReview !== "object" || out.humanReview === null) {
-          errors.push(`${prefix}.outbound.humanReview: must be an object`);
-        } else {
-          const review = out.humanReview as Record<string, unknown>;
-          if (review.requiredForTrustLevels !== undefined) {
-            if (!Array.isArray(review.requiredForTrustLevels)) {
-              errors.push(
-                `${prefix}.outbound.humanReview.requiredForTrustLevels: must be an array`,
-              );
-            } else {
-              for (let i = 0; i < review.requiredForTrustLevels.length; i++) {
-                const level = review.requiredForTrustLevels[i];
-                if (typeof level !== "string" || !VALID_TRUST_LEVELS.has(level)) {
-                  errors.push(
-                    `${prefix}.outbound.humanReview.requiredForTrustLevels[${i}]: must be one of "creator", "agent", "public" (got ${JSON.stringify(level)})`,
-                  );
-                }
-              }
-            }
-          }
-          if (
-            review.expiresAfterMs !== undefined &&
-            (typeof review.expiresAfterMs !== "number" ||
-              !Number.isSafeInteger(review.expiresAfterMs) ||
-              review.expiresAfterMs <= 0 ||
-              review.expiresAfterMs > 30 * 24 * 60 * 60_000)
-          ) {
-            errors.push(
-              `${prefix}.outbound.humanReview.expiresAfterMs: must be between 1 and 2592000000`,
-            );
-          }
-        }
-      }
-    }
-  }
-
-  if (opts.inbound !== undefined) {
-    try {
-      validateAgentMailInboundConfig(
-        opts.inbound,
-        opts.outbound && typeof opts.outbound === "object" && !Array.isArray(opts.outbound)
-          ? (opts.outbound as AgentMailOutboundOptions)
-          : undefined,
-      );
-    } catch (error) {
-      errors.push(`${prefix}.inbound: ${(error as Error).message}`);
-    }
+  try {
+    validateAgentMailConfig(opts);
+  } catch (error) {
+    errors.push(`${prefix}: ${(error as Error).message}`);
   }
 }
 
@@ -2341,68 +2181,6 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
       validateUniqueNotifyDestinationNames(notifyBindings);
     } catch (error) {
       errors.push((error as Error).message);
-    }
-
-    const agentMailWebhookConfigured = augments.some((entry) => {
-      if (typeof entry !== "object" || entry === null) return false;
-      const augment = entry as Record<string, unknown>;
-      if (augment.type !== "agentMail") return false;
-      const options = augment.options as Record<string, unknown> | undefined;
-      const inbound = options?.inbound as Record<string, unknown> | undefined;
-      return inbound?.mode === "webhook";
-    });
-    const agentMailReviewConfigured = augments.some((entry) => {
-      if (typeof entry !== "object" || entry === null) return false;
-      const augment = entry as Record<string, unknown>;
-      if (augment.type !== "agentMail") return false;
-      const options = augment.options as Record<string, unknown> | undefined;
-      const outbound = options?.outbound as Record<string, unknown> | undefined;
-      if (options?.inbound !== undefined) {
-        try {
-          const validatedInbound = validateAgentMailInboundConfig(
-            options.inbound,
-            outbound && !Array.isArray(outbound)
-              ? (outbound as AgentMailOutboundOptions)
-              : undefined,
-          );
-          if (agentMailInboundRequiresAdminRoute(validatedInbound)) return true;
-        } catch {
-          // AgentMail option validation above reports the precise malformed
-          // inbound/outbound field. Dependency analysis must not mask it.
-        }
-      }
-      const allowed = Array.isArray(outbound?.allowedTrustLevels)
-        ? outbound.allowedTrustLevels
-        : ["creator"];
-      const humanReview = outbound?.humanReview as Record<string, unknown> | undefined;
-      const reviewed = Array.isArray(humanReview?.requiredForTrustLevels)
-        ? humanReview.requiredForTrustLevels
-        : ["public"];
-      const executableTrustLevels = new Set(["creator", ...allowed]);
-      return reviewed.some((level) => executableTrustLevels.has(level));
-    });
-    const hasWebTransport = augments.some(
-      (entry) =>
-        typeof entry === "object" &&
-        entry !== null &&
-        (entry as Record<string, unknown>).type === "webTransport",
-    );
-    const hasAdminWebTransport = augments.some((entry) => {
-      if (typeof entry !== "object" || entry === null) return false;
-      const augment = entry as Record<string, unknown>;
-      if (augment.type !== "webTransport") return false;
-      const options = augment.options as Record<string, unknown> | undefined;
-      return options?.adminRoute !== false;
-    });
-    if (agentMailWebhookConfigured && !hasWebTransport) {
-      errors.push(
-        'agentMail inbound.mode "webhook" requires a webTransport augment to mount its verified HTTP route',
-      );
-    }
-    if (agentMailReviewConfigured && !hasAdminWebTransport) {
-      errors.push(
-        "agentMail human review requires a webTransport augment with adminRoute enabled for review decisions",
-      );
     }
   }
 

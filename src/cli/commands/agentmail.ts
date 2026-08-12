@@ -27,11 +27,9 @@ import {
 } from "../augment-catalog";
 import { isWellFormedEmail } from "../../augments/visitorAuth/email-validation";
 import {
-  agentMailInboundRequiresAdminRoute,
-  validateAgentMailInboundConfig,
-  type ValidatedAgentMailInboundConfig,
+  validateAgentMailConfig,
+  type ValidatedAgentMailConfig,
 } from "../../augments/agentMail/config";
-import type { AgentMailOutboundOptions } from "../../types";
 
 export type AgentMailSetupTarget = AgentMailProvisioningTarget;
 export type AgentMailSetupMode = "signup" | "existing" | "manual" | "env";
@@ -706,7 +704,7 @@ interface AgentMailConfigPlan {
   requiredPermissions: AgentMailRequiredPermissions;
   requiresWebTransport: boolean;
   requiresAdminWebTransport: boolean;
-  inboundReplyMode?: ValidatedAgentMailInboundConfig["replies"]["mode"];
+  inboundReplyMode?: ValidatedAgentMailConfig["replies"]["mode"];
 }
 
 function planAgentMailConfig(
@@ -727,28 +725,7 @@ function planAgentMailConfig(
     doc.config && typeof doc.config === "object" && !Array.isArray(doc.config)
       ? (doc.config as Record<string, unknown>)
       : {};
-  let validatedInbound: ValidatedAgentMailInboundConfig | undefined;
-  if (target === "agentMail" && config.inbound !== undefined) {
-    try {
-      validatedInbound = validateAgentMailInboundConfig(
-        config.inbound,
-        config.outbound && typeof config.outbound === "object" && !Array.isArray(config.outbound)
-          ? (config.outbound as AgentMailOutboundOptions)
-          : undefined,
-      );
-    } catch (error) {
-      throw new Error(
-        `${displayPath(augmentPath)} config.inbound is invalid: ${(error as Error).message}`,
-      );
-    }
-  }
-  const inboundEnabled = validatedInbound !== undefined && validatedInbound.config.mode !== "none";
-  const requiredPermissions = buildAgentMailRequiredPermissions({
-    inboundEnabled,
-    processSpam: validatedInbound?.processedEventTypes.includes("message.received.spam") ?? false,
-    processBlocked:
-      validatedInbound?.processedEventTypes.includes("message.received.blocked") ?? false,
-  });
+  let validatedAgentMail: ValidatedAgentMailConfig | undefined;
 
   if (target === "visitorAuth") {
     const currentAgentMail =
@@ -774,17 +751,27 @@ function planAgentMailConfig(
     config.inboxId = "${AGENTMAIL_INBOX_ID}";
     config.emailAddress = "${AGENTMAIL_INBOX_EMAIL}";
     config.addressVisibility ??= "creator";
+    try {
+      validatedAgentMail = validateAgentMailConfig(config);
+    } catch (error) {
+      throw new Error(`${displayPath(augmentPath)} config is invalid: ${(error as Error).message}`);
+    }
   }
+
+  const requiredPermissions = buildAgentMailRequiredPermissions({
+    inboundEnabled: validatedAgentMail?.inbound.mode === "websocket",
+    processSpam: false,
+    processBlocked: false,
+  });
 
   doc.config = config;
   return {
     expectedAugmentConfig,
     updatedAugmentConfig: stringifyYaml(doc),
     requiredPermissions,
-    requiresWebTransport: validatedInbound?.config.mode === "webhook",
-    requiresAdminWebTransport:
-      validatedInbound !== undefined && agentMailInboundRequiresAdminRoute(validatedInbound),
-    ...(validatedInbound ? { inboundReplyMode: validatedInbound.replies.mode } : {}),
+    requiresWebTransport: false,
+    requiresAdminWebTransport: false,
+    ...(validatedAgentMail ? { inboundReplyMode: validatedAgentMail.replies.mode } : {}),
   };
 }
 

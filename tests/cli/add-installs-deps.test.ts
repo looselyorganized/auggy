@@ -685,8 +685,9 @@ describe("runAdd no-op cases", () => {
       type: "agentMail",
       config: {
         addressVisibility: "creator",
-        dbPath: "./data/agent-mail.db",
+        dbPath: "./data/agent-mail/agentMail/orchestration.db",
         inbound: { mode: "none" },
+        replies: { mode: "disabled", allowReplyAll: false },
       },
     });
 

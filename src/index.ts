@@ -182,13 +182,12 @@ export type { WebFetchOptions, WebFetchResult } from "./augments/webFetch";
 export { agentMail } from "./augments/agentMail";
 export type {
   AgentMailAugmentOptions,
-  AgentMailCreatorDigestOptions,
   AgentMailOutboundOptions,
-  AgentMailRateLimitOptions,
+  AgentMailOutboundRateLimitOptions,
   AgentMailInboundConfig,
   AgentMailInboundMode,
-  AgentMailInboundReplyMode,
-  AgentMailInboundReplyOptions,
+  AgentMailReplyMode,
+  AgentMailReplyOptions,
   AgentMailAddressVisibility,
 } from "./types";
 

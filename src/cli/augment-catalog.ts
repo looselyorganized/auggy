@@ -283,7 +283,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     label: "Agent Mail",
     tagline: "send and receive email through AgentMail",
     description:
-      "Policy-gated AgentMail transport with durable polling, WebSocket, or Svix webhook inbound plus send / reply / forward tools. Inbound is disabled by default; enabling it requires an explicit allowlist or deliberately public, rate-limited sender policy.",
+      "Provider-native AgentMail inbox, threads, and drafts with WebSocket wake-up, offline catch-up, and creator-reviewed replies. Inbound is disabled by default; enabling it requires an allowlist or deliberately public, rate-limited sender policy.",
     type: "agentMail",
     defaultName: "agentMail",
     defaultOptions: {
@@ -291,24 +291,23 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       inboxId: "${AGENTMAIL_INBOX_ID}",
       emailAddress: "${AGENTMAIL_INBOX_EMAIL}",
       addressVisibility: "creator",
-      dbPath: "./agent-mail.db",
+      dbPath: "./data/agent-mail/agentMail/orchestration.db",
+      inbound: { mode: "none" },
+      replies: {
+        mode: "disabled",
+        allowReplyAll: false,
+      },
       outbound: {
         allowedTrustLevels: ["creator"],
-        humanReview: {
-          requiredForTrustLevels: ["public"],
-          expiresAfterMs: 86_400_000,
-        },
         subjectPrefix: "[Auggy] ",
         maxRecipients: 10,
         bodyMaxBytes: 102_400,
-        allowHtml: false,
         rateLimit: {
           globalMaxPerHour: 10,
           perRecipientCooldownMs: 300_000,
           dedupWindowMs: 300_000,
         },
       },
-      inbound: { mode: "none" },
     },
     required: false,
     stability: "stable",

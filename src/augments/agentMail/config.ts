@@ -1,25 +1,76 @@
 import type {
-  AgentMailInboundConfig,
+  AgentMailAugmentOptions,
   AgentMailInboundMode,
-  AgentMailInboundReplyMode,
-  AgentMailOutboundOptions,
+  AgentMailReplyMode,
+  TrustLevel,
 } from "../../types";
+import { isWellFormedEmail } from "../visitorAuth/email-validation";
 
-const INBOUND_MODES = new Set<AgentMailInboundMode>(["none", "websocket", "polling", "webhook"]);
-const REPLY_MODES = new Set<AgentMailInboundReplyMode>(["disabled", "review", "automatic"]);
-const RECEIVED_EVENT_TYPES = [
-  "message.received",
-  "message.received.spam",
-  "message.received.blocked",
-  "message.received.unauthenticated",
-] as const;
+const TOP_LEVEL_FIELDS = new Set([
+  "apiKey",
+  "inboxId",
+  "emailAddress",
+  "addressVisibility",
+  "apiBaseUrl",
+  "websocketBaseUrl",
+  "allowInsecureHttpWithCredentials",
+  "dbPath",
+  "inbound",
+  "replies",
+  "outbound",
+]);
+const INBOUND_FIELDS = new Set(["mode", "allowedSenders", "allowAnySender", "rateLimit"]);
+const REPLY_FIELDS = new Set(["mode", "allowReplyAll"]);
+const OUTBOUND_FIELDS = new Set([
+  "allowedTrustLevels",
+  "allowedRecipients",
+  "maxRecipients",
+  "bodyMaxBytes",
+  "subjectPrefix",
+  "rateLimit",
+]);
+const INBOUND_RATE_FIELDS = new Set(["globalMaxPerHour", "perSenderMaxPerHour"]);
+const OUTBOUND_RATE_FIELDS = new Set([
+  "globalMaxPerHour",
+  "perRecipientCooldownMs",
+  "dedupWindowMs",
+]);
+const TRUST_LEVELS = new Set<TrustLevel>(["creator", "agent", "public"]);
+const SENDER_PATTERN = /^\*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
 
-export interface ValidatedAgentMailInboundConfig {
-  config: AgentMailInboundConfig;
-  processedEventTypes: Array<(typeof RECEIVED_EVENT_TYPES)[number]>;
+export interface ValidatedAgentMailConfig {
+  apiKey: string;
+  inboxId: string;
+  emailAddress?: string;
+  addressVisibility: "creator" | "public";
+  apiBaseUrl?: string;
+  websocketBaseUrl?: string;
+  allowInsecureHttpWithCredentials: boolean;
+  dbPath: string;
+  inbound: {
+    mode: AgentMailInboundMode;
+    senderPolicy: "disabled" | "allowlist" | "any";
+    allowedSenders: string[];
+    rateLimit: {
+      globalMaxPerHour: number;
+      perSenderMaxPerHour: number;
+    };
+  };
   replies: {
-    mode: AgentMailInboundReplyMode;
+    mode: AgentMailReplyMode;
     allowReplyAll: boolean;
+  };
+  outbound: {
+    allowedTrustLevels: TrustLevel[];
+    allowedRecipients?: string[];
+    maxRecipients: number;
+    bodyMaxBytes: number;
+    subjectPrefix: string;
+    rateLimit: {
+      globalMaxPerHour: number;
+      perRecipientCooldownMs: number;
+      dedupWindowMs: number;
+    };
   };
 }
 
@@ -30,105 +81,273 @@ function objectValue(value: unknown, label: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-/**
- * Transitional validator for the replacement mount. It deliberately accepts
- * only the retained public fields; deleted creator-digest/review-store fields
- * fail instead of silently reviving the previous runtime.
- */
-export function validateAgentMailInboundConfig(
+function rejectUnknownFields(
+  value: Record<string, unknown>,
+  fields: ReadonlySet<string>,
+  label: string,
+): void {
+  const unknown = Object.keys(value).find((key) => !fields.has(key));
+  if (unknown) throw new Error(`agentMail: unsupported ${label} field ${JSON.stringify(unknown)}`);
+}
+
+function requiredString(value: unknown, field: string, env?: string): string {
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(
+      `agentMail: ${field} is required${env === undefined ? "" : ` (set ${env} in .env)`}`,
+    );
+  }
+  return value;
+}
+
+function optionalString(value: unknown, field: string): string | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.trim() === "") {
+    throw new Error(`agentMail: ${field} must be a non-empty string`);
+  }
+  return value;
+}
+
+function boundedInteger(
   value: unknown,
-  _outbound?: AgentMailOutboundOptions,
-): ValidatedAgentMailInboundConfig {
-  const inbound = objectValue(value, "inbound");
-  const supported = new Set([
-    "mode",
-    "allowedSenders",
-    "allowAnySender",
-    "rateLimit",
-    "classifications",
-    "replies",
-    "pollIntervalMs",
-    "maxPromptBytes",
-    "maxAttempts",
-    "websocketBaseUrl",
-    "webhook",
-  ]);
-  for (const key of Object.keys(inbound)) {
-    if (!supported.has(key)) {
-      throw new Error(`agentMail: unsupported inbound field ${JSON.stringify(key)}`);
+  fallback: number,
+  field: string,
+  minimum: number,
+  maximum: number,
+): number {
+  const candidate = value ?? fallback;
+  if (
+    typeof candidate !== "number" ||
+    !Number.isSafeInteger(candidate) ||
+    candidate < minimum ||
+    candidate > maximum
+  ) {
+    throw new Error(`agentMail: ${field} must be an integer from ${minimum} to ${maximum}`);
+  }
+  return candidate;
+}
+
+function senderPattern(value: unknown, field: string): string {
+  if (typeof value !== "string") {
+    throw new Error(`agentMail: ${field} must be an email address or *@domain pattern`);
+  }
+  const normalized = value.trim().toLowerCase();
+  if (!isWellFormedEmail(normalized) && !SENDER_PATTERN.test(normalized)) {
+    throw new Error(`agentMail: ${field} must be an email address or *@domain pattern`);
+  }
+  return normalized;
+}
+
+function stringArray(value: unknown, field: string): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value) || value.length === 0 || value.length > 1_000) {
+    throw new Error(`agentMail: ${field} must be a non-empty array with at most 1000 entries`);
+  }
+  const normalized = value.map((entry, index) => senderPattern(entry, `${field}[${index}]`));
+  if (new Set(normalized).size !== normalized.length) {
+    throw new Error(`agentMail: ${field} must not contain duplicate entries`);
+  }
+  return normalized;
+}
+
+/**
+ * Compile the only supported AgentMail configuration contract. The returned
+ * object is normalized and safe for runtime policy decisions; callers must not
+ * read policy directly from the unvalidated YAML object.
+ */
+export function validateAgentMailConfig(value: unknown): ValidatedAgentMailConfig {
+  const config = objectValue(value, "config");
+  rejectUnknownFields(config, TOP_LEVEL_FIELDS, "config");
+
+  const apiKey = requiredString(config.apiKey, "apiKey", "AGENTMAIL_API_KEY");
+  const inboxId = requiredString(config.inboxId, "inboxId", "AGENTMAIL_INBOX_ID");
+  const emailAddress = optionalString(config.emailAddress, "emailAddress");
+  if (emailAddress !== undefined && !/^\$\{[A-Z_][A-Z0-9_]*\}$/.test(emailAddress)) {
+    if (!isWellFormedEmail(emailAddress)) {
+      throw new Error("agentMail: emailAddress must be a well-formed email address");
     }
   }
+  if (
+    config.addressVisibility !== undefined &&
+    config.addressVisibility !== "creator" &&
+    config.addressVisibility !== "public"
+  ) {
+    throw new Error('agentMail: addressVisibility must be "creator" or "public"');
+  }
+  if (
+    config.allowInsecureHttpWithCredentials !== undefined &&
+    typeof config.allowInsecureHttpWithCredentials !== "boolean"
+  ) {
+    throw new Error("agentMail: allowInsecureHttpWithCredentials must be a boolean");
+  }
 
+  const inbound =
+    config.inbound === undefined ? { mode: "none" } : objectValue(config.inbound, "inbound");
+  rejectUnknownFields(inbound, INBOUND_FIELDS, "inbound");
   const mode = inbound.mode ?? "none";
-  if (typeof mode !== "string" || !INBOUND_MODES.has(mode as AgentMailInboundMode)) {
-    throw new Error('agentMail: inbound.mode must be "none", "websocket", "polling", or "webhook"');
+  if (mode !== "none" && mode !== "websocket") {
+    throw new Error('agentMail: inbound.mode must be "none" or "websocket"');
   }
   if (inbound.allowAnySender !== undefined && typeof inbound.allowAnySender !== "boolean") {
     throw new Error("agentMail: inbound.allowAnySender must be a boolean");
   }
-  if (inbound.allowedSenders !== undefined) {
-    if (
-      !Array.isArray(inbound.allowedSenders) ||
-      inbound.allowedSenders.length === 0 ||
-      inbound.allowedSenders.some((sender) => typeof sender !== "string" || sender.trim() === "")
-    ) {
-      throw new Error("agentMail: inbound.allowedSenders must be a non-empty string array");
-    }
-  }
-  if (inbound.allowAnySender === true && inbound.allowedSenders !== undefined) {
+  const allowedSenders = stringArray(inbound.allowedSenders, "inbound.allowedSenders");
+  if (inbound.allowAnySender === true && allowedSenders !== undefined) {
     throw new Error(
       "agentMail: inbound.allowedSenders and inbound.allowAnySender cannot be combined",
     );
   }
-  if (mode !== "none" && inbound.allowAnySender !== true && inbound.allowedSenders === undefined) {
+  if (mode === "none" && (inbound.allowAnySender === true || allowedSenders !== undefined)) {
+    throw new Error("agentMail: sender admission cannot be configured while inbound.mode is none");
+  }
+  if (mode === "websocket" && inbound.allowAnySender !== true && allowedSenders === undefined) {
     throw new Error(
-      "agentMail: enabled inbound requires allowedSenders or explicit allowAnySender: true",
+      "agentMail: websocket inbound requires allowedSenders or explicit allowAnySender: true",
     );
   }
+  const inboundRate =
+    inbound.rateLimit === undefined ? {} : objectValue(inbound.rateLimit, "inbound.rateLimit");
+  rejectUnknownFields(inboundRate, INBOUND_RATE_FIELDS, "inbound.rateLimit");
+  if (mode === "none" && inbound.rateLimit !== undefined) {
+    throw new Error("agentMail: inbound.rateLimit cannot be configured while inbound.mode is none");
+  }
 
-  const replies =
-    inbound.replies === undefined ? {} : objectValue(inbound.replies, "inbound.replies");
+  const replies = config.replies === undefined ? {} : objectValue(config.replies, "replies");
+  rejectUnknownFields(replies, REPLY_FIELDS, "replies");
   const replyMode = replies.mode ?? "disabled";
-  if (typeof replyMode !== "string" || !REPLY_MODES.has(replyMode as AgentMailInboundReplyMode)) {
-    throw new Error('agentMail: inbound.replies.mode must be "disabled", "review", or "automatic"');
+  if (replyMode !== "disabled" && replyMode !== "review") {
+    throw new Error('agentMail: replies.mode must be "disabled" or "review"');
   }
   if (replies.allowReplyAll !== undefined && typeof replies.allowReplyAll !== "boolean") {
-    throw new Error("agentMail: inbound.replies.allowReplyAll must be a boolean");
+    throw new Error("agentMail: replies.allowReplyAll must be a boolean");
   }
   if (mode === "none" && replyMode !== "disabled") {
-    throw new Error('agentMail: inbound.replies.mode must be "disabled" when inbound is disabled');
+    throw new Error('agentMail: replies.mode must be "disabled" when inbound is disabled');
+  }
+  if (replyMode === "disabled" && replies.allowReplyAll === true) {
+    throw new Error("agentMail: replies.allowReplyAll requires replies.mode review");
   }
 
-  const classifications =
-    inbound.classifications === undefined
-      ? {}
-      : objectValue(inbound.classifications, "inbound.classifications");
-  const eventByField = {
-    received: "message.received",
-    spam: "message.received.spam",
-    blocked: "message.received.blocked",
-    unauthenticated: "message.received.unauthenticated",
-  } as const;
-  const processedEventTypes = Object.entries(eventByField).flatMap(([field, eventType]) => {
-    const configured = classifications[field] ?? (field === "received" ? "process" : "discard");
-    if (configured !== "process" && configured !== "discard") {
-      throw new Error(`agentMail: inbound.classifications.${field} must be "process" or "discard"`);
+  const outbound = config.outbound === undefined ? {} : objectValue(config.outbound, "outbound");
+  rejectUnknownFields(outbound, OUTBOUND_FIELDS, "outbound");
+  let allowedTrustLevels: TrustLevel[] = ["creator"];
+  if (outbound.allowedTrustLevels !== undefined) {
+    if (!Array.isArray(outbound.allowedTrustLevels) || outbound.allowedTrustLevels.length === 0) {
+      throw new Error("agentMail: outbound.allowedTrustLevels must be a non-empty array");
     }
-    return configured === "process" ? [eventType] : [];
-  });
+    allowedTrustLevels = outbound.allowedTrustLevels.map((entry, index) => {
+      if (typeof entry !== "string" || !TRUST_LEVELS.has(entry as TrustLevel)) {
+        throw new Error(
+          `agentMail: outbound.allowedTrustLevels[${index}] must be creator, agent, or public`,
+        );
+      }
+      return entry as TrustLevel;
+    });
+    if (new Set(allowedTrustLevels).size !== allowedTrustLevels.length) {
+      throw new Error("agentMail: outbound.allowedTrustLevels must not contain duplicates");
+    }
+  }
+  const allowedRecipients = stringArray(outbound.allowedRecipients, "outbound.allowedRecipients");
+  const subjectPrefix = outbound.subjectPrefix ?? "[Auggy] ";
+  if (
+    typeof subjectPrefix !== "string" ||
+    subjectPrefix.length === 0 ||
+    subjectPrefix.length > 200
+  ) {
+    throw new Error("agentMail: outbound.subjectPrefix must be a string from 1 to 200 characters");
+  }
+  if (/[\r\n\0]/.test(subjectPrefix)) {
+    throw new Error("agentMail: outbound.subjectPrefix must not contain control characters");
+  }
+  const outboundRate =
+    outbound.rateLimit === undefined ? {} : objectValue(outbound.rateLimit, "outbound.rateLimit");
+  rejectUnknownFields(outboundRate, OUTBOUND_RATE_FIELDS, "outbound.rateLimit");
 
   return {
-    config: inbound as unknown as AgentMailInboundConfig,
-    processedEventTypes,
+    apiKey,
+    inboxId,
+    ...(emailAddress === undefined ? {} : { emailAddress }),
+    addressVisibility: config.addressVisibility === "public" ? "public" : "creator",
+    ...(optionalString(config.apiBaseUrl, "apiBaseUrl") === undefined
+      ? {}
+      : { apiBaseUrl: config.apiBaseUrl as string }),
+    ...(optionalString(config.websocketBaseUrl, "websocketBaseUrl") === undefined
+      ? {}
+      : { websocketBaseUrl: config.websocketBaseUrl as string }),
+    allowInsecureHttpWithCredentials: config.allowInsecureHttpWithCredentials === true,
+    dbPath:
+      optionalString(config.dbPath, "dbPath") ?? "./data/agent-mail/agentMail/orchestration.db",
+    inbound: {
+      mode,
+      senderPolicy:
+        mode === "none" ? "disabled" : inbound.allowAnySender === true ? "any" : "allowlist",
+      allowedSenders: allowedSenders ?? [],
+      rateLimit: {
+        globalMaxPerHour: boundedInteger(
+          inboundRate.globalMaxPerHour,
+          100,
+          "inbound.rateLimit.globalMaxPerHour",
+          1,
+          100_000,
+        ),
+        perSenderMaxPerHour: boundedInteger(
+          inboundRate.perSenderMaxPerHour,
+          5,
+          "inbound.rateLimit.perSenderMaxPerHour",
+          1,
+          10_000,
+        ),
+      },
+    },
     replies: {
-      mode: replyMode as AgentMailInboundReplyMode,
+      mode: replyMode,
       allowReplyAll: replies.allowReplyAll === true,
+    },
+    outbound: {
+      allowedTrustLevels,
+      ...(allowedRecipients === undefined ? {} : { allowedRecipients }),
+      maxRecipients: boundedInteger(outbound.maxRecipients, 10, "outbound.maxRecipients", 1, 50),
+      bodyMaxBytes: boundedInteger(
+        outbound.bodyMaxBytes,
+        102_400,
+        "outbound.bodyMaxBytes",
+        1,
+        1_048_576,
+      ),
+      subjectPrefix,
+      rateLimit: {
+        globalMaxPerHour: boundedInteger(
+          outboundRate.globalMaxPerHour,
+          10,
+          "outbound.rateLimit.globalMaxPerHour",
+          1,
+          10_000,
+        ),
+        perRecipientCooldownMs: boundedInteger(
+          outboundRate.perRecipientCooldownMs,
+          300_000,
+          "outbound.rateLimit.perRecipientCooldownMs",
+          0,
+          2_592_000_000,
+        ),
+        dedupWindowMs: boundedInteger(
+          outboundRate.dedupWindowMs,
+          300_000,
+          "outbound.rateLimit.dedupWindowMs",
+          0,
+          2_592_000_000,
+        ),
+      },
     },
   };
 }
 
-export function agentMailInboundRequiresAdminRoute(
-  config: ValidatedAgentMailInboundConfig,
-): boolean {
+export function agentMailRequiresAdminRoute(config: ValidatedAgentMailConfig): boolean {
   return config.replies.mode === "review";
+}
+
+/** Convert the public options type without weakening runtime validation. */
+export function validateTypedAgentMailConfig(
+  value: AgentMailAugmentOptions,
+): ValidatedAgentMailConfig {
+  return validateAgentMailConfig(value);
 }

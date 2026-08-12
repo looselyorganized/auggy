@@ -31,7 +31,7 @@ import {
 } from "../augments/notify/destination-policy";
 import { mcp } from "../augments/mcp";
 import { agentMail } from "../augments/agentMail";
-import { validateAgentMailInboundConfig } from "../augments/agentMail/config";
+import { validateAgentMailConfig } from "../augments/agentMail/config";
 import { telegramTransport } from "../augments/telegramTransport";
 import { turnControl, type TurnControlOptions } from "../augments/turnControl";
 import { visitorAuth } from "../augments/visitorAuth";
@@ -728,14 +728,8 @@ export async function resolveAugments(
   validateUniqueNotifyDestinationNames(notifyBindings);
   for (const config of configs) {
     if (config.type !== "agentMail") continue;
-    const inbound = config.options?.inbound as Record<string, unknown> | undefined;
-    if (inbound !== undefined) {
-      validateAgentMailInboundConfig(
-        inbound,
-        config.options?.outbound as AgentMailAugmentOptions["outbound"],
-      );
-    }
-    if ((inbound?.mode ?? "none") === "none") continue;
+    const agentMailConfig = validateAgentMailConfig(config.options);
+    if (agentMailConfig.inbound.mode === "none") continue;
     const inboxId = config.options?.inboxId;
     if (typeof inboxId !== "string") continue;
     const existing = inboundInboxOwners.get(inboxId);
@@ -1023,7 +1017,12 @@ export async function resolveAugments(
           });
           break;
         case "agentMail": {
-          const rawDbPath = (opts.dbPath as string | undefined) ?? "./agent-mail.db";
+          const configuredDbPath = opts.dbPath as string | undefined;
+          const rawDbPath =
+            configuredDbPath ??
+            (resolverOpts.runtimeDataRoot === undefined
+              ? `./data/agent-mail/${config.name}/orchestration.db`
+              : "orchestration.db");
           let stateDir: string | undefined;
           let dbPath: string;
 
@@ -1046,13 +1045,11 @@ export async function resolveAugments(
               { createParents: true },
             );
           } else if (agentMailInstanceCount > 1) {
-            // Preserve the project-root layout for one local mailbox. Multiple
-            // instances get isolated sidecars and a namespaced default ledger.
             stateDir = resolve(agentDir, "data", "agent-mail", config.name);
             dbPath =
-              opts.dbPath === undefined
+              configuredDbPath === undefined
                 ? resolveOwnedStatePath(
-                    resolve(stateDir, "agent-mail.db"),
+                    resolve(stateDir, "orchestration.db"),
                     agentDir,
                     ownedStateRoot ?? resolve(agentDir),
                     `agentMail "${config.name}" dbPath`,
@@ -1091,13 +1088,14 @@ export async function resolveAugments(
               | AgentMailAugmentOptions["addressVisibility"]
               | undefined,
             apiBaseUrl: opts.apiBaseUrl as string | undefined,
+            websocketBaseUrl: opts.websocketBaseUrl as string | undefined,
             allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials as
               | boolean
               | undefined,
             dbPath,
-            outbound: opts.outbound as AgentMailAugmentOptions["outbound"],
             inbound: opts.inbound as AgentMailAugmentOptions["inbound"],
-            agentDir,
+            replies: opts.replies as AgentMailAugmentOptions["replies"],
+            outbound: opts.outbound as AgentMailAugmentOptions["outbound"],
           });
           break;
         }

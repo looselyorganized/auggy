@@ -759,7 +759,7 @@ function rewriteMutablePaths(value: unknown): unknown {
       continue;
     }
     if (typeof child === "string" && isMutableArtifactPath(key, child)) {
-      out[key] = `./data/${basename(child)}`;
+      out[key] = child.startsWith("./data/") ? child : `./data/${basename(child)}`;
       continue;
     }
     out[key] = rewriteMutablePaths(child);
