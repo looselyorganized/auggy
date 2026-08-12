@@ -111,6 +111,8 @@ function fakeSdk(overrides: FakeOverrides = {}): AgentMailSdkClient {
             messageId: "message_sent",
             threadId: "thread_sent",
           },
+        draftReply: async (_id, _messageId, input) => overrides.createDraft?.(input) ?? draft(),
+        draftReplyAll: async (_id, _messageId, input) => overrides.createDraft?.(input) ?? draft(),
       },
       threads: {
         get: async () => ({
@@ -170,7 +172,7 @@ describe("AgentMail provider boundary", () => {
     });
   });
 
-  test("lists all classifications in ascending recovery order", async () => {
+  test("lists ordinary inbox mail in ascending recovery order without privileged label reads", async () => {
     let observedInput: unknown;
     let observedOptions: unknown;
     const mail = provider(
@@ -183,17 +185,33 @@ describe("AgentMail provider boundary", () => {
       }),
     );
     const page = await mail.listMessages({ after: now.getTime() - 1_000, limit: 50 });
-    expect(observedInput).toMatchObject({
+    expect(observedInput).toEqual({
       ascending: true,
-      includeSpam: true,
-      includeBlocked: true,
-      includeUnauthenticated: true,
+      after: new Date(now.getTime() - 1_000),
       limit: 50,
     });
     expect(observedOptions).toMatchObject({ maxRetries: 0 });
     expect(page).toMatchObject({
       nextPageToken: "next",
-      messages: [{ messageId: "message_1", classification: "spam", attachmentCount: 0 }],
+      messages: [
+        {
+          messageId: "message_1",
+          sender: "customer@example.com",
+          classification: "spam",
+          attachmentCount: 0,
+        },
+      ],
+    });
+  });
+
+  test("fails closed on malformed or multi-address provider sender fields", async () => {
+    const mail = provider(
+      fakeSdk({
+        getMessage: async () => message({ from: "Alice <alice@example.com>, bob@example.com" }),
+      }),
+    );
+    await expect(mail.getMessage("message_1")).rejects.toMatchObject({
+      details: { code: "provider_contract_invalid", operation: "get_message" },
     });
   });
 
@@ -216,11 +234,7 @@ describe("AgentMail provider boundary", () => {
         clientId: "reply-message_1",
       }),
     ).toMatchObject({ draftId: "draft_1", inReplyTo: "message_1" });
-    expect(createInput).toEqual({
-      inReplyTo: "message_1",
-      text: "We can help.",
-      clientId: "reply-message_1",
-    });
+    expect(createInput).toEqual({ text: "We can help.", clientId: "reply-message_1" });
   });
 
   test("passes exact send idempotency keys to the SDK", async () => {

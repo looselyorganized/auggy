@@ -1,50 +1,11 @@
-import type { AdminInfoBlock, Augment, ContextBlock } from "../../types";
+import type { Augment } from "../../types";
 import type { AgentMailAugmentOptions } from "../../types";
 import { validateAgentMailConfig } from "./config";
+import { createAgentMailRuntime } from "./runtime";
 
-const PLACEHOLDER = /^\$\{[A-Z_][A-Z0-9_]*\}$/;
-
-/**
- * Provider-native AgentMail replacement mount.
- *
- * Slice 1 intentionally exposes no mail tools or inbound listener. Subsequent
- * slices add those surfaces only after their provider and durability contracts
- * exist. Keeping this factory resolvable lets the rest of Auggy remain
- * operational while preventing fallback to the removed implementation.
- */
+/** Mount the single supported provider-native AgentMail runtime. */
 export function agentMail(opts: AgentMailAugmentOptions): Augment {
-  const config = validateAgentMailConfig(opts);
-
-  const unresolved = PLACEHOLDER.test(config.apiKey) || PLACEHOLDER.test(config.inboxId);
-  const context: ContextBlock = {
-    source: "agentMail",
-    content:
-      "AgentMail is mounted but its provider-native replacement has no active mailbox operations in this build.",
-    placement: "system",
-    provenance: "augment",
-    priority: "normal",
-    eviction: "drop",
-    origin: "system",
-  };
-
-  const adminInfo = async (): Promise<AdminInfoBlock> => ({
-    augmentName: "agentMail",
-    title: "AgentMail",
-    sections: [
-      {
-        kind: "status",
-        level: "warn",
-        message: unresolved ? "Configuration required" : "Replacement runtime not active",
-      },
-    ],
-  });
-
-  return {
-    name: "agentMail",
-    type: "agentMail",
-    context: async () => [context],
-    adminInfo,
-  };
+  return createAgentMailRuntime(validateAgentMailConfig(opts));
 }
 
 export { agentMailRequiresAdminRoute, validateAgentMailConfig } from "./config";
@@ -52,6 +13,7 @@ export type { ValidatedAgentMailConfig } from "./config";
 export {
   evaluateAgentMailInbound,
   evaluateAgentMailOutbound,
+  evaluateAgentMailPreparedDraft,
   maySendAgentMailDraft,
   type AgentMailAdmissionDecision,
   type AgentMailOutboundPolicyDecision,
@@ -60,6 +22,7 @@ export {
   AgentMailProviderError,
   createAgentMailProvider,
   type AgentMailDraft,
+  type AgentMailDraftSummary,
   type AgentMailMessage,
   type AgentMailMessageSummary,
   type AgentMailProvider,
@@ -76,6 +39,8 @@ export {
   hashAgentMailOrchestrationValue,
   type AgentMailDraftReference,
   type AgentMailOrchestrationStore,
+  type AgentMailOutboundOperation,
+  type AgentMailRateReservation,
   type AgentMailWorkItem,
   type AgentMailWorkState,
 } from "./store";
@@ -85,3 +50,7 @@ export {
   type AgentMailInboundCoordinatorOptions,
   type AgentMailInboundStatus,
 } from "./inbound";
+export {
+  createAgentMailRuntime,
+  type AgentMailRuntimeDependencies,
+} from "./runtime";

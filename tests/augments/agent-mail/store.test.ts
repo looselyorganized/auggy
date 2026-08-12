@@ -29,6 +29,7 @@ function claimInput(overrides: Record<string, unknown> = {}) {
     threadId: "thread_1",
     eventId: "event_1",
     classification: "received" as const,
+    sender: "sender@example.com",
     senderHash: hashAgentMailOrchestrationValue("sender@example.com"),
     payloadHash: hashAgentMailOrchestrationValue("message_1:thread_1"),
     receivedAt: 1_000,
@@ -63,7 +64,7 @@ describe("AgentMail orchestration store", () => {
     expect(columns).not.toContain("html");
     expect(columns).not.toContain("api_key");
     db.close();
-    expect(readFileSync(paths.dbPath).includes(Buffer.from("sender@example.com"))).toBe(false);
+    expect(readFileSync(paths.dbPath).includes(Buffer.from("Full body"))).toBe(false);
   });
 
   test("deduplicates exact events and fences message/event conflicts", () => {
@@ -196,6 +197,157 @@ describe("AgentMail orchestration store", () => {
         payloadHash: hashAgentMailOrchestrationValue("changed"),
       }),
     ).toBe("conflict");
+    store.close();
+  });
+
+  test("durably enforces inbound limits, outbound cooldown, and send-operation replay", () => {
+    const paths = fixture();
+    let now = 4_000_000;
+    const store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+      clock: () => now,
+      sendKey: () => "stable-send-key",
+    });
+    const senderHash = hashAgentMailOrchestrationValue("sender@example.com");
+    const firstPayload = hashAgentMailOrchestrationValue("inbound-1");
+    expect(
+      store.reserveInboundRate({
+        messageId: "message_1",
+        senderHash,
+        payloadHash: firstPayload,
+        globalMaxPerHour: 10,
+        perSenderMaxPerHour: 1,
+      }),
+    ).toEqual({ status: "reserved" });
+    expect(
+      store.reserveInboundRate({
+        messageId: "message_1",
+        senderHash,
+        payloadHash: firstPayload,
+        globalMaxPerHour: 10,
+        perSenderMaxPerHour: 1,
+      }),
+    ).toEqual({ status: "replay" });
+    expect(
+      store.reserveInboundRate({
+        messageId: "message_2",
+        senderHash,
+        payloadHash: hashAgentMailOrchestrationValue("inbound-2"),
+        globalMaxPerHour: 10,
+        perSenderMaxPerHour: 1,
+      }),
+    ).toMatchObject({ status: "rate_limited", reason: "actor" });
+
+    const recipientHash = hashAgentMailOrchestrationValue("buyer@example.com");
+    const outboundHash = hashAgentMailOrchestrationValue("outbound-1");
+    expect(
+      store.reserveOutboundRate({
+        operationId: "operation_1",
+        recipientHashes: [recipientHash],
+        payloadHash: outboundHash,
+        globalMaxPerHour: 10,
+        perRecipientCooldownMs: 300_000,
+        dedupWindowMs: 0,
+      }),
+    ).toEqual({ status: "reserved" });
+    expect(
+      store.reserveOutboundRate({
+        operationId: "operation_2",
+        recipientHashes: [recipientHash],
+        payloadHash: hashAgentMailOrchestrationValue("outbound-2"),
+        globalMaxPerHour: 10,
+        perRecipientCooldownMs: 300_000,
+        dedupWindowMs: 0,
+      }),
+    ).toMatchObject({ status: "rate_limited", reason: "actor" });
+
+    const reserved = store.reserveOutboundOperation({
+      operationId: "operation_1",
+      payloadHash: outboundHash,
+    });
+    expect(reserved).toMatchObject({
+      status: "reserved",
+      operation: { sendKey: "stable-send-key", state: "reserved" },
+    });
+    store.settleOutboundOperation("operation_1", {
+      status: "sent",
+      messageId: "sent_1",
+      threadId: "thread_1",
+    });
+    expect(
+      store.reserveOutboundOperation({ operationId: "operation_1", payloadHash: outboundHash }),
+    ).toMatchObject({
+      status: "replay",
+      operation: { state: "sent", sentMessageId: "sent_1" },
+    });
+    now += 3_600_001;
+    expect(
+      store.reserveInboundRate({
+        messageId: "message_3",
+        senderHash,
+        payloadHash: hashAgentMailOrchestrationValue("inbound-3"),
+        globalMaxPerHour: 10,
+        perSenderMaxPerHour: 1,
+      }),
+    ).toEqual({ status: "reserved" });
+    store.close();
+  });
+
+  test("stales older thread drafts even when newer mail arrived before draft recording", () => {
+    const paths = fixture();
+    const store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+    });
+    store.claimMessage(claimInput({ eventId: "event_1", receivedAt: 1_000 }));
+    store.claimMessage(
+      claimInput({
+        messageId: "message_2",
+        eventId: "event_2",
+        payloadHash: hashAgentMailOrchestrationValue("message_2"),
+        receivedAt: 2_000,
+      }),
+    );
+    store.recordDraft({
+      sourceMessageId: "message_1",
+      threadId: "thread_1",
+      draftId: "draft_1",
+      clientId: "reply-message-1",
+      providerUpdatedAt: 2_500,
+    });
+    expect(store.getDraftByMessage("message_1")?.state).toBe("stale");
+    store.close();
+  });
+
+  test("turns crash-interrupted mutations into reconciliation-required ambiguity", () => {
+    const paths = fixture();
+    const store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+      sendKey: () => "stable-send-key",
+    });
+    store.claimMessage(claimInput());
+    store.recordDraft({
+      sourceMessageId: "message_1",
+      threadId: "thread_1",
+      draftId: "draft_1",
+      clientId: "reply-message-1",
+      providerUpdatedAt: 1_500,
+    });
+    store.approveDraft({
+      sourceMessageId: "message_1",
+      approvalEvidence: "creator send action",
+      expectedUpdatedAt: 1_500,
+    });
+    store.reserveDraftSend("message_1");
+    store.reserveOutboundOperation({
+      operationId: "operation_1",
+      payloadHash: hashAgentMailOrchestrationValue("outbound"),
+    });
+    expect(store.recoverAmbiguousMutations()).toEqual({ drafts: 1, outbound: 1 });
+    expect(store.getDraftByMessage("message_1")?.state).toBe("ambiguous");
+    expect(store.recoverAmbiguousMutations()).toEqual({ drafts: 0, outbound: 0 });
     store.close();
   });
 

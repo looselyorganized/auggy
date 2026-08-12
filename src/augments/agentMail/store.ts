@@ -24,6 +24,7 @@ const SCHEMA = [
     thread_id       TEXT NOT NULL,
     event_id        TEXT,
     classification  TEXT NOT NULL CHECK (classification IN ('received', 'spam', 'blocked', 'unauthenticated')),
+    sender_address  TEXT NOT NULL,
     sender_hash      TEXT NOT NULL,
     payload_hash     TEXT NOT NULL,
     received_at      INTEGER NOT NULL,
@@ -50,6 +51,7 @@ const SCHEMA = [
     approval_hash      TEXT,
     approved_at        INTEGER,
     send_key           TEXT,
+    send_started_at    INTEGER,
     sent_message_id    TEXT,
     created_at         INTEGER NOT NULL,
     updated_at         INTEGER NOT NULL,
@@ -61,6 +63,31 @@ const SCHEMA = [
   )`,
   `CREATE INDEX IF NOT EXISTS idx_agentmail_draft_state
      ON agentmail_drafts(inbox_id, state, updated_at)`,
+  `CREATE TABLE IF NOT EXISTS agentmail_rate_reservations (
+    inbox_id      TEXT NOT NULL,
+    direction     TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
+    operation_id  TEXT NOT NULL,
+    actor_hash    TEXT NOT NULL,
+    payload_hash  TEXT NOT NULL,
+    occurred_at   INTEGER NOT NULL,
+    PRIMARY KEY (inbox_id, direction, operation_id, actor_hash)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_agentmail_rate_window
+     ON agentmail_rate_reservations(inbox_id, direction, occurred_at)`,
+  `CREATE INDEX IF NOT EXISTS idx_agentmail_rate_actor
+     ON agentmail_rate_reservations(inbox_id, direction, actor_hash, occurred_at)`,
+  `CREATE TABLE IF NOT EXISTS agentmail_outbound_operations (
+    inbox_id        TEXT NOT NULL,
+    operation_id    TEXT NOT NULL,
+    payload_hash    TEXT NOT NULL,
+    send_key        TEXT NOT NULL,
+    state           TEXT NOT NULL CHECK (state IN ('reserved', 'sent', 'ambiguous', 'failed')),
+    sent_message_id TEXT,
+    sent_thread_id  TEXT,
+    created_at      INTEGER NOT NULL,
+    updated_at      INTEGER NOT NULL,
+    PRIMARY KEY (inbox_id, operation_id)
+  )`,
   `CREATE TABLE IF NOT EXISTS agentmail_provider_events (
     inbox_id    TEXT NOT NULL,
     event_id    TEXT NOT NULL,
@@ -111,6 +138,7 @@ export interface AgentMailWorkItem {
   threadId: string;
   eventId?: string;
   classification: AgentMailMessageClassification;
+  sender: string;
   senderHash: string;
   payloadHash: string;
   receivedAt: number;
@@ -128,7 +156,26 @@ export interface AgentMailDraftReference {
   providerUpdatedAt: number;
   state: "ready" | "stale" | "approved" | "sending" | "sent" | "ambiguous" | "failed";
   sendKey?: string;
+  sendStartedAt?: number;
   sentMessageId?: string;
+}
+
+export type AgentMailRateReservation =
+  | { status: "reserved" | "replay" }
+  | {
+      status: "rate_limited";
+      reason: "global" | "actor" | "duplicate";
+      retryAfterMs: number;
+    }
+  | { status: "conflict" };
+
+export interface AgentMailOutboundOperation {
+  operationId: string;
+  payloadHash: string;
+  sendKey: string;
+  state: "reserved" | "sent" | "ambiguous" | "failed";
+  sentMessageId?: string;
+  sentThreadId?: string;
 }
 
 export interface AgentMailOrchestrationStore {
@@ -137,18 +184,22 @@ export interface AgentMailOrchestrationStore {
     threadId: string;
     eventId?: string;
     classification: AgentMailMessageClassification;
+    sender: string;
     senderHash: string;
     payloadHash: string;
     receivedAt: number;
     policyVersion: number;
   }): { status: "claimed" | "duplicate" | "conflict" };
   claimNext(): AgentMailWorkItem | undefined;
+  claimPending(messageId: string): AgentMailWorkItem | undefined;
+  deferMessage(messageId: string, errorCode: string): void;
   settleMessage(
     messageId: string,
     outcome: "no_reply" | "draft_ready" | "quarantined" | "completed",
     errorCode?: string,
   ): void;
   recoverInterrupted(staleBefore: number): number;
+  recoverAmbiguousMutations(): { drafts: number; outbound: number };
   getMessage(messageId: string): AgentMailWorkItem | undefined;
   hasPendingWork(): boolean;
   listPendingMessageIds(limit?: number): string[];
@@ -162,6 +213,14 @@ export interface AgentMailOrchestrationStore {
     providerUpdatedAt: number;
   }): { status: "recorded" | "duplicate" | "conflict" };
   getDraftByMessage(messageId: string): AgentMailDraftReference | undefined;
+  getDraftById(draftId: string): AgentMailDraftReference | undefined;
+  listDrafts(limit?: number): AgentMailDraftReference[];
+  updateDraftReference(input: {
+    sourceMessageId: string;
+    expectedUpdatedAt: number;
+    providerUpdatedAt: number;
+  }): void;
+  markThreadDraftsStale(threadId: string, exceptSourceMessageId: string): number;
   markDraftStale(sourceMessageId: string): void;
   approveDraft(input: {
     sourceMessageId: string;
@@ -173,7 +232,34 @@ export interface AgentMailOrchestrationStore {
   ): { status: "reserved"; sendKey: string } | { status: "replay"; draft: AgentMailDraftReference };
   settleDraftSend(
     sourceMessageId: string,
-    outcome: { status: "sent"; messageId: string } | { status: "ambiguous" | "failed" },
+    outcome: { status: "sent"; messageId: string } | { status: "ambiguous" | "failed" | "ready" },
+  ): void;
+  reserveInboundRate(input: {
+    messageId: string;
+    senderHash: string;
+    payloadHash: string;
+    globalMaxPerHour: number;
+    perSenderMaxPerHour: number;
+  }): AgentMailRateReservation;
+  reserveOutboundRate(input: {
+    operationId: string;
+    recipientHashes: string[];
+    payloadHash: string;
+    globalMaxPerHour: number;
+    perRecipientCooldownMs: number;
+    dedupWindowMs: number;
+  }): AgentMailRateReservation;
+  reserveOutboundOperation(input: { operationId: string; payloadHash: string }):
+    | { status: "reserved"; operation: AgentMailOutboundOperation }
+    | {
+        status: "replay" | "conflict";
+        operation: AgentMailOutboundOperation;
+      };
+  settleOutboundOperation(
+    operationId: string,
+    outcome:
+      | { status: "sent"; messageId: string; threadId: string }
+      | { status: "ambiguous" | "failed" },
   ): void;
   recordProviderEvent(input: {
     eventId: string;
@@ -198,6 +284,7 @@ interface MessageRow {
   thread_id: string;
   event_id: string | null;
   classification: AgentMailMessageClassification;
+  sender_address: string;
   sender_hash: string;
   payload_hash: string;
   received_at: number;
@@ -215,6 +302,7 @@ interface DraftRow {
   provider_updated_at: number;
   state: AgentMailDraftReference["state"];
   send_key: string | null;
+  send_started_at: number | null;
   sent_message_id: string | null;
 }
 
@@ -243,6 +331,7 @@ function messageFromRow(row: MessageRow): AgentMailWorkItem {
     threadId: row.thread_id,
     ...(row.event_id === null ? {} : { eventId: row.event_id }),
     classification: row.classification,
+    sender: row.sender_address,
     senderHash: row.sender_hash,
     payloadHash: row.payload_hash,
     receivedAt: row.received_at,
@@ -262,7 +351,28 @@ function draftFromRow(row: DraftRow): AgentMailDraftReference {
     providerUpdatedAt: row.provider_updated_at,
     state: row.state,
     ...(row.send_key === null ? {} : { sendKey: row.send_key }),
+    ...(row.send_started_at === null ? {} : { sendStartedAt: row.send_started_at }),
     ...(row.sent_message_id === null ? {} : { sentMessageId: row.sent_message_id }),
+  };
+}
+
+interface OutboundOperationRow {
+  operation_id: string;
+  payload_hash: string;
+  send_key: string;
+  state: AgentMailOutboundOperation["state"];
+  sent_message_id: string | null;
+  sent_thread_id: string | null;
+}
+
+function outboundOperationFromRow(row: OutboundOperationRow): AgentMailOutboundOperation {
+  return {
+    operationId: row.operation_id,
+    payloadHash: row.payload_hash,
+    sendKey: row.send_key,
+    state: row.state,
+    ...(row.sent_message_id === null ? {} : { sentMessageId: row.sent_message_id }),
+    ...(row.sent_thread_id === null ? {} : { sentThreadId: row.sent_thread_id }),
   };
 }
 
@@ -304,20 +414,26 @@ export function createAgentMailOrchestrationStore(
   );
 
   const findMessage = db.query<MessageRow, [string, string]>(
-    `SELECT inbox_id, message_id, thread_id, event_id, classification, sender_hash,
+    `SELECT inbox_id, message_id, thread_id, event_id, classification, sender_address, sender_hash,
             payload_hash, received_at, state, attempt_count, policy_version
        FROM agentmail_messages WHERE inbox_id = ? AND message_id = ?`,
   );
   const findDraft = db.query<DraftRow, [string, string]>(
     `SELECT inbox_id, source_message_id, thread_id, draft_id, client_id,
-            provider_updated_at, state, send_key, sent_message_id
+            provider_updated_at, state, send_key, send_started_at, sent_message_id
        FROM agentmail_drafts WHERE inbox_id = ? AND source_message_id = ?`,
+  );
+  const findDraftById = db.query<DraftRow, [string, string]>(
+    `SELECT inbox_id, source_message_id, thread_id, draft_id, client_id,
+            provider_updated_at, state, send_key, send_started_at, sent_message_id
+       FROM agentmail_drafts WHERE inbox_id = ? AND draft_id = ?`,
   );
 
   const claimMessage = db.transaction(
     (input: Parameters<AgentMailOrchestrationStore["claimMessage"]>[0]) => {
       assertBoundedIdentifier(input.messageId, "messageId");
       assertBoundedIdentifier(input.threadId, "threadId");
+      assertBoundedIdentifier(input.sender, "sender");
       if (input.eventId !== undefined) assertBoundedIdentifier(input.eventId, "eventId");
       if (!validHash(input.senderHash) || !validHash(input.payloadHash)) {
         throw new Error("agentMail store: claim hashes must be SHA-256 values");
@@ -347,15 +463,16 @@ export function createAgentMailOrchestrationStore(
       try {
         db.run(
           `INSERT INTO agentmail_messages(
-             inbox_id, message_id, thread_id, event_id, classification, sender_hash,
+             inbox_id, message_id, thread_id, event_id, classification, sender_address, sender_hash,
              payload_hash, received_at, state, policy_version, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?)`,
           [
             inboxId,
             input.messageId,
             input.threadId,
             input.eventId ?? null,
             input.classification,
+            input.sender,
             input.senderHash,
             input.payloadHash,
             input.receivedAt,
@@ -375,7 +492,7 @@ export function createAgentMailOrchestrationStore(
   const claimNext = db.transaction(() => {
     const row = db
       .query<MessageRow, [string]>(
-        `SELECT inbox_id, message_id, thread_id, event_id, classification, sender_hash,
+        `SELECT inbox_id, message_id, thread_id, event_id, classification, sender_address, sender_hash,
                 payload_hash, received_at, state, attempt_count, policy_version
            FROM agentmail_messages
           WHERE inbox_id = ? AND state = 'pending'
@@ -398,12 +515,46 @@ export function createAgentMailOrchestrationStore(
     };
   });
 
+  const claimPending = db.transaction((messageId: string) => {
+    assertBoundedIdentifier(messageId, "messageId");
+    const row = findMessage.get(inboxId, messageId);
+    if (row?.state !== "pending") return undefined;
+    const at = clock();
+    const result = db.run(
+      `UPDATE agentmail_messages
+          SET state = 'processing', attempt_count = attempt_count + 1,
+              claimed_at = ?, updated_at = ?
+        WHERE inbox_id = ? AND message_id = ? AND state = 'pending'`,
+      [at, at, inboxId, messageId],
+    );
+    if (result.changes !== 1) return undefined;
+    return {
+      ...messageFromRow(row),
+      state: "processing" as const,
+      attemptCount: row.attempt_count + 1,
+    };
+  });
+
   return {
     claimMessage(input) {
       return claimMessage.immediate(input);
     },
     claimNext() {
       return claimNext.immediate();
+    },
+    claimPending(messageId) {
+      return claimPending.immediate(messageId);
+    },
+    deferMessage(messageId, errorCode) {
+      assertBoundedIdentifier(messageId, "messageId");
+      assertBoundedIdentifier(errorCode, "errorCode");
+      const result = db.run(
+        `UPDATE agentmail_messages
+            SET state = 'pending', claimed_at = NULL, last_error_code = ?, updated_at = ?
+          WHERE inbox_id = ? AND message_id = ? AND state = 'processing'`,
+        [errorCode, clock(), inboxId, messageId],
+      );
+      if (result.changes !== 1) throw new Error("agentMail store: message is not actively claimed");
     },
     settleMessage(messageId, outcome, errorCode) {
       assertBoundedIdentifier(messageId, "messageId");
@@ -426,6 +577,20 @@ export function createAgentMailOrchestrationStore(
           WHERE inbox_id = ? AND state = 'processing' AND claimed_at <= ?`,
         [clock(), inboxId, staleBefore],
       ).changes;
+    },
+    recoverAmbiguousMutations() {
+      const at = clock();
+      const drafts = db.run(
+        `UPDATE agentmail_drafts SET state = 'ambiguous', updated_at = ?
+          WHERE inbox_id = ? AND state = 'sending'`,
+        [at, inboxId],
+      ).changes;
+      const outbound = db.run(
+        `UPDATE agentmail_outbound_operations SET state = 'ambiguous', updated_at = ?
+          WHERE inbox_id = ? AND state = 'reserved'`,
+        [at, inboxId],
+      ).changes;
+      return { drafts, outbound };
     },
     getMessage(messageId) {
       const row = findMessage.get(inboxId, messageId);
@@ -506,11 +671,30 @@ export function createAgentMailOrchestrationStore(
       }
       try {
         const at = clock();
+        const source = findMessage.get(inboxId, input.sourceMessageId);
+        if (!source || source.thread_id !== input.threadId) {
+          throw new Error("agentMail store: draft source does not match a claimed message");
+        }
+        const newerMessage = db
+          .query<{ present: number }, [string, string, number, number, string]>(
+            `SELECT 1 AS present FROM agentmail_messages
+              WHERE inbox_id = ? AND thread_id = ?
+                AND (received_at > ? OR (received_at = ? AND message_id > ?))
+              LIMIT 1`,
+          )
+          .get(
+            inboxId,
+            input.threadId,
+            source.received_at,
+            source.received_at,
+            input.sourceMessageId,
+          );
+        const initialState = newerMessage ? "stale" : "ready";
         db.run(
           `INSERT INTO agentmail_drafts(
              inbox_id, source_message_id, thread_id, draft_id, client_id,
              provider_updated_at, state, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, 'ready', ?, ?)`,
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             inboxId,
             input.sourceMessageId,
@@ -518,6 +702,7 @@ export function createAgentMailOrchestrationStore(
             input.draftId,
             input.clientId,
             input.providerUpdatedAt,
+            initialState,
             at,
             at,
           ],
@@ -531,6 +716,57 @@ export function createAgentMailOrchestrationStore(
     getDraftByMessage(messageId) {
       const row = findDraft.get(inboxId, messageId);
       return row ? draftFromRow(row) : undefined;
+    },
+    getDraftById(draftId) {
+      assertBoundedIdentifier(draftId, "draftId");
+      const row = findDraftById.get(inboxId, draftId);
+      return row ? draftFromRow(row) : undefined;
+    },
+    listDrafts(limit = 100) {
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+        throw new Error("agentMail store: draft limit must be between 1 and 1000");
+      }
+      return db
+        .query<DraftRow, [string, number]>(
+          `SELECT inbox_id, source_message_id, thread_id, draft_id, client_id,
+                  provider_updated_at, state, send_key, send_started_at, sent_message_id
+             FROM agentmail_drafts WHERE inbox_id = ?
+             ORDER BY updated_at DESC, draft_id ASC LIMIT ?`,
+        )
+        .all(inboxId, limit)
+        .map(draftFromRow);
+    },
+    updateDraftReference(input) {
+      if (
+        !Number.isSafeInteger(input.expectedUpdatedAt) ||
+        input.expectedUpdatedAt < 0 ||
+        !Number.isSafeInteger(input.providerUpdatedAt) ||
+        input.providerUpdatedAt < input.expectedUpdatedAt
+      ) {
+        throw new Error("agentMail store: provider draft timestamps are invalid");
+      }
+      const result = db.run(
+        `UPDATE agentmail_drafts
+            SET provider_updated_at = ?, state = 'ready', approval_hash = NULL,
+                approved_at = NULL, send_key = NULL, send_started_at = NULL, updated_at = ?
+          WHERE inbox_id = ? AND source_message_id = ? AND provider_updated_at = ?
+            AND state IN ('ready', 'stale', 'failed')`,
+        [input.providerUpdatedAt, clock(), inboxId, input.sourceMessageId, input.expectedUpdatedAt],
+      );
+      if (result.changes !== 1) {
+        throw new Error("agentMail store: draft changed or cannot return to review");
+      }
+    },
+    markThreadDraftsStale(threadId, exceptSourceMessageId) {
+      assertBoundedIdentifier(threadId, "threadId");
+      assertBoundedIdentifier(exceptSourceMessageId, "exceptSourceMessageId");
+      return db.run(
+        `UPDATE agentmail_drafts SET state = 'stale', approval_hash = NULL,
+                approved_at = NULL, updated_at = ?
+          WHERE inbox_id = ? AND thread_id = ? AND source_message_id <> ?
+            AND state IN ('ready', 'approved')`,
+        [clock(), inboxId, threadId, exceptSourceMessageId],
+      ).changes;
     },
     markDraftStale(sourceMessageId) {
       db.run(
@@ -576,9 +812,10 @@ export function createAgentMailOrchestrationStore(
             throw new Error("agentMail store: generated send key is invalid");
           }
           db.run(
-            `UPDATE agentmail_drafts SET state = 'sending', send_key = ?, updated_at = ?
+            `UPDATE agentmail_drafts SET state = 'sending', send_key = ?,
+                    send_started_at = ?, updated_at = ?
               WHERE inbox_id = ? AND source_message_id = ? AND state = 'approved'`,
-            [sendKey, clock(), inboxId, sourceMessageId],
+            [sendKey, clock(), clock(), inboxId, sourceMessageId],
           );
           return { status: "reserved" as const, sendKey };
         })
@@ -588,17 +825,235 @@ export function createAgentMailOrchestrationStore(
       const state = outcome.status;
       const result = db.run(
         `UPDATE agentmail_drafts
-            SET state = ?, sent_message_id = ?, updated_at = ?
+            SET state = ?, sent_message_id = ?,
+                send_key = CASE WHEN ? = 'ready' THEN NULL ELSE send_key END,
+                send_started_at = CASE WHEN ? = 'ready' THEN NULL ELSE send_started_at END,
+                updated_at = ?
           WHERE inbox_id = ? AND source_message_id = ? AND state = 'sending'`,
         [
           state,
           outcome.status === "sent" ? outcome.messageId : null,
+          state,
+          state,
           clock(),
           inboxId,
           sourceMessageId,
         ],
       );
       if (result.changes !== 1) throw new Error("agentMail store: no reserved send to settle");
+    },
+    reserveInboundRate(input) {
+      assertBoundedIdentifier(input.messageId, "messageId");
+      if (!validHash(input.senderHash) || !validHash(input.payloadHash)) {
+        throw new Error("agentMail store: inbound rate hashes are invalid");
+      }
+      if (
+        !Number.isSafeInteger(input.globalMaxPerHour) ||
+        input.globalMaxPerHour < 1 ||
+        !Number.isSafeInteger(input.perSenderMaxPerHour) ||
+        input.perSenderMaxPerHour < 1
+      ) {
+        throw new Error("agentMail store: inbound rate policy is invalid");
+      }
+      return db
+        .transaction((): AgentMailRateReservation => {
+          const existing = db
+            .query<{ payload_hash: string }, [string, string, string]>(
+              `SELECT payload_hash FROM agentmail_rate_reservations
+                WHERE inbox_id = ? AND direction = 'inbound'
+                  AND operation_id = ? AND actor_hash = ?`,
+            )
+            .get(inboxId, input.messageId, input.senderHash);
+          if (existing) {
+            return existing.payload_hash === input.payloadHash
+              ? { status: "replay" }
+              : { status: "conflict" };
+          }
+          const at = clock();
+          const cutoff = at - 3_600_000;
+          const globalCount =
+            db
+              .query<{ count: number }, [string, number]>(
+                `SELECT COUNT(*) AS count FROM agentmail_rate_reservations
+                  WHERE inbox_id = ? AND direction = 'inbound' AND occurred_at > ?`,
+              )
+              .get(inboxId, cutoff)?.count ?? 0;
+          if (globalCount >= input.globalMaxPerHour) {
+            return { status: "rate_limited", reason: "global", retryAfterMs: 3_600_000 };
+          }
+          const actorCount =
+            db
+              .query<{ count: number }, [string, string, number]>(
+                `SELECT COUNT(*) AS count FROM agentmail_rate_reservations
+                  WHERE inbox_id = ? AND direction = 'inbound'
+                    AND actor_hash = ? AND occurred_at > ?`,
+              )
+              .get(inboxId, input.senderHash, cutoff)?.count ?? 0;
+          if (actorCount >= input.perSenderMaxPerHour) {
+            return { status: "rate_limited", reason: "actor", retryAfterMs: 3_600_000 };
+          }
+          db.run(
+            `INSERT INTO agentmail_rate_reservations(
+               inbox_id, direction, operation_id, actor_hash, payload_hash, occurred_at
+             ) VALUES (?, 'inbound', ?, ?, ?, ?)`,
+            [inboxId, input.messageId, input.senderHash, input.payloadHash, at],
+          );
+          return { status: "reserved" };
+        })
+        .immediate();
+    },
+    reserveOutboundRate(input) {
+      assertBoundedIdentifier(input.operationId, "operationId");
+      if (!validHash(input.payloadHash) || input.recipientHashes.some((hash) => !validHash(hash))) {
+        throw new Error("agentMail store: outbound rate hashes are invalid");
+      }
+      if (
+        input.recipientHashes.length === 0 ||
+        new Set(input.recipientHashes).size !== input.recipientHashes.length ||
+        !Number.isSafeInteger(input.globalMaxPerHour) ||
+        input.globalMaxPerHour < 1 ||
+        !Number.isSafeInteger(input.perRecipientCooldownMs) ||
+        input.perRecipientCooldownMs < 0 ||
+        !Number.isSafeInteger(input.dedupWindowMs) ||
+        input.dedupWindowMs < 0
+      ) {
+        throw new Error("agentMail store: outbound rate policy is invalid");
+      }
+      return db
+        .transaction((): AgentMailRateReservation => {
+          const existing = db
+            .query<{ actor_hash: string; payload_hash: string }, [string, string]>(
+              `SELECT actor_hash, payload_hash FROM agentmail_rate_reservations
+                WHERE inbox_id = ? AND direction = 'outbound' AND operation_id = ?`,
+            )
+            .all(inboxId, input.operationId);
+          if (existing.length > 0) {
+            const expectedActors = [...input.recipientHashes].sort();
+            const actualActors = existing.map((row) => row.actor_hash).sort();
+            return existing.every((row) => row.payload_hash === input.payloadHash) &&
+              JSON.stringify(actualActors) === JSON.stringify(expectedActors)
+              ? { status: "replay" }
+              : { status: "conflict" };
+          }
+          const at = clock();
+          const hourCutoff = at - 3_600_000;
+          const globalCount =
+            db
+              .query<{ count: number }, [string, number]>(
+                `SELECT COUNT(DISTINCT operation_id) AS count
+                   FROM agentmail_rate_reservations
+                  WHERE inbox_id = ? AND direction = 'outbound' AND occurred_at > ?`,
+              )
+              .get(inboxId, hourCutoff)?.count ?? 0;
+          if (globalCount >= input.globalMaxPerHour) {
+            return { status: "rate_limited", reason: "global", retryAfterMs: 3_600_000 };
+          }
+          if (input.dedupWindowMs > 0) {
+            const duplicate = db
+              .query<{ present: number }, [string, string, number]>(
+                `SELECT 1 AS present FROM agentmail_rate_reservations
+                  WHERE inbox_id = ? AND direction = 'outbound'
+                    AND payload_hash = ? AND occurred_at > ? LIMIT 1`,
+              )
+              .get(inboxId, input.payloadHash, at - input.dedupWindowMs);
+            if (duplicate) {
+              return {
+                status: "rate_limited",
+                reason: "duplicate",
+                retryAfterMs: input.dedupWindowMs,
+              };
+            }
+          }
+          for (const recipientHash of input.recipientHashes) {
+            const latest = db
+              .query<{ occurred_at: number }, [string, string]>(
+                `SELECT occurred_at FROM agentmail_rate_reservations
+                  WHERE inbox_id = ? AND direction = 'outbound' AND actor_hash = ?
+                  ORDER BY occurred_at DESC LIMIT 1`,
+              )
+              .get(inboxId, recipientHash);
+            if (latest && at - latest.occurred_at < input.perRecipientCooldownMs) {
+              return {
+                status: "rate_limited",
+                reason: "actor",
+                retryAfterMs: input.perRecipientCooldownMs - (at - latest.occurred_at),
+              };
+            }
+          }
+          for (const recipientHash of input.recipientHashes) {
+            db.run(
+              `INSERT INTO agentmail_rate_reservations(
+                 inbox_id, direction, operation_id, actor_hash, payload_hash, occurred_at
+               ) VALUES (?, 'outbound', ?, ?, ?, ?)`,
+              [inboxId, input.operationId, recipientHash, input.payloadHash, at],
+            );
+          }
+          return { status: "reserved" };
+        })
+        .immediate();
+    },
+    reserveOutboundOperation(input) {
+      assertBoundedIdentifier(input.operationId, "operationId");
+      if (!validHash(input.payloadHash)) {
+        throw new Error("agentMail store: outbound operation hash is invalid");
+      }
+      return db
+        .transaction(() => {
+          const find = () =>
+            db
+              .query<OutboundOperationRow, [string, string]>(
+                `SELECT operation_id, payload_hash, send_key, state,
+                        sent_message_id, sent_thread_id
+                   FROM agentmail_outbound_operations
+                  WHERE inbox_id = ? AND operation_id = ?`,
+              )
+              .get(inboxId, input.operationId);
+          const existing = find();
+          if (existing) {
+            return {
+              status: existing.payload_hash === input.payloadHash ? "replay" : "conflict",
+              operation: outboundOperationFromRow(existing),
+            } as const;
+          }
+          const sendKey = createSendKey();
+          if (!/^[A-Za-z0-9._~-]{1,256}$/.test(sendKey)) {
+            throw new Error("agentMail store: generated send key is invalid");
+          }
+          const at = clock();
+          db.run(
+            `INSERT INTO agentmail_outbound_operations(
+               inbox_id, operation_id, payload_hash, send_key, state, created_at, updated_at
+             ) VALUES (?, ?, ?, ?, 'reserved', ?, ?)`,
+            [inboxId, input.operationId, input.payloadHash, sendKey, at, at],
+          );
+          const created = find();
+          if (!created) throw new Error("agentMail store: outbound reservation was not persisted");
+          return { status: "reserved", operation: outboundOperationFromRow(created) } as const;
+        })
+        .immediate();
+    },
+    settleOutboundOperation(operationId, outcome) {
+      assertBoundedIdentifier(operationId, "operationId");
+      if (outcome.status === "sent") {
+        assertBoundedIdentifier(outcome.messageId, "messageId");
+        assertBoundedIdentifier(outcome.threadId, "threadId");
+      }
+      const result = db.run(
+        `UPDATE agentmail_outbound_operations
+            SET state = ?, sent_message_id = ?, sent_thread_id = ?, updated_at = ?
+          WHERE inbox_id = ? AND operation_id = ? AND state = 'reserved'`,
+        [
+          outcome.status,
+          outcome.status === "sent" ? outcome.messageId : null,
+          outcome.status === "sent" ? outcome.threadId : null,
+          clock(),
+          inboxId,
+          operationId,
+        ],
+      );
+      if (result.changes !== 1) {
+        throw new Error("agentMail store: no reserved outbound operation to settle");
+      }
     },
     recordProviderEvent(input) {
       if (!validHash(input.payloadHash)) throw new Error("agentMail store: event hash is invalid");

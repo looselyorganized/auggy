@@ -150,8 +150,12 @@ draft_ready -> revising -> draft_ready
 
 One inbound message can reference at most one active reply draft. A new message
 on the provider thread makes an awaiting draft stale until the creator reviews
-the new context. Revision uses provider freshness metadata and fails with a
-conflict rather than overwriting a creator edit made in AgentMail.
+the new context. Revision is serialized inside Auggy, fetches and compares the
+provider timestamp immediately before updating, and verifies the result with a
+second fetch. AgentMail does not expose a conditional-update token in the
+pinned SDK, so a simultaneous AgentMail UI edit can still race that update.
+This residual race is documented; creator review and a fresh timestamp remain
+mandatory before sending.
 
 The creator can either open AgentMail or ask Auggy to show and revise the
 draft. Both paths operate on the same provider object. `Send it` is a new,

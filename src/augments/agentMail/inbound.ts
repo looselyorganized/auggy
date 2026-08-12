@@ -132,6 +132,7 @@ export function createAgentMailInboundCoordinator(
       threadId: message.threadId,
       ...(eventId === undefined ? {} : { eventId }),
       classification: message.classification,
+      sender: message.sender,
       senderHash: hashAgentMailOrchestrationValue(message.sender.trim().toLowerCase()),
       payloadHash: messagePayloadHash(message),
       receivedAt: message.timestamp,
@@ -153,7 +154,8 @@ export function createAgentMailInboundCoordinator(
       currentState = "catching_up";
       options.store.recoverInterrupted(clock() - 5 * 60_000);
       for (const messageId of scheduledMessageIds) {
-        if (options.store.getMessage(messageId)?.state !== "pending") {
+        const state = options.store.getMessage(messageId)?.state;
+        if (state !== "processing" && (lastCatchUpAt !== undefined || state !== "pending")) {
           scheduledMessageIds.delete(messageId);
         }
       }

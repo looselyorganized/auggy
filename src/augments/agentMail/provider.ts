@@ -9,6 +9,7 @@ import {
   assertSecureCredentialTransport,
   assertSecureWebSocketCredentialTransport,
 } from "../../engines/_shared/credential-transport";
+import { canonicalizeEmail, isWellFormedEmail } from "../visitorAuth/email-validation";
 
 export type AgentMailProviderErrorCode =
   | "configuration_invalid"
@@ -36,6 +37,7 @@ export interface AgentMailProviderErrorDetails {
 
 export class AgentMailProviderError extends Error {
   readonly details: Readonly<AgentMailProviderErrorDetails>;
+  readonly outcomeUnknown: boolean;
 
   constructor(details: AgentMailProviderErrorDetails) {
     super(
@@ -43,6 +45,7 @@ export class AgentMailProviderError extends Error {
     );
     this.name = "AgentMailProviderError";
     this.details = Object.freeze({ ...details });
+    this.outcomeUnknown = details.code === "mutation_ambiguous";
   }
 }
 
@@ -116,6 +119,11 @@ export interface AgentMailDraft {
   createdAt: number;
 }
 
+export type AgentMailDraftSummary = Omit<
+  AgentMailDraft,
+  "clientId" | "text" | "html" | "createdAt"
+>;
+
 export type AgentMailProviderEvent =
   | {
       type: "message.received";
@@ -152,9 +160,15 @@ export interface AgentMailProvider {
   listDrafts(
     input?: { pageToken?: string; limit?: number },
     signal?: AbortSignal,
-  ): Promise<{ drafts: AgentMailDraft[]; nextPageToken?: string }>;
+  ): Promise<{ drafts: AgentMailDraftSummary[]; nextPageToken?: string }>;
   createReplyDraft(
-    input: { messageId: string; text: string; clientId: string },
+    input: {
+      messageId: string;
+      text: string;
+      clientId: string;
+      replyAll?: boolean;
+      subject?: string;
+    },
     signal?: AbortSignal,
   ): Promise<AgentMailDraft>;
   getDraft(draftId: string, signal?: AbortSignal): Promise<AgentMailDraft>;
@@ -212,6 +226,18 @@ export interface AgentMailSdkClient {
       list(inboxId: string, input?: unknown, options?: unknown): Promise<unknown>;
       get(inboxId: string, messageId: string, options?: unknown): Promise<unknown>;
       send(inboxId: string, input: unknown, options?: unknown): Promise<unknown>;
+      draftReply(
+        inboxId: string,
+        messageId: string,
+        input: unknown,
+        options?: unknown,
+      ): Promise<unknown>;
+      draftReplyAll(
+        inboxId: string,
+        messageId: string,
+        input: unknown,
+        options?: unknown,
+      ): Promise<unknown>;
     };
     threads: { get(inboxId: string, threadId: string, options?: unknown): Promise<unknown> };
     drafts: {
@@ -329,9 +355,9 @@ function normalizeMessageSummary(value: unknown, operation: string): AgentMailMe
     inboxId: requiredString(message, "inboxId", operation),
     threadId: requiredString(message, "threadId", operation),
     messageId: requiredString(message, "messageId", operation),
-    sender: requiredString(message, "from", operation),
-    to: stringArray(message.to, operation),
-    cc: stringArray(message.cc, operation),
+    sender: normalizeMailboxAddress(requiredString(message, "from", operation), operation),
+    to: mailboxArray(message.to, operation),
+    cc: mailboxArray(message.cc, operation),
     subject: optionalString(message, "subject"),
     preview: optionalString(message, "preview"),
     labels,
@@ -346,6 +372,42 @@ function normalizeMessageSummary(value: unknown, operation: string): AgentMailMe
   };
 }
 
+function normalizeMailboxAddress(value: string, operation: string): string {
+  if (
+    value.length > 998 ||
+    [...value].some((character) => {
+      const code = character.codePointAt(0) ?? 0;
+      return code === 0 || code === 10 || code === 13;
+    })
+  ) {
+    throw contractError(operation);
+  }
+  const trimmed = value.trim();
+  const open = trimmed.indexOf("<");
+  const close = trimmed.indexOf(">");
+  let candidate = trimmed;
+  if (open !== -1 || close !== -1) {
+    if (
+      open <= 0 ||
+      close !== trimmed.length - 1 ||
+      open !== trimmed.lastIndexOf("<") ||
+      close !== trimmed.lastIndexOf(">")
+    ) {
+      throw contractError(operation);
+    }
+    candidate = trimmed.slice(open + 1, close).trim();
+  }
+  const normalized = canonicalizeEmail(candidate);
+  if (!isWellFormedEmail(normalized)) throw contractError(operation);
+  return normalized;
+}
+
+function mailboxArray(value: unknown, operation: string): string[] {
+  return stringArray(value, operation).map((address) =>
+    normalizeMailboxAddress(address, operation),
+  );
+}
+
 function normalizeMessage(value: unknown, operation: string): AgentMailMessage {
   const message = asRecord(value, operation);
   const summary = normalizeMessageSummary(message, operation);
@@ -356,7 +418,7 @@ function normalizeMessage(value: unknown, operation: string): AgentMailMessage {
     html: optionalString(message, "html"),
     extractedText: optionalString(message, "extractedText"),
     extractedHtml: optionalString(message, "extractedHtml"),
-    replyTo: stringArray(message.replyTo, operation),
+    replyTo: mailboxArray(message.replyTo, operation),
     inReplyTo: optionalString(message, "inReplyTo"),
     references: stringArray(message.references, operation),
     attachments: rawAttachments.map((attachment) => normalizeAttachment(attachment, operation)),
@@ -369,9 +431,9 @@ function normalizeDraft(value: unknown, operation: string): AgentMailDraft {
     inboxId: requiredString(draft, "inboxId", operation),
     draftId: requiredString(draft, "draftId", operation),
     clientId: optionalString(draft, "clientId"),
-    to: stringArray(draft.to, operation),
-    cc: stringArray(draft.cc, operation),
-    bcc: stringArray(draft.bcc, operation),
+    to: mailboxArray(draft.to, operation),
+    cc: mailboxArray(draft.cc, operation),
+    bcc: mailboxArray(draft.bcc, operation),
     subject: optionalString(draft, "subject"),
     text: optionalString(draft, "text"),
     html: optionalString(draft, "html"),
@@ -379,6 +441,21 @@ function normalizeDraft(value: unknown, operation: string): AgentMailDraft {
     sendStatus: optionalString(draft, "sendStatus"),
     updatedAt: timestamp(draft.updatedAt, operation),
     createdAt: timestamp(draft.createdAt, operation),
+  };
+}
+
+function normalizeDraftSummary(value: unknown, operation: string): AgentMailDraftSummary {
+  const draft = asRecord(value, operation);
+  return {
+    inboxId: requiredString(draft, "inboxId", operation),
+    draftId: requiredString(draft, "draftId", operation),
+    to: mailboxArray(draft.to, operation),
+    cc: mailboxArray(draft.cc, operation),
+    bcc: mailboxArray(draft.bcc, operation),
+    subject: optionalString(draft, "subject"),
+    inReplyTo: optionalString(draft, "inReplyTo"),
+    sendStatus: optionalString(draft, "sendStatus"),
+    updatedAt: timestamp(draft.updatedAt, operation),
   };
 }
 
@@ -625,9 +702,6 @@ export function createAgentMailProvider(options: AgentMailProviderOptions): Agen
           {
             limit: input.limit ?? 100,
             ascending: true,
-            includeSpam: true,
-            includeBlocked: true,
-            includeUnauthenticated: true,
             ...(input.pageToken === undefined ? {} : { pageToken: input.pageToken }),
             ...(input.after === undefined ? {} : { after: new Date(input.after) }),
           },
@@ -703,7 +777,7 @@ export function createAgentMailProvider(options: AgentMailProviderOptions): Agen
       if (!Array.isArray(page.drafts)) throw contractError("list_drafts");
       const nextPageToken = optionalString(page, "nextPageToken");
       return {
-        drafts: page.drafts.map((draft) => normalizeDraft(draft, "list_drafts")),
+        drafts: page.drafts.map((draft) => normalizeDraftSummary(draft, "list_drafts")),
         ...(nextPageToken === undefined ? {} : { nextPageToken }),
       };
     },
@@ -722,15 +796,33 @@ export function createAgentMailProvider(options: AgentMailProviderOptions): Agen
           messageId: input.messageId,
           mutation: true,
         },
-        () =>
-          client.inboxes.drafts.create(
-            inboxId,
-            { inReplyTo: input.messageId, text: input.text, clientId: input.clientId },
-            requestOptions(signal),
-          ),
+        () => {
+          const request = {
+            text: input.text,
+            clientId: input.clientId,
+            ...(input.subject === undefined ? {} : { subject: input.subject }),
+          };
+          return input.replyAll === true
+            ? client.inboxes.messages.draftReplyAll(
+                inboxId,
+                input.messageId,
+                request,
+                requestOptions(signal),
+              )
+            : client.inboxes.messages.draftReply(
+                inboxId,
+                input.messageId,
+                request,
+                requestOptions(signal),
+              );
+        },
       );
       const draft = normalizeDraft(value, "create_reply_draft");
-      if (draft.inboxId !== inboxId || draft.inReplyTo !== input.messageId) {
+      if (
+        draft.inboxId !== inboxId ||
+        draft.inReplyTo !== input.messageId ||
+        (draft.clientId !== undefined && draft.clientId !== input.clientId)
+      ) {
         throw contractError("create_reply_draft");
       }
       return draft;

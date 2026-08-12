@@ -34,8 +34,8 @@ function matchesPattern(address: string, pattern: string): boolean {
   return address.endsWith(pattern.slice(1));
 }
 
-function senderPeer(address: string): PeerIdentity {
-  const digest = createHash("sha256").update(address).digest("hex");
+function senderPeer(address: string, inboxId: string): PeerIdentity {
+  const digest = createHash("sha256").update(`${inboxId}\0${address}`).digest("hex");
   return {
     id: `mail_${digest.slice(0, 32)}`,
     kind: "human",
@@ -67,7 +67,7 @@ export function evaluateAgentMailInbound(
   return {
     admitted: true,
     sender,
-    peer: senderPeer(sender),
+    peer: senderPeer(sender, config.inboxId),
     replyDisposition: config.replies.mode === "review" ? "review" : "none",
   };
 }
@@ -114,6 +114,54 @@ export function evaluateAgentMailOutbound(
     allowed: true,
     recipients,
     subject: `${config.outbound.subjectPrefix}${input.subject}`,
+  };
+}
+
+/** Revalidate a provider-native draft immediately before creator revision/send. */
+export function evaluateAgentMailPreparedDraft(
+  input: {
+    recipients: readonly string[];
+    subject?: string;
+    text?: string;
+    html?: string;
+  },
+  config: ValidatedAgentMailConfig,
+): AgentMailOutboundPolicyDecision {
+  if (input.html !== undefined && input.html.trim() !== "") {
+    return { allowed: false, reason: "body_limit_exceeded" };
+  }
+  if (!trustAllowed("creator", config.outbound.allowedTrustLevels)) {
+    return { allowed: false, reason: "trust_not_allowed" };
+  }
+  if (input.recipients.length === 0 || input.recipients.length > config.outbound.maxRecipients) {
+    return { allowed: false, reason: "recipient_limit_exceeded" };
+  }
+  const recipients: string[] = [];
+  for (const rawRecipient of input.recipients) {
+    const recipient = canonicalizeEmail(rawRecipient);
+    if (!isWellFormedEmail(recipient)) return { allowed: false, reason: "recipient_malformed" };
+    if (
+      config.outbound.allowedRecipients !== undefined &&
+      !config.outbound.allowedRecipients.some((pattern) => matchesPattern(recipient, pattern))
+    ) {
+      return { allowed: false, reason: "recipient_not_allowed" };
+    }
+    recipients.push(recipient);
+  }
+  if (new Set(recipients).size !== recipients.length) {
+    return { allowed: false, reason: "recipient_malformed" };
+  }
+  const subject = input.subject ?? "";
+  if (subject.length === 0 || subject.length > 998 || /[\r\n\0]/.test(subject)) {
+    return { allowed: false, reason: "subject_invalid" };
+  }
+  if (Buffer.byteLength(input.text ?? "", "utf8") > config.outbound.bodyMaxBytes) {
+    return { allowed: false, reason: "body_limit_exceeded" };
+  }
+  return {
+    allowed: true,
+    recipients,
+    subject,
   };
 }
 
