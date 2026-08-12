@@ -58,3 +58,16 @@ export function agentMail(opts: AgentMailAugmentOptions): Augment {
 
 export { validateAgentMailInboundConfig, agentMailInboundRequiresAdminRoute } from "./config";
 export type { ValidatedAgentMailInboundConfig } from "./config";
+export {
+  AgentMailProviderError,
+  createAgentMailProvider,
+  type AgentMailDraft,
+  type AgentMailMessage,
+  type AgentMailMessageSummary,
+  type AgentMailProvider,
+  type AgentMailProviderEvent,
+  type AgentMailProviderIdentity,
+  type AgentMailProviderOptions,
+  type AgentMailProviderSubscription,
+  type AgentMailThread,
+} from "./provider";
