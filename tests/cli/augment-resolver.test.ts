@@ -1360,6 +1360,62 @@ describe("resolveAugments — budgets", () => {
   });
 });
 
+describe("resolveAugments — AgentMail creator notifications", () => {
+  const mailOptions = {
+    apiKey: "am_test",
+    inboxId: "support@agentmail.to",
+    inbound: {
+      mode: "websocket",
+      allowAnySender: true,
+      rateLimit: { globalMaxPerHour: 100, perSenderMaxPerHour: 5 },
+    },
+    replies: { mode: "review" },
+    notifications: { destination: "creator", maxAttempts: 3 },
+  };
+
+  test("rejects a missing named Notify destination before opening runtime state", async () => {
+    await expect(
+      resolveAugments([{ name: "mail", type: "agentMail", options: mailOptions }], TMP),
+    ).rejects.toThrow('agentMail.notifications.destination "creator" does not match');
+  });
+
+  test("appends one lifecycle bridge independent of declared augment order", async () => {
+    const augments = await resolveAugments(
+      [
+        { name: "mail", type: "agentMail", options: mailOptions },
+        {
+          name: "notify",
+          type: "notify",
+          options: {
+            destinations: [
+              {
+                name: "creator",
+                transport: "log-to-file",
+                path: "./notifications.jsonl",
+                allowedTrustLevels: ["creator"],
+              },
+            ],
+          },
+        },
+      ],
+      TMP,
+    );
+    try {
+      expect(augments.map((augment) => augment.name)).toEqual([
+        "mail",
+        "notify",
+        "agentMail-notifications-mail",
+      ]);
+      expect(augments.at(-1)).toMatchObject({
+        type: "agentMail.notifications",
+        synthetic: true,
+      });
+    } finally {
+      for (const augment of [...augments].reverse()) await augment.onShutdown?.();
+    }
+  });
+});
+
 // ---------------------------------------------------------------------------
 // core SQLite runtime state paths
 // ---------------------------------------------------------------------------

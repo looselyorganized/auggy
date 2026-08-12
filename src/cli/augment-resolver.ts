@@ -24,13 +24,13 @@ import { webFetch } from "../augments/webFetch";
 import { knowledgeRoot } from "../augments/knowledge";
 import { skills } from "../augments/skills";
 import { bash } from "../augments/bash";
-import { notify } from "../augments/notify";
+import { notify, type NotifyAugment, type NotifyDispatchHost } from "../augments/notify";
 import {
   collectNotifyDestinationPolicyBindings,
   validateUniqueNotifyDestinationNames,
 } from "../augments/notify/destination-policy";
 import { mcp } from "../augments/mcp";
-import { agentMail } from "../augments/agentMail";
+import { agentMail, type AgentMailRuntimeAugment } from "../augments/agentMail";
 import { validateAgentMailConfig } from "../augments/agentMail/config";
 import { telegramTransport } from "../augments/telegramTransport";
 import { turnControl, type TurnControlOptions } from "../augments/turnControl";
@@ -726,9 +726,18 @@ export async function resolveAugments(
     ),
   );
   validateUniqueNotifyDestinationNames(notifyBindings);
+  const notifyBindingNames = new Set(notifyBindings.map((binding) => binding.destinationName));
   for (const config of configs) {
     if (config.type !== "agentMail") continue;
     const agentMailConfig = validateAgentMailConfig(config.options);
+    if (
+      agentMailConfig.notifications &&
+      !notifyBindingNames.has(agentMailConfig.notifications.destination)
+    ) {
+      throw new Error(
+        `[augment-resolver] agentMail.notifications.destination ${JSON.stringify(agentMailConfig.notifications.destination)} does not match any Notify destination`,
+      );
+    }
     if (agentMailConfig.inbound.mode === "none") continue;
     const inboxId = config.options?.inboxId;
     if (typeof inboxId !== "string") continue;
@@ -745,6 +754,13 @@ export async function resolveAugments(
   type NotifyToolExecute = NonNullable<Augment["tools"]>[number]["execute"];
   const notifyDestinationNames = new Set<string>();
   const notifyExecutorsByDestination = new Map<string, NotifyToolExecute>();
+  const notifyHostsByDestination = new Map<string, NotifyDispatchHost>();
+  const agentMailAttentionMounts: Array<{
+    name: string;
+    augment: AgentMailRuntimeAugment;
+    destination: string;
+    maxAttempts: number;
+  }> = [];
 
   for (const binding of notifyBindings) {
     notifyDestinationNames.add(binding.destinationName);
@@ -1096,6 +1112,7 @@ export async function resolveAugments(
             inbound: opts.inbound as AgentMailAugmentOptions["inbound"],
             replies: opts.replies as AgentMailAugmentOptions["replies"],
             outbound: opts.outbound as AgentMailAugmentOptions["outbound"],
+            notifications: opts.notifications as AgentMailAugmentOptions["notifications"],
           });
           break;
         }
@@ -1141,6 +1158,7 @@ export async function resolveAugments(
       // Override the auto-generated augment name with the operator's choice.
       augment = { ...augment, name: config.name };
       if (config.type === "notify") {
+        const notifyAugment = augment as NotifyAugment;
         const notifyTool = augment.tools?.find((tool) => tool.name === "notify");
         if (notifyTool) {
           const destinations =
@@ -1148,8 +1166,20 @@ export async function resolveAugments(
           for (const destination of destinations) {
             if (typeof destination.name === "string") {
               notifyExecutorsByDestination.set(destination.name, notifyTool.execute);
+              notifyHostsByDestination.set(destination.name, notifyAugment.dispatchHost);
             }
           }
+        }
+      }
+      if (config.type === "agentMail") {
+        const validated = validateAgentMailConfig(config.options);
+        if (validated.notifications) {
+          agentMailAttentionMounts.push({
+            name: config.name,
+            augment: augment as AgentMailRuntimeAugment,
+            destination: validated.notifications.destination,
+            maxAttempts: validated.notifications.maxAttempts,
+          });
         }
       }
       augments.push(augment);
@@ -1270,6 +1300,42 @@ export async function resolveAugments(
           augments,
         }),
       );
+    }
+
+    for (const mount of agentMailAttentionMounts) {
+      const dispatchHost = notifyHostsByDestination.get(mount.destination);
+      if (!dispatchHost) {
+        throw new Error(
+          `[augment-resolver] Notify destination ${JSON.stringify(mount.destination)} has no durable internal dispatch host`,
+        );
+      }
+      augments.push({
+        name: `agentMail-notifications-${mount.name}`,
+        type: "agentMail.notifications",
+        synthetic: true,
+        async onBoot() {
+          const destinationBindingHash = dispatchHost.destinationBindingSha256(mount.destination);
+          const metadata = dispatchHost.destinationMetadata(mount.destination);
+          if (!destinationBindingHash || !metadata) {
+            throw new Error(
+              `agentMail notifications: Notify destination ${JSON.stringify(mount.destination)} is unavailable or does not allow creator delivery`,
+            );
+          }
+          mount.augment.creatorAttentionHost.configure({
+            dispatchHost,
+            destination: mount.destination,
+            destinationBindingHash,
+            maxAttempts: mount.maxAttempts,
+            ...(metadata.transport === "agentmail"
+              ? { agentMailRecipients: metadata.recipients }
+              : {}),
+          });
+          await mount.augment.creatorAttentionHost.start();
+        },
+        async onShutdown() {
+          await mount.augment.creatorAttentionHost.stop();
+        },
+      });
     }
 
     return augments;

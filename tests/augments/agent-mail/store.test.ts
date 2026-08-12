@@ -176,6 +176,159 @@ describe("AgentMail orchestration store", () => {
     store.close();
   });
 
+  test("atomically enqueues one metadata-only creator alert for a provider draft", () => {
+    const paths = fixture();
+    const store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+      clock: () => 2_000,
+    });
+    store.claimMessage(claimInput());
+    const draft = {
+      sourceMessageId: "message_1",
+      threadId: "thread_1",
+      draftId: "draft_1",
+      clientId: "reply-message-1",
+      providerUpdatedAt: 1_500,
+    };
+    expect(store.recordDraft(draft)).toEqual({ status: "recorded" });
+    expect(store.recordDraft(draft)).toEqual({ status: "duplicate" });
+    const alerts = store.listCreatorAttention();
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({
+      kind: "draft_ready",
+      subjectId: "draft_1",
+      relatedMessageId: "message_1",
+      state: "pending",
+      version: 1,
+      attemptCount: 0,
+    });
+    expect(alerts[0]!.operationKey).toMatch(/^agentmail\.attention\.[a-f0-9]{64}$/);
+
+    expect(() =>
+      store.recordDraft({ ...draft, sourceMessageId: "missing", draftId: "draft_2" }),
+    ).toThrow(/source does not match/);
+    expect(store.listCreatorAttention()).toHaveLength(1);
+    store.close();
+
+    const db = new Database(paths.dbPath, { readonly: true });
+    const columns = db
+      .query<{ name: string }, []>("PRAGMA table_info(agentmail_creator_attention)")
+      .all()
+      .map((row) => row.name);
+    expect(columns).not.toContain("sender");
+    expect(columns).not.toContain("recipient");
+    expect(columns).not.toContain("subject");
+    expect(columns).not.toContain("body");
+    expect(columns).not.toContain("provider_response");
+    db.close();
+  });
+
+  test("binds, claims, retries, settles, and acknowledges one attention generation", () => {
+    const paths = fixture();
+    let now = 2_000;
+    const store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+      clock: () => now,
+    });
+    store.claimMessage(claimInput());
+    store.recordDraft({
+      sourceMessageId: "message_1",
+      threadId: "thread_1",
+      draftId: "draft_1",
+      clientId: "reply-message-1",
+      providerUpdatedAt: 1_500,
+    });
+    const attention = store.listCreatorAttention()[0]!;
+    const binding = {
+      attentionId: attention.attentionId,
+      destination: "creator",
+      destinationBindingHash: "a".repeat(64),
+      payloadHash: "b".repeat(64),
+      maxAttempts: 3,
+    };
+    expect(store.bindCreatorAttention(binding)).toMatchObject({ status: "bound" });
+    expect(store.bindCreatorAttention(binding)).toMatchObject({ status: "duplicate" });
+    expect(
+      store.bindCreatorAttention({ ...binding, destinationBindingHash: "c".repeat(64) }),
+    ).toMatchObject({ status: "conflict" });
+
+    const firstClaim = store.claimCreatorAttention(attention.attentionId)!;
+    expect(firstClaim.state).toBe("dispatching");
+    expect(store.claimCreatorAttention(attention.attentionId)).toBeUndefined();
+    now = 3_000;
+    const retry = store.settleCreatorAttention({
+      attentionId: attention.attentionId,
+      expectedVersion: firstClaim.version,
+      outcome: { status: "retry", attemptCount: 1, resultCode: "delivery_failed" },
+    });
+    expect(retry).toMatchObject({ state: "pending", attemptCount: 1 });
+
+    const secondClaim = store.claimCreatorAttention(attention.attentionId)!;
+    const presented = store.settleCreatorAttention({
+      attentionId: attention.attentionId,
+      expectedVersion: secondClaim.version,
+      outcome: { status: "presented", attemptCount: 2, resultCode: "sent" },
+    });
+    expect(presented).toMatchObject({ state: "presented", attemptCount: 2, settledAt: 3_000 });
+    expect(presented.settlementHash).toMatch(/^[a-f0-9]{64}$/);
+    const acknowledged = store.acknowledgeCreatorAttention({
+      attentionId: attention.attentionId,
+      expectedVersion: presented.version,
+      settlementHash: presented.settlementHash!,
+    });
+    expect(acknowledged.notifyAcknowledgedAt).toBe(3_000);
+    expect(
+      store.acknowledgeCreatorAttention({
+        attentionId: attention.attentionId,
+        expectedVersion: presented.version,
+        settlementHash: presented.settlementHash!,
+      }),
+    ).toEqual(acknowledged);
+    store.close();
+  });
+
+  test("repairs interrupted attention dispatch without minting another operation", () => {
+    const paths = fixture();
+    let store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+    });
+    store.claimMessage(claimInput());
+    store.recordDraft({
+      sourceMessageId: "message_1",
+      threadId: "thread_1",
+      draftId: "draft_1",
+      clientId: "reply-message-1",
+      providerUpdatedAt: 1_500,
+    });
+    const attention = store.listCreatorAttention()[0]!;
+    store.bindCreatorAttention({
+      attentionId: attention.attentionId,
+      destination: "creator",
+      destinationBindingHash: "a".repeat(64),
+      payloadHash: "b".repeat(64),
+      maxAttempts: 3,
+    });
+    const operationKey = store.claimCreatorAttention(attention.attentionId)!.operationKey;
+    store.close();
+
+    store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+    });
+    expect(store.recoverCreatorAttention()).toEqual({ dispatching: 1, superseded: 0 });
+    const recovered = store.getCreatorAttention(attention.attentionId)!;
+    expect(recovered).toMatchObject({
+      state: "pending",
+      operationKey,
+      lastResultCode: "interrupted_dispatch",
+    });
+    expect(store.recoverCreatorAttention()).toEqual({ dispatching: 0, superseded: 0 });
+    store.close();
+  });
+
   test("deduplicates delivery events and rejects changed reuse", () => {
     const paths = fixture();
     const store = createAgentMailOrchestrationStore({
@@ -197,6 +350,128 @@ describe("AgentMail orchestration store", () => {
         payloadHash: hashAgentMailOrchestrationValue("changed"),
       }),
     ).toBe("conflict");
+    store.close();
+  });
+
+  test("enqueues delivery-failure attention only for locally managed sent mail", () => {
+    const paths = fixture();
+    const store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+      sendKey: () => "stable-send-key",
+    });
+    const outboundHash = hashAgentMailOrchestrationValue("managed outbound");
+    store.reserveOutboundOperation({ operationId: "operation_1", payloadHash: outboundHash });
+    store.settleOutboundOperation("operation_1", {
+      status: "sent",
+      messageId: "sent_1",
+      threadId: "thread_1",
+    });
+    const ignored = {
+      eventId: "bounce_unmanaged",
+      eventType: "message.bounced",
+      messageId: "not_ours",
+      payloadHash: hashAgentMailOrchestrationValue("unmanaged bounce"),
+      observedAt: 2_000,
+    };
+    expect(store.recordProviderEvent(ignored)).toBe("recorded");
+    expect(store.listCreatorAttention()).toHaveLength(0);
+
+    const delivered = {
+      eventId: "delivery_1",
+      eventType: "message.delivered",
+      messageId: "sent_1",
+      payloadHash: hashAgentMailOrchestrationValue("managed delivery"),
+      observedAt: 2_100,
+    };
+    expect(store.recordProviderEvent(delivered)).toBe("recorded");
+    expect(store.listCreatorAttention()).toHaveLength(0);
+
+    const failed = {
+      eventId: "bounce_1",
+      eventType: "message.bounced",
+      messageId: "sent_1",
+      payloadHash: hashAgentMailOrchestrationValue("managed bounce"),
+      observedAt: 2_200,
+    };
+    expect(store.recordProviderEvent(failed)).toBe("recorded");
+    expect(store.recordProviderEvent(failed)).toBe("duplicate");
+    expect(store.listCreatorAttention()).toEqual([
+      expect.objectContaining({
+        kind: "delivery_failure",
+        subjectId: "bounce_1",
+        relatedMessageId: "sent_1",
+        state: "pending",
+      }),
+    ]);
+    store.close();
+  });
+
+  test("reconciles delivery failures recorded before local draft and direct-send settlement", () => {
+    const paths = fixture();
+    let sendKey = 0;
+    const store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+      sendKey: () => `stable-send-key-${++sendKey}`,
+    });
+    const directFailure = {
+      eventId: "reject_direct",
+      eventType: "message.rejected",
+      messageId: "sent_direct",
+      payloadHash: hashAgentMailOrchestrationValue("direct rejected"),
+      observedAt: 2_000,
+    };
+    expect(store.recordProviderEvent(directFailure)).toBe("recorded");
+    expect(store.listCreatorAttention()).toHaveLength(0);
+    store.reserveOutboundOperation({
+      operationId: "operation_direct",
+      payloadHash: hashAgentMailOrchestrationValue("direct payload"),
+    });
+    store.settleOutboundOperation("operation_direct", {
+      status: "sent",
+      messageId: "sent_direct",
+      threadId: "thread_direct",
+    });
+
+    store.claimMessage(claimInput());
+    store.recordDraft({
+      sourceMessageId: "message_1",
+      threadId: "thread_1",
+      draftId: "draft_1",
+      clientId: "reply-message-1",
+      providerUpdatedAt: 1_500,
+    });
+    store.approveDraft({
+      sourceMessageId: "message_1",
+      approvalEvidence: "creator explicitly approved",
+      expectedUpdatedAt: 1_500,
+    });
+    store.reserveDraftSend("message_1");
+    const draftFailure = {
+      eventId: "complaint_draft",
+      eventType: "message.complained",
+      messageId: "sent_draft",
+      payloadHash: hashAgentMailOrchestrationValue("draft complaint"),
+      observedAt: 2_100,
+    };
+    expect(store.recordProviderEvent(draftFailure)).toBe("recorded");
+    expect(
+      store.listCreatorAttention().filter((attention) => attention.kind === "delivery_failure"),
+    ).toHaveLength(1);
+    store.settleDraftSend("message_1", { status: "sent", messageId: "sent_draft" });
+
+    expect(
+      store
+        .listCreatorAttention({ states: ["pending"] })
+        .filter((attention) => attention.kind === "delivery_failure")
+        .map((attention) => attention.subjectId),
+    ).toEqual(["reject_direct", "complaint_draft"]);
+    expect(store.recordProviderEvent(directFailure)).toBe("duplicate");
+    expect(store.recordProviderEvent(draftFailure)).toBe("duplicate");
+    expect(
+      store.listCreatorAttention().filter((attention) => attention.kind === "delivery_failure"),
+    ).toHaveLength(2);
     store.close();
   });
 
@@ -317,6 +592,75 @@ describe("AgentMail orchestration store", () => {
       providerUpdatedAt: 2_500,
     });
     expect(store.getDraftByMessage("message_1")?.state).toBe("stale");
+    expect(store.listCreatorAttention()).toEqual([
+      expect.objectContaining({
+        kind: "draft_ready",
+        subjectId: "draft_1",
+        state: "superseded",
+      }),
+    ]);
+    const obsolete = store.listCreatorAttention()[0]!;
+    const obsoleteBinding = store.bindCreatorAttention({
+      attentionId: obsolete.attentionId,
+      destination: "creator",
+      destinationBindingHash: "a".repeat(64),
+      payloadHash: "b".repeat(64),
+      maxAttempts: 3,
+    });
+    expect(obsoleteBinding).toMatchObject({
+      status: "duplicate",
+      record: { state: "superseded" },
+    });
+    expect(obsoleteBinding.record.destination).toBeUndefined();
+    store.close();
+  });
+
+  test("supersedes pending draft alerts when a draft becomes stale or is sent", () => {
+    const paths = fixture();
+    const store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+      sendKey: () => "send-message-1",
+    });
+    store.claimMessage(claimInput());
+    store.recordDraft({
+      sourceMessageId: "message_1",
+      threadId: "thread_1",
+      draftId: "draft_1",
+      clientId: "reply-message-1",
+      providerUpdatedAt: 1_500,
+    });
+    store.markDraftStale("message_1");
+    expect(store.listCreatorAttention()[0]).toMatchObject({
+      state: "superseded",
+      lastResultCode: "draft_no_longer_pending_review",
+    });
+
+    store.claimMessage(
+      claimInput({
+        messageId: "message_2",
+        threadId: "thread_2",
+        eventId: "event_2",
+        payloadHash: hashAgentMailOrchestrationValue("message_2"),
+      }),
+    );
+    store.recordDraft({
+      sourceMessageId: "message_2",
+      threadId: "thread_2",
+      draftId: "draft_2",
+      clientId: "reply-message-2",
+      providerUpdatedAt: 1_600,
+    });
+    store.approveDraft({
+      sourceMessageId: "message_2",
+      approvalEvidence: "creator explicitly approved",
+      expectedUpdatedAt: 1_600,
+    });
+    store.reserveDraftSend("message_2");
+    store.settleDraftSend("message_2", { status: "sent", messageId: "sent_2" });
+    expect(
+      store.listCreatorAttention().find((attention) => attention.subjectId === "draft_2"),
+    ).toMatchObject({ state: "superseded" });
     store.close();
   });
 

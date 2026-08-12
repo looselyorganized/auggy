@@ -18,6 +18,7 @@ const TOP_LEVEL_FIELDS = new Set([
   "inbound",
   "replies",
   "outbound",
+  "notifications",
 ]);
 const INBOUND_FIELDS = new Set(["mode", "allowedSenders", "allowAnySender", "rateLimit"]);
 const REPLY_FIELDS = new Set(["mode", "allowReplyAll"]);
@@ -35,6 +36,7 @@ const OUTBOUND_RATE_FIELDS = new Set([
   "perRecipientCooldownMs",
   "dedupWindowMs",
 ]);
+const NOTIFICATION_FIELDS = new Set(["destination", "maxAttempts"]);
 const TRUST_LEVELS = new Set<TrustLevel>(["creator", "agent", "public"]);
 const SENDER_PATTERN = /^\*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
 
@@ -72,6 +74,10 @@ export interface ValidatedAgentMailConfig {
       dedupWindowMs: number;
     };
   };
+  notifications?: {
+    destination: string;
+    maxAttempts: number;
+  };
 }
 
 function objectValue(value: unknown, label: string): Record<string, unknown> {
@@ -103,6 +109,21 @@ function optionalString(value: unknown, field: string): string | undefined {
   if (value === undefined) return undefined;
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`agentMail: ${field} must be a non-empty string`);
+  }
+  return value;
+}
+
+function notificationDestination(value: unknown): string {
+  if (
+    typeof value !== "string" ||
+    value.length < 1 ||
+    value.length > 128 ||
+    value !== value.trim() ||
+    /\p{Cc}/u.test(value)
+  ) {
+    throw new Error(
+      "agentMail: notifications.destination must be a non-empty Notify destination name without surrounding whitespace or control characters",
+    );
   }
   return value;
 }
@@ -209,6 +230,19 @@ export function validateAgentMailConfig(value: unknown): ValidatedAgentMailConfi
   rejectUnknownFields(inboundRate, INBOUND_RATE_FIELDS, "inbound.rateLimit");
   if (mode === "none" && inbound.rateLimit !== undefined) {
     throw new Error("agentMail: inbound.rateLimit cannot be configured while inbound.mode is none");
+  }
+
+  const notifications =
+    config.notifications === undefined
+      ? undefined
+      : objectValue(config.notifications, "notifications");
+  if (notifications !== undefined) {
+    rejectUnknownFields(notifications, NOTIFICATION_FIELDS, "notifications");
+    if (mode !== "websocket") {
+      throw new Error(
+        'agentMail: notifications require inbound.mode "websocket" so AgentMail events can be observed',
+      );
+    }
   }
 
   const replies = config.replies === undefined ? {} : objectValue(config.replies, "replies");
@@ -338,6 +372,20 @@ export function validateAgentMailConfig(value: unknown): ValidatedAgentMailConfi
         ),
       },
     },
+    ...(notifications === undefined
+      ? {}
+      : {
+          notifications: {
+            destination: notificationDestination(notifications.destination),
+            maxAttempts: boundedInteger(
+              notifications.maxAttempts,
+              3,
+              "notifications.maxAttempts",
+              1,
+              20,
+            ),
+          },
+        }),
   };
 }
 

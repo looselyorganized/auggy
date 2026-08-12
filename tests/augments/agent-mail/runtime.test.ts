@@ -13,6 +13,7 @@ import type {
   TurnState,
   TurnTrigger,
 } from "../../../src/types";
+import type { NotifyDispatchHost, NotifyInternalDispatchInput } from "../../../src/augments/notify";
 import { validateAgentMailConfig } from "../../../src/augments/agentMail/config";
 import { createAgentMailRuntime } from "../../../src/augments/agentMail/runtime";
 import type {
@@ -182,7 +183,9 @@ class FakeProvider implements AgentMailProvider {
   }
 }
 
-function fixture(options: { inbound?: boolean; provider?: FakeProvider } = {}) {
+function fixture(
+  options: { inbound?: boolean; notifications?: boolean; provider?: FakeProvider } = {},
+) {
   const root = mkdtempSync(join(tmpdir(), "auggy-agentmail-runtime-"));
   roots.push(root);
   const store = createAgentMailOrchestrationStore({
@@ -204,6 +207,7 @@ function fixture(options: { inbound?: boolean; provider?: FakeProvider } = {}) {
         }
       : { mode: "none" },
     replies: options.inbound ? { mode: "review", allowReplyAll: false } : { mode: "disabled" },
+    ...(options.notifications ? { notifications: { destination: "creator" } } : {}),
     outbound: {
       allowedTrustLevels: ["creator"],
       subjectPrefix: "[Store] ",
@@ -216,6 +220,30 @@ function fixture(options: { inbound?: boolean; provider?: FakeProvider } = {}) {
   });
   const augment = createAgentMailRuntime(config, { provider, store });
   return { root, store, provider, augment };
+}
+
+function notificationHost(deliveries: NotifyInternalDispatchInput[]): NotifyDispatchHost {
+  const sent = new Set<string>();
+  return {
+    destinationMetadata: () => ({ transport: "webhook" }),
+    destinationBindingSha256: () => "b".repeat(64),
+    inspectInternal(input) {
+      return sent.has(input.operationKey)
+        ? { status: "sent", attemptCount: 1 }
+        : { status: "not_found", attemptCount: 0 };
+    },
+    async dispatchInternal(input) {
+      deliveries.push(input);
+      sent.add(input.operationKey);
+      return { status: "sent", replayed: false, attemptCount: 1 };
+    },
+    acknowledgeInternalSettlement() {
+      return { status: "acknowledged" };
+    },
+    authorizeInternalRetry() {
+      return { status: "not_found", attemptCount: 0 };
+    },
+  };
 }
 
 function kernel(onTurn: (trigger: TurnTrigger) => Promise<string>): TransportKernel {
@@ -291,6 +319,65 @@ function creatorTurn(turnId: string, threadId: string, text: string): TurnState 
 }
 
 describe("AgentMail provider-native runtime", () => {
+  test("routes one content-free draft-ready alert through the hardened Notify host", async () => {
+    const provider = new FakeProvider();
+    const incoming = message();
+    provider.messages.set(incoming.messageId, incoming);
+    provider.pages = [[summary(incoming)]];
+    const f = fixture({ inbound: true, notifications: true, provider });
+    const deliveries: NotifyInternalDispatchInput[] = [];
+    const dispatchHost = notificationHost(deliveries);
+
+    await f.augment.onBoot?.();
+    f.augment.creatorAttentionHost.configure({
+      dispatchHost,
+      destination: "creator",
+      destinationBindingHash: "b".repeat(64),
+      maxAttempts: 3,
+    });
+    await f.augment.creatorAttentionHost.start();
+    await f.augment.transport?.register(
+      kernel(async () => "We can help."),
+      "agentMail",
+    );
+    await f.augment.transport?.ready?.();
+    await waitFor(() => deliveries.length === 1);
+
+    expect(deliveries[0]).toMatchObject({
+      source: "agentmail.draft-ready",
+      destination: "creator",
+      maxAttempts: 3,
+      payload: {
+        summary:
+          "A new AgentMail reply draft is ready for review. Open Auggy Console or AgentMail.",
+      },
+    });
+    expect(JSON.stringify(deliveries)).not.toContain("customer@example.com");
+    expect(JSON.stringify(deliveries)).not.toContain("We can help");
+    await f.augment.creatorAttentionHost.repair();
+    expect(deliveries).toHaveLength(1);
+
+    await f.augment.onShutdown?.();
+    f.store.close();
+  });
+
+  test("rejects a creator notification route that targets its monitored inbox", async () => {
+    const f = fixture({ inbound: true, notifications: true });
+    const dispatchHost = notificationHost([]);
+    await f.augment.onBoot?.();
+    expect(() =>
+      f.augment.creatorAttentionHost.configure({
+        dispatchHost,
+        destination: "creator",
+        destinationBindingHash: "b".repeat(64),
+        maxAttempts: 3,
+        agentMailRecipients: [inboxId.toUpperCase()],
+      }),
+    ).toThrow("would create a mail loop");
+    await f.augment.onShutdown?.();
+    f.store.close();
+  });
+
   test("runs admitted inbound mail through a normal public turn and creates one provider draft", async () => {
     const provider = new FakeProvider();
     const incoming = message();

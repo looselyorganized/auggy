@@ -20,6 +20,7 @@ export interface AgentMailInboundCoordinatorOptions {
   store: AgentMailOrchestrationStore;
   policyVersion: number;
   onWorkAvailable(messageId: string): void | Promise<void>;
+  onCreatorAttentionAvailable?(): void;
   onError?(error: AgentMailProviderError | Error): void;
   catchUpOverlapMs?: number;
   repairIntervalMs?: number;
@@ -214,6 +215,7 @@ export function createAgentMailInboundCoordinator(
     if (result === "conflict") {
       throw new Error(`agentMail inbound: conflicting provider event ${event.eventId}`);
     }
+    options.onCreatorAttentionAvailable?.();
   }
 
   return {

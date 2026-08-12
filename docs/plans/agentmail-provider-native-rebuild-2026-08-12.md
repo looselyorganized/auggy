@@ -45,7 +45,7 @@ reported; it is never read, migrated, or deleted automatically.
 | Admission lists | AgentMail Lists | Optional provider enforcement | Lists do not grant Auggy autonomous authority |
 | Credential scope | `auth_me` and API-key permissions | Validate the supplied key and configured inbox | Auggy never creates, rotates, or replaces a key |
 | Spam and authentication classification | Received event variants and labels | Additional untrusted-input classification | Provider authentication is not Auggy identity |
-| Delivery lifecycle | sent, delivered, bounced, complained, rejected events | Reconcile activity and notify creator on failure | A successful send call is not delivery evidence |
+| Delivery lifecycle | sent, delivered, bounced, complained, rejected events | Correlate live failure events to Auggy-managed sends and notify the creator | A successful send call is not delivery evidence; AgentMail exposes no message-addressable lifecycle replay API |
 | Attachments | Provider metadata and expiring signed download URL | Fetch only for an authorized turn that requires it | Never persist signed URLs or execute content |
 
 The implementation is checked against:
@@ -82,7 +82,7 @@ AgentMail live event
        -> review/revise with Auggy, or
        -> open AgentMail
   -> explicit authorized send
-  -> delivery reconciliation
+  -> live delivery-failure correlation
 ```
 
 ### Boot and reconnect ordering
@@ -161,6 +161,16 @@ The creator can either open AgentMail or ask Auggy to show and revise the
 draft. Both paths operate on the same provider object. `Send it` is a new,
 creator-authorized mutation; creating or editing a draft is never send
 authorization.
+
+Draft-ready creator attention is restart-recoverable because Auggy records the
+draft reference and attention item in one local transaction. Delivery-failure
+attention is durable after Auggy observes the live event, but events missed
+while Auggy is offline cannot be reconstructed per message: AgentMail's inbox
+event-list endpoint documents label changes only, while its metrics endpoint
+returns aggregate counts without message identity. WebSocket reconnection is
+therefore not presented as lifecycle replay. Reliable offline lifecycle-event
+recovery requires a future verified webhook inbox or a provider event-history
+API with stable message identifiers.
 
 ## Error contract
 

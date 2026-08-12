@@ -17,6 +17,11 @@ import type {
   TurnTrigger,
 } from "../../types";
 import type { ValidatedAgentMailConfig } from "./config";
+import type {
+  NotifyDispatchHost,
+  NotifyInternalDispatchInput,
+  NotifyInternalSource,
+} from "../notify";
 import { createAgentMailInboundCoordinator, type AgentMailInboundCoordinator } from "./inbound";
 import {
   evaluateAgentMailInbound,
@@ -35,6 +40,8 @@ import {
   createAgentMailOrchestrationStore,
   hashAgentMailOrchestrationValue,
   type AgentMailDraftReference,
+  type AgentMailCreatorAttentionKind,
+  type AgentMailCreatorAttentionRecord,
   type AgentMailOrchestrationStore,
   type AgentMailWorkItem,
 } from "./store";
@@ -53,6 +60,26 @@ export interface AgentMailRuntimeDependencies {
   provider?: AgentMailProvider;
   store?: AgentMailOrchestrationStore;
 }
+
+export interface AgentMailCreatorAttentionBinding {
+  dispatchHost: NotifyDispatchHost;
+  destination: string;
+  destinationBindingHash: string;
+  maxAttempts: number;
+  /** AgentMail recipients only, for monitored-inbox loop prevention. */
+  agentMailRecipients?: readonly string[];
+}
+
+export interface AgentMailCreatorAttentionHost {
+  configure(binding: AgentMailCreatorAttentionBinding): void;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  repair(): Promise<void>;
+}
+
+export type AgentMailRuntimeAugment = Augment & {
+  creatorAttentionHost: AgentMailCreatorAttentionHost;
+};
 
 interface ActiveMailRoute {
   work: AgentMailWorkItem;
@@ -121,6 +148,20 @@ function providerCode(error: unknown): string {
   return error instanceof AgentMailProviderError ? error.details.code : "runtime_failure";
 }
 
+function creatorAttentionSource(kind: AgentMailCreatorAttentionKind): NotifyInternalSource {
+  return kind === "draft_ready" ? "agentmail.draft-ready" : "agentmail.delivery-failed";
+}
+
+function creatorAttentionSummary(kind: AgentMailCreatorAttentionKind): string {
+  return kind === "draft_ready"
+    ? "A new AgentMail reply draft is ready for review. Open Auggy Console or AgentMail."
+    : "An Auggy-managed AgentMail message had a delivery failure. Open Auggy Console or AgentMail.";
+}
+
+function creatorAttentionResultCode(value: string): string {
+  return value.replace(/[^a-z0-9_-]/g, "_").slice(0, 64) || "unknown";
+}
+
 function isRetryable(error: unknown): boolean {
   return error instanceof AgentMailProviderError && error.details.retryable;
 }
@@ -168,7 +209,7 @@ function managedProviderDraft(
 export function createAgentMailRuntime(
   config: ValidatedAgentMailConfig,
   dependencies: AgentMailRuntimeDependencies = {},
-): Augment {
+): AgentMailRuntimeAugment {
   const provider =
     dependencies.provider ??
     createAgentMailProvider({
@@ -193,6 +234,11 @@ export function createAgentMailRuntime(
   const draftTails = new Map<string, Promise<void>>();
   let verifiedEmailAddress: string | undefined;
   let lastErrorCode: string | undefined;
+  let attentionBinding: AgentMailCreatorAttentionBinding | undefined;
+  let attentionTail: Promise<void> = Promise.resolve();
+  let attentionStarted = false;
+  let attentionStopped = false;
+  let attentionTimer: ReturnType<typeof setInterval> | undefined;
 
   function runtimeStore(): AgentMailOrchestrationStore {
     if (!store) throw new Error("agentMail: orchestration store is unavailable before boot");
@@ -219,6 +265,258 @@ export function createAgentMailRuntime(
       if (draftTails.get(draftId) === tail) draftTails.delete(draftId);
     }
   }
+
+  function attentionInput(
+    record: AgentMailCreatorAttentionRecord,
+    binding: AgentMailCreatorAttentionBinding,
+  ): NotifyInternalDispatchInput {
+    return {
+      source: creatorAttentionSource(record.kind),
+      operationKey: record.operationKey,
+      destination: binding.destination,
+      threadId: stableId("agentmail-attention", config.inboxId, record.kind),
+      payload: { summary: creatorAttentionSummary(record.kind) },
+      maxAttempts: binding.maxAttempts,
+      signal: lifecycleController.signal,
+    };
+  }
+
+  function bindAttention(
+    record: AgentMailCreatorAttentionRecord,
+    binding: AgentMailCreatorAttentionBinding,
+  ): AgentMailCreatorAttentionRecord {
+    const input = attentionInput(record, binding);
+    const payloadHash = hashAgentMailOrchestrationValue(
+      JSON.stringify([
+        "agentmail-attention-payload/v1",
+        input.source,
+        input.payload.summary,
+        input.payload.reason ?? null,
+        input.payload.visitor ?? null,
+      ]),
+    );
+    const result = runtimeStore().bindCreatorAttention({
+      attentionId: record.attentionId,
+      destination: binding.destination,
+      destinationBindingHash: binding.destinationBindingHash,
+      payloadHash,
+      maxAttempts: binding.maxAttempts,
+    });
+    if (result.status === "conflict") {
+      throw new Error("agentMail notifications: creator destination changed for pending work");
+    }
+    return result.record;
+  }
+
+  function acknowledgeAttention(record: AgentMailCreatorAttentionRecord): void {
+    const binding = attentionBinding;
+    if (
+      !binding ||
+      !record.destination ||
+      !record.settlementHash ||
+      record.notifyAcknowledgedAt !== undefined
+    )
+      return;
+    const acknowledged = binding.dispatchHost.acknowledgeInternalSettlement({
+      source: creatorAttentionSource(record.kind),
+      operationKey: record.operationKey,
+      settlementSha256: record.settlementHash,
+    });
+    if (
+      acknowledged.status === "acknowledged" ||
+      acknowledged.status === "already_acknowledged" ||
+      acknowledged.status === "not_found"
+    ) {
+      runtimeStore().acknowledgeCreatorAttention({
+        attentionId: record.attentionId,
+        expectedVersion: record.version,
+        settlementHash: record.settlementHash,
+      });
+    } else if (acknowledged.status === "operation_conflict") {
+      throw new Error("agentMail notifications: Notify settlement identity conflicted");
+    }
+  }
+
+  async function dispatchAttention(record: AgentMailCreatorAttentionRecord): Promise<void> {
+    const binding = attentionBinding;
+    if (!binding || attentionStopped) return;
+    if (
+      record.state === "presented" ||
+      record.state === "failed" ||
+      record.state === "superseded" ||
+      record.state === "dismissed"
+    ) {
+      acknowledgeAttention(record);
+      return;
+    }
+    const bound = bindAttention(record, binding);
+    if (bound.state === "ambiguous") return;
+
+    const input = attentionInput(bound, binding);
+    const inspected = binding.dispatchHost.inspectInternal(input);
+    if (inspected.status === "sent") {
+      const claimed = runtimeStore().claimCreatorAttention(bound.attentionId);
+      if (!claimed) return;
+      const settled = runtimeStore().settleCreatorAttention({
+        attentionId: claimed.attentionId,
+        expectedVersion: claimed.version,
+        outcome: {
+          status: "presented",
+          attemptCount: inspected.attemptCount,
+          resultCode: "notify_replayed_sent",
+        },
+      });
+      acknowledgeAttention(settled);
+      return;
+    }
+    if (inspected.status === "outcome_unknown") {
+      const claimed = runtimeStore().claimCreatorAttention(bound.attentionId);
+      if (!claimed) return;
+      runtimeStore().settleCreatorAttention({
+        attentionId: claimed.attentionId,
+        expectedVersion: claimed.version,
+        outcome: {
+          status: "ambiguous",
+          attemptCount: inspected.attemptCount,
+          resultCode: "notify_outcome_unknown",
+        },
+      });
+      return;
+    }
+    if (
+      inspected.status === "operation_conflict" ||
+      inspected.status === "invalid_request" ||
+      inspected.status === "durable_state_unavailable"
+    ) {
+      throw new Error(`agentMail notifications: Notify inspection failed (${inspected.status})`);
+    }
+    if (inspected.status === "in_flight") return;
+
+    const claimed = runtimeStore().claimCreatorAttention(bound.attentionId);
+    if (!claimed) return;
+    const result = await binding.dispatchHost.dispatchInternal(input);
+    if (result.status === "sent") {
+      const settled = runtimeStore().settleCreatorAttention({
+        attentionId: claimed.attentionId,
+        expectedVersion: claimed.version,
+        outcome: {
+          status: "presented",
+          attemptCount: result.attemptCount,
+          resultCode: result.replayed ? "notify_replayed_sent" : "notify_sent",
+        },
+      });
+      acknowledgeAttention(settled);
+      return;
+    }
+    if (result.status === "outcome_unknown") {
+      runtimeStore().settleCreatorAttention({
+        attentionId: claimed.attentionId,
+        expectedVersion: claimed.version,
+        outcome: {
+          status: "ambiguous",
+          attemptCount: result.attemptCount,
+          resultCode: "notify_outcome_unknown",
+        },
+      });
+      return;
+    }
+    if (result.status === "in_flight" || result.status === "rate_limited") {
+      runtimeStore().settleCreatorAttention({
+        attentionId: claimed.attentionId,
+        expectedVersion: claimed.version,
+        outcome: {
+          status: "retry",
+          attemptCount: result.attemptCount,
+          resultCode: `notify_${result.status}`,
+        },
+      });
+      return;
+    }
+    const definitiveFailure = result.status === "failed" && !result.retryable;
+    const exhausted = result.status === "attempts_exhausted";
+    const settled = runtimeStore().settleCreatorAttention({
+      attentionId: claimed.attentionId,
+      expectedVersion: claimed.version,
+      outcome: {
+        status: definitiveFailure || exhausted ? "failed" : "retry",
+        attemptCount: result.attemptCount,
+        resultCode: creatorAttentionResultCode(
+          result.status === "failed" ? `notify_${result.reason}` : `notify_${result.status}`,
+        ),
+      },
+    });
+    if (settled.state === "failed") acknowledgeAttention(settled);
+  }
+
+  async function repairAttention(): Promise<void> {
+    if (!attentionStarted || attentionStopped || !attentionBinding) return;
+    for (const record of runtimeStore().listCreatorAttention({ limit: 1_000 })) {
+      if (attentionStopped) return;
+      await dispatchAttention(record);
+    }
+  }
+
+  function scheduleAttention(): void {
+    if (!attentionStarted || attentionStopped) return;
+    attentionTail = attentionTail.then(repairAttention).catch((error) => {
+      lastErrorCode = "notification_failure";
+      console.warn(`[agentMail] creator notification degraded code=${providerCode(error)}`);
+    });
+  }
+
+  const creatorAttentionHost: AgentMailCreatorAttentionHost = {
+    configure(binding) {
+      if (!config.notifications) {
+        throw new Error("agentMail notifications: notifications are not configured");
+      }
+      if (attentionBinding) throw new Error("agentMail notifications: already configured");
+      if (
+        binding.destination !== config.notifications.destination ||
+        binding.maxAttempts !== config.notifications.maxAttempts ||
+        !/^[a-f0-9]{64}$/.test(binding.destinationBindingHash)
+      ) {
+        throw new Error("agentMail notifications: binding does not match validated configuration");
+      }
+      attentionBinding = binding;
+      const monitoredInbox = (verifiedEmailAddress ?? config.inboxId).trim().toLowerCase();
+      if (
+        binding.agentMailRecipients?.some(
+          (recipient) => recipient.trim().toLowerCase() === monitoredInbox,
+        )
+      ) {
+        attentionBinding = undefined;
+        throw new Error(
+          "agentMail notifications: Notify destination targets the monitored inbox and would create a mail loop",
+        );
+      }
+    },
+    async start() {
+      if (!config.notifications) return;
+      if (!store) throw new Error("agentMail notifications: store is unavailable before boot");
+      if (!attentionBinding) {
+        throw new Error(
+          `agentMail notifications: Notify destination ${JSON.stringify(config.notifications.destination)} is not wired`,
+        );
+      }
+      if (attentionStarted) throw new Error("agentMail notifications: already started");
+      attentionStopped = false;
+      attentionStarted = true;
+      runtimeStore().recoverCreatorAttention();
+      await repairAttention();
+      attentionTimer = setInterval(scheduleAttention, 60_000);
+      attentionTimer.unref?.();
+    },
+    async stop() {
+      attentionStopped = true;
+      attentionStarted = false;
+      if (attentionTimer) clearInterval(attentionTimer);
+      attentionTimer = undefined;
+      await attentionTail.catch(() => undefined);
+    },
+    async repair() {
+      await repairAttention();
+    },
+  };
 
   async function createReviewDraft(route: ActiveMailRoute, text: string, signal?: AbortSignal) {
     const ledger = runtimeStore();
@@ -272,6 +570,7 @@ export function createAgentMailRuntime(
     }
     ledger.settleMessage(route.work.messageId, "draft_ready");
     route.draftCreated = true;
+    scheduleAttention();
   }
 
   async function processMessage(messageId: string): Promise<void> {
@@ -391,6 +690,9 @@ export function createAgentMailRuntime(
     },
     async ready() {
       if (!kernel) throw new Error("agentMail: transport cannot become ready before registration");
+      if (config.notifications && !attentionStarted) {
+        throw new Error("agentMail: creator notifications were configured but not started");
+      }
       if (config.inbound.mode === "none" || coordinator) return;
       coordinator = createAgentMailInboundCoordinator({
         provider,
@@ -401,6 +703,7 @@ export function createAgentMailRuntime(
           // barrier opens only after every transport readiness hook returns.
           scheduleMessage(messageId);
         },
+        onCreatorAttentionAvailable: scheduleAttention,
         onError(error) {
           lastErrorCode = providerCode(error);
           console.warn(`[agentMail] inbound degraded code=${lastErrorCode}`);
@@ -634,6 +937,7 @@ export function createAgentMailRuntime(
             status: "sent",
             messageId: sent.messageId,
           });
+          scheduleAttention();
           return JSON.stringify({ status: "sent", ...sent });
         } catch (error) {
           if (
@@ -724,6 +1028,7 @@ export function createAgentMailRuntime(
           messageId: sent.messageId,
           threadId: sent.threadId,
         });
+        scheduleAttention();
         return JSON.stringify({ status: "sent", ...sent });
       } catch (error) {
         if (
@@ -871,6 +1176,7 @@ export function createAgentMailRuntime(
       },
     },
     adminInfo,
+    creatorAttentionHost,
     async onBoot() {
       if (lifecycleController.signal.aborted) lifecycleController = new AbortController();
       if (!store) {
@@ -911,6 +1217,7 @@ export function createAgentMailRuntime(
       creatorTurns.delete(result.turnId);
     },
     async onShutdown() {
+      await creatorAttentionHost.stop();
       lifecycleController.abort(new DOMException("AgentMail is shutting down.", "AbortError"));
       await coordinator?.stop();
       coordinator = undefined;

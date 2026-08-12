@@ -102,6 +102,50 @@ describe("AgentMail configuration contract", () => {
       }),
     ).toThrow("replies.allowReplyAll requires replies.mode review");
   });
+
+  test("compiles optional creator notifications with a bounded retry default", () => {
+    expect(
+      config({
+        notifications: { destination: "creator" },
+      }).notifications,
+    ).toEqual({ destination: "creator", maxAttempts: 3 });
+    expect(
+      config({
+        notifications: { destination: "mail-ops", maxAttempts: 20 },
+      }).notifications,
+    ).toEqual({ destination: "mail-ops", maxAttempts: 20 });
+    expect(config({ notifications: undefined }).notifications).toBeUndefined();
+  });
+
+  test("requires WebSocket inbound when creator notifications are configured", () => {
+    expect(() =>
+      validateAgentMailConfig({
+        apiKey: "am_test",
+        inboxId: "mail@example.com",
+        inbound: { mode: "none" },
+        notifications: { destination: "creator" },
+      }),
+    ).toThrow('notifications require inbound.mode "websocket"');
+  });
+
+  test("strictly validates creator notification fields", () => {
+    const invalidNotifications: unknown[] = [
+      null,
+      [],
+      {},
+      { destination: "" },
+      { destination: " creator" },
+      { destination: "creator\nops" },
+      { destination: "creator", unknown: true },
+      { destination: "creator", maxAttempts: 0 },
+      { destination: "creator", maxAttempts: 21 },
+      { destination: "creator", maxAttempts: 1.5 },
+      { destination: "creator", maxAttempts: "3" },
+    ];
+    for (const notifications of invalidNotifications) {
+      expect(() => config({ notifications })).toThrow(/agentMail: .*notifications/);
+    }
+  });
 });
 
 describe("AgentMail identity and authorization policy", () => {

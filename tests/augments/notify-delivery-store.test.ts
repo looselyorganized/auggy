@@ -58,7 +58,7 @@ function internalReservation(
     payloadHash: hash(`payload:${operation}`),
     maxAttempts: 2,
     threadId: "internal_thread",
-    peerHash: hash("agentmail.review-ready"),
+    peerHash: hash("agentmail.draft-ready"),
     destination: "creator",
     summaryHash: hash(`summary:${operation}`),
     policy: {

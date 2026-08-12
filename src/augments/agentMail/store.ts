@@ -97,6 +97,31 @@ const SCHEMA = [
     observed_at INTEGER NOT NULL,
     PRIMARY KEY (inbox_id, event_id)
   )`,
+  `CREATE TABLE IF NOT EXISTS agentmail_creator_attention (
+    inbox_id                   TEXT NOT NULL,
+    attention_id               TEXT NOT NULL,
+    kind                       TEXT NOT NULL CHECK (kind IN ('draft_ready', 'delivery_failure')),
+    subject_id                 TEXT NOT NULL,
+    related_message_id         TEXT,
+    operation_key              TEXT NOT NULL,
+    state                      TEXT NOT NULL CHECK (state IN ('pending', 'dispatching', 'presented', 'failed', 'ambiguous', 'superseded', 'dismissed')),
+    record_version             INTEGER NOT NULL DEFAULT 1 CHECK (record_version >= 1),
+    destination                TEXT,
+    destination_binding_hash   TEXT,
+    payload_hash               TEXT,
+    max_attempts               INTEGER,
+    attempt_count              INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    last_result_code           TEXT,
+    settlement_hash            TEXT,
+    notify_acknowledged_at     INTEGER,
+    created_at                 INTEGER NOT NULL,
+    updated_at                 INTEGER NOT NULL,
+    settled_at                 INTEGER,
+    PRIMARY KEY (inbox_id, attention_id),
+    UNIQUE (inbox_id, operation_key)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_agentmail_creator_attention_state
+     ON agentmail_creator_attention(inbox_id, state, created_at, attention_id)`,
 ] as const;
 
 function expectedSchema(): ReadonlyMap<string, string> {
@@ -178,6 +203,61 @@ export interface AgentMailOutboundOperation {
   sentThreadId?: string;
 }
 
+export type AgentMailCreatorAttentionKind = "draft_ready" | "delivery_failure";
+export type AgentMailCreatorAttentionState =
+  | "pending"
+  | "dispatching"
+  | "presented"
+  | "failed"
+  | "ambiguous"
+  | "superseded"
+  | "dismissed";
+
+const AGENTMAIL_CREATOR_ATTENTION_STATES = new Set<AgentMailCreatorAttentionState>([
+  "pending",
+  "dispatching",
+  "presented",
+  "failed",
+  "ambiguous",
+  "superseded",
+  "dismissed",
+]);
+
+/**
+ * Metadata-only creator-attention outbox entry. Mail content, addresses, and
+ * provider responses remain outside Auggy's orchestration database.
+ */
+export interface AgentMailCreatorAttentionRecord {
+  inboxId: string;
+  attentionId: string;
+  kind: AgentMailCreatorAttentionKind;
+  /** Provider draft ID for draft_ready; provider event ID for delivery_failure. */
+  subjectId: string;
+  relatedMessageId?: string;
+  operationKey: string;
+  state: AgentMailCreatorAttentionState;
+  version: number;
+  destination?: string;
+  destinationBindingHash?: string;
+  payloadHash?: string;
+  maxAttempts?: number;
+  attemptCount: number;
+  lastResultCode?: string;
+  settlementHash?: string;
+  notifyAcknowledgedAt?: number;
+  createdAt: number;
+  updatedAt: number;
+  settledAt?: number;
+}
+
+export type AgentMailCreatorAttentionSettlement =
+  | { status: "retry"; attemptCount: number; resultCode: string }
+  | {
+      status: "presented" | "failed" | "ambiguous" | "dismissed";
+      attemptCount: number;
+      resultCode: string;
+    };
+
 export interface AgentMailOrchestrationStore {
   claimMessage(input: {
     messageId: string;
@@ -200,6 +280,7 @@ export interface AgentMailOrchestrationStore {
   ): void;
   recoverInterrupted(staleBefore: number): number;
   recoverAmbiguousMutations(): { drafts: number; outbound: number };
+  recoverCreatorAttention(): { dispatching: number; superseded: number };
   getMessage(messageId: string): AgentMailWorkItem | undefined;
   hasPendingWork(): boolean;
   listPendingMessageIds(limit?: number): string[];
@@ -268,6 +349,29 @@ export interface AgentMailOrchestrationStore {
     payloadHash: string;
     observedAt: number;
   }): "recorded" | "duplicate" | "conflict";
+  getCreatorAttention(attentionId: string): AgentMailCreatorAttentionRecord | undefined;
+  listCreatorAttention(input?: {
+    states?: readonly AgentMailCreatorAttentionState[];
+    limit?: number;
+  }): AgentMailCreatorAttentionRecord[];
+  bindCreatorAttention(input: {
+    attentionId: string;
+    destination: string;
+    destinationBindingHash: string;
+    payloadHash: string;
+    maxAttempts: number;
+  }): { status: "bound" | "duplicate" | "conflict"; record: AgentMailCreatorAttentionRecord };
+  claimCreatorAttention(attentionId: string): AgentMailCreatorAttentionRecord | undefined;
+  settleCreatorAttention(input: {
+    attentionId: string;
+    expectedVersion: number;
+    outcome: AgentMailCreatorAttentionSettlement;
+  }): AgentMailCreatorAttentionRecord;
+  acknowledgeCreatorAttention(input: {
+    attentionId: string;
+    expectedVersion: number;
+    settlementHash: string;
+  }): AgentMailCreatorAttentionRecord;
   close(): void;
 }
 
@@ -365,6 +469,28 @@ interface OutboundOperationRow {
   sent_thread_id: string | null;
 }
 
+interface CreatorAttentionRow {
+  inbox_id: string;
+  attention_id: string;
+  kind: AgentMailCreatorAttentionKind;
+  subject_id: string;
+  related_message_id: string | null;
+  operation_key: string;
+  state: AgentMailCreatorAttentionState;
+  record_version: number;
+  destination: string | null;
+  destination_binding_hash: string | null;
+  payload_hash: string | null;
+  max_attempts: number | null;
+  attempt_count: number;
+  last_result_code: string | null;
+  settlement_hash: string | null;
+  notify_acknowledged_at: number | null;
+  created_at: number;
+  updated_at: number;
+  settled_at: number | null;
+}
+
 function outboundOperationFromRow(row: OutboundOperationRow): AgentMailOutboundOperation {
   return {
     operationId: row.operation_id,
@@ -376,8 +502,67 @@ function outboundOperationFromRow(row: OutboundOperationRow): AgentMailOutboundO
   };
 }
 
+function creatorAttentionFromRow(row: CreatorAttentionRow): AgentMailCreatorAttentionRecord {
+  return {
+    inboxId: row.inbox_id,
+    attentionId: row.attention_id,
+    kind: row.kind,
+    subjectId: row.subject_id,
+    ...(row.related_message_id === null ? {} : { relatedMessageId: row.related_message_id }),
+    operationKey: row.operation_key,
+    state: row.state,
+    version: row.record_version,
+    ...(row.destination === null ? {} : { destination: row.destination }),
+    ...(row.destination_binding_hash === null
+      ? {}
+      : { destinationBindingHash: row.destination_binding_hash }),
+    ...(row.payload_hash === null ? {} : { payloadHash: row.payload_hash }),
+    ...(row.max_attempts === null ? {} : { maxAttempts: row.max_attempts }),
+    attemptCount: row.attempt_count,
+    ...(row.last_result_code === null ? {} : { lastResultCode: row.last_result_code }),
+    ...(row.settlement_hash === null ? {} : { settlementHash: row.settlement_hash }),
+    ...(row.notify_acknowledged_at === null
+      ? {}
+      : { notifyAcknowledgedAt: row.notify_acknowledged_at }),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    ...(row.settled_at === null ? {} : { settledAt: row.settled_at }),
+  };
+}
+
 export function hashAgentMailOrchestrationValue(value: string): string {
   return createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function creatorAttentionIdentity(
+  inboxId: string,
+  kind: AgentMailCreatorAttentionKind,
+  subjectId: string,
+): { attentionId: string; operationKey: string } {
+  const digest = hashAgentMailOrchestrationValue(
+    JSON.stringify(["agentmail-creator-attention/v1", inboxId, kind, subjectId]),
+  );
+  return {
+    attentionId: `attention.${digest}`,
+    operationKey: `agentmail.attention.${digest}`,
+  };
+}
+
+function creatorAttentionSettlementHash(
+  record: Pick<
+    AgentMailCreatorAttentionRecord,
+    "attentionId" | "operationKey" | "state" | "attemptCount"
+  >,
+): string {
+  return hashAgentMailOrchestrationValue(
+    JSON.stringify([
+      "agentmail-creator-attention-settlement/v1",
+      record.attentionId,
+      record.operationKey,
+      record.state,
+      record.attemptCount,
+    ]),
+  );
 }
 
 export function createAgentMailOrchestrationStore(
@@ -428,6 +613,123 @@ export function createAgentMailOrchestrationStore(
             provider_updated_at, state, send_key, send_started_at, sent_message_id
        FROM agentmail_drafts WHERE inbox_id = ? AND draft_id = ?`,
   );
+  const findCreatorAttention = db.query<CreatorAttentionRow, [string, string]>(
+    `SELECT * FROM agentmail_creator_attention
+      WHERE inbox_id = ? AND attention_id = ?`,
+  );
+
+  function enqueueCreatorAttention(input: {
+    kind: AgentMailCreatorAttentionKind;
+    subjectId: string;
+    relatedMessageId?: string;
+    state?: "pending" | "superseded";
+  }): AgentMailCreatorAttentionRecord {
+    assertBoundedIdentifier(input.subjectId, "attention subjectId");
+    if (input.relatedMessageId !== undefined) {
+      assertBoundedIdentifier(input.relatedMessageId, "attention relatedMessageId");
+    }
+    const identity = creatorAttentionIdentity(inboxId, input.kind, input.subjectId);
+    const existing = findCreatorAttention.get(inboxId, identity.attentionId);
+    if (existing) {
+      if (
+        existing.kind !== input.kind ||
+        existing.subject_id !== input.subjectId ||
+        existing.related_message_id !== (input.relatedMessageId ?? null) ||
+        existing.operation_key !== identity.operationKey
+      ) {
+        throw new Error("agentMail store: creator attention identity conflict");
+      }
+      return creatorAttentionFromRow(existing);
+    }
+    const at = clock();
+    const state = input.state ?? "pending";
+    const settledAt = state === "superseded" ? at : null;
+    const resultCode = state === "superseded" ? "draft_was_stale_at_creation" : null;
+    db.run(
+      `INSERT INTO agentmail_creator_attention(
+         inbox_id, attention_id, kind, subject_id, related_message_id,
+         operation_key, state, last_result_code, created_at, updated_at, settled_at
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        inboxId,
+        identity.attentionId,
+        input.kind,
+        input.subjectId,
+        input.relatedMessageId ?? null,
+        identity.operationKey,
+        state,
+        resultCode,
+        at,
+        at,
+        settledAt,
+      ],
+    );
+    const created = findCreatorAttention.get(inboxId, identity.attentionId);
+    if (!created) throw new Error("agentMail store: creator attention was not persisted");
+    if (state === "superseded") {
+      const record = creatorAttentionFromRow(created);
+      const settlementHash = creatorAttentionSettlementHash(record);
+      db.run(
+        `UPDATE agentmail_creator_attention
+            SET settlement_hash = ?
+          WHERE inbox_id = ? AND attention_id = ?`,
+        [settlementHash, inboxId, identity.attentionId],
+      );
+      return creatorAttentionFromRow(findCreatorAttention.get(inboxId, identity.attentionId)!);
+    }
+    return creatorAttentionFromRow(created);
+  }
+
+  function supersedePendingDraftAttention(draftIdsSql: string, params: string[]): number {
+    const candidates = db
+      .query<CreatorAttentionRow, string[]>(
+        `SELECT attention.* FROM agentmail_creator_attention AS attention
+          WHERE attention.inbox_id = ? AND attention.kind = 'draft_ready'
+            AND attention.state = 'pending' AND attention.subject_id IN (${draftIdsSql})`,
+      )
+      .all(inboxId, ...params);
+    let changed = 0;
+    for (const candidate of candidates) {
+      const at = clock();
+      const next = creatorAttentionFromRow({
+        ...candidate,
+        state: "superseded",
+        record_version: candidate.record_version + 1,
+        updated_at: at,
+        settled_at: at,
+      });
+      const settlementHash = creatorAttentionSettlementHash(next);
+      changed += db.run(
+        `UPDATE agentmail_creator_attention
+            SET state = 'superseded', record_version = record_version + 1,
+                last_result_code = 'draft_no_longer_pending_review', settlement_hash = ?,
+                updated_at = ?, settled_at = ?
+          WHERE inbox_id = ? AND attention_id = ? AND state = 'pending'`,
+        [settlementHash, at, at, inboxId, candidate.attention_id],
+      ).changes;
+    }
+    return changed;
+  }
+
+  function enqueueRecordedDeliveryFailures(messageId: string): number {
+    assertBoundedIdentifier(messageId, "delivery failure messageId");
+    const failures = db
+      .query<{ event_id: string }, [string, string]>(
+        `SELECT event_id FROM agentmail_provider_events
+          WHERE inbox_id = ? AND message_id = ?
+            AND event_type IN ('message.bounced', 'message.complained', 'message.rejected')
+          ORDER BY observed_at ASC, event_id ASC`,
+      )
+      .all(inboxId, messageId);
+    for (const failure of failures) {
+      enqueueCreatorAttention({
+        kind: "delivery_failure",
+        subjectId: failure.event_id,
+        relatedMessageId: messageId,
+      });
+    }
+    return failures.length;
+  }
 
   const claimMessage = db.transaction(
     (input: Parameters<AgentMailOrchestrationStore["claimMessage"]>[0]) => {
@@ -592,6 +894,33 @@ export function createAgentMailOrchestrationStore(
       ).changes;
       return { drafts, outbound };
     },
+    recoverCreatorAttention() {
+      return db
+        .transaction(() => {
+          const dispatching = db.run(
+            `UPDATE agentmail_creator_attention
+                SET state = 'pending', record_version = record_version + 1,
+                    last_result_code = 'interrupted_dispatch', updated_at = ?
+              WHERE inbox_id = ? AND state = 'dispatching'`,
+            [clock(), inboxId],
+          ).changes;
+          const obsoleteDrafts = db
+            .query<{ draft_id: string }, [string]>(
+              `SELECT draft_id FROM agentmail_drafts
+                WHERE inbox_id = ? AND state IN ('stale', 'sent')`,
+            )
+            .all(inboxId);
+          const superseded =
+            obsoleteDrafts.length === 0
+              ? 0
+              : supersedePendingDraftAttention(
+                  obsoleteDrafts.map(() => "?").join(", "),
+                  obsoleteDrafts.map((draft) => draft.draft_id),
+                );
+          return { dispatching, superseded };
+        })
+        .immediate();
+    },
     getMessage(messageId) {
       const row = findMessage.get(inboxId, messageId);
       return row ? messageFromRow(row) : undefined;
@@ -660,54 +989,64 @@ export function createAgentMailOrchestrationStore(
       if (!Number.isSafeInteger(input.providerUpdatedAt) || input.providerUpdatedAt < 0) {
         throw new Error("agentMail store: provider draft timestamp is invalid");
       }
-      const existing = findDraft.get(inboxId, input.sourceMessageId);
-      if (existing) {
-        return {
-          status:
-            existing.draft_id === input.draftId && existing.client_id === input.clientId
-              ? "duplicate"
-              : "conflict",
-        };
-      }
       try {
-        const at = clock();
-        const source = findMessage.get(inboxId, input.sourceMessageId);
-        if (!source || source.thread_id !== input.threadId) {
-          throw new Error("agentMail store: draft source does not match a claimed message");
-        }
-        const newerMessage = db
-          .query<{ present: number }, [string, string, number, number, string]>(
-            `SELECT 1 AS present FROM agentmail_messages
-              WHERE inbox_id = ? AND thread_id = ?
-                AND (received_at > ? OR (received_at = ? AND message_id > ?))
-              LIMIT 1`,
-          )
-          .get(
-            inboxId,
-            input.threadId,
-            source.received_at,
-            source.received_at,
-            input.sourceMessageId,
-          );
-        const initialState = newerMessage ? "stale" : "ready";
-        db.run(
-          `INSERT INTO agentmail_drafts(
-             inbox_id, source_message_id, thread_id, draft_id, client_id,
-             provider_updated_at, state, created_at, updated_at
-           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            inboxId,
-            input.sourceMessageId,
-            input.threadId,
-            input.draftId,
-            input.clientId,
-            input.providerUpdatedAt,
-            initialState,
-            at,
-            at,
-          ],
-        );
-        return { status: "recorded" };
+        return db
+          .transaction(() => {
+            const existing = findDraft.get(inboxId, input.sourceMessageId);
+            if (existing) {
+              return {
+                status:
+                  existing.draft_id === input.draftId && existing.client_id === input.clientId
+                    ? "duplicate"
+                    : "conflict",
+              } as const;
+            }
+            const at = clock();
+            const source = findMessage.get(inboxId, input.sourceMessageId);
+            if (!source || source.thread_id !== input.threadId) {
+              throw new Error("agentMail store: draft source does not match a claimed message");
+            }
+            const newerMessage = db
+              .query<{ present: number }, [string, string, number, number, string]>(
+                `SELECT 1 AS present FROM agentmail_messages
+                  WHERE inbox_id = ? AND thread_id = ?
+                    AND (received_at > ? OR (received_at = ? AND message_id > ?))
+                  LIMIT 1`,
+              )
+              .get(
+                inboxId,
+                input.threadId,
+                source.received_at,
+                source.received_at,
+                input.sourceMessageId,
+              );
+            const initialState = newerMessage ? "stale" : "ready";
+            db.run(
+              `INSERT INTO agentmail_drafts(
+                 inbox_id, source_message_id, thread_id, draft_id, client_id,
+                 provider_updated_at, state, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              [
+                inboxId,
+                input.sourceMessageId,
+                input.threadId,
+                input.draftId,
+                input.clientId,
+                input.providerUpdatedAt,
+                initialState,
+                at,
+                at,
+              ],
+            );
+            enqueueCreatorAttention({
+              kind: "draft_ready",
+              subjectId: input.draftId,
+              relatedMessageId: input.sourceMessageId,
+              ...(initialState === "stale" ? { state: "superseded" as const } : {}),
+            });
+            return { status: "recorded" } as const;
+          })
+          .immediate();
       } catch (error) {
         if (String(error).includes("UNIQUE")) return { status: "conflict" };
         throw error;
@@ -760,20 +1099,45 @@ export function createAgentMailOrchestrationStore(
     markThreadDraftsStale(threadId, exceptSourceMessageId) {
       assertBoundedIdentifier(threadId, "threadId");
       assertBoundedIdentifier(exceptSourceMessageId, "exceptSourceMessageId");
-      return db.run(
-        `UPDATE agentmail_drafts SET state = 'stale', approval_hash = NULL,
-                approved_at = NULL, updated_at = ?
-          WHERE inbox_id = ? AND thread_id = ? AND source_message_id <> ?
-            AND state IN ('ready', 'approved')`,
-        [clock(), inboxId, threadId, exceptSourceMessageId],
-      ).changes;
+      return db
+        .transaction(() => {
+          const drafts = db
+            .query<{ draft_id: string }, [string, string, string]>(
+              `SELECT draft_id FROM agentmail_drafts
+                WHERE inbox_id = ? AND thread_id = ? AND source_message_id <> ?
+                  AND state IN ('ready', 'approved')`,
+            )
+            .all(inboxId, threadId, exceptSourceMessageId);
+          const result = db.run(
+            `UPDATE agentmail_drafts SET state = 'stale', approval_hash = NULL,
+                    approved_at = NULL, updated_at = ?
+              WHERE inbox_id = ? AND thread_id = ? AND source_message_id <> ?
+                AND state IN ('ready', 'approved')`,
+            [clock(), inboxId, threadId, exceptSourceMessageId],
+          );
+          if (drafts.length > 0) {
+            supersedePendingDraftAttention(
+              drafts.map(() => "?").join(", "),
+              drafts.map((draft) => draft.draft_id),
+            );
+          }
+          return result.changes;
+        })
+        .immediate();
     },
     markDraftStale(sourceMessageId) {
-      db.run(
-        `UPDATE agentmail_drafts SET state = 'stale', updated_at = ?
-          WHERE inbox_id = ? AND source_message_id = ? AND state IN ('ready', 'approved')`,
-        [clock(), inboxId, sourceMessageId],
-      );
+      assertBoundedIdentifier(sourceMessageId, "sourceMessageId");
+      db.transaction(() => {
+        const draft = findDraft.get(inboxId, sourceMessageId);
+        const result = db.run(
+          `UPDATE agentmail_drafts SET state = 'stale', updated_at = ?
+            WHERE inbox_id = ? AND source_message_id = ? AND state IN ('ready', 'approved')`,
+          [clock(), inboxId, sourceMessageId],
+        );
+        if (result.changes === 1 && draft) {
+          supersedePendingDraftAttention("?", [draft.draft_id]);
+        }
+      }).immediate();
     },
     approveDraft(input) {
       if (
@@ -822,25 +1186,34 @@ export function createAgentMailOrchestrationStore(
         .immediate();
     },
     settleDraftSend(sourceMessageId, outcome) {
+      assertBoundedIdentifier(sourceMessageId, "sourceMessageId");
+      if (outcome.status === "sent") assertBoundedIdentifier(outcome.messageId, "messageId");
       const state = outcome.status;
-      const result = db.run(
-        `UPDATE agentmail_drafts
-            SET state = ?, sent_message_id = ?,
-                send_key = CASE WHEN ? = 'ready' THEN NULL ELSE send_key END,
-                send_started_at = CASE WHEN ? = 'ready' THEN NULL ELSE send_started_at END,
-                updated_at = ?
-          WHERE inbox_id = ? AND source_message_id = ? AND state = 'sending'`,
-        [
-          state,
-          outcome.status === "sent" ? outcome.messageId : null,
-          state,
-          state,
-          clock(),
-          inboxId,
-          sourceMessageId,
-        ],
-      );
-      if (result.changes !== 1) throw new Error("agentMail store: no reserved send to settle");
+      db.transaction(() => {
+        const draft = findDraft.get(inboxId, sourceMessageId);
+        const result = db.run(
+          `UPDATE agentmail_drafts
+              SET state = ?, sent_message_id = ?,
+                  send_key = CASE WHEN ? = 'ready' THEN NULL ELSE send_key END,
+                  send_started_at = CASE WHEN ? = 'ready' THEN NULL ELSE send_started_at END,
+                  updated_at = ?
+            WHERE inbox_id = ? AND source_message_id = ? AND state = 'sending'`,
+          [
+            state,
+            outcome.status === "sent" ? outcome.messageId : null,
+            state,
+            state,
+            clock(),
+            inboxId,
+            sourceMessageId,
+          ],
+        );
+        if (result.changes !== 1) throw new Error("agentMail store: no reserved send to settle");
+        if (outcome.status === "sent" && draft) {
+          supersedePendingDraftAttention("?", [draft.draft_id]);
+          enqueueRecordedDeliveryFailures(outcome.messageId);
+        }
+      }).immediate();
     },
     reserveInboundRate(input) {
       assertBoundedIdentifier(input.messageId, "messageId");
@@ -1038,22 +1411,25 @@ export function createAgentMailOrchestrationStore(
         assertBoundedIdentifier(outcome.messageId, "messageId");
         assertBoundedIdentifier(outcome.threadId, "threadId");
       }
-      const result = db.run(
-        `UPDATE agentmail_outbound_operations
-            SET state = ?, sent_message_id = ?, sent_thread_id = ?, updated_at = ?
-          WHERE inbox_id = ? AND operation_id = ? AND state = 'reserved'`,
-        [
-          outcome.status,
-          outcome.status === "sent" ? outcome.messageId : null,
-          outcome.status === "sent" ? outcome.threadId : null,
-          clock(),
-          inboxId,
-          operationId,
-        ],
-      );
-      if (result.changes !== 1) {
-        throw new Error("agentMail store: no reserved outbound operation to settle");
-      }
+      db.transaction(() => {
+        const result = db.run(
+          `UPDATE agentmail_outbound_operations
+              SET state = ?, sent_message_id = ?, sent_thread_id = ?, updated_at = ?
+            WHERE inbox_id = ? AND operation_id = ? AND state = 'reserved'`,
+          [
+            outcome.status,
+            outcome.status === "sent" ? outcome.messageId : null,
+            outcome.status === "sent" ? outcome.threadId : null,
+            clock(),
+            inboxId,
+            operationId,
+          ],
+        );
+        if (result.changes !== 1) {
+          throw new Error("agentMail store: no reserved outbound operation to settle");
+        }
+        if (outcome.status === "sent") enqueueRecordedDeliveryFailures(outcome.messageId);
+      }).immediate();
     },
     recordProviderEvent(input) {
       if (!validHash(input.payloadHash)) throw new Error("agentMail store: event hash is invalid");
@@ -1063,32 +1439,305 @@ export function createAgentMailOrchestrationStore(
       if (!Number.isSafeInteger(input.observedAt) || input.observedAt < 0) {
         throw new Error("agentMail store: event timestamp is invalid");
       }
-      const existing = db
-        .query<{ payload_hash: string; event_type: string }, [string, string]>(
-          `SELECT payload_hash, event_type FROM agentmail_provider_events
-            WHERE inbox_id = ? AND event_id = ?`,
-        )
-        .get(inboxId, input.eventId);
-      if (existing) {
-        return existing.payload_hash === input.payloadHash &&
-          existing.event_type === input.eventType
-          ? "duplicate"
-          : "conflict";
+      return db
+        .transaction(() => {
+          const existing = db
+            .query<
+              { payload_hash: string; event_type: string; message_id: string | null },
+              [string, string]
+            >(
+              `SELECT payload_hash, event_type, message_id FROM agentmail_provider_events
+                WHERE inbox_id = ? AND event_id = ?`,
+            )
+            .get(inboxId, input.eventId);
+          if (existing) {
+            return existing.payload_hash === input.payloadHash &&
+              existing.event_type === input.eventType &&
+              existing.message_id === (input.messageId ?? null)
+              ? "duplicate"
+              : "conflict";
+          }
+          db.run(
+            `INSERT INTO agentmail_provider_events(
+               inbox_id, event_id, event_type, message_id, payload_hash, observed_at
+             ) VALUES (?, ?, ?, ?, ?, ?)`,
+            [
+              inboxId,
+              input.eventId,
+              input.eventType,
+              input.messageId ?? null,
+              input.payloadHash,
+              input.observedAt,
+            ],
+          );
+          if (
+            input.messageId !== undefined &&
+            (input.eventType === "message.bounced" ||
+              input.eventType === "message.complained" ||
+              input.eventType === "message.rejected")
+          ) {
+            const managed = db
+              .query<{ present: number }, [string, string, string, string]>(
+                `SELECT 1 AS present FROM agentmail_drafts
+                  WHERE inbox_id = ? AND sent_message_id = ? AND state = 'sent'
+                UNION ALL
+                SELECT 1 AS present FROM agentmail_outbound_operations
+                  WHERE inbox_id = ? AND sent_message_id = ? AND state = 'sent'
+                LIMIT 1`,
+              )
+              .get(inboxId, input.messageId, inboxId, input.messageId);
+            if (managed) {
+              enqueueCreatorAttention({
+                kind: "delivery_failure",
+                subjectId: input.eventId,
+                relatedMessageId: input.messageId,
+              });
+            }
+          }
+          return "recorded";
+        })
+        .immediate();
+    },
+    getCreatorAttention(attentionId) {
+      assertBoundedIdentifier(attentionId, "attentionId");
+      const row = findCreatorAttention.get(inboxId, attentionId);
+      return row ? creatorAttentionFromRow(row) : undefined;
+    },
+    listCreatorAttention(input = {}) {
+      const limit = input.limit ?? 100;
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+        throw new Error("agentMail store: creator attention limit must be between 1 and 1000");
       }
-      db.run(
-        `INSERT INTO agentmail_provider_events(
-           inbox_id, event_id, event_type, message_id, payload_hash, observed_at
-         ) VALUES (?, ?, ?, ?, ?, ?)`,
-        [
-          inboxId,
-          input.eventId,
-          input.eventType,
-          input.messageId ?? null,
-          input.payloadHash,
-          input.observedAt,
-        ],
-      );
-      return "recorded";
+      const states = input.states;
+      if (
+        states !== undefined &&
+        (states.length === 0 ||
+          new Set(states).size !== states.length ||
+          states.some((state) => !AGENTMAIL_CREATOR_ATTENTION_STATES.has(state)))
+      ) {
+        throw new Error("agentMail store: creator attention states are invalid");
+      }
+      const stateClause = states ? ` AND state IN (${states.map(() => "?").join(", ")})` : "";
+      const bindings: Array<string | number> = [inboxId, ...(states ?? []), limit];
+      return db
+        .query<CreatorAttentionRow, Array<string | number>>(
+          `SELECT * FROM agentmail_creator_attention
+            WHERE inbox_id = ?${stateClause}
+            ORDER BY created_at ASC, attention_id ASC LIMIT ?`,
+        )
+        .all(...bindings)
+        .map(creatorAttentionFromRow);
+    },
+    bindCreatorAttention(input) {
+      assertBoundedIdentifier(input.attentionId, "attentionId");
+      assertBoundedIdentifier(input.destination, "attention destination");
+      if (!validHash(input.destinationBindingHash) || !validHash(input.payloadHash)) {
+        throw new Error("agentMail store: creator attention binding hashes are invalid");
+      }
+      if (
+        !Number.isSafeInteger(input.maxAttempts) ||
+        input.maxAttempts < 1 ||
+        input.maxAttempts > 20
+      ) {
+        throw new Error("agentMail store: creator attention maxAttempts must be between 1 and 20");
+      }
+      return db
+        .transaction(() => {
+          const existing = findCreatorAttention.get(inboxId, input.attentionId);
+          if (!existing) throw new Error("agentMail store: creator attention not found");
+          const exact =
+            existing.destination === input.destination &&
+            existing.destination_binding_hash === input.destinationBindingHash &&
+            existing.payload_hash === input.payloadHash &&
+            existing.max_attempts === input.maxAttempts;
+          const terminal =
+            existing.state === "presented" ||
+            existing.state === "failed" ||
+            existing.state === "superseded" ||
+            existing.state === "dismissed";
+          if (
+            existing.notify_acknowledged_at !== null ||
+            (terminal && existing.destination === null)
+          ) {
+            return {
+              status: "duplicate",
+              record: creatorAttentionFromRow(existing),
+            } as const;
+          }
+          if (existing.destination !== null || existing.state !== "pending") {
+            return {
+              status: exact ? "duplicate" : "conflict",
+              record: creatorAttentionFromRow(existing),
+            } as const;
+          }
+          const at = clock();
+          const result = db.run(
+            `UPDATE agentmail_creator_attention
+                SET destination = ?, destination_binding_hash = ?, payload_hash = ?,
+                    max_attempts = ?, record_version = record_version + 1, updated_at = ?
+              WHERE inbox_id = ? AND attention_id = ? AND state = 'pending'
+                AND destination IS NULL AND destination_binding_hash IS NULL
+                AND payload_hash IS NULL AND max_attempts IS NULL`,
+            [
+              input.destination,
+              input.destinationBindingHash,
+              input.payloadHash,
+              input.maxAttempts,
+              at,
+              inboxId,
+              input.attentionId,
+            ],
+          );
+          if (result.changes !== 1) {
+            throw new Error("agentMail store: creator attention changed while binding target");
+          }
+          return {
+            status: "bound",
+            record: creatorAttentionFromRow(findCreatorAttention.get(inboxId, input.attentionId)!),
+          } as const;
+        })
+        .immediate();
+    },
+    claimCreatorAttention(attentionId) {
+      assertBoundedIdentifier(attentionId, "attentionId");
+      return db
+        .transaction(() => {
+          const current = findCreatorAttention.get(inboxId, attentionId);
+          if (
+            current?.state !== "pending" ||
+            current.destination === null ||
+            current.destination_binding_hash === null ||
+            current.payload_hash === null ||
+            current.max_attempts === null
+          ) {
+            return undefined;
+          }
+          const result = db.run(
+            `UPDATE agentmail_creator_attention
+                SET state = 'dispatching', record_version = record_version + 1, updated_at = ?
+              WHERE inbox_id = ? AND attention_id = ? AND state = 'pending'
+                AND destination IS NOT NULL AND destination_binding_hash IS NOT NULL
+                AND payload_hash IS NOT NULL AND max_attempts IS NOT NULL`,
+            [clock(), inboxId, attentionId],
+          );
+          if (result.changes !== 1) return undefined;
+          return creatorAttentionFromRow(findCreatorAttention.get(inboxId, attentionId)!);
+        })
+        .immediate();
+    },
+    settleCreatorAttention(input) {
+      assertBoundedIdentifier(input.attentionId, "attentionId");
+      if (!Number.isSafeInteger(input.expectedVersion) || input.expectedVersion < 1) {
+        throw new Error("agentMail store: creator attention expectedVersion is invalid");
+      }
+      if (
+        !Number.isSafeInteger(input.outcome.attemptCount) ||
+        input.outcome.attemptCount < 0 ||
+        input.outcome.attemptCount > 20 ||
+        !/^[a-z0-9_-]{1,64}$/.test(input.outcome.resultCode)
+      ) {
+        throw new Error("agentMail store: creator attention result is invalid");
+      }
+      return db
+        .transaction(() => {
+          const currentRow = findCreatorAttention.get(inboxId, input.attentionId);
+          if (
+            currentRow?.state !== "dispatching" ||
+            currentRow.record_version !== input.expectedVersion
+          ) {
+            throw new Error("agentMail store: creator attention changed before settlement");
+          }
+          if (
+            currentRow.max_attempts === null ||
+            input.outcome.attemptCount < currentRow.attempt_count ||
+            (input.outcome.status === "retry" &&
+              input.outcome.attemptCount >= currentRow.max_attempts)
+          ) {
+            throw new Error("agentMail store: creator attention attempt count is inconsistent");
+          }
+          const nextState = input.outcome.status === "retry" ? "pending" : input.outcome.status;
+          const at = clock();
+          const terminal =
+            nextState === "presented" || nextState === "failed" || nextState === "dismissed";
+          const nextRecord = creatorAttentionFromRow({
+            ...currentRow,
+            state: nextState,
+            record_version: currentRow.record_version + 1,
+            attempt_count: input.outcome.attemptCount,
+            last_result_code: input.outcome.resultCode,
+            settlement_hash: null,
+            updated_at: at,
+            settled_at: terminal ? at : null,
+          });
+          const settlementHash = terminal ? creatorAttentionSettlementHash(nextRecord) : null;
+          const result = db.run(
+            `UPDATE agentmail_creator_attention
+                SET state = ?, record_version = record_version + 1, attempt_count = ?,
+                    last_result_code = ?, settlement_hash = ?, updated_at = ?, settled_at = ?
+              WHERE inbox_id = ? AND attention_id = ? AND state = 'dispatching'
+                AND record_version = ?`,
+            [
+              nextState,
+              input.outcome.attemptCount,
+              input.outcome.resultCode,
+              settlementHash,
+              at,
+              terminal ? at : null,
+              inboxId,
+              input.attentionId,
+              input.expectedVersion,
+            ],
+          );
+          if (result.changes !== 1) {
+            throw new Error("agentMail store: creator attention changed before settlement");
+          }
+          return creatorAttentionFromRow(findCreatorAttention.get(inboxId, input.attentionId)!);
+        })
+        .immediate();
+    },
+    acknowledgeCreatorAttention(input) {
+      assertBoundedIdentifier(input.attentionId, "attentionId");
+      if (
+        !Number.isSafeInteger(input.expectedVersion) ||
+        input.expectedVersion < 1 ||
+        !validHash(input.settlementHash)
+      ) {
+        throw new Error("agentMail store: creator attention acknowledgement is invalid");
+      }
+      return db
+        .transaction(() => {
+          const current = findCreatorAttention.get(inboxId, input.attentionId);
+          if (!current) throw new Error("agentMail store: creator attention not found");
+          if (
+            current.notify_acknowledged_at !== null &&
+            current.settlement_hash === input.settlementHash
+          ) {
+            return creatorAttentionFromRow(current);
+          }
+          if (
+            current.record_version !== input.expectedVersion ||
+            current.settlement_hash !== input.settlementHash ||
+            (current.state !== "presented" &&
+              current.state !== "failed" &&
+              current.state !== "superseded" &&
+              current.state !== "dismissed")
+          ) {
+            throw new Error("agentMail store: creator attention cannot be acknowledged");
+          }
+          const at = clock();
+          const result = db.run(
+            `UPDATE agentmail_creator_attention
+                SET notify_acknowledged_at = ?, record_version = record_version + 1, updated_at = ?
+              WHERE inbox_id = ? AND attention_id = ? AND record_version = ?
+                AND notify_acknowledged_at IS NULL`,
+            [at, at, inboxId, input.attentionId, input.expectedVersion],
+          );
+          if (result.changes !== 1) {
+            throw new Error("agentMail store: creator attention changed before acknowledgement");
+          }
+          return creatorAttentionFromRow(findCreatorAttention.get(inboxId, input.attentionId)!);
+        })
+        .immediate();
     },
     close() {
       try {

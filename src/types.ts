@@ -1993,6 +1993,14 @@ export interface AgentMailInboundConfig {
   rateLimit?: AgentMailInboundRateLimitOptions;
 }
 
+/** Optional creator attention routed through a named Notify destination. */
+export interface AgentMailNotificationOptions {
+  /** Existing, agent-wide Notify destination name. */
+  destination: string;
+  /** Maximum definitive delivery attempts. Default 3; hard range 1-20. */
+  maxAttempts?: number;
+}
+
 export interface AgentMailAugmentOptions {
   /** AgentMail API key (`am_*`). Resolve via `${AGENTMAIL_API_KEY}` in agent.yaml. */
   apiKey: string;
@@ -2024,6 +2032,12 @@ export interface AgentMailAugmentOptions {
   replies?: AgentMailReplyOptions;
   /** Direct outbound-message policy. */
   outbound?: AgentMailOutboundOptions;
+  /**
+   * Notify the creator when a provider-native reply draft is ready or a live
+   * failure event is observed for an Auggy-managed send. Requires WebSocket
+   * inbound so provider lifecycle events can be observed.
+   */
+  notifications?: AgentMailNotificationOptions;
 }
 
 // ---------------------------------------------------------------------------

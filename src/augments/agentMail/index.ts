@@ -1,15 +1,19 @@
-import type { Augment } from "../../types";
 import type { AgentMailAugmentOptions } from "../../types";
 import { validateAgentMailConfig } from "./config";
-import { createAgentMailRuntime } from "./runtime";
+import { createAgentMailRuntime, type AgentMailRuntimeAugment } from "./runtime";
 
 /** Mount the single supported provider-native AgentMail runtime. */
-export function agentMail(opts: AgentMailAugmentOptions): Augment {
+export function agentMail(opts: AgentMailAugmentOptions): AgentMailRuntimeAugment {
   return createAgentMailRuntime(validateAgentMailConfig(opts));
 }
 
 export { agentMailRequiresAdminRoute, validateAgentMailConfig } from "./config";
 export type { ValidatedAgentMailConfig } from "./config";
+export type {
+  AgentMailCreatorAttentionBinding,
+  AgentMailCreatorAttentionHost,
+  AgentMailRuntimeAugment,
+} from "./runtime";
 export {
   evaluateAgentMailInbound,
   evaluateAgentMailOutbound,

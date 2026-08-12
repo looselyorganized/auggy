@@ -5,6 +5,7 @@ import { join } from "node:path";
 import {
   notify as createNotify,
   type NotifyAugmentInternalOptions,
+  type NotifyInternalDispatchInput,
 } from "../../src/augments/notify";
 import type {
   NotifyAdapter,
@@ -738,7 +739,7 @@ describe("notify augment", () => {
       },
     });
     const input = {
-      source: "agentmail.review-ready" as const,
+      source: "agentmail.draft-ready" as const,
       operationKey: "digest-batch-1",
       destination: "creator",
       threadId: "agentmail-digest-thread",
@@ -753,14 +754,14 @@ describe("notify augment", () => {
     });
     expect(
       aug.dispatchHost.acknowledgeInternalSettlement({
-        source: "agentmail.review-ready",
+        source: "agentmail.draft-ready",
         operationKey: input.operationKey,
         settlementSha256: "a".repeat(64),
       }),
     ).toEqual({ status: "acknowledged" });
     expect(
       aug.dispatchHost.acknowledgeInternalSettlement({
-        source: "agentmail.review-ready",
+        source: "agentmail.draft-ready",
         operationKey: input.operationKey,
         settlementSha256: "a".repeat(64),
       }),
@@ -784,11 +785,85 @@ describe("notify augment", () => {
     expect(deliveryAttempts).toBe(1);
     expect(
       aug.dispatchHost.acknowledgeInternalSettlement({
-        source: "agentmail.review-ready",
+        source: "agentmail.draft-ready",
         operationKey: input.operationKey,
         settlementSha256: "not-a-hash",
       }),
     ).toEqual({ status: "invalid_request" });
+  });
+
+  test("accepts only the current AgentMail internal event sources", () => {
+    const aug = notify({
+      destinations: [
+        {
+          name: "creator",
+          transport: "webhook",
+          url: "https://example.com/notify",
+          allowedTrustLevels: ["creator"],
+        },
+      ],
+      adapters: { webhook: mockAdapter() },
+    });
+    const input = {
+      operationKey: "mail-event-1",
+      destination: "creator",
+      threadId: "agentmail-thread",
+      payload: { summary: "Mail event" },
+      maxAttempts: 1,
+    };
+
+    expect(aug.dispatchHost.inspectInternal({ ...input, source: "agentmail.draft-ready" })).toEqual(
+      { status: "not_found", attemptCount: 0 },
+    );
+    expect(
+      aug.dispatchHost.inspectInternal({ ...input, source: "agentmail.delivery-failed" }),
+    ).toEqual({ status: "not_found", attemptCount: 0 });
+    expect(
+      aug.dispatchHost.inspectInternal({
+        ...input,
+        source: "agentmail.review-ready",
+      } as unknown as NotifyInternalDispatchInput),
+    ).toEqual({ status: "invalid_request", attemptCount: 0 });
+  });
+
+  test("exposes only transport and AgentMail recipients for internal topology checks", () => {
+    const mailDestination: NotifyDestination = {
+      name: "creator-mail",
+      transport: "agentmail",
+      apiKey: "am_private_key",
+      inboxId: "inbox_private_id",
+      to: [" creator@example.com ", "ops@example.com"],
+      subjectPrefix: "[Private] ",
+      labels: ["operator"],
+    };
+    const aug = notify({
+      destinations: [
+        mailDestination,
+        {
+          name: "creator-webhook",
+          transport: "webhook",
+          url: "https://example.com/private-hook",
+          headers: { Authorization: "private" },
+        },
+      ],
+      adapters: { agentmail: mockAdapter(), webhook: mockAdapter() },
+    });
+
+    const mail = aug.dispatchHost.destinationMetadata("creator-mail");
+    expect(mail).toEqual({
+      transport: "agentmail",
+      recipients: ["creator@example.com", "ops@example.com"],
+    });
+    expect(
+      Object.isFrozen(mail?.transport === "agentmail" ? mail.recipients : undefined),
+    ).toBeTrue();
+    expect(JSON.stringify(mail)).not.toContain("am_private_key");
+    expect(JSON.stringify(mail)).not.toContain("inbox_private_id");
+    expect(JSON.stringify(mail)).not.toContain("[Private]");
+    expect(aug.dispatchHost.destinationMetadata("creator-webhook")).toEqual({
+      transport: "webhook",
+    });
+    expect(aug.dispatchHost.destinationMetadata("missing")).toBeUndefined();
   });
 
   test("internal destination binding changes when effective delivery config changes", async () => {
@@ -870,7 +945,7 @@ describe("notify augment", () => {
       },
     });
     const input = {
-      source: "agentmail.review-ready" as const,
+      source: "agentmail.draft-ready" as const,
       operationKey: "authority-replay",
       destination: "creator",
       threadId: "agentmail-digest-thread",
@@ -915,7 +990,7 @@ describe("notify augment", () => {
       },
     });
     const input = {
-      source: "agentmail.review-ready" as const,
+      source: "agentmail.draft-ready" as const,
       destination: "creator",
       threadId: "agentmail-digest-thread",
       payload: { summary: "First digest" },
@@ -957,7 +1032,7 @@ describe("notify augment", () => {
       },
     });
     const input = {
-      source: "agentmail.review-ready" as const,
+      source: "agentmail.draft-ready" as const,
       destination: "creator",
       threadId: "agentmail-digest-thread",
       payload: { summary: "First digest" },
@@ -999,7 +1074,7 @@ describe("notify augment", () => {
       },
     });
     const input = {
-      source: "agentmail.review-ready" as const,
+      source: "agentmail.draft-ready" as const,
       operationKey: "exhausted-digest",
       destination: "creator",
       threadId: "agentmail-digest-thread",
@@ -1067,7 +1142,7 @@ describe("notify augment", () => {
       },
     });
     const base = {
-      source: "agentmail.review-ready" as const,
+      source: "agentmail.draft-ready" as const,
       destination: "creator",
       threadId: "agentmail-digest-thread",
       maxAttempts: 2,
