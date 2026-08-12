@@ -65,21 +65,31 @@ describe("CapabilityDetail", () => {
         hasTurnGate: false,
       },
     ];
-    data.mail = {
-      schemaVersion: 1,
-      instances: [
-        {
+    data.blocks = [
+      {
+        augmentName: "support",
+        title: "AgentMail",
+        sections: [],
+        projection: {
+          kind: "mail",
           augmentName: "support",
           inboxId: "inb_support",
           inboxEmail: "support@agentmail.to",
           externalConsoleUrl: "https://console.agentmail.to",
           status: { level: "ok", message: "Inbound websocket ready" },
-          inbound: { mode: "websocket", state: "ready" },
-          reviews: [],
-          attention: [],
+          inbound: {
+            mode: "websocket",
+            state: "ready",
+            senderPolicy: "any",
+            allowedSenderCount: 0,
+            globalMaxPerHour: 100,
+            perSenderMaxPerHour: 5,
+          },
+          replies: { mode: "review", allowReplyAll: false },
+          drafts: [],
         },
-      ],
-    };
+      },
+    ];
 
     let renderer: ReturnType<typeof create> | undefined;
     await act(async () => {

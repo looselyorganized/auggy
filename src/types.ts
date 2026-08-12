@@ -1272,62 +1272,14 @@ export interface AugmentConstraints {
 // See docs/21-console.md for the current operator-surface contract.
 // ===========================================================================
 
-/** One target-aware action exposed by a structured admin projection. */
-export interface AdminProjectionAction {
-  actionId: string;
-}
-
-/**
- * Metadata-only review row for the creator Mail action center.
- *
- * Exact recipients, draft bodies, HTML, and approval fingerprints are fetched
- * on demand from the creator-authenticated `detailPath`; they must never be
- * embedded in the dashboard snapshot.
- */
-export interface AdminMailReviewProjection {
-  /** Opaque row identity used for both targeted CSRF and action dispatch. */
-  rowKey: string;
-  reviewId: string;
-  status: "pending" | "sending";
-  subject: string;
-  /** Bounded/redacted correspondent summary suitable for the list view. */
-  correspondent: string;
-  updatedAt?: string;
-  expiresAt: string;
-  /** Same-origin, creator-authenticated, no-store JSON endpoint. */
-  detailPath: string;
-  actions: {
-    approve?: AdminProjectionAction;
-    revise?: AdminProjectionAction;
-    reject?: AdminProjectionAction;
-    /** Creator-only confirmation that an ambiguous provider mutation was sent. */
-    reconcileSent?: AdminProjectionAction;
-    /** Creator-only confirmation that an ambiguous provider mutation was not sent. */
-    reconcileFailed?: AdminProjectionAction;
-  };
-}
-
-/** Metadata-only inbound item requiring creator attention. */
-export interface AdminMailAttentionProjection {
-  /** Opaque row identity used for both targeted CSRF and action dispatch. */
-  rowKey: string;
-  messageId: string;
-  status: "open" | "pending_review" | "ambiguous";
-  /** Compare-and-set generation required by attention mutations. */
-  version: number;
-  subject?: string;
-  sender?: string;
-  receivedAt?: string;
-  updatedAt: string;
-  /** Same-origin, creator-authenticated, no-store JSON endpoint when inspectable. */
-  detailPath?: string;
-  actions: {
-    dismiss?: AdminProjectionAction;
-    /** Creator-only confirmation that an outcome-unknown inbound turn completed. */
-    reconcileProcessed?: AdminProjectionAction;
-    /** Creator-only confirmation that no external effect occurred and retry is safe. */
-    reconcilePending?: AdminProjectionAction;
-  };
+/** Metadata-only reference to a provider-native AgentMail draft. */
+export interface AdminMailDraftProjection {
+  draftId: string;
+  sourceMessageId: string;
+  threadId: string;
+  state: "ready" | "stale" | "approved" | "sending" | "sent" | "ambiguous" | "failed";
+  /** Provider freshness marker. The editable draft itself remains in AgentMail. */
+  providerUpdatedAt: string;
 }
 
 /** Safe projection for one mounted AgentMail instance. */
@@ -1343,26 +1295,25 @@ export interface AdminMailInstanceProjection {
   };
   inbound: {
     mode: AgentMailInboundMode;
-    state: "disabled" | "starting" | "ready" | "subscribed" | "degraded" | "stopped";
-    senderPolicy?: "disabled" | "allowlist" | "any";
-    allowedSenderCount?: number;
-    rateLimit?: {
-      globalMaxPerHour: number;
-      perSenderMaxPerHour: number;
-      rollingGlobalUsage: number;
-      globalRejections: number;
-      perSenderRejections: number;
-      lastRejectedAt?: string;
-    };
+    state: "idle" | "connecting" | "catching_up" | "ready" | "degraded" | "stopped";
+    senderPolicy: "disabled" | "allowlist" | "any";
+    allowedSenderCount: number;
+    globalMaxPerHour?: number;
+    perSenderMaxPerHour?: number;
+    lastCatchUpAt?: string;
+    lastEventAt?: string;
+    lastErrorCode?: string;
   };
-  reviews: AdminMailReviewProjection[];
-  attention: AdminMailAttentionProjection[];
+  replies: {
+    mode: AgentMailReplyMode;
+    allowReplyAll: boolean;
+  };
+  drafts: AdminMailDraftProjection[];
 }
 
-/** Versioned structured views understood by the creator console. */
+/** Structured views understood by the creator console. */
 export type AdminInfoProjection = AdminMailInstanceProjection & {
   kind: "mail";
-  schemaVersion: 1;
 };
 
 /** A typed render block for an augment's section on /admin. */

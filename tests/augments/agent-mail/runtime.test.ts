@@ -319,6 +319,34 @@ describe("AgentMail provider-native runtime", () => {
     });
     expect(f.store.getMessage("message_1")?.state).toBe("draft_ready");
     expect(f.store.getDraftByMessage("message_1")?.draftId).toBe("draft_1");
+    const projection = (await f.augment.adminInfo?.())?.projection;
+    expect(projection).toMatchObject({
+      kind: "mail",
+      inboxId,
+      inboxEmail: inboxId,
+      externalConsoleUrl: "https://console.agentmail.to",
+      status: { level: "ok", message: "Inbound ready" },
+      inbound: {
+        mode: "websocket",
+        state: "ready",
+        senderPolicy: "any",
+        allowedSenderCount: 0,
+        globalMaxPerHour: 100,
+        perSenderMaxPerHour: 5,
+      },
+      replies: { mode: "review", allowReplyAll: false },
+      drafts: [
+        {
+          draftId: "draft_1",
+          sourceMessageId: "message_1",
+          threadId: "thread_1",
+          state: "ready",
+          providerUpdatedAt: "1970-01-01T00:00:02.000Z",
+        },
+      ],
+    });
+    expect(JSON.stringify(projection)).not.toContain("We can help");
+    expect(JSON.stringify(projection)).not.toContain("customer@example.com");
 
     await f.augment.onShutdown?.();
     f.store.close();

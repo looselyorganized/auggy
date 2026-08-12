@@ -211,17 +211,12 @@ function AgentDetailsButton({
 export function selectAgentMailInboxEmail(blocks: DashboardData["blocks"]): string | undefined {
   const emails = new Set<string>();
   for (const block of blocks) {
-    const isMailProjection =
-      block.projection?.kind === "mail" && block.projection.schemaVersion === 1;
-    if (!isMailProjection && block.augmentName !== "agent-mail") continue;
-
-    for (const section of block.sections) {
-      if (section.kind !== "keyValue") continue;
-
-      const row = section.rows.find(({ label }) => label === "Inbox email");
-      const email = row?.value.trim();
-      if (email && isDisplayableEmail(email)) emails.add(email);
-    }
+    if (block.projection?.kind !== "mail") continue;
+    const email =
+      typeof block.projection.inboxEmail === "string"
+        ? block.projection.inboxEmail.trim()
+        : undefined;
+    if (email && isDisplayableEmail(email)) emails.add(email);
   }
 
   return emails.size > 0 ? [...emails].join(", ") : undefined;

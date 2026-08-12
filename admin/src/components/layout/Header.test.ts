@@ -1,9 +1,9 @@
 import { describe, expect, it } from "bun:test";
-import type { DashboardData } from "@/lib/types";
+import type { AdminInfoBlock, DashboardData } from "@/lib/types";
 import { buildRuntimeEndpointRows, selectAgentMailInboxEmail } from "./Header";
 
 describe("selectAgentMailInboxEmail", () => {
-  it("selects the exact Inbox email row from the AgentMail block", () => {
+  it("selects inbox email only from the provider-native Mail projection", () => {
     const blocks: DashboardData["blocks"] = [
       {
         augmentName: "other",
@@ -15,26 +15,13 @@ describe("selectAgentMailInboxEmail", () => {
           },
         ],
       },
-      {
-        augmentName: "agent-mail",
-        title: "AgentMail",
-        sections: [
-          { kind: "status", level: "ok", message: "Ready" },
-          {
-            kind: "keyValue",
-            rows: [
-              { label: "Inbox ID", value: "inbox_123" },
-              { label: "Inbox email", value: " hello@agentmail.to " },
-            ],
-          },
-        ],
-      },
+      mailBlock("support", " hello@agentmail.to "),
     ];
 
     expect(selectAgentMailInboxEmail(blocks)).toBe("hello@agentmail.to");
   });
 
-  it("omits absent, blank, unavailable, and non-exact labels", () => {
+  it("ignores generic legacy rows and invalid projected addresses", () => {
     const blocks: DashboardData["blocks"] = [
       {
         augmentName: "agent-mail",
@@ -42,45 +29,22 @@ describe("selectAgentMailInboxEmail", () => {
         sections: [
           {
             kind: "keyValue",
-            rows: [
-              { label: "Inbox Email", value: "case-mismatch@example.com" },
-              { label: "Inbox email", value: "   " },
-              { label: "Inbox email", value: "(unavailable — run AgentMail setup)" },
-            ],
+            rows: [{ label: "Inbox email", value: "legacy@example.com" }],
           },
         ],
       },
+      mailBlock("invalid", "(unavailable)"),
     ];
 
     expect(selectAgentMailInboxEmail(blocks)).toBeUndefined();
     expect(selectAgentMailInboxEmail([])).toBeUndefined();
   });
 
-  it("renders every distinct AgentMail inbox address without singular ambiguity", () => {
+  it("renders every distinct mounted inbox without singular ambiguity", () => {
     const blocks: DashboardData["blocks"] = [
-      {
-        augmentName: "support",
-        title: "AgentMail · support",
-        projection: { kind: "mail", schemaVersion: 1, inboxEmail: "one@example.com" },
-        sections: [
-          { kind: "keyValue", rows: [{ label: "Inbox email", value: "one@example.com" }] },
-        ],
-      },
-      {
-        augmentName: "billing",
-        title: "AgentMail · billing",
-        projection: { kind: "mail", schemaVersion: 1, inboxEmail: "two@example.com" },
-        sections: [
-          { kind: "keyValue", rows: [{ label: "Inbox email", value: "two@example.com" }] },
-        ],
-      },
-      {
-        augmentName: "agent-mail",
-        title: "AgentMail",
-        sections: [
-          { kind: "keyValue", rows: [{ label: "Inbox email", value: "one@example.com" }] },
-        ],
-      },
+      mailBlock("support", "one@example.com"),
+      mailBlock("billing", "two@example.com"),
+      mailBlock("duplicate", "one@example.com"),
     ];
 
     expect(selectAgentMailInboxEmail(blocks)).toBe("one@example.com, two@example.com");
@@ -105,3 +69,26 @@ describe("buildRuntimeEndpointRows", () => {
     ]);
   });
 });
+
+function mailBlock(augmentName: string, inboxEmail: string): AdminInfoBlock {
+  return {
+    augmentName,
+    title: "AgentMail",
+    sections: [],
+    projection: {
+      kind: "mail",
+      augmentName,
+      inboxId: "inbox_" + augmentName,
+      inboxEmail,
+      status: { level: "ok", message: "Ready" },
+      inbound: {
+        mode: "none",
+        state: "idle",
+        senderPolicy: "disabled",
+        allowedSenderCount: 0,
+      },
+      replies: { mode: "disabled", allowReplyAll: false },
+      drafts: [],
+    },
+  };
+}

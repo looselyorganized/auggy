@@ -775,22 +775,32 @@ export function createAgentMailRuntime(
   const adminInfo = async (): Promise<AdminInfoBlock> => {
     const status = coordinator?.status();
     const drafts = store?.listDrafts(100) ?? [];
+    const inboundState = config.inbound.mode === "none" ? "idle" : (status?.state ?? "idle");
+    const isStarting = store === undefined || verifiedEmailAddress === undefined;
+    const statusLevel = lastErrorCode ? "warn" : isStarting ? "warn" : "ok";
+    const statusMessage = lastErrorCode
+      ? `Mail degraded (${lastErrorCode})`
+      : isStarting
+        ? "Mail is starting; provider access has not been verified yet"
+        : config.inbound.mode === "none"
+          ? "Outbound ready; inbound disabled"
+          : `Inbound ${inboundState}`;
     return {
       augmentName: registeredName,
       title: "AgentMail",
       sections: [
         {
           kind: "status",
-          level: lastErrorCode ? "warn" : "ok",
-          message: lastErrorCode
-            ? `Mail degraded (${lastErrorCode})`
-            : config.inbound.mode === "none"
-              ? "Outbound ready; inbound disabled"
-              : `Inbound ${status?.state ?? "starting"}`,
+          level: statusLevel,
+          message: statusMessage,
         },
         {
           kind: "keyValue",
           rows: [
+            { label: "Inbox ID", value: config.inboxId },
+            ...(verifiedEmailAddress
+              ? [{ label: "Inbox email", value: verifiedEmailAddress }]
+              : []),
             { label: "Managed drafts", value: String(drafts.length) },
             {
               label: "Awaiting review",
@@ -803,6 +813,47 @@ export function createAgentMailRuntime(
           ],
         },
       ],
+      projection: {
+        kind: "mail",
+        augmentName: registeredName,
+        inboxId: config.inboxId,
+        ...(verifiedEmailAddress ? { inboxEmail: verifiedEmailAddress } : {}),
+        externalConsoleUrl: "https://console.agentmail.to",
+        status: {
+          level: statusLevel,
+          message: statusMessage,
+        },
+        inbound: {
+          mode: config.inbound.mode,
+          state: inboundState,
+          senderPolicy: config.inbound.senderPolicy,
+          allowedSenderCount: config.inbound.allowedSenders.length,
+          ...(config.inbound.mode === "websocket"
+            ? {
+                globalMaxPerHour: config.inbound.rateLimit.globalMaxPerHour,
+                perSenderMaxPerHour: config.inbound.rateLimit.perSenderMaxPerHour,
+              }
+            : {}),
+          ...(status?.lastCatchUpAt === undefined
+            ? {}
+            : { lastCatchUpAt: new Date(status.lastCatchUpAt).toISOString() }),
+          ...(status?.lastEventAt === undefined
+            ? {}
+            : { lastEventAt: new Date(status.lastEventAt).toISOString() }),
+          ...(status?.lastErrorCode === undefined ? {} : { lastErrorCode: status.lastErrorCode }),
+        },
+        replies: {
+          mode: config.replies.mode,
+          allowReplyAll: config.replies.allowReplyAll,
+        },
+        drafts: drafts.map((draft) => ({
+          draftId: draft.draftId,
+          sourceMessageId: draft.sourceMessageId,
+          threadId: draft.threadId,
+          state: draft.state,
+          providerUpdatedAt: new Date(draft.providerUpdatedAt).toISOString(),
+        })),
+      },
     };
   };
 

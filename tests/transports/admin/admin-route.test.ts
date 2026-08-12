@@ -1991,67 +1991,6 @@ describe("handleAdminRoute — POST action dispatch", () => {
     expect(receivedParams).toEqual({ expectedVersion: "7", rowKey: "vis_abc" });
   });
 
-  it("admits bounded large AgentMail revisions without widening other action bodies", async () => {
-    let receivedLength = 0;
-    const aug: Augment = {
-      name: "mail",
-      adminInfo: async () => ({
-        augmentName: "mail",
-        title: "Mail",
-        sections: [
-          {
-            kind: "table",
-            columns: ["review"],
-            rows: [["review_1"]],
-            rowActions: [
-              {
-                id: "agentmail-review-revise",
-                label: "Revise",
-                confirmRequired: true,
-                rowKeyColumn: 0,
-                inputs: [
-                  { name: "fingerprint", label: "Fingerprint", type: "text", required: true },
-                  { name: "text", label: "Text", type: "text", required: true },
-                ],
-              },
-            ],
-          },
-        ],
-      }),
-      adminActions: {
-        "agentmail-review-revise": async (params) => {
-          receivedLength = params.text?.length ?? 0;
-          return { ok: true, message: "revised" };
-        },
-      },
-    };
-    const csrf = await generateCsrfToken({
-      bearer: "test-bearer",
-      agentName: "zip",
-      augmentName: "mail",
-      actionId: "agentmail-review-revise",
-      rowKey: "review_1",
-    });
-    const text = ` ${"x".repeat(70 * 1024)} `;
-    const res = await handleAdminRoute(
-      new Request(
-        "http://127.0.0.1:8080/console/action/mail/agentmail-review-revise/row/review_1",
-        {
-          method: "POST",
-          headers: {
-            authorization: basicHeader("test-bearer"),
-            accept: "application/json",
-            "content-type": "application/x-www-form-urlencoded",
-          },
-          body: new URLSearchParams({ _csrf: csrf, fingerprint: "sha256:test", text }),
-        },
-      ),
-      await makeCtx({ augments: [aug] }),
-    );
-    expect(res.status).toBe(200);
-    expect(receivedLength).toBe(text.length);
-  });
-
   it("rejects undeclared fields on targeted row actions without dispatch", async () => {
     let dispatched = false;
     const aug: Augment = {

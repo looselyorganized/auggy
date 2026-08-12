@@ -1,13 +1,11 @@
 import { describe, expect, it } from "bun:test";
 import { hasMailDashboard, selectMailDashboard } from "./mail-dashboard";
-import type { DashboardData, MailInstanceProjection } from "./types";
+import type { AdminInfoBlock, DashboardData, MailAdminProjection } from "./types";
 
 describe("Mail dashboard projection", () => {
-  it("selects multiple typed instances and preserves only metadata/action targets", () => {
-    const west = instance("mail-west", "west@example.com");
-    const east = instance("mail-east", "east@example.com");
+  it("selects block-local provider-native instances", () => {
     const dashboard = baseDashboard({
-      mail: { schemaVersion: 1, instances: [west, east] },
+      blocks: [block("mail-west", "west@example.com"), block("mail-east", "east@example.com")],
     });
 
     expect(selectMailDashboard(dashboard)?.instances.map((item) => item.augmentName)).toEqual([
@@ -15,126 +13,79 @@ describe("Mail dashboard projection", () => {
       "mail-east",
     ]);
     expect(hasMailDashboard(dashboard)).toBeTrue();
-    expect(JSON.stringify(selectMailDashboard(dashboard))).not.toContain("private body");
   });
 
-  it("does not expose the feature when no AgentMail projection exists", () => {
-    const dashboard = baseDashboard();
-    expect(selectMailDashboard(dashboard)).toBeNull();
-    expect(hasMailDashboard(dashboard)).toBeFalse();
-  });
-
-  it("adapts current AgentMail blocks as read-only queues", () => {
+  it("does not expose Mail for generic or legacy AgentMail blocks", () => {
     const dashboard = baseDashboard({
       blocks: [
         {
-          augmentName: "agent-mail",
+          augmentName: "agentMail",
           title: "AgentMail",
           sections: [
-            { kind: "status", level: "ok", message: "Inbound websocket ready" },
+            { kind: "status", level: "ok", message: "Ready" },
             {
               kind: "keyValue",
-              rows: [
-                { label: "Inbox ID", value: "ibx_1" },
-                { label: "Inbox email", value: "agent@example.com" },
-                { label: "Inbound mode", value: "websocket" },
-                { label: "Inbound runtime", value: "ready" },
-              ],
-            },
-            {
-              kind: "table",
-              columns: [
-                "Review ID",
-                "Trust",
-                "State",
-                "Recipients",
-                "Subject",
-                "Expires",
-                "Inspect",
-              ],
-              rows: [
-                [
-                  "review_1",
-                  "public",
-                  "pending",
-                  "m***@example.com",
-                  "Quarterly update",
-                  "2026-08-01T12:00:00.000Z",
-                  "/agentmail/reviews/review_1",
-                ],
-              ],
-            },
-            {
-              kind: "table",
-              columns: ["Message", "State", "Version", "Review", "Updated"],
-              rows: [
-                [
-                  "message_1",
-                  "open",
-                  "2",
-                  "(none)",
-                  "2026-07-30T12:00:00.000Z",
-                ],
-              ],
+              rows: [{ label: "Inbox ID", value: "legacy_inbox" }],
             },
           ],
         },
       ],
     });
 
-    const selected = selectMailDashboard(dashboard)?.instances[0];
-    expect(selected).toMatchObject({
-      augmentName: "agent-mail",
-      inboxId: "ibx_1",
-      inboxEmail: "agent@example.com",
-      inbound: { mode: "websocket", state: "ready" },
-    });
-    expect(selected?.reviews[0]?.actions).toEqual({});
-    expect(selected?.attention[0]?.actions).toEqual({});
+    expect(selectMailDashboard(dashboard)).toBeNull();
+    expect(hasMailDashboard(dashboard)).toBeFalse();
   });
 
-  it("drops malformed items and unsafe detail paths from otherwise valid projections", () => {
-    const valid = instance("mail-west", "west@example.com");
-    const dashboard = baseDashboard({
-      mail: {
-        schemaVersion: 1,
-        instances: [
-          {
-            ...valid,
-            reviews: [
-              {
-                ...valid.reviews[0]!,
-                detailPath: "/agentmail/mail-west/reviews/../console",
-              },
-            ],
-          },
-        ],
+  it("rejects a projection whose mounted augment identity does not match", () => {
+    const candidate = block("mail-west", "west@example.com");
+    candidate.projection = {
+      ...candidate.projection,
+      augmentName: "mail-east",
+    } as MailAdminProjection;
+
+    expect(selectMailDashboard(baseDashboard({ blocks: [candidate] }))).toBeNull();
+  });
+
+  it("drops malformed draft references without rejecting healthy instance status", () => {
+    const candidate = block("mail-west", "west@example.com");
+    const projection = candidate.projection as MailAdminProjection;
+    projection.drafts.push(
+      {
+        ...projection.drafts[0]!,
+        draftId: "",
       },
-    });
-    expect(selectMailDashboard(dashboard)?.instances[0]?.reviews).toEqual([]);
+      {
+        ...projection.drafts[0]!,
+        draftId: "draft_bad_time",
+        providerUpdatedAt: "not-a-time",
+      },
+    );
+
+    const selected = selectMailDashboard(baseDashboard({ blocks: [candidate] }));
+    expect(selected?.instances[0]?.drafts.map((draft) => draft.draftId)).toEqual(["draft_1"]);
   });
 
-  it("neutralizes control and bidirectional override characters in displayed metadata", () => {
-    const valid = instance("mail-west", "west@example.com");
-    valid.reviews[0]!.subject = "Invoice\u0000\u202Egpj.exe";
-    const dashboard = baseDashboard({
-      mail: { schemaVersion: 1, instances: [valid] },
-    });
-    expect(selectMailDashboard(dashboard)?.instances[0]?.reviews[0]?.subject).toBe(
-      "Invoice��gpj.exe",
-    );
+  it("neutralizes display control characters in opaque identifiers", () => {
+    const candidate = block("mail-west", "west@example.com");
+    (candidate.projection as MailAdminProjection).drafts[0]!.draftId =
+      "draft\u0000\u202Egpj.exe";
+
+    expect(
+      selectMailDashboard(baseDashboard({ blocks: [candidate] }))?.instances[0]?.drafts[0]
+        ?.draftId,
+    ).toBe("draft��gpj.exe");
   });
 
   it("accepts only the credential-free AgentMail Console root", () => {
-    const valid = instance("mail-west", "west@example.com");
-    valid.externalConsoleUrl = "https://console.agentmail.to/";
+    const valid = block("mail-west", "west@example.com");
+    (valid.projection as MailAdminProjection).externalConsoleUrl =
+      "https://console.agentmail.to/";
     expect(
-      selectMailDashboard(
-        baseDashboard({ mail: { schemaVersion: 1, instances: [valid] } }),
-      )?.instances[0]?.externalConsoleUrl,
+      selectMailDashboard(baseDashboard({ blocks: [valid] }))?.instances[0]
+        ?.externalConsoleUrl,
     ).toBe("https://console.agentmail.to");
 
-    const unsafeUrls = [
+    for (const externalConsoleUrl of [
       "http://console.agentmail.to",
       "https://console.agentmail.to.evil.example",
       "https://user:password@console.agentmail.to",
@@ -142,207 +93,115 @@ describe("Mail dashboard projection", () => {
       "https://console.agentmail.to/?token=secret",
       "https://console.agentmail.to/#inbox",
       "not a URL",
-    ];
-    for (const externalConsoleUrl of unsafeUrls) {
-      const candidate = instance("mail-west", "west@example.com");
-      candidate.externalConsoleUrl = externalConsoleUrl;
-      const selected = selectMailDashboard(
-        baseDashboard({ mail: { schemaVersion: 1, instances: [candidate] } }),
-      )?.instances[0];
-      expect(selected?.augmentName).toBe("mail-west");
-      expect(selected?.externalConsoleUrl).toBeUndefined();
+    ]) {
+      const candidate = block("mail-west", "west@example.com");
+      (candidate.projection as MailAdminProjection).externalConsoleUrl = externalConsoleUrl;
+      const selected = selectMailDashboard(baseDashboard({ blocks: [candidate] }));
+      expect(selected?.instances[0]?.augmentName).toBe("mail-west");
+      expect(selected?.instances[0]?.externalConsoleUrl).toBeUndefined();
     }
   });
 
-  it("preserves only the exact projected recovery action contracts", () => {
-    const valid = instance("mail-west", "west@example.com");
-    valid.reviews[0] = {
-      ...valid.reviews[0]!,
-      status: "sending",
-      actions: {
-        approve: { actionId: "agentmail-review-approve-wrong" },
-        reconcileSent: { actionId: "agentmail-review-reconcile-sent" },
-        reconcileFailed: { actionId: "agentmail-review-reconcile-failed" },
+  it("rejects impossible inbound and reply policy combinations", () => {
+    const overrides = [
+      { inbound: { mode: "none", state: "idle", senderPolicy: "any", allowedSenderCount: 0 } },
+      {
+        inbound: {
+          mode: "websocket",
+          state: "ready",
+          senderPolicy: "any",
+          allowedSenderCount: 0,
+        },
       },
-    };
-    valid.attention.push({
-      rowKey: "incident_1",
-      messageId: "message_1",
-      status: "ambiguous",
-      version: 4,
-      subject: "Uncertain webhook",
-      sender: "sender@example.com",
-      receivedAt: "2026-07-30T12:00:00.000Z",
-      updatedAt: "2026-07-30T12:01:00.000Z",
-      detailPath: "/agentmail/mail-west/messages/message_1",
-      actions: {
-        dismiss: { actionId: "agentmail-attention-dismiss-wrong" },
-        reconcileProcessed: { actionId: "agentmail-inbound-reconcile-handled" },
-        reconcilePending: { actionId: "agentmail-inbound-reconcile-no-effect" },
+      {
+        inbound: {
+          mode: "websocket",
+          state: "ready",
+          senderPolicy: "allowlist",
+          allowedSenderCount: 0,
+          globalMaxPerHour: 100,
+          perSenderMaxPerHour: 5,
+        },
       },
-    });
+      { replies: { mode: "automatic", allowReplyAll: false } },
+    ];
 
-    const selected = selectMailDashboard(
-      baseDashboard({ mail: { schemaVersion: 1, instances: [valid] } }),
-    )?.instances[0];
-
-    expect(selected?.reviews[0]?.actions).toEqual({
-      reconcileSent: { actionId: "agentmail-review-reconcile-sent" },
-      reconcileFailed: { actionId: "agentmail-review-reconcile-failed" },
-    });
-    expect(selected?.attention[0]?.rowKey).toBe("incident_1");
-    expect(selected?.attention[0]?.actions).toEqual({
-      reconcileProcessed: { actionId: "agentmail-inbound-reconcile-handled" },
-      reconcilePending: { actionId: "agentmail-inbound-reconcile-no-effect" },
-    });
+    for (const override of overrides) {
+      const candidate = block("mail-west", "west@example.com");
+      candidate.projection = {
+        ...candidate.projection,
+        ...override,
+      } as MailAdminProjection;
+      expect(selectMailDashboard(baseDashboard({ blocks: [candidate] }))).toBeNull();
+    }
   });
 
-  it("preserves bounded public-inbound quota metadata", () => {
-    const valid = instance("mail-public", "public@example.com");
-    valid.inbound = {
-      mode: "websocket",
+  it("caps projected instances and drafts", () => {
+    const blocks = Array.from({ length: 40 }, (_, index) =>
+      block("mail-" + index, index + "@example.com"),
+    );
+    const projection = blocks[0]!.projection as MailAdminProjection;
+    projection.drafts = Array.from({ length: 120 }, (_, index) => ({
+      draftId: "draft_" + index,
+      sourceMessageId: "message_" + index,
+      threadId: "thread_" + index,
       state: "ready",
-      senderPolicy: "any",
-      allowedSenderCount: 0,
-      rateLimit: {
-        globalMaxPerHour: 100,
-        perSenderMaxPerHour: 5,
-        rollingGlobalUsage: 12,
-        globalRejections: 3,
-        perSenderRejections: 7,
-        lastRejectedAt: "2026-07-31T12:00:00.000Z",
-      },
-    };
+      providerUpdatedAt: "2026-08-12T18:00:00.000Z",
+    }));
 
-    expect(
-      selectMailDashboard(
-        baseDashboard({ mail: { schemaVersion: 1, instances: [valid] } }),
-      )?.instances[0]?.inbound,
-    ).toEqual(valid.inbound);
+    const selected = selectMailDashboard(baseDashboard({ blocks }));
+    expect(selected?.instances).toHaveLength(32);
+    expect(selected?.instances[0]?.drafts).toHaveLength(100);
   });
 
-  it("rejects malformed or impossible public-inbound quota metadata", () => {
-    const cases = [
-      { senderPolicy: "everyone" },
-      { allowedSenderCount: 1_001 },
-      { senderPolicy: "any", allowedSenderCount: 0 },
-      { senderPolicy: "allowlist", allowedSenderCount: 0 },
-      { senderPolicy: "disabled", allowedSenderCount: 0 },
-      {
-        senderPolicy: "disabled",
-        allowedSenderCount: 0,
-        rateLimit: {
-          globalMaxPerHour: 10,
-          perSenderMaxPerHour: 1,
-          rollingGlobalUsage: 0,
-          globalRejections: 0,
-          perSenderRejections: 0,
-        },
-      },
-      {
-        senderPolicy: "any",
-        allowedSenderCount: 1,
-        rateLimit: {
-          globalMaxPerHour: 10,
-          perSenderMaxPerHour: 1,
-          rollingGlobalUsage: 0,
-          globalRejections: 0,
-          perSenderRejections: 0,
-        },
-      },
-      {
-        mode: "none",
-        senderPolicy: "any",
-        allowedSenderCount: 0,
-        rateLimit: {
-          globalMaxPerHour: 10,
-          perSenderMaxPerHour: 1,
-          rollingGlobalUsage: 0,
-          globalRejections: 0,
-          perSenderRejections: 0,
-        },
-      },
-      {
-        rateLimit: {
-          globalMaxPerHour: 10,
-          perSenderMaxPerHour: 11,
-          rollingGlobalUsage: 0,
-          globalRejections: 0,
-          perSenderRejections: 0,
-        },
-      },
-      {
-        rateLimit: {
-          globalMaxPerHour: 10_001,
-          perSenderMaxPerHour: 1,
-          rollingGlobalUsage: 0,
-          globalRejections: 0,
-          perSenderRejections: 0,
-        },
-      },
-      {
-        senderPolicy: "any",
-        allowedSenderCount: 0,
-        rateLimit: {
-          globalMaxPerHour: 10,
-          perSenderMaxPerHour: 1,
-          rollingGlobalUsage: 0,
-          globalRejections: 0,
-          perSenderRejections: 0,
-          lastRejectedAt: "not-a-timestamp",
-        },
-      },
-      {
-        senderPolicy: "any",
-        allowedSenderCount: 0,
-        rateLimit: {
-          globalMaxPerHour: 10,
-          perSenderMaxPerHour: 1,
-          rollingGlobalUsage: 0,
-          globalRejections: 0,
-          perSenderRejections: 0,
-          lastRejectedAt: "July 31, 2026",
-        },
-      },
-    ];
+  it("contains no legacy editable review contract", () => {
+    const selected = selectMailDashboard(
+      baseDashboard({ blocks: [block("mail-west", "west@example.com")] }),
+    );
+    const serialized = JSON.stringify(selected);
 
-    for (const inboundOverride of cases) {
-      const valid = instance("mail-public", "public@example.com");
-      const candidate = {
-        ...valid,
-        inbound: { ...valid.inbound, ...inboundOverride },
-      } as MailInstanceProjection;
-      expect(
-        selectMailDashboard(
-          baseDashboard({ mail: { schemaVersion: 1, instances: [candidate] } }),
-        ),
-      ).toBeNull();
-    }
+    expect(serialized).not.toContain("detailPath");
+    expect(serialized).not.toContain("actions");
+    expect(serialized).not.toContain("reviewId");
+    expect(serialized).not.toContain("body");
+    expect(serialized).not.toContain("recipients");
+    expect(serialized).not.toContain("clientId");
+    expect(serialized).not.toContain("sendKey");
   });
 });
 
-function instance(augmentName: string, inboxEmail: string): MailInstanceProjection {
+function block(augmentName: string, inboxEmail: string): AdminInfoBlock {
   return {
     augmentName,
-    inboxId: `ibx_${augmentName}`,
-    inboxEmail,
-    status: { level: "ok", message: "Inbound websocket ready" },
-    inbound: { mode: "websocket", state: "ready" },
-    reviews: [
-      {
-        rowKey: "review_1",
-        reviewId: "review_1",
-        status: "pending",
-        subject: "Quarterly update",
-        correspondent: "m***@example.com",
-        expiresAt: "2026-08-01T12:00:00.000Z",
-        detailPath: `/agentmail/${augmentName}/reviews/review_1`,
-        actions: {
-          approve: { actionId: "agentmail-review-approve" },
-        },
+    title: "AgentMail",
+    sections: [{ kind: "status", level: "ok", message: "Inbound ready" }],
+    projection: {
+      kind: "mail",
+      augmentName,
+      inboxId: "ibx_" + augmentName,
+      inboxEmail,
+      externalConsoleUrl: "https://console.agentmail.to",
+      status: { level: "ok", message: "Inbound ready" },
+      inbound: {
+        mode: "websocket",
+        state: "ready",
+        senderPolicy: "any",
+        allowedSenderCount: 0,
+        globalMaxPerHour: 100,
+        perSenderMaxPerHour: 5,
+        lastCatchUpAt: "2026-08-12T18:00:00.000Z",
       },
-    ],
-    attention: [],
+      replies: { mode: "review", allowReplyAll: false },
+      drafts: [
+        {
+          draftId: "draft_1",
+          sourceMessageId: "message_1",
+          threadId: "thread_1",
+          state: "ready",
+          providerUpdatedAt: "2026-08-12T18:00:00.000Z",
+        },
+      ],
+    },
   };
 }
 

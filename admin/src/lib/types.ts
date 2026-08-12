@@ -72,48 +72,21 @@ export interface CsrfToken {
 }
 
 export type MailStatusLevel = "ok" | "warn" | "error";
-export type MailReviewStatus = "pending" | "sending";
-export type MailAttentionStatus = "open" | "pending_review" | "ambiguous";
+export type MailDraftState =
+  | "ready"
+  | "stale"
+  | "approved"
+  | "sending"
+  | "sent"
+  | "ambiguous"
+  | "failed";
 
-export interface MailActionTarget {
-  actionId: string;
-}
-
-/** Metadata-only summary. Exact message content is available only from detailPath. */
-export interface MailReviewProjection {
-  rowKey: string;
-  reviewId: string;
-  status: MailReviewStatus;
-  subject: string;
-  correspondent: string;
-  updatedAt?: string;
-  expiresAt: string;
-  detailPath: string;
-  actions: {
-    approve?: MailActionTarget;
-    revise?: MailActionTarget;
-    reject?: MailActionTarget;
-    reconcileSent?: MailActionTarget;
-    reconcileFailed?: MailActionTarget;
-  };
-}
-
-/** Metadata-only summary. Message bodies and model output must never appear here. */
-export interface MailAttentionProjection {
-  rowKey: string;
-  messageId: string;
-  status: MailAttentionStatus;
-  version: number;
-  subject?: string;
-  sender?: string;
-  receivedAt?: string;
-  updatedAt: string;
-  detailPath?: string;
-  actions: {
-    dismiss?: MailActionTarget;
-    reconcileProcessed?: MailActionTarget;
-    reconcilePending?: MailActionTarget;
-  };
+export interface MailDraftProjection {
+  draftId: string;
+  sourceMessageId: string;
+  threadId: string;
+  state: MailDraftState;
+  providerUpdatedAt: string;
 }
 
 export interface MailInstanceProjection {
@@ -126,31 +99,29 @@ export interface MailInstanceProjection {
     message: string;
   };
   inbound: {
-    mode: string;
-    state: string;
-    senderPolicy?: "disabled" | "allowlist" | "any";
-    allowedSenderCount?: number;
-    rateLimit?: {
-      globalMaxPerHour: number;
-      perSenderMaxPerHour: number;
-      rollingGlobalUsage: number;
-      globalRejections: number;
-      perSenderRejections: number;
-      lastRejectedAt?: string;
-    };
+    mode: "none" | "websocket";
+    state: "idle" | "connecting" | "catching_up" | "ready" | "degraded" | "stopped";
+    senderPolicy: "disabled" | "allowlist" | "any";
+    allowedSenderCount: number;
+    globalMaxPerHour?: number;
+    perSenderMaxPerHour?: number;
+    lastCatchUpAt?: string;
+    lastEventAt?: string;
+    lastErrorCode?: string;
   };
-  reviews: MailReviewProjection[];
-  attention: MailAttentionProjection[];
+  replies: {
+    mode: "disabled" | "review";
+    allowReplyAll: boolean;
+  };
+  drafts: MailDraftProjection[];
 }
 
 export interface MailDashboardProjection {
-  schemaVersion: 1;
   instances: MailInstanceProjection[];
 }
 
 export interface MailAdminProjection extends MailInstanceProjection {
   kind: "mail";
-  schemaVersion: 1;
 }
 
 export interface AgentCardLite {
@@ -399,8 +370,6 @@ export interface DashboardData {
   runtime?: RuntimeOperationalState | null;
   blocks: AdminInfoBlock[];
   csrfTokens: CsrfToken[];
-  /** Optional typed Mail action-center envelope. AdminInfoBlock projections are also accepted. */
-  mail?: MailDashboardProjection;
   /** Skills snapshot — installed + available Auggy-provided skills. */
   skills: SkillsInfo;
 }

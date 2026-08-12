@@ -18,10 +18,24 @@ describe("agentMail replacement boundary", () => {
       "send_mail_draft",
     ]);
     expect(augment.transport).toBeDefined();
-    expect((await augment.adminInfo?.())?.sections[0]).toEqual({
+    const admin = await augment.adminInfo?.();
+    expect(admin?.sections[0]).toEqual({
       kind: "status",
-      level: "ok",
-      message: "Outbound ready; inbound disabled",
+      level: "warn",
+      message: "Mail is starting; provider access has not been verified yet",
+    });
+    expect(admin?.projection).toMatchObject({
+      kind: "mail",
+      augmentName: "agentMail",
+      inboxId: "support@agentmail.to",
+      inbound: {
+        mode: "none",
+        state: "idle",
+        senderPolicy: "disabled",
+        allowedSenderCount: 0,
+      },
+      replies: { mode: "disabled", allowReplyAll: false },
+      drafts: [],
     });
   });
 
