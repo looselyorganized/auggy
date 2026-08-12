@@ -3,10 +3,10 @@ name: AgentMail provider canary
 # This workflow has no push, pull_request, repository_dispatch, or scheduled
 # trigger. Dispatch it manually from canonical main only after the protected
 # agentmail-provider-canary Environment is configured and approved.
-# The first approved run creates one persistent canary inbox in that
-# Environment's AgentMail account; every later run reuses the same inbox. Each
-# run uses the protected supplied key unchanged for provisioning and the shipped
-# runtime REST/WebSocket adapters. It does not send mail or mutate API keys.
+# Every run connects to one pre-provisioned canary inbox with the exact protected
+# runtime key and exercises the shipped read-only REST/WebSocket adapters. It
+# does not sign up, create an inbox, create or rotate a key, create a draft, or
+# send mail.
 on:
   workflow_dispatch:
 
@@ -19,7 +19,7 @@ permissions:
 
 jobs:
   canary:
-    name: Existing-account runtime-path canary
+    name: Pre-provisioned inbox runtime-path canary
     if: github.repository == 'looselyorganized/auggy' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -42,10 +42,11 @@ jobs:
       - name: Install trusted dependencies
         run: bun install --frozen-lockfile
 
-      - name: Verify persistent inbox and runtime adapters with the supplied key
+      - name: Verify pre-provisioned inbox and runtime adapters with the supplied key
         env:
-          # Configure AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY only on the
-          # protected Environment. Do not add a repository-level fallback.
-          # Its value is passed unchanged through the canonical runtime name.
-          AGENTMAIL_API_KEY: ${{ secrets.AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY }}
+          # Configure these only on the protected Environment. The key is
+          # passed unchanged through the canonical runtime variable.
+          AGENTMAIL_API_KEY: ${{ secrets.AGENTMAIL_CANARY_RUNTIME_API_KEY }}
+          AGENTMAIL_CANARY_INBOX_ID: ${{ vars.AGENTMAIL_CANARY_INBOX_ID }}
+          AGENTMAIL_CANARY_INBOX_EMAIL: ${{ vars.AGENTMAIL_CANARY_INBOX_EMAIL }}
         run: bun scripts/agentmail-provider-canary.ts

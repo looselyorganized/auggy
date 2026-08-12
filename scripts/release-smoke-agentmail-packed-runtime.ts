@@ -41,6 +41,7 @@ function assertPackedResolution(): void {
 }
 
 function startLoopbackProvider(state: {
+  authChecks: number;
   healthChecks: number;
   catchUps: number;
   subscriptions: number;
@@ -59,6 +60,15 @@ function startLoopbackProvider(state: {
           }
           const url = new URL(request.url);
           if (url.pathname === "/v0" && server.upgrade(request, { data: undefined })) return;
+          if (request.method === "GET" && url.pathname === "/v0/auth/me") {
+            state.authChecks++;
+            return Response.json({
+              scope_type: "inbox",
+              scope_id: INBOX_ID,
+              organization_id: "org_packed_runtime",
+              inbox_id: INBOX_ID,
+            });
+          }
           if (
             request.method === "GET" &&
             url.pathname === `/v0/inboxes/${encodeURIComponent(INBOX_ID)}`
@@ -86,14 +96,11 @@ function startLoopbackProvider(state: {
             ) as {
               type?: string;
               inbox_ids?: string[];
-              event_types?: string[];
             };
             if (
               message.type !== "subscribe" ||
               message.inbox_ids?.length !== 1 ||
-              message.inbox_ids[0] !== INBOX_ID ||
-              message.event_types?.length !== 1 ||
-              message.event_types[0] !== "message.received"
+              message.inbox_ids[0] !== INBOX_ID
             ) {
               socket.close(1008, "unexpected subscription");
               return;
@@ -103,7 +110,6 @@ function startLoopbackProvider(state: {
               JSON.stringify({
                 type: "subscribed",
                 inbox_ids: message.inbox_ids,
-                event_types: message.event_types,
               }),
             );
           },
@@ -122,6 +128,7 @@ function startLoopbackProvider(state: {
 
 assertPackedResolution();
 const state = {
+  authChecks: 0,
   healthChecks: 0,
   catchUps: 0,
   subscriptions: 0,
@@ -137,9 +144,10 @@ const augment = agentMail({
   apiKey: API_KEY,
   inboxId: INBOX_ID,
   emailAddress: INBOX_ID,
-  apiBaseUrl: `${baseUrl}/v0`,
+  apiBaseUrl: baseUrl,
+  websocketBaseUrl: baseUrl.replace("http:", "ws:"),
   allowInsecureHttpWithCredentials: true,
-  stateDir,
+  dbPath: join(stateDir, "orchestration.db"),
   inbound: {
     mode: "websocket",
     allowAnySender: true,
@@ -147,7 +155,6 @@ const augment = agentMail({
       globalMaxPerHour: 10,
       perSenderMaxPerHour: 2,
     },
-    websocketBaseUrl: baseUrl.replace("http:", "ws:"),
   },
 });
 
@@ -156,13 +163,26 @@ try {
   if (!augment.transport) throw new Error("packed AgentMail omitted its inbound transport");
   await augment.transport.register(
     {
+      onOutbound() {},
       quarantineThread() {},
     } as never,
     augment.name,
   );
   await withTimeout(augment.transport.ready?.() ?? Promise.resolve(), "packed AgentMail ready");
-  if (state.healthChecks !== 1 || state.catchUps !== 1 || state.subscriptions !== 1) {
-    throw new Error("packed AgentMail runtime did not complete its provider readiness sequence");
+  if (
+    state.authChecks !== 2 ||
+    state.healthChecks !== 2 ||
+    state.catchUps !== 1 ||
+    state.subscriptions !== 1
+  ) {
+    throw new Error(
+      `packed AgentMail runtime did not complete its provider readiness sequence: ${JSON.stringify({
+        authChecks: state.authChecks,
+        healthChecks: state.healthChecks,
+        catchUps: state.catchUps,
+        subscriptions: state.subscriptions,
+      })}`,
+    );
   }
   await withTimeout(augment.onShutdown?.() ?? Promise.resolve(), "packed AgentMail shutdown");
   await withTimeout(state.closed.promise, "packed AgentMail WebSocket close");

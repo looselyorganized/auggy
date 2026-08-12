@@ -715,19 +715,19 @@ function assertRailwayDeploySafeConfig(configPath: string): ReturnType<typeof pa
   const recommendedSetup = canonicalSharedAgentMail
     ? [
         "  - Recommended: reuse the installed AgentMail inbox:",
-        "      auggy augment setup agentMail",
+        "      auggy augment setup agentMail --mode connect",
         "      auggy augment setup visitorAuth --mode env",
       ]
     : anyAgentMailInstalled
       ? [
           "  - This agent has an inline, renamed, or additional agentMail mount.",
-          "    Automatic shared setup is unavailable for that topology. Configure distinct",
-          "    credentials manually, or migrate to one canonical augments/agentMail mount",
+          "    Shared credential connection is unavailable for that topology. Configure exact",
+          "    AGENTMAIL_* references for each mount, or migrate to one canonical agentMail mount",
           "    and then attach visitorAuth with `auggy augment setup visitorAuth --mode env`.",
         ]
       : [
-          "  - Recommended: run `auggy augment setup visitorAuth`.",
-          "    This configures the supplied AgentMail key and writes the needed .env values.",
+          "  - Recommended: run `auggy augment setup visitorAuth --mode connect`.",
+          "    This verifies an existing inbox and supplied API key, then writes the needed .env values.",
         ];
 
   throw new Error(

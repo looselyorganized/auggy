@@ -18,6 +18,7 @@ import { AUGMENT_CATALOG } from "../augment-catalog";
 import { augmentFolderForType } from "../scaffold-skills";
 import { parseEnvFile } from "../env-parse";
 import { diagnoseMcpConfig } from "../mcp-config";
+import { buildAgentMailRequiredPermissions } from "../agentmail-capabilities";
 import { describeEnginePricing, hasUsdBudgetCaps } from "../model-registry";
 import {
   MODEL_SNAPSHOT_RELATIVE_PATH,
@@ -102,6 +103,7 @@ export async function runDoctor(
   checks.push(...checkConfigEnvReferences(configPath, agentDir));
   checks.push(...checkLearnedBehaviorFiles(agentDir, config));
   checks.push(...checkUnsupportedAgentMailState(agentDir, config));
+  checks.push(...checkAgentMailPolicy(config));
   checks.push(...checkProviderEnv(agentDir, config));
   checks.push(...checkAgentDependencies(agentDir, config));
   checks.push(...checkRuntimeSource(agentDir));
@@ -115,21 +117,55 @@ export async function runDoctor(
   return checks;
 }
 
+export function checkAgentMailPolicy(config: ParsedConfig): DoctorCheck[] {
+  return config.augments.flatMap((augment) => {
+    if (augment.type !== "agentMail") return [];
+    const options = augment.options ?? {};
+    const inbound = options.inbound as { mode?: unknown } | undefined;
+    const replies = options.replies as { mode?: unknown } | undefined;
+    const inboundEnabled = inbound?.mode === "websocket";
+    const reviewReplies = replies?.mode === "review";
+    const permissions = Object.keys(
+      buildAgentMailRequiredPermissions({ inboundEnabled, reviewReplies }),
+    ).join(", ");
+    return [
+      {
+        name: `AgentMail policy ${augment.name}`,
+        status: "pass" as const,
+        message: `inbound ${inboundEnabled ? "websocket" : "disabled"}; replies ${reviewReplies ? "review" : "disabled"}; required key permissions: ${permissions}`,
+        fix: "Use one operator-supplied AgentMail key with these permissions. Auggy verifies and uses that exact key; it does not create a replacement runtime key.",
+      },
+    ];
+  });
+}
+
 export function checkUnsupportedAgentMailState(
   agentDir: string,
   config: ParsedConfig,
 ): DoctorCheck[] {
   if (!config.augments.some((augment) => augment.type === "agentMail")) return [];
-  const legacy = [
+  const legacyNames = [
     "agent-mail.db",
     "agent-mail.db-wal",
     "agent-mail.db-shm",
     "agent-mail.db-journal",
     "agent-mail-state.json",
     "agent-mail-reviews.json",
-  ].filter((name) => existsSync(join(agentDir, name)));
-  const legacyInstances = join(agentDir, "data", "agent-mail");
-  if (existsSync(legacyInstances)) legacy.push("data/agent-mail/");
+  ];
+  const candidateDirs = [
+    { absolute: agentDir, relative: "" },
+    ...config.augments
+      .filter((augment) => augment.type === "agentMail")
+      .map((augment) => ({
+        absolute: join(agentDir, "data", "agent-mail", augment.name),
+        relative: join("data", "agent-mail", augment.name),
+      })),
+  ];
+  const legacy = candidateDirs.flatMap(({ absolute, relative }) =>
+    legacyNames
+      .filter((name) => existsSync(join(absolute, name)))
+      .map((name) => (relative ? join(relative, name) : name)),
+  );
   if (legacy.length === 0) return [];
   return [
     {

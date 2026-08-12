@@ -28,6 +28,30 @@ describe("auggy augment command", () => {
     expect(cmd.commands.map((c) => c.name())).toContain("test");
   });
 
+  test("setup exposes only existing-credential AgentMail options", () => {
+    const setup = augmentCommand().commands.find((command) => command.name() === "setup");
+    expect(setup).toBeDefined();
+    const flags = setup!.options.map((option) => option.long);
+    expect(flags).toEqual(
+      expect.arrayContaining([
+        "--mode",
+        "--api-key",
+        "--inbox-id",
+        "--base-url",
+        "--allow-insecure-http-with-credentials",
+      ]),
+    );
+    expect(flags).not.toEqual(
+      expect.arrayContaining([
+        "--human-email",
+        "--username",
+        "--display-name",
+        "--replace-key",
+        "--yes",
+      ]),
+    );
+  });
+
   test("setup dispatches to setup helper", async () => {
     const setupAugment = mock(async () => "configured");
     const logs: string[] = [];
@@ -45,13 +69,11 @@ describe("auggy augment command", () => {
           "--agent",
           "zip",
           "--mode",
-          "manual",
+          "connect",
           "--api-key",
           "am_x",
           "--inbox-id",
           "inb_x",
-          "--replace-key",
-          "--yes",
           "--allow-insecure-http-with-credentials",
         ],
         { from: "user" },
@@ -65,14 +87,9 @@ describe("auggy augment command", () => {
       {
         agent: "zip",
         config: undefined,
-        mode: "manual",
-        humanEmail: undefined,
-        username: undefined,
-        displayName: undefined,
+        mode: "connect",
         apiKey: "am_x",
         inboxId: "inb_x",
-        replaceKey: true,
-        yes: true,
         baseUrl: undefined,
         allowInsecureHttpWithCredentials: true,
       },

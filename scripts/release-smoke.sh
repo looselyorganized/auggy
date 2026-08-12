@@ -345,7 +345,7 @@ reject_pack_pattern() {
 }
 
 require_pack_entry "src/cli/index.ts"
-require_pack_entry "src/cli/agentmail-provisioning.ts"
+require_pack_entry "src/cli/agentmail-capabilities.ts"
 require_pack_entry "src/jobs/index.ts"
 require_pack_entry "src/jobs/runtime.ts"
 require_pack_entry "src/jobs/sqlite-store.ts"
