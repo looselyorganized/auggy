@@ -187,7 +187,13 @@ class FakeProvider implements AgentMailProvider {
 }
 
 function fixture(
-  options: { inbound?: boolean; notifications?: boolean; provider?: FakeProvider } = {},
+  options: {
+    inbound?: boolean;
+    notifications?: boolean;
+    provider?: FakeProvider;
+    outboundGlobalMaxPerHour?: number;
+    clock?: () => number;
+  } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "auggy-agentmail-runtime-"));
   roots.push(root);
@@ -195,6 +201,7 @@ function fixture(
     dbPath: join(root, "orchestration.db"),
     inboxId,
     sendKey: () => "auggy-test-send-key",
+    ...(options.clock === undefined ? {} : { clock: options.clock }),
   });
   const provider = options.provider ?? new FakeProvider();
   const config = validateAgentMailConfig({
@@ -215,7 +222,7 @@ function fixture(
       allowedTrustLevels: ["creator"],
       subjectPrefix: "[Store] ",
       rateLimit: {
-        globalMaxPerHour: 10,
+        globalMaxPerHour: options.outboundGlobalMaxPerHour ?? 10,
         perRecipientCooldownMs: 0,
         dedupWindowMs: 0,
       },
@@ -359,6 +366,73 @@ describe("AgentMail provider-native runtime", () => {
     expect(JSON.stringify(deliveries)).not.toContain("We can help");
     await f.augment.creatorAttentionHost.repair();
     expect(deliveries).toHaveLength(1);
+
+    await f.augment.onShutdown?.();
+    f.store.close();
+  });
+
+  test("does not let a terminal notification backlog starve new creator attention", async () => {
+    let now = 1_000;
+    const f = fixture({ inbound: true, notifications: true, clock: () => now });
+    for (let index = 0; index < 1_000; index++) {
+      now = 1_000 + index;
+      const messageId = `historical_message_${index}`;
+      const threadId = `historical_thread_${index}`;
+      f.store.claimMessage({
+        messageId,
+        threadId,
+        classification: "received",
+        sender: `historical-${index}@example.com`,
+        senderHash: hashAgentMailOrchestrationValue(`historical-${index}@example.com`),
+        payloadHash: hashAgentMailOrchestrationValue(`historical-payload-${index}`),
+        receivedAt: now,
+        policyVersion: 1,
+      });
+      f.store.recordDraft({
+        sourceMessageId: messageId,
+        threadId,
+        draftId: `historical_draft_${index}`,
+        clientId: `historical_client_${index}`,
+        providerUpdatedAt: now,
+      });
+      f.store.markDraftStale(messageId);
+    }
+
+    now = 10_000;
+    f.store.claimMessage({
+      messageId: "new_message",
+      threadId: "new_thread",
+      classification: "received",
+      sender: "new@example.com",
+      senderHash: hashAgentMailOrchestrationValue("new@example.com"),
+      payloadHash: hashAgentMailOrchestrationValue("new-payload"),
+      receivedAt: now,
+      policyVersion: 1,
+    });
+    f.store.recordDraft({
+      sourceMessageId: "new_message",
+      threadId: "new_thread",
+      draftId: "new_draft",
+      clientId: "new_client",
+      providerUpdatedAt: now,
+    });
+
+    const deliveries: NotifyInternalDispatchInput[] = [];
+    await f.augment.onBoot?.();
+    f.augment.creatorAttentionHost.configure({
+      dispatchHost: notificationHost(deliveries),
+      destination: "creator",
+      destinationBindingHash: "b".repeat(64),
+      maxAttempts: 3,
+    });
+    await f.augment.creatorAttentionHost.start();
+
+    expect(deliveries).toHaveLength(1);
+    const presented = f.store
+      .listCreatorAttention({ states: ["presented"] })
+      .find((record) => record.subjectId === "new_draft");
+    expect(presented).toBeDefined();
+    expect(deliveries[0]?.operationKey).toBe(presented?.operationKey);
 
     await f.augment.onShutdown?.();
     f.store.close();
@@ -682,6 +756,56 @@ describe("AgentMail provider-native runtime", () => {
     f.store.close();
   });
 
+  test("applies the shared outbound rate limit to creator-reviewed draft sends", async () => {
+    const f = fixture({ outboundGlobalMaxPerHour: 1 });
+    const incoming = message();
+    f.provider.messages.set(incoming.messageId, incoming);
+    f.provider.drafts.set("draft_1", draft());
+    f.store.claimMessage({
+      messageId: incoming.messageId,
+      threadId: incoming.threadId,
+      classification: "received",
+      sender: incoming.sender,
+      senderHash: hashAgentMailOrchestrationValue(incoming.sender),
+      payloadHash: hashAgentMailOrchestrationValue("payload"),
+      receivedAt: incoming.timestamp,
+      policyVersion: 1,
+    });
+    f.store.recordDraft({
+      sourceMessageId: incoming.messageId,
+      threadId: incoming.threadId,
+      draftId: "draft_1",
+      clientId: "auggy.reply.v1.fixture",
+      providerUpdatedAt: 2_000,
+    });
+    await f.augment.onBoot?.();
+
+    const direct = requireTool(f.augment, "send_message");
+    expect(
+      await direct.execute(
+        { to: ["buyer@example.com"], subject: "Update", text: "Your order shipped." },
+        toolContext({ operationId: "direct_before_draft" }),
+      ),
+    ).toContain("sent_direct_1");
+
+    const sendDraft = requireTool(f.augment, "send_mail_draft");
+    await f.augment.onTurnStart?.(
+      creatorTurn("rate_limited_draft", "console_thread_1", "send draft draft_1"),
+    );
+    const result = await sendDraft.execute(
+      { draftId: "draft_1", expectedUpdatedAt: 2_000 },
+      toolContext({ turnId: "rate_limited_draft" }),
+    );
+    expect(result).toMatchObject({ isError: true });
+    expect(JSON.stringify(result)).toContain("rate limited (global)");
+    expect(f.provider.sentDrafts).toHaveLength(0);
+    expect(f.store.getDraftByMessage("message_1")?.state).toBe("ready");
+
+    await f.augment.onTurnEnd?.({ turnId: "rate_limited_draft" } as TurnResult);
+    await f.augment.onShutdown?.();
+    f.store.close();
+  });
+
   test("revises only a freshly shown plain-text draft and invalidates the old provider version", async () => {
     const f = fixture();
     const incoming = message();
@@ -706,8 +830,31 @@ describe("AgentMail provider-native runtime", () => {
     });
     await f.augment.onBoot?.();
     const revise = requireTool(f.augment, "revise_mail_draft");
+
     await f.augment.onTurnStart?.(
-      creatorTurn("revise_turn", "console_thread_1", "revise this draft to be concise"),
+      creatorTurn("show_only", "console_thread_1", "show draft draft_1"),
+    );
+    expect(
+      await revise.execute(
+        { draftId: "draft_1", expectedUpdatedAt: 2_000, text: "Unauthorized change." },
+        toolContext({ turnId: "show_only" }),
+      ),
+    ).toMatchObject({ isError: true });
+    await f.augment.onTurnEnd?.({ turnId: "show_only" } as TurnResult);
+
+    await f.augment.onTurnStart?.(
+      creatorTurn("generic_revise", "another_console_thread", "revise a mail draft"),
+    );
+    expect(
+      await revise.execute(
+        { draftId: "draft_1", expectedUpdatedAt: 2_000, text: "Unauthorized change." },
+        toolContext({ turnId: "generic_revise", threadId: "another_console_thread" }),
+      ),
+    ).toMatchObject({ isError: true });
+    await f.augment.onTurnEnd?.({ turnId: "generic_revise" } as TurnResult);
+
+    await f.augment.onTurnStart?.(
+      creatorTurn("revise_turn", "console_thread_1", "revise draft draft_1 to be concise"),
     );
     expect(
       await revise.execute(

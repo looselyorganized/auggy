@@ -185,10 +185,12 @@ export type {
   AgentMailOutboundOptions,
   AgentMailOutboundRateLimitOptions,
   AgentMailInboundConfig,
+  AgentMailInboundRateLimitOptions,
   AgentMailInboundMode,
   AgentMailReplyMode,
   AgentMailReplyOptions,
   AgentMailAddressVisibility,
+  AgentMailNotificationOptions,
 } from "./types";
 
 export { bash } from "./augments/bash";

@@ -450,9 +450,25 @@ export function createAgentMailRuntime(
 
   async function repairAttention(): Promise<void> {
     if (!attentionStarted || attentionStopped || !attentionBinding) return;
-    for (const record of runtimeStore().listCreatorAttention({ limit: 1_000 })) {
+    for (const record of runtimeStore().listCreatorAttention({
+      states: ["pending"],
+      limit: 1_000,
+    })) {
       if (attentionStopped) return;
       await dispatchAttention(record);
+    }
+    // A crash after Notify settlement but before cross-ledger acknowledgement
+    // leaves terminal work that still needs one idempotent acknowledgement.
+    // Query it separately so historical terminal rows cannot hide new pending
+    // creator attention behind the bounded result limit. Ambiguous delivery is
+    // deliberately excluded: its outcome remains fenced for reconciliation.
+    for (const record of runtimeStore().listCreatorAttention({
+      states: ["presented", "failed", "superseded", "dismissed"],
+      acknowledgementPending: true,
+      limit: 1_000,
+    })) {
+      if (attentionStopped) return;
+      acknowledgeAttention(record);
     }
   }
 
@@ -796,11 +812,13 @@ export function createAgentMailRuntime(
     execute: async ({ draftId, expectedUpdatedAt, text }, context) => {
       if (!creator(context)) return denied("Only the verified creator may revise mail drafts.");
       const intent = creatorTurns.get(context.turnId);
-      if (
-        !intent ||
-        (!/\b(revise|change|edit|rewrite)\b/i.test(intent.text) && !intent.text.includes(draftId))
-      ) {
-        return denied("Ask explicitly to revise, change, edit, or rewrite this draft.");
+      const hasRevisionVerb = /\b(revise|change|edit|rewrite)\b/i.test(intent?.text ?? "");
+      const namesExactDraft = intent?.text.toLowerCase().includes(draftId.toLowerCase()) === true;
+      const namesSelectedDraft = intent?.selectedDraftId === draftId;
+      if (!intent || !hasRevisionVerb || (!namesExactDraft && !namesSelectedDraft)) {
+        return denied(
+          "Ask explicitly to revise, change, edit, or rewrite this exact or previously shown draft.",
+        );
       }
       return withDraftLock(draftId, async () => {
         const current = await freshManagedDraft(draftId, context.signal);
@@ -907,14 +925,32 @@ export function createAgentMailRuntime(
           config,
         );
         if (!policy.allowed) return denied(`Draft failed outbound policy: ${policy.reason}.`);
+        const payloadHash = hashAgentMailOrchestrationValue(
+          JSON.stringify([policy.recipients, current.draft.subject, current.draft.text]),
+        );
+        const rate = runtimeStore().reserveOutboundRate({
+          operationId: stableId(
+            "agentmail.draft-send-rate.v1",
+            config.inboxId,
+            current.reference.sourceMessageId,
+            String(expectedUpdatedAt),
+          ),
+          recipientHashes: policy.recipients.map(hashAgentMailOrchestrationValue),
+          payloadHash,
+          ...config.outbound.rateLimit,
+        });
+        if (rate.status === "conflict") {
+          return failed("Reviewed reply rate identity conflicted. Show the draft again.");
+        }
+        if (rate.status === "rate_limited") {
+          return failed(`Reviewed reply is rate limited (${rate.reason}). Retry later.`);
+        }
         const evidence = JSON.stringify({
           action: "send_mail_draft",
           creatorPeerId: context.peer.id,
           draftId,
           expectedUpdatedAt,
-          contentHash: hashAgentMailOrchestrationValue(
-            JSON.stringify([recipients, current.draft.subject, current.draft.text]),
-          ),
+          contentHash: payloadHash,
           turnId: context.turnId,
         });
         runtimeStore().approveDraft({
@@ -1186,7 +1222,7 @@ export function createAgentMailRuntime(
         });
         ownsStore = true;
       }
-      store.recoverInterrupted(Date.now() - 5 * 60_000);
+      store.recoverInterrupted(Date.now());
       store.recoverAmbiguousMutations();
       const identity = await provider.verifyAccess(lifecycleController.signal);
       verifiedEmailAddress = identity.emailAddress ?? identity.configuredInboxId;

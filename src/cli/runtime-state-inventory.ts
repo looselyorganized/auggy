@@ -100,6 +100,51 @@ export function mutableFileMemoryRuntimePath(runtimeDataRoot: string, augmentNam
   return join(resolve(runtimeDataRoot), "file-memory", `${augmentName}.md`);
 }
 
+/**
+ * Resolve the AgentMail orchestration ledger exactly as the runtime does.
+ * The generated local-project path maps to the instance-owned volume leaf;
+ * it must not be nested beneath that same namespace a second time.
+ */
+export function agentMailOrchestrationRuntimePath(options: {
+  configuredPath?: string;
+  augmentName: string;
+  agentDir: string;
+  runtimeDataRoot?: string;
+}): string {
+  const { augmentName, agentDir, runtimeDataRoot } = options;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(augmentName)) {
+    throw new Error(`[runtime-state] agentMail name "${augmentName}" is not a safe namespace`);
+  }
+  const localDefault = `./data/agent-mail/${augmentName}/orchestration.db`;
+  const configuredPath = options.configuredPath ?? localDefault;
+  if (!runtimeDataRoot) {
+    return resolveRuntimeStatePath(
+      configuredPath,
+      agentDir,
+      undefined,
+      `agentMail ${augmentName} dbPath`,
+    );
+  }
+  if (isAbsolute(configuredPath)) {
+    throw new Error(
+      `[runtime-state] agentMail ${augmentName} dbPath must be relative to its owned state directory`,
+    );
+  }
+
+  const stateDir = resolve(runtimeDataRoot, "agent-mail", augmentName);
+  const relativePath =
+    resolve(agentDir, configuredPath) === resolve(agentDir, localDefault)
+      ? "orchestration.db"
+      : configuredPath;
+  const target = resolve(stateDir, relativePath);
+  if (!isContained(stateDir, target) || target === stateDir) {
+    throw new Error(
+      `[runtime-state] agentMail ${augmentName} dbPath must stay within its owned state directory`,
+    );
+  }
+  return target;
+}
+
 function stableJson(value: unknown): string {
   if (
     value === null ||
@@ -653,12 +698,12 @@ export function buildRuntimeStateInventory(
         break;
       }
       case "agentMail": {
-        const path = resolveRuntimeStatePath(
-          String(opts.dbPath ?? `./data/agent-mail/${augment.name}/orchestration.db`),
+        const path = agentMailOrchestrationRuntimePath({
+          ...(opts.dbPath === undefined ? {} : { configuredPath: String(opts.dbPath) }),
+          augmentName: augment.name,
           agentDir,
-          ownedStateRoot,
-          `agentMail ${augment.name} dbPath`,
-        );
+          ...(runtimeDataRoot === undefined ? {} : { runtimeDataRoot }),
+        });
         addStore(
           stores,
           sqliteEntry({

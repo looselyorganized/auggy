@@ -249,6 +249,7 @@ try {
     visitorAuthPath,
   );
   configureReadOnlyDoctorFixture(configPath, agentMailPath, provider.baseUrl);
+  let doctorChangedEnv = false;
   try {
     const doctor = await runCli(["doctor", "--config", configPath], {}, consumerDir);
     if (doctor.exitCode !== 0) {
@@ -263,12 +264,13 @@ try {
       throw new Error(`packed AgentMail doctor omitted the connected policy:\n${doctor.output}`);
     }
   } finally {
-    if (readFileSync(join(consumerDir, ".env"), "utf8") !== beforeDoctor.env) {
-      throw new Error("packed AgentMail doctor changed the connected credential file");
-    }
+    doctorChangedEnv = readFileSync(join(consumerDir, ".env"), "utf8") !== beforeDoctor.env;
     writeFileSync(configPath, beforeDoctor.agent);
     writeFileSync(agentMailPath, beforeDoctor.agentMail);
     writeFileSync(visitorAuthPath, beforeDoctor.visitorAuth);
+  }
+  if (doctorChangedEnv) {
+    throw new Error("packed AgentMail doctor changed the connected credential file");
   }
 
   const rejectedDir = join(consumerDir, ".rejected-connect-check");

@@ -247,9 +247,9 @@ new outbound messages.
 | `outbound.subjectPrefix` | String, 1–200 characters; no CR, LF, or NUL | `[Auggy] ` | Prefix added to new outbound subjects and generated reply-draft subjects. |
 | `outbound.maxRecipients` | Integer `1`–`50` | `10` | Maximum recipients for a send. The direct `send_message` tool currently accepts `to` recipients only. |
 | `outbound.bodyMaxBytes` | Integer `1`–`1048576` | `102400` | Maximum UTF-8 plain-text body size for new messages and reviewed drafts. |
-| `outbound.rateLimit.globalMaxPerHour` | Integer `1`–`10000` | `10` | Maximum Auggy-managed sends per rolling hour. |
-| `outbound.rateLimit.perRecipientCooldownMs` | Integer `0`–`2592000000` | `300000` | Minimum time between Auggy-managed sends to the same normalized recipient. `0` disables the cooldown. |
-| `outbound.rateLimit.dedupWindowMs` | Integer `0`–`2592000000` | `300000` | Window that rejects a duplicate outbound payload. `0` disables deduplication. |
+| `outbound.rateLimit.globalMaxPerHour` | Integer `1`–`10000` | `10` | Maximum combined new-message and reviewed-reply sends per rolling hour. |
+| `outbound.rateLimit.perRecipientCooldownMs` | Integer `0`–`2592000000` | `300000` | Minimum time between new-message or reviewed-reply sends to the same normalized recipient. `0` disables the cooldown. |
+| `outbound.rateLimit.dedupWindowMs` | Integer `0`–`2592000000` | `300000` | Window that rejects a duplicate new-message or reviewed-reply payload. `0` disables deduplication. |
 
 Auggy sends plain text only. HTML composition, arbitrary attachments, forward
 drafts, scheduled drafts, and recipient editing are not exposed by this

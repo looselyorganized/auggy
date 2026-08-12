@@ -1207,6 +1207,32 @@ describe("resolveAugments — budgets", () => {
     }
   });
 
+  test("rejects pre-rebuild AgentMail state in the runtime volume without changing it", async () => {
+    const runtimeDataRoot = join(TMP, "railway-old-agentmail");
+    const oldState = join(runtimeDataRoot, "agent-mail", "agentMail", "agent-mail.db");
+    mkdirSync(join(runtimeDataRoot, "agent-mail", "agentMail"), { recursive: true });
+    writeFileSync(oldState, "legacy");
+
+    await expect(
+      resolveAugments(
+        [
+          {
+            name: "agentMail",
+            type: "agentMail",
+            options: {
+              apiKey: "am_test",
+              inboxId: "inbox@agentmail.to",
+              dbPath: "./data/agent-mail/agentMail/orchestration.db",
+            },
+          },
+        ],
+        TMP,
+        { runtimeDataRoot },
+      ),
+    ).rejects.toThrow(/unsupported pre-rebuild AgentMail state.*agent-mail\.db/is);
+    expect(readFileSync(oldState, "utf8")).toBe("legacy");
+  });
+
   test("routes log-to-file notifications into the Railway runtime volume", async () => {
     const runtimeDataRoot = join(TMP, "railway-notify");
     mkdirSync(runtimeDataRoot, { recursive: true });

@@ -352,6 +352,7 @@ export interface AgentMailOrchestrationStore {
   getCreatorAttention(attentionId: string): AgentMailCreatorAttentionRecord | undefined;
   listCreatorAttention(input?: {
     states?: readonly AgentMailCreatorAttentionState[];
+    acknowledgementPending?: boolean;
     limit?: number;
   }): AgentMailCreatorAttentionRecord[];
   bindCreatorAttention(input: {
@@ -1517,12 +1518,21 @@ export function createAgentMailOrchestrationStore(
       ) {
         throw new Error("agentMail store: creator attention states are invalid");
       }
+      if (
+        input.acknowledgementPending !== undefined &&
+        typeof input.acknowledgementPending !== "boolean"
+      ) {
+        throw new Error("agentMail store: acknowledgementPending must be a boolean");
+      }
       const stateClause = states ? ` AND state IN (${states.map(() => "?").join(", ")})` : "";
+      const acknowledgementClause = input.acknowledgementPending
+        ? " AND destination IS NOT NULL AND settlement_hash IS NOT NULL AND notify_acknowledged_at IS NULL"
+        : "";
       const bindings: Array<string | number> = [inboxId, ...(states ?? []), limit];
       return db
         .query<CreatorAttentionRow, Array<string | number>>(
           `SELECT * FROM agentmail_creator_attention
-            WHERE inbox_id = ?${stateClause}
+            WHERE inbox_id = ?${stateClause}${acknowledgementClause}
             ORDER BY created_at ASC, attention_id ASC LIMIT ?`,
         )
         .all(...bindings)

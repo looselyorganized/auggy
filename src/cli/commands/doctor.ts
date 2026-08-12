@@ -102,7 +102,13 @@ export async function runDoctor(
   checks.push(checkPackageManifest(agentDir));
   checks.push(...checkConfigEnvReferences(configPath, agentDir));
   checks.push(...checkLearnedBehaviorFiles(agentDir, config));
-  checks.push(...checkUnsupportedAgentMailState(agentDir, config));
+  checks.push(
+    ...checkUnsupportedAgentMailState(
+      agentDir,
+      config,
+      opts.cloud ? process.env.RAILWAY_VOLUME_MOUNT_PATH : undefined,
+    ),
+  );
   checks.push(...checkAgentMailPolicy(config));
   checks.push(...checkProviderEnv(agentDir, config));
   checks.push(...checkAgentDependencies(agentDir, config));
@@ -142,6 +148,7 @@ export function checkAgentMailPolicy(config: ParsedConfig): DoctorCheck[] {
 export function checkUnsupportedAgentMailState(
   agentDir: string,
   config: ParsedConfig,
+  runtimeDataRoot?: string,
 ): DoctorCheck[] {
   if (!config.augments.some((augment) => augment.type === "agentMail")) return [];
   const legacyNames = [
@@ -160,6 +167,14 @@ export function checkUnsupportedAgentMailState(
         absolute: join(agentDir, "data", "agent-mail", augment.name),
         relative: join("data", "agent-mail", augment.name),
       })),
+    ...(runtimeDataRoot
+      ? config.augments
+          .filter((augment) => augment.type === "agentMail")
+          .map((augment) => ({
+            absolute: join(runtimeDataRoot, "agent-mail", augment.name),
+            relative: join(runtimeDataRoot, "agent-mail", augment.name),
+          }))
+      : []),
   ];
   const legacy = candidateDirs.flatMap(({ absolute, relative }) =>
     legacyNames

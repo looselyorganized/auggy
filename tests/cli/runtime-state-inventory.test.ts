@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  agentMailOrchestrationRuntimePath,
   buildRuntimeStateInventory,
   mutableFileMemoryRuntimePath,
   resolveRuntimeStatePath,
@@ -144,6 +145,28 @@ describe("runtime state inventory", () => {
     expect(inventory.externalPrerequisites.map((entry) => entry.id)).toContain(
       "agentmail-provider:mail-a",
     );
+  });
+
+  test("maps the generated AgentMail project path to the same volume ledger inventoried for backup", () => {
+    const paths = fixture();
+    const value = config();
+    const mail = value.augments.find((augment) => augment.type === "agentMail")!;
+    mail.name = "agentMail";
+    mail.options = { dbPath: "./data/agent-mail/agentMail/orchestration.db" };
+
+    const runtimePath = agentMailOrchestrationRuntimePath({
+      configuredPath: "./data/agent-mail/agentMail/orchestration.db",
+      augmentName: "agentMail",
+      ...paths,
+    });
+    const inventoryPath = buildRuntimeStateInventory(value, paths).stores.find(
+      (store) => store.id === "agentmail-orchestration:agentMail",
+    );
+
+    expect(runtimePath).toBe(
+      join(paths.runtimeDataRoot, "agent-mail", "agentMail", "orchestration.db"),
+    );
+    expect(inventoryPath?.relativePath).toBe("agent-mail/agentMail/orchestration.db");
   });
 
   test("records explicit in-memory opt-outs as non-restorable", () => {

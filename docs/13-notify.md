@@ -352,8 +352,8 @@ Optional fields on the destination:
 - **Free tier hard cap.** 100 emails/day. The runtime's `dailyBudgetUsd` does not model AgentMail tier limits — the operator should be aware that AgentMail can refuse delivery independently of runtime budgets.
 - **Inbound delivery is not part of this adapter.** `notify` remains
   outbound-only. For bidirectional email, add the separate `agentMail` augment;
-  it owns sender admission, durable polling/WebSocket/Svix ingestion, and email
-  turns.
+  it owns sender admission, AgentMail WebSocket ingestion with REST catch-up,
+  and email turns.
 
 ## 5. Durable delivery state and rate limiting
 

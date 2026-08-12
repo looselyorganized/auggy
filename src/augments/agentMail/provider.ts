@@ -298,9 +298,17 @@ function requiredString(record: Record<string, unknown>, key: string, operation:
   return value;
 }
 
-function optionalString(record: Record<string, unknown>, key: string): string | undefined {
+function optionalString(
+  record: Record<string, unknown>,
+  key: string,
+  operation: string,
+): string | undefined {
   const value = record[key];
-  return typeof value === "string" && value.length <= 1_048_576 ? value : undefined;
+  if (value === undefined) return undefined;
+  if (typeof value !== "string" || value.length > 1_048_576) {
+    throw contractError(operation);
+  }
+  return value;
 }
 
 function stringArray(value: unknown, operation: string): string[] {
@@ -337,8 +345,8 @@ function normalizeAttachment(
   const normalized: AgentMailMessage["attachments"][number] = {
     attachmentId: requiredString(attachment, "attachmentId", operation),
   };
-  const filename = optionalString(attachment, "filename");
-  const contentType = optionalString(attachment, "contentType");
+  const filename = optionalString(attachment, "filename", operation);
+  const contentType = optionalString(attachment, "contentType", operation);
   if (filename !== undefined) normalized.filename = filename;
   if (contentType !== undefined) normalized.contentType = contentType;
   if (typeof attachment.size === "number" && Number.isSafeInteger(attachment.size)) {
@@ -358,8 +366,8 @@ function normalizeMessageSummary(value: unknown, operation: string): AgentMailMe
     sender: normalizeMailboxAddress(requiredString(message, "from", operation), operation),
     to: mailboxArray(message.to, operation),
     cc: mailboxArray(message.cc, operation),
-    subject: optionalString(message, "subject"),
-    preview: optionalString(message, "preview"),
+    subject: optionalString(message, "subject", operation),
+    preview: optionalString(message, "preview", operation),
     labels,
     timestamp: timestamp(message.timestamp, operation),
     updatedAt: timestamp(message.updatedAt, operation),
@@ -414,12 +422,12 @@ function normalizeMessage(value: unknown, operation: string): AgentMailMessage {
   const rawAttachments = Array.isArray(message.attachments) ? message.attachments : [];
   return {
     ...summary,
-    text: optionalString(message, "text"),
-    html: optionalString(message, "html"),
-    extractedText: optionalString(message, "extractedText"),
-    extractedHtml: optionalString(message, "extractedHtml"),
+    text: optionalString(message, "text", operation),
+    html: optionalString(message, "html", operation),
+    extractedText: optionalString(message, "extractedText", operation),
+    extractedHtml: optionalString(message, "extractedHtml", operation),
     replyTo: mailboxArray(message.replyTo, operation),
-    inReplyTo: optionalString(message, "inReplyTo"),
+    inReplyTo: optionalString(message, "inReplyTo", operation),
     references: stringArray(message.references, operation),
     attachments: rawAttachments.map((attachment) => normalizeAttachment(attachment, operation)),
   };
@@ -430,15 +438,15 @@ function normalizeDraft(value: unknown, operation: string): AgentMailDraft {
   return {
     inboxId: requiredString(draft, "inboxId", operation),
     draftId: requiredString(draft, "draftId", operation),
-    clientId: optionalString(draft, "clientId"),
+    clientId: optionalString(draft, "clientId", operation),
     to: mailboxArray(draft.to, operation),
     cc: mailboxArray(draft.cc, operation),
     bcc: mailboxArray(draft.bcc, operation),
-    subject: optionalString(draft, "subject"),
-    text: optionalString(draft, "text"),
-    html: optionalString(draft, "html"),
-    inReplyTo: optionalString(draft, "inReplyTo"),
-    sendStatus: optionalString(draft, "sendStatus"),
+    subject: optionalString(draft, "subject", operation),
+    text: optionalString(draft, "text", operation),
+    html: optionalString(draft, "html", operation),
+    inReplyTo: optionalString(draft, "inReplyTo", operation),
+    sendStatus: optionalString(draft, "sendStatus", operation),
     updatedAt: timestamp(draft.updatedAt, operation),
     createdAt: timestamp(draft.createdAt, operation),
   };
@@ -452,9 +460,9 @@ function normalizeDraftSummary(value: unknown, operation: string): AgentMailDraf
     to: mailboxArray(draft.to, operation),
     cc: mailboxArray(draft.cc, operation),
     bcc: mailboxArray(draft.bcc, operation),
-    subject: optionalString(draft, "subject"),
-    inReplyTo: optionalString(draft, "inReplyTo"),
-    sendStatus: optionalString(draft, "sendStatus"),
+    subject: optionalString(draft, "subject", operation),
+    inReplyTo: optionalString(draft, "inReplyTo", operation),
+    sendStatus: optionalString(draft, "sendStatus", operation),
     updatedAt: timestamp(draft.updatedAt, operation),
   };
 }
@@ -668,7 +676,7 @@ export function createAgentMailProvider(options: AgentMailProviderOptions): Agen
       const inbox = asRecord(inboxValue, "get_inbox");
       const canonicalInboxId = requiredString(inbox, "inboxId", "get_inbox");
       if (canonicalInboxId !== inboxId) throw contractError("get_inbox");
-      const scopedInbox = optionalString(identity, "inboxId");
+      const scopedInbox = optionalString(identity, "inboxId", "auth_me");
       if (scopedInbox !== undefined && scopedInbox !== inboxId) {
         throw new AgentMailProviderError({
           code: "permission_missing",
@@ -685,7 +693,7 @@ export function createAgentMailProvider(options: AgentMailProviderOptions): Agen
         organizationId: requiredString(identity, "organizationId", "auth_me"),
         ...(scopedInbox === undefined ? {} : { inboxId: scopedInbox }),
         configuredInboxId: inboxId,
-        emailAddress: optionalString(inbox, "emailAddress") ?? canonicalInboxId,
+        emailAddress: optionalString(inbox, "emailAddress", "get_inbox") ?? canonicalInboxId,
       };
     },
 
@@ -702,6 +710,10 @@ export function createAgentMailProvider(options: AgentMailProviderOptions): Agen
           {
             limit: input.limit ?? 100,
             ascending: true,
+            // AgentMail inbox history includes both received and sent mail.
+            // Catch-up is an inbound recovery path, so constrain the provider
+            // query before any item can reach the durable message ledger.
+            labels: ["received"],
             ...(input.pageToken === undefined ? {} : { pageToken: input.pageToken }),
             ...(input.after === undefined ? {} : { after: new Date(input.after) }),
           },
@@ -710,11 +722,19 @@ export function createAgentMailProvider(options: AgentMailProviderOptions): Agen
       );
       const page = asRecord(value, "list_messages");
       if (!Array.isArray(page.messages)) throw contractError("list_messages");
+      const messages = page.messages.map((message) =>
+        normalizeMessageSummary(message, "list_messages"),
+      );
+      // Fail closed if the provider ever stops honoring the direction filter.
+      // Treating a sent message as inbound could wake the agent on its own
+      // output and create a reply-draft feedback loop.
+      if (messages.some((message) => !message.labels.includes("received"))) {
+        throw contractError("list_messages");
+      }
+      const nextPageToken = optionalString(page, "nextPageToken", "list_messages");
       return {
-        messages: page.messages.map((message) => normalizeMessageSummary(message, "list_messages")),
-        ...(optionalString(page, "nextPageToken") === undefined
-          ? {}
-          : { nextPageToken: optionalString(page, "nextPageToken") }),
+        messages,
+        ...(nextPageToken === undefined ? {} : { nextPageToken }),
       };
     },
 
@@ -741,7 +761,7 @@ export function createAgentMailProvider(options: AgentMailProviderOptions): Agen
       const normalized: AgentMailThread = {
         inboxId: requiredString(thread, "inboxId", "get_thread"),
         threadId: requiredString(thread, "threadId", "get_thread"),
-        subject: optionalString(thread, "subject"),
+        subject: optionalString(thread, "subject", "get_thread"),
         lastMessageId: requiredString(thread, "lastMessageId", "get_thread"),
         messageCount:
           typeof thread.messageCount === "number" && Number.isSafeInteger(thread.messageCount)
@@ -775,7 +795,7 @@ export function createAgentMailProvider(options: AgentMailProviderOptions): Agen
       );
       const page = asRecord(value, "list_drafts");
       if (!Array.isArray(page.drafts)) throw contractError("list_drafts");
-      const nextPageToken = optionalString(page, "nextPageToken");
+      const nextPageToken = optionalString(page, "nextPageToken", "list_drafts");
       return {
         drafts: page.drafts.map((draft) => normalizeDraftSummary(draft, "list_drafts")),
         ...(nextPageToken === undefined ? {} : { nextPageToken }),

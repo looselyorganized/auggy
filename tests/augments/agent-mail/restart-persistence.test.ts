@@ -330,12 +330,12 @@ async function waitFor(check: () => boolean): Promise<void> {
 }
 
 describe("AgentMail restart persistence", () => {
-  test("recovers old interrupted inbound work and reopens the same provider draft projection", async () => {
+  test("recovers a just-interrupted inbound claim and reopens the same provider draft projection", async () => {
     const paths = fixturePath();
     const seed = createAgentMailOrchestrationStore({
       dbPath: paths.dbPath,
       inboxId,
-      clock: () => 1,
+      clock: () => Date.now() - 1_000,
     });
     seed.claimMessage(claimInput());
     expect(seed.claimNext()).toMatchObject({ state: "processing" });

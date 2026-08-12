@@ -43,4 +43,19 @@ describe("AgentMail cross-document contract", () => {
     expect(deploy).toContain("one live Auggy replica per logical AgentMail inbox");
     expect(deploy).toContain("paginated provider catch-up");
   });
+
+  test("describes the provider-native inbound path consistently", () => {
+    const notify = read("docs/13-notify.md");
+    expect(notify).toContain("AgentMail WebSocket ingestion with REST catch-up");
+    expect(notify).not.toContain("durable polling/WebSocket/Svix ingestion");
+
+    const useCases = read("docs/23-augments-over-tools-use-cases.md");
+    expect(useCases).toContain("through AgentMail WebSockets, catches up");
+    expect(useCases).toContain("through REST after startup or reconnect");
+    expect(useCases).not.toContain("through polling, WebSocket, or authenticated Svix webhooks");
+
+    const routes = read("docs/use-cases/app-backend-route-use-cases.md");
+    expect(routes).toContain("/webhooks/clerk");
+    expect(routes).not.toContain("/webhooks/agentmail");
+  });
 });

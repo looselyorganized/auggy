@@ -66,6 +66,23 @@ describe("doctor AgentMail replacement state boundary", () => {
     expect(checks[0]!.message).not.toContain("orchestration.db");
   });
 
+  test("reports old state in the deployment runtime volume", () => {
+    const root = mkdtempSync(join(tmpdir(), "auggy-old-agentmail-cloud-"));
+    const runtimeRoot = join(root, "runtime");
+    const oldState = join(runtimeRoot, "agent-mail", "agentMail", "agent-mail.db");
+    mkdirSync(join(runtimeRoot, "agent-mail", "agentMail"), { recursive: true });
+    writeFileSync(oldState, "legacy");
+
+    const checks = checkUnsupportedAgentMailState(root, config("agentMail"), runtimeRoot);
+    expect(checks).toEqual([
+      expect.objectContaining({
+        status: "fail",
+        message: expect.stringContaining(oldState),
+      }),
+    ]);
+    expect(Bun.file(oldState).size).toBe(6);
+  });
+
   test("reports the exact reviewed-reply permission set without exposing credentials", () => {
     const parsed = config("agentMail");
     parsed.augments[0]!.options = {

@@ -62,7 +62,10 @@ import type { AugmentConfig } from "./types";
 import type { BudgetsAugmentOptions } from "../augments/budgets";
 import { validateBundledSkills } from "./skill-validator";
 import { auggySelf, type AuggySelfAgentMetadata } from "./auggy-self-augment";
-import { mutableFileMemoryRuntimePath } from "./runtime-state-inventory";
+import {
+  agentMailOrchestrationRuntimePath,
+  mutableFileMemoryRuntimePath,
+} from "./runtime-state-inventory";
 import { assertImmutableAgentId, scopedAgentNamespace } from "./agent-isolation";
 import { compareOwnedStatePaths, resolveOwnedStatePath } from "./owned-state-path";
 
@@ -118,21 +121,38 @@ function resolveSqlitePath(
   });
 }
 
-/**
- * The former local single-instance layout has no owner field in its JSON
- * review/rate records. Never guess which newly configured mailbox owns them.
- * A legacy SQLite ledger does carry inbox identity and may be retained only
- * when an operator explicitly points an AgentMail instance at that exact path.
- */
-function assertNoUnsupportedAgentMailState(agentDir: string): void {
-  const ambiguous = [
+/** Never guess which replacement inbox owns pre-rebuild AgentMail state. */
+function assertNoUnsupportedAgentMailState(
+  agentDir: string,
+  augmentNames: readonly string[],
+  runtimeDataRoot?: string,
+): void {
+  const unsafeName = augmentNames.find((name) => !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name));
+  if (unsafeName !== undefined) {
+    throw new Error(
+      `[augment-resolver] agentMail augment name "${unsafeName}" is not a safe state namespace`,
+    );
+  }
+  const legacyNames = [
     "agent-mail-state.json",
     "agent-mail-reviews.json",
     "agent-mail.db",
     "agent-mail.db-wal",
     "agent-mail.db-shm",
     "agent-mail.db-journal",
-  ].filter((name) => lstatSync(resolve(agentDir, name), { throwIfNoEntry: false }) !== undefined);
+  ];
+  const candidateDirs = [
+    agentDir,
+    ...augmentNames.map((name) => resolve(agentDir, "data", "agent-mail", name)),
+    ...(runtimeDataRoot
+      ? augmentNames.map((name) => resolve(runtimeDataRoot, "agent-mail", name))
+      : []),
+  ];
+  const ambiguous = candidateDirs.flatMap((directory) =>
+    legacyNames
+      .map((name) => resolve(directory, name))
+      .filter((path) => lstatSync(path, { throwIfNoEntry: false }) !== undefined),
+  );
 
   if (ambiguous.length === 0) return;
   throw new Error(
@@ -680,10 +700,15 @@ export async function resolveAugments(
   const overrideDir = resolverOpts.runtimeDataRoot ?? agentDir;
   const ownedStateRoot =
     resolverOpts.runtimeDataRoot ?? (resolverOpts.agentId ? resolve(agentDir) : undefined);
-  const agentMailInstanceCount = configs.filter((config) => config.type === "agentMail").length;
+  const agentMailConfigs = configs.filter((config) => config.type === "agentMail");
+  const agentMailInstanceCount = agentMailConfigs.length;
   const agentMailDbOwners = new Map<string, string>();
-  if (resolverOpts.runtimeDataRoot === undefined && agentMailInstanceCount > 0) {
-    assertNoUnsupportedAgentMailState(agentDir);
+  if (agentMailInstanceCount > 0) {
+    assertNoUnsupportedAgentMailState(
+      agentDir,
+      agentMailConfigs.map((config) => config.name),
+      resolverOpts.runtimeDataRoot,
+    );
   }
 
   if (resolverOpts.agentId) {
@@ -1034,13 +1059,16 @@ export async function resolveAugments(
           break;
         case "agentMail": {
           const configuredDbPath = opts.dbPath as string | undefined;
-          const rawDbPath =
-            configuredDbPath ??
-            (resolverOpts.runtimeDataRoot === undefined
-              ? `./data/agent-mail/${config.name}/orchestration.db`
-              : "orchestration.db");
+          const rawDbPath = configuredDbPath ?? `./data/agent-mail/${config.name}/orchestration.db`;
           let stateDir: string | undefined;
-          let dbPath: string;
+          let dbPath = agentMailOrchestrationRuntimePath({
+            ...(configuredDbPath === undefined ? {} : { configuredPath: configuredDbPath }),
+            augmentName: config.name,
+            agentDir,
+            ...(resolverOpts.runtimeDataRoot === undefined
+              ? {}
+              : { runtimeDataRoot: resolverOpts.runtimeDataRoot }),
+          });
 
           if (resolverOpts.runtimeDataRoot !== undefined) {
             // Config parsing normally enforces this pattern. Repeat it here
@@ -1052,7 +1080,6 @@ export async function resolveAugments(
             }
             const agentMailRoot = resolve(resolverOpts.runtimeDataRoot, "agent-mail");
             stateDir = resolve(agentMailRoot, config.name);
-            dbPath = resolveContainedPath(rawDbPath, stateDir, `agentMail "${config.name}" dbPath`);
             dbPath = resolveOwnedStatePath(
               dbPath,
               agentDir,

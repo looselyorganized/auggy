@@ -21,6 +21,7 @@ export interface AgentMailCanaryDependencies {
   inboxEmail?: string;
   createProvider?: (input: { apiKey: string; inboxId: string }) => ReadOnlyCanaryProvider;
   observeLiveMs?: number;
+  operationTimeoutMs?: number;
 }
 
 class AgentMailCanaryError extends Error {
@@ -44,10 +45,11 @@ export async function runAgentMailProviderCanary(
   const inboxId = readIdentifier(dependencies.inboxId, INBOX_ID_ENV);
   const expectedEmail = readEmail(dependencies.inboxEmail, INBOX_EMAIL_ENV);
   const provider = (dependencies.createProvider ?? createAgentMailProvider)({ apiKey, inboxId });
+  const operationTimeoutMs = dependencies.operationTimeoutMs ?? OPERATION_TIMEOUT_MS;
 
   const identity = await withTimeout(
-    provider.verifyAccess(),
-    OPERATION_TIMEOUT_MS,
+    (signal) => provider.verifyAccess(signal),
+    operationTimeoutMs,
     "credential scope and inbox access",
   );
   if (identity.configuredInboxId !== inboxId || identity.emailAddress !== expectedEmail) {
@@ -57,13 +59,13 @@ export async function runAgentMailProviderCanary(
   }
 
   await withTimeout(
-    provider.listMessages({ limit: 1 }),
-    OPERATION_TIMEOUT_MS,
+    (signal) => provider.listMessages({ limit: 1 }, signal),
+    operationTimeoutMs,
     "bounded message-read probe",
   );
   await withTimeout(
-    provider.listDrafts({ limit: 1 }),
-    OPERATION_TIMEOUT_MS,
+    (signal) => provider.listDrafts({ limit: 1 }, signal),
+    operationTimeoutMs,
     "bounded draft-read probe",
   );
 
@@ -72,20 +74,25 @@ export async function runAgentMailProviderCanary(
   let subscription: Awaited<ReturnType<ReadOnlyCanaryProvider["connect"]>> | undefined;
   try {
     subscription = await withTimeout(
-      provider.connect({
-        onEvent() {
-          // Passive events may arrive during the bounded observation window.
-          // Do not log or retain provider message data.
-        },
-        onClose() {
-          liveClosed = true;
-        },
-        onError(error) {
-          liveError = error;
-        },
-      }),
-      OPERATION_TIMEOUT_MS,
+      (signal) =>
+        provider.connect(
+          {
+            onEvent() {
+              // Passive events may arrive during the bounded observation window.
+              // Do not log or retain provider message data.
+            },
+            onClose() {
+              liveClosed = true;
+            },
+            onError(error) {
+              liveError = error;
+            },
+          },
+          signal,
+        ),
+      operationTimeoutMs,
       "WebSocket connection and inbox subscription",
+      (lateSubscription) => lateSubscription.close(),
     );
     await Bun.sleep(dependencies.observeLiveMs ?? LIVE_OBSERVATION_MS);
     if (liveError) throw liveError;
@@ -134,15 +141,36 @@ function readEmail(explicit: string | undefined, envName: string): string {
   return value.toLowerCase();
 }
 
-async function withTimeout<T>(operation: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+async function withTimeout<T>(
+  start: (signal: AbortSignal) => Promise<T>,
+  timeoutMs: number,
+  label: string,
+  disposeLateResult?: (value: T) => void,
+): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
   let timer: ReturnType<typeof setTimeout>;
+  const operation = start(controller.signal);
+  void operation.then(
+    (value) => {
+      if (!timedOut || !disposeLateResult) return;
+      try {
+        disposeLateResult(value);
+      } catch {
+        // A timed-out operation is already reported. Late cleanup is best effort
+        // and must not become an unhandled rejection in the canary process.
+      }
+    },
+    () => undefined,
+  );
   return Promise.race([
     operation,
     new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new AgentMailCanaryError(`Timed out waiting for ${label}.`)),
-        timeoutMs,
-      );
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort(new DOMException(`Timed out waiting for ${label}.`, "TimeoutError"));
+        reject(new AgentMailCanaryError(`Timed out waiting for ${label}.`));
+      }, timeoutMs);
     }),
   ]).finally(() => clearTimeout(timer));
 }

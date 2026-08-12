@@ -153,7 +153,6 @@ export function createAgentMailInboundCoordinator(
     catchUpPromise = (async () => {
       if (stopped) return;
       currentState = "catching_up";
-      options.store.recoverInterrupted(clock() - 5 * 60_000);
       for (const messageId of scheduledMessageIds) {
         const state = options.store.getMessage(messageId)?.state;
         if (state !== "processing" && (lastCatchUpAt !== undefined || state !== "pending")) {
@@ -224,7 +223,11 @@ export function createAgentMailInboundCoordinator(
         throw new Error("agentMail inbound: coordinator already started");
       stopped = false;
       currentState = "connecting";
-      options.store.recoverInterrupted(clock() - 5 * 60_000);
+      // The supported mailbox topology has one process/replica per logical
+      // agent. At boot, any persisted processing claim belongs to the dead
+      // predecessor and is safe to recover immediately. Runtime catch-up does
+      // not reset active claims.
+      options.store.recoverInterrupted(clock());
       await options.provider.verifyAccess(abortController.signal);
       subscription = await options.provider.connect(
         {

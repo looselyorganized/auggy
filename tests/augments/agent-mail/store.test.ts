@@ -273,12 +273,24 @@ describe("AgentMail orchestration store", () => {
     });
     expect(presented).toMatchObject({ state: "presented", attemptCount: 2, settledAt: 3_000 });
     expect(presented.settlementHash).toMatch(/^[a-f0-9]{64}$/);
+    expect(
+      store.listCreatorAttention({
+        states: ["presented"],
+        acknowledgementPending: true,
+      }),
+    ).toEqual([presented]);
     const acknowledged = store.acknowledgeCreatorAttention({
       attentionId: attention.attentionId,
       expectedVersion: presented.version,
       settlementHash: presented.settlementHash!,
     });
     expect(acknowledged.notifyAcknowledgedAt).toBe(3_000);
+    expect(
+      store.listCreatorAttention({
+        states: ["presented"],
+        acknowledgementPending: true,
+      }),
+    ).toEqual([]);
     expect(
       store.acknowledgeCreatorAttention({
         attentionId: attention.attentionId,

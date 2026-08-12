@@ -78,6 +78,7 @@ interface FakeOverrides {
   authMe?: () => Promise<unknown>;
   listMessages?: (input: unknown, options: unknown) => Promise<unknown>;
   getMessage?: () => Promise<unknown>;
+  getDraft?: () => Promise<unknown>;
   createDraft?: (input: unknown) => Promise<unknown>;
   updateDraft?: (input: unknown) => Promise<unknown>;
   sendDraft?: (options: unknown) => Promise<unknown>;
@@ -127,7 +128,7 @@ function fakeSdk(overrides: FakeOverrides = {}): AgentMailSdkClient {
       drafts: {
         list: async () => ({ drafts: [draft()] }),
         create: async (_id, input) => overrides.createDraft?.(input) ?? draft(),
-        get: async () => draft(),
+        get: overrides.getDraft ?? (async () => draft()),
         update: async (_id, _draftId, input) =>
           overrides.updateDraft?.(input) ?? draft(input as Record<string, unknown>),
         send: async (_id, _draftId, _input, options) =>
@@ -172,7 +173,7 @@ describe("AgentMail provider boundary", () => {
     });
   });
 
-  test("lists ordinary inbox mail in ascending recovery order without privileged label reads", async () => {
+  test("lists received inbox mail in ascending recovery order without privileged label reads", async () => {
     let observedInput: unknown;
     let observedOptions: unknown;
     const mail = provider(
@@ -188,6 +189,7 @@ describe("AgentMail provider boundary", () => {
     expect(observedInput).toEqual({
       ascending: true,
       after: new Date(now.getTime() - 1_000),
+      labels: ["received"],
       limit: 50,
     });
     expect(observedOptions).toMatchObject({ maxRetries: 0 });
@@ -204,6 +206,22 @@ describe("AgentMail provider boundary", () => {
     });
   });
 
+  test("fails closed when catch-up returns mail outside the received direction", async () => {
+    const mail = provider(
+      fakeSdk({
+        listMessages: async () => ({ messages: [message({ labels: ["sent"] })] }),
+      }),
+    );
+
+    await expect(mail.listMessages({ limit: 1 })).rejects.toMatchObject({
+      details: {
+        code: "provider_contract_invalid",
+        operation: "list_messages",
+        phase: "response_validation",
+      },
+    });
+  });
+
   test("fails closed on malformed or multi-address provider sender fields", async () => {
     const mail = provider(
       fakeSdk({
@@ -212,6 +230,38 @@ describe("AgentMail provider boundary", () => {
     );
     await expect(mail.getMessage("message_1")).rejects.toMatchObject({
       details: { code: "provider_contract_invalid", operation: "get_message" },
+    });
+  });
+
+  test("rejects present invalid optional draft fields instead of treating them as absent", async () => {
+    const mail = provider(
+      fakeSdk({
+        getDraft: async () => draft({ html: "x".repeat(1_048_577) }),
+      }),
+    );
+
+    await expect(mail.getDraft("draft_1")).rejects.toMatchObject({
+      details: {
+        code: "provider_contract_invalid",
+        operation: "get_draft",
+        phase: "response_validation",
+      },
+    });
+  });
+
+  test("rejects a malformed pagination token instead of silently ending catch-up", async () => {
+    const mail = provider(
+      fakeSdk({
+        listMessages: async () => ({ messages: [message()], nextPageToken: 42 }),
+      }),
+    );
+
+    await expect(mail.listMessages({ limit: 1 })).rejects.toMatchObject({
+      details: {
+        code: "provider_contract_invalid",
+        operation: "list_messages",
+        phase: "response_validation",
+      },
     });
   });
 

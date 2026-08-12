@@ -179,24 +179,6 @@ async function runAgentMailSetupLocked(
     );
   }
   const configPlan = planAgentMailConfig(target, augmentPath);
-  if (
-    configPlan.requiresWebTransport &&
-    !mountedAugments.some((augment) => augment.type === "webTransport")
-  ) {
-    throw new Error(
-      `${displayPath(augmentPath)} config.inbound.mode webhook requires a webTransport augment before AgentMail setup can continue.`,
-    );
-  }
-  if (
-    configPlan.requiresAdminWebTransport &&
-    !mountedAugments.some(
-      (augment) => augment.type === "webTransport" && augment.options.adminRoute !== false,
-    )
-  ) {
-    throw new Error(
-      `${displayPath(augmentPath)} config.inbound.replies.mode ${configPlan.inboundReplyMode} requires a webTransport augment with adminRoute enabled before AgentMail setup can continue.`,
-    );
-  }
   const envPath = join(agentDir, ".env");
   const expectedEnv = readAgentMailEnvSnapshot(envPath);
   const diskEnv = readEffectiveAgentMailDiskEnv(expectedEnv);
@@ -387,8 +369,6 @@ interface AgentMailConfigPlan {
   expectedAugmentConfig: string;
   updatedAugmentConfig: string;
   requiredPermissions: AgentMailRequiredPermissions;
-  requiresWebTransport: boolean;
-  requiresAdminWebTransport: boolean;
   inboundEnabled: boolean;
   inboundReplyMode?: ValidatedAgentMailConfig["replies"]["mode"];
 }
@@ -456,8 +436,6 @@ function planAgentMailConfig(
     expectedAugmentConfig,
     updatedAugmentConfig: stringifyYaml(doc),
     requiredPermissions,
-    requiresWebTransport: false,
-    requiresAdminWebTransport: false,
     inboundEnabled: validatedAgentMail?.inbound.mode === "websocket",
     ...(validatedAgentMail ? { inboundReplyMode: validatedAgentMail.replies.mode } : {}),
   };
@@ -886,7 +864,7 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
             "Auggy saved the exact API key you supplied; it did not create, rotate, replace, or scope a key.",
             `Read access was verified. Write operations still require: ${permissions}.`,
             "Incoming email will be processed according to augments/agentMail/augment.yaml.",
-            "Review inbound, reply, and forwarding behavior:",
+            "Review inbound and creator-reviewed reply behavior:",
             "  https://auggy.dev/docs/augment-agentmail",
           ]
         : [
@@ -894,7 +872,8 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
             "Auggy saved the exact API key you supplied; it did not create, rotate, replace, or scope a key.",
             `Read access was verified. Sending still requires: ${permissions}.`,
             "Incoming email is stored in AgentMail, but Auggy won't read or act on it by default.",
-            "To receive, reply to, or forward email with Auggy, enable inbound processing:",
+            "To receive email and prepare creator-reviewed replies with Auggy, enable inbound processing:",
+            "Create forwards, HTML, attachments, and schedules directly in AgentMail.",
             "  https://auggy.dev/docs/augment-agentmail",
           ];
   return [

@@ -1,7 +1,7 @@
 # AgentMail provider-native rebuild
 
-Status: accepted implementation contract  
-Date: 2026-08-12  
+Status: accepted implementation contract
+Date: 2026-08-12
 Owner: Auggy runtime
 
 ## Decision
@@ -87,7 +87,9 @@ AgentMail live event
 
 ### Boot and reconnect ordering
 
-1. Validate configuration and open the orchestration store.
+1. Validate configuration, open the orchestration store, and immediately
+   recover interrupted claims from the dead predecessor in the supported
+   single-process topology.
 2. Verify the supplied credential and configured inbox.
 3. Establish the WebSocket and subscribe to the exact inbox.
 4. Start paginated REST catch-up from a durable high-water mark.
@@ -128,10 +130,12 @@ are separate decisions.
   action.
 - Layered memory is advisory and cannot grant authority.
 
-Mail policy separately controls receive admission, draft creation, reply,
-automatic send, recipient scope, reply-all, attachments, rate limits, expiry,
-and revocation. A natural-language policy request is converted into a bounded
-structured proposal and becomes active only after explicit creator approval.
+The validated YAML policy controls receive admission, whether Auggy creates a
+review draft, recipient scope, reply-all, and inbound/outbound rate limits.
+Auggy does not automatically send replies. HTML, attachments, forwards, and
+schedules remain AgentMail operations; Auggy revalidates provider-native draft
+recipients, body type, body size, and freshness before an explicit creator
+send. Changing policy requires an operator config edit and agent restart.
 AgentMail Lists may mirror recipient boundaries as defense in depth but are not
 the authorization record.
 
@@ -143,9 +147,11 @@ received -> triaging -> no_reply
                                       -> quarantined
 draft_ready -> revising -> draft_ready
             -> stale
-            -> approved -> sending -> sent -> delivered
+            -> approved -> sending -> sent
                                   -> ambiguous
-                                  -> rejected|bounced|complained
+
+live sent-message events -> delivered (provider evidence only)
+                         -> rejected|bounced|complained -> creator attention
 ```
 
 One inbound message can reference at most one active reply draft. A new message
@@ -198,9 +204,11 @@ attachment content.
 
 - An unavailable or corrupt orchestration store fails closed before inbound
   traffic is admitted.
-- A transient AgentMail outage degrades only the mail capability when the store
-  and configuration remain safe.
-- A poison message quarantines its provider thread rather than unrelated mail.
+- Startup fails readiness if the configured inbox cannot be verified and its
+  live subscription cannot be established. After readiness, a transient
+  AgentMail outage degrades the mail capability while the rest of the agent
+  stays available; reconnect and catch-up repair the mailbox path.
+- A poison message quarantines the affected message rather than unrelated mail.
 - An ambiguous kernel or provider mutation fences only its affected thread or
   draft until reconciliation.
 - Shutdown is bounded and idempotent. Work already persisted is recovered on

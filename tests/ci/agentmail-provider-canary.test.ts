@@ -136,6 +136,43 @@ describe("AgentMail provider canary contract", () => {
     expect(connected).toBe(false);
   });
 
+  test("aborts timed-out provider work and closes a late WebSocket result", async () => {
+    let connectSignal: AbortSignal | undefined;
+    let resolveConnect!: (subscription: { close(): void }) => void;
+    let closed = false;
+    const lateConnection = new Promise<{ close(): void }>((resolve) => {
+      resolveConnect = resolve;
+    });
+
+    const result = runAgentMailProviderCanary({
+      apiKey: API_KEY,
+      inboxId: INBOX_ID,
+      inboxEmail: INBOX_ID,
+      createProvider: () =>
+        provider({
+          connect: async (_handlers, signal) => {
+            connectSignal = signal;
+            return lateConnection;
+          },
+        }),
+      observeLiveMs: 0,
+      operationTimeoutMs: 1,
+    });
+
+    await expect(result).rejects.toThrow(
+      /Timed out waiting for WebSocket connection and inbox subscription/,
+    );
+    expect(connectSignal?.aborted).toBe(true);
+
+    resolveConnect({
+      close() {
+        closed = true;
+      },
+    });
+    await Bun.sleep(0);
+    expect(closed).toBe(true);
+  });
+
   test("workflow exposes only the protected exact-key, inbox-existing contract", () => {
     const workflow = readFileSync(
       join(import.meta.dir, "../../.github/workflows/agentmail-provider-canary.yml"),
