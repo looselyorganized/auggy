@@ -24,6 +24,10 @@ import {
   CONSOLE_CHAT_SCHEMA_VERSION,
 } from "../transports/admin/console-chat-store";
 import { DURABLE_JOBS_APPLICATION_ID, DURABLE_JOBS_SCHEMA_VERSION } from "../jobs/sqlite-store";
+import {
+  AGENTMAIL_ORCHESTRATION_APPLICATION_ID,
+  AGENTMAIL_ORCHESTRATION_SCHEMA_VERSION,
+} from "../augments/agentMail/store";
 
 export interface RuntimeStateSqliteIdentity {
   applicationId: number;
@@ -65,6 +69,10 @@ export const RUNTIME_STATE_SQLITE_IDENTITIES: Readonly<Record<string, RuntimeSta
     "NTFY/v1": {
       applicationId: NOTIFY_DELIVERY_APPLICATION_ID,
       userVersion: 1,
+    },
+    "AMOR/v1": {
+      applicationId: AGENTMAIL_ORCHESTRATION_APPLICATION_ID,
+      userVersion: AGENTMAIL_ORCHESTRATION_SCHEMA_VERSION,
     },
     "DJOB/v2": {
       applicationId: DURABLE_JOBS_APPLICATION_ID,

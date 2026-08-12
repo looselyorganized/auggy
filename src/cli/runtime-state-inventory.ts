@@ -653,6 +653,26 @@ export function buildRuntimeStateInventory(
         break;
       }
       case "agentMail": {
+        const path = resolveRuntimeStatePath(
+          String(opts.dbPath ?? `./data/agent-mail/${augment.name}/orchestration.db`),
+          agentDir,
+          ownedStateRoot,
+          `agentMail ${augment.name} dbPath`,
+        );
+        addStore(
+          stores,
+          sqliteEntry({
+            id: `agentmail-orchestration:${augment.name}`,
+            owner,
+            namespace: `agentmail:${augment.name}`,
+            path,
+            runtimeDataRoot,
+            schema: "AMOR/v1",
+            retention: "orchestration identifiers and replay evidence until operator maintenance",
+            restoreOrder: 55,
+            replayCritical: true,
+          }),
+        );
         externalPrerequisites.push({
           id: `agentmail-provider:${augment.name}`,
           owner,
