@@ -81,3 +81,9 @@ export {
   type AgentMailWorkItem,
   type AgentMailWorkState,
 } from "./store";
+export {
+  createAgentMailInboundCoordinator,
+  type AgentMailInboundCoordinator,
+  type AgentMailInboundCoordinatorOptions,
+  type AgentMailInboundStatus,
+} from "./inbound";

@@ -150,6 +150,8 @@ export interface AgentMailOrchestrationStore {
   ): void;
   recoverInterrupted(staleBefore: number): number;
   getMessage(messageId: string): AgentMailWorkItem | undefined;
+  hasPendingWork(): boolean;
+  listPendingMessageIds(limit?: number): string[];
   advanceCheckpoint(timestamp: number, messageId: string): void;
   getCheckpoint(): { timestamp: number; messageId?: string };
   recordDraft(input: {
@@ -428,6 +430,29 @@ export function createAgentMailOrchestrationStore(
     getMessage(messageId) {
       const row = findMessage.get(inboxId, messageId);
       return row ? messageFromRow(row) : undefined;
+    },
+    hasPendingWork() {
+      return (
+        (db
+          .query<{ present: number }, [string]>(
+            `SELECT 1 AS present FROM agentmail_messages
+              WHERE inbox_id = ? AND state = 'pending' LIMIT 1`,
+          )
+          .get(inboxId)?.present ?? 0) === 1
+      );
+    },
+    listPendingMessageIds(limit = 1_000) {
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 10_000) {
+        throw new Error("agentMail store: pending message limit must be between 1 and 10000");
+      }
+      return db
+        .query<{ message_id: string }, [string, number]>(
+          `SELECT message_id FROM agentmail_messages
+            WHERE inbox_id = ? AND state = 'pending'
+            ORDER BY received_at ASC, message_id ASC LIMIT ?`,
+        )
+        .all(inboxId, limit)
+        .map((row) => row.message_id);
     },
     advanceCheckpoint(checkpointTimestamp, messageId) {
       if (!Number.isSafeInteger(checkpointTimestamp) || checkpointTimestamp < 0) {
