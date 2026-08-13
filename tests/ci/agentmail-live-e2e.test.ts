@@ -32,6 +32,8 @@ describe("AgentMail protected live mutation E2E", () => {
     expect(script).toContain("senderProvider.listMessages");
     expect(script).toContain("findTargetDelivery(targetProvider, subject)");
     expect(script).toContain("findCatchUpDelivery(targetProvider, subject, sentAt)");
+    expect(script).toContain("const canonicalDelivery = catchUpDelivery ?? mailboxDelivery");
+    expect(script).toContain("return canonicalDelivery");
     expect(script).toContain("senderProvider.connect");
     expect(script).toContain("senderProvider.getMessage(sentInbound.messageId)");
     expect(script).toContain("senderEvents=${diagnostics.senderEvents.join");
