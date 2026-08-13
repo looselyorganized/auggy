@@ -19,11 +19,13 @@ import {
   AgentMailProviderError,
   createAgentMailProvider,
   type AgentMailProvider,
+  type AgentMailProviderEvent,
+  type AgentMailProviderSubscription,
 } from "../src/augments/agentMail/provider";
 
 const CONFIRMATION = "create-temporary-inbox-and-send-live-email";
 const OPERATION_TIMEOUT_MS = 30_000;
-const DELIVERY_TIMEOUT_MS = 90_000;
+const DELIVERY_TIMEOUT_MS = 180_000;
 const POLL_INTERVAL_MS = 3_000;
 
 const creator: PeerIdentity = {
@@ -54,6 +56,10 @@ interface KernelProbe {
 
 interface LiveStageDiagnostics {
   targetDelivery?: "received" | "spam" | "blocked" | "unauthenticated";
+  targetCatchUp: boolean;
+  senderEvents: string[];
+  senderMessageStored: boolean;
+  senderStreamError?: string;
   kernelTurns: number;
   providerDraft: boolean;
   managedDraftState?: string;
@@ -287,6 +293,18 @@ async function findTargetDelivery(provider: AgentMailProvider, subject: string) 
   return matches[0];
 }
 
+async function findCatchUpDelivery(provider: AgentMailProvider, subject: string, after: number) {
+  let pageToken: string | undefined;
+  for (let pageNumber = 1; pageNumber <= 10; pageNumber += 1) {
+    const page = await provider.listMessages({ after, pageToken, limit: 100 });
+    const match = page.messages.find((message) => message.subject === subject);
+    if (match) return match;
+    pageToken = page.nextPageToken;
+    if (!pageToken) return undefined;
+  }
+  throw new Error("Live AgentMail target catch-up exceeded its bounded page scan.");
+}
+
 async function findProviderDraft(provider: AgentMailProvider, replySubject: string) {
   if (!provider.listMailboxDrafts) {
     throw new Error("Live AgentMail provider omitted mailbox draft listing.");
@@ -318,6 +336,18 @@ function stagedTimeout(diagnostics: LiveStageDiagnostics): Error {
       `(targetDelivery=${diagnostics.targetDelivery ?? "none"}, ` +
       `kernelTurns=${diagnostics.kernelTurns}, providerDraft=${diagnostics.providerDraft ? "yes" : "no"}, ` +
       `managedDraft=${managed}, inboundState=${diagnostics.inboundState ?? "unknown"}, ` +
+      `inboundError=${diagnostics.inboundError ?? "none"}).`,
+  );
+}
+
+function deliveryTimeout(diagnostics: LiveStageDiagnostics): Error {
+  return new Error(
+    "Live AgentMail target delivery timed out " +
+      `(senderStored=${diagnostics.senderMessageStored ? "yes" : "no"}, ` +
+      `senderEvents=${diagnostics.senderEvents.join(",") || "none"}, ` +
+      `senderStreamError=${diagnostics.senderStreamError ?? "none"}, ` +
+      `targetCatchUp=${diagnostics.targetCatchUp ? "yes" : "no"}, ` +
+      `kernelTurns=${diagnostics.kernelTurns}, inboundState=${diagnostics.inboundState ?? "unknown"}, ` +
       `inboundError=${diagnostics.inboundError ?? "none"}).`,
   );
 }
@@ -394,6 +424,7 @@ export async function runAgentMailLiveE2E(): Promise<void> {
   let sentReplyMessageId: string | undefined;
   let firstRuntime: ReturnType<typeof agentMail> | undefined;
   let restartRuntime: ReturnType<typeof agentMail> | undefined;
+  let senderSubscription: AgentMailProviderSubscription | undefined;
   let targetVerified = false;
   let failure: unknown;
   const cleanupFailures: string[] = [];
@@ -423,6 +454,19 @@ export async function runAgentMailLiveE2E(): Promise<void> {
     senderInboxId = temporary.inboxId;
     const senderProvider = createAgentMailProvider({ apiKey: env.apiKey, inboxId: senderInboxId });
     await withTimeout(senderProvider.verifyAccess(), "temporary sender inbox access");
+    const senderEvents = new Set<AgentMailProviderEvent["type"]>();
+    let senderStreamError: string | undefined;
+    senderSubscription = await withTimeout(
+      senderProvider.connect({
+        onEvent(event) {
+          senderEvents.add(event.type);
+        },
+        onError(error) {
+          senderStreamError = error.details.code;
+        },
+      }),
+      "temporary sender event stream",
+    );
 
     firstRuntime = runtime({
       apiKey: env.apiKey,
@@ -434,7 +478,7 @@ export async function runAgentMailLiveE2E(): Promise<void> {
     const firstProbe: KernelProbe = { turns: 0 };
     await boot(firstRuntime, firstDraftBody, firstProbe);
 
-    await withTimeout(
+    const sentInbound = await withTimeout(
       senderProvider.sendMessage({
         to: [env.targetInboxEmail],
         subject,
@@ -443,14 +487,56 @@ export async function runAgentMailLiveE2E(): Promise<void> {
       }),
       "live inbound send",
     );
-
-    const targetDelivery = await waitFor(
-      () => findTargetDelivery(targetProvider, subject),
-      "live inbound delivery to the target inbox",
+    const senderStored = await withTimeout(
+      senderProvider.getMessage(sentInbound.messageId),
+      "sent message persistence",
     );
+    if (senderStored.messageId !== sentInbound.messageId) {
+      throw new Error("Live AgentMail sender persisted the wrong message identity.");
+    }
+
+    const deliveryDiagnostics: LiveStageDiagnostics = {
+      targetCatchUp: false,
+      senderEvents: [],
+      senderMessageStored: true,
+      kernelTurns: 0,
+      providerDraft: false,
+    };
+    const sentAt = Date.now() - 60_000;
+    let targetDelivery: Awaited<ReturnType<typeof findTargetDelivery>>;
+    try {
+      targetDelivery = await waitFor(async () => {
+        deliveryDiagnostics.senderEvents = [...senderEvents].sort();
+        deliveryDiagnostics.senderStreamError = senderStreamError;
+        deliveryDiagnostics.kernelTurns = firstProbe.turns;
+        const [mailboxDelivery, catchUpDelivery] = await Promise.all([
+          findTargetDelivery(targetProvider, subject),
+          findCatchUpDelivery(targetProvider, subject, sentAt),
+        ]);
+        deliveryDiagnostics.targetCatchUp = catchUpDelivery !== undefined;
+        deliveryDiagnostics.targetDelivery = mailboxDelivery?.classification;
+        await updateRuntimeDiagnostics(firstRuntime as Augment, deliveryDiagnostics);
+        return mailboxDelivery;
+      }, "live inbound delivery to the target inbox");
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Timed out waiting for")) {
+        deliveryDiagnostics.senderEvents = [...senderEvents].sort();
+        deliveryDiagnostics.senderStreamError = senderStreamError;
+        deliveryDiagnostics.kernelTurns = firstProbe.turns;
+        await updateRuntimeDiagnostics(firstRuntime, deliveryDiagnostics);
+        throw deliveryTimeout(deliveryDiagnostics);
+      }
+      throw error;
+    }
     inboundMessageId = targetDelivery.messageId;
     const diagnostics: LiveStageDiagnostics = {
       targetDelivery: targetDelivery.classification,
+      targetCatchUp: deliveryDiagnostics.targetCatchUp,
+      senderEvents: deliveryDiagnostics.senderEvents,
+      senderMessageStored: deliveryDiagnostics.senderMessageStored,
+      ...(deliveryDiagnostics.senderStreamError === undefined
+        ? {}
+        : { senderStreamError: deliveryDiagnostics.senderStreamError }),
       kernelTurns: 0,
       providerDraft: false,
     };
@@ -599,6 +685,7 @@ export async function runAgentMailLiveE2E(): Promise<void> {
   } finally {
     await firstRuntime?.onShutdown?.().catch(() => undefined);
     await restartRuntime?.onShutdown?.().catch(() => undefined);
+    senderSubscription?.close();
     process.off("unhandledRejection", onUnhandled);
     if (targetVerified) {
       await cleanupCurrentRun({
