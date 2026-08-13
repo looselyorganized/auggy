@@ -1,0 +1,23 @@
+{
+  "mcpServers": {
+    "agentmail-readonly": {
+      "type": "http",
+      "url": "https://mcp.agentmail.to/mcp",
+      "headers": {
+        "x-api-key": "${AGENTMAIL_API_KEY}"
+      },
+      "auggy": {
+        "allowedTools": [
+          "list_threads",
+          "search_threads",
+          "get_thread",
+          "list_messages",
+          "search_messages",
+          "list_drafts",
+          "get_draft"
+        ],
+        "allowedTrustLevels": ["creator"]
+      }
+    }
+  }
+}

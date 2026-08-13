@@ -1,0 +1,21 @@
+{
+  "agentmailSkills": {
+    "repository": "https://github.com/agentmail-to/agentmail-skills",
+    "commit": "e0db938ca1dfd9f7525e08c0264c019707e034e2",
+    "auditedPaths": [
+      "agentmail/SKILL.md",
+      "agentmail/references/typescript.md",
+      "agentmail/references/websockets.md",
+      "agentmail-send-email/SKILL.md",
+      "agentmail-check-email/SKILL.md",
+      "agentmail-mcp/SKILL.md"
+    ]
+  },
+  "agentmailMcp": {
+    "repository": "https://github.com/agentmail-to/agentmail-mcp",
+    "commit": "9cf619c973c59efad1fed34ea0967ef2f016cf5a",
+    "manifestPath": "mcp-manifest.json",
+    "hostedUrl": "https://mcp.agentmail.to/mcp"
+  },
+  "sdkVersion": "0.5.19"
+}
