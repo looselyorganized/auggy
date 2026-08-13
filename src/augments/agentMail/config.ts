@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import type {
   AgentMailAugmentOptions,
   AgentMailInboundMode,
@@ -17,17 +18,41 @@ const TOP_LEVEL_FIELDS = new Set([
   "dbPath",
   "inbound",
   "replies",
+  "mailbox",
+  "drafts",
+  "destructive",
   "outbound",
   "notifications",
 ]);
 const INBOUND_FIELDS = new Set(["mode", "allowedSenders", "allowAnySender", "rateLimit"]);
 const REPLY_FIELDS = new Set(["mode", "allowReplyAll"]);
+const MAILBOX_FIELDS = new Set([
+  "maxListResults",
+  "maxSearchQueryBytes",
+  "allowLabelMutation",
+  "allowedLabels",
+  "allowAttachmentAccess",
+]);
+const DRAFT_FIELDS = new Set([
+  "allowNew",
+  "allowReply",
+  "allowReplyAll",
+  "allowForward",
+  "allowScheduling",
+]);
+const DESTRUCTIVE_FIELDS = new Set(["allowPermanentDelete"]);
 const OUTBOUND_FIELDS = new Set([
   "allowedTrustLevels",
   "allowedRecipients",
   "maxRecipients",
   "bodyMaxBytes",
   "subjectPrefix",
+  "allowDirectDelivery",
+  "allowHtml",
+  "maxAttachments",
+  "maxAttachmentBytes",
+  "maxTotalAttachmentBytes",
+  "allowedAttachmentTypes",
   "rateLimit",
 ]);
 const INBOUND_RATE_FIELDS = new Set(["globalMaxPerHour", "perSenderMaxPerHour"]);
@@ -39,6 +64,23 @@ const OUTBOUND_RATE_FIELDS = new Set([
 const NOTIFICATION_FIELDS = new Set(["destination", "maxAttempts"]);
 const TRUST_LEVELS = new Set<TrustLevel>(["creator", "agent", "public"]);
 const SENDER_PATTERN = /^\*@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}$/;
+const LABEL_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:/-]{0,127}$/;
+const CONTENT_TYPE_PATTERN = /^(?:[a-z0-9!#$&^_.+-]+|\*)\/(?:[a-z0-9!#$&^_.+-]+|\*)$/;
+const SYSTEM_LABELS = new Set([
+  "blocked",
+  "bounced",
+  "complained",
+  "delivered",
+  "failed",
+  "received",
+  "rejected",
+  "scheduled",
+  "sending",
+  "sent",
+  "spam",
+  "trash",
+  "unauthenticated",
+]);
 
 export interface ValidatedAgentMailConfig {
   apiKey: string;
@@ -62,12 +104,35 @@ export interface ValidatedAgentMailConfig {
     mode: AgentMailReplyMode;
     allowReplyAll: boolean;
   };
+  mailbox: {
+    maxListResults: number;
+    maxSearchQueryBytes: number;
+    allowLabelMutation: boolean;
+    allowedLabels: string[];
+    allowAttachmentAccess: boolean;
+  };
+  drafts: {
+    allowNew: boolean;
+    allowReply: boolean;
+    allowReplyAll: boolean;
+    allowForward: boolean;
+    allowScheduling: boolean;
+  };
+  destructive: {
+    allowPermanentDelete: boolean;
+  };
   outbound: {
     allowedTrustLevels: TrustLevel[];
     allowedRecipients?: string[];
     maxRecipients: number;
     bodyMaxBytes: number;
     subjectPrefix: string;
+    allowDirectDelivery: boolean;
+    allowHtml: boolean;
+    maxAttachments: number;
+    maxAttachmentBytes: number;
+    maxTotalAttachmentBytes: number;
+    allowedAttachmentTypes: string[];
     rateLimit: {
       globalMaxPerHour: number;
       perRecipientCooldownMs: number;
@@ -78,6 +143,8 @@ export interface ValidatedAgentMailConfig {
     destination: string;
     maxAttempts: number;
   };
+  /** Hash of authorization-relevant validated policy, excluding credentials. */
+  policyGeneration: string;
 }
 
 function objectValue(value: unknown, label: string): Record<string, unknown> {
@@ -168,6 +235,87 @@ function stringArray(value: unknown, field: string): string[] | undefined {
     throw new Error(`agentMail: ${field} must not contain duplicate entries`);
   }
   return normalized;
+}
+
+function optionalBoolean(value: unknown, fallback: boolean, field: string): boolean {
+  if (value === undefined) return fallback;
+  if (typeof value !== "boolean") throw new Error(`agentMail: ${field} must be a boolean`);
+  return value;
+}
+
+function strictStringList(
+  value: unknown,
+  field: string,
+  normalize: (entry: string, index: number) => string,
+): string[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value) || value.length === 0 || value.length > 1_000) {
+    throw new Error(`agentMail: ${field} must be a non-empty array with at most 1000 entries`);
+  }
+  const result = value.map((entry, index) => {
+    if (typeof entry !== "string")
+      throw new Error(`agentMail: ${field}[${index}] must be a string`);
+    return normalize(entry, index);
+  });
+  if (new Set(result).size !== result.length) {
+    throw new Error(`agentMail: ${field} must not contain duplicate entries`);
+  }
+  return result;
+}
+
+function labelList(value: unknown, enabled: boolean): string[] {
+  const labels = strictStringList(value, "mailbox.allowedLabels", (entry, index) => {
+    const normalized = entry.trim().toLowerCase();
+    if (!LABEL_PATTERN.test(normalized) || SYSTEM_LABELS.has(normalized)) {
+      throw new Error(
+        `agentMail: mailbox.allowedLabels[${index}] must be a non-system label using letters, numbers, dot, underscore, colon, slash, or hyphen`,
+      );
+    }
+    return normalized;
+  });
+  if (enabled && labels.length === 0) {
+    throw new Error(
+      "agentMail: mailbox.allowLabelMutation requires a non-empty mailbox.allowedLabels allowlist",
+    );
+  }
+  if (!enabled && labels.length > 0) {
+    throw new Error("agentMail: mailbox.allowedLabels requires mailbox.allowLabelMutation: true");
+  }
+  return labels;
+}
+
+function contentTypeList(value: unknown, maxAttachments: number): string[] {
+  const types = strictStringList(value, "outbound.allowedAttachmentTypes", (entry, index) => {
+    const normalized = entry.trim().toLowerCase();
+    if (
+      !CONTENT_TYPE_PATTERN.test(normalized) ||
+      normalized === "*/*" ||
+      normalized.startsWith("*/")
+    ) {
+      throw new Error(
+        `agentMail: outbound.allowedAttachmentTypes[${index}] must be an exact MIME type or a bounded type/* pattern`,
+      );
+    }
+    return normalized;
+  });
+  if (maxAttachments > 0 && types.length === 0) {
+    throw new Error(
+      "agentMail: outbound.maxAttachments above zero requires outbound.allowedAttachmentTypes",
+    );
+  }
+  if (maxAttachments === 0 && types.length > 0) {
+    throw new Error(
+      "agentMail: outbound.allowedAttachmentTypes requires outbound.maxAttachments above zero",
+    );
+  }
+  return types;
+}
+
+function policyGeneration(value: object): string {
+  return createHash("sha256")
+    .update("agentmail-policy-generation/v1\0", "utf8")
+    .update(JSON.stringify(value), "utf8")
+    .digest("hex");
 }
 
 /**
@@ -261,6 +409,40 @@ export function validateAgentMailConfig(value: unknown): ValidatedAgentMailConfi
     throw new Error("agentMail: replies.allowReplyAll requires replies.mode review");
   }
 
+  const mailbox = config.mailbox === undefined ? {} : objectValue(config.mailbox, "mailbox");
+  rejectUnknownFields(mailbox, MAILBOX_FIELDS, "mailbox");
+  const allowLabelMutation = optionalBoolean(
+    mailbox.allowLabelMutation,
+    false,
+    "mailbox.allowLabelMutation",
+  );
+  const allowedLabels = labelList(mailbox.allowedLabels, allowLabelMutation);
+  const allowAttachmentAccess = optionalBoolean(
+    mailbox.allowAttachmentAccess,
+    false,
+    "mailbox.allowAttachmentAccess",
+  );
+
+  const drafts = config.drafts === undefined ? {} : objectValue(config.drafts, "drafts");
+  rejectUnknownFields(drafts, DRAFT_FIELDS, "drafts");
+  const allowNewDraft = optionalBoolean(drafts.allowNew, false, "drafts.allowNew");
+  const allowReplyDraft = optionalBoolean(drafts.allowReply, false, "drafts.allowReply");
+  const allowReplyAllDraft = optionalBoolean(drafts.allowReplyAll, false, "drafts.allowReplyAll");
+  const allowForwardDraft = optionalBoolean(drafts.allowForward, false, "drafts.allowForward");
+  const allowScheduling = optionalBoolean(drafts.allowScheduling, false, "drafts.allowScheduling");
+  if (allowReplyAllDraft && !allowReplyDraft) {
+    throw new Error("agentMail: drafts.allowReplyAll requires drafts.allowReply: true");
+  }
+
+  const destructive =
+    config.destructive === undefined ? {} : objectValue(config.destructive, "destructive");
+  rejectUnknownFields(destructive, DESTRUCTIVE_FIELDS, "destructive");
+  const allowPermanentDelete = optionalBoolean(
+    destructive.allowPermanentDelete,
+    false,
+    "destructive.allowPermanentDelete",
+  );
+
   const outbound = config.outbound === undefined ? {} : objectValue(config.outbound, "outbound");
   rejectUnknownFields(outbound, OUTBOUND_FIELDS, "outbound");
   let allowedTrustLevels: TrustLevel[] = ["creator"];
@@ -296,7 +478,41 @@ export function validateAgentMailConfig(value: unknown): ValidatedAgentMailConfi
     outbound.rateLimit === undefined ? {} : objectValue(outbound.rateLimit, "outbound.rateLimit");
   rejectUnknownFields(outboundRate, OUTBOUND_RATE_FIELDS, "outbound.rateLimit");
 
-  return {
+  const allowDirectDelivery = optionalBoolean(
+    outbound.allowDirectDelivery,
+    false,
+    "outbound.allowDirectDelivery",
+  );
+  const allowHtml = optionalBoolean(outbound.allowHtml, false, "outbound.allowHtml");
+  const maxAttachments = boundedInteger(
+    outbound.maxAttachments,
+    0,
+    "outbound.maxAttachments",
+    0,
+    50,
+  );
+  const maxAttachmentBytes = boundedInteger(
+    outbound.maxAttachmentBytes,
+    10_485_760,
+    "outbound.maxAttachmentBytes",
+    1,
+    26_214_400,
+  );
+  const maxTotalAttachmentBytes = boundedInteger(
+    outbound.maxTotalAttachmentBytes,
+    26_214_400,
+    "outbound.maxTotalAttachmentBytes",
+    1,
+    52_428_800,
+  );
+  if (maxAttachmentBytes > maxTotalAttachmentBytes) {
+    throw new Error(
+      "agentMail: outbound.maxAttachmentBytes cannot exceed outbound.maxTotalAttachmentBytes",
+    );
+  }
+  const allowedAttachmentTypes = contentTypeList(outbound.allowedAttachmentTypes, maxAttachments);
+
+  const validated = {
     apiKey,
     inboxId,
     ...(emailAddress === undefined ? {} : { emailAddress }),
@@ -336,6 +552,27 @@ export function validateAgentMailConfig(value: unknown): ValidatedAgentMailConfi
       mode: replyMode,
       allowReplyAll: replies.allowReplyAll === true,
     },
+    mailbox: {
+      maxListResults: boundedInteger(mailbox.maxListResults, 50, "mailbox.maxListResults", 1, 100),
+      maxSearchQueryBytes: boundedInteger(
+        mailbox.maxSearchQueryBytes,
+        1_024,
+        "mailbox.maxSearchQueryBytes",
+        1,
+        8_192,
+      ),
+      allowLabelMutation,
+      allowedLabels,
+      allowAttachmentAccess,
+    },
+    drafts: {
+      allowNew: allowNewDraft,
+      allowReply: allowReplyDraft,
+      allowReplyAll: allowReplyAllDraft,
+      allowForward: allowForwardDraft,
+      allowScheduling,
+    },
+    destructive: { allowPermanentDelete },
     outbound: {
       allowedTrustLevels,
       ...(allowedRecipients === undefined ? {} : { allowedRecipients }),
@@ -348,6 +585,12 @@ export function validateAgentMailConfig(value: unknown): ValidatedAgentMailConfi
         1_048_576,
       ),
       subjectPrefix,
+      allowDirectDelivery,
+      allowHtml,
+      maxAttachments,
+      maxAttachmentBytes,
+      maxTotalAttachmentBytes,
+      allowedAttachmentTypes,
       rateLimit: {
         globalMaxPerHour: boundedInteger(
           outboundRate.globalMaxPerHour,
@@ -386,6 +629,18 @@ export function validateAgentMailConfig(value: unknown): ValidatedAgentMailConfi
             ),
           },
         }),
+  } satisfies Omit<ValidatedAgentMailConfig, "policyGeneration">;
+  return {
+    ...validated,
+    policyGeneration: policyGeneration({
+      inboxId: validated.inboxId,
+      inbound: validated.inbound,
+      replies: validated.replies,
+      mailbox: validated.mailbox,
+      drafts: validated.drafts,
+      destructive: validated.destructive,
+      outbound: validated.outbound,
+    }),
   };
 }
 
