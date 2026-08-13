@@ -218,7 +218,6 @@ export type AgentMailCreateDraftInput = AgentMailComposeInput & {
   kind: "new" | "reply" | "replyAll" | "forward";
   sourceMessageId?: string;
   clientId: string;
-  sendAt?: number;
 };
 
 export interface AgentMailUpdateDraftInput {
@@ -234,7 +233,6 @@ export interface AgentMailUpdateDraftInput {
   removeAttachmentIds?: string[];
   addLabels?: string[];
   removeLabels?: string[];
-  sendAt?: number | null;
 }
 
 export interface AgentMailDeliveryResult {
@@ -1434,7 +1432,6 @@ export function createAgentMailProvider(options: AgentMailProviderOptions): Agen
     ) {
       throw requestError(operation, "reply-all draft recipients are derived by AgentMail.");
     }
-    assertEpoch(input.sendAt, "sendAt", operation);
     const composed = composeRequest(input, operation);
     const request: AgentMail.CreateDraftRequest = {
       ...(composed.labels === undefined ? {} : { labels: composed.labels }),
@@ -1452,7 +1449,6 @@ export function createAgentMailProvider(options: AgentMailProviderOptions): Agen
         : {}),
       ...(input.kind === "replyAll" ? { replyAll: true } : {}),
       ...(input.kind === "forward" ? { forwardOf: input.sourceMessageId } : {}),
-      ...(input.sendAt === undefined ? {} : { sendAt: new Date(input.sendAt) }),
     };
     return mutate(
       {
@@ -1891,13 +1887,6 @@ export function createAgentMailProvider(options: AgentMailProviderOptions): Agen
         MAX_LABELS,
       );
       if (removeLabels !== undefined) request.removeLabels = removeLabels;
-      if (input.sendAt !== undefined) {
-        if (input.sendAt === null) request.sendAt = null;
-        else {
-          assertEpoch(input.sendAt, "sendAt", operation);
-          request.sendAt = new Date(input.sendAt);
-        }
-      }
       if (Object.keys(request).length === 0) {
         throw requestError(operation, "at least one draft field must be changed.");
       }
@@ -2040,10 +2029,10 @@ export function createAgentMailProvider(options: AgentMailProviderOptions): Agen
             ...(signal ? { abortSignal: signal } : {}),
           }),
       );
-      // agentmail@0.5.14 defaults to `blob`, which Bun's Node-compatible `ws`
-      // implementation rejects. Set the reconnecting socket preference before
-      // its first asynchronous connection attempt; browsers and Node both
-      // support arraybuffer.
+      // The pinned generated SDK defaults to `blob`, which Bun's
+      // Node-compatible `ws` implementation rejects. Set the reconnecting
+      // socket preference before its first asynchronous connection attempt;
+      // browsers and Node both support arraybuffer.
       if (socket.socket) socket.socket.binaryType = "arraybuffer";
       let subscribed = false;
       const subscribe = () => {

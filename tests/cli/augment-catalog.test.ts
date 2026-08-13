@@ -50,7 +50,16 @@ describe("augment catalog", () => {
       expect.arrayContaining(["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID"]),
     );
     expect(entry?.defaultOptions.inbound).toEqual({ mode: "none" });
+    expect(entry?.defaultOptions.outbound).toEqual(
+      expect.objectContaining({
+        allowedTrustLevels: ["creator"],
+        allowDirectDelivery: true,
+      }),
+    );
+    expect(entry?.defaultOptions.drafts).toEqual(expect.objectContaining({ allowForward: true }));
     expect(entry?.description).toContain("disabled by default");
+    expect(entry?.description).toContain("retry");
+    expect(entry?.description).toContain("reconciliation");
     expect(entry?.description).toContain("deliberately public, rate-limited sender policy");
     expect(entry?.hasSkill).toBe(true);
   });

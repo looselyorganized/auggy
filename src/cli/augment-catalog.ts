@@ -281,9 +281,9 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "Agent Mail",
-    tagline: "send and receive email through AgentMail",
+    tagline: "read, draft, send, and triage AgentMail email",
     description:
-      "Provider-native AgentMail inbox, threads, and drafts with WebSocket wake-up, offline catch-up, and creator-reviewed replies. Inbound is disabled by default; enabling it requires an allowlist or deliberately public, rate-limited sender policy.",
+      "Provider-native message, thread, draft, reply, forward, direct-delivery, retry, and reconciliation tools. Creator-authorized outbound is ready after setup. WebSocket receive and triage are disabled by default; enabling them requires an allowlist or deliberately public, rate-limited sender policy, and reviewed replies remain drafts until creator approval.",
     type: "agentMail",
     defaultName: "agentMail",
     defaultOptions: {
@@ -297,11 +297,18 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
         mode: "disabled",
         allowReplyAll: false,
       },
+      drafts: {
+        allowNew: false,
+        allowReply: false,
+        allowReplyAll: false,
+        allowForward: true,
+      },
       outbound: {
         allowedTrustLevels: ["creator"],
         subjectPrefix: "[Auggy] ",
         maxRecipients: 10,
         bodyMaxBytes: 102_400,
+        allowDirectDelivery: true,
         rateLimit: {
           globalMaxPerHour: 10,
           perRecipientCooldownMs: 300_000,

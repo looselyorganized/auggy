@@ -50,7 +50,7 @@ When this file disagrees with code, code wins.
 | Layered memory | Published | [`05`](./05-memory-subsystem.md), [`07`](./07-built-in-augments.md) | Peer-scoped episodic memory; SQLite default |
 | Visitor auth | Published | [`19`](./19-visitor-auth.md) | Email magic-link recognition and visitor tokens |
 | Notify | Published | [`13`](./13-notify.md) | File, webhook, Telegram, and AgentMail destinations |
-| AgentMail outbound and reviewed drafts | RC | [`22`](./22-agent-mail.md) | Trust-gated plain-text sends plus provider-native reply drafts that require an explicit creator send |
+| AgentMail mailbox and reviewed drafts | RC | [`22`](./22-agent-mail.md) | Bounded reads, labels, attachments, direct send/reply/forward, and provider-native new/reply/reply-all/forward drafts behind creator and policy gates |
 | AgentMail inbound | RC | [`22`](./22-agent-mail.md) | WebSocket wake-up, paginated REST catch-up, bounded sender admission, and durable orchestration metadata |
 | Telegram transport | Published | [`14`](./14-telegram-transport.md) | Bidirectional Telegram conversations |
 | MCP | Published | [`24`](./24-mcp.md) | Local stdio and remote HTTP MCP servers |

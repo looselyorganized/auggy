@@ -18,7 +18,12 @@ import { AUGMENT_CATALOG } from "../augment-catalog";
 import { augmentFolderForType } from "../scaffold-skills";
 import { parseEnvFile } from "../env-parse";
 import { diagnoseMcpConfig } from "../mcp-config";
-import { buildAgentMailRequiredPermissions } from "../agentmail-capabilities";
+import {
+  agentMailCapabilityRequirements,
+  buildAgentMailRequiredPermissions,
+  describeAgentMailCapabilities,
+} from "../agentmail-capabilities";
+import { validateAgentMailConfig } from "../../augments/agentMail/config";
 import { describeEnginePricing, hasUsdBudgetCaps } from "../model-registry";
 import {
   MODEL_SNAPSHOT_RELATIVE_PATH,
@@ -127,19 +132,16 @@ export function checkAgentMailPolicy(config: ParsedConfig): DoctorCheck[] {
   return config.augments.flatMap((augment) => {
     if (augment.type !== "agentMail") return [];
     const options = augment.options ?? {};
-    const inbound = options.inbound as { mode?: unknown } | undefined;
-    const replies = options.replies as { mode?: unknown } | undefined;
-    const inboundEnabled = inbound?.mode === "websocket";
-    const reviewReplies = replies?.mode === "review";
-    const permissions = Object.keys(
-      buildAgentMailRequiredPermissions({ inboundEnabled, reviewReplies }),
-    ).join(", ");
+    const validated = validateAgentMailConfig(options);
+    const requirements = agentMailCapabilityRequirements(validated);
+    const permissions = Object.keys(buildAgentMailRequiredPermissions(requirements)).join(", ");
+    const capabilities = describeAgentMailCapabilities(requirements).join("; ");
     return [
       {
         name: `AgentMail policy ${augment.name}`,
         status: "pass" as const,
-        message: `inbound ${inboundEnabled ? "websocket" : "disabled"}; replies ${reviewReplies ? "review" : "disabled"}; required key permissions: ${permissions}`,
-        fix: "Use one operator-supplied AgentMail key with these permissions. Auggy verifies and uses that exact key; it does not create a replacement runtime key.",
+        message: `receive/triage ${requirements.inboundEnabled ? "enabled" : "disabled"}; reviewed reply drafts ${requirements.reviewReplies ? "enabled" : "disabled"}; enabled operations: ${capabilities}; required key permissions: ${permissions}`,
+        fix: "In AgentMail Console, grant these permissions to the operator-supplied key for this inbox. Auggy verifies and uses that exact key; it does not create, rotate, exchange, or narrow it.",
       },
     ];
   });

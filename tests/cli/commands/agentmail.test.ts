@@ -25,6 +25,33 @@ afterEach(() => {
 });
 
 describe("agentMail connect setup", () => {
+  test("accepts lowercase setup target while preserving canonical files and result", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-lowercase-"));
+    try {
+      const paths = writeAgent(root);
+      const result = await runAgentMailSetup(
+        "agentmail",
+        {
+          config: paths.configPath,
+          mode: "connect",
+          apiKey: "am_operator_selected",
+          inboxId: "owned@agentmail.to",
+        },
+        {
+          interactive: false,
+          verifyRuntimeAccess: async () => ({
+            emailAddress: "owned@agentmail.to",
+            verifiedPermissions: ["inbox_read", "message_read", "draft_read"],
+          }),
+        },
+      );
+      expect(result.target).toBe("agentMail");
+      expect(result.augmentPath).toBe(paths.augmentPath);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   test("persists the exact supplied runtime key after read-only inbox checks", async () => {
     const root = mkdtempSync(join(tmpdir(), "agentmail-connect-"));
     try {
@@ -32,7 +59,7 @@ describe("agentMail connect setup", () => {
       const verifyRuntimeAccess = mock(async (input, requirements) => {
         expect(input.apiKey).toBe("am_exact_runtime_key");
         expect(input.inboxId).toBe("inbox@agentmail.to");
-        expect(requirements).toEqual({ inboundEnabled: true, reviewReplies: true });
+        expect(requirements).toEqual({ messageRead: true, draftRead: true });
         return {
           emailAddress: "inbox@agentmail.to",
           verifiedPermissions: ["inbox_read", "message_read", "draft_read"],
@@ -61,9 +88,9 @@ describe("agentMail connect setup", () => {
       expect(result.verifiedPermissions).toEqual(["inbox_read", "message_read", "draft_read"]);
       expect(result.requiredPermissions).toEqual([
         "inbox_read",
-        "message_send",
         "message_read",
         "draft_read",
+        "message_send",
         "draft_create",
         "draft_update",
         "draft_send",
@@ -210,6 +237,10 @@ describe("agentMail connect setup", () => {
       envKeys: ["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID", "AGENTMAIL_INBOX_EMAIL"],
       verifiedPermissions: ["inbox_read", "message_read", "draft_read"],
       requiredPermissions: ["inbox_read", "message_read", "message_send", "draft_create"],
+      enabledCapabilities: [
+        "receive and triage incoming mail",
+        "prepare creator-reviewed reply drafts",
+      ],
     });
     expect(output).toContain("exact API key you supplied");
     expect(output).toContain("Verified read capabilities: inbox_read, message_read, draft_read");
@@ -285,6 +316,7 @@ function writeAgent(
       "  inboxId: ${AGENTMAIL_INBOX_ID}",
       "  outbound:",
       "    allowedTrustLevels: [creator]",
+      "    allowDirectDelivery: true",
       ...(options.inbound
         ? [
             "  inbound:",

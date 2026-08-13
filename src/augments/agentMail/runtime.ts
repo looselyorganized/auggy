@@ -2243,6 +2243,11 @@ export function createAgentMailRuntime(
       return withDraftLock(draftId, async () => {
         const current = await freshManagedDraft(draftId, context.signal);
         if ("error" in current) return failed(current.error);
+        if (current.reference.state === "scheduled") {
+          return failed(
+            "This draft is scheduled in AgentMail. Unschedule it in AgentMail before revising it with Auggy.",
+          );
+        }
         if (
           current.reference.state !== "ready" ||
           current.snapshot.providerRevision !== expectedRevision
@@ -2381,6 +2386,11 @@ export function createAgentMailRuntime(
       return withDraftLock(draftId, async () => {
         const current = await freshManagedDraft(draftId, context.signal);
         if ("error" in current) return failed(current.error);
+        if (current.reference.state === "scheduled") {
+          return failed(
+            "This draft is scheduled in AgentMail. Unschedule it in AgentMail before deleting it with Auggy.",
+          );
+        }
         if (current.snapshot.providerRevision !== expectedRevision)
           return failed("Draft changed in AgentMail. Show it again first.");
         const input: AgentMailOperationInput = {
@@ -2456,12 +2466,32 @@ export function createAgentMailRuntime(
           }
           const replay = deliveryResult(operationId);
           if (replay) return replay;
+          const current = await freshManagedDraft(draftId, context.signal);
+          if ("error" in current) return failed(current.error);
+          if (current.reference.state === "scheduled" || current.snapshot.sendAt !== undefined) {
+            return failed(
+              "This draft is scheduled in AgentMail. Unschedule it in AgentMail before sending it with Auggy.",
+            );
+          }
+          if (
+            current.snapshot.providerRevision !== existingDelivery.providerRevision ||
+            current.snapshot.materialHash !== existingDelivery.materialHash
+          ) {
+            return failed(
+              "Draft changed in AgentMail after delivery was authorized. No provider call was made.",
+            );
+          }
           return dispatchDelivery(operationId, (key) =>
             provider.sendDraft({ draftId, idempotencyKey: key }, context.signal),
           );
         }
         const current = await freshManagedDraft(draftId, context.signal);
         if ("error" in current) return failed(current.error);
+        if (current.reference.state === "scheduled") {
+          return failed(
+            "This draft is scheduled in AgentMail. Unschedule it in AgentMail before sending it with Auggy.",
+          );
+        }
         if (
           current.reference.state !== "ready" ||
           current.snapshot.providerRevision !== expectedRevision
@@ -2848,6 +2878,11 @@ export function createAgentMailRuntime(
               kind: operation.draftKind!,
               sourceMessageId: operation.sourceMessageId,
             });
+            if (snapshot.sendAt !== undefined) {
+              return failed(
+                "This draft is scheduled in AgentMail. Unschedule it in AgentMail before retrying delivery with Auggy.",
+              );
+            }
             if (
               snapshot.providerRevision !== operation.providerRevision ||
               snapshot.materialHash !== operation.materialHash ||
@@ -3227,6 +3262,10 @@ export function createAgentMailRuntime(
               label: "Ambiguous sends",
               value: String(drafts.filter((d) => d.state === "ambiguous").length),
             },
+            {
+              label: "Retry required",
+              value: String(drafts.filter((d) => d.state === "retryable").length),
+            },
           ],
         },
       ],
@@ -3263,16 +3302,31 @@ export function createAgentMailRuntime(
           mode: config.replies.mode,
           allowReplyAll: config.replies.allowReplyAll,
         },
-        drafts: drafts.map((draft) => ({
-          draftId: draft.draftId,
-          ...(draft.sourceMessageId === undefined
-            ? {}
-            : { sourceMessageId: draft.sourceMessageId }),
-          ...(draft.threadId === undefined ? {} : { threadId: draft.threadId }),
-          state: draft.state,
-          providerUpdatedAt: new Date(draft.providerUpdatedAt).toISOString(),
-          ...(draft.sendAt === undefined ? {} : { sendAt: new Date(draft.sendAt).toISOString() }),
-        })),
+        drafts: drafts.map((draft) => {
+          const delivery =
+            draft.state === "retryable" && draft.sendOperationId
+              ? runtimeStore().getDeliveryOperation(draft.sendOperationId)
+              : undefined;
+          const retryableDelivery = delivery?.state === "retryable" ? delivery : undefined;
+          return {
+            draftId: draft.draftId,
+            ...(draft.sourceMessageId === undefined
+              ? {}
+              : { sourceMessageId: draft.sourceMessageId }),
+            ...(draft.threadId === undefined ? {} : { threadId: draft.threadId }),
+            state: draft.state,
+            providerUpdatedAt: new Date(draft.providerUpdatedAt).toISOString(),
+            ...(draft.sendAt === undefined ? {} : { sendAt: new Date(draft.sendAt).toISOString() }),
+            ...(retryableDelivery === undefined
+              ? {}
+              : {
+                  retryOperationId: retryableDelivery.operationId,
+                  ...(retryableDelivery.retryAfter === undefined
+                    ? {}
+                    : { retryAt: new Date(retryableDelivery.retryAfter).toISOString() }),
+                }),
+          };
+        }),
       },
     };
   };

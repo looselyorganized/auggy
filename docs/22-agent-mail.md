@@ -1,56 +1,25 @@
 # `agentMail` augment
 
-`agentMail` connects one Auggy agent to an existing AgentMail inbox.
+`agentMail` connects one Auggy agent to one existing AgentMail inbox. AgentMail
+stores the inbox, messages, threads, attachments, and drafts. Auggy adds
+WebSocket wake-up, offline catch-up, authorization, limits, creator review, and
+crash-safe delivery records.
 
-Use it to:
+Incoming email is always untrusted. A sender address—even an allowlisted or
+provider-authenticated address—does not make that sender the creator.
 
-- send new plain-text email;
-- receive email over AgentMail WebSockets;
-- wake the agent for admitted messages;
-- create provider-native reply drafts; and
-- review, revise, and send those drafts as the verified creator.
+## Set up the connection
 
-AgentMail remains the system of record for inboxes, messages, threads, and
-draft bodies. Auggy owns admission, authorization, rate limits, wake-up,
-review state, and crash recovery.
-
-Inbound mail is off by default. A sender address never proves identity: every
-admitted email starts as a public, anonymous peer.
-
-## Quick start
-
-This example sends email, receives from any well-formed sender, applies finite
-rate limits, and requires creator review before an inbound reply is sent.
-
-### 1. Create the AgentMail resources
-
-In the [AgentMail Console](https://console.agentmail.to):
-
-1. Create or choose an inbox.
-2. Create an API key scoped to that inbox, pod, or organization.
-3. Grant the permissions required by the policy below.
-
-| Capability | Required AgentMail permissions |
-| --- | --- |
-| Send new email only | `inbox_read`, `message_send` |
-| Receive email | add `message_read` |
-| Create and review reply drafts | add `draft_read`, `draft_create`, `draft_update`, `draft_send` |
-
-AgentMail keys without a `permissions` object have full access within their
-scope. When a `permissions` object is present, it is a whitelist: omitted
-permissions are denied. Prefer the narrowest scope and permissions that cover
-the enabled features. See [AgentMail permissions](https://www.agentmail.to/docs/permissions).
-
-### 2. Add and connect the augment
+Create an inbox and API key in the
+[AgentMail Console](https://console.agentmail.to), then run:
 
 ```bash
 auggy augment add agentMail
 auggy augment setup agentMail --mode connect
 ```
 
-`connect` asks for the existing inbox ID and the exact API key Auggy should use
-at runtime. Auggy verifies read access and the canonical inbox address, then
-writes these values to the agent's `.env`:
+Setup asks for that inbox ID and that exact API key. It verifies the connection
+and writes these values to the agent's `.env`:
 
 ```dotenv
 AGENTMAIL_API_KEY=am_your_existing_key
@@ -58,70 +27,32 @@ AGENTMAIL_INBOX_ID=store@agentmail.to
 AGENTMAIL_INBOX_EMAIL=store@agentmail.to
 ```
 
-Auggy does not create an account, inbox, or another key. It does not
-rotate, narrow, or revoke the supplied key.
+Auggy does not create, replace, narrow, rotate, or revoke the key. If the values
+already exist, verify them with `auggy augment setup agentMail --mode env`.
+Setup performs read-only checks; a missing write permission is reported when
+the corresponding action is first used.
 
-If those values are already in the agent's `.env`, verify and reuse them:
+The generated baseline needs `inbox_read`, `message_read`, `draft_read`,
+`message_send`, `draft_create`, `draft_update`, and `draft_send`. Add permissions
+only when you enable their controls:
 
-```bash
-auggy augment setup agentMail --mode env
-```
+| Enabled control | Additional permission |
+| --- | --- |
+| Label mutation | `message_update` |
+| Trash/restore | `message_update`, `label_trash_read` |
+| Permanent deletion | `message_delete`, `draft_delete` |
 
-Setup verifies configured read permissions without sending mail or creating a
-draft. Required write permissions are exercised only when the corresponding
-operation runs.
-
-### 3. Use this complete configuration
-
-```yaml
-# augments/agentMail/augment.yaml
-type: agentMail
-config:
-  apiKey: ${AGENTMAIL_API_KEY}
-  inboxId: ${AGENTMAIL_INBOX_ID}
-  emailAddress: ${AGENTMAIL_INBOX_EMAIL}
-  addressVisibility: creator
-  dbPath: ./data/agent-mail/agentMail/orchestration.db
-
-  inbound:
-    mode: websocket
-    allowAnySender: true
-    rateLimit:
-      globalMaxPerHour: 100
-      perSenderMaxPerHour: 5
-
-  replies:
-    mode: review
-    allowReplyAll: false
-
-  outbound:
-    allowedTrustLevels:
-      - creator
-    subjectPrefix: "[Mikes Store] "
-    maxRecipients: 10
-    bodyMaxBytes: 102400
-    rateLimit:
-      globalMaxPerHour: 10
-      perRecipientCooldownMs: 300000
-      dedupWindowMs: 300000
-```
-
-Then validate and restart:
-
-```bash
-auggy doctor
-auggy restart <agent-name>
-```
-
-Edit YAML and restart when policy changes. Setup does not need to run again
-unless the inbox or key changes. `--mode env` is available as an optional,
-read-only preflight after adding inbound or draft permissions.
+An AgentMail key without a `permissions` object has full access inside its
+scope. A key with a `permissions` object denies every omitted permission.
 
 ## Base configuration
 
-The generated outbound-only configuration is:
+This is the generated baseline. The verified creator can inspect mail and use
+direct new-message, reply, and forward tools. Incoming wake-up and automatic
+reply-draft creation remain off.
 
 ```yaml
+# augments/agentMail/augment.yaml
 type: agentMail
 config:
   apiKey: ${AGENTMAIL_API_KEY}
@@ -134,36 +65,47 @@ config:
   replies:
     mode: disabled
     allowReplyAll: false
+  drafts:
+    allowNew: false
+    allowReply: false
+    allowReplyAll: false
+    allowForward: true
   outbound:
     allowedTrustLevels:
       - creator
     subjectPrefix: "[Auggy] "
     maxRecipients: 10
     bodyMaxBytes: 102400
+    allowDirectDelivery: true
     rateLimit:
       globalMaxPerHour: 10
       perRecipientCooldownMs: 300000
       dedupWindowMs: 300000
 ```
 
-All configuration changes below require an agent restart.
-
-| Key | Values | Default | Description |
-| --- | --- | --- | --- |
-| `apiKey` | Non-empty string | Required | Exact AgentMail API key used by setup and runtime. Use `${AGENTMAIL_API_KEY}`. |
-| `inboxId` | AgentMail inbox ID | Required | Inbox used for all reads, drafts, and sends. Use `${AGENTMAIL_INBOX_ID}`. |
-| `emailAddress` | Email address | Omitted | Setup-verified canonical inbox address. On boot, a mismatch with AgentMail fails closed. Use `${AGENTMAIL_INBOX_EMAIL}`. |
-| `addressVisibility` | `creator`, `public` | `creator` | Controls who may learn the inbox address through model context. It does not enable inbound mail or trust senders. |
-| `dbPath` | Non-empty path | `./data/agent-mail/agentMail/orchestration.db` | SQLite ledger for checkpoints, operation identity, rates, and managed-draft references. Message and draft bodies stay in AgentMail. |
-| `apiBaseUrl` | HTTPS URL, or loopback HTTP in development | AgentMail production API | Testing or sandbox override. Do not set for normal use. |
-| `websocketBaseUrl` | WSS URL, or loopback WS in development | AgentMail production WebSocket endpoint | Testing or sandbox override. Do not set for normal use. |
-| `allowInsecureHttpWithCredentials` | `true`, `false` | `false` | Development-only escape hatch for credentialed non-loopback HTTP/WS. Production remains fail-closed. |
+| Key | Values | Description |
+| --- | --- | --- |
+| `apiKey` | Non-empty string; required | Exact runtime key. Keep it in `.env` and reference `${AGENTMAIL_API_KEY}`. |
+| `inboxId` | AgentMail inbox ID; required | The one inbox Auggy reads and sends from. |
+| `emailAddress` | Email address; optional | Expected canonical address. Auggy fails boot if AgentMail reports a different address. |
+| `addressVisibility` | `creator` (default), `public` | Who may learn the address in model context. This does not enable inbound mail or trust senders. |
+| `dbPath` | Non-empty path; default `./data/agent-mail/agentMail/orchestration.db` | SQLite orchestration ledger. Email and draft bodies remain in AgentMail. |
+| `apiBaseUrl` | Absolute HTTPS URL; optional | Development/sandbox override for the AgentMail HTTP API. Normal use should omit it. Loopback HTTP is allowed for tests. |
+| `websocketBaseUrl` | Absolute WSS URL; optional | Development/sandbox override for AgentMail WebSockets. Normal use should omit it. Loopback WS is allowed for tests. |
+| `allowInsecureHttpWithCredentials` | `false` (default), `true` | Development-only override for credentialed, non-loopback HTTP/WS. It works only when `NODE_ENV=development`; production remains fail-closed. |
+| `inbound.mode` | `none` (default), `websocket` | Whether incoming mail wakes Auggy. `websocket` also enables REST catch-up. |
+| `replies.mode` | `disabled` (default), `review` | Whether an admitted email may produce a reply draft. It never authorizes sending. |
+| `replies.allowReplyAll` | `false` (default), `true` | Whether an inbound reply draft may address the full thread. Requires `replies.mode: review`. |
+| `drafts.allowNew` | `false` (default), `true` | Whether the creator may create or adopt new-message drafts. |
+| `drafts.allowReply` | `false` (default), `true` | Whether the creator may create or adopt reply drafts outside inbound triage. |
+| `drafts.allowReplyAll` | `false` (default), `true` | Whether creator-created drafts may reply-all. Requires `allowReply: true`. |
+| `drafts.allowForward` | `true` in generated config | Enables forward drafts and direct forward when direct delivery is enabled. Validator default is `false` when omitted. |
+| `outbound.allowDirectDelivery` | `true` in generated config | Enables direct new-message, reply, and forward tools. Validator default is `false` when omitted. |
 
 ## Receive email and review replies
 
-Choose exactly one sender policy: `allowedSenders` or `allowAnySender: true`.
-
-Open inbox with explicit limits:
+Add these blocks to the base configuration to receive from any well-formed
+sender and create provider-native reply drafts for review:
 
 ```yaml
 config:
@@ -178,51 +120,46 @@ config:
     allowReplyAll: false
 ```
 
-Allowlisted inbox:
+| New key | Values | Description |
+| --- | --- | --- |
+| `inbound.allowAnySender` | `false` (default), `true` | `true` admits any well-formed sender as public and anonymous. It cannot coexist with `allowedSenders`; `false` requires an allowlist when WebSocket inbound is enabled. |
+| `inbound.allowedSenders` | 1–1000 exact emails or `*@domain` patterns | Alternative to `allowAnySender`. `*@example.com` matches that domain, not subdomains. Admission is not authentication. |
+| `inbound.rateLimit.globalMaxPerHour` | Integer `1`–`100000`; default `100` | Maximum unique messages admitted across all senders in a rolling hour. |
+| `inbound.rateLimit.perSenderMaxPerHour` | Integer `1`–`10000`; default `5` | Maximum unique messages admitted from one normalized sender in a rolling hour. |
 
-```yaml
-config:
-  inbound:
-    mode: websocket
-    allowedSenders:
-      - owner@example.com
-      - "*@customers.example"
-    rateLimit:
-      globalMaxPerHour: 100
-      perSenderMaxPerHour: 5
-  replies:
-    mode: review
-    allowReplyAll: false
+At boot, reconnect, and once per minute, Auggy lists messages after its durable
+checkpoint. Mail received while Auggy was offline is therefore processed after
+startup. WebSocket and catch-up overlap is deduplicated before a turn runs.
+Spam, blocked, and unauthenticated classifications are rejected. An inbound
+turn receives bounded plain text and attachment metadata, never attachment
+bytes, and cannot authorize a send.
+
+When a reply is appropriate, Auggy creates the draft in AgentMail and waits:
+
+```text
+List my mail drafts.
+Show draft <draft-id>.
+Revise draft <draft-id> to say: Thanks — I will check and reply tomorrow.
+Show draft <draft-id>.
+Send draft <draft-id>.
 ```
 
-`*@customers.example` matches that exact domain, not its subdomains.
+You can instead use **Console → Mail → Open in AgentMail** to inspect, edit, and
+send the same draft. Auggy stores only provider IDs, hashes, timestamps, and
+recovery state—not the editable draft body. A new creator command is required
+to send through Auggy.
 
-| Key | Values | Default | Description |
-| --- | --- | --- | --- |
-| `inbound.mode` | `none`, `websocket` | `none` | `none` leaves incoming mail in AgentMail without Auggy processing. `websocket` enables live events plus REST catch-up. |
-| `inbound.allowedSenders` | 1–1000 exact emails or `*@domain` patterns | Omitted | Admits matching senders. Mutually exclusive with `allowAnySender: true`. Admission does not raise sender trust. |
-| `inbound.allowAnySender` | `true`, `false` | `false` | `true` admits any well-formed sender as public and anonymous. Use explicit finite rate limits. |
-| `inbound.rateLimit.globalMaxPerHour` | Integer `1`–`100000` | `100` | Maximum unique messages admitted across all senders per rolling hour. |
-| `inbound.rateLimit.perSenderMaxPerHour` | Integer `1`–`10000` | `5` | Maximum unique messages admitted from one normalized sender per rolling hour. |
-| `replies.mode` | `disabled`, `review` | `disabled` | `review` lets an inbound turn create an AgentMail reply draft. It never sends automatically. |
-| `replies.allowReplyAll` | `true`, `false` | `false` | Allows a reviewed reply draft to include the thread's other recipients. Requires `replies.mode: review`. |
+## Adjust outbound sending
 
-When `websocket` is enabled, Auggy catches up from AgentMail at startup, after
-reconnects, and during periodic repair. This covers messages received while the
-agent was offline. WebSocket delivery is the wake-up path; the durable ledger
-and AgentMail REST API provide deduplication and recovery.
-
-Spam, blocked, and unauthenticated classifications are not admitted. Email
-body content is untrusted input. Auggy loads bounded plain text and attachment
-metadata, not attachment contents.
-
-## Send new email
+The generated baseline already allows creator-requested direct sends. Replace
+its `outbound` block to change recipient scope, branding, or limits:
 
 ```yaml
 config:
   outbound:
     allowedTrustLevels:
       - creator
+    allowDirectDelivery: true
     allowedRecipients:
       - owner@example.com
       - "*@customers.example"
@@ -235,36 +172,147 @@ config:
       dedupWindowMs: 300000
 ```
 
-Omit `allowedRecipients` to allow any well-formed recipient. The agent uses
-`send_message` to send a new message immediately. `replies.mode: review`
-applies only to replies created from inbound mail; it is not a review gate for
-new outbound messages.
+Omit `allowedRecipients` to permit any well-formed address. Ask with exact
+language such as `Send email to owner@example.com`; the direct-send tool
+accepts `to`, subject, and plain text. Direct reply and forward use exact source
+message IDs:
 
-| Key | Values | Default | Description |
-| --- | --- | --- | --- |
-| `outbound.allowedTrustLevels` | Non-empty subset of `creator`, `agent`, `public` | `[creator]` | Trust levels allowed to request a new outbound message. Inbound email cannot authorize a new outbound send. |
-| `outbound.allowedRecipients` | 1–1000 exact emails or `*@domain` patterns | Omitted | Optional recipient allowlist for both new messages and reviewed replies. |
-| `outbound.subjectPrefix` | String, 1–200 characters; no CR, LF, or NUL | `[Auggy] ` | Prefix added to new outbound subjects and generated reply-draft subjects. |
-| `outbound.maxRecipients` | Integer `1`–`50` | `10` | Maximum recipients for a send. The direct `send_message` tool currently accepts `to` recipients only. |
-| `outbound.bodyMaxBytes` | Integer `1`–`1048576` | `102400` | Maximum UTF-8 plain-text body size for new messages and reviewed drafts. |
-| `outbound.rateLimit.globalMaxPerHour` | Integer `1`–`10000` | `10` | Maximum combined new-message and reviewed-reply sends per rolling hour. |
-| `outbound.rateLimit.perRecipientCooldownMs` | Integer `0`–`2592000000` | `300000` | Minimum time between new-message or reviewed-reply sends to the same normalized recipient. `0` disables the cooldown. |
-| `outbound.rateLimit.dedupWindowMs` | Integer `0`–`2592000000` | `300000` | Window that rejects a duplicate new-message or reviewed-reply payload. `0` disables deduplication. |
+```text
+Reply to message <message-id>.
+Forward message <message-id> to owner@example.com.
+```
 
-Auggy sends plain text only. HTML composition, arbitrary attachments, forward
-drafts, scheduled drafts, and recipient editing are not exposed by this
-augment. Use AgentMail directly when those capabilities are needed.
+| New key | Values | Description |
+| --- | --- | --- |
+| `outbound.allowedTrustLevels` | Non-empty subset of `creator`, `agent`, `public`; default `[creator]` | Delivery policy must include `creator` for current creator-only tools to send. Other values validate for future/host policy but do not expose tools to those peers. Inbound email never satisfies this setting. |
+| `outbound.allowDirectDelivery` | `true` in generated config; validator default `false` when omitted | Enables immediate new-message, reply, and forward tools. Set `false` for draft-only operation. |
+| `outbound.allowedRecipients` | 1–1000 exact emails or `*@domain` patterns; optional | Recipient allowlist for new sends, direct replies/forwards, and draft sends. |
+| `outbound.subjectPrefix` | 1–200 characters; default `[Auggy] ` | Prefix added to composed subjects. CR, LF, and NUL are rejected. |
+| `outbound.maxRecipients` | Integer `1`–`50`; default `10` | Combined `to`, `cc`, and `bcc` cap where those fields are available. |
+| `outbound.bodyMaxBytes` | Integer `1`–`1048576`; default `102400` | Combined UTF-8 text-plus-HTML body limit for sends and managed drafts. |
+| `outbound.rateLimit.globalMaxPerHour` | Integer `1`–`10000`; default `10` | Combined direct and managed-draft sends per rolling hour. |
+| `outbound.rateLimit.perRecipientCooldownMs` | Integer `0`–`2592000000`; default `300000` | Delay before another send to the same recipient. `0` disables it. |
+| `outbound.rateLimit.dedupWindowMs` | Integer `0`–`2592000000`; default `300000` | Window that rejects an identical delivery payload. `0` disables it. |
 
-## Notify the creator
+## Use the inbox for visitor magic links
 
-Notifications are optional. They tell the creator that a reply draft is ready
-or that an Auggy-managed delivery failure was observed. They do not contain the
-email or draft body.
+`visitorAuth` can use the same key and inbox for outbound magic links:
 
-First install `notify` and configure a named destination. Then reference that
-name from AgentMail:
+```yaml
+# augments/visitorAuth/augment.yaml
+type: visitorAuth
+config:
+  publicUrl: ${AUGGY_PUBLIC_URL}
+  signingKey: ${VISITOR_SIGNING_KEY}
+  agentMail:
+    transport: agentmail
+    apiKey: ${AGENTMAIL_API_KEY}
+    inboxId: ${AGENTMAIL_INBOX_ID}
+```
 
-Add this block under the `config` object from the complete example:
+| Key | Values | Description |
+| --- | --- | --- |
+| `publicUrl` | Public HTTPS origin | Base URL placed in the magic link. The click returns to Auggy's verification route. |
+| `signingKey` | Secret string | Signs visitor tokens. Keep it in `.env`. |
+| `agentMail.transport` | `agentmail` | Sends the link through AgentMail. `console` is local-only. |
+| `agentMail.apiKey` | Non-empty string | The exact key visitorAuth uses to send. It may reference the same environment value as `agentMail`. |
+| `agentMail.inboxId` | AgentMail inbox ID | Inbox that sends the magic link. |
+
+Run `auggy augment setup visitorAuth --mode env`, then restart. Magic-link
+verification does not require inbound email: the visitor clicks an HTTP link
+back to Auggy.
+
+## Optional mailbox controls
+
+Reads are bounded and creator-only. Mutations remain off until explicitly
+enabled:
+
+```yaml
+config:
+  mailbox:
+    maxListResults: 50
+    maxSearchQueryBytes: 1024
+    allowLabelMutation: true
+    allowedLabels:
+      - needs-review
+      - customer
+    allowTrashRestore: true
+    allowAttachmentAccess: true
+    maxAttachmentBytes: 1048576
+    allowedAttachmentTypes:
+      - text/plain
+      - text/csv
+      - application/json
+```
+
+| Key | Values | Description |
+| --- | --- | --- |
+| `mailbox.maxListResults` | Integer `1`–`100`; default `50` | Maximum results returned by one mailbox tool call. |
+| `mailbox.maxSearchQueryBytes` | Integer `1`–`8192`; default `1024` | Maximum UTF-8 search-query size. |
+| `mailbox.allowLabelMutation` | `false` (default), `true` | Enables add/remove label tools. |
+| `mailbox.allowedLabels` | 1–1000 non-system labels, each 1–128 characters | Required when label mutation is enabled. Each starts with a letter or number and then uses letters, numbers, `.`, `_`, `:`, `/`, or `-`. |
+| `mailbox.allowTrashRestore` | `false` (default), `true` | Enables adding or removing AgentMail's `trash` label. |
+| `mailbox.allowAttachmentAccess` | `false` (default), `true` | Enables bounded, just-in-time attachment reads. Bytes and signed URLs are not retained. |
+| `mailbox.maxAttachmentBytes` | Integer `1`–`1048576`; default `1048576` | Maximum downloaded attachment size. |
+| `mailbox.allowedAttachmentTypes` | Exact MIME types or bounded `type/*` patterns | Defaults to safe text, CSV, JSON, and XML types when access is enabled. `*/*` is rejected. |
+
+## Optional draft and composition controls
+
+Inbound reply drafts are controlled by `replies`. Creator-created or adopted
+drafts use the separate `drafts` controls:
+
+```yaml
+config:
+  drafts:
+    allowNew: true
+    allowReply: true
+    allowReplyAll: false
+    allowForward: true
+  outbound:
+    allowHtml: false
+    maxAttachments: 2
+    maxAttachmentBytes: 10485760
+    maxTotalAttachmentBytes: 26214400
+    allowedAttachmentTypes:
+      - text/plain
+      - application/pdf
+```
+
+| Key | Values | Description |
+| --- | --- | --- |
+| `drafts.allowNew` | `false` (default), `true` | Allows creator-created new provider drafts. |
+| `drafts.allowReply` | `false` (default), `true` | Allows creator-created reply drafts and adoption of reply drafts. |
+| `drafts.allowReplyAll` | `false` (default), `true` | Allows creator-created reply-all drafts. Requires `allowReply: true`. Direct reply-all is not exposed. |
+| `drafts.allowForward` | `true` in generated config; validator default `false` when omitted | Allows forward drafts and direct forwarding when direct delivery is also enabled. |
+| `outbound.allowHtml` | `false` (default), `true` | Permits HTML in managed draft creation/revision. Direct new-message tools remain plain-text. |
+| `outbound.maxAttachments` | Integer `0`–`50`; default `0` | Maximum newly supplied draft attachments. Values above zero require an attachment-type allowlist. |
+| `outbound.maxAttachmentBytes` | Integer `1`–`25165824`; default `10485760` | Maximum decoded size of one supplied attachment. |
+| `outbound.maxTotalAttachmentBytes` | Integer `1`–`52428800`; default `26214400` | Maximum decoded size across supplied attachments. Must be at least the per-attachment limit. |
+| `outbound.allowedAttachmentTypes` | Exact MIME types or bounded `type/*` patterns | Allowlist for supplied attachments. `*/*` is rejected. |
+
+Auggy can create, adopt, show, revise, delete, and send allowed provider drafts.
+It re-fetches the draft before mutations. If the provider revision or material
+changes, review it again. Auggy cannot re-attest existing provider attachment
+bytes before send, so drafts containing attachments must be sent in AgentMail.
+
+Permanent message, thread, and draft deletion is a separate destructive gate:
+
+```yaml
+config:
+  destructive:
+    allowPermanentDelete: true
+```
+
+`allowPermanentDelete` defaults to `false`. Trash/restore is safer because it
+changes a label instead of permanently deleting the provider object.
+
+| Key | Values | Description |
+| --- | --- | --- |
+| `destructive.allowPermanentDelete` | `false` (default), `true` | Enables permanent message, thread, and managed-draft deletion. Requires fresh, exact creator intent. |
+
+## Optional creator notifications
+
+After configuring a named `notify` destination, add:
 
 ```yaml
 config:
@@ -273,124 +321,50 @@ config:
     maxAttempts: 3
 ```
 
-| Key | Values | Default | Description |
-| --- | --- | --- | --- |
-| `notifications.destination` | Existing Notify destination name, 1–128 characters | Required when `notifications` exists | Routes draft-ready and delivery-failure attention through that destination. The name must match `augments/notify/augment.yaml`. |
-| `notifications.maxAttempts` | Integer `1`–`20` | `3` | Maximum definitive Notify delivery attempts. An ambiguous delivery is not retried automatically. |
+| Key | Values | Description |
+| --- | --- | --- |
+| `notifications.destination` | Existing Notify destination name, 1–128 characters | Receives content-free draft-ready and live delivery-failure notices. Surrounding whitespace and control characters are rejected. |
+| `notifications.maxAttempts` | Integer `1`–`20`; default `3` | Maximum definitive Notify attempts. Ambiguous notification delivery is not retried blindly. |
 
-Notifications require `inbound.mode: websocket`, because live provider events
-drive draft-ready and delivery-failure attention. A Notify destination that
-sends back into the monitored inbox is rejected to prevent a mail loop.
-Startup catch-up recovers inbound messages and draft work. AgentMail does not
-currently expose message-addressable replay for delivery lifecycle failures,
-so creator delivery-failure alerts cover live observed events only.
+Notifications require `inbound.mode: websocket`. A destination that sends back
+into the monitored inbox is rejected to prevent a loop.
 
-## Review provider-native drafts
+## Apply changes
 
-When an admitted message arrives:
-
-1. Auggy wakes one untrusted inbound turn.
-2. The agent triages the message.
-3. If no reply is appropriate, it produces no draft.
-4. Otherwise, Auggy creates a reply draft in AgentMail.
-5. The draft waits for a new, explicit creator action.
-
-The draft body lives in AgentMail. Auggy stores only the provider IDs, state,
-timestamps, authorization evidence, and recovery metadata needed to manage it.
-AgentMail deletes a provider draft after it is sent.
-
-### Review with Auggy
-
-Open **Console → Mail** to see inbox health and managed draft metadata. Then
-open Chat and use direct language:
-
-```text
-List my mail drafts.
-Show draft <draft-id>.
-Revise draft <draft-id> to say: Thanks — I will check and reply tomorrow.
-Show draft <draft-id>.
-Send draft <draft-id>.
-```
-
-After showing a draft, `Send it` also works for that selected draft. Sending
-always requires a fresh creator command. Public visitors, other agents, and
-inbound email turns cannot list, inspect, revise, or send managed drafts.
-
-Auggy re-reads the provider draft before revision and send. If it changed in
-AgentMail, show it again before continuing. HTML drafts must be edited and sent
-in AgentMail because Auggy revises plain text only.
-
-### Review in AgentMail
-
-From **Console → Mail**, select **Open in AgentMail**. Inspect, edit, and send
-the same provider-native draft there. AgentMail remains authoritative.
-
-## Use the inbox with `visitorAuth`
-
-`visitorAuth` may share the same inbox and API key for outbound magic links:
-
-```bash
-auggy augment add visitorAuth
-auggy augment setup visitorAuth --mode env
-auggy restart <agent-name>
-```
-
-Magic-link verification returns through Auggy's public HTTP route, not inbound
-email. `agentMail.inbound.mode` may remain `none` when the inbox is used only
-for magic-link delivery. See [`visitorAuth`](./19-visitor-auth.md).
-
-## Identity and security boundaries
-
-- An email `From` address is data, not authentication. Allowlisted senders
-  remain public and anonymous.
-- `allowedSenders` and `allowAnySender` control admission only.
-- `addressVisibility` controls address disclosure only.
-- Inbound content cannot authorize a new outbound message.
-- Reply drafts never send automatically. A verified creator must issue the
-  send command.
-- Outbound recipient, body-size, rate, cooldown, and dedup policies are checked
-  again immediately before a managed draft is sent.
-- One inbox may have only one inbound AgentMail ledger in an agent.
-- The supported SQLite deployment is one process/replica per logical agent.
-- Keep `AGENTMAIL_API_KEY` in `.env`; never place the literal key in YAML.
-
-## Operational limits
-
-| Area | Current behavior |
-| --- | --- |
-| Inbound mode | `none` or AgentMail WebSocket with REST catch-up; no webhook or polling mode |
-| Inbound concurrency | One message turn at a time; transport queue depth `100` |
-| Inbound prompt | Up to `64 KiB` of bounded plain text; at most `25` attachment metadata entries; attachment bodies are not loaded |
-| Sender classes | Normal received mail only; spam, blocked, and unauthenticated classifications are rejected |
-| New outbound mail | Plain text, `to` recipients only; no HTML or attachments |
-| Managed replies | Provider-native reply drafts; optional reply-all; no automatic sending |
-| Draft editing | Plain-text body only; edit recipients, HTML, attachments, forwards, or schedules in AgentMail |
-| Persistence | SQLite stores orchestration metadata; AgentMail stores messages, threads, drafts, and bodies |
-
-## Recovery and errors
-
-Start with:
+After every YAML policy edit:
 
 ```bash
 auggy doctor
+auggy restart <agent-name>
 ```
 
-Then inspect **Console → Mail** and AgentMail itself.
+Do not rerun setup unless the inbox or key changed. For a foreground process,
+press Ctrl-C and run `auggy run` again.
 
-| Symptom | Meaning | Action |
-| --- | --- | --- |
-| Setup cannot verify `inbox_read` | The key is invalid, out of scope, or lacks inbox read access. | Check the key's scope, inbox ID, and permissions. Retry setup. |
-| Setup fails on `message_read` or `draft_read` | The current YAML enables inbound or review but the key cannot perform the read-only preflight. | Grant the named permission to the same key, then retry `--mode env`. |
-| Sending fails with `permission_missing` | Setup does not probe mutating permissions. | Grant `message_send`, or the required draft write/send permissions, to the configured key. |
-| Mail is in AgentMail but Auggy does not react | Inbound is disabled, the sender was rejected, the rate limit was reached, or the WebSocket is degraded. | Confirm `inbound.mode: websocket`, sender policy, rate limits, key permissions, and **Console → Mail** status; then restart. |
-| The agent was offline | Live wake-up could not run. | Start the agent. Startup catch-up reads messages after the durable checkpoint and schedules pending work. |
-| No reply draft appears | Reply mode is disabled, the agent chose no reply, the message was rejected, or draft permission failed. | Check `replies.mode: review`, Console status, and AgentMail key permissions. |
-| A draft changed | AgentMail's copy no longer matches Auggy's last observed timestamp. | Show the draft again before revising or sending. |
-| Send outcome is unknown | The provider may have accepted the send before the connection failed. | Inspect AgentMail. Do not retry automatically. |
-| Provider returns `429` | AgentMail's provider limit was reached. | Wait for the provider retry window; do not loosen Auggy's own limits reflexively. |
-| Notification setup fails | The destination is missing, mismatched, or would send into the monitored inbox. | Fix the named Notify destination or remove `notifications`. |
-| `agent.yaml` or YAML validation fails | A key is unknown, has the wrong type, or conflicts with another field. | Use the tables above, fix the config, rerun `auggy doctor`, and restart. |
+## Recovery and limits
 
-Provider-side details are documented in [AgentMail WebSockets](https://www.agentmail.to/docs/websockets/quickstart),
+| Situation | Safe action |
+| --- | --- |
+| Provider returns `429` | Wait until the returned retry time, then use the exact `retry mail delivery <operation-id>` command. Auggy reuses the original operation and idempotency key. |
+| Send is `outcome_unknown` | Inspect AgentMail. Never retry blindly or create a fresh send. Use `reconcile delivery <operation-id> as sent` with provider IDs, or `... as not sent` only with explicit evidence. |
+| Draft changed in AgentMail | Show it again. Prior review is invalidated. |
+| Agent was offline | Start it. REST catch-up processes messages after the durable checkpoint. |
+| Mail is present but no turn runs | Check `inbound.mode`, sender policy, limits, permissions, and **Console → Mail**, then restart. |
+| Draft is scheduled in AgentMail | Inspect it in Auggy or AgentMail. Auggy does not create, change, cancel, or send scheduled drafts. |
+
+Current boundaries:
+
+- one live Auggy replica per logical inbox;
+- WebSocket inbound plus REST catch-up; no webhook or polling mode;
+- one inbound turn at a time with queue depth `100`;
+- inbound body prompt capped at `64 KiB` and `25` attachment metadata items;
+- no automatic reply sending;
+- no Auggy scheduling or unscheduling; AgentMail remains authoritative for
+  provider-scheduled drafts; and
+- provider delivery failures missed while Auggy is offline cannot currently be
+  replayed per message.
+
+See [AgentMail permissions](https://www.agentmail.to/docs/permissions),
+[WebSockets](https://www.agentmail.to/docs/websockets/quickstart),
 [Drafts](https://www.agentmail.to/docs/drafts), and
-[Permissions](https://www.agentmail.to/docs/permissions).
+[Idempotency](https://docs.agentmail.to/idempotency).

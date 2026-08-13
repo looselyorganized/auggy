@@ -4,7 +4,9 @@ import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import {
+  agentMailCapabilityRequirements,
   buildAgentMailRequiredPermissions,
+  describeAgentMailCapabilities,
   type AgentMailRequiredPermissions,
 } from "../agentmail-capabilities";
 import { successMark } from "../_shared/styles";
@@ -67,8 +69,8 @@ export interface AgentMailCommandDeps {
       allowInsecureHttpWithCredentials?: boolean;
     },
     requirements: {
-      inboundEnabled: boolean;
-      reviewReplies: boolean;
+      messageRead: boolean;
+      draftRead: boolean;
     },
   ) => Promise<{ emailAddress: string; verifiedPermissions: string[] }>;
   promptSelect?: PromptSelect;
@@ -102,11 +104,14 @@ export interface AgentMailSetupResult {
   envKeys: string[];
   requiredPermissions?: string[];
   verifiedPermissions?: string[];
+  enabledCapabilities?: string[];
 }
 
 export function agentMailCommand(deps: AgentMailCommandDeps = {}): Command {
   const exit = deps.exit ?? ((code: number) => process.exit(code));
-  const command = new Command("agentmail").description("Set up AgentMail-backed email delivery");
+  const command = new Command("agentmail").description(
+    "Connect an existing AgentMail inbox for agent email and visitorAuth",
+  );
 
   command
     .command("setup [target]")
@@ -223,8 +228,8 @@ async function runAgentMailSetupLocked(
     ...(opts.allowInsecureHttpWithCredentials ? { allowInsecureHttpWithCredentials: true } : {}),
   };
   const verificationRequirements = {
-    inboundEnabled: target === "agentMail" && configPlan.inboundEnabled,
-    reviewReplies: target === "agentMail" && configPlan.inboundReplyMode === "review",
+    messageRead: configPlan.requiredPermissions.message_read === true,
+    draftRead: configPlan.requiredPermissions.draft_read === true,
   };
   let verification: { emailAddress: string; verifiedPermissions: string[] };
   try {
@@ -265,6 +270,7 @@ async function runAgentMailSetupLocked(
     envKeys,
     requiredPermissions: enabledPermissionNames(configPlan.requiredPermissions),
     verifiedPermissions: verification.verifiedPermissions,
+    enabledCapabilities: configPlan.enabledCapabilities,
   };
 }
 
@@ -369,8 +375,7 @@ interface AgentMailConfigPlan {
   expectedAugmentConfig: string;
   updatedAugmentConfig: string;
   requiredPermissions: AgentMailRequiredPermissions;
-  inboundEnabled: boolean;
-  inboundReplyMode?: ValidatedAgentMailConfig["replies"]["mode"];
+  enabledCapabilities: string[];
 }
 
 function planAgentMailConfig(
@@ -424,20 +429,34 @@ function planAgentMailConfig(
     }
   }
 
-  const requiredPermissions = buildAgentMailRequiredPermissions({
-    inboundEnabled: validatedAgentMail?.inbound.mode === "websocket",
-    reviewReplies: validatedAgentMail?.replies.mode === "review",
-    processSpam: false,
-    processBlocked: false,
-  });
+  const requirements = validatedAgentMail
+    ? agentMailCapabilityRequirements(validatedAgentMail)
+    : {
+        inboundEnabled: false,
+        reviewReplies: false,
+        allowNewDraft: false,
+        allowReplyDraft: false,
+        allowReplyAllDraft: false,
+        allowForwardDraft: false,
+        allowLabelMutation: false,
+        allowTrashRestore: false,
+        allowAttachmentAccess: false,
+        allowPermanentDelete: false,
+        allowDirectDelivery: true,
+      };
+  const requiredPermissions: AgentMailRequiredPermissions = validatedAgentMail
+    ? buildAgentMailRequiredPermissions(requirements)
+    : { inbox_read: true, message_send: true };
 
   doc.config = config;
   return {
     expectedAugmentConfig,
     updatedAugmentConfig: stringifyYaml(doc),
     requiredPermissions,
-    inboundEnabled: validatedAgentMail?.inbound.mode === "websocket",
-    ...(validatedAgentMail ? { inboundReplyMode: validatedAgentMail.replies.mode } : {}),
+    enabledCapabilities:
+      target === "agentMail"
+        ? describeAgentMailCapabilities(requirements)
+        : ["send visitorAuth magic links"],
   };
 }
 
@@ -851,7 +870,8 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
   const permissionText = `Required AgentMail key capabilities: ${permissions}.`;
   const verified = (result.verifiedPermissions ?? ["inbox_read"]).join(", ");
   const verificationText = `Verified read capabilities: ${verified}.`;
-  const inboundEnabled = result.requiredPermissions?.includes("message_read") ?? false;
+  const capabilities = result.enabledCapabilities ?? [];
+  const inboundEnabled = capabilities.includes("receive and triage incoming mail");
   const readyText =
     result.target === "visitorAuth"
       ? [
@@ -864,6 +884,9 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
             "Auggy saved the exact API key you supplied; it did not create, rotate, replace, or scope a key.",
             `Read access was verified. Write operations still require: ${permissions}.`,
             "Incoming email will be processed according to augments/agentMail/augment.yaml.",
+            ...(capabilities.length > 0
+              ? [`Enabled AgentMail operations: ${capabilities.join("; ")}.`]
+              : []),
             "Review inbound and creator-reviewed reply behavior:",
             "  https://auggy.dev/docs/augment-agentmail",
           ]
@@ -873,7 +896,9 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
             `Read access was verified. Sending still requires: ${permissions}.`,
             "Incoming email is stored in AgentMail, but Auggy won't read or act on it by default.",
             "To receive email and prepare creator-reviewed replies with Auggy, enable inbound processing:",
-            "Create forwards, HTML, attachments, and schedules directly in AgentMail.",
+            ...(capabilities.length > 0
+              ? [`Enabled AgentMail operations: ${capabilities.join("; ")}.`]
+              : []),
             "  https://auggy.dev/docs/augment-agentmail",
           ];
   return [
@@ -992,8 +1017,8 @@ async function verifyAgentMailRuntimeReadAccess(
     allowInsecureHttpWithCredentials?: boolean;
   },
   requirements: {
-    inboundEnabled: boolean;
-    reviewReplies: boolean;
+    messageRead: boolean;
+    draftRead: boolean;
   },
 ): Promise<{ emailAddress: string; verifiedPermissions: string[] }> {
   const provider: AgentMailProvider = createAgentMailProvider(input);
@@ -1003,11 +1028,11 @@ async function verifyAgentMailRuntimeReadAccess(
   if (!emailAddress) {
     throw new Error("AgentMail did not return a canonical inbox email address.");
   }
-  if (requirements.inboundEnabled) {
+  if (requirements.messageRead) {
     await provider.listMessages({ limit: 1 });
     verified.push("message_read");
   }
-  if (requirements.reviewReplies) {
+  if (requirements.draftRead) {
     await provider.listDrafts({ limit: 1 });
     verified.push("draft_read");
   }
@@ -1017,15 +1042,15 @@ async function verifyAgentMailRuntimeReadAccess(
 function agentMailAccessVerificationError(
   error: unknown,
   inboxId: string,
-  requirements: { inboundEnabled: boolean; reviewReplies: boolean },
+  requirements: { messageRead: boolean; draftRead: boolean },
 ): Error {
   const details =
     error instanceof AgentMailProviderError
       ? ` AgentMail classified the failure as ${error.details.code}${error.details.httpStatus ? ` (${error.details.httpStatus})` : ""}.`
       : "";
-  const capability = requirements.reviewReplies
+  const capability = requirements.draftRead
     ? "inbox_read, message_read, and draft_read"
-    : requirements.inboundEnabled
+    : requirements.messageRead
       ? "inbox_read and message_read"
       : "inbox_read";
   return new Error(

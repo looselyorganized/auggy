@@ -310,7 +310,7 @@ NODE
       AUGGY_SOURCE_ROOT="$ROOT" \
       bun contract.ts
   ) >"$LOG_DIR/agentmail-packed-runtime.log" 2>&1 \
-    || fail "packed AgentMail runtime WebSocket contract failed"
+    || fail "packed AgentMail offline-catch-up, draft-review, and restart E2E failed"
 }
 
 info "verify packed provider contracts and isolated imports"
@@ -351,6 +351,8 @@ require_pack_entry "src/augments/agentMail/index.ts"
 require_pack_entry "src/augments/agentMail/config.ts"
 require_pack_entry "src/augments/agentMail/provider.ts"
 require_pack_entry "src/augments/agentMail/inbound.ts"
+require_pack_entry "src/augments/agentMail/attachment.ts"
+require_pack_entry "src/augments/agentMail/draft-snapshot.ts"
 require_pack_entry "src/augments/agentMail/policy.ts"
 require_pack_entry "src/augments/agentMail/runtime.ts"
 require_pack_entry "src/augments/agentMail/store.ts"

@@ -65,6 +65,114 @@ describe("Mail dashboard projection", () => {
     expect(selected?.instances[0]?.drafts.map((draft) => draft.draftId)).toEqual(["draft_1"]);
   });
 
+  it("accepts new-message drafts without source or thread references", () => {
+    const candidate = block("mail-west", "west@example.com");
+    const projection = candidate.projection as MailAdminProjection;
+    projection.drafts = [
+      {
+        draftId: "draft_new",
+        state: "ready",
+        providerUpdatedAt: "2026-08-12T18:00:00.000Z",
+      },
+    ];
+
+    expect(
+      selectMailDashboard(baseDashboard({ blocks: [candidate] }))?.instances[0]?.drafts,
+    ).toEqual([
+      {
+        draftId: "draft_new",
+        state: "ready",
+        providerUpdatedAt: "2026-08-12T18:00:00.000Z",
+      },
+    ]);
+  });
+
+  it("accepts scheduled and deleted provider states", () => {
+    const candidate = block("mail-west", "west@example.com");
+    const projection = candidate.projection as MailAdminProjection;
+    projection.drafts = [
+      {
+        ...projection.drafts[0]!,
+        draftId: "draft_scheduled",
+        state: "scheduled",
+        sendAt: "2026-08-13T18:00:00.000Z",
+      },
+      { ...projection.drafts[0]!, draftId: "draft_deleted", state: "deleted" },
+    ];
+
+    expect(
+      selectMailDashboard(baseDashboard({ blocks: [candidate] }))?.instances[0]?.drafts.map(
+        (draft) => draft.state,
+      ),
+    ).toEqual(["scheduled", "deleted"]);
+  });
+
+  it("requires valid provider scheduling metadata for scheduled drafts", () => {
+    for (const sendAt of [undefined, "not-a-time"]) {
+      const candidate = block("mail-west", "west@example.com");
+      const projection = candidate.projection as MailAdminProjection;
+      projection.drafts = [
+        {
+          ...projection.drafts[0]!,
+          state: "scheduled",
+          ...(sendAt === undefined ? {} : { sendAt }),
+        },
+      ];
+      expect(
+        selectMailDashboard(baseDashboard({ blocks: [candidate] }))?.instances[0]?.drafts,
+      ).toEqual([]);
+    }
+  });
+
+  it("binds retry guidance only to a valid retryable delivery operation", () => {
+    const candidate = block("mail-west", "west@example.com");
+    const projection = candidate.projection as MailAdminProjection;
+    projection.drafts = [
+      {
+        ...projection.drafts[0]!,
+        state: "retryable",
+        retryOperationId: "delivery_retry_1",
+        retryAt: "2026-08-13T18:00:00.000Z",
+      },
+    ];
+    expect(
+      selectMailDashboard(baseDashboard({ blocks: [candidate] }))?.instances[0]?.drafts[0],
+    ).toMatchObject({
+      state: "retryable",
+      retryOperationId: "delivery_retry_1",
+      retryAt: "2026-08-13T18:00:00.000Z",
+    });
+
+    for (const draft of [
+      { ...projection.drafts[0]!, retryOperationId: undefined },
+      { ...projection.drafts[0]!, retryAt: "not-a-time" },
+      {
+        ...projection.drafts[0]!,
+        state: "ready" as const,
+        retryOperationId: "delivery_retry_1",
+      },
+    ]) {
+      const malformed = block("mail-west", "west@example.com");
+      (malformed.projection as MailAdminProjection).drafts = [draft];
+      expect(
+        selectMailDashboard(baseDashboard({ blocks: [malformed] }))?.instances[0]?.drafts,
+      ).toEqual([]);
+    }
+  });
+
+  it("rejects present but malformed optional draft references", () => {
+    const candidate = block("mail-west", "west@example.com");
+    const projection = candidate.projection as MailAdminProjection;
+    projection.drafts = [
+      { ...projection.drafts[0]!, draftId: "draft_bad_source", sourceMessageId: "" },
+      { ...projection.drafts[0]!, draftId: "draft_bad_thread", threadId: 42 as never },
+    ];
+
+    expect(
+      selectMailDashboard(baseDashboard({ blocks: [candidate] }))?.instances[0]?.drafts,
+    ).toEqual([]);
+  });
+
   it("neutralizes display control characters in opaque identifiers", () => {
     const candidate = block("mail-west", "west@example.com");
     (candidate.projection as MailAdminProjection).drafts[0]!.draftId =
@@ -124,6 +232,25 @@ describe("Mail dashboard projection", () => {
         },
       },
       { replies: { mode: "automatic", allowReplyAll: false } },
+      {
+        inbound: { mode: "none", state: "ready", senderPolicy: "disabled", allowedSenderCount: 0 },
+      },
+      { replies: { mode: "disabled", allowReplyAll: true } },
+      {
+        inbound: { mode: "none", state: "idle", senderPolicy: "disabled", allowedSenderCount: 0 },
+        replies: { mode: "review", allowReplyAll: false },
+      },
+      {
+        inbound: {
+          mode: "websocket",
+          state: "ready",
+          senderPolicy: "any",
+          allowedSenderCount: 0,
+          globalMaxPerHour: 100,
+          perSenderMaxPerHour: 5,
+          lastEventAt: "not-a-time",
+        },
+      },
     ];
 
     for (const override of overrides) {

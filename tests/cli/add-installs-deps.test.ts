@@ -688,6 +688,11 @@ describe("runAdd no-op cases", () => {
         dbPath: "./data/agent-mail/agentMail/orchestration.db",
         inbound: { mode: "none" },
         replies: { mode: "disabled", allowReplyAll: false },
+        drafts: { allowForward: true },
+        outbound: {
+          allowedTrustLevels: ["creator"],
+          allowDirectDelivery: true,
+        },
       },
     });
 
@@ -700,7 +705,12 @@ describe("runAdd no-op cases", () => {
       "Or set AGENTMAIL_API_KEY, AGENTMAIL_INBOX_ID, and AGENTMAIL_INBOX_EMAIL in .env",
     );
     expect(output).toContain("Configure mail policy in augments/agentMail/augment.yaml");
-    expect(output).toContain("Default mode: outbound email only, creator trust required");
+    expect(output).toContain(
+      "Default: creator-authorized send, reply, forward, retry, and reconciliation",
+    );
+    expect(output).toContain(
+      "Enable WebSocket inbound for receive, triage, and reviewed reply drafts",
+    );
     expect(output).toContain("notify + Agent Mail is usually simpler");
     expect(output).toContain("AGENTMAIL_API_KEY=");
     expect(output).toContain("AGENTMAIL_INBOX_ID=");

@@ -58,11 +58,11 @@ const SCHEMA = [
     provider_updated_at     INTEGER NOT NULL,
     material_hash           TEXT NOT NULL CHECK (length(material_hash) = 64),
     send_at                 INTEGER,
-    state                   TEXT NOT NULL CHECK (state IN ('ready', 'stale', 'approved', 'sending', 'scheduled', 'sent', 'ambiguous', 'failed', 'deleted')),
+    state                   TEXT NOT NULL CHECK (state IN ('ready', 'stale', 'approved', 'sending', 'retryable', 'scheduled', 'sent', 'ambiguous', 'failed', 'deleted')),
     approval_generation     INTEGER NOT NULL DEFAULT 0 CHECK (approval_generation >= 0),
     approval_manifest_hash  TEXT CHECK (approval_manifest_hash IS NULL OR length(approval_manifest_hash) = 64),
     approved_at             INTEGER,
-    send_operation_kind     TEXT CHECK (send_operation_kind IS NULL OR send_operation_kind IN ('send', 'schedule')),
+    send_operation_kind     TEXT CHECK (send_operation_kind IS NULL OR send_operation_kind = 'send'),
     send_operation_id       TEXT,
     send_key                TEXT,
     send_started_at         INTEGER,
@@ -91,7 +91,7 @@ const SCHEMA = [
     inbox_id                    TEXT NOT NULL,
     operation_id               TEXT NOT NULL,
     draft_id                   TEXT,
-    kind                       TEXT NOT NULL CHECK (kind IN ('create', 'revise', 'schedule', 'unschedule', 'delete')),
+    kind                       TEXT NOT NULL CHECK (kind IN ('create', 'revise', 'delete')),
     draft_kind                 TEXT NOT NULL CHECK (draft_kind IN ('new', 'reply', 'reply_all', 'forward')),
     source_message_id          TEXT,
     thread_id                  TEXT,
@@ -99,8 +99,7 @@ const SCHEMA = [
     expected_provider_revision TEXT,
     expected_material_hash     TEXT CHECK (expected_material_hash IS NULL OR length(expected_material_hash) = 64),
     manifest_hash              TEXT NOT NULL CHECK (length(manifest_hash) = 64),
-    send_at                    INTEGER,
-    prior_draft_state          TEXT CHECK (prior_draft_state IS NULL OR prior_draft_state IN ('ready', 'stale', 'approved', 'scheduled', 'failed')),
+    prior_draft_state          TEXT CHECK (prior_draft_state IS NULL OR prior_draft_state IN ('ready', 'stale', 'approved', 'failed')),
     state                      TEXT NOT NULL CHECK (state IN ('prepared', 'dispatching', 'updated', 'deleted', 'outcome_unknown', 'failed', 'reconciled_not_applied')),
     result_draft_id            TEXT,
     result_provider_revision   TEXT,
@@ -122,7 +121,6 @@ const SCHEMA = [
       (kind = 'create' AND draft_id IS NULL AND expected_provider_revision IS NULL AND expected_material_hash IS NULL AND prior_draft_state IS NULL) OR
       (kind <> 'create' AND draft_id IS NOT NULL AND expected_provider_revision IS NOT NULL AND expected_material_hash IS NOT NULL AND prior_draft_state IS NOT NULL)
     ),
-    CHECK ((kind = 'schedule' AND send_at IS NOT NULL) OR (kind <> 'schedule' AND send_at IS NULL)),
     CHECK ((state = 'deleted' AND kind = 'delete') OR state <> 'deleted'),
     CHECK ((state = 'updated' AND result_draft_id IS NOT NULL AND result_provider_revision IS NOT NULL AND result_provider_updated_at IS NOT NULL AND result_material_hash IS NOT NULL) OR state <> 'updated'),
     CHECK ((state = 'deleted' AND result_draft_id IS NOT NULL) OR state <> 'deleted')
@@ -304,17 +302,13 @@ export type AgentMailProviderDraftState =
   | "stale"
   | "approved"
   | "sending"
+  | "retryable"
   | "scheduled"
   | "sent"
   | "ambiguous"
   | "failed"
   | "deleted";
-export type AgentMailProviderDraftMutationKind =
-  | "create"
-  | "revise"
-  | "schedule"
-  | "unschedule"
-  | "delete";
+export type AgentMailProviderDraftMutationKind = "create" | "revise" | "delete";
 export type AgentMailProviderDraftMutationState =
   | "prepared"
   | "dispatching"
@@ -336,8 +330,7 @@ export interface AgentMailProviderDraftMutationOperation {
   expectedProviderRevision?: string;
   expectedMaterialHash?: string;
   manifestHash: string;
-  sendAt?: number;
-  priorDraftState?: "ready" | "stale" | "approved" | "scheduled" | "failed";
+  priorDraftState?: "ready" | "stale" | "approved" | "failed";
   state: AgentMailProviderDraftMutationState;
   resultDraftId?: string;
   resultProviderRevision?: string;
@@ -363,13 +356,12 @@ export type AgentMailProviderDraftMutationReservation =
       manifestHash: string;
     }
   | {
-      kind: "revise" | "schedule" | "unschedule" | "delete";
+      kind: "revise" | "delete";
       operationId: string;
       draftId: string;
       expectedProviderRevision: string;
       expectedMaterialHash: string;
       manifestHash: string;
-      sendAt?: number;
     };
 
 export type AgentMailProviderDraftMutationOutcome =
@@ -787,7 +779,6 @@ interface DraftMutationRow {
   expected_provider_revision: string | null;
   expected_material_hash: string | null;
   manifest_hash: string;
-  send_at: number | null;
   prior_draft_state: AgentMailProviderDraftMutationOperation["priorDraftState"] | null;
   state: AgentMailProviderDraftMutationState;
   result_draft_id: string | null;
@@ -805,7 +796,7 @@ interface DraftMutationRow {
 
 const DRAFT_MUTATION_COLUMNS = `inbox_id, operation_id, draft_id, kind, draft_kind,
   source_message_id, thread_id, client_id, expected_provider_revision, expected_material_hash,
-  manifest_hash, send_at, prior_draft_state, state, result_draft_id,
+  manifest_hash, prior_draft_state, state, result_draft_id,
   result_provider_revision, result_provider_updated_at, result_material_hash, result_send_at,
   outcome_code, reconciliation_hash, reconciled_at, created_at, dispatch_started_at, updated_at`;
 
@@ -826,7 +817,6 @@ function draftMutationFromRow(row: DraftMutationRow): AgentMailProviderDraftMuta
       ? {}
       : { expectedMaterialHash: row.expected_material_hash }),
     manifestHash: row.manifest_hash,
-    ...(row.send_at === null ? {} : { sendAt: row.send_at }),
     ...(row.prior_draft_state === null ? {} : { priorDraftState: row.prior_draft_state }),
     state: row.state,
     ...(row.result_draft_id === null ? {} : { resultDraftId: row.result_draft_id }),
@@ -1508,12 +1498,6 @@ export function createAgentMailOrchestrationStore(
     if (operation.kind !== "create" && outcome.draftId !== operation.draft_id) {
       throw new Error("agentMail store: draft mutation result changed immutable draft identity");
     }
-    if (operation.kind === "schedule" && outcome.sendAt !== operation.send_at) {
-      throw new Error("agentMail store: scheduled draft result does not match the requested time");
-    }
-    if (operation.kind === "unschedule" && outcome.sendAt !== undefined) {
-      throw new Error("agentMail store: unscheduled draft result still has a send time");
-    }
   }
 
   function settleDraftMutationInTransaction(
@@ -1628,15 +1612,11 @@ export function createAgentMailOrchestrationStore(
           throw new Error("agentMail store: provider draft mutation did not advance its revision");
         }
         const nextState: AgentMailProviderDraftState =
-          operation.kind === "schedule"
+          outcome.sendAt !== undefined
             ? "scheduled"
-            : operation.kind === "unschedule"
-              ? "ready"
-              : operation.prior_draft_state === "stale"
-                ? "stale"
-                : outcome.sendAt === undefined
-                  ? "ready"
-                  : "scheduled";
+            : operation.prior_draft_state === "stale"
+              ? "stale"
+              : "ready";
         const changed = db.run(
           `UPDATE agentmail_drafts
               SET provider_revision = ?, provider_updated_at = ?, material_hash = ?, send_at = ?,
@@ -2037,13 +2017,6 @@ export function createAgentMailOrchestrationStore(
         if (!validHash(input.expectedMaterialHash)) {
           throw new Error("agentMail store: draft mutation expected material hash is invalid");
         }
-        if (
-          (input.kind === "schedule" && input.sendAt === undefined) ||
-          (input.kind !== "schedule" && input.sendAt !== undefined)
-        ) {
-          throw new Error("agentMail store: draft mutation kind and schedule are inconsistent");
-        }
-        assertOptionalTimestamp(input.sendAt, "draft mutation sendAt");
       }
       return db
         .transaction(() => {
@@ -2062,8 +2035,7 @@ export function createAgentMailOrchestrationStore(
                   existing.client_id === input.clientId
                 : existing.draft_id === input.draftId &&
                   existing.expected_provider_revision === input.expectedProviderRevision &&
-                  existing.expected_material_hash === input.expectedMaterialHash &&
-                  existing.send_at === (input.sendAt ?? null));
+                  existing.expected_material_hash === input.expectedMaterialHash);
             return {
               status: exact ? "replay" : "conflict",
               operation: draftMutationFromRow(existing),
@@ -2081,6 +2053,7 @@ export function createAgentMailOrchestrationStore(
             }
             if (
               currentDraft.state === "sending" ||
+              currentDraft.state === "scheduled" ||
               currentDraft.state === "sent" ||
               currentDraft.state === "ambiguous" ||
               currentDraft.state === "deleted"
@@ -2088,18 +2061,6 @@ export function createAgentMailOrchestrationStore(
               throw new Error(
                 "agentMail store: provider draft cannot be mutated in its current state",
               );
-            }
-            if (
-              input.kind === "schedule" &&
-              (currentDraft.send_at !== null || currentDraft.state === "scheduled")
-            ) {
-              throw new Error("agentMail store: provider draft is already scheduled");
-            }
-            if (
-              input.kind === "unschedule" &&
-              (currentDraft.send_at === null || currentDraft.state !== "scheduled")
-            ) {
-              throw new Error("agentMail store: provider draft is not scheduled");
             }
           }
 
@@ -2109,8 +2070,8 @@ export function createAgentMailOrchestrationStore(
               `INSERT INTO agentmail_draft_mutations(
                  inbox_id, operation_id, draft_id, kind, draft_kind, source_message_id,
                  thread_id, client_id, expected_provider_revision, expected_material_hash,
-                 manifest_hash, send_at, prior_draft_state, state, created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?)`,
+                 manifest_hash, prior_draft_state, state, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'prepared', ?, ?)`,
               [
                 inboxId,
                 input.operationId,
@@ -2125,7 +2086,6 @@ export function createAgentMailOrchestrationStore(
                 input.kind === "create" ? null : input.expectedProviderRevision,
                 input.kind === "create" ? null : input.expectedMaterialHash,
                 input.manifestHash,
-                input.kind === "schedule" ? (input.sendAt ?? null) : null,
                 input.kind === "create" ? null : currentDraft!.state,
                 at,
                 at,
@@ -2976,7 +2936,7 @@ export function createAgentMailOrchestrationStore(
                 : outcome.status === "outcome_unknown"
                   ? "ambiguous"
                   : outcome.status === "retryable"
-                    ? "sending"
+                    ? "retryable"
                     : "ready";
             db.run(
               `UPDATE agentmail_drafts

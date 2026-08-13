@@ -1285,12 +1285,19 @@ export interface AdminMailDraftProjection {
     | "stale"
     | "approved"
     | "sending"
+    | "retryable"
     | "sent"
     | "ambiguous"
     | "failed"
     | "deleted";
   /** Provider freshness marker. The editable draft itself remains in AgentMail. */
   providerUpdatedAt: string;
+  /** Provider-managed delivery time when the draft has scheduling metadata. */
+  sendAt?: string;
+  /** Durable delivery operation to use with the explicit retry command. */
+  retryOperationId?: string;
+  /** Earliest provider retry time for a retryable delivery operation. */
+  retryAt?: string;
 }
 
 /** Safe projection for one mounted AgentMail instance. */
@@ -1936,9 +1943,9 @@ export interface AgentMailReplyOptions {
 /** Durable admission limits for inbound AgentMail messages. */
 export interface AgentMailInboundRateLimitOptions {
   /** Maximum unique inbound messages processed across all senders per rolling hour. */
-  globalMaxPerHour: number;
+  globalMaxPerHour?: number;
   /** Maximum unique inbound messages processed from one normalized sender per rolling hour. */
-  perSenderMaxPerHour: number;
+  perSenderMaxPerHour?: number;
 }
 
 /** Who may learn the canonical inbox address through model context. */
@@ -1955,8 +1962,9 @@ export interface AgentMailOutboundRateLimitOptions {
 
 export interface AgentMailOutboundOptions {
   /**
-   * Trust levels permitted to request a new outbound message. Default
-   * `["creator"]`. Inbound email never proves one of these trust levels.
+   * Trust levels accepted by outbound policy. Default `["creator"]`. Current
+   * tools are creator-only, so delivery requires this list to include creator.
+   * Inbound email never proves one of these trust levels.
    */
   allowedTrustLevels?: TrustLevel[];
   /**
@@ -1976,13 +1984,64 @@ export interface AgentMailOutboundOptions {
    * Cannot be empty — recipients must be able to identify agent-sent mail.
    */
   subjectPrefix?: string;
+  /**
+   * Enable verified-creator direct send, reply, and forward tools. Default
+   * false at the runtime contract; the CLI's generated AgentMail policy opts
+   * in explicitly.
+   */
+  allowDirectDelivery?: boolean;
+  /** Permit HTML in provider-native draft creation and revision. Default false. */
+  allowHtml?: boolean;
+  /** Maximum attachments supplied to a draft operation. Default 0; hard ceiling 50. */
+  maxAttachments?: number;
+  /** Maximum decoded bytes for one supplied attachment. Default 10 MiB. */
+  maxAttachmentBytes?: number;
+  /** Maximum decoded bytes across supplied attachments. Default 25 MiB. */
+  maxTotalAttachmentBytes?: number;
+  /** Exact MIME types or bounded `type/*` patterns permitted for supplied attachments. */
+  allowedAttachmentTypes?: string[];
   /** Rate-limit configuration. */
   rateLimit?: AgentMailOutboundRateLimitOptions;
 }
 
+/** Creator-only mailbox inspection and mutation controls. */
+export interface AgentMailMailboxOptions {
+  /** Maximum items returned by one list call. Default 50; range 1-100. */
+  maxListResults?: number;
+  /** Maximum UTF-8 search query size. Default 1024 bytes; range 1-8192. */
+  maxSearchQueryBytes?: number;
+  /** Enable add/remove label tools. Default false. */
+  allowLabelMutation?: boolean;
+  /** Non-system labels that mailbox tools may add or remove. */
+  allowedLabels?: string[];
+  /** Enable reversible trash and restore tools. Default false. */
+  allowTrashRestore?: boolean;
+  /** Enable bounded, just-in-time attachment reads. Default false. */
+  allowAttachmentAccess?: boolean;
+  /** Maximum downloaded attachment size. Default and hard ceiling 1 MiB. */
+  maxAttachmentBytes?: number;
+  /** Exact MIME types or bounded `type/*` patterns permitted for attachment reads. */
+  allowedAttachmentTypes?: string[];
+}
+
+/** Creator-created or adopted provider-native draft capabilities. */
+export interface AgentMailDraftOptions {
+  allowNew?: boolean;
+  allowReply?: boolean;
+  /** Requires `allowReply: true`. Direct reply-all is never exposed. */
+  allowReplyAll?: boolean;
+  allowForward?: boolean;
+}
+
+/** Irreversible provider deletion controls. */
+export interface AgentMailDestructiveOptions {
+  /** Enable permanent message, thread, and draft deletion. Default false. */
+  allowPermanentDelete?: boolean;
+}
+
 export interface AgentMailInboundConfig {
-  /** Inbound delivery channel. */
-  mode: AgentMailInboundMode;
+  /** Inbound delivery channel. Default `"none"`. */
+  mode?: AgentMailInboundMode;
   /**
    * Exact sender addresses or `*@domain` patterns. One sender policy is
    * required when inbound is enabled: this non-empty list or
@@ -1993,14 +2052,14 @@ export interface AgentMailInboundConfig {
   allowedSenders?: string[];
   /**
    * Explicitly admit any well-formed sender address. Mutually exclusive with
-   * `allowedSenders` and accepted only with a bounded inbound `rateLimit`.
-   * This is admission policy, not sender authentication.
+   * `allowedSenders`; bounded default rate limits apply when omitted. This is
+   * admission policy, not sender authentication.
    */
   allowAnySender?: boolean;
   /**
-   * Optional durable inbound admission limits. Both limits are required when
-   * this block is present. Defaults: 100 messages/hour globally and 5 per
-   * sender/hour, including when `allowAnySender` is enabled.
+   * Optional durable inbound admission limits. Each omitted value uses its
+   * default: 100 messages/hour globally and 5 per sender/hour, including when
+   * `allowAnySender` is enabled.
    */
   rateLimit?: AgentMailInboundRateLimitOptions;
 }
@@ -2042,10 +2101,16 @@ export interface AgentMailAugmentOptions {
   inbound?: AgentMailInboundConfig;
   /** Provider-native reply-draft policy for admitted inbound messages. */
   replies?: AgentMailReplyOptions;
+  /** Bounded mailbox reads, labels, trash/restore, and attachment policy. */
+  mailbox?: AgentMailMailboxOptions;
+  /** Provider-native draft creation and adoption policy. */
+  drafts?: AgentMailDraftOptions;
+  /** Irreversible provider deletion policy. */
+  destructive?: AgentMailDestructiveOptions;
   /** Direct outbound-message policy. */
   outbound?: AgentMailOutboundOptions;
   /**
-   * Notify the creator when a provider-native reply draft is ready or a live
+   * Notify the creator when a provider-native draft is ready or a live
    * failure event is observed for an Auggy-managed send. Requires WebSocket
    * inbound so provider lifecycle events can be observed.
    */

@@ -25,9 +25,9 @@ describe("MailActionCenter", () => {
     expect(html).toContain("public senders");
     expect(html).toContain("100/hour");
     expect(html).toContain("5/sender");
-    expect(html).toContain("Show draft");
+    expect(html).toContain("show draft");
     expect(html).toContain("&lt;draft-id&gt;");
-    expect(html).toContain("Send draft");
+    expect(html).toContain("send draft");
     expect(html).toContain('href="/chat/new"');
     expect(html).toContain('aria-label="Managed AgentMail drafts"');
     expect(html).toContain("draft_west");
@@ -86,12 +86,18 @@ describe("MailActionCenter", () => {
     const data = projection();
     data.instances[0]!.drafts[0]!.draftId = '<img src=x onerror="alert(1)">';
     data.instances[0]!.drafts[0]!.sourceMessageId = "<script>alert(1)</script>";
+    data.instances[0]!.drafts[0] = {
+      ...data.instances[0]!.drafts[0]!,
+      state: "retryable",
+      retryOperationId: '<svg onload="alert(1)">',
+    };
     const html = render({ instances: [data.instances[0]!] });
 
     expect(html).not.toContain("<img src=x");
     expect(html).not.toContain("<script>alert");
     expect(html).toContain("&lt;img");
     expect(html).toContain("&lt;script&gt;");
+    expect(html).toContain("&lt;svg");
   });
 
   it("presents stale and failed states distinctly", () => {
@@ -102,8 +108,83 @@ describe("MailActionCenter", () => {
     );
     const html = render({ instances: [data.instances[0]!] });
 
-    expect(html).toContain("Newer message received");
+    expect(html).toContain("Changed in AgentMail");
     expect(html).toContain("Needs attention");
+  });
+
+  it("renders optional provenance and provider lifecycle states truthfully", () => {
+    const data = projection();
+    data.instances[0]!.drafts = [
+      {
+        draftId: "draft_new",
+        state: "ready",
+        providerUpdatedAt: "2026-08-12T18:00:00.000Z",
+      },
+      {
+        ...draft("draft_scheduled", "scheduled"),
+        sendAt: "2026-08-13T18:00:00.000Z",
+      },
+      draft("draft_sending", "sending"),
+      {
+        ...draft("draft_retryable", "retryable"),
+        retryOperationId: "delivery_retry_1",
+        retryAt: "2026-08-13T19:00:00.000Z",
+      },
+      draft("draft_sent", "sent"),
+      draft("draft_deleted", "deleted"),
+    ];
+    const html = render({ instances: [data.instances[0]!] });
+
+    expect(html).toContain("New message draft");
+    expect(html).toContain("Scheduled in AgentMail");
+    expect(html).toContain("Scheduled for");
+    expect(html).toContain('dateTime="2026-08-13T18:00:00.000Z"');
+    expect(html).toContain("Sending");
+    expect(html).toContain("Retry required");
+    expect(html).toContain("retry mail delivery delivery_retry_1");
+    expect(html).toContain("Retry after");
+    expect(html).toContain("Sent");
+    expect(html).toContain("Deleted in AgentMail");
+    expect(html).not.toContain("provider-native");
+    expect(html).not.toContain(">undefined<");
+  });
+
+  it("makes degraded and stale-dashboard states explicit", () => {
+    const data = projection();
+    data.instances[0]!.status = { level: "warn", message: "Inbound reconnecting" };
+    data.instances[0]!.inbound.state = "degraded";
+    data.instances[0]!.inbound.lastErrorCode = "socket_closed";
+
+    const degraded = render({ instances: [data.instances[0]!] });
+    expect(degraded).toContain('role="alert"');
+    expect(degraded).toContain("Mail needs attention");
+    expect(degraded).toContain("Inbound reconnecting");
+    expect(degraded).toContain("socket_closed");
+
+    const stale = renderToStaticMarkup(
+      <MemoryRouter>
+        <MailActionCenter
+          projection={{ instances: [data.instances[0]!] }}
+          refreshError="Dashboard refresh failed"
+        />
+      </MemoryRouter>,
+    );
+    expect(stale).toContain("Mail status may be stale");
+    expect(stale).toContain("Dashboard refresh failed");
+
+    data.instances[0]!.status = { level: "error", message: "Provider unavailable" };
+    const unavailable = renderToStaticMarkup(
+      <MemoryRouter>
+        <MailActionCenter
+          projection={{ instances: [data.instances[0]!] }}
+          refreshError="Dashboard refresh failed"
+        />
+      </MemoryRouter>,
+    );
+    expect(unavailable).toContain("Mail is unavailable");
+    expect(unavailable).toContain("Provider unavailable");
+    expect(unavailable).toContain("Latest dashboard refresh also failed");
+    expect(unavailable).toContain("text-destructive");
   });
 });
 

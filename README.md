@@ -228,7 +228,7 @@ Core augments make the default agent work and are installed by `auggy create`.
 | `knowledge` | Local Markdown or API-backed reference material |
 | `layeredMemory` | Peer-scoped episodic memory backed by SQLite |
 | `visitorAuth` | Email magic-link recognition for returning visitors |
-| `agentMail` | Provider-native inboxes and drafts with durable inbound catch-up and creator review |
+| `agentMail` | Provider-native mailbox tools, direct delivery, durable inbound catch-up, and creator-reviewed drafts |
 | `notify` | Outbound alerts through file, webhook, Telegram, or AgentMail |
 | `telegramTransport` | Bidirectional Telegram conversations |
 | `mcp` | Tools exposed by local or remote MCP servers |
@@ -413,8 +413,9 @@ auggy augment add agentMail
 auggy agentmail setup agentMail --mode connect
 ```
 
-See the [`agentMail` operator reference](./docs/22-agent-mail.md) for inbox,
-API-key, inbound-policy, provider-draft review, and recovery configuration.
+See the [`agentMail` operator reference](./docs/22-agent-mail.md) for the exact
+key, mailbox controls, direct delivery, inbound policy, provider-draft review,
+and recovery configuration.
 Run one live Auggy consumer per logical inbox. WebSocket delivery wakes a live
 agent; paginated catch-up reconciles messages missed while it was offline.
 

@@ -1395,6 +1395,24 @@ The console dashboard API exposes a **Budgets** block with:
 
 The closure variable backing the daily cap is mutated on flip, so the new cap takes effect on the NEXT `prepare()` — no restart required. Pass `agentDir` in the augment config to enable persistence.
 
+## `agentMail` — Provider-native mailbox operations
+
+`agentMail` connects an existing AgentMail inbox and exact operator-supplied
+API key. The generated policy gives the verified creator bounded reads and
+direct send/reply/forward operations. WebSocket receive, anonymous sender
+admission, inbound triage, and creator-reviewed reply drafts are explicit
+opt-ins. AgentMail remains authoritative for messages, threads, attachments,
+and draft bodies; Auggy owns authorization, limits, wake-up, catch-up, review,
+and delivery recovery.
+
+```bash
+auggy augment add agentMail
+auggy augment setup agentMail --mode connect
+```
+
+See [22-agent-mail.md](./22-agent-mail.md) for the task-led configuration,
+permissions, complete key/value tables, review flow, and recovery commands.
+
 ## `visitorAuth` — Email magic-link verification
 
 ```yaml

@@ -277,7 +277,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
       "  - Or set AGENTMAIL_API_KEY, AGENTMAIL_INBOX_ID, and AGENTMAIL_INBOX_EMAIL in .env",
     );
     console.log("  - Configure mail policy in augments/agentMail/augment.yaml");
-    console.log("  - Default mode: outbound email only, creator trust required");
+    console.log("  - Default: creator-authorized send, reply, forward, retry, and reconciliation");
+    console.log("  - Enable WebSocket inbound for receive, triage, and reviewed reply drafts");
+    console.log("  - Run auggy doctor after changing mailbox, draft, or delivery policy");
     console.log("  - For simple operator alerts, notify + Agent Mail is usually simpler");
   }
 

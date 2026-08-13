@@ -1131,6 +1131,18 @@ describe("AgentMail orchestration store", () => {
       sendAt: 11_000,
     });
     expect(refreshed).toMatchObject({ state: "scheduled", sendAt: 11_000 });
+    for (const kind of ["revise", "delete"] as const) {
+      expect(() =>
+        store.reserveProviderDraftMutation({
+          kind,
+          operationId: `${kind}_scheduled_1`,
+          draftId: "draft_provider_1",
+          expectedProviderRevision: "revision_2",
+          expectedMaterialHash: secondMaterial,
+          manifestHash: hashAgentMailOrchestrationValue(`${kind} scheduled manifest`),
+        }),
+      ).toThrow("provider draft cannot be mutated in its current state");
+    }
     const unscheduled = store.refreshProviderDraft({
       draftId: "draft_provider_1",
       expectedProviderRevision: "revision_2",

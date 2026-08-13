@@ -32,10 +32,16 @@ export function MailRoute() {
   }
   if (!projection) return null;
 
-  return <MailActionCenter projection={projection} />;
+  return <MailActionCenter projection={projection} refreshError={error ?? undefined} />;
 }
 
-export function MailActionCenter({ projection }: { projection: MailDashboardProjection }) {
+export function MailActionCenter({
+  projection,
+  refreshError,
+}: {
+  projection: MailDashboardProjection;
+  refreshError?: string;
+}) {
   const [selectedName, setSelectedName] = useState(projection.instances[0]?.augmentName ?? "");
   const selected =
     projection.instances.find((instance) => instance.augmentName === selectedName) ??
@@ -61,7 +67,7 @@ export function MailActionCenter({ projection }: { projection: MailDashboardProj
               Mail
             </h2>
             <p className="text-sm text-muted-foreground">
-              Review provider-native drafts with Auggy or open the same inbox in AgentMail.
+              Review drafts with Auggy or open the inbox in AgentMail.
             </p>
           </div>
           <div className="flex flex-col gap-2 sm:flex-row sm:items-end">
@@ -88,6 +94,10 @@ export function MailActionCenter({ projection }: { projection: MailDashboardProj
 
         <InboxSummary instance={selected} />
 
+        {(refreshError || needsAttention(selected)) && (
+          <MailHealthNotice instance={selected} refreshError={refreshError} />
+        )}
+
         <Card>
           <CardHeader className="gap-1 p-4">
             <CardTitle className="flex items-center gap-2 text-sm">
@@ -95,9 +105,9 @@ export function MailActionCenter({ projection }: { projection: MailDashboardProj
               Review with Auggy
             </CardTitle>
             <CardDescription>
-              In Chat, use <InlineCode>Show draft &lt;draft-id&gt;</InlineCode>, then ask for
-              revisions. Sending always requires a fresh explicit{" "}
-              <InlineCode>Send draft &lt;draft-id&gt;</InlineCode> command.
+              In Chat, ask Auggy to <InlineCode>show draft &lt;draft-id&gt;</InlineCode>, then request
+              revisions. Sending requires a fresh exact{" "}
+              <InlineCode>send draft &lt;draft-id&gt;</InlineCode> command.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex justify-end px-4 pb-4 pt-0">
@@ -130,7 +140,7 @@ function InboxSummary({ instance }: { instance: MailInstanceProjection }) {
               <StatusBadge level={instance.status.level}>{instance.status.level}</StatusBadge>
               <Badge variant="outline">{instance.inbound.mode}</Badge>
               <Badge variant={instance.inbound.state === "ready" ? "success" : "secondary"}>
-                {instance.inbound.state}
+                {inboundStateLabel(instance.inbound.state)}
               </Badge>
               {instance.inbound.senderPolicy === "any" && (
                 <Badge variant="warn">public senders</Badge>
@@ -200,7 +210,7 @@ function DraftList({ instance }: { instance: MailInstanceProjection }) {
           <div className="rounded-md border border-dashed px-4 py-8 text-center">
             <div className="text-sm font-medium">No managed drafts</div>
             <div className="mt-1 text-xs text-muted-foreground">
-              Reply drafts created from inbound mail will appear here.
+              Drafts created or tracked by Auggy will appear here.
             </div>
           </div>
         ) : (
@@ -227,15 +237,56 @@ function DraftRow({ draft }: { draft: MailDraftProjection }) {
           <DraftStateBadge state={draft.state} />
         </div>
         <dl className="mt-2 grid min-w-0 gap-x-3 gap-y-1 text-xs sm:grid-cols-[7rem_minmax(0,1fr)]">
-          <dt className="text-muted-foreground">Source message</dt>
-          <dd className="break-all font-mono">{draft.sourceMessageId}</dd>
-          <dt className="text-muted-foreground">Thread</dt>
-          <dd className="break-all font-mono">{draft.threadId}</dd>
+          {draft.sourceMessageId && (
+            <>
+              <dt className="text-muted-foreground">Source message</dt>
+              <dd className="break-all font-mono">{draft.sourceMessageId}</dd>
+            </>
+          )}
+          {draft.threadId && (
+            <>
+              <dt className="text-muted-foreground">Thread</dt>
+              <dd className="break-all font-mono">{draft.threadId}</dd>
+            </>
+          )}
+          {!draft.sourceMessageId && !draft.threadId && (
+            <>
+              <dt className="text-muted-foreground">Origin</dt>
+              <dd>New message draft</dd>
+            </>
+          )}
+          {draft.sendAt && (
+            <>
+              <dt className="text-muted-foreground">
+                {draft.state === "scheduled" ? "Scheduled for" : "Provider send time"}
+              </dt>
+              <dd>
+                <time dateTime={draft.sendAt}>{formatTimestamp(draft.sendAt)}</time>
+              </dd>
+            </>
+          )}
+          {draft.retryOperationId && (
+            <>
+              <dt className="text-muted-foreground">Retry in Chat</dt>
+              <dd>
+                <InlineCode>retry mail delivery {draft.retryOperationId}</InlineCode>
+              </dd>
+            </>
+          )}
+          {draft.retryAt && (
+            <>
+              <dt className="text-muted-foreground">Retry after</dt>
+              <dd>
+                <time dateTime={draft.retryAt}>{formatTimestamp(draft.retryAt)}</time>
+              </dd>
+            </>
+          )}
         </dl>
       </div>
       <time
         className="text-xs text-muted-foreground sm:text-right"
         dateTime={draft.providerUpdatedAt}
+        aria-label="Provider updated"
       >
         {formatTimestamp(draft.providerUpdatedAt)}
       </time>
@@ -247,9 +298,9 @@ function DraftStateBadge({ state }: { state: MailDraftState }) {
   const variant =
     state === "ready"
       ? "success"
-      : state === "ambiguous" || state === "failed"
+      : state === "ambiguous" || state === "failed" || state === "retryable"
         ? "warn"
-        : state === "sending" || state === "approved"
+        : state === "sending" || state === "approved" || state === "scheduled"
           ? "info"
           : "secondary";
   return <Badge variant={variant}>{draftStateLabel(state)}</Badge>;
@@ -259,18 +310,100 @@ function draftStateLabel(state: MailDraftState): string {
   switch (state) {
     case "ready":
       return "Ready for review";
+    case "scheduled":
+      return "Scheduled in AgentMail";
     case "stale":
-      return "Newer message received";
+      return "Changed in AgentMail";
     case "approved":
       return "Approved";
     case "sending":
       return "Sending";
+    case "retryable":
+      return "Retry required";
     case "sent":
       return "Sent";
     case "ambiguous":
       return "Send outcome unknown";
     case "failed":
       return "Needs attention";
+    case "deleted":
+      return "Deleted in AgentMail";
+  }
+}
+
+function needsAttention(instance: MailInstanceProjection): boolean {
+  return (
+    instance.status.level !== "ok" ||
+    instance.inbound.state === "degraded" ||
+    (instance.inbound.mode === "websocket" && instance.inbound.state === "stopped")
+  );
+}
+
+function MailHealthNotice({
+  instance,
+  refreshError,
+}: {
+  instance: MailInstanceProjection;
+  refreshError?: string;
+}) {
+  const isRefreshFailure = Boolean(refreshError);
+  const isUnavailable = instance.status.level === "error";
+  const title = isUnavailable
+    ? "Mail is unavailable"
+    : isRefreshFailure
+      ? "Mail status may be stale"
+      : "Mail needs attention";
+  const detail = isUnavailable
+    ? instance.status.message
+    : isRefreshFailure
+      ? refreshError
+      : instance.status.message;
+
+  return (
+    <Card
+      className={isUnavailable ? "border-destructive/40" : "border-amber-500/40"}
+      role="alert"
+    >
+      <CardContent className="flex items-start gap-3 p-4">
+        <AlertTriangle
+          className={
+            isUnavailable
+              ? "mt-0.5 size-4 shrink-0 text-destructive"
+              : "mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-300"
+          }
+          aria-hidden="true"
+        />
+        <div className="min-w-0">
+          <div
+            className={
+              isUnavailable ? "text-sm font-medium text-destructive" : "text-sm font-medium"
+            }
+          >
+            {title}
+          </div>
+          <p className="mt-1 break-words text-xs text-muted-foreground">{detail}</p>
+          {isUnavailable && refreshError && (
+            <p className="mt-1 break-words text-xs text-muted-foreground">
+              Latest dashboard refresh also failed: {refreshError}
+            </p>
+          )}
+          {instance.inbound.lastErrorCode && (
+            <p className="mt-1 font-mono text-xs text-muted-foreground">
+              Error code: {instance.inbound.lastErrorCode}
+            </p>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function inboundStateLabel(state: MailInstanceProjection["inbound"]["state"]): string {
+  switch (state) {
+    case "catching_up":
+      return "catching up";
+    default:
+      return state;
   }
 }
 
@@ -290,7 +423,7 @@ function StatusBadge({
 
 function InlineCode({ children }: { children: ReactNode }) {
   return (
-    <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">
+    <code className="break-all rounded bg-muted px-1 py-0.5 font-mono text-xs text-foreground">
       {children}
     </code>
   );

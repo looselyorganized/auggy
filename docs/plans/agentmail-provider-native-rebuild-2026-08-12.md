@@ -40,7 +40,7 @@ reported; it is never read, migrated, or deleted automatically.
 | Message and thread reads | SDK and hosted MCP | SDK-backed list, search, get, attachment metadata, and label tools | Content remains untrusted; attachment access is bounded and audited |
 | Live inbound | SDK WebSocket or verified webhook | WebSocket first; webhook may feed the same normalized event boundary | Reconnect is not replay |
 | Offline recovery | Paginated message listing | Catch up after subscribe and after every reconnect | Auggy owns checkpoint and deduplication |
-| Provider-native drafts | SDK and hosted MCP | New, reply, reply-all, and forward drafts; list, inspect, revise, schedule, delete, and send | No editable body is stored by Auggy |
+| Provider-native drafts | SDK and hosted MCP | New, reply, reply-all, and forward drafts; list, inspect, revise, delete, and send | No editable body is stored by Auggy; provider-scheduled drafts are visible but scheduling remains in AgentMail |
 | Draft creation idempotency | `clientId` | Stable ID derived from inbox, message, and policy generation | One source message has at most one active draft |
 | Sending idempotency | `Idempotency-Key` request header | Stable key retained across retries of one approved send | Hosted MCP `send_draft` does not expose this key |
 | Admission lists | AgentMail Lists | Optional provider enforcement | Lists do not grant Auggy autonomous authority |
@@ -49,7 +49,7 @@ reported; it is never read, migrated, or deleted automatically.
 | Delivery lifecycle | sent, delivered, bounced, complained, rejected events | Correlate live failure events to Auggy-managed sends and notify the creator | A successful send call is not delivery evidence; AgentMail exposes no message-addressable lifecycle replay API |
 | Attachments | Provider metadata and expiring signed download URL | Fetch only for an authorized turn that requires it | Never persist signed URLs or execute content |
 | Labels | SDK and hosted MCP | Read and mutate as creator-authorized workflow state | Labels do not grant Auggy identity or send authority |
-| Direct delivery | SDK and hosted MCP | SDK send, reply, reply-all, and forward behind one Auggy policy/approval ledger | Raw MCP mutations never bypass Auggy policy |
+| Direct delivery | SDK and hosted MCP | SDK send, reply, and forward behind one Auggy policy, rate, idempotency, and audit ledger | Reply-all is draft-only; raw MCP mutations never bypass Auggy policy |
 | Official skills | AgentMail skill repository | Adapted, pinned behavioral guidance for safe email use | Skills guide behavior; they do not provide authority or execution |
 
 The implementation is checked against:
@@ -135,13 +135,14 @@ are separate decisions.
 - Layered memory is advisory and cannot grant authority.
 
 The validated YAML policy controls receive admission, whether Auggy creates a
-review draft, recipient scope, reply-all, forward, attachment, scheduling, and
+review draft, recipient scope, reply-all, forward, attachments, and
 inbound/outbound rate limits. Auggy does not automatically send replies. New,
 reply, reply-all, and forward drafts remain provider-native objects. Auggy
 revalidates every material field immediately before an explicit creator send,
 including separated To/Cc/Bcc recipients, text or HTML, attachment identity and
-size, source message, schedule, and provider revision. Changing policy requires
-an operator config edit and agent restart.
+size, source message, provider schedule state, and provider revision. Auggy
+does not create or mutate provider schedules. Changing policy requires an
+operator config edit and agent restart.
 AgentMail Lists may mirror recipient boundaries as defense in depth but are not
 the authorization record.
 
@@ -195,7 +196,7 @@ Provider-facing failures use stable categories:
 | `configuration_invalid` | Local configuration cannot be used safely | Fail mail boot with exact field guidance |
 | `credential_rejected` | Credential is absent, invalid, or revoked | Fail mail readiness; do not rotate it |
 | `permission_missing` | Supplied key lacks the required capability | Fail the affected operation with permission guidance |
-| `provider_rate_limited` | AgentMail rejected work temporarily | Respect retry metadata and keep durable work pending |
+| `provider_rate_limited` | AgentMail rejected work temporarily | Persist the retry time; a later exact creator retry reuses the original operation and idempotency key |
 | `provider_unavailable` | Network or provider 5xx failure | Degrade mail, reconnect, and reconcile |
 | `provider_contract_invalid` | Response/event violates the validated contract | Quarantine affected work and surface contract drift |
 | `mutation_ambiguous` | Provider may have applied a mutation | Fence automatic retry and reconcile by provider IDs/idempotency |
@@ -280,6 +281,8 @@ inbox without mutating provider state.
 - Inferring creator identity from a `From` address.
 - Treating memory as authorization.
 - Blind retry of an outcome-unknown send.
+- Creating, changing, or cancelling scheduled drafts through Auggy. Externally
+  scheduled provider drafts remain visible and must be managed in AgentMail.
 - WebSocket-only recovery.
 - Exposing unrestricted AgentMail MCP tools to public turns.
 - Exposing hosted MCP send, reply, forward, draft mutation, label mutation, or
@@ -316,7 +319,7 @@ must not invent a second policy or provider path.
 - Pin one reviewed AgentMail SDK version and update the frozen lockfile.
 - Compile-check every SDK method and request/response field used by the
   provider adapter, including draft forward, reply-all, attachment, label,
-  schedule, and idempotency surfaces.
+  observed schedule state, and idempotency surfaces.
 - Disable SDK mutation retries; Auggy's durable operation ledger owns retries.
 - Prove the installed SDK's WebSocket implementation boots under the supported
   Bun version without assigning the unsupported `blob` binary type.
@@ -335,8 +338,9 @@ must not invent a second policy or provider path.
 
 - Key draft state by provider draft ID and operation identity; represent new,
   reply, reply-all, and forward drafts without storing content.
-- Persist immutable material hashes, provider revisions, approvals, schedules,
-  send idempotency, outcomes, and provider correlation IDs.
+- Persist immutable material hashes, provider revisions, approvals, observed
+  provider schedule state, send idempotency, outcomes, and provider correlation
+  IDs.
 - Support crash recovery, bounded retention, stale-draft transitions, and
   outcome-unknown reconciliation without duplicate delivery.
 - Migrations are transactional and fail closed on unsupported or corrupt state.
@@ -345,11 +349,12 @@ must not invent a second policy or provider path.
 
 - Validate all public configuration with explicit defaults and deny unknown
   fields.
-- Authorize admission, reads, labels, attachment access, drafts, schedules,
-  direct delivery, reply-all, forward, delete, and send from one policy module.
+- Authorize admission, reads, labels, attachment access, drafts, direct
+  delivery, reply-all, forward, delete, and send from one policy module.
 - Bind approval to an immutable operation manifest containing action, inbox,
   resource IDs, separated recipients, body/attachment hashes, source message,
-  schedule, provider revision, creator, and policy generation.
+  observed provider schedule state, provider revision, creator, and policy
+  generation.
 - Neither email content, provider labels, official skills, MCP, nor memory can
   grant authority.
 
@@ -366,8 +371,9 @@ must not invent a second policy or provider path.
 
 ### Slice 7 — provider-native draft workflow
 
-- Create, list, show, revise, schedule, unschedule, and delete new, reply,
-  reply-all, and forward drafts.
+- Create, list, show, revise, and delete new, reply, reply-all, and forward
+  drafts. Show externally scheduled drafts truthfully but direct schedule
+  changes to AgentMail.
 - Keep `inReplyTo` and `forwardOf` immutable and preserve provider forward body
   and attachments through delivery.
 - Detect external AgentMail edits through provider revision/material hashes and
@@ -377,8 +383,9 @@ must not invent a second policy or provider path.
 
 ### Slice 8 — delivery and reconciliation
 
-- Send provider drafts and perform explicitly enabled direct new/reply/
-  reply-all/forward operations only after current policy and approval checks.
+- Send provider drafts and perform explicitly enabled direct new, reply, and
+  forward operations only after current policy and approval checks. Reply-all
+  remains provider-draft-only.
 - Use a stable provider idempotency key for the identical request for at most
   the documented provider retention window.
 - Classify pre-dispatch failures as retryable where safe and post-dispatch

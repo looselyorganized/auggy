@@ -579,7 +579,6 @@ describe("AgentMail provider boundary", () => {
       removeAttachmentIds: ["attachment_old"],
       addLabels: ["reviewed"],
       removeLabels: ["draft"],
-      sendAt: now.getTime(),
     });
 
     expect(requests).toEqual([
@@ -615,7 +614,6 @@ describe("AgentMail provider boundary", () => {
       removeAttachments: ["attachment_old"],
       addLabels: ["reviewed"],
       removeLabels: ["draft"],
-      sendAt: now,
     });
   });
 

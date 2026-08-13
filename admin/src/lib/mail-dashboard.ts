@@ -28,12 +28,15 @@ const SENDER_POLICIES = new Set(["disabled", "allowlist", "any"] as const);
 const REPLY_MODES = new Set(["disabled", "review"] as const);
 const DRAFT_STATES = new Set<MailDraftState>([
   "ready",
+  "scheduled",
   "stale",
   "approved",
   "sending",
+  "retryable",
   "sent",
   "ambiguous",
   "failed",
+  "deleted",
 ]);
 
 /**
@@ -111,15 +114,21 @@ function parseMailInstance(value: unknown): MailInstanceProjection | null {
     allowedSenderCount === null ||
     globalMaxPerHour === null ||
     perSenderMaxPerHour === null ||
+    (value.inbound.lastCatchUpAt !== undefined && lastCatchUpAt === undefined) ||
+    (value.inbound.lastEventAt !== undefined && lastEventAt === undefined) ||
+    (value.inbound.lastErrorCode !== undefined && lastErrorCode === undefined) ||
     typeof replyMode !== "string" ||
     !REPLY_MODES.has(replyMode as "disabled" | "review") ||
     typeof allowReplyAll !== "boolean" ||
+    (inboundMode === "none" && inboundState !== "idle") ||
     (inboundMode === "none" && senderPolicy !== "disabled") ||
     (inboundMode === "none" && (globalMaxPerHour !== undefined || perSenderMaxPerHour !== undefined)) ||
+    (inboundMode === "none" && replyMode !== "disabled") ||
     (inboundMode === "websocket" && senderPolicy === "disabled") ||
     (senderPolicy === "any" && allowedSenderCount !== 0) ||
     (senderPolicy === "allowlist" && allowedSenderCount < 1) ||
     (senderPolicy === "disabled" && allowedSenderCount !== 0) ||
+    (replyMode === "disabled" && allowReplyAll) ||
     (senderPolicy !== "disabled" &&
       (globalMaxPerHour === undefined || perSenderMaxPerHour === undefined))
   ) {
@@ -159,26 +168,38 @@ function parseMailInstance(value: unknown): MailInstanceProjection | null {
 function parseDraft(value: unknown): MailDraftProjection | null {
   if (!isRecord(value)) return null;
   const draftId = requiredText(value.draftId, 256);
-  const sourceMessageId = requiredText(value.sourceMessageId, 256);
-  const threadId = requiredText(value.threadId, 256);
+  const sourceMessageId = optionalText(value.sourceMessageId, 256);
+  const threadId = optionalText(value.threadId, 256);
   const state = value.state;
   const providerUpdatedAt = parseTimestamp(value.providerUpdatedAt);
+  const sendAt = parseOptionalTimestamp(value.sendAt);
+  const retryOperationId = optionalText(value.retryOperationId, 256);
+  const retryAt = parseOptionalTimestamp(value.retryAt);
   if (
     !draftId ||
-    !sourceMessageId ||
-    !threadId ||
+    (value.sourceMessageId !== undefined && sourceMessageId === undefined) ||
+    (value.threadId !== undefined && threadId === undefined) ||
     typeof state !== "string" ||
     !DRAFT_STATES.has(state as MailDraftState) ||
-    !providerUpdatedAt
+    !providerUpdatedAt ||
+    (value.sendAt !== undefined && sendAt === undefined) ||
+    (state === "scheduled" && sendAt === undefined) ||
+    (value.retryOperationId !== undefined && retryOperationId === undefined) ||
+    (value.retryAt !== undefined && retryAt === undefined) ||
+    (state === "retryable" && retryOperationId === undefined) ||
+    (state !== "retryable" && (retryOperationId !== undefined || retryAt !== undefined))
   ) {
     return null;
   }
   return {
     draftId,
-    sourceMessageId,
-    threadId,
+    ...(sourceMessageId ? { sourceMessageId } : {}),
+    ...(threadId ? { threadId } : {}),
     state: state as MailDraftState,
     providerUpdatedAt,
+    ...(sendAt ? { sendAt } : {}),
+    ...(retryOperationId ? { retryOperationId } : {}),
+    ...(retryAt ? { retryAt } : {}),
   };
 }
 

@@ -189,6 +189,9 @@ export type {
   AgentMailInboundMode,
   AgentMailReplyMode,
   AgentMailReplyOptions,
+  AgentMailMailboxOptions,
+  AgentMailDraftOptions,
+  AgentMailDestructiveOptions,
   AgentMailAddressVisibility,
   AgentMailNotificationOptions,
 } from "./types";

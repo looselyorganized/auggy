@@ -242,7 +242,6 @@ class FakeProvider implements AgentMailProvider {
       html: input.html,
       inReplyTo: input.kind === "reply" || input.kind === "replyAll" ? source : undefined,
       forwardOf: input.kind === "forward" ? source : undefined,
-      sendAt: input.sendAt,
       updatedAt: 2_000 + this.drafts.size,
     });
     this.drafts.set(value.draftId, value);
@@ -280,7 +279,6 @@ class FakeProvider implements AgentMailProvider {
       ...(input.subject === undefined ? {} : { subject: input.subject ?? undefined }),
       ...(input.text === undefined ? {} : { text: input.text ?? undefined }),
       ...(input.html === undefined ? {} : { html: input.html ?? undefined }),
-      ...(input.sendAt === undefined ? {} : { sendAt: input.sendAt ?? undefined }),
       updatedAt: current.updatedAt + 1,
       ...(this.corruptDraftAfterUpdate ? { inReplyTo: "message_changed_after_accept" } : {}),
     };
@@ -1179,10 +1177,23 @@ describe("AgentMail provider-native runtime", () => {
         ),
       ),
     ).toMatchObject({ status: "retryable", operationId: "draft_retry_op_1" });
+    expect(f.store.getProviderDraft(managed.draftId)?.state).toBe("retryable");
+    expect((await f.augment.adminInfo?.())?.projection).toMatchObject({
+      kind: "mail",
+      drafts: [
+        {
+          draftId: managed.draftId,
+          state: "retryable",
+          retryOperationId: "draft_retry_op_1",
+          retryAt: "1970-01-01T00:00:31.000Z",
+        },
+      ],
+    });
     const originalKey = provider.sentDrafts[0]?.idempotencyKey;
     provider.drafts.set(managed.draftId, {
       ...managed,
       text: "Externally changed",
+      sendAt: 60_000,
       updatedAt: 3_000,
     });
     now = 31_001;
@@ -1193,12 +1204,12 @@ describe("AgentMail provider-native runtime", () => {
         "retry mail delivery draft_retry_op_1",
       ),
     );
-    expect(
-      await retry.execute(
-        { action: "send_draft", operationId: "draft_retry_op_1" },
-        toolContext({ turnId: "retry_draft_changed" }),
-      ),
-    ).toMatchObject({ isError: true });
+    const retryChanged = await retry.execute(
+      { action: "send_draft", operationId: "draft_retry_op_1" },
+      toolContext({ turnId: "retry_draft_changed" }),
+    );
+    expect(retryChanged).toMatchObject({ isError: true });
+    expect(JSON.stringify(retryChanged)).toContain("scheduled in AgentMail");
     expect(provider.sentDrafts).toHaveLength(1);
     expect(provider.sentDrafts[0]?.idempotencyKey).toBe(originalKey);
     expect(f.store.getDeliveryOperation("draft_retry_op_1")?.state).toBe("retryable");
@@ -1918,10 +1929,11 @@ describe("AgentMail provider-native runtime", () => {
     expect(f.store.getProviderDraft(unmanaged.draftId)?.providerUpdatedAt).toBe(
       unmanaged.updatedAt + 10,
     );
+    const scheduledAt = Date.now() + 60_000;
     f.provider.drafts.set(unmanaged.draftId, {
       ...unmanaged,
       text: "Edited in AgentMail",
-      sendAt: Date.now() + 60_000,
+      sendAt: scheduledAt,
       updatedAt: unmanaged.updatedAt + 20,
     });
     const scheduled = toolJson(
@@ -1929,6 +1941,45 @@ describe("AgentMail provider-native runtime", () => {
     );
     expect(scheduled).toMatchObject({ managed: true, sendAt: expect.any(Number) });
     expect(f.store.getProviderDraft(unmanaged.draftId)).toMatchObject({ state: "scheduled" });
+    expect((await f.augment.adminInfo?.())?.projection).toMatchObject({
+      kind: "mail",
+      drafts: [
+        {
+          draftId: unmanaged.draftId,
+          state: "scheduled",
+          sendAt: new Date(scheduledAt).toISOString(),
+        },
+      ],
+    });
+    const scheduledRevision = String(scheduled.providerRevision);
+    await f.augment.onTurnStart?.(
+      creatorTurn("revise_scheduled", "console_thread_1", "revise draft external_1"),
+    );
+    const reviseScheduled = await requireTool(f.augment, "revise_mail_draft").execute(
+      { draftId: unmanaged.draftId, expectedRevision: scheduledRevision, text: "Do not revise" },
+      toolContext({ turnId: "revise_scheduled", operationId: "revise_scheduled_1" }),
+    );
+    await f.augment.onTurnStart?.(
+      creatorTurn("send_scheduled", "console_thread_1", "send draft external_1"),
+    );
+    const sendScheduled = await requireTool(f.augment, "send_mail_draft").execute(
+      { draftId: unmanaged.draftId, expectedRevision: scheduledRevision },
+      toolContext({ turnId: "send_scheduled", operationId: "send_scheduled_1" }),
+    );
+    await f.augment.onTurnStart?.(
+      creatorTurn("delete_scheduled", "console_thread_1", "delete draft external_1"),
+    );
+    const deleteScheduled = await requireTool(f.augment, "delete_mail_draft").execute(
+      { draftId: unmanaged.draftId, expectedRevision: scheduledRevision },
+      toolContext({ turnId: "delete_scheduled", operationId: "delete_scheduled_1" }),
+    );
+    for (const result of [reviseScheduled, sendScheduled, deleteScheduled]) {
+      expect(result).toMatchObject({ isError: true });
+      expect(JSON.stringify(result)).toContain("scheduled in AgentMail");
+    }
+    expect(f.provider.updatedDrafts).toHaveLength(0);
+    expect(f.provider.sentDrafts).toHaveLength(0);
+    expect(f.provider.deletedDrafts).toHaveLength(0);
     await f.augment.onShutdown?.();
     f.store.close();
   });

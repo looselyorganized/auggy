@@ -13,7 +13,19 @@ function config(type: "agentMail" | "notify"): ParsedConfig {
     id: "aug1_11111111-1111-4111-8111-111111111111",
     name: "mail-test",
     engine: { provider: "openai", model: "test" },
-    augments: [{ name: type, type, options: {} }],
+    augments: [
+      {
+        name: type,
+        type,
+        options:
+          type === "agentMail"
+            ? {
+                apiKey: "${AGENTMAIL_API_KEY}",
+                inboxId: "${AGENTMAIL_INBOX_ID}",
+              }
+            : {},
+      },
+    ],
     settings: {},
   };
 }
@@ -88,8 +100,9 @@ describe("doctor AgentMail replacement state boundary", () => {
     parsed.augments[0]!.options = {
       apiKey: "am_secret",
       inboxId: "support@agentmail.to",
-      inbound: { mode: "websocket" },
+      inbound: { mode: "websocket", allowAnySender: true },
       replies: { mode: "review" },
+      outbound: { allowDirectDelivery: true },
     };
     const checks = checkAgentMailPolicy(parsed);
     expect(checks[0]).toMatchObject({

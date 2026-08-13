@@ -74,19 +74,25 @@ export interface CsrfToken {
 export type MailStatusLevel = "ok" | "warn" | "error";
 export type MailDraftState =
   | "ready"
+  | "scheduled"
   | "stale"
   | "approved"
   | "sending"
+  | "retryable"
   | "sent"
   | "ambiguous"
-  | "failed";
+  | "failed"
+  | "deleted";
 
 export interface MailDraftProjection {
   draftId: string;
-  sourceMessageId: string;
-  threadId: string;
+  sourceMessageId?: string;
+  threadId?: string;
   state: MailDraftState;
   providerUpdatedAt: string;
+  sendAt?: string;
+  retryOperationId?: string;
+  retryAt?: string;
 }
 
 export interface MailInstanceProjection {
