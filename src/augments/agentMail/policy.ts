@@ -57,6 +57,10 @@ export type AgentMailOperation =
   | "get_thread"
   | "update_message_labels"
   | "update_thread_labels"
+  | "trash_message"
+  | "restore_message"
+  | "trash_thread"
+  | "restore_thread"
   | "get_attachment"
   | "create_new_draft"
   | "create_reply_draft"
@@ -92,6 +96,8 @@ export interface AgentMailOperationInput {
   draftId?: string;
   attachmentId?: string;
   listLimit?: number;
+  pageToken?: string;
+  includeTrash?: boolean;
   searchQuery?: string;
   addLabels?: readonly string[];
   removeLabels?: readonly string[];
@@ -135,6 +141,8 @@ export type AgentMailOperationDecision =
       recipients: NormalizedAgentMailRecipients;
       subject?: string;
       sendAt?: number;
+      addLabels?: string[];
+      removeLabels?: string[];
     }
   | { allowed: false; reason: AgentMailOperationDenialReason };
 
@@ -157,6 +165,14 @@ export interface AgentMailOperationManifest {
     subjectHash: string | null;
     textHash: string | null;
     htmlHash: string | null;
+  }>;
+  readonly mailbox: Readonly<{
+    listLimit: number | null;
+    pageTokenHash: string | null;
+    includeTrash: boolean | null;
+    searchQueryHash: string | null;
+    addLabels: readonly string[];
+    removeLabels: readonly string[];
   }>;
   readonly attachments: readonly Readonly<{
     attachmentId: string | null;
@@ -367,6 +383,8 @@ function requireResource(input: AgentMailOperationInput): boolean {
   switch (input.action) {
     case "get_message":
     case "update_message_labels":
+    case "trash_message":
+    case "restore_message":
     case "delete_message":
     case "create_reply_draft":
     case "create_reply_all_draft":
@@ -377,6 +395,8 @@ function requireResource(input: AgentMailOperationInput): boolean {
       return validProviderIdentifier(input.messageId);
     case "get_thread":
     case "update_thread_labels":
+    case "trash_thread":
+    case "restore_thread":
     case "delete_thread":
       return validProviderIdentifier(input.threadId);
     case "get_attachment":
@@ -398,6 +418,10 @@ function requiresProviderRevision(action: AgentMailOperation): boolean {
   return [
     "update_message_labels",
     "update_thread_labels",
+    "trash_message",
+    "restore_message",
+    "trash_thread",
+    "restore_thread",
     "create_reply_draft",
     "create_reply_all_draft",
     "create_forward_draft",
@@ -477,6 +501,18 @@ export function evaluateAgentMailOperation(
       return { allowed: false, reason: "list_limit_exceeded" };
     }
   }
+  if (
+    input.pageToken !== undefined &&
+    (typeof input.pageToken !== "string" ||
+      input.pageToken.length < 1 ||
+      input.pageToken.length > 4_096 ||
+      /[\0\r\n]/.test(input.pageToken))
+  ) {
+    return { allowed: false, reason: "resource_invalid" };
+  }
+  if (input.includeTrash !== undefined && typeof input.includeTrash !== "boolean") {
+    return { allowed: false, reason: "resource_invalid" };
+  }
   if (input.action === "search_messages" || input.action === "search_threads") {
     const limit = input.listLimit ?? config.mailbox.maxListResults;
     if (
@@ -511,6 +547,30 @@ export function evaluateAgentMailOperation(
     ) {
       return { allowed: false, reason: "label_not_allowed" };
     }
+    const addCount = add.length;
+    return {
+      allowed: true,
+      recipients: { to: [], cc: [], bcc: [] },
+      addLabels: normalized.slice(0, addCount),
+      removeLabels: normalized.slice(addCount),
+    };
+  }
+  if (
+    input.action === "trash_message" ||
+    input.action === "restore_message" ||
+    input.action === "trash_thread" ||
+    input.action === "restore_thread"
+  ) {
+    if (!config.mailbox.allowTrashRestore) {
+      return { allowed: false, reason: "operation_disabled" };
+    }
+    const trash = input.action === "trash_message" || input.action === "trash_thread";
+    return {
+      allowed: true,
+      recipients: { to: [], cc: [], bcc: [] },
+      addLabels: trash ? ["trash"] : [],
+      removeLabels: trash ? [] : ["trash"],
+    };
   }
   if (input.action === "get_attachment" && !config.mailbox.allowAttachmentAccess) {
     return { allowed: false, reason: "attachment_access_disabled" };
@@ -676,6 +736,14 @@ export function createAgentMailOperationManifest(
       subjectHash: decision.subject === undefined ? null : sha256(decision.subject),
       textHash: input.text === undefined ? null : sha256(input.text),
       htmlHash: input.html === undefined ? null : sha256(input.html),
+    },
+    mailbox: {
+      listLimit: input.listLimit ?? null,
+      pageTokenHash: input.pageToken === undefined ? null : sha256(input.pageToken),
+      includeTrash: input.includeTrash ?? null,
+      searchQueryHash: input.searchQuery === undefined ? null : sha256(input.searchQuery),
+      addLabels: [...(decision.addLabels ?? [])],
+      removeLabels: [...(decision.removeLabels ?? [])],
     },
     attachments,
     source: {

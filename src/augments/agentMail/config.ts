@@ -31,7 +31,10 @@ const MAILBOX_FIELDS = new Set([
   "maxSearchQueryBytes",
   "allowLabelMutation",
   "allowedLabels",
+  "allowTrashRestore",
   "allowAttachmentAccess",
+  "maxAttachmentBytes",
+  "allowedAttachmentTypes",
 ]);
 const DRAFT_FIELDS = new Set([
   "allowNew",
@@ -109,7 +112,10 @@ export interface ValidatedAgentMailConfig {
     maxSearchQueryBytes: number;
     allowLabelMutation: boolean;
     allowedLabels: string[];
+    allowTrashRestore: boolean;
     allowAttachmentAccess: boolean;
+    maxAttachmentBytes: number;
+    allowedAttachmentTypes: string[];
   };
   drafts: {
     allowNew: boolean;
@@ -311,6 +317,31 @@ function contentTypeList(value: unknown, maxAttachments: number): string[] {
   return types;
 }
 
+function mailboxContentTypeList(value: unknown, enabled: boolean): string[] {
+  const types = strictStringList(value, "mailbox.allowedAttachmentTypes", (entry, index) => {
+    const normalized = entry.trim().toLowerCase();
+    if (
+      !CONTENT_TYPE_PATTERN.test(normalized) ||
+      normalized === "*/*" ||
+      normalized.startsWith("*/")
+    ) {
+      throw new Error(
+        `agentMail: mailbox.allowedAttachmentTypes[${index}] must be an exact MIME type or a bounded type/* pattern`,
+      );
+    }
+    return normalized;
+  });
+  if (enabled && types.length === 0) {
+    return ["text/plain", "text/csv", "application/json", "application/xml", "text/xml"];
+  }
+  if (!enabled && types.length > 0) {
+    throw new Error(
+      "agentMail: mailbox.allowedAttachmentTypes requires mailbox.allowAttachmentAccess: true",
+    );
+  }
+  return types;
+}
+
 function policyGeneration(value: object): string {
   return createHash("sha256")
     .update("agentmail-policy-generation/v1\0", "utf8")
@@ -417,10 +448,26 @@ export function validateAgentMailConfig(value: unknown): ValidatedAgentMailConfi
     "mailbox.allowLabelMutation",
   );
   const allowedLabels = labelList(mailbox.allowedLabels, allowLabelMutation);
+  const allowTrashRestore = optionalBoolean(
+    mailbox.allowTrashRestore,
+    false,
+    "mailbox.allowTrashRestore",
+  );
   const allowAttachmentAccess = optionalBoolean(
     mailbox.allowAttachmentAccess,
     false,
     "mailbox.allowAttachmentAccess",
+  );
+  const mailboxMaxAttachmentBytes = boundedInteger(
+    mailbox.maxAttachmentBytes,
+    1_048_576,
+    "mailbox.maxAttachmentBytes",
+    1,
+    1_048_576,
+  );
+  const mailboxAllowedAttachmentTypes = mailboxContentTypeList(
+    mailbox.allowedAttachmentTypes,
+    allowAttachmentAccess,
   );
 
   const drafts = config.drafts === undefined ? {} : objectValue(config.drafts, "drafts");
@@ -563,7 +610,10 @@ export function validateAgentMailConfig(value: unknown): ValidatedAgentMailConfi
       ),
       allowLabelMutation,
       allowedLabels,
+      allowTrashRestore,
       allowAttachmentAccess,
+      maxAttachmentBytes: mailboxMaxAttachmentBytes,
+      allowedAttachmentTypes: mailboxAllowedAttachmentTypes,
     },
     drafts: {
       allowNew: allowNewDraft,

@@ -8,6 +8,7 @@ import type {
   PeerIdentity,
   Tool,
   ToolExecuteContext,
+  ToolResult,
   TransportKernel,
   TurnResult,
   TurnState,
@@ -17,11 +18,15 @@ import type { NotifyDispatchHost, NotifyInternalDispatchInput } from "../../../s
 import { validateAgentMailConfig } from "../../../src/augments/agentMail/config";
 import { createAgentMailRuntime } from "../../../src/augments/agentMail/runtime";
 import type {
+  AgentMailAttachmentMetadata,
   AgentMailDraft,
   AgentMailMessage,
   AgentMailMessageSummary,
+  AgentMailPage,
   AgentMailProvider,
+  AgentMailThreadSummary,
 } from "../../../src/augments/agentMail/provider";
+import type { HttpClient } from "../../../src/http";
 import {
   createAgentMailOrchestrationStore,
   hashAgentMailOrchestrationValue,
@@ -104,6 +109,15 @@ class FakeProvider implements AgentMailProvider {
   created: Array<Parameters<AgentMailProvider["createReplyDraft"]>[0]> = [];
   sentDrafts: Array<Parameters<AgentMailProvider["sendDraft"]>[0]> = [];
   sentMessages: Array<Parameters<AgentMailProvider["sendMessage"]>[0]> = [];
+  messageLabelUpdates: Array<{ messageId: string; addLabels?: string[]; removeLabels?: string[] }> =
+    [];
+  threadLabelUpdates: Array<{ threadId: string; addLabels?: string[]; removeLabels?: string[] }> =
+    [];
+  deletedMessages: string[] = [];
+  deletedThreads: string[] = [];
+  messagePages: AgentMailPage<AgentMailMessageSummary>[] = [];
+  threadPages: AgentMailPage<AgentMailThreadSummary>[] = [];
+  attachmentMetadata?: AgentMailAttachmentMetadata;
   getMessageCalls = 0;
   handlers?: Parameters<AgentMailProvider["connect"]>[0];
 
@@ -131,6 +145,29 @@ class FakeProvider implements AgentMailProvider {
     if (!value) throw new Error("message not found");
     return value;
   }
+  async listMailboxMessages(input: { pageToken?: string; limit?: number } = {}) {
+    const index = input.pageToken ? Number(input.pageToken) : 0;
+    return this.messagePages[index] ?? { items: [], count: 0, limit: input.limit };
+  }
+  async searchMessages(input: { pageToken?: string; limit?: number }) {
+    const index = input.pageToken ? Number(input.pageToken) : 0;
+    return this.messagePages[index] ?? { items: [], count: 0, limit: input.limit };
+  }
+  async updateMessageLabels(input: {
+    messageId: string;
+    addLabels?: string[];
+    removeLabels?: string[];
+  }) {
+    this.messageLabelUpdates.push(input);
+    return { messageId: input.messageId, labels: input.addLabels ?? [] };
+  }
+  async deleteMessagePermanently(messageId: string) {
+    this.deletedMessages.push(messageId);
+  }
+  async getMessageAttachment() {
+    if (!this.attachmentMetadata) throw new Error("attachment not found");
+    return this.attachmentMetadata;
+  }
   async getThread(threadId: string) {
     const messages = [...this.messages.values()].filter((item) => item.threadId === threadId);
     return {
@@ -141,6 +178,25 @@ class FakeProvider implements AgentMailProvider {
       updatedAt: messages.at(-1)?.updatedAt ?? 0,
       messages,
     };
+  }
+  async listThreads(input: { pageToken?: string; limit?: number } = {}) {
+    const index = input.pageToken ? Number(input.pageToken) : 0;
+    return this.threadPages[index] ?? { items: [], count: 0, limit: input.limit };
+  }
+  async searchThreads(input: { pageToken?: string; limit?: number }) {
+    const index = input.pageToken ? Number(input.pageToken) : 0;
+    return this.threadPages[index] ?? { items: [], count: 0, limit: input.limit };
+  }
+  async updateThreadLabels(input: {
+    threadId: string;
+    addLabels?: string[];
+    removeLabels?: string[];
+  }) {
+    this.threadLabelUpdates.push(input);
+    return { threadId: input.threadId, labels: input.addLabels ?? [] };
+  }
+  async deleteThreadPermanently(threadId: string) {
+    this.deletedThreads.push(threadId);
   }
   async listDrafts() {
     return { drafts: [...this.drafts.values()] };
@@ -193,6 +249,9 @@ function fixture(
     provider?: FakeProvider;
     outboundGlobalMaxPerHour?: number;
     clock?: () => number;
+    mailbox?: Record<string, unknown>;
+    destructive?: Record<string, unknown>;
+    attachmentClient?: Pick<HttpClient, "get">;
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "auggy-agentmail-runtime-"));
@@ -217,6 +276,8 @@ function fixture(
         }
       : { mode: "none" },
     replies: options.inbound ? { mode: "review", allowReplyAll: false } : { mode: "disabled" },
+    ...(options.mailbox === undefined ? {} : { mailbox: options.mailbox }),
+    ...(options.destructive === undefined ? {} : { destructive: options.destructive }),
     ...(options.notifications ? { notifications: { destination: "creator" } } : {}),
     outbound: {
       allowedTrustLevels: ["creator"],
@@ -228,7 +289,14 @@ function fixture(
       },
     },
   });
-  const augment = createAgentMailRuntime(config, { provider, store });
+  const augment = createAgentMailRuntime(config, {
+    provider,
+    store,
+    ...(options.attachmentClient === undefined
+      ? {}
+      : { attachmentClient: options.attachmentClient }),
+    ...(options.clock === undefined ? {} : { clock: options.clock }),
+  });
   return { root, store, provider, augment };
 }
 
@@ -301,6 +369,10 @@ function requireTool(augment: Augment, name: string): Tool {
   const value = augment.tools?.find((candidate) => candidate.name === name);
   if (!value) throw new Error(`missing tool ${name}`);
   return value;
+}
+
+function toolJson(value: string | ToolResult): Record<string, unknown> {
+  return JSON.parse(typeof value === "string" ? value : value.content) as Record<string, unknown>;
 }
 
 function creatorTurn(turnId: string, threadId: string, text: string): TurnState {
@@ -904,6 +976,206 @@ describe("AgentMail provider-native runtime", () => {
     });
     await f.augment.onTurnEnd?.({ turnId: "revise_turn" } as TurnResult);
     await f.augment.onShutdown?.();
+    f.store.close();
+  });
+
+  test("keeps mailbox reads creator-only, bounded, paginated, and distinct from provider errors", async () => {
+    const f = fixture({ mailbox: { maxListResults: 2 } });
+    const first = message();
+    const second = message({ messageId: "message_2", preview: "x".repeat(10_000) });
+    f.provider.messages.set(first.messageId, first);
+    f.provider.messages.set(second.messageId, second);
+    f.provider.messagePages = [
+      {
+        items: [summary(first), summary(second)],
+        count: 2,
+        limit: 2,
+        nextPageToken: "next_1",
+      },
+      { items: [], count: 0, limit: 2 },
+    ];
+    const list = requireTool(f.augment, "list_mail_messages");
+    const publicResult = await list.execute(
+      { limit: 2, includeTrash: false },
+      toolContext({ peer: { ...creatorPeer, trustLevel: "public" } }),
+    );
+    expect(publicResult).toMatchObject({ isError: true });
+
+    const firstPage = toolJson(
+      await list.execute({ limit: 2, includeTrash: false }, toolContext()),
+    );
+    expect(firstPage).toMatchObject({ status: "ok", empty: false, nextPageToken: "next_1" });
+    expect(firstPage.messages).toHaveLength(2);
+    expect(JSON.stringify(firstPage).length).toBeLessThan(8_000);
+    expect(
+      toolJson(
+        await list.execute({ limit: 2, includeTrash: false, pageToken: "1" }, toolContext()),
+      ),
+    ).toMatchObject({ status: "ok", empty: true, messages: [] });
+
+    f.provider.searchMessages = async () => {
+      throw new Error("provider response includes private content");
+    };
+    const search = requireTool(f.augment, "search_mail_messages");
+    const failure = await search.execute({ query: "order", limit: 2 }, toolContext());
+    expect(failure).toMatchObject({ isError: true });
+    expect(JSON.stringify(failure)).toContain("runtime_failure");
+    expect(JSON.stringify(failure)).not.toContain("private content");
+    f.store.close();
+  });
+
+  test("reads bounded thread content and fails closed when an optional provider method is absent", async () => {
+    const f = fixture({ mailbox: { maxListResults: 1 } });
+    const first = message({ text: "old" });
+    const second = message({ messageId: "message_2", text: "new" });
+    f.provider.messages.set(first.messageId, first);
+    f.provider.messages.set(second.messageId, second);
+    const get = requireTool(f.augment, "get_mail_thread");
+    const result = toolJson(await get.execute({ threadId: "thread_1" }, toolContext()));
+    expect(result).toMatchObject({ status: "ok", messagesTruncated: true });
+    expect(result.messages).toHaveLength(1);
+    expect(JSON.stringify(result)).toContain("message_2");
+
+    (f.provider as unknown as { listThreads?: AgentMailProvider["listThreads"] }).listThreads =
+      undefined;
+    const list = requireTool(f.augment, "list_mail_threads");
+    const unavailable = await list.execute({ limit: 1, includeTrash: false }, toolContext());
+    expect(unavailable).toMatchObject({ isError: true });
+    expect(JSON.stringify(unavailable)).toContain("unavailable");
+    f.store.close();
+  });
+
+  test("normalizes custom labels and separates reversible trash from permanent delete", async () => {
+    const f = fixture({
+      mailbox: {
+        allowLabelMutation: true,
+        allowedLabels: ["important", "customer"],
+        allowTrashRestore: true,
+      },
+    });
+    f.provider.messages.set("message_1", message());
+    const update = requireTool(f.augment, "update_mail_message_labels");
+    expect(
+      toolJson(
+        await update.execute(
+          { messageId: "message_1", addLabels: [" Important "], removeLabels: ["CUSTOMER"] },
+          toolContext(),
+        ),
+      ),
+    ).toMatchObject({ status: "ok", messageId: "message_1" });
+    expect(f.provider.messageLabelUpdates[0]).toEqual({
+      messageId: "message_1",
+      addLabels: ["important"],
+      removeLabels: ["customer"],
+    });
+
+    await requireTool(f.augment, "trash_mail_message").execute(
+      { messageId: "message_1" },
+      toolContext(),
+    );
+    await requireTool(f.augment, "restore_mail_message").execute(
+      { messageId: "message_1" },
+      toolContext(),
+    );
+    expect(f.provider.messageLabelUpdates.slice(1)).toEqual([
+      { messageId: "message_1", addLabels: ["trash"], removeLabels: [] },
+      { messageId: "message_1", addLabels: [], removeLabels: ["trash"] },
+    ]);
+    const deniedDelete = await requireTool(f.augment, "delete_mail_message_permanently").execute(
+      { messageId: "message_1" },
+      toolContext(),
+    );
+    expect(deniedDelete).toMatchObject({ isError: true });
+    expect(f.provider.deletedMessages).toEqual([]);
+    f.store.close();
+
+    const destructive = fixture({ destructive: { allowPermanentDelete: true } });
+    destructive.provider.messages.set("message_1", message());
+    expect(
+      toolJson(
+        await requireTool(destructive.augment, "delete_mail_message_permanently").execute(
+          { messageId: "message_1" },
+          toolContext(),
+        ),
+      ),
+    ).toEqual({ status: "deleted", messageId: "message_1", permanent: true });
+    expect(destructive.provider.deletedMessages).toEqual(["message_1"]);
+    destructive.store.close();
+  });
+
+  test("applies the same normalized label and trash policy to threads", async () => {
+    const f = fixture({
+      mailbox: {
+        allowLabelMutation: true,
+        allowedLabels: ["important"],
+        allowTrashRestore: true,
+      },
+    });
+    f.provider.messages.set("message_1", message());
+    await requireTool(f.augment, "update_mail_thread_labels").execute(
+      { threadId: "thread_1", addLabels: [" IMPORTANT "] },
+      toolContext(),
+    );
+    await requireTool(f.augment, "trash_mail_thread").execute(
+      { threadId: "thread_1" },
+      toolContext(),
+    );
+    expect(f.provider.threadLabelUpdates).toEqual([
+      { threadId: "thread_1", addLabels: ["important"], removeLabels: [] },
+      { threadId: "thread_1", addLabels: ["trash"], removeLabels: [] },
+    ]);
+    f.store.close();
+  });
+
+  test("reads safe text attachments without exposing the provider signed URL", async () => {
+    const signedUrl = "https://files.agentmail.example/download?secret=do-not-leak";
+    const provider = new FakeProvider();
+    provider.attachmentMetadata = {
+      attachmentId: "attachment_1",
+      filename: "order.txt",
+      size: 5,
+      contentType: "text/plain",
+      downloadUrl: signedUrl,
+      expiresAt: 20_000,
+    };
+    const headers = new Headers({ "content-type": "text/plain", "content-length": "5" });
+    const f = fixture({
+      provider,
+      clock: () => 10_000,
+      mailbox: {
+        allowAttachmentAccess: true,
+        maxAttachmentBytes: 100,
+        allowedAttachmentTypes: ["text/plain"],
+      },
+      attachmentClient: {
+        async get() {
+          return {
+            finalUrl: signedUrl,
+            status: 200,
+            statusText: "OK",
+            contentType: "text/plain",
+            headers,
+            body: "hello",
+          };
+        },
+      },
+    });
+    const tool = requireTool(f.augment, "read_mail_attachment");
+    expect(
+      await tool.execute(
+        { messageId: "message_1", attachmentId: "attachment_1" },
+        toolContext({ peer: { ...creatorPeer, trustLevel: "public" } }),
+      ),
+    ).toMatchObject({ isError: true });
+    const result = toolJson(
+      await tool.execute({ messageId: "message_1", attachmentId: "attachment_1" }, toolContext()),
+    );
+    expect(result).toMatchObject({
+      status: "ok",
+      attachment: { filename: "order.txt", contentType: "text/plain", size: 5, text: "hello" },
+    });
+    expect(JSON.stringify(result)).not.toContain("secret");
+    expect(JSON.stringify(result)).not.toContain("download");
     f.store.close();
   });
 });

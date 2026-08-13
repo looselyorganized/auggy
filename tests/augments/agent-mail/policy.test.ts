@@ -173,7 +173,10 @@ describe("AgentMail configuration contract", () => {
         maxSearchQueryBytes: 1_024,
         allowLabelMutation: false,
         allowedLabels: [],
+        allowTrashRestore: false,
         allowAttachmentAccess: false,
+        maxAttachmentBytes: 1_048_576,
+        allowedAttachmentTypes: [],
       },
       drafts: {
         allowNew: false,
@@ -506,6 +509,37 @@ describe("AgentMail comprehensive operation policy", () => {
     ).toEqual({ allowed: false, reason: "recipient_malformed" });
   });
 
+  test("normalizes custom labels and keeps trash and restore on a separate gate", () => {
+    const policy = comprehensiveConfig({ mailbox: { allowTrashRestore: true } });
+    expect(
+      evaluateAgentMailOperation(
+        operation("update_message_labels", {
+          addLabels: [" IMPORTANT "],
+          removeLabels: ["Customer"],
+        }),
+        policy,
+      ),
+    ).toMatchObject({
+      allowed: true,
+      addLabels: ["important"],
+      removeLabels: ["customer"],
+    });
+    expect(evaluateAgentMailOperation(operation("trash_message"), policy)).toMatchObject({
+      allowed: true,
+      addLabels: ["trash"],
+      removeLabels: [],
+    });
+    expect(evaluateAgentMailOperation(operation("restore_thread"), policy)).toMatchObject({
+      allowed: true,
+      addLabels: [],
+      removeLabels: ["trash"],
+    });
+    expect(evaluateAgentMailOperation(operation("trash_message"), comprehensiveConfig())).toEqual({
+      allowed: false,
+      reason: "operation_disabled",
+    });
+  });
+
   test("allows only the exact registered augment worker to create inbound review drafts", () => {
     const policy = comprehensiveConfig();
     const systemAuthority = {
@@ -736,6 +770,10 @@ describe("AgentMail operation manifest", () => {
       [operation("create_new_draft"), policy],
       [operation("send_message"), comprehensiveConfig({ inboxId: "other@agentmail.to" })],
       [operation("send_message", { messageId: "msg_2" }), policy],
+      [operation("send_message", { listLimit: 11 }), policy],
+      [operation("send_message", { pageToken: "next-page" }), policy],
+      [operation("send_message", { searchQuery: "changed query" }), policy],
+      [operation("send_message", { includeTrash: true }), policy],
       [operation("send_message", { recipients: { to: ["other@example.com"] } }), policy],
       [operation("send_message", { text: "Changed" }), policy],
       [operation("send_message", { html: "<p>Changed</p>" }), policy],
@@ -778,6 +816,16 @@ describe("AgentMail operation manifest", () => {
       if (!variant.allowed) throw new Error(`variant manifest denied: ${variant.reason}`);
       expect(variant.hash).not.toBe(base.hash);
     }
+    const labelBase = createAgentMailOperationManifest(
+      operation("update_message_labels", { addLabels: ["important"] }),
+      policy,
+    );
+    const labelChanged = createAgentMailOperationManifest(
+      operation("update_message_labels", { addLabels: ["customer"] }),
+      policy,
+    );
+    if (!labelBase.allowed || !labelChanged.allowed) throw new Error("label manifest denied");
+    expect(labelChanged.hash).not.toBe(labelBase.hash);
   });
 
   test("canonical hashing ignores JavaScript object insertion order", () => {
@@ -794,6 +842,7 @@ describe("AgentMail operation manifest", () => {
       source: created.manifest.source,
       attachments: created.manifest.attachments,
       body: created.manifest.body,
+      mailbox: created.manifest.mailbox,
       recipients: created.manifest.recipients,
       resources: created.manifest.resources,
       inboxId: created.manifest.inboxId,
