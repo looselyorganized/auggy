@@ -139,6 +139,16 @@ evidence before tagging. For releases unrelated to AgentMail connectivity, the
 canary remains optional. It never publishes packages or replaces the normal
 release gates.
 
+For a release that changes AgentMail mutation or inbound orchestration, also
+dispatch `agentmail-live-e2e.yml` from that exact `main` SHA. This protected,
+manual workflow creates one temporary AgentMail sender inbox, sends a bounded
+message into the stable canary inbox, exercises the shipped WebSocket wake,
+provider-native review draft, creator revision/send, reply delivery, and
+restart replay paths, then deletes the temporary inbox and both canary message
+copies. It uses the established protected key unchanged and never creates,
+narrows, rotates, or deletes an API key. A failed cleanup is a hard failure and
+leaves the temporary inbox identifiable by `source: auggy-live-e2e` metadata.
+
 ## Cutting a new release
 
 ### 0. Between releases (feature PRs)
