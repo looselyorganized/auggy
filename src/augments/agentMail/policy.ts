@@ -570,15 +570,12 @@ function legacyCompositionReason(
   }
 }
 
-const PROVIDER_ID_PATTERN = /^[A-Za-z0-9._~@+\-:]+$/;
-
 function validProviderIdentifier(value: string | undefined): boolean {
-  return (
-    typeof value === "string" &&
-    value.length > 0 &&
-    value.length <= 512 &&
-    PROVIDER_ID_PATTERN.test(value)
-  );
+  if (typeof value !== "string" || value.length === 0 || value.length > 1_024) return false;
+  return ![...value].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 31 || codePoint === 127;
+  });
 }
 
 function validManifestIdentity(value: string | undefined): boolean {

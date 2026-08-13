@@ -324,6 +324,28 @@ describe("AgentMail provider boundary", () => {
     });
   });
 
+  test("round-trips opaque provider message identifiers", async () => {
+    const messageId = "<live/message=42+reply@example.agentmail>";
+    const threadId = "<live/thread=42@example.agentmail>";
+    const mail = provider(
+      fakeSdk({
+        getMessage: async () => message({ messageId, text: "Full body" }),
+        sendMessage: async () => ({ messageId, threadId }),
+      }),
+    );
+
+    const sent = await mail.sendMessage({
+      to: ["customer@example.com"],
+      text: "Full body",
+      idempotencyKey: "opaque-id-round-trip",
+    });
+    expect(sent).toEqual({ messageId, threadId });
+    expect(await mail.getMessage(sent.messageId)).toMatchObject({ messageId, text: "Full body" });
+    await expect(mail.getMessage("message\r\ninjected")).rejects.toMatchObject({
+      details: { code: "configuration_invalid", operation: "validate" },
+    });
+  });
+
   test("rejects present invalid optional draft fields instead of treating them as absent", async () => {
     const mail = provider(
       fakeSdk({

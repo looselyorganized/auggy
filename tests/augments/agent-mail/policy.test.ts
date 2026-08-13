@@ -589,6 +589,25 @@ describe("AgentMail comprehensive operation policy", () => {
     ).toEqual({ allowed: false, reason: "resource_invalid" });
   });
 
+  test("treats provider identifiers as bounded opaque values", () => {
+    const messageId = "<live/message=42+reply@example.agentmail>";
+    expect(
+      evaluateAgentMailOperation(operation("get_message", { messageId }), comprehensiveConfig()),
+    ).toMatchObject({ allowed: true });
+    expect(
+      createAgentMailOperationManifest(
+        operation("get_message", { messageId }),
+        comprehensiveConfig(),
+      ),
+    ).toMatchObject({ allowed: true, manifest: { resources: { messageId } } });
+    expect(
+      evaluateAgentMailOperation(
+        operation("get_message", { messageId: "message\r\ninjected" }),
+        comprehensiveConfig(),
+      ),
+    ).toEqual({ allowed: false, reason: "resource_invalid" });
+  });
+
   test("requires explicit forward recipients and normalizes draft reply-to and labels", () => {
     const policy = comprehensiveConfig();
     expect(
