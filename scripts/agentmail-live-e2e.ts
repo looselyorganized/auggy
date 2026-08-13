@@ -24,6 +24,7 @@ import {
 const CONFIRMATION = "create-temporary-inbox-and-send-live-email";
 const OPERATION_TIMEOUT_MS = 30_000;
 const DELIVERY_TIMEOUT_MS = 90_000;
+const POLL_INTERVAL_MS = 3_000;
 
 const creator: PeerIdentity = {
   id: "creator_agentmail_live_canary",
@@ -45,6 +46,20 @@ interface DraftListItem {
   inReplyTo?: string;
   state?: string;
   management?: string;
+}
+
+interface KernelProbe {
+  turns: number;
+}
+
+interface LiveStageDiagnostics {
+  targetDelivery?: "received" | "spam" | "blocked" | "unauthenticated";
+  kernelTurns: number;
+  providerDraft: boolean;
+  managedDraftState?: string;
+  managedDraftManagement?: string;
+  inboundState?: string;
+  inboundError?: string;
 }
 
 function readEnvironment(): LiveCanaryEnvironment {
@@ -102,24 +117,21 @@ async function withTimeout<T>(
 }
 
 async function waitFor<T>(probe: () => Promise<T | undefined>, label: string): Promise<T> {
-  return withTimeout(
-    (async () => {
-      while (true) {
-        const value = await probe();
-        if (value !== undefined) return value;
-        await Bun.sleep(1_000);
-      }
-    })(),
-    label,
-    DELIVERY_TIMEOUT_MS,
-  );
+  const deadline = Date.now() + DELIVERY_TIMEOUT_MS;
+  while (Date.now() < deadline) {
+    const value = await probe();
+    if (value !== undefined) return value;
+    await Bun.sleep(Math.min(POLL_INTERVAL_MS, Math.max(0, deadline - Date.now())));
+  }
+  throw new Error(`Timed out waiting for ${label}.`);
 }
 
-function kernel(reply: string): TransportKernel {
+function kernel(reply: string, probe: KernelProbe): TransportKernel {
   let outbound: ((peer: PeerIdentity, message: OutboundMessage) => Promise<void>) | undefined;
   return {
     async handleInbound(trigger: TurnTrigger) {
       if (!trigger.peer || !outbound) throw new Error("Live AgentMail turn identity was missing.");
+      probe.turns += 1;
       const response: OutboundMessage = {
         parts: [{ kind: "text", text: reply }],
         contextId: trigger.contextId,
@@ -192,10 +204,14 @@ function context(turnId: string, operationId: string): ToolExecuteContext {
   };
 }
 
-async function boot(augment: ReturnType<typeof agentMail>, reply: string): Promise<void> {
+async function boot(
+  augment: ReturnType<typeof agentMail>,
+  reply: string,
+  probe: KernelProbe,
+): Promise<void> {
   await withTimeout(augment.onBoot?.() ?? Promise.resolve(), "AgentMail runtime boot");
   if (!augment.transport) throw new Error("Live AgentMail runtime omitted its transport.");
-  await augment.transport.register(kernel(reply), "agentMail");
+  await augment.transport.register(kernel(reply, probe), "agentMail");
   await withTimeout(augment.transport.ready?.() ?? Promise.resolve(), "AgentMail transport ready");
 }
 
@@ -248,17 +264,98 @@ async function findManagedDraft(
     throw new Error("AgentMail draft listing returned an invalid contract.");
   }
   return (value.drafts as DraftListItem[]).find(
-    (draft) =>
-      draft.subject?.includes(marker) === true &&
-      draft.state === "ready" &&
-      draft.management === "managed" &&
-      typeof draft.inReplyTo === "string",
+    (draft) => draft.subject?.includes(marker) === true,
   );
 }
 
-async function deleteMessage(provider: AgentMailProvider, messageId: string | undefined) {
-  if (!messageId || !provider.deleteMessagePermanently) return;
-  await provider.deleteMessagePermanently(messageId);
+async function findTargetDelivery(provider: AgentMailProvider, subject: string) {
+  if (!provider.listMailboxMessages) {
+    throw new Error("Live AgentMail provider omitted mailbox message listing.");
+  }
+  const page = await provider.listMailboxMessages({
+    subject: [subject],
+    limit: 10,
+    includeSpam: true,
+    includeBlocked: true,
+    includeUnauthenticated: true,
+    includeTrash: true,
+  });
+  const matches = page.items.filter((message) => message.subject === subject);
+  if (matches.length > 1) {
+    throw new Error("Live AgentMail target inbox received a duplicate canary message.");
+  }
+  return matches[0];
+}
+
+async function findProviderDraft(provider: AgentMailProvider, replySubject: string) {
+  if (!provider.listMailboxDrafts) {
+    throw new Error("Live AgentMail provider omitted mailbox draft listing.");
+  }
+  const page = await provider.listMailboxDrafts({ limit: 100 });
+  const matches = page.items.filter((draft) => draft.subject === replySubject);
+  if (matches.length > 1) {
+    throw new Error("Live AgentMail target inbox contained duplicate canary drafts.");
+  }
+  return matches[0];
+}
+
+async function updateRuntimeDiagnostics(
+  augment: Augment,
+  diagnostics: LiveStageDiagnostics,
+): Promise<void> {
+  const projection = (await augment.adminInfo?.())?.projection;
+  if (projection?.kind !== "mail") return;
+  diagnostics.inboundState = projection.inbound.state;
+  diagnostics.inboundError = projection.inbound.lastErrorCode;
+}
+
+function stagedTimeout(diagnostics: LiveStageDiagnostics): Error {
+  const managed = diagnostics.managedDraftState
+    ? `${diagnostics.managedDraftState}/${diagnostics.managedDraftManagement ?? "unknown"}`
+    : "none";
+  return new Error(
+    "Live AgentMail review draft timed out " +
+      `(targetDelivery=${diagnostics.targetDelivery ?? "none"}, ` +
+      `kernelTurns=${diagnostics.kernelTurns}, providerDraft=${diagnostics.providerDraft ? "yes" : "no"}, ` +
+      `managedDraft=${managed}, inboundState=${diagnostics.inboundState ?? "unknown"}, ` +
+      `inboundError=${diagnostics.inboundError ?? "none"}).`,
+  );
+}
+
+async function cleanupCurrentRun(input: {
+  provider: AgentMailProvider;
+  subject: string;
+  replySubject: string;
+  knownMessageIds: Array<string | undefined>;
+}): Promise<void> {
+  const messageIds = new Set(input.knownMessageIds.filter((id): id is string => id !== undefined));
+  const draftIds = new Set<string>();
+  if (input.provider.listMailboxMessages) {
+    for (const subject of [input.subject, input.replySubject]) {
+      const page = await input.provider.listMailboxMessages({
+        subject: [subject],
+        limit: 10,
+        includeSpam: true,
+        includeBlocked: true,
+        includeUnauthenticated: true,
+        includeTrash: true,
+      });
+      for (const message of page.items) {
+        if (message.subject === subject) messageIds.add(message.messageId);
+      }
+    }
+  }
+  if (input.provider.listMailboxDrafts) {
+    const page = await input.provider.listMailboxDrafts({ limit: 100 });
+    for (const draft of page.items) {
+      if (draft.subject === input.replySubject) draftIds.add(draft.draftId);
+    }
+  }
+  if (!input.provider.deleteMessagePermanently || !input.provider.deleteDraft) {
+    throw new Error("Live AgentMail provider omitted current-run cleanup operations.");
+  }
+  for (const draftId of draftIds) await input.provider.deleteDraft(draftId);
+  for (const messageId of messageIds) await input.provider.deleteMessagePermanently(messageId);
 }
 
 function safeFailure(error: unknown): string {
@@ -284,6 +381,7 @@ export async function runAgentMailLiveE2E(): Promise<void> {
   const firstDraftBody = `Live provider draft ${marker}.`;
   const revisedDraftBody = `Live provider revised draft ${marker}.`;
   const subjectPrefix = `[Auggy Live E2E ${marker}] `;
+  const replySubject = `${subjectPrefix}Re: ${subject}`;
   const stateDir = mkdtempSync(join(tmpdir(), "auggy-agentmail-live-"));
   const dbPath = join(stateDir, "orchestration.db");
   const sdk = new AgentMailClient({ apiKey: env.apiKey });
@@ -296,6 +394,7 @@ export async function runAgentMailLiveE2E(): Promise<void> {
   let sentReplyMessageId: string | undefined;
   let firstRuntime: ReturnType<typeof agentMail> | undefined;
   let restartRuntime: ReturnType<typeof agentMail> | undefined;
+  let targetVerified = false;
   let failure: unknown;
   const cleanupFailures: string[] = [];
   const unhandled: unknown[] = [];
@@ -304,6 +403,7 @@ export async function runAgentMailLiveE2E(): Promise<void> {
 
   try {
     const targetIdentity = await withTimeout(targetProvider.verifyAccess(), "target inbox access");
+    targetVerified = true;
     if (
       targetIdentity.configuredInboxId !== env.targetInboxId ||
       targetIdentity.emailAddress !== env.targetInboxEmail
@@ -331,7 +431,8 @@ export async function runAgentMailLiveE2E(): Promise<void> {
       dbPath,
       subjectPrefix,
     });
-    await boot(firstRuntime, firstDraftBody);
+    const firstProbe: KernelProbe = { turns: 0 };
+    await boot(firstRuntime, firstDraftBody, firstProbe);
 
     await withTimeout(
       senderProvider.sendMessage({
@@ -343,14 +444,55 @@ export async function runAgentMailLiveE2E(): Promise<void> {
       "live inbound send",
     );
 
-    const draft = await waitFor(async () => {
-      const candidate = await findManagedDraft(firstRuntime as Augment, marker);
-      return candidate?.draftId ? candidate : undefined;
-    }, "live inbound wake and review draft creation");
-    if (!draft.draftId || !draft.inReplyTo) {
+    const targetDelivery = await waitFor(
+      () => findTargetDelivery(targetProvider, subject),
+      "live inbound delivery to the target inbox",
+    );
+    inboundMessageId = targetDelivery.messageId;
+    const diagnostics: LiveStageDiagnostics = {
+      targetDelivery: targetDelivery.classification,
+      kernelTurns: 0,
+      providerDraft: false,
+    };
+    if (targetDelivery.classification !== "received") {
+      throw new Error(
+        `Live AgentMail target delivery was classified as ${targetDelivery.classification} and correctly rejected by inbound policy.`,
+      );
+    }
+
+    let draft: DraftListItem | undefined;
+    try {
+      draft = await waitFor(async () => {
+        diagnostics.kernelTurns = firstProbe.turns;
+        const [managed, providerDraft] = await Promise.all([
+          findManagedDraft(firstRuntime as Augment, marker),
+          findProviderDraft(targetProvider, replySubject),
+        ]);
+        diagnostics.providerDraft = providerDraft !== undefined;
+        diagnostics.managedDraftState = managed?.state;
+        diagnostics.managedDraftManagement = managed?.management;
+        await updateRuntimeDiagnostics(firstRuntime as Augment, diagnostics);
+        return managed?.draftId &&
+          managed.state === "ready" &&
+          managed.management === "managed" &&
+          typeof managed.inReplyTo === "string"
+          ? managed
+          : undefined;
+      }, "live inbound wake and review draft creation");
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Timed out waiting for")) {
+        diagnostics.kernelTurns = firstProbe.turns;
+        await updateRuntimeDiagnostics(firstRuntime, diagnostics);
+        throw stagedTimeout(diagnostics);
+      }
+      throw error;
+    }
+    if (!draft?.draftId || !draft.inReplyTo) {
       throw new Error("AgentMail runtime did not preserve the inbound draft source.");
     }
-    inboundMessageId = draft.inReplyTo;
+    if (draft.inReplyTo !== inboundMessageId) {
+      throw new Error("AgentMail runtime attached the review draft to the wrong inbound message.");
+    }
 
     const showTurn = creatorTurn("show-live-draft", `show draft ${draft.draftId}`);
     await firstRuntime.onTurnStart?.(showTurn);
@@ -435,7 +577,7 @@ export async function runAgentMailLiveE2E(): Promise<void> {
       dbPath,
       subjectPrefix,
     });
-    await boot(restartRuntime, "[NO_REPLY]");
+    await boot(restartRuntime, "[NO_REPLY]", { turns: 0 });
     const restartTurn = creatorTurn("restart-live-replay", `send draft ${draft.draftId}`);
     await restartRuntime.onTurnStart?.(restartTurn);
     const restartReplay = toolJson(
@@ -455,15 +597,17 @@ export async function runAgentMailLiveE2E(): Promise<void> {
   } catch (error) {
     failure = error;
   } finally {
-    process.off("unhandledRejection", onUnhandled);
     await firstRuntime?.onShutdown?.().catch(() => undefined);
     await restartRuntime?.onShutdown?.().catch(() => undefined);
-    await deleteMessage(targetProvider, inboundMessageId).catch(() =>
-      cleanupFailures.push("inbound"),
-    );
-    await deleteMessage(targetProvider, sentReplyMessageId).catch(() =>
-      cleanupFailures.push("outbound"),
-    );
+    process.off("unhandledRejection", onUnhandled);
+    if (targetVerified) {
+      await cleanupCurrentRun({
+        provider: targetProvider,
+        subject,
+        replySubject,
+        knownMessageIds: [inboundMessageId, sentReplyMessageId],
+      }).catch(() => cleanupFailures.push("target artifacts"));
+    }
     if (senderInboxId) {
       await sdk.inboxes.delete(senderInboxId).catch(() => cleanupFailures.push("temporary inbox"));
     }
