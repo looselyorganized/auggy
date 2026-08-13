@@ -178,11 +178,11 @@ describe("AgentMail provider canary contract", () => {
       join(import.meta.dir, "../../.github/workflows/agentmail-provider-canary.yml"),
       "utf8",
     );
-    expect(workflow).toContain("secrets.AGENTMAIL_CANARY_RUNTIME_API_KEY");
+    expect(workflow).toContain("secrets.AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY");
     expect(workflow).toContain("vars.AGENTMAIL_CANARY_INBOX_ID");
     expect(workflow).toContain("vars.AGENTMAIL_CANARY_INBOX_EMAIL");
     expect(workflow).toContain("bun scripts/agentmail-provider-canary.ts");
-    expect(workflow).not.toContain("AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY");
+    expect(workflow).not.toContain("AGENTMAIL_CANARY_RUNTIME_API_KEY");
     expect(workflow).not.toMatch(/create(?:s)? one persistent canary inbox/i);
   });
 });

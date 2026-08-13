@@ -106,11 +106,13 @@ external paid service. Before its first use:
 1. Create the protected `agentmail-provider-canary` GitHub Environment.
 2. Allow deployments from `main` only and require a reviewer.
 3. Create one dedicated canary inbox in AgentMail before running the workflow.
-4. Add `AGENTMAIL_CANARY_RUNTIME_API_KEY` as an Environment secret. Use the
-   exact key Auggy should exercise at runtime, scoped to the canary inbox when
-   practical, with `inbox_read`, `message_read`, and `draft_read`. Do not add a
-   repository-level fallback. The workflow maps its exact value to canonical
-   `AGENTMAIL_API_KEY` only for the canary step.
+4. Add `AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY` as an Environment secret.
+   Use the exact operator-supplied key Auggy should exercise at runtime, scoped
+   to the canary inbox when practical, with `inbox_read`, `message_read`, and
+   `draft_read`. Do not add a repository-level fallback. The workflow maps its
+   exact value to canonical `AGENTMAIL_API_KEY` only for the canary step. Keep
+   this established secret name unless a deliberate Environment migration is
+   completed before the workflow contract changes.
 5. Add `AGENTMAIL_CANARY_INBOX_ID` and `AGENTMAIL_CANARY_INBOX_EMAIL` as
    Environment variables. Both must identify that pre-provisioned inbox.
 
