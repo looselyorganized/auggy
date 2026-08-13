@@ -153,6 +153,34 @@ class FakeProvider implements AgentMailProvider {
     return draft;
   }
 
+  async createDraft(input: Parameters<NonNullable<AgentMailProvider["createDraft"]>>[0]) {
+    this.created.push({
+      messageId: input.sourceMessageId ?? "new",
+      text: input.text ?? "",
+      clientId: input.clientId,
+      replyAll: input.kind === "replyAll",
+      subject: input.subject,
+    });
+    const draft: AgentMailDraft = {
+      inboxId,
+      draftId: "draft_1",
+      clientId: input.clientId,
+      to: input.to ?? ["customer@example.com"],
+      cc: input.cc ?? [],
+      bcc: input.bcc ?? [],
+      subject: input.subject,
+      text: input.text,
+      ...(input.kind === "reply" || input.kind === "replyAll"
+        ? { inReplyTo: input.sourceMessageId }
+        : {}),
+      ...(input.kind === "forward" ? { forwardOf: input.sourceMessageId } : {}),
+      createdAt: 2_000,
+      updatedAt: 2_000,
+    };
+    this.drafts.set(draft.draftId, draft);
+    return draft;
+  }
+
   async getDraft(draftId: string) {
     const value = this.drafts.get(draftId);
     if (!value) throw new Error("draft not found");

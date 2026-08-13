@@ -43,10 +43,19 @@ export interface NormalizedAgentMailRecipients {
 
 export interface AgentMailPolicyAttachment {
   attachmentId?: string;
+  filename?: string;
   sha256: string;
   size: number;
   contentType: string;
+  contentDisposition?: "inline" | "attachment";
+  contentId?: string;
+  /** Exact SDK base64 `content`, when this operation uploads bytes. Never persisted in a manifest. */
+  contentBase64?: string;
+  /** Hash of an externally fetched attachment URL; raw URLs never enter a manifest. */
+  sourceUrlHash?: string;
 }
+
+export type AgentMailDraftKind = "new" | "reply" | "replyAll" | "forward";
 
 export type AgentMailOperation =
   | "list_messages"
@@ -62,6 +71,9 @@ export type AgentMailOperation =
   | "trash_thread"
   | "restore_thread"
   | "get_attachment"
+  | "list_drafts"
+  | "get_draft"
+  | "adopt_draft"
   | "create_new_draft"
   | "create_reply_draft"
   | "create_reply_all_draft"
@@ -86,14 +98,21 @@ export interface AgentMailOperationAuthority {
   sourceAugment?: string;
 }
 
-export interface AgentMailOperationInput {
-  action: AgentMailOperation;
+/** Runtime-owned identity bindings. Tool arguments, skills, MCP, mail, and memory cannot supply these. */
+export interface AgentMailTrustedAuthority {
   authority: AgentMailOperationAuthority;
   creatorPeerId: string;
   registeredAugment: string;
+  now: number;
+}
+
+export interface AgentMailOperationInput {
+  action: AgentMailOperation;
   messageId?: string;
+  sourceMessageId?: string;
   threadId?: string;
   draftId?: string;
+  draftKind?: AgentMailDraftKind;
   attachmentId?: string;
   listLimit?: number;
   pageToken?: string;
@@ -102,12 +121,19 @@ export interface AgentMailOperationInput {
   addLabels?: readonly string[];
   removeLabels?: readonly string[];
   recipients?: AgentMailRecipients;
+  replyTo?: readonly string[];
+  labels?: readonly string[];
   subject?: string;
   text?: string;
   html?: string;
   attachments?: readonly AgentMailPolicyAttachment[];
-  sendAt?: number;
+  sendAt?: number | null;
   providerRevision?: string;
+  materialHash?: string;
+  clientId?: string;
+  operationId?: string;
+  idempotencyKey?: string;
+  removeAttachmentIds?: readonly string[];
 }
 
 export type AgentMailOperationDenialReason =
@@ -126,6 +152,7 @@ export type AgentMailOperationDenialReason =
   | "recipient_not_allowed"
   | "recipient_limit_exceeded"
   | "subject_invalid"
+  | "body_required"
   | "body_limit_exceeded"
   | "html_not_allowed"
   | "attachment_limit_exceeded"
@@ -143,15 +170,19 @@ export type AgentMailOperationDecision =
       sendAt?: number;
       addLabels?: string[];
       removeLabels?: string[];
+      replyTo?: string[];
+      labels?: string[];
+      draftKind?: AgentMailDraftKind;
     }
   | { allowed: false; reason: AgentMailOperationDenialReason };
 
 export interface AgentMailOperationManifest {
-  readonly version: 1;
+  readonly version: 2;
   readonly action: AgentMailOperation;
   readonly inboxId: string;
   readonly resources: Readonly<{
     messageId: string | null;
+    sourceMessageId: string | null;
     threadId: string | null;
     draftId: string | null;
     attachmentId: string | null;
@@ -160,11 +191,22 @@ export interface AgentMailOperationManifest {
     to: readonly string[];
     cc: readonly string[];
     bcc: readonly string[];
+    supplied: Readonly<{ to: boolean; cc: boolean; bcc: boolean }>;
   }>;
   readonly body: Readonly<{
     subjectHash: string | null;
     textHash: string | null;
     htmlHash: string | null;
+    supplied: Readonly<{ subject: boolean; text: boolean; html: boolean }>;
+  }>;
+  readonly draft: Readonly<{
+    kind: AgentMailDraftKind | null;
+    replyTo: readonly string[];
+    replyToSupplied: boolean;
+    labels: readonly string[];
+    labelsSupplied: boolean;
+    attachmentsSupplied: boolean;
+    removeAttachmentIds: readonly string[];
   }>;
   readonly mailbox: Readonly<{
     listLimit: number | null;
@@ -179,6 +221,10 @@ export interface AgentMailOperationManifest {
     sha256: string;
     size: number;
     contentType: string;
+    filenameHash: string | null;
+    contentDisposition: "inline" | "attachment" | null;
+    contentIdHash: string | null;
+    sourceUrlHash: string | null;
   }>[];
   readonly source: Readonly<{
     origin: AgentMailOperationAuthority["origin"];
@@ -186,9 +232,18 @@ export interface AgentMailOperationManifest {
     trustLevel: TrustLevel;
     sourceAugment: string | null;
   }>;
-  readonly sendAt: number | null;
+  readonly schedule: Readonly<{ supplied: boolean; sendAt: number | null }>;
   readonly providerRevision: string | null;
-  readonly creatorPeerId: string;
+  readonly materialHash: string | null;
+  readonly execution: Readonly<{
+    clientId: string | null;
+    operationId: string | null;
+    idempotencyKey: string | null;
+  }>;
+  readonly trustedAuthority: Readonly<{
+    creatorPeerId: string;
+    registeredAugment: string;
+  }>;
   readonly policyGeneration: string;
 }
 
@@ -285,6 +340,74 @@ function subjectAllowed(subject: string | undefined, required: boolean): boolean
   return subject.length > 0 && subject.length <= 998 && !/[\r\n\0]/.test(subject);
 }
 
+function prefixedSubject(subject: string, prefix: string): string {
+  return subject.startsWith(prefix) ? subject : `${prefix}${subject}`;
+}
+
+function normalizeAddressList(
+  values: readonly string[] | undefined,
+  maximum: number,
+): string[] | undefined {
+  if (values === undefined) return undefined;
+  if (!Array.isArray(values) || values.length > maximum) return undefined;
+  const normalized = values.map((value) =>
+    typeof value === "string" ? canonicalizeEmail(value) : "",
+  );
+  if (
+    normalized.some((value) => !isWellFormedEmail(value)) ||
+    new Set(normalized).size !== normalized.length
+  ) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function normalizeDraftLabels(
+  values: readonly string[] | undefined,
+  config: ValidatedAgentMailConfig,
+): string[] | undefined {
+  if (values === undefined) return undefined;
+  if (!Array.isArray(values) || values.length > 50) return undefined;
+  const normalized = values.map((value) =>
+    typeof value === "string" ? value.trim().toLowerCase() : "",
+  );
+  if (
+    new Set(normalized).size !== normalized.length ||
+    normalized.some((value) => !config.mailbox.allowedLabels.includes(value))
+  ) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function normalizeLabelChanges(
+  add: readonly string[] | undefined,
+  remove: readonly string[] | undefined,
+  config: ValidatedAgentMailConfig,
+): { add: string[]; remove: string[] } | undefined {
+  const normalizedAdd = normalizeDraftLabels(add, config) ?? (add === undefined ? [] : undefined);
+  const normalizedRemove =
+    normalizeDraftLabels(remove, config) ?? (remove === undefined ? [] : undefined);
+  if (
+    normalizedAdd === undefined ||
+    normalizedRemove === undefined ||
+    new Set([...normalizedAdd, ...normalizedRemove]).size !==
+      normalizedAdd.length + normalizedRemove.length
+  ) {
+    return undefined;
+  }
+  return { add: normalizedAdd, remove: normalizedRemove };
+}
+
+function decodedBase64(value: string): Buffer | undefined {
+  if (value.length === 0 || value.length % 4 !== 0 || !/^[A-Za-z0-9+/]*={0,2}$/.test(value)) {
+    return undefined;
+  }
+  const decoded = Buffer.from(value, "base64");
+  if (decoded.toString("base64") !== value) return undefined;
+  return decoded;
+}
+
 function contentTypeAllowed(contentType: string, allowed: readonly string[]): boolean {
   const normalized = contentType.toLowerCase();
   return allowed.some((entry) => {
@@ -294,20 +417,45 @@ function contentTypeAllowed(contentType: string, allowed: readonly string[]): bo
 }
 
 function evaluateComposition(
-  input: Pick<AgentMailOperationInput, "recipients" | "subject" | "text" | "html" | "attachments">,
+  input: Pick<
+    AgentMailOperationInput,
+    "recipients" | "replyTo" | "labels" | "subject" | "text" | "html" | "attachments"
+  >,
   config: ValidatedAgentMailConfig,
-  options: { requireRecipient: boolean; requireSubject: boolean },
+  options: {
+    requireRecipient: boolean;
+    requireSubject: boolean;
+    requireBody: boolean;
+    applySubjectPrefix: boolean;
+  },
 ): AgentMailOperationDecision {
   const recipientDecision = normalizeRecipients(input.recipients, config, options.requireRecipient);
   if (!recipientDecision.allowed) return recipientDecision;
-  if (!subjectAllowed(input.subject, options.requireSubject)) {
+  const effectiveSubject =
+    input.subject === undefined
+      ? undefined
+      : options.applySubjectPrefix
+        ? prefixedSubject(input.subject, config.outbound.subjectPrefix)
+        : input.subject;
+  if (!subjectAllowed(effectiveSubject, options.requireSubject)) {
     return { allowed: false, reason: "subject_invalid" };
+  }
+  const replyTo = normalizeAddressList(input.replyTo, 50);
+  if (input.replyTo !== undefined && replyTo === undefined) {
+    return { allowed: false, reason: "recipient_malformed" };
+  }
+  const labels = normalizeDraftLabels(input.labels, config);
+  if (input.labels !== undefined && labels === undefined) {
+    return { allowed: false, reason: "label_not_allowed" };
   }
   if (input.html !== undefined && input.html !== "" && !config.outbound.allowHtml) {
     return { allowed: false, reason: "html_not_allowed" };
   }
   const bodyBytes =
     Buffer.byteLength(input.text ?? "", "utf8") + Buffer.byteLength(input.html ?? "", "utf8");
+  if (options.requireBody && (input.text ?? "") === "" && (input.html ?? "") === "") {
+    return { allowed: false, reason: "body_required" };
+  }
   if (bodyBytes > config.outbound.bodyMaxBytes) {
     return { allowed: false, reason: "body_limit_exceeded" };
   }
@@ -325,12 +473,42 @@ function evaluateComposition(
       !Number.isSafeInteger(attachment.size) ||
       attachment.size < 0 ||
       typeof attachment.contentType !== "string" ||
-      attachment.contentType.trim() === ""
+      attachment.contentType.trim() === "" ||
+      (attachment.filename !== undefined &&
+        (typeof attachment.filename !== "string" ||
+          attachment.filename.length < 1 ||
+          attachment.filename.length > 512 ||
+          /[\0\r\n]/.test(attachment.filename))) ||
+      (attachment.contentDisposition !== undefined &&
+        attachment.contentDisposition !== "inline" &&
+        attachment.contentDisposition !== "attachment") ||
+      (attachment.contentId !== undefined &&
+        (typeof attachment.contentId !== "string" ||
+          attachment.contentId.length < 1 ||
+          attachment.contentId.length > 512 ||
+          /[\0\r\n]/.test(attachment.contentId))) ||
+      (attachment.sourceUrlHash !== undefined && !/^[a-f0-9]{64}$/i.test(attachment.sourceUrlHash))
     ) {
       return { allowed: false, reason: "attachment_invalid" };
     }
     if (attachment.size > config.outbound.maxAttachmentBytes) {
       return { allowed: false, reason: "attachment_too_large" };
+    }
+    if (attachment.contentBase64 !== undefined) {
+      if (
+        typeof attachment.contentBase64 !== "string" ||
+        attachment.contentBase64.length > 4 * Math.ceil(config.outbound.maxAttachmentBytes / 3)
+      ) {
+        return { allowed: false, reason: "attachment_too_large" };
+      }
+      const decoded = decodedBase64(attachment.contentBase64);
+      if (
+        decoded === undefined ||
+        decoded.byteLength !== attachment.size ||
+        createHash("sha256").update(decoded).digest("hex") !== attachment.sha256.toLowerCase()
+      ) {
+        return { allowed: false, reason: "attachment_invalid" };
+      }
     }
     totalAttachmentBytes += attachment.size;
     if (totalAttachmentBytes > config.outbound.maxTotalAttachmentBytes) {
@@ -343,7 +521,9 @@ function evaluateComposition(
   return {
     allowed: true,
     recipients: recipientDecision.recipients,
-    ...(input.subject === undefined ? {} : { subject: input.subject }),
+    ...(effectiveSubject === undefined ? {} : { subject: effectiveSubject }),
+    ...(replyTo === undefined ? {} : { replyTo }),
+    ...(labels === undefined ? {} : { labels }),
   };
 }
 
@@ -386,13 +566,14 @@ function requireResource(input: AgentMailOperationInput): boolean {
     case "trash_message":
     case "restore_message":
     case "delete_message":
-    case "create_reply_draft":
-    case "create_reply_all_draft":
-    case "create_forward_draft":
     case "reply":
     case "reply_all":
     case "forward":
       return validProviderIdentifier(input.messageId);
+    case "create_reply_draft":
+    case "create_reply_all_draft":
+    case "create_forward_draft":
+      return validProviderIdentifier(input.sourceMessageId);
     case "get_thread":
     case "update_thread_labels":
     case "trash_thread":
@@ -403,6 +584,8 @@ function requireResource(input: AgentMailOperationInput): boolean {
       return (
         validProviderIdentifier(input.messageId) && validProviderIdentifier(input.attachmentId)
       );
+    case "get_draft":
+    case "adopt_draft":
     case "update_draft":
     case "schedule_draft":
     case "unschedule_draft":
@@ -425,6 +608,7 @@ function requiresProviderRevision(action: AgentMailOperation): boolean {
     "create_reply_draft",
     "create_reply_all_draft",
     "create_forward_draft",
+    "adopt_draft",
     "update_draft",
     "schedule_draft",
     "unschedule_draft",
@@ -438,18 +622,107 @@ function requiresProviderRevision(action: AgentMailOperation): boolean {
   ].includes(action);
 }
 
-function creatorAuthorized(input: AgentMailOperationInput): boolean {
+function creatorAuthorized(trusted: AgentMailTrustedAuthority): boolean {
+  const authority = trusted.authority;
   return (
-    input.authority.origin === "creator" &&
-    input.authority.trustLevel === "creator" &&
-    input.authority.peerId === input.creatorPeerId
+    authority.origin === "creator" &&
+    authority.trustLevel === "creator" &&
+    authority.peerId === trusted.creatorPeerId
   );
 }
 
-function systemDraftAuthorized(input: AgentMailOperationInput): boolean {
+function systemDraftAuthorized(trusted: AgentMailTrustedAuthority): boolean {
   return (
-    input.authority.origin === "system" && input.authority.sourceAugment === input.registeredAugment
+    trusted.authority.origin === "system" &&
+    trusted.authority.sourceAugment === trusted.registeredAugment
   );
+}
+
+function validTrustedAuthority(value: AgentMailTrustedAuthority): boolean {
+  return (
+    validManifestIdentity(value.creatorPeerId) &&
+    validManifestIdentity(value.registeredAugment) &&
+    validManifestIdentity(value.authority.peerId) &&
+    (value.authority.sourceAugment === undefined ||
+      validManifestIdentity(value.authority.sourceAugment)) &&
+    Number.isSafeInteger(value.now) &&
+    value.now >= 0
+  );
+}
+
+function expectedDraftKind(action: AgentMailOperation): AgentMailDraftKind | undefined {
+  switch (action) {
+    case "create_new_draft":
+      return "new";
+    case "create_reply_draft":
+      return "reply";
+    case "create_reply_all_draft":
+      return "replyAll";
+    case "create_forward_draft":
+      return "forward";
+    default:
+      return undefined;
+  }
+}
+
+function validateDraftIdentity(input: AgentMailOperationInput): boolean {
+  const expected = expectedDraftKind(input.action);
+  if (expected !== undefined && input.draftKind !== undefined && input.draftKind !== expected) {
+    return false;
+  }
+  const kind = expected ?? input.draftKind;
+  const needsKnownKind = [
+    "adopt_draft",
+    "update_draft",
+    "schedule_draft",
+    "unschedule_draft",
+    "send_draft",
+    "delete_draft",
+  ].includes(input.action);
+  const acceptsDraftIdentity = needsKnownKind || expected !== undefined;
+  if (
+    !acceptsDraftIdentity &&
+    (input.draftKind !== undefined || input.sourceMessageId !== undefined)
+  ) {
+    return false;
+  }
+  if (needsKnownKind && kind === undefined) return false;
+  if (kind === "new") return input.sourceMessageId === undefined;
+  if (kind === "reply" || kind === "replyAll" || kind === "forward") {
+    return validProviderIdentifier(input.sourceMessageId);
+  }
+  return input.sourceMessageId === undefined;
+}
+
+function validHash(value: string | undefined): boolean {
+  return value === undefined || /^[a-f0-9]{64}$/i.test(value);
+}
+
+function validateOperationIdentities(input: AgentMailOperationInput): boolean {
+  for (const value of [input.clientId, input.operationId, input.idempotencyKey]) {
+    if (value !== undefined && !validManifestIdentity(value)) return false;
+  }
+  if (expectedDraftKind(input.action) !== undefined && !validManifestIdentity(input.clientId)) {
+    return false;
+  }
+  if (
+    ["send_message", "send_draft", "reply", "reply_all", "forward"].includes(input.action) &&
+    !validManifestIdentity(input.idempotencyKey)
+  ) {
+    return false;
+  }
+  if (!validHash(input.materialHash)) return false;
+  if (requiresProviderRevision(input.action) && input.materialHash === undefined) return false;
+  if (
+    input.removeAttachmentIds !== undefined &&
+    (!Array.isArray(input.removeAttachmentIds) ||
+      input.removeAttachmentIds.length > 50 ||
+      new Set(input.removeAttachmentIds).size !== input.removeAttachmentIds.length ||
+      input.removeAttachmentIds.some((value) => !validProviderIdentifier(value)))
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function operationRequiresComposition(action: AgentMailOperation): boolean {
@@ -477,25 +750,34 @@ function operationRequiresComposition(action: AgentMailOperation): boolean {
 export function evaluateAgentMailOperation(
   input: AgentMailOperationInput,
   config: ValidatedAgentMailConfig,
+  trusted: AgentMailTrustedAuthority,
 ): AgentMailOperationDecision {
-  if (input.authority.origin === "inbound") {
+  if (!validTrustedAuthority(trusted)) return { allowed: false, reason: "resource_invalid" };
+  if (trusted.authority.origin === "inbound") {
     return { allowed: false, reason: "inbound_origin_denied" };
   }
   const systemDraft =
-    systemDraftAuthorized(input) &&
+    systemDraftAuthorized(trusted) &&
     (input.action === "create_reply_draft" || input.action === "create_reply_all_draft");
-  if (input.authority.origin === "system" && !systemDraft) {
+  if (trusted.authority.origin === "system" && !systemDraft) {
     return { allowed: false, reason: "system_source_invalid" };
   }
-  if (!systemDraft && !creatorAuthorized(input)) {
+  if (!systemDraft && !creatorAuthorized(trusted)) {
     return { allowed: false, reason: "creator_required" };
   }
   if (!requireResource(input)) return { allowed: false, reason: "resource_invalid" };
+  if (!validateDraftIdentity(input) || !validateOperationIdentities(input)) {
+    return { allowed: false, reason: "resource_invalid" };
+  }
   if (requiresProviderRevision(input.action) && !validManifestIdentity(input.providerRevision)) {
     return { allowed: false, reason: "resource_invalid" };
   }
 
-  if (input.action === "list_messages" || input.action === "list_threads") {
+  if (
+    input.action === "list_messages" ||
+    input.action === "list_threads" ||
+    input.action === "list_drafts"
+  ) {
     const limit = input.listLimit ?? config.mailbox.maxListResults;
     if (!Number.isSafeInteger(limit) || limit < 1 || limit > config.mailbox.maxListResults) {
       return { allowed: false, reason: "list_limit_exceeded" };
@@ -576,6 +858,20 @@ export function evaluateAgentMailOperation(
     return { allowed: false, reason: "attachment_access_disabled" };
   }
 
+  let draftLabelChanges: { add: string[]; remove: string[] } | undefined;
+  if (
+    input.action === "update_draft" &&
+    (input.addLabels !== undefined || input.removeLabels !== undefined)
+  ) {
+    if (!config.mailbox.allowLabelMutation) {
+      return { allowed: false, reason: "label_mutation_disabled" };
+    }
+    draftLabelChanges = normalizeLabelChanges(input.addLabels, input.removeLabels, config);
+    if (draftLabelChanges === undefined) {
+      return { allowed: false, reason: "label_not_allowed" };
+    }
+  }
+
   const operationEnabled = (() => {
     switch (input.action) {
       case "create_new_draft":
@@ -588,8 +884,26 @@ export function evaluateAgentMailOperation(
           : config.drafts.allowReply && config.drafts.allowReplyAll;
       case "create_forward_draft":
         return config.drafts.allowForward;
+      case "adopt_draft":
+        switch (input.draftKind) {
+          case "new":
+            return config.drafts.allowNew;
+          case "reply":
+            return config.drafts.allowReply;
+          case "replyAll":
+            return config.drafts.allowReply && config.drafts.allowReplyAll;
+          case "forward":
+            return config.drafts.allowForward;
+          default:
+            return false;
+        }
       case "update_draft":
-        return config.drafts.allowNew || config.drafts.allowReply || config.drafts.allowForward;
+        return (
+          config.drafts.allowNew ||
+          config.drafts.allowReply ||
+          config.drafts.allowForward ||
+          config.replies.mode === "review"
+        );
       case "schedule_draft":
         return config.drafts.allowScheduling;
       case "send_message":
@@ -619,10 +933,19 @@ export function evaluateAgentMailOperation(
   if (input.action === "forward" && !config.drafts.allowForward) {
     return { allowed: false, reason: "operation_disabled" };
   }
+  const schedulingAction = input.action === "schedule_draft";
+  const unschedulingAction = input.action === "unschedule_draft";
+  const createAction = expectedDraftKind(input.action) !== undefined;
+  const scheduleSupplied = input.sendAt !== undefined;
   if (
-    (input.action === "schedule_draft" && input.sendAt === undefined) ||
-    (input.sendAt !== undefined &&
-      (typeof input.sendAt !== "number" || !Number.isFinite(input.sendAt) || input.sendAt < 0))
+    (schedulingAction && typeof input.sendAt !== "number") ||
+    (unschedulingAction && input.sendAt !== null) ||
+    (!schedulingAction && !unschedulingAction && !createAction && scheduleSupplied) ||
+    (scheduleSupplied && !config.drafts.allowScheduling) ||
+    (typeof input.sendAt === "number" &&
+      (!Number.isSafeInteger(input.sendAt) ||
+        input.sendAt <= trusted.now ||
+        input.sendAt > trusted.now + config.drafts.maxScheduleDelayMs))
   ) {
     return { allowed: false, reason: "schedule_invalid" };
   }
@@ -633,22 +956,47 @@ export function evaluateAgentMailOperation(
       "send_draft",
       "schedule_draft",
       "create_new_draft",
+      "create_forward_draft",
+      "forward",
     ].includes(input.action);
-    const requireSubject = requireRecipient;
-    const composition = evaluateComposition(input, config, { requireRecipient, requireSubject });
+    const requireSubject = [
+      "send_message",
+      "send_draft",
+      "schedule_draft",
+      "create_new_draft",
+    ].includes(input.action);
+    const requireBody = [
+      "send_message",
+      "send_draft",
+      "schedule_draft",
+      "reply",
+      "reply_all",
+      "forward",
+    ].includes(input.action);
+    const applySubjectPrefix =
+      input.action === "send_message" || input.action === "create_new_draft";
+    const composition = evaluateComposition(input, config, {
+      requireRecipient,
+      requireSubject,
+      requireBody,
+      applySubjectPrefix,
+    });
     if (!composition.allowed) return composition;
-    if (
-      composition.subject !== undefined &&
-      (input.action === "send_message" || input.action === "create_new_draft")
-    ) {
-      return {
-        ...composition,
-        subject: `${config.outbound.subjectPrefix}${composition.subject}`,
-      };
-    }
-    return composition;
+    return {
+      ...composition,
+      ...(draftLabelChanges === undefined
+        ? {}
+        : { addLabels: draftLabelChanges.add, removeLabels: draftLabelChanges.remove }),
+      ...(expectedDraftKind(input.action) === undefined
+        ? {}
+        : { draftKind: expectedDraftKind(input.action) }),
+    };
   }
-  return { allowed: true, recipients: { to: [], cc: [], bcc: [] } };
+  return {
+    allowed: true,
+    recipients: { to: [], cc: [], bcc: [] },
+    ...(input.draftKind === undefined ? {} : { draftKind: input.draftKind }),
+  };
 }
 
 function sha256(value: string): string {
@@ -682,7 +1030,7 @@ function canonicalJson(value: unknown): string {
 /** Hash an immutable, canonical operation manifest before provider execution. */
 export function hashAgentMailOperationManifest(manifest: AgentMailOperationManifest): string {
   return createHash("sha256")
-    .update("agentmail-operation-manifest/v1\0", "utf8")
+    .update("agentmail-operation-manifest/v2\0", "utf8")
     .update(canonicalJson(manifest), "utf8")
     .digest("hex");
 }
@@ -695,12 +1043,13 @@ export function hashAgentMailOperationManifest(manifest: AgentMailOperationManif
 export function createAgentMailOperationManifest(
   input: AgentMailOperationInput,
   config: ValidatedAgentMailConfig,
+  trusted: AgentMailTrustedAuthority,
 ): AgentMailManifestDecision {
-  const decision = evaluateAgentMailOperation(input, config);
+  const decision = evaluateAgentMailOperation(input, config, trusted);
   if (!decision.allowed) return decision;
   if (
-    !validManifestIdentity(input.creatorPeerId) ||
-    !validManifestIdentity(input.registeredAugment)
+    !validManifestIdentity(trusted.creatorPeerId) ||
+    !validManifestIdentity(trusted.registeredAugment)
   ) {
     return { allowed: false, reason: "resource_invalid" };
   }
@@ -716,13 +1065,18 @@ export function createAgentMailOperationManifest(
     sha256: attachment.sha256.toLowerCase(),
     size: attachment.size,
     contentType: attachment.contentType.toLowerCase(),
+    filenameHash: attachment.filename === undefined ? null : sha256(attachment.filename),
+    contentDisposition: attachment.contentDisposition ?? null,
+    contentIdHash: attachment.contentId === undefined ? null : sha256(attachment.contentId),
+    sourceUrlHash: attachment.sourceUrlHash?.toLowerCase() ?? null,
   }));
   const manifest = deepFreeze<AgentMailOperationManifest>({
-    version: 1,
+    version: 2,
     action: input.action,
     inboxId: config.inboxId,
     resources: {
       messageId: normalizeOptionalIdentifier(input.messageId),
+      sourceMessageId: normalizeOptionalIdentifier(input.sourceMessageId),
       threadId: normalizeOptionalIdentifier(input.threadId),
       draftId: normalizeOptionalIdentifier(input.draftId),
       attachmentId: normalizeOptionalIdentifier(input.attachmentId),
@@ -731,11 +1085,30 @@ export function createAgentMailOperationManifest(
       to: [...decision.recipients.to],
       cc: [...decision.recipients.cc],
       bcc: [...decision.recipients.bcc],
+      supplied: {
+        to: input.recipients?.to !== undefined,
+        cc: input.recipients?.cc !== undefined,
+        bcc: input.recipients?.bcc !== undefined,
+      },
     },
     body: {
       subjectHash: decision.subject === undefined ? null : sha256(decision.subject),
       textHash: input.text === undefined ? null : sha256(input.text),
       htmlHash: input.html === undefined ? null : sha256(input.html),
+      supplied: {
+        subject: input.subject !== undefined,
+        text: input.text !== undefined,
+        html: input.html !== undefined,
+      },
+    },
+    draft: {
+      kind: decision.draftKind ?? null,
+      replyTo: [...(decision.replyTo ?? [])],
+      replyToSupplied: input.replyTo !== undefined,
+      labels: [...(decision.labels ?? [])],
+      labelsSupplied: input.labels !== undefined,
+      attachmentsSupplied: input.attachments !== undefined,
+      removeAttachmentIds: [...(input.removeAttachmentIds ?? [])],
     },
     mailbox: {
       listLimit: input.listLimit ?? null,
@@ -747,14 +1120,23 @@ export function createAgentMailOperationManifest(
     },
     attachments,
     source: {
-      origin: input.authority.origin,
-      peerId: input.authority.peerId,
-      trustLevel: input.authority.trustLevel,
-      sourceAugment: input.authority.sourceAugment ?? null,
+      origin: trusted.authority.origin,
+      peerId: trusted.authority.peerId,
+      trustLevel: trusted.authority.trustLevel,
+      sourceAugment: trusted.authority.sourceAugment ?? null,
     },
-    sendAt,
+    schedule: { supplied: input.sendAt !== undefined, sendAt },
     providerRevision: input.providerRevision ?? null,
-    creatorPeerId: input.creatorPeerId,
+    materialHash: input.materialHash?.toLowerCase() ?? null,
+    execution: {
+      clientId: input.clientId ?? null,
+      operationId: input.operationId ?? null,
+      idempotencyKey: input.idempotencyKey ?? null,
+    },
+    trustedAuthority: {
+      creatorPeerId: trusted.creatorPeerId,
+      registeredAugment: trusted.registeredAugment,
+    },
     policyGeneration: config.policyGeneration,
   });
   return { allowed: true, manifest, hash: hashAgentMailOperationManifest(manifest) };
@@ -775,7 +1157,12 @@ export function evaluateAgentMailOutbound(
       text: input.text,
     },
     config,
-    { requireRecipient: true, requireSubject: true },
+    {
+      requireRecipient: true,
+      requireSubject: true,
+      requireBody: true,
+      applySubjectPrefix: true,
+    },
   );
   if (!composition.allowed) {
     return { allowed: false, reason: legacyCompositionReason(composition.reason) };
@@ -783,7 +1170,7 @@ export function evaluateAgentMailOutbound(
   return {
     allowed: true,
     recipients: composition.recipients.to,
-    subject: `${config.outbound.subjectPrefix}${input.subject}`,
+    subject: composition.subject ?? "",
   };
 }
 
@@ -808,7 +1195,12 @@ export function evaluateAgentMailPreparedDraft(
       html: input.html,
     },
     config,
-    { requireRecipient: true, requireSubject: true },
+    {
+      requireRecipient: true,
+      requireSubject: true,
+      requireBody: true,
+      applySubjectPrefix: false,
+    },
   );
   if (!composition.allowed) {
     return { allowed: false, reason: legacyCompositionReason(composition.reason) };

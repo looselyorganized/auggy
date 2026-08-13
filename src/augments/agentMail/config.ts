@@ -42,6 +42,7 @@ const DRAFT_FIELDS = new Set([
   "allowReplyAll",
   "allowForward",
   "allowScheduling",
+  "maxScheduleDelayMs",
 ]);
 const DESTRUCTIVE_FIELDS = new Set(["allowPermanentDelete"]);
 const OUTBOUND_FIELDS = new Set([
@@ -123,6 +124,7 @@ export interface ValidatedAgentMailConfig {
     allowReplyAll: boolean;
     allowForward: boolean;
     allowScheduling: boolean;
+    maxScheduleDelayMs: number;
   };
   destructive: {
     allowPermanentDelete: boolean;
@@ -477,6 +479,16 @@ export function validateAgentMailConfig(value: unknown): ValidatedAgentMailConfi
   const allowReplyAllDraft = optionalBoolean(drafts.allowReplyAll, false, "drafts.allowReplyAll");
   const allowForwardDraft = optionalBoolean(drafts.allowForward, false, "drafts.allowForward");
   const allowScheduling = optionalBoolean(drafts.allowScheduling, false, "drafts.allowScheduling");
+  const maxScheduleDelayMs = boundedInteger(
+    drafts.maxScheduleDelayMs,
+    2_592_000_000,
+    "drafts.maxScheduleDelayMs",
+    60_000,
+    31_536_000_000,
+  );
+  if (!allowScheduling && drafts.maxScheduleDelayMs !== undefined) {
+    throw new Error("agentMail: drafts.maxScheduleDelayMs requires drafts.allowScheduling: true");
+  }
   if (allowReplyAllDraft && !allowReplyDraft) {
     throw new Error("agentMail: drafts.allowReplyAll requires drafts.allowReply: true");
   }
@@ -543,7 +555,7 @@ export function validateAgentMailConfig(value: unknown): ValidatedAgentMailConfi
     10_485_760,
     "outbound.maxAttachmentBytes",
     1,
-    26_214_400,
+    25_165_824,
   );
   const maxTotalAttachmentBytes = boundedInteger(
     outbound.maxTotalAttachmentBytes,
@@ -621,6 +633,7 @@ export function validateAgentMailConfig(value: unknown): ValidatedAgentMailConfi
       allowReplyAll: allowReplyAllDraft,
       allowForward: allowForwardDraft,
       allowScheduling,
+      maxScheduleDelayMs,
     },
     destructive: { allowPermanentDelete },
     outbound: {

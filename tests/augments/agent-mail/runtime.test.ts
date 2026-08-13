@@ -107,6 +107,9 @@ class FakeProvider implements AgentMailProvider {
   messages = new Map<string, AgentMailMessage>();
   drafts = new Map<string, AgentMailDraft>();
   created: Array<Parameters<AgentMailProvider["createReplyDraft"]>[0]> = [];
+  createdDrafts: Array<Parameters<NonNullable<AgentMailProvider["createDraft"]>>[0]> = [];
+  updatedDrafts: Array<Parameters<AgentMailProvider["updateDraft"]>[0]> = [];
+  deletedDrafts: string[] = [];
   sentDrafts: Array<Parameters<AgentMailProvider["sendDraft"]>[0]> = [];
   sentMessages: Array<Parameters<AgentMailProvider["sendMessage"]>[0]> = [];
   messageLabelUpdates: Array<{ messageId: string; addLabels?: string[]; removeLabels?: string[] }> =
@@ -118,6 +121,7 @@ class FakeProvider implements AgentMailProvider {
   messagePages: AgentMailPage<AgentMailMessageSummary>[] = [];
   threadPages: AgentMailPage<AgentMailThreadSummary>[] = [];
   attachmentMetadata?: AgentMailAttachmentMetadata;
+  corruptDraftAfterUpdate = false;
   getMessageCalls = 0;
   handlers?: Parameters<AgentMailProvider["connect"]>[0];
 
@@ -201,6 +205,39 @@ class FakeProvider implements AgentMailProvider {
   async listDrafts() {
     return { drafts: [...this.drafts.values()] };
   }
+  async listMailboxDrafts(input: { pageToken?: string; limit?: number } = {}) {
+    return {
+      items: [...this.drafts.values()],
+      count: this.drafts.size,
+      limit: input.limit,
+    };
+  }
+  async createDraft(input: Parameters<NonNullable<AgentMailProvider["createDraft"]>>[0]) {
+    this.createdDrafts.push(input);
+    const existing = [...this.drafts.values()].find((item) => item.clientId === input.clientId);
+    if (existing) return existing;
+    const source = input.sourceMessageId;
+    const value = draft({
+      draftId: `draft_${this.drafts.size + 1}`,
+      clientId: input.clientId,
+      to:
+        input.to ??
+        (input.kind === "replyAll"
+          ? ["customer@example.com", "team@example.com"]
+          : ["customer@example.com"]),
+      cc: input.cc ?? [],
+      bcc: input.bcc ?? [],
+      subject: input.subject,
+      text: input.text,
+      html: input.html,
+      inReplyTo: input.kind === "reply" || input.kind === "replyAll" ? source : undefined,
+      forwardOf: input.kind === "forward" ? source : undefined,
+      sendAt: input.sendAt,
+      updatedAt: 2_000 + this.drafts.size,
+    });
+    this.drafts.set(value.draftId, value);
+    return value;
+  }
   async createReplyDraft(input: Parameters<AgentMailProvider["createReplyDraft"]>[0]) {
     this.created.push(input);
     const existing = [...this.drafts.values()].find((item) => item.clientId === input.clientId);
@@ -221,11 +258,28 @@ class FakeProvider implements AgentMailProvider {
     if (!value) throw new Error("draft not found");
     return value;
   }
-  async updateDraft(input: { draftId: string; text: string }) {
+  async updateDraft(input: Parameters<AgentMailProvider["updateDraft"]>[0]) {
+    this.updatedDrafts.push(input);
     const current = await this.getDraft(input.draftId);
-    const updated = { ...current, text: input.text, updatedAt: current.updatedAt + 1 };
+    const updated = {
+      ...current,
+      ...(input.to === undefined ? {} : { to: input.to ?? [] }),
+      ...(input.cc === undefined ? {} : { cc: input.cc ?? [] }),
+      ...(input.bcc === undefined ? {} : { bcc: input.bcc ?? [] }),
+      ...(input.replyTo === undefined ? {} : { replyTo: input.replyTo ?? [] }),
+      ...(input.subject === undefined ? {} : { subject: input.subject ?? undefined }),
+      ...(input.text === undefined ? {} : { text: input.text ?? undefined }),
+      ...(input.html === undefined ? {} : { html: input.html ?? undefined }),
+      ...(input.sendAt === undefined ? {} : { sendAt: input.sendAt ?? undefined }),
+      updatedAt: current.updatedAt + 1,
+      ...(this.corruptDraftAfterUpdate ? { inReplyTo: "message_changed_after_accept" } : {}),
+    };
     this.drafts.set(input.draftId, updated);
     return updated;
+  }
+  async deleteDraft(draftId: string) {
+    this.deletedDrafts.push(draftId);
+    this.drafts.delete(draftId);
   }
   async sendDraft(input: Parameters<AgentMailProvider["sendDraft"]>[0]) {
     this.sentDrafts.push(input);
@@ -251,6 +305,7 @@ function fixture(
     clock?: () => number;
     mailbox?: Record<string, unknown>;
     destructive?: Record<string, unknown>;
+    drafts?: Record<string, unknown>;
     attachmentClient?: Pick<HttpClient, "get">;
   } = {},
 ) {
@@ -278,6 +333,7 @@ function fixture(
     replies: options.inbound ? { mode: "review", allowReplyAll: false } : { mode: "disabled" },
     ...(options.mailbox === undefined ? {} : { mailbox: options.mailbox }),
     ...(options.destructive === undefined ? {} : { destructive: options.destructive }),
+    ...(options.drafts === undefined ? {} : { drafts: options.drafts }),
     ...(options.notifications ? { notifications: { destination: "creator" } } : {}),
     outbound: {
       allowedTrustLevels: ["creator"],
@@ -543,18 +599,18 @@ describe("AgentMail provider-native runtime", () => {
       "agentMail",
     );
     await f.augment.transport?.ready?.();
-    await waitFor(() => provider.created.length === 1);
+    await waitFor(() => provider.createdDrafts.length === 1);
 
     expect(observed?.peer).toMatchObject({ trustLevel: "public", publicSubstate: "anonymous" });
     expect(JSON.stringify(observed?.payload)).toContain("UNTRUSTED INBOUND EMAIL");
-    expect(provider.created[0]).toMatchObject({
-      messageId: "message_1",
+    expect(provider.createdDrafts[0]).toMatchObject({
+      kind: "reply",
+      sourceMessageId: "message_1",
       text: "We can help with order 42.",
-      replyAll: false,
       subject: "[Store] Re: Need help",
     });
     expect(f.store.getMessage("message_1")?.state).toBe("draft_ready");
-    expect(f.store.getDraftByMessage("message_1")?.draftId).toBe("draft_1");
+    expect(f.store.getProviderDraft("draft_1")?.sourceMessageId).toBe("message_1");
     const projection = (await f.augment.adminInfo?.())?.projection;
     expect(projection).toMatchObject({
       kind: "mail",
@@ -605,7 +661,7 @@ describe("AgentMail provider-native runtime", () => {
       "agentMail",
     );
     await f.augment.transport?.ready?.();
-    await waitFor(() => provider.created.length === 1);
+    await waitFor(() => provider.createdDrafts.length === 1);
 
     expect(provider.sequence.indexOf("connect")).toBeLessThan(provider.sequence.indexOf("list"));
     expect(f.store.getMessage(incoming.messageId)?.state).toBe("draft_ready");
@@ -619,7 +675,7 @@ describe("AgentMail provider-native runtime", () => {
     provider.handlers?.onClose?.({ code: 1006 });
     provider.handlers?.onOpen?.();
     await waitFor(() => provider.sequence.filter((item) => item === "list").length === 2);
-    expect(provider.created).toHaveLength(1);
+    expect(provider.createdDrafts).toHaveLength(1);
 
     const list = requireTool(f.augment, "list_mail_drafts");
     const show = requireTool(f.augment, "show_mail_draft");
@@ -652,7 +708,7 @@ describe("AgentMail provider-native runtime", () => {
         await revise.execute(
           {
             draftId: "draft_1",
-            expectedUpdatedAt: firstReview.providerUpdatedAt,
+            expectedRevision: firstReview.providerRevision,
             text: "E2E private revised draft.",
           },
           toolContext({ turnId: "revise_e2e", threadId: "console_e2e" }),
@@ -914,7 +970,7 @@ describe("AgentMail provider-native runtime", () => {
   });
 
   test("revises only a freshly shown plain-text draft and invalidates the old provider version", async () => {
-    const f = fixture();
+    const f = fixture({ drafts: { allowReply: true } });
     const incoming = message();
     f.provider.messages.set(incoming.messageId, incoming);
     f.provider.drafts.set("draft_1", draft());
@@ -964,17 +1020,78 @@ describe("AgentMail provider-native runtime", () => {
       creatorTurn("revise_turn", "console_thread_1", "revise draft draft_1 to be concise"),
     );
     expect(
-      await revise.execute(
-        { draftId: "draft_1", expectedUpdatedAt: 2_000, text: "Concise reply." },
-        toolContext({ turnId: "revise_turn" }),
+      toolJson(
+        await revise.execute(
+          {
+            draftId: "draft_1",
+            expectedRevision: toolJson(
+              await requireTool(f.augment, "show_mail_draft").execute(
+                { draftId: "draft_1" },
+                toolContext({ turnId: "revise_turn" }),
+              ),
+            ).providerRevision,
+            text: "Concise reply.",
+          },
+          toolContext({ turnId: "revise_turn" }),
+        ),
       ),
-    ).toContain('"status":"revised"');
+    ).toMatchObject({ status: "revised" });
     expect(f.provider.drafts.get("draft_1")?.text).toBe("Concise reply.");
     expect(f.store.getDraftByMessage("message_1")).toMatchObject({
       state: "ready",
       providerUpdatedAt: 2_001,
     });
     await f.augment.onTurnEnd?.({ turnId: "revise_turn" } as TurnResult);
+    await f.augment.onShutdown?.();
+    f.store.close();
+  });
+
+  test("fences a draft mutation when provider acceptance is followed by verification drift", async () => {
+    const f = fixture({ drafts: { allowReply: true } });
+    const incoming = message();
+    f.provider.messages.set(incoming.messageId, incoming);
+    f.provider.drafts.set("draft_1", draft());
+    f.store.claimMessage({
+      messageId: incoming.messageId,
+      threadId: incoming.threadId,
+      classification: "received",
+      sender: incoming.sender,
+      senderHash: hashAgentMailOrchestrationValue(incoming.sender),
+      payloadHash: hashAgentMailOrchestrationValue("payload"),
+      receivedAt: incoming.timestamp,
+      policyVersion: 1,
+    });
+    f.store.recordDraft({
+      sourceMessageId: incoming.messageId,
+      threadId: incoming.threadId,
+      draftId: "draft_1",
+      clientId: "auggy.reply.v1.fixture",
+      providerUpdatedAt: 2_000,
+    });
+    await f.augment.onBoot?.();
+    await f.augment.onTurnStart?.(
+      creatorTurn("revise_drift", "console_thread_1", "revise draft draft_1"),
+    );
+    const shown = toolJson(
+      await requireTool(f.augment, "show_mail_draft").execute(
+        { draftId: "draft_1" },
+        toolContext({ turnId: "revise_drift" }),
+      ),
+    );
+    f.provider.corruptDraftAfterUpdate = true;
+    const result = await requireTool(f.augment, "revise_mail_draft").execute(
+      {
+        draftId: "draft_1",
+        expectedRevision: shown.providerRevision,
+        text: "Provider accepted this body.",
+      },
+      toolContext({ turnId: "revise_drift", operationId: "revise_post_accept_1" }),
+    );
+    expect(result).toMatchObject({ isError: true, outcomeUnknown: true });
+    expect(f.store.getProviderDraftMutation("revise_post_accept_1")).toMatchObject({
+      state: "outcome_unknown",
+    });
+    expect(f.store.getProviderDraft("draft_1")).toMatchObject({ state: "ambiguous" });
     await f.augment.onShutdown?.();
     f.store.close();
   });
@@ -1124,6 +1241,138 @@ describe("AgentMail provider-native runtime", () => {
       { threadId: "thread_1", addLabels: ["important"], removeLabels: [] },
       { threadId: "thread_1", addLabels: ["trash"], removeLabels: [] },
     ]);
+    f.store.close();
+  });
+
+  test("creates native new and forward drafts without flattening provider forward identity", async () => {
+    const f = fixture({ drafts: { allowNew: true, allowForward: true } });
+    const incoming = message();
+    f.provider.messages.set(incoming.messageId, incoming);
+    await f.augment.onBoot?.();
+    const create = requireTool(f.augment, "create_mail_draft");
+    const createdNew = toolJson(
+      await create.execute(
+        { kind: "new", to: ["customer@example.com"], subject: "Update", text: "Hello" },
+        toolContext({ operationId: "create_new_1" }),
+      ),
+    );
+    expect(createdNew).toMatchObject({ status: "created", kind: "new" });
+    const createdForward = toolJson(
+      await create.execute(
+        {
+          kind: "forward",
+          sourceMessageId: incoming.messageId,
+          to: ["owner@example.com"],
+          text: "Please review.",
+        },
+        toolContext({ operationId: "create_forward_1" }),
+      ),
+    );
+    expect(createdForward).toMatchObject({ status: "created", kind: "forward" });
+    expect(f.provider.createdDrafts.at(-1)).toMatchObject({
+      kind: "forward",
+      sourceMessageId: incoming.messageId,
+    });
+    expect(f.provider.drafts.get(String(createdForward.draftId))?.forwardOf).toBe(
+      incoming.messageId,
+    );
+    expect(f.store.getProviderDraft(String(createdForward.draftId))).toMatchObject({
+      kind: "forward",
+      sourceMessageId: incoming.messageId,
+    });
+    await f.augment.onShutdown?.();
+    f.store.close();
+  });
+
+  test("requires explicit adoption and refreshes externally edited provider drafts", async () => {
+    const f = fixture({ drafts: { allowReply: true } });
+    const incoming = message();
+    const unmanaged = draft({ draftId: "external_1", inReplyTo: incoming.messageId });
+    f.provider.messages.set(incoming.messageId, incoming);
+    f.provider.drafts.set(unmanaged.draftId, unmanaged);
+    await f.augment.onBoot?.();
+    const show = requireTool(f.augment, "show_mail_draft");
+    expect(
+      toolJson(await show.execute({ draftId: unmanaged.draftId }, toolContext())),
+    ).toMatchObject({
+      managed: false,
+      inferredKind: "reply_or_reply_all",
+    });
+    const adopt = requireTool(f.augment, "adopt_mail_draft");
+    await f.augment.onTurnStart?.(
+      creatorTurn("adopt_1", "console_thread_1", "adopt draft external_1 as reply"),
+    );
+    expect(
+      toolJson(
+        await adopt.execute(
+          { draftId: unmanaged.draftId, kind: "reply" },
+          toolContext({ turnId: "adopt_1", operationId: "adopt_operation_1" }),
+        ),
+      ),
+    ).toMatchObject({ status: "adopted", kind: "reply" });
+    await f.augment.onTurnEnd?.({ turnId: "adopt_1" } as TurnResult);
+    f.provider.drafts.set(unmanaged.draftId, {
+      ...unmanaged,
+      text: "Edited in AgentMail",
+      updatedAt: unmanaged.updatedAt + 10,
+    });
+    const refreshed = toolJson(
+      await show.execute({ draftId: unmanaged.draftId }, toolContext({ turnId: "show_external" })),
+    );
+    expect(refreshed).toMatchObject({ managed: true, externallyChanged: true });
+    expect(f.store.getProviderDraft(unmanaged.draftId)?.providerUpdatedAt).toBe(
+      unmanaged.updatedAt + 10,
+    );
+    await f.augment.onShutdown?.();
+    f.store.close();
+  });
+
+  test("fails schedule closed and durably deletes only after exact creator intent", async () => {
+    const f = fixture({
+      drafts: { allowNew: true, allowScheduling: true },
+      destructive: { allowPermanentDelete: true },
+    });
+    await f.augment.onBoot?.();
+    const created = toolJson(
+      await requireTool(f.augment, "create_mail_draft").execute(
+        { kind: "new", to: ["customer@example.com"], subject: "Draft", text: "Body" },
+        toolContext({ operationId: "create_delete_1" }),
+      ),
+    );
+    const draftId = String(created.draftId);
+    const shown = toolJson(
+      await requireTool(f.augment, "show_mail_draft").execute({ draftId }, toolContext()),
+    );
+    expect(
+      toolJson(
+        await requireTool(f.augment, "schedule_mail_draft").execute(
+          { draftId, expectedRevision: shown.providerRevision, sendAt: Date.now() + 60_000 },
+          toolContext({ operationId: "schedule_1" }),
+        ),
+      ),
+    ).toMatchObject({ status: "failed" });
+    expect(f.provider.updatedDrafts).toHaveLength(0);
+    const remove = requireTool(f.augment, "delete_mail_draft");
+    expect(
+      await remove.execute(
+        { draftId, expectedRevision: shown.providerRevision },
+        toolContext({ operationId: "delete_denied" }),
+      ),
+    ).toMatchObject({ isError: true });
+    await f.augment.onTurnStart?.(
+      creatorTurn("delete_exact", "console_thread_1", `delete draft ${draftId}`),
+    );
+    expect(
+      toolJson(
+        await remove.execute(
+          { draftId, expectedRevision: shown.providerRevision },
+          toolContext({ turnId: "delete_exact", operationId: "delete_exact_1" }),
+        ),
+      ),
+    ).toEqual({ status: "deleted", draftId });
+    expect(f.store.getProviderDraft(draftId)?.state).toBe("deleted");
+    await f.augment.onTurnEnd?.({ turnId: "delete_exact" } as TurnResult);
+    await f.augment.onShutdown?.();
     f.store.close();
   });
 

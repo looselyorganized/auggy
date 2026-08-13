@@ -28,8 +28,13 @@ describe("agentMail replacement boundary", () => {
       "delete_mail_thread_permanently",
       "read_mail_attachment",
       "list_mail_drafts",
+      "create_mail_draft",
+      "adopt_mail_draft",
       "show_mail_draft",
       "revise_mail_draft",
+      "schedule_mail_draft",
+      "unschedule_mail_draft",
+      "delete_mail_draft",
       "send_mail_draft",
     ]);
     expect(augment.transport).toBeDefined();

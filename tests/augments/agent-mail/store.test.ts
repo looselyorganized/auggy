@@ -76,7 +76,11 @@ describe("AgentMail orchestration store", () => {
     expect(columns).not.toContain("body");
     expect(columns).not.toContain("html");
     expect(columns).not.toContain("api_key");
-    for (const table of ["agentmail_drafts", "agentmail_draft_delivery_operations"]) {
+    for (const table of [
+      "agentmail_drafts",
+      "agentmail_draft_mutations",
+      "agentmail_draft_delivery_operations",
+    ]) {
       const stateColumns = db
         .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
         .all()
@@ -725,9 +729,17 @@ describe("AgentMail orchestration store", () => {
       operationId: "operation_1",
       payloadHash: hashAgentMailOrchestrationValue("outbound"),
     });
-    expect(store.recoverAmbiguousMutations()).toEqual({ drafts: 1, outbound: 1 });
+    expect(store.recoverAmbiguousMutations()).toEqual({
+      drafts: 1,
+      outbound: 1,
+      draftMutations: 0,
+    });
     expect(store.getDraftByMessage("message_1")?.state).toBe("ambiguous");
-    expect(store.recoverAmbiguousMutations()).toEqual({ drafts: 0, outbound: 0 });
+    expect(store.recoverAmbiguousMutations()).toEqual({
+      drafts: 0,
+      outbound: 0,
+      draftMutations: 0,
+    });
     store.close();
   });
 
@@ -788,6 +800,253 @@ describe("AgentMail orchestration store", () => {
       materialHash: reply.materialHash,
     });
     expect(store.getProviderDraft("draft_provider_1")).toMatchObject({ kind: "new" });
+    store.close();
+  });
+
+  test("keeps prepared draft creation retryable and reconciles only a dispatched crash", () => {
+    const paths = fixture();
+    const manifestHash = hashAgentMailOrchestrationValue("create draft request");
+    let store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+    });
+    const input = {
+      kind: "create" as const,
+      operationId: "mutation_create_1",
+      draftKind: "reply" as const,
+      sourceMessageId: "provider_message_1",
+      threadId: "provider_thread_1",
+      clientId: "stable_create_client_1",
+      manifestHash,
+    };
+    expect(store.reserveProviderDraftMutation(input)).toMatchObject({
+      status: "reserved",
+      operation: { state: "prepared", clientId: "stable_create_client_1" },
+    });
+    expect(store.reserveProviderDraftMutation(input)).toMatchObject({ status: "replay" });
+    expect(
+      store.reserveProviderDraftMutation({
+        ...input,
+        manifestHash: hashAgentMailOrchestrationValue("changed create request"),
+      }),
+    ).toMatchObject({ status: "conflict" });
+    expect(
+      store.reserveProviderDraftMutation({
+        ...input,
+        operationId: "mutation_create_2",
+      }),
+    ).toMatchObject({ status: "conflict" });
+    store.close();
+
+    store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+    });
+    expect(store.recoverAmbiguousMutations()).toEqual({
+      drafts: 0,
+      outbound: 0,
+      draftMutations: 0,
+    });
+    expect(store.getProviderDraftMutation("mutation_create_1")?.state).toBe("prepared");
+    expect(store.markProviderDraftMutationDispatching("mutation_create_1")).toMatchObject({
+      status: "dispatch",
+      operation: { state: "dispatching" },
+    });
+    store.close();
+
+    store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+    });
+    expect(store.recoverAmbiguousMutations()).toEqual({
+      drafts: 0,
+      outbound: 0,
+      draftMutations: 1,
+    });
+    expect(store.listUnresolvedProviderDraftMutations()).toEqual([
+      expect.objectContaining({ operationId: "mutation_create_1", state: "outcome_unknown" }),
+    ]);
+    const materialHash = hashAgentMailOrchestrationValue("created provider material");
+    expect(
+      store.reconcileProviderDraftMutation({
+        operationId: "mutation_create_1",
+        evidenceHash: hashAgentMailOrchestrationValue("provider client lookup"),
+        resolution: {
+          status: "updated",
+          draftId: "provider_draft_1",
+          providerRevision: "revision_1",
+          providerUpdatedAt: 2_000,
+          materialHash,
+        },
+      }),
+    ).toMatchObject({ state: "updated", resultDraftId: "provider_draft_1" });
+    expect(store.getProviderDraft("provider_draft_1")).toMatchObject({
+      kind: "reply",
+      sourceMessageId: "provider_message_1",
+      clientId: "stable_create_client_1",
+      materialHash,
+      state: "ready",
+    });
+    store.close();
+  });
+
+  test("durably revises, schedules, unschedules, and deletes provider drafts", () => {
+    const paths = fixture();
+    let now = 2_000;
+    const store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+      clock: () => now,
+    });
+    const material1 = hashAgentMailOrchestrationValue("material 1");
+    const material2 = hashAgentMailOrchestrationValue("material 2");
+    store.recordProviderDraft(providerDraftInput({ materialHash: material1 }));
+    store.approveProviderDraft({
+      draftId: "draft_provider_1",
+      expectedProviderRevision: "revision_1",
+      expectedMaterialHash: material1,
+      approvalGeneration: 1,
+      manifestHash: hashAgentMailOrchestrationValue("approval 1"),
+    });
+
+    const revise = store.reserveProviderDraftMutation({
+      kind: "revise",
+      operationId: "mutation_revise_1",
+      draftId: "draft_provider_1",
+      expectedProviderRevision: "revision_1",
+      expectedMaterialHash: material1,
+      manifestHash: hashAgentMailOrchestrationValue("revision request"),
+    });
+    expect(revise).toMatchObject({ status: "reserved", operation: { state: "prepared" } });
+    expect(store.getProviderDraft("draft_provider_1")).toMatchObject({
+      state: "ready",
+      approvalGeneration: 1,
+    });
+    expect(store.getProviderDraft("draft_provider_1")?.approvalManifestHash).toBeUndefined();
+    store.markProviderDraftMutationDispatching("mutation_revise_1");
+    now = 3_000;
+    store.settleProviderDraftMutation("mutation_revise_1", {
+      status: "updated",
+      draftId: "draft_provider_1",
+      providerRevision: "revision_2",
+      providerUpdatedAt: 2_500,
+      materialHash: material2,
+    });
+
+    const schedule = store.reserveProviderDraftMutation({
+      kind: "schedule",
+      operationId: "mutation_schedule_1",
+      draftId: "draft_provider_1",
+      expectedProviderRevision: "revision_2",
+      expectedMaterialHash: material2,
+      manifestHash: hashAgentMailOrchestrationValue("schedule request"),
+      sendAt: 50_000,
+    });
+    expect(schedule).toMatchObject({
+      status: "reserved",
+      operation: { state: "prepared", sendAt: 50_000 },
+    });
+    store.markProviderDraftMutationDispatching("mutation_schedule_1");
+    store.settleProviderDraftMutation("mutation_schedule_1", {
+      status: "updated",
+      draftId: "draft_provider_1",
+      providerRevision: "revision_3",
+      providerUpdatedAt: 3_500,
+      materialHash: material2,
+      sendAt: 50_000,
+    });
+    expect(store.getProviderDraft("draft_provider_1")).toMatchObject({
+      state: "scheduled",
+      sendAt: 50_000,
+    });
+
+    const db = new Database(paths.dbPath, { readonly: true });
+    expect(
+      db
+        .query<{ count: number }, []>("SELECT count(*) AS count FROM agentmail_rate_reservations")
+        .get()?.count ?? -1,
+    ).toBe(0);
+    db.close();
+
+    store.reserveProviderDraftMutation({
+      kind: "unschedule",
+      operationId: "mutation_unschedule_1",
+      draftId: "draft_provider_1",
+      expectedProviderRevision: "revision_3",
+      expectedMaterialHash: material2,
+      manifestHash: hashAgentMailOrchestrationValue("unschedule request"),
+    });
+    store.markProviderDraftMutationDispatching("mutation_unschedule_1");
+    store.settleProviderDraftMutation("mutation_unschedule_1", {
+      status: "updated",
+      draftId: "draft_provider_1",
+      providerRevision: "revision_4",
+      providerUpdatedAt: 4_000,
+      materialHash: material2,
+    });
+    expect(store.getProviderDraft("draft_provider_1")).toMatchObject({ state: "ready" });
+    expect(store.getProviderDraft("draft_provider_1")?.sendAt).toBeUndefined();
+
+    store.reserveProviderDraftMutation({
+      kind: "delete",
+      operationId: "mutation_delete_404",
+      draftId: "draft_provider_1",
+      expectedProviderRevision: "revision_4",
+      expectedMaterialHash: material2,
+      manifestHash: hashAgentMailOrchestrationValue("delete request 404"),
+    });
+    store.markProviderDraftMutationDispatching("mutation_delete_404");
+    store.settleProviderDraftMutation("mutation_delete_404", {
+      status: "failed",
+      code: "provider_not_found",
+    });
+    expect(store.getProviderDraft("draft_provider_1")).toMatchObject({ state: "ready" });
+    expect(store.getProviderDraft("draft_provider_1")?.sentMessageId).toBeUndefined();
+
+    store.reserveProviderDraftMutation({
+      kind: "delete",
+      operationId: "mutation_delete_1",
+      draftId: "draft_provider_1",
+      expectedProviderRevision: "revision_4",
+      expectedMaterialHash: material2,
+      manifestHash: hashAgentMailOrchestrationValue("delete request success"),
+    });
+    store.markProviderDraftMutationDispatching("mutation_delete_1");
+    expect(
+      store.settleProviderDraftMutation("mutation_delete_1", { status: "deleted" }),
+    ).toMatchObject({ state: "deleted", resultDraftId: "draft_provider_1" });
+    expect(store.getProviderDraft("draft_provider_1")).toMatchObject({ state: "deleted" });
+    store.close();
+  });
+
+  test("keeps active and unknown draft mutations through bounded compaction", () => {
+    const paths = fixture();
+    let now = 1_000;
+    const store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+      clock: () => now,
+    });
+    store.reserveProviderDraftMutation({
+      kind: "create",
+      operationId: "prepared_create",
+      draftKind: "new",
+      clientId: "prepared_client",
+      manifestHash: hashAgentMailOrchestrationValue("prepared create"),
+    });
+    store.reserveProviderDraftMutation({
+      kind: "create",
+      operationId: "unknown_create",
+      draftKind: "new",
+      clientId: "unknown_client",
+      manifestHash: hashAgentMailOrchestrationValue("unknown create"),
+    });
+    store.markProviderDraftMutationDispatching("unknown_create");
+    store.recoverAmbiguousMutations();
+    now = 10_000;
+    store.compact({ terminalBefore: 9_000, maxRows: 100 });
+    expect(store.getProviderDraftMutation("prepared_create")?.state).toBe("prepared");
+    expect(store.getProviderDraftMutation("unknown_create")?.state).toBe("outcome_unknown");
     store.close();
   });
 
@@ -912,7 +1171,11 @@ describe("AgentMail orchestration store", () => {
       dbPath: paths.dbPath,
       inboxId: "support@agentmail.to",
     });
-    expect(store.recoverAmbiguousMutations()).toEqual({ drafts: 1, outbound: 0 });
+    expect(store.recoverAmbiguousMutations()).toEqual({
+      drafts: 1,
+      outbound: 0,
+      draftMutations: 0,
+    });
     expect(store.getDraftDeliveryOperation("send_draft_1")).toMatchObject({
       state: "outcome_unknown",
       outcomeCode: "interrupted_before_settlement",

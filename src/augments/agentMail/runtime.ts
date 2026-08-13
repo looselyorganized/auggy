@@ -26,6 +26,12 @@ import type {
 import { createAgentMailInboundCoordinator, type AgentMailInboundCoordinator } from "./inbound";
 import { readAgentMailTextAttachment } from "./attachment";
 import {
+  assertAgentMailDraftIdentity,
+  snapshotAgentMailDraft,
+  type AgentMailDraftSnapshot,
+} from "./draft-snapshot";
+import {
+  createAgentMailOperationManifest,
   evaluateAgentMailInbound,
   evaluateAgentMailOperation,
   evaluateAgentMailOutbound,
@@ -33,11 +39,13 @@ import {
   maySendAgentMailDraft,
   type AgentMailOperation,
   type AgentMailOperationInput,
+  type AgentMailTrustedAuthority,
 } from "./policy";
 import {
   AgentMailProviderError,
   createAgentMailProvider,
   type AgentMailDraft,
+  type AgentMailDraftSummary,
   type AgentMailMessage,
   type AgentMailMessageSummary,
   type AgentMailProvider,
@@ -46,10 +54,11 @@ import {
 import {
   createAgentMailOrchestrationStore,
   hashAgentMailOrchestrationValue,
-  type AgentMailDraftReference,
   type AgentMailCreatorAttentionKind,
   type AgentMailCreatorAttentionRecord,
   type AgentMailOrchestrationStore,
+  type AgentMailProviderDraftKind,
+  type AgentMailProviderDraftRecord,
   type AgentMailWorkItem,
 } from "./store";
 
@@ -58,8 +67,13 @@ const MAX_INBOUND_PROMPT_BYTES = 64 * 1024;
 const MAX_PROCESSING_ATTEMPTS = 5;
 const CREATOR_TOOL_NAMES = [
   "list_mail_drafts",
+  "create_mail_draft",
+  "adopt_mail_draft",
   "show_mail_draft",
   "revise_mail_draft",
+  "schedule_mail_draft",
+  "unschedule_mail_draft",
+  "delete_mail_draft",
   "send_mail_draft",
   "list_mail_messages",
   "search_mail_messages",
@@ -293,21 +307,87 @@ function safeThreadSummary(thread: AgentMailThreadSummary): Record<string, unkno
   };
 }
 
+function safeDraftSummary(draft: AgentMailDraftSummary): Record<string, unknown> {
+  return {
+    draftId: draft.draftId,
+    to: draft.to,
+    cc: draft.cc,
+    bcc: draft.bcc,
+    ...(safeSubject(draft.subject) === undefined ? {} : { subject: safeSubject(draft.subject) }),
+    ...(draft.preview === undefined
+      ? {}
+      : { preview: boundedText(draft.preview, MAX_MAIL_PREVIEW_BYTES) }),
+    ...(draft.labels === undefined ? {} : { labels: draft.labels }),
+    ...(draft.inReplyTo === undefined ? {} : { inReplyTo: draft.inReplyTo }),
+    ...(draft.forwardOf === undefined ? {} : { forwardOf: draft.forwardOf }),
+    ...(draft.sendAt === undefined ? {} : { sendAt: draft.sendAt }),
+    updatedAt: draft.updatedAt,
+  };
+}
+
+function operationIdentity(context: ToolExecuteContext | undefined): string | undefined {
+  const value = context?.operationId?.trim();
+  return value ? value : undefined;
+}
+
+function exactCreatorIntent(
+  intent: CreatorTurnIntent | undefined,
+  draftId: string,
+  verbs: readonly string[],
+): boolean {
+  const normalized = intent?.text.trim().replace(/\s+/g, " ").toLowerCase();
+  if (!normalized) return false;
+  const draft = draftId.toLowerCase();
+  return verbs.some((verb) => normalized === `${verb} draft ${draft}`);
+}
+
 function mailboxFailure(operation: string, error: unknown): ToolResult {
   return failed(`${operation} failed (${providerCode(error)}). No mailbox result was returned.`);
 }
 
 function managedProviderDraft(
-  reference: AgentMailDraftReference,
+  reference: AgentMailProviderDraftRecord,
   draft: AgentMailDraft,
 ): string | undefined {
   if (draft.inboxId !== reference.inboxId || draft.draftId !== reference.draftId) {
     return "AgentMail returned a draft outside the managed inbox boundary.";
   }
-  if (draft.inReplyTo !== reference.sourceMessageId) {
-    return "The provider draft is no longer bound to its managed source message.";
+  try {
+    assertAgentMailDraftIdentity(draft, {
+      inboxId: reference.inboxId,
+      draftId: reference.draftId,
+      kind: reference.kind,
+      sourceMessageId: reference.sourceMessageId,
+    });
+  } catch (error) {
+    return error instanceof Error ? error.message : "AgentMail draft identity changed.";
   }
   return undefined;
+}
+
+function providerDraftKind(
+  kind: "new" | "reply" | "replyAll" | "forward",
+): AgentMailProviderDraftKind {
+  return kind === "replyAll" ? "reply_all" : kind;
+}
+
+function policyDraftKind(
+  kind: AgentMailProviderDraftKind,
+): "new" | "reply" | "replyAll" | "forward" {
+  return kind === "reply_all" ? "replyAll" : kind;
+}
+
+function createDraftAction(kind: AgentMailProviderDraftKind): AgentMailOperation {
+  switch (kind) {
+    case "new":
+      return "create_new_draft";
+    case "reply":
+      return "create_reply_draft";
+    case "reply_all":
+      return "create_reply_all_draft";
+    case "forward":
+      return "create_forward_draft";
+  }
 }
 
 /**
@@ -352,6 +432,125 @@ export function createAgentMailRuntime(
   function runtimeStore(): AgentMailOrchestrationStore {
     if (!store) throw new Error("agentMail: orchestration store is unavailable before boot");
     return store;
+  }
+
+  function trustedAuthority(context?: ToolExecuteContext): AgentMailTrustedAuthority {
+    const isCreator = creator(context);
+    return {
+      authority: isCreator
+        ? {
+            origin: "creator",
+            peerId: context.peer.id,
+            trustLevel: "creator",
+            sourceAugment: context.peer.sourceAugment,
+          }
+        : {
+            origin: "system",
+            peerId: `system:${registeredName}`,
+            trustLevel: "creator",
+            sourceAugment: registeredName,
+          },
+      creatorPeerId: isCreator ? context.peer.id : "agentmail-system-creator",
+      registeredAugment: registeredName,
+      now: dependencies.clock?.() ?? Date.now(),
+    };
+  }
+
+  function draftPolicyValues(
+    draft: AgentMailDraft,
+    snapshot: AgentMailDraftSnapshot,
+  ): Partial<AgentMailOperationInput> {
+    return {
+      draftId: draft.draftId,
+      draftKind: policyDraftKind(snapshot.kind),
+      ...(snapshot.sourceMessageId === undefined
+        ? {}
+        : { sourceMessageId: snapshot.sourceMessageId }),
+      recipients: { to: draft.to, cc: draft.cc, bcc: draft.bcc },
+      replyTo: draft.replyTo,
+      labels: draft.labels,
+      subject: draft.subject,
+      text: draft.text,
+      html: draft.html,
+      providerRevision: snapshot.providerRevision,
+      materialHash: snapshot.materialHash,
+      ...(snapshot.sendAt === undefined ? {} : { sendAt: snapshot.sendAt }),
+    };
+  }
+
+  function sourcePolicyValues(message: AgentMailMessage): {
+    providerRevision: string;
+    materialHash: string;
+    threadId: string;
+  } {
+    return {
+      providerRevision: `message-updated-at:${message.updatedAt}`,
+      materialHash: hashAgentMailOrchestrationValue(
+        JSON.stringify([
+          message.inboxId,
+          message.messageId,
+          message.threadId,
+          message.updatedAt,
+          message.sender,
+          message.replyTo,
+          message.to,
+          message.cc,
+          message.bcc,
+          message.subject,
+          message.attachments.map((attachment) => [
+            attachment.attachmentId,
+            attachment.filename,
+            attachment.size,
+            attachment.contentType,
+          ]),
+        ]),
+      ),
+      threadId: message.threadId,
+    };
+  }
+
+  function settleDraftMutationUnknown(
+    operationId: string,
+    error: unknown,
+    providerAccepted = false,
+  ): ToolResult {
+    const code = providerCode(error);
+    const outcomeUnknown =
+      providerAccepted ||
+      (error instanceof AgentMailProviderError &&
+        (error.outcomeUnknown || error.details.code === "mutation_ambiguous"));
+    runtimeStore().settleProviderDraftMutation(operationId, {
+      status: outcomeUnknown ? "outcome_unknown" : "failed",
+      code,
+    });
+    if (!(error instanceof AgentMailProviderError)) {
+      console.warn(
+        `[agentMail] draft mutation failed operation=${operationId} error=${error instanceof Error ? error.message : "unknown"}`,
+      );
+    }
+    return outcomeUnknown
+      ? ambiguous("AgentMail may have applied this draft change. Reconcile it before retrying.")
+      : failed(`AgentMail draft mutation failed (${code}). No successful change was recorded.`);
+  }
+
+  function settleUpdatedDraftMutation(operationId: string, draft: AgentMailDraft) {
+    const operation = runtimeStore().getProviderDraftMutation(operationId);
+    if (!operation) throw new Error("agentMail: draft mutation disappeared before settlement");
+    const snapshot = assertAgentMailDraftIdentity(draft, {
+      inboxId: config.inboxId,
+      draftId: draft.draftId,
+      kind: operation.draftKind,
+      sourceMessageId: operation.sourceMessageId,
+    });
+    runtimeStore().settleProviderDraftMutation(operationId, {
+      status: "updated",
+      draftId: draft.draftId,
+      providerRevision: snapshot.providerRevision,
+      providerUpdatedAt: snapshot.providerUpdatedAt,
+      materialHash: snapshot.materialHash,
+      ...(snapshot.sendAt === undefined ? {} : { sendAt: snapshot.sendAt }),
+    });
+    return snapshot;
   }
 
   function threadId(providerThreadId: string): string {
@@ -658,40 +857,105 @@ export function createAgentMailRuntime(
       return;
     }
     const clientId = stableId("auggy.reply.v1", config.inboxId, route.work.messageId);
+    const operationId = stableId(
+      "agentmail.inbound-draft.v2",
+      config.inboxId,
+      route.work.messageId,
+      config.policyGeneration,
+    );
     const baseSubject = route.message.subject?.trim() || "(no subject)";
     const replySubject = `${config.outbound.subjectPrefix}${/^re:/i.test(baseSubject) ? baseSubject : `Re: ${baseSubject}`}`;
+    const kind = config.replies.allowReplyAll ? "reply_all" : "reply";
+    const providerRevision = `message-updated-at:${route.message.updatedAt}`;
+    const materialHash = hashAgentMailOrchestrationValue(
+      JSON.stringify([
+        route.message.inboxId,
+        route.message.messageId,
+        route.message.threadId,
+        route.message.updatedAt,
+        route.message.sender,
+        route.message.to,
+        route.message.cc,
+        route.message.bcc,
+        route.message.subject,
+      ]),
+    );
+    const policyInput: AgentMailOperationInput = {
+      action: createDraftAction(kind),
+      sourceMessageId: route.work.messageId,
+      draftKind: policyDraftKind(kind),
+      clientId,
+      operationId,
+      providerRevision,
+      materialHash,
+      subject: replySubject,
+      text,
+    };
+    const authorization = createAgentMailOperationManifest(policyInput, config, trustedAuthority());
+    if (!authorization.allowed) {
+      ledger.settleMessage(route.work.messageId, "quarantined", authorization.reason);
+      route.draftCreated = true;
+      return;
+    }
+    if (!provider.createDraft) {
+      throw new Error("agentMail: provider-native draft creation is unavailable");
+    }
     const input = {
-      messageId: route.work.messageId,
+      kind: policyDraftKind(kind),
+      sourceMessageId: route.work.messageId,
       text,
       clientId,
-      replyAll: config.replies.allowReplyAll,
       subject: replySubject,
-    };
-    let draft: AgentMailDraft;
-    try {
-      draft = await provider.createReplyDraft(input, signal);
-    } catch (error) {
-      if (
-        !(error instanceof AgentMailProviderError) ||
-        error.details.code !== "mutation_ambiguous"
-      ) {
-        throw error;
-      }
-      // Draft creation is idempotent by clientId, so exactly one immediate
-      // reconciliation retry cannot create a duplicate provider draft.
-      draft = await provider.createReplyDraft(input, signal);
-    }
-    const recorded = ledger.recordDraft({
+    } as const;
+    const reservation = ledger.reserveProviderDraftMutation({
+      kind: "create",
+      operationId,
+      draftKind: kind,
       sourceMessageId: route.work.messageId,
       threadId: route.work.threadId,
-      draftId: draft.draftId,
       clientId,
-      providerUpdatedAt: draft.updatedAt,
+      manifestHash: authorization.hash,
     });
-    if (recorded.status === "conflict") {
+    if (reservation.status === "conflict") {
       ledger.settleMessage(route.work.messageId, "quarantined", "draft_identity_conflict");
       route.draftCreated = true;
       return;
+    }
+    if (reservation.status === "replay") {
+      if (reservation.operation.state === "updated") {
+        ledger.settleMessage(route.work.messageId, "draft_ready");
+        route.draftCreated = true;
+        return;
+      }
+      throw new Error("agentMail: inbound draft creation requires reconciliation");
+    }
+    const dispatch = ledger.markProviderDraftMutationDispatching(operationId);
+    if (dispatch.status !== "dispatch") {
+      throw new Error("agentMail: inbound draft creation is already dispatching");
+    }
+    let providerAccepted = false;
+    try {
+      const created = await provider.createDraft(input, signal);
+      providerAccepted = true;
+      if (created.clientId !== clientId) {
+        throw new Error("agentMail: provider draft client identity changed during creation");
+      }
+      const draft = await provider.getDraft(created.draftId, signal);
+      if (draft.clientId !== clientId) {
+        throw new Error("agentMail: provider draft client identity changed during verification");
+      }
+      settleUpdatedDraftMutation(operationId, draft);
+    } catch (error) {
+      ledger.settleProviderDraftMutation(operationId, {
+        status:
+          providerAccepted ||
+          (error instanceof AgentMailProviderError &&
+            (error.outcomeUnknown || error.details.code === "mutation_ambiguous"))
+            ? "outcome_unknown"
+            : "failed",
+        code: providerCode(error),
+      });
+      throw error;
     }
     ledger.settleMessage(route.work.messageId, "draft_ready");
     route.draftCreated = true;
@@ -845,13 +1109,51 @@ export function createAgentMailRuntime(
   function freshManagedDraft(
     draftId: string,
     signal?: AbortSignal,
-  ): Promise<{ error: string } | { reference: AgentMailDraftReference; draft: AgentMailDraft }> {
-    const reference = runtimeStore().getDraftById(draftId);
+  ): Promise<
+    | { error: string }
+    | {
+        reference: AgentMailProviderDraftRecord;
+        draft: AgentMailDraft;
+        snapshot: AgentMailDraftSnapshot;
+        externallyChanged: boolean;
+      }
+  > {
+    const reference = runtimeStore().getProviderDraft(draftId);
     if (!reference)
       return Promise.resolve({ error: "Draft is not managed by this Auggy agent." } as const);
     return provider.getDraft(draftId, signal).then((draft) => {
       const error = managedProviderDraft(reference, draft);
-      return error ? ({ error } as const) : ({ reference, draft } as const);
+      if (error) return { error } as const;
+      const snapshot = assertAgentMailDraftIdentity(draft, {
+        inboxId: reference.inboxId,
+        draftId: reference.draftId,
+        kind: reference.kind,
+        sourceMessageId: reference.sourceMessageId,
+      });
+      if (
+        reference.providerRevision === snapshot.providerRevision &&
+        reference.materialHash === snapshot.materialHash &&
+        reference.providerUpdatedAt === snapshot.providerUpdatedAt &&
+        reference.sendAt === snapshot.sendAt
+      ) {
+        return { reference, draft, snapshot, externallyChanged: false } as const;
+      }
+      try {
+        const refreshed = runtimeStore().refreshProviderDraft({
+          draftId,
+          expectedProviderRevision: reference.providerRevision,
+          providerRevision: snapshot.providerRevision,
+          providerUpdatedAt: snapshot.providerUpdatedAt,
+          materialHash: snapshot.materialHash,
+          ...(snapshot.sendAt === undefined ? {} : { sendAt: snapshot.sendAt }),
+        });
+        return { reference: refreshed, draft, snapshot, externallyChanged: true } as const;
+      } catch {
+        return {
+          error:
+            "Draft changed in AgentMail while Auggy was synchronizing it. Show it again before continuing.",
+        } as const;
+      }
     });
   }
 
@@ -863,17 +1165,10 @@ export function createAgentMailRuntime(
     return evaluateAgentMailOperation(
       {
         action,
-        authority: {
-          peerId: context?.peer?.id ?? "missing",
-          trustLevel: context?.peer?.trustLevel ?? "public",
-          origin: creator(context) ? "creator" : "agent",
-          sourceAugment: context?.peer?.sourceAugment,
-        },
-        creatorPeerId: creator(context) ? context.peer.id : "unavailable",
-        registeredAugment: registeredName,
         ...values,
       },
       config,
+      trustedAuthority(context),
     );
   }
 
@@ -998,6 +1293,15 @@ export function createAgentMailRuntime(
       const decision = authorizeMailboxOperation(action, context, {
         messageId,
         providerRevision: `updated-at:${current.updatedAt}`,
+        materialHash: hashAgentMailOrchestrationValue(
+          JSON.stringify([
+            current.inboxId,
+            current.messageId,
+            current.threadId,
+            current.updatedAt,
+            current.labels,
+          ]),
+        ),
         ...(addLabels === undefined ? {} : { addLabels }),
         ...(removeLabels === undefined ? {} : { removeLabels }),
       });
@@ -1064,6 +1368,15 @@ export function createAgentMailRuntime(
         const decision = authorizeMailboxOperation("delete_message", context, {
           messageId,
           providerRevision: `updated-at:${current.updatedAt}`,
+          materialHash: hashAgentMailOrchestrationValue(
+            JSON.stringify([
+              current.inboxId,
+              current.messageId,
+              current.threadId,
+              current.updatedAt,
+              current.labels,
+            ]),
+          ),
         });
         if (!decision.allowed) return denied(`Mailbox policy denied deletion: ${decision.reason}.`);
         await provider.deleteMessagePermanently(messageId, context.signal);
@@ -1186,6 +1499,16 @@ export function createAgentMailRuntime(
       const decision = authorizeMailboxOperation(action, context, {
         threadId,
         providerRevision: `updated-at:${current.updatedAt}`,
+        materialHash: hashAgentMailOrchestrationValue(
+          JSON.stringify([
+            current.inboxId,
+            current.threadId,
+            current.updatedAt,
+            current.labels,
+            current.lastMessageId,
+            current.messageCount,
+          ]),
+        ),
         ...(addLabels === undefined ? {} : { addLabels }),
         ...(removeLabels === undefined ? {} : { removeLabels }),
       });
@@ -1252,6 +1575,16 @@ export function createAgentMailRuntime(
         const decision = authorizeMailboxOperation("delete_thread", context, {
           threadId,
           providerRevision: `updated-at:${current.updatedAt}`,
+          materialHash: hashAgentMailOrchestrationValue(
+            JSON.stringify([
+              current.inboxId,
+              current.threadId,
+              current.updatedAt,
+              current.labels,
+              current.lastMessageId,
+              current.messageCount,
+            ]),
+          ),
         });
         if (!decision.allowed) return denied(`Mailbox policy denied deletion: ${decision.reason}.`);
         await provider.deleteThreadPermanently(threadId, context.signal);
@@ -1311,21 +1644,317 @@ export function createAgentMailRuntime(
 
   const listDraftsTool = defineTool({
     name: "list_mail_drafts",
-    description: "List AgentMail reply drafts managed by this Auggy agent. Creator only.",
+    description:
+      "List provider-native AgentMail drafts and whether each is managed, externally changed, or unmanaged. Creator only.",
     category: "communication",
-    input: z.object({ limit: z.number().int().min(1).max(100).default(20) }),
-    execute: async ({ limit }, context) => {
+    input: z.object({
+      limit: z.number().int().min(1).max(100).default(20),
+      pageToken: z.string().min(1).max(4_096).optional(),
+    }),
+    execute: async ({ limit, pageToken }, context) => {
       if (!creator(context)) return denied("Only the verified creator may list mail drafts.");
-      const drafts = runtimeStore()
-        .listDrafts(limit)
-        .map((draft) => ({
-          draftId: draft.draftId,
-          sourceMessageId: draft.sourceMessageId,
-          threadId: draft.threadId,
-          state: draft.state,
-          providerUpdatedAt: draft.providerUpdatedAt,
-        }));
-      return JSON.stringify({ status: "ok", drafts });
+      const decision = authorizeMailboxOperation("list_drafts", context, {
+        listLimit: limit,
+        ...(pageToken === undefined ? {} : { pageToken }),
+      });
+      if (!decision.allowed)
+        return denied(`Mailbox policy denied draft listing: ${decision.reason}.`);
+      if (!provider.listMailboxDrafts) {
+        return failed("AgentMail provider-native draft listing is unavailable.");
+      }
+      try {
+        const page = await provider.listMailboxDrafts({ limit, pageToken }, context.signal);
+        const localById = new Map(
+          runtimeStore()
+            .listProviderDrafts(1_000)
+            .map((draft) => [draft.draftId, draft] as const),
+        );
+        const drafts: Record<string, unknown>[] = page.items.map((draft) => {
+          const local = localById.get(draft.draftId);
+          if (!local) return { ...safeDraftSummary(draft), management: "unmanaged" };
+          localById.delete(draft.draftId);
+          return {
+            ...safeDraftSummary(draft),
+            management:
+              local.state === "deleted"
+                ? "provider_present_after_local_delete"
+                : local.providerUpdatedAt === draft.updatedAt
+                  ? "managed"
+                  : "externally_changed",
+            state: local.state,
+            kind: local.kind,
+          };
+        });
+        // A page is not proof that an absent local draft was deleted. Resolve
+        // each omitted managed draft by exact ID before reporting it missing.
+        for (const local of [...localById.values()].slice(0, limit)) {
+          try {
+            await provider.getDraft(local.draftId, context.signal);
+          } catch (error) {
+            if (
+              error instanceof AgentMailProviderError &&
+              error.details.code === "resource_not_found"
+            ) {
+              drafts.push({
+                draftId: local.draftId,
+                to: [],
+                cc: [],
+                bcc: [],
+                updatedAt: local.providerUpdatedAt,
+                management: "missing_from_provider",
+                state: local.state,
+                kind: local.kind,
+              });
+            } else {
+              throw error;
+            }
+          }
+        }
+        return JSON.stringify({
+          status: "ok",
+          drafts,
+          count: page.count,
+          ...(page.nextPageToken === undefined ? {} : { nextPageToken: page.nextPageToken }),
+        });
+      } catch (error) {
+        return mailboxFailure("AgentMail draft listing", error);
+      }
+    },
+  });
+
+  const draftAttachmentInput = z.object({
+    filename: z.string().min(1).max(512),
+    contentType: z.string().min(1).max(255),
+    contentDisposition: z.enum(["inline", "attachment"]).optional(),
+    contentId: z.string().min(1).max(512).optional(),
+    contentBase64: z.string().min(4),
+    sha256: z.string().regex(/^[a-f0-9]{64}$/i),
+    size: z.number().int().nonnegative(),
+  });
+
+  const createDraftTool = defineTool({
+    name: "create_mail_draft",
+    description:
+      "Create a provider-native new, reply, reply-all, or forward draft. This never sends mail. Creator only.",
+    category: "communication",
+    input: z.object({
+      kind: z.enum(["new", "reply", "reply_all", "forward"]),
+      sourceMessageId: z.string().min(1).max(512).optional(),
+      to: z.array(z.string().min(3).max(320)).max(50).optional(),
+      cc: z.array(z.string().min(3).max(320)).max(50).optional(),
+      bcc: z.array(z.string().min(3).max(320)).max(50).optional(),
+      replyTo: z.array(z.string().min(3).max(320)).max(50).optional(),
+      subject: z.string().min(1).max(998).optional(),
+      text: z.string().min(1).max(1_048_576).optional(),
+      html: z.string().min(1).max(1_048_576).optional(),
+      labels: z.array(z.string().min(1).max(128)).max(50).optional(),
+      attachments: z.array(draftAttachmentInput).max(50).optional(),
+    }),
+    execute: async (input, context) => {
+      if (!creator(context)) return denied("Only the verified creator may create mail drafts.");
+      if (!provider.createDraft)
+        return failed("AgentMail provider-native draft creation is unavailable.");
+      const operationId = operationIdentity(context);
+      if (!operationId)
+        return denied("A durable operation identity is required to create a draft.");
+      const kind = input.kind;
+      const sourceRequired = kind !== "new";
+      if (sourceRequired !== (input.sourceMessageId !== undefined)) {
+        return failed(
+          sourceRequired
+            ? `${kind} drafts require sourceMessageId.`
+            : "New drafts cannot specify sourceMessageId.",
+        );
+      }
+      try {
+        const source = input.sourceMessageId
+          ? await provider.getMessage(input.sourceMessageId, context.signal)
+          : undefined;
+        const sourceValues = source ? sourcePolicyValues(source) : undefined;
+        const providerKind = providerDraftKind(kind === "reply_all" ? "replyAll" : kind);
+        const clientId = stableId(
+          "agentmail.creator-draft.v2",
+          config.inboxId,
+          operationId,
+          providerKind,
+          input.sourceMessageId ?? "new",
+        );
+        const policyInput: AgentMailOperationInput = {
+          action: createDraftAction(providerKind),
+          draftKind: policyDraftKind(providerKind),
+          clientId,
+          operationId,
+          ...(input.sourceMessageId === undefined
+            ? {}
+            : { sourceMessageId: input.sourceMessageId }),
+          ...(sourceValues === undefined ? {} : sourceValues),
+          recipients: { to: input.to, cc: input.cc, bcc: input.bcc },
+          replyTo: input.replyTo,
+          labels: input.labels,
+          subject: input.subject,
+          text: input.text,
+          html: input.html,
+          attachments: input.attachments,
+        };
+        const decision = evaluateAgentMailOperation(policyInput, config, trustedAuthority(context));
+        if (!decision.allowed) return denied(`Draft policy denied creation: ${decision.reason}.`);
+        const authorization = createAgentMailOperationManifest(
+          policyInput,
+          config,
+          trustedAuthority(context),
+        );
+        if (!authorization.allowed)
+          return denied(`Draft policy denied creation: ${authorization.reason}.`);
+        const reservation = runtimeStore().reserveProviderDraftMutation({
+          kind: "create",
+          operationId,
+          draftKind: providerKind,
+          ...(input.sourceMessageId === undefined
+            ? {}
+            : { sourceMessageId: input.sourceMessageId }),
+          ...(sourceValues === undefined ? {} : { threadId: sourceValues.threadId }),
+          clientId,
+          manifestHash: authorization.hash,
+        });
+        if (reservation.status === "conflict")
+          return failed("Draft operation identity conflicted.");
+        if (reservation.status === "replay" && reservation.operation.state === "updated") {
+          return JSON.stringify({
+            status: "created",
+            draftId: reservation.operation.resultDraftId,
+          });
+        }
+        const dispatch = runtimeStore().markProviderDraftMutationDispatching(operationId);
+        if (dispatch.status !== "dispatch") {
+          return ambiguous(
+            "This draft creation is already dispatching or awaiting reconciliation.",
+          );
+        }
+        let created: AgentMailDraft;
+        let providerAccepted = false;
+        try {
+          created = await provider.createDraft(
+            {
+              kind: policyDraftKind(providerKind),
+              ...(input.sourceMessageId === undefined
+                ? {}
+                : { sourceMessageId: input.sourceMessageId }),
+              clientId,
+              to: decision.recipients.to,
+              cc: decision.recipients.cc,
+              bcc: decision.recipients.bcc,
+              replyTo: decision.replyTo,
+              labels: decision.labels,
+              subject: decision.subject,
+              text: input.text,
+              html: input.html,
+              attachments: input.attachments?.map((attachment) => ({
+                filename: attachment.filename,
+                contentType: attachment.contentType,
+                contentDisposition: attachment.contentDisposition,
+                contentId: attachment.contentId,
+                content: attachment.contentBase64,
+              })),
+            },
+            context.signal,
+          );
+          providerAccepted = true;
+          const verified = await provider.getDraft(created.draftId, context.signal);
+          if (verified.clientId !== clientId) {
+            throw new Error("agentMail: created draft client identity did not match");
+          }
+          const snapshot = settleUpdatedDraftMutation(operationId, verified);
+          selectedDraftByThread.set(context.threadId, verified.draftId);
+          scheduleAttention();
+          return JSON.stringify({
+            status: "created",
+            draftId: verified.draftId,
+            kind: providerKind,
+            providerRevision: snapshot.providerRevision,
+            note: "The draft is not authorized for delivery. Review it before sending.",
+          });
+        } catch (error) {
+          return settleDraftMutationUnknown(operationId, error, providerAccepted);
+        }
+      } catch (error) {
+        return mailboxFailure("AgentMail draft creation", error);
+      }
+    },
+  });
+
+  const adoptDraftTool = defineTool({
+    name: "adopt_mail_draft",
+    description:
+      "Explicitly adopt an existing AgentMail draft as new, reply, reply-all, or forward. Adoption never sends it. Creator only.",
+    category: "communication",
+    input: z.object({
+      draftId: z.string().min(1).max(512),
+      kind: z.enum(["new", "reply", "reply_all", "forward"]),
+    }),
+    execute: async ({ draftId, kind }, context) => {
+      if (!creator(context)) return denied("Only the verified creator may adopt mail drafts.");
+      const expectedIntent = `adopt draft ${draftId} as ${kind}`.toLowerCase();
+      const actualIntent = creatorTurns
+        .get(context.turnId)
+        ?.text.trim()
+        .replace(/\s+/g, " ")
+        .toLowerCase();
+      if (actualIntent !== expectedIntent) {
+        return denied(`Use exactly \`adopt draft ${draftId} as ${kind}\`.`);
+      }
+      if (runtimeStore().getProviderDraft(draftId))
+        return failed("This draft is already managed by Auggy.");
+      try {
+        const draft = await provider.getDraft(draftId, context.signal);
+        const providerKind = providerDraftKind(kind === "reply_all" ? "replyAll" : kind);
+        const sourceMessageId = draft.inReplyTo ?? draft.forwardOf;
+        const snapshot = assertAgentMailDraftIdentity(draft, {
+          inboxId: config.inboxId,
+          draftId,
+          kind: providerKind,
+          ...(sourceMessageId === undefined ? {} : { sourceMessageId }),
+        });
+        const source = sourceMessageId
+          ? await provider.getMessage(sourceMessageId, context.signal)
+          : undefined;
+        const input: AgentMailOperationInput = {
+          action: "adopt_draft",
+          ...draftPolicyValues(draft, snapshot),
+        };
+        const authorization = createAgentMailOperationManifest(
+          input,
+          config,
+          trustedAuthority(context),
+        );
+        if (!authorization.allowed)
+          return denied(`Draft policy denied adoption: ${authorization.reason}.`);
+        const operationId =
+          operationIdentity(context) ?? stableId("agentmail.adopt.v1", config.inboxId, draftId);
+        const result = runtimeStore().recordProviderDraft({
+          draftId,
+          kind: providerKind,
+          ...(sourceMessageId === undefined ? {} : { sourceMessageId }),
+          ...(source === undefined ? {} : { threadId: source.threadId }),
+          operationId,
+          clientId:
+            draft.clientId ?? stableId("agentmail.adopted-client.v1", config.inboxId, draftId),
+          providerRevision: snapshot.providerRevision,
+          providerUpdatedAt: snapshot.providerUpdatedAt,
+          materialHash: snapshot.materialHash,
+          ...(snapshot.sendAt === undefined ? {} : { sendAt: snapshot.sendAt }),
+        });
+        if (result.status === "conflict")
+          return failed("Draft identity conflicts with existing managed state.");
+        selectedDraftByThread.set(context.threadId, draftId);
+        return JSON.stringify({
+          status: "adopted",
+          draftId,
+          kind: providerKind,
+          providerRevision: snapshot.providerRevision,
+        });
+      } catch (error) {
+        return mailboxFailure("AgentMail draft adoption", error);
+      }
     },
   });
 
@@ -1337,7 +1966,7 @@ export function createAgentMailRuntime(
     input: z.object({ draftId: z.string().min(1).max(512) }),
     execute: async ({ draftId }, context) => {
       if (!creator(context)) return denied("Only the verified creator may inspect mail drafts.");
-      const reference = runtimeStore().getDraftById(draftId);
+      const reference = runtimeStore().getProviderDraft(draftId);
       if (reference?.state === "sent") {
         return JSON.stringify({
           status: "sent",
@@ -1346,18 +1975,44 @@ export function createAgentMailRuntime(
           note: "AgentMail deletes a provider draft after sending it.",
         });
       }
+      if (!reference) {
+        try {
+          const unmanaged = await provider.getDraft(draftId, context.signal);
+          const inferredKind = unmanaged.forwardOf
+            ? "forward"
+            : unmanaged.inReplyTo
+              ? "reply_or_reply_all"
+              : "new";
+          return JSON.stringify({
+            status: "review",
+            managed: false,
+            inferredKind,
+            draft: safeDraftSummary(unmanaged),
+            note: "Explicitly adopt this provider draft before Auggy may mutate or send it.",
+          });
+        } catch (error) {
+          return mailboxFailure("AgentMail draft read", error);
+        }
+      }
+      const decision = authorizeMailboxOperation("get_draft", context, { draftId });
+      if (!decision.allowed) return denied(`Mailbox policy denied this draft: ${decision.reason}.`);
       const current = await freshManagedDraft(draftId, context.signal);
       if ("error" in current) return failed(current.error);
       selectedDraftByThread.set(context.threadId, draftId);
       return JSON.stringify({
         status: "review",
+        managed: true,
         draftId,
+        kind: current.reference.kind,
         to: current.draft.to,
         cc: current.draft.cc,
         bcc: current.draft.bcc,
         subject: current.draft.subject,
         text: current.draft.text,
         providerUpdatedAt: current.draft.updatedAt,
+        providerRevision: current.snapshot.providerRevision,
+        materialHash: current.snapshot.materialHash,
+        externallyChanged: current.externallyChanged,
         note: "Review this content. Draft creation and display never authorize sending.",
       });
     },
@@ -1366,14 +2021,24 @@ export function createAgentMailRuntime(
   const reviseDraftTool = defineTool({
     name: "revise_mail_draft",
     description:
-      "Revise the plain-text body of a managed AgentMail draft after creator review. Requires the providerUpdatedAt value returned by show_mail_draft.",
+      "Revise a managed provider-native AgentMail draft. Requires its exact current providerRevision. Creator only.",
     category: "communication",
     input: z.object({
       draftId: z.string().min(1).max(512),
-      expectedUpdatedAt: z.number().int().nonnegative(),
-      text: z.string().min(1).max(1_048_576),
+      expectedRevision: z.string().min(1).max(256),
+      to: z.array(z.string().min(3).max(320)).max(50).optional(),
+      cc: z.array(z.string().min(3).max(320)).max(50).optional(),
+      bcc: z.array(z.string().min(3).max(320)).max(50).optional(),
+      replyTo: z.array(z.string().min(3).max(320)).max(50).optional(),
+      subject: z.string().min(1).max(998).optional(),
+      text: z.string().min(1).max(1_048_576).optional(),
+      html: z.string().min(1).max(1_048_576).optional(),
+      addAttachments: z.array(draftAttachmentInput).max(50).optional(),
+      removeAttachmentIds: z.array(z.string().min(1).max(512)).max(50).optional(),
+      addLabels: z.array(z.string().min(1).max(128)).max(50).optional(),
+      removeLabels: z.array(z.string().min(1).max(128)).max(50).optional(),
     }),
-    execute: async ({ draftId, expectedUpdatedAt, text }, context) => {
+    execute: async ({ draftId, expectedRevision, ...changes }, context) => {
       if (!creator(context)) return denied("Only the verified creator may revise mail drafts.");
       const intent = creatorTurns.get(context.turnId);
       const hasRevisionVerb = /\b(revise|change|edit|rewrite)\b/i.test(intent?.text ?? "");
@@ -1389,40 +2054,209 @@ export function createAgentMailRuntime(
         if ("error" in current) return failed(current.error);
         if (
           current.reference.state !== "ready" ||
-          current.reference.providerUpdatedAt !== expectedUpdatedAt ||
-          current.draft.updatedAt !== expectedUpdatedAt
+          current.snapshot.providerRevision !== expectedRevision
         ) {
-          runtimeStore().markDraftStale(current.reference.sourceMessageId);
           return failed("Draft changed in AgentMail. Show it again before revising.");
         }
-        if (current.draft.html?.trim()) {
-          return failed(
-            "This draft contains HTML. Edit it in AgentMail; Auggy revises plain-text drafts only.",
-          );
-        }
-        if (Buffer.byteLength(text, "utf8") > config.outbound.bodyMaxBytes) {
-          return failed("Revised draft exceeds outbound.bodyMaxBytes.");
-        }
-        const updated = await provider.updateDraft({ draftId, text }, context.signal);
-        const verified = await provider.getDraft(draftId, context.signal);
-        if (updated.updatedAt !== verified.updatedAt || verified.text !== text) {
-          runtimeStore().markDraftStale(current.reference.sourceMessageId);
-          return failed(
-            "AgentMail draft changed during revision. Show it again before continuing.",
-          );
-        }
-        runtimeStore().updateDraftReference({
-          sourceMessageId: current.reference.sourceMessageId,
-          expectedUpdatedAt,
-          providerUpdatedAt: verified.updatedAt,
-        });
-        selectedDraftByThread.set(context.threadId, draftId);
-        return JSON.stringify({
-          status: "revised",
+        if (Object.values(changes).every((value) => value === undefined))
+          return failed("Specify at least one draft field to revise.");
+        const operationId = operationIdentity(context);
+        if (!operationId)
+          return denied("A durable operation identity is required to revise a draft.");
+        const { addAttachments, removeAttachmentIds, addLabels, removeLabels, ...composition } =
+          changes;
+        const removed = new Set(removeLabels?.map((label) => label.trim().toLowerCase()) ?? []);
+        const candidateLabels = [
+          ...(current.draft.labels ?? []).filter((label) => !removed.has(label.toLowerCase())),
+          ...(addLabels ?? []),
+        ];
+        const candidate: AgentMailDraft = {
+          ...current.draft,
+          ...Object.fromEntries(
+            Object.entries(composition).filter(([, value]) => value !== undefined),
+          ),
+          ...(addLabels === undefined && removeLabels === undefined
+            ? {}
+            : { labels: candidateLabels }),
+        };
+        const candidateSnapshot = snapshotAgentMailDraft(candidate, current.reference.kind);
+        const policyInput: AgentMailOperationInput = {
+          action: "update_draft",
+          ...draftPolicyValues(candidate, candidateSnapshot),
+          attachments: addAttachments,
+          removeAttachmentIds,
+          operationId,
+        };
+        const decision = evaluateAgentMailOperation(policyInput, config, trustedAuthority(context));
+        if (!decision.allowed) return denied(`Draft policy denied revision: ${decision.reason}.`);
+        const authorization = createAgentMailOperationManifest(
+          policyInput,
+          config,
+          trustedAuthority(context),
+        );
+        if (!authorization.allowed)
+          return denied(`Draft policy denied revision: ${authorization.reason}.`);
+        const reservation = runtimeStore().reserveProviderDraftMutation({
+          kind: "revise",
+          operationId,
           draftId,
-          providerUpdatedAt: verified.updatedAt,
-          note: "The revised draft still requires a separate explicit send command.",
+          expectedProviderRevision: current.snapshot.providerRevision,
+          expectedMaterialHash: current.snapshot.materialHash,
+          manifestHash: authorization.hash,
         });
+        if (reservation.status === "conflict") return failed("Draft revision identity conflicted.");
+        if (reservation.status === "replay" && reservation.operation.state === "updated")
+          return JSON.stringify({
+            status: "revised",
+            draftId,
+            providerRevision: reservation.operation.resultProviderRevision,
+          });
+        const dispatch = runtimeStore().markProviderDraftMutationDispatching(operationId);
+        if (dispatch.status !== "dispatch")
+          return ambiguous("This revision is already dispatching or awaiting reconciliation.");
+        let providerAccepted = false;
+        try {
+          await provider.updateDraft(
+            {
+              draftId,
+              ...composition,
+              ...(addAttachments === undefined
+                ? {}
+                : {
+                    addAttachments: addAttachments.map((attachment) => ({
+                      filename: attachment.filename,
+                      contentType: attachment.contentType,
+                      contentDisposition: attachment.contentDisposition,
+                      contentId: attachment.contentId,
+                      content: attachment.contentBase64,
+                    })),
+                  }),
+              removeAttachmentIds,
+              addLabels,
+              removeLabels,
+            },
+            context.signal,
+          );
+          providerAccepted = true;
+          const verified = await provider.getDraft(draftId, context.signal);
+          const verifiedSnapshot = assertAgentMailDraftIdentity(verified, {
+            inboxId: config.inboxId,
+            draftId,
+            kind: current.reference.kind,
+            sourceMessageId: current.reference.sourceMessageId,
+          });
+          for (const [field, value] of Object.entries(composition)) {
+            if (
+              value !== undefined &&
+              JSON.stringify(verified[field as keyof AgentMailDraft]) !== JSON.stringify(value)
+            )
+              throw new Error(`agentMail: provider did not apply draft field ${field}`);
+          }
+          settleUpdatedDraftMutation(operationId, verified);
+          selectedDraftByThread.set(context.threadId, draftId);
+          return JSON.stringify({
+            status: "revised",
+            draftId,
+            providerUpdatedAt: verified.updatedAt,
+            providerRevision: verifiedSnapshot.providerRevision,
+            note: "Review the revised draft before delivery.",
+          });
+        } catch (error) {
+          return settleDraftMutationUnknown(operationId, error, providerAccepted);
+        }
+      });
+    },
+  });
+
+  const scheduleDraftTool = defineTool({
+    name: "schedule_mail_draft",
+    description:
+      "Schedule a managed draft at a bounded future Unix millisecond timestamp. Creator only.",
+    category: "communication",
+    input: z.object({
+      draftId: z.string().min(1).max(512),
+      expectedRevision: z.string().min(1).max(256),
+      sendAt: z.number().int().nonnegative(),
+    }),
+    execute: async () =>
+      failed(
+        "AgentMail draft scheduling is unavailable until delivery-time approval and rate-limit reservation are active.",
+      ),
+  });
+
+  const unscheduleDraftTool = defineTool({
+    name: "unschedule_mail_draft",
+    description: "Remove the provider schedule from a managed draft. Creator only.",
+    category: "communication",
+    input: z.object({
+      draftId: z.string().min(1).max(512),
+      expectedRevision: z.string().min(1).max(256),
+    }),
+    execute: async () =>
+      failed(
+        "AgentMail draft unscheduling is unavailable until durable scheduled-delivery reconciliation is active.",
+      ),
+  });
+
+  const deleteDraftTool = defineTool({
+    name: "delete_mail_draft",
+    description:
+      "Permanently delete a managed AgentMail draft when destructive deletion is enabled. Creator only.",
+    category: "communication",
+    input: z.object({
+      draftId: z.string().min(1).max(512),
+      expectedRevision: z.string().min(1).max(256),
+    }),
+    execute: async ({ draftId, expectedRevision }, context) => {
+      if (!creator(context)) return denied("Only the verified creator may delete mail drafts.");
+      if (!exactCreatorIntent(creatorTurns.get(context.turnId), draftId, ["delete"]))
+        return denied(`Use exactly \`delete draft ${draftId}\`.`);
+      if (!provider.deleteDraft)
+        return failed("AgentMail provider-native draft deletion is unavailable.");
+      const deleteProviderDraft = provider.deleteDraft.bind(provider);
+      const operationId = operationIdentity(context);
+      if (!operationId)
+        return denied("A durable operation identity is required to delete a draft.");
+      return withDraftLock(draftId, async () => {
+        const current = await freshManagedDraft(draftId, context.signal);
+        if ("error" in current) return failed(current.error);
+        if (current.snapshot.providerRevision !== expectedRevision)
+          return failed("Draft changed in AgentMail. Show it again first.");
+        const input: AgentMailOperationInput = {
+          action: "delete_draft",
+          ...draftPolicyValues(current.draft, current.snapshot),
+          operationId,
+        };
+        const authorization = createAgentMailOperationManifest(
+          input,
+          config,
+          trustedAuthority(context),
+        );
+        if (!authorization.allowed)
+          return denied(`Draft policy denied deletion: ${authorization.reason}.`);
+        const reservation = runtimeStore().reserveProviderDraftMutation({
+          kind: "delete",
+          operationId,
+          draftId,
+          expectedProviderRevision: current.snapshot.providerRevision,
+          expectedMaterialHash: current.snapshot.materialHash,
+          manifestHash: authorization.hash,
+        });
+        if (reservation.status === "conflict") return failed("Draft deletion identity conflicted.");
+        if (reservation.status === "replay" && reservation.operation.state === "deleted")
+          return JSON.stringify({ status: "deleted", draftId });
+        const dispatch = runtimeStore().markProviderDraftMutationDispatching(operationId);
+        if (dispatch.status !== "dispatch")
+          return ambiguous("This deletion is already dispatching or awaiting reconciliation.");
+        let providerAccepted = false;
+        try {
+          await deleteProviderDraft(draftId, context.signal);
+          providerAccepted = true;
+          runtimeStore().settleProviderDraftMutation(operationId, { status: "deleted" });
+          return JSON.stringify({ status: "deleted", draftId });
+        } catch (error) {
+          return settleDraftMutationUnknown(operationId, error, providerAccepted);
+        }
       });
     },
   });
@@ -1457,15 +2291,21 @@ export function createAgentMailRuntime(
         }
         const current = await freshManagedDraft(draftId, context.signal);
         if ("error" in current) return failed(current.error);
+        const sourceMessageId = current.reference.sourceMessageId;
+        if (!sourceMessageId) {
+          return failed(
+            "This draft is not an inbound reply. Use the provider-native delivery workflow.",
+          );
+        }
         if (
           current.reference.state !== "ready" ||
           current.reference.providerUpdatedAt !== expectedUpdatedAt ||
           current.draft.updatedAt !== expectedUpdatedAt
         ) {
-          runtimeStore().markDraftStale(current.reference.sourceMessageId);
+          runtimeStore().markDraftStale(sourceMessageId);
           return failed("Draft changed in AgentMail. Show it again before sending.");
         }
-        const source = await provider.getMessage(current.reference.sourceMessageId, context.signal);
+        const source = await provider.getMessage(sourceMessageId, context.signal);
         const recipients = [...current.draft.to, ...current.draft.cc, ...current.draft.bcc];
         if (!config.replies.allowReplyAll) {
           const replyTargets = source.replyTo.length > 0 ? source.replyTo : [source.sender];
@@ -1496,7 +2336,7 @@ export function createAgentMailRuntime(
           operationId: stableId(
             "agentmail.draft-send-rate.v1",
             config.inboxId,
-            current.reference.sourceMessageId,
+            sourceMessageId,
             String(expectedUpdatedAt),
           ),
           recipientHashes: policy.recipients.map(hashAgentMailOrchestrationValue),
@@ -1518,11 +2358,11 @@ export function createAgentMailRuntime(
           turnId: context.turnId,
         });
         runtimeStore().approveDraft({
-          sourceMessageId: current.reference.sourceMessageId,
+          sourceMessageId,
           approvalEvidence: evidence,
           expectedUpdatedAt,
         });
-        const reservation = runtimeStore().reserveDraftSend(current.reference.sourceMessageId);
+        const reservation = runtimeStore().reserveDraftSend(sourceMessageId);
         if (reservation.status === "replay") {
           return reservation.draft.state === "sent"
             ? JSON.stringify({ status: "sent", messageId: reservation.draft.sentMessageId })
@@ -1533,7 +2373,7 @@ export function createAgentMailRuntime(
             { draftId, idempotencyKey: reservation.sendKey },
             context.signal,
           );
-          runtimeStore().settleDraftSend(current.reference.sourceMessageId, {
+          runtimeStore().settleDraftSend(sourceMessageId, {
             status: "sent",
             messageId: sent.messageId,
           });
@@ -1544,12 +2384,12 @@ export function createAgentMailRuntime(
             error instanceof AgentMailProviderError &&
             error.details.code === "mutation_ambiguous"
           ) {
-            runtimeStore().settleDraftSend(current.reference.sourceMessageId, {
+            runtimeStore().settleDraftSend(sourceMessageId, {
               status: "ambiguous",
             });
             return ambiguous("AgentMail may have sent this draft. Reconcile it before retrying.");
           }
-          runtimeStore().settleDraftSend(current.reference.sourceMessageId, { status: "ready" });
+          runtimeStore().settleDraftSend(sourceMessageId, { status: "ready" });
           return failed(`AgentMail send failed with ${providerCode(error)}.`);
         }
       });
@@ -1785,8 +2625,13 @@ export function createAgentMailRuntime(
       deleteThreadTool,
       readAttachmentTool,
       listDraftsTool,
+      createDraftTool,
+      adoptDraftTool,
       showDraftTool,
       reviseDraftTool,
+      scheduleDraftTool,
+      unscheduleDraftTool,
+      deleteDraftTool,
       sendDraftTool,
     ],
     transport,
