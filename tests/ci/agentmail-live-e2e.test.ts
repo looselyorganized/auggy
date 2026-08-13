@@ -29,6 +29,11 @@ describe("AgentMail protected live mutation E2E", () => {
     expect(script).toContain('"list_mail_drafts"');
     expect(script).toContain('"revise_mail_draft"');
     expect(script).toContain('"send_mail_draft"');
+    expect(script).toContain("targetProvider.getDraft(draft.draftId)");
+    expect(script).toContain("revisedProviderDraft.text !== revisedDraftBody");
+    expect(script).toContain("receivedReply.text ?? receivedReply.extractedText");
+    expect(script).toContain("!deliveredText.includes(revisedDraftBody)");
+    expect(script).toContain("deliveredText.includes(firstDraftBody)");
     expect(script).toContain("senderProvider.listMessages");
     expect(script).toContain("findTargetDelivery(targetProvider, subject)");
     expect(script).toContain("findCatchUpDelivery(targetProvider, subject, sentAt)");
