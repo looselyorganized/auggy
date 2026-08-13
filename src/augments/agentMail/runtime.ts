@@ -597,6 +597,7 @@ export function createAgentMailRuntime(
       const admission = evaluateAgentMailInbound(
         { sender: work.sender, classification: work.classification },
         config,
+        registeredName,
       );
       if (!admission.admitted) {
         ledger.settleMessage(work.messageId, "no_reply", admission.reason);

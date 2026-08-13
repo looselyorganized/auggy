@@ -153,10 +153,12 @@ describe("AgentMail identity and authorization policy", () => {
     const first = evaluateAgentMailInbound(
       { sender: "Person@One.Example", classification: "received" },
       config(),
+      "agentMail",
     );
     const second = evaluateAgentMailInbound(
       { sender: "person@one.example", classification: "received" },
       config(),
+      "agentMail",
     );
     expect(first).toMatchObject({
       admitted: true,
@@ -185,12 +187,14 @@ describe("AgentMail identity and authorization policy", () => {
       evaluateAgentMailInbound(
         { sender: "owner@example.com", classification: "spam" },
         allowlisted,
+        "agentMail",
       ),
     ).toEqual({ admitted: false, reason: "classification_blocked" });
     expect(
       evaluateAgentMailInbound(
         { sender: "person@sub.customers.example", classification: "received" },
         allowlisted,
+        "agentMail",
       ),
     ).toEqual({ admitted: false, reason: "sender_not_allowed" });
   });

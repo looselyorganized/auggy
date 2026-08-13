@@ -34,14 +34,14 @@ function matchesPattern(address: string, pattern: string): boolean {
   return address.endsWith(pattern.slice(1));
 }
 
-function senderPeer(address: string, inboxId: string): PeerIdentity {
+function senderPeer(address: string, inboxId: string, sourceAugment: string): PeerIdentity {
   const digest = createHash("sha256").update(`${inboxId}\0${address}`).digest("hex");
   return {
     id: `mail_${digest.slice(0, 32)}`,
     kind: "human",
     trustLevel: "public",
     publicSubstate: "anonymous",
-    sourceAugment: "agentMail",
+    sourceAugment,
   };
 }
 
@@ -52,6 +52,7 @@ function senderPeer(address: string, inboxId: string): PeerIdentity {
 export function evaluateAgentMailInbound(
   input: { sender: string; classification: AgentMailMessageClassification },
   config: ValidatedAgentMailConfig,
+  sourceAugment: string,
 ): AgentMailAdmissionDecision {
   const sender = canonicalizeEmail(input.sender);
   if (!isWellFormedEmail(sender)) return { admitted: false, reason: "malformed_sender" };
@@ -67,7 +68,7 @@ export function evaluateAgentMailInbound(
   return {
     admitted: true,
     sender,
-    peer: senderPeer(sender, config.inboxId),
+    peer: senderPeer(sender, config.inboxId, sourceAugment),
     replyDisposition: config.replies.mode === "review" ? "review" : "none",
   };
 }
