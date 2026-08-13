@@ -235,7 +235,7 @@ function recommend(goal: string, installed: Set<string>) {
         ? []
         : [
             "Run `auggy augment add visitorAuth` if browser visitors should be recognized across sessions.",
-            "Use `auggy agentmail setup visitorAuth` for production magic-link email.",
+            "Use `auggy agentmail setup visitorAuth --mode connect` to connect an existing inbox for production magic-link email.",
           ]),
       ...(layeredMemoryInstalled
         ? [

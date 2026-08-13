@@ -46,125 +46,102 @@ var name. Do not ask them to paste the secret value into chat.
 
 ## Configure AgentMail
 
-Install the canonical target before setup:
+Create the inbox and runtime API key in the AgentMail Console first. Then
+install the canonical augment and connect that existing inbox:
 
 ```bash
 auggy augment add agentMail
-auggy agentmail setup agentMail
+auggy augment setup agentMail --mode connect
 ```
 
-With an interactive terminal, the second command offers four explicit modes:
+AgentMail setup exposes only two modes:
 
 | Mode | Use when | Behavior |
 | --- | --- | --- |
-| `signup` | The creator is new to AgentMail | Creates an account and first inbox through email verification, then stores the API key returned by that flow unchanged |
-| `existing` | The creator already has AgentMail and the supplied key can create inboxes | Creates or recovers this agent's stable inbox, then stores the exact supplied key for runtime use |
-| `manual` | The creator already has an inbox and a key that can access it | Connects the exact inbox ID and supplied key without creating provider resources |
+| `connect` | An AgentMail inbox and runtime key already exist | Collects the inbox ID and exact key, verifies read access, and writes canonical local bindings without changing AgentMail resources |
 | `env` | Complete `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` credentials are already in `.env` | Reuses the exact stored values without creating an inbox or key |
 
-For an existing account, the direct command is:
+Interactive `connect` uses a masked key prompt. Automation may provide the
+canonical environment variable and inbox ID:
 
 ```bash
-auggy agentmail setup agentMail --mode existing
+AGENTMAIL_API_KEY="$AGENTMAIL_API_KEY" \
+  auggy augment setup agentMail --mode connect \
+  --inbox-id "$AGENTMAIL_INBOX_ID"
 ```
 
-Use the masked prompt or canonical process environment `AGENTMAIL_API_KEY`; do
-not put a key in chat. Auggy persists that exact selected value and uses it at
-runtime. It does not mint a child key, narrow its permissions, rotate it, or
-revoke it. Existing-account retries derive one provider-valid `client_id` from
-the immutable agent ID and target, so the same logical setup recovers the same
-inbox instead of creating duplicates.
+Do not put a key in chat or a command argument. Auggy persists the exact
+supplied key and uses it at runtime. It never creates or adopts an inbox, or
+creates, narrows, rotates, or revokes API keys. To change
+credentials, update the operator-owned local or deployment secret source and
+run `connect` for the new explicit inbox/key pair.
 
-`AGENTMAIL_ACCOUNT_API_KEY` remains a deprecated compatibility alias for one RC.
-It is accepted only from the setup process environment. Project `.env`,
-`.env.local`, and environment-specific dotenv files containing it are rejected
-before provider access. Auggy never persists or deploys the legacy variable
-name; when accepted, its exact value is stored under canonical
-`AGENTMAIL_API_KEY`. Rename the input variable now and do not use it for new
-setup.
-
-Every setup mode verifies that the selected key can read the configured inbox
-identity (`inbox_read`) before changing local files. The success output also
-lists capabilities required by the configured policy, such as `message_send`
-or `message_read`; those additional capabilities are requirements, not claims
-that setup exercised or verified them.
-
-Setup never silently replaces credentials already assigned to the agent. Reuse
-them with `--mode env`. To replace only the stored key while preserving the
-existing inbox ID and email, use:
-
-```bash
-auggy agentmail setup agentMail --mode manual --replace-key
-```
-
-Interactive use reads the new key through a masked prompt and asks for
-confirmation. Non-interactive automation must supply the new key through an
-explicit setup source and add `--yes`. Auggy verifies the new key's access to
-the existing inbox before atomically writing it. It does not create, rotate, or
-revoke any provider key; after setup succeeds, the creator may separately
-revoke the previous key in AgentMail if nothing else uses it. A no-op key or an
-attempt to change the inbox fails before provider access.
-
-If signup reports that the owner email already has an account, switch to
-`existing` mode. The failed signup does not adopt an arbitrary inbox or change
-local credentials. For non-interactive automation, pass an explicit mode and
-its required inputs; `signup` remains interactive because it requires the
-verification code issued during the flow.
-
-If AgentMail returns a definitive `403 resource_taken`, reuse is safe only
-when the exact inbox address and compatible Auggy `client_id` prove one owned
-match; interactive setup still asks for confirmation. Otherwise it offers a
-different username for at most three create attempts total. Non-interactive
-setup fails without adopting the collision; pass another `--username` or use
-`--mode manual` with a verified inbox and supplied API key. Confirmed reuse
-keeps the exact selected key; it does not create or revoke provider keys.
+Before writing local files, setup verifies the configured inbox identity with
+`inbox_read`. When inbound or reviewed replies are enabled, it also performs
+bounded `message_read` and `draft_read` probes. Success output lists every
+permission the policy requires. Write permissions such as `message_send`,
+`draft_create`, `draft_update`, and `draft_send` are requirements, not verified
+claims: setup does not send mail or mutate drafts.
 
 `agentMail` and `visitorAuth` use the same `AGENTMAIL_*` credentials. When both
 canonical augments are being added interactively, one command coordinates the
-complete flow regardless of selection order:
+connection regardless of selection order:
 
 ```bash
 auggy augment add agentMail visitorAuth
 ```
 
-The CLI uses one shared setup confirmation and credential flow, provisions
-`agentMail`, and attaches `visitorAuth` through environment reuse without
-asking for credentials again. `--yes` skips optional post-add setup. For
-standalone adds, automation, skipped setup, or recovery, preserve the same
-boundary with this sequence:
+The CLI uses one shared confirmation and credential flow, connects `agentMail`,
+and attaches `visitorAuth` through environment reuse without asking twice.
+`--yes` skips optional post-add setup. For standalone adds, automation, skipped
+setup, or recovery, preserve the same boundary with this sequence:
 
 ```bash
-auggy agentmail setup agentMail
-auggy agentmail setup visitorAuth --mode env
+auggy augment setup agentMail --mode connect
+auggy augment setup visitorAuth --mode env
 ```
 
-The first command establishes the provider-confirmed inbox address and exact
-supplied API key. The second updates `visitorAuth` to reuse them without
-creating or replacing provider resources. Omitting the target when both are
-installed fails closed instead of guessing. Automatic setup also refuses
-inline, custom-named, or additional AgentMail consumers; configure those
-topologies manually. Automatic credential mutation requires macOS or Linux; on
-Windows, configure `.env` and the referenced augment YAML with ordinary
-project tooling.
+The second command verifies and reuses the same stored values without changing
+provider resources. Omitting the target when both are installed fails closed
+instead of guessing. Automatic setup also refuses inline, renamed, or
+additional AgentMail consumers.
 
 Setup is not an inbound on/off switch. After credentials are configured, enable
-inbound processing in `augments/agentMail/augment.yaml`, confirm that the same
-`AGENTMAIL_API_KEY` has the required inbound capabilities, and restart:
+inbound processing and reviewed replies in
+`augments/agentMail/augment.yaml`, confirm that the same runtime key has the
+reported permissions, and restart:
 
 ```bash
 auggy restart <agent-name>
 ```
 
-Do not run AgentMail setup again merely because `inbound.mode` changed. Setup
-is needed again only when credentials are missing, invalid, or intentionally
-being replaced through the explicit key-replacement flow.
+With `inbound.mode: websocket`, a live AgentMail event wakes a running Auggy.
+On boot and periodically while running, bounded provider catch-up recovers mail
+missed during downtime or a connection gap. The official AgentMail skill and
+MCP server do not provide that lifecycle behavior.
+
+With `replies.mode: review`, Auggy generates a plain-text reply and creates it
+as a provider-native draft in AgentMail. The verified creator can review and
+iterate on that draft in Auggy with `list_mail_drafts`, `show_mail_draft`, and
+`revise_mail_draft`, or edit it in AgentMail. Draft creation or revision never
+authorizes delivery. Sending through Auggy requires a separate exact creator
+command—`send it` after showing the draft or `send draft <draftId>`—and a fresh
+provider version check. A draft sent in AgentMail is provider-owned and is no
+longer available as a draft afterward.
+
+The official AgentMail skill teaches compatible coding agents how to call the
+provider, and the hosted MCP exposes broad inbox, message, thread, draft,
+attachment, and organization tools. Treat either as supplemental capability
+for explicit operator work. Installing either does not connect provider events
+to Auggy turns, persist Auggy's recovery checkpoint, apply its sender/rate
+policy, or enforce its creator-review workflow. Do not add broad direct
+mutation tools to the same managed inbox as a substitute for this augment;
+that would create a path around Auggy's authorization and review controls.
 
 Removing either shared augment retains the remote inbox/key and local
 `AGENTMAIL_*` values. Keep them while the other consumer remains. After
 removing the last consumer, separately revoke a truly unused key in AgentMail
 before removing its local value. Auggy never revokes it for you.
-`AGENTMAIL_WEBHOOK_SECRET` is optional and belongs only to Svix webhook inbound
-mode; default outbound, polling, and WebSocket use do not require it.
 
 ## Run Locally
 

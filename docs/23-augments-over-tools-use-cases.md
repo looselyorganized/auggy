@@ -54,8 +54,9 @@ MCP is mostly pull-oriented: the model or client calls tools and reads resources
 Examples:
 
 - `telegramTransport` receives Telegram messages and creates `TurnTrigger`s.
-- `agentMail` receives admitted email through polling, WebSocket, or verified
-  webhook delivery and invokes the model only when its durable ledger has work.
+- `agentMail` receives admitted email through AgentMail WebSockets, catches up
+  through REST after startup or reconnect, and invokes the model only when its
+  durable ledger has work.
 - Future Slack, SMS, voice, or queue transports can wake the agent on real events.
 
 This avoids expensive empty polling loops. For email, for example, a scheduler-driven "check inbox" loop through MCP can run full LLM turns just to discover there is no mail. An augment can listen at the REST, webhook, or WebSocket layer and invoke the model only when there is work.

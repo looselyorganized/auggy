@@ -272,12 +272,14 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   if (agentMailAdded) {
     console.log();
     console.log("Use AgentMail:");
-    console.log("  - Run setup: auggy augment setup agentMail");
+    console.log("  - Connect an existing inbox: auggy augment setup agentMail --mode connect");
     console.log(
       "  - Or set AGENTMAIL_API_KEY, AGENTMAIL_INBOX_ID, and AGENTMAIL_INBOX_EMAIL in .env",
     );
     console.log("  - Configure mail policy in augments/agentMail/augment.yaml");
-    console.log("  - Default mode: outbound email only, creator trust required");
+    console.log("  - Default: creator-authorized send, reply, forward, retry, and reconciliation");
+    console.log("  - Enable WebSocket inbound for receive, triage, and reviewed reply drafts");
+    console.log("  - Run auggy doctor after changing mailbox, draft, or delivery policy");
     console.log("  - For simple operator alerts, notify + Agent Mail is usually simpler");
   }
 
@@ -285,9 +287,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log();
     console.log("Use visitorAuth:");
     console.log("  - Local testing uses console magic links");
-    console.log("  - Production email: auggy augment setup visitorAuth");
+    console.log("  - Production email: auggy augment setup visitorAuth --mode connect");
     console.log(
-      "  - This configures the supplied AgentMail key and updates augments/visitorAuth/augment.yaml",
+      "  - This verifies the supplied inbox and API key, then updates augments/visitorAuth/augment.yaml",
     );
   }
 
@@ -415,7 +417,9 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
       `${infoLabel()} agentMail is installed, but its required credentials are unresolved.`,
     );
     console.log("     Before starting or restarting the agent, choose one:");
-    console.log("       - Configure it: `auggy augment setup agentMail`");
+    console.log(
+      "       - Connect an existing inbox: `auggy augment setup agentMail --mode connect`",
+    );
     console.log("       - Remove it: `auggy augment remove agentMail`");
     return;
   }
@@ -491,7 +495,10 @@ async function offerSetupForAddedAugments(
     }
   };
 
-  const runSetup = async (target: "agentMail" | "visitorAuth", mode?: "env"): Promise<boolean> => {
+  const runSetup = async (
+    target: "agentMail" | "visitorAuth",
+    mode: "connect" | "env",
+  ): Promise<boolean> => {
     try {
       const result = await setup(
         target,
@@ -508,9 +515,7 @@ async function offerSetupForAddedAugments(
         `${errorLabel({ color: Boolean(process.stderr.isTTY) })} AgentMail setup did not complete: ${(err as Error).message}`,
       );
       console.error(`      Local ${target} install is still applied.`);
-      console.error(
-        `      Retry when ready: auggy augment setup ${target}${mode === "env" ? " --mode env" : ""}`,
-      );
+      console.error(`      Retry when ready: auggy augment setup ${target} --mode ${mode}`);
       console.error(
         "      Do not restart the agent until setup succeeds or the augment is removed.",
       );
@@ -521,20 +526,22 @@ async function offerSetupForAddedAugments(
   const explainConsoleFallback = () => {
     console.log();
     console.log(`${infoLabel()} visitorAuth will use local console delivery for magic links.`);
-    console.log("     Set up AgentMail later: `auggy augment setup visitorAuth`.");
+    console.log(
+      "     Connect an existing inbox later: `auggy augment setup visitorAuth --mode connect`.",
+    );
   };
 
-  // A batch containing both consumers is one shared setup operation regardless
-  // of picker/argument order: configure agentMail first, then attach
+  // A batch containing both consumers has one credential prompt regardless of
+  // picker/argument order: connect agentMail first, then attach
   // visitorAuth to the same API key and inbox without another credential prompt.
   if (addedAgentMail && addedVisitorAuth) {
     const proceed = await ask(
-      "Set up one shared AgentMail inbox for agentMail and visitorAuth now?",
+      "Connect one existing AgentMail inbox to agentMail and visitorAuth now?",
       true,
       [
         "Both augments remain installed, but agentMail credentials are unresolved.",
         "Before restarting, run:",
-        "  auggy augment setup agentMail",
+        "  auggy augment setup agentMail --mode connect",
         "  auggy augment setup visitorAuth --mode env",
         "Or remove agentMail if this agent should not use email.",
       ],
@@ -544,15 +551,19 @@ async function offerSetupForAddedAugments(
       explainConsoleFallback();
       return true;
     }
-    if (!(await runSetup("agentMail"))) return false;
+    if (!(await runSetup("agentMail", "connect"))) return false;
     return runSetup("visitorAuth", "env");
   }
 
   if (addedVisitorAuth) {
-    const proceed = await ask("Set up AgentMail delivery for visitorAuth magic links now?", false, [
-      "visitorAuth remains installed with local console delivery.",
-      "Configure production delivery later: auggy augment setup visitorAuth",
-    ]);
+    const proceed = await ask(
+      "Connect an existing AgentMail inbox for visitorAuth magic links now?",
+      false,
+      [
+        "visitorAuth remains installed with local console delivery.",
+        "Connect production delivery later: auggy augment setup visitorAuth --mode connect",
+      ],
+    );
     if (proceed === null) return false;
     if (!proceed) {
       explainConsoleFallback();
@@ -562,30 +573,34 @@ async function offerSetupForAddedAugments(
     if (hadAgentMail) {
       // Reuse an already-configured consumer directly. If agentMail is only
       // installed, configure it first and then attach visitorAuth.
-      if (!hasAgentMailRuntimeCredentials(agentDir) && !(await runSetup("agentMail"))) return false;
+      if (!hasAgentMailRuntimeCredentials(agentDir) && !(await runSetup("agentMail", "connect"))) {
+        return false;
+      }
       return runSetup("visitorAuth", "env");
     }
-    return runSetup("visitorAuth");
+    return runSetup("visitorAuth", "connect");
   }
 
   const visitorAlreadyUsesAgentMail = hadVisitorAuth && visitorAuthUsesAgentMail(agentDir);
   const proceed = await ask(
     visitorAlreadyUsesAgentMail
       ? "Use visitorAuth's AgentMail inbox for agentMail too?"
-      : "Set up AgentMail inbox credentials now?",
+      : "Connect an existing AgentMail inbox now?",
     true,
     [
       "agentMail remains installed, but its required credentials are unresolved.",
-      `Before restarting, run: auggy augment setup agentMail${visitorAlreadyUsesAgentMail ? " --mode env" : ""}`,
+      `Before restarting, run: auggy augment setup agentMail --mode ${visitorAlreadyUsesAgentMail ? "env" : "connect"}`,
       "Or remove it: auggy augment remove agentMail",
     ],
   );
   if (proceed === null) return false;
   if (!proceed) return true;
-  if (!(await runSetup("agentMail", visitorAlreadyUsesAgentMail ? "env" : undefined))) return false;
+  if (!(await runSetup("agentMail", visitorAlreadyUsesAgentMail ? "env" : "connect"))) {
+    return false;
+  }
 
   // Adding agentMail beside an existing console-only visitorAuth is a useful
-  // opportunity to share the new inbox, but remains an explicit policy change.
+  // opportunity to share the connected inbox, but remains an explicit policy change.
   if (hadVisitorAuth && !visitorAlreadyUsesAgentMail) {
     const attach = await ask("Use this AgentMail inbox for visitorAuth magic links too?", true, [
       "agentMail is configured; visitorAuth remains on local console delivery.",
@@ -759,7 +774,7 @@ function rewriteMutablePaths(value: unknown): unknown {
       continue;
     }
     if (typeof child === "string" && isMutableArtifactPath(key, child)) {
-      out[key] = `./data/${basename(child)}`;
+      out[key] = child.startsWith("./data/") ? child : `./data/${basename(child)}`;
       continue;
     }
     out[key] = rewriteMutablePaths(child);

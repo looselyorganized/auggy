@@ -333,7 +333,7 @@ describe("auggySelf augment", () => {
     expect(parsed.recommendation.alreadyInstalled).toBe(false);
     expect(parsed.recommendation.nextSteps).toContain("Run `auggy augment add layeredMemory`.");
     expect(parsed.recommendation.nextSteps).toContain(
-      "Use `auggy agentmail setup visitorAuth` for production magic-link email.",
+      "Use `auggy agentmail setup visitorAuth --mode connect` to connect an existing inbox for production magic-link email.",
     );
   });
 

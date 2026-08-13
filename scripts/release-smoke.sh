@@ -137,6 +137,20 @@ writeFileSync(
     name: "packed-provider-consumer",
     private: true,
     type: "module",
+    // Bun applies the consumer's security overrides while importing the packed
+    // TypeScript package, even when a package is not otherwise present in the
+    // resolved graph. Install these audited overrides explicitly so the
+    // isolated import exercises the same pinned contract as the workspace.
+    dependencies: {
+      "@hono/node-server": "2.0.11",
+      "body-parser": "2.3.0",
+      "brace-expansion": "5.0.9",
+      "fast-uri": "3.1.5",
+      "hono": "4.12.34",
+      "ip-address": "10.4.0",
+      "postcss": "8.5.25",
+      "undici": "7.29.0",
+    },
     overrides: {
       "@hono/node-server": "2.0.11",
       "body-parser": "2.3.0",
@@ -154,8 +168,8 @@ NODE
     cd "$consumer_dir"
     # Install the required runtime peer first so package managers never try to
     # satisfy it from the stale published registry version.
-    bun add --offline --no-summary "$TARBALL"
-    bun add --offline --no-summary "$adapter_tarball" "$@"
+    bun add --offline --no-summary "$TARBALL" || exit $?
+    bun add --offline --no-summary "$adapter_tarball" "$@" || exit $?
     bun -e '
       const [packageName, factoryName] = process.argv.slice(1);
       const core = await import("auggy");
@@ -187,10 +201,10 @@ NODE
       if (typeof provider[factoryName] !== "function") {
         throw new Error(`${packageName} does not export ${factoryName}`);
       }
-    ' "$package_name" "$factory_name"
+    ' "$package_name" "$factory_name" || exit $?
     bun -e '
-      import { existsSync, readFileSync } from "node:fs";
-      import { dirname, join } from "node:path";
+      import { readFileSync } from "node:fs";
+      import { join } from "node:path";
 
       const expected = {
         "@hono/node-server": "2.0.11",
@@ -202,34 +216,30 @@ NODE
         postcss: "8.5.25",
         undici: "7.29.0",
       };
-      const coreDirectory = dirname(Bun.resolveSync("auggy", process.cwd()));
       for (const [name, version] of Object.entries(expected)) {
-        let directory = dirname(Bun.resolveSync(name, coreDirectory));
-        let manifest;
-        for (let depth = 0; depth < 8; depth += 1) {
-          const candidate = join(directory, "package.json");
-          if (existsSync(candidate)) {
-            const parsed = JSON.parse(readFileSync(candidate, "utf8"));
-            if (parsed.name === name) {
-              manifest = parsed;
-              break;
-            }
-          }
-          directory = dirname(directory);
-        }
-        if (manifest?.version !== version) {
+        // These are direct consumer dependencies. Read their root manifests
+        // instead of resolving module entry points: Bun resolves `undici` to
+        // its built-in implementation even when an audited package is present.
+        const manifestPath = join(
+          process.cwd(),
+          "node_modules",
+          ...name.split("/"),
+          "package.json",
+        );
+        const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+        if (manifest.name !== name || manifest.version !== version) {
           throw new Error(
-            `${name} resolved to ${manifest?.version ?? "unknown"}, expected ${version}`,
+            `${name} resolved to ${manifest.version ?? "unknown"}, expected ${version}`,
           );
         }
       }
-    '
+    ' || exit $?
     bun audit --json | node -e '
       const result = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
       if (Object.keys(result).length !== 0) {
         throw new Error(`packed consumer has advisories: ${Object.keys(result).join(", ")}`);
       }
-    '
+    ' || exit $?
   ) >"$LOG_DIR/provider-$slug.log" 2>&1 \
     || fail "packed provider consumer failed for $package_name"
 }
@@ -260,8 +270,8 @@ writeFileSync(
 NODE
   (
     cd "$consumer_dir"
-    bun add --offline --no-summary "$TARBALL"
-    bun add --offline --no-summary "$EVALS_TARBALL"
+    bun add --offline --no-summary "$TARBALL" || exit $?
+    bun add --offline --no-summary "$EVALS_TARBALL" || exit $?
     bun -e '
       import { existsSync } from "node:fs";
       const security = await import("@auggy/evals/security/run");
@@ -276,14 +286,14 @@ NODE
       if (!existsSync(security.getDefaultFixtureConfigPath())) {
         throw new Error("packed @auggy/evals omitted its default security fixture");
       }
-    '
-    bun ./node_modules/auggy/src/cli/index.ts eval auto-save --dry-run
+    ' || exit $?
+    bun ./node_modules/auggy/src/cli/index.ts eval auto-save --dry-run || exit $?
     bun audit --json | node -e '
       const result = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
       if (Object.keys(result).length !== 0) {
         throw new Error(`packed eval consumer has advisories: ${Object.keys(result).join(", ")}`);
       }
-    '
+    ' || exit $?
   ) >"$LOG_DIR/evals-consumer.log" 2>&1 \
     || fail "packed @auggy/evals consumer failed"
 }
@@ -305,12 +315,12 @@ NODE
   cp "$ROOT/scripts/release-smoke-agentmail-packed-runtime.ts" "$consumer_dir/contract.ts"
   (
     cd "$consumer_dir"
-    bun add --offline --no-summary "$TARBALL"
+    bun add --offline --no-summary "$TARBALL" || exit $?
     AUGGY_PACKED_CONSUMER_ROOT="$consumer_dir" \
       AUGGY_SOURCE_ROOT="$ROOT" \
-      bun contract.ts
+      bun contract.ts || exit $?
   ) >"$LOG_DIR/agentmail-packed-runtime.log" 2>&1 \
-    || fail "packed AgentMail runtime WebSocket contract failed"
+    || fail "packed AgentMail offline-catch-up, draft-review, and restart E2E failed"
 }
 
 info "verify packed provider contracts and isolated imports"
@@ -345,7 +355,22 @@ reject_pack_pattern() {
 }
 
 require_pack_entry "src/cli/index.ts"
-require_pack_entry "src/cli/agentmail-provisioning.ts"
+require_pack_entry "src/cli/agentmail-capabilities.ts"
+require_pack_entry "src/cli/commands/agentmail.ts"
+require_pack_entry "src/augments/agentMail/index.ts"
+require_pack_entry "src/augments/agentMail/config.ts"
+require_pack_entry "src/augments/agentMail/provider.ts"
+require_pack_entry "src/augments/agentMail/inbound.ts"
+require_pack_entry "src/augments/agentMail/attachment.ts"
+require_pack_entry "src/augments/agentMail/draft-snapshot.ts"
+require_pack_entry "src/augments/agentMail/policy.ts"
+require_pack_entry "src/augments/agentMail/runtime.ts"
+require_pack_entry "src/augments/agentMail/store.ts"
+require_pack_entry "src/augments/agentMail/skill/SKILL.md"
+require_pack_entry "src/augments/agentMail/skill/references/upstream-provenance.md"
+require_pack_entry "src/augments/agentMail/skill/references/upstream-provenance.json"
+require_pack_entry "src/augments/agentMail/skill/references/mcp-boundary.md"
+require_pack_entry "src/augments/agentMail/skill/references/mcp-read-only.example.json"
 require_pack_entry "src/jobs/index.ts"
 require_pack_entry "src/jobs/runtime.ts"
 require_pack_entry "src/jobs/sqlite-store.ts"
@@ -374,6 +399,10 @@ grep -Eq '^package/admin/dist/assets/.+\.css$' "$PACK_LIST" \
   || fail "tarball missing built console CSS"
 reject_pack_pattern '^package/admin/dist/login/.*\.(js|mjs|cjs|map)$' \
   "tarball includes executable Console login output or source maps"
+reject_pack_pattern '^package/src/cli/agentmail-provisioning\.ts$' \
+  "tarball includes removed AgentMail provisioning implementation"
+reject_pack_pattern '^package/src/augments/agentMail/(creator-attention|creator-digest-bridge|creator-digest-policy|creator-digest|inbound-ledger|inbound-policy|inbound-worker|outbound|persist-state|rate-limit|review-queue|sdk-provider|types|webhook-provider)\.ts$' \
+  "tarball includes a removed pre-rebuild AgentMail runtime module"
 reject_pack_pattern '\.map$' "tarball includes source maps"
 reject_pack_pattern '^package/(\.env|node_modules/|\.git/|\.auggy/|docs/|tests/)' \
   "tarball includes local-only files"
@@ -432,6 +461,8 @@ bun "$ROOT/scripts/release-smoke-agentmail-cli.ts" \
   "$GLOBAL_PREFIX/lib/node_modules/auggy" \
   "$SMOKE_DIR/packed-agentmail-cli" \
   "$SMOKE_HOME" \
+  "$TARBALL" \
+  "$ANTHROPIC_TARBALL" \
   >"$LOG_DIR/packed-agentmail-cli.log" 2>&1 \
   || fail "packed AgentMail CLI contract failed"
 

@@ -26,7 +26,7 @@ For a production visitor-auth experience:
 ```bash
 auggy augment add layeredMemory
 auggy augment add visitorAuth
-auggy agentmail setup visitorAuth
+auggy agentmail setup visitorAuth --mode connect
 auggy doctor --cloud
 ```
 
@@ -49,11 +49,10 @@ consumers together in an interactive terminal:
 auggy augment add agentMail visitorAuth
 ```
 
-The post-add flow uses one setup confirmation and credential flow, provisions
-`agentMail`, and attaches `visitorAuth` to that inbox with environment reuse
-without asking for credentials again, regardless of selection order. `--yes`
-skips this optional setup flow; use the manual shared sequence below for
-automation or recovery.
+The post-add flow uses one setup confirmation, connects `agentMail` to an
+existing inbox and exact API key, and attaches `visitorAuth` to the same
+environment values without asking again. `--yes` skips this optional setup
+flow; use the explicit shared sequence below for automation or recovery.
 
 ## App-backend magic link request
 
@@ -202,11 +201,12 @@ database from silently falling back to the same `ep` namespace.
 
 ## AgentMail setup
 
-For production email delivery, prefer the setup command over hand-editing secrets:
+For production email delivery, create an inbox and API key in AgentMail, then
+connect those exact values:
 
 ```bash
 auggy augment add visitorAuth
-auggy agentmail setup visitorAuth
+auggy agentmail setup visitorAuth --mode connect
 ```
 
 `auggy augment setup visitorAuth` is the generic equivalent. The direct
@@ -222,87 +222,53 @@ omission fails closed and prints the safe shared-credential sequence below. A
 custom-named, inline, or additional same-type mount is never selected or
 rewritten automatically.
 
-Automatic credential mutation is supported on macOS and Linux. It serializes
-Auggy `.env` writers and rechecks the exact agent, `.env`, and augment sources before
-commit. On Windows, configure `.env` and `augment.yaml` with ordinary project
-tooling; setup fails closed without mutation because its POSIX descriptor lock
-is unavailable.
+Setup has two modes:
 
-### Setup modes and inputs
+| Mode | Use it when | Effect |
+|---|---|---|
+| `connect` | Connecting an existing inbox for the first time | Prompts securely for its inbox ID and API key, verifies `inbox_read`, stores the exact values in `.env`, and switches visitorAuth to AgentMail delivery |
+| `env` | The same values are already complete in the agent's `.env` | Revalidates and reuses them without asking again |
 
-Run the command interactively to choose among these modes:
+Auggy never creates an AgentMail account, inbox, or API key. It also never
+narrows, rotates, replaces, or revokes the supplied key. Create and manage those
+resources in AgentMail. If you intentionally change either credential, update
+the exact `.env` values and rerun `--mode connect`.
 
-- `signup` — for someone new to AgentMail. This creates an account and first
-  inbox, sends a verification code to the human owner email, and prompts for
-  that code. Signup is interactive-only. If AgentMail reports that the account
-  already exists, an interactively selected signup can offer to continue with
-  the existing-account flow. An explicit `--mode signup` never switches modes
-  or adopts an existing inbox on its own.
-- `existing` — creates a new inbox in an existing AgentMail account. It needs
-  an API key that can create inboxes plus an inbox username. That exact key is
-  retained for runtime use; Auggy does not derive a child key. In
-  non-interactive use, pass `--mode existing --username <name>` and supply the
-  key with `--api-key` or, preferably, `AGENTMAIL_API_KEY`. `--display-name`
-  is optional.
-- `manual` — connects an inbox that already exists. Supply its inbox ID and an
-  API key using secure prompts, `--inbox-id` / `--api-key`, or
-  `AGENTMAIL_INBOX_ID` / `AGENTMAIL_API_KEY`. Setup does not change the
-  provider key or its permissions, so it must already grant `inbox_read` and
-  `message_send`.
-- `env` — reuses usable `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` values
-  already in the agent's `.env`. It accepts no provisioning inputs and does
-  not change the existing key's permissions.
+For non-interactive use, name the mode and supply `AGENTMAIL_API_KEY` plus
+`AGENTMAIL_INBOX_ID` in the process environment, or pass `--api-key` and
+`--inbox-id`. Prefer environment variables because command-line secrets can be
+recorded in shell history or process listings.
 
-Non-interactive invocations must include `--mode`; missing required inputs and
-flags that a mode would ignore are rejected before provider or local side
-effects. Prefer the masked prompt or environment variables over `--api-key` so
-credentials do not enter shell history.
-
-Setup never silently replaces runtime credentials already assigned to the
-agent. Use `--mode env` to reuse the values in `.env`. To replace only the key
-for the existing inbox, run
-`auggy augment setup visitorAuth --mode manual --replace-key`; the CLI verifies
-the new key against that inbox, preserves the inbox ID, asks for confirmation,
-and does not revoke the previous provider key. Non-interactive replacement
-also requires `--yes`.
-
-`AGENTMAIL_API_KEY` is the canonical stored and runtime variable. Every setup
-mode that accepts a key uses it; signup instead stores the provider-returned key
-under that canonical name. For one RC,
-`AGENTMAIL_ACCOUNT_API_KEY` remains a deprecated process-only alias. Setup
-rejects that alias in project dotenv files and never persists or deploys the
-legacy variable name. If accepted from the process environment, its exact value
-is stored as `AGENTMAIL_API_KEY`.
-Prefer the masked prompt or canonical environment variable; controlled
-automation can pass `--api-key` but should account for shell-history and
-process-inspection exposure. On success, setup writes the exact selected key
-and inbox ID as `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID`, switches
+On success, setup writes `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID`, switches
 `augments/visitorAuth/augment.yaml` to `agentMail.transport: agentmail`, and
-reports that `inbox_read` was exercised. `visitorAuth` also requires
-`message_send`, but setup does not claim that permission is verified.
+reports that `inbox_read` was verified. Sending the first magic link exercises
+`message_send`; setup cannot prove a write permission without sending mail.
+The local `.env` and augment YAML update is transactional on supported POSIX
+systems and fails closed if their inputs change during setup.
 
 ### Sharing credentials with the `agentMail` augment
 
 The canonical `agentMail` and `visitorAuth` mounts currently reference the same
 global `AGENTMAIL_*` variables. When both are installed, configure the
-model-facing mail augment first, then make visitor auth reuse that inbox and
-API key:
+mailbox augment first, then make visitor auth reuse that inbox and API key:
 
 ```bash
-auggy agentmail setup agentMail
+auggy agentmail setup agentMail --mode connect
 auggy agentmail setup visitorAuth --mode env
 ```
 
-This order lets `agentMail` record `AGENTMAIL_INBOX_EMAIL`; `visitorAuth` then
-reuses the same supplied credentials without changing provider permissions.
-An interactive add containing both augments performs this same sequence after
-one shared confirmation and credential flow. The explicit commands remain the
-supported path after a skipped setup or partial failure.
-Automatic setup refuses custom, inline, renamed, or additional AgentMail
-consumers because changing the shared globals could silently retarget another
-augment. Configure those consumers manually with distinct environment
-references, or isolate them in separate agents, and run `auggy doctor` before
-starting the runtime.
+An interactive add containing both augments performs this sequence after one
+shared confirmation. Automatic setup refuses custom, inline, renamed, or
+additional AgentMail consumers because changing shared globals could silently
+retarget another augment. Give those consumers distinct environment references
+or isolate them in separate agents, then run `auggy doctor`.
+
+The runtime responsibilities remain independent. `visitorAuth` sends a magic
+link through AgentMail; the visitor's click returns directly to Auggy's public
+verification route. It does not require the `agentMail` augment, inbound mail,
+WebSockets, or draft processing. The `agentMail` augment separately owns
+mailbox wake-up, catch-up, provider-native drafts, and creator review. See
+[AgentMail](./22-agent-mail.md) for that workflow.
 
 Removing either augment does not revoke the remote inbox/key or delete
 `AGENTMAIL_*`. Auggy retains them while another shared consumer is installed
@@ -313,33 +279,18 @@ local values. Auggy never revokes it automatically.
 
 ### Failure recovery
 
-Setup commits `.env` and augment YAML only after the provider flow has returned
-a valid inbox identity for the selected key; a local write failure rolls local
-changes back. Provider mutations are different: an inbox can exist remotely
-even when the final local commit fails.
+Setup is read-only against AgentMail, so a failed attempt cannot leave a newly
+created remote resource behind. It writes local configuration only after the
+inbox identity is validated for the supplied key.
 
-- For an existing owner email, rerun with
-  `auggy agentmail setup visitorAuth --mode existing`; do not retry signup or
-  claim an arbitrary existing inbox.
-- For a definite validation or authorization error, correct the named input or
-  permission before explicitly retrying.
-- For a definitive `403 resource_taken`, interactive setup reuses an inbox only
-  when its exact address and Auggy `client_id` prove it belongs to this agent,
-  and asks before doing so. Otherwise it offers another username for at most
-  three create attempts total. Non-interactive setup fails without choosing a
-  new name or adopting the colliding inbox; supply a different `--username` or
-  connect a verified inbox with `--mode manual`. Confirmed reuse keeps the
-  selected key unchanged.
-- If the CLI says a mutation's outcome is unknown, do **not** retry blindly.
-  Inspect the intended AgentMail account for the requested inbox. If the inbox
-  exists, connect it with the selected key through `--mode manual`. If the
-  provider confirms that nothing was created, rerun the original command.
-
-The existing-account inbox request carries a stable, provider-valid
-idempotency identity derived from the immutable agent ID and target. That makes
-provider reconciliation possible; it is not permission to auto-retry a
-timeout, malformed success response, or other ambiguous mutation. Setup never
-silently adopts or deletes a provider resource.
+- For `401` or `403`, confirm the key is active, scoped to the selected inbox,
+  and grants `inbox_read` plus `message_send`. Change permissions in AgentMail,
+  then retry.
+- For `404`, copy the exact inbox ID from AgentMail and retry.
+- For an unknown network outcome, it is safe to rerun: setup performs provider
+  reads only. No message is sent during validation.
+- If local values are already correct, use `--mode env`; if you intend to
+  change them, update the exact values and use `--mode connect`.
 
 After a visitor clicks the verification link, the success page stores the signed
 visitor token in browser localStorage. `/console/chat` and public frontends should
@@ -446,7 +397,8 @@ The `notifyOnFirstVerify` option (operator-alert email on each new visitor) cann
 - AgentMail keys should be least-privilege. visitorAuth uses `inbox_read` during
   setup and boot healthchecks and `message_send` for verification delivery.
   Setup proves only inbox access; the first delivery exercises `message_send`.
-  A broad account key remains broad because Auggy never narrows it.
+  An over-privileged key remains over-privileged because Auggy uses the exact
+  key supplied by the operator.
 - `publicUrl` MUST point to a host where the agent's `/visitor-auth/verify` route is reachable from the public internet. If you're running behind a tunnel (ngrok, Cloudflare), use the tunnel URL; if you're running on Railway, use the Railway domain.
 - Per-email rate limits are **in-memory only** — restart resets state.
   Verification tokens and visitors live in the schema-branded SQLite store;
@@ -522,5 +474,5 @@ lookups trim and lowercase operator input just like enrollment.
 | Verify link returns 410 "expired" | More than 15 minutes between send and click | Re-issue |
 | Verify link returns 410 "consumed" | Token was already used (visitor double-clicked, or someone with the link beat them) | Re-issue |
 | Visitor verifies but agent doesn't recognize them next visit | Cleared localStorage, or `VISITOR_SIGNING_KEY` rotated | Re-verify |
-| AgentMail healthcheck returns 403 | API key lacks access to the configured inbox, or a permission whitelist omitted `inbox_read` | Update the selected key's permissions or explicitly replace it with one that has `inbox_read` and `message_send`; restart |
+| AgentMail healthcheck returns 403 | API key lacks access to the configured inbox, or a permission whitelist omitted `inbox_read` | Update the key in AgentMail, or intentionally connect a different exact key with `--mode connect`; restart |
 | `auggy visitors --revoke` reports `memory.db` missing | layeredMemory has not created its DB yet, or a local custom path differs | Check `layeredMemoryDbPath` in `augments/visitorAuth/augment.yaml`. Portable catalog defaults use `./memory.db`; Railway resolves it directly under `/app/data`. |

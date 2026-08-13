@@ -3,6 +3,7 @@ import { chmodSync, mkdtempSync, mkdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
+  agentMailOrchestrationRuntimePath,
   buildRuntimeStateInventory,
   mutableFileMemoryRuntimePath,
   resolveRuntimeStatePath,
@@ -119,15 +120,13 @@ describe("runtime state inventory", () => {
     expect(byId.get("console-chat:web")?.relativePath).toBe("console-chat.db");
     expect(byId.get("telegram-replay:telegram")?.schema).toBe("TGRP/v2");
     expect(byId.get("telegram-replay:telegram")?.namespace).toBe("telegram:bot-123456");
-    expect(byId.get("agentmail-ledger:mail-a")?.relativePath).toBe(
-      "agent-mail/mail-a/agent-mail.db",
+    expect(byId.get("agentmail-orchestration:mail-a")?.relativePath).toBe(
+      "agent-mail/mail-a/orchestration.db",
     );
-    expect(byId.get("agentmail-ledger:mail-a")?.schema).toBe("AMIL/v5");
-    expect(byId.get("agent-mail-rate/v2:mail-a")?.relativePath).toBe(
-      "agent-mail/mail-a/agent-mail-state.json",
-    );
-    expect(byId.get("agent-mail-reviews/v1:mail-a")?.relativePath).toBe(
-      "agent-mail/mail-a/agent-mail-reviews.json",
+    expect(byId.get("agentmail-orchestration:mail-a")?.schema).toBe("AMOR/v1");
+    expect(byId.get("agentmail-orchestration:mail-a")?.replayCritical).toBe(true);
+    expect(inventory.externalPrerequisites).toContainEqual(
+      expect.objectContaining({ id: "agentmail-provider:mail-a" }),
     );
     expect(byId.get("notify-delivery:notify")?.relativePath).toBe("notify-notify.db");
     expect(byId.get("notify-delivery:notify")?.schema).toBe("NTFY/v2");
@@ -146,6 +145,28 @@ describe("runtime state inventory", () => {
     expect(inventory.externalPrerequisites.map((entry) => entry.id)).toContain(
       "agentmail-provider:mail-a",
     );
+  });
+
+  test("maps the generated AgentMail project path to the same volume ledger inventoried for backup", () => {
+    const paths = fixture();
+    const value = config();
+    const mail = value.augments.find((augment) => augment.type === "agentMail")!;
+    mail.name = "agentMail";
+    mail.options = { dbPath: "./data/agent-mail/agentMail/orchestration.db" };
+
+    const runtimePath = agentMailOrchestrationRuntimePath({
+      configuredPath: "./data/agent-mail/agentMail/orchestration.db",
+      augmentName: "agentMail",
+      ...paths,
+    });
+    const inventoryPath = buildRuntimeStateInventory(value, paths).stores.find(
+      (store) => store.id === "agentmail-orchestration:agentMail",
+    );
+
+    expect(runtimePath).toBe(
+      join(paths.runtimeDataRoot, "agent-mail", "agentMail", "orchestration.db"),
+    );
+    expect(inventoryPath?.relativePath).toBe("agent-mail/agentMail/orchestration.db");
   });
 
   test("records explicit in-memory opt-outs as non-restorable", () => {

@@ -1272,62 +1272,32 @@ export interface AugmentConstraints {
 // See docs/21-console.md for the current operator-surface contract.
 // ===========================================================================
 
-/** One target-aware action exposed by a structured admin projection. */
-export interface AdminProjectionAction {
-  actionId: string;
-}
-
-/**
- * Metadata-only review row for the creator Mail action center.
- *
- * Exact recipients, draft bodies, HTML, and approval fingerprints are fetched
- * on demand from the creator-authenticated `detailPath`; they must never be
- * embedded in the dashboard snapshot.
- */
-export interface AdminMailReviewProjection {
-  /** Opaque row identity used for both targeted CSRF and action dispatch. */
-  rowKey: string;
-  reviewId: string;
-  status: "pending" | "sending";
-  subject: string;
-  /** Bounded/redacted correspondent summary suitable for the list view. */
-  correspondent: string;
-  updatedAt?: string;
-  expiresAt: string;
-  /** Same-origin, creator-authenticated, no-store JSON endpoint. */
-  detailPath: string;
-  actions: {
-    approve?: AdminProjectionAction;
-    revise?: AdminProjectionAction;
-    reject?: AdminProjectionAction;
-    /** Creator-only confirmation that an ambiguous provider mutation was sent. */
-    reconcileSent?: AdminProjectionAction;
-    /** Creator-only confirmation that an ambiguous provider mutation was not sent. */
-    reconcileFailed?: AdminProjectionAction;
-  };
-}
-
-/** Metadata-only inbound item requiring creator attention. */
-export interface AdminMailAttentionProjection {
-  /** Opaque row identity used for both targeted CSRF and action dispatch. */
-  rowKey: string;
-  messageId: string;
-  status: "open" | "pending_review" | "ambiguous";
-  /** Compare-and-set generation required by attention mutations. */
-  version: number;
-  subject?: string;
-  sender?: string;
-  receivedAt?: string;
-  updatedAt: string;
-  /** Same-origin, creator-authenticated, no-store JSON endpoint when inspectable. */
-  detailPath?: string;
-  actions: {
-    dismiss?: AdminProjectionAction;
-    /** Creator-only confirmation that an outcome-unknown inbound turn completed. */
-    reconcileProcessed?: AdminProjectionAction;
-    /** Creator-only confirmation that no external effect occurred and retry is safe. */
-    reconcilePending?: AdminProjectionAction;
-  };
+/** Metadata-only reference to a provider-native AgentMail draft. */
+export interface AdminMailDraftProjection {
+  draftId: string;
+  /** Present for provider drafts derived from a source message. */
+  sourceMessageId?: string;
+  /** Present for provider drafts bound to an existing mail thread. */
+  threadId?: string;
+  state:
+    | "ready"
+    | "scheduled"
+    | "stale"
+    | "approved"
+    | "sending"
+    | "retryable"
+    | "sent"
+    | "ambiguous"
+    | "failed"
+    | "deleted";
+  /** Provider freshness marker. The editable draft itself remains in AgentMail. */
+  providerUpdatedAt: string;
+  /** Provider-managed delivery time when the draft has scheduling metadata. */
+  sendAt?: string;
+  /** Durable delivery operation to use with the explicit retry command. */
+  retryOperationId?: string;
+  /** Earliest provider retry time for a retryable delivery operation. */
+  retryAt?: string;
 }
 
 /** Safe projection for one mounted AgentMail instance. */
@@ -1343,26 +1313,25 @@ export interface AdminMailInstanceProjection {
   };
   inbound: {
     mode: AgentMailInboundMode;
-    state: "disabled" | "starting" | "ready" | "subscribed" | "degraded" | "stopped";
-    senderPolicy?: "disabled" | "allowlist" | "any";
-    allowedSenderCount?: number;
-    rateLimit?: {
-      globalMaxPerHour: number;
-      perSenderMaxPerHour: number;
-      rollingGlobalUsage: number;
-      globalRejections: number;
-      perSenderRejections: number;
-      lastRejectedAt?: string;
-    };
+    state: "idle" | "connecting" | "catching_up" | "ready" | "degraded" | "stopped";
+    senderPolicy: "disabled" | "allowlist" | "any";
+    allowedSenderCount: number;
+    globalMaxPerHour?: number;
+    perSenderMaxPerHour?: number;
+    lastCatchUpAt?: string;
+    lastEventAt?: string;
+    lastErrorCode?: string;
   };
-  reviews: AdminMailReviewProjection[];
-  attention: AdminMailAttentionProjection[];
+  replies: {
+    mode: AgentMailReplyMode;
+    allowReplyAll: boolean;
+  };
+  drafts: AdminMailDraftProjection[];
 }
 
-/** Versioned structured views understood by the creator console. */
+/** Structured views understood by the creator console. */
 export type AdminInfoProjection = AdminMailInstanceProjection & {
   kind: "mail";
-  schemaVersion: 1;
 };
 
 /** A typed render block for an augment's section on /admin. */
@@ -1949,25 +1918,21 @@ export interface NotifyAdapter {
 }
 
 // ---------------------------------------------------------------------------
-// agentMail augment (outbound + durable inbound)
+// agentMail augment (provider-native mailbox orchestration)
 // ---------------------------------------------------------------------------
 
-/**
- * Inbound delivery modes for the agentMail augment. WebSocket is recommended
- * when a public webhook URL is unavailable; every mode performs REST catch-up.
- */
-export type AgentMailInboundMode = "none" | "websocket" | "polling" | "webhook";
+/** Live receipt is either disabled or delivered through AgentMail WebSockets. */
+export type AgentMailInboundMode = "none" | "websocket";
 
 /** Runtime authority granted to replies originating from admitted inbound mail. */
-export type AgentMailInboundReplyMode = "disabled" | "review" | "automatic";
+export type AgentMailReplyMode = "disabled" | "review";
 
-export interface AgentMailInboundReplyOptions {
+export interface AgentMailReplyOptions {
   /**
-   * Reply authority for admitted inbound turns. Enabled inbound defaults to
-   * `"review"`; dormant inbound defaults to `"disabled"`. `"automatic"` is
-   * accepted only while a bounded outbound rate policy remains enabled.
+   * `"review"` lets the agent create a provider-native reply draft. Only a
+   * later creator-authorized action may send it. Default: `"disabled"`.
    */
-  mode?: AgentMailInboundReplyMode;
+  mode?: AgentMailReplyMode;
   /**
    * Permit an inbound turn to request reply-all. Default false. This never
    * bypasses the outbound recipient allowlist or recipient-count cap.
@@ -1978,48 +1943,28 @@ export interface AgentMailInboundReplyOptions {
 /** Durable admission limits for inbound AgentMail messages. */
 export interface AgentMailInboundRateLimitOptions {
   /** Maximum unique inbound messages processed across all senders per rolling hour. */
-  globalMaxPerHour: number;
+  globalMaxPerHour?: number;
   /** Maximum unique inbound messages processed from one normalized sender per rolling hour. */
-  perSenderMaxPerHour: number;
-}
-
-/**
- * Optional bridge from durable inbound creator-attention state to a named
- * Notify destination. Omitted or disabled means no background notification
- * behavior and no Notify dependency.
- */
-export interface AgentMailCreatorDigestOptions {
-  /** Master opt-in. Default false. */
-  enabled?: boolean;
-  /** Named Notify destination. Required when enabled. */
-  destination?: string;
-  /** Digest cadence in milliseconds. Default 15 minutes. */
-  intervalMs?: number;
-  /** Maximum attention items captured in one immutable digest batch. Default 20. */
-  maxItems?: number;
-  /** Maximum settled delivery attempts for one digest batch. Default 5. */
-  maxAttempts?: number;
+  perSenderMaxPerHour?: number;
 }
 
 /** Who may learn the canonical inbox address through model context. */
 export type AgentMailAddressVisibility = "creator" | "public";
 
-export interface AgentMailRateLimitOptions {
-  /** Master toggle; default true. Creator/null peer always bypass when enabled. */
-  enabled?: boolean;
+export interface AgentMailOutboundRateLimitOptions {
   /** Maximum outbound sends across all recipients per hour. Default 10. */
   globalMaxPerHour?: number;
   /** Cooldown between sends to the same recipient (ms). Default 300000 (5min). */
   perRecipientCooldownMs?: number;
-  /** Subject-hash dedup window (ms). Default 300000 (5min). 0 disables dedup. */
+  /** Message-fingerprint dedup window (ms). Default 300000 (5min). 0 disables dedup. */
   dedupWindowMs?: number;
 }
 
 export interface AgentMailOutboundOptions {
   /**
-   * Trust levels permitted to call `send_message` / `reply_to_message` /
-   * `forward_message`. Default `["creator"]`. Email is a high-blast-radius
-   * channel — defaults are strict on purpose.
+   * Trust levels accepted by outbound policy. Default `["creator"]`. Current
+   * tools are creator-only, so delivery requires this list to include creator.
+   * Inbound email never proves one of these trust levels.
    */
   allowedTrustLevels?: TrustLevel[];
   /**
@@ -2034,32 +1979,69 @@ export interface AgentMailOutboundOptions {
   maxRecipients?: number;
   /** Hard cap on text body size in bytes. Default 102400 (100 KiB); configurable up to 1 MiB. */
   bodyMaxBytes?: number;
-  /** Permit HTML body in send/reply/forward. Default false. */
-  allowHtml?: boolean;
   /**
    * Subject prefix prepended to every outbound subject. Default `"[Auggy] "`.
    * Cannot be empty — recipients must be able to identify agent-sent mail.
    */
   subjectPrefix?: string;
-  /** Rate-limit configuration. */
-  rateLimit?: AgentMailRateLimitOptions;
   /**
-   * Durable operator review for outbound actions. By default, actions
-   * originating from public peers are queued instead of sent immediately.
-   * Set `requiredForTrustLevels: []` only when autonomous public sending is
-   * explicitly intended.
+   * Enable verified-creator direct send, reply, and forward tools. Default
+   * false at the runtime contract; the CLI's generated AgentMail policy opts
+   * in explicitly.
    */
-  humanReview?: {
-    /** Trust levels whose valid outbound actions enter the review queue. Default `["public"]`. */
-    requiredForTrustLevels?: TrustLevel[];
-    /** Time an action remains approvable. Default 86400000 (24 hours), maximum 30 days. */
-    expiresAfterMs?: number;
-  };
+  allowDirectDelivery?: boolean;
+  /** Permit HTML in provider-native draft creation and revision. Default false. */
+  allowHtml?: boolean;
+  /** Maximum attachments supplied to a draft operation. Default 0; hard ceiling 50. */
+  maxAttachments?: number;
+  /** Maximum decoded bytes for one supplied attachment. Default 10 MiB. */
+  maxAttachmentBytes?: number;
+  /** Maximum decoded bytes across supplied attachments. Default 25 MiB. */
+  maxTotalAttachmentBytes?: number;
+  /** Exact MIME types or bounded `type/*` patterns permitted for supplied attachments. */
+  allowedAttachmentTypes?: string[];
+  /** Rate-limit configuration. */
+  rateLimit?: AgentMailOutboundRateLimitOptions;
+}
+
+/** Creator-only mailbox inspection and mutation controls. */
+export interface AgentMailMailboxOptions {
+  /** Maximum items returned by one list call. Default 50; range 1-100. */
+  maxListResults?: number;
+  /** Maximum UTF-8 search query size. Default 1024 bytes; range 1-8192. */
+  maxSearchQueryBytes?: number;
+  /** Enable add/remove label tools. Default false. */
+  allowLabelMutation?: boolean;
+  /** Non-system labels that mailbox tools may add or remove. */
+  allowedLabels?: string[];
+  /** Enable reversible trash and restore tools. Default false. */
+  allowTrashRestore?: boolean;
+  /** Enable bounded, just-in-time attachment reads. Default false. */
+  allowAttachmentAccess?: boolean;
+  /** Maximum downloaded attachment size. Default and hard ceiling 1 MiB. */
+  maxAttachmentBytes?: number;
+  /** Exact MIME types or bounded `type/*` patterns permitted for attachment reads. */
+  allowedAttachmentTypes?: string[];
+}
+
+/** Creator-created or adopted provider-native draft capabilities. */
+export interface AgentMailDraftOptions {
+  allowNew?: boolean;
+  allowReply?: boolean;
+  /** Requires `allowReply: true`. Direct reply-all is never exposed. */
+  allowReplyAll?: boolean;
+  allowForward?: boolean;
+}
+
+/** Irreversible provider deletion controls. */
+export interface AgentMailDestructiveOptions {
+  /** Enable permanent message, thread, and draft deletion. Default false. */
+  allowPermanentDelete?: boolean;
 }
 
 export interface AgentMailInboundConfig {
-  /** Inbound delivery channel. */
-  mode: AgentMailInboundMode;
+  /** Inbound delivery channel. Default `"none"`. */
+  mode?: AgentMailInboundMode;
   /**
    * Exact sender addresses or `*@domain` patterns. One sender policy is
    * required when inbound is enabled: this non-empty list or
@@ -2070,44 +2052,24 @@ export interface AgentMailInboundConfig {
   allowedSenders?: string[];
   /**
    * Explicitly admit any well-formed sender address. Mutually exclusive with
-   * `allowedSenders` and accepted only with a bounded inbound `rateLimit`.
-   * This is admission policy, not sender authentication.
+   * `allowedSenders`; bounded default rate limits apply when omitted. This is
+   * admission policy, not sender authentication.
    */
   allowAnySender?: boolean;
   /**
-   * Optional durable inbound admission limits. Both limits are required when
-   * this block is present, and the block is mandatory with `allowAnySender`.
+   * Optional durable inbound admission limits. Each omitted value uses its
+   * default: 100 messages/hour globally and 5 per sender/hour, including when
+   * `allowAnySender` is enabled.
    */
   rateLimit?: AgentMailInboundRateLimitOptions;
-  /** Classification gates. Only ordinary received mail is processed by default. */
-  classifications?: {
-    received?: "process" | "discard";
-    spam?: "process" | "discard";
-    blocked?: "process" | "discard";
-    unauthenticated?: "process" | "discard";
-  };
-  /** Action-specific authority for replies to the triggering inbound message. */
-  replies?: AgentMailInboundReplyOptions;
-  /**
-   * Optional creator notification digest. This remains off unless
-   * `enabled: true` is explicitly configured and a compatible Notify
-   * destination exists.
-   */
-  creatorDigest?: AgentMailCreatorDigestOptions;
-  /** Poll/reconciliation cadence. Default 60 seconds; range 1 second to 24 hours. */
-  pollIntervalMs?: number;
-  /** Max bytes rendered into the untrusted email prompt. Default 100 KiB; max 1 MiB. */
-  maxPromptBytes?: number;
-  /** Attempts before durable discard. Default 5; maximum 20. */
+}
+
+/** Optional creator attention routed through a named Notify destination. */
+export interface AgentMailNotificationOptions {
+  /** Existing, agent-wide Notify destination name. */
+  destination: string;
+  /** Maximum definitive delivery attempts. Default 3; hard range 1-20. */
   maxAttempts?: number;
-  /** WebSocket origin override for sandbox providers. */
-  websocketBaseUrl?: string;
-  /** Svix route configuration when mode is `"webhook"`. */
-  webhook?: {
-    path?: string;
-    secretEnv?: string;
-    timestampToleranceSeconds?: number;
-  };
 }
 
 export interface AgentMailAugmentOptions {
@@ -2129,21 +2091,30 @@ export interface AgentMailAugmentOptions {
   addressVisibility?: AgentMailAddressVisibility;
   /** Override AgentMail API base URL (testing/sandbox). */
   apiBaseUrl?: string;
+  /** Override AgentMail WebSocket origin (testing/sandbox). */
+  websocketBaseUrl?: string;
   /** Development-only escape hatch for credentialed non-loopback HTTP/WS. */
   allowInsecureHttpWithCredentials?: boolean;
-  /** SQLite store path for inbound dedup. Default `"./agent-mail.db"`. */
+  /** SQLite orchestration path. Message and draft bodies stay in AgentMail. */
   dbPath?: string;
-  /** Outbound policy + tools configuration. */
-  outbound?: AgentMailOutboundOptions;
   /** Inbound configuration. Omit or use `{ mode: "none" }` to disable receiving. */
   inbound?: AgentMailInboundConfig;
+  /** Provider-native reply-draft policy for admitted inbound messages. */
+  replies?: AgentMailReplyOptions;
+  /** Bounded mailbox reads, labels, trash/restore, and attachment policy. */
+  mailbox?: AgentMailMailboxOptions;
+  /** Provider-native draft creation and adoption policy. */
+  drafts?: AgentMailDraftOptions;
+  /** Irreversible provider deletion policy. */
+  destructive?: AgentMailDestructiveOptions;
+  /** Direct outbound-message policy. */
+  outbound?: AgentMailOutboundOptions;
   /**
-   * Agent project directory. When set,
-   * `admin-overrides.json` is read at boot to apply runtime overrides
-   * (currently: outbound.rateLimit.globalMaxPerHour). Admin actions persist
-   * back via this path.
+   * Notify the creator when a provider-native draft is ready or a live
+   * failure event is observed for an Auggy-managed send. Requires WebSocket
+   * inbound so provider lifecycle events can be observed.
    */
-  agentDir?: string;
+  notifications?: AgentMailNotificationOptions;
 }
 
 // ---------------------------------------------------------------------------

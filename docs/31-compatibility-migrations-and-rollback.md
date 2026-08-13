@@ -19,7 +19,7 @@ reinterpreted, or accepted merely because an object has a familiar name.
 | `auggy routes --json` | Envelope `schemaVersion: 1` | Consumers must reject unknown envelope versions. Route entries remain derived from the current config and installed augment code. |
 | OpenAPI route artifact | OpenAPI 3.1.0 plus `x-auggy.artifactSchemaVersion: 1` | Regenerate when route paths, auth, policies, media types, or schemas change. `info.version` labels the generated API description, not the Auggy package. |
 | Generated TypeScript client | Generator `v0` in the file header | Generated files are application-owned snapshots, not package exports. Regenerate and typecheck them during an upgrade; Auggy never rewrites copied clients or templates. |
-| Scheduler recovery | Package API plus store-owned incident versions | Process-local `recoverThread()` is valid only after every durable incident authority has been reconciled. AgentMail, Telegram, notify, and console recovery use their own versioned, compare-and-set records. |
+| Scheduler recovery | Package API plus store-owned incident versions | Process-local `recoverThread()` is valid only after every registered durable incident authority has been reconciled. Telegram, notify, durable jobs, and console recovery use their own versioned records. AgentMail send ambiguity is provider-scoped and remains fenced in its orchestration store. |
 | Durable job execution | `auggy/jobs` source API plus `DJOB/v2` | One server-minted job and immutable binding per key. Unstarted work may retry within bounds; post-start ambiguity requires exact incident/version reconciliation. This is not a multi-step workflow-history contract. |
 | Runtime inventory and bundle | Inventory v1, bundle v1, volume identity v1, restore fence v1 | Readers require exact supported versions, configuration shape, agent identity, replay-critical mapping, paths, modes, and hashes. Unknown/newer formats fail before restore or startup. |
 | PostgreSQL coordination preview | Checksum ledger plus exact catalog validation in the `public` schema | Provisioning is explicit. Every run revalidates owned tables, columns, types, nullability, defaults, sequence ownership, indexes, and checks, including when the ledger already says the migration ran. The runtime still refuses replica mode. |
@@ -47,17 +47,16 @@ tampered, or newer database fails without stamping or mutating it.
 | Web idempotency and rate limits | `AUID/v2` | Exact v1 migration fixture | Restore bundle; do not roll back terminal request evidence independently |
 | Console chat/history | `CCHT/v4` | Exact v2 and v3 fixtures migrate to v4 | Restore bundle with matching thread ownership/history state |
 | Telegram replay/conflicts | `TGRP/v2` | Exact prior replay fixture | Restore bundle and reconcile provider offsets/conflicts before ingress |
-| AgentMail inbound ledger | `AMIL/v5` | Exact v1, v2, v3, and v4 fixtures | Restore bundle and reconcile mailbox/downstream delivery, inbound quota, and pending digest state |
+| AgentMail orchestration | `AMOR/v1` | None. Pre-rebuild AgentMail state is detected but is never read, migrated, or deleted automatically. | Restore the complete matching `AMOR/v1` bundle with the AgentMail mailbox recovery point; an older runtime must not read this store |
 | Notify delivery incidents/quotas | `NTFY/v2` | Exact v1 migration fixture | Restore bundle and reconcile outcome-unknown notifications and internal retry authorizations |
 | Durable jobs and schedules | `DJOB/v2` | Exact branded `DJOB/v1` migrates atomically to v2; lookalikes fail before DDL | Restore the complete pre-upgrade bundle to roll back; reconcile every ambiguous downstream effect before enabling schedules or ingress |
 | Local runtime claims and launchd generations | `AUCL/v2` | Exact branded v1 claim table migrates to v2 | Local CLI control state, not runtime-volume state; stop and unload every local agent before restoring the matching registry |
 
 Runtime-state restore intentionally requires an exact replay-critical schema
-topology. A bundle declaring `AMIL/v4` can be verified by this release, but it
-cannot be restored directly into an inventory that declares `AMIL/v5`. Restore
-that bundle with the retained v4 Auggy binary first, then start the v5 binary
-against the restored runtime volume so the owned ledger migration runs before
-ingress. Do not copy only the ledger around this fence.
+topology. A bundle containing a pre-rebuild AgentMail ledger cannot be restored
+as `AMOR/v1`. Keep it with the retained matching binary for rollback or archive
+it outside the active agent project. The replacement never infers provider
+drafts, checkpoints, or authorization from the former state.
 
 Thread-history snapshots (`version: 1`), anonymous-session proofs
 (`version: 1`), Link provenance (`version: 1`), and model snapshots
@@ -65,8 +64,8 @@ Thread-history snapshots (`version: 1`), anonymous-session proofs
 registry caches are advisory and may be discarded on an unsupported cache
 schema; replay, authorization, quota, and delivery stores may not.
 
-Supabase tables, downstream provider state, package-owned Link/AgentMail
-files, and custom augment persistence are external prerequisites. Core can
+Supabase tables, downstream provider state (including the AgentMail mailbox),
+package-owned Link files, and custom augment persistence are external prerequisites. Core can
 inventory them, but their operator or package owns schema migration and the
 matching recovery point. Auggy does not claim a universal database migrator.
 
@@ -182,12 +181,12 @@ While the agent is stopped, inspect every mounted Notify augment and every
 direct `notify(...)` destination array, then give each destination a unique
 name. Preserve the name of the destination that existing callers are intended
 to reach, rename the others, and update every
-`notify(to: ...)` caller, `budgets.notifications.destination`, and AgentMail
-`inbound.creatorDigest.destination` reference. Reconcile pending, in-flight,
-exhausted, or outcome-unknown Notify and creator-digest operations against the
-old binding before renaming it; the runtime does not rewrite durable operation
-identity or infer which duplicate an old call meant. Back up the complete
-runtime state before reopening ingress.
+`notify(to: ...)` caller, `budgets.notifications.destination`, and
+`agentMail.notifications.destination` reference. Reconcile pending, in-flight,
+exhausted, or outcome-unknown Notify and AgentMail creator-attention operations
+against the old binding before renaming it; the runtime does not rewrite
+durable operation identity or infer which duplicate an old call meant. Back up
+the complete runtime state before reopening ingress.
 
 ## Rollback
 

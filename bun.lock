@@ -8,7 +8,7 @@
         "@inquirer/prompts": "7.8.6",
         "@modelcontextprotocol/sdk": "^1.29.0",
         "@supabase/supabase-js": "^2.103.0",
-        "agentmail": "0.5.14",
+        "agentmail": "0.5.19",
         "commander": "^14.0.3",
         "svix": "1.96.1",
         "yaml": "^2.8.3",
@@ -511,7 +511,7 @@
 
     "accepts": ["accepts@2.0.0", "", { "dependencies": { "mime-types": "^3.0.0", "negotiator": "^1.0.0" } }, "sha512-5cvg6CtKwfgdmVqY1WIiXKc3Q1bkRqGLi+2W/6ao+6Y7gu/RCwRuAhGEzh5B4KlszSuTLgZYuqFqo5bImjNKng=="],
 
-    "agentmail": ["agentmail@0.5.14", "", { "dependencies": { "ws": "^8.20.0" } }, "sha512-2vp2W1abVvEGlM0/JgYHFEeX6MoJf3S/0oIEvxSU8/Lz7YkvOGo3v882lX8NOv2ZTpJMshATLIJrlNIIoo5uvA=="],
+    "agentmail": ["agentmail@0.5.19", "", { "dependencies": { "ws": "^8.20.0" } }, "sha512-GMTDVcbXLW3K6qzuYXp3ilVwkAfsO2zN4PoROxTWd7Blsk+y6ly5gRguB5AhlgJk52apok501hgDAkOcrc4eTQ=="],
 
     "ajv": ["ajv@8.20.0", "", { "dependencies": { "fast-deep-equal": "^3.1.3", "fast-uri": "^3.0.1", "json-schema-traverse": "^1.0.0", "require-from-string": "^2.0.2" } }, "sha512-Thbli+OlOj+iMPYFBVBfJ3OmCAnaSyNn4M1vz9T6Gka5Jt9ba/HIR56joy65tY6kx/FCF5VXNB819Y7/GUrBGA=="],
 

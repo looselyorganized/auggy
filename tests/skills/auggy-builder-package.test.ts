@@ -120,15 +120,50 @@ describe("auggy builder skill mirrors", () => {
     const compactSkill = skill.replace(/\s+/g, " ");
     const compactWorkflows = workflows.replace(/\s+/g, " ");
 
-    expect(compactSkill).toContain("Key-accepting modes preserve the supplied key unchanged");
-    expect(compactSkill).toContain("signup stores AgentMail's provider-returned key");
-    expect(compactSkill).toContain("does not prove outbound send or inbound read capability");
-    expect(compactWorkflows).toContain("does not mint a child key");
-    expect(compactWorkflows).toContain("deprecated compatibility alias for one RC");
-    expect(compactWorkflows).toContain("--mode manual --replace-key");
-    expect(compactWorkflows).toContain("Do not run AgentMail setup again merely because");
-    expect(compactWorkflows).not.toContain("mints a new scoped runtime key");
-    expect(compactWorkflows).not.toContain("stores only an inbox-scoped runtime key");
+    expect(compactSkill).toContain("create the inbox and API key in AgentMail first");
+    expect(compactSkill).toContain("stores the same key as `AGENTMAIL_API_KEY`");
+    expect(compactWorkflows).toContain("AgentMail setup exposes only two modes");
+    expect(compactWorkflows).toContain("| `connect` |");
+    expect(compactWorkflows).toContain("| `env` |");
+    expect(compactWorkflows).toContain("never creates or adopts an inbox");
+    expect(compactWorkflows).toContain("does not send mail or mutate drafts");
+    for (const removed of ["`signup`", "`existing`", "`manual`", "--replace-key"]) {
+      expect(compactSkill, removed).not.toContain(removed);
+      expect(compactWorkflows, removed).not.toContain(removed);
+    }
+  });
+
+  test("AgentMail guidance separates Auggy lifecycle policy from optional provider tools", () => {
+    const skill = readFileSync(join(CANONICAL_SKILL, "SKILL.md"), "utf-8");
+    const workflows = readFileSync(
+      join(CANONICAL_SKILL, "references", "cli-workflows.md"),
+      "utf-8",
+    );
+
+    for (const source of [skill, workflows]) {
+      const compact = source.replace(/\s+/g, " ");
+      expect(compact).toContain("official AgentMail skill");
+      expect(compact).toContain("MCP");
+      expect(compact).toMatch(/do not|neither/i);
+      expect(compact).toMatch(/wake/i);
+      expect(compact).toMatch(/catch-up/i);
+    }
+    expect(workflows).toContain("provider-native draft");
+    expect(workflows).toContain("`send it`");
+    expect(workflows).toContain("`send draft <draftId>`");
+  });
+
+  test("DX lab connects one existing inbox without provider provisioning", () => {
+    const script = readFileSync(join(ROOT, "scripts", "dx-lab-agent.sh"), "utf-8");
+
+    expect(script).toContain('[[ -n "$(read_env_value AGENTMAIL_API_KEY)" &&');
+    expect(script).toContain('"$CLI" augment setup agentMail \\');
+    expect(script).toContain("--mode connect \\");
+    expect(script).toContain('"$CLI" augment setup visitorAuth --mode env');
+    expect(script).toContain("requires both AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID");
+    expect(script).not.toContain("--mode manual");
+    expect(script).not.toContain("--mode existing");
+    expect(script).not.toContain("--username");
   });
 });
 

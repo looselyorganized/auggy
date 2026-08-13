@@ -70,7 +70,6 @@ import {
   readRequestBodyText,
   RequestBodyTooLargeError,
 } from "../request-body";
-import { handleMailDetailProxy } from "./mail-detail-proxy";
 
 const AUGGY_VERSION = readPackageVersion();
 
@@ -565,14 +564,6 @@ async function dispatchAdminRoute(req: Request, ctx: AdminRouteContext): Promise
     return handleConsoleVisitorIdentity(req, ctx, agentName);
   }
 
-  // Creator-authenticated AgentMail detail proxy -------------------------
-  // Console sessions are intentionally scoped to /console. Resolve the
-  // narrow, canonical AgentMail detail surface through a loopback bearer
-  // fetch so the browser never receives the permanent credential.
-  if (url.pathname === "/console/api/mail-detail") {
-    return handleMailDetailProxy(req, ctx);
-  }
-
   // Chat SSE proxy --------------------------------------------------------
   if (req.method === "POST" && url.pathname === "/console/api/chat") {
     return handleChatProxy(req, ctx, agentName);
@@ -748,13 +739,6 @@ async function handleLogoutPost(
 function adminBodyLimit(pathname: string): number {
   if (pathname === "/console/logout") return 4 * 1024;
   if (pathname.startsWith("/console/action/")) {
-    const segments = pathname.split("/");
-    // A valid 1 MiB UTF-8 revision may expand to roughly 3 MiB when form
-    // encoded. Keep the larger authenticated bound specific to this action;
-    // every other admin action retains the tighter generic limit.
-    if (segments[3] === "agentmail-review-revise" || segments[4] === "agentmail-review-revise") {
-      return 4 * 1024 * 1024;
-    }
     return 64 * 1024;
   }
   if (pathname === "/console/api/chat") return 17 * 1024 * 1024;

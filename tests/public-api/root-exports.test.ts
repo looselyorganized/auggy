@@ -3,6 +3,8 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { telegramTransport } from "../../src";
 import type {
+  AgentMailInboundRateLimitOptions,
+  AgentMailNotificationOptions,
   TelegramAsyncReplayStore,
   TelegramReplayClaim,
   TelegramReplayClaimOptions,
@@ -15,6 +17,20 @@ interface PackageJson {
 }
 
 describe("public package exports", () => {
+  test("exports the complete public AgentMail configuration boundary", () => {
+    const inboundRateLimit = {
+      globalMaxPerHour: 100,
+      perSenderMaxPerHour: 5,
+    } satisfies AgentMailInboundRateLimitOptions;
+    const notifications = {
+      destination: "creator",
+      maxAttempts: 3,
+    } satisfies AgentMailNotificationOptions;
+
+    expect(inboundRateLimit.perSenderMaxPerHour).toBe(5);
+    expect(notifications.destination).toBe("creator");
+  });
+
   test("does not export generated route-client helpers from the package", () => {
     const root = process.cwd();
     const indexSource = readFileSync(join(root, "src", "index.ts"), "utf8");

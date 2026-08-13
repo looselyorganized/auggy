@@ -60,8 +60,8 @@ The candidate includes:
 - Portable Auggy builder skill sources and evals for coding-agent guidance.
 - Basic `auggy augment create <name>` scaffolding with a typed tool, test, and
   optional skill.
-- Durable AgentMail inbound catch-up, outbound review, reconciliation, and
-  persistent-volume admission.
+- Provider-native AgentMail reply drafts, WebSocket wake-up, offline message
+  catch-up, exact-key connection, and persistent-volume admission.
 - Repository-wide security remediation, bounded turn scheduling, Telegram
   conflict recovery, and complete tracked-test inventory enforcement.
 - A fail-closed PostgreSQL coordination foundation that remains disabled until
@@ -112,8 +112,10 @@ querying SQLite or reading logs by hand.
 Goal: build on the durable AgentMail channel shape without widening the runtime
 faster than its audit and recovery model.
 
-- Operational soak and provider-compatibility testing for AgentMail polling,
-  WebSocket, Svix webhook, durable catch-up, and outbound reconciliation.
+- Operational soak and provider-compatibility testing for AgentMail WebSockets,
+  durable message catch-up, provider-native drafts, and send reconciliation.
+- A verified webhook or provider event-history path if AgentMail exposes the
+  message-addressable delivery-lifecycle replay needed for offline recovery.
 - Additional webhook verifiers after Stripe and Svix, likely GitHub.
 - Provider recipes for common app auth bridges beyond the current Supabase and
   Clerk examples.

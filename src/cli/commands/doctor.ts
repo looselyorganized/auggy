@@ -18,6 +18,12 @@ import { AUGMENT_CATALOG } from "../augment-catalog";
 import { augmentFolderForType } from "../scaffold-skills";
 import { parseEnvFile } from "../env-parse";
 import { diagnoseMcpConfig } from "../mcp-config";
+import {
+  agentMailCapabilityRequirements,
+  buildAgentMailRequiredPermissions,
+  describeAgentMailCapabilities,
+} from "../agentmail-capabilities";
+import { validateAgentMailConfig } from "../../augments/agentMail/config";
 import { describeEnginePricing, hasUsdBudgetCaps } from "../model-registry";
 import {
   MODEL_SNAPSHOT_RELATIVE_PATH,
@@ -101,6 +107,14 @@ export async function runDoctor(
   checks.push(checkPackageManifest(agentDir));
   checks.push(...checkConfigEnvReferences(configPath, agentDir));
   checks.push(...checkLearnedBehaviorFiles(agentDir, config));
+  checks.push(
+    ...checkUnsupportedAgentMailState(
+      agentDir,
+      config,
+      opts.cloud ? process.env.RAILWAY_VOLUME_MOUNT_PATH : undefined,
+    ),
+  );
+  checks.push(...checkAgentMailPolicy(config));
   checks.push(...checkProviderEnv(agentDir, config));
   checks.push(...checkAgentDependencies(agentDir, config));
   checks.push(...checkRuntimeSource(agentDir));
@@ -112,6 +126,72 @@ export async function runDoctor(
   checks.push(...checkMcp(agentDir, config, opts.cloud ?? false));
 
   return checks;
+}
+
+export function checkAgentMailPolicy(config: ParsedConfig): DoctorCheck[] {
+  return config.augments.flatMap((augment) => {
+    if (augment.type !== "agentMail") return [];
+    const options = augment.options ?? {};
+    const validated = validateAgentMailConfig(options);
+    const requirements = agentMailCapabilityRequirements(validated);
+    const permissions = Object.keys(buildAgentMailRequiredPermissions(requirements)).join(", ");
+    const capabilities = describeAgentMailCapabilities(requirements).join("; ");
+    return [
+      {
+        name: `AgentMail policy ${augment.name}`,
+        status: "pass" as const,
+        message: `receive/triage ${requirements.inboundEnabled ? "enabled" : "disabled"}; reviewed reply drafts ${requirements.reviewReplies ? "enabled" : "disabled"}; enabled operations: ${capabilities}; required key permissions: ${permissions}`,
+        fix: "In AgentMail Console, grant these permissions to the operator-supplied key for this inbox. Auggy verifies and uses that exact key; it does not create, rotate, exchange, or narrow it.",
+      },
+    ];
+  });
+}
+
+export function checkUnsupportedAgentMailState(
+  agentDir: string,
+  config: ParsedConfig,
+  runtimeDataRoot?: string,
+): DoctorCheck[] {
+  if (!config.augments.some((augment) => augment.type === "agentMail")) return [];
+  const legacyNames = [
+    "agent-mail.db",
+    "agent-mail.db-wal",
+    "agent-mail.db-shm",
+    "agent-mail.db-journal",
+    "agent-mail-state.json",
+    "agent-mail-reviews.json",
+  ];
+  const candidateDirs = [
+    { absolute: agentDir, relative: "" },
+    ...config.augments
+      .filter((augment) => augment.type === "agentMail")
+      .map((augment) => ({
+        absolute: join(agentDir, "data", "agent-mail", augment.name),
+        relative: join("data", "agent-mail", augment.name),
+      })),
+    ...(runtimeDataRoot
+      ? config.augments
+          .filter((augment) => augment.type === "agentMail")
+          .map((augment) => ({
+            absolute: join(runtimeDataRoot, "agent-mail", augment.name),
+            relative: join(runtimeDataRoot, "agent-mail", augment.name),
+          }))
+      : []),
+  ];
+  const legacy = candidateDirs.flatMap(({ absolute, relative }) =>
+    legacyNames
+      .filter((name) => existsSync(join(absolute, name)))
+      .map((name) => (relative ? join(relative, name) : name)),
+  );
+  if (legacy.length === 0) return [];
+  return [
+    {
+      name: "AgentMail old state",
+      status: "fail",
+      message: `unsupported pre-rebuild state: ${legacy.join(", ")}`,
+      fix: "Stop the agent. Inspect and archive these artifacts outside the agent project, then remove them explicitly. Auggy will not read, migrate, or delete them.",
+    },
+  ];
 }
 
 function checkModelSnapshot(agentDir: string, config: ParsedConfig): DoctorCheck[] {

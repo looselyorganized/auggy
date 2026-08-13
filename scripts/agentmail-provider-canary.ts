@@ -1,45 +1,27 @@
 import {
-  AgentMailProvisioningApiError,
-  AgentMailProvisioningResponseError,
-  AgentMailProvisioningTransportError,
-  buildAgentMailClientId,
-  createAgentMailProvisioningClient,
-  type AgentMailProvisioningClient,
-} from "../src/cli/agentmail-provisioning";
-import {
-  AgentMailProviderRequestError,
-  createAgentMailSdkAdapters,
-  type AgentMailSdkAdapters,
-  type AgentMailSdkProviderOptions,
-} from "../src/augments/agentMail/sdk-provider";
-import { AgentMailPayloadError } from "../src/augments/agentMail/provider";
+  AgentMailProviderError,
+  createAgentMailProvider,
+  type AgentMailProvider,
+} from "../src/augments/agentMail/provider";
 
-/**
- * Protected real-provider canary for the existing-account AgentMail flow.
- *
- * This identity is intentionally stable. The first approved run creates one
- * persistent canary inbox in the configured AgentMail account; later runs
- * reuse it through client_id idempotency. Each run uses the protected supplied
- * key unchanged for the same inbox-create and account-inventory reads used by
- * CLI setup, then exercises the shipped runtime REST and WebSocket adapters.
- * The canary never sends mail or creates, lists, deletes, or replaces API keys.
- */
-const CANARY_AGENT_ID = "aug1_7d2c91f4-8a65-4f0b-9c3d-5e6f708192ab";
-const CANARY_TARGET = "agentMail" as const;
-const CANARY_CLIENT_ID = "auggy.v1.inbox.aug1_7d2c91f4-8a65-4f0b-9c3d-5e6f708192ab.agentMail";
-const CANARY_USERNAME = "auggy-release-canary-7d2c91f4";
-const CANARY_EMAIL = "auggy-release-canary-7d2c91f4@agentmail.to";
-const CANARY_DISPLAY_NAME = "Auggy release provider canary";
 const API_KEY_ENV = "AGENTMAIL_API_KEY";
-const RUNTIME_EVENT_TYPES = ["message.received"] as const;
-const SDK_TIMEOUT_MS = 15_000;
-const RUNTIME_TIMEOUT_MS = 20_000;
-const CLOSE_TIMEOUT_MS = 5_000;
+const INBOX_ID_ENV = "AGENTMAIL_CANARY_INBOX_ID";
+const INBOX_EMAIL_ENV = "AGENTMAIL_CANARY_INBOX_EMAIL";
+const OPERATION_TIMEOUT_MS = 20_000;
+const LIVE_OBSERVATION_MS = 500;
+
+type ReadOnlyCanaryProvider = Pick<
+  AgentMailProvider,
+  "verifyAccess" | "listMessages" | "listDrafts" | "connect"
+>;
 
 export interface AgentMailCanaryDependencies {
   apiKey?: string;
-  provisioner?: Pick<AgentMailProvisioningClient, "createInbox" | "listInboxes">;
-  createSdkAdapters?: (options: AgentMailSdkProviderOptions) => AgentMailSdkAdapters;
+  inboxId?: string;
+  inboxEmail?: string;
+  createProvider?: (input: { apiKey: string; inboxId: string }) => ReadOnlyCanaryProvider;
+  observeLiveMs?: number;
+  operationTimeoutMs?: number;
 }
 
 class AgentMailCanaryError extends Error {
@@ -49,203 +31,157 @@ class AgentMailCanaryError extends Error {
   }
 }
 
+/**
+ * Exercise a pre-provisioned inbox using the exact protected runtime key.
+ *
+ * This canary is intentionally read-only. It does not sign up, create an
+ * inbox, create or rotate a key, create a draft, or send mail. Mutation
+ * semantics remain covered by deterministic provider-contract tests.
+ */
 export async function runAgentMailProviderCanary(
   dependencies: AgentMailCanaryDependencies = {},
 ): Promise<void> {
-  const apiKey = dependencies.apiKey ?? readApiKey();
-  const derivedClientId = buildAgentMailClientId(CANARY_AGENT_ID, CANARY_TARGET);
-  if (derivedClientId !== CANARY_CLIENT_ID) {
-    throw new AgentMailCanaryError(
-      "The AgentMail client_id contract changed; refusing to create another persistent canary inbox.",
-    );
-  }
-  const provisioner = dependencies.provisioner ?? createAgentMailProvisioningClient();
-  const request = {
-    apiKey,
-    username: CANARY_USERNAME,
-    displayName: CANARY_DISPLAY_NAME,
-    clientId: CANARY_CLIENT_ID,
-    metadata: {
-      source: "auggy-provider-canary",
-      agent: "release-canary",
-      augment: CANARY_TARGET,
-    },
-  };
+  const apiKey = readSecret(dependencies.apiKey, API_KEY_ENV);
+  const inboxId = readIdentifier(dependencies.inboxId, INBOX_ID_ENV);
+  const expectedEmail = readEmail(dependencies.inboxEmail, INBOX_EMAIL_ENV);
+  const provider = (dependencies.createProvider ?? createAgentMailProvider)({ apiKey, inboxId });
+  const operationTimeoutMs = dependencies.operationTimeoutMs ?? OPERATION_TIMEOUT_MS;
 
-  // Sequential duplicate creates prove retry behavior without creating a
-  // race. Do not log either response: inbox identifiers and addresses are not
-  // needed in Actions output.
-  const first = await provisioner.createInbox(request);
-  const second = await provisioner.createInbox(request);
-
-  if (first.inboxId !== second.inboxId) {
-    throw new AgentMailCanaryError(
-      "AgentMail returned different inboxes for the stable canary client_id.",
-    );
-  }
-  if (first.email !== second.email) {
-    throw new AgentMailCanaryError(
-      "AgentMail returned different addresses for the stable canary client_id.",
-    );
-  }
-  if (first.email !== CANARY_EMAIL) {
-    throw new AgentMailCanaryError(
-      "AgentMail returned an unexpected address for the fixed canary username.",
-    );
-  }
-  if (!provisioner.listInboxes) {
-    throw new AgentMailCanaryError(
-      "The AgentMail inbox ownership-list contract is unavailable; refusing to continue.",
-    );
-  }
-  const listedInboxes = await provisioner.listInboxes(apiKey);
-  const ownedMatches = listedInboxes.filter(
-    (inbox) =>
-      inbox.inboxId === first.inboxId &&
-      inbox.email === CANARY_EMAIL &&
-      inbox.clientId === CANARY_CLIENT_ID,
+  const identity = await withTimeout(
+    (signal) => provider.verifyAccess(signal),
+    operationTimeoutMs,
+    "credential scope and inbox access",
   );
-  if (ownedMatches.length !== 1) {
+  if (identity.configuredInboxId !== inboxId || identity.emailAddress !== expectedEmail) {
     throw new AgentMailCanaryError(
-      "The AgentMail account inventory did not contain exactly one matching fixed canary inbox/client_id.",
+      "AgentMail returned an inbox identity that does not match the protected canary configuration.",
     );
   }
 
-  const createAdapters = dependencies.createSdkAdapters ?? createAgentMailSdkAdapters;
-  const adapters = createAdapters({
-    apiKey,
-    timeoutMs: SDK_TIMEOUT_MS,
-    handshakeTimeoutMs: SDK_TIMEOUT_MS,
-    connectionTimeoutMs: SDK_TIMEOUT_MS,
-  });
+  await withTimeout(
+    (signal) => provider.listMessages({ limit: 1 }, signal),
+    operationTimeoutMs,
+    "bounded message-read probe",
+  );
+  await withTimeout(
+    (signal) => provider.listDrafts({ limit: 1 }, signal),
+    operationTimeoutMs,
+    "bounded draft-read probe",
+  );
 
-  // Exercise the shipped runtime REST normalizer without fetching message
-  // bodies or performing a provider mutation.
-  try {
-    await adapters.catchUp.listMessages({
-      inboxId: first.inboxId,
-      limit: 1,
-      processedEventTypes: [...RUNTIME_EVENT_TYPES],
-    });
-  } catch (error) {
-    throw classifyRuntimeFailure("REST message-list", error);
-  }
-
-  let subscription: Awaited<ReturnType<AgentMailSdkAdapters["live"]["subscribe"]>> | undefined;
-  let subscriptionAcknowledged = false;
-  let liveErrorObserved = false;
-  let closeStarted = false;
-  let failure: unknown;
+  let liveError: AgentMailProviderError | undefined;
+  let liveClosed = false;
+  let subscription: Awaited<ReturnType<ReadOnlyCanaryProvider["connect"]>> | undefined;
   try {
     subscription = await withTimeout(
-      adapters.live.subscribe({
-        inboxId: first.inboxId,
-        eventTypes: [...RUNTIME_EVENT_TYPES],
-        async onSubscribed({ reconnected }) {
-          if (!reconnected) subscriptionAcknowledged = true;
-        },
-        async onEvent() {
-          // Never log message data if a passive event arrives during the handshake check.
-        },
-        onError() {
-          liveErrorObserved = true;
-        },
-      }),
-      RUNTIME_TIMEOUT_MS,
-      "runtime WebSocket subscription",
+      (signal) =>
+        provider.connect(
+          {
+            onEvent() {
+              // Passive events may arrive during the bounded observation window.
+              // Do not log or retain provider message data.
+            },
+            onClose() {
+              liveClosed = true;
+            },
+            onError(error) {
+              liveError = error;
+            },
+          },
+          signal,
+        ),
+      operationTimeoutMs,
+      "WebSocket connection and inbox subscription",
+      (lateSubscription) => lateSubscription.close(),
     );
-    closeStarted = true;
-    await withTimeout(subscription.close(), CLOSE_TIMEOUT_MS, "runtime WebSocket close");
-    await withTimeout(subscription.closed, CLOSE_TIMEOUT_MS, "runtime WebSocket closed signal");
-    subscription = undefined;
-  } catch (error) {
-    failure = error;
-  } finally {
-    if (subscription && !closeStarted) {
-      try {
-        closeStarted = true;
-        await withTimeout(subscription.close(), CLOSE_TIMEOUT_MS, "runtime WebSocket cleanup");
-        await withTimeout(
-          subscription.closed,
-          CLOSE_TIMEOUT_MS,
-          "runtime WebSocket cleanup signal",
-        );
-      } catch (cleanupError) {
-        failure ??= cleanupError;
-      }
+    await Bun.sleep(dependencies.observeLiveMs ?? LIVE_OBSERVATION_MS);
+    if (liveError) throw liveError;
+    if (liveClosed) {
+      throw new AgentMailCanaryError(
+        "The AgentMail WebSocket closed during the bounded live-read probe.",
+      );
     }
-  }
-  if (failure) throw classifyRuntimeFailure("WebSocket subscription", failure);
-  if (!subscriptionAcknowledged) {
-    throw new AgentMailCanaryError(
-      "The AgentMail runtime WebSocket did not acknowledge the canary subscription.",
-    );
-  }
-  if (liveErrorObserved) {
-    throw new AgentMailCanaryError(
-      "The AgentMail runtime WebSocket reported an error during the canary subscription.",
-    );
+  } finally {
+    subscription?.close();
   }
 
-  console.log("AgentMail provider canary passed: stable client_id reused one inbox.");
-  console.log("The exact protected AGENTMAIL_API_KEY passed runtime REST and WebSocket checks.");
+  console.log("AgentMail provider canary passed for the pre-provisioned inbox.");
   console.log(
-    "No mail was sent and no AgentMail API key was created, listed, deleted, or replaced.",
+    "The exact protected runtime key passed scope, inbox, message-read, draft-read, and WebSocket checks.",
   );
+  console.log("No AgentMail resource was created, changed, sent, or deleted.");
 }
 
-function readApiKey(): string {
-  const value = process.env[API_KEY_ENV];
-  if (!value) {
+function readSecret(explicit: string | undefined, envName: string): string {
+  const value = explicit ?? process.env[envName];
+  if (!value || !/^[\x21-\x7e]{1,4096}$/.test(value)) {
     throw new AgentMailCanaryError(
-      `${API_KEY_ENV} is required from the protected GitHub Environment.`,
+      `${envName} is required from the protected GitHub Environment and must be a non-empty ASCII token.`,
     );
-  }
-  if (!/^[\x21-\x7e]{1,4096}$/.test(value)) {
-    throw new AgentMailCanaryError(`${API_KEY_ENV} is malformed.`);
   }
   return value;
 }
 
+function readIdentifier(explicit: string | undefined, envName: string): string {
+  const value = explicit ?? process.env[envName];
+  if (!value || !/^[\x21-\x7e]{1,256}$/.test(value)) {
+    throw new AgentMailCanaryError(
+      `${envName} is required from the protected GitHub Environment and must be a non-empty identifier.`,
+    );
+  }
+  return value;
+}
+
+function readEmail(explicit: string | undefined, envName: string): string {
+  const value = readIdentifier(explicit, envName);
+  const at = value.lastIndexOf("@");
+  if (at <= 0 || at === value.length - 1 || value.includes(" ")) {
+    throw new AgentMailCanaryError(`${envName} must be the canonical email for the canary inbox.`);
+  }
+  return value.toLowerCase();
+}
+
 async function withTimeout<T>(
-  promise: Promise<T>,
+  start: (signal: AbortSignal) => Promise<T>,
   timeoutMs: number,
-  operation: string,
+  label: string,
+  disposeLateResult?: (value: T) => void,
 ): Promise<T> {
+  const controller = new AbortController();
+  let timedOut = false;
   let timer: ReturnType<typeof setTimeout>;
+  const operation = start(controller.signal);
+  void operation.then(
+    (value) => {
+      if (!timedOut || !disposeLateResult) return;
+      try {
+        disposeLateResult(value);
+      } catch {
+        // A timed-out operation is already reported. Late cleanup is best effort
+        // and must not become an unhandled rejection in the canary process.
+      }
+    },
+    () => undefined,
+  );
   return Promise.race([
-    promise,
+    operation,
     new Promise<never>((_, reject) => {
-      timer = setTimeout(
-        () => reject(new AgentMailCanaryError(`Timed out waiting for ${operation}.`)),
-        timeoutMs,
-      );
+      timer = setTimeout(() => {
+        timedOut = true;
+        controller.abort(new DOMException(`Timed out waiting for ${label}.`, "TimeoutError"));
+        reject(new AgentMailCanaryError(`Timed out waiting for ${label}.`));
+      }, timeoutMs);
     }),
   ]).finally(() => clearTimeout(timer));
 }
 
 function safeCanaryFailure(error: unknown): string {
-  if (error instanceof AgentMailProvisioningApiError) {
-    return `AgentMail ${error.operation} failed with HTTP ${error.status}.`;
+  if (error instanceof AgentMailProviderError) {
+    const status = error.details.httpStatus ? ` (HTTP ${error.details.httpStatus})` : "";
+    return `${error.details.operation} failed: ${error.details.code}${status}. ${error.details.nextAction}`;
   }
-  if (error instanceof AgentMailProviderRequestError) return error.message;
-  if (
-    error instanceof AgentMailCanaryError ||
-    error instanceof AgentMailProvisioningResponseError ||
-    error instanceof AgentMailProvisioningTransportError
-  ) {
-    return error.message;
-  }
+  if (error instanceof AgentMailCanaryError) return error.message;
   return "Unexpected failure; details were suppressed to protect provider credentials and responses.";
-}
-
-function classifyRuntimeFailure(operation: string, error: unknown): unknown {
-  if (error instanceof AgentMailPayloadError) {
-    return new AgentMailCanaryError(
-      `The AgentMail runtime ${operation} payload did not satisfy the shipped adapter contract.`,
-    );
-  }
-  return error;
 }
 
 if (import.meta.main) {

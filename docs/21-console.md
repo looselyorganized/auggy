@@ -23,17 +23,16 @@ Primary surfaces:
 - Mail action center, present only when AgentMail reports a supported
   metadata projection
   - One explicit mailbox selector when multiple instances are mounted
-  - Inbox address, inbound/runtime posture, pending review, and
-    creator-attention queues
+  - Inbox address, inbound/runtime posture, reply policy, rate limits, and
+    provider-native draft references
   - **Open in AgentMail** for the selected mailbox, using the provider's
     credential-free Console entry point; the selected inbox address and ID
     remain visible because AgentMail does not document an inbox-specific URL
-  - Creator-authenticated, on-demand detail drawers for message and
-    queued-proposal content; bodies and approval fingerprints are not embedded
-    in the dashboard snapshot
-  - Row-bound approve/send, revise/send, reject, and dismiss decisions, plus
-    explicit sent/not-sent and handled/no-effect reconciliation for ambiguous
-    outcomes, with stale-state handling
+  - Exact prompts for showing, revising, and explicitly sending the same draft
+    through Chat
+  - No message body, draft editor, send button, or parallel inbox; editable
+    draft content remains in AgentMail and conversational mutations use the
+    creator-authorized runtime tools
 - Integrations view organized by caller
   - **Browser application** first, with posture-aware authentication guidance,
     a browser-safe AG-UI example, CORS state, and browser-callable app routes
@@ -231,17 +230,17 @@ dashboard contains at least one supported AgentMail projection.
 `/console/api/dashboard` returns the agent card, agent metadata, augment
 summaries, tool inventory, web posture state, the live route manifest
 summary/entries, target-aware CSRF tokens, skill snapshots, and admin blocks.
-AgentMail blocks may add a versioned `projection.kind: "mail"` list view.
-That projection is intentionally content-minimized: it can contain bounded
-sender/correspondent, subject, timestamps, status, and same-origin detail
-paths, plus the fixed `https://console.agentmail.to` provider entry point. The
+AgentMail blocks may add a `projection.kind: "mail"` list view. That
+projection is intentionally content-minimized: it can contain inbox/runtime
+status, bounded policy metadata, provider message/thread/draft identifiers,
+draft state and provider timestamps, plus the fixed
+`https://console.agentmail.to` provider entry point. The
 Console accepts that external link only when its origin, path, credentials,
 query, and fragment match the exact credential-free contract. It never derives
 the destination from `apiBaseUrl` or appends an API key, Console token, message
 body, review identifier, or approval data. The projection cannot contain a
-message body, queued-proposal body, HTML, or approval fingerprint.
-Detail endpoints require creator authentication and return `Cache-Control:
-no-store`.
+sender, recipient, subject, message body, draft body, HTML, client id, send key,
+or approval fingerprint.
 
 Skill snapshots report content provenance separately from installation state
 and owning augment:

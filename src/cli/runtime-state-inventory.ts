@@ -100,6 +100,51 @@ export function mutableFileMemoryRuntimePath(runtimeDataRoot: string, augmentNam
   return join(resolve(runtimeDataRoot), "file-memory", `${augmentName}.md`);
 }
 
+/**
+ * Resolve the AgentMail orchestration ledger exactly as the runtime does.
+ * The generated local-project path maps to the instance-owned volume leaf;
+ * it must not be nested beneath that same namespace a second time.
+ */
+export function agentMailOrchestrationRuntimePath(options: {
+  configuredPath?: string;
+  augmentName: string;
+  agentDir: string;
+  runtimeDataRoot?: string;
+}): string {
+  const { augmentName, agentDir, runtimeDataRoot } = options;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(augmentName)) {
+    throw new Error(`[runtime-state] agentMail name "${augmentName}" is not a safe namespace`);
+  }
+  const localDefault = `./data/agent-mail/${augmentName}/orchestration.db`;
+  const configuredPath = options.configuredPath ?? localDefault;
+  if (!runtimeDataRoot) {
+    return resolveRuntimeStatePath(
+      configuredPath,
+      agentDir,
+      undefined,
+      `agentMail ${augmentName} dbPath`,
+    );
+  }
+  if (isAbsolute(configuredPath)) {
+    throw new Error(
+      `[runtime-state] agentMail ${augmentName} dbPath must be relative to its owned state directory`,
+    );
+  }
+
+  const stateDir = resolve(runtimeDataRoot, "agent-mail", augmentName);
+  const relativePath =
+    resolve(agentDir, configuredPath) === resolve(agentDir, localDefault)
+      ? "orchestration.db"
+      : configuredPath;
+  const target = resolve(stateDir, relativePath);
+  if (!isContained(stateDir, target) || target === stateDir) {
+    throw new Error(
+      `[runtime-state] agentMail ${augmentName} dbPath must stay within its owned state directory`,
+    );
+  }
+  return target;
+}
+
 function stableJson(value: unknown): string {
   if (
     value === null ||
@@ -285,9 +330,6 @@ export function buildRuntimeStateInventory(
   const stores: RuntimeStateStoreInventoryEntry[] = [];
   const externalPrerequisites: RuntimeStateExternalPrerequisite[] = [];
   const namespace = config.id;
-  const agentMailInstanceCount = config.augments.filter(
-    (augment) => augment.type === "agentMail",
-  ).length;
 
   addStore(stores, {
     id: "runtime-identity",
@@ -656,83 +698,31 @@ export function buildRuntimeStateInventory(
         break;
       }
       case "agentMail": {
-        if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(augment.name)) {
-          throw new Error(
-            `[runtime-state] agentMail name "${augment.name}" is not a safe namespace`,
-          );
-        }
-        const stateDir = runtimeDataRoot
-          ? join(runtimeDataRoot, "agent-mail", augment.name)
-          : agentMailInstanceCount > 1
-            ? join(agentDir, "data", "agent-mail", augment.name)
-            : agentDir;
-        const path = runtimeDataRoot
-          ? resolveRuntimeStatePath(
-              String(opts.dbPath ?? "./agent-mail.db"),
-              stateDir,
-              stateDir,
-              `agentMail ${augment.name} dbPath`,
-            )
-          : agentMailInstanceCount > 1 && opts.dbPath === undefined
-            ? resolveRuntimeStatePath(
-                "./agent-mail.db",
-                stateDir,
-                ownedStateRoot,
-                `agentMail ${augment.name} dbPath`,
-              )
-            : resolveRuntimeStatePath(
-                String(opts.dbPath ?? "./agent-mail.db"),
-                agentDir,
-                ownedStateRoot,
-                `agentMail ${augment.name} dbPath`,
-              );
+        const path = agentMailOrchestrationRuntimePath({
+          ...(opts.dbPath === undefined ? {} : { configuredPath: String(opts.dbPath) }),
+          augmentName: augment.name,
+          agentDir,
+          ...(runtimeDataRoot === undefined ? {} : { runtimeDataRoot }),
+        });
         addStore(
           stores,
           sqliteEntry({
-            id: `agentmail-ledger:${augment.name}`,
+            id: `agentmail-orchestration:${augment.name}`,
             owner,
-            namespace,
+            namespace: `agentmail:${augment.name}`,
             path,
             runtimeDataRoot,
-            schema: "AMIL/v5",
-            retention:
-              "terminal inbound work, bounded content-free policy tombstones, fail-closed rejection filter, quota aggregates, and unresolved creator-digest batches retained according to ledger policy",
-            restoreOrder: 50,
+            schema: "AMOR/v1",
+            retention: "orchestration identifiers and replay evidence until operator maintenance",
+            restoreOrder: 55,
             replayCritical: true,
-            required:
-              ((opts.inbound as Record<string, unknown> | undefined)?.mode ?? "none") !== "none",
           }),
         );
-        for (const [filename, schema] of [
-          ["agent-mail-state.json", "agent-mail-rate/v2"],
-          ["agent-mail-reviews.json", "agent-mail-reviews/v1"],
-        ] as const) {
-          addStore(stores, {
-            id: `${schema}:${augment.name}`,
-            owner,
-            namespace,
-            kind: "json",
-            backupPlane: runtimeDataRoot ? "runtime-volume" : "project-source",
-            ...(runtimeDataRoot
-              ? {
-                  relativePath: runtimeVolumeRelativePath(
-                    runtimeDataRoot,
-                    join(stateDir, filename),
-                    `${schema}:${augment.name}`,
-                  ),
-                }
-              : {}),
-            schema,
-            retention: "bounded runtime policy; ambiguous attempts retained for reconciliation",
-            restoreOrder: 50,
-            replayCritical: true,
-            required: false,
-          });
-        }
         externalPrerequisites.push({
           id: `agentmail-provider:${augment.name}`,
           owner,
-          reason: "the provider mailbox and already-sent messages are outside the runtime volume",
+          reason:
+            "AgentMail owns the provider mailbox, messages, threads, drafts, and delivery state",
         });
         break;
       }

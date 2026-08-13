@@ -15,10 +15,8 @@ import { Database } from "bun:sqlite";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSqliteTelegramReplayStore } from "../../src/augments/telegramTransport/replay-store";
-import { createAgentMailReviewQueue } from "../../src/augments/agentMail/review-queue";
 import {
   assertNoRuntimeStateRestoreFence,
-  assertRuntimeStateRestoreCompatibility,
   admitRuntimeStateIdentity,
   createRuntimeStateBundle,
   readRuntimeStateRestoreFence,
@@ -108,24 +106,7 @@ function seedReplayState(root: string) {
   expect(telegram.claim("agent:telegram", 7, "b".repeat(64))).toBe("claimed");
   expect(telegram.claim("agent:telegram", 7, "c".repeat(64))).toBe("conflict");
   telegram.close?.();
-  const mailDir = join(root, "agent-mail", "support");
-  mkdirSync(mailDir, { recursive: true, mode: 0o700 });
-  const reviews = createAgentMailReviewQueue({
-    stateDir: mailDir,
-    now: () => 100,
-    id: () => "review-1",
-  });
-  reviews.enqueue({
-    trustLevel: "public",
-    recipients: ["customer@example.com"],
-    subject: "Order update",
-    rateKey: "order-update",
-    fingerprint: "same-reviewed-send",
-    request: { kind: "reply", messageId: "message-1", text: "Shipped" },
-    expiresAt: 1_000,
-  });
-  reviews.beginApproval("review-1");
-  return { completeKey, completeBinding, unknownKey, unknownBinding, mailDir };
+  return { completeKey, completeBinding, unknownKey, unknownBinding };
 }
 
 describe("runtime state bundle", () => {
@@ -186,23 +167,6 @@ describe("runtime state bundle", () => {
     });
     expect(restoredTelegram.claim("agent:telegram", 8, "d".repeat(64))).toBe("quarantined");
     restoredTelegram.close?.();
-    const restoredReviews = createAgentMailReviewQueue({
-      stateDir: join(restored, "agent-mail", "support"),
-      now: () => 200,
-    });
-    expect(restoredReviews.get("review-1")?.state).toBe("sending");
-    expect(() =>
-      restoredReviews.enqueue({
-        trustLevel: "public",
-        recipients: ["customer@example.com"],
-        subject: "Order update",
-        rateKey: "order-update",
-        fingerprint: "same-reviewed-send",
-        request: { kind: "reply", messageId: "message-1", text: "Shipped" },
-        expiresAt: 1_000,
-      }),
-    ).toThrow("operator reconciliation is required");
-
     expect(() =>
       reconcileRuntimeStateRestore({
         runtimeDataRoot: restored,
@@ -388,29 +352,6 @@ describe("runtime state bundle", () => {
     expect(existsSync(destination)).toBe(false);
   });
 
-  test("verifies AMIL/v4 bundles but preserves the exact cross-version restore boundary", () => {
-    const paths = fixture();
-    const bundledInventory = inventory();
-    bundledInventory.stores[0]!.id = "agentmail-ledger:support";
-    bundledInventory.stores[0]!.owner = "augment:agentMail";
-    bundledInventory.stores[0]!.relativePath = "agent-mail/support/inbound-ledger.sqlite";
-    bundledInventory.stores[0]!.schema = "AMIL/v4";
-    const bundlePath = join(paths.backups, "agentmail-v4.auggy-state");
-    createRuntimeStateBundle({
-      sourceRoot: paths.source,
-      bundlePath,
-      inventory: bundledInventory,
-      confirmStopped: true,
-    });
-    expect(verifyRuntimeStateBundle(bundlePath).inventory.stores[0]?.schema).toBe("AMIL/v4");
-
-    const currentInventory = structuredClone(bundledInventory);
-    currentInventory.stores[0]!.schema = "AMIL/v5";
-    expect(() =>
-      assertRuntimeStateRestoreCompatibility(bundledInventory, currentInventory),
-    ).toThrow("replay-critical state topology is incompatible");
-  });
-
   test("rejects wrong declared SQLite identity and bounded byte overflow", () => {
     const paths = fixture();
     const foreign = new Database(join(paths.source, "web-idempotency.db"));
@@ -456,11 +397,9 @@ describe("runtime state bundle", () => {
     expect(readdirSync(paths.backups)).toEqual([]);
   });
 
-  test("admits exact legacy inventory identities, including historical AMIL labels", () => {
+  test("admits exact supported legacy inventory identities", () => {
     const paths = fixture();
     for (const [filename, schema, applicationId, userVersion] of [
-      ["agent-mail-v2-label.db", "AMIL/v2", 0x414d494c, 3],
-      ["agent-mail-v4.db", "AMIL/v4", 0x414d494c, 4],
       ["notify-v1.db", "NTFY/v1", 0x4e544659, 1],
     ] as const) {
       const db = new Database(join(paths.source, filename));

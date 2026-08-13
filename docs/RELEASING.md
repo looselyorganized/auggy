@@ -100,37 +100,40 @@ than claiming the release gate passed.
 ### AgentMail provider canary gate
 
 The manual `agentmail-provider-canary.yml` workflow verifies the real
-existing-account provisioning contract without making a PR check depend on an
+pre-provisioned-inbox runtime read path without making a PR check depend on an
 external paid service. Before its first use:
 
 1. Create the protected `agentmail-provider-canary` GitHub Environment.
 2. Allow deployments from `main` only and require a reviewer.
-3. Add `AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY` to that Environment only.
-   Use a dedicated key capable of creating and listing the canary inbox,
-   reading its messages, and opening its WebSocket subscription. Do not add a
-   repository-level secret with the same or unsuffixed name. The workflow maps
-   its exact value to canonical `AGENTMAIL_API_KEY` only for the canary step.
+3. Create one dedicated canary inbox in AgentMail before running the workflow.
+4. Add `AGENTMAIL_CANARY_RUNTIME_API_KEY` as an Environment secret. Use the
+   exact key Auggy should exercise at runtime, scoped to the canary inbox when
+   practical, with `inbox_read`, `message_read`, and `draft_read`. Do not add a
+   repository-level fallback. The workflow maps its exact value to canonical
+   `AGENTMAIL_API_KEY` only for the canary step.
+5. Add `AGENTMAIL_CANARY_INBOX_ID` and `AGENTMAIL_CANARY_INBOX_EMAIL` as
+   Environment variables. Both must identify that pre-provisioned inbox.
 
 Dispatch the workflow manually from canonical `looselyorganized/auggy` `main`
-only. Never run it from a PR or fork. The first approved run creates one
-persistent canary inbox; later runs submit the same stable `client_id` twice and
-must resolve that same inbox. Each run uses the protected key unchanged for
-both create requests, proves exactly one matching inbox in account inventory,
-then exercises the shipped runtime REST message-list normalizer and WebSocket
-subscribe/ack/close path. The persistent inbox is intentional. The canary
-sends no mail and never creates, lists, deletes, replaces, narrows, rotates, or
-revokes an API key. It logs neither credentials, inbox identity, message data,
-nor provider responses. A runtime error, missing subscription acknowledgement,
-or bounded-close failure is a hard failure.
+only. Never run it from a PR or fork. Each run uses the protected key unchanged
+to verify credential scope, exact inbox identity, bounded message and draft
+reads, and the shipped WebSocket connection/subscription path. The canary sends
+no mail and never signs up, creates an inbox, creates or changes a draft, or
+creates, lists, deletes, replaces, narrows, rotates, or revokes an API key. It
+logs neither credentials, inbox identity, message data, nor provider responses.
+A provider error, identity mismatch, failed bounded read, early live-connection
+close, or timeout is a hard failure. Deterministic packed-provider tests remain
+the evidence for subscription acknowledgements and mutation contracts; this
+real-provider canary is deliberately non-mutating.
 
-When a release changes AgentMail provisioning requests or responses, the
-provisioning client, or CLI setup behavior, this canary is mandatory pre-tag
-evidence. After the release PR merges to `main`, dispatch it for that exact main
+When a release changes AgentMail connection verification, CLI setup, or the
+runtime provider adapter, this canary is mandatory pre-tag evidence. After the
+release PR merges to `main`, dispatch it for that exact main
 SHA, wait for the protected-Environment approval and green result, and record
 the Actions run URL **and its `headSha`** in the merged release PR or release
 record. The release tag must point to that same SHA. If the intended tag commit
 changes, rerun the canary for the replacement SHA and replace the recorded
-evidence before tagging. For releases unrelated to AgentMail provisioning, the
+evidence before tagging. For releases unrelated to AgentMail connectivity, the
 canary remains optional. It never publishes packages or replaces the normal
 release gates.
 
@@ -281,7 +284,7 @@ cd ..
 
 ```bash
 git checkout main && git pull
-# For an AgentMail-provisioning release, this must equal the recorded green
+# For an AgentMail-connectivity release, this must equal the recorded green
 # canary run's `headSha` (inspect it with `gh run view <run-id> --json headSha`).
 git rev-parse HEAD
 git tag v<major>.<minor>.<patch>[-<prerelease>] # MUST match all package versions

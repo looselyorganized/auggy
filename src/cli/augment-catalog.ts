@@ -281,9 +281,9 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
   },
   {
     label: "Agent Mail",
-    tagline: "send and receive email through AgentMail",
+    tagline: "read, draft, send, and triage AgentMail email",
     description:
-      "Policy-gated AgentMail transport with durable polling, WebSocket, or Svix webhook inbound plus send / reply / forward tools. Inbound is disabled by default; enabling it requires an explicit allowlist or deliberately public, rate-limited sender policy.",
+      "Provider-native message, thread, draft, reply, forward, direct-delivery, retry, and reconciliation tools. Creator-authorized outbound is ready after setup. WebSocket receive and triage are disabled by default; enabling them requires an allowlist or deliberately public, rate-limited sender policy, and reviewed replies remain drafts until creator approval.",
     type: "agentMail",
     defaultName: "agentMail",
     defaultOptions: {
@@ -291,24 +291,30 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
       inboxId: "${AGENTMAIL_INBOX_ID}",
       emailAddress: "${AGENTMAIL_INBOX_EMAIL}",
       addressVisibility: "creator",
-      dbPath: "./agent-mail.db",
+      dbPath: "./data/agent-mail/agentMail/orchestration.db",
+      inbound: { mode: "none" },
+      replies: {
+        mode: "disabled",
+        allowReplyAll: false,
+      },
+      drafts: {
+        allowNew: false,
+        allowReply: false,
+        allowReplyAll: false,
+        allowForward: true,
+      },
       outbound: {
         allowedTrustLevels: ["creator"],
-        humanReview: {
-          requiredForTrustLevels: ["public"],
-          expiresAfterMs: 86_400_000,
-        },
         subjectPrefix: "[Auggy] ",
         maxRecipients: 10,
         bodyMaxBytes: 102_400,
-        allowHtml: false,
+        allowDirectDelivery: true,
         rateLimit: {
           globalMaxPerHour: 10,
           perRecipientCooldownMs: 300_000,
           dedupWindowMs: 300_000,
         },
       },
-      inbound: { mode: "none" },
     },
     required: false,
     stability: "stable",

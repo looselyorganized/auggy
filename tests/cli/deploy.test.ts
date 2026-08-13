@@ -882,7 +882,7 @@ describe("runDeploy", () => {
 
     const { cli, calls } = mockRailwayCli();
     await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
-      /augment setup agentMail[\s\S]*augment setup visitorAuth --mode env/,
+      /augment setup agentMail --mode connect[\s\S]*augment setup visitorAuth --mode env/,
     );
 
     expect(calls.checkPresence).toBe(0);
@@ -932,7 +932,7 @@ describe("runDeploy", () => {
     }
 
     expect(error?.message).toContain("inline, renamed, or additional agentMail mount");
-    expect(error?.message).toContain("Configure distinct");
+    expect(error?.message).toMatch(/Configure exact\s+AGENTMAIL_\* references/);
     expect(error?.message).not.toContain("auggy augment setup agentMail\n");
     expect(calls.checkPresence).toBe(0);
     expect(calls.up).toBe(0);

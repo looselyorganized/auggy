@@ -24,19 +24,14 @@ import { webFetch } from "../augments/webFetch";
 import { knowledgeRoot } from "../augments/knowledge";
 import { skills } from "../augments/skills";
 import { bash } from "../augments/bash";
-import { notify } from "../augments/notify";
-import { mcp } from "../augments/mcp";
-import { agentMail } from "../augments/agentMail";
-import {
-  agentMailCreatorDigestBridgeName,
-  createAgentMailCreatorDigestBridge,
-} from "../augments/agentMail/creator-digest-bridge";
-import { validateAgentMailInboundConfig } from "../augments/agentMail/inbound-policy";
+import { notify, type NotifyAugment, type NotifyDispatchHost } from "../augments/notify";
 import {
   collectNotifyDestinationPolicyBindings,
-  resolveCreatorDigestNotifyBinding,
   validateUniqueNotifyDestinationNames,
-} from "../augments/agentMail/creator-digest-policy";
+} from "../augments/notify/destination-policy";
+import { mcp } from "../augments/mcp";
+import { agentMail, type AgentMailRuntimeAugment } from "../augments/agentMail";
+import { validateAgentMailConfig } from "../augments/agentMail/config";
 import { telegramTransport } from "../augments/telegramTransport";
 import { turnControl, type TurnControlOptions } from "../augments/turnControl";
 import { visitorAuth } from "../augments/visitorAuth";
@@ -67,7 +62,10 @@ import type { AugmentConfig } from "./types";
 import type { BudgetsAugmentOptions } from "../augments/budgets";
 import { validateBundledSkills } from "./skill-validator";
 import { auggySelf, type AuggySelfAgentMetadata } from "./auggy-self-augment";
-import { mutableFileMemoryRuntimePath } from "./runtime-state-inventory";
+import {
+  agentMailOrchestrationRuntimePath,
+  mutableFileMemoryRuntimePath,
+} from "./runtime-state-inventory";
 import { assertImmutableAgentId, scopedAgentNamespace } from "./agent-isolation";
 import { compareOwnedStatePaths, resolveOwnedStatePath } from "./owned-state-path";
 
@@ -123,35 +121,44 @@ function resolveSqlitePath(
   });
 }
 
-/**
- * The former local single-instance layout has no owner field in its JSON
- * review/rate records. Never guess which newly configured mailbox owns them.
- * A legacy SQLite ledger does carry inbox identity and may be retained only
- * when an operator explicitly points an AgentMail instance at that exact path.
- */
-function assertNoAmbiguousLocalAgentMailState(
-  configs: readonly AugmentConfig[],
+/** Never guess which replacement inbox owns pre-rebuild AgentMail state. */
+function assertNoUnsupportedAgentMailState(
   agentDir: string,
+  augmentNames: readonly string[],
+  runtimeDataRoot?: string,
 ): void {
-  const legacyDbPath = resolve(agentDir, "agent-mail.db");
-  const legacyDbExplicitlyClaimed = configs.some((config) => {
-    if (config.type !== "agentMail") return false;
-    const configured = config.options?.dbPath;
-    return typeof configured === "string" && resolvePath(configured, agentDir) === legacyDbPath;
-  });
-  const ambiguous = [
+  const unsafeName = augmentNames.find((name) => !/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(name));
+  if (unsafeName !== undefined) {
+    throw new Error(
+      `[augment-resolver] agentMail augment name "${unsafeName}" is not a safe state namespace`,
+    );
+  }
+  const legacyNames = [
     "agent-mail-state.json",
     "agent-mail-reviews.json",
-    ...(!legacyDbExplicitlyClaimed
-      ? ["agent-mail.db", "agent-mail.db-wal", "agent-mail.db-shm", "agent-mail.db-journal"]
+    "agent-mail.db",
+    "agent-mail.db-wal",
+    "agent-mail.db-shm",
+    "agent-mail.db-journal",
+  ];
+  const candidateDirs = [
+    agentDir,
+    ...augmentNames.map((name) => resolve(agentDir, "data", "agent-mail", name)),
+    ...(runtimeDataRoot
+      ? augmentNames.map((name) => resolve(runtimeDataRoot, "agent-mail", name))
       : []),
-  ].filter((name) => lstatSync(resolve(agentDir, name), { throwIfNoEntry: false }) !== undefined);
+  ];
+  const ambiguous = candidateDirs.flatMap((directory) =>
+    legacyNames
+      .map((name) => resolve(directory, name))
+      .filter((path) => lstatSync(path, { throwIfNoEntry: false }) !== undefined),
+  );
 
   if (ambiguous.length === 0) return;
   throw new Error(
-    `[augment-resolver] multiple local AgentMail instances cannot adopt legacy singleton state (${ambiguous.join(
+    `[augment-resolver] unsupported pre-rebuild AgentMail state exists (${ambiguous.join(
       ", ",
-    )}). Reconcile pending or ambiguous work with the prior single-instance configuration, then explicitly migrate/archive these artifacts. A legacy agent-mail.db may be retained only by configuring its owning instance with dbPath: ./agent-mail.db.`,
+    )}). Stop the agent, inspect and archive these files, then remove them explicitly before starting the replacement runtime. Auggy will not read, migrate, or delete them.`,
   );
 }
 
@@ -693,10 +700,15 @@ export async function resolveAugments(
   const overrideDir = resolverOpts.runtimeDataRoot ?? agentDir;
   const ownedStateRoot =
     resolverOpts.runtimeDataRoot ?? (resolverOpts.agentId ? resolve(agentDir) : undefined);
-  const agentMailInstanceCount = configs.filter((config) => config.type === "agentMail").length;
+  const agentMailConfigs = configs.filter((config) => config.type === "agentMail");
+  const agentMailInstanceCount = agentMailConfigs.length;
   const agentMailDbOwners = new Map<string, string>();
-  if (resolverOpts.runtimeDataRoot === undefined && agentMailInstanceCount > 1) {
-    assertNoAmbiguousLocalAgentMailState(configs, agentDir);
+  if (agentMailInstanceCount > 0) {
+    assertNoUnsupportedAgentMailState(
+      agentDir,
+      agentMailConfigs.map((config) => config.name),
+      resolverOpts.runtimeDataRoot,
+    );
   }
 
   if (resolverOpts.agentId) {
@@ -739,31 +751,19 @@ export async function resolveAugments(
     ),
   );
   validateUniqueNotifyDestinationNames(notifyBindings);
-  const creatorDigestBindings: Array<{
-    agentMailAugmentName: string;
-    notifyAugmentName: string;
-  }> = [];
-
+  const notifyBindingNames = new Set(notifyBindings.map((binding) => binding.destinationName));
   for (const config of configs) {
     if (config.type !== "agentMail") continue;
-    const inbound = config.options?.inbound as Record<string, unknown> | undefined;
-    if (inbound !== undefined) {
-      const validatedInbound = validateAgentMailInboundConfig(
-        inbound,
-        config.options?.outbound as AgentMailAugmentOptions["outbound"],
+    const agentMailConfig = validateAgentMailConfig(config.options);
+    if (
+      agentMailConfig.notifications &&
+      !notifyBindingNames.has(agentMailConfig.notifications.destination)
+    ) {
+      throw new Error(
+        `[augment-resolver] agentMail.notifications.destination ${JSON.stringify(agentMailConfig.notifications.destination)} does not match any Notify destination`,
       );
-      const binding = resolveCreatorDigestNotifyBinding(
-        validatedInbound.creatorDigest,
-        notifyBindings,
-      );
-      if (binding) {
-        creatorDigestBindings.push({
-          agentMailAugmentName: config.name,
-          notifyAugmentName: binding.augmentName,
-        });
-      }
     }
-    if ((inbound?.mode ?? "none") === "none") continue;
+    if (agentMailConfig.inbound.mode === "none") continue;
     const inboxId = config.options?.inboxId;
     if (typeof inboxId !== "string") continue;
     const existing = inboundInboxOwners.get(inboxId);
@@ -779,6 +779,13 @@ export async function resolveAugments(
   type NotifyToolExecute = NonNullable<Augment["tools"]>[number]["execute"];
   const notifyDestinationNames = new Set<string>();
   const notifyExecutorsByDestination = new Map<string, NotifyToolExecute>();
+  const notifyHostsByDestination = new Map<string, NotifyDispatchHost>();
+  const agentMailAttentionMounts: Array<{
+    name: string;
+    augment: AgentMailRuntimeAugment;
+    destination: string;
+    maxAttempts: number;
+  }> = [];
 
   for (const binding of notifyBindings) {
     notifyDestinationNames.add(binding.destinationName);
@@ -1051,9 +1058,17 @@ export async function resolveAugments(
           });
           break;
         case "agentMail": {
-          const rawDbPath = (opts.dbPath as string | undefined) ?? "./agent-mail.db";
+          const configuredDbPath = opts.dbPath as string | undefined;
+          const rawDbPath = configuredDbPath ?? `./data/agent-mail/${config.name}/orchestration.db`;
           let stateDir: string | undefined;
-          let dbPath: string;
+          let dbPath = agentMailOrchestrationRuntimePath({
+            ...(configuredDbPath === undefined ? {} : { configuredPath: configuredDbPath }),
+            augmentName: config.name,
+            agentDir,
+            ...(resolverOpts.runtimeDataRoot === undefined
+              ? {}
+              : { runtimeDataRoot: resolverOpts.runtimeDataRoot }),
+          });
 
           if (resolverOpts.runtimeDataRoot !== undefined) {
             // Config parsing normally enforces this pattern. Repeat it here
@@ -1065,7 +1080,6 @@ export async function resolveAugments(
             }
             const agentMailRoot = resolve(resolverOpts.runtimeDataRoot, "agent-mail");
             stateDir = resolve(agentMailRoot, config.name);
-            dbPath = resolveContainedPath(rawDbPath, stateDir, `agentMail "${config.name}" dbPath`);
             dbPath = resolveOwnedStatePath(
               dbPath,
               agentDir,
@@ -1074,13 +1088,11 @@ export async function resolveAugments(
               { createParents: true },
             );
           } else if (agentMailInstanceCount > 1) {
-            // Preserve the project-root layout for one local mailbox. Multiple
-            // instances get isolated sidecars and a namespaced default ledger.
             stateDir = resolve(agentDir, "data", "agent-mail", config.name);
             dbPath =
-              opts.dbPath === undefined
+              configuredDbPath === undefined
                 ? resolveOwnedStatePath(
-                    resolve(stateDir, "agent-mail.db"),
+                    resolve(stateDir, "orchestration.db"),
                     agentDir,
                     ownedStateRoot ?? resolve(agentDir),
                     `agentMail "${config.name}" dbPath`,
@@ -1112,9 +1124,6 @@ export async function resolveAugments(
           agentMailDbOwners.set(resolve(dbPath), config.name);
 
           augment = agentMail({
-            instanceId: config.name,
-            legacySingletonCompatibility: agentMailInstanceCount === 1,
-            namespaceTools: agentMailInstanceCount > 1,
             apiKey: opts.apiKey as string,
             inboxId: opts.inboxId as string,
             emailAddress: opts.emailAddress as string | undefined,
@@ -1122,15 +1131,15 @@ export async function resolveAugments(
               | AgentMailAugmentOptions["addressVisibility"]
               | undefined,
             apiBaseUrl: opts.apiBaseUrl as string | undefined,
+            websocketBaseUrl: opts.websocketBaseUrl as string | undefined,
             allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials as
               | boolean
               | undefined,
             dbPath,
-            outbound: opts.outbound as AgentMailAugmentOptions["outbound"],
             inbound: opts.inbound as AgentMailAugmentOptions["inbound"],
-            agentDir,
-            stateDir,
-            overrideDir,
+            replies: opts.replies as AgentMailAugmentOptions["replies"],
+            outbound: opts.outbound as AgentMailAugmentOptions["outbound"],
+            notifications: opts.notifications as AgentMailAugmentOptions["notifications"],
           });
           break;
         }
@@ -1176,6 +1185,7 @@ export async function resolveAugments(
       // Override the auto-generated augment name with the operator's choice.
       augment = { ...augment, name: config.name };
       if (config.type === "notify") {
+        const notifyAugment = augment as NotifyAugment;
         const notifyTool = augment.tools?.find((tool) => tool.name === "notify");
         if (notifyTool) {
           const destinations =
@@ -1183,8 +1193,20 @@ export async function resolveAugments(
           for (const destination of destinations) {
             if (typeof destination.name === "string") {
               notifyExecutorsByDestination.set(destination.name, notifyTool.execute);
+              notifyHostsByDestination.set(destination.name, notifyAugment.dispatchHost);
             }
           }
+        }
+      }
+      if (config.type === "agentMail") {
+        const validated = validateAgentMailConfig(config.options);
+        if (validated.notifications) {
+          agentMailAttentionMounts.push({
+            name: config.name,
+            augment: augment as AgentMailRuntimeAugment,
+            destination: validated.notifications.destination,
+            maxAttempts: validated.notifications.maxAttempts,
+          });
         }
       }
       augments.push(augment);
@@ -1307,33 +1329,40 @@ export async function resolveAugments(
       );
     }
 
-    // Optional creator digests are explicit cross-augment composition. Append
-    // each bridge last so it boots after AgentMail and Notify, then shuts down
-    // before either durable store closes.
-    for (const binding of creatorDigestBindings) {
-      const agentMailIndex = configs.findIndex(
-        (config) => config.name === binding.agentMailAugmentName,
-      );
-      const notifyIndex = configs.findIndex((config) => config.name === binding.notifyAugmentName);
-      const agentMailAugment = agentMailIndex >= 0 ? augments[agentMailIndex] : undefined;
-      const notifyAugment = notifyIndex >= 0 ? augments[notifyIndex] : undefined;
-      if (!agentMailAugment || !notifyAugment) {
+    for (const mount of agentMailAttentionMounts) {
+      const dispatchHost = notifyHostsByDestination.get(mount.destination);
+      if (!dispatchHost) {
         throw new Error(
-          `[augment-resolver] creator digest binding for "${binding.agentMailAugmentName}" could not be mounted`,
+          `[augment-resolver] Notify destination ${JSON.stringify(mount.destination)} has no durable internal dispatch host`,
         );
       }
-      const bridgeName = agentMailCreatorDigestBridgeName(agentMailAugment.name);
-      if (augments.some((augment) => augment.name === bridgeName)) {
-        throw new Error(
-          `[augment-resolver] creator digest bridge name "${bridgeName}" collides with an existing augment`,
-        );
-      }
-      augments.push(
-        createAgentMailCreatorDigestBridge({
-          agentMail: agentMailAugment,
-          notify: notifyAugment,
-        }),
-      );
+      augments.push({
+        name: `agentMail-notifications-${mount.name}`,
+        type: "agentMail.notifications",
+        synthetic: true,
+        async onBoot() {
+          const destinationBindingHash = dispatchHost.destinationBindingSha256(mount.destination);
+          const metadata = dispatchHost.destinationMetadata(mount.destination);
+          if (!destinationBindingHash || !metadata) {
+            throw new Error(
+              `agentMail notifications: Notify destination ${JSON.stringify(mount.destination)} is unavailable or does not allow creator delivery`,
+            );
+          }
+          mount.augment.creatorAttentionHost.configure({
+            dispatchHost,
+            destination: mount.destination,
+            destinationBindingHash,
+            maxAttempts: mount.maxAttempts,
+            ...(metadata.transport === "agentmail"
+              ? { agentMailRecipients: metadata.recipients }
+              : {}),
+          });
+          await mount.augment.creatorAttentionHost.start();
+        },
+        async onShutdown() {
+          await mount.augment.creatorAttentionHost.stop();
+        },
+      });
     }
 
     return augments;

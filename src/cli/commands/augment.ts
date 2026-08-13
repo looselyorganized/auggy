@@ -153,20 +153,15 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
 
   command
     .command("setup <augment>")
-    .description("Configure secrets and external services for an installed augment")
+    .description("Connect an installed augment to existing external credentials")
     .option("--agent <name>", "agent project name when running from a parent directory")
     .option("--config <path>", "path to agent.yaml")
-    .option("--mode <mode>", "setup mode where supported")
-    .option("--human-email <email>", "human owner email for AgentMail signup")
-    .option("--username <username>", "external-service username or inbox name")
-    .option("--display-name <name>", "external-service display name")
+    .option("--mode <mode>", "AgentMail connection mode: connect or env")
     .option(
       "--api-key <key>",
       "external-service API key (prefer a secure prompt or provider environment variable)",
     )
-    .option("--inbox-id <id>", "existing AgentMail inbox ID for manual mode")
-    .option("--replace-key", "replace only the stored API key for the existing inbox (manual mode)")
-    .option("--yes", "confirm a non-interactive --replace-key operation")
+    .option("--inbox-id <id>", "existing AgentMail inbox ID for connect mode")
     .option("--base-url <url>", "external-service API base URL")
     .option(
       "--allow-insecure-http-with-credentials",

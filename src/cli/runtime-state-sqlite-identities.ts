@@ -1,8 +1,4 @@
 import {
-  AGENTMAIL_LEDGER_APPLICATION_ID,
-  AGENTMAIL_LEDGER_SCHEMA_VERSION,
-} from "../augments/agentMail/inbound-ledger";
-import {
   NOTIFY_DELIVERY_APPLICATION_ID,
   NOTIFY_DELIVERY_SCHEMA_VERSION,
 } from "../augments/notify/delivery-store";
@@ -28,6 +24,10 @@ import {
   CONSOLE_CHAT_SCHEMA_VERSION,
 } from "../transports/admin/console-chat-store";
 import { DURABLE_JOBS_APPLICATION_ID, DURABLE_JOBS_SCHEMA_VERSION } from "../jobs/sqlite-store";
+import {
+  AGENTMAIL_ORCHESTRATION_APPLICATION_ID,
+  AGENTMAIL_ORCHESTRATION_SCHEMA_VERSION,
+} from "../augments/agentMail/store";
 
 export interface RuntimeStateSqliteIdentity {
   applicationId: number;
@@ -62,23 +62,6 @@ export const RUNTIME_STATE_SQLITE_IDENTITIES: Readonly<Record<string, RuntimeSta
       applicationId: TELEGRAM_REPLAY_APPLICATION_ID,
       userVersion: TELEGRAM_REPLAY_SCHEMA_VERSION,
     },
-    "AMIL/v5": {
-      applicationId: AGENTMAIL_LEDGER_APPLICATION_ID,
-      userVersion: AGENTMAIL_LEDGER_SCHEMA_VERSION,
-    },
-    "AMIL/v4": {
-      applicationId: AGENTMAIL_LEDGER_APPLICATION_ID,
-      userVersion: 4,
-    },
-    "AMIL/v3": {
-      applicationId: AGENTMAIL_LEDGER_APPLICATION_ID,
-      userVersion: 3,
-    },
-    "AMIL/v2": {
-      applicationId: AGENTMAIL_LEDGER_APPLICATION_ID,
-      userVersion: 2,
-      compatibleUserVersions: [2, 3],
-    },
     "NTFY/v2": {
       applicationId: NOTIFY_DELIVERY_APPLICATION_ID,
       userVersion: NOTIFY_DELIVERY_SCHEMA_VERSION,
@@ -86,6 +69,10 @@ export const RUNTIME_STATE_SQLITE_IDENTITIES: Readonly<Record<string, RuntimeSta
     "NTFY/v1": {
       applicationId: NOTIFY_DELIVERY_APPLICATION_ID,
       userVersion: 1,
+    },
+    "AMOR/v1": {
+      applicationId: AGENTMAIL_ORCHESTRATION_APPLICATION_ID,
+      userVersion: AGENTMAIL_ORCHESTRATION_SCHEMA_VERSION,
     },
     "DJOB/v2": {
       applicationId: DURABLE_JOBS_APPLICATION_ID,

@@ -76,7 +76,17 @@ export interface NotifyAugmentInternalOptions extends NotifyAugmentOptions {
   }>;
 }
 
-export type NotifyInternalSource = "agentmail.creator-digest";
+export type NotifyInternalSource = "agentmail.draft-ready" | "agentmail.delivery-failed";
+
+export type NotifyInternalDestinationMetadata =
+  | {
+      transport: Exclude<NotifyDestination["transport"], "agentmail">;
+    }
+  | {
+      transport: "agentmail";
+      /** Configured delivery recipients only. Provider credentials and inbox authority stay private. */
+      recipients: readonly string[];
+    };
 
 export interface NotifyInternalDispatchInput {
   source: NotifyInternalSource;
@@ -171,6 +181,8 @@ export type NotifyInternalInspectionResult =
   | { status: "invalid_request" | "durable_state_unavailable"; attemptCount: 0 };
 
 export interface NotifyDispatchHost {
+  /** Minimal destination identity for internal topology checks; never includes credentials. */
+  destinationMetadata(destination: string): NotifyInternalDestinationMetadata | undefined;
   /** Hash of the effective destination configuration; secrets never leave this boundary. */
   destinationBindingSha256(destination: string): string | undefined;
   /** Inspect one protected operation without quota reservation or provider dispatch. */
@@ -366,7 +378,9 @@ export function notify(opts: NotifyAugmentInternalOptions): NotifyAugment {
   }
 
   function validInternalInput(input: NotifyInternalDispatchInput): boolean {
-    if (input.source !== "agentmail.creator-digest") return false;
+    if (input.source !== "agentmail.draft-ready" && input.source !== "agentmail.delivery-failed") {
+      return false;
+    }
     if (
       typeof input.operationKey !== "string" ||
       input.operationKey.length < 1 ||
@@ -415,7 +429,7 @@ export function notify(opts: NotifyAugmentInternalOptions): NotifyAugment {
 
   function validRetryAuthorizationInput(input: NotifyInternalRetryAuthorizationInput): boolean {
     return (
-      input.source === "agentmail.creator-digest" &&
+      (input.source === "agentmail.draft-ready" || input.source === "agentmail.delivery-failed") &&
       typeof input.operationKey === "string" &&
       input.operationKey.length >= 1 &&
       input.operationKey.length <= 512 &&
@@ -432,7 +446,7 @@ export function notify(opts: NotifyAugmentInternalOptions): NotifyAugment {
 
   function validInternalAcknowledgementInput(input: NotifyInternalAcknowledgementInput): boolean {
     return (
-      input.source === "agentmail.creator-digest" &&
+      (input.source === "agentmail.draft-ready" || input.source === "agentmail.delivery-failed") &&
       typeof input.operationKey === "string" &&
       input.operationKey.length >= 1 &&
       input.operationKey.length <= 512 &&
@@ -482,6 +496,21 @@ export function notify(opts: NotifyAugmentInternalOptions): NotifyAugment {
   }
 
   const dispatchHost: NotifyDispatchHost = {
+    destinationMetadata(destinationName) {
+      const destination = destinationsByName.get(destinationName);
+      if (!destination) return undefined;
+      if (destination.transport !== "agentmail") {
+        return { transport: destination.transport };
+      }
+      return {
+        transport: "agentmail",
+        recipients: Object.freeze(
+          (Array.isArray(destination.to) ? destination.to : [destination.to]).map((recipient) =>
+            recipient.trim(),
+          ),
+        ),
+      };
+    },
     destinationBindingSha256(destinationName) {
       const destination = destinationsByName.get(destinationName);
       if (!destination) return undefined;
