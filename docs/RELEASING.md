@@ -31,14 +31,14 @@ git push origin vX.Y.Z
 
 ## Current release state
 
-As of 2026-08-11, npm's stable `latest` version for all six packages is `0.4.4`
-and `next` is `0.5.0-rc.9` for all six. The `v0.5.0-rc.1` through
-`v0.5.0-rc.9` tags are published, immutable release candidates. The RC.9
+As of 2026-08-13, npm's stable `latest` version for all six packages is `0.4.4`
+and `next` is `0.5.0-rc.10` for all six. The `v0.5.0-rc.1` through
+`v0.5.0-rc.10` tags are published, immutable release candidates. The RC.10
 GitHub prerelease contains all six verified package tarballs and `SHA256SUMS`.
-`0.5.0-rc.10` is the pending release-PR candidate; it is not published and must
+`0.5.0-rc.11` is the pending release-PR candidate; it is not published and must
 not be described as available from `next` until its exact merged commit has
-passed the AgentMail provider canary, been tagged, and completed the publish
-workflow.
+passed the AgentMail provider and live mutation canaries, been tagged, and
+completed the publish workflow.
 Registry metadata and the corresponding Git tag—not a working-tree version—
 remain the authority for release state.
 
@@ -47,7 +47,7 @@ The next release follows the
 On 2026-07-28, the repository became public after the full-history secret and
 artifact audit passed. The protected GitHub Environments, environment-only
 evaluation secret, six npm trusted-publisher connections, and package-level
-token restrictions are configured. All six `0.5.0-rc.9` packages expose npm's
+token restrictions are configured. All six `0.5.0-rc.10` packages expose npm's
 SLSA provenance attestation. Final `0.5.0` remains a separate release PR and
 requires fresh verification and attestations for its exact six artifacts; prior
 candidates are not evidence for stable. It must publish under `latest` only
