@@ -10,6 +10,7 @@ import type { AgentMailMessageClassification } from "./provider";
 
 export const AGENTMAIL_ORCHESTRATION_APPLICATION_ID = 0x414d4f52; // "AMOR"
 export const AGENTMAIL_ORCHESTRATION_SCHEMA_VERSION = 1;
+const AGENTMAIL_ORCHESTRATION_CONTRACT = "agentmail-provider-native-orchestration/2026-08-13";
 
 const SCHEMA = [
   `CREATE TABLE IF NOT EXISTS agentmail_mailboxes (
@@ -17,6 +18,11 @@ const SCHEMA = [
     checkpoint_timestamp INTEGER NOT NULL DEFAULT 0,
     checkpoint_message_id TEXT,
     updated_at           INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS agentmail_store_metadata (
+    singleton            INTEGER PRIMARY KEY CHECK (singleton = 1),
+    contract_fingerprint TEXT NOT NULL CHECK (length(contract_fingerprint) = 64),
+    created_at           INTEGER NOT NULL
   )`,
   `CREATE TABLE IF NOT EXISTS agentmail_messages (
     inbox_id        TEXT NOT NULL,
@@ -41,28 +47,78 @@ const SCHEMA = [
   `CREATE INDEX IF NOT EXISTS idx_agentmail_message_work
      ON agentmail_messages(inbox_id, state, received_at, message_id)`,
   `CREATE TABLE IF NOT EXISTS agentmail_drafts (
-    inbox_id           TEXT NOT NULL,
-    source_message_id  TEXT NOT NULL,
-    thread_id          TEXT NOT NULL,
-    draft_id           TEXT NOT NULL,
-    client_id          TEXT NOT NULL,
-    provider_updated_at INTEGER NOT NULL,
-    state              TEXT NOT NULL CHECK (state IN ('ready', 'stale', 'approved', 'sending', 'sent', 'ambiguous', 'failed')),
-    approval_hash      TEXT,
-    approved_at        INTEGER,
-    send_key           TEXT,
-    send_started_at    INTEGER,
-    sent_message_id    TEXT,
-    created_at         INTEGER NOT NULL,
-    updated_at         INTEGER NOT NULL,
-    PRIMARY KEY (inbox_id, source_message_id),
-    UNIQUE (inbox_id, draft_id),
+    inbox_id                TEXT NOT NULL,
+    draft_id                TEXT NOT NULL,
+    kind                    TEXT NOT NULL CHECK (kind IN ('new', 'reply', 'reply_all', 'forward')),
+    source_message_id       TEXT,
+    thread_id               TEXT,
+    operation_id            TEXT NOT NULL,
+    client_id               TEXT NOT NULL,
+    provider_revision       TEXT NOT NULL,
+    provider_updated_at     INTEGER NOT NULL,
+    material_hash           TEXT NOT NULL CHECK (length(material_hash) = 64),
+    send_at                 INTEGER,
+    state                   TEXT NOT NULL CHECK (state IN ('ready', 'stale', 'approved', 'sending', 'scheduled', 'sent', 'ambiguous', 'failed', 'deleted')),
+    approval_generation     INTEGER NOT NULL DEFAULT 0 CHECK (approval_generation >= 0),
+    approval_manifest_hash  TEXT CHECK (approval_manifest_hash IS NULL OR length(approval_manifest_hash) = 64),
+    approved_at             INTEGER,
+    send_operation_kind     TEXT CHECK (send_operation_kind IS NULL OR send_operation_kind IN ('send', 'schedule')),
+    send_operation_id       TEXT,
+    send_key                TEXT,
+    send_started_at         INTEGER,
+    sent_message_id         TEXT,
+    sent_thread_id          TEXT,
+    outcome_code            TEXT,
+    reconciliation_state    TEXT NOT NULL DEFAULT 'none' CHECK (reconciliation_state IN ('none', 'required', 'confirmed_sent', 'confirmed_not_sent')),
+    reconciliation_hash     TEXT CHECK (reconciliation_hash IS NULL OR length(reconciliation_hash) = 64),
+    reconciled_at           INTEGER,
+    created_at              INTEGER NOT NULL,
+    updated_at              INTEGER NOT NULL,
+    PRIMARY KEY (inbox_id, draft_id),
+    UNIQUE (inbox_id, operation_id),
     UNIQUE (inbox_id, client_id),
-    FOREIGN KEY (inbox_id, source_message_id)
-      REFERENCES agentmail_messages(inbox_id, message_id) ON DELETE RESTRICT
+    CHECK (
+      (kind = 'new' AND source_message_id IS NULL) OR
+      (kind IN ('reply', 'reply_all', 'forward') AND source_message_id IS NOT NULL)
+    )
   )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_agentmail_draft_source_operation
+     ON agentmail_drafts(inbox_id, source_message_id, operation_id)
+     WHERE source_message_id IS NOT NULL`,
   `CREATE INDEX IF NOT EXISTS idx_agentmail_draft_state
      ON agentmail_drafts(inbox_id, state, updated_at)`,
+  `CREATE TABLE IF NOT EXISTS agentmail_draft_delivery_operations (
+    inbox_id                 TEXT NOT NULL,
+    operation_id             TEXT NOT NULL,
+    draft_id                 TEXT NOT NULL,
+    kind                     TEXT NOT NULL CHECK (kind IN ('send', 'schedule')),
+    idempotency_key          TEXT NOT NULL,
+    approval_generation      INTEGER NOT NULL CHECK (approval_generation >= 1),
+    approval_manifest_hash   TEXT NOT NULL CHECK (length(approval_manifest_hash) = 64),
+    provider_revision        TEXT NOT NULL,
+    material_hash            TEXT NOT NULL CHECK (length(material_hash) = 64),
+    send_at                  INTEGER,
+    state                    TEXT NOT NULL CHECK (state IN ('reserved', 'scheduled', 'sent', 'outcome_unknown', 'failed', 'reconciled_not_sent')),
+    sent_message_id          TEXT,
+    sent_thread_id           TEXT,
+    outcome_code             TEXT,
+    reconciliation_hash      TEXT CHECK (reconciliation_hash IS NULL OR length(reconciliation_hash) = 64),
+    reconciled_at            INTEGER,
+    created_at               INTEGER NOT NULL,
+    updated_at               INTEGER NOT NULL,
+    PRIMARY KEY (inbox_id, operation_id),
+    UNIQUE (inbox_id, idempotency_key),
+    FOREIGN KEY (inbox_id, draft_id)
+      REFERENCES agentmail_drafts(inbox_id, draft_id) ON DELETE CASCADE,
+    CHECK ((kind = 'schedule' AND send_at IS NOT NULL) OR (kind = 'send' AND send_at IS NULL)),
+    CHECK ((state = 'sent' AND sent_message_id IS NOT NULL AND sent_thread_id IS NOT NULL) OR state <> 'sent'),
+    CHECK ((state = 'outcome_unknown' AND reconciliation_hash IS NULL) OR state <> 'outcome_unknown')
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS idx_agentmail_draft_delivery_active
+     ON agentmail_draft_delivery_operations(inbox_id, draft_id)
+     WHERE state IN ('reserved', 'scheduled', 'outcome_unknown')`,
+  `CREATE INDEX IF NOT EXISTS idx_agentmail_draft_delivery_state
+     ON agentmail_draft_delivery_operations(inbox_id, state, updated_at)`,
   `CREATE TABLE IF NOT EXISTS agentmail_rate_reservations (
     inbox_id      TEXT NOT NULL,
     direction     TEXT NOT NULL CHECK (direction IN ('inbound', 'outbound')),
@@ -135,8 +191,17 @@ function expectedSchema(): ReadonlyMap<string, string> {
 }
 
 const EXPECTED_SCHEMA = expectedSchema();
+const AGENTMAIL_ORCHESTRATION_CONTRACT_FINGERPRINT = createHash("sha256")
+  .update(
+    JSON.stringify([
+      AGENTMAIL_ORCHESTRATION_CONTRACT,
+      [...EXPECTED_SCHEMA.entries()].sort(([left], [right]) => left.localeCompare(right)),
+    ]),
+    "utf8",
+  )
+  .digest("hex");
 
-function validateSchema(_db: Database, objects: readonly SqliteSchemaObject[]): void {
+function validateSchema(db: Database, objects: readonly SqliteSchemaObject[]): void {
   if (
     objects.length !== EXPECTED_SCHEMA.size ||
     !objects.every(
@@ -146,6 +211,14 @@ function validateSchema(_db: Database, objects: readonly SqliteSchemaObject[]): 
     throw new Error(
       "agentMail store: schema does not match the provider-native orchestration contract",
     );
+  }
+  const metadata = db
+    .query<{ contract_fingerprint: string }, []>(
+      "SELECT contract_fingerprint FROM agentmail_store_metadata WHERE singleton = 1",
+    )
+    .get();
+  if (metadata?.contract_fingerprint !== AGENTMAIL_ORCHESTRATION_CONTRACT_FINGERPRINT) {
+    throw new Error("agentMail store: orchestration contract fingerprint is missing or corrupt");
   }
 }
 
@@ -172,6 +245,81 @@ export interface AgentMailWorkItem {
   policyVersion: number;
 }
 
+export type AgentMailProviderDraftKind = "new" | "reply" | "reply_all" | "forward";
+export type AgentMailProviderDraftState =
+  | "ready"
+  | "stale"
+  | "approved"
+  | "sending"
+  | "scheduled"
+  | "sent"
+  | "ambiguous"
+  | "failed"
+  | "deleted";
+export type AgentMailDraftDeliveryKind = "send" | "schedule";
+export type AgentMailDraftDeliveryState =
+  | "reserved"
+  | "scheduled"
+  | "sent"
+  | "outcome_unknown"
+  | "failed"
+  | "reconciled_not_sent";
+
+/**
+ * Content-free provider draft projection. Material fields are represented only
+ * by a SHA-256 digest; editable content remains exclusively in AgentMail.
+ */
+export interface AgentMailProviderDraftRecord {
+  inboxId: string;
+  draftId: string;
+  kind: AgentMailProviderDraftKind;
+  sourceMessageId?: string;
+  threadId?: string;
+  operationId: string;
+  clientId: string;
+  providerRevision: string;
+  providerUpdatedAt: number;
+  materialHash: string;
+  sendAt?: number;
+  state: AgentMailProviderDraftState;
+  approvalGeneration: number;
+  approvalManifestHash?: string;
+  approvedAt?: number;
+  sendOperationKind?: AgentMailDraftDeliveryKind;
+  sendOperationId?: string;
+  sendKey?: string;
+  sendStartedAt?: number;
+  sentMessageId?: string;
+  sentThreadId?: string;
+  outcomeCode?: string;
+  reconciliationState: "none" | "required" | "confirmed_sent" | "confirmed_not_sent";
+  reconciliationHash?: string;
+  reconciledAt?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface AgentMailDraftDeliveryOperation {
+  inboxId: string;
+  operationId: string;
+  draftId: string;
+  kind: AgentMailDraftDeliveryKind;
+  idempotencyKey: string;
+  approvalGeneration: number;
+  approvalManifestHash: string;
+  providerRevision: string;
+  materialHash: string;
+  sendAt?: number;
+  state: AgentMailDraftDeliveryState;
+  sentMessageId?: string;
+  sentThreadId?: string;
+  outcomeCode?: string;
+  reconciliationHash?: string;
+  reconciledAt?: number;
+  createdAt: number;
+  updatedAt: number;
+}
+
 export interface AgentMailDraftReference {
   inboxId: string;
   sourceMessageId: string;
@@ -183,6 +331,7 @@ export interface AgentMailDraftReference {
   sendKey?: string;
   sendStartedAt?: number;
   sentMessageId?: string;
+  sentThreadId?: string;
 }
 
 export type AgentMailRateReservation =
@@ -286,6 +435,70 @@ export interface AgentMailOrchestrationStore {
   listPendingMessageIds(limit?: number): string[];
   advanceCheckpoint(timestamp: number, messageId: string): void;
   getCheckpoint(): { timestamp: number; messageId?: string };
+  recordProviderDraft(input: {
+    draftId: string;
+    kind: AgentMailProviderDraftKind;
+    sourceMessageId?: string;
+    threadId?: string;
+    operationId: string;
+    clientId: string;
+    providerRevision: string;
+    providerUpdatedAt: number;
+    materialHash: string;
+    sendAt?: number;
+  }): { status: "recorded" | "duplicate" | "conflict" };
+  getProviderDraft(draftId: string): AgentMailProviderDraftRecord | undefined;
+  listProviderDrafts(limit?: number): AgentMailProviderDraftRecord[];
+  refreshProviderDraft(input: {
+    draftId: string;
+    expectedProviderRevision: string;
+    providerRevision: string;
+    providerUpdatedAt: number;
+    materialHash: string;
+    sendAt?: number;
+  }): AgentMailProviderDraftRecord;
+  approveProviderDraft(input: {
+    draftId: string;
+    expectedProviderRevision: string;
+    expectedMaterialHash: string;
+    approvalGeneration: number;
+    manifestHash: string;
+  }): AgentMailProviderDraftRecord;
+  reserveProviderDraftDelivery(input: {
+    draftId: string;
+    operationId: string;
+    kind: AgentMailDraftDeliveryKind;
+    expectedProviderRevision: string;
+    expectedMaterialHash: string;
+    approvalGeneration: number;
+    manifestHash: string;
+    sendAt?: number;
+  }):
+    | { status: "reserved"; operation: AgentMailDraftDeliveryOperation }
+    | { status: "replay" | "conflict"; operation: AgentMailDraftDeliveryOperation };
+  getDraftDeliveryOperation(operationId: string): AgentMailDraftDeliveryOperation | undefined;
+  settleProviderDraftDelivery(
+    operationId: string,
+    outcome:
+      | { status: "scheduled"; sendAt: number }
+      | { status: "sent"; messageId: string; threadId: string }
+      | { status: "outcome_unknown"; code: string }
+      | { status: "failed"; code: string },
+  ): AgentMailDraftDeliveryOperation;
+  reconcileProviderDraftDelivery(input: {
+    operationId: string;
+    evidenceHash: string;
+    resolution: { status: "sent"; messageId: string; threadId: string } | { status: "not_sent" };
+  }): AgentMailDraftDeliveryOperation;
+  compact(input: { terminalBefore: number; maxRows: number }): {
+    drafts: number;
+    deliveryOperations: number;
+    messages: number;
+    outboundOperations: number;
+    providerEvents: number;
+    rateReservations: number;
+    creatorAttention: number;
+  };
   recordDraft(input: {
     sourceMessageId: string;
     threadId: string;
@@ -400,16 +613,44 @@ interface MessageRow {
 
 interface DraftRow {
   inbox_id: string;
-  source_message_id: string;
-  thread_id: string;
   draft_id: string;
+  kind: AgentMailProviderDraftKind;
+  source_message_id: string | null;
+  thread_id: string | null;
+  operation_id: string;
   client_id: string;
+  provider_revision: string;
   provider_updated_at: number;
-  state: AgentMailDraftReference["state"];
+  material_hash: string;
+  send_at: number | null;
+  state: AgentMailProviderDraftState;
+  approval_generation: number;
+  approval_manifest_hash: string | null;
+  approved_at: number | null;
+  send_operation_kind: AgentMailDraftDeliveryKind | null;
+  send_operation_id: string | null;
   send_key: string | null;
   send_started_at: number | null;
   sent_message_id: string | null;
+  sent_thread_id: string | null;
+  outcome_code: string | null;
+  reconciliation_state: AgentMailProviderDraftRecord["reconciliationState"];
+  reconciliation_hash: string | null;
+  reconciled_at: number | null;
+  created_at: number;
+  updated_at: number;
 }
+
+const DRAFT_COLUMNS = `inbox_id, draft_id, kind, source_message_id, thread_id,
+  operation_id, client_id, provider_revision, provider_updated_at, material_hash, send_at, state,
+  approval_generation, approval_manifest_hash, approved_at, send_operation_kind, send_operation_id,
+  send_key, send_started_at, sent_message_id, sent_thread_id, outcome_code, reconciliation_state,
+  reconciliation_hash, reconciled_at, created_at, updated_at`;
+
+const DRAFT_DELIVERY_COLUMNS = `inbox_id, operation_id, draft_id, kind, idempotency_key,
+  approval_generation, approval_manifest_hash, provider_revision, material_hash, send_at, state,
+  sent_message_id, sent_thread_id, outcome_code, reconciliation_hash, reconciled_at,
+  created_at, updated_at`;
 
 function validHash(value: string): boolean {
   return /^[a-f0-9]{64}$/.test(value);
@@ -427,6 +668,49 @@ function assertBoundedIdentifier(value: string, field: string): void {
   if (!value || value.length > 1_024 || hasControlCharacter) {
     throw new Error(`agentMail store: ${field} is invalid`);
   }
+}
+
+function assertTimestamp(value: number, field: string): void {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error(`agentMail store: ${field} must be a non-negative integer`);
+  }
+}
+
+function assertOptionalTimestamp(value: number | undefined, field: string): void {
+  if (value !== undefined) assertTimestamp(value, field);
+}
+
+function assertDraftIdentity(input: {
+  draftId: string;
+  kind: AgentMailProviderDraftKind;
+  sourceMessageId?: string;
+  threadId?: string;
+  operationId: string;
+  clientId: string;
+  providerRevision: string;
+  providerUpdatedAt: number;
+  materialHash: string;
+  sendAt?: number;
+}): void {
+  assertBoundedIdentifier(input.draftId, "draftId");
+  assertBoundedIdentifier(input.operationId, "operationId");
+  assertBoundedIdentifier(input.clientId, "clientId");
+  assertBoundedIdentifier(input.providerRevision, "providerRevision");
+  if (input.sourceMessageId !== undefined) {
+    assertBoundedIdentifier(input.sourceMessageId, "sourceMessageId");
+  }
+  if (input.threadId !== undefined) assertBoundedIdentifier(input.threadId, "threadId");
+  if (
+    (input.kind === "new" && input.sourceMessageId !== undefined) ||
+    (input.kind !== "new" && input.sourceMessageId === undefined)
+  ) {
+    throw new Error("agentMail store: provider draft kind and source message are inconsistent");
+  }
+  if (!validHash(input.materialHash)) {
+    throw new Error("agentMail store: provider draft material hash is invalid");
+  }
+  assertTimestamp(input.providerUpdatedAt, "providerUpdatedAt");
+  assertOptionalTimestamp(input.sendAt, "sendAt");
 }
 
 function messageFromRow(row: MessageRow): AgentMailWorkItem {
@@ -447,6 +731,11 @@ function messageFromRow(row: MessageRow): AgentMailWorkItem {
 }
 
 function draftFromRow(row: DraftRow): AgentMailDraftReference {
+  if (row.source_message_id === null || row.thread_id === null) {
+    throw new Error("agentMail store: provider draft is not a legacy reply reference");
+  }
+  const state =
+    row.state === "scheduled" ? "sending" : row.state === "deleted" ? "stale" : row.state;
   return {
     inboxId: row.inbox_id,
     sourceMessageId: row.source_message_id,
@@ -454,10 +743,89 @@ function draftFromRow(row: DraftRow): AgentMailDraftReference {
     draftId: row.draft_id,
     clientId: row.client_id,
     providerUpdatedAt: row.provider_updated_at,
-    state: row.state,
+    state,
     ...(row.send_key === null ? {} : { sendKey: row.send_key }),
     ...(row.send_started_at === null ? {} : { sendStartedAt: row.send_started_at }),
     ...(row.sent_message_id === null ? {} : { sentMessageId: row.sent_message_id }),
+    ...(row.sent_thread_id === null ? {} : { sentThreadId: row.sent_thread_id }),
+  };
+}
+
+function providerDraftFromRow(row: DraftRow): AgentMailProviderDraftRecord {
+  return {
+    inboxId: row.inbox_id,
+    draftId: row.draft_id,
+    kind: row.kind,
+    ...(row.source_message_id === null ? {} : { sourceMessageId: row.source_message_id }),
+    ...(row.thread_id === null ? {} : { threadId: row.thread_id }),
+    operationId: row.operation_id,
+    clientId: row.client_id,
+    providerRevision: row.provider_revision,
+    providerUpdatedAt: row.provider_updated_at,
+    materialHash: row.material_hash,
+    ...(row.send_at === null ? {} : { sendAt: row.send_at }),
+    state: row.state,
+    approvalGeneration: row.approval_generation,
+    ...(row.approval_manifest_hash === null
+      ? {}
+      : { approvalManifestHash: row.approval_manifest_hash }),
+    ...(row.approved_at === null ? {} : { approvedAt: row.approved_at }),
+    ...(row.send_operation_kind === null ? {} : { sendOperationKind: row.send_operation_kind }),
+    ...(row.send_operation_id === null ? {} : { sendOperationId: row.send_operation_id }),
+    ...(row.send_key === null ? {} : { sendKey: row.send_key }),
+    ...(row.send_started_at === null ? {} : { sendStartedAt: row.send_started_at }),
+    ...(row.sent_message_id === null ? {} : { sentMessageId: row.sent_message_id }),
+    ...(row.sent_thread_id === null ? {} : { sentThreadId: row.sent_thread_id }),
+    ...(row.outcome_code === null ? {} : { outcomeCode: row.outcome_code }),
+    reconciliationState: row.reconciliation_state,
+    ...(row.reconciliation_hash === null ? {} : { reconciliationHash: row.reconciliation_hash }),
+    ...(row.reconciled_at === null ? {} : { reconciledAt: row.reconciled_at }),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+interface DraftDeliveryRow {
+  inbox_id: string;
+  operation_id: string;
+  draft_id: string;
+  kind: AgentMailDraftDeliveryKind;
+  idempotency_key: string;
+  approval_generation: number;
+  approval_manifest_hash: string;
+  provider_revision: string;
+  material_hash: string;
+  send_at: number | null;
+  state: AgentMailDraftDeliveryState;
+  sent_message_id: string | null;
+  sent_thread_id: string | null;
+  outcome_code: string | null;
+  reconciliation_hash: string | null;
+  reconciled_at: number | null;
+  created_at: number;
+  updated_at: number;
+}
+
+function draftDeliveryFromRow(row: DraftDeliveryRow): AgentMailDraftDeliveryOperation {
+  return {
+    inboxId: row.inbox_id,
+    operationId: row.operation_id,
+    draftId: row.draft_id,
+    kind: row.kind,
+    idempotencyKey: row.idempotency_key,
+    approvalGeneration: row.approval_generation,
+    approvalManifestHash: row.approval_manifest_hash,
+    providerRevision: row.provider_revision,
+    materialHash: row.material_hash,
+    ...(row.send_at === null ? {} : { sendAt: row.send_at }),
+    state: row.state,
+    ...(row.sent_message_id === null ? {} : { sentMessageId: row.sent_message_id }),
+    ...(row.sent_thread_id === null ? {} : { sentThreadId: row.sent_thread_id }),
+    ...(row.outcome_code === null ? {} : { outcomeCode: row.outcome_code }),
+    ...(row.reconciliation_hash === null ? {} : { reconciliationHash: row.reconciliation_hash }),
+    ...(row.reconciled_at === null ? {} : { reconciledAt: row.reconciled_at }),
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
   };
 }
 
@@ -584,7 +952,17 @@ export function createAgentMailOrchestrationStore(
         applicationId: AGENTMAIL_ORCHESTRATION_APPLICATION_ID,
         schemaVersion: AGENTMAIL_ORCHESTRATION_SCHEMA_VERSION,
         initialize(database) {
-          for (const sql of SCHEMA) database.run(sql);
+          database
+            .transaction(() => {
+              for (const sql of SCHEMA) database.run(sql);
+              database.run(
+                `INSERT INTO agentmail_store_metadata(
+                   singleton, contract_fingerprint, created_at
+                 ) VALUES (1, ?, ?)`,
+                [AGENTMAIL_ORCHESTRATION_CONTRACT_FINGERPRINT, clock()],
+              );
+            })
+            .immediate();
         },
         validate: validateSchema,
         isLegacy: () => false,
@@ -605,14 +983,19 @@ export function createAgentMailOrchestrationStore(
        FROM agentmail_messages WHERE inbox_id = ? AND message_id = ?`,
   );
   const findDraft = db.query<DraftRow, [string, string]>(
-    `SELECT inbox_id, source_message_id, thread_id, draft_id, client_id,
-            provider_updated_at, state, send_key, send_started_at, sent_message_id
-       FROM agentmail_drafts WHERE inbox_id = ? AND source_message_id = ?`,
+    `SELECT ${DRAFT_COLUMNS}
+       FROM agentmail_drafts
+      WHERE inbox_id = ? AND source_message_id = ?
+      ORDER BY created_at ASC, draft_id ASC LIMIT 1`,
   );
   const findDraftById = db.query<DraftRow, [string, string]>(
-    `SELECT inbox_id, source_message_id, thread_id, draft_id, client_id,
-            provider_updated_at, state, send_key, send_started_at, sent_message_id
+    `SELECT ${DRAFT_COLUMNS}
        FROM agentmail_drafts WHERE inbox_id = ? AND draft_id = ?`,
+  );
+  const findDraftDelivery = db.query<DraftDeliveryRow, [string, string]>(
+    `SELECT ${DRAFT_DELIVERY_COLUMNS}
+       FROM agentmail_draft_delivery_operations
+      WHERE inbox_id = ? AND operation_id = ?`,
   );
   const findCreatorAttention = db.query<CreatorAttentionRow, [string, string]>(
     `SELECT * FROM agentmail_creator_attention
@@ -838,6 +1221,89 @@ export function createAgentMailOrchestrationStore(
     };
   });
 
+  const recordProviderDraft = db.transaction(
+    (input: Parameters<AgentMailOrchestrationStore["recordProviderDraft"]>[0]) => {
+      assertDraftIdentity(input);
+      const existing = findDraftById.get(inboxId, input.draftId);
+      if (existing) {
+        const exact =
+          existing.kind === input.kind &&
+          existing.source_message_id === (input.sourceMessageId ?? null) &&
+          existing.thread_id === (input.threadId ?? null) &&
+          existing.operation_id === input.operationId &&
+          existing.client_id === input.clientId &&
+          existing.provider_revision === input.providerRevision &&
+          existing.provider_updated_at === input.providerUpdatedAt &&
+          existing.material_hash === input.materialHash &&
+          existing.send_at === (input.sendAt ?? null);
+        return { status: exact ? "duplicate" : "conflict" } as const;
+      }
+
+      const source =
+        input.sourceMessageId === undefined
+          ? undefined
+          : findMessage.get(inboxId, input.sourceMessageId);
+      if (source && input.threadId !== undefined && source.thread_id !== input.threadId) {
+        throw new Error("agentMail store: draft source thread does not match the claimed message");
+      }
+      const threadId = input.threadId ?? source?.thread_id;
+      let initialState: AgentMailProviderDraftState = "ready";
+      if (source && (input.kind === "reply" || input.kind === "reply_all")) {
+        const newerMessage = db
+          .query<{ present: number }, [string, string, number, number, string]>(
+            `SELECT 1 AS present FROM agentmail_messages
+              WHERE inbox_id = ? AND thread_id = ?
+                AND (received_at > ? OR (received_at = ? AND message_id > ?))
+              LIMIT 1`,
+          )
+          .get(
+            inboxId,
+            source.thread_id,
+            source.received_at,
+            source.received_at,
+            source.message_id,
+          );
+        if (newerMessage) initialState = "stale";
+      }
+      const at = clock();
+      try {
+        db.run(
+          `INSERT INTO agentmail_drafts(
+             inbox_id, draft_id, kind, source_message_id, thread_id, operation_id, client_id,
+             provider_revision, provider_updated_at, material_hash, send_at, state,
+             created_at, updated_at
+           ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          [
+            inboxId,
+            input.draftId,
+            input.kind,
+            input.sourceMessageId ?? null,
+            threadId ?? null,
+            input.operationId,
+            input.clientId,
+            input.providerRevision,
+            input.providerUpdatedAt,
+            input.materialHash,
+            input.sendAt ?? null,
+            initialState,
+            at,
+            at,
+          ],
+        );
+      } catch (error) {
+        if (String(error).includes("UNIQUE")) return { status: "conflict" } as const;
+        throw error;
+      }
+      enqueueCreatorAttention({
+        kind: "draft_ready",
+        subjectId: input.draftId,
+        ...(input.sourceMessageId === undefined ? {} : { relatedMessageId: input.sourceMessageId }),
+        ...(initialState === "stale" ? { state: "superseded" as const } : {}),
+      });
+      return { status: "recorded" } as const;
+    },
+  );
+
   return {
     claimMessage(input) {
       return claimMessage.immediate(input);
@@ -882,18 +1348,31 @@ export function createAgentMailOrchestrationStore(
       ).changes;
     },
     recoverAmbiguousMutations() {
-      const at = clock();
-      const drafts = db.run(
-        `UPDATE agentmail_drafts SET state = 'ambiguous', updated_at = ?
-          WHERE inbox_id = ? AND state = 'sending'`,
-        [at, inboxId],
-      ).changes;
-      const outbound = db.run(
-        `UPDATE agentmail_outbound_operations SET state = 'ambiguous', updated_at = ?
-          WHERE inbox_id = ? AND state = 'reserved'`,
-        [at, inboxId],
-      ).changes;
-      return { drafts, outbound };
+      return db
+        .transaction(() => {
+          const at = clock();
+          db.run(
+            `UPDATE agentmail_draft_delivery_operations
+                SET state = 'outcome_unknown', outcome_code = 'interrupted_before_settlement',
+                    updated_at = ?
+              WHERE inbox_id = ? AND state = 'reserved'`,
+            [at, inboxId],
+          );
+          const drafts = db.run(
+            `UPDATE agentmail_drafts
+                SET state = 'ambiguous', outcome_code = 'interrupted_before_settlement',
+                    reconciliation_state = 'required', updated_at = ?
+              WHERE inbox_id = ? AND state = 'sending'`,
+            [at, inboxId],
+          ).changes;
+          const outbound = db.run(
+            `UPDATE agentmail_outbound_operations SET state = 'ambiguous', updated_at = ?
+              WHERE inbox_id = ? AND state = 'reserved'`,
+            [at, inboxId],
+          ).changes;
+          return { drafts, outbound };
+        })
+        .immediate();
     },
     recoverCreatorAttention() {
       return db
@@ -983,75 +1462,577 @@ export function createAgentMailOrchestrationStore(
         ...(row?.checkpoint_message_id ? { messageId: row.checkpoint_message_id } : {}),
       };
     },
-    recordDraft(input) {
-      for (const [field, value] of Object.entries(input)) {
-        if (field !== "providerUpdatedAt") assertBoundedIdentifier(String(value), field);
+    recordProviderDraft(input) {
+      return recordProviderDraft.immediate(input);
+    },
+    getProviderDraft(draftId) {
+      assertBoundedIdentifier(draftId, "draftId");
+      const row = findDraftById.get(inboxId, draftId);
+      return row ? providerDraftFromRow(row) : undefined;
+    },
+    listProviderDrafts(limit = 100) {
+      if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
+        throw new Error("agentMail store: provider draft limit must be between 1 and 1000");
       }
-      if (!Number.isSafeInteger(input.providerUpdatedAt) || input.providerUpdatedAt < 0) {
-        throw new Error("agentMail store: provider draft timestamp is invalid");
+      return db
+        .query<DraftRow, [string, number]>(
+          `SELECT ${DRAFT_COLUMNS} FROM agentmail_drafts
+            WHERE inbox_id = ? ORDER BY updated_at DESC, draft_id ASC LIMIT ?`,
+        )
+        .all(inboxId, limit)
+        .map(providerDraftFromRow);
+    },
+    refreshProviderDraft(input) {
+      assertBoundedIdentifier(input.draftId, "draftId");
+      assertBoundedIdentifier(input.expectedProviderRevision, "expectedProviderRevision");
+      assertBoundedIdentifier(input.providerRevision, "providerRevision");
+      assertTimestamp(input.providerUpdatedAt, "providerUpdatedAt");
+      assertOptionalTimestamp(input.sendAt, "sendAt");
+      if (!validHash(input.materialHash)) {
+        throw new Error("agentMail store: provider draft material hash is invalid");
       }
-      try {
-        return db
-          .transaction(() => {
-            const existing = findDraft.get(inboxId, input.sourceMessageId);
-            if (existing) {
-              return {
-                status:
-                  existing.draft_id === input.draftId && existing.client_id === input.clientId
-                    ? "duplicate"
-                    : "conflict",
-              } as const;
-            }
-            const at = clock();
-            const source = findMessage.get(inboxId, input.sourceMessageId);
-            if (!source || source.thread_id !== input.threadId) {
-              throw new Error("agentMail store: draft source does not match a claimed message");
-            }
-            const newerMessage = db
-              .query<{ present: number }, [string, string, number, number, string]>(
-                `SELECT 1 AS present FROM agentmail_messages
-                  WHERE inbox_id = ? AND thread_id = ?
-                    AND (received_at > ? OR (received_at = ? AND message_id > ?))
-                  LIMIT 1`,
-              )
-              .get(
-                inboxId,
-                input.threadId,
-                source.received_at,
-                source.received_at,
-                input.sourceMessageId,
-              );
-            const initialState = newerMessage ? "stale" : "ready";
+      return db
+        .transaction(() => {
+          const current = findDraftById.get(inboxId, input.draftId);
+          if (!current) throw new Error("agentMail store: provider draft not found");
+          if (current.provider_revision !== input.expectedProviderRevision) {
+            throw new Error("agentMail store: provider draft revision changed before refresh");
+          }
+          if (
+            current.provider_revision === input.providerRevision &&
+            current.provider_updated_at === input.providerUpdatedAt &&
+            current.material_hash === input.materialHash &&
+            current.send_at === (input.sendAt ?? null)
+          ) {
+            return providerDraftFromRow(current);
+          }
+          if (
+            current.provider_revision === input.providerRevision ||
+            input.providerUpdatedAt < current.provider_updated_at
+          ) {
+            throw new Error("agentMail store: provider draft refresh did not advance its revision");
+          }
+          if (
+            current.state === "sending" ||
+            current.state === "scheduled" ||
+            current.state === "sent" ||
+            current.state === "ambiguous" ||
+            current.state === "deleted"
+          ) {
+            throw new Error(
+              "agentMail store: provider draft cannot be refreshed in its current state",
+            );
+          }
+          const state = current.state === "stale" ? "stale" : "ready";
+          const at = clock();
+          const result = db.run(
+            `UPDATE agentmail_drafts
+                SET provider_revision = ?, provider_updated_at = ?, material_hash = ?, send_at = ?,
+                    state = ?, approval_manifest_hash = NULL,
+                    approved_at = NULL, send_operation_kind = NULL, send_operation_id = NULL,
+                    send_key = NULL, send_started_at = NULL, outcome_code = NULL,
+                    reconciliation_state = 'none', reconciliation_hash = NULL,
+                    reconciled_at = NULL, updated_at = ?
+              WHERE inbox_id = ? AND draft_id = ? AND provider_revision = ?`,
+            [
+              input.providerRevision,
+              input.providerUpdatedAt,
+              input.materialHash,
+              input.sendAt ?? null,
+              state,
+              at,
+              inboxId,
+              input.draftId,
+              input.expectedProviderRevision,
+            ],
+          );
+          if (result.changes !== 1) {
+            throw new Error("agentMail store: provider draft changed before refresh");
+          }
+          return providerDraftFromRow(findDraftById.get(inboxId, input.draftId)!);
+        })
+        .immediate();
+    },
+    approveProviderDraft(input) {
+      assertBoundedIdentifier(input.draftId, "draftId");
+      assertBoundedIdentifier(input.expectedProviderRevision, "expectedProviderRevision");
+      if (
+        !validHash(input.expectedMaterialHash) ||
+        !validHash(input.manifestHash) ||
+        !Number.isSafeInteger(input.approvalGeneration) ||
+        input.approvalGeneration < 1
+      ) {
+        throw new Error("agentMail store: provider draft approval manifest is invalid");
+      }
+      return db
+        .transaction(() => {
+          const current = findDraftById.get(inboxId, input.draftId);
+          if (!current || input.approvalGeneration !== current.approval_generation + 1) {
+            throw new Error("agentMail store: provider draft approval generation is not monotonic");
+          }
+          const at = clock();
+          const result = db.run(
+            `UPDATE agentmail_drafts
+                SET state = 'approved', approval_generation = ?, approval_manifest_hash = ?,
+                    approved_at = ?, updated_at = ?
+              WHERE inbox_id = ? AND draft_id = ? AND state = 'ready'
+                AND provider_revision = ? AND material_hash = ?
+                AND approval_generation = ?`,
+            [
+              input.approvalGeneration,
+              input.manifestHash,
+              at,
+              at,
+              inboxId,
+              input.draftId,
+              input.expectedProviderRevision,
+              input.expectedMaterialHash,
+              current.approval_generation,
+            ],
+          );
+          if (result.changes !== 1) {
+            throw new Error("agentMail store: provider draft changed or is not awaiting approval");
+          }
+          return providerDraftFromRow(findDraftById.get(inboxId, input.draftId)!);
+        })
+        .immediate();
+    },
+    reserveProviderDraftDelivery(input) {
+      assertBoundedIdentifier(input.draftId, "draftId");
+      assertBoundedIdentifier(input.operationId, "operationId");
+      assertBoundedIdentifier(input.expectedProviderRevision, "expectedProviderRevision");
+      if (
+        !validHash(input.expectedMaterialHash) ||
+        !validHash(input.manifestHash) ||
+        !Number.isSafeInteger(input.approvalGeneration) ||
+        input.approvalGeneration < 1
+      ) {
+        throw new Error("agentMail store: draft delivery manifest is invalid");
+      }
+      if (
+        (input.kind === "schedule" && input.sendAt === undefined) ||
+        (input.kind === "send" && input.sendAt !== undefined)
+      ) {
+        throw new Error("agentMail store: draft delivery kind and schedule are inconsistent");
+      }
+      assertOptionalTimestamp(input.sendAt, "sendAt");
+      return db
+        .transaction(() => {
+          const existing = findDraftDelivery.get(inboxId, input.operationId);
+          if (existing) {
+            const exact =
+              existing.draft_id === input.draftId &&
+              existing.kind === input.kind &&
+              existing.approval_generation === input.approvalGeneration &&
+              existing.approval_manifest_hash === input.manifestHash &&
+              existing.provider_revision === input.expectedProviderRevision &&
+              existing.material_hash === input.expectedMaterialHash &&
+              existing.send_at === (input.sendAt ?? null);
+            return {
+              status: exact ? "replay" : "conflict",
+              operation: draftDeliveryFromRow(existing),
+            } as const;
+          }
+          const draft = findDraftById.get(inboxId, input.draftId);
+          if (
+            draft?.state !== "approved" ||
+            draft.provider_revision !== input.expectedProviderRevision ||
+            draft.material_hash !== input.expectedMaterialHash ||
+            draft.approval_generation !== input.approvalGeneration ||
+            draft.approval_manifest_hash !== input.manifestHash
+          ) {
+            throw new Error("agentMail store: draft approval changed before delivery reservation");
+          }
+          if (input.kind === "schedule" && draft.send_at !== (input.sendAt ?? null)) {
+            throw new Error("agentMail store: draft schedule changed before delivery reservation");
+          }
+          const idempotencyKey = createSendKey();
+          if (!/^[A-Za-z0-9._~-]{1,256}$/.test(idempotencyKey)) {
+            throw new Error("agentMail store: generated send key is invalid");
+          }
+          const at = clock();
+          try {
             db.run(
-              `INSERT INTO agentmail_drafts(
-                 inbox_id, source_message_id, thread_id, draft_id, client_id,
-                 provider_updated_at, state, created_at, updated_at
-               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              `INSERT INTO agentmail_draft_delivery_operations(
+                 inbox_id, operation_id, draft_id, kind, idempotency_key,
+                 approval_generation, approval_manifest_hash, provider_revision,
+                 material_hash, send_at, state, created_at, updated_at
+               ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?)`,
               [
                 inboxId,
-                input.sourceMessageId,
-                input.threadId,
+                input.operationId,
                 input.draftId,
-                input.clientId,
-                input.providerUpdatedAt,
-                initialState,
+                input.kind,
+                idempotencyKey,
+                input.approvalGeneration,
+                input.manifestHash,
+                input.expectedProviderRevision,
+                input.expectedMaterialHash,
+                input.sendAt ?? null,
                 at,
                 at,
               ],
             );
-            enqueueCreatorAttention({
-              kind: "draft_ready",
-              subjectId: input.draftId,
-              relatedMessageId: input.sourceMessageId,
-              ...(initialState === "stale" ? { state: "superseded" as const } : {}),
-            });
-            return { status: "recorded" } as const;
-          })
-          .immediate();
-      } catch (error) {
-        if (String(error).includes("UNIQUE")) return { status: "conflict" };
-        throw error;
+          } catch (error) {
+            if (String(error).includes("UNIQUE")) {
+              throw new Error("agentMail store: another delivery operation is already active");
+            }
+            throw error;
+          }
+          const updated = db.run(
+            `UPDATE agentmail_drafts
+                SET state = 'sending', send_operation_kind = ?, send_operation_id = ?,
+                    send_key = ?, send_started_at = ?, outcome_code = NULL,
+                    reconciliation_state = 'none', reconciliation_hash = NULL,
+                    reconciled_at = NULL, updated_at = ?
+              WHERE inbox_id = ? AND draft_id = ? AND state = 'approved'`,
+            [input.kind, input.operationId, idempotencyKey, at, at, inboxId, input.draftId],
+          );
+          if (updated.changes !== 1) {
+            throw new Error("agentMail store: draft changed during delivery reservation");
+          }
+          return {
+            status: "reserved",
+            operation: draftDeliveryFromRow(findDraftDelivery.get(inboxId, input.operationId)!),
+          } as const;
+        })
+        .immediate();
+    },
+    getDraftDeliveryOperation(operationId) {
+      assertBoundedIdentifier(operationId, "operationId");
+      const row = findDraftDelivery.get(inboxId, operationId);
+      return row ? draftDeliveryFromRow(row) : undefined;
+    },
+    settleProviderDraftDelivery(operationId, outcome) {
+      assertBoundedIdentifier(operationId, "operationId");
+      if (outcome.status === "scheduled") assertTimestamp(outcome.sendAt, "sendAt");
+      if (outcome.status === "sent") {
+        assertBoundedIdentifier(outcome.messageId, "messageId");
+        assertBoundedIdentifier(outcome.threadId, "threadId");
       }
+      if (outcome.status === "outcome_unknown" || outcome.status === "failed") {
+        assertBoundedIdentifier(outcome.code, "outcomeCode");
+      }
+      return db
+        .transaction(() => {
+          const operation = findDraftDelivery.get(inboxId, operationId);
+          if (!operation) {
+            throw new Error("agentMail store: no reserved draft delivery to settle");
+          }
+          if (operation.state !== "reserved" && operation.state !== "scheduled") {
+            const exact =
+              (outcome.status === "sent" &&
+                operation.state === "sent" &&
+                operation.sent_message_id === outcome.messageId &&
+                operation.sent_thread_id === outcome.threadId) ||
+              ((outcome.status === "outcome_unknown" || outcome.status === "failed") &&
+                operation.state === outcome.status &&
+                operation.outcome_code === outcome.code);
+            if (exact) return draftDeliveryFromRow(operation);
+            throw new Error("agentMail store: draft delivery was already settled differently");
+          }
+          if (
+            operation.state === "scheduled" &&
+            outcome.status === "scheduled" &&
+            operation.send_at === outcome.sendAt
+          ) {
+            return draftDeliveryFromRow(operation);
+          }
+          if (
+            (outcome.status === "scheduled" &&
+              (operation.state !== "reserved" ||
+                operation.kind !== "schedule" ||
+                operation.send_at !== outcome.sendAt)) ||
+            (operation.kind === "send" && outcome.status === "scheduled")
+          ) {
+            throw new Error("agentMail store: draft delivery settlement does not match its kind");
+          }
+          const nextOperationState: AgentMailDraftDeliveryState =
+            outcome.status === "outcome_unknown" ? "outcome_unknown" : outcome.status;
+          const nextDraftState: AgentMailProviderDraftState =
+            outcome.status === "scheduled"
+              ? "scheduled"
+              : outcome.status === "outcome_unknown"
+                ? "ambiguous"
+                : outcome.status === "failed"
+                  ? operation.state === "scheduled"
+                    ? "failed"
+                    : "approved"
+                  : "sent";
+          const at = clock();
+          db.run(
+            `UPDATE agentmail_draft_delivery_operations
+                SET state = ?, sent_message_id = ?, sent_thread_id = ?, outcome_code = ?,
+                    updated_at = ?
+              WHERE inbox_id = ? AND operation_id = ? AND state = ?`,
+            [
+              nextOperationState,
+              outcome.status === "sent" ? outcome.messageId : null,
+              outcome.status === "sent" ? outcome.threadId : null,
+              outcome.status === "outcome_unknown" || outcome.status === "failed"
+                ? outcome.code
+                : null,
+              at,
+              inboxId,
+              operationId,
+              operation.state,
+            ],
+          );
+          db.run(
+            `UPDATE agentmail_drafts
+                SET state = ?, sent_message_id = ?, sent_thread_id = ?, outcome_code = ?,
+                    reconciliation_state = ?, updated_at = ?
+              WHERE inbox_id = ? AND draft_id = ? AND state = ?
+                AND send_operation_id = ?`,
+            [
+              nextDraftState,
+              outcome.status === "sent" ? outcome.messageId : null,
+              outcome.status === "sent" ? outcome.threadId : null,
+              outcome.status === "outcome_unknown" || outcome.status === "failed"
+                ? outcome.code
+                : null,
+              outcome.status === "outcome_unknown" ? "required" : "none",
+              at,
+              inboxId,
+              operation.draft_id,
+              operation.state === "scheduled" ? "scheduled" : "sending",
+              operationId,
+            ],
+          );
+          if (outcome.status === "sent") {
+            supersedePendingDraftAttention("?", [operation.draft_id]);
+            enqueueRecordedDeliveryFailures(outcome.messageId);
+          }
+          return draftDeliveryFromRow(findDraftDelivery.get(inboxId, operationId)!);
+        })
+        .immediate();
+    },
+    reconcileProviderDraftDelivery(input) {
+      assertBoundedIdentifier(input.operationId, "operationId");
+      if (!validHash(input.evidenceHash)) {
+        throw new Error("agentMail store: reconciliation evidence hash is invalid");
+      }
+      if (input.resolution.status === "sent") {
+        assertBoundedIdentifier(input.resolution.messageId, "messageId");
+        assertBoundedIdentifier(input.resolution.threadId, "threadId");
+      }
+      return db
+        .transaction(() => {
+          const operation = findDraftDelivery.get(inboxId, input.operationId);
+          if (!operation) throw new Error("agentMail store: draft delivery operation not found");
+          const resolvedState = input.resolution.status === "sent" ? "sent" : "reconciled_not_sent";
+          if (operation.state !== "outcome_unknown") {
+            const exact =
+              operation.state === resolvedState &&
+              operation.reconciliation_hash === input.evidenceHash &&
+              (input.resolution.status !== "sent" ||
+                (operation.sent_message_id === input.resolution.messageId &&
+                  operation.sent_thread_id === input.resolution.threadId));
+            if (exact) return draftDeliveryFromRow(operation);
+            throw new Error("agentMail store: draft delivery is not awaiting reconciliation");
+          }
+          const at = clock();
+          db.run(
+            `UPDATE agentmail_draft_delivery_operations
+                SET state = ?, sent_message_id = ?, sent_thread_id = ?,
+                    reconciliation_hash = ?, reconciled_at = ?, updated_at = ?
+              WHERE inbox_id = ? AND operation_id = ? AND state = 'outcome_unknown'`,
+            [
+              resolvedState,
+              input.resolution.status === "sent" ? input.resolution.messageId : null,
+              input.resolution.status === "sent" ? input.resolution.threadId : null,
+              input.evidenceHash,
+              at,
+              at,
+              inboxId,
+              input.operationId,
+            ],
+          );
+          db.run(
+            `UPDATE agentmail_drafts
+                SET state = ?, sent_message_id = ?, sent_thread_id = ?,
+                    reconciliation_state = ?, reconciliation_hash = ?, reconciled_at = ?,
+                    updated_at = ?
+              WHERE inbox_id = ? AND draft_id = ? AND state = 'ambiguous'
+                AND send_operation_id = ? AND reconciliation_state = 'required'`,
+            [
+              input.resolution.status === "sent" ? "sent" : "approved",
+              input.resolution.status === "sent" ? input.resolution.messageId : null,
+              input.resolution.status === "sent" ? input.resolution.threadId : null,
+              input.resolution.status === "sent" ? "confirmed_sent" : "confirmed_not_sent",
+              input.evidenceHash,
+              at,
+              at,
+              inboxId,
+              operation.draft_id,
+              input.operationId,
+            ],
+          );
+          if (input.resolution.status === "sent") {
+            supersedePendingDraftAttention("?", [operation.draft_id]);
+            enqueueRecordedDeliveryFailures(input.resolution.messageId);
+          }
+          return draftDeliveryFromRow(findDraftDelivery.get(inboxId, input.operationId)!);
+        })
+        .immediate();
+    },
+    compact(input) {
+      assertTimestamp(input.terminalBefore, "terminalBefore");
+      if (!Number.isSafeInteger(input.maxRows) || input.maxRows < 1 || input.maxRows > 100_000) {
+        throw new Error("agentMail store: compaction maxRows must be between 1 and 100000");
+      }
+      return db
+        .transaction(() => {
+          let remaining = input.maxRows;
+          const remove = (sql: string, bindings: Array<string | number>): number => {
+            if (remaining === 0) return 0;
+            const changed = db.run(sql, [...bindings, remaining]).changes;
+            remaining -= changed;
+            return changed;
+          };
+          const creatorAttention = remove(
+            `DELETE FROM agentmail_creator_attention WHERE rowid IN (
+               SELECT rowid FROM agentmail_creator_attention
+                WHERE inbox_id = ? AND updated_at < ?
+                  AND state IN ('presented', 'failed', 'superseded', 'dismissed')
+                  AND (destination IS NULL OR notify_acknowledged_at IS NOT NULL)
+                ORDER BY updated_at ASC, attention_id ASC LIMIT ?
+             )`,
+            [inboxId, input.terminalBefore],
+          );
+          const deliveryOperations = remove(
+            `DELETE FROM agentmail_draft_delivery_operations WHERE rowid IN (
+               SELECT delivery.rowid FROM agentmail_draft_delivery_operations AS delivery
+                WHERE delivery.inbox_id = ? AND delivery.updated_at < ?
+                  AND delivery.state IN ('sent', 'failed', 'reconciled_not_sent')
+                  AND EXISTS (
+                    SELECT 1 FROM agentmail_drafts AS draft
+                     WHERE draft.inbox_id = delivery.inbox_id
+                       AND draft.draft_id = delivery.draft_id
+                       AND draft.state IN ('stale', 'sent', 'deleted')
+                  )
+                ORDER BY delivery.updated_at ASC, delivery.operation_id ASC LIMIT ?
+             )`,
+            [inboxId, input.terminalBefore],
+          );
+          const drafts = remove(
+            `DELETE FROM agentmail_drafts WHERE rowid IN (
+               SELECT draft.rowid FROM agentmail_drafts AS draft
+                WHERE draft.inbox_id = ? AND draft.updated_at < ?
+                  AND draft.state IN ('stale', 'sent', 'deleted')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM agentmail_creator_attention AS attention
+                     WHERE attention.inbox_id = draft.inbox_id
+                       AND attention.subject_id = draft.draft_id
+                       AND attention.state IN ('pending', 'dispatching', 'ambiguous')
+                  )
+                  AND NOT EXISTS (
+                    SELECT 1 FROM agentmail_draft_delivery_operations AS delivery
+                     WHERE delivery.inbox_id = draft.inbox_id
+                       AND delivery.draft_id = draft.draft_id
+                       AND delivery.state IN ('reserved', 'scheduled', 'outcome_unknown')
+                  )
+                ORDER BY draft.updated_at ASC, draft.draft_id ASC LIMIT ?
+             )`,
+            [inboxId, input.terminalBefore],
+          );
+          const messages = remove(
+            `DELETE FROM agentmail_messages WHERE rowid IN (
+               SELECT message.rowid FROM agentmail_messages AS message
+                WHERE message.inbox_id = ? AND message.updated_at < ?
+                  AND message.state IN ('no_reply', 'draft_ready', 'quarantined', 'completed')
+                  AND NOT EXISTS (
+                    SELECT 1 FROM agentmail_drafts AS draft
+                     WHERE draft.inbox_id = message.inbox_id
+                       AND draft.source_message_id = message.message_id
+                  )
+                ORDER BY message.updated_at ASC, message.message_id ASC LIMIT ?
+             )`,
+            [inboxId, input.terminalBefore],
+          );
+          const outboundOperations = remove(
+            `DELETE FROM agentmail_outbound_operations WHERE rowid IN (
+               SELECT rowid FROM agentmail_outbound_operations
+                WHERE inbox_id = ? AND updated_at < ? AND state IN ('sent', 'failed')
+                ORDER BY updated_at ASC, operation_id ASC LIMIT ?
+             )`,
+            [inboxId, input.terminalBefore],
+          );
+          const providerEvents = remove(
+            `DELETE FROM agentmail_provider_events WHERE rowid IN (
+               SELECT event.rowid FROM agentmail_provider_events AS event
+                WHERE event.inbox_id = ? AND event.observed_at < ?
+                  AND NOT EXISTS (
+                    SELECT 1 FROM agentmail_creator_attention AS attention
+                     WHERE attention.inbox_id = event.inbox_id
+                       AND attention.subject_id = event.event_id
+                       AND attention.state IN ('pending', 'dispatching', 'ambiguous')
+                  )
+                ORDER BY event.observed_at ASC, event.event_id ASC LIMIT ?
+             )`,
+            [inboxId, input.terminalBefore],
+          );
+          const rateReservations = remove(
+            `DELETE FROM agentmail_rate_reservations WHERE rowid IN (
+               SELECT rowid FROM agentmail_rate_reservations
+                WHERE inbox_id = ? AND occurred_at < ?
+                ORDER BY occurred_at ASC, operation_id ASC LIMIT ?
+             )`,
+            [inboxId, input.terminalBefore],
+          );
+          return {
+            drafts,
+            deliveryOperations,
+            messages,
+            outboundOperations,
+            providerEvents,
+            rateReservations,
+            creatorAttention,
+          };
+        })
+        .immediate();
+    },
+    recordDraft(input) {
+      for (const [field, value] of Object.entries(input)) {
+        if (field !== "providerUpdatedAt") assertBoundedIdentifier(String(value), field);
+      }
+      assertTimestamp(input.providerUpdatedAt, "providerUpdatedAt");
+      const existing = findDraft.get(inboxId, input.sourceMessageId);
+      if (existing) {
+        return {
+          status:
+            existing.draft_id === input.draftId &&
+            existing.client_id === input.clientId &&
+            existing.provider_updated_at === input.providerUpdatedAt
+              ? "duplicate"
+              : "conflict",
+        } as const;
+      }
+      const source = findMessage.get(inboxId, input.sourceMessageId);
+      if (!source || source.thread_id !== input.threadId) {
+        throw new Error("agentMail store: legacy draft source does not match claimed message");
+      }
+      const materialHash = hashAgentMailOrchestrationValue(
+        JSON.stringify([
+          "agentmail-legacy-draft-reference/v1",
+          input.sourceMessageId,
+          input.threadId,
+          input.draftId,
+          input.clientId,
+          input.providerUpdatedAt,
+        ]),
+      );
+      return recordProviderDraft.immediate({
+        draftId: input.draftId,
+        kind: "reply",
+        sourceMessageId: input.sourceMessageId,
+        threadId: input.threadId,
+        operationId: input.clientId,
+        clientId: input.clientId,
+        providerRevision: `updated-at:${input.providerUpdatedAt}`,
+        providerUpdatedAt: input.providerUpdatedAt,
+        materialHash,
+      });
     },
     getDraftByMessage(messageId) {
       const row = findDraft.get(inboxId, messageId);
@@ -1060,7 +2041,7 @@ export function createAgentMailOrchestrationStore(
     getDraftById(draftId) {
       assertBoundedIdentifier(draftId, "draftId");
       const row = findDraftById.get(inboxId, draftId);
-      return row ? draftFromRow(row) : undefined;
+      return row?.source_message_id && row.thread_id ? draftFromRow(row) : undefined;
     },
     listDrafts(limit = 100) {
       if (!Number.isSafeInteger(limit) || limit < 1 || limit > 1_000) {
@@ -1068,9 +2049,8 @@ export function createAgentMailOrchestrationStore(
       }
       return db
         .query<DraftRow, [string, number]>(
-          `SELECT inbox_id, source_message_id, thread_id, draft_id, client_id,
-                  provider_updated_at, state, send_key, send_started_at, sent_message_id
-             FROM agentmail_drafts WHERE inbox_id = ?
+          `SELECT ${DRAFT_COLUMNS} FROM agentmail_drafts
+            WHERE inbox_id = ? AND source_message_id IS NOT NULL AND thread_id IS NOT NULL
              ORDER BY updated_at DESC, draft_id ASC LIMIT ?`,
         )
         .all(inboxId, limit)
@@ -1085,17 +2065,47 @@ export function createAgentMailOrchestrationStore(
       ) {
         throw new Error("agentMail store: provider draft timestamps are invalid");
       }
-      const result = db.run(
-        `UPDATE agentmail_drafts
-            SET provider_updated_at = ?, state = 'ready', approval_hash = NULL,
-                approved_at = NULL, send_key = NULL, send_started_at = NULL, updated_at = ?
-          WHERE inbox_id = ? AND source_message_id = ? AND provider_updated_at = ?
-            AND state IN ('ready', 'stale', 'failed')`,
-        [input.providerUpdatedAt, clock(), inboxId, input.sourceMessageId, input.expectedUpdatedAt],
-      );
-      if (result.changes !== 1) {
-        throw new Error("agentMail store: draft changed or cannot return to review");
-      }
+      db.transaction(() => {
+        const current = findDraft.get(inboxId, input.sourceMessageId);
+        if (
+          !current ||
+          current.provider_updated_at !== input.expectedUpdatedAt ||
+          !["ready", "stale", "failed"].includes(current.state)
+        ) {
+          throw new Error("agentMail store: draft changed or cannot return to review");
+        }
+        const providerRevision = `updated-at:${input.providerUpdatedAt}`;
+        const materialHash = hashAgentMailOrchestrationValue(
+          JSON.stringify([
+            "agentmail-legacy-draft-refresh/v1",
+            current.material_hash,
+            providerRevision,
+          ]),
+        );
+        const result = db.run(
+          `UPDATE agentmail_drafts
+              SET provider_revision = ?, provider_updated_at = ?, material_hash = ?,
+                  state = 'ready', approval_manifest_hash = NULL, approved_at = NULL,
+                  send_operation_kind = NULL, send_operation_id = NULL,
+                  send_key = NULL, send_started_at = NULL, outcome_code = NULL,
+                  reconciliation_state = 'none', reconciliation_hash = NULL,
+                  reconciled_at = NULL, updated_at = ?
+            WHERE inbox_id = ? AND draft_id = ? AND provider_updated_at = ?
+              AND state IN ('ready', 'stale', 'failed')`,
+          [
+            providerRevision,
+            input.providerUpdatedAt,
+            materialHash,
+            clock(),
+            inboxId,
+            current.draft_id,
+            input.expectedUpdatedAt,
+          ],
+        );
+        if (result.changes !== 1) {
+          throw new Error("agentMail store: draft changed or cannot return to review");
+        }
+      }).immediate();
     },
     markThreadDraftsStale(threadId, exceptSourceMessageId) {
       assertBoundedIdentifier(threadId, "threadId");
@@ -1110,7 +2120,8 @@ export function createAgentMailOrchestrationStore(
             )
             .all(inboxId, threadId, exceptSourceMessageId);
           const result = db.run(
-            `UPDATE agentmail_drafts SET state = 'stale', approval_hash = NULL,
+            `UPDATE agentmail_drafts
+                SET state = 'stale', approval_manifest_hash = NULL,
                     approved_at = NULL, updated_at = ?
               WHERE inbox_id = ? AND thread_id = ? AND source_message_id <> ?
                 AND state IN ('ready', 'approved')`,
@@ -1131,7 +2142,9 @@ export function createAgentMailOrchestrationStore(
       db.transaction(() => {
         const draft = findDraft.get(inboxId, sourceMessageId);
         const result = db.run(
-          `UPDATE agentmail_drafts SET state = 'stale', updated_at = ?
+          `UPDATE agentmail_drafts
+              SET state = 'stale', approval_manifest_hash = NULL,
+                  approved_at = NULL, updated_at = ?
             WHERE inbox_id = ? AND source_message_id = ? AND state IN ('ready', 'approved')`,
           [clock(), inboxId, sourceMessageId],
         );
@@ -1147,17 +2160,21 @@ export function createAgentMailOrchestrationStore(
       ) {
         throw new Error("agentMail store: approval evidence is invalid");
       }
+      const current = findDraft.get(inboxId, input.sourceMessageId);
+      if (!current) throw new Error("agentMail store: draft changed or is not awaiting review");
+      const at = clock();
       const result = db.run(
         `UPDATE agentmail_drafts
-            SET state = 'approved', approval_hash = ?, approved_at = ?, updated_at = ?
-          WHERE inbox_id = ? AND source_message_id = ? AND state = 'ready'
+            SET state = 'approved', approval_generation = approval_generation + 1,
+                approval_manifest_hash = ?, approved_at = ?, updated_at = ?
+          WHERE inbox_id = ? AND draft_id = ? AND state = 'ready'
             AND provider_updated_at = ?`,
         [
           hashAgentMailOrchestrationValue(input.approvalEvidence),
-          clock(),
-          clock(),
+          at,
+          at,
           inboxId,
-          input.sourceMessageId,
+          current.draft_id,
           input.expectedUpdatedAt,
         ],
       );
@@ -1176,12 +2193,20 @@ export function createAgentMailOrchestrationStore(
           if (!/^[A-Za-z0-9._~-]{1,256}$/.test(sendKey)) {
             throw new Error("agentMail store: generated send key is invalid");
           }
-          db.run(
-            `UPDATE agentmail_drafts SET state = 'sending', send_key = ?,
-                    send_started_at = ?, updated_at = ?
-              WHERE inbox_id = ? AND source_message_id = ? AND state = 'approved'`,
-            [sendKey, clock(), clock(), inboxId, sourceMessageId],
+          const at = clock();
+          const operationId = `legacy-send:${row.draft_id}:${row.approval_generation}`;
+          const result = db.run(
+            `UPDATE agentmail_drafts
+                SET state = 'sending', send_operation_kind = 'send', send_operation_id = ?,
+                    send_key = ?, send_started_at = ?, outcome_code = NULL,
+                    reconciliation_state = 'none', reconciliation_hash = NULL,
+                    reconciled_at = NULL, updated_at = ?
+              WHERE inbox_id = ? AND draft_id = ? AND state = 'approved'`,
+            [operationId, sendKey, at, at, inboxId, row.draft_id],
           );
+          if (result.changes !== 1) {
+            throw new Error("agentMail store: draft changed during send reservation");
+          }
           return { status: "reserved" as const, sendKey };
         })
         .immediate();
@@ -1197,16 +2222,29 @@ export function createAgentMailOrchestrationStore(
               SET state = ?, sent_message_id = ?,
                   send_key = CASE WHEN ? = 'ready' THEN NULL ELSE send_key END,
                   send_started_at = CASE WHEN ? = 'ready' THEN NULL ELSE send_started_at END,
+                  send_operation_kind = CASE WHEN ? = 'ready' THEN NULL ELSE send_operation_kind END,
+                  send_operation_id = CASE WHEN ? = 'ready' THEN NULL ELSE send_operation_id END,
+                  outcome_code = CASE
+                    WHEN ? = 'ambiguous' THEN 'legacy_outcome_unknown'
+                    WHEN ? = 'failed' THEN 'legacy_send_failed'
+                    ELSE NULL
+                  END,
+                  reconciliation_state = CASE WHEN ? = 'ambiguous' THEN 'required' ELSE 'none' END,
                   updated_at = ?
-            WHERE inbox_id = ? AND source_message_id = ? AND state = 'sending'`,
+            WHERE inbox_id = ? AND draft_id = ? AND state = 'sending'`,
           [
             state,
             outcome.status === "sent" ? outcome.messageId : null,
             state,
             state,
+            state,
+            state,
+            state,
+            state,
+            state,
             clock(),
             inboxId,
-            sourceMessageId,
+            draft?.draft_id ?? "",
           ],
         );
         if (result.changes !== 1) throw new Error("agentMail store: no reserved send to settle");

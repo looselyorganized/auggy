@@ -38,6 +38,19 @@ function claimInput(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function providerDraftInput(overrides: Record<string, unknown> = {}) {
+  return {
+    draftId: "draft_provider_1",
+    kind: "new" as const,
+    operationId: "create_provider_draft_1",
+    clientId: "client_provider_draft_1",
+    providerRevision: "revision_1",
+    providerUpdatedAt: 1_500,
+    materialHash: hashAgentMailOrchestrationValue("provider draft material 1"),
+    ...overrides,
+  };
+}
+
 describe("AgentMail orchestration store", () => {
   test("brands a fresh exact schema and persists only orchestration state", () => {
     const paths = fixture();
@@ -63,6 +76,17 @@ describe("AgentMail orchestration store", () => {
     expect(columns).not.toContain("body");
     expect(columns).not.toContain("html");
     expect(columns).not.toContain("api_key");
+    for (const table of ["agentmail_drafts", "agentmail_draft_delivery_operations"]) {
+      const stateColumns = db
+        .query<{ name: string }, []>(`PRAGMA table_info(${table})`)
+        .all()
+        .map((row) => row.name);
+      expect(stateColumns).not.toContain("body");
+      expect(stateColumns).not.toContain("html");
+      expect(stateColumns).not.toContain("attachments");
+      expect(stateColumns).not.toContain("api_key");
+      expect(stateColumns).not.toContain("signed_url");
+    }
     db.close();
     expect(readFileSync(paths.dbPath).includes(Buffer.from("Full body"))).toBe(false);
   });
@@ -705,6 +729,301 @@ describe("AgentMail orchestration store", () => {
     expect(store.getDraftByMessage("message_1")?.state).toBe("ambiguous");
     expect(store.recoverAmbiguousMutations()).toEqual({ drafts: 0, outbound: 0 });
     store.close();
+  });
+
+  test("keys provider-native drafts by provider and operation identity across restarts", () => {
+    const paths = fixture();
+    let store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+    });
+    store.claimMessage(claimInput());
+    const reply = providerDraftInput({
+      draftId: "draft_reply_1",
+      kind: "reply" as const,
+      sourceMessageId: "message_1",
+      threadId: "thread_1",
+      operationId: "create_reply_1",
+      clientId: "client_reply_1",
+    });
+    expect(store.recordProviderDraft(reply)).toEqual({ status: "recorded" });
+    expect(store.recordProviderDraft(reply)).toEqual({ status: "duplicate" });
+    expect(store.recordProviderDraft({ ...reply, providerRevision: "revision_changed" })).toEqual({
+      status: "conflict",
+    });
+    expect(
+      store.recordProviderDraft(
+        providerDraftInput({ draftId: "draft_collision", operationId: "create_reply_1" }),
+      ),
+    ).toEqual({ status: "conflict" });
+    expect(() =>
+      store.recordProviderDraft(
+        providerDraftInput({ kind: "forward" as const, sourceMessageId: undefined }),
+      ),
+    ).toThrow(/kind and source message/);
+    expect(
+      store.recordProviderDraft(
+        providerDraftInput({
+          draftId: "draft_external_reply",
+          kind: "reply_all" as const,
+          sourceMessageId: "provider_message_not_ingested_by_auggy",
+          threadId: "provider_thread_not_ingested_by_auggy",
+          operationId: "create_external_reply",
+          clientId: "client_external_reply",
+        }),
+      ),
+    ).toEqual({ status: "recorded" });
+    expect(store.recordProviderDraft(providerDraftInput())).toEqual({ status: "recorded" });
+    expect(store.listProviderDrafts()).toHaveLength(3);
+    store.close();
+
+    store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+    });
+    expect(store.getProviderDraft("draft_reply_1")).toMatchObject({
+      kind: "reply",
+      sourceMessageId: "message_1",
+      operationId: "create_reply_1",
+      materialHash: reply.materialHash,
+    });
+    expect(store.getProviderDraft("draft_provider_1")).toMatchObject({ kind: "new" });
+    store.close();
+  });
+
+  test("invalidates approvals on provider refresh and fences delivery with immutable manifests", () => {
+    const paths = fixture();
+    let now = 2_000;
+    const store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+      clock: () => now,
+      sendKey: () => "provider-idempotency-key",
+    });
+    const firstMaterial = hashAgentMailOrchestrationValue("first provider material");
+    const secondMaterial = hashAgentMailOrchestrationValue("second provider material");
+    const firstManifest = hashAgentMailOrchestrationValue("first immutable approval manifest");
+    const secondManifest = hashAgentMailOrchestrationValue("second immutable approval manifest");
+    store.recordProviderDraft(providerDraftInput({ materialHash: firstMaterial, sendAt: 10_000 }));
+    expect(
+      store.approveProviderDraft({
+        draftId: "draft_provider_1",
+        expectedProviderRevision: "revision_1",
+        expectedMaterialHash: firstMaterial,
+        approvalGeneration: 1,
+        manifestHash: firstManifest,
+      }),
+    ).toMatchObject({ state: "approved", approvalGeneration: 1 });
+    now = 3_000;
+    const refreshed = store.refreshProviderDraft({
+      draftId: "draft_provider_1",
+      expectedProviderRevision: "revision_1",
+      providerRevision: "revision_2",
+      providerUpdatedAt: 2_500,
+      materialHash: secondMaterial,
+      sendAt: 11_000,
+    });
+    expect(refreshed).toMatchObject({ state: "ready", approvalGeneration: 1 });
+    expect(refreshed.approvalManifestHash).toBeUndefined();
+    expect(() =>
+      store.approveProviderDraft({
+        draftId: "draft_provider_1",
+        expectedProviderRevision: "revision_2",
+        expectedMaterialHash: secondMaterial,
+        approvalGeneration: 1,
+        manifestHash: secondManifest,
+      }),
+    ).toThrow(/generation is not monotonic/);
+    store.approveProviderDraft({
+      draftId: "draft_provider_1",
+      expectedProviderRevision: "revision_2",
+      expectedMaterialHash: secondMaterial,
+      approvalGeneration: 2,
+      manifestHash: secondManifest,
+    });
+    const reserved = store.reserveProviderDraftDelivery({
+      draftId: "draft_provider_1",
+      operationId: "schedule_draft_1",
+      kind: "schedule",
+      expectedProviderRevision: "revision_2",
+      expectedMaterialHash: secondMaterial,
+      approvalGeneration: 2,
+      manifestHash: secondManifest,
+      sendAt: 11_000,
+    });
+    expect(reserved).toMatchObject({
+      status: "reserved",
+      operation: { idempotencyKey: "provider-idempotency-key", state: "reserved" },
+    });
+    expect(
+      store.reserveProviderDraftDelivery({
+        draftId: "draft_provider_1",
+        operationId: "schedule_draft_1",
+        kind: "schedule",
+        expectedProviderRevision: "revision_2",
+        expectedMaterialHash: secondMaterial,
+        approvalGeneration: 2,
+        manifestHash: secondManifest,
+        sendAt: 11_000,
+      }),
+    ).toMatchObject({
+      status: "replay",
+      operation: { idempotencyKey: "provider-idempotency-key" },
+    });
+    expect(
+      store.settleProviderDraftDelivery("schedule_draft_1", {
+        status: "scheduled",
+        sendAt: 11_000,
+      }),
+    ).toMatchObject({ state: "scheduled", sendAt: 11_000 });
+    expect(store.getProviderDraft("draft_provider_1")).toMatchObject({ state: "scheduled" });
+    store.close();
+  });
+
+  test("recovers uncertain provider sends and requires explicit reconciliation", () => {
+    const paths = fixture();
+    let store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+      sendKey: () => "provider-send-key",
+    });
+    const materialHash = hashAgentMailOrchestrationValue("send material");
+    const manifestHash = hashAgentMailOrchestrationValue("send manifest");
+    store.recordProviderDraft(providerDraftInput({ materialHash }));
+    store.approveProviderDraft({
+      draftId: "draft_provider_1",
+      expectedProviderRevision: "revision_1",
+      expectedMaterialHash: materialHash,
+      approvalGeneration: 1,
+      manifestHash,
+    });
+    store.reserveProviderDraftDelivery({
+      draftId: "draft_provider_1",
+      operationId: "send_draft_1",
+      kind: "send",
+      expectedProviderRevision: "revision_1",
+      expectedMaterialHash: materialHash,
+      approvalGeneration: 1,
+      manifestHash,
+    });
+    store.close();
+
+    store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+    });
+    expect(store.recoverAmbiguousMutations()).toEqual({ drafts: 1, outbound: 0 });
+    expect(store.getDraftDeliveryOperation("send_draft_1")).toMatchObject({
+      state: "outcome_unknown",
+      outcomeCode: "interrupted_before_settlement",
+    });
+    expect(store.getProviderDraft("draft_provider_1")).toMatchObject({
+      state: "ambiguous",
+      reconciliationState: "required",
+    });
+    const evidenceHash = hashAgentMailOrchestrationValue("provider search confirmed send");
+    const reconciled = store.reconcileProviderDraftDelivery({
+      operationId: "send_draft_1",
+      evidenceHash,
+      resolution: { status: "sent", messageId: "sent_1", threadId: "thread_1" },
+    });
+    expect(reconciled).toMatchObject({
+      state: "sent",
+      sentMessageId: "sent_1",
+      sentThreadId: "thread_1",
+      reconciliationHash: evidenceHash,
+    });
+    expect(
+      store.reconcileProviderDraftDelivery({
+        operationId: "send_draft_1",
+        evidenceHash,
+        resolution: { status: "sent", messageId: "sent_1", threadId: "thread_1" },
+      }),
+    ).toEqual(reconciled);
+    expect(() =>
+      store.reconcileProviderDraftDelivery({
+        operationId: "send_draft_1",
+        evidenceHash: hashAgentMailOrchestrationValue("conflicting evidence"),
+        resolution: { status: "not_sent" },
+      }),
+    ).toThrow(/not awaiting reconciliation/);
+    store.close();
+  });
+
+  test("compacts terminal state in bounded batches while retaining active and ambiguous work", () => {
+    const paths = fixture();
+    let now = 1_000;
+    let sendKey = 0;
+    const store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+      clock: () => now,
+      sendKey: () => `send-key-${++sendKey}`,
+    });
+    const materialHash = hashAgentMailOrchestrationValue("terminal material");
+    const manifestHash = hashAgentMailOrchestrationValue("terminal manifest");
+    store.recordProviderDraft(providerDraftInput({ materialHash }));
+    store.approveProviderDraft({
+      draftId: "draft_provider_1",
+      expectedProviderRevision: "revision_1",
+      expectedMaterialHash: materialHash,
+      approvalGeneration: 1,
+      manifestHash,
+    });
+    store.reserveProviderDraftDelivery({
+      draftId: "draft_provider_1",
+      operationId: "send_terminal",
+      kind: "send",
+      expectedProviderRevision: "revision_1",
+      expectedMaterialHash: materialHash,
+      approvalGeneration: 1,
+      manifestHash,
+    });
+    store.settleProviderDraftDelivery("send_terminal", {
+      status: "sent",
+      messageId: "sent_terminal",
+      threadId: "thread_terminal",
+    });
+
+    store.recordProviderDraft(
+      providerDraftInput({
+        draftId: "draft_active",
+        operationId: "create_active",
+        clientId: "client_active",
+        materialHash: hashAgentMailOrchestrationValue("active material"),
+      }),
+    );
+    now = 5_000;
+    const first = store.compact({ terminalBefore: 4_000, maxRows: 1 });
+    expect(Object.values(first).reduce((sum, count) => sum + count, 0)).toBe(1);
+    expect(store.getProviderDraft("draft_active")?.state).toBe("ready");
+    const second = store.compact({ terminalBefore: 4_000, maxRows: 1 });
+    expect(Object.values(second).reduce((sum, count) => sum + count, 0)).toBeLessThanOrEqual(1);
+    expect(store.getProviderDraft("draft_active")?.state).toBe("ready");
+    const third = store.compact({ terminalBefore: 4_000, maxRows: 1 });
+    expect(Object.values(third).reduce((sum, count) => sum + count, 0)).toBeLessThanOrEqual(1);
+    expect(store.getProviderDraft("draft_provider_1")).toBeUndefined();
+    store.close();
+  });
+
+  test("fails closed when the exact orchestration fingerprint is corrupt", () => {
+    const paths = fixture();
+    const store = createAgentMailOrchestrationStore({
+      dbPath: paths.dbPath,
+      inboxId: "support@agentmail.to",
+    });
+    store.close();
+    const db = new Database(paths.dbPath);
+    db.run("UPDATE agentmail_store_metadata SET contract_fingerprint = ? WHERE singleton = 1", [
+      "0".repeat(64),
+    ]);
+    db.close();
+    expect(() =>
+      createAgentMailOrchestrationStore({
+        dbPath: paths.dbPath,
+        inboxId: "support@agentmail.to",
+      }),
+    ).toThrow(/fingerprint.*corrupt/i);
   });
 
   test("rejects an unrelated or obsolete SQLite identity instead of migrating it", () => {
