@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **AgentMail setup choices restored.** Interactive setup can create the first
+  AgentMail account, create an inbox in an existing account, or manually
+  connect an existing inbox. Every path retains the provider-returned or
+  operator-supplied key unchanged; Auggy never exchanges it for a child key.
+
+### Fixed
+
+- **Provider-compatible AgentMail tools.** Retry and reconciliation tools now
+  expose object-shaped input schemas accepted by Anthropic while preserving
+  variant-specific validation. Installing AgentMail no longer causes every
+  model turn to fail before inference.
+
 ## [0.5.0-rc.11] - 2026-08-13
 
 This eleventh public candidate replaces the legacy AgentMail integration with

@@ -1,6 +1,6 @@
 # `agentMail` augment
 
-`agentMail` connects one Auggy agent to one existing AgentMail inbox. AgentMail
+`agentMail` connects one Auggy agent to one AgentMail inbox. AgentMail
 stores the inbox, messages, threads, attachments, and drafts. Auggy adds
 WebSocket wake-up, offline catch-up, authorization, limits, creator review, and
 crash-safe delivery records.
@@ -10,16 +10,23 @@ provider-authenticated address—does not make that sender the creator.
 
 ## Set up the connection
 
-Create an inbox and API key in the
-[AgentMail Console](https://console.agentmail.to), then run:
+Install the augment, then start its interactive setup:
 
 ```bash
 auggy augment add agentMail
-auggy augment setup agentMail --mode connect
+auggy augment setup agentMail
 ```
 
-Setup asks for that inbox ID and that exact API key. It verifies the connection
-and writes these values to the agent's `.env`:
+Choose one path:
+
+| Setup choice | What Auggy does | Runtime key |
+| --- | --- | --- |
+| Create an AgentMail account | Creates the first account and inbox, then verifies the email OTP. | Saves the initial key returned by AgentMail. |
+| Create a new inbox in an existing account | Creates an inbox with the account key you enter. | Saves that exact same key. |
+| Manually connect an existing AgentMail inbox | Verifies the inbox ID and key you enter. | Saves that exact same key. |
+
+Setup verifies the resulting connection and writes these values to the agent's
+`.env`:
 
 ```dotenv
 AGENTMAIL_API_KEY=am_your_existing_key
@@ -27,10 +34,12 @@ AGENTMAIL_INBOX_ID=store@agentmail.to
 AGENTMAIL_INBOX_EMAIL=store@agentmail.to
 ```
 
-Auggy does not create, replace, narrow, rotate, or revoke the key. If the values
-already exist, verify them with `auggy augment setup agentMail --mode env`.
-Setup performs read-only checks; a missing write permission is reported when
-the corresponding action is first used.
+Auggy never exchanges your selected key for a second, narrower runtime key and
+never rotates or revokes it. If the values already exist, verify them with
+`auggy augment setup agentMail --mode env`. Manual connection is also available
+as `--mode manual`; the older `--mode connect` spelling remains an alias during
+the release-candidate line. Setup performs read-only runtime checks; a missing
+write permission is reported when the corresponding action is first used.
 
 The generated baseline needs `inbox_read`, `message_read`, `draft_read`,
 `message_send`, `draft_create`, `draft_update`, and `draft_send`. Add permissions

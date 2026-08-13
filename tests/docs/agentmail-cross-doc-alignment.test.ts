@@ -13,20 +13,15 @@ const surfaces = [
 ] as const;
 
 describe("AgentMail cross-document contract", () => {
-  test("documents only exact-key connection and environment reuse", () => {
+  test("documents exact-key setup and environment reuse", () => {
     for (const path of surfaces) {
       const source = read(path);
-      expect(source).not.toContain("--mode signup");
-      expect(source).not.toContain("--mode existing");
-      expect(source).not.toContain("--mode manual");
       expect(source).not.toContain("--replace-key");
       expect(source).not.toContain("AGENTMAIL_ACCOUNT_API_KEY");
     }
 
-    expect(read("README.md")).toContain("auggy agentmail setup agentMail --mode connect");
-    expect(read("docs/19-visitor-auth.md")).toContain(
-      "auggy agentmail setup visitorAuth --mode connect",
-    );
+    expect(read("README.md")).toContain("auggy agentmail setup agentMail");
+    expect(read("docs/19-visitor-auth.md")).toContain("auggy agentmail setup visitorAuth");
   });
 
   test("keeps visitorAuth independent from mailbox inbound processing", () => {

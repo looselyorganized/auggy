@@ -1,4 +1,4 @@
-import { input, password, select } from "@inquirer/prompts";
+import { confirm, input, password, select } from "@inquirer/prompts";
 import { Command } from "commander";
 import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -31,9 +31,14 @@ import {
   createAgentMailProvider,
   type AgentMailProvider,
 } from "../../augments/agentMail/provider";
+import {
+  createAgentMailSetupProvider,
+  type AgentMailSetupProvider,
+} from "../agentmail-setup-provider";
 
 export type AgentMailSetupTarget = "agentMail" | "visitorAuth";
-export type AgentMailSetupMode = "connect" | "env";
+export type AgentMailSetupMode = "signup" | "existing" | "manual" | "connect" | "env";
+const AGENTMAIL_OTP_MAX_ATTEMPTS = 3;
 const AGENTMAIL_RUNTIME_ENV_KEYS = [
   "AGENTMAIL_API_KEY",
   "AGENTMAIL_INBOX_ID",
@@ -58,8 +63,10 @@ interface AgentMailEnvSnapshot {
 type PromptSelect = typeof select;
 type PromptInput = typeof input;
 type PromptPassword = typeof password;
+type PromptConfirm = typeof confirm;
 
 export interface AgentMailCommandDeps {
+  setupProvider?: AgentMailSetupProvider;
   /** Read-only runtime capability checks for the supplied inbox and key. */
   verifyRuntimeAccess?: (
     input: {
@@ -76,6 +83,7 @@ export interface AgentMailCommandDeps {
   promptSelect?: PromptSelect;
   promptInput?: PromptInput;
   promptPassword?: PromptPassword;
+  promptConfirm?: PromptConfirm;
   exit?: (code: number) => void;
   cwd?: string;
   auggyDir?: string;
@@ -87,8 +95,12 @@ export interface AgentMailSetupOptions {
   agent?: string;
   config?: string;
   mode?: string;
+  humanEmail?: string;
+  username?: string;
+  displayName?: string;
   apiKey?: string;
   inboxId?: string;
+  yes?: boolean;
   baseUrl?: string;
   allowInsecureHttpWithCredentials?: boolean;
 }
@@ -110,17 +122,21 @@ export interface AgentMailSetupResult {
 export function agentMailCommand(deps: AgentMailCommandDeps = {}): Command {
   const exit = deps.exit ?? ((code: number) => process.exit(code));
   const command = new Command("agentmail").description(
-    "Connect an existing AgentMail inbox for agent email and visitorAuth",
+    "Create or connect an AgentMail inbox for agent email and visitorAuth",
   );
 
   command
     .command("setup [target]")
-    .description("Connect AgentMail to an installed augment")
+    .description("Create or connect AgentMail for an installed augment")
     .option("--agent <name>", "agent project name when running from a parent directory")
     .option("--config <path>", "path to agent.yaml")
-    .option("--mode <mode>", "connect an existing inbox, or env to verify saved credentials")
+    .option("--mode <mode>", "signup, existing, manual, or env")
+    .option("--human-email <email>", "human owner email for first-time AgentMail signup")
+    .option("--username <username>", "username for a new AgentMail inbox")
+    .option("--display-name <name>", "display name for a new AgentMail inbox")
     .option("--api-key <key>", "AgentMail API key (prefer the secure prompt or AGENTMAIL_API_KEY)")
-    .option("--inbox-id <id>", "existing AgentMail inbox ID for connect mode")
+    .option("--inbox-id <id>", "existing AgentMail inbox ID for manual mode")
+    .option("--yes", "confirm a non-interactive provider mutation")
     .option("--base-url <url>", "AgentMail API base URL")
     .option(
       "--allow-insecure-http-with-credentials",
@@ -163,14 +179,22 @@ async function runAgentMailSetupLocked(
 ): Promise<AgentMailSetupResult> {
   const expectedAgentConfig = readFileSync(configPath, "utf-8");
   const agentName = readAgentNameSnapshot(configPath, expectedAgentConfig);
+  const agentId = readAgentIdSnapshot(configPath, expectedAgentConfig);
   const prompts = {
     select: deps.promptSelect ?? select,
     input: deps.promptInput ?? input,
     password: deps.promptPassword ?? password,
+    confirm: deps.promptConfirm ?? confirm,
   };
   const interactive =
     deps.interactive ??
-    Boolean(deps.promptSelect ?? deps.promptInput ?? deps.promptPassword ?? process.stdin.isTTY);
+    Boolean(
+      deps.promptSelect ??
+        deps.promptInput ??
+        deps.promptPassword ??
+        deps.promptConfirm ??
+        process.stdin.isTTY,
+    );
   const mountedAugments = readMountedAugmentConfigs(configPath, expectedAgentConfig);
   const target = resolveSetupTarget(targetArg, agentDir, mountedAugments);
   const augmentPath = join(agentDir, "augments", target, "augment.yaml");
@@ -208,19 +232,35 @@ async function runAgentMailSetupLocked(
   assertModeOptionCompatibility(target, mode, opts);
   assertNonInteractiveSetupInputs(target, mode, opts, interactive, diskEnv);
   assertSharedCredentialMode(target, mode, otherConsumers, diskEnv);
-  if (mode === "connect") {
-    assertConnectEnvSafe(opts, diskEnv);
-  } else {
-    assertAmbientDiskEnvParity(diskEnv);
-  }
-  const credentials =
-    mode === "env"
-      ? (envCredentials ?? missingEnvCredentials(target))
-      : await runConnectFlow(opts, prompts, {
-          agentDir,
-          invocationDir: deps.cwd ?? process.cwd(),
-          diskEnv,
-        });
+  if (mode === "manual" || mode === "connect") assertManualEnvSafe(opts, diskEnv);
+  else if (mode === "existing") assertNewInboxEnvSafe(opts, diskEnv);
+  else if (mode === "signup") assertSignupEnvSafe(diskEnv);
+  else assertAmbientDiskEnvParity(diskEnv);
+  const setupProvider =
+    deps.setupProvider ??
+    createAgentMailSetupProvider({
+      ...(opts.baseUrl ? { apiBaseUrl: opts.baseUrl } : {}),
+      ...(opts.allowInsecureHttpWithCredentials ? { allowInsecureHttpWithCredentials: true } : {}),
+    });
+  const credentials = await (async (): Promise<AgentMailSetupCredentials> => {
+    if (mode === "env") return envCredentials ?? missingEnvCredentials(target);
+    if (mode === "manual" || mode === "connect") {
+      return runManualFlow(opts, prompts, {
+        agentDir,
+        invocationDir: deps.cwd ?? process.cwd(),
+        diskEnv,
+      });
+    }
+    if (mode === "existing") {
+      return runExistingAccountFlow(target, agentName, agentId, opts, setupProvider, prompts, {
+        agentDir,
+        invocationDir: deps.cwd ?? process.cwd(),
+        diskEnv,
+        interactive,
+      });
+    }
+    return runSignupFlow(target, agentName, opts, setupProvider, prompts, interactive);
+  })();
   const verificationInput = {
     apiKey: credentials.apiKey,
     inboxId: credentials.inboxId,
@@ -274,7 +314,158 @@ async function runAgentMailSetupLocked(
   };
 }
 
-async function runConnectFlow(
+async function runSignupFlow(
+  target: AgentMailSetupTarget,
+  agentName: string,
+  opts: AgentMailSetupOptions,
+  provider: AgentMailSetupProvider,
+  prompts: { input: PromptInput; confirm: PromptConfirm },
+  interactive: boolean,
+): Promise<AgentMailSetupCredentials> {
+  const humanEmail =
+    usableOption(opts.humanEmail) ??
+    (await prompts.input({
+      message: "Human owner email for AgentMail verification:",
+      validate: (value) => isWellFormedEmail(value.trim()) || "enter a valid email address",
+    }));
+  const normalizedEmail = humanEmail.trim().toLowerCase();
+  if (!isWellFormedEmail(normalizedEmail)) throw new Error("Invalid AgentMail owner email.");
+  const username = await resolveInboxUsername(agentName, opts.username, prompts.input);
+  if (interactive && !opts.yes) {
+    const proceed = await prompts.confirm({
+      message: `Create a new AgentMail account with ${username}@agentmail.to and send a verification code to ${normalizedEmail}?`,
+      default: true,
+    });
+    if (!proceed) throw new Error("AgentMail account creation cancelled.");
+  }
+  const signup = await provider.signUp({
+    humanEmail: normalizedEmail,
+    username,
+    source: "auggy-cli",
+    referrer: `auggy ${target} setup`,
+  });
+  for (let attempt = 1; attempt <= AGENTMAIL_OTP_MAX_ATTEMPTS; attempt += 1) {
+    const otpCode = await prompts.input({
+      message:
+        attempt === 1
+          ? "AgentMail verification code:"
+          : `AgentMail verification code (attempt ${attempt} of ${AGENTMAIL_OTP_MAX_ATTEMPTS}):`,
+      validate: (value) => /^\d{6}$/.test(value.trim()) || "enter the 6-digit verification code",
+    });
+    const verified = await provider.verify(signup.apiKey, otpCode.trim());
+    if (verified.verified) {
+      return { inboxId: signup.inboxId, apiKey: signup.apiKey };
+    }
+  }
+  throw new Error(
+    "AgentMail account was created but verification did not complete. Sign in to AgentMail Console to verify it before retrying setup.",
+  );
+}
+
+async function runExistingAccountFlow(
+  target: AgentMailSetupTarget,
+  agentName: string,
+  agentId: string,
+  opts: AgentMailSetupOptions,
+  provider: AgentMailSetupProvider,
+  prompts: { input: PromptInput; password: PromptPassword; confirm: PromptConfirm },
+  context: {
+    agentDir: string;
+    invocationDir: string;
+    diskEnv: AgentMailDiskEnv;
+    interactive: boolean;
+  },
+): Promise<AgentMailSetupCredentials> {
+  const apiKey = await resolveConnectApiKey(
+    opts.apiKey,
+    prompts.password,
+    context.agentDir,
+    context.invocationDir,
+    context.diskEnv.AGENTMAIL_API_KEY,
+  );
+  const username = await resolveInboxUsername(agentName, opts.username, prompts.input);
+  const displayName = await resolveInboxDisplayName(agentName, opts.displayName, prompts.input);
+  if (context.interactive && !opts.yes) {
+    const proceed = await prompts.confirm({
+      message: `Create ${username}@agentmail.to in the existing AgentMail account using this exact runtime key?`,
+      default: true,
+    });
+    if (!proceed) throw new Error("AgentMail inbox creation cancelled.");
+  }
+  const inbox = await provider.createInbox({
+    apiKey,
+    username,
+    displayName,
+    clientId: buildSetupClientId(agentId, target),
+    metadata: { source: "auggy-cli", agent: agentName, augment: target },
+  });
+  return { apiKey, inboxId: inbox.inboxId, email: inbox.email };
+}
+
+async function resolveInboxUsername(
+  agentName: string,
+  selected: string | undefined,
+  promptInput: PromptInput,
+): Promise<string> {
+  const fallback = slugForAgentMail(agentName);
+  const value =
+    usableOption(selected) ??
+    (await promptInput({
+      message: "AgentMail inbox username:",
+      default: fallback,
+      validate: (candidate) =>
+        validAgentMailUsername(candidate.trim()) ||
+        "use 1-64 letters, numbers, periods, hyphens, underscores, or tildes",
+    }));
+  const username = value.trim();
+  if (!validAgentMailUsername(username)) throw new Error("Invalid AgentMail inbox username.");
+  return username;
+}
+
+async function resolveInboxDisplayName(
+  agentName: string,
+  selected: string | undefined,
+  promptInput: PromptInput,
+): Promise<string> {
+  const value =
+    usableOption(selected) ??
+    (await promptInput({ message: "Inbox display name:", default: agentName }));
+  const displayName = value.trim() || agentName;
+  if (displayName.length > 256 || /[\p{Cc}\p{Cf}]/u.test(displayName)) {
+    throw new Error(
+      "AgentMail inbox display name must be at most 256 characters without controls.",
+    );
+  }
+  return displayName;
+}
+
+function validAgentMailUsername(value: string): boolean {
+  return /^[A-Za-z0-9._~-]{1,64}$/.test(value);
+}
+
+function slugForAgentMail(value: string): string {
+  const slug = value
+    .toLowerCase()
+    .replace(/[^a-z0-9._~-]+/g, "-")
+    .replace(/^[._~-]+|[._~-]+$/g, "")
+    .slice(0, 64);
+  return slug || "auggy-agent";
+}
+
+function buildSetupClientId(agentId: string, target: AgentMailSetupTarget): string {
+  const clientId = `auggy.v2.inbox.${agentId}.${target}`;
+  if (!/^[A-Za-z0-9._~-]{1,256}$/.test(clientId)) {
+    throw new Error("Agent identity cannot be represented as an AgentMail client ID.");
+  }
+  return clientId;
+}
+
+function usableOption(value: string | undefined): string | null {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : null;
+}
+
+async function runManualFlow(
   opts: AgentMailSetupOptions,
   prompts: {
     input: PromptInput;
@@ -622,12 +813,24 @@ async function resolveMode(
   if (mode) return parseMode(target, mode);
   if (!interactive) {
     throw new Error(
-      `${target} AgentMail setup needs a mode in non-interactive use. Pass --mode connect or env.`,
+      `${target} AgentMail setup needs a mode in non-interactive use. Pass --mode signup, existing, manual, or env.`,
     );
   }
   return promptSelect<AgentMailSetupMode>({
     message: target === "agentMail" ? "AgentMail setup mode:" : "visitorAuth delivery setup mode:",
     choices: [
+      {
+        name: "Create an AgentMail account",
+        value: "signup",
+      },
+      {
+        name: "Create a new inbox in an existing AgentMail account",
+        value: "existing",
+      },
+      {
+        name: "Manually connect an existing AgentMail inbox",
+        value: "manual",
+      },
       ...(hasEnvCredentials
         ? [
             {
@@ -636,12 +839,8 @@ async function resolveMode(
             },
           ]
         : []),
-      {
-        name: "Existing AgentMail inbox — connect its ID and API key",
-        value: "connect",
-      },
     ],
-    default: hasEnvCredentials ? "env" : "connect",
+    default: hasEnvCredentials ? "env" : "signup",
   });
 }
 
@@ -750,13 +949,15 @@ function parseTarget(value: string): AgentMailSetupTarget {
 }
 
 function parseMode(target: AgentMailSetupTarget, value: string): AgentMailSetupMode {
-  if (value === "connect" || value === "env") return value;
-  if (value === "signup" || value === "existing" || value === "manual") {
-    throw new Error(
-      `${target} AgentMail setup mode "${value}" was removed. Auggy does not create accounts, inboxes, or API keys. Create them in AgentMail, then use --mode connect.`,
-    );
+  if (value === "signup" || value === "existing" || value === "manual" || value === "env") {
+    return value;
   }
-  throw new Error(`Invalid ${target} AgentMail setup mode "${value}". Use connect or env.`);
+  // Preserve the RC.11 non-interactive spelling while presenting the clearer
+  // manual mode in the operator menu.
+  if (value === "connect") return "connect";
+  throw new Error(
+    `Invalid ${target} AgentMail setup mode "${value}". Use signup, existing, manual, or env.`,
+  );
 }
 
 function assertModeOptionCompatibility(
@@ -765,12 +966,19 @@ function assertModeOptionCompatibility(
   opts: AgentMailSetupOptions,
 ): void {
   const allowedByMode: Record<AgentMailSetupMode, ReadonlySet<keyof AgentMailSetupOptions>> = {
+    signup: new Set(["humanEmail", "username", "yes"]),
+    existing: new Set(["apiKey", "username", "displayName", "yes"]),
+    manual: new Set(["apiKey", "inboxId"]),
     connect: new Set(["apiKey", "inboxId"]),
     env: new Set(),
   };
   const setupFlags: Array<[keyof AgentMailSetupOptions, string]> = [
+    ["humanEmail", "--human-email"],
+    ["username", "--username"],
+    ["displayName", "--display-name"],
     ["apiKey", "--api-key"],
     ["inboxId", "--inbox-id"],
+    ["yes", "--yes"],
   ];
   const ignored = setupFlags.flatMap(([key, flag]) =>
     opts[key] !== undefined && !allowedByMode[mode].has(key) ? [flag] : [],
@@ -790,8 +998,25 @@ function assertNonInteractiveSetupInputs(
   diskEnv: AgentMailDiskEnv,
 ): void {
   if (interactive || mode === "env") return;
+  if (mode === "signup") {
+    throw new Error(
+      `${target} AgentMail --mode signup requires an interactive terminal for email verification. ` +
+        "For automation, use --mode existing, manual, or env.",
+    );
+  }
   const missing: string[] = [];
-  if (mode === "connect") {
+  if (mode === "existing") {
+    if (
+      !exactApiKey(opts.apiKey, "--api-key") &&
+      !exactApiKey(process.env.AGENTMAIL_API_KEY, "AGENTMAIL_API_KEY") &&
+      !exactApiKey(diskEnv.AGENTMAIL_API_KEY, ".env AGENTMAIL_API_KEY")
+    ) {
+      missing.push("--api-key or AGENTMAIL_API_KEY");
+    }
+    if (!usableOption(opts.username)) missing.push("--username");
+    if (!opts.yes) missing.push("--yes");
+  }
+  if (mode === "manual" || mode === "connect") {
     if (
       !exactApiKey(opts.apiKey, "--api-key") &&
       !exactApiKey(process.env.AGENTMAIL_API_KEY, "AGENTMAIL_API_KEY") &&
@@ -872,6 +1097,12 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
   const verificationText = `Verified read capabilities: ${verified}.`;
   const capabilities = result.enabledCapabilities ?? [];
   const inboundEnabled = capabilities.includes("receive and triage incoming mail");
+  const credentialText =
+    result.mode === "signup"
+      ? "Auggy saved the API key AgentMail returned for the new account; it did not create or exchange another key."
+      : result.mode === "existing"
+        ? "Auggy created the inbox with your supplied account key and saved that exact same key for runtime use."
+        : "Auggy saved the exact API key you supplied; it did not create, rotate, replace, or scope a key.";
   const readyText =
     result.target === "visitorAuth"
       ? [
@@ -881,7 +1112,7 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
       : inboundEnabled
         ? [
             "AgentMail is configured for outbound email and inbound processing.",
-            "Auggy saved the exact API key you supplied; it did not create, rotate, replace, or scope a key.",
+            credentialText,
             `Read access was verified. Write operations still require: ${permissions}.`,
             "Incoming email will be processed according to augments/agentMail/augment.yaml.",
             ...(capabilities.length > 0
@@ -892,7 +1123,7 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
           ]
         : [
             "AgentMail is configured for outbound email, including visitorAuth magic links.",
-            "Auggy saved the exact API key you supplied; it did not create, rotate, replace, or scope a key.",
+            credentialText,
             `Read access was verified. Sending still requires: ${permissions}.`,
             "Incoming email is stored in AgentMail, but Auggy won't read or act on it by default.",
             "To receive email and prepare creator-reviewed replies with Auggy, enable inbound processing:",
@@ -920,6 +1151,17 @@ function readAgentNameSnapshot(configPath: string, source: string): string {
   const raw = parseYaml(source) as { name?: unknown } | null;
   if (typeof raw?.name === "string" && raw.name.trim().length > 0) return raw.name.trim();
   throw new Error(`agent.yaml at ${configPath} is missing a non-empty name.`);
+}
+
+function readAgentIdSnapshot(configPath: string, source: string): string {
+  const raw = parseYaml(source) as { id?: unknown } | null;
+  if (
+    typeof raw?.id === "string" &&
+    /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw.id)
+  ) {
+    return raw.id;
+  }
+  throw new Error(`agent.yaml at ${configPath} is missing a valid immutable id.`);
 }
 
 function readAgentMailEnvSnapshot(envPath: string): AgentMailEnvSnapshot {
@@ -959,13 +1201,41 @@ function assertAmbientDiskEnvParity(diskEnv: AgentMailDiskEnv): void {
   }
 }
 
-function assertConnectEnvSafe(opts: AgentMailSetupOptions, diskEnv: AgentMailDiskEnv): void {
+function assertManualEnvSafe(opts: AgentMailSetupOptions, diskEnv: AgentMailDiskEnv): void {
   assertAmbientDiskEnvParity(diskEnv);
   const selected = {
     AGENTMAIL_API_KEY: exactApiKey(opts.apiKey, "--api-key") ?? undefined,
     AGENTMAIL_INBOX_ID: exactInboxId(opts.inboxId, "--inbox-id") ?? undefined,
   };
   assertSelectedCredentialsMatchAmbientEnv(diskEnv, selected);
+}
+
+function assertNewInboxEnvSafe(opts: AgentMailSetupOptions, diskEnv: AgentMailDiskEnv): void {
+  assertAmbientDiskEnvParity(diskEnv);
+  assertSelectedCredentialsMatchAmbientEnv(diskEnv, {
+    AGENTMAIL_API_KEY: exactApiKey(opts.apiKey, "--api-key") ?? undefined,
+  });
+  for (const key of ["AGENTMAIL_INBOX_ID", "AGENTMAIL_INBOX_EMAIL"] as const) {
+    if (runtimeEnvValue(key, process.env[key]) || runtimeEnvValue(key, diskEnv[key])) {
+      throw new Error(
+        `AgentMail existing-account mode cannot replace ${key}. Use --mode env for the configured inbox, ` +
+          "or remove all AGENTMAIL_INBOX_* values before creating another inbox. Setup did not contact AgentMail.",
+      );
+    }
+  }
+}
+
+function assertSignupEnvSafe(diskEnv: AgentMailDiskEnv): void {
+  assertAmbientDiskEnvParity(diskEnv);
+  const configured = AGENTMAIL_RUNTIME_ENV_KEYS.filter(
+    (key) => runtimeEnvValue(key, process.env[key]) || runtimeEnvValue(key, diskEnv[key]),
+  );
+  if (configured.length > 0) {
+    throw new Error(
+      `AgentMail signup mode cannot replace existing ${configured.join(", ")}. Use --mode env, or remove ` +
+        "all AGENTMAIL_* runtime credentials before creating a new account. Setup did not contact AgentMail.",
+    );
+  }
 }
 
 function assertSelectedCredentialsMatchAmbientEnv(
@@ -993,7 +1263,7 @@ function comparableRuntimeCredential(key: AgentMailRuntimeEnvKey, value: string)
 
 function existingRuntimeCredentialMismatchError(key: AgentMailRuntimeEnvKey): Error {
   return new Error(
-    `AgentMail connect mode cannot replace the existing ${key} runtime credential. ` +
+    `AgentMail manual mode cannot replace the existing ${key} runtime credential. ` +
       "Reuse the exact existing credentials or use --mode env. To intentionally replace them, remove the " +
       "AGENTMAIL_* values from .env and unset exported AGENTMAIL_* values before retrying; " +
       "setup did not change local files.",
@@ -1106,7 +1376,7 @@ function missingEnvCredentials(target: AgentMailSetupTarget): never {
   throw new Error(
     "AGENTMAIL_API_KEY and AGENTMAIL_INBOX_ID are not set in .env. " +
       (target === "agentMail"
-        ? "In AgentMail, create or select the inbox and API key you want Auggy to use, then run setup with --mode connect."
-        : "In AgentMail, select the inbox and API key you want visitorAuth to use, then run setup with --mode connect."),
+        ? "Run setup with --mode signup, existing, or manual."
+        : "Run setup with --mode signup, existing, or manual for the inbox visitorAuth should use."),
   );
 }

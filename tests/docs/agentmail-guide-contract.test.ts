@@ -99,10 +99,13 @@ describe("AgentMail operator guide", () => {
   });
 
   test("documents exact-key, provider-native, and recovery boundaries", () => {
-    expect(guide).toContain("auggy augment setup agentMail --mode connect");
+    expect(guide).toContain("auggy augment setup agentMail");
     expect(guide).toContain("auggy augment setup agentMail --mode env");
-    expect(guide).toContain("that exact API key");
-    expect(guide).toContain("does not create, replace, narrow, rotate, or revoke the key");
+    expect(guide).toContain("Create an AgentMail account");
+    expect(guide).toContain("Create a new inbox in an existing account");
+    expect(guide).toContain("Manually connect an existing AgentMail inbox");
+    expect(guide).toContain("Saves that exact same key");
+    expect(guide).toContain("never exchanges your selected key");
     expect(guide).toContain("same draft");
     expect(guide).toContain("Open in AgentMail");
     expect(guide).toContain("retry mail delivery <operation-id>");
@@ -111,7 +114,7 @@ describe("AgentMail operator guide", () => {
     expect(guide).toContain("delivery failures missed while Auggy is offline");
   });
 
-  test("does not teach removed configuration or provisioning commands", () => {
+  test("does not teach removed configuration or key replacement commands", () => {
     for (const removed of [
       "schemaVersion",
       "humanReview",
@@ -119,9 +122,6 @@ describe("AgentMail operator guide", () => {
       "expiresAfterMs",
       "allowScheduling",
       "maxScheduleDelayMs",
-      "--mode signup",
-      "--mode existing",
-      "--mode manual",
       "--replace-key",
     ]) {
       expect(guide).not.toContain(removed);
