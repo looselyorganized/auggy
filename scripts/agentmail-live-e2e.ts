@@ -618,6 +618,13 @@ export async function runAgentMailLiveE2E(): Promise<void> {
     if (revised.status !== "revised" || typeof revised.providerRevision !== "string") {
       throw new Error("AgentMail runtime did not revise the provider draft.");
     }
+    const revisedProviderDraft = await targetProvider.getDraft(draft.draftId);
+    if (
+      revisedProviderDraft.text !== revisedDraftBody ||
+      revisedProviderDraft.text.includes(firstDraftBody)
+    ) {
+      throw new Error("AgentMail provider did not persist the creator-reviewed revision.");
+    }
 
     const sendTurn = creatorTurn("send-live-draft", `send draft ${draft.draftId}`);
     await firstRuntime.onTurnStart?.(sendTurn);
@@ -654,7 +661,8 @@ export async function runAgentMailLiveE2E(): Promise<void> {
       if (matches.length !== 1) return undefined;
       return senderProvider.getMessage(matches[0]!.messageId);
     }, "reviewed reply delivery to the temporary sender inbox");
-    if (receivedReply.text !== revisedDraftBody) {
+    const deliveredText = receivedReply.text ?? receivedReply.extractedText ?? "";
+    if (!deliveredText.includes(revisedDraftBody) || deliveredText.includes(firstDraftBody)) {
       throw new Error("AgentMail delivered reply did not contain the creator-reviewed revision.");
     }
 
