@@ -169,7 +169,33 @@ NODE
     # Install the required runtime peer first so package managers never try to
     # satisfy it from the stale published registry version.
     bun add --offline --no-summary "$TARBALL" || exit $?
-    bun add --offline --no-summary "$adapter_tarball" "$@" || exit $?
+    # Install packed adapter prerequisites in their own transactions. Bun may
+    # otherwise resolve one tarball's dependency from the registry before it
+    # has registered the matching tarball passed later in the same command.
+    # OpenRouter depends on the same-release packed OpenAI adapter, which does
+    # not exist on npm yet during a release rehearsal.
+    local prerequisite_tarball
+    local prerequisite_name
+    for prerequisite_tarball in "$@"; do
+      prerequisite_name="$(
+        tar -xOf "$prerequisite_tarball" package/package.json \
+          | node -e '
+              const manifest = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
+              if (typeof manifest.name !== "string" || manifest.name.length === 0) process.exit(1);
+              process.stdout.write(manifest.name);
+            '
+      )" || exit $?
+      node - "$consumer_dir/package.json" "$prerequisite_name" "$prerequisite_tarball" <<'NODE'
+const { readFileSync, writeFileSync } = require("node:fs");
+const [manifestPath, packageName, tarball] = process.argv.slice(2);
+const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+manifest.overrides ??= {};
+manifest.overrides[packageName] = tarball;
+writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+NODE
+      bun add --offline --no-summary "$prerequisite_tarball" || exit $?
+    done
+    bun add --offline --no-summary "$adapter_tarball" || exit $?
     bun -e '
       const [packageName, factoryName] = process.argv.slice(1);
       const core = await import("auggy");

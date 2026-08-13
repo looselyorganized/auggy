@@ -7,6 +7,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0-rc.11] - 2026-08-13
+
+This eleventh public candidate replaces the legacy AgentMail integration with
+a provider-native, durable mail workflow that wakes Auggy on inbound mail and
+keeps creator-reviewed drafts in AgentMail.
+
+### Added
+
+- **Complete AgentMail mailbox tools.** Agents can list, search, inspect,
+  label, trash, restore, and permanently delete messages and threads; read
+  bounded attachments; and create, adopt, revise, delete, send, reply,
+  reply-all, and forward provider-native drafts under explicit policy.
+- **Provider-native reviewed replies.** Authenticated inbound email can wake
+  the agent over AgentMail WebSockets, run one untrusted turn, and create a
+  durable AgentMail reply draft for creator review. The Console exposes a
+  purpose-built Mail surface and links to AgentMail for provider-owned inbox
+  and draft management.
+- **Creator attention and recovery.** Durable attention state notifies the
+  creator when review or delivery action is required. Startup catch-up,
+  idempotent mutations, reconciliation, and restart replay recover interrupted
+  work without duplicating sends.
+
+### Changed
+
+- **Official skill and MCP boundary.** The bundled AgentMail skill mirrors the
+  official provider mental model while documenting Auggy's authorization,
+  review, and durability boundary. Optional MCP remains read-only discovery;
+  policy-bearing mail mutations stay behind the augment's tools.
+- **Existing-inbox setup.** CLI setup connects the operator's existing
+  AgentMail inbox and exact runtime key without creating, narrowing, rotating,
+  or revoking provider credentials.
+
+### Fixed
+
+- **Mounted inbound identity.** Email turns bind their identity and reply route
+  to the mounted augment instance, preventing stale or mismatched source names
+  from breaking review-draft creation.
+- **Fail-closed release proof.** Packed smoke now fails on incomplete
+  AgentMail lifecycle verification, and the protected live canary isolates
+  provider delivery, WebSocket wake, kernel turn, draft creation, creator
+  revision/send, reply delivery, restart replay, and scoped cleanup stages.
+- **Same-release adapter rehearsal.** Packed OpenRouter verification now pins
+  the local candidate OpenAI artifact, so release smoke tests the exact RC
+  dependency graph without falling back to an older registry package.
+
+### Architecture
+
+- **Durable mailbox authorization.** A centralized operation manifest,
+  SQLite orchestration ledger, provider revision checks, bounded policy, and
+  outcome-unknown reconciliation make AgentMail side effects deterministic and
+  auditable while AgentMail remains the system of record for mail and drafts.
+- **Legacy implementation removed.** The unused pre-provider-native AgentMail
+  runtime and its obsolete tests were removed rather than carrying a second
+  schema or compatibility path with no public users.
+
 ## [0.5.0-rc.10] - 2026-08-11
 
 This tenth public candidate preserves the operator's chosen AgentMail
@@ -728,7 +783,8 @@ Initial tagged release. The kernel and built-in augments described in `docs/02-a
 - **CLI** — `aug1 create / add / dev / start / stop / restart / status` with launchd installation on macOS and PID-manifest tracking under `~/.auggy/`.
 - **Reference documentation** — `docs/01-philosophy.md` through `docs/11-skills.md`.
 
-[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.10...HEAD
+[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.11...HEAD
+[0.5.0-rc.11]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.10...v0.5.0-rc.11
 [0.5.0-rc.10]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.9...v0.5.0-rc.10
 [0.5.0-rc.9]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.8...v0.5.0-rc.9
 [0.5.0-rc.8]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.7...v0.5.0-rc.8
