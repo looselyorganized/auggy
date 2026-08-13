@@ -226,18 +226,6 @@ export interface AgentMailSdkClient {
       list(inboxId: string, input?: unknown, options?: unknown): Promise<unknown>;
       get(inboxId: string, messageId: string, options?: unknown): Promise<unknown>;
       send(inboxId: string, input: unknown, options?: unknown): Promise<unknown>;
-      draftReply(
-        inboxId: string,
-        messageId: string,
-        input: unknown,
-        options?: unknown,
-      ): Promise<unknown>;
-      draftReplyAll(
-        inboxId: string,
-        messageId: string,
-        input: unknown,
-        options?: unknown,
-      ): Promise<unknown>;
     };
     threads: { get(inboxId: string, threadId: string, options?: unknown): Promise<unknown> };
     drafts: {
@@ -820,21 +808,11 @@ export function createAgentMailProvider(options: AgentMailProviderOptions): Agen
           const request = {
             text: input.text,
             clientId: input.clientId,
+            inReplyTo: input.messageId,
+            ...(input.replyAll === true ? { replyAll: true } : {}),
             ...(input.subject === undefined ? {} : { subject: input.subject }),
           };
-          return input.replyAll === true
-            ? client.inboxes.messages.draftReplyAll(
-                inboxId,
-                input.messageId,
-                request,
-                requestOptions(signal),
-              )
-            : client.inboxes.messages.draftReply(
-                inboxId,
-                input.messageId,
-                request,
-                requestOptions(signal),
-              );
+          return client.inboxes.drafts.create(inboxId, request, requestOptions(signal));
         },
       );
       const draft = normalizeDraft(value, "create_reply_draft");

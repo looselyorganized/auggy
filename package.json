@@ -139,7 +139,7 @@
     "@inquirer/prompts": "7.8.6",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@supabase/supabase-js": "^2.103.0",
-    "agentmail": "0.5.14",
+    "agentmail": "0.5.19",
     "commander": "^14.0.3",
     "svix": "1.96.1",
     "yaml": "^2.8.3",

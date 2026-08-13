@@ -112,8 +112,6 @@ function fakeSdk(overrides: FakeOverrides = {}): AgentMailSdkClient {
             messageId: "message_sent",
             threadId: "thread_sent",
           },
-        draftReply: async (_id, _messageId, input) => overrides.createDraft?.(input) ?? draft(),
-        draftReplyAll: async (_id, _messageId, input) => overrides.createDraft?.(input) ?? draft(),
       },
       threads: {
         get: async () => ({
@@ -284,7 +282,37 @@ describe("AgentMail provider boundary", () => {
         clientId: "reply-message_1",
       }),
     ).toMatchObject({ draftId: "draft_1", inReplyTo: "message_1" });
-    expect(createInput).toEqual({ text: "We can help.", clientId: "reply-message_1" });
+    expect(createInput).toEqual({
+      text: "We can help.",
+      clientId: "reply-message_1",
+      inReplyTo: "message_1",
+    });
+  });
+
+  test("creates reply-all drafts through the provider-native draft contract", async () => {
+    let createInput: unknown;
+    const mail = provider(
+      fakeSdk({
+        createDraft: async (input) => {
+          createInput = input;
+          return draft({ clientId: "reply-all-message_1", inReplyTo: "message_1" });
+        },
+      }),
+    );
+
+    await mail.createReplyDraft({
+      messageId: "message_1",
+      text: "We can all help.",
+      clientId: "reply-all-message_1",
+      replyAll: true,
+    });
+
+    expect(createInput).toEqual({
+      text: "We can all help.",
+      clientId: "reply-all-message_1",
+      inReplyTo: "message_1",
+      replyAll: true,
+    });
   });
 
   test("passes exact send idempotency keys to the SDK", async () => {
