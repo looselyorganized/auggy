@@ -257,9 +257,16 @@ try {
     }
     if (
       !doctor.output.includes("AgentMail policy agentMail") ||
-      !doctor.output.includes("inbound disabled; replies disabled") ||
+      !doctor.output.includes("receive/triage disabled; reviewed reply drafts disabled") ||
+      !doctor.output.includes("read and search messages, threads, and drafts") ||
+      !doctor.output.includes("send, reply, and forward directly") ||
       !doctor.output.includes("inbox_read") ||
-      !doctor.output.includes("message_send")
+      !doctor.output.includes("message_read") ||
+      !doctor.output.includes("draft_read") ||
+      !doctor.output.includes("message_send") ||
+      !doctor.output.includes("draft_create") ||
+      !doctor.output.includes("draft_update") ||
+      !doctor.output.includes("draft_send")
     ) {
       throw new Error(`packed AgentMail doctor omitted the connected policy:\n${doctor.output}`);
     }
