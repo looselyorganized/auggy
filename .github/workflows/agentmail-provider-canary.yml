@@ -44,9 +44,9 @@ jobs:
 
       - name: Verify pre-provisioned inbox and runtime adapters with the supplied key
         env:
-          # Configure these only on the protected Environment. The key is
-          # passed unchanged through the canonical runtime variable.
-          AGENTMAIL_API_KEY: ${{ secrets.AGENTMAIL_CANARY_RUNTIME_API_KEY }}
+          # Preserve the existing protected Environment contract. The value is
+          # the exact operator-supplied key and is passed through unchanged.
+          AGENTMAIL_API_KEY: ${{ secrets.AGENTMAIL_CANARY_ACCOUNT_API_KEY_ENV_ONLY }}
           AGENTMAIL_CANARY_INBOX_ID: ${{ vars.AGENTMAIL_CANARY_INBOX_ID }}
           AGENTMAIL_CANARY_INBOX_EMAIL: ${{ vars.AGENTMAIL_CANARY_INBOX_EMAIL }}
         run: bun scripts/agentmail-provider-canary.ts
