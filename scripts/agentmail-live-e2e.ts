@@ -514,9 +514,14 @@ export async function runAgentMailLiveE2E(): Promise<void> {
           findCatchUpDelivery(targetProvider, subject, sentAt),
         ]);
         deliveryDiagnostics.targetCatchUp = catchUpDelivery !== undefined;
-        deliveryDiagnostics.targetDelivery = mailboxDelivery?.classification;
+        const canonicalDelivery = catchUpDelivery ?? mailboxDelivery;
+        deliveryDiagnostics.targetDelivery = canonicalDelivery?.classification;
         await updateRuntimeDiagnostics(firstRuntime as Augment, deliveryDiagnostics);
-        return mailboxDelivery;
+        // The runtime's durable recovery contract uses the received-label
+        // catch-up path. Keep the subject-filtered mailbox lookup as extra
+        // telemetry, but never let optional provider filter behavior overrule
+        // canonical evidence that the exact run-unique message was received.
+        return canonicalDelivery;
       }, "live inbound delivery to the target inbox");
     } catch (error) {
       if (error instanceof Error && error.message.startsWith("Timed out waiting for")) {
