@@ -61,6 +61,58 @@ describe("agentMail replacement boundary", () => {
     });
   });
 
+  test("keeps every provider tool schema object-shaped for Anthropic", () => {
+    const augment = agentMail({
+      apiKey: "am_test",
+      inboxId: "support@agentmail.to",
+      inbound: { mode: "none" },
+    });
+
+    for (const tool of augment.tools ?? []) {
+      expect(tool.inputJsonSchema?.type, tool.name).toBe("object");
+      expect(tool.inputJsonSchema, tool.name).not.toHaveProperty("oneOf");
+      expect(tool.inputJsonSchema, tool.name).not.toHaveProperty("anyOf");
+      expect(tool.inputJsonSchema, tool.name).not.toHaveProperty("allOf");
+    }
+  });
+
+  test("validates retry and reconciliation variants without top-level unions", () => {
+    const tools = new Map(
+      agentMail({
+        apiKey: "am_test",
+        inboxId: "support@agentmail.to",
+        inbound: { mode: "none" },
+      }).tools?.map((tool) => [tool.name, tool]),
+    );
+    const retry = tools.get("retry_mail_delivery")!;
+    const reconcile = tools.get("reconcile_mail_delivery")!;
+
+    expect(
+      retry.input.safeParse({ action: "send_draft", operationId: "operation_1" }).success,
+    ).toBe(true);
+    expect(
+      retry.input.safeParse({
+        action: "send_message",
+        operationId: "operation_2",
+        request: { to: ["owner@example.com"], subject: "Hello", text: "Body" },
+      }).success,
+    ).toBe(true);
+    expect(
+      retry.input.safeParse({ action: "forward", operationId: "operation_3", request: {} }).success,
+    ).toBe(false);
+    expect(
+      reconcile.input.safeParse({
+        operationId: "operation_4",
+        resolution: "sent",
+        messageId: "message_1",
+        threadId: "thread_1",
+      }).success,
+    ).toBe(true);
+    expect(
+      reconcile.input.safeParse({ operationId: "operation_5", resolution: "not_sent" }).success,
+    ).toBe(false);
+  });
+
   test("rejects deleted workflow fields instead of silently reviving legacy behavior", () => {
     expect(() =>
       agentMail({

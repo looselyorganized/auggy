@@ -2789,40 +2789,53 @@ export function createAgentMailRuntime(
     description:
       "Retry one provider-rate-limited delivery with its original operation and idempotency key. Direct messages require the exact original request because Auggy stores no mail content.",
     category: "communication",
-    input: z.discriminatedUnion("action", [
-      z.object({
-        action: z.literal("send_draft"),
+    // Anthropic requires the tool input_schema itself to be an object and
+    // rejects top-level oneOf/anyOf/allOf. Keep the public flat argument shape
+    // while enforcing the action-specific contract with refinements.
+    input: z
+      .object({
+        action: z.enum(["send_draft", "send_message", "reply", "forward"]),
         operationId: z.string().min(1).max(512),
+        request: z
+          .object({
+            messageId: z.string().min(1).max(512).optional(),
+            to: z.array(z.string().min(3).max(320)).min(1).max(50).optional(),
+            cc: z.array(z.string().min(3).max(320)).max(50).optional(),
+            bcc: z.array(z.string().min(3).max(320)).max(50).optional(),
+            subject: z.string().min(1).max(998).optional(),
+            text: z.string().min(1).max(1_048_576).optional(),
+          })
+          .optional(),
+      })
+      .superRefine((input, context) => {
+        const request = input.request;
+        const invalid = (message: string) =>
+          context.addIssue({ code: "custom", path: ["request"], message });
+        if (input.action === "send_draft") {
+          if (request !== undefined) invalid("must be omitted when action is send_draft");
+          return;
+        }
+        if (!request?.text) {
+          invalid("text is required for direct delivery retries");
+          return;
+        }
+        if (input.action === "send_message") {
+          if (!request.to || !request.subject || request.messageId || request.cc || request.bcc) {
+            invalid("send_message requires only to, subject, and text");
+          }
+          return;
+        }
+        if (!request.messageId || request.subject) {
+          invalid(`${input.action} requires messageId and text without subject`);
+          return;
+        }
+        if (input.action === "reply" && (request.to || request.cc || request.bcc)) {
+          invalid("reply derives its recipient and does not accept to, cc, or bcc");
+        }
+        if (input.action === "forward" && !request.to) {
+          invalid("forward requires at least one to recipient");
+        }
       }),
-      z.object({
-        action: z.literal("send_message"),
-        operationId: z.string().min(1).max(512),
-        request: z.object({
-          to: z.array(z.string().min(3).max(320)).min(1).max(50),
-          subject: z.string().min(1).max(998),
-          text: z.string().min(1).max(1_048_576),
-        }),
-      }),
-      z.object({
-        action: z.literal("reply"),
-        operationId: z.string().min(1).max(512),
-        request: z.object({
-          messageId: z.string().min(1).max(512),
-          text: z.string().min(1).max(1_048_576),
-        }),
-      }),
-      z.object({
-        action: z.literal("forward"),
-        operationId: z.string().min(1).max(512),
-        request: z.object({
-          messageId: z.string().min(1).max(512),
-          to: z.array(z.string().min(3).max(320)).min(1).max(50),
-          cc: z.array(z.string().min(3).max(320)).max(50).optional(),
-          bcc: z.array(z.string().min(3).max(320)).max(50).optional(),
-          text: z.string().min(1).max(1_048_576),
-        }),
-      }),
-    ]),
     execute: async (input, context) => {
       if (!creator(context)) return denied("Only the verified creator may retry mail delivery.");
       const retryCommand = `retry mail delivery ${input.operationId}`;
@@ -2965,11 +2978,15 @@ export function createAgentMailRuntime(
         }
 
         if (input.action === "send_message") {
+          const request = input.request;
+          if (!request?.to || !request.subject || !request.text) {
+            return failed("Retry request is incomplete for send_message.");
+          }
           const policyInput: AgentMailOperationInput = {
             action: "send_message",
-            recipients: { to: input.request.to },
-            subject: input.request.subject,
-            text: input.request.text,
+            recipients: { to: request.to },
+            subject: request.subject,
+            text: request.text,
             operationId: operation.operationId,
             idempotencyKey: operation.idempotencyKey,
           };
@@ -3009,8 +3026,8 @@ export function createAgentMailRuntime(
               provider.sendMessage(
                 {
                   to: [...authorization.manifest.recipients.to],
-                  subject: decision.subject ?? input.request.subject,
-                  text: input.request.text,
+                  subject: decision.subject ?? request.subject,
+                  text: request.text,
                   idempotencyKey: key,
                 },
                 context.signal,
@@ -3020,7 +3037,15 @@ export function createAgentMailRuntime(
         }
 
         const request = input.request;
-        const source = await provider.getMessage(request.messageId, context.signal);
+        if (!request?.messageId || !request.text) {
+          return failed(`Retry request is incomplete for ${input.action}.`);
+        }
+        if (input.action === "forward" && !request.to) {
+          return failed("Retry request is incomplete for forward.");
+        }
+        const sourceMessageId = request.messageId;
+        const deliveryText = request.text;
+        const source = await provider.getMessage(sourceMessageId, context.signal);
         if (
           source.inboxId !== config.inboxId ||
           source.messageId !== request.messageId ||
@@ -3035,9 +3060,9 @@ export function createAgentMailRuntime(
           input.action === "reply"
             ? { to: replyTarget === undefined ? [] : [replyTarget] }
             : {
-                to: input.request.to,
-                cc: input.request.cc,
-                bcc: input.request.bcc,
+                to: request.to,
+                cc: request.cc,
+                bcc: request.bcc,
               };
         const policyInput: AgentMailOperationInput = {
           action: input.action,
@@ -3092,7 +3117,7 @@ export function createAgentMailRuntime(
             operation.operationId,
             (key) =>
               provider.replyToMessage!(
-                { messageId: request.messageId, text: request.text, idempotencyKey: key },
+                { messageId: sourceMessageId, text: deliveryText, idempotencyKey: key },
                 context.signal,
               ),
             "retry",
@@ -3105,11 +3130,11 @@ export function createAgentMailRuntime(
           (key) =>
             provider.forwardMessage!(
               {
-                messageId: request.messageId,
+                messageId: sourceMessageId,
                 to: [...authorization.manifest.recipients.to],
                 cc: [...authorization.manifest.recipients.cc],
                 bcc: [...authorization.manifest.recipients.bcc],
-                text: request.text,
+                text: deliveryText,
                 idempotencyKey: key,
               },
               context.signal,
@@ -3127,19 +3152,31 @@ export function createAgentMailRuntime(
     description:
       "Resolve one outcome-unknown delivery using explicit provider evidence. Never infers non-delivery from a missing draft.",
     category: "communication",
-    input: z.discriminatedUnion("resolution", [
-      z.object({
+    input: z
+      .object({
         operationId: z.string().min(1).max(512),
-        resolution: z.literal("sent"),
-        messageId: z.string().min(1).max(512),
-        threadId: z.string().min(1).max(512),
+        resolution: z.enum(["sent", "not_sent"]),
+        messageId: z.string().min(1).max(512).optional(),
+        threadId: z.string().min(1).max(512).optional(),
+        evidence: z.string().min(1).max(2_048).optional(),
+      })
+      .superRefine((input, context) => {
+        if (input.resolution === "sent") {
+          if (!input.messageId || !input.threadId || input.evidence) {
+            context.addIssue({
+              code: "custom",
+              message: "sent requires messageId and threadId without evidence",
+            });
+          }
+          return;
+        }
+        if (!input.evidence || input.messageId || input.threadId) {
+          context.addIssue({
+            code: "custom",
+            message: "not_sent requires evidence without messageId or threadId",
+          });
+        }
       }),
-      z.object({
-        operationId: z.string().min(1).max(512),
-        resolution: z.literal("not_sent"),
-        evidence: z.string().min(1).max(2_048),
-      }),
-    ]),
     execute: async (input, context) => {
       if (!creator(context))
         return denied("Only the verified creator may reconcile mail delivery.");
@@ -3153,6 +3190,9 @@ export function createAgentMailRuntime(
       const operation = runtimeStore().getDeliveryOperation(input.operationId);
       if (!operation) return failed("Delivery operation was not found.");
       if (input.resolution === "sent") {
+        if (!input.messageId || !input.threadId) {
+          return failed("Sent reconciliation requires provider message and thread IDs.");
+        }
         try {
           const message = await provider.getMessage(input.messageId, context.signal);
           if (
@@ -3180,6 +3220,7 @@ export function createAgentMailRuntime(
           return mailboxFailure("AgentMail delivery reconciliation", error);
         }
       }
+      if (!input.evidence) return failed("Not-sent reconciliation requires provider evidence.");
       runtimeStore().reconcileDeliveryOperation({
         operationId: input.operationId,
         evidenceHash: hashAgentMailOrchestrationValue(
