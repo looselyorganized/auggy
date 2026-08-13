@@ -238,7 +238,9 @@ async function findManagedDraft(
 ): Promise<DraftListItem | undefined> {
   const value = toolJson(
     await requireTool(augment, "list_mail_drafts").execute(
-      { limit: 100 },
+      // Stay within the shipped default mailbox.maxListResults policy. The
+      // canary must prove the public baseline rather than silently widening it.
+      { limit: 50 },
       context("list-live-draft", "list-live-draft"),
     ),
   );
