@@ -25,6 +25,8 @@ describe("AgentMail protected live mutation E2E", () => {
   test("exercises Auggy's live runtime and cleans up its temporary fixture", () => {
     expect(script).toContain("senderProvider.sendMessage");
     expect(script).toContain('mode: "websocket"');
+    expect(script).toContain("{ limit: 50 }");
+    expect(script).not.toContain("{ limit: 100 }");
     expect(script).toContain('"list_mail_drafts"');
     expect(script).toContain('"revise_mail_draft"');
     expect(script).toContain('"send_mail_draft"');
