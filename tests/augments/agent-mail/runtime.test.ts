@@ -16,20 +16,23 @@ import type {
 } from "../../../src/types";
 import type { NotifyDispatchHost, NotifyInternalDispatchInput } from "../../../src/augments/notify";
 import { validateAgentMailConfig } from "../../../src/augments/agentMail/config";
+import { snapshotAgentMailDraft } from "../../../src/augments/agentMail/draft-snapshot";
 import { createAgentMailRuntime } from "../../../src/augments/agentMail/runtime";
-import type {
-  AgentMailAttachmentMetadata,
-  AgentMailDraft,
-  AgentMailMessage,
-  AgentMailMessageSummary,
-  AgentMailPage,
-  AgentMailProvider,
-  AgentMailThreadSummary,
+import {
+  AgentMailProviderError,
+  type AgentMailAttachmentMetadata,
+  type AgentMailDraft,
+  type AgentMailMessage,
+  type AgentMailMessageSummary,
+  type AgentMailPage,
+  type AgentMailProvider,
+  type AgentMailThreadSummary,
 } from "../../../src/augments/agentMail/provider";
 import type { HttpClient } from "../../../src/http";
 import {
   createAgentMailOrchestrationStore,
   hashAgentMailOrchestrationValue,
+  type AgentMailOrchestrationStore,
 } from "../../../src/augments/agentMail/store";
 
 const roots: string[] = [];
@@ -112,6 +115,12 @@ class FakeProvider implements AgentMailProvider {
   deletedDrafts: string[] = [];
   sentDrafts: Array<Parameters<AgentMailProvider["sendDraft"]>[0]> = [];
   sentMessages: Array<Parameters<AgentMailProvider["sendMessage"]>[0]> = [];
+  sentReplies: Array<Parameters<NonNullable<AgentMailProvider["replyToMessage"]>>[0]> = [];
+  sentForwards: Array<Parameters<NonNullable<AgentMailProvider["forwardMessage"]>>[0]> = [];
+  sendDraftErrors: unknown[] = [];
+  sendMessageErrors: unknown[] = [];
+  replyErrors: unknown[] = [];
+  forwardErrors: unknown[] = [];
   messageLabelUpdates: Array<{ messageId: string; addLabels?: string[]; removeLabels?: string[] }> =
     [];
   threadLabelUpdates: Array<{ threadId: string; addLabels?: string[]; removeLabels?: string[] }> =
@@ -122,6 +131,7 @@ class FakeProvider implements AgentMailProvider {
   threadPages: AgentMailPage<AgentMailThreadSummary>[] = [];
   attachmentMetadata?: AgentMailAttachmentMetadata;
   corruptDraftAfterUpdate = false;
+  deleteDraftAfterSend = false;
   getMessageCalls = 0;
   handlers?: Parameters<AgentMailProvider["connect"]>[0];
 
@@ -283,11 +293,28 @@ class FakeProvider implements AgentMailProvider {
   }
   async sendDraft(input: Parameters<AgentMailProvider["sendDraft"]>[0]) {
     this.sentDrafts.push(input);
+    const error = this.sendDraftErrors.shift();
+    if (error !== undefined) throw error;
+    if (this.deleteDraftAfterSend) this.drafts.delete(input.draftId);
     return { messageId: "sent_reply_1", threadId: "thread_1" };
   }
   async sendMessage(input: Parameters<AgentMailProvider["sendMessage"]>[0]) {
     this.sentMessages.push(input);
+    const error = this.sendMessageErrors.shift();
+    if (error !== undefined) throw error;
     return { messageId: "sent_direct_1", threadId: "thread_direct_1" };
+  }
+  async replyToMessage(input: Parameters<NonNullable<AgentMailProvider["replyToMessage"]>>[0]) {
+    this.sentReplies.push(input);
+    const error = this.replyErrors.shift();
+    if (error !== undefined) throw error;
+    return { messageId: "sent_reply_direct_1", threadId: "thread_1" };
+  }
+  async forwardMessage(input: Parameters<NonNullable<AgentMailProvider["forwardMessage"]>>[0]) {
+    this.sentForwards.push(input);
+    const error = this.forwardErrors.shift();
+    if (error !== undefined) throw error;
+    return { messageId: "sent_forward_1", threadId: "thread_1" };
   }
   async connect(handlers: Parameters<AgentMailProvider["connect"]>[0]) {
     this.sequence.push("connect");
@@ -307,6 +334,7 @@ function fixture(
     destructive?: Record<string, unknown>;
     drafts?: Record<string, unknown>;
     attachmentClient?: Pick<HttpClient, "get">;
+    storeTransform?: (store: AgentMailOrchestrationStore) => AgentMailOrchestrationStore;
   } = {},
 ) {
   const root = mkdtempSync(join(tmpdir(), "auggy-agentmail-runtime-"));
@@ -314,7 +342,6 @@ function fixture(
   const store = createAgentMailOrchestrationStore({
     dbPath: join(root, "orchestration.db"),
     inboxId,
-    sendKey: () => "auggy-test-send-key",
     ...(options.clock === undefined ? {} : { clock: options.clock }),
   });
   const provider = options.provider ?? new FakeProvider();
@@ -337,6 +364,7 @@ function fixture(
     ...(options.notifications ? { notifications: { destination: "creator" } } : {}),
     outbound: {
       allowedTrustLevels: ["creator"],
+      allowDirectDelivery: true,
       subjectPrefix: "[Store] ",
       rateLimit: {
         globalMaxPerHour: options.outboundGlobalMaxPerHour ?? 10,
@@ -347,13 +375,34 @@ function fixture(
   });
   const augment = createAgentMailRuntime(config, {
     provider,
-    store,
+    store: options.storeTransform?.(store) ?? store,
     ...(options.attachmentClient === undefined
       ? {}
       : { attachmentClient: options.attachmentClient }),
     ...(options.clock === undefined ? {} : { clock: options.clock }),
   });
-  return { root, store, provider, augment };
+  return { root, store, provider, augment, config };
+}
+
+function recordManagedDraft(
+  store: AgentMailOrchestrationStore,
+  providerDraft: AgentMailDraft,
+  input: { sourceMessageId?: string; threadId?: string; operationId?: string } = {},
+): void {
+  const kind = providerDraft.forwardOf ? "forward" : providerDraft.inReplyTo ? "reply" : "new";
+  const snapshot = snapshotAgentMailDraft(providerDraft, kind);
+  const result = store.recordProviderDraft({
+    draftId: providerDraft.draftId,
+    kind,
+    ...(input.sourceMessageId === undefined ? {} : { sourceMessageId: input.sourceMessageId }),
+    ...(input.threadId === undefined ? {} : { threadId: input.threadId }),
+    operationId: input.operationId ?? `fixture.${providerDraft.draftId}`,
+    clientId: providerDraft.clientId ?? `client.${providerDraft.draftId}`,
+    providerRevision: snapshot.providerRevision,
+    providerUpdatedAt: snapshot.providerUpdatedAt,
+    materialHash: snapshot.materialHash,
+  });
+  if (result.status === "conflict") throw new Error("fixture draft identity conflict");
 }
 
 function notificationHost(deliveries: NotifyInternalDispatchInput[]): NotifyDispatchHost {
@@ -516,14 +565,17 @@ describe("AgentMail provider-native runtime", () => {
         receivedAt: now,
         policyVersion: 1,
       });
-      f.store.recordDraft({
-        sourceMessageId: messageId,
-        threadId,
-        draftId: `historical_draft_${index}`,
-        clientId: `historical_client_${index}`,
-        providerUpdatedAt: now,
-      });
-      f.store.markDraftStale(messageId);
+      recordManagedDraft(
+        f.store,
+        draft({
+          draftId: `historical_draft_${index}`,
+          clientId: `historical_client_${index}`,
+          inReplyTo: messageId,
+          updatedAt: now,
+        }),
+        { sourceMessageId: messageId, threadId },
+      );
+      f.store.markThreadDraftsStale(threadId, `newer_${messageId}`);
     }
 
     now = 10_000;
@@ -537,13 +589,16 @@ describe("AgentMail provider-native runtime", () => {
       receivedAt: now,
       policyVersion: 1,
     });
-    f.store.recordDraft({
-      sourceMessageId: "new_message",
-      threadId: "new_thread",
-      draftId: "new_draft",
-      clientId: "new_client",
-      providerUpdatedAt: now,
-    });
+    recordManagedDraft(
+      f.store,
+      draft({
+        draftId: "new_draft",
+        clientId: "new_client",
+        inReplyTo: "new_message",
+        updatedAt: now,
+      }),
+      { sourceMessageId: "new_message", threadId: "new_thread" },
+    );
 
     const deliveries: NotifyInternalDispatchInput[] = [];
     await f.augment.onBoot?.();
@@ -738,13 +793,12 @@ describe("AgentMail provider-native runtime", () => {
 
     await f.augment.onTurnStart?.(creatorTurn("send_e2e", "console_e2e", "send it"));
     const sendContext = toolContext({ turnId: "send_e2e", threadId: "console_e2e" });
+    provider.deleteDraftAfterSend = true;
     expect(
-      JSON.parse(
-        String(
-          await send.execute(
-            { draftId: "draft_1", expectedUpdatedAt: finalReview.providerUpdatedAt },
-            sendContext,
-          ),
+      toolJson(
+        await send.execute(
+          { draftId: "draft_1", expectedRevision: finalReview.providerRevision },
+          sendContext,
         ),
       ),
     ).toMatchObject({ status: "sent", messageId: "sent_reply_1" });
@@ -752,15 +806,16 @@ describe("AgentMail provider-native runtime", () => {
       JSON.parse(
         String(
           await send.execute(
-            { draftId: "draft_1", expectedUpdatedAt: finalReview.providerUpdatedAt },
+            { draftId: "draft_1", expectedRevision: finalReview.providerRevision },
             sendContext,
           ),
         ),
       ),
     ).toMatchObject({ status: "sent", messageId: "sent_reply_1" });
-    expect(provider.sentDrafts).toEqual([
-      { draftId: "draft_1", idempotencyKey: "auggy-test-send-key" },
-    ]);
+    expect(provider.sentDrafts).toHaveLength(1);
+    expect(provider.drafts.has("draft_1")).toBe(false);
+    expect(provider.sentDrafts[0]).toMatchObject({ draftId: "draft_1" });
+    expect(provider.sentDrafts[0]?.idempotencyKey).toMatch(/^agentmail\.delivery\.v2\./);
     await f.augment.onTurnEnd?.({ turnId: "send_e2e" } as TurnResult);
 
     await f.augment.onShutdown?.();
@@ -796,7 +851,7 @@ describe("AgentMail provider-native runtime", () => {
   });
 
   test("requires a fresh creator identity for review tools and exact send intent", async () => {
-    const f = fixture();
+    const f = fixture({ drafts: { allowReply: true } });
     const incoming = message();
     f.provider.messages.set(incoming.messageId, incoming);
     const providerDraft = draft();
@@ -811,12 +866,9 @@ describe("AgentMail provider-native runtime", () => {
       receivedAt: incoming.timestamp,
       policyVersion: 1,
     });
-    f.store.recordDraft({
+    recordManagedDraft(f.store, providerDraft, {
       sourceMessageId: incoming.messageId,
       threadId: incoming.threadId,
-      draftId: providerDraft.draftId,
-      clientId: providerDraft.clientId!,
-      providerUpdatedAt: providerDraft.updatedAt,
     });
     await f.augment.onBoot?.();
     const show = requireTool(f.augment, "show_mail_draft");
@@ -835,7 +887,11 @@ describe("AgentMail provider-native runtime", () => {
     );
     expect(
       await send.execute(
-        { draftId: "draft_1", expectedUpdatedAt: 2_000 },
+        {
+          draftId: "draft_1",
+          expectedRevision: snapshotAgentMailDraft(f.provider.drafts.get("draft_1")!, "reply")
+            .providerRevision,
+        },
         toolContext({ turnId: "bad_send" }),
       ),
     ).toMatchObject({ isError: true });
@@ -844,14 +900,20 @@ describe("AgentMail provider-native runtime", () => {
 
     await f.augment.onTurnStart?.(creatorTurn("send_turn", "console_thread_1", "send it"));
     expect(
-      await send.execute(
-        { draftId: "draft_1", expectedUpdatedAt: 2_000 },
-        toolContext({ turnId: "send_turn" }),
+      toolJson(
+        await send.execute(
+          {
+            draftId: "draft_1",
+            expectedRevision: snapshotAgentMailDraft(f.provider.drafts.get("draft_1")!, "reply")
+              .providerRevision,
+          },
+          toolContext({ turnId: "send_turn" }),
+        ),
       ),
-    ).toContain("sent_reply_1");
-    expect(f.provider.sentDrafts).toEqual([
-      { draftId: "draft_1", idempotencyKey: "auggy-test-send-key" },
-    ]);
+    ).toMatchObject({ status: "sent", messageId: "sent_reply_1" });
+    expect(f.provider.sentDrafts).toHaveLength(1);
+    expect(f.provider.sentDrafts[0]).toMatchObject({ draftId: "draft_1" });
+    expect(f.provider.sentDrafts[0]?.idempotencyKey).toMatch(/^agentmail\.delivery\.v2\./);
     await f.augment.onTurnEnd?.({ turnId: "send_turn" } as TurnResult);
     await f.augment.onShutdown?.();
     f.store.close();
@@ -876,10 +938,539 @@ describe("AgentMail provider-native runtime", () => {
         }),
       ),
     ).toMatchObject({ isError: true });
-    expect(await send.execute(input, toolContext())).toContain("sent_direct_1");
-    expect(await send.execute(input, toolContext())).toContain("sent_direct_1");
+    await f.augment.onTurnStart?.(
+      creatorTurn("direct_send", "console_thread_1", "send email to buyer@example.com"),
+    );
+    expect(
+      toolJson(await send.execute(input, toolContext({ turnId: "direct_send" }))),
+    ).toMatchObject({ status: "sent", messageId: "sent_direct_1" });
+    expect(
+      toolJson(await send.execute(input, toolContext({ turnId: "direct_send" }))),
+    ).toMatchObject({ status: "sent", messageId: "sent_direct_1" });
     expect(f.provider.sentMessages).toHaveLength(1);
     expect(f.provider.sentMessages[0]?.subject).toBe("[Store] Update");
+    expect(
+      await send.execute(
+        { ...input, text: "A changed body under the same operation." },
+        toolContext({ turnId: "direct_send" }),
+      ),
+    ).toMatchObject({ isError: true });
+    expect(f.provider.sentMessages).toHaveLength(1);
+    await f.augment.onShutdown?.();
+    f.store.close();
+  });
+
+  test("retries a rate-limited direct send across turns with its exact persisted provider key", async () => {
+    let now = 10_000;
+    const provider = new FakeProvider();
+    provider.sendMessageErrors.push(
+      new AgentMailProviderError({
+        code: "provider_rate_limited",
+        operation: "send message",
+        phase: "sending",
+        retryable: true,
+        nextAction: "Retry later.",
+        retryAfterSeconds: 2,
+      }),
+    );
+    const f = fixture({ provider, clock: () => now });
+    await f.augment.onBoot?.();
+    const send = requireTool(f.augment, "send_message");
+    const retry = requireTool(f.augment, "retry_mail_delivery");
+    const request = { to: ["buyer@example.com"], subject: "Update", text: "Shipped." };
+    await f.augment.onTurnStart?.(
+      creatorTurn("send_rate_1", "console_thread_1", "send email to buyer@example.com"),
+    );
+    const first = toolJson(
+      await send.execute(request, toolContext({ turnId: "send_rate_1", operationId: "rate_op_1" })),
+    );
+    expect(first).toMatchObject({
+      status: "retryable",
+      operationId: "rate_op_1",
+      retryAfter: 12_000,
+      retryCommand: "retry mail delivery rate_op_1",
+    });
+    expect(provider.sentMessages).toHaveLength(1);
+    const originalKey = provider.sentMessages[0]?.idempotencyKey;
+
+    await f.augment.onTurnStart?.(
+      creatorTurn("retry_early", "console_thread_1", "retry mail delivery rate_op_1"),
+    );
+    expect(
+      await retry.execute(
+        { action: "send_message", operationId: "rate_op_1", request },
+        toolContext({ turnId: "retry_early", operationId: "new_turn_operation" }),
+      ),
+    ).toMatchObject({ isError: true });
+    expect(provider.sentMessages).toHaveLength(1);
+
+    now = 12_001;
+    await f.augment.onTurnStart?.(
+      creatorTurn("retry_exact", "console_thread_1", "retry mail delivery rate_op_1"),
+    );
+    expect(
+      toolJson(
+        await retry.execute(
+          { action: "send_message", operationId: "rate_op_1", request },
+          toolContext({ turnId: "retry_exact", operationId: "another_new_turn_operation" }),
+        ),
+      ),
+    ).toMatchObject({ status: "sent", messageId: "sent_direct_1" });
+    expect(provider.sentMessages).toHaveLength(2);
+    expect(provider.sentMessages[1]?.idempotencyKey).toBe(originalKey);
+    expect(f.store.getDeliveryOperation("rate_op_1")).toMatchObject({
+      state: "sent",
+      attemptCount: 2,
+      idempotencyKey: originalKey,
+    });
+    await f.augment.onShutdown?.();
+    f.store.close();
+  });
+
+  test("uses a bounded retry fallback and rejects changed or unauthorized retry requests", async () => {
+    let now = 20_000;
+    const provider = new FakeProvider();
+    provider.sendMessageErrors.push(
+      new AgentMailProviderError({
+        code: "provider_rate_limited",
+        operation: "send message",
+        phase: "sending",
+        retryable: true,
+        nextAction: "Retry later.",
+      }),
+    );
+    const f = fixture({ provider, clock: () => now });
+    await f.augment.onBoot?.();
+    const send = requireTool(f.augment, "send_message");
+    const retry = requireTool(f.augment, "retry_mail_delivery");
+    const request = { to: ["buyer@example.com"], subject: "Update", text: "Shipped." };
+    await f.augment.onTurnStart?.(
+      creatorTurn("send_fallback", "console_thread_1", "send email to buyer@example.com"),
+    );
+    expect(
+      toolJson(
+        await send.execute(
+          request,
+          toolContext({ turnId: "send_fallback", operationId: "fallback_op_1" }),
+        ),
+      ),
+    ).toMatchObject({ status: "retryable", retryAfter: 80_000 });
+    now = 80_001;
+
+    await f.augment.onTurnStart?.(
+      creatorTurn("retry_wrong_words", "console_thread_1", "please retry that email"),
+    );
+    expect(
+      await retry.execute(
+        { action: "send_message", operationId: "fallback_op_1", request },
+        toolContext({ turnId: "retry_wrong_words" }),
+      ),
+    ).toMatchObject({ isError: true });
+    expect(provider.sentMessages).toHaveLength(1);
+
+    await f.augment.onTurnStart?.(
+      creatorTurn("retry_changed", "console_thread_1", "retry mail delivery fallback_op_1"),
+    );
+    expect(
+      await retry.execute(
+        {
+          action: "send_message",
+          operationId: "fallback_op_1",
+          request: { ...request, text: "Changed after approval." },
+        },
+        toolContext({ turnId: "retry_changed" }),
+      ),
+    ).toMatchObject({ isError: true });
+    expect(provider.sentMessages).toHaveLength(1);
+
+    expect(
+      await retry.execute(
+        { action: "send_message", operationId: "fallback_op_1", request },
+        toolContext({
+          turnId: "retry_changed",
+          peer: {
+            id: "public",
+            kind: "human",
+            trustLevel: "public",
+            sourceAugment: "webTransport",
+          },
+        }),
+      ),
+    ).toMatchObject({ isError: true });
+    expect(provider.sentMessages).toHaveLength(1);
+    await f.augment.onShutdown?.();
+    f.store.close();
+  });
+
+  test("never retries an outcome-unknown delivery", async () => {
+    const provider = new FakeProvider();
+    provider.sendMessageErrors.push(
+      new AgentMailProviderError({
+        code: "mutation_ambiguous",
+        operation: "send message",
+        phase: "sending",
+        retryable: false,
+        nextAction: "Reconcile before retrying.",
+      }),
+    );
+    const f = fixture({ provider });
+    await f.augment.onBoot?.();
+    const send = requireTool(f.augment, "send_message");
+    const retry = requireTool(f.augment, "retry_mail_delivery");
+    const request = { to: ["buyer@example.com"], subject: "Update", text: "Shipped." };
+    await f.augment.onTurnStart?.(
+      creatorTurn("send_unknown", "console_thread_1", "send email to buyer@example.com"),
+    );
+    expect(
+      await send.execute(
+        request,
+        toolContext({ turnId: "send_unknown", operationId: "unknown_op_1" }),
+      ),
+    ).toMatchObject({ isError: true, outcomeUnknown: true });
+    await f.augment.onTurnStart?.(
+      creatorTurn("retry_unknown", "console_thread_1", "retry mail delivery unknown_op_1"),
+    );
+    expect(
+      await retry.execute(
+        { action: "send_message", operationId: "unknown_op_1", request },
+        toolContext({ turnId: "retry_unknown" }),
+      ),
+    ).toMatchObject({ isError: true, outcomeUnknown: true });
+    expect(provider.sentMessages).toHaveLength(1);
+    expect(f.store.getDeliveryOperation("unknown_op_1")?.state).toBe("outcome_unknown");
+    await f.augment.onShutdown?.();
+    f.store.close();
+  });
+
+  test("revalidates a rate-limited draft before retry and refuses provider drift", async () => {
+    let now = 30_000;
+    const provider = new FakeProvider();
+    const managed = draft({
+      draftId: "draft_retry_1",
+      clientId: "client_retry_1",
+      inReplyTo: undefined,
+      subject: "[Store] Update",
+    });
+    provider.drafts.set(managed.draftId, managed);
+    provider.sendDraftErrors.push(
+      new AgentMailProviderError({
+        code: "provider_rate_limited",
+        operation: "send draft",
+        phase: "sending",
+        retryable: true,
+        nextAction: "Retry later.",
+        retryAfterSeconds: 1,
+      }),
+    );
+    const f = fixture({ provider, clock: () => now, drafts: { allowNew: true } });
+    recordManagedDraft(f.store, managed);
+    await f.augment.onBoot?.();
+    const send = requireTool(f.augment, "send_mail_draft");
+    const retry = requireTool(f.augment, "retry_mail_delivery");
+    const expectedRevision = snapshotAgentMailDraft(managed, "new").providerRevision;
+    await f.augment.onTurnStart?.(
+      creatorTurn("send_draft_rate", "console_thread_1", "send draft draft_retry_1"),
+    );
+    expect(
+      toolJson(
+        await send.execute(
+          { draftId: managed.draftId, expectedRevision },
+          toolContext({ turnId: "send_draft_rate", operationId: "draft_retry_op_1" }),
+        ),
+      ),
+    ).toMatchObject({ status: "retryable", operationId: "draft_retry_op_1" });
+    const originalKey = provider.sentDrafts[0]?.idempotencyKey;
+    provider.drafts.set(managed.draftId, {
+      ...managed,
+      text: "Externally changed",
+      updatedAt: 3_000,
+    });
+    now = 31_001;
+    await f.augment.onTurnStart?.(
+      creatorTurn(
+        "retry_draft_changed",
+        "console_thread_1",
+        "retry mail delivery draft_retry_op_1",
+      ),
+    );
+    expect(
+      await retry.execute(
+        { action: "send_draft", operationId: "draft_retry_op_1" },
+        toolContext({ turnId: "retry_draft_changed" }),
+      ),
+    ).toMatchObject({ isError: true });
+    expect(provider.sentDrafts).toHaveLength(1);
+    expect(provider.sentDrafts[0]?.idempotencyKey).toBe(originalKey);
+    expect(f.store.getDeliveryOperation("draft_retry_op_1")?.state).toBe("retryable");
+    await f.augment.onShutdown?.();
+    f.store.close();
+  });
+
+  test("retries an unchanged managed draft with its original provider key", async () => {
+    let now = 40_000;
+    const provider = new FakeProvider();
+    const managed = draft({ draftId: "draft_retry_ok", clientId: "client_retry_ok" });
+    provider.drafts.set(managed.draftId, managed);
+    provider.messages.set("message_1", message());
+    provider.sendDraftErrors.push(
+      new AgentMailProviderError({
+        code: "provider_rate_limited",
+        operation: "send draft",
+        phase: "sending",
+        retryable: true,
+        nextAction: "Retry later.",
+        retryAfterSeconds: 1,
+      }),
+    );
+    const f = fixture({ provider, clock: () => now, drafts: { allowReply: true } });
+    recordManagedDraft(f.store, managed, { sourceMessageId: "message_1", threadId: "thread_1" });
+    await f.augment.onBoot?.();
+    const send = requireTool(f.augment, "send_mail_draft");
+    const retry = requireTool(f.augment, "retry_mail_delivery");
+    const expectedRevision = snapshotAgentMailDraft(managed, "reply").providerRevision;
+    await f.augment.onTurnStart?.(
+      creatorTurn("send_draft_retry", "console_thread_1", "send draft draft_retry_ok"),
+    );
+    expect(
+      toolJson(
+        await send.execute(
+          { draftId: managed.draftId, expectedRevision },
+          toolContext({ turnId: "send_draft_retry", operationId: "draft_retry_ok_op" }),
+        ),
+      ),
+    ).toMatchObject({ status: "retryable" });
+    const originalKey = provider.sentDrafts[0]?.idempotencyKey;
+    now = 41_001;
+    await f.augment.onTurnStart?.(
+      creatorTurn("retry_draft_ok", "console_thread_1", "retry mail delivery draft_retry_ok_op"),
+    );
+    expect(
+      toolJson(
+        await retry.execute(
+          { action: "send_draft", operationId: "draft_retry_ok_op" },
+          toolContext({ turnId: "retry_draft_ok", operationId: "new_kernel_retry_op" }),
+        ),
+      ),
+    ).toMatchObject({ status: "sent", messageId: "sent_reply_1" });
+    expect(provider.sentDrafts).toHaveLength(2);
+    expect(provider.sentDrafts[1]?.idempotencyKey).toBe(originalKey);
+    await f.augment.onShutdown?.();
+    f.store.close();
+  });
+
+  test("fences provider acceptance when local delivery settlement fails", async () => {
+    let failSettlement = true;
+    const f = fixture({
+      storeTransform: (store) =>
+        new Proxy(store, {
+          get(target, property, receiver) {
+            if (property === "settleDeliveryOperation") {
+              return (
+                ...args: Parameters<AgentMailOrchestrationStore["settleDeliveryOperation"]>
+              ) => {
+                if (failSettlement && args[1].status === "sent") {
+                  failSettlement = false;
+                  throw new Error("simulated disk failure");
+                }
+                return target.settleDeliveryOperation(...args);
+              };
+            }
+            const value = Reflect.get(target, property, receiver);
+            return typeof value === "function" ? value.bind(target) : value;
+          },
+        }),
+    });
+    await f.augment.onBoot?.();
+    const send = requireTool(f.augment, "send_message");
+    await f.augment.onTurnStart?.(
+      creatorTurn("settle_failure", "console_thread_1", "send email to buyer@example.com"),
+    );
+    const result = await send.execute(
+      { to: ["buyer@example.com"], subject: "Update", text: "Shipped." },
+      toolContext({ turnId: "settle_failure", operationId: "settle_failure_1" }),
+    );
+    expect(result).toMatchObject({ isError: true, outcomeUnknown: true });
+    expect(f.provider.sentMessages).toHaveLength(1);
+    expect(f.store.getDeliveryOperation("settle_failure_1")?.state).toBe("outcome_unknown");
+    f.provider.messages.set(
+      "sent_direct_1",
+      message({ messageId: "sent_direct_1", threadId: "thread_direct_1" }),
+    );
+    await f.augment.onTurnStart?.(
+      creatorTurn(
+        "settle_reconcile",
+        "console_thread_1",
+        "reconcile delivery settle_failure_1 as sent",
+      ),
+    );
+    expect(
+      toolJson(
+        await requireTool(f.augment, "reconcile_mail_delivery").execute(
+          {
+            operationId: "settle_failure_1",
+            resolution: "sent",
+            messageId: "sent_direct_1",
+            threadId: "thread_direct_1",
+          },
+          toolContext({ turnId: "settle_reconcile" }),
+        ),
+      ),
+    ).toMatchObject({ status: "sent", messageId: "sent_direct_1" });
+    await f.augment.onShutdown?.();
+    f.store.close();
+
+    const restartedProvider = new FakeProvider();
+    const restarted = createAgentMailRuntime(f.config, { provider: restartedProvider });
+    await restarted.onBoot?.();
+    await restarted.onTurnStart?.(
+      creatorTurn("settle_retry", "console_thread_1", "send email to buyer@example.com"),
+    );
+    expect(
+      toolJson(
+        await requireTool(restarted, "send_message").execute(
+          { to: ["buyer@example.com"], subject: "Update", text: "Shipped." },
+          toolContext({ turnId: "settle_retry", operationId: "settle_failure_1" }),
+        ),
+      ),
+    ).toMatchObject({ status: "sent", messageId: "sent_direct_1", replayed: true });
+    expect(restartedProvider.sentMessages).toHaveLength(0);
+    await restarted.onShutdown?.();
+  });
+
+  test("direct reply and forward require exact creator intent and preserve source identity", async () => {
+    const f = fixture({ drafts: { allowForward: true } });
+    const source = message({ replyTo: ["reply@example.com"] });
+    f.provider.messages.set(source.messageId, source);
+    await f.augment.onBoot?.();
+    const reply = requireTool(f.augment, "reply_to_mail_message");
+    expect(
+      await reply.execute(
+        { messageId: source.messageId, text: "Thanks" },
+        toolContext({ operationId: "reply_without_intent" }),
+      ),
+    ).toMatchObject({ isError: true });
+    await f.augment.onTurnStart?.(
+      creatorTurn("reply_exact", "console_thread_1", `reply to message ${source.messageId}`),
+    );
+    expect(
+      toolJson(
+        await reply.execute(
+          { messageId: source.messageId, text: "Thanks" },
+          toolContext({ turnId: "reply_exact", operationId: "reply_exact_1" }),
+        ),
+      ),
+    ).toMatchObject({ status: "sent", messageId: "sent_reply_direct_1" });
+    expect(f.provider.sentReplies[0]).toMatchObject({
+      messageId: source.messageId,
+      text: "Thanks",
+    });
+
+    const forward = requireTool(f.augment, "forward_mail_message");
+    await f.augment.onTurnStart?.(
+      creatorTurn(
+        "forward_exact",
+        "console_thread_1",
+        `forward message ${source.messageId} to owner@example.com`,
+      ),
+    );
+    expect(
+      toolJson(
+        await forward.execute(
+          { messageId: source.messageId, to: ["owner@example.com"], text: "FYI" },
+          toolContext({ turnId: "forward_exact", operationId: "forward_exact_1" }),
+        ),
+      ),
+    ).toMatchObject({ status: "sent", messageId: "sent_forward_1" });
+    expect(f.provider.sentForwards[0]).toMatchObject({
+      messageId: source.messageId,
+      to: ["owner@example.com"],
+    });
+    expect(f.augment.tools?.some((tool) => tool.name.includes("reply_all"))).toBe(false);
+    await f.augment.onShutdown?.();
+    f.store.close();
+  });
+
+  test("retries direct reply and forward through their exact AgentMail idempotency keys", async () => {
+    let now = 50_000;
+    const provider = new FakeProvider();
+    const limited = () =>
+      new AgentMailProviderError({
+        code: "provider_rate_limited",
+        operation: "deliver mail",
+        phase: "sending",
+        retryable: true,
+        nextAction: "Retry later.",
+        retryAfterSeconds: 1,
+      });
+    provider.replyErrors.push(limited());
+    provider.forwardErrors.push(limited());
+    const source = message({ replyTo: ["reply@example.com"] });
+    provider.messages.set(source.messageId, source);
+    const f = fixture({ provider, clock: () => now, drafts: { allowForward: true } });
+    await f.augment.onBoot?.();
+    const reply = requireTool(f.augment, "reply_to_mail_message");
+    const forward = requireTool(f.augment, "forward_mail_message");
+    const retry = requireTool(f.augment, "retry_mail_delivery");
+
+    await f.augment.onTurnStart?.(
+      creatorTurn("reply_limited", "console_thread_1", `reply to message ${source.messageId}`),
+    );
+    await reply.execute(
+      { messageId: source.messageId, text: "Thanks" },
+      toolContext({ turnId: "reply_limited", operationId: "reply_retry_op" }),
+    );
+    const replyKey = provider.sentReplies[0]?.idempotencyKey;
+    now = 51_001;
+    await f.augment.onTurnStart?.(
+      creatorTurn("reply_retry", "console_thread_1", "retry mail delivery reply_retry_op"),
+    );
+    expect(
+      toolJson(
+        await retry.execute(
+          {
+            action: "reply",
+            operationId: "reply_retry_op",
+            request: { messageId: source.messageId, text: "Thanks" },
+          },
+          toolContext({ turnId: "reply_retry" }),
+        ),
+      ),
+    ).toMatchObject({ status: "sent", messageId: "sent_reply_direct_1" });
+    expect(provider.sentReplies[1]?.idempotencyKey).toBe(replyKey);
+
+    await f.augment.onTurnStart?.(
+      creatorTurn(
+        "forward_limited",
+        "console_thread_1",
+        `forward message ${source.messageId} to owner@example.com`,
+      ),
+    );
+    await forward.execute(
+      { messageId: source.messageId, to: ["owner@example.com"], text: "FYI" },
+      toolContext({ turnId: "forward_limited", operationId: "forward_retry_op" }),
+    );
+    const forwardKey = provider.sentForwards[0]?.idempotencyKey;
+    now = 52_002;
+    await f.augment.onTurnStart?.(
+      creatorTurn("forward_retry", "console_thread_1", "retry mail delivery forward_retry_op"),
+    );
+    expect(
+      toolJson(
+        await retry.execute(
+          {
+            action: "forward",
+            operationId: "forward_retry_op",
+            request: {
+              messageId: source.messageId,
+              to: ["owner@example.com"],
+              text: "FYI",
+            },
+          },
+          toolContext({ turnId: "forward_retry" }),
+        ),
+      ),
+    ).toMatchObject({ status: "sent", messageId: "sent_forward_1" });
+    expect(provider.sentForwards[1]?.idempotencyKey).toBe(forwardKey);
     await f.augment.onShutdown?.();
     f.store.close();
   });
@@ -920,7 +1511,7 @@ describe("AgentMail provider-native runtime", () => {
   });
 
   test("applies the shared outbound rate limit to creator-reviewed draft sends", async () => {
-    const f = fixture({ outboundGlobalMaxPerHour: 1 });
+    const f = fixture({ outboundGlobalMaxPerHour: 1, drafts: { allowReply: true } });
     const incoming = message();
     f.provider.messages.set(incoming.messageId, incoming);
     f.provider.drafts.set("draft_1", draft());
@@ -934,35 +1525,41 @@ describe("AgentMail provider-native runtime", () => {
       receivedAt: incoming.timestamp,
       policyVersion: 1,
     });
-    f.store.recordDraft({
+    recordManagedDraft(f.store, f.provider.drafts.get("draft_1")!, {
       sourceMessageId: incoming.messageId,
       threadId: incoming.threadId,
-      draftId: "draft_1",
-      clientId: "auggy.reply.v1.fixture",
-      providerUpdatedAt: 2_000,
     });
     await f.augment.onBoot?.();
 
     const direct = requireTool(f.augment, "send_message");
+    await f.augment.onTurnStart?.(
+      creatorTurn("direct_rate", "console_thread_1", "send email to buyer@example.com"),
+    );
     expect(
-      await direct.execute(
-        { to: ["buyer@example.com"], subject: "Update", text: "Your order shipped." },
-        toolContext({ operationId: "direct_before_draft" }),
+      toolJson(
+        await direct.execute(
+          { to: ["buyer@example.com"], subject: "Update", text: "Your order shipped." },
+          toolContext({ turnId: "direct_rate", operationId: "direct_before_draft" }),
+        ),
       ),
-    ).toContain("sent_direct_1");
+    ).toMatchObject({ status: "sent", messageId: "sent_direct_1" });
 
     const sendDraft = requireTool(f.augment, "send_mail_draft");
     await f.augment.onTurnStart?.(
       creatorTurn("rate_limited_draft", "console_thread_1", "send draft draft_1"),
     );
     const result = await sendDraft.execute(
-      { draftId: "draft_1", expectedUpdatedAt: 2_000 },
+      {
+        draftId: "draft_1",
+        expectedRevision: snapshotAgentMailDraft(f.provider.drafts.get("draft_1")!, "reply")
+          .providerRevision,
+      },
       toolContext({ turnId: "rate_limited_draft" }),
     );
     expect(result).toMatchObject({ isError: true });
     expect(JSON.stringify(result)).toContain("rate limited (global)");
     expect(f.provider.sentDrafts).toHaveLength(0);
-    expect(f.store.getDraftByMessage("message_1")?.state).toBe("ready");
+    expect(f.store.getProviderDraft("draft_1")?.state).toBe("ready");
 
     await f.augment.onTurnEnd?.({ turnId: "rate_limited_draft" } as TurnResult);
     await f.augment.onShutdown?.();
@@ -984,22 +1581,23 @@ describe("AgentMail provider-native runtime", () => {
       receivedAt: incoming.timestamp,
       policyVersion: 1,
     });
-    f.store.recordDraft({
+    recordManagedDraft(f.store, f.provider.drafts.get("draft_1")!, {
       sourceMessageId: incoming.messageId,
       threadId: incoming.threadId,
-      draftId: "draft_1",
-      clientId: "auggy.reply.v1.fixture",
-      providerUpdatedAt: 2_000,
     });
     await f.augment.onBoot?.();
     const revise = requireTool(f.augment, "revise_mail_draft");
+    const expectedRevision = snapshotAgentMailDraft(
+      f.provider.drafts.get("draft_1")!,
+      "reply",
+    ).providerRevision;
 
     await f.augment.onTurnStart?.(
       creatorTurn("show_only", "console_thread_1", "show draft draft_1"),
     );
     expect(
       await revise.execute(
-        { draftId: "draft_1", expectedUpdatedAt: 2_000, text: "Unauthorized change." },
+        { draftId: "draft_1", expectedRevision, text: "Unauthorized change." },
         toolContext({ turnId: "show_only" }),
       ),
     ).toMatchObject({ isError: true });
@@ -1010,7 +1608,7 @@ describe("AgentMail provider-native runtime", () => {
     );
     expect(
       await revise.execute(
-        { draftId: "draft_1", expectedUpdatedAt: 2_000, text: "Unauthorized change." },
+        { draftId: "draft_1", expectedRevision, text: "Unauthorized change." },
         toolContext({ turnId: "generic_revise", threadId: "another_console_thread" }),
       ),
     ).toMatchObject({ isError: true });
@@ -1037,7 +1635,7 @@ describe("AgentMail provider-native runtime", () => {
       ),
     ).toMatchObject({ status: "revised" });
     expect(f.provider.drafts.get("draft_1")?.text).toBe("Concise reply.");
-    expect(f.store.getDraftByMessage("message_1")).toMatchObject({
+    expect(f.store.getProviderDraft("draft_1")).toMatchObject({
       state: "ready",
       providerUpdatedAt: 2_001,
     });
@@ -1061,12 +1659,9 @@ describe("AgentMail provider-native runtime", () => {
       receivedAt: incoming.timestamp,
       policyVersion: 1,
     });
-    f.store.recordDraft({
+    recordManagedDraft(f.store, f.provider.drafts.get("draft_1")!, {
       sourceMessageId: incoming.messageId,
       threadId: incoming.threadId,
-      draftId: "draft_1",
-      clientId: "auggy.reply.v1.fixture",
-      providerUpdatedAt: 2_000,
     });
     await f.augment.onBoot?.();
     await f.augment.onTurnStart?.(
@@ -1323,13 +1918,24 @@ describe("AgentMail provider-native runtime", () => {
     expect(f.store.getProviderDraft(unmanaged.draftId)?.providerUpdatedAt).toBe(
       unmanaged.updatedAt + 10,
     );
+    f.provider.drafts.set(unmanaged.draftId, {
+      ...unmanaged,
+      text: "Edited in AgentMail",
+      sendAt: Date.now() + 60_000,
+      updatedAt: unmanaged.updatedAt + 20,
+    });
+    const scheduled = toolJson(
+      await show.execute({ draftId: unmanaged.draftId }, toolContext({ turnId: "show_scheduled" })),
+    );
+    expect(scheduled).toMatchObject({ managed: true, sendAt: expect.any(Number) });
+    expect(f.store.getProviderDraft(unmanaged.draftId)).toMatchObject({ state: "scheduled" });
     await f.augment.onShutdown?.();
     f.store.close();
   });
 
-  test("fails schedule closed and durably deletes only after exact creator intent", async () => {
+  test("durably deletes a draft only after exact creator intent", async () => {
     const f = fixture({
-      drafts: { allowNew: true, allowScheduling: true },
+      drafts: { allowNew: true },
       destructive: { allowPermanentDelete: true },
     });
     await f.augment.onBoot?.();
@@ -1343,15 +1949,6 @@ describe("AgentMail provider-native runtime", () => {
     const shown = toolJson(
       await requireTool(f.augment, "show_mail_draft").execute({ draftId }, toolContext()),
     );
-    expect(
-      toolJson(
-        await requireTool(f.augment, "schedule_mail_draft").execute(
-          { draftId, expectedRevision: shown.providerRevision, sendAt: Date.now() + 60_000 },
-          toolContext({ operationId: "schedule_1" }),
-        ),
-      ),
-    ).toMatchObject({ status: "failed" });
-    expect(f.provider.updatedDrafts).toHaveLength(0);
     const remove = requireTool(f.augment, "delete_mail_draft");
     expect(
       await remove.execute(

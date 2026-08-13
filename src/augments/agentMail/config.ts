@@ -36,14 +36,7 @@ const MAILBOX_FIELDS = new Set([
   "maxAttachmentBytes",
   "allowedAttachmentTypes",
 ]);
-const DRAFT_FIELDS = new Set([
-  "allowNew",
-  "allowReply",
-  "allowReplyAll",
-  "allowForward",
-  "allowScheduling",
-  "maxScheduleDelayMs",
-]);
+const DRAFT_FIELDS = new Set(["allowNew", "allowReply", "allowReplyAll", "allowForward"]);
 const DESTRUCTIVE_FIELDS = new Set(["allowPermanentDelete"]);
 const OUTBOUND_FIELDS = new Set([
   "allowedTrustLevels",
@@ -123,8 +116,6 @@ export interface ValidatedAgentMailConfig {
     allowReply: boolean;
     allowReplyAll: boolean;
     allowForward: boolean;
-    allowScheduling: boolean;
-    maxScheduleDelayMs: number;
   };
   destructive: {
     allowPermanentDelete: boolean;
@@ -478,17 +469,6 @@ export function validateAgentMailConfig(value: unknown): ValidatedAgentMailConfi
   const allowReplyDraft = optionalBoolean(drafts.allowReply, false, "drafts.allowReply");
   const allowReplyAllDraft = optionalBoolean(drafts.allowReplyAll, false, "drafts.allowReplyAll");
   const allowForwardDraft = optionalBoolean(drafts.allowForward, false, "drafts.allowForward");
-  const allowScheduling = optionalBoolean(drafts.allowScheduling, false, "drafts.allowScheduling");
-  const maxScheduleDelayMs = boundedInteger(
-    drafts.maxScheduleDelayMs,
-    2_592_000_000,
-    "drafts.maxScheduleDelayMs",
-    60_000,
-    31_536_000_000,
-  );
-  if (!allowScheduling && drafts.maxScheduleDelayMs !== undefined) {
-    throw new Error("agentMail: drafts.maxScheduleDelayMs requires drafts.allowScheduling: true");
-  }
   if (allowReplyAllDraft && !allowReplyDraft) {
     throw new Error("agentMail: drafts.allowReplyAll requires drafts.allowReply: true");
   }
@@ -632,8 +612,6 @@ export function validateAgentMailConfig(value: unknown): ValidatedAgentMailConfi
       allowReply: allowReplyDraft,
       allowReplyAll: allowReplyAllDraft,
       allowForward: allowForwardDraft,
-      allowScheduling,
-      maxScheduleDelayMs,
     },
     destructive: { allowPermanentDelete },
     outbound: {

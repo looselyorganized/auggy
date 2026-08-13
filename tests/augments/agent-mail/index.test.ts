@@ -32,10 +32,12 @@ describe("agentMail replacement boundary", () => {
       "adopt_mail_draft",
       "show_mail_draft",
       "revise_mail_draft",
-      "schedule_mail_draft",
-      "unschedule_mail_draft",
       "delete_mail_draft",
       "send_mail_draft",
+      "reply_to_mail_message",
+      "forward_mail_message",
+      "retry_mail_delivery",
+      "reconcile_mail_delivery",
     ]);
     expect(augment.transport).toBeDefined();
     const admin = await augment.adminInfo?.();

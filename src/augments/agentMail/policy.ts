@@ -53,6 +53,8 @@ export interface AgentMailPolicyAttachment {
   contentBase64?: string;
   /** Hash of an externally fetched attachment URL; raw URLs never enter a manifest. */
   sourceUrlHash?: string;
+  /** Runtime attestation that the descriptor was produced by trusted byte ingestion. */
+  trustedBytes?: true;
 }
 
 export type AgentMailDraftKind = "new" | "reply" | "replyAll" | "forward";
@@ -79,8 +81,6 @@ export type AgentMailOperation =
   | "create_reply_all_draft"
   | "create_forward_draft"
   | "update_draft"
-  | "schedule_draft"
-  | "unschedule_draft"
   | "send_message"
   | "send_draft"
   | "reply"
@@ -104,6 +104,8 @@ export interface AgentMailTrustedAuthority {
   creatorPeerId: string;
   registeredAugment: string;
   now: number;
+  /** Provider-derived single reply target for a direct reply operation. */
+  derivedReplyRecipient?: string;
 }
 
 export interface AgentMailOperationInput {
@@ -127,7 +129,6 @@ export interface AgentMailOperationInput {
   text?: string;
   html?: string;
   attachments?: readonly AgentMailPolicyAttachment[];
-  sendAt?: number | null;
   providerRevision?: string;
   materialHash?: string;
   clientId?: string;
@@ -159,15 +160,13 @@ export type AgentMailOperationDenialReason =
   | "attachment_too_large"
   | "attachment_total_exceeded"
   | "attachment_type_not_allowed"
-  | "attachment_invalid"
-  | "schedule_invalid";
+  | "attachment_invalid";
 
 export type AgentMailOperationDecision =
   | {
       allowed: true;
       recipients: NormalizedAgentMailRecipients;
       subject?: string;
-      sendAt?: number;
       addLabels?: string[];
       removeLabels?: string[];
       replyTo?: string[];
@@ -232,7 +231,6 @@ export interface AgentMailOperationManifest {
     trustLevel: TrustLevel;
     sourceAugment: string | null;
   }>;
-  readonly schedule: Readonly<{ supplied: boolean; sendAt: number | null }>;
   readonly providerRevision: string | null;
   readonly materialHash: string | null;
   readonly execution: Readonly<{
@@ -240,9 +238,14 @@ export interface AgentMailOperationManifest {
     operationId: string | null;
     idempotencyKey: string | null;
   }>;
+  readonly delivery: Readonly<{
+    endpoint: "none" | "drafts.send" | "messages.send" | "messages.reply" | "messages.forward";
+    requestHash: string;
+  }>;
   readonly trustedAuthority: Readonly<{
     creatorPeerId: string;
     registeredAugment: string;
+    derivedReplyRecipient: string | null;
   }>;
   readonly policyGeneration: string;
 }
@@ -344,6 +347,11 @@ function prefixedSubject(subject: string, prefix: string): string {
   return subject.startsWith(prefix) ? subject : `${prefix}${subject}`;
 }
 
+function hasExactlyOnePrefix(subject: string | undefined, prefix: string): boolean {
+  if (subject === undefined || !subject.startsWith(prefix)) return false;
+  return !subject.slice(prefix.length).startsWith(prefix);
+}
+
 function normalizeAddressList(
   values: readonly string[] | undefined,
   maximum: number,
@@ -374,6 +382,20 @@ function normalizeDraftLabels(
   if (
     new Set(normalized).size !== normalized.length ||
     normalized.some((value) => !config.mailbox.allowedLabels.includes(value))
+  ) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function normalizeObservedLabels(values: readonly string[] | undefined): string[] | undefined {
+  if (values === undefined || !Array.isArray(values) || values.length > 50) return undefined;
+  const normalized = values.map((value) =>
+    typeof value === "string" ? value.trim().toLowerCase() : "",
+  );
+  if (
+    new Set(normalized).size !== normalized.length ||
+    normalized.some((value) => !/^[a-z0-9][a-z0-9._:/-]{0,127}$/.test(value))
   ) {
     return undefined;
   }
@@ -427,6 +449,7 @@ function evaluateComposition(
     requireSubject: boolean;
     requireBody: boolean;
     applySubjectPrefix: boolean;
+    observedLabels: boolean;
   },
 ): AgentMailOperationDecision {
   const recipientDecision = normalizeRecipients(input.recipients, config, options.requireRecipient);
@@ -444,7 +467,9 @@ function evaluateComposition(
   if (input.replyTo !== undefined && replyTo === undefined) {
     return { allowed: false, reason: "recipient_malformed" };
   }
-  const labels = normalizeDraftLabels(input.labels, config);
+  const labels = options.observedLabels
+    ? normalizeObservedLabels(input.labels)
+    : normalizeDraftLabels(input.labels, config);
   if (input.labels !== undefined && labels === undefined) {
     return { allowed: false, reason: "label_not_allowed" };
   }
@@ -489,6 +514,9 @@ function evaluateComposition(
           /[\0\r\n]/.test(attachment.contentId))) ||
       (attachment.sourceUrlHash !== undefined && !/^[a-f0-9]{64}$/i.test(attachment.sourceUrlHash))
     ) {
+      return { allowed: false, reason: "attachment_invalid" };
+    }
+    if (attachment.sourceUrlHash !== undefined || attachment.trustedBytes !== true) {
       return { allowed: false, reason: "attachment_invalid" };
     }
     if (attachment.size > config.outbound.maxAttachmentBytes) {
@@ -566,10 +594,10 @@ function requireResource(input: AgentMailOperationInput): boolean {
     case "trash_message":
     case "restore_message":
     case "delete_message":
-    case "reply":
-    case "reply_all":
-    case "forward":
       return validProviderIdentifier(input.messageId);
+    case "reply":
+    case "forward":
+      return validProviderIdentifier(input.messageId) && validProviderIdentifier(input.threadId);
     case "create_reply_draft":
     case "create_reply_all_draft":
     case "create_forward_draft":
@@ -587,8 +615,6 @@ function requireResource(input: AgentMailOperationInput): boolean {
     case "get_draft":
     case "adopt_draft":
     case "update_draft":
-    case "schedule_draft":
-    case "unschedule_draft":
     case "send_draft":
     case "delete_draft":
       return validProviderIdentifier(input.draftId);
@@ -610,8 +636,6 @@ function requiresProviderRevision(action: AgentMailOperation): boolean {
     "create_forward_draft",
     "adopt_draft",
     "update_draft",
-    "schedule_draft",
-    "unschedule_draft",
     "send_draft",
     "reply",
     "reply_all",
@@ -645,6 +669,8 @@ function validTrustedAuthority(value: AgentMailTrustedAuthority): boolean {
     validManifestIdentity(value.authority.peerId) &&
     (value.authority.sourceAugment === undefined ||
       validManifestIdentity(value.authority.sourceAugment)) &&
+    (value.derivedReplyRecipient === undefined ||
+      isWellFormedEmail(canonicalizeEmail(value.derivedReplyRecipient))) &&
     Number.isSafeInteger(value.now) &&
     value.now >= 0
   );
@@ -671,15 +697,11 @@ function validateDraftIdentity(input: AgentMailOperationInput): boolean {
     return false;
   }
   const kind = expected ?? input.draftKind;
-  const needsKnownKind = [
-    "adopt_draft",
-    "update_draft",
-    "schedule_draft",
-    "unschedule_draft",
-    "send_draft",
-    "delete_draft",
-  ].includes(input.action);
-  const acceptsDraftIdentity = needsKnownKind || expected !== undefined;
+  const needsKnownKind = ["adopt_draft", "update_draft", "send_draft", "delete_draft"].includes(
+    input.action,
+  );
+  const directMessageSource = input.action === "reply" || input.action === "forward";
+  const acceptsDraftIdentity = needsKnownKind || expected !== undefined || directMessageSource;
   if (
     !acceptsDraftIdentity &&
     (input.draftKind !== undefined || input.sourceMessageId !== undefined)
@@ -687,6 +709,7 @@ function validateDraftIdentity(input: AgentMailOperationInput): boolean {
     return false;
   }
   if (needsKnownKind && kind === undefined) return false;
+  if (directMessageSource) return validProviderIdentifier(input.sourceMessageId);
   if (kind === "new") return input.sourceMessageId === undefined;
   if (kind === "reply" || kind === "replyAll" || kind === "forward") {
     return validProviderIdentifier(input.sourceMessageId);
@@ -707,7 +730,7 @@ function validateOperationIdentities(input: AgentMailOperationInput): boolean {
   }
   if (
     ["send_message", "send_draft", "reply", "reply_all", "forward"].includes(input.action) &&
-    !validManifestIdentity(input.idempotencyKey)
+    (!validManifestIdentity(input.idempotencyKey) || !validManifestIdentity(input.operationId))
   ) {
     return false;
   }
@@ -725,6 +748,76 @@ function validateOperationIdentities(input: AgentMailOperationInput): boolean {
   return true;
 }
 
+function draftCapabilityEnabled(
+  kind: AgentMailDraftKind | undefined,
+  config: ValidatedAgentMailConfig,
+): boolean {
+  switch (kind) {
+    case "new":
+      return config.drafts.allowNew;
+    case "reply":
+      return config.drafts.allowReply || config.replies.mode === "review";
+    case "replyAll":
+      return (
+        (config.drafts.allowReply && config.drafts.allowReplyAll) ||
+        (config.replies.mode === "review" && config.replies.allowReplyAll)
+      );
+    case "forward":
+      return config.drafts.allowForward;
+    default:
+      return false;
+  }
+}
+
+function deliveryEndpoint(
+  action: AgentMailOperation,
+): AgentMailOperationManifest["delivery"]["endpoint"] {
+  switch (action) {
+    case "send_draft":
+      return "drafts.send";
+    case "send_message":
+      return "messages.send";
+    case "reply":
+      return "messages.reply";
+    case "forward":
+      return "messages.forward";
+    default:
+      return "none";
+  }
+}
+
+function deliveryRequestHash(
+  input: AgentMailOperationInput,
+  decision: Extract<AgentMailOperationDecision, { allowed: true }>,
+  config: ValidatedAgentMailConfig,
+  attachments: AgentMailOperationManifest["attachments"],
+): string {
+  const endpoint = deliveryEndpoint(input.action);
+  const common = {
+    endpoint,
+    inboxId: config.inboxId,
+  };
+  if (endpoint === "drafts.send") {
+    return sha256(canonicalJson({ ...common, draftId: input.draftId ?? null }));
+  }
+  if (endpoint === "none") return sha256(canonicalJson(common));
+  return sha256(
+    canonicalJson({
+      ...common,
+      ...(endpoint === "messages.send" ? {} : { messageId: input.messageId ?? null }),
+      to: decision.recipients.to,
+      cc: decision.recipients.cc,
+      bcc: decision.recipients.bcc,
+      replyTo: decision.replyTo ?? [],
+      labels: decision.labels ?? [],
+      subject: decision.subject ?? null,
+      textHash: input.text === undefined ? null : sha256(input.text),
+      htmlHash: input.html === undefined ? null : sha256(input.html),
+      attachments,
+    }),
+  );
+}
+
 function operationRequiresComposition(action: AgentMailOperation): boolean {
   return [
     "create_new_draft",
@@ -732,11 +825,9 @@ function operationRequiresComposition(action: AgentMailOperation): boolean {
     "create_reply_all_draft",
     "create_forward_draft",
     "update_draft",
-    "schedule_draft",
     "send_message",
     "send_draft",
     "reply",
-    "reply_all",
     "forward",
   ].includes(action);
 }
@@ -753,6 +844,11 @@ export function evaluateAgentMailOperation(
   trusted: AgentMailTrustedAuthority,
 ): AgentMailOperationDecision {
   if (!validTrustedAuthority(trusted)) return { allowed: false, reason: "resource_invalid" };
+  if (input.action === "reply_all") {
+    // AgentMail alone derives reply-all recipients. Auggy only permits this via
+    // a provider-native reply-all draft that the creator reviews before send.
+    return { allowed: false, reason: "operation_disabled" };
+  }
   if (trusted.authority.origin === "inbound") {
     return { allowed: false, reason: "inbound_origin_denied" };
   }
@@ -766,6 +862,12 @@ export function evaluateAgentMailOperation(
     return { allowed: false, reason: "creator_required" };
   }
   if (!requireResource(input)) return { allowed: false, reason: "resource_invalid" };
+  if (
+    (input.action === "reply" || input.action === "forward") &&
+    input.sourceMessageId !== input.messageId
+  ) {
+    return { allowed: false, reason: "resource_invalid" };
+  }
   if (!validateDraftIdentity(input) || !validateOperationIdentities(input)) {
     return { allowed: false, reason: "resource_invalid" };
   }
@@ -857,7 +959,6 @@ export function evaluateAgentMailOperation(
   if (input.action === "get_attachment" && !config.mailbox.allowAttachmentAccess) {
     return { allowed: false, reason: "attachment_access_disabled" };
   }
-
   let draftLabelChanges: { add: string[]; remove: string[] } | undefined;
   if (
     input.action === "update_draft" &&
@@ -885,18 +986,7 @@ export function evaluateAgentMailOperation(
       case "create_forward_draft":
         return config.drafts.allowForward;
       case "adopt_draft":
-        switch (input.draftKind) {
-          case "new":
-            return config.drafts.allowNew;
-          case "reply":
-            return config.drafts.allowReply;
-          case "replyAll":
-            return config.drafts.allowReply && config.drafts.allowReplyAll;
-          case "forward":
-            return config.drafts.allowForward;
-          default:
-            return false;
-        }
+        return draftCapabilityEnabled(input.draftKind, config);
       case "update_draft":
         return (
           config.drafts.allowNew ||
@@ -904,11 +994,10 @@ export function evaluateAgentMailOperation(
           config.drafts.allowForward ||
           config.replies.mode === "review"
         );
-      case "schedule_draft":
-        return config.drafts.allowScheduling;
+      case "send_draft":
+        return draftCapabilityEnabled(input.draftKind, config);
       case "send_message":
       case "reply":
-      case "reply_all":
       case "forward":
         return config.outbound.allowDirectDelivery;
       case "delete_message":
@@ -927,59 +1016,73 @@ export function evaluateAgentMailOperation(
   ) {
     return { allowed: false, reason: "trust_not_allowed" };
   }
-  if (input.action === "reply_all" && !config.drafts.allowReplyAll) {
-    return { allowed: false, reason: "operation_disabled" };
-  }
   if (input.action === "forward" && !config.drafts.allowForward) {
     return { allowed: false, reason: "operation_disabled" };
   }
-  const schedulingAction = input.action === "schedule_draft";
-  const unschedulingAction = input.action === "unschedule_draft";
-  const createAction = expectedDraftKind(input.action) !== undefined;
-  const scheduleSupplied = input.sendAt !== undefined;
-  if (
-    (schedulingAction && typeof input.sendAt !== "number") ||
-    (unschedulingAction && input.sendAt !== null) ||
-    (!schedulingAction && !unschedulingAction && !createAction && scheduleSupplied) ||
-    (scheduleSupplied && !config.drafts.allowScheduling) ||
-    (typeof input.sendAt === "number" &&
-      (!Number.isSafeInteger(input.sendAt) ||
-        input.sendAt <= trusted.now ||
-        input.sendAt > trusted.now + config.drafts.maxScheduleDelayMs))
-  ) {
-    return { allowed: false, reason: "schedule_invalid" };
-  }
-
   if (operationRequiresComposition(input.action)) {
     const requireRecipient = [
       "send_message",
       "send_draft",
-      "schedule_draft",
       "create_new_draft",
       "create_forward_draft",
       "forward",
     ].includes(input.action);
-    const requireSubject = [
+    const requireSubject = ["send_message", "send_draft", "create_new_draft"].includes(
+      input.action,
+    );
+    const requireBody = ["send_message", "send_draft", "reply", "reply_all", "forward"].includes(
+      input.action,
+    );
+    const applySubjectPrefix = [
       "send_message",
-      "send_draft",
-      "schedule_draft",
-      "create_new_draft",
-    ].includes(input.action);
-    const requireBody = [
-      "send_message",
-      "send_draft",
-      "schedule_draft",
-      "reply",
-      "reply_all",
       "forward",
+      "create_new_draft",
+      "create_reply_draft",
+      "create_reply_all_draft",
+      "create_forward_draft",
     ].includes(input.action);
-    const applySubjectPrefix =
-      input.action === "send_message" || input.action === "create_new_draft";
+    if (
+      input.action === "send_draft" &&
+      !hasExactlyOnePrefix(input.subject, config.outbound.subjectPrefix)
+    ) {
+      return { allowed: false, reason: "subject_invalid" };
+    }
+    if (input.action === "reply" && input.subject !== undefined) {
+      return { allowed: false, reason: "subject_invalid" };
+    }
+    if (
+      input.action === "send_draft" &&
+      (input.recipients?.to === undefined ||
+        input.recipients.cc === undefined ||
+        input.recipients.bcc === undefined ||
+        input.replyTo === undefined ||
+        input.labels === undefined ||
+        input.attachments === undefined ||
+        (input.draftKind !== "new" && !validProviderIdentifier(input.threadId)))
+    ) {
+      return { allowed: false, reason: "resource_invalid" };
+    }
+    if (input.action === "reply") {
+      if (
+        !validProviderIdentifier(input.sourceMessageId) ||
+        input.sourceMessageId !== input.messageId ||
+        input.recipients?.to === undefined ||
+        input.recipients.to.length !== 1 ||
+        trusted.derivedReplyRecipient === undefined ||
+        canonicalizeEmail(input.recipients.to[0] ?? "") !==
+          canonicalizeEmail(trusted.derivedReplyRecipient) ||
+        (input.recipients.cc?.length ?? 0) > 0 ||
+        (input.recipients.bcc?.length ?? 0) > 0
+      ) {
+        return { allowed: false, reason: "recipient_malformed" };
+      }
+    }
     const composition = evaluateComposition(input, config, {
       requireRecipient,
       requireSubject,
       requireBody,
       applySubjectPrefix,
+      observedLabels: input.action === "update_draft" || input.action === "send_draft",
     });
     if (!composition.allowed) return composition;
     return {
@@ -988,7 +1091,9 @@ export function evaluateAgentMailOperation(
         ? {}
         : { addLabels: draftLabelChanges.add, removeLabels: draftLabelChanges.remove }),
       ...(expectedDraftKind(input.action) === undefined
-        ? {}
+        ? input.draftKind === undefined
+          ? {}
+          : { draftKind: input.draftKind }
         : { draftKind: expectedDraftKind(input.action) }),
     };
   }
@@ -1059,7 +1164,6 @@ export function createAgentMailOperationManifest(
   ) {
     return { allowed: false, reason: "resource_invalid" };
   }
-  const sendAt = input.sendAt ?? null;
   const attachments = (input.attachments ?? []).map((attachment) => ({
     attachmentId: normalizeOptionalIdentifier(attachment.attachmentId),
     sha256: attachment.sha256.toLowerCase(),
@@ -1068,8 +1172,10 @@ export function createAgentMailOperationManifest(
     filenameHash: attachment.filename === undefined ? null : sha256(attachment.filename),
     contentDisposition: attachment.contentDisposition ?? null,
     contentIdHash: attachment.contentId === undefined ? null : sha256(attachment.contentId),
-    sourceUrlHash: attachment.sourceUrlHash?.toLowerCase() ?? null,
+    sourceUrlHash: null,
   }));
+  const endpoint = deliveryEndpoint(input.action);
+  const requestHash = deliveryRequestHash(input, decision, config, attachments);
   const manifest = deepFreeze<AgentMailOperationManifest>({
     version: 2,
     action: input.action,
@@ -1125,7 +1231,6 @@ export function createAgentMailOperationManifest(
       trustLevel: trusted.authority.trustLevel,
       sourceAugment: trusted.authority.sourceAugment ?? null,
     },
-    schedule: { supplied: input.sendAt !== undefined, sendAt },
     providerRevision: input.providerRevision ?? null,
     materialHash: input.materialHash?.toLowerCase() ?? null,
     execution: {
@@ -1133,9 +1238,14 @@ export function createAgentMailOperationManifest(
       operationId: input.operationId ?? null,
       idempotencyKey: input.idempotencyKey ?? null,
     },
+    delivery: { endpoint, requestHash },
     trustedAuthority: {
       creatorPeerId: trusted.creatorPeerId,
       registeredAugment: trusted.registeredAugment,
+      derivedReplyRecipient:
+        trusted.derivedReplyRecipient === undefined
+          ? null
+          : canonicalizeEmail(trusted.derivedReplyRecipient),
     },
     policyGeneration: config.policyGeneration,
   });
@@ -1162,6 +1272,7 @@ export function evaluateAgentMailOutbound(
       requireSubject: true,
       requireBody: true,
       applySubjectPrefix: true,
+      observedLabels: false,
     },
   );
   if (!composition.allowed) {
@@ -1200,6 +1311,7 @@ export function evaluateAgentMailPreparedDraft(
       requireSubject: true,
       requireBody: true,
       applySubjectPrefix: false,
+      observedLabels: true,
     },
   );
   if (!composition.allowed) {

@@ -1275,9 +1275,20 @@ export interface AugmentConstraints {
 /** Metadata-only reference to a provider-native AgentMail draft. */
 export interface AdminMailDraftProjection {
   draftId: string;
-  sourceMessageId: string;
-  threadId: string;
-  state: "ready" | "stale" | "approved" | "sending" | "sent" | "ambiguous" | "failed";
+  /** Present for provider drafts derived from a source message. */
+  sourceMessageId?: string;
+  /** Present for provider drafts bound to an existing mail thread. */
+  threadId?: string;
+  state:
+    | "ready"
+    | "scheduled"
+    | "stale"
+    | "approved"
+    | "sending"
+    | "sent"
+    | "ambiguous"
+    | "failed"
+    | "deleted";
   /** Provider freshness marker. The editable draft itself remains in AgentMail. */
   providerUpdatedAt: string;
 }

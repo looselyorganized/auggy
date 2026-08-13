@@ -17,25 +17,15 @@ import {
 } from "../../../src/augments/agentMail/store";
 import type { NotifyDispatchHost, NotifyInternalDispatchInput } from "../../../src/augments/notify";
 import type {
-  Augment,
   OutboundMessage,
   PeerIdentity,
-  Tool,
-  ToolExecuteContext,
   TransportKernel,
   TurnResult,
-  TurnState,
   TurnTrigger,
 } from "../../../src/types";
 
 const roots: string[] = [];
 const inboxId = "support@agentmail.to";
-const creatorPeer: PeerIdentity = {
-  id: "creator_1",
-  kind: "human",
-  trustLevel: "creator",
-  sourceAugment: "webTransport",
-};
 
 afterEach(() => {
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -282,47 +272,6 @@ function kernel(onTurn: (trigger: TurnTrigger) => Promise<string>): TransportKer
   };
 }
 
-function creatorTurn(turnId: string, text: string): TurnState {
-  return {
-    turnId,
-    threadId: "console_thread_1",
-    peer: creatorPeer,
-    toolCallsSoFar: 0,
-    turnStartedAt: Date.now(),
-    metadata: {},
-    trigger: {
-      type: "message",
-      turnId,
-      threadId: "console_thread_1",
-      timestamp: Date.now(),
-      source: "webTransport",
-      peer: creatorPeer,
-      payload: {
-        parts: [{ kind: "text", text }],
-        sourceAugment: "webTransport",
-        peer: creatorPeer,
-        timestamp: Date.now(),
-      },
-    },
-  };
-}
-
-function toolContext(overrides: Partial<ToolExecuteContext> = {}): ToolExecuteContext {
-  return {
-    turnId: "turn_1",
-    threadId: "console_thread_1",
-    peer: creatorPeer,
-    operationId: "operation_1",
-    ...overrides,
-  };
-}
-
-function requireTool(augment: Augment, name: string): Tool {
-  const value = augment.tools?.find((candidate) => candidate.name === name);
-  if (!value) throw new Error(`missing tool ${name}`);
-  return value;
-}
-
 function notificationHost(
   deliveries: NotifyInternalDispatchInput[],
   sent: Set<string>,
@@ -398,71 +347,20 @@ describe("AgentMail restart persistence", () => {
     await restarted.onShutdown?.();
   });
 
-  test("fences crash-interrupted draft and direct sends after reopening the volume", async () => {
-    const paths = fixturePath();
-    const seed = createAgentMailOrchestrationStore({
-      dbPath: paths.dbPath,
-      inboxId,
-      sendKey: () => "stable-send-key",
-    });
-    seed.claimMessage(claimInput());
-    seed.recordDraft({
-      sourceMessageId: "message_1",
-      threadId: "thread_1",
-      draftId: "draft_1",
-      clientId: "auggy.reply.v1.fixture",
-      providerUpdatedAt: 2_000,
-    });
-    seed.approveDraft({
-      sourceMessageId: "message_1",
-      approvalEvidence: "creator send action",
-      expectedUpdatedAt: 2_000,
-    });
-    seed.reserveDraftSend("message_1");
-    seed.reserveOutboundOperation({
-      operationId: "operation_1",
-      payloadHash: hashAgentMailOrchestrationValue(
-        JSON.stringify([["buyer@example.com"], "[Store] Update", "Your order shipped."]),
-      ),
-    });
-    seed.close();
-
-    const provider = new FakeProvider();
-    const restarted = createAgentMailRuntime(config(paths.dbPath), { provider });
-    await restarted.onBoot?.();
-    expect((await restarted.adminInfo?.())?.projection).toMatchObject({
-      kind: "mail",
-      drafts: [{ draftId: "draft_1", state: "ambiguous" }],
-    });
-
-    await restarted.onTurnStart?.(creatorTurn("send_draft", "send draft draft_1"));
-    const draftResult = await requireTool(restarted, "send_mail_draft").execute(
-      { draftId: "draft_1", expectedUpdatedAt: 2_000 },
-      toolContext({ turnId: "send_draft" }),
-    );
-    expect(draftResult).toMatchObject({ isError: true, outcomeUnknown: true });
-
-    const directResult = await requireTool(restarted, "send_message").execute(
-      { to: ["buyer@example.com"], subject: "Update", text: "Your order shipped." },
-      toolContext(),
-    );
-    expect(directResult).toMatchObject({ isError: true, outcomeUnknown: true });
-    expect(provider.sentDrafts).toHaveLength(0);
-    expect(provider.sentMessages).toHaveLength(0);
-    await restarted.onTurnEnd?.({ turnId: "send_draft" } as TurnResult);
-    await restarted.onShutdown?.();
-  });
-
   test("repairs one interrupted creator alert and does not redeliver it after another restart", async () => {
     const paths = fixturePath();
     const seed = createAgentMailOrchestrationStore({ dbPath: paths.dbPath, inboxId });
     seed.claimMessage(claimInput());
-    seed.recordDraft({
+    seed.recordProviderDraft({
       sourceMessageId: "message_1",
       threadId: "thread_1",
       draftId: "draft_1",
+      kind: "reply",
+      operationId: "auggy.reply.v1.fixture",
       clientId: "auggy.reply.v1.fixture",
+      providerRevision: "revision_1",
       providerUpdatedAt: 2_000,
+      materialHash: hashAgentMailOrchestrationValue("draft_1"),
     });
     const attention = seed.listCreatorAttention()[0]!;
     seed.bindCreatorAttention({

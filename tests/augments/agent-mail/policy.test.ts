@@ -24,6 +24,7 @@ const trustedAuthority: AgentMailTrustedAuthority = {
   creatorPeerId: "creator_1",
   registeredAugment: "renamedMail",
   now: 1_892_000_000_000,
+  derivedReplyRecipient: "buyer@example.com",
 };
 
 function evaluateAgentMailOperation(
@@ -83,7 +84,6 @@ function comprehensiveConfig(overrides: Record<string, unknown> = {}) {
       allowReply: true,
       allowReplyAll: true,
       allowForward: true,
-      allowScheduling: true,
     },
     destructive: { allowPermanentDelete: true },
     outbound: {
@@ -122,6 +122,7 @@ const attachment = {
   sha256: "a".repeat(64),
   size: 50,
   contentType: "text/plain",
+  trustedBytes: true as const,
 };
 
 function operation(
@@ -137,14 +138,7 @@ function operation(
           ? "replyAll"
           : action === "create_forward_draft"
             ? "forward"
-            : [
-                  "adopt_draft",
-                  "update_draft",
-                  "schedule_draft",
-                  "unschedule_draft",
-                  "send_draft",
-                  "delete_draft",
-                ].includes(action)
+            : ["adopt_draft", "update_draft", "send_draft", "delete_draft"].includes(action)
               ? "new"
               : undefined;
   const sourceMessageId =
@@ -152,10 +146,13 @@ function operation(
       ? "msg_1"
       : undefined;
   const delivery = ["send_message", "send_draft", "reply", "reply_all", "forward"].includes(action);
+  const messageSource = ["reply", "reply_all", "forward"].includes(action);
   return {
     action,
     messageId: "msg_1",
-    ...(sourceMessageId === undefined ? {} : { sourceMessageId }),
+    ...(sourceMessageId === undefined && !messageSource
+      ? {}
+      : { sourceMessageId: sourceMessageId ?? "msg_1" }),
     threadId: "thread_1",
     draftId: "draft_1",
     ...(draftKind === undefined ? {} : { draftKind }),
@@ -166,24 +163,28 @@ function operation(
     removeLabels: [],
     recipients: {
       to: ["buyer@example.com"],
-      cc: ["ops@example.com"],
-      bcc: ["audit@example.com"],
+      cc: action === "reply" ? [] : ["ops@example.com"],
+      bcc: action === "reply" ? [] : ["audit@example.com"],
     },
-    subject: "Order 42",
+    replyTo: [],
+    labels: [],
+    subject:
+      action === "reply" || action === "reply_all"
+        ? undefined
+        : action === "send_draft"
+          ? "[Store] Order 42"
+          : "Order 42",
     text: "Ready",
     html: "<p>Ready</p>",
     attachments: [attachment],
-    ...(action === "schedule_draft"
-      ? { sendAt: 1_893_456_000_000 }
-      : action === "unschedule_draft"
-        ? { sendAt: null }
-        : {}),
     providerRevision: "revision_1",
     materialHash: "c".repeat(64),
     ...(draftKind === undefined || !action.startsWith("create_")
       ? {}
       : { clientId: `client_${action}` }),
-    ...(delivery ? { idempotencyKey: `operation_${action}` } : {}),
+    ...(delivery
+      ? { operationId: `operation_${action}`, idempotencyKey: `operation_${action}` }
+      : {}),
     ...overrides,
   };
 }
@@ -240,8 +241,6 @@ describe("AgentMail configuration contract", () => {
         allowReply: false,
         allowReplyAll: false,
         allowForward: false,
-        allowScheduling: false,
-        maxScheduleDelayMs: 2_592_000_000,
       },
       destructive: { allowPermanentDelete: false },
       outbound: {
@@ -260,6 +259,8 @@ describe("AgentMail configuration contract", () => {
     for (const invalid of [
       { mailbox: { unknown: true } },
       { drafts: { unknown: true } },
+      { drafts: { allowScheduling: true } },
+      { drafts: { maxScheduleDelayMs: 60_000 } },
       { destructive: { unknown: true } },
       { mailbox: { allowLabelMutation: true } },
       { mailbox: { allowedLabels: ["important"] } },
@@ -530,12 +531,9 @@ describe("AgentMail comprehensive operation policy", () => {
       "create_reply_all_draft",
       "create_forward_draft",
       "update_draft",
-      "schedule_draft",
-      "unschedule_draft",
       "send_message",
       "send_draft",
       "reply",
-      "reply_all",
       "forward",
       "delete_message",
       "delete_thread",
@@ -628,32 +626,14 @@ describe("AgentMail comprehensive operation policy", () => {
     ).toEqual({ allowed: false, reason: "subject_invalid" });
   });
 
-  test("requires provider delivery bodies and enforces a future bounded schedule", () => {
-    const policy = comprehensiveConfig({ drafts: { maxScheduleDelayMs: 60_000 } });
+  test("requires provider delivery bodies", () => {
+    const policy = comprehensiveConfig();
     expect(
       evaluateAgentMailOperation(
         operation("send_message", { text: "", html: "", attachments: [] }),
         policy,
       ),
     ).toEqual({ allowed: false, reason: "body_required" });
-    expect(
-      evaluateAgentMailOperation(
-        operation("schedule_draft", { sendAt: trustedAuthority.now }),
-        policy,
-      ),
-    ).toEqual({ allowed: false, reason: "schedule_invalid" });
-    expect(
-      evaluateAgentMailOperation(
-        operation("schedule_draft", { sendAt: trustedAuthority.now + 60_001 }),
-        policy,
-      ),
-    ).toEqual({ allowed: false, reason: "schedule_invalid" });
-    expect(
-      evaluateAgentMailOperation(
-        operation("schedule_draft", { sendAt: trustedAuthority.now + 60_000 }),
-        policy,
-      ),
-    ).toMatchObject({ allowed: true });
   });
 
   test("measures canonical base64 attachments by decoded bytes and verifies their digest", () => {
@@ -683,6 +663,104 @@ describe("AgentMail comprehensive operation policy", () => {
         policy,
       ),
     ).toEqual({ allowed: false, reason: "attachment_too_large" });
+  });
+
+  test("sends each draft kind only when its exact capability and fresh material remain enabled", () => {
+    const cases = [
+      ["new", { drafts: { allowNew: false } }],
+      [
+        "reply",
+        {
+          drafts: { allowReply: false, allowReplyAll: false },
+          replies: { mode: "disabled", allowReplyAll: false },
+        },
+      ],
+      [
+        "replyAll",
+        {
+          drafts: { allowReply: true, allowReplyAll: false },
+          replies: { mode: "disabled", allowReplyAll: false },
+        },
+      ],
+      ["forward", { drafts: { allowForward: false } }],
+    ] as const;
+    for (const [draftKind, override] of cases) {
+      expect(
+        evaluateAgentMailOperation(
+          operation("send_draft", {
+            draftKind,
+            sourceMessageId: draftKind === "new" ? undefined : "msg_1",
+          }),
+          comprehensiveConfig(),
+        ),
+      ).toMatchObject({ allowed: true });
+      expect(
+        evaluateAgentMailOperation(
+          operation("send_draft", {
+            draftKind,
+            sourceMessageId: draftKind === "new" ? undefined : "msg_1",
+          }),
+          comprehensiveConfig(override),
+        ),
+      ).toEqual({ allowed: false, reason: "operation_disabled" });
+    }
+    expect(
+      evaluateAgentMailOperation(
+        operation("send_draft", { providerRevision: undefined }),
+        comprehensiveConfig(),
+      ),
+    ).toEqual({ allowed: false, reason: "resource_invalid" });
+    expect(
+      evaluateAgentMailOperation(
+        operation("send_draft", { materialHash: undefined }),
+        comprehensiveConfig(),
+      ),
+    ).toEqual({ allowed: false, reason: "resource_invalid" });
+  });
+
+  test("allows direct new/reply/forward only with creator authority and stable delivery identity", () => {
+    const policy = comprehensiveConfig();
+    expect(evaluateAgentMailOperation(operation("reply"), policy)).toMatchObject({ allowed: true });
+    expect(
+      evaluateAgentMailOperation(
+        operation("reply", { recipients: { to: ["buyer@example.com", "ops@example.com"] } }),
+        policy,
+      ),
+    ).toEqual({ allowed: false, reason: "recipient_malformed" });
+    expect(evaluateAgentMailOperation(operation("reply_all"), policy)).toEqual({
+      allowed: false,
+      reason: "operation_disabled",
+    });
+    expect(
+      evaluateAgentMailOperation(operation("forward", { recipients: undefined }), policy),
+    ).toEqual({ allowed: false, reason: "recipient_limit_exceeded" });
+    for (const input of [
+      operation("send_message", { idempotencyKey: undefined }),
+      operation("send_message", { operationId: undefined }),
+      operation("reply", { idempotencyKey: undefined }),
+      operation("forward", { idempotencyKey: undefined }),
+    ]) {
+      expect(evaluateAgentMailOperation(input, policy)).toEqual({
+        allowed: false,
+        reason: "resource_invalid",
+      });
+    }
+  });
+
+  test("binds the exact provider delivery endpoint, request, and idempotency key", () => {
+    const policy = comprehensiveConfig();
+    for (const [action, endpoint] of [
+      ["send_message", "messages.send"],
+      ["reply", "messages.reply"],
+      ["forward", "messages.forward"],
+      ["send_draft", "drafts.send"],
+    ] as const) {
+      const created = createAgentMailOperationManifest(operation(action), policy);
+      if (!created.allowed) throw new Error(`${action} manifest denied: ${created.reason}`);
+      expect(created.manifest.delivery.endpoint).toBe(endpoint);
+      expect(created.manifest.delivery.requestHash).toMatch(/^[a-f0-9]{64}$/);
+      expect(created.manifest.execution.idempotencyKey).toBe(`operation_${action}`);
+    }
   });
 
   test("normalizes custom labels and keeps trash and restore on a separate gate", () => {
@@ -901,10 +979,6 @@ describe("AgentMail comprehensive operation policy", () => {
           attachments: [{ ...attachment, sha256: "not-a-digest" }],
         }),
       },
-      {
-        expected: "schedule_invalid",
-        input: operation("schedule_draft", { sendAt: -1 }),
-      },
     ];
     for (const item of cases) {
       expect(evaluateAgentMailOperation(item.input, item.config ?? policy, item.trusted)).toEqual({
@@ -952,20 +1026,24 @@ describe("AgentMail operation manifest", () => {
         labels: [],
         removeAttachmentIds: [],
       },
-      schedule: { supplied: false, sendAt: null },
       providerRevision: "revision_1",
       materialHash: "c".repeat(64),
       execution: {
         clientId: null,
-        operationId: null,
+        operationId: "operation_send_message",
         idempotencyKey: "operation_send_message",
+      },
+      delivery: {
+        endpoint: "messages.send",
       },
       trustedAuthority: {
         creatorPeerId: "creator_1",
         registeredAugment: "renamedMail",
+        derivedReplyRecipient: "buyer@example.com",
       },
       policyGeneration: policy.policyGeneration,
     });
+    expect(created.manifest.delivery.requestHash).toMatch(/^[a-f0-9]{64}$/);
   });
 
   test("invalidates authorization when any bound field changes", () => {
@@ -1012,12 +1090,6 @@ describe("AgentMail operation manifest", () => {
         }),
         policy,
       ],
-      [
-        operation("send_message", {
-          attachments: [{ ...attachment, sourceUrlHash: "d".repeat(64) }],
-        }),
-        policy,
-      ],
       [operation("send_message", { providerRevision: "revision_2" }), policy],
       [operation("send_message", { materialHash: "d".repeat(64) }), policy],
       [operation("send_message", { operationId: "op_2" }), policy],
@@ -1039,14 +1111,6 @@ describe("AgentMail operation manifest", () => {
     );
     if (!labelBase.allowed || !labelChanged.allowed) throw new Error("label manifest denied");
     expect(labelChanged.hash).not.toBe(labelBase.hash);
-
-    const scheduled = createAgentMailOperationManifest(operation("schedule_draft"), policy);
-    const rescheduled = createAgentMailOperationManifest(
-      operation("schedule_draft", { sendAt: 1_893_556_000_000 }),
-      policy,
-    );
-    if (!scheduled.allowed || !rescheduled.allowed) throw new Error("schedule manifest denied");
-    expect(rescheduled.hash).not.toBe(scheduled.hash);
 
     const forward = createAgentMailOperationManifest(operation("create_forward_draft"), policy);
     const changedForwardSource = createAgentMailOperationManifest(
@@ -1070,6 +1134,58 @@ describe("AgentMail operation manifest", () => {
     if (!changedTrusted.allowed)
       throw new Error(`trusted manifest denied: ${changedTrusted.reason}`);
     expect(changedTrusted.hash).not.toBe(base.hash);
+    expect(
+      createAgentMailOperationManifest(
+        operation("send_message", {
+          attachments: [{ ...attachment, sourceUrlHash: "d".repeat(64) }],
+        }),
+        policy,
+      ),
+    ).toEqual({ allowed: false, reason: "attachment_invalid" });
+  });
+
+  test("binds every fresh send-draft field and invalidates any drift", () => {
+    const policy = comprehensiveConfig();
+    const baseInput = operation("send_draft", {
+      draftKind: "forward",
+      sourceMessageId: "msg_1",
+      threadId: "thread_1",
+      replyTo: ["replies@example.com"],
+      labels: ["important"],
+      attachments: [{ ...attachment, filename: "invoice.txt" }],
+    });
+    const base = createAgentMailOperationManifest(baseInput, policy);
+    if (!base.allowed) throw new Error(`send draft denied: ${base.reason}`);
+    const variants: AgentMailOperationInput[] = [
+      { ...baseInput, draftKind: "reply" },
+      { ...baseInput, sourceMessageId: "msg_2" },
+      { ...baseInput, threadId: "thread_2" },
+      { ...baseInput, providerRevision: "revision_2" },
+      { ...baseInput, materialHash: "d".repeat(64) },
+      { ...baseInput, recipients: { to: ["other@example.com"], cc: [], bcc: [] } },
+      { ...baseInput, replyTo: ["other@example.com"] },
+      { ...baseInput, labels: ["customer"] },
+      { ...baseInput, subject: "[Store] Changed" },
+      { ...baseInput, text: "Changed" },
+      { ...baseInput, html: "<p>Changed</p>" },
+      { ...baseInput, attachments: [{ ...attachment, filename: "changed.txt" }] },
+      { ...baseInput, operationId: "op_2" },
+      { ...baseInput, idempotencyKey: "send_2" },
+    ];
+    for (const input of variants) {
+      const changed = createAgentMailOperationManifest(input, policy);
+      if (!changed.allowed)
+        throw new Error(`changed send draft denied: ${changed.reason} ${JSON.stringify(input)}`);
+      expect(changed.hash).not.toBe(base.hash);
+    }
+    const requestChanged = createAgentMailOperationManifest(
+      { ...baseInput, idempotencyKey: "send_2" },
+      policy,
+    );
+    if (!requestChanged.allowed) throw new Error("changed delivery request denied");
+    // The idempotency key is bound separately in the manifest. It is an SDK
+    // request option, not part of AgentMail's endpoint request body.
+    expect(requestChanged.manifest.delivery.requestHash).toBe(base.manifest.delivery.requestHash);
   });
 
   test("canonical hashing ignores JavaScript object insertion order", () => {
@@ -1082,9 +1198,9 @@ describe("AgentMail operation manifest", () => {
       policyGeneration: created.manifest.policyGeneration,
       trustedAuthority: created.manifest.trustedAuthority,
       execution: created.manifest.execution,
+      delivery: created.manifest.delivery,
       materialHash: created.manifest.materialHash,
       providerRevision: created.manifest.providerRevision,
-      schedule: created.manifest.schedule,
       source: created.manifest.source,
       attachments: created.manifest.attachments,
       draft: created.manifest.draft,
