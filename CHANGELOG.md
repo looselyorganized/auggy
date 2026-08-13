@@ -16,6 +16,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Console mail mutations.** Ordinary Console and transport turns now receive
+  a stable, opaque operation identity, so AgentMail drafts, sends, replies, and
+  forwards can use their durable idempotency ledger outside injected jobs.
+- **Natural creator authorization.** AgentMail no longer treats invented exact
+  phrases as authorization tokens. Verified creator identity, structured tool
+  arguments, current provider revisions, and configured policy remain the
+  enforced runtime boundary.
 - **Provider-compatible AgentMail tools.** Retry and reconciliation tools now
   expose object-shaped input schemas accepted by Anthropic while preserving
   variant-specific validation. Installing AgentMail no longer causes every

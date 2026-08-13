@@ -181,8 +181,10 @@ config:
       dedupWindowMs: 300000
 ```
 
-Omit `allowedRecipients` to permit any well-formed address. Ask with exact
-language such as `Send email to owner@example.com`; the direct-send tool
+Omit `allowedRecipients` to permit any well-formed address. Natural requests
+such as `Send email to owner@example.com` work; the creator's wording is not an
+authorization token. Runtime authorization uses verified creator identity, the
+structured tool action and arguments, and this policy. The direct-send tool
 accepts `to`, subject, and plain text. Direct reply and forward use exact source
 message IDs:
 
@@ -317,7 +319,7 @@ changes a label instead of permanently deleting the provider object.
 
 | Key | Values | Description |
 | --- | --- | --- |
-| `destructive.allowPermanentDelete` | `false` (default), `true` | Enables permanent message, thread, and managed-draft deletion. Requires fresh, exact creator intent. |
+| `destructive.allowPermanentDelete` | `false` (default), `true` | Enables permanent message, thread, and managed-draft deletion for the verified creator. Tools must identify the exact object, and draft deletion requires its current provider revision. |
 
 ## Optional creator notifications
 
@@ -354,7 +356,7 @@ press Ctrl-C and run `auggy run` again.
 
 | Situation | Safe action |
 | --- | --- |
-| Provider returns `429` | Wait until the returned retry time, then use the exact `retry mail delivery <operation-id>` command. Auggy reuses the original operation and idempotency key. |
+| Provider returns `429` | Wait until the returned retry time, then ask Auggy to retry that operation ID. No magic wording is required. Auggy reuses the original request, operation, and idempotency key. |
 | Send is `outcome_unknown` | Inspect AgentMail. Never retry blindly or create a fresh send. Use `reconcile delivery <operation-id> as sent` with provider IDs, or `... as not sent` only with explicit evidence. |
 | Draft changed in AgentMail | Show it again. Prior review is invalidated. |
 | Agent was offline | Start it. REST catch-up processes messages after the durable checkpoint. |

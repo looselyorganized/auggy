@@ -161,7 +161,7 @@ export interface ToolExecuteContext {
   signal?: AbortSignal;
   /** Safe execution metadata projection; binding and idempotency hashes stay trusted to the kernel. */
   executionContext?: ExecutionTraceContextV1;
-  /** Opaque downstream idempotency identity derived from the execution and tool position. */
+  /** Opaque downstream idempotency identity derived from the admitted turn and tool position. */
   operationId?: string;
 }
 

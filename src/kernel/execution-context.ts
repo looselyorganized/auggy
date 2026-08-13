@@ -133,3 +133,38 @@ export function deriveToolOperationId(
   ].join("\u0000");
   return `auggy-op-v1-${createHash("sha256").update(input).digest("hex")}`;
 }
+
+/**
+ * Derive an opaque operation identity for an ordinary admitted turn. Public
+ * transports cannot supply trusted execution metadata, but their server-side
+ * turn, thread, source, and peer bindings still form a stable operation scope.
+ * Tool ordinal distinguishes repeated calls, including calls across inference
+ * rounds, without exposing any of those identifiers downstream.
+ */
+export function deriveTurnToolOperationId(
+  turn: {
+    turnId: string;
+    threadId: string;
+    triggerType: string;
+    sourceAugment?: string;
+    peerId?: string;
+    peerTrustLevel?: string;
+    peerSourceAugment?: string;
+  },
+  toolName: string,
+  ordinal: number,
+): string {
+  const input = [
+    "auggy-turn-tool-operation-v1",
+    turn.turnId,
+    turn.threadId,
+    turn.triggerType,
+    turn.sourceAugment ?? "",
+    turn.peerId ?? "",
+    turn.peerTrustLevel ?? "",
+    turn.peerSourceAugment ?? "",
+    toolName,
+    String(ordinal),
+  ].join("\u0000");
+  return `auggy-op-v1-${createHash("sha256").update(input).digest("hex")}`;
+}

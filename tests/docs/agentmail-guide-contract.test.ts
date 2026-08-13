@@ -108,7 +108,7 @@ describe("AgentMail operator guide", () => {
     expect(guide).toContain("never exchanges your selected key");
     expect(guide).toContain("same draft");
     expect(guide).toContain("Open in AgentMail");
-    expect(guide).toContain("retry mail delivery <operation-id>");
+    expect(guide).toContain("No magic wording is required");
     expect(guide).toContain("reconcile delivery <operation-id> as sent");
     expect(guide).toContain("does not create, change, cancel, or send scheduled drafts");
     expect(guide).toContain("delivery failures missed while Auggy is offline");

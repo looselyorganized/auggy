@@ -1,12 +1,14 @@
 import { describe, expect, it } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { z } from "zod";
 import { defineAgent } from "@/agent";
 import { generateCsrfToken } from "@/transports/admin/admin-csrf";
 import { webTransport } from "@/transports/web-transport";
 import { createMockModel } from "@tests/fixtures/mock-model";
-import type { ModelClient } from "@/types";
+import type { ModelClient, ToolExecuteContext } from "@/types";
 
 function tempAgentDir(): string {
   return mkdtempSync(join(tmpdir(), "auggy-g36-p3-1-"));
@@ -14,6 +16,20 @@ function tempAgentDir(): string {
 
 function basicHeader(bearer: string): string {
   return `Basic ${Buffer.from(`:${bearer}`).toString("base64")}`;
+}
+
+async function freePort(): Promise<number> {
+  const probe = createServer();
+  await new Promise<void>((resolve, reject) => {
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", resolve);
+  });
+  const address = probe.address();
+  if (!address || typeof address === "string") throw new Error("failed to allocate test port");
+  await new Promise<void>((resolve, reject) =>
+    probe.close((error) => (error ? reject(error) : resolve())),
+  );
+  return address.port;
 }
 
 interface AdminBlock {
@@ -61,7 +77,7 @@ async function fetchDashboard(port: number, bearer: string): Promise<DashboardJs
 describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
   it("GET /console/api/dashboard includes the webTransport posture block", async () => {
     const model = createMockModel();
-    const port = 19310;
+    const port = await freePort();
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
@@ -100,7 +116,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
 
   it("POST /console/action/posture-flip writes admin-overrides.json + mutates closure", async () => {
     const agentDir = tempAgentDir();
-    const port = 19311;
+    const port = await freePort();
     const model = createMockModel();
     const aug = webTransport({
       port,
@@ -153,7 +169,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
 
   it("POST /console/action/posture-reset clears the override and reverts to yaml", async () => {
     const agentDir = tempAgentDir();
-    const port = 19312;
+    const port = await freePort();
     const model = createMockModel();
     const aug = webTransport({
       port,
@@ -210,7 +226,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
 
   it("POST /console/action/posture-public-integration-set publishes and privatizes discovery", async () => {
     const agentDir = tempAgentDir();
-    const port = 19313;
+    const port = await freePort();
     const model = createMockModel();
     const aug = webTransport({
       port,
@@ -311,7 +327,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
   });
 
   it("POST /console/api/chat proxies to /agent/run and invokes the model", async () => {
-    const port = 19314;
+    const port = await freePort();
     const model = createMockModel({ response: "hello from console chat" });
     const aug = webTransport({
       port,
@@ -350,8 +366,79 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
     }
   });
 
+  it("POST /console/api/chat supplies bound operation identity to tools", async () => {
+    const port = await freePort();
+    const model = createMockModel();
+    model.pushResponse({
+      toolCalls: [{ name: "operation_probe", arguments: {} }],
+      finishReason: "tool_use",
+    });
+    model.pushResponse({ content: "operation recorded" });
+    let observed: ToolExecuteContext | undefined;
+    const aug = webTransport({
+      port,
+      auth: { type: "bearer", token: "test-token" },
+      allowAnonymous: false,
+    });
+    const agent = defineAgent(
+      {
+        name: "zip",
+        model: "mock",
+        augments: [
+          aug,
+          {
+            name: "operation-probe",
+            tools: [
+              {
+                name: "operation_probe",
+                description: "Record the tool execution context.",
+                category: "meta",
+                input: z.object({}),
+                execute: async (_input, context) => {
+                  observed = context;
+                  return "recorded";
+                },
+              },
+            ],
+          },
+        ],
+      },
+      model,
+    );
+    await agent.start();
+
+    try {
+      const csrf = await generateCsrfToken({
+        bearer: "test-token",
+        agentName: "zip",
+        actionId: "console-chat",
+      });
+      const resp = await fetch(`http://127.0.0.1:${port}/console/api/chat`, {
+        method: "POST",
+        headers: {
+          authorization: basicHeader("test-token"),
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          csrf,
+          message: "run the operation probe",
+          threadId: "thread-operation-probe",
+          chatMode: "creator",
+        }),
+      });
+      expect(resp.status).toBe(200);
+      await resp.text();
+      expect(observed?.operationId).toMatch(/^auggy-op-v1-[a-f0-9]{64}$/);
+      expect(observed?.peer).toMatchObject({ trustLevel: "creator" });
+      expect(observed?.threadId).toBe("thread-operation-probe");
+      expect(observed?.executionContext).toBeUndefined();
+    } finally {
+      await agent.stop();
+    }
+  });
+
   it("POST /console/api/chat creator mode reaches the model as creator even when anonymous chat is enabled", async () => {
-    const port = 19315;
+    const port = await freePort();
     const model = createMockModel({ response: "creator mode ok" });
     const aug = webTransport({
       port,
@@ -406,7 +493,7 @@ describe("webTransport adminInfo — posture row (G36 phase 3)", () => {
         return Math.ceil(text.length / 4);
       },
     };
-    const port = 19316;
+    const port = await freePort();
     const aug = webTransport({
       port,
       auth: { type: "bearer", token: "test-token" },
