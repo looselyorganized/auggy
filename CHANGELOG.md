@@ -51,6 +51,9 @@ keeps creator-reviewed drafts in AgentMail.
 - **Same-release adapter rehearsal.** Packed OpenRouter verification now pins
   the local candidate OpenAI artifact, so release smoke tests the exact RC
   dependency graph without falling back to an older registry package.
+- **Opaque AgentMail identifiers.** Provider-generated message, thread, draft,
+  and attachment IDs now round-trip through authorization and SDK operations
+  without assuming a narrower character set than AgentMail's contract.
 
 ### Architecture
 

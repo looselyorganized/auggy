@@ -529,7 +529,6 @@ export interface AgentMailSdkClient {
   };
 }
 
-const ID_PATTERN = /^[A-Za-z0-9._~@+\-:]+$/;
 const IDEMPOTENCY_PATTERN = /^[A-Za-z0-9._~-]{1,256}$/;
 const MAX_PAGE_SIZE = 100;
 const MAX_FILTER_VALUES = 20;
@@ -551,7 +550,11 @@ function requestError(operation: string, nextAction: string): AgentMailProviderE
 }
 
 function assertIdentifier(value: string, field: string): void {
-  if (!value || value.length > 512 || !ID_PATTERN.test(value)) {
+  const hasControlCharacter = [...value].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 31 || codePoint === 127;
+  });
+  if (!value || value.length > 1_024 || hasControlCharacter) {
     throw new AgentMailProviderError({
       code: "configuration_invalid",
       operation: "validate",
