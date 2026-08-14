@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { resolveTelegramIdentity } from "../../src/augments/telegramTransport";
 import type {
   AgentCard,
+  InboundMessage,
   OutboundMessage,
   PeerIdentity,
   TelegramAsyncReplayStore,
@@ -417,6 +418,87 @@ describe("telegramTransport — polling lifecycle", () => {
     expect(handleInboundCalls[0]?.trigger.peer?.trustLevel).toBe("creator");
     expect(handleInboundCalls[0]?.trigger.threadId).toBe("tg-bot-123-chat-100");
     expect(handleInboundCalls[0]?.trigger.type).toBe("message");
+  });
+
+  it("resumes polling after durable admission without waiting for the model turn", async () => {
+    const firstUpdate: TelegramUpdate = {
+      update_id: 41,
+      message: {
+        message_id: 1,
+        chat: { id: 100, type: "private" },
+        from: { id: 100, is_bot: false },
+        date: 0,
+        text: "slow turn",
+      },
+    };
+    const secondUpdate: TelegramUpdate = {
+      update_id: 42,
+      message: {
+        message_id: 2,
+        chat: { id: 100, type: "private" },
+        from: { id: 100, is_bot: false },
+        date: 1,
+        text: "queued behind the slow turn",
+      },
+    };
+    let pollCalls = 0;
+    let observeSecondPoll!: (offset: number | undefined) => void;
+    const secondPollStarted = new Promise<number | undefined>((resolve) => {
+      observeSecondPoll = resolve;
+    });
+    const { client } = makeMockClient([]);
+    client.getUpdates = async (options) => {
+      pollCalls += 1;
+      if (pollCalls === 1) return [firstUpdate, secondUpdate];
+      observeSecondPoll(options.offset);
+      await new Promise<void>((resolve) => {
+        if (options.signal?.aborted) resolve();
+        else options.signal?.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return [];
+    };
+
+    let releaseTurn!: () => void;
+    const turnReleased = new Promise<void>((resolve) => {
+      releaseTurn = resolve;
+    });
+    let turnSettled = false;
+    const setup = makeMockKernel({
+      handleInbound: async (trigger) => {
+        await turnReleased;
+        turnSettled = true;
+        return {
+          turnId: trigger.turnId,
+          success: true,
+          status: "completed",
+          toolCalls: [],
+          trace: {} as TurnResult["trace"],
+        };
+      },
+    });
+    const aug = telegramTransport({
+      botToken: "123:test-token",
+      inbound: { mode: "polling", polling: { timeoutSec: 0 } },
+      auth: { creatorUserIds: [100] },
+      _clientFactory: () => client,
+    } as unknown as Parameters<typeof telegramTransport>[0]);
+
+    await aug.transport!.register(setup.kernel, "telegram-transport");
+    await aug.onBoot?.();
+    await aug.transport!.ready?.();
+    try {
+      expect(await secondPollStarted).toBe(43);
+      expect(turnSettled).toBe(false);
+      expect(
+        setup.handleInboundCalls.map((call) => (call.trigger.payload as InboundMessage).parts[0]),
+      ).toEqual([
+        { kind: "text", text: "slow turn" },
+        { kind: "text", text: "queued behind the slow turn" },
+      ]);
+    } finally {
+      releaseTurn();
+      await aug.onShutdown?.();
+    }
   });
 
   it("isolates the same Telegram chat across distinct bot identities", async () => {

@@ -173,9 +173,9 @@ transport instances safely.
 
 | | Polling | Webhook |
 |---|---|---|
-| **How it works** | Agent calls `getUpdates` in a long-poll loop (one request at a time, up to `timeoutSec`). | Telegram POSTs each update to your `publicUrl`. Agent runs a local HTTP server on `port`. |
+| **How it works** | Agent calls `getUpdates` in a long-poll loop (one active request at a time, up to `timeoutSec`). Each accepted update is durably claimed and submitted to Auggy's bounded turn scheduler before the next poll begins. | Telegram POSTs each update to your `publicUrl`. Agent runs a local HTTP server on `port`. |
 | **Public HTTPS required** | No | Yes — valid TLS certificate, publicly reachable domain |
-| **Latency** | One `timeoutSec` cycle (≤30 s) to receive a message after bot restart | Near-immediate delivery |
+| **Latency** | Telegram returns an available update immediately; `timeoutSec` only controls how long an idle request stays open. Model/tool work does not block the next poll. | Near-immediate delivery |
 | **Best for** | Self-hosted / home lab / development; no reverse proxy required | Cloud deployments with a public domain |
 | **Limitation** | Higher API polling load during idle periods | Telegram's delivery guarantee requires your server to be reachable at all times |
 
@@ -197,6 +197,15 @@ already have produced side effects. Webhook processing failures return `503`
 only when no stable duplicate/conflict response applies; polling advances past
 a durably claimed duplicate on the next attempt. Operators should alert on
 processing failures and reconcile outcome-unknown side effects manually.
+
+In polling mode, safe intake and turn completion are deliberately separate.
+The poll loop advances only after validation, durable replay claiming, and
+submission to the bounded keyed scheduler; it does not wait for model, tool, or
+outbound delivery completion. The scheduler preserves FIFO execution within a
+Telegram chat/thread and enforces source, agent, thread, and peer capacity.
+This prevents one slow turn from blocking intake for every later Telegram
+message without creating an unbounded transport-owned work queue. Shutdown
+aborts and joins admitted Telegram turns before clearing their reply routes.
 
 The console reports a quarantined Telegram transport and always registers a
 confirm-required recovery action. Recovery accepts only the current opaque

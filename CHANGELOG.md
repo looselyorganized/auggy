@@ -28,6 +28,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   variant-specific validation. Installing AgentMail no longer causes every
   model turn to fail before inference.
 
+- **Telegram polling head-of-line blocking.** Polling now resumes after an
+  update is validated, durably claimed, and submitted to the bounded keyed
+  scheduler instead of waiting for the complete model/tool turn. Same-chat
+  ordering, replay quarantine, capacity rejections, and shutdown cancellation
+  remain enforced.
+
 ## [0.5.0-rc.11] - 2026-08-13
 
 This eleventh public candidate replaces the legacy AgentMail integration with
