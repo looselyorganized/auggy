@@ -331,12 +331,12 @@ recognized identity across sessions:
 
 ```bash
 auggy augment add visitorAuth
-auggy agentmail setup visitorAuth --mode connect
+auggy agentmail setup visitorAuth
 ```
 
-Create the inbox and API key in AgentMail, then connect their exact values.
-Auggy verifies access and stores that key unchanged; it does not create,
-narrow, rotate, or revoke provider keys. See the
+Choose account creation, a new inbox in an existing account, or manual
+connection to an existing inbox. Auggy stores the selected key unchanged; it
+never exchanges it for a narrower runtime key and never rotates or revokes it. See the
 [`visitorAuth` operator reference](./docs/19-visitor-auth.md#agentmail-setup)
 for inputs, permissions, shared-inbox sequencing, and recovery.
 
@@ -347,8 +347,8 @@ interactive command:
 auggy augment add agentMail visitorAuth
 ```
 
-The post-add flow uses one shared setup confirmation. It connects `agentMail`
-to an existing inbox and exact API key, then configures `visitorAuth` to reuse
+The post-add flow uses one shared setup confirmation. It configures `agentMail`
+with one inbox and exact API key, then configures `visitorAuth` to reuse
 the same environment values without asking again. The result is independent
 of argument or picker order. `--yes` skips optional post-add setup, so use the
 explicit sequence in the operator references when automating installation.
@@ -410,7 +410,7 @@ public-preview line:
 
 ```bash
 auggy augment add agentMail
-auggy agentmail setup agentMail --mode connect
+auggy agentmail setup agentMail
 ```
 
 See the [`agentMail` operator reference](./docs/22-agent-mail.md) for the exact

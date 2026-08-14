@@ -701,7 +701,7 @@ describe("AgentMail provider-native runtime", () => {
     expect(bytes.includes(Buffer.from("am_test"))).toBe(false);
   });
 
-  test("completes offline recovery through provider-native creator review, revision, and exact send", async () => {
+  test("completes offline recovery through provider-native creator review, revision, and send", async () => {
     const provider = new FakeProvider();
     const incoming = message({ text: "E2E private inbound body for order 42." });
     provider.messages.set(incoming.messageId, incoming);
@@ -848,7 +848,7 @@ describe("AgentMail provider-native runtime", () => {
     f.store.close();
   });
 
-  test("requires a fresh creator identity for review tools and exact send intent", async () => {
+  test("requires verified creator identity and current draft revision for delivery", async () => {
     const f = fixture({ drafts: { allowReply: true } });
     const incoming = message();
     f.provider.messages.set(incoming.messageId, incoming);
@@ -873,30 +873,8 @@ describe("AgentMail provider-native runtime", () => {
     const send = requireTool(f.augment, "send_mail_draft");
     expect(await show.execute({ draftId: "draft_1" }, undefined)).toMatchObject({ isError: true });
 
-    await f.augment.onTurnStart?.(
-      creatorTurn("show_turn", "console_thread_1", "show draft draft_1"),
-    );
     const shown = await show.execute({ draftId: "draft_1" }, toolContext({ turnId: "show_turn" }));
     expect(String(shown)).toContain("We can help.");
-    await f.augment.onTurnEnd?.({ turnId: "show_turn" } as TurnResult);
-
-    await f.augment.onTurnStart?.(
-      creatorTurn("bad_send", "console_thread_1", "what do you think?"),
-    );
-    expect(
-      await send.execute(
-        {
-          draftId: "draft_1",
-          expectedRevision: snapshotAgentMailDraft(f.provider.drafts.get("draft_1")!, "reply")
-            .providerRevision,
-        },
-        toolContext({ turnId: "bad_send" }),
-      ),
-    ).toMatchObject({ isError: true });
-    expect(f.provider.sentDrafts).toHaveLength(0);
-    await f.augment.onTurnEnd?.({ turnId: "bad_send" } as TurnResult);
-
-    await f.augment.onTurnStart?.(creatorTurn("send_turn", "console_thread_1", "send it"));
     expect(
       toolJson(
         await send.execute(
@@ -912,7 +890,6 @@ describe("AgentMail provider-native runtime", () => {
     expect(f.provider.sentDrafts).toHaveLength(1);
     expect(f.provider.sentDrafts[0]).toMatchObject({ draftId: "draft_1" });
     expect(f.provider.sentDrafts[0]?.idempotencyKey).toMatch(/^agentmail\.delivery\.v2\./);
-    await f.augment.onTurnEnd?.({ turnId: "send_turn" } as TurnResult);
     await f.augment.onShutdown?.();
     f.store.close();
   });
@@ -1055,20 +1032,6 @@ describe("AgentMail provider-native runtime", () => {
     ).toMatchObject({ status: "retryable", retryAfter: 80_000 });
     now = 80_001;
 
-    await f.augment.onTurnStart?.(
-      creatorTurn("retry_wrong_words", "console_thread_1", "please retry that email"),
-    );
-    expect(
-      await retry.execute(
-        { action: "send_message", operationId: "fallback_op_1", request },
-        toolContext({ turnId: "retry_wrong_words" }),
-      ),
-    ).toMatchObject({ isError: true });
-    expect(provider.sentMessages).toHaveLength(1);
-
-    await f.augment.onTurnStart?.(
-      creatorTurn("retry_changed", "console_thread_1", "retry mail delivery fallback_op_1"),
-    );
     expect(
       await retry.execute(
         {
@@ -1348,26 +1311,17 @@ describe("AgentMail provider-native runtime", () => {
     await restarted.onShutdown?.();
   });
 
-  test("direct reply and forward require exact creator intent and preserve source identity", async () => {
+  test("direct reply and forward require creator authority and preserve source identity", async () => {
     const f = fixture({ drafts: { allowForward: true } });
     const source = message({ replyTo: ["reply@example.com"] });
     f.provider.messages.set(source.messageId, source);
     await f.augment.onBoot?.();
     const reply = requireTool(f.augment, "reply_to_mail_message");
     expect(
-      await reply.execute(
-        { messageId: source.messageId, text: "Thanks" },
-        toolContext({ operationId: "reply_without_intent" }),
-      ),
-    ).toMatchObject({ isError: true });
-    await f.augment.onTurnStart?.(
-      creatorTurn("reply_exact", "console_thread_1", `reply to message ${source.messageId}`),
-    );
-    expect(
       toolJson(
         await reply.execute(
           { messageId: source.messageId, text: "Thanks" },
-          toolContext({ turnId: "reply_exact", operationId: "reply_exact_1" }),
+          toolContext({ turnId: "reply_natural", operationId: "reply_natural_1" }),
         ),
       ),
     ).toMatchObject({ status: "sent", messageId: "sent_reply_direct_1" });
@@ -1377,18 +1331,11 @@ describe("AgentMail provider-native runtime", () => {
     });
 
     const forward = requireTool(f.augment, "forward_mail_message");
-    await f.augment.onTurnStart?.(
-      creatorTurn(
-        "forward_exact",
-        "console_thread_1",
-        `forward message ${source.messageId} to owner@example.com`,
-      ),
-    );
     expect(
       toolJson(
         await forward.execute(
           { messageId: source.messageId, to: ["owner@example.com"], text: "FYI" },
-          toolContext({ turnId: "forward_exact", operationId: "forward_exact_1" }),
+          toolContext({ turnId: "forward_natural", operationId: "forward_natural_1" }),
         ),
       ),
     ).toMatchObject({ status: "sent", messageId: "sent_forward_1" });
@@ -1577,7 +1524,7 @@ describe("AgentMail provider-native runtime", () => {
     f.store.close();
   });
 
-  test("revises only a freshly shown plain-text draft and invalidates the old provider version", async () => {
+  test("revises a plain-text draft only at its current provider version", async () => {
     const f = fixture({ drafts: { allowReply: true } });
     const incoming = message();
     f.provider.messages.set(incoming.messageId, incoming);
@@ -1598,36 +1545,13 @@ describe("AgentMail provider-native runtime", () => {
     });
     await f.augment.onBoot?.();
     const revise = requireTool(f.augment, "revise_mail_draft");
-    const expectedRevision = snapshotAgentMailDraft(
-      f.provider.drafts.get("draft_1")!,
-      "reply",
-    ).providerRevision;
-
-    await f.augment.onTurnStart?.(
-      creatorTurn("show_only", "console_thread_1", "show draft draft_1"),
-    );
     expect(
       await revise.execute(
-        { draftId: "draft_1", expectedRevision, text: "Unauthorized change." },
-        toolContext({ turnId: "show_only" }),
+        { draftId: "draft_1", expectedRevision: "stale-revision", text: "Stale change." },
+        toolContext({ turnId: "stale_revision" }),
       ),
     ).toMatchObject({ isError: true });
-    await f.augment.onTurnEnd?.({ turnId: "show_only" } as TurnResult);
-
-    await f.augment.onTurnStart?.(
-      creatorTurn("generic_revise", "another_console_thread", "revise a mail draft"),
-    );
-    expect(
-      await revise.execute(
-        { draftId: "draft_1", expectedRevision, text: "Unauthorized change." },
-        toolContext({ turnId: "generic_revise", threadId: "another_console_thread" }),
-      ),
-    ).toMatchObject({ isError: true });
-    await f.augment.onTurnEnd?.({ turnId: "generic_revise" } as TurnResult);
-
-    await f.augment.onTurnStart?.(
-      creatorTurn("revise_turn", "console_thread_1", "revise draft draft_1 to be concise"),
-    );
+    expect(f.provider.updatedDrafts).toHaveLength(0);
     expect(
       toolJson(
         await revise.execute(
@@ -1650,7 +1574,6 @@ describe("AgentMail provider-native runtime", () => {
       state: "ready",
       providerUpdatedAt: 2_001,
     });
-    await f.augment.onTurnEnd?.({ turnId: "revise_turn" } as TurnResult);
     await f.augment.onShutdown?.();
     f.store.close();
   });
@@ -1984,7 +1907,7 @@ describe("AgentMail provider-native runtime", () => {
     f.store.close();
   });
 
-  test("durably deletes a draft only after exact creator intent", async () => {
+  test("durably deletes a draft only for the verified creator with current revision", async () => {
     const f = fixture({
       drafts: { allowNew: true },
       destructive: { allowPermanentDelete: true },
@@ -2004,22 +1927,26 @@ describe("AgentMail provider-native runtime", () => {
     expect(
       await remove.execute(
         { draftId, expectedRevision: shown.providerRevision },
-        toolContext({ operationId: "delete_denied" }),
+        toolContext({
+          operationId: "delete_public_denied",
+          peer: {
+            id: "public",
+            kind: "human",
+            trustLevel: "public",
+            sourceAugment: "webTransport",
+          },
+        }),
       ),
     ).toMatchObject({ isError: true });
-    await f.augment.onTurnStart?.(
-      creatorTurn("delete_exact", "console_thread_1", `delete draft ${draftId}`),
-    );
     expect(
       toolJson(
         await remove.execute(
           { draftId, expectedRevision: shown.providerRevision },
-          toolContext({ turnId: "delete_exact", operationId: "delete_exact_1" }),
+          toolContext({ turnId: "delete_creator", operationId: "delete_creator_1" }),
         ),
       ),
     ).toEqual({ status: "deleted", draftId });
     expect(f.store.getProviderDraft(draftId)?.state).toBe("deleted");
-    await f.augment.onTurnEnd?.({ turnId: "delete_exact" } as TurnResult);
     await f.augment.onShutdown?.();
     f.store.close();
   });

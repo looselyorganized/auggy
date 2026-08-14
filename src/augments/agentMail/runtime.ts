@@ -130,11 +130,6 @@ interface ActiveMailRoute {
   draftCreated: boolean;
 }
 
-interface CreatorTurnIntent {
-  text: string;
-  selectedDraftId?: string;
-}
-
 function stableId(prefix: string, ...values: string[]): string {
   const digest = createHash("sha256").update(values.join("\0"), "utf8").digest("hex");
   return `${prefix}.${digest}`;
@@ -331,17 +326,6 @@ function operationIdentity(context: ToolExecuteContext | undefined): string | un
   return value ? value : undefined;
 }
 
-function exactCreatorIntent(
-  intent: CreatorTurnIntent | undefined,
-  draftId: string,
-  verbs: readonly string[],
-): boolean {
-  const normalized = intent?.text.trim().replace(/\s+/g, " ").toLowerCase();
-  if (!normalized) return false;
-  const draft = draftId.toLowerCase();
-  return verbs.some((verb) => normalized === `${verb} draft ${draft}`);
-}
-
 function mailboxFailure(operation: string, error: unknown): ToolResult {
   return failed(`${operation} failed (${providerCode(error)}). No mailbox result was returned.`);
 }
@@ -419,8 +403,6 @@ export function createAgentMailRuntime(
   let lifecycleController = new AbortController();
   let workTail: Promise<void> = Promise.resolve();
   const activeRoutes = new Map<string, ActiveMailRoute>();
-  const selectedDraftByThread = new Map<string, string>();
-  const creatorTurns = new Map<string, CreatorTurnIntent>();
   const draftTails = new Map<string, Promise<void>>();
   let verifiedEmailAddress: string | undefined;
   let lastErrorCode: string | undefined;
@@ -1236,7 +1218,7 @@ export function createAgentMailRuntime(
     }
     if (operation.state === "retryable") {
       return failed(
-        `Delivery operation ${operation.operationId} is retryable. Use exactly \`retry mail delivery ${operation.operationId}\` after its retry time.`,
+        `Delivery operation ${operation.operationId} is retryable after its retry time. Retry that persisted operation without changing its request.`,
       );
     }
     return undefined;
@@ -2051,7 +2033,6 @@ export function createAgentMailRuntime(
             throw new Error("agentMail: created draft client identity did not match");
           }
           const snapshot = settleUpdatedDraftMutation(operationId, verified);
-          selectedDraftByThread.set(context.threadId, verified.draftId);
           scheduleAttention();
           return JSON.stringify({
             status: "created",
@@ -2080,15 +2061,6 @@ export function createAgentMailRuntime(
     }),
     execute: async ({ draftId, kind }, context) => {
       if (!creator(context)) return denied("Only the verified creator may adopt mail drafts.");
-      const expectedIntent = `adopt draft ${draftId} as ${kind}`.toLowerCase();
-      const actualIntent = creatorTurns
-        .get(context.turnId)
-        ?.text.trim()
-        .replace(/\s+/g, " ")
-        .toLowerCase();
-      if (actualIntent !== expectedIntent) {
-        return denied(`Use exactly \`adopt draft ${draftId} as ${kind}\`.`);
-      }
       if (runtimeStore().getProviderDraft(draftId))
         return failed("This draft is already managed by Auggy.");
       try {
@@ -2132,7 +2104,6 @@ export function createAgentMailRuntime(
         });
         if (result.status === "conflict")
           return failed("Draft identity conflicts with existing managed state.");
-        selectedDraftByThread.set(context.threadId, draftId);
         return JSON.stringify({
           status: "adopted",
           draftId,
@@ -2185,7 +2156,6 @@ export function createAgentMailRuntime(
       if (!decision.allowed) return denied(`Mailbox policy denied this draft: ${decision.reason}.`);
       const current = await freshManagedDraft(draftId, context.signal);
       if ("error" in current) return failed(current.error);
-      selectedDraftByThread.set(context.threadId, draftId);
       return JSON.stringify({
         status: "review",
         managed: true,
@@ -2231,15 +2201,6 @@ export function createAgentMailRuntime(
     }),
     execute: async ({ draftId, expectedRevision, ...changes }, context) => {
       if (!creator(context)) return denied("Only the verified creator may revise mail drafts.");
-      const intent = creatorTurns.get(context.turnId);
-      const hasRevisionVerb = /\b(revise|change|edit|rewrite)\b/i.test(intent?.text ?? "");
-      const namesExactDraft = intent?.text.toLowerCase().includes(draftId.toLowerCase()) === true;
-      const namesSelectedDraft = intent?.selectedDraftId === draftId;
-      if (!intent || !hasRevisionVerb || (!namesExactDraft && !namesSelectedDraft)) {
-        return denied(
-          "Ask explicitly to revise, change, edit, or rewrite this exact or previously shown draft.",
-        );
-      }
       return withDraftLock(draftId, async () => {
         const current = await freshManagedDraft(draftId, context.signal);
         if ("error" in current) return failed(current.error);
@@ -2349,7 +2310,6 @@ export function createAgentMailRuntime(
               throw new Error(`agentMail: provider did not apply draft field ${field}`);
           }
           settleUpdatedDraftMutation(operationId, verified);
-          selectedDraftByThread.set(context.threadId, draftId);
           return JSON.stringify({
             status: "revised",
             draftId,
@@ -2375,8 +2335,6 @@ export function createAgentMailRuntime(
     }),
     execute: async ({ draftId, expectedRevision }, context) => {
       if (!creator(context)) return denied("Only the verified creator may delete mail drafts.");
-      if (!exactCreatorIntent(creatorTurns.get(context.turnId), draftId, ["delete"]))
-        return denied(`Use exactly \`delete draft ${draftId}\`.`);
       if (!provider.deleteDraft)
         return failed("AgentMail provider-native draft deletion is unavailable.");
       const deleteProviderDraft = provider.deleteDraft.bind(provider);
@@ -2435,7 +2393,7 @@ export function createAgentMailRuntime(
   const sendDraftTool = defineTool({
     name: "send_mail_draft",
     description:
-      "Send a reviewed managed AgentMail draft after an exact creator command: `send it` for the previously shown draft, or `send draft <draftId>`.",
+      "Send a reviewed managed AgentMail draft. The verified creator, exact draft ID, current provider revision, and configured outbound policy authorize the operation.",
     category: "communication",
     input: z.object({
       draftId: z.string().min(1).max(512),
@@ -2444,13 +2402,6 @@ export function createAgentMailRuntime(
     execute: async ({ draftId, expectedRevision }, context) => {
       if (!creator(context) || !maySendAgentMailDraft(context.peer.trustLevel)) {
         return denied("Only the verified creator may send a mail draft.");
-      }
-      const intent = creatorTurns.get(context.turnId);
-      const normalized = intent?.text.trim().replace(/\s+/g, " ").toLowerCase();
-      const explicitById = normalized === `send draft ${draftId.toLowerCase()}`;
-      const explicitSelected = normalized === "send it" && intent?.selectedDraftId === draftId;
-      if (!explicitById && !explicitSelected) {
-        return denied("Use exactly `send it` after showing the draft, or `send draft <draftId>`. ");
       }
       const operationId = operationIdentity(context);
       if (!operationId) return denied("A durable operation identity is required to send a draft.");
@@ -2591,12 +2542,6 @@ export function createAgentMailRuntime(
     }),
     execute: async ({ to, subject, text }, context) => {
       if (!creator(context)) return denied("Only the verified creator may send new mail.");
-      const expectedIntent = `send email to ${to.map((address) => address.toLowerCase()).join(",")}`;
-      const intent = creatorTurns.get(context.turnId);
-      const actualIntent = intent?.text.trim().replace(/\s+/g, " ").toLowerCase();
-      if (actualIntent !== expectedIntent) {
-        return denied(`Use exactly \`${expectedIntent}\`.`);
-      }
       const operationId = operationIdentity(context);
       if (!operationId) return failed("A durable operation identity is required to send mail.");
       const idempotencyKey = stableId("agentmail.delivery.v2", config.inboxId, operationId);
@@ -2661,18 +2606,6 @@ export function createAgentMailRuntime(
     if (!creator(context)) return denied("Only the verified creator may deliver mail.");
     const operationId = operationIdentity(context);
     if (!operationId) return denied("A durable operation identity is required to deliver mail.");
-    const expectedIntent =
-      action === "reply"
-        ? `reply to message ${input.messageId}`
-        : `forward message ${input.messageId} to ${(input.to ?? [])
-            .map((address) => address.toLowerCase())
-            .join(",")}`;
-    if (
-      creatorTurns.get(context.turnId)?.text.trim().replace(/\s+/g, " ").toLowerCase() !==
-      expectedIntent.toLowerCase()
-    ) {
-      return denied(`Use exactly \`${expectedIntent}\`.`);
-    }
     if (action === "reply" && !provider.replyToMessage) {
       return failed("Direct AgentMail reply is unavailable in the configured provider.");
     }
@@ -2761,7 +2694,7 @@ export function createAgentMailRuntime(
   const replyMessageTool = defineTool({
     name: "reply_to_mail_message",
     description:
-      "Directly reply to one source message after an exact creator command. Reply-all is intentionally draft-only.",
+      "Directly reply to one source message as the verified creator, subject to configured outbound policy. Reply-all is intentionally draft-only.",
     category: "communication",
     input: z.object({
       messageId: z.string().min(1).max(512),
@@ -2772,7 +2705,8 @@ export function createAgentMailRuntime(
 
   const forwardMessageTool = defineTool({
     name: "forward_mail_message",
-    description: "Directly forward one source message after an exact creator command.",
+    description:
+      "Directly forward one source message as the verified creator, subject to configured outbound policy.",
     category: "communication",
     input: z.object({
       messageId: z.string().min(1).max(512),
@@ -2789,47 +2723,55 @@ export function createAgentMailRuntime(
     description:
       "Retry one provider-rate-limited delivery with its original operation and idempotency key. Direct messages require the exact original request because Auggy stores no mail content.",
     category: "communication",
-    input: z.discriminatedUnion("action", [
-      z.object({
-        action: z.literal("send_draft"),
+    // Anthropic requires the tool input_schema itself to be an object and
+    // rejects top-level oneOf/anyOf/allOf. Keep the public flat argument shape
+    // while enforcing the action-specific contract with refinements.
+    input: z
+      .object({
+        action: z.enum(["send_draft", "send_message", "reply", "forward"]),
         operationId: z.string().min(1).max(512),
+        request: z
+          .object({
+            messageId: z.string().min(1).max(512).optional(),
+            to: z.array(z.string().min(3).max(320)).min(1).max(50).optional(),
+            cc: z.array(z.string().min(3).max(320)).max(50).optional(),
+            bcc: z.array(z.string().min(3).max(320)).max(50).optional(),
+            subject: z.string().min(1).max(998).optional(),
+            text: z.string().min(1).max(1_048_576).optional(),
+          })
+          .optional(),
+      })
+      .superRefine((input, context) => {
+        const request = input.request;
+        const invalid = (message: string) =>
+          context.addIssue({ code: "custom", path: ["request"], message });
+        if (input.action === "send_draft") {
+          if (request !== undefined) invalid("must be omitted when action is send_draft");
+          return;
+        }
+        if (!request?.text) {
+          invalid("text is required for direct delivery retries");
+          return;
+        }
+        if (input.action === "send_message") {
+          if (!request.to || !request.subject || request.messageId || request.cc || request.bcc) {
+            invalid("send_message requires only to, subject, and text");
+          }
+          return;
+        }
+        if (!request.messageId || request.subject) {
+          invalid(`${input.action} requires messageId and text without subject`);
+          return;
+        }
+        if (input.action === "reply" && (request.to || request.cc || request.bcc)) {
+          invalid("reply derives its recipient and does not accept to, cc, or bcc");
+        }
+        if (input.action === "forward" && !request.to) {
+          invalid("forward requires at least one to recipient");
+        }
       }),
-      z.object({
-        action: z.literal("send_message"),
-        operationId: z.string().min(1).max(512),
-        request: z.object({
-          to: z.array(z.string().min(3).max(320)).min(1).max(50),
-          subject: z.string().min(1).max(998),
-          text: z.string().min(1).max(1_048_576),
-        }),
-      }),
-      z.object({
-        action: z.literal("reply"),
-        operationId: z.string().min(1).max(512),
-        request: z.object({
-          messageId: z.string().min(1).max(512),
-          text: z.string().min(1).max(1_048_576),
-        }),
-      }),
-      z.object({
-        action: z.literal("forward"),
-        operationId: z.string().min(1).max(512),
-        request: z.object({
-          messageId: z.string().min(1).max(512),
-          to: z.array(z.string().min(3).max(320)).min(1).max(50),
-          cc: z.array(z.string().min(3).max(320)).max(50).optional(),
-          bcc: z.array(z.string().min(3).max(320)).max(50).optional(),
-          text: z.string().min(1).max(1_048_576),
-        }),
-      }),
-    ]),
     execute: async (input, context) => {
       if (!creator(context)) return denied("Only the verified creator may retry mail delivery.");
-      const retryCommand = `retry mail delivery ${input.operationId}`;
-      const intent = creatorTurns.get(context.turnId)?.text.trim().replace(/\s+/g, " ");
-      if (intent?.toLowerCase() !== retryCommand.toLowerCase()) {
-        return denied(`Use exactly \`${retryCommand}\`.`);
-      }
       const operation = runtimeStore().getDeliveryOperation(input.operationId);
       if (!operation) return failed("Delivery operation was not found.");
       if (operation.action !== input.action) {
@@ -2965,11 +2907,15 @@ export function createAgentMailRuntime(
         }
 
         if (input.action === "send_message") {
+          const request = input.request;
+          if (!request?.to || !request.subject || !request.text) {
+            return failed("Retry request is incomplete for send_message.");
+          }
           const policyInput: AgentMailOperationInput = {
             action: "send_message",
-            recipients: { to: input.request.to },
-            subject: input.request.subject,
-            text: input.request.text,
+            recipients: { to: request.to },
+            subject: request.subject,
+            text: request.text,
             operationId: operation.operationId,
             idempotencyKey: operation.idempotencyKey,
           };
@@ -3009,8 +2955,8 @@ export function createAgentMailRuntime(
               provider.sendMessage(
                 {
                   to: [...authorization.manifest.recipients.to],
-                  subject: decision.subject ?? input.request.subject,
-                  text: input.request.text,
+                  subject: decision.subject ?? request.subject,
+                  text: request.text,
                   idempotencyKey: key,
                 },
                 context.signal,
@@ -3020,7 +2966,15 @@ export function createAgentMailRuntime(
         }
 
         const request = input.request;
-        const source = await provider.getMessage(request.messageId, context.signal);
+        if (!request?.messageId || !request.text) {
+          return failed(`Retry request is incomplete for ${input.action}.`);
+        }
+        if (input.action === "forward" && !request.to) {
+          return failed("Retry request is incomplete for forward.");
+        }
+        const sourceMessageId = request.messageId;
+        const deliveryText = request.text;
+        const source = await provider.getMessage(sourceMessageId, context.signal);
         if (
           source.inboxId !== config.inboxId ||
           source.messageId !== request.messageId ||
@@ -3035,9 +2989,9 @@ export function createAgentMailRuntime(
           input.action === "reply"
             ? { to: replyTarget === undefined ? [] : [replyTarget] }
             : {
-                to: input.request.to,
-                cc: input.request.cc,
-                bcc: input.request.bcc,
+                to: request.to,
+                cc: request.cc,
+                bcc: request.bcc,
               };
         const policyInput: AgentMailOperationInput = {
           action: input.action,
@@ -3092,7 +3046,7 @@ export function createAgentMailRuntime(
             operation.operationId,
             (key) =>
               provider.replyToMessage!(
-                { messageId: request.messageId, text: request.text, idempotencyKey: key },
+                { messageId: sourceMessageId, text: deliveryText, idempotencyKey: key },
                 context.signal,
               ),
             "retry",
@@ -3105,11 +3059,11 @@ export function createAgentMailRuntime(
           (key) =>
             provider.forwardMessage!(
               {
-                messageId: request.messageId,
+                messageId: sourceMessageId,
                 to: [...authorization.manifest.recipients.to],
                 cc: [...authorization.manifest.recipients.cc],
                 bcc: [...authorization.manifest.recipients.bcc],
-                text: request.text,
+                text: deliveryText,
                 idempotencyKey: key,
               },
               context.signal,
@@ -3127,32 +3081,40 @@ export function createAgentMailRuntime(
     description:
       "Resolve one outcome-unknown delivery using explicit provider evidence. Never infers non-delivery from a missing draft.",
     category: "communication",
-    input: z.discriminatedUnion("resolution", [
-      z.object({
+    input: z
+      .object({
         operationId: z.string().min(1).max(512),
-        resolution: z.literal("sent"),
-        messageId: z.string().min(1).max(512),
-        threadId: z.string().min(1).max(512),
+        resolution: z.enum(["sent", "not_sent"]),
+        messageId: z.string().min(1).max(512).optional(),
+        threadId: z.string().min(1).max(512).optional(),
+        evidence: z.string().min(1).max(2_048).optional(),
+      })
+      .superRefine((input, context) => {
+        if (input.resolution === "sent") {
+          if (!input.messageId || !input.threadId || input.evidence) {
+            context.addIssue({
+              code: "custom",
+              message: "sent requires messageId and threadId without evidence",
+            });
+          }
+          return;
+        }
+        if (!input.evidence || input.messageId || input.threadId) {
+          context.addIssue({
+            code: "custom",
+            message: "not_sent requires evidence without messageId or threadId",
+          });
+        }
       }),
-      z.object({
-        operationId: z.string().min(1).max(512),
-        resolution: z.literal("not_sent"),
-        evidence: z.string().min(1).max(2_048),
-      }),
-    ]),
     execute: async (input, context) => {
       if (!creator(context))
         return denied("Only the verified creator may reconcile mail delivery.");
-      const expected = `reconcile delivery ${input.operationId} as ${input.resolution === "sent" ? "sent" : "not sent"}`;
-      if (
-        creatorTurns.get(context.turnId)?.text.trim().replace(/\s+/g, " ").toLowerCase() !==
-        expected.toLowerCase()
-      ) {
-        return denied(`Use exactly \`${expected}\`.`);
-      }
       const operation = runtimeStore().getDeliveryOperation(input.operationId);
       if (!operation) return failed("Delivery operation was not found.");
       if (input.resolution === "sent") {
+        if (!input.messageId || !input.threadId) {
+          return failed("Sent reconciliation requires provider message and thread IDs.");
+        }
         try {
           const message = await provider.getMessage(input.messageId, context.signal);
           if (
@@ -3180,6 +3142,7 @@ export function createAgentMailRuntime(
           return mailboxFailure("AgentMail delivery reconciliation", error);
         }
       }
+      if (!input.evidence) return failed("Not-sent reconciliation requires provider evidence.");
       runtimeStore().reconcileDeliveryOperation({
         operationId: input.operationId,
         evidenceHash: hashAgentMailOrchestrationValue(
@@ -3395,24 +3358,6 @@ export function createAgentMailRuntime(
         throw new Error("agentMail: configured emailAddress does not match the verified inbox");
       }
     },
-    onTurnStart: async (turn) => {
-      if (turn.peer?.trustLevel !== "creator") return;
-      if (creatorTurns.size >= 1_000) creatorTurns.clear();
-      const inbound = turn.trigger.payload as InboundMessage;
-      const text = (Array.isArray(inbound.parts) ? inbound.parts : [])
-        .filter((part): part is Extract<Part, { kind: "text" }> => part.kind === "text")
-        .map((part) => part.text)
-        .join("\n");
-      creatorTurns.set(turn.turnId, {
-        text,
-        ...(selectedDraftByThread.get(turn.threadId) === undefined
-          ? {}
-          : { selectedDraftId: selectedDraftByThread.get(turn.threadId) }),
-      });
-    },
-    onTurnEnd: async (result) => {
-      creatorTurns.delete(result.turnId);
-    },
     async onShutdown() {
       await creatorAttentionHost.stop();
       lifecycleController.abort(new DOMException("AgentMail is shutting down.", "AbortError"));
@@ -3420,8 +3365,6 @@ export function createAgentMailRuntime(
       coordinator = undefined;
       await workTail.catch(() => undefined);
       activeRoutes.clear();
-      creatorTurns.clear();
-      selectedDraftByThread.clear();
       kernel = undefined;
       if (ownsStore) store?.close();
       store = undefined;

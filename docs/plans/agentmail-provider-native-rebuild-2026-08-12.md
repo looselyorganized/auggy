@@ -258,21 +258,23 @@ defaults, runtime tests, and a clear restart/apply contract.
 
 ## CLI connection boundary
 
-`auggy augment setup agentMail` and `auggy augment setup visitorAuth` connect
-resources that already exist in AgentMail. The supported modes are:
+`auggy augment setup agentMail` and `auggy augment setup visitorAuth` support
+three interactive entry paths:
 
-- `connect`: collect an existing inbox ID and the exact API key the operator
-  chose for runtime use; and
-- `env`: revalidate the existing `AGENTMAIL_API_KEY` and
-  `AGENTMAIL_INBOX_ID` values without changing their identity.
+- `signup`: create the first AgentMail account and inbox, verify its email OTP,
+  and retain the initial key returned by AgentMail;
+- `existing`: create a new inbox with the operator's account key and retain that
+  exact key for runtime use; and
+- `manual`: connect an existing inbox ID to the exact key the operator chose.
 
-Setup never signs up an AgentMail account, creates or adopts an inbox, or
-creates, scopes, rotates, replaces, or revokes an API key. It validates the
-configured inbox identity and exercises required read operations without
-provider mutations. Output separates reads that were verified from write
-permissions that are required but cannot be safely probed during setup. The
-real-provider release canary exercises the same exact key and pre-provisioned
-inbox without mutating provider state.
+`connect` remains a release-candidate alias for `manual`, while `env`
+revalidates existing `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` values.
+Setup never mints, narrows, exchanges, rotates, or revokes a second API key.
+It validates the configured inbox identity and exercises required read
+operations. Output separates reads that were verified from write permissions
+that are required but cannot be safely probed during setup. The real-provider
+release canary continues to use the same exact key and pre-provisioned inbox
+without mutating provider state.
 
 ## Explicitly unsupported
 

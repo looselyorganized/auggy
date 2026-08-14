@@ -41,47 +41,50 @@ if (optionalAdd.exitCode !== 0) {
   throw new Error(`packed CLI could not add lowercase agentmail:\n${optionalAdd.output}`);
 }
 const setupHelp = await runCli(["agentmail", "setup", "--help"], {}, optionalTargetDir);
-if (
-  setupHelp.exitCode !== 0 ||
-  !setupHelp.output.includes("connect an existing inbox, or env to verify saved credentials")
-) {
+if (setupHelp.exitCode !== 0 || !setupHelp.output.includes("signup, existing, manual, or env")) {
   throw new Error(`packed AgentMail help omitted the supported setup modes:\n${setupHelp.output}`);
 }
-for (const removedFlag of ["--username", "--display-name", "--human-email", "--replace-key"]) {
-  if (setupHelp.output.includes(removedFlag)) {
-    throw new Error(`packed AgentMail help still advertises removed option ${removedFlag}`);
+for (const requiredFlag of [
+  "--username",
+  "--display-name",
+  "--human-email",
+  "--api-key",
+  "--inbox-id",
+]) {
+  if (!setupHelp.output.includes(requiredFlag)) {
+    throw new Error(`packed AgentMail help omitted setup option ${requiredFlag}`);
   }
+}
+if (setupHelp.output.includes("--replace-key")) {
+  throw new Error("packed AgentMail help still advertises removed key-replacement behavior");
 }
 const optionalConfigPath = join(optionalTargetDir, "agent.yaml");
 const optionalAugmentPath = join(optionalTargetDir, "augments", "agentMail", "augment.yaml");
-const beforeRemovedModes = snapshotAgentMailFiles(
+const beforeNoninteractiveSignup = snapshotAgentMailFiles(
   optionalTargetDir,
   optionalConfigPath,
   optionalAugmentPath,
 );
-for (const removedMode of ["signup", "existing", "manual"]) {
-  const removed = await runCli(
-    ["augment", "setup", "agentmail", "--mode", removedMode],
-    {},
-    optionalTargetDir,
+const noninteractiveSignup = await runCli(
+  ["augment", "setup", "agentmail", "--mode", "signup"],
+  {},
+  optionalTargetDir,
+);
+if (
+  noninteractiveSignup.exitCode === 0 ||
+  !noninteractiveSignup.output.includes("requires an interactive terminal for email verification")
+) {
+  throw new Error(
+    `packed AgentMail CLI did not fail closed for non-interactive signup:\n${noninteractiveSignup.output}`,
   );
-  if (
-    removed.exitCode === 0 ||
-    !removed.output.includes(`setup mode "${removedMode}" was removed`) ||
-    !removed.output.includes("does not create accounts, inboxes, or API keys")
-  ) {
-    throw new Error(
-      `packed AgentMail CLI did not reject removed mode ${removedMode}:\n${removed.output}`,
-    );
-  }
-  if (
-    !isDeepStrictEqual(
-      beforeRemovedModes,
-      snapshotAgentMailFiles(optionalTargetDir, optionalConfigPath, optionalAugmentPath),
-    )
-  ) {
-    throw new Error(`packed AgentMail removed mode ${removedMode} changed local state`);
-  }
+}
+if (
+  !isDeepStrictEqual(
+    beforeNoninteractiveSignup,
+    snapshotAgentMailFiles(optionalTargetDir, optionalConfigPath, optionalAugmentPath),
+  )
+) {
+  throw new Error("packed AgentMail non-interactive signup changed local state");
 }
 const invalidMode = await runCli(
   ["agentmail", "setup", "--mode", "packed-smoke-invalid"],
@@ -121,7 +124,7 @@ const addOutput = await captureConsoleOutput(async () => {
       return {
         agentName: "packed-agentmail",
         target,
-        mode: target === "agentMail" ? "connect" : "env",
+        mode: target === "agentMail" ? "manual" : "env",
         inboxId: INBOX_ID,
         inboxEmail: INBOX_EMAIL,
         envPath: join(consumerDir, ".env"),
@@ -134,13 +137,13 @@ const addOutput = await captureConsoleOutput(async () => {
 assertNoCredentialOutput(addOutput);
 if (
   setupConfirmations.length !== 1 ||
-  setupConfirmations[0] !== "Connect one existing AgentMail inbox to agentMail and visitorAuth now?"
+  setupConfirmations[0] !== "Set up one shared AgentMail inbox for agentMail and visitorAuth now?"
 ) {
   throw new Error(
     `packed shared add did not ask exactly once: ${JSON.stringify(setupConfirmations)}`,
   );
 }
-if (setupTargets.join(",") !== "agentMail:connect,visitorAuth:env") {
+if (setupTargets.join(",") !== "agentMail:interactive,visitorAuth:env") {
   throw new Error(`packed shared setup order was incorrect: ${JSON.stringify(setupTargets)}`);
 }
 
@@ -162,7 +165,7 @@ try {
       "agentMail",
       {
         config: configPath,
-        mode: "connect",
+        mode: "manual",
         baseUrl: provider.baseUrl,
         allowInsecureHttpWithCredentials: true,
       },
@@ -187,11 +190,11 @@ try {
     );
   } catch (error) {
     throw new Error(
-      `packed AgentMail connect failed: ${(error as Error).message}; provider state ${JSON.stringify(provider.state)}`,
+      `packed AgentMail manual connection failed: ${(error as Error).message}; provider state ${JSON.stringify(provider.state)}`,
     );
   }
   if (keyPrompts !== 1 || inboxPrompts !== 1) {
-    throw new Error("packed connect did not collect exactly one key and one inbox ID");
+    throw new Error("packed manual setup did not collect exactly one key and one inbox ID");
   }
   assertPermissionEvidence(setupResult);
   assertNoCredentialOutput(packedSetup.formatAgentMailSetupResult(setupResult));
@@ -298,7 +301,7 @@ try {
       "agentMail",
       {
         config: rejectedConfig,
-        mode: "connect",
+        mode: "manual",
         apiKey: REJECTED_KEY,
         inboxId: INBOX_ID,
         baseUrl: provider.baseUrl,
@@ -313,7 +316,7 @@ try {
     !(rejectedError instanceof Error) ||
     !/credential|permission|403/i.test(rejectedError.message)
   ) {
-    throw new Error("packed connect did not fail clearly for a rejected supplied key");
+    throw new Error("packed manual setup did not fail clearly for a rejected supplied key");
   }
   assertNoCredentialOutput(rejectedError.message);
   if (
@@ -322,11 +325,11 @@ try {
       snapshotAgentMailFiles(rejectedDir, rejectedConfig, rejectedAugment),
     )
   ) {
-    throw new Error("failed packed connect changed local credentials or configuration");
+    throw new Error("failed packed manual setup changed local credentials or configuration");
   }
 
   assertReadOnlyProviderState(provider.state);
-  console.log("packed AgentMail CLI connect-existing contract passed");
+  console.log("packed AgentMail CLI setup contract passed");
 } finally {
   await provider.close();
 }

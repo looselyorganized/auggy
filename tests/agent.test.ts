@@ -5,7 +5,7 @@ import { extractText } from "@/parts";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import { createMockTransport, createIdentityAugment } from "@tests/fixtures/mock-augment";
 import { emptyTrace } from "@/kernel/trace-emitter";
-import { deriveToolOperationId } from "@/kernel/execution-context";
+import { deriveToolOperationId, deriveTurnToolOperationId } from "@/kernel/execution-context";
 import type { Augment, TransportKernel } from "@/types";
 
 describe("defineAgent", () => {
@@ -459,6 +459,27 @@ describe("defineAgent", () => {
     expect(rebound).not.toBe(initial);
     expect(initial).not.toContain(base.bindingHash);
     expect(initial).not.toContain(base.idempotencyKeyHash);
+  });
+
+  it("derives stable bound operation identities for ordinary turns", () => {
+    const turn = {
+      turnId: "console-turn-1",
+      threadId: "console-thread-1",
+      triggerType: "message",
+      sourceAugment: "webTransport",
+      peerId: "creator",
+      peerTrustLevel: "creator",
+      peerSourceAugment: "webTransport",
+    };
+    const first = deriveTurnToolOperationId(turn, "send_message", 0);
+    expect(first).toMatch(/^auggy-op-v1-[a-f0-9]{64}$/);
+    expect(deriveTurnToolOperationId(turn, "send_message", 0)).toBe(first);
+    expect(deriveTurnToolOperationId(turn, "send_message", 1)).not.toBe(first);
+    expect(
+      deriveTurnToolOperationId({ ...turn, peerId: "another-creator" }, "send_message", 0),
+    ).not.toBe(first);
+    expect(first).not.toContain(turn.turnId);
+    expect(first).not.toContain(turn.peerId);
   });
 
   it("assigns distinct stable operation identities across inference rounds and execution retries", async () => {

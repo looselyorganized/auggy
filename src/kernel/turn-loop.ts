@@ -170,7 +170,11 @@ import { createContextAllocator } from "./context-allocator";
 import { createCapabilityTable } from "./capability-table";
 import { selectTools } from "./tool-selector";
 import { createTraceEmitter } from "./trace-emitter";
-import { deriveToolOperationId, executionContextForTrace } from "./execution-context";
+import {
+  deriveToolOperationId,
+  deriveTurnToolOperationId,
+  executionContextForTrace,
+} from "./execution-context";
 import { buildPreamble } from "./preamble";
 import { validateOutput } from "./output-validator";
 import { createHistoryManager, type HistoryManager } from "./history-manager";
@@ -1298,15 +1302,31 @@ export function createTurnLoop(opts: {
                       signal: deadlineSignal,
                       ...(trigger.auth !== undefined ? { auth: trigger.auth } : {}),
                       ...(executionTrace !== undefined ? { executionContext: executionTrace } : {}),
-                      ...(executionContext === undefined
-                        ? {}
-                        : {
-                            operationId: deriveToolOperationId(
-                              executionContext,
-                              entry.reg.tool.name,
-                              entry.operationOrdinal,
-                            ),
-                          }),
+                      operationId:
+                        deriveToolOperationId(
+                          executionContext,
+                          entry.reg.tool.name,
+                          entry.operationOrdinal,
+                        ) ??
+                        deriveTurnToolOperationId(
+                          {
+                            turnId: trigger.turnId,
+                            threadId,
+                            triggerType: trigger.type,
+                            ...(trigger.source === undefined
+                              ? {}
+                              : { sourceAugment: trigger.source }),
+                            ...(peer === null
+                              ? {}
+                              : {
+                                  peerId: peer.id,
+                                  peerTrustLevel: peer.trustLevel,
+                                  peerSourceAugment: peer.sourceAugment,
+                                }),
+                          },
+                          entry.reg.tool.name,
+                          entry.operationOrdinal,
+                        ),
                     }),
                   timeout,
                   signal,

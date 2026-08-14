@@ -103,7 +103,7 @@ function writeAgentMailRuntimeEnv(dir: string): void {
 }
 
 function agentMailSetupResult(dir: string, target: "agentMail" | "visitorAuth") {
-  const mode: "connect" | "env" = target === "agentMail" ? "connect" : "env";
+  const mode: "manual" | "env" = target === "agentMail" ? "manual" : "env";
   return {
     agentName: "test-agent",
     target,
@@ -698,9 +698,7 @@ describe("runAdd no-op cases", () => {
 
     const output = logs.join("\n");
     expect(output).toContain("Use AgentMail:");
-    expect(output).toContain(
-      "Connect an existing inbox: auggy augment setup agentMail --mode connect",
-    );
+    expect(output).toContain("Create or connect an inbox: auggy augment setup agentMail");
     expect(output).toContain(
       "Or set AGENTMAIL_API_KEY, AGENTMAIL_INBOX_ID, and AGENTMAIL_INBOX_EMAIL in .env",
     );
@@ -716,9 +714,7 @@ describe("runAdd no-op cases", () => {
     expect(output).toContain("AGENTMAIL_INBOX_ID=");
     expect(output).not.toContain("Apply changes:");
     expect(output).toContain("agentMail is installed, but its required credentials are unresolved");
-    expect(output).toContain(
-      "Connect an existing inbox: `auggy augment setup agentMail --mode connect`",
-    );
+    expect(output).toContain("Run guided setup: `auggy augment setup agentMail`");
     expect(output).toContain("Remove it: `auggy augment remove agentMail`");
   });
 
@@ -750,7 +746,7 @@ describe("runAdd no-op cases", () => {
       const output = logs.join("\n");
       expect(output).not.toContain("Apply changes:");
       expect(output).toContain("Before starting or restarting the agent, choose one:");
-      expect(output).toContain("auggy augment setup agentMail --mode connect");
+      expect(output).toContain("auggy augment setup agentMail");
       expect(output).toContain("auggy augment remove agentMail");
     } finally {
       console.log = originalLog;
@@ -916,7 +912,7 @@ describe("runAdd no-op cases", () => {
     const output = logs.join("\n");
     expect(output).toContain(
       "INFO visitorAuth will use local console delivery for magic links.\n" +
-        "     Connect an existing inbox later: `auggy augment setup visitorAuth --mode connect`.",
+        "     Set up AgentMail later: `auggy augment setup visitorAuth`.",
     );
     expect(output).toContain("Apply changes:");
   });
@@ -940,16 +936,14 @@ describe("runAdd no-op cases", () => {
         calls.push({ target, mode: setupOpts?.mode });
         return {
           ...agentMailSetupResult(dir, target as "agentMail" | "visitorAuth"),
-          mode: "connect",
+          mode: "manual",
         };
       },
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
-    expect(confirmations).toEqual([
-      "Connect an existing AgentMail inbox for visitorAuth magic links now?",
-    ]);
-    expect(calls).toEqual([{ target: "visitorAuth", mode: "connect" }]);
+    expect(confirmations).toEqual(["Set up AgentMail for visitorAuth magic links now?"]);
+    expect(calls).toEqual([{ target: "visitorAuth", mode: undefined }]);
   });
 
   test("does not suggest restart when visitorAuth declines mail but installed agentMail is unresolved", async () => {
@@ -1014,10 +1008,10 @@ describe("runAdd no-op cases", () => {
       }
 
       expect(confirmations).toEqual([
-        "Connect one existing AgentMail inbox to agentMail and visitorAuth now?",
+        "Set up one shared AgentMail inbox for agentMail and visitorAuth now?",
       ]);
       expect(calls).toEqual([
-        { target: "agentMail", mode: "connect" },
+        { target: "agentMail", mode: undefined },
         { target: "visitorAuth", mode: "env" },
       ]);
       expect(readFileSync(join(dir, ".env"), "utf-8")).toContain(
@@ -1085,7 +1079,7 @@ describe("runAdd no-op cases", () => {
       expect(readAgentAugments(dir)).toEqual(expect.arrayContaining(["agentMail", "visitorAuth"]));
       const output = errors.join("\n");
       expect(output).toContain("post-add setup was cancelled");
-      expect(output).toContain("auggy augment setup agentMail --mode connect");
+      expect(output).toContain("auggy augment setup agentMail");
       expect(output).toContain("auggy augment setup visitorAuth --mode env");
     } finally {
       console.error = originalError;
@@ -1137,7 +1131,7 @@ describe("runAdd no-op cases", () => {
     });
 
     expect(calls).toEqual([
-      { target: "agentMail", mode: "connect" },
+      { target: "agentMail", mode: undefined },
       { target: "visitorAuth", mode: "env" },
     ]);
   });
@@ -1167,11 +1161,11 @@ describe("runAdd no-op cases", () => {
     });
 
     expect(confirmations).toEqual([
-      "Connect an existing AgentMail inbox now?",
+      "Set up an AgentMail inbox now?",
       "Use this AgentMail inbox for visitorAuth magic links too?",
     ]);
     expect(calls).toEqual([
-      { target: "agentMail", mode: "connect" },
+      { target: "agentMail", mode: undefined },
       { target: "visitorAuth", mode: "env" },
     ]);
   });
@@ -1294,9 +1288,7 @@ describe("runAdd no-op cases", () => {
       expect(readAgentAugments(dir)).toEqual(expect.arrayContaining(["agentMail", "visitorAuth"]));
       expect(logs.join("\n")).not.toContain("Apply changes:");
       expect(errors.join("\n")).toContain("provider unavailable");
-      expect(errors.join("\n")).toContain(
-        "Retry when ready: auggy augment setup agentMail --mode connect",
-      );
+      expect(errors.join("\n")).toContain("Retry when ready: auggy augment setup agentMail");
       expect(errors.join("\n")).toContain("Do not restart the agent");
     } finally {
       console.log = originalLog;

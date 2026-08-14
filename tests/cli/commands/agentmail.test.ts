@@ -157,24 +157,133 @@ describe("agentMail connect setup", () => {
     }
   });
 
-  test("rejects removed agentMail provisioning and replacement modes before provider access", async () => {
-    const root = mkdtempSync(join(tmpdir(), "agentmail-removed-mode-"));
+  test("offers account creation, inbox creation, and manual connection", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-mode-menu-"));
     try {
       const paths = writeAgent(root);
-      const verifyRuntimeAccess = mock(async () => ({
-        emailAddress: "must-not-run@agentmail.to",
-        verifiedPermissions: ["inbox_read"],
+      let choiceNames: string[] = [];
+      const result = await runAgentMailSetup(
+        "agentMail",
+        { config: paths.configPath },
+        {
+          interactive: true,
+          promptSelect: (async (options: { choices: Array<{ name: string }> }) => {
+            choiceNames = options.choices.map((choice) => choice.name);
+            return "manual";
+          }) as never,
+          promptPassword: (async () => "am_manual") as never,
+          promptInput: (async () => "manual@agentmail.to") as never,
+          verifyRuntimeAccess: async () => ({
+            emailAddress: "manual@agentmail.to",
+            verifiedPermissions: ["inbox_read"],
+          }),
+        },
+      );
+      expect(choiceNames).toEqual([
+        "Create an AgentMail account",
+        "Create a new inbox in an existing AgentMail account",
+        "Manually connect an existing AgentMail inbox",
+      ]);
+      expect(result.mode).toBe("manual");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("creates and verifies a first AgentMail account without minting another key", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-signup-"));
+    try {
+      const paths = writeAgent(root);
+      const signUp = mock(async () => ({
+        organizationId: "org_1",
+        inboxId: "new@agentmail.to",
+        apiKey: "am_signup_returned",
       }));
-      for (const mode of ["signup", "existing", "manual"]) {
-        await expect(
-          runAgentMailSetup(
-            "agentMail",
-            { config: paths.configPath, mode },
-            { interactive: false, verifyRuntimeAccess },
-          ),
-        ).rejects.toThrow(/does not create accounts, inboxes, or API keys/);
-      }
-      expect(verifyRuntimeAccess).not.toHaveBeenCalled();
+      const verify = mock(async (apiKey: string, otpCode: string) => {
+        expect(apiKey).toBe("am_signup_returned");
+        expect(otpCode).toBe("123456");
+        return { verified: true };
+      });
+      const result = await runAgentMailSetup(
+        "agentMail",
+        {
+          config: paths.configPath,
+          mode: "signup",
+          humanEmail: "owner@example.com",
+          username: "new-agent",
+          yes: true,
+        },
+        {
+          interactive: true,
+          promptInput: (async () => "123456") as never,
+          setupProvider: {
+            signUp,
+            verify,
+            createInbox: async () => {
+              throw new Error("must not create another inbox");
+            },
+          },
+          verifyRuntimeAccess: async (input) => {
+            expect(input.apiKey).toBe("am_signup_returned");
+            return {
+              emailAddress: "new@agentmail.to",
+              verifiedPermissions: ["inbox_read"],
+            };
+          },
+        },
+      );
+      expect(signUp).toHaveBeenCalledTimes(1);
+      expect(verify).toHaveBeenCalledTimes(1);
+      expect(result.mode).toBe("signup");
+      expect(readFileSync(paths.envPath, "utf8")).toContain("AGENTMAIL_API_KEY=am_signup_returned");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test("creates an inbox with and retains the exact existing-account key", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-existing-"));
+    try {
+      const paths = writeAgent(root);
+      const createInbox = mock(async (input) => {
+        expect(input.apiKey).toBe("am_account_key");
+        expect(input.username).toBe("store-agent");
+        expect(input.clientId).toMatch(/^auggy\.v2\.inbox\.aug1_[A-Za-z0-9-]+\.agentMail$/);
+        return { inboxId: "store-agent@agentmail.to", email: "store-agent@agentmail.to" };
+      });
+      const result = await runAgentMailSetup(
+        "agentMail",
+        {
+          config: paths.configPath,
+          mode: "existing",
+          apiKey: "am_account_key",
+          username: "store-agent",
+          displayName: "Store Agent",
+          yes: true,
+        },
+        {
+          interactive: false,
+          setupProvider: {
+            signUp: async () => {
+              throw new Error("must not sign up");
+            },
+            verify: async () => {
+              throw new Error("must not verify signup");
+            },
+            createInbox,
+          },
+          verifyRuntimeAccess: async (input) => {
+            expect(input.apiKey).toBe("am_account_key");
+            return {
+              emailAddress: "store-agent@agentmail.to",
+              verifiedPermissions: ["inbox_read"],
+            };
+          },
+        },
+      );
+      expect(createInbox).toHaveBeenCalledTimes(1);
+      expect(result.mode).toBe("existing");
+      expect(readFileSync(paths.envPath, "utf8")).toContain("AGENTMAIL_API_KEY=am_account_key");
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
