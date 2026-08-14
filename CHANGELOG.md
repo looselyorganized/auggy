@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0-rc.12] - 2026-08-13
+
+This twelfth and intended final public candidate completes the guided
+AgentMail setup and creator-delivery paths, fixes provider-schema compatibility,
+and removes Telegram polling head-of-line blocking before stable `0.5.0`.
+
 ### Changed
 
 - **AgentMail setup choices restored.** Interactive setup can create the first
@@ -33,6 +39,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   scheduler instead of waiting for the complete model/tool turn. Same-chat
   ordering, replay quarantine, capacity rejections, and shutdown cancellation
   remain enforced.
+
+### Documentation
+
+- **Cross-channel context and Activity Index plans.** The Telegram/AgentMail
+  incident, channel-history boundary, authorized retrieval design, and a
+  hardened typed Activity Index architecture are recorded as post-`0.5.0`
+  follow-up work. Neither merged transcripts nor activity-derived
+  authorization is introduced in this candidate.
 
 ## [0.5.0-rc.11] - 2026-08-13
 
@@ -813,7 +827,8 @@ Initial tagged release. The kernel and built-in augments described in `docs/02-a
 - **CLI** — `aug1 create / add / dev / start / stop / restart / status` with launchd installation on macOS and PID-manifest tracking under `~/.auggy/`.
 - **Reference documentation** — `docs/01-philosophy.md` through `docs/11-skills.md`.
 
-[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.11...HEAD
+[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.12...HEAD
+[0.5.0-rc.12]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.11...v0.5.0-rc.12
 [0.5.0-rc.11]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.10...v0.5.0-rc.11
 [0.5.0-rc.10]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.9...v0.5.0-rc.10
 [0.5.0-rc.9]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.8...v0.5.0-rc.9
