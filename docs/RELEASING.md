@@ -32,13 +32,13 @@ git push origin vX.Y.Z
 ## Current release state
 
 As of 2026-08-13, npm's stable `latest` version for all six packages is `0.4.4`
-and `next` is `0.5.0-rc.10` for all six. The `v0.5.0-rc.1` through
-`v0.5.0-rc.10` tags are published, immutable release candidates. The RC.10
+and `next` is `0.5.0-rc.11` for all six. The `v0.5.0-rc.1` through
+`v0.5.0-rc.11` tags are published, immutable release candidates. The RC.11
 GitHub prerelease contains all six verified package tarballs and `SHA256SUMS`.
-`0.5.0-rc.11` is the pending release-PR candidate; it is not published and must
-not be described as available from `next` until its exact merged commit has
-passed the AgentMail provider and live mutation canaries, been tagged, and
-completed the publish workflow.
+`0.5.0-rc.12` is the intended final release-candidate target; it is not
+published and must not be described as available from `next` until its exact
+merged commit has passed the AgentMail provider and live mutation canaries,
+been tagged, and completed the publish workflow.
 Registry metadata and the corresponding Git tag—not a working-tree version—
 remain the authority for release state.
 
@@ -47,7 +47,7 @@ The next release follows the
 On 2026-07-28, the repository became public after the full-history secret and
 artifact audit passed. The protected GitHub Environments, environment-only
 evaluation secret, six npm trusted-publisher connections, and package-level
-token restrictions are configured. All six `0.5.0-rc.10` packages expose npm's
+token restrictions are configured. All six `0.5.0-rc.11` packages expose npm's
 SLSA provenance attestation. Final `0.5.0` remains a separate release PR and
 requires fresh verification and attestations for its exact six artifacts; prior
 candidates are not evidence for stable. It must publish under `latest` only
@@ -351,9 +351,9 @@ the workflow will not assemble a release from mixed package bytes.
 
 The source repository is public and the release workflow is configured for npm
 trusted publishing. npm's generated SLSA provenance attestation is present for
-all six `0.5.0-rc.9` packages, so the RC.9 provenance gate is complete. RC.10,
-stable `0.5.0`, and every later candidate each require fresh attestation checks
-on their own exact package artifacts.
+all six `0.5.0-rc.11` packages, so the RC.11 provenance gate is complete.
+RC.12, stable `0.5.0`, and every later release each require fresh attestation
+checks on their own exact package artifacts.
 
 The publish workflow separates uncredentialed verification from publication.
 Repository and dependency code runs in `verify`, which has neither
@@ -405,9 +405,15 @@ The `0.5.0-rc.9` publication repeated that verification after the protected
 AgentMail provider canary passed on the exact merged commit, published six
 checksum-verified tarballs plus `SHA256SUMS`, and produced fresh attestations
 for all six packages.
+The `0.5.0-rc.10` publication repeated the exact-candidate verification and
+published six checksum-verified tarballs plus `SHA256SUMS` with fresh
+attestations for all six packages. The `0.5.0-rc.11` publication additionally
+required the protected AgentMail provider and live mutation canaries on the
+exact merged commit, then published the same complete verified artifact set
+with fresh attestations for all six packages.
 Confirm the obsolete npm account token remains revoked and recheck
 configuration before every tag; configuration drift makes publication fail
-closed. RC.10, stable `0.5.0`, and every later candidate require fresh
+closed. RC.12, stable `0.5.0`, and every later release require fresh
 attestations for their exact six artifacts; prior prerelease candidates are not
 evidence for future versions.
 

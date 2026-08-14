@@ -7,15 +7,16 @@ the compact feature/status matrix.
 ## Release Framing
 
 - **Latest stable release:** `0.4.4`.
-- **Public-preview candidate:** `0.5.0-rc.11`, distributed through npm's `next`
+- **Final public-preview candidate:** `0.5.0-rc.12`, distributed through npm's `next`
   tag. It includes the
   app-backend foundation, durable AgentMail inbound/review, the security-audit
   remediation, keyed turn scheduling, Telegram conflict recovery, CI
   test-surface enforcement, and a fail-closed distributed-coordination
   foundation.
-- **Immediate release plan:** validate the published `0.5.0-rc.11` public OSS
-  path, harden any remaining candidate issues, then publish final `0.5.0`. See the
-  [OSS Production Release Plan](./plans/production-readiness-roadmap-2026-07-24.md).
+- **Immediate release plan:** validate the published `0.5.0-rc.12` public OSS
+  path as the final candidate, harden only release-blocking regressions, then
+  publish stable `0.5.0`. See the [OSS Production Release
+  Plan](./plans/production-readiness-roadmap-2026-07-24.md).
 - **Pre-1.0 cadence:** do not jump straight from `0.5.x` to `1.0.0`. Ship useful
   `0.x` releases as the app-backend surface hardens.
 - **`1.0.0`:** the OSS GA line. It should mean the docs, examples, release
@@ -33,7 +34,7 @@ completed plans are removed once their durable decisions reach reference docs.
 
 ## 0.5.0 Candidate — OSS Production Preview
 
-Status: **public release candidate (`0.5.0-rc.11`)**.
+Status: **final public release candidate (`0.5.0-rc.12`)**.
 
 The candidate includes:
 
@@ -69,11 +70,12 @@ The candidate includes:
 
 ### Immediate reliability work after RC testing
 
-- **Telegram polling latency:** decouple safe update intake from complete model
-  turn execution while retaining durable replay claims, conflict quarantine,
-  bounded scheduling, same-thread ordering, and shutdown cancellation. The
-  incident, acceptance criteria, and implementation boundary are captured in
-  [Telegram latency and cross-channel context](./plans/telegram-latency-and-cross-channel-context-2026-08-13.md).
+- **Telegram polling latency — completed for RC.12:** safe update intake is
+  decoupled from complete model-turn execution while durable replay claims,
+  conflict quarantine, bounded scheduling, same-thread ordering, and shutdown
+  cancellation remain enforced. The incident and verified boundary are
+  captured in [Telegram latency and cross-channel
+  context](./plans/telegram-latency-and-cross-channel-context-2026-08-13.md).
 - **Cross-channel operational references:** let the same currently verified
   creator resolve bounded recent AgentMail activity from Console or Telegram
   without merging channel transcripts or treating Layered Memory as operation
@@ -84,6 +86,9 @@ The candidate includes:
   must remain separate from provider/domain truth, audit telemetry, Layered
   Memory, and executable behavior policy. See the adversarially reviewed
   [Activity Index architecture](./plans/activity-index-architecture-2026-08-13.md).
+
+The cross-channel retrieval and Activity Index items are post-`0.5.0`
+architecture work, not hidden requirements for the supported RC.12 behavior.
 
 ---
 
