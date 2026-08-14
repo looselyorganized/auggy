@@ -24,6 +24,12 @@ export interface PollLoopSnapshot {
 export interface PollLoopOptions {
   client: TelegramBotClient;
   timeoutSec?: number;
+  /**
+   * Admit one validated update. The returned promise defines the checkpoint
+   * boundary: the loop advances its offset only after this resolves. Callers
+   * may submit longer work to their own bounded scheduler without awaiting
+   * that work here.
+   */
   onUpdate: (update: TelegramUpdate) => void | Promise<void>;
   initialConflict?: PollLoopConflict;
   waitForReplayRecovery?: (conflict: PollLoopConflict, signal: AbortSignal) => Promise<void>;

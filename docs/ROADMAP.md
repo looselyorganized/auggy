@@ -7,13 +7,13 @@ the compact feature/status matrix.
 ## Release Framing
 
 - **Latest stable release:** `0.4.4`.
-- **Public-preview candidate:** `0.5.0-rc.9`, distributed through npm's `next`
+- **Public-preview candidate:** `0.5.0-rc.11`, distributed through npm's `next`
   tag. It includes the
   app-backend foundation, durable AgentMail inbound/review, the security-audit
   remediation, keyed turn scheduling, Telegram conflict recovery, CI
   test-surface enforcement, and a fail-closed distributed-coordination
   foundation.
-- **Immediate release plan:** validate the published `0.5.0-rc.9` public OSS
+- **Immediate release plan:** validate the published `0.5.0-rc.11` public OSS
   path, harden any remaining candidate issues, then publish final `0.5.0`. See the
   [OSS Production Release Plan](./plans/production-readiness-roadmap-2026-07-24.md).
 - **Pre-1.0 cadence:** do not jump straight from `0.5.x` to `1.0.0`. Ship useful
@@ -33,7 +33,7 @@ completed plans are removed once their durable decisions reach reference docs.
 
 ## 0.5.0 Candidate — OSS Production Preview
 
-Status: **public release candidate (`0.5.0-rc.9`)**.
+Status: **public release candidate (`0.5.0-rc.11`)**.
 
 The candidate includes:
 
@@ -66,6 +66,24 @@ The candidate includes:
   conflict recovery, and complete tracked-test inventory enforcement.
 - A fail-closed PostgreSQL coordination foundation that remains disabled until
   the complete replica contract exists.
+
+### Immediate reliability work after RC testing
+
+- **Telegram polling latency:** decouple safe update intake from complete model
+  turn execution while retaining durable replay claims, conflict quarantine,
+  bounded scheduling, same-thread ordering, and shutdown cancellation. The
+  incident, acceptance criteria, and implementation boundary are captured in
+  [Telegram latency and cross-channel context](./plans/telegram-latency-and-cross-channel-context-2026-08-13.md).
+- **Cross-channel operational references:** let the same currently verified
+  creator resolve bounded recent AgentMail activity from Console or Telegram
+  without merging channel transcripts or treating Layered Memory as operation
+  truth. This remains the next implementation slice after the transport fix;
+  see the same [incident and context plan](./plans/telegram-latency-and-cross-channel-context-2026-08-13.md).
+- **Auggy Activity Index:** build a minimized, typed, authorized projection of
+  meaningful augment activity backed by transactional producer outboxes. It
+  must remain separate from provider/domain truth, audit telemetry, Layered
+  Memory, and executable behavior policy. See the adversarially reviewed
+  [Activity Index architecture](./plans/activity-index-architecture-2026-08-13.md).
 
 ---
 

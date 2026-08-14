@@ -261,6 +261,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
   let replayStore: ActiveReplayStore | null = opts.replay?.store ?? null;
   let ownsReplayStore = false;
   let lifecycleController = new AbortController();
+  const pendingTurns = new Set<Promise<void>>();
 
   /**
    * Per-thread chat_id map. Populated when an inbound update arrives, read
@@ -552,7 +553,12 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
         pollHandle = runPollLoop({
           client,
           timeoutSec: opts.inbound.polling?.timeoutSec ?? 30,
-          onUpdate: (u) => handleUpdate(u),
+          // Polling owns intake, not turn completion. handleUpdate still waits
+          // for canonical validation and the durable replay claim before it
+          // returns, but the admitted kernel turn runs under the bounded keyed
+          // scheduler while getUpdates immediately resumes. This prevents one
+          // slow model/tool turn from blocking every later Telegram update.
+          onUpdate: (u) => handleUpdate(u, "after-admission"),
           initialConflict: durableConflict
             ? {
                 ...durableConflict,
@@ -605,7 +611,10 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
    * Mirrors web-transport's handleAgentRun shape: build InboundMessage,
    * wrap in TurnTrigger, call kernel.handleInbound.
    */
-  async function handleUpdate(update: TelegramUpdate): Promise<void> {
+  async function handleUpdate(
+    update: TelegramUpdate,
+    completion: "await-turn" | "after-admission" = "await-turn",
+  ): Promise<void> {
     const currentKernel = kernel;
     const currentRegisteredName = registeredName;
     const lifecycleSignal = lifecycleController.signal;
@@ -644,12 +653,43 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     if (kernel !== currentKernel || registeredName !== currentRegisteredName) {
       throw new DOMException("Telegram transport lifecycle changed.", "AbortError");
     }
-    if (!update.message?.text || !update.message.from) return;
+    const message = update.message;
+    if (!message?.text || !message.from) return;
 
-    const userId = update.message.from.id;
-    const chatId = update.message.chat.id;
-    const chatType = update.message.chat.type;
-    const displayName = update.message.from.first_name ?? update.message.from.username ?? undefined;
+    const turn = processClaimedTextUpdate({
+      message: {
+        ...message,
+        text: message.text,
+        from: message.from,
+      },
+      updateNamespace,
+      kernel: currentKernel,
+      registeredName: currentRegisteredName,
+      lifecycleSignal,
+    });
+    pendingTurns.add(turn);
+    void turn.then(
+      () => pendingTurns.delete(turn),
+      () => pendingTurns.delete(turn),
+    );
+    if (completion === "await-turn") await turn;
+  }
+
+  function processClaimedTextUpdate(args: {
+    message: NonNullable<TelegramUpdate["message"]> & {
+      text: string;
+      from: NonNullable<NonNullable<TelegramUpdate["message"]>["from"]>;
+    };
+    updateNamespace: string;
+    kernel: TransportKernel;
+    registeredName: string;
+    lifecycleSignal: AbortSignal;
+  }): Promise<void> {
+    const { message, updateNamespace, kernel, registeredName, lifecycleSignal } = args;
+    const userId = message.from.id;
+    const chatId = message.chat.id;
+    const chatType = message.chat.type;
+    const displayName = message.from.first_name ?? message.from.username ?? undefined;
     // Telegram private-chat IDs are stable across bots. Scope the thread to
     // the bot identity so two bots cannot enter each other's kernel history.
     const botIdentityScope = botId
@@ -660,7 +700,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
       { userId, threadId, chatType, displayName },
       auth,
       opts.creator,
-      currentRegisteredName,
+      registeredName,
     );
 
     // Retain chat routing only while a turn is active. A reference count
@@ -672,10 +712,10 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
       activeTurns: (activeRoute?.activeTurns ?? 0) + 1,
     });
 
-    const parts: Part[] = [{ kind: "text", text: update.message.text }];
+    const parts: Part[] = [{ kind: "text", text: message.text }];
     const inbound: InboundMessage = {
       parts,
-      sourceAugment: currentRegisteredName,
+      sourceAugment: registeredName,
       peer,
       timestamp: Date.now(),
       contextId: threadId,
@@ -686,7 +726,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
       threadId,
       contextId: threadId,
       timestamp: Date.now(),
-      source: currentRegisteredName,
+      source: registeredName,
       peer,
       payload: inbound,
     };
@@ -697,28 +737,44 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
     // later, this is where text_message_delta would be intercepted.
     const onEvent = (_e: KernelEvent): void => {};
 
+    // The production kernel submits to its bounded scheduler synchronously
+    // before returning this promise. Keep that invocation outside the async
+    // completion handler so a synchronous pre-admission failure propagates to
+    // the polling checkpoint instead of advancing the offset.
+    const releaseRoute = (): void => {
+      const route = threadChatIds.get(threadId);
+      if (!route) return;
+      if (route.activeTurns <= 1) threadChatIds.delete(threadId);
+      else threadChatIds.set(threadId, { ...route, activeTurns: route.activeTurns - 1 });
+    };
+    let scheduledTurn: Promise<TurnResult>;
     try {
-      const result = await currentKernel.handleInbound(trigger, {
+      scheduledTurn = kernel.handleInbound(trigger, {
         onEvent,
         signal: lifecycleSignal,
       });
-      if (!result.success) {
-        console.warn(
-          `[telegram-transport] turn failed for threadId=${threadId}: status=${result.status}` +
-            `${result.error?.source ? ` source=${result.error.source}` : ""}`,
-        );
-        await sendFailureReply(chatId, failureReplyForResult(result), lifecycleSignal);
-      }
-    } catch {
-      console.warn(`[telegram-transport] kernel.handleInbound failed for threadId=${threadId}`);
-      await sendFailureReply(chatId, genericFailureReply, lifecycleSignal);
-    } finally {
-      const route = threadChatIds.get(threadId);
-      if (route) {
-        if (route.activeTurns <= 1) threadChatIds.delete(threadId);
-        else threadChatIds.set(threadId, { ...route, activeTurns: route.activeTurns - 1 });
-      }
+    } catch (error) {
+      releaseRoute();
+      throw error;
     }
+
+    return (async () => {
+      try {
+        const result = await scheduledTurn;
+        if (!result.success) {
+          console.warn(
+            `[telegram-transport] turn failed for threadId=${threadId}: status=${result.status}` +
+              `${result.error?.source ? ` source=${result.error.source}` : ""}`,
+          );
+          await sendFailureReply(chatId, failureReplyForResult(result), lifecycleSignal);
+        }
+      } catch {
+        console.warn(`[telegram-transport] kernel.handleInbound failed for threadId=${threadId}`);
+        await sendFailureReply(chatId, genericFailureReply, lifecycleSignal);
+      } finally {
+        releaseRoute();
+      }
+    })();
   }
 
   function failureReplyForResult(result: TurnResult): string {
@@ -931,7 +987,7 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
       };
     },
 
-    async onShutdown(): Promise<void> {
+    async onShutdown(shutdownSignal?: AbortSignal): Promise<void> {
       lifecycleController.abort(
         new DOMException("Telegram transport is shutting down.", "AbortError"),
       );
@@ -951,6 +1007,23 @@ export function telegramTransport(opts: TelegramTransportOptions): Augment {
           );
         }
       }
+      const turns = Promise.allSettled([...pendingTurns]);
+      if (shutdownSignal) {
+        let resolveAbort!: () => void;
+        const aborted = new Promise<void>((resolve) => {
+          resolveAbort = resolve;
+        });
+        if (shutdownSignal.aborted) resolveAbort();
+        else shutdownSignal.addEventListener("abort", resolveAbort, { once: true });
+        try {
+          await Promise.race([turns, aborted]);
+        } finally {
+          shutdownSignal.removeEventListener("abort", resolveAbort);
+        }
+      } else {
+        await turns;
+      }
+      pendingTurns.clear();
       kernel = null;
       registeredName = null;
       threadChatIds.clear();
