@@ -21,22 +21,20 @@ Underneath, a small Bun/TypeScript runtime runs agent turns. Augments also add
 memory, transports, context, skills, lifecycle behavior, and operator controls
 without making the model the application or security boundary.
 
-Auggy 0.5 is in public preview. The release candidate is distributed through
-npm's `next` tag; pin its exact version for production-like evaluation until
-`1.0.0`.
+Auggy 0.5 is the current stable release and remains public preview software
+until `1.0.0`. Pin exact versions for production-like evaluation.
 
 ## Quick Start
 
 ```bash
-bun add --global auggy@0.5.0-rc.9
+bun add --global auggy@0.5.0
 auggy create my-agent
 cd my-agent
 auggy doctor
 auggy run
 ```
 
-The command above installs the published RC.9 package. This source branch may
-contain unreleased changes.
+The command above installs the published 0.5 release.
 
 `auggy create` walks through the model provider, model, and agent identity,
 adds the core augments, then installs the agent's local dependencies. Choose Anthropic, OpenAI,

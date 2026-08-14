@@ -6,17 +6,16 @@ the compact feature/status matrix.
 
 ## Release Framing
 
-- **Latest stable release:** `0.4.4`.
-- **Final public-preview candidate:** `0.5.0-rc.12`, distributed through npm's `next`
-  tag. It includes the
+- **Latest stable release:** `0.5.0`, distributed through npm's `latest` tag.
+  It includes the
   app-backend foundation, durable AgentMail inbound/review, the security-audit
   remediation, keyed turn scheduling, Telegram conflict recovery, CI
   test-surface enforcement, and a fail-closed distributed-coordination
   foundation.
-- **Immediate release plan:** validate the published `0.5.0-rc.12` public OSS
-  path as the final candidate, harden only release-blocking regressions, then
-  publish stable `0.5.0`. See the [OSS Production Release
-  Plan](./plans/production-readiness-roadmap-2026-07-24.md).
+- **Immediate release plan:** operate the published `0.5.0` public OSS path,
+  prioritize release-blocking regressions and adopter evidence, and ship
+  focused `0.5.x` fixes without expanding the supported topology. See the
+  [OSS Production Release Plan](./plans/production-readiness-roadmap-2026-07-24.md).
 - **Pre-1.0 cadence:** do not jump straight from `0.5.x` to `1.0.0`. Ship useful
   `0.x` releases as the app-backend surface hardens.
 - **`1.0.0`:** the OSS GA line. It should mean the docs, examples, release
@@ -32,11 +31,11 @@ completed plans are removed once their durable decisions reach reference docs.
 
 ---
 
-## 0.5.0 Candidate — OSS Production Preview
+## 0.5.0 — OSS Production Preview
 
-Status: **final public release candidate (`0.5.0-rc.12`)**.
+Status: **stable public-preview release**.
 
-The candidate includes:
+The release includes:
 
 - Deterministic augment HTTP routes beside `/agent/run`.
 - Route groups, exact paths, full-segment path params, query/body parsing,

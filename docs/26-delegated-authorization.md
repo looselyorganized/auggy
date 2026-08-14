@@ -617,7 +617,7 @@ authority can never be composed into one turn.
 ## Team and Internal Users
 
 Auggy does not include a separate `team`, `internal`, or `trusted` trust level
-in the unpublished `0.5.0` candidate. The runtime trust levels remain
+in the stable `0.5.0` release. The runtime trust levels remain
 `creator`, `agent`, and `public`.
 
 For product-facing teammates, employees, customers, or staff members, use the

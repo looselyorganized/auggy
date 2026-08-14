@@ -1,6 +1,6 @@
 {
   "name": "@auggy/openai",
-  "version": "0.5.0-rc.12",
+  "version": "0.5.0",
   "description": "OpenAI engine adapter for Auggy, powered by the official openai SDK.",
   "keywords": [
     "auggy",
@@ -36,7 +36,7 @@
   },
   "private": false,
   "peerDependencies": {
-    "auggy": "^0.5.0-rc.12"
+    "auggy": "^0.5.0"
   },
   "peerDependenciesMeta": {
     "auggy": {

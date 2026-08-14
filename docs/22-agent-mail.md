@@ -38,7 +38,7 @@ Auggy never exchanges your selected key for a second, narrower runtime key and
 never rotates or revokes it. If the values already exist, verify them with
 `auggy augment setup agentMail --mode env`. Manual connection is also available
 as `--mode manual`; the older `--mode connect` spelling remains an alias during
-the release-candidate line. Setup performs read-only runtime checks; a missing
+the `0.5.x` line. Setup performs read-only runtime checks; a missing
 write permission is reported when the corresponding action is first used.
 
 The generated baseline needs `inbox_read`, `message_read`, `draft_read`,
