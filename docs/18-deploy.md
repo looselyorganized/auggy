@@ -343,13 +343,19 @@ serve caller-selected thread history. Before rollback, stop keyed and public
 traffic and drain outstanding retries; rollback otherwise deliberately reopens
 H-01/H-02.
 
-The operator console also requires explicit proxy trust. Railway environment
-markers do not make forwarding headers authoritative. Configure the actual
-ingress IPs or CIDRs as `webTransport.config.trustedProxies` and the public
-console origin as `webTransport.config.consoleSecurity.allowedOrigins`. If the
-deployment cannot provide a stable, reviewable ingress range, leave the console
-disabled (`adminRoute: false`) and use a local or SSH-tunneled console instead
-of trusting a broad private network.
+The operator console requires proxy trust for the forwarding headers Railway's
+edge adds. On a standard `auggy deploy` this is configured for you: the
+generated entrypoint starts the runtime in Railway mode, which defaults
+`webTransport.config.trustedProxies` to Railway's internal ingress network
+(`100.64.0.0/10` — the address the container sees as its TCP peer) and logs
+one line at boot saying so, and `AUGGY_PUBLIC_URL` (set by `auggy deploy`)
+contributes the console origin. Railway's edge overwrites client-supplied
+`X-Forwarded-For`, `X-Real-IP`, `X-Forwarded-Host`, and `X-Forwarded-Proto`,
+so those headers are authoritative from that network. Railway environment
+markers alone never grant trust; only the deploy entrypoint's explicit Railway
+mode does. To narrow or override the default, set
+`webTransport.config.trustedProxies` explicitly; to disable the console in the
+cloud entirely, set `adminRoute: false` and use a local or SSH-tunneled console.
 
 ---
 
