@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Operator Console on Railway.** A fresh `auggy deploy` served
+  `400 CONSOLE_REQUEST_REJECTED` for every `/console` request because the
+  console request boundary rejected Railway's forwarded header set outright
+  (`X-Forwarded-Host` present; `X-Forwarded-For` and `X-Real-IP` together) and
+  nothing configured `trustedProxies` for Railway's ingress. The boundary now
+  accepts a trusted proxy's `X-Forwarded-Host` when it matches the request
+  `Host`, ignores `X-Forwarded-Port`, and accepts `X-Real-IP` alongside
+  `X-Forwarded-For` when it names one of the forwarded hops (preferring it as
+  the client address). The deploy-generated Railway entrypoint now defaults
+  `trustedProxies` to Railway's internal ingress network `100.64.0.0/10` — the
+  container's actual TCP peer — when unset, logging one line at boot; explicit
+  `trustedProxies` always wins and environment markers alone still grant no
+  trust. Verified against headers and peer addresses captured from a live
+  Railway deployment.
+
 ## [0.5.0-rc.12] - 2026-08-13
 
 This twelfth and intended final public candidate completes the guided
