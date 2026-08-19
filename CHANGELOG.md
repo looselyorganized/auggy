@@ -7,8 +7,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-18
+
+Auggy 0.5 is the first stable public-preview release of the TypeScript augment
+runtime. It promotes the twelve public release candidates after exact-package,
+provider, security, and operator verification.
+
+### Added
+
+- **Agent-ready application capabilities.** TypeScript augments can keep
+  identity, explicit authorization, schemas, tools, deterministic routes, and
+  domain adapters behind one owned boundary. Route manifests, OpenAPI-shaped
+  export, generated clients, webhook verification, and delegated application
+  authorization ship with the runtime.
+- **Operational agent surfaces.** The creator Console, CLI diagnostics,
+  Railway deployment, runtime-state backup and recovery, bounded scheduling,
+  provider resilience, and optional durable single-turn jobs provide a
+  coherent single-replica operating path.
+- **Composable integrations.** Stable built-ins cover memory, knowledge,
+  visitor recognition, notifications, MCP, and Telegram. AgentMail adds
+  WebSocket inbound wake-up, offline catch-up, bounded mailbox operations, and
+  provider-native drafts, replies, and forwards behind creator review and
+  deterministic policy.
+
+### Changed
+
+- **Stable npm channel.** All six public packages now version together at
+  `0.5.0`, use stable internal ranges, and publish through npm's `latest`
+  dist-tag. Pre-`1.0` compatibility remains governed by the documented public
+  preview boundaries.
+- **Explicit topology.** The supported production shape remains one process
+  and replica per logical agent with SQLite state. PostgreSQL coordination is
+  an internal, disabled, fail-closed foundation rather than a supported
+  horizontal-runtime claim.
+
 ### Fixed
 
+- **Audited build dependency.** The locked Nano ID transitive override is
+  updated to the patched `3.3.18` release before the stable package build.
 - **Operator Console on Railway.** A fresh `auggy deploy` served
   `400 CONSOLE_REQUEST_REJECTED` for every `/console` request because the
   console request boundary rejected Railway's forwarded header set outright
@@ -23,6 +59,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `trustedProxies` always wins and environment markers alone still grant no
   trust. Verified against headers and peer addresses captured from a live
   Railway deployment.
+
+### Architecture
+
+- **Deterministic ownership and recovery.** Authorization remains a runtime
+  decision; provider credentials, skills, MCP, memory, and model output cannot
+  grant authority. Durable operations use bounded identity, idempotency,
+  settlement, replay, and explicit unknown-outcome handling.
+
+### Process
+
+- **Reproducible publication.** Release PR rehearsal, complete tests, isolated
+  tarball installation, exact-integrity retry checks, npm trusted publishing,
+  GitHub release checksums, and package provenance gate every release.
 
 ## [0.5.0-rc.12] - 2026-08-13
 
@@ -95,7 +144,9 @@ keeps creator-reviewed drafts in AgentMail.
   policy-bearing mail mutations stay behind the augment's tools.
 - **Existing-inbox setup.** CLI setup connects the operator's existing
   AgentMail inbox and exact runtime key without creating, narrowing, rotating,
-  or revoking provider credentials.
+  or revoking provider credentials. The rc.10 `--replace-key` flag is removed;
+  use `auggy augment setup agentMail --mode manual` to connect a different
+  key.
 
 ### Fixed
 
@@ -844,7 +895,8 @@ Initial tagged release. The kernel and built-in augments described in `docs/02-a
 - **CLI** — `aug1 create / add / dev / start / stop / restart / status` with launchd installation on macOS and PID-manifest tracking under `~/.auggy/`.
 - **Reference documentation** — `docs/01-philosophy.md` through `docs/11-skills.md`.
 
-[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.12...HEAD
+[Unreleased]: https://github.com/looselyorganized/auggy/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/looselyorganized/auggy/compare/v0.4.4...v0.5.0
 [0.5.0-rc.12]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.11...v0.5.0-rc.12
 [0.5.0-rc.11]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.10...v0.5.0-rc.11
 [0.5.0-rc.10]: https://github.com/looselyorganized/auggy/compare/v0.5.0-rc.9...v0.5.0-rc.10

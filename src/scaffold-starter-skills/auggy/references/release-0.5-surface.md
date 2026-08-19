@@ -1,4 +1,4 @@
-# Auggy 0.5 Preview Surface
+# Auggy 0.5 Surface
 
 0.5 is a public preview of Auggy's small TypeScript agent runtime. It is useful
 now, but not a `1.0` stability promise.
@@ -13,9 +13,10 @@ now, but not a `1.0` stability promise.
 - identity, learned behavior, skills, and scoped filesystem access,
 - knowledge, web fetch, layered memory, and visitor recognition,
 - notify, MCP, and Telegram,
+- runtime-state backup and recovery plus optional durable single-turn jobs,
 - Railway deployment.
 
-## Advanced Preview
+## Application Integrations
 
 - augment-owned GET/POST routes,
 - route manifests and OpenAPI-shaped output,
@@ -24,7 +25,7 @@ now, but not a `1.0` stability promise.
 - Stripe webhook signature policy.
 - provider-native AgentMail drafts, WebSocket wake-up, paginated offline
   message catch-up, exact-key existing-inbox connection, and explicit creator
-  review; confirm the installed release candidate contains this surface.
+  review.
 
 These capabilities are optional and do not make Auggy a general app backend.
 
@@ -37,14 +38,14 @@ These capabilities are optional and do not make Auggy a general app backend.
 
 ## Not In This Release
 
-- durable workflow execution,
-- a persistent job queue,
+- checkpointed or multi-step workflow execution,
+- a general persistent job queue,
 - first-class artifact/image handling,
 - a stable `1.0` public API.
 
 ## Launch Posture
 
-- npm package is public preview software.
+- `0.5.0` is the stable npm release and remains public preview software.
 - Source is public at `looselyorganized/auggy`.
 - License is Apache-2.0.
 - Public docs and support live on `auggy.dev`.

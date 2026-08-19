@@ -16,8 +16,7 @@ In that model, augments are not just tool bundles. They are app capability modul
 
 ## Current implementation status
 
-The core app-backend foundation is implemented in the unpublished `0.5.0`
-candidate:
+The core app-backend foundation is implemented in the stable `0.5.0` release:
 
 - Deterministic augment routes beside `/agent/run`.
 - Route groups, path params, query/body schemas, response schemas, route

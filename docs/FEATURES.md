@@ -6,7 +6,6 @@ It is a status index, not a roadmap.
 Status values:
 
 - **Published** — available in the latest stable npm release.
-- **RC** — included in the published `0.5.0-rc.9` candidate source.
 - **Preview** — implemented for deliberate experimentation; its API or
   production posture may still change.
 - **Unsupported** — deliberately unavailable; nearby foundations must not be
@@ -25,17 +24,17 @@ When this file disagrees with code, code wins.
 | Skills | Published | [`11`](./11-skills.md) | Markdown instruction folders installed with agents and augments |
 | Web transport and `/agent/run` | Published | [`06`](./06-transports.md), [`20`](./20-embedding.md) | HTTP/SSE chat through AG-UI-shaped events |
 | Creator console | Published | [`21`](./21-console.md) | Chat-first per-agent browser surface with integration guidance |
-| Console capability runtime map | RC | [`21`](./21-console.md) | Observed augments, routes, tools, memory, skills, reported safeguards, issues, and notes |
+| Console capability runtime map | Published | [`21`](./21-console.md) | Observed augments, routes, tools, memory, skills, reported safeguards, issues, and notes |
 | CLI create/run/doctor lifecycle | Published | root [`README`](../README.md) | Scaffold, local operation, diagnostics, and background process commands |
 | Railway deploy | Published | [`18`](./18-deploy.md) | Railway-first staging, secrets, persistent volume, and health verification |
-| Keyed turn scheduling | RC | [`04`](./04-kernel.md), [`08`](./08-agent-lifecycle.md) | Bounded agent/source/thread admission and process-local outcome-unknown quarantine |
-| Runtime-state inventory and fenced recovery | RC | [`27`](./27-runtime-state-recovery.md) | Offline single-replica volume bundles, verification, exact resume, and mandatory downstream reconciliation |
-| Durable delivery and operator recovery | RC | [`28`](./28-delivery-and-operator-recovery.md) | Transport-specific replay contracts, durable AgentMail/notify incidents, and creator CAS recovery |
-| Provider deadline and brownout isolation | RC | [`29`](./29-provider-resilience.md) | One bounded model attempt, explicit no-retry policy, cancellation, late-result fencing, and scheduler capacity release |
-| Single-replica runtime load evidence | RC | [`30`](./30-single-replica-load-evidence.md) | Bounded real-runtime burst, tool, cancellation, fault, drain, restart, and soak evidence; no universal RPS claim |
-| Compatibility and rollback contract | RC | [`31`](./31-compatibility-migrations-and-rollback.md) | Strict config admission, versioned artifacts/state, tested predecessor migrations, and full-state rollback |
-| Durable single-turn jobs and UTC schedules | RC | [`33`](./33-durable-jobs.md) | Trusted application/operator submission, fenced SQLite execution, bounded restart recovery, and explicit outcome-unknown reconciliation; one replica only |
-| Auggy Builder Skill | RC | [`11`](./11-skills.md) | Portable coding-agent guidance and evals; public installation UX remains roadmap work |
+| Keyed turn scheduling | Published | [`04`](./04-kernel.md), [`08`](./08-agent-lifecycle.md) | Bounded agent/source/thread admission and process-local outcome-unknown quarantine |
+| Runtime-state inventory and fenced recovery | Published | [`27`](./27-runtime-state-recovery.md) | Offline single-replica volume bundles, verification, exact resume, and mandatory downstream reconciliation |
+| Durable delivery and operator recovery | Published | [`28`](./28-delivery-and-operator-recovery.md) | Transport-specific replay contracts, durable AgentMail/notify incidents, and creator CAS recovery |
+| Provider deadline and brownout isolation | Published | [`29`](./29-provider-resilience.md) | One bounded model attempt, explicit no-retry policy, cancellation, late-result fencing, and scheduler capacity release |
+| Single-replica runtime load evidence | Published | [`30`](./30-single-replica-load-evidence.md) | Bounded real-runtime burst, tool, cancellation, fault, drain, restart, and soak evidence; no universal RPS claim |
+| Compatibility and rollback contract | Published | [`31`](./31-compatibility-migrations-and-rollback.md) | Strict config admission, versioned artifacts/state, tested predecessor migrations, and full-state rollback |
+| Durable single-turn jobs and UTC schedules | Published | [`33`](./33-durable-jobs.md) | Trusted application/operator submission, fenced SQLite execution, bounded restart recovery, and explicit outcome-unknown reconciliation; one replica only |
+| Auggy Builder Skill | Preview | [`11`](./11-skills.md) | Portable coding-agent guidance and evals; public installation UX remains roadmap work |
 | Multiple replicas for one logical agent | Unsupported | [coordination report](./plans/distributed-coordination-implementation-report-2026-07-24.md) | Configuration fails closed; PostgreSQL coordinator foundation is not wired into runtime execution |
 
 ## Built-In Augments
@@ -50,24 +49,24 @@ When this file disagrees with code, code wins.
 | Layered memory | Published | [`05`](./05-memory-subsystem.md), [`07`](./07-built-in-augments.md) | Peer-scoped episodic memory; SQLite default |
 | Visitor auth | Published | [`19`](./19-visitor-auth.md) | Email magic-link recognition and visitor tokens |
 | Notify | Published | [`13`](./13-notify.md) | File, webhook, Telegram, and AgentMail destinations |
-| AgentMail mailbox and reviewed drafts | RC | [`22`](./22-agent-mail.md) | Bounded reads, labels, attachments, direct send/reply/forward, and provider-native new/reply/reply-all/forward drafts behind creator and policy gates |
-| AgentMail inbound | RC | [`22`](./22-agent-mail.md) | WebSocket wake-up, paginated REST catch-up, bounded sender admission, and durable orchestration metadata |
+| AgentMail mailbox and reviewed drafts | Published | [`22`](./22-agent-mail.md) | Bounded reads, labels, attachments, direct send/reply/forward, and provider-native new/reply/reply-all/forward drafts behind creator and policy gates |
+| AgentMail inbound | Published | [`22`](./22-agent-mail.md) | WebSocket wake-up, paginated REST catch-up, bounded sender admission, and durable orchestration metadata |
 | Telegram transport | Published | [`14`](./14-telegram-transport.md) | Bidirectional Telegram conversations |
 | MCP | Published | [`24`](./24-mcp.md) | Local stdio and remote HTTP MCP servers |
 | Budgets | Preview | [`12`](./12-budgets.md) | Turn and spend guardrails, not billing control |
 | Bash | Preview | [`07`](./07-built-in-augments.md) | Scoped host process execution, not a sandbox |
 | Link | Preview | [`07`](./07-built-in-augments.md) | Configured peer traffic, not open discovery or an agent mesh |
 
-## Advanced Preview Capabilities
+## Application Integration Capabilities
 
 | Capability | Status | Primary docs | Notes |
 | --- | --- | --- | --- |
-| Deterministic augment routes | RC | [`25`](./25-generated-route-clients.md) | Small GET/POST surfaces served beside the agent runtime |
-| Route manifest and OpenAPI-shaped export | RC | [`25`](./25-generated-route-clients.md) | Inspection through `auggy routes` |
-| Generated TypeScript route clients | RC | [`25`](./25-generated-route-clients.md) | Browser/server targets, typed successful responses, and declared request/response media types |
-| Route auth modes | RC | [`19`](./19-visitor-auth.md), [`25`](./25-generated-route-clients.md) | Public, visitor, creator, bearer, and agent route postures |
-| Webhook route policy | RC | [`25`](./25-generated-route-clients.md), [`26`](./26-delegated-authorization.md) | Policy metadata plus Stripe and Svix signature verification |
-| Delegated app authorization | RC | [`26`](./26-delegated-authorization.md) | App-signed scopes/grants enforced on routes and tools |
+| Deterministic augment routes | Published | [`25`](./25-generated-route-clients.md) | Small GET/POST surfaces served beside the agent runtime |
+| Route manifest and OpenAPI-shaped export | Published | [`25`](./25-generated-route-clients.md) | Inspection through `auggy routes` |
+| Generated TypeScript route clients | Published | [`25`](./25-generated-route-clients.md) | Browser/server targets, typed successful responses, and declared request/response media types |
+| Route auth modes | Published | [`19`](./19-visitor-auth.md), [`25`](./25-generated-route-clients.md) | Public, visitor, creator, bearer, and agent route postures |
+| Webhook route policy | Published | [`25`](./25-generated-route-clients.md), [`26`](./26-delegated-authorization.md) | Policy metadata plus Stripe and Svix signature verification |
+| Delegated app authorization | Published | [`26`](./26-delegated-authorization.md) | App-signed scopes/grants enforced on routes and tools |
 
 These capabilities are usable, but they do not make Auggy a general web
 framework, general workflow engine, or distributed job platform. The optional
@@ -76,8 +75,8 @@ checkpoint or orchestrate multi-step business workflows.
 
 ## Package Snapshot
 
-- Latest stable package: `0.4.4`.
-- Published release candidate: `0.5.0-rc.9` on npm's `next` tag for all six
-  packages.
+- Latest stable package: `0.5.0`.
+- Final release candidate: `0.5.0-rc.12` remains available on npm's `next`
+  tag for all six packages.
 - Release plan: [`plans/production-readiness-roadmap-2026-07-24.md`](./plans/production-readiness-roadmap-2026-07-24.md).
 - Source of truth: code in `src/`, followed by the numbered reference docs.

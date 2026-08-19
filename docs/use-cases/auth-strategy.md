@@ -215,7 +215,7 @@ Do not expose:
 
 ## Current route and delegated auth contract
 
-The route-auth foundation is implemented in the unpublished `0.5.0` candidate.
+The route-auth foundation is implemented in the stable `0.5.0` release.
 
 Current route auth modes:
 

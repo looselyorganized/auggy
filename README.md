@@ -21,22 +21,20 @@ Underneath, a small Bun/TypeScript runtime runs agent turns. Augments also add
 memory, transports, context, skills, lifecycle behavior, and operator controls
 without making the model the application or security boundary.
 
-Auggy 0.5 is in public preview. The release candidate is distributed through
-npm's `next` tag; pin its exact version for production-like evaluation until
-`1.0.0`.
+Auggy 0.5 is the current stable release and remains public preview software
+until `1.0.0`. Pin exact versions for production-like evaluation.
 
 ## Quick Start
 
 ```bash
-bun add --global auggy@0.5.0-rc.9
+bun add --global auggy@0.5.0
 auggy create my-agent
 cd my-agent
 auggy doctor
 auggy run
 ```
 
-The command above installs the published RC.9 package. This source branch may
-contain unreleased changes.
+The command above installs the published 0.5 release.
 
 `auggy create` walks through the model provider, model, and agent identity,
 adds the core augments, then installs the agent's local dependencies. Choose Anthropic, OpenAI,
@@ -511,20 +509,25 @@ is unavailable, it opens the password screen and points to the applicable
 | `auggy doctor [name]` | Check configuration, environment, dependencies, port, and skills |
 | `auggy list` / `auggy status [name]` | Discover agent projects and inspect local process state |
 | `auggy state inventory/backup/verify/restore/restore-resume/reconcile` | Inventory and rehearse fenced offline single-replica runtime-volume recovery |
-| `auggy jobs list/inspect/cancel/retry/reconcile/prune` | Inspect and recover redacted single-replica durable job state |
+| `auggy jobs list/inspect/cancel/retry/reconcile/prune/prune-audit` | Inspect and recover redacted single-replica durable job state |
 | `auggy jobs schedules list/pause/resume` | Inspect and compare-and-set configured UTC schedules |
 | `auggy chat [name]` | Open a running agent's browser chat |
 | `auggy augment list` | Show core, stable, and preview augments |
 | `auggy augment add [name...]` | Select or add built-in augments |
+| `auggy augment remove <name>` | Remove an augment from the current agent |
 | `auggy agentmail setup [target]` | Connect an existing AgentMail inbox and exact API key to `agentMail` or `visitorAuth` |
 | `auggy augment setup <name>` | Run a supported augment setup recipe |
 | `auggy augment create <name>` | Create and register a custom augment in the current agent |
 | `auggy augment install <agent> <path>` | Import a custom augment authored elsewhere |
+| `auggy augment test <path>` | Validate a custom augment folder |
 | `auggy skill create <name>` | Create a skill folder |
 | `auggy skill add <name>` | Install or refresh an Auggy-provided skill |
+| `auggy skill list` / `auggy skill remove <name>` | List installed skills or remove one |
 | `auggy routes [name]` | Inspect preview routes and generate clients |
 | `auggy mcp init/list/show/add-json/remove/doctor` | Manage MCP servers |
 | `auggy models list [provider] --refresh` | Refresh the provider model list |
+| `auggy models doctor [name]` | Check the configured provider and model for an agent |
+| `auggy coordination migrate` | Provision the disabled distributed-coordination preview database |
 | `auggy visitors <name>` | List verified visitors for an agent |
 | `auggy deploy` | Deploy the current agent to Railway |
 | `auggy logs` | Open Railway logs for a deployed agent |
