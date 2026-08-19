@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.5.0] - 2026-08-14
+## [0.5.0] - 2026-08-18
 
 Auggy 0.5 is the first stable public-preview release of the TypeScript augment
 runtime. It promotes the twelve public release candidates after exact-package,
@@ -130,7 +130,9 @@ keeps creator-reviewed drafts in AgentMail.
   policy-bearing mail mutations stay behind the augment's tools.
 - **Existing-inbox setup.** CLI setup connects the operator's existing
   AgentMail inbox and exact runtime key without creating, narrowing, rotating,
-  or revoking provider credentials.
+  or revoking provider credentials. The rc.10 `--replace-key` flag is removed;
+  use `auggy augment setup agentMail --mode manual` to connect a different
+  key.
 
 ### Fixed
 

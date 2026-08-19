@@ -1343,7 +1343,9 @@ are process-local or unfenced. The local keyed scheduler will remain the
 per-process executor behind a future fleet coordinator. Runtime preflight must
 also verify shared budgets, replay ledgers, mutable memory, visitor state, and a
 durable fenced delivery outbox before it can enable distributed execution.
-Until then deploy one runtime replica for each logical agent namespace.
+Until then deploy one runtime replica for each logical agent namespace and
+do **not** add a `settings.coordination` block: if it is present, the agent
+refuses to start. Remove the block to run.
 
 Provision the dedicated coordination database explicitly; the command reads
 only the environment variable named by `urlEnv`, never a URL in `agent.yaml`:
