@@ -1861,18 +1861,34 @@ describe("webTransport HTTP server", () => {
       expect(malformed.status).toBe(400);
       expect(await malformed.json()).toEqual({ error: "invalid_forwarded_request" });
 
-      const ambiguous = await fetch(url, {
+      // X-Real-IP that is not one of the forwarded hops is a genuine conflict.
+      const conflicting = await fetch(url, {
         method: "POST",
         headers: {
           "content-type": "application/json",
           "x-forwarded-for": "203.0.113.1",
+          "x-real-ip": "198.51.100.9",
+        },
+        body,
+      });
+      expect(conflicting.status).toBe(400);
+      expect(await conflicting.json()).toEqual({ error: "invalid_forwarded_request" });
+      expect(model.calls).toHaveLength(0);
+
+      // A proxy naming the same client in both headers (Railway, nginx
+      // defaults) is consistent and must not be rejected as forwarded-invalid.
+      const consistent = await fetch(url, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-forwarded-for": "203.0.113.1, 10.9.9.9",
           "x-real-ip": "203.0.113.1",
         },
         body,
       });
-      expect(ambiguous.status).toBe(400);
-      expect(await ambiguous.json()).toEqual({ error: "invalid_forwarded_request" });
-      expect(model.calls).toHaveLength(0);
+      expect(consistent.status).not.toBe(400);
+      const consistentBody = (await consistent.json()) as { error?: string };
+      expect(consistentBody.error).not.toBe("invalid_forwarded_request");
     } finally {
       await agent.stop();
       await tmp.cleanup();

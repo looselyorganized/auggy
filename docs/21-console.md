@@ -124,7 +124,10 @@ allowed automatically. Public deployments must configure exact
 `consoleSecurity.allowedOrigins`; a valid `AUGGY_PUBLIC_URL` contributes its
 origin automatically. Forwarding headers are accepted only from an immediate
 peer in `trustedProxies`; deployment-platform environment variables never grant
-proxy trust.
+proxy trust. The deploy-generated Railway entrypoint is the one exception: it
+defaults `trustedProxies` to Railway's internal ingress network
+(`100.64.0.0/10`) so the Console works on a fresh `auggy deploy` — see
+[`06-transports.md` → Caller IP & `trustedProxies`](./06-transports.md#caller-ip--trustedproxies).
 
 State-mutating endpoints additionally require a CSRF token bound to the exact
 augment instance, action, and row identity. The legacy action-only endpoint

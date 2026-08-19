@@ -68,6 +68,8 @@ import {
 } from "./runtime-state-inventory";
 import { assertImmutableAgentId, scopedAgentNamespace } from "./agent-isolation";
 import { compareOwnedStatePaths, resolveOwnedStatePath } from "./owned-state-path";
+import { RAILWAY_RUNTIME_DATA_ROOT } from "./runtime-volume";
+import { RAILWAY_INGRESS_PROXY_NETWORKS } from "../transports/console-request-security";
 
 // ---------------------------------------------------------------------------
 // Path resolution helper
@@ -425,6 +427,27 @@ function resolveWebIdempotencyOptions(
   };
 }
 
+/**
+ * Explicit `trustedProxies` always wins. Inside the deploy-generated Railway
+ * container (runtime data root leased at `/app/data`), default to Railway's
+ * internal ingress proxy network so forwarded headers — and therefore the
+ * operator Console, caller IPs, and per-peer rate limits — work out of the box.
+ * Elsewhere the default stays empty: forwarding headers are ignored unless the
+ * operator names the proxy network.
+ */
+export function resolveTrustedProxies(
+  configured: string[] | undefined,
+  runtimeDataRoot: string | undefined,
+): string[] | undefined {
+  if (configured !== undefined) return configured;
+  if (runtimeDataRoot !== RAILWAY_RUNTIME_DATA_ROOT) return undefined;
+  console.log(
+    "[web-transport] Railway runtime: trusting forwarded headers from Railway's ingress proxy network " +
+      `(${RAILWAY_INGRESS_PROXY_NETWORKS.join(", ")}). Set webTransport.config.trustedProxies to override.`,
+  );
+  return [...RAILWAY_INGRESS_PROXY_NETWORKS];
+}
+
 function resolveWebTransport(
   opts: Record<string, unknown>,
   agentDir: string,
@@ -470,7 +493,10 @@ function resolveWebTransport(
     allowAnonymous: opts.allowAnonymous as boolean | undefined,
     publicIntegration: opts.publicIntegration as boolean | undefined,
     publicFrontendUrl: opts.publicFrontendUrl as string | undefined,
-    trustedProxies: opts.trustedProxies as string[] | undefined,
+    trustedProxies: resolveTrustedProxies(
+      opts.trustedProxies as string[] | undefined,
+      runtimeDataRoot,
+    ),
     consoleSecurity: opts.consoleSecurity as WebTransportOptions["consoleSecurity"],
     externalAuth: opts.externalAuth as WebTransportOptions["externalAuth"],
     adminRoute: opts.adminRoute as boolean | undefined,

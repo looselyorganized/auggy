@@ -996,16 +996,25 @@ webTransport({
 
 Behavior:
 
-- Connection IP is on `trustedProxies` → `X-Forwarded-For` is parsed right-to-left, trusted proxy hops are dropped, and the first untrusted client IP is honored. `X-Real-IP` is used only when `X-Forwarded-For` is absent.
+- Connection IP is on `trustedProxies` → `X-Forwarded-For` is parsed right-to-left, trusted proxy hops are dropped, and the first untrusted client IP is honored. When the proxy also sends `X-Real-IP` (Railway, nginx defaults), it must name one of the forwarded hops and is then preferred as the client address; a value absent from the chain is rejected as conflicting. `X-Real-IP` alone is used when `X-Forwarded-For` is absent.
+- A trusted proxy's `X-Forwarded-Host` must match the request `Host` (compared
+  as normalized authorities); a mismatch is rejected. `X-Forwarded-Port` is
+  ignored — it carries nothing the runtime uses, and some edges pass a
+  client-supplied value through unchanged.
 - Connection IP is NOT on `trustedProxies` (or list is empty) → forwarding
   headers are ignored for ordinary route rate limiting. Console requests
   carrying them fail closed.
 - The first time an XFF arrives without `trustedProxies` configured, a single `console.warn` per startup nudges operators with a config hint. Latched per-instance — no warning spam.
 - Railway or other deployment environment markers do not grant implicit proxy
-  trust.
-- Malformed, ambiguous, oversized, or mixed forwarding chains fail closed at
-  the console boundary. Universal CIDRs such as `0.0.0.0/0` and `::/0` are
-  rejected.
+  trust. The one deliberate default: when the runtime is started by the
+  deploy-generated Railway entrypoint (`--internal-mode railway` with the
+  `/app/data` volume verified) and `trustedProxies` is unset, it defaults to
+  Railway's internal ingress proxy network `100.64.0.0/10` — the address the
+  container actually sees as its TCP peer — and logs one line saying so. Set
+  `trustedProxies` explicitly to override or narrow it.
+- Malformed, ambiguous, oversized, or inconsistent forwarding chains fail
+  closed at the console boundary. Universal CIDRs such as `0.0.0.0/0` and
+  `::/0` are rejected.
 
 For YAML configuration, place both properties under the web transport
 augment's `config` block. `AUGGY_PUBLIC_URL` contributes an exact console

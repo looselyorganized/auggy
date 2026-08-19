@@ -2276,3 +2276,31 @@ describe("resolveAugments — identity-loss warning when visitorAuth removed (fi
     }
   });
 });
+
+describe("resolveTrustedProxies — Railway ingress default", () => {
+  test("explicit trustedProxies always win, Railway runtime defaults to its ingress network, elsewhere stays unset", async () => {
+    const { resolveTrustedProxies } = await import("../../src/cli/augment-resolver");
+    const { RAILWAY_RUNTIME_DATA_ROOT } = await import("../../src/cli/runtime-volume");
+    const { RAILWAY_INGRESS_PROXY_NETWORKS } = await import(
+      "../../src/transports/console-request-security"
+    );
+    const logSpy = spyOn(console, "log").mockImplementation(() => {});
+    try {
+      expect(resolveTrustedProxies(["10.1.0.0/16"], RAILWAY_RUNTIME_DATA_ROOT)).toEqual([
+        "10.1.0.0/16",
+      ]);
+      expect(resolveTrustedProxies([], RAILWAY_RUNTIME_DATA_ROOT)).toEqual([]);
+      expect(resolveTrustedProxies(undefined, undefined)).toBeUndefined();
+      expect(resolveTrustedProxies(undefined, "/somewhere/else")).toBeUndefined();
+      expect(logSpy).not.toHaveBeenCalled();
+
+      expect(resolveTrustedProxies(undefined, RAILWAY_RUNTIME_DATA_ROOT)).toEqual([
+        ...RAILWAY_INGRESS_PROXY_NETWORKS,
+      ]);
+      expect(logSpy).toHaveBeenCalledTimes(1);
+      expect(String(logSpy.mock.calls[0]?.[0])).toContain("Railway runtime");
+    } finally {
+      logSpy.mockRestore();
+    }
+  });
+});

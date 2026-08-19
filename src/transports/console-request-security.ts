@@ -63,6 +63,18 @@ export function compileTrustedProxyNetworks(entries: readonly string[]): Trusted
   };
 }
 
+/**
+ * Railway's public edge reaches a service container through Railway's internal
+ * proxy network; the container's TCP peer is an address in this CGNAT range
+ * (observed 100.64.0.2/.3 on 2026-08-19), not the edge's public IP. The edge
+ * overwrites client-supplied `X-Forwarded-For`, `X-Real-IP`, `X-Forwarded-Host`
+ * and `X-Forwarded-Proto`, so forwarding headers arriving from this network are
+ * authoritative. Used as the `trustedProxies` default only when the runtime
+ * was started by the deploy-generated Railway entrypoint (`--internal-mode
+ * railway` with a verified `/app/data` volume), never from environment markers.
+ */
+export const RAILWAY_INGRESS_PROXY_NETWORKS: readonly string[] = ["100.64.0.0/10"];
+
 const FORWARDED_HEADERS = [
   "x-forwarded-for",
   "x-real-ip",
@@ -103,15 +115,27 @@ export function resolveForwardedRequest(args: {
   };
   if (!proxyTrusted) return base;
 
-  if (args.headers.has("x-forwarded-host") || args.headers.has("x-forwarded-port")) {
-    return { ...base, error: "forwarded host and port headers are not accepted" };
+  // `X-Forwarded-Host` from a trusted proxy is accepted only when it names the
+  // same authority the request already carries in `Host`; a mismatch means the
+  // proxy and the request disagree about the public authority, which the
+  // console must not guess at. `X-Forwarded-Port` is ignored: it carries no
+  // information the console uses, and some edges (Railway) pass a client-
+  // supplied value through unchanged, so rejecting it would let any caller
+  // deny console access.
+  const forwardedHost = args.headers.get("x-forwarded-host");
+  if (forwardedHost !== null) {
+    // Compare as origins under one fixed scheme so both authorities get the
+    // same strict parsing `Host` already receives (no userinfo, path, trailing
+    // dot, or comma-joined lists). Default ports normalize identically.
+    const requestAuthority = requestOrigin("https", args.headers.get("host"));
+    const forwardedAuthority = requestOrigin("https", forwardedHost);
+    if (!requestAuthority || !forwardedAuthority || forwardedAuthority !== requestAuthority) {
+      return { ...base, error: "forwarded host does not match the request host" };
+    }
   }
 
   const xff = args.headers.get("x-forwarded-for");
   const realIp = args.headers.get("x-real-ip");
-  if (xff && realIp) {
-    return { ...base, error: "conflicting forwarded client IP headers" };
-  }
 
   let callerIp = connection.address;
   if (xff !== null) {
@@ -139,6 +163,20 @@ export function resolveForwardedRequest(args: {
         callerIp = candidate;
         break;
       }
+    }
+    if (realIp !== null) {
+      // A trusted proxy that sets both headers (Railway, nginx defaults) is
+      // naming the client twice. Accept the pair only when `X-Real-IP` is one
+      // of the forwarded hops, and prefer it: the proxy's single-address claim
+      // identifies the client even when `X-Forwarded-For` also lists upstream
+      // edge hops that are not on the operator's trusted list.
+      if (realIp.includes(",")) return { ...base, error: "real-ip must contain one address" };
+      const parsedRealIp = normalizeStrictIp(realIp);
+      if (!parsedRealIp) return { ...base, error: "real-ip contains an invalid IP" };
+      if (!entries.includes(parsedRealIp.address)) {
+        return { ...base, error: "conflicting forwarded client IP headers" };
+      }
+      callerIp = parsedRealIp.address;
     }
   } else if (realIp !== null) {
     if (realIp.includes(",")) return { ...base, error: "real-ip must contain one address" };
