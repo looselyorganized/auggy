@@ -458,7 +458,6 @@ See:
 - [Delegated Authorization](https://auggy.dev/docs/delegated-authorization)
 - [Showcase Examples](https://auggy.dev/examples)
 - [Pickleball Storefront](https://auggy.dev/examples/pickleball-storefront)
-- [Secure Order Support](https://auggy.dev/examples/order-support)
 - [Field-Service Dispatch](https://auggy.dev/examples/service-dispatch)
 - [App Auth Bridge Example](https://auggy.dev/examples/app-auth-bridge)
 

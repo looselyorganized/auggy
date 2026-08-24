@@ -12,13 +12,6 @@ domain logic. This is the clearest proof of an Auggy app backend serving both
 deterministic software and a model-mediated workflow. It includes a generated
 TypeScript browser client and a small runnable frontend.
 
-### [Secure Order Support](./order-support/README.md)
-
-A verified visitor or creator can inspect an order and change its shipping
-address through an expiring prepare/confirm protocol. The augment owns identity
-checks, actor/thread binding, turn lifecycle evidence, replay prevention, and
-audit output around the shared mutation.
-
 ### [Field-Service Intake And Dispatch](./service-dispatch/README.md)
 
 A form or conversation creates the same structured service intake. The agent
