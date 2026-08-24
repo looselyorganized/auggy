@@ -138,7 +138,6 @@ Auggy project and not a replacement for a general application backend.
 - [Delegated Authorization](./26-delegated-authorization.md)
 - [Examples Index](../examples/README.md)
 - [Pickleball Storefront](../examples/pickleball-storefront/README.md)
-- [Secure Order Support](../examples/order-support/README.md)
 - [Field-Service Dispatch](../examples/service-dispatch/README.md)
 - [Concierge Example](../examples/concierge/README.md)
 - [App Auth Bridge Example](../examples/app-auth-bridge/README.md)
