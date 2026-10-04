@@ -405,7 +405,7 @@ export function createAgentMailRuntime(
   const activeRoutes = new Map<string, ActiveMailRoute>();
   const draftTails = new Map<string, Promise<void>>();
   let verifiedEmailAddress: string | undefined;
-  let lastErrorCode: string | undefined;
+  let runtimeErrorCode: string | undefined;
   let attentionBinding: AgentMailCreatorAttentionBinding | undefined;
   let attentionTail: Promise<void> = Promise.resolve();
   let attentionStarted = false;
@@ -791,7 +791,7 @@ export function createAgentMailRuntime(
   function scheduleAttention(): void {
     if (!attentionStarted || attentionStopped) return;
     attentionTail = attentionTail.then(repairAttention).catch((error) => {
-      lastErrorCode = "notification_failure";
+      runtimeErrorCode = "notification_failure";
       console.warn(`[agentMail] creator notification degraded code=${providerCode(error)}`);
     });
   }
@@ -1051,7 +1051,7 @@ export function createAgentMailRuntime(
         activeRoutes.delete(contextId);
       }
     } catch (error) {
-      lastErrorCode = providerCode(error);
+      runtimeErrorCode = providerCode(error);
       if (ledger.getMessage(work.messageId)?.state !== "processing") return;
       const safelyRetryable =
         isRetryable(error) ||
@@ -1068,8 +1068,8 @@ export function createAgentMailRuntime(
     workTail = workTail
       .then(() => processMessage(messageId))
       .catch((error) => {
-        lastErrorCode = providerCode(error);
-        console.warn(`[agentMail] inbound work failed code=${lastErrorCode}`);
+        runtimeErrorCode = providerCode(error);
+        console.warn(`[agentMail] inbound work failed code=${runtimeErrorCode}`);
       });
   }
 
@@ -1104,8 +1104,7 @@ export function createAgentMailRuntime(
         },
         onCreatorAttentionAvailable: scheduleAttention,
         onError(error) {
-          lastErrorCode = providerCode(error);
-          console.warn(`[agentMail] inbound degraded code=${lastErrorCode}`);
+          console.warn(`[agentMail] inbound degraded code=${providerCode(error)}`);
         },
       });
       await coordinator.start();
@@ -3192,6 +3191,7 @@ export function createAgentMailRuntime(
     const drafts = store?.listProviderDrafts(100) ?? [];
     const inboundState = config.inbound.mode === "none" ? "idle" : (status?.state ?? "idle");
     const isStarting = store === undefined || verifiedEmailAddress === undefined;
+    const lastErrorCode = runtimeErrorCode ?? status?.lastErrorCode;
     const statusLevel = lastErrorCode ? "warn" : isStarting ? "warn" : "ok";
     const statusMessage = lastErrorCode
       ? `Mail degraded (${lastErrorCode})`

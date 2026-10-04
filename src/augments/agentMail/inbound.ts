@@ -22,6 +22,7 @@ export interface AgentMailInboundCoordinatorOptions {
   onWorkAvailable(messageId: string): void | Promise<void>;
   onCreatorAttentionAvailable?(): void;
   onError?(error: AgentMailProviderError | Error): void;
+  onRecovered?(previousError: AgentMailProviderError | Error): void;
   catchUpOverlapMs?: number;
   repairIntervalMs?: number;
   maxCatchUpPages?: number;
@@ -94,6 +95,8 @@ export function createAgentMailInboundCoordinator(
   let lastCatchUpAt: number | undefined;
   let lastEventAt: number | undefined;
   let lastErrorCode: string | undefined;
+  let lastError: AgentMailProviderError | Error | undefined;
+  let errorGeneration = 0;
   let subscription: AgentMailProviderSubscription | undefined;
   let repairTimer: ReturnType<typeof setInterval> | undefined;
   let stopped = false;
@@ -104,6 +107,8 @@ export function createAgentMailInboundCoordinator(
 
   function report(error: AgentMailProviderError | Error): void {
     if (stopped) return;
+    errorGeneration += 1;
+    lastError = error;
     currentState = "degraded";
     lastErrorCode =
       "details" in error &&
@@ -117,7 +122,7 @@ export function createAgentMailInboundCoordinator(
   }
 
   async function signalWork(messageId: string): Promise<void> {
-    if (scheduledMessageIds.has(messageId)) return;
+    if (stopped || scheduledMessageIds.has(messageId)) return;
     scheduledMessageIds.add(messageId);
     try {
       await options.onWorkAvailable(messageId);
@@ -152,6 +157,7 @@ export function createAgentMailInboundCoordinator(
     if (catchUpPromise) return catchUpPromise;
     catchUpPromise = (async () => {
       if (stopped) return;
+      const startedGeneration = errorGeneration;
       currentState = "catching_up";
       for (const messageId of scheduledMessageIds) {
         const state = options.store.getMessage(messageId)?.state;
@@ -172,18 +178,26 @@ export function createAgentMailInboundCoordinator(
           { after, pageToken, limit: 100 },
           abortController.signal,
         );
+        if (stopped) return;
         for (const message of page.messages) {
           if (stopped) return;
           claimSummary(message);
         }
         pageToken = page.nextPageToken;
       } while (pageToken !== undefined && !stopped);
-      lastCatchUpAt = clock();
-      lastErrorCode = undefined;
-      currentState = "ready";
       for (const messageId of options.store.listPendingMessageIds(10_000)) {
         await signalWork(messageId);
       }
+      if (stopped) return;
+      lastCatchUpAt = clock();
+      // A live event or work callback may report a newer failure while this
+      // catch-up is in flight. Only recover the episode this pass observed.
+      if (errorGeneration !== startedGeneration) return;
+      const previousError = lastError;
+      lastError = undefined;
+      lastErrorCode = undefined;
+      currentState = "ready";
+      if (previousError !== undefined) options.onRecovered?.(previousError);
     })()
       .catch((error) => {
         report(error as Error);
@@ -229,7 +243,8 @@ export function createAgentMailInboundCoordinator(
       // not reset active claims.
       options.store.recoverInterrupted(clock());
       await options.provider.verifyAccess(abortController.signal);
-      subscription = await options.provider.connect(
+      if (stopped) return;
+      const connected = await options.provider.connect(
         {
           onEvent: onProviderEvent,
           onOpen: () => {
@@ -243,10 +258,16 @@ export function createAgentMailInboundCoordinator(
         },
         abortController.signal,
       );
+      if (stopped) {
+        connected.close();
+        return;
+      }
+      subscription = connected;
       initialConnect = false;
       // connect() resolves only after subscription; catch-up therefore closes
       // both the startup gap and any overlap with live delivery.
       await catchUp();
+      if (stopped) return;
       repairTimer = setInterval(() => {
         void catchUp().catch(() => undefined);
       }, repairIntervalMs);

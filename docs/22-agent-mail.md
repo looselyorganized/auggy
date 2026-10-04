@@ -354,6 +354,11 @@ press Ctrl-C and run `auggy run` again.
 
 ## Recovery and limits
 
+Inbound status reflects the current catch-up error. A successful catch-up clears
+that warning without a restart, unless a newer inbound failure occurred while
+the catch-up was running. An unresolved message-processing, draft, or creator
+notification failure remains visible even after inbound catch-up recovers.
+
 | Situation | Safe action |
 | --- | --- |
 | Provider returns `429` | Wait until the returned retry time, then ask Auggy to retry that operation ID. No magic wording is required. Auggy reuses the original request, operation, and idempotency key. |
