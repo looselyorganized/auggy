@@ -359,6 +359,33 @@ that warning without a restart, unless a newer inbound failure occurred while
 the catch-up was running. An unresolved message-processing, draft, or creator
 notification failure remains visible even after inbound catch-up recovers.
 
+Inbound failure logs retain the `inbound degraded code=...` prefix and append
+bounded JSON diagnostics. For example:
+
+```text
+[agentMail] inbound degraded code=permission_missing {"timestamp":"2026-10-04T12:34:56.000Z","category":"permission_missing","operation":"list_messages","phase":"catch_up","httpStatus":403,"retryable":false,"providerCode":"missing_permission"}
+[agentMail] inbound recovered code=permission_missing {"timestamp":"2026-10-04T12:35:56.000Z","category":"permission_missing","operation":"list_messages","phase":"catch_up","httpStatus":403,"retryable":false,"providerCode":"missing_permission"}
+```
+
+Each actual failure is logged; successful catch-up emits one recovery event for
+the failed episode. Its timestamp records recovery, while the remaining fields
+describe the previous failure. Healthy startup and healthy periodic checks emit
+neither event. The current catch-up repair interval remains 60 seconds, including
+after failures classified as `retryable: false`; that field describes the
+provider error classification, not whether inbound repair will run again.
+
+`permission_missing` broadly classifies provider HTTP 403 responses other than
+recognized message rejection. It does not prove that a key needs different
+permissions. Check the operation, HTTP status, and provider code before changing
+access. Earlier logs containing only `permission_missing` cannot establish the
+historical provider-side cause.
+
+Diagnostics include only allowlisted categories, operations, and phases, plus
+validated status and retryability when available. Recognized provider codes are
+`missing_permission`, `message_rejected`, `resource_taken`, and `already_exists`;
+other supplied codes become `unknown`. Logs omit raw errors, message content,
+resource identifiers, response bodies, URLs, headers, and credentials.
+
 | Situation | Safe action |
 | --- | --- |
 | Provider returns `429` | Wait until the returned retry time, then ask Auggy to retry that operation ID. No magic wording is required. Auggy reuses the original request, operation, and idempotency key. |

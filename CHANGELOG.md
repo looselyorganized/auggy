@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **AgentMail recovery status.** Successful inbound catch-up clears its prior
+  degraded warning without hiding unresolved processing or notification failures.
+  Late responses after shutdown and older catch-up attempts cannot overwrite
+  newer health state.
+- **AgentMail diagnostics.** Inbound failure and recovery logs include bounded,
+  sanitized operation and provider metadata without logging credentials or mail
+  content. Provider error classifications and retry policies are unchanged.
+
 ## [0.5.0] - 2026-08-18
 
 Auggy 0.5 is the first stable public-preview release of the TypeScript augment

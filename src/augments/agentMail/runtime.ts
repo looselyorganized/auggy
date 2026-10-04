@@ -25,6 +25,7 @@ import type {
 } from "../notify";
 import { createAgentMailInboundCoordinator, type AgentMailInboundCoordinator } from "./inbound";
 import { readAgentMailTextAttachment } from "./attachment";
+import { formatAgentMailInboundDiagnostic } from "./diagnostics";
 import {
   assertAgentMailDraftIdentity,
   snapshotAgentMailDraft,
@@ -1104,7 +1105,12 @@ export function createAgentMailRuntime(
         },
         onCreatorAttentionAvailable: scheduleAttention,
         onError(error) {
-          console.warn(`[agentMail] inbound degraded code=${providerCode(error)}`);
+          console.warn(formatAgentMailInboundDiagnostic("degraded", error, dependencies.clock?.()));
+        },
+        onRecovered(previousError) {
+          console.info(
+            formatAgentMailInboundDiagnostic("recovered", previousError, dependencies.clock?.()),
+          );
         },
       });
       await coordinator.start();

@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -486,6 +486,7 @@ function catchUpPermissionFailure(): AgentMailProviderError {
     phase: "catch_up",
     retryable: false,
     httpStatus: 403,
+    providerCode: "missing_permission",
     nextAction: "Check inbox access.",
   });
 }
@@ -536,8 +537,11 @@ function creatorTurn(turnId: string, threadId: string, text: string): TurnState 
 }
 
 describe("AgentMail provider-native runtime", () => {
-  test("clears the status section and mail projection after failed catch-up recovers", async () => {
-    const f = fixture({ inbound: true });
+  test("clears status after two catch-up failures and logs exactly one recovery", async () => {
+    let now = Date.parse("2026-10-04T12:34:56.000Z");
+    const f = fixture({ inbound: true, clock: () => now });
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const info = spyOn(console, "info").mockImplementation(() => {});
     try {
       await f.augment.onBoot?.();
       await f.augment.transport?.register(
@@ -546,6 +550,10 @@ describe("AgentMail provider-native runtime", () => {
       );
       await f.augment.transport?.ready?.();
       await waitForMailStatus(f.augment, "ready");
+      f.provider.handlers?.onOpen?.();
+      await waitForMailStatus(f.augment, "ready");
+      expect(warn).not.toHaveBeenCalled();
+      expect(info).not.toHaveBeenCalled();
       const listMessages = f.provider.listMessages.bind(f.provider);
       f.provider.listMessages = async () => {
         throw catchUpPermissionFailure();
@@ -553,13 +561,45 @@ describe("AgentMail provider-native runtime", () => {
       f.provider.handlers?.onOpen?.();
       const degraded = await waitForMailStatus(f.augment, "degraded", "permission_missing");
       expect(degraded.inbound.lastErrorCode).toBe("permission_missing");
+      f.provider.handlers?.onOpen?.();
+      await waitFor(() => warn.mock.calls.length === 2);
+      await waitForMailStatus(f.augment, "degraded", "permission_missing");
+      expect(info).not.toHaveBeenCalled();
+      const metadata = {
+        timestamp: "2026-10-04T12:34:56.000Z",
+        category: "permission_missing",
+        operation: "list_messages",
+        phase: "catch_up",
+        httpStatus: 403,
+        retryable: false,
+        providerCode: "missing_permission",
+      };
+      const failureMetadata = JSON.stringify(metadata);
+      expect(warn.mock.calls).toEqual([
+        [`[agentMail] inbound degraded code=permission_missing ${failureMetadata}`],
+        [`[agentMail] inbound degraded code=permission_missing ${failureMetadata}`],
+      ]);
+      now += 60_000;
       f.provider.listMessages = listMessages;
       f.provider.handlers?.onOpen?.();
       const recovered = await waitForMailStatus(f.augment, "ready");
       expect(recovered.inbound.lastErrorCode).toBeUndefined();
+      const recoveryMetadata = JSON.stringify({
+        ...metadata,
+        timestamp: "2026-10-04T12:35:56.000Z",
+      });
+      expect(info.mock.calls).toEqual([
+        [`[agentMail] inbound recovered code=permission_missing ${recoveryMetadata}`],
+      ]);
+      f.provider.handlers?.onOpen?.();
+      await waitForMailStatus(f.augment, "ready");
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(info).toHaveBeenCalledTimes(1);
     } finally {
       await f.augment.onShutdown?.();
       f.store.close();
+      warn.mockRestore();
+      info.mockRestore();
     }
   });
 
