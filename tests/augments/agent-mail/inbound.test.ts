@@ -6,10 +6,11 @@ import {
   createAgentMailInboundCoordinator,
   type AgentMailInboundCoordinatorOptions,
 } from "../../../src/augments/agentMail/inbound";
-import type {
-  AgentMailMessageSummary,
-  AgentMailProvider,
-  AgentMailProviderEvent,
+import {
+  AgentMailProviderError,
+  type AgentMailMessageSummary,
+  type AgentMailProvider,
+  type AgentMailProviderEvent,
 } from "../../../src/augments/agentMail/provider";
 import { createAgentMailOrchestrationStore } from "../../../src/augments/agentMail/store";
 
@@ -144,7 +145,241 @@ function receivedEvent(summary: AgentMailMessageSummary, eventId = `event_${summ
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+function permissionFailure(): AgentMailProviderError {
+  return new AgentMailProviderError({
+    code: "permission_missing",
+    operation: "list_messages",
+    phase: "catch_up",
+    retryable: false,
+    httpStatus: 403,
+    nextAction: "Check inbox access.",
+  });
+}
+
 describe("AgentMail inbound wake and recovery coordinator", () => {
+  test("recovers failed catch-up once per episode and keeps persistent failures degraded", async () => {
+    const provider = new FakeProvider();
+    const recovered: Error[] = [];
+    const errors: Error[] = [];
+    const f = fixture(provider, {
+      onRecovered: (error) => recovered.push(error),
+      onError: (error) => errors.push(error),
+    });
+    try {
+      await f.coordinator.start();
+      await f.coordinator.repair();
+      expect(recovered).toEqual([]);
+      const failed = permissionFailure();
+      const listMessages = provider.listMessages.bind(provider);
+      provider.listMessages = async () => {
+        throw failed;
+      };
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await expect(f.coordinator.repair()).rejects.toBe(failed);
+        expect(f.coordinator.status()).toMatchObject({
+          state: "degraded",
+          lastErrorCode: "permission_missing",
+        });
+        expect(recovered).toEqual([]);
+      }
+      expect(errors).toEqual([failed, failed]);
+      provider.listMessages = listMessages;
+      await f.coordinator.repair();
+      expect(f.coordinator.status().state).toBe("ready");
+      expect(f.coordinator.status().lastErrorCode).toBeUndefined();
+      expect(recovered).toEqual([failed]);
+      await f.coordinator.repair();
+      expect(recovered).toEqual([failed]);
+      provider.handlers?.onError?.(failed);
+      await f.coordinator.repair();
+      expect(recovered).toEqual([failed, failed]);
+    } finally {
+      await f.coordinator.stop();
+      f.store.close();
+    }
+  });
+
+  test("does not let older catch-up success clear a newer live error", async () => {
+    const provider = new FakeProvider();
+    const recovered: Error[] = [];
+    const f = fixture(provider, { onRecovered: (error) => recovered.push(error) });
+    const pending = deferred<Awaited<ReturnType<FakeProvider["listMessages"]>>>();
+    try {
+      await f.coordinator.start();
+      const first = permissionFailure();
+      provider.handlers?.onError?.(first);
+      const listMessages = provider.listMessages.bind(provider);
+      provider.listMessages = () => pending.promise;
+      const repair = f.coordinator.repair();
+      const newer = new AgentMailProviderError({
+        ...permissionFailure().details,
+        code: "provider_unavailable",
+      });
+      provider.handlers?.onError?.(newer);
+      pending.resolve({ messages: [] });
+      await repair;
+      expect(f.coordinator.status()).toMatchObject({
+        state: "degraded",
+        lastErrorCode: "provider_unavailable",
+      });
+      expect(recovered).toEqual([]);
+      provider.listMessages = listMessages;
+      await f.coordinator.repair();
+      expect(f.coordinator.status().state).toBe("ready");
+      expect(recovered).toEqual([newer]);
+    } finally {
+      pending.resolve({ messages: [] });
+      await f.coordinator.stop();
+      f.store.close();
+    }
+  });
+
+  test("only reports recovery after pending work has been signaled successfully", async () => {
+    const provider = new FakeProvider();
+    const recovered: Error[] = [];
+    const failed = new Error("could not schedule work");
+    let failWork = true;
+    const f = fixture(provider, {
+      onRecovered: (error) => recovered.push(error),
+      onWorkAvailable() {
+        if (failWork) throw failed;
+      },
+    });
+    try {
+      await f.coordinator.start();
+      provider.handlers?.onError?.(permissionFailure());
+      provider.pages = [{ messages: [message("pending_1", 1_000)] }];
+      await f.coordinator.repair();
+      expect(f.coordinator.status()).toMatchObject({
+        state: "degraded",
+        lastErrorCode: "inbound_failure",
+      });
+      expect(recovered).toEqual([]);
+      failWork = false;
+      await f.coordinator.repair();
+      expect(recovered).toEqual([failed]);
+      expect(f.coordinator.status().state).toBe("ready");
+    } finally {
+      await f.coordinator.stop();
+      f.store.close();
+    }
+  });
+
+  for (const lateMessages of [[], [message("late_1", 2_000)]]) {
+    test(`ignores catch-up completion after shutdown with ${lateMessages.length} messages`, async () => {
+      const provider = new FakeProvider();
+      const recovered: Error[] = [];
+      const f = fixture(provider, { onRecovered: (error) => recovered.push(error) });
+      const pending = deferred<Awaited<ReturnType<FakeProvider["listMessages"]>>>();
+      try {
+        await f.coordinator.start();
+        const lastCatchUpAt = f.coordinator.status().lastCatchUpAt;
+        provider.handlers?.onError?.(permissionFailure());
+        provider.listMessages = () => pending.promise;
+        const repair = f.coordinator.repair();
+        const stopping = f.coordinator.stop();
+        pending.resolve({ messages: lateMessages });
+        await Promise.all([repair, stopping]);
+        expect(f.coordinator.status()).toEqual({
+          state: "stopped",
+          lastCatchUpAt,
+          lastErrorCode: "permission_missing",
+        });
+        expect(recovered).toEqual([]);
+        expect(f.woken).toEqual([]);
+        expect(f.store.getMessage("late_1")).toBeUndefined();
+        provider.handlers?.onOpen?.();
+        provider.handlers?.onError?.(permissionFailure());
+        expect(f.coordinator.status().state).toBe("stopped");
+      } finally {
+        pending.resolve({ messages: [] });
+        await f.coordinator.stop();
+        f.store.close();
+      }
+    });
+  }
+
+  test("does not connect when access verification finishes after shutdown", async () => {
+    const provider = new FakeProvider();
+    const pending = deferred<Awaited<ReturnType<FakeProvider["verifyAccess"]>>>();
+    const verifyAccess = provider.verifyAccess.bind(provider);
+    provider.verifyAccess = () => pending.promise;
+    const f = fixture(provider);
+    try {
+      const starting = f.coordinator.start();
+      await f.coordinator.stop();
+      pending.resolve(await verifyAccess());
+      await starting;
+      expect(provider.sequence).toEqual(["verify"]);
+      expect(f.coordinator.status()).toEqual({ state: "stopped" });
+    } finally {
+      await f.coordinator.stop();
+      f.store.close();
+    }
+  });
+
+  test("does not publish readiness when initial catch-up finishes after shutdown", async () => {
+    const provider = new FakeProvider();
+    const entered = deferred<void>();
+    const pending = deferred<Awaited<ReturnType<FakeProvider["listMessages"]>>>();
+    const recovered: Error[] = [];
+    provider.listMessages = async () => {
+      entered.resolve();
+      return pending.promise;
+    };
+    const f = fixture(provider, { onRecovered: (error) => recovered.push(error) });
+    try {
+      const starting = f.coordinator.start();
+      await entered.promise;
+      const stopping = f.coordinator.stop();
+      pending.resolve({ messages: [] });
+      await Promise.all([starting, stopping]);
+      expect(f.coordinator.status()).toEqual({ state: "stopped" });
+      expect(recovered).toEqual([]);
+      expect(provider.closed).toBe(true);
+    } finally {
+      pending.resolve({ messages: [] });
+      await f.coordinator.stop();
+      f.store.close();
+    }
+  });
+
+  test("closes a subscription that finishes connecting after shutdown", async () => {
+    const provider = new FakeProvider();
+    const entered = deferred<void>();
+    const pending = deferred<Awaited<ReturnType<FakeProvider["connect"]>>>();
+    provider.connect = async () => {
+      entered.resolve();
+      return pending.promise;
+    };
+    const f = fixture(provider);
+    try {
+      const starting = f.coordinator.start();
+      await entered.promise;
+      await f.coordinator.stop();
+      pending.resolve({
+        close: () => {
+          provider.closed = true;
+        },
+      });
+      await starting;
+      expect(provider.closed).toBe(true);
+      expect(provider.listCalls).toBe(0);
+      expect(f.coordinator.status()).toEqual({ state: "stopped" });
+    } finally {
+      await f.coordinator.stop();
+      f.store.close();
+    }
+  });
+
   test("subscribes before REST catch-up and wakes for offline mail", async () => {
     const provider = new FakeProvider();
     provider.pages = [{ messages: [message("offline_1", 1_000)] }];

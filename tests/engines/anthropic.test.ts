@@ -403,8 +403,8 @@ describe("createAnthropicEngine — costUsd", () => {
   });
 
   it("computes correct cost for haiku model with different rate", async () => {
-    // claude-haiku-4-5: $0.8/Mtok input, $4.0/Mtok output
-    // 1000 input + 200 output → (1000/1e6)*0.8 + (200/1e6)*4.0 = 0.0008 + 0.0008 = 0.0016
+    // claude-haiku-4-5: $1/Mtok input, $5/Mtok output
+    // 1000 input + 200 output → (1000/1e6)*1 + (200/1e6)*5 = 0.001 + 0.001 = 0.002
     nextAnthropicResponse = {
       id: "msg_test",
       type: "message",
@@ -419,7 +419,7 @@ describe("createAnthropicEngine — costUsd", () => {
     const result = await engine.complete(
       emptyPrompt({ messages: [anthropicMsg({ content: "hi" })] }),
     );
-    expect(result.costUsd).toBeCloseTo(0.0016, 8);
+    expect(result.costUsd).toBeCloseTo(0.002, 8);
   });
 
   it("costOverride populates costUsd for unknown model", async () => {
@@ -557,6 +557,32 @@ describe("createAnthropicEngine — costUsd", () => {
 // ---------------------------------------------------------------------------
 
 describe("createAnthropicEngine — startup warnings", () => {
+  it("prices opus 5 without an unpriced-model warning or cost override", async () => {
+    const warnings: string[] = [];
+    const original = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(String(args[0]));
+    try {
+      nextAnthropicResponse = {
+        id: "msg_test",
+        type: "message",
+        role: "assistant",
+        content: [{ type: "text", text: "hello" }],
+        model: "claude-opus-5",
+        stop_reason: "end_turn",
+        stop_sequence: null,
+        usage: { input_tokens: 100, output_tokens: 50 },
+      };
+      const result = await createAnthropicEngine({ model: "claude-opus-5" }).complete(
+        emptyPrompt(),
+      );
+      expect(warnings.some((warning) => warning.includes("No pricing entry"))).toBe(false);
+      expect(result.unpricedReason).toBeUndefined();
+      expect(result.costUsd).toBeCloseTo(0.00175, 8);
+    } finally {
+      console.warn = original;
+    }
+  });
+
   it("logs a warning containing 'No pricing entry' when model has no rates and no costOverride", () => {
     const warnings: string[] = [];
     const original = console.warn;

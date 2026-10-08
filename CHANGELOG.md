@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Verified model pricing.** Add Claude Opus 5 cost tracking and correct the
+  built-in Opus 4.6/4.7, Haiku 4.5, GPT-5, and GPT-5 mini rates against provider
+  pricing verified on 2026-10-08. Budget and usage accounting use the corrected
+  rates without requiring a custom cost override.
+- **AgentMail recovery status.** Successful inbound catch-up clears its prior
+  degraded warning without hiding unresolved processing or notification failures.
+  Late responses after shutdown and older catch-up attempts cannot overwrite
+  newer health state.
+- **AgentMail diagnostics.** Inbound failure and recovery logs include bounded,
+  sanitized operation and provider metadata without logging credentials or mail
+  content. Provider error classifications and retry policies are unchanged.
+
+### Security
+
+- Refresh patched runtime and tooling dependencies, including the MCP SDK, and
+  the Temporal example's gRPC, URI, and source-map dependencies. Packed release
+  checks use the reviewed workspace security overrides to avoid stale pins.
+
 ## [0.5.0] - 2026-08-18
 
 Auggy 0.5 is the first stable public-preview release of the TypeScript augment

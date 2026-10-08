@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, spyOn, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -458,6 +458,39 @@ async function waitFor(check: () => boolean): Promise<void> {
   throw new Error("condition did not settle");
 }
 
+async function waitForMailStatus(augment: Augment, state: string, errorCode?: string) {
+  const expectedStatus = {
+    level: errorCode === undefined ? "ok" : "warn",
+    message: errorCode === undefined ? `Inbound ${state}` : `Mail degraded (${errorCode})`,
+  } as const;
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const info = await augment.adminInfo?.();
+    if (
+      info?.projection?.kind === "mail" &&
+      info.projection.inbound.state === state &&
+      info.projection.status.message === expectedStatus.message
+    ) {
+      expect(info.sections[0]).toEqual({ kind: "status", ...expectedStatus });
+      expect(info.projection.status).toEqual(expectedStatus);
+      return info.projection;
+    }
+    await Bun.sleep(5);
+  }
+  throw new Error(`mail status did not settle: ${state}, ${expectedStatus.message}`);
+}
+
+function catchUpPermissionFailure(): AgentMailProviderError {
+  return new AgentMailProviderError({
+    code: "permission_missing",
+    operation: "list_messages",
+    phase: "catch_up",
+    retryable: false,
+    httpStatus: 403,
+    providerCode: "missing_permission",
+    nextAction: "Check inbox access.",
+  });
+}
+
 function toolContext(overrides: Partial<ToolExecuteContext> = {}): ToolExecuteContext {
   return {
     turnId: "turn_1",
@@ -504,6 +537,165 @@ function creatorTurn(turnId: string, threadId: string, text: string): TurnState 
 }
 
 describe("AgentMail provider-native runtime", () => {
+  test("clears status after two catch-up failures and logs exactly one recovery", async () => {
+    let now = Date.parse("2026-10-04T12:34:56.000Z");
+    const f = fixture({ inbound: true, clock: () => now });
+    const warn = spyOn(console, "warn").mockImplementation(() => {});
+    const info = spyOn(console, "info").mockImplementation(() => {});
+    try {
+      await f.augment.onBoot?.();
+      await f.augment.transport?.register(
+        kernel(async () => "[NO_REPLY]"),
+        "agentMail",
+      );
+      await f.augment.transport?.ready?.();
+      await waitForMailStatus(f.augment, "ready");
+      f.provider.handlers?.onOpen?.();
+      await waitForMailStatus(f.augment, "ready");
+      expect(warn).not.toHaveBeenCalled();
+      expect(info).not.toHaveBeenCalled();
+      const listMessages = f.provider.listMessages.bind(f.provider);
+      f.provider.listMessages = async () => {
+        throw catchUpPermissionFailure();
+      };
+      f.provider.handlers?.onOpen?.();
+      const degraded = await waitForMailStatus(f.augment, "degraded", "permission_missing");
+      expect(degraded.inbound.lastErrorCode).toBe("permission_missing");
+      f.provider.handlers?.onOpen?.();
+      await waitFor(() => warn.mock.calls.length === 2);
+      await waitForMailStatus(f.augment, "degraded", "permission_missing");
+      expect(info).not.toHaveBeenCalled();
+      const metadata = {
+        timestamp: "2026-10-04T12:34:56.000Z",
+        category: "permission_missing",
+        operation: "list_messages",
+        phase: "catch_up",
+        httpStatus: 403,
+        retryable: false,
+        providerCode: "missing_permission",
+      };
+      const failureMetadata = JSON.stringify(metadata);
+      expect(warn.mock.calls).toEqual([
+        [`[agentMail] inbound degraded code=permission_missing ${failureMetadata}`],
+        [`[agentMail] inbound degraded code=permission_missing ${failureMetadata}`],
+      ]);
+      now += 60_000;
+      f.provider.listMessages = listMessages;
+      f.provider.handlers?.onOpen?.();
+      const recovered = await waitForMailStatus(f.augment, "ready");
+      expect(recovered.inbound.lastErrorCode).toBeUndefined();
+      const recoveryMetadata = JSON.stringify({
+        ...metadata,
+        timestamp: "2026-10-04T12:35:56.000Z",
+      });
+      expect(info.mock.calls).toEqual([
+        [`[agentMail] inbound recovered code=permission_missing ${recoveryMetadata}`],
+      ]);
+      f.provider.handlers?.onOpen?.();
+      await waitForMailStatus(f.augment, "ready");
+      expect(warn).toHaveBeenCalledTimes(2);
+      expect(info).toHaveBeenCalledTimes(1);
+    } finally {
+      await f.augment.onShutdown?.();
+      f.store.close();
+      warn.mockRestore();
+      info.mockRestore();
+    }
+  });
+
+  for (const failureStage of ["processing", "draft"] as const) {
+    test(`inbound recovery preserves an unresolved ${failureStage} failure`, async () => {
+      const provider = new FakeProvider();
+      const incoming = message();
+      provider.messages.set(incoming.messageId, incoming);
+      provider.pages = [[summary(incoming)]];
+      const failure = new AgentMailProviderError({
+        code: "resource_unprocessable",
+        operation: failureStage === "processing" ? "get_message" : "create_reply_draft",
+        phase: "provider",
+        retryable: false,
+        nextAction: "Inspect the failed operation.",
+      });
+      if (failureStage === "processing") {
+        provider.getMessage = async () => {
+          throw failure;
+        };
+      } else {
+        provider.createDraft = async () => {
+          throw failure;
+        };
+      }
+      const f = fixture({ inbound: true, provider });
+      try {
+        await f.augment.onBoot?.();
+        await f.augment.transport?.register(
+          kernel(async () => "We can help."),
+          "agentMail",
+        );
+        await f.augment.transport?.ready?.();
+        await waitFor(() => f.store.getMessage(incoming.messageId)?.state === "quarantined");
+        await waitForMailStatus(f.augment, "ready", "resource_unprocessable");
+        const listMessages = provider.listMessages.bind(provider);
+        provider.listMessages = async () => {
+          throw catchUpPermissionFailure();
+        };
+        provider.handlers?.onOpen?.();
+        const degraded = await waitForMailStatus(f.augment, "degraded", "resource_unprocessable");
+        expect(degraded.inbound.lastErrorCode).toBe("permission_missing");
+        provider.listMessages = listMessages;
+        provider.handlers?.onOpen?.();
+        const recovered = await waitForMailStatus(f.augment, "ready", "resource_unprocessable");
+        expect(recovered.inbound.lastErrorCode).toBeUndefined();
+        expect(f.store.getMessage(incoming.messageId)?.state).toBe("quarantined");
+      } finally {
+        await f.augment.onShutdown?.();
+        f.store.close();
+      }
+    });
+  }
+
+  test("inbound recovery preserves an unresolved creator notification failure", async () => {
+    const provider = new FakeProvider();
+    const incoming = message();
+    provider.messages.set(incoming.messageId, incoming);
+    provider.pages = [[summary(incoming)]];
+    const f = fixture({ inbound: true, notifications: true, provider });
+    const dispatchHost = notificationHost([]);
+    dispatchHost.dispatchInternal = async () => {
+      throw new Error("Notify unavailable");
+    };
+    try {
+      await f.augment.onBoot?.();
+      f.augment.creatorAttentionHost.configure({
+        dispatchHost,
+        destination: "creator",
+        destinationBindingHash: "b".repeat(64),
+        maxAttempts: 3,
+      });
+      await f.augment.creatorAttentionHost.start();
+      await f.augment.transport?.register(
+        kernel(async () => "We can help."),
+        "agentMail",
+      );
+      await f.augment.transport?.ready?.();
+      await waitForMailStatus(f.augment, "ready", "notification_failure");
+      const listMessages = provider.listMessages.bind(provider);
+      provider.listMessages = async () => {
+        throw catchUpPermissionFailure();
+      };
+      provider.handlers?.onOpen?.();
+      const degraded = await waitForMailStatus(f.augment, "degraded", "notification_failure");
+      expect(degraded.inbound.lastErrorCode).toBe("permission_missing");
+      provider.listMessages = listMessages;
+      provider.handlers?.onOpen?.();
+      const recovered = await waitForMailStatus(f.augment, "ready", "notification_failure");
+      expect(recovered.inbound.lastErrorCode).toBeUndefined();
+    } finally {
+      await f.augment.onShutdown?.();
+      f.store.close();
+    }
+  });
+
   test("routes one content-free draft-ready alert through the hardened Notify host", async () => {
     const provider = new FakeProvider();
     const incoming = message();

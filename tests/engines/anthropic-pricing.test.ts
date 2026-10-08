@@ -22,20 +22,24 @@ describe("anthropic lookup", () => {
   it("returns correct haiku rates", () => {
     const r = lookup("claude-haiku-4-5");
     expect(r).toBeTruthy();
-    expect(r!.inputUsdPerMtok).toBe(0.8);
-    expect(r!.outputUsdPerMtok).toBe(4.0);
-    expect(r!.cacheWriteUsdPerMtok).toBe(1.0);
-    expect(r!.cacheReadUsdPerMtok).toBe(0.08);
+    expect(r!.inputUsdPerMtok).toBe(1.0);
+    expect(r!.outputUsdPerMtok).toBe(5.0);
+    expect(r!.cacheWriteUsdPerMtok).toBe(1.25);
+    expect(r!.cacheReadUsdPerMtok).toBe(0.1);
+    expect(r).toEqual(lookup("claude-haiku-4-5-20251001"));
   });
 
-  it("returns correct opus 4.8 rates", () => {
-    const r = lookup("claude-opus-4-8");
-    expect(r).toBeTruthy();
-    expect(r!.inputUsdPerMtok).toBe(5.0);
-    expect(r!.outputUsdPerMtok).toBe(25.0);
-    expect(r!.cacheWriteUsdPerMtok).toBe(6.25);
-    expect(r!.cacheReadUsdPerMtok).toBe(0.5);
-  });
+  it.each(["claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6"])(
+    "returns correct standard rates for %s",
+    (model) => {
+      const r = lookup(model);
+      expect(r).toBeTruthy();
+      expect(r!.inputUsdPerMtok).toBe(5.0);
+      expect(r!.outputUsdPerMtok).toBe(25.0);
+      expect(r!.cacheWriteUsdPerMtok).toBe(6.25);
+      expect(r!.cacheReadUsdPerMtok).toBe(0.5);
+    },
+  );
 
   it("returns correct fable 5 rates", () => {
     const r = lookup("claude-fable-5");
@@ -62,6 +66,17 @@ describe("anthropic getFreshness", () => {
 });
 
 describe("priceAnthropicResponse — standard path", () => {
+  it("prices opus 5 without an override, including cache tokens", () => {
+    const result = priceAnthropicResponse("claude-opus-5", undefined, {
+      input_tokens: 100_000,
+      output_tokens: 10_000,
+      cache_creation_input_tokens: 200_000,
+      cache_read_input_tokens: 1_000_000,
+    });
+    // 0.5 input + 0.25 output + 1.25 cache write + 0.5 cache read.
+    expect(result).toEqual({ priced: true, costUsd: 2.5 });
+  });
+
   it("prices known model correctly (sonnet)", () => {
     const result = priceAnthropicResponse("claude-sonnet-4-6", undefined, {
       input_tokens: 100,
