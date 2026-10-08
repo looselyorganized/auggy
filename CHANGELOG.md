@@ -21,6 +21,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sanitized operation and provider metadata without logging credentials or mail
   content. Provider error classifications and retry policies are unchanged.
 
+### Security
+
+- Refresh patched runtime and tooling dependencies, including the MCP SDK, and
+  the Temporal example's gRPC, URI, and source-map dependencies. Packed release
+  checks use the reviewed workspace security overrides to avoid stale pins.
+
 ## [0.5.0] - 2026-08-18
 
 Auggy 0.5 is the first stable public-preview release of the TypeScript augment

@@ -129,8 +129,9 @@ verify_adapter_consumer() {
   shift 4
 
   mkdir -p "$consumer_dir"
-  node - "$consumer_dir/package.json" <<'NODE'
-const { writeFileSync } = require("node:fs");
+  node - "$consumer_dir/package.json" "$ROOT/package.json" <<'NODE'
+const { readFileSync, writeFileSync } = require("node:fs");
+const { overrides } = JSON.parse(readFileSync(process.argv[3], "utf8"));
 writeFileSync(
   process.argv[2],
   `${JSON.stringify({
@@ -141,26 +142,8 @@ writeFileSync(
     // TypeScript package, even when a package is not otherwise present in the
     // resolved graph. Install these audited overrides explicitly so the
     // isolated import exercises the same pinned contract as the workspace.
-    dependencies: {
-      "@hono/node-server": "2.0.11",
-      "body-parser": "2.3.0",
-      "brace-expansion": "5.0.9",
-      "fast-uri": "3.1.5",
-      "hono": "4.12.34",
-      "ip-address": "10.4.0",
-      "postcss": "8.5.25",
-      "undici": "7.29.0",
-    },
-    overrides: {
-      "@hono/node-server": "2.0.11",
-      "body-parser": "2.3.0",
-      "brace-expansion": "5.0.9",
-      "fast-uri": "3.1.5",
-      "hono": "4.12.34",
-      "ip-address": "10.4.0",
-      "postcss": "8.5.25",
-      "undici": "7.29.0",
-    },
+    dependencies: { ...overrides },
+    overrides,
   }, null, 2)}\n`,
 );
 NODE
@@ -232,16 +215,7 @@ NODE
       import { readFileSync } from "node:fs";
       import { join } from "node:path";
 
-      const expected = {
-        "@hono/node-server": "2.0.11",
-        "body-parser": "2.3.0",
-        "brace-expansion": "5.0.9",
-        "fast-uri": "3.1.5",
-        hono: "4.12.34",
-        "ip-address": "10.4.0",
-        postcss: "8.5.25",
-        undici: "7.29.0",
-      };
+      const { overrides: expected } = JSON.parse(readFileSync(process.argv[1], "utf8"));
       for (const [name, version] of Object.entries(expected)) {
         // These are direct consumer dependencies. Read their root manifests
         // instead of resolving module entry points: Bun resolves `undici` to
@@ -259,7 +233,7 @@ NODE
           );
         }
       }
-    ' || exit $?
+    ' "$ROOT/package.json" || exit $?
     bun audit --json | node -e '
       const result = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
       if (Object.keys(result).length !== 0) {
@@ -273,24 +247,16 @@ NODE
 verify_evals_consumer() {
   local consumer_dir="$SMOKE_DIR/evals-consumer"
   mkdir -p "$consumer_dir"
-  node - "$consumer_dir/package.json" <<'NODE'
-const { writeFileSync } = require("node:fs");
+  node - "$consumer_dir/package.json" "$ROOT/package.json" <<'NODE'
+const { readFileSync, writeFileSync } = require("node:fs");
+const { overrides } = JSON.parse(readFileSync(process.argv[3], "utf8"));
 writeFileSync(
   process.argv[2],
   `${JSON.stringify({
     name: "packed-evals-consumer",
     private: true,
     type: "module",
-    overrides: {
-      "@hono/node-server": "2.0.11",
-      "body-parser": "2.3.0",
-      "brace-expansion": "5.0.9",
-      "fast-uri": "3.1.5",
-      "hono": "4.12.34",
-      "ip-address": "10.4.0",
-      "postcss": "8.5.25",
-      "undici": "7.29.0",
-    },
+    overrides,
   }, null, 2)}\n`,
 );
 NODE

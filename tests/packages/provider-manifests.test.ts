@@ -75,14 +75,18 @@ describe("published provider package contracts", () => {
     expect(rootManifest.overrides).toEqual({
       "@hono/node-server": "2.0.11",
       "body-parser": "2.3.0",
-      "brace-expansion": "5.0.9",
-      "fast-uri": "3.1.5",
-      hono: "4.12.34",
-      "ip-address": "10.4.0",
-      "js-yaml": "4.3.1",
+      "brace-expansion": "5.0.12",
+      "fast-uri": "3.1.8",
+      hono: "4.13.11",
+      "ip-address": "10.7.1",
+      "js-yaml": "4.3.2",
       nanoid: "3.3.18",
       postcss: "8.5.25",
-      undici: "7.29.0",
+      "postcss-selector-parser": "7.1.6",
+      "proxy-addr": "2.0.8",
+      qs: "6.16.0",
+      "source-map-js": "1.2.2",
+      undici: "7.29.1",
     });
   });
 
