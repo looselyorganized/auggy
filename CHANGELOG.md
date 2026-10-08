@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Verified model pricing.** Add Claude Opus 5 cost tracking and correct the
+  built-in Opus 4.6/4.7, Haiku 4.5, GPT-5, and GPT-5 mini rates against provider
+  pricing verified on 2026-10-08. Budget and usage accounting use the corrected
+  rates without requiring a custom cost override.
 - **AgentMail recovery status.** Successful inbound catch-up clears its prior
   degraded warning without hiding unresolved processing or notification failures.
   Late responses after shutdown and older catch-up attempts cannot overwrite

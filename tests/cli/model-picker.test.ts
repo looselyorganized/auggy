@@ -8,6 +8,7 @@ describe("getModelChoices", () => {
     expect(ids).toContain("claude-haiku-4-5");
     expect(ids).toContain("claude-sonnet-4-6");
     expect(ids).toContain("claude-opus-4-8");
+    expect(ids).toContain("claude-opus-5");
     expect(ids).toContain("claude-opus-4-6");
     expect(ids).toContain("claude-opus-4-7");
     expect(choices.every((c) => typeof c.inputUsdPerMtok === "number")).toBe(true);
@@ -28,6 +29,7 @@ describe("getModelChoices", () => {
     const ids = choices.map((c) => c.id);
     expect(ids).toContain("anthropic/claude-sonnet-4-6");
     expect(ids).toContain("anthropic/claude-opus-4-8");
+    expect(ids).toContain("anthropic/claude-opus-5");
     expect(ids).toContain("openai/gpt-5.4-mini");
     expect(ids).toContain("openai/gpt-5");
     expect(ids).toContain("anthropic/claude-haiku-4-5");
@@ -47,11 +49,11 @@ describe("getModelChoices", () => {
 describe("formatChoiceLabel", () => {
   test("formats with two decimal places when below $1", () => {
     const choice: ModelChoice = {
-      id: "claude-haiku-4-5",
-      inputUsdPerMtok: 0.8,
-      outputUsdPerMtok: 4.0,
+      id: "gpt-5-mini",
+      inputUsdPerMtok: 0.25,
+      outputUsdPerMtok: 2.0,
     };
-    expect(formatChoiceLabel(choice)).toBe("claude-haiku-4-5 — $0.80/$4 per Mtok");
+    expect(formatChoiceLabel(choice)).toBe("gpt-5-mini — $0.25/$2 per Mtok");
   });
 
   test("formats with no decimal when integer", () => {

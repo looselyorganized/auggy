@@ -6,13 +6,14 @@ import {
   freshness,
 } from "../_shared/cost";
 
-// USD per million tokens. Update via PR when OpenAI changes pricing.
+// Standard short-context USD per million uncached input/output tokens.
+// Verified against each model's pricing at https://developers.openai.com/api/docs/models/<model>.
 const TABLE: Record<string, Pricing> = {
   "gpt-5.5": { inputUsdPerMtok: 5.0, outputUsdPerMtok: 30.0 },
   "gpt-5.4": { inputUsdPerMtok: 2.5, outputUsdPerMtok: 15.0 },
   "gpt-5.4-mini": { inputUsdPerMtok: 0.75, outputUsdPerMtok: 4.5 },
-  "gpt-5": { inputUsdPerMtok: 5.0, outputUsdPerMtok: 20.0 },
-  "gpt-5-mini": { inputUsdPerMtok: 1.0, outputUsdPerMtok: 4.0 },
+  "gpt-5": { inputUsdPerMtok: 1.25, outputUsdPerMtok: 10.0 },
+  "gpt-5-mini": { inputUsdPerMtok: 0.25, outputUsdPerMtok: 2.0 },
 };
 
 /**
@@ -23,7 +24,7 @@ export function listModels(): string[] {
   return Object.keys(TABLE);
 }
 
-const VERIFIED_AT = "2026-06-01";
+const VERIFIED_AT = "2026-10-08";
 
 export function lookup(model: string): Pricing | null {
   return TABLE[model] ?? null;

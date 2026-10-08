@@ -617,12 +617,12 @@ describe("createOpenRouterEngine — costUsd", () => {
 
   test("routes-to-openai slug populates costUsd", async () => {
     // openai/gpt-5 → lookupPricing("openai", "gpt-5")
-    // $5.00/Mtok in, $20.00/Mtok out; 400 in + 200 out → 0.002 + 0.004 = 0.006 USD
+    // $1.25/Mtok in, $10/Mtok out; 400 in + 200 out → 0.0005 + 0.002 = 0.0025 USD
     nextResponse = mockCompletionWithTokens(400, 200, "openai/gpt-5");
     const engine = createOpenRouterEngine({ model: "openai/gpt-5" });
     const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.costUsd).toBeGreaterThan(0);
-    expect(result.costUsd).toBeCloseTo(0.006, 8);
+    expect(result.costUsd).toBeCloseTo(0.0025, 8);
   });
 
   test("unknown provider slug leaves costUsd undefined", async () => {
@@ -829,7 +829,7 @@ describe("createOpenRouterEngine — response limits", () => {
       name: "ModelResponseLimitError",
       accounting: { inputTokens: 200, outputTokens: 100 },
     });
-    expect(error.accounting.costUsd).toBeCloseTo(0.003, 8);
+    expect(error.accounting.costUsd).toBeCloseTo(0.00125, 8);
     expect(error.message).not.toContain("sentinel-provider-id");
   });
 });

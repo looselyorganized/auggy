@@ -21,7 +21,7 @@ describe("resolveSlug", () => {
     const r = resolveSlug("openai/gpt-5");
     expect(r).toBeTruthy();
     expect(r!.resolvedProvider).toBe("openai");
-    expect(r!.rates.inputUsdPerMtok).toBe(5.0);
+    expect(r!.rates.inputUsdPerMtok).toBe(1.25);
   });
 
   it("returns null for unknown provider prefix", () => {
@@ -90,14 +90,14 @@ describe("priceOpenRouterResponse — slug routing path", () => {
   });
 
   it("prices openai/* slug via openai pricing module", () => {
-    // openai/gpt-5: $5.00/Mtok in, $20.00/Mtok out
-    // 400 in + 200 out → 0.002 + 0.004 = 0.006 USD
+    // openai/gpt-5: $1.25/Mtok in, $10/Mtok out
+    // 400 in + 200 out → 0.0005 + 0.002 = 0.0025 USD
     const result = priceOpenRouterResponse("openai/gpt-5", undefined, {
       prompt_tokens: 400,
       completion_tokens: 200,
     });
     expect(result.priced).toBe(true);
-    if (result.priced) expect(result.costUsd).toBeCloseTo(0.006, 8);
+    if (result.priced) expect(result.costUsd).toBeCloseTo(0.0025, 8);
   });
 
   it("returns unpriced for unknown provider slug", () => {

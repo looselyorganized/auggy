@@ -770,13 +770,13 @@ describe("createOpenAIEngine — SDK call payload", () => {
 
 describe("createOpenAIEngine — costUsd", () => {
   test("populates costUsd when pricing is known for the model", async () => {
-    // gpt-5: $5.00/Mtok input, $20.00/Mtok output
-    // 200 input + 100 output → (200/1e6)*5 + (100/1e6)*20 = 0.001 + 0.002 = 0.003
+    // gpt-5: $1.25/Mtok input, $10/Mtok output
+    // 200 input + 100 output → (200/1e6)*1.25 + (100/1e6)*10 = 0.00025 + 0.001 = 0.00125
     nextResponse = mockCompletion({ inputTokens: 200, outputTokens: 100 });
     const engine = createOpenAIEngine({ model: "gpt-5" });
     const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
     expect(result.costUsd).toBeGreaterThan(0);
-    expect(result.costUsd).toBeCloseTo(0.003, 8);
+    expect(result.costUsd).toBeCloseTo(0.00125, 8);
   });
 
   test("leaves costUsd undefined for unknown models", async () => {
@@ -787,12 +787,12 @@ describe("createOpenAIEngine — costUsd", () => {
   });
 
   test("computes correct cost for gpt-5-mini model", async () => {
-    // gpt-5-mini: $1.00/Mtok input, $4.00/Mtok output
-    // 500 input + 250 output → (500/1e6)*1 + (250/1e6)*4 = 0.0005 + 0.001 = 0.0015
+    // gpt-5-mini: $0.25/Mtok input, $2/Mtok output
+    // 500 input + 250 output → (500/1e6)*0.25 + (250/1e6)*2 = 0.000125 + 0.0005 = 0.000625
     nextResponse = mockCompletion({ inputTokens: 500, outputTokens: 250 });
     const engine = createOpenAIEngine({ model: "gpt-5-mini" });
     const result = await engine.complete(emptyPrompt({ messages: [msg({ content: "hi" })] }));
-    expect(result.costUsd).toBeCloseTo(0.0015, 8);
+    expect(result.costUsd).toBeCloseTo(0.000625, 8);
   });
 
   test("costOverride populates costUsd for unknown model", async () => {
@@ -808,7 +808,7 @@ describe("createOpenAIEngine — costUsd", () => {
   });
 
   test("costOverride takes precedence over pricing-table entry for known model", async () => {
-    // gpt-5 is in the pricing table ($5/$20) but costOverride wins ($1/$4)
+    // gpt-5 is in the pricing table ($1.25/$10) but costOverride wins ($1/$4)
     // 600 input + 300 output → (600/1e6)*1 + (300/1e6)*4 = 0.0006 + 0.0012 = 0.0018
     nextResponse = mockCompletion({ inputTokens: 600, outputTokens: 300 });
     const engine = createOpenAIEngine({
@@ -985,7 +985,7 @@ describe("createOpenAIEngine — response limits", () => {
       name: "ModelResponseLimitError",
       accounting: { inputTokens: 200, outputTokens: 100 },
     });
-    expect(error.accounting.costUsd).toBeCloseTo(0.003, 8);
+    expect(error.accounting.costUsd).toBeCloseTo(0.00125, 8);
     expect(error.message).not.toContain("sentinel-provider-id");
   });
 });
