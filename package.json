@@ -67,7 +67,10 @@
     "./internal/augments/layeredMemory/storage/sqlite-store": "./src/augments/layeredMemory/storage/sqlite-store.ts",
     "./internal/augments/layeredMemory/extractor/inject-handler": "./src/augments/layeredMemory/extractor/inject-handler.ts",
     "./internal/augments/layeredMemory/extractor/frequency": "./src/augments/layeredMemory/extractor/frequency.ts",
-    "./application": "./src/application/index.ts"
+    "./application": {
+      "types": "./src/application/public.d.ts",
+      "default": "./src/application/index.ts"
+    }
   },
   "bin": {
     "auggy": "src/cli/index.ts"
