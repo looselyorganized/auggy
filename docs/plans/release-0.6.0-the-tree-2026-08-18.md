@@ -1,6 +1,7 @@
 # Release 0.6.0 — inspectable agent applications
 
-Status: implementation in progress; no milestone accepted yet.
+Status: milestones 1–2 implementation delivered; local M2 evidence accepted.
+Formal acceptance awaits Linux/security/PostgreSQL CI and preservation review.
 Revised: 2026-11-12. Governing direction: [Roadmap](../ROADMAP.md).
 Delete this implementation plan when 0.6.0 ships; retain accepted ADRs.
 
@@ -111,14 +112,14 @@ A commit/patch identity must accompany any eventual accepted baseline.
 
 | Gate | State |
 |---|---|
-| Preservation | In progress |
-| Original-main baseline | In progress |
-| Scoped baseline repairs | Awaiting findings |
+| Preservation | Archives verified; retirement deferred for exclusion review |
+| Original-main baseline | Captured; initial failures retained in evidence |
+| Scoped baseline repairs | Required local checks pass; extra workspace audit findings recorded |
 | Ownership decision | Adopted; implementation guarantees remain future |
-| Packed execution scenarios | In progress |
-| Independent review | Pending |
-| M1 acceptance | Pending |
-| M2 acceptance | Pending |
+| Packed execution scenarios | All seven passed in immutable full release rehearsal |
+| Independent review | Local code and final evidence approved |
+| M1 acceptance | Pending Linux/security/PostgreSQL CI and preservation review |
+| M2 acceptance | Accepted locally; formal gate follows M1 certification |
 
 ## Milestones 3–6: roadmap only
 
