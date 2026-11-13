@@ -567,3 +567,74 @@ test("timed-out HTTP route retains host claims and route resources until actual 
     await host.stop();
   }
 });
+
+test("streaming HTTP response drains before shutdown of the route's augment resources", async () => {
+  const f = fixture();
+  const port = await freePort();
+  f.configure({
+    augments: [{ name: "web", type: "webTransport", options: { port, adminRoute: false } }],
+  });
+  const held = deferred();
+  let resourceClosed = false;
+  let bodySawClosedResource: boolean | undefined;
+  const route = routeFixtureAugment({
+    auth: "bearer",
+    handler: async () =>
+      new Response(
+        new ReadableStream<Uint8Array>({
+          async start(controller) {
+            controller.enqueue(new TextEncoder().encode("begin"));
+            await held.promise;
+            bodySawClosedResource = resourceClosed;
+            controller.enqueue(new TextEncoder().encode("end"));
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "text/plain" } },
+      ),
+  });
+  route.onShutdown = async () => {
+    resourceClosed = true;
+  };
+  const host = f.host({
+    factories: {
+      resolveEngine: async () => createMockModel(),
+      resolveAugments: async (_configs, _dir, options) => [
+        options!.webTransportFactory!(
+          { port, auth: { type: "bearer", token: "stream-test-only" }, adminRoute: false },
+          "web",
+        ),
+        route,
+      ],
+    },
+  });
+  let cancelBody: (() => Promise<void>) | undefined;
+  try {
+    const prepared = await host.prepare();
+    await host.start({ http: prepared.http.map(listener) });
+    const response = await fetch(`http://127.0.0.1:${port}/test/echo`, {
+      headers: { authorization: "Bearer stream-test-only" },
+    });
+    expect(response.status).toBe(200);
+    const reader = response.body!.getReader();
+    cancelBody = () => reader.cancel();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("begin");
+    expect(await host.stop({ deadlineMs: 10 })).toMatchObject({
+      status: "retained",
+      reason: "deadline",
+    });
+    expect(resourceClosed).toBe(false);
+    expect(f.manifest()?.agentId).toBe(f.id);
+    held.resolve();
+    expect(new TextDecoder().decode((await reader.read()).value)).toBe("end");
+    expect((await reader.read()).done).toBe(true);
+    expect(await host.stop()).toMatchObject({ status: "stopped", cleanup: "complete" });
+    expect(bodySawClosedResource).toBe(false);
+    expect(resourceClosed).toBe(true);
+    expect(f.manifest()).toBeNull();
+  } finally {
+    held.resolve();
+    await cancelBody?.();
+    await host.stop();
+  }
+});

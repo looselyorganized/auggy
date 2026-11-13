@@ -3958,12 +3958,9 @@ function createWebTransportInstance(
       router.closeAdmission();
       await waitForHttpQuiescence();
       if (server) {
-        // Close admission first, then drain active delivery before stopping
-        // all sockets. Bun's graceful stop can retain idle keep-alive sockets
+        // After draining active delivery, close idle sockets too.
+        // Bun's graceful stop can retain idle keep-alive sockets
         // whose old handler would otherwise survive a same-process restart.
-        while (server.pendingRequests > 0) {
-          await new Promise<void>((done) => setTimeout(done, 10));
-        }
         await server.stop(true);
         server = null;
       }
@@ -3997,6 +3994,12 @@ function createWebTransportInstance(
   async function waitForHttpQuiescence(): Promise<void> {
     await router.waitForQuiescence();
     while (executions.size > 0) await Promise.allSettled([...executions]);
+    // A route can return its Response before the streaming body finishes using
+    // augment resources. The host joins delivery here before it runs any of
+    // those augment shutdown hooks, regardless of their declaration order.
+    while (server && server.pendingRequests > 0) {
+      await new Promise<void>((done) => setTimeout(done, 10));
+    }
   }
 
   registerCleanupProof(
