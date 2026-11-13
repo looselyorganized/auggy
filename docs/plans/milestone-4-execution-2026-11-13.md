@@ -1,6 +1,8 @@
 # Milestone 4 — inspectable project authoring
 
-Status: execution authorized; verified-main gate is in progress. See the
+Status: execution authorized; G0 accepted at verified main `911fe168` and M4-00
+compiled contracts independently accepted. Document/publication producers follow
+this freeze. See the
 [execution evidence](./milestone-4-evidence-2026-11-13.md) and
 [review dispositions](./milestone-4-plan-review-2026-11-13.md).
 This packet is prepared for
@@ -29,9 +31,12 @@ The candidate is not an accepted main baseline. Its
 [M3 evidence](./milestone-3-evidence-2026-11-13.md) is supporting evidence, not
 permission to skip verification after merge.
 
-PR #227 is now merged as `d8d0072cd334834bc62e8270b40edd2a2a7a94e9`.
-Its tree exactly matches the reviewed candidate; main CI/CodeQL verification is
-the remaining G0 prerequisite. The implementation branch is
+PR #227 merged as `d8d0072cd334834bc62e8270b40edd2a2a7a94e9`. A scoped test-only
+CodeQL repair merged through PR #228. The accepted M4 baseline is
+`911fe1682c76208c1d99d4dc6841bfcaa608dd8d`, tree
+`d901475a9afb7a9d24dc70c21ac2480bfab78439`. All 29 resulting-main checks, PostgreSQL
+13/13 and the full-main CodeQL zero-open-alert audit pass. Production source and
+the root lock match the planning candidate. The implementation branch is
 `feat/inspectable-authoring`, isolated from the original dirty checkout.
 
 **G0:** before M4 implementation, obtain implementation authorization, complete
@@ -211,6 +216,14 @@ provenance, redacted plans and preconditioned mutations. M4-02 exposes a pure
 application-template planner consumed by migration. M4-06 supplies a pure report
 builder and shared passive command grammar consumed by root. Freeze these small
 interfaces and compile fixtures in 00; no framework-sized abstraction.
+
+The exact shared types are in `src/cli/authoring/contracts.ts`, with compile-only
+consumers in `tests/fixtures/authoring-contract.ts`. The
+[interface freeze](./milestone-4-contracts/freeze.md) and
+[harness freeze](./milestone-4-contracts/harness-freeze.md) record concrete limits,
+failure/credential compensation, ignore bootstrap, source-edit observations and
+artifact selection. M4-01 is split into document and publication producers with
+separate file ownership; root alone accepts their combined outcome.
 
 The harness may prepare fixtures and negative controls after 00 without waiting
 for product completion. This does not make its acceptance ready. Its ledger

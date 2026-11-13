@@ -1,9 +1,9 @@
-# M4-00 draft — generated-project harness interfaces
+# M4-00 — generated-project harness interfaces
 
-Status: draft pending G0 and root contract freeze. The user authorized execution,
-but main verification and the scoped CodeQL repair in PR #228 remain entry-gate
-work. This document is preparation only, not acceptance of M4 implementation.
-Root owns final interface decisions, shared changes and ledger state.
+Status: contract accepted after G0 verification and independent design review.
+PR #228 is merged; verified main is `911fe168`. This freezes the harness producer
+boundary, not installed acceptance or completion of M4. Root owns shared changes
+and ledger state.
 
 This supplements [C4](./acceptance.md) and [C1](./authoring.md). Source inspection
 used candidate `ba16ce3a8be1f5ef8ec36e43c79889c3feecc250`, whose tree matches M3

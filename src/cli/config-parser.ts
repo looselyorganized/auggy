@@ -25,6 +25,7 @@ import type {
 } from "./types";
 import { parseApplicationDeclaration } from "./application-definition";
 import { VALID_NAME_RE } from "./agent-name";
+import { BUILTIN_TYPES } from "./builtin-types";
 export { VALID_NAME_RE } from "./agent-name";
 import { KNOWN_PROVIDERS, isKnownProvider } from "./types";
 import { parseEnvFile } from "./env-parse";
@@ -366,25 +367,6 @@ const AUG1_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-
 /** Agent and augment names: code identifiers; no dots, slashes, or spaces. */
 const VALID_COMPACTION = new Set(["truncate", "summarize", "sliding-window"]);
 const AUGMENT_SOURCE_LABEL_FIELD = "__auggySourceLabel";
-const BUILTIN_TYPES = new Set([
-  "fileMemory",
-  "supabaseMemory",
-  "layeredMemory",
-  "filesystem",
-  "webTransport",
-  "webFetch",
-  "knowledge",
-  "skills",
-  "bash",
-  "budgets",
-  "notify",
-  "mcp",
-  "agentMail",
-  "telegramTransport",
-  "turnControl",
-  "visitorAuth",
-  "link",
-]);
 const VALID_REASONING_EFFORTS = new Set(["none", "minimal", "low", "medium", "high", "xhigh"]);
 const VALID_ROUTING_SORTS = new Set(["price", "throughput", "latency"]);
 const VALID_ROUTING_KEYS = new Set(["only", "ignore", "sort", "max_price"]);

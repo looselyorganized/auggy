@@ -1,17 +1,19 @@
-# M4-00 — shared contract freeze draft
+# M4-00 — shared contract freeze
 
-**DRAFT — pending G0 and root contract review. M4-00 is not accepted.**
+**Accepted after verified main G0 and independent compiled-contract review.**
 
 This document records the configuration architect's read-only preparation for
 the [execution plan](../milestone-4-execution-2026-11-13.md). Root owns the final
 `contracts.ts`, compile fixtures, integration boundaries and acceptance decision.
-No implementation or ledger state is established by this draft.
+The implementation types are `src/cli/authoring/contracts.ts`; compile fixtures
+are `tests/fixtures/authoring-contract.ts`. Only root changes ledger acceptance.
 
 The inspected implementation is M3 candidate `ba16ce3a8be1f5ef8ec36e43c79889c3feecc250`.
 Its tree matches merged main `d8d0072cd334834bc62e8270b40edd2a2a7a94e9` exactly.
-Merged-main CodeQL findings currently block G0; any accepted repair must be
-reconciled before these interfaces are frozen. Existing C1–C4 preservation and
-security requirements still apply.
+The test-only CodeQL repair is merged and verified on main `911fe168`, with zero
+open full-main findings. Production source is unchanged. Independent review of
+the actual compiled contracts found one path-limit mismatch, corrected to 1,024
+bytes before acceptance. Existing C1–C4 preservation/security requirements apply.
 
 ## Producer split and import boundary
 

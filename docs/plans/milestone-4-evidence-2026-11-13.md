@@ -1,6 +1,6 @@
 # Milestone 4 — execution evidence
 
-Status: execution authorized; G0 verification in progress. No implementation
+Status: execution authorized; G0 accepted on repaired main. No implementation
 acceptance is claimed until the corresponding ledger task is accepted.
 
 ## Entry gate and preservation
@@ -70,4 +70,27 @@ installed-harness interfaces in [freeze.md](./milestone-4-contracts/freeze.md) a
 [harness-freeze.md](./milestone-4-contracts/harness-freeze.md). Independent contract
 review added explicit config activation outcomes for AgentMail compensation and
 an ignore-rule bootstrap recovery protocol. These close concrete cross-producer
-failure gaps. Product implementation still waits for G0 and compiled M4-00 freeze.
+failure gaps. At this preparation point, producers were still waiting for G0 and
+compiled M4-00 freeze.
+
+## G0 accepted and contract compilation
+
+The entry auditor accepted main `911fe1682c76208c1d99d4dc6841bfcaa608dd8d`, tree
+`d901475a9afb7a9d24dc70c21ac2480bfab78439`, matching the reviewed repair exactly.
+[Main CI](https://github.com/looselyorganized/auggy/actions/runs/43375919380) passed
+all required checks and PostgreSQL 13/13 on 170010. The
+[full-main CodeQL run](https://github.com/looselyorganized/auggy/actions/runs/43375919436)
+uploaded analysis `2158727887` with zero open main-ref alerts. Alerts 118–127 are
+fixed, not dismissed. All 29 resulting-main checks passed.
+
+The implementation branch was rebased onto that main, retaining only M4 planning
+and preparation changes. Root translated the independently reviewed draft into
+CLI-local shared types and compile-only consumers, and extracted the unchanged
+declarable built-in type set into a pure module. Strict typecheck passed; existing
+parser regression passed 132 tests / 266 assertions; scoped formatting/lint passed.
+The independent final M4-00 recheck accepted the actual compiled files after a
+4,096-versus-1,024 relative-path limit mismatch was corrected. Final contracts
+SHA-256: `34edd0aae8e24fefa62090de428fd58099537eef428d50b41de0511e46601713`;
+compile fixture: `51d229669d2df73672b967cc4e2b8c74ad229072a4c21c0b1d02f2fef4aeaa29`.
+No remaining contract blockers. M4-01 document and publication producers can start
+with disjoint file scopes, while root retains integration and final acceptance.

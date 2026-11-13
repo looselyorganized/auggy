@@ -10,16 +10,16 @@
     "planningCandidate": "ba16ce3a8be1f5ef8ec36e43c79889c3feecc250",
     "planningCandidatePR": "https://github.com/looselyorganized/auggy/pull/227",
     "planningCandidatePRState": "MERGED",
-    "acceptedMain": null,
-    "acceptedTree": null,
+    "acceptedMain": "911fe1682c76208c1d99d4dc6841bfcaa608dd8d",
+    "acceptedTree": "d901475a9afb7a9d24dc70c21ac2480bfab78439",
     "planningLockSHA256": "cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7",
-    "acceptedLockSHA256": null,
+    "acceptedLockSHA256": "cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7",
     "mergedMainCandidate": "911fe1682c76208c1d99d4dc6841bfcaa608dd8d",
-    "mergedMainTree": "1986af1001357c48ff7ed1c7feee2ececf3a963f"
+    "mergedMainTree": "d901475a9afb7a9d24dc70c21ac2480bfab78439"
   },
   "gates": {
     "G0": {
-      "status": "blocked",
+      "status": "accepted",
       "requires": [
         "user authorizes M4 implementation",
         "M3 PR227 reviewed and merged",
@@ -27,16 +27,17 @@
         "exact accepted main/tree/toolchain/lock recorded",
         "differences from planning candidate reconciled"
       ],
-      "acceptedMain": null,
+      "acceptedMain": "911fe1682c76208c1d99d4dc6841bfcaa608dd8d",
       "evidence": [
         "https://github.com/looselyorganized/auggy/pull/227",
         "https://github.com/looselyorganized/auggy/actions/runs/43374475284",
         "https://github.com/looselyorganized/auggy/actions/runs/43374475262",
-        "milestone-4-evidence-2026-11-13.md"
+        "milestone-4-evidence-2026-11-13.md",
+        "https://github.com/looselyorganized/auggy/pull/228",
+        "https://github.com/looselyorganized/auggy/actions/runs/43375919380",
+        "https://github.com/looselyorganized/auggy/actions/runs/43375919436"
       ],
-      "pending": [
-        "verification of repaired merged-main CI, PostgreSQL and full CodeQL findings"
-      ],
+      "pending": [],
       "blockingFindings": {
         "analysisId": 2158668062,
         "alerts": [
@@ -57,7 +58,18 @@
         "fullBranchAnalysis": 2158700808,
         "fullBranchOpenAlerts": 0,
         "repairMerged": "911fe1682c76208c1d99d4dc6841bfcaa608dd8d"
-      }
+      },
+      "verification": {
+        "mainChecks": 29,
+        "postgresRegistered": 13,
+        "postgresCompleted": 13,
+        "postgresVersion": 170010,
+        "codeQLAnalysis": 2158727887,
+        "mainOpenAlerts": 0,
+        "repairAlerts": "118\u2013127 fixed without dismissals",
+        "reviewer": "m4_entry_gate_auditor"
+      },
+      "acceptedAt": "2026-11-13T06:05:00Z"
     }
   },
   "contracts": {
@@ -78,10 +90,8 @@
       "id": "M4-00",
       "title": "Freeze accepted baseline, contracts and ownership",
       "specialist": "CTO / AI Engineering Lead + architecture specialist",
-      "status": "blocked",
-      "blockedBy": [
-        "G0"
-      ],
+      "status": "in_progress",
+      "blockedBy": [],
       "dependsOn": [],
       "acceptanceDependsOn": [],
       "acceptance": [
@@ -101,7 +111,15 @@
       ],
       "acceptedCommit": null,
       "evidence": [],
-      "acceptanceScope": "baseline-and-contract-freeze"
+      "acceptanceScope": "baseline-and-contract-freeze",
+      "verification": {
+        "typecheck": "passed",
+        "parserRegression": {
+          "passed": 132,
+          "assertions": 266
+        },
+        "contractReview": "actual compiled files under independent review"
+      }
     },
     {
       "id": "M4-01",
@@ -109,7 +127,7 @@
       "specialist": "configuration engineer",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M4-00"
       ],
       "dependsOn": [
         "M4-00"
@@ -144,7 +162,7 @@
       "specialist": "application DX engineer",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M4-00"
       ],
       "dependsOn": [
         "M4-01"
@@ -183,7 +201,7 @@
       "specialist": "augment authoring engineer",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M4-00"
       ],
       "dependsOn": [
         "M4-01"
@@ -219,7 +237,7 @@
       "specialist": "migration engineer",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M4-00"
       ],
       "dependsOn": [
         "M4-01",
@@ -254,7 +272,7 @@
       "specialist": "credential security engineer",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M4-00"
       ],
       "dependsOn": [
         "M4-01",
@@ -285,7 +303,7 @@
       "specialist": "inspection engineer",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M4-00"
       ],
       "dependsOn": [
         "M4-01"
@@ -321,7 +339,7 @@
       "specialist": "harness engineer",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M4-00"
       ],
       "dependsOn": [
         "M4-00"
@@ -376,7 +394,7 @@
       "specialist": "documentation engineer",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M4-00"
       ],
       "dependsOn": [
         "M4-02",
@@ -410,7 +428,7 @@
       "specialist": "independent architecture/security/harness reviewer",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M4-00"
       ],
       "dependsOn": [
         "M4-02",
@@ -446,7 +464,7 @@
       "specialist": "CTO / AI Engineering Lead",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M4-00"
       ],
       "dependsOn": [
         "M4-07",
@@ -524,7 +542,7 @@
     "contractReview": "m4_contract_freeze_review"
   },
   "notes": [
-    "Implementation authorized; producers remain blocked until verified main G0 and contract freeze.",
+    "G0 accepted at verified repaired main; producers await compiled M4-00 contract acceptance.",
     "M4-07 may prepare after M4-00 acceptance; its installed acceptance also requires acceptanceDependsOn.",
     "Only root changes task/gate acceptance status.",
     "M5/M6 remain roadmap outcomes; no merge or publication authorized by this plan."
