@@ -16,6 +16,7 @@ export const APPLICATION_BOUNDS = Object.freeze({
   readinessMs: 60_000,
   scenarioMs: 120_000,
   shutdownMs: 15_000,
+  reapMs: 5_000,
   outputBytes: 2 * 1024 * 1024,
   sourceBytes: 2 * 1024 * 1024,
   artifactBytes: 256 * 1024 * 1024,
@@ -47,6 +48,7 @@ type Manifest = {
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   optionalDependencies?: Record<string, string>;
+  overrides?: Record<string, string>;
   bin?: Record<string, string>;
   auggyRuntime?: {
     schemaVersion: number;
@@ -252,6 +254,7 @@ export async function withApplicationEdit<T>(
   root: string,
   edit: ApplicationSourceEdit,
   use: () => Promise<T>,
+  canRestore: () => boolean = () => true,
 ): Promise<T> {
   const file = localPath(edit.path);
   const original = regularBytes(root, file);
@@ -261,15 +264,32 @@ export async function withApplicationEdit<T>(
     "Application edit needs distinct explicit anchors",
   );
   check(text.split(edit.before).length === 2, "Application edit anchor must occur exactly once");
+  let primary: { error: unknown } | undefined;
+  let restoration: { error: unknown } | undefined;
+  let value: T | undefined;
   try {
     writeFileSync(
       join(root, file),
       text.replace(edit.before, () => edit.after),
     );
-    return await use();
-  } finally {
-    writeFileSync(join(root, file), original);
+    value = await use();
+  } catch (error) {
+    primary = { error };
   }
+  try {
+    check(canRestore(), "Application edit retained because process cleanup is unconfirmed");
+    writeFileSync(join(root, file), original);
+  } catch (error) {
+    restoration = { error };
+  }
+  if (primary && restoration)
+    throw new AggregateError(
+      [primary.error, restoration.error],
+      "Application operation failed and its edit could not safely be restored",
+    );
+  if (primary) throw primary.error;
+  if (restoration) throw restoration.error;
+  return value as T;
 }
 
 export function prepareApplicationConsumer(options: {
@@ -329,6 +349,37 @@ export function prepareApplicationConsumer(options: {
     "Application fixture uses the existing real Anthropic adapter",
   );
   const manifest = JSON.parse(contents.get("package.json")!.toString("utf8")) as Manifest;
+  // The checked-in example needs these exact source-checkout overrides for
+  // Bun's nested workspace development references. Packed consumers must not.
+  const checkoutOverrides: Record<string, string> = {
+    "@auggy/anthropic": "file:../../packages/anthropic",
+    "@auggy/ollama": "file:../../packages/ollama",
+    "@auggy/openai": "file:../../packages/openai",
+    "@auggy/openrouter": "file:../../packages/openrouter",
+  };
+  if (manifest.overrides !== undefined) {
+    check(
+      manifest.overrides !== null &&
+        typeof manifest.overrides === "object" &&
+        !Array.isArray(manifest.overrides),
+      "Reference overrides must be a dependency map",
+    );
+    manifest.overrides = { ...manifest.overrides };
+    for (const [name, spec] of Object.entries(manifest.overrides)) {
+      if (checkoutOverrides[name] === spec) {
+        delete manifest.overrides[name];
+        continue;
+      }
+      check(
+        typeof spec === "string" && !/^(?:file:|link:|workspace:|\.?\.?\/|\/)/.test(spec),
+        "Reference override would escape the packed consumer",
+      );
+      check(
+        name !== core.packageName && name !== provider.packageName,
+        "Runtime override conflicts with the packed artifact selection",
+      );
+    }
+  }
   manifest.dependencies = { ...manifest.dependencies };
   const artifactInputs = [options.core, options.provider];
   for (const [index, artifact] of [core, provider].entries()) {
@@ -485,21 +536,69 @@ export function startApplicationChild(options: {
     stdio: ["ignore", "pipe", "pipe"],
   });
   const chunks: { stdout: Buffer[]; stderr: Buffer[] } = { stdout: [], stderr: [] };
-  let bytes = 0,
-    exceededOutput = false,
-    timedOut = false,
-    closed = false;
-  let spawnFailed = false,
-    orphanedGroup = false;
-  const signal = (value: NodeJS.Signals) => {
-    if (!child.pid || closed) return;
+  let bytes = 0;
+  let exceededOutput = false;
+  let timedOut = false;
+  let spawnFailed = false;
+  let orphanedGroup = false;
+  let leaderExited = false;
+  let streamsClosed = false;
+  let cleanupConfirmed = false;
+  let terminalSettled = false;
+  let forced = false;
+  let outcome: { exitCode: number | null; signal: NodeJS.Signals | null } = {
+    exitCode: null,
+    signal: null,
+  };
+  const groupState = (): "gone" | "live" | "unknown" => {
+    if (process.platform === "win32") return leaderExited ? "gone" : "live";
+    if (!child.pid) return spawnFailed ? "gone" : "unknown";
     try {
-      if (process.platform === "win32") child.kill(value);
-      else process.kill(-child.pid, value);
+      process.kill(-child.pid, 0);
+      return "live";
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+      return (error as NodeJS.ErrnoException).code === "ESRCH" ? "gone" : "unknown";
     }
   };
+  const signal = (value: NodeJS.Signals) => {
+    if (!child.pid || cleanupConfirmed || terminalSettled) return;
+    try {
+      if (process.platform === "win32") child.kill(value);
+      else if (groupState() !== "gone") process.kill(-child.pid, value);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") orphanedGroup = true;
+    }
+  };
+  let resolveTerminal!: (value: typeof outcome) => void;
+  const exited = new Promise<typeof outcome>((resolveExit) => {
+    resolveTerminal = resolveExit;
+  });
+  let finalizeTask: Promise<void> | undefined;
+  let stopTimer: ReturnType<typeof setTimeout> | undefined;
+  const finalize = () =>
+    (finalizeTask ??= (async () => {
+      const deadline = Date.now() + APPLICATION_BOUNDS.reapMs;
+      while (Date.now() < deadline) {
+        if ((leaderExited || spawnFailed) && streamsClosed && groupState() === "gone") {
+          cleanupConfirmed = true;
+          break;
+        }
+        await new Promise((resolveWait) => setTimeout(resolveWait, 10));
+      }
+      clearTimeout(lifetimeTimer);
+      if (stopTimer) clearTimeout(stopTimer);
+      terminalSettled = true;
+      // Close our own pipes after a failed reap observation. Do not certify that
+      // another process has exited merely because its inherited pipe was closed.
+      child.stdout?.destroy();
+      child.stderr?.destroy();
+      resolveTerminal(outcome);
+    })());
+  const lifetimeTimer = setTimeout(() => {
+    timedOut = true;
+    signal("SIGKILL");
+    void finalize();
+  }, timeoutMs);
   for (const stream of ["stdout", "stderr"] as const) {
     child[stream]!.on("data", (value: Buffer) => {
       const available = Math.max(0, maxOutputBytes - bytes);
@@ -508,40 +607,34 @@ export function startApplicationChild(options: {
       if (bytes > maxOutputBytes && !exceededOutput) {
         exceededOutput = true;
         signal("SIGKILL");
+        void finalize();
       }
     });
   }
-  const timer = setTimeout(() => {
-    timedOut = true;
-    signal("SIGKILL");
-  }, timeoutMs);
-  const exited = new Promise<{ exitCode: number | null; signal: NodeJS.Signals | null }>(
-    (resolveExit) => {
-      child.once("error", () => {
-        spawnFailed = true;
-      });
-      child.once("close", (exitCode, exitSignal) => {
-        if (child.pid && process.platform !== "win32") {
-          try {
-            process.kill(-child.pid, 0);
-            orphanedGroup = true;
-            signal("SIGKILL");
-          } catch (error) {
-            if ((error as NodeJS.ErrnoException).code !== "ESRCH") orphanedGroup = true;
-          }
-        }
-        closed = true;
-        clearTimeout(timer);
-        resolveExit({ exitCode, signal: exitSignal });
-      });
-    },
-  );
+  child.once("error", () => {
+    spawnFailed = true;
+    void finalize();
+  });
+  child.once("exit", (exitCode, exitSignal) => {
+    leaderExited = true;
+    outcome = { exitCode, signal: exitSignal };
+    if (groupState() !== "gone") {
+      orphanedGroup = true;
+      signal("SIGKILL");
+    }
+    void finalize();
+  });
+  child.once("close", (exitCode, exitSignal) => {
+    streamsClosed = true;
+    if (!leaderExited) outcome = { exitCode, signal: exitSignal };
+    void finalize();
+  });
   return {
     pid: child.pid,
     exited,
     signal,
     async finish() {
-      const outcome = await exited;
+      const terminal = await exited;
       const stdout = redactEvidence(Buffer.concat(chunks.stdout).toString("utf8"), [
         ...options.secrets,
       ]);
@@ -549,11 +642,13 @@ export function startApplicationChild(options: {
         ...options.secrets,
       ]);
       return {
-        ...outcome,
+        ...terminal,
+        pid: child.pid ?? null,
         spawnFailed,
         timedOut,
         exceededOutput,
         orphanedGroup,
+        cleanupConfirmed,
         durationMs: Date.now() - started,
         stdout,
         stderr,
@@ -562,19 +657,17 @@ export function startApplicationChild(options: {
       };
     },
     async stop(requestedSignal: "SIGINT" | "SIGTERM" = "SIGTERM") {
-      const wasRunning = !closed;
-      signal(requestedSignal);
-      let forced = false;
-      const killTimer = setTimeout(() => {
-        forced = true;
-        signal("SIGKILL");
-      }, APPLICATION_BOUNDS.shutdownMs);
-      try {
-        await exited;
-      } finally {
-        clearTimeout(killTimer);
+      const wasRunning = !leaderExited && !terminalSettled;
+      if (!terminalSettled) {
+        signal(requestedSignal);
+        stopTimer ??= setTimeout(() => {
+          forced = true;
+          signal("SIGKILL");
+          void finalize();
+        }, APPLICATION_BOUNDS.shutdownMs);
       }
-      return { wasRunning, forced, ...(await this.finish()) };
+      const result = await this.finish();
+      return { wasRunning, forced, ...result };
     },
   };
 }

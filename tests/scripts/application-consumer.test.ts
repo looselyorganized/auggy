@@ -196,6 +196,75 @@ describe("application fixture materialization (not runtime acceptance)", () => {
     expect(existsSync(options.destination)).toBe(false);
   });
 
+  test("removes only the known checkout provider overrides and preserves security pins", () => {
+    const options = materialization();
+    const path = join(options.referenceDir, "package.json");
+    const manifest = JSON.parse(readFileSync(path, "utf8"));
+    const security = {
+      "@hono/node-server": "2.1.6",
+      "body-parser": "2.4.0",
+      "fast-uri": "3.1.9",
+      hono: "4.13.16",
+      "ip-address": "10.7.4",
+      "proxy-addr": "2.0.8",
+      qs: "6.16.1",
+    };
+    manifest.overrides = {
+      ...security,
+      ...Object.fromEntries(
+        ["anthropic", "ollama", "openai", "openrouter"].map((name) => [
+          `@auggy/${name}`,
+          `file:../../packages/${name}`,
+        ]),
+      ),
+    };
+    write(path, JSON.stringify(manifest));
+    prepareApplicationConsumer(options);
+    const consumer = JSON.parse(readFileSync(join(options.destination, "package.json"), "utf8"));
+    expect(consumer.overrides).toEqual(security);
+    expect(consumer.dependencies.auggy).toStartWith("file:./.application-artifacts/");
+    expect(consumer.dependencies["@auggy/anthropic"]).toStartWith("file:./.application-artifacts/");
+    expect(JSON.parse(readFileSync(path, "utf8")).overrides).toEqual(manifest.overrides);
+  });
+
+  test("rejects unknown or changed checkout overrides before creating a consumer", () => {
+    const options = materialization();
+    const path = join(options.referenceDir, "package.json");
+    const manifest = JSON.parse(readFileSync(path, "utf8"));
+    for (const overrides of [
+      { "@auggy/openai": "file:../../other" },
+      { unknown: "link:../outside" },
+      { unknown: "workspace:*" },
+      { unknown: { ".": "file:../outside" } },
+      { auggy: "0.5.0" },
+    ]) {
+      write(path, JSON.stringify({ ...manifest, overrides }));
+      expect(() => prepareApplicationConsumer(options)).toThrow(/override/);
+      expect(existsSync(options.destination)).toBe(false);
+    }
+  });
+
+  test("retains an edited file when process cleanup is unconfirmed and preserves the primary error", async () => {
+    const reference = join(root, "repo/reference");
+    const originalError = new Error("primary scenario failure");
+    let thrown: unknown;
+    try {
+      await withApplicationEdit(
+        reference,
+        recipe.edits.turn,
+        async () => {
+          throw originalError;
+        },
+        () => false,
+      );
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(AggregateError);
+    expect((thrown as AggregateError).errors[0]).toBe(originalError);
+    expect(readFileSync(join(reference, "src/turn.ts"), "utf8")).toContain("maxInferences: 1");
+  });
+
   test("equal versions cannot substitute a different artifact's installed source", () => {
     const a = inspectApplicationArtifact(artifact("auggy", "A"));
     const b = inspectApplicationArtifact(artifact("auggy", "B"));
@@ -275,6 +344,7 @@ describe("bounded harness child ownership", () => {
     expect(result.stdout).not.toContain("dummy-secret");
     expect(result.stdoutSHA256).toBe(applicationHash(result.stdout));
     expect(result.orphanedGroup).toBe(false);
+    expect(result.cleanupConfirmed).toBe(true);
     expect(() =>
       applicationEnvironment(join(root, "home"), join(root, "temp"), {
         NODE_OPTIONS: "--require anything",
@@ -308,6 +378,37 @@ describe("bounded harness child ownership", () => {
       orphanedGroup: false,
     });
   });
+
+  test.skipIf(process.platform === "win32")(
+    "bounds inherited pipes outside the owned group without claiming cleanup",
+    async () => {
+      const pidFile = join(root, "escaped-pid");
+      const started = Date.now();
+      try {
+        const result = await child(
+          `import {spawn} from "node:child_process"; import {writeFileSync} from "node:fs";
+        const escaped = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {detached:true,stdio:["ignore",process.stdout,process.stderr]});
+        writeFileSync(${JSON.stringify(pidFile)}, String(escaped.pid)); escaped.unref(); process.exit(0);`,
+          { timeoutMs: 100 },
+        ).finish();
+        expect(result.cleanupConfirmed).toBe(false);
+        expect(Date.now() - started).toBeLessThan(6500);
+        expect(result.pid).toBeGreaterThan(0);
+      } finally {
+        // This exact child was deliberately created by the fixture above and
+        // remains alive on its own timer; clean it without relying on parent PGID.
+        if (existsSync(pidFile)) {
+          const pid = Number(readFileSync(pidFile, "utf8"));
+          if (Number.isSafeInteger(pid) && pid > 0) {
+            try {
+              process.kill(pid, "SIGKILL");
+            } catch {}
+          }
+        }
+      }
+    },
+    10_000,
+  );
 
   test.skipIf(process.platform === "win32")(
     "detects and kills a delegated descendant left behind by an exited parent",
