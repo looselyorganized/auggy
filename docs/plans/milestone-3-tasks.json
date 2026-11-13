@@ -263,7 +263,7 @@
       "id": "M3-05",
       "title": "Packed reference acceptance",
       "specialist": "harness-engineer",
-      "status": "review",
+      "status": "accepted",
       "blockedBy": [],
       "dependsOn": [
         "M3-00"
@@ -286,25 +286,30 @@
         "source-edit negative/positive controls",
         "sanitized scenario evidence"
       ],
-      "acceptedCommit": null,
-      "evidence": [],
+      "acceptedCommit": "866e8d144cd51dce577fda5fa5149f039a4ed50e",
+      "evidence": [
+        "milestone-3-evidence-2026-11-13.md"
+      ],
       "startedAt": "2026-11-13T03:36:26.979536+00:00",
       "producerCommits": {
         "M3-00": "7e1c85acb4c4d76fae690181ae646b67dbd9bc5e"
       },
       "producerCommit": "7bb4bd402f59dfa2946e8b2f4a3d46d7b8883954",
       "verification": {
-        "firstCompleteRehearsal": "passed; all 16 application rows",
-        "sourceArtifactSHA256": "120faf7c90691be116583efd722f1f6d783dfa217c27672758b74b1598e9cd2f",
-        "freshCandidateRerun": "required after independent review repairs",
-        "containerExecution": "unavailable locally; generated deployment checks passed; no hosted deployment"
+        "cleanProductCommit": "1604dcd6e81a72a27930a246b91154f809e2e8c2",
+        "cleanMacOSRehearsal": "all16 rows passed",
+        "repairedHarnessRehearsal": "all16 rows passed; no retained workspace",
+        "coreSHA256": "2234e3ec9d13ec41c98308ae658322b40491638f901a82dda1d13048f2681e76",
+        "rootLockUnchanged": true,
+        "linuxProductRehearsal": "15 applicable rows passed; macOS launchd unavailable",
+        "containerDeployment": "not certified; generated files and command boundary checks only"
       }
     },
     {
       "id": "M3-06",
       "title": "Independent adversarial review",
       "specialist": "independent-reviewer",
-      "status": "review",
+      "status": "accepted",
       "blockedBy": [],
       "dependsOn": [
         "M3-01",
@@ -334,34 +339,28 @@
         "owner repairs and rechecks",
         "review disposition"
       ],
-      "acceptedCommit": null,
-      "evidence": [],
+      "acceptedCommit": "4aaffa8",
+      "evidence": [
+        "milestone-3-evidence-2026-11-13.md"
+      ],
       "reviewers": [
         "m3_runtime_final_review",
         "m3_launch_final_review"
       ],
       "verification": {
-        "reviewedCommit": "7bb4bd402f59dfa2946e8b2f4a3d46d7b8883954",
-        "findings": [
-          {
-            "severity": "P1",
-            "description": "Unfinished augment construction incorrectly certified resources closed",
-            "status": "repair in progress"
-          },
-          {
-            "severity": "P2",
-            "description": "Nested package export no-match prevented valid outer fallback",
-            "status": "repaired and independently verified",
-            "repairCommit": "f5dd8bd"
-          }
-        ]
+        "runtimeReview": "no blocking findings at1604dcd",
+        "launchReview": "nested export fallback repaired and independently verified",
+        "harnessReview": "no blocking findings at866e8d1; 62 combined tests plus10 final regression tests and live JSONL workload",
+        "codeQLFindings": "all11 fixed; remote findings check passed; zero open PR alerts",
+        "postgresTestReview": "4aaffa8 test-only lease correction independently verified; real service execution required in final CI",
+        "unresolvedBlockingReviewFindings": 0
       }
     },
     {
       "id": "M3-07",
       "title": "Final certification and PR handoff",
       "specialist": "orchestrator",
-      "status": "in_progress",
+      "status": "review",
       "blockedBy": [],
       "dependsOn": [
         "M3-06"
@@ -388,11 +387,20 @@
         "reviewable PR and compatibility notes"
       ],
       "acceptedCommit": null,
-      "evidence": [],
+      "evidence": [
+        "milestone-3-evidence-2026-11-13.md",
+        "https://github.com/looselyorganized/auggy/pull/227"
+      ],
       "verification": {
-        "localTrackedTests": "passed before final constructor repair; 13 PostgreSQL cases require CI service",
-        "finalCertification": "pending repair verification and exact-candidate rehearsal",
-        "requiredCI": "pending PR creation"
+        "localFullTests": {
+          "passed": 4884,
+          "failed": 0,
+          "localPostgresSkips": 13
+        },
+        "cleanProductRelease": "passed",
+        "repairedHarnessAcceptance": "passed",
+        "requiredCI": "pending final PostgreSQL test-only correction",
+        "handoff": "draft PR227; no merge or publication"
       }
     }
   ],
@@ -407,9 +415,9 @@
     "planSHA256": "57ab734e954d9a50897eb4b6a51b631b38ef626d393b870c44ee3c9024430d0b"
   },
   "activeOwnership": {
-    "shared manifests, locks, CI, exports, docs, integration and acceptance": "root",
-    "src/cli/augment-resolver.ts and focused construction tests": "m3_construction_repair",
-    "independent runtime review": "m3_runtime_final_review (read-only)",
-    "independent launch review": "m3_launch_final_review (read-only)"
+    "integration, metadata and final acceptance": "root",
+    "independent runtime, harness and PostgreSQL test review": "m3_runtime_final_review (complete)",
+    "independent launch review and harness repair": "m3_launch_final_review (complete; repair independently reviewed)",
+    "constructor and descriptor-reader repair": "m3_construction_repair (complete; independently reviewed)"
   }
 }

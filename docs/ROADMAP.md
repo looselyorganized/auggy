@@ -102,8 +102,10 @@ matching documentation. Packed request, restart, and upgrade checks pass;
 engineers unfamiliar with the repository demonstrate improved traceability.
 
 Implementation proceeds through six gated milestones. Milestones 1–2 are accepted
-at verified main `209185d0`; milestone 3 now begins with contract freeze and
-specialized implementation. Milestones 4–6 remain roadmap outcomes:
+at verified main `209185d0`. Milestone 3 is implemented in
+[PR #227](https://github.com/looselyorganized/auggy/pull/227), with
+[acceptance evidence](./plans/milestone-3-evidence-2026-11-13.md) and final PR gates.
+Milestones 4–6 remain roadmap outcomes:
 
 | Milestone | Outcome | Exit gate |
 |---|---|---|

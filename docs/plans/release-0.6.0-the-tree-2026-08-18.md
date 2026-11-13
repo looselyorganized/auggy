@@ -2,7 +2,8 @@
 
 Status: milestones 1–2 accepted on verified main `209185d0`. Link 0.2.0 is
 published and integrated; foundation PR #226 is merged, and fresh main CI and
-CodeQL passed. Milestone 3 contract freeze and specialized execution are active.
+CodeQL passed. Milestone 3 is implemented in PR #227; its final certification
+and review handoff are tracked in the acceptance evidence.
 Worktree retirement remains separately deferred for preservation review.
 Revised: 2026-11-12. Governing direction: [Roadmap](../ROADMAP.md).
 Delete this implementation plan when 0.6.0 ships; retain accepted ADRs.
@@ -195,9 +196,11 @@ and [execution evidence](./foundation-evidence-2026-11-12.md).
 The [M3 execution plan](./milestone-3-execution-2026-11-12.md) and
 [task ledger](./milestone-3-tasks.json) define specialized engineering ownership,
 CTO orchestration, contracts, dependency order, adversarial review and acceptance.
-Foundation gate G0 is accepted at verified main `209185d0`; execution begins with
-M3-00 contract freeze. Dependent tasks remain blocked until their producers are
-reviewed and accepted. These documents do not authorize package publication.
+Foundation gate G0 is accepted at verified main `209185d0`. Milestone 3 now has
+a working reference, reviewed managed execution, and installed-artifact
+acceptance; see [the evidence](./milestone-3-evidence-2026-11-13.md) and
+[PR #227](https://github.com/looselyorganized/auggy/pull/227) for final gates.
+Milestones 4–6 remain unimplemented. These documents do not authorize publication.
 
 ## Milestones 4–6: roadmap only
 
