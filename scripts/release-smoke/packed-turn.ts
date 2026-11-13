@@ -1,6 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { mkdir, readFile, rm, rmdir, unlink, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { parse, stringify } from "yaml";
@@ -10,6 +10,7 @@ import {
   PROVIDER_FIXTURE_FINAL_TEXT,
   type ProviderFixtureEvidence,
 } from "./provider-fixture";
+import { readBoundedRegularFile } from "./bounded-file";
 
 const READY_MS = 60_000;
 const SCENARIO_MS = 120_000;
@@ -95,6 +96,150 @@ interface StreamEvidence {
   events: Record<string, unknown>[];
 }
 
+/** Temporary scenario configuration retains the consumer's declaration format. */
+export async function preparePackedTurnFixture(input: {
+  agentDir: string;
+  observerSource: string;
+  engine: Record<string, unknown>;
+  filesystem: Record<string, unknown>;
+  webTransport: Record<string, unknown>;
+  env: string;
+}) {
+  const agentDir = realpathSync(input.agentDir);
+  const ordinaryParents = (path: string) => {
+    let parent = agentDir;
+    for (const part of path.split("/").slice(0, -1)) {
+      parent = join(parent, part);
+      const stat = lstatSync(parent);
+      check(
+        stat.isDirectory() && !stat.isSymbolicLink(),
+        "Packed fixture parents must be existing ordinary directories",
+      );
+    }
+  };
+  const read = (path: string) => {
+    ordinaryParents(path);
+    return readBoundedRegularFile(join(agentDir, path), 1024 * 1024);
+  };
+  const before = new Map([
+    ["agent.yaml", read("agent.yaml")],
+    [".env", read(".env")],
+  ]);
+  const config = parse(
+    new TextDecoder("utf-8", { fatal: true }).decode(before.get("agent.yaml")!.bytes),
+  );
+  check(
+    config &&
+      typeof config === "object" &&
+      Array.isArray(config.augments) &&
+      config.augments.length > 0,
+    "Packed fixture requires an existing augment declaration graph",
+  );
+  const referenced = config.augments.every((entry: unknown) => typeof entry === "string");
+  const inline = config.augments.every(
+    (entry: unknown) => entry !== null && typeof entry === "object" && !Array.isArray(entry),
+  );
+  check(referenced || inline, "Packed fixture requires wholly referenced or inline declarations");
+  const format = referenced ? "referenced" : "inline";
+  const observerName = "packedAcceptanceObserver";
+  const observerPath = `${referenced ? "augments" : "src/augments"}/${observerName}`;
+  ordinaryParents(observerPath);
+  const outputs = new Map<string, string>();
+  const declarations = [
+    { name: "filesystem", type: "filesystem", options: input.filesystem },
+    { name: "webTransport", type: "webTransport", options: input.webTransport },
+  ];
+  if (referenced) {
+    for (const entry of declarations) {
+      check(config.augments.includes(entry.name), `Legacy packed fixture is missing ${entry.name}`);
+      const path = `augments/${entry.name}/augment.yaml`;
+      const original = read(path);
+      const metadata = parse(new TextDecoder("utf-8", { fatal: true }).decode(original.bytes));
+      check(metadata?.type === entry.type, "Legacy packed fixture metadata type differs");
+      before.set(path, original);
+      outputs.set(path, stringify({ type: entry.type, config: entry.options }));
+    }
+    config.augments = [...declarations.map((entry) => entry.name), observerName];
+  } else {
+    for (const expected of declarations)
+      check(
+        config.augments.filter(
+          (entry: { type?: unknown; name?: unknown }) =>
+            entry.type === expected.type && (entry.name ?? entry.type) === expected.name,
+        ).length === 1,
+        `Inline packed fixture requires one canonical ${expected.name} declaration`,
+      );
+    config.augments = [
+      ...declarations,
+      { name: observerName, type: "custom", source: `./${observerPath}/index.ts` },
+    ];
+  }
+  config.engine = input.engine;
+  outputs.set(".env", input.env);
+  // Central activation follows all fixture source and metadata writes.
+  outputs.set("agent.yaml", stringify(config));
+  const observerFiles = new Map<string, string>([["index.ts", input.observerSource]]);
+  if (referenced)
+    observerFiles.set("augment.yaml", stringify({ type: "custom", source: "./index.ts" }));
+  for (const output of [...outputs.values(), ...observerFiles.values()])
+    check(Buffer.byteLength(output) <= 1024 * 1024, "Packed fixture output exceeds its read bound");
+  // Exclusive mkdir rejects files, directories, and dangling symlink collisions alike.
+  await mkdir(join(agentDir, observerPath), { mode: 0o700 });
+  const observerIdentity = lstatSync(join(agentDir, observerPath));
+  const written: string[] = [];
+  const created: string[] = [];
+  const restore = async () => {
+    ordinaryParents(`${observerPath}/index.ts`);
+    const current = lstatSync(join(agentDir, observerPath));
+    check(
+      current.dev === observerIdentity.dev && current.ino === observerIdentity.ino,
+      "Packed observer ownership changed; preserve the fixture for review",
+    );
+    // Check the whole affected set before restoring or deleting any fixture file.
+    for (const path of written) {
+      const current = read(path);
+      check(
+        current.bytes.equals(Buffer.from(outputs.get(path)!)) &&
+          current.mode === before.get(path)!.mode,
+        "Packed fixture output changed; preserve it for review",
+      );
+    }
+    for (const file of created)
+      check(
+        read(`${observerPath}/${file}`).bytes.equals(Buffer.from(observerFiles.get(file)!)),
+        "Packed observer source changed; preserve it for review",
+      );
+    for (const path of [...written].reverse()) {
+      await writeFile(join(agentDir, path), before.get(path)!.bytes);
+      check(read(path).bytes.equals(before.get(path)!.bytes), "Packed fixture restoration differs");
+    }
+    for (const file of created) await unlink(join(agentDir, observerPath, file));
+    // Remove only the directory we created, and only when empty. Parents are never created or removed.
+    await rmdir(join(agentDir, observerPath));
+  };
+  try {
+    for (const [file, source] of observerFiles) {
+      await writeFile(join(agentDir, observerPath, file), source, { mode: 0o600, flag: "wx" });
+      created.push(file);
+    }
+    for (const [path, output] of outputs) {
+      written.push(path);
+      await writeFile(join(agentDir, path), output);
+    }
+  } catch (error) {
+    try {
+      await restore();
+    } catch (cleanupError) {
+      throw new AggregateError(
+        [error, cleanupError],
+        "Packed fixture setup and restoration failed",
+      );
+    }
+    throw error;
+  }
+  return { format, observerPath, changedFiles: [...outputs.keys()], restore };
+}
+
 export async function runPackedTurn(options: {
   cli: string;
   agentDir: string;
@@ -139,11 +284,6 @@ export async function runPackedTurn(options: {
     ANTHROPIC_API_KEY: PROVIDER_FIXTURE_API_KEY,
     AUGGY_WEB_TOKEN: bearer,
   };
-  const saved = new Map<string, Buffer>();
-  const rewrite = async (file: string, value: string) => {
-    if (!saved.has(file)) saved.set(file, await readFile(file));
-    await writeFile(file, value, { mode: 0o600 });
-  };
   const outcomes: Record<string, unknown> = Object.fromEntries(
     SCENARIOS.map((name) => [name, { status: "pending" }]),
   );
@@ -152,7 +292,7 @@ export async function runPackedTurn(options: {
   let child: ReturnType<typeof Bun.spawn> | undefined;
   let outputs: Promise<string>[] = [];
   let generation = 0;
-  let observerCreated = false;
+  let fixture: Awaited<ReturnType<typeof preparePackedTurnFixture>> | undefined;
   let provider: ReturnType<typeof createProviderFixture> | undefined;
   let failure: unknown;
   let interrupted = false;
@@ -310,17 +450,11 @@ export async function runPackedTurn(options: {
         ? "project-local"
         : "external-cli",
       runtimeOwnership:
-        "Project-local delegation selects the consumer's installed runtime; the generated application, provider and custom augment execute from that consumer. The application suite separately verifies exact launch provenance.",
+        "Project-local delegation selects the consumer's installed runtime. The temporary scenario preserves its execution mode and referenced or inline declaration format; fixture.json records those reversible edits. This run does not migrate the consumer.",
       agentListener:
         "Existing webTransport bind behavior; acceptance requests use 127.0.0.1. Provider fixture binds only 127.0.0.1.",
     });
-    const observerDir = join(agentDir, "src", "augments", "packedAcceptanceObserver");
-    check(!existsSync(observerDir), "Packed observer directory already exists");
-    await mkdir(observerDir, { mode: 0o700 });
-    observerCreated = true;
-    await writeFile(
-      join(observerDir, "index.ts"),
-      `import { appendFile } from "node:fs/promises";
+    const observerSource = `import { appendFile } from "node:fs/promises";
 import { defineAugment } from "auggy";
 export default function observer() {
   return defineAugment({ name: "packedAcceptanceObserver", onTurnEnd: async (turn) => {
@@ -331,23 +465,7 @@ export default function observer() {
     await appendFile(${JSON.stringify(tracePath)}, JSON.stringify(record) + "\\n", { mode: 0o600 });
   }});
 }
-`,
-    );
-    const configPath = join(agentDir, "agent.yaml");
-    const config = parse(await readFile(configPath, "utf8"));
-    config.engine = {
-      provider: "anthropic",
-      model: "claude-packed-acceptance",
-      baseURL: provider.baseURL,
-      maxContextTokens: 32_000,
-      maxTokens: 256,
-      requestTimeoutMs: 5_000,
-      costOverride: { inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
-    };
-    await rewrite(
-      join(agentDir, ".env"),
-      `ANTHROPIC_API_KEY=${PROVIDER_FIXTURE_API_KEY}\nAUGGY_WEB_TOKEN=${bearer}\n`,
-    );
+`;
     const portReservation = Bun.serve({
       hostname: "127.0.0.1",
       port: 0,
@@ -357,42 +475,47 @@ export default function observer() {
     await portReservation.stop(true);
     const baseURL = `http://127.0.0.1:${port}`;
     env.AUGGY_PUBLIC_URL = baseURL;
-    config.augments = [
-      {
-        name: "filesystem",
-        type: "filesystem",
-        options: {
-          mounts: [
-            {
-              name: "workspace",
-              path: join(ownedDir, "workspace"),
-              writable: false,
-              deletable: false,
-            },
-          ],
-          workspaceAwareness: { enabled: false },
-        },
+    fixture = await preparePackedTurnFixture({
+      agentDir,
+      observerSource,
+      engine: {
+        provider: "anthropic",
+        model: "claude-packed-acceptance",
+        baseURL: provider.baseURL,
+        maxContextTokens: 32_000,
+        maxTokens: 256,
+        requestTimeoutMs: 5_000,
+        costOverride: { inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
       },
-      {
-        name: "webTransport",
-        type: "webTransport",
-        options: {
-          port,
-          auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
-          allowAnonymous: false,
-          adminRoute: false,
-          visitorTokens: { enabled: false },
-          idempotency: { dbPath: "./data/packed-acceptance-idempotency.db" },
-          consoleChat: { dbPath: "./data/packed-acceptance-console.db" },
-        },
+      env: `ANTHROPIC_API_KEY=${PROVIDER_FIXTURE_API_KEY}\nAUGGY_WEB_TOKEN=${bearer}\n`,
+      filesystem: {
+        mounts: [
+          {
+            name: "workspace",
+            path: join(ownedDir, "workspace"),
+            writable: false,
+            deletable: false,
+          },
+        ],
+        workspaceAwareness: { enabled: false },
       },
-      {
-        name: "packedAcceptanceObserver",
-        type: "custom",
-        source: "./src/augments/packedAcceptanceObserver/index.ts",
+      webTransport: {
+        port,
+        auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
+        allowAnonymous: false,
+        adminRoute: false,
+        visitorTokens: { enabled: false },
+        idempotency: { dbPath: "./data/packed-acceptance-idempotency.db" },
+        consoleChat: { dbPath: "./data/packed-acceptance-console.db" },
       },
-    ];
-    await rewrite(configPath, stringify(config));
+    });
+    await json("fixture.json", {
+      declarationFormat: fixture.format,
+      observerSource: `${fixture.observerPath}/index.ts`,
+      changedFiles: fixture.changedFiles,
+      migrationPerformed: false,
+      restoration: "pending",
+    });
     const start = async () => {
       checkpoint();
       generation++;
@@ -695,15 +818,17 @@ export default function observer() {
         await cleanup("provider shutdown", () =>
           bounded(provider!.stop(), 5_000, "provider shutdown"),
         );
-      for (const [file, contents] of saved)
-        await cleanup(`restore ${relative(agentDir, file)}`, () => writeFile(file, contents));
-      if (observerCreated)
-        await cleanup("remove observer", () =>
-          rm(join(agentDir, "src/augments/packedAcceptanceObserver"), {
-            recursive: true,
-            force: true,
-          }),
-        );
+      if (fixture)
+        await cleanup("restore packed fixture", async () => {
+          await fixture!.restore();
+          await json("fixture.json", {
+            declarationFormat: fixture!.format,
+            observerSource: `${fixture!.observerPath}/index.ts`,
+            changedFiles: fixture!.changedFiles,
+            migrationPerformed: false,
+            restoration: "exact-original-bytes",
+          });
+        });
       await cleanup("write traces", async () => json("traces.json", await traces()));
       await cleanup("write scenario snapshot", snapshot);
       await cleanup("remove temporary consumer files", () =>

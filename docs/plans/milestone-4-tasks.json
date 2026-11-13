@@ -676,7 +676,7 @@
     "m4_final_architecture_review": "Read-only preparation and final integrated review after installed gate"
   },
   "notes": [
-    "G0 and scoped producers M4-00 through M4-06 plus M4-08 accepted. Final preparation repairs independently accepted. Full runtime and fresh installed certification underway; M4-07/09/10 acceptance pending.",
+    "Scoped product/teaching and all final preparation repairs independently accepted. Direct actual generated suite passed against c1902f8 artifacts. Fresh clean-candidate aggregate release and CI/full CodeQL certification follow.",
     "M4-07 may prepare after M4-00 acceptance; its installed acceptance also requires acceptanceDependsOn.",
     "Only root changes task/gate acceptance status.",
     "M5/M6 remain roadmap outcomes; no merge or publication authorized by this plan."
@@ -754,6 +754,13 @@
         "macosService": "passed",
         "cleanup": "confirmed",
         "scope": "Same frozen candidate product artifacts and unchanged authoring harness; aggregate release remains failed before this stage"
+      },
+      "harnessRepairReview": {
+        "reviewer": "m4_harness_review",
+        "status": "accepted-scoped",
+        "tests": 28,
+        "assertions": 87,
+        "scope": "Preserve legacy and inline active fixture formats, ordinary existing parents, exclusive observer and guarded exact restoration"
       }
     }
   ]

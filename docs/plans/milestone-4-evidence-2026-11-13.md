@@ -365,3 +365,19 @@ service lifecycle with the reviewed log watchdog. Cleanup is confirmed. Report:
 `/private/tmp/m4-generated-c190-evidence/authoring-suite.json`. This isolates
 actual generated-product evidence; it does not turn the failed aggregate release
 attempt into a pass. The final clean-candidate aggregate still must run.
+
+Independent harness review accepted the historical/inline fixture repair after
+28 tests / 87 assertions. Historical consumers keep referenced metadata and
+legacy execution during the actual scenario; inline consumers keep their
+application declaration and source layout. Observer creation is exclusive under
+existing ordinary parents; no parent directory is created or removed. Before
+restoring original bytes, the helper checks every affected postimage and mode,
+and removes only owned observer files and the empty observer directory. Changed
+or partial outputs remain for inspection and fail cleanup rather than claiming
+automatic restoration. `fixture.json` records the selected representation,
+reversible changes, no migration, and actual restoration outcome.
+
+Final strict typecheck, lint, inventory and source-index checks pass after both
+repairs. The root dependency lock remains unchanged. The next aggregate run
+uses a new clean revision and separate evidence destination so the failed
+`c1902f8` report remains intact.
