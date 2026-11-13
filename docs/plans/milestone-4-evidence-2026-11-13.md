@@ -94,3 +94,15 @@ SHA-256: `34edd0aae8e24fefa62090de428fd58099537eef428d50b41de0511e46601713`;
 compile fixture: `51d229669d2df73672b967cc4e2b8c74ad229072a4c21c0b1d02f2fef4aeaa29`.
 No remaining contract blockers. M4-01 document and publication producers can start
 with disjoint file scopes, while root retains integration and final acceptance.
+
+## M4-07 bounded harness preparation
+
+The harness specialist delivered artifact selection (including OpenRouter's exact
+OpenAI prerequisite), nonmutating source/manifest checks, bounded CLI supervision,
+and generated-recipe/public-effect assertions. Root inspected these helpers and
+independently reran their 11 tests / 78 assertions. Producer scoped Biome and strict
+TypeScript checks passed. Root also added an answer-only loopback provider scenario
+for untouched scaffold startup; its existing and new provider controls passed
+18 tests / 86 assertions. These are harness preparation results, not installed
+CLI acceptance. Full create/install orchestration, five launch paths, source-edit
+observations, migration and inspection scenarios remain pending accepted producers.

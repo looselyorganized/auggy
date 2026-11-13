@@ -3,6 +3,7 @@ import { createAnthropicEngine } from "../../packages/anthropic/src";
 import type { AssembledPrompt, Message } from "../../src/types";
 import {
   createProviderFixture,
+  PROVIDER_FIXTURE_ANSWER_TEXT,
   PROVIDER_FIXTURE_API_KEY,
   PROVIDER_FIXTURE_FINAL_TEXT,
   type ProviderFixture,
@@ -75,6 +76,27 @@ function post(server: ProviderFixture, body: unknown, key = PROVIDER_FIXTURE_API
 }
 
 describe("packed release Anthropic provider fixture", () => {
+  test.each([false, true])(
+    "answer-only scenario needs no tools and responds once (stream=%s)",
+    async (stream) => {
+      const server = fixture({ scenario: "answer-only" });
+      const body = { ...requestBody(stream), tools: [] };
+      const response = await post(server, body);
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).toContain(PROVIDER_FIXTURE_ANSWER_TEXT);
+      expect(text).not.toContain("tool_use");
+      expect(server.evidence()).toMatchObject({
+        calls: 1,
+        toolRequests: 0,
+        validatedToolResults: 0,
+        finalResponses: 1,
+        rejectedRequests: 0,
+      });
+      expect((await post(server, body)).status).toBe(400);
+    },
+  );
+
   test("explicit application tool runs through the real adapter with exact nested input validation", async () => {
     const input = { id: "order-17", options: { include: ["status", "total"], currency: "USD" } };
     const server = fixture({ tool: { name: "orders_lookup", input, invalidInput: { id: 17 } } });

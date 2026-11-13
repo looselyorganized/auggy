@@ -76,7 +76,9 @@
     "C1": "milestone-4-contracts/authoring.md",
     "C2": "milestone-4-contracts/migration.md",
     "C3": "milestone-4-contracts/inspection.md",
-    "C4": "milestone-4-contracts/acceptance.md"
+    "C4": "milestone-4-contracts/acceptance.md",
+    "freeze": "milestone-4-contracts/freeze.md",
+    "harnessFreeze": "milestone-4-contracts/harness-freeze.md"
   },
   "allowedStates": [
     "blocked",
@@ -90,7 +92,7 @@
       "id": "M4-00",
       "title": "Freeze accepted baseline, contracts and ownership",
       "specialist": "CTO / AI Engineering Lead + architecture specialist",
-      "status": "in_progress",
+      "status": "accepted",
       "blockedBy": [],
       "dependsOn": [],
       "acceptanceDependsOn": [],
@@ -109,8 +111,14 @@
       "writeScope": [
         "root-reserved contracts and status documents"
       ],
-      "acceptedCommit": null,
-      "evidence": [],
+      "acceptedCommit": "88b815ed3ead921e44be53687193d0799e5d3b21",
+      "evidence": [
+        "milestone-4-contracts/freeze.md",
+        "milestone-4-contracts/harness-freeze.md",
+        "../../src/cli/authoring/contracts.ts",
+        "../../tests/fixtures/authoring-contract.ts",
+        "milestone-4-evidence-2026-11-13.md"
+      ],
       "acceptanceScope": "baseline-and-contract-freeze",
       "verification": {
         "typecheck": "passed",
@@ -118,17 +126,16 @@
           "passed": 132,
           "assertions": 266
         },
-        "contractReview": "actual compiled files under independent review"
-      }
+        "contractReview": "m4_contract_freeze_review independently accepted exact compiled files; path bound corrected to1024"
+      },
+      "acceptedAt": "2026-11-13T06:10:54.267586+00:00"
     },
     {
       "id": "M4-01",
       "title": "Pure configuration documents and recoverable publication",
       "specialist": "configuration engineer",
-      "status": "blocked",
-      "blockedBy": [
-        "M4-00"
-      ],
+      "status": "in_progress",
+      "blockedBy": [],
       "dependsOn": [
         "M4-00"
       ],
@@ -154,7 +161,13 @@
       ],
       "acceptedCommit": null,
       "evidence": [],
-      "acceptanceScope": "scoped-producer-contribution"
+      "acceptanceScope": "scoped-producer-contribution",
+      "startedAt": "2026-11-13T06:10:54.267586+00:00",
+      "producerBaseline": "88b815ed3ead921e44be53687193d0799e5d3b21",
+      "owners": {
+        "document": "m4_document_engineer",
+        "publication": "m4_publication_engineer"
+      }
     },
     {
       "id": "M4-02",
@@ -162,7 +175,7 @@
       "specialist": "application DX engineer",
       "status": "blocked",
       "blockedBy": [
-        "M4-00"
+        "M4-01"
       ],
       "dependsOn": [
         "M4-01"
@@ -201,7 +214,7 @@
       "specialist": "augment authoring engineer",
       "status": "blocked",
       "blockedBy": [
-        "M4-00"
+        "M4-01"
       ],
       "dependsOn": [
         "M4-01"
@@ -237,7 +250,8 @@
       "specialist": "migration engineer",
       "status": "blocked",
       "blockedBy": [
-        "M4-00"
+        "M4-01",
+        "M4-02"
       ],
       "dependsOn": [
         "M4-01",
@@ -272,7 +286,8 @@
       "specialist": "credential security engineer",
       "status": "blocked",
       "blockedBy": [
-        "M4-00"
+        "M4-01",
+        "M4-03"
       ],
       "dependsOn": [
         "M4-01",
@@ -303,7 +318,7 @@
       "specialist": "inspection engineer",
       "status": "blocked",
       "blockedBy": [
-        "M4-00"
+        "M4-01"
       ],
       "dependsOn": [
         "M4-01"
@@ -337,10 +352,8 @@
       "id": "M4-07",
       "title": "Actual generated-project installed acceptance",
       "specialist": "harness engineer",
-      "status": "blocked",
-      "blockedBy": [
-        "M4-00"
-      ],
+      "status": "in_progress",
+      "blockedBy": [],
       "dependsOn": [
         "M4-00"
       ],
@@ -386,7 +399,21 @@
       ],
       "acceptedCommit": null,
       "evidence": [],
-      "acceptanceScope": "installed-scenario-evidence"
+      "acceptanceScope": "installed-scenario-evidence",
+      "startedAt": "2026-11-13T06:10:54.267586+00:00",
+      "producerBaseline": "88b815ed3ead921e44be53687193d0799e5d3b21",
+      "preparation": {
+        "status": "reviewed",
+        "owner": "m4_harness_contracts",
+        "scope": "Bounded helpers only; installed orchestration and acceptance pending producers",
+        "reviewer": "root",
+        "verification": {
+          "tests": 11,
+          "assertions": 78,
+          "providerFixtureTests": 18,
+          "providerFixtureAssertions": 86
+        }
+      }
     },
     {
       "id": "M4-08",
@@ -394,7 +421,11 @@
       "specialist": "documentation engineer",
       "status": "blocked",
       "blockedBy": [
-        "M4-00"
+        "M4-02",
+        "M4-03",
+        "M4-04",
+        "M4-05",
+        "M4-06"
       ],
       "dependsOn": [
         "M4-02",
@@ -428,7 +459,13 @@
       "specialist": "independent architecture/security/harness reviewer",
       "status": "blocked",
       "blockedBy": [
-        "M4-00"
+        "M4-02",
+        "M4-03",
+        "M4-04",
+        "M4-05",
+        "M4-06",
+        "M4-07",
+        "M4-08"
       ],
       "dependsOn": [
         "M4-02",
@@ -464,7 +501,9 @@
       "specialist": "CTO / AI Engineering Lead",
       "status": "blocked",
       "blockedBy": [
-        "M4-00"
+        "M4-07",
+        "M4-08",
+        "M4-09"
       ],
       "dependsOn": [
         "M4-07",
@@ -515,13 +554,15 @@
     "independentReviewer": "m4_plan_adversarial_review",
     "remainingPlanningBlockers": [],
     "implementationAuthorized": true,
-    "planSHA256": "7a61b593f9ef2bac167d8e6534e1852cf9a7a83650f52d579fbb5d4356358c51",
+    "planSHA256": "c5f6cb19c897851af96314020414812bfa75d8161f10c13b8040a2620c63f6f0",
     "reviewRecord": "milestone-4-plan-review-2026-11-13.md",
     "contractSHA256": {
-      "milestone-4-contracts/acceptance.md": "6f5792df409519eefa584a4a920442d6122970714c89ee93bbbb93c90b3cd3f1",
-      "milestone-4-contracts/authoring.md": "c84eb787994717bb22a1dbbac8d72c8acd518e0e2f80685b86c97fa1c6f72d30",
+      "milestone-4-contracts/authoring.md": "08da36e677a58a5ad6c0c9e98b2a14298fffd59fa05eb752ae4448940573bded",
+      "milestone-4-contracts/migration.md": "895c0e971d4a8bba3603bdd5ab860adb889ec97961cce7d62860e3ff52c3f56e",
       "milestone-4-contracts/inspection.md": "33993a110a642ab34b34532079f778a5d69f4fd3fd8ca67e5b003080ffc9df65",
-      "milestone-4-contracts/migration.md": "978279c476fcbbcfb75fcb51d408fb07fd23545c175581f2e581d2a5654608ca"
+      "milestone-4-contracts/acceptance.md": "f940dcdb5bb8e78e3e89457a2dd4400c2fd9c5ba824a63909d3545b210725007",
+      "milestone-4-contracts/freeze.md": "a4c4020159d7986756f8e5c3eb3ce19eca3182d6fa8eab41407e6734b8dcac3a",
+      "milestone-4-contracts/harness-freeze.md": "c6cb1a9a2dde00287e0ac2205953459c2a3e1a2cb6b257f6e84872a8467bb4a0"
     },
     "findings": {
       "resolved": [
@@ -532,17 +573,17 @@
         "R5"
       ],
       "unresolved": []
-    }
+    },
+    "approvedPlanningPlanSHA256": "7a61b593f9ef2bac167d8e6534e1852cf9a7a83650f52d579fbb5d4356358c51"
   },
   "activeOwnership": {
-    "orchestrator": "root",
-    "entryGateAudit": "m4_entry_gate_auditor",
-    "contractPreparation": "m4_contract_architect",
-    "harnessPreparation": "m4_harness_contracts",
-    "contractReview": "m4_contract_freeze_review"
+    "root": "shared contracts, integration, manifests, CLI registration and acceptance",
+    "m4_document_engineer": "M4-01 document-io/document/mutation and focused tests",
+    "m4_publication_engineer": "M4-01 publication/lease/receipts/recovery and focused tests",
+    "m4_foundation_review": "Independent read-only M4-01 foundation and root passive integration review"
   },
   "notes": [
-    "G0 accepted at verified repaired main; producers await compiled M4-00 contract acceptance.",
+    "G0 and M4-00 accepted; M4-01 document/publication producers and M4-07 preparation in progress.",
     "M4-07 may prepare after M4-00 acceptance; its installed acceptance also requires acceptanceDependsOn.",
     "Only root changes task/gate acceptance status.",
     "M5/M6 remain roadmap outcomes; no merge or publication authorized by this plan."

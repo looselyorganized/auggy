@@ -1,8 +1,13 @@
 /** A bounded Anthropic Messages server for the packed release acceptance path. */
 export const PROVIDER_FIXTURE_API_KEY = "sk-ant-auggy-release-smoke-not-real";
 export const PROVIDER_FIXTURE_FINAL_TEXT = "Packed acceptance tool result verified.";
+export const PROVIDER_FIXTURE_ANSWER_TEXT = "Generated application response verified.";
 
-export type ProviderFixtureScenario = "success" | "invalid-tool-arguments" | "provider-failure";
+export type ProviderFixtureScenario =
+  | "success"
+  | "answer-only"
+  | "invalid-tool-arguments"
+  | "provider-failure";
 
 export interface ProviderFixtureTool {
   name: string;
@@ -23,6 +28,7 @@ export interface ProviderFixtureOptions {
 
 type RequestOutcome =
   | "tool-request"
+  | "direct-answer"
   | "verified-tool-result"
   | "verified-validation-error"
   | "provider-failure"
@@ -75,7 +81,7 @@ function canonicalInput(value: unknown, depth = 0): string {
 }
 
 function validScenario(value: string): value is ProviderFixtureScenario {
-  return ["success", "invalid-tool-arguments", "provider-failure"].includes(value);
+  return ["success", "answer-only", "invalid-tool-arguments", "provider-failure"].includes(value);
 }
 
 function limit(value: number, maximum: number, name: string): number {
@@ -331,6 +337,18 @@ export function createProviderFixture(options: ProviderFixtureOptions): Provider
               error: { type: "overloaded_error", message: "Fixture provider failure." },
             },
             { status: 503, headers: { "retry-after": "0" } },
+          );
+        }
+        if (state.scenario === "answer-only") {
+          if (phase !== "initial") throw new Error("answer-already-returned");
+          phase = "complete";
+          state.finalResponses++;
+          note("direct-answer", 200);
+          return messageResponse(
+            body.model,
+            { type: "text", text: PROVIDER_FIXTURE_ANSWER_TEXT },
+            streaming,
+            `msg_fixture_${state.generation}_${call}`,
           );
         }
         const invalidArguments = state.scenario === "invalid-tool-arguments";
