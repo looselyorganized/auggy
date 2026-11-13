@@ -331,7 +331,7 @@
         "reviewer": "m4_foundation_review",
         "tests": 69,
         "assertions": 700,
-        "installedAcceptance": "pending"
+        "installedAcceptance": "accepted by final M4-07/10 certification on 4fd2fff"
       }
     },
     {
@@ -373,7 +373,7 @@
         "reviewer": "m4_foundation_review",
         "tests": 60,
         "assertions": 200,
-        "installedAcceptance": "pending"
+        "installedAcceptance": "accepted by final M4-07/10 certification on 4fd2fff"
       }
     },
     {
@@ -425,7 +425,7 @@
       "id": "M4-07",
       "title": "Actual generated-project installed acceptance",
       "specialist": "harness engineer",
-      "status": "review",
+      "status": "accepted",
       "blockedBy": [],
       "dependsOn": [
         "M4-00"
@@ -470,8 +470,11 @@
         "scripts/release-smoke/authoring-migration.ts",
         "tests/scripts/authoring-*"
       ],
-      "acceptedCommit": null,
-      "evidence": [],
+      "acceptedCommit": "4fd2fffa3e927986dc632d084fec592ea36279f9",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md",
+        "https://github.com/looselyorganized/auggy/pull/229"
+      ],
       "acceptanceScope": "installed-scenario-evidence",
       "startedAt": "2026-11-13T06:10:54.267586+00:00",
       "producerBaseline": "88b815ed3ead921e44be53687193d0799e5d3b21",
@@ -489,14 +492,25 @@
       },
       "implementationCommit": "4693ee0168eff5c0affd2b09efa295ef8d6b9aa2",
       "review": {
-        "status": "accepted-scoped",
+        "status": "accepted",
         "reviewer": "m4_harness_review",
         "tests": 36,
         "assertions": 171,
         "findings": "Generated inventory and detached service log supervision gaps repaired and independently rechecked",
-        "finalAcceptance": "Await accepted M4-08 and rebuilt candidate installed suite"
+        "finalAcceptance": "Actual generated suite accepted; all six final macOS artifacts byte-identical to independently audited c1902f8 artifacts, and fresh full macOS/Linux aggregate passes on 4fd2fff"
       },
-      "finalCandidatePreparation": "a5f2ba0b7a822132a99538184d90a8345416fd24"
+      "finalCandidatePreparation": "a5f2ba0b7a822132a99538184d90a8345416fd24",
+      "acceptedAt": "2026-11-13T07:59:15.071652+00:00",
+      "verification": {
+        "reviewer": "m4_harness_review",
+        "freshConsumers": 7,
+        "inventoryEntriesEach": 80,
+        "applicationScenarios": 59,
+        "sourceEdits": 15,
+        "lifecycleObservations": 74,
+        "macosService": "passed",
+        "cleanup": "confirmed"
+      }
     },
     {
       "id": "M4-08",
@@ -547,16 +561,8 @@
       "id": "M4-09",
       "title": "Independent integrated adversarial review",
       "specialist": "independent architecture/security/harness reviewer",
-      "status": "blocked",
-      "blockedBy": [
-        "M4-02",
-        "M4-03",
-        "M4-04",
-        "M4-05",
-        "M4-06",
-        "M4-07",
-        "M4-08"
-      ],
+      "status": "accepted",
+      "blockedBy": [],
       "dependsOn": [
         "M4-02",
         "M4-03",
@@ -581,25 +587,28 @@
       "writeScope": [
         "read-only; review reports only"
       ],
-      "acceptedCommit": null,
-      "evidence": [],
+      "acceptedCommit": "4fd2fffa3e927986dc632d084fec592ea36279f9",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md",
+        "https://github.com/looselyorganized/auggy/pull/229"
+      ],
       "acceptanceScope": "independent-integrated-review",
-      "preparation": {
-        "status": "read-only-source-audit",
-        "owner": "m4_final_architecture_review",
-        "acceptance": "GO pending accepted M4-07/08 and exact final candidate"
+      "acceptedAt": "2026-11-13T07:59:15.071652+00:00",
+      "review": {
+        "status": "accepted",
+        "reviewer": "m4_final_architecture_review",
+        "blockingFindings": [],
+        "packagedSourceFilesCompared": 342,
+        "indexedEntrypointsVerified": 20,
+        "remainingScope": "M5 hosted integration and M6 supported published upgrades/human DX measurement remain roadmap work"
       }
     },
     {
       "id": "M4-10",
       "title": "Certify final artifacts, CI and PR handoff",
       "specialist": "CTO / AI Engineering Lead",
-      "status": "blocked",
-      "blockedBy": [
-        "M4-07",
-        "M4-08",
-        "M4-09"
-      ],
+      "status": "accepted",
+      "blockedBy": [],
       "dependsOn": [
         "M4-07",
         "M4-08",
@@ -634,9 +643,19 @@
       "writeScope": [
         "root-reserved integration, manifests/locks, CI and evidence/status files"
       ],
-      "acceptedCommit": null,
-      "evidence": [],
-      "acceptanceScope": "milestone-certification"
+      "acceptedCommit": "4fd2fffa3e927986dc632d084fec592ea36279f9",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md",
+        "https://github.com/looselyorganized/auggy/pull/229"
+      ],
+      "acceptanceScope": "milestone-certification",
+      "acceptedAt": "2026-11-13T07:59:15.071652+00:00",
+      "review": {
+        "status": "accepted",
+        "reviewer": "m4_certification_auditor",
+        "checks": 31,
+        "blockingFindings": []
+      }
     }
   ],
   "planReview": {
@@ -672,11 +691,10 @@
     "approvedPlanningPlanSHA256": "7a61b593f9ef2bac167d8e6534e1852cf9a7a83650f52d579fbb5d4356358c51"
   },
   "activeOwnership": {
-    "root": "Final frozen-candidate verification, release artifacts/CI, evidence and PR handoff",
-    "m4_final_architecture_review": "Read-only preparation and final integrated review after installed gate"
+    "root": "Evidence-only handoff commit and final PR verification; no implementation work remains"
   },
   "notes": [
-    "Scoped product/teaching and all final preparation repairs independently accepted. Direct actual generated suite passed against c1902f8 artifacts. Fresh clean-candidate aggregate release and CI/full CodeQL certification follow.",
+    "M4-00 through M4-10 accepted. Exact 4fd2fff source passed full macOS/Linux aggregate release, all 31 PR checks, required PG17 and full manual CodeQL with zero open findings. Closing documentation records acceptance; merge/publication remain separate.",
     "M4-07 may prepare after M4-00 acceptance; its installed acceptance also requires acceptanceDependsOn.",
     "Only root changes task/gate acceptance status.",
     "M5/M6 remain roadmap outcomes; no merge or publication authorized by this plan."
@@ -763,5 +781,48 @@
         "scope": "Preserve legacy and inline active fixture formats, ordinary existing parents, exclusive observer and guarded exact restoration"
       }
     }
-  ]
+  ],
+  "certification": {
+    "status": "accepted",
+    "sourceRevision": "4fd2fffa3e927986dc632d084fec592ea36279f9",
+    "sourceTree": "64a968e8ba95edfec1c80051c882b32dcd1f8ab1",
+    "testedMerge": "5f8953eaafc6f5592de1917a78aaceb4e6bc441a",
+    "sourceChangesSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "rootLockSHA256": "cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7",
+    "bun": "1.3.14",
+    "ci": "https://github.com/looselyorganized/auggy/actions/runs/43388365523",
+    "linuxRelease": "https://github.com/looselyorganized/auggy/actions/runs/43388365574",
+    "linuxEvidenceArtifact": 14019409302,
+    "fullCodeQL": "https://github.com/looselyorganized/auggy/actions/runs/43388389592",
+    "codeQLAnalysis": 2159213461,
+    "openCodeQLAlerts": 0,
+    "repairedAlerts": [
+      128,
+      129
+    ],
+    "repairedAlertsDisposition": "fixed without dismissals",
+    "postgresRegistered": 13,
+    "postgresCompleted": 13,
+    "postgresVersion": 170010,
+    "macosReleaseEvidence": "/private/tmp/m4-final-release-evidence-2/release.json",
+    "macosEvidenceRecords": 427,
+    "linuxEvidenceRecords": 427,
+    "crossPlatformInstalledFileComparisons": 576,
+    "macosTarballs": {
+      "auggy-ollama-0.5.0.tgz": "56122840cc3773ee2c80183cb999cde251cd254ab1bbdd81fc17b6990ccf39df",
+      "auggy-anthropic-0.5.0.tgz": "293d662d72b8dc2820daee5e0a6d65695fbd71210fcc0899ac181b22ffb15c5d",
+      "auggy-evals-0.5.0.tgz": "9eee63f4034f0cc1a6b46d7ec70ea61fdf1e0cfa452999db03975811ca619942",
+      "auggy-openrouter-0.5.0.tgz": "483ac6d7343d7c6a7249eafb857856b8cb11a13a8eb004aec02fdb6495c1b15b",
+      "auggy-0.5.0.tgz": "b288d35053e6c52a867d4de6a0824f3066e158ba693586ab5c1d174df1da3a25",
+      "auggy-openai-0.5.0.tgz": "3b6d40297001421d2281b2d4bf8b947995b6cfe6645f3385ec2b6e9da5421fcd"
+    },
+    "reviewers": [
+      "m4_harness_review",
+      "m4_final_architecture_review",
+      "m4_certification_auditor"
+    ],
+    "handoffPR": "https://github.com/looselyorganized/auggy/pull/229",
+    "mergeAuthorized": false,
+    "publicationAuthorized": false
+  }
 }

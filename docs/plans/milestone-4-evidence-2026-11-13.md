@@ -1,7 +1,8 @@
 # Milestone 4 — execution evidence
 
-Status: execution authorized; G0 accepted on repaired main. No implementation
-acceptance is claimed until the corresponding ledger task is accepted.
+Status: M4-00 through M4-10 accepted for PR review on `4fd2fff`. All required
+macOS/Linux execution, CI, independent review and full CodeQL gates passed.
+The implementation remains unmerged and unreleased in PR #229.
 
 ## Entry gate and preservation
 
@@ -381,3 +382,86 @@ Final strict typecheck, lint, inventory and source-index checks pass after both
 repairs. The root dependency lock remains unchanged. The next aggregate run
 uses a new clean revision and separate evidence destination so the failed
 `c1902f8` report remains intact.
+
+
+## Final certification accepted
+
+Certification source: `4fd2fffa3e927986dc632d084fec592ea36279f9`; clean source
+tree `64a968e8ba95edfec1c80051c882b32dcd1f8ab1`. Tested PR merge
+`5f8953eaafc6f5592de1917a78aaceb4e6bc441a` has the identical tree. Bun 1.3.14,
+unchanged root lock
+`cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7`,
+and empty source-diff SHA
+`e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855`
+are recorded in both platform manifests. This closing documentation change
+records that verified implementation; it changes no packaged source or harness.
+
+Independent reviewers accepted installed authoring (`m4_harness_review`),
+integrated architecture/security/inspectability (`m4_final_architecture_review`)
+and final certification (`m4_certification_auditor`). No unresolved M4-blocking
+findings remain. The final architecture review compared all 342 packaged source
+files with the frozen checkout and verified all 20 indexed entrypoints.
+
+- [CI](https://github.com/looselyorganized/auggy/actions/runs/43388365523): all required gates passed; PostgreSQL registered/completed 13/13 on 170010 with zero skips. Native Linux publication and interruption recovery actually executed.
+- [Linux release rehearsal](https://github.com/looselyorganized/auggy/actions/runs/43388365574): full aggregate passed; sanitized evidence artifact `14019409302`, downloaded for independent audit. All 31 PR checks passed.
+- [Full manual CodeQL](https://github.com/looselyorganized/auggy/actions/runs/43388389592): analysis `2159213461` ran without PR diff filtering; zero open exact-branch findings. Alerts 128/129 are fixed without dismissal. The five inherited dismissals are unchanged from main.
+- macOS aggregate: `AUGGY_RELEASE_EVIDENCE_DIR=/private/tmp/m4-final-release-evidence-2 AUGGY_RELEASE_ARTIFACT_DIR=/private/tmp/m4-final-release-artifacts-2 bun run smoke:release` exited zero on arm64. Manifest: `/private/tmp/m4-final-release-evidence-2/release.json`; log: `/private/tmp/m4-final-release-2.log`.
+
+The auditor independently recomputed all 427 evidence-record hashes on each
+platform and all six macOS tarball hashes with zero mismatches. Linux and macOS
+archives can differ by build platform; all 576 compared installed file hashes
+across the four provider adoptions matched. Each successful platform aggregate
+includes 25 clean dependency audits; the old retained-override negative control
+intentionally reports two vulnerable packages, followed by a clean migrated
+consumer. No vulnerable historical runtime was executed.
+
+The actual generated suite passed all four provider creation/install/public-API
+typecheck/test/frozen-install/audit paths; seven fresh consumers each had an
+80-entry pre-install inventory and 19 selected owned-source hashes. It passed
+59 application scenarios, 15 startup/HTTP/turn edits across five launch paths,
+and 74 lifecycle observations (37 ready/37 stopped). Untouched answer-only
+execution used one provider call; the authorized tool scenario used two calls
+and one effect; invalid input and provider failures produced zero tool effects.
+
+Active-turn config conversion and explicit application adoption passed with
+durable replay, 12 migration reports and guarded rollback controls. Six passive
+import traps remained unexecuted and were restored; a different-version global
+CLI selected the local runtime's metadata. Ownership replacement retained 24
+source and three state hashes plus private env data, while 14 artifact members
+changed. This is explicitly a same-version artifact experiment. Deployment
+staging verified 25 source files and exclusion/negative controls; it does not
+claim container execution or hosted Railway deployment.
+
+Actual macOS service start/status/restart/stop passed with two owned generations,
+source sensitivity and exact restart replay. Cleanup confirmed no remaining
+claims/active service and removed the successful suite workspace. The log
+watchdog observed a maximum 1,062 stdout bytes and zero stderr bytes, with no
+errors; its 100 ms polling and possible between-poll overshoot remain explicit.
+Linux correctly records macOS service evidence as unavailable; the actual
+macOS aggregate supplies that required row. Reference-application and historical
+upgrade suites also passed, with exact fixture restoration and no retained
+successful workspaces.
+
+Final macOS candidate archive SHA-256 values:
+
+| Archive | SHA-256 |
+| --- | --- |
+| `auggy-0.5.0.tgz` | `b288d35053e6c52a867d4de6a0824f3066e158ba693586ab5c1d174df1da3a25` |
+| `auggy-anthropic-0.5.0.tgz` | `293d662d72b8dc2820daee5e0a6d65695fbd71210fcc0899ac181b22ffb15c5d` |
+| `auggy-evals-0.5.0.tgz` | `9eee63f4034f0cc1a6b46d7ec70ea61fdf1e0cfa452999db03975811ca619942` |
+| `auggy-ollama-0.5.0.tgz` | `56122840cc3773ee2c80183cb999cde251cd254ab1bbdd81fc17b6990ccf39df` |
+| `auggy-openai-0.5.0.tgz` | `3b6d40297001421d2281b2d4bf8b947995b6cfe6645f3385ec2b6e9da5421fcd` |
+| `auggy-openrouter-0.5.0.tgz` | `483ac6d7343d7c6a7249eafb857856b8cb11a13a8eb004aec02fdb6495c1b15b` |
+
+The local full runtime run passed 4,929 tests / 18,533 assertions before the
+subsequent test-only repairs; final CI and aggregate rehearsal reran the updated
+tracked suites. The console suite passed 360 tests / 1,474 assertions. Final
+strict typecheck, lint, source-index and inventory checks passed. Failed attempts
+above remain recorded rather than relabeled.
+
+[PR #229](https://github.com/looselyorganized/auggy/pull/229) is the review handoff.
+There is no package version change, npm publication or merge authorization. M5
+owns hosted Next.js/Auggy integration; M6 owns supported published-version
+upgrades and measurement with unfamiliar engineers. The pre-existing
+hyphen/underscore custom-tool name alias remains follow-up work, not an M4
+regression. The original dirty checkout and experiment worktrees remain untouched.

@@ -109,10 +109,13 @@ M4's accepted main baseline is `911fe168`; its
 [execution plan](./plans/milestone-4-execution-2026-11-13.md),
 [specialist task ledger](./plans/milestone-4-tasks.json), and
 [execution evidence](./plans/milestone-4-evidence-2026-11-13.md) track implementation.
-The scaffold, inline authoring, passive inspection, migration and AgentMail
-producers have passed independent scoped review. Installed acceptance,
-documentation alignment and final certification are in progress. These changes
-are unreleased; no package version or publication is implied by this milestone.
+Milestone 4 is implemented and certified for review in
+[PR #229](https://github.com/looselyorganized/auggy/pull/229), verified source
+`4fd2fff`. Independent product, harness, documentation and integrated architecture
+reviews are accepted. Actual generated-agent acceptance, full macOS/Linux release
+rehearsals, all required CI/PG17 checks and full CodeQL findings verification pass.
+These changes remain unmerged and unreleased; no package version or publication
+is implied by this milestone.
 Milestones 5–6 remain roadmap outcomes:
 
 | Milestone | Outcome | Exit gate |
