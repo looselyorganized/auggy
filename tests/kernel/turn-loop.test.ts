@@ -41,6 +41,85 @@ function makeTrigger(text: string, auth?: RouteAuthContext): TurnTrigger {
 }
 
 describe("TurnLoop", () => {
+  it.each([false, true])(
+    "rejects ambiguous tools before model or tool execution (reversed: %s)",
+    async (reverse) => {
+      const executed: string[] = [];
+      const model = createMockModel();
+      model.pushResponse({
+        toolCalls: [{ name: "shared_tool", arguments: {} }],
+        finishReason: "tool_use",
+      });
+      model.pushResponse({ content: "finished", finishReason: "end_turn" });
+      const augments: Augment[] = ["restricted-owner", "open-owner"].map((name, index) => ({
+        name,
+        constraints: { maxToolCallsPerTurn: index === 0 ? 0 : 10 },
+        tools: [
+          {
+            name: "shared_tool",
+            description: "Ambiguous owner regression",
+            category: "meta",
+            input: z.object({}),
+            execute: async () => {
+              executed.push(name);
+              return name;
+            },
+          },
+        ],
+      }));
+      if (reverse) augments.reverse();
+      const loop = createTurnLoop({
+        augments,
+        model,
+        tokenizer: createTokenizer(),
+        config: { name: "duplicate-tools", model: "mock", augments: [] },
+      });
+
+      await expect(
+        loop.executeTurn(makeTrigger("Use the tool"), "duplicate-tools"),
+      ).rejects.toThrow('Duplicate tool name "shared_tool"');
+      expect(model.calls).toHaveLength(0);
+      expect(executed).toEqual([]);
+    },
+  );
+
+  it("revalidates tool ownership after tools change between turns", async () => {
+    let executions = 0;
+    const tool = (name: string) => ({
+      name,
+      description: "Dynamically discovered tool",
+      category: "meta" as const,
+      input: z.object({}),
+      execute: async () => {
+        executions++;
+        return "executed";
+      },
+    });
+    const first: Augment = { name: "first-owner", tools: [tool("first_tool")] };
+    const dynamic: Augment = { name: "dynamic-owner", tools: [tool("dynamic_tool")] };
+    const model = createMockModel({ response: "ready" });
+    const loop = createTurnLoop({
+      augments: [first, dynamic],
+      model,
+      tokenizer: createTokenizer(),
+      config: { name: "dynamic-tools", model: "mock", augments: [] },
+    });
+
+    expect((await loop.executeTurn(makeTrigger("First turn"), "dynamic-tools")).success).toBe(true);
+    expect(model.calls).toHaveLength(1);
+
+    dynamic.tools!.push(tool("first_tool"));
+    await expect(loop.executeTurn(makeTrigger("Second turn"), "dynamic-tools")).rejects.toThrow(
+      'Duplicate tool name "first_tool" in augments "first-owner" and "dynamic-owner"',
+    );
+    expect(model.calls).toHaveLength(1);
+    expect(executions).toBe(0);
+
+    dynamic.tools!.pop();
+    expect((await loop.executeTurn(makeTrigger("Third turn"), "dynamic-tools")).success).toBe(true);
+    expect(model.calls).toHaveLength(2);
+  });
+
   it("fences late provider events and results after the inference deadline", async () => {
     let observedSignal: AbortSignal | undefined;
     let emitDelta: ((text: string) => void) | undefined;

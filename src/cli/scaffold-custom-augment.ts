@@ -14,6 +14,11 @@ export function validateCustomAugmentSlug(slug: string): void {
   }
 }
 
+/** The sample tool name is shared by scaffold output and collision preflight. */
+export function customAugmentToolName(slug: string): string {
+  return `${slug.replace(/-/g, "_")}_lookup_record`;
+}
+
 /** Pure project-owned sample files; the caller publishes them with central registration. */
 export function scaffoldCustomAugment(
   opts: CustomAugmentScaffoldOptions,
@@ -77,7 +82,7 @@ export function lookupRecord(input: unknown): SampleRecord | null {
 }
 
 function indexTemplate(slug: string): string {
-  const tool = `${slug.replace(/-/g, "_")}_lookup_record`;
+  const tool = customAugmentToolName(slug);
   return `import { defineAugment, defineRoute, defineTool, json } from "auggy";
 import { lookupInput, recordSchema } from "./schemas";
 import { lookupRecord } from "./service";
@@ -138,7 +143,7 @@ allowedTrustLevels:
 
 # ${slug}
 
-Use \`${slug.replace(/-/g, "_")}_lookup_record\` with an identifier such as SAMPLE-001.
+Use \`${customAugmentToolName(slug)}\` with an identifier such as SAMPLE-001.
 This is sample read-only logic, not a production database. Replace the service with
 an adapter to your system of record before relying on real business data.
 `;
@@ -153,7 +158,7 @@ production database, durable workflow, or system of record.
 
 - \`schemas.ts\` owns validation shared by the tool and route.
 - \`service.ts\` owns the read-only lookup. Replace it with a narrow system-of-record adapter.
-- \`index.ts\` exposes \`${slug.replace(/-/g, "_")}_lookup_record\` and \`GET /${slug}/records/:id\`.
+- \`index.ts\` exposes \`${customAugmentToolName(slug)}\` and \`GET /${slug}/records/:id\`.
 - \`tests/augments/${slug}.test.ts\` checks validation, lookup, missing records, and tool denial.
 
 The sample ID is SAMPLE-001. The route requires creator authentication through the
@@ -169,7 +174,7 @@ directly does not authenticate a request.
 }
 
 function testTemplate(slug: string): string {
-  const tool = `${slug.replace(/-/g, "_")}_lookup_record`;
+  const tool = customAugmentToolName(slug);
   return `import { describe, expect, test } from "bun:test";
 import type { ToolExecuteContext, TrustLevel } from "auggy";
 import createSampleAugment from "../../src/augments/${slug}/index";

@@ -370,6 +370,12 @@ createCapabilityTable(augments) → {
 }
 ```
 
+Construction rejects duplicate tool names within or across augments. The table
+is rebuilt per turn, so tools populated during startup or changed between turns
+are checked before inference and dispatch. An ambiguous name never selects one
+owner's policy and another owner's implementation. This check does not run before
+arbitrary augment context or turn-start hooks.
+
 Construction walks the augment list and builds:
 - A `Set<string>` of global `neverExpose` tool names (never sent to the model, regardless of trust level)
 - A `Set<string>` of global `requiresHumanApproval` tool names

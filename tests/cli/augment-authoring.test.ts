@@ -24,6 +24,7 @@ import {
   removeAugment,
 } from "../../src/cli/commands/augment";
 import { acquireProjectMutationLease } from "../../src/cli/authoring/publication";
+import { readFileSnapshot } from "../../src/cli/authoring/document-io";
 import { acquireAgentEnvMutationLock } from "../../src/cli/env-mutation-lock";
 import type { PublicationFaultHook } from "../../src/cli/authoring/contracts";
 
@@ -209,6 +210,68 @@ describe("central augment authoring preservation", () => {
     expect(contents("agent.yaml")).toBe(before);
     expect(existsSync(join(root, "src"))).toBe(false);
     expect(existsSync(join(root, ".auggy"))).toBe(false);
+  });
+
+  for (const [existing, requested] of [
+    ["crm-lookup", "crm_lookup"],
+    ["crm_lookup", "crm-lookup"],
+  ] as const) {
+    test(`create refuses ${requested} after ${existing} without changing any project files`, () => {
+      createCustomAugment({ cwd: root, slug: existing, includeSkill: true });
+      const snapshot = () => {
+        const paths = readdirSync(root, { recursive: true, encoding: "utf8" }).sort();
+        return {
+          paths,
+          files: paths
+            .filter((path) => lstatSync(join(root, path)).isFile())
+            .map((path) => readFileSnapshot(join(root, path), 1024 * 1024)),
+        };
+      };
+      const before = snapshot();
+      let scaffoldCalls = 0;
+      expect(() =>
+        createCustomAugment(
+          { cwd: root, slug: requested, includeSkill: true },
+          {
+            scaffold: () => {
+              scaffoldCalls++;
+              throw new Error("must reject before scaffolding");
+            },
+          },
+        ),
+      ).toThrow(
+        `Augment "${requested}" would generate tool "crm_lookup_lookup_record", which conflicts with declared augment "${existing}". Choose a slug that differs by more than hyphens and underscores.`,
+      );
+      expect(scaffoldCalls).toBe(0);
+      expect(snapshot()).toEqual(before);
+      expect(existsSync(join(root, "src", "augments", requested))).toBe(false);
+      expect(existsSync(join(root, "skills", requested))).toBe(false);
+      expect(existsSync(join(root, "tests", "augments", `${requested}.test.ts`))).toBe(false);
+    });
+  }
+
+  test("distinct generated tool names remain creatable and preserve existing naming", () => {
+    createCustomAugment({ cwd: root, slug: "crm-lookup" });
+    createCustomAugment({ cwd: root, slug: "crm-orders" });
+    expect(declaration().map((entry) => entry.name)).toEqual(["crm-lookup", "crm-orders"]);
+    expect(contents("src/augments/crm-lookup/index.ts")).toContain(
+      'name: "crm_lookup_lookup_record"',
+    );
+    expect(contents("src/augments/crm-orders/index.ts")).toContain(
+      'name: "crm_orders_lookup_record"',
+    );
+  });
+
+  test("builtin instance names do not reserve custom generated tool names", () => {
+    write("agent.yaml", "name: sample\naugments:\n - { name: crm-lookup, type: webFetch }\n");
+    createCustomAugment({ cwd: root, slug: "crm_lookup" });
+    expect(declaration().map((entry) => [entry.name, entry.type])).toEqual([
+      ["crm-lookup", "webFetch"],
+      ["crm_lookup", "custom"],
+    ]);
+    expect(contents("src/augments/crm_lookup/index.ts")).toContain(
+      'name: "crm_lookup_lookup_record"',
+    );
   });
 
   test("symlink destinations cannot write outside the project", async () => {

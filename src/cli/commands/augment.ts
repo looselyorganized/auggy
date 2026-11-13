@@ -4,7 +4,11 @@ import { basename, dirname, join, relative, resolve } from "node:path";
 import { AUGMENT_CATALOG, resolveCatalogEntry, type CatalogEntry } from "../augment-catalog";
 import { runAdd, type AddOpts } from "./add";
 import { selectInspectionDocument } from "../authoring/inspection-selection";
-import { scaffoldCustomAugment, validateCustomAugmentSlug } from "../scaffold-custom-augment";
+import {
+  customAugmentToolName,
+  scaffoldCustomAugment,
+  validateCustomAugmentSlug,
+} from "../scaffold-custom-augment";
 import { validateCustomAugment } from "../augment-validator";
 import { displayPath } from "../display-path";
 import { VALID_NAME_RE } from "../agent-name";
@@ -561,6 +565,18 @@ export function createCustomAugment(
   if (document.declarations.some((entry) => entry.name === slug))
     throw new Error(
       `Augment "${slug}" is already declared. Choose another slug or review the declaration manually.`,
+    );
+  const toolName = customAugmentToolName(slug);
+  // Reserve scaffold names for custom declarations without executing their factories.
+  const toolNameConflict = document.declarations.find(
+    (entry) =>
+      entry.type === "custom" &&
+      entry.name !== null &&
+      customAugmentToolName(entry.name) === toolName,
+  );
+  if (toolNameConflict)
+    throw new Error(
+      `Augment "${slug}" would generate tool "${toolName}", which conflicts with declared augment "${toolNameConflict.name}". Choose a slug that differs by more than hyphens and underscores.`,
     );
   const augmentDir = join(dirname(configPath), "src", "augments", slug);
   const skillDir = opts.includeSkill ? join(dirname(configPath), "skills", slug) : null;
