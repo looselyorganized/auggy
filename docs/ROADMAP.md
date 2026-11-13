@@ -77,12 +77,15 @@ Docker or on Railway, and the docs match.
 Release plan with entry conditions, work items, order, and ledger:
 [`docs/plans/release-0.6.0-the-tree-2026-08-18.md`](./plans/release-0.6.0-the-tree-2026-08-18.md).
 
-- Central YAML v2 project authoring (one strict `agent.yaml`, `SOUL.md`,
-  `AGENTS.md`, TypeScript only for custom augments) and `auggy migrate project`.
-  This is the direction recorded in ADR
-  `2026-08-16-central-yaml-agent-project-authoring`; the earlier
-  TypeScript-project-definition plan is superseded and its worktree is salvage
-  only.
+- Inspectable application authoring: central YAML is the configuration authority;
+  project-owned TypeScript exposes startup, HTTP wiring, agent composition, and
+  real turn orchestration. Built-in augments and guarded runtime operations stay
+  package-managed. The configuration-only scaffold direction is superseded.
+- Implement incrementally from committed main, not either authoring worktree.
+  The accepted ownership contract is in
+  [the architecture decision](./adr/2026-11-12-inspectable-agent-application.md).
+  Both authoring experiments are salvage sources only; their results do not
+  establish main's implementation or verification status.
 - Public docs rewritten for the new layout (site, `llms.txt`, `api-reference.json`,
   README, examples, builder skill).
 - Generic Docker path: the existing Dockerfile generator decoupled from the
@@ -93,9 +96,26 @@ Release plan with entry conditions, work items, order, and ledger:
   `settings.coordination` startup refusal names its remedy; README CLI table
   matches `auggy --help`.
 
-**Exit criterion:** release smoke green on a fresh machine, including a
-scaffolded project that typechecks, boots in Docker, and matches the published
-docs.
+**Exit criterion:** the installed scaffold exposes its actual request and turn
+execution path, preserves runtime safeguards, runs in Docker/Railway, and has
+matching documentation. Packed request, restart, and upgrade checks pass;
+engineers unfamiliar with the repository demonstrate improved traceability.
+
+Implementation proceeds through six gated milestones. Only 1–2 are detailed
+and authorized for the current implementation tranche:
+
+| Milestone | Outcome | Exit gate |
+|---|---|---|
+| 1. Baseline | Preserve outstanding work and verify isolated committed main | Attributable, reproducible required checks; scoped blockers repaired |
+| 2. Contract and acceptance | Adopt ownership and exercise an installed HTTP-to-tool turn | Consistent decisions, deterministic packed scenarios, independent review |
+| 3. Reference application | Managed startup, visible HTTP wiring, real local orchestration | Local edits affect execution; safeguards hold; project-selected runtime executes |
+| 4. Authoring | Central YAML, custom augments, inspection, migration, CLI scaffold | Fresh packed create/inspect/run/extend works with the agreed layout |
+| 5. Integration | Next.js app communicating with standalone Auggy service | Authenticated streaming, tenant isolation, persistence and recovery on Railway |
+| 6. Upgrade and DX | Dependency upgrades and measured developer usability | Customized source survives upgrades; unfamiliar engineers trace execution effectively |
+
+Milestones are dependency gates, not separate version promises. Plan milestone 3
+in detail after the first two pass. Existing scope items below remain roadmap
+requirements; they are not permission to expand the current tranche.
 
 ### 0.7.0 — the visitor
 

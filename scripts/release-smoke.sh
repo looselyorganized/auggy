@@ -13,14 +13,48 @@ SMOKE_HOME="$SMOKE_DIR/home"
 SMOKE_PORT=""
 SERVER_PID=""
 FAILED=""
+EVIDENCE_DIR="${AUGGY_RELEASE_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/auggy-release-evidence.XXXXXX")}"
+SOURCE_REVISION="$(git -C "$ROOT" rev-parse HEAD)"
 
 mkdir -p "$LOG_DIR" "$PACK_DIR" "$SMOKE_HOME"
 
+stop_server() {
+  [[ -n "$SERVER_PID" ]] || return 0
+  local remaining=60
+  if kill -0 "$SERVER_PID" 2>/dev/null; then
+    kill "$SERVER_PID" 2>/dev/null || true
+    while kill -0 "$SERVER_PID" 2>/dev/null && (( remaining > 0 )); do
+      sleep 0.25
+      remaining=$((remaining - 1))
+    done
+    if kill -0 "$SERVER_PID" 2>/dev/null; then
+      kill -KILL "$SERVER_PID" 2>/dev/null || true
+      # Reap after SIGKILL without allowing cleanup to wait indefinitely.
+      remaining=20
+      while kill -0 "$SERVER_PID" 2>/dev/null && (( remaining > 0 )); do
+        sleep 0.05
+        remaining=$((remaining - 1))
+      done
+      if ! kill -0 "$SERVER_PID" 2>/dev/null; then
+        wait "$SERVER_PID" 2>/dev/null || true
+      fi
+      SERVER_PID=""
+      return 1
+    fi
+  fi
+  wait "$SERVER_PID" 2>/dev/null || true
+  SERVER_PID=""
+}
+
 cleanup() {
   local exit_status="$1"
-  if [[ -n "$SERVER_PID" ]] && kill -0 "$SERVER_PID" 2>/dev/null; then
-    kill "$SERVER_PID" 2>/dev/null || true
-    wait "$SERVER_PID" 2>/dev/null || true
+  if ! stop_server; then
+    printf 'agent exceeded graceful shutdown deadline\n' >&2
+    exit_status=1
+  fi
+  if ! bun "$ROOT/scripts/release-smoke/export-evidence.ts" "$SMOKE_DIR" "$EVIDENCE_DIR" "$exit_status" "$SOURCE_REVISION" "$PACK_DIR" "$ROOT"; then
+    printf 'could not export release evidence\n' >&2
+    exit_status=1
   fi
   if [[ -n "$FAILED" ]] || (( exit_status != 0 )); then
     if [[ -z "$FAILED" ]]; then
@@ -29,9 +63,10 @@ cleanup() {
     fi
     return "$exit_status"
   fi
+  printf "release evidence: %s\n" "$EVIDENCE_DIR"
   rm -rf "$SMOKE_DIR"
 }
-trap 'cleanup $?' EXIT
+trap 'exit_status=$?; trap - EXIT; if cleanup "$exit_status"; then exit "$exit_status"; else exit 1; fi' EXIT
 
 info() {
   printf '\n==> %s\n' "$1"
@@ -129,8 +164,9 @@ verify_adapter_consumer() {
   shift 4
 
   mkdir -p "$consumer_dir"
-  node - "$consumer_dir/package.json" <<'NODE'
-const { writeFileSync } = require("node:fs");
+  node - "$consumer_dir/package.json" "$ROOT/package.json" <<'NODE'
+const { readFileSync, writeFileSync } = require("node:fs");
+const { overrides } = JSON.parse(readFileSync(process.argv[3], "utf8"));
 writeFileSync(
   process.argv[2],
   `${JSON.stringify({
@@ -141,26 +177,8 @@ writeFileSync(
     // TypeScript package, even when a package is not otherwise present in the
     // resolved graph. Install these audited overrides explicitly so the
     // isolated import exercises the same pinned contract as the workspace.
-    dependencies: {
-      "@hono/node-server": "2.0.11",
-      "body-parser": "2.3.0",
-      "brace-expansion": "5.0.9",
-      "fast-uri": "3.1.5",
-      "hono": "4.12.34",
-      "ip-address": "10.4.0",
-      "postcss": "8.5.25",
-      "undici": "7.29.0",
-    },
-    overrides: {
-      "@hono/node-server": "2.0.11",
-      "body-parser": "2.3.0",
-      "brace-expansion": "5.0.9",
-      "fast-uri": "3.1.5",
-      "hono": "4.12.34",
-      "ip-address": "10.4.0",
-      "postcss": "8.5.25",
-      "undici": "7.29.0",
-    },
+    dependencies: { ...overrides },
+    overrides,
   }, null, 2)}\n`,
 );
 NODE
@@ -232,16 +250,7 @@ NODE
       import { readFileSync } from "node:fs";
       import { join } from "node:path";
 
-      const expected = {
-        "@hono/node-server": "2.0.11",
-        "body-parser": "2.3.0",
-        "brace-expansion": "5.0.9",
-        "fast-uri": "3.1.5",
-        hono: "4.12.34",
-        "ip-address": "10.4.0",
-        postcss: "8.5.25",
-        undici: "7.29.0",
-      };
+      const { overrides: expected } = JSON.parse(readFileSync(process.argv[1], "utf8"));
       for (const [name, version] of Object.entries(expected)) {
         // These are direct consumer dependencies. Read their root manifests
         // instead of resolving module entry points: Bun resolves `undici` to
@@ -259,7 +268,7 @@ NODE
           );
         }
       }
-    ' || exit $?
+    ' "$ROOT/package.json" || exit $?
     bun audit --json | node -e '
       const result = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
       if (Object.keys(result).length !== 0) {
@@ -273,24 +282,16 @@ NODE
 verify_evals_consumer() {
   local consumer_dir="$SMOKE_DIR/evals-consumer"
   mkdir -p "$consumer_dir"
-  node - "$consumer_dir/package.json" <<'NODE'
-const { writeFileSync } = require("node:fs");
+  node - "$consumer_dir/package.json" "$ROOT/package.json" <<'NODE'
+const { readFileSync, writeFileSync } = require("node:fs");
+const { overrides } = JSON.parse(readFileSync(process.argv[3], "utf8"));
 writeFileSync(
   process.argv[2],
   `${JSON.stringify({
     name: "packed-evals-consumer",
     private: true,
     type: "module",
-    overrides: {
-      "@hono/node-server": "2.0.11",
-      "body-parser": "2.3.0",
-      "brace-expansion": "5.0.9",
-      "fast-uri": "3.1.5",
-      "hono": "4.12.34",
-      "ip-address": "10.4.0",
-      "postcss": "8.5.25",
-      "undici": "7.29.0",
-    },
+    overrides,
   }, null, 2)}\n`,
 );
 NODE
@@ -623,7 +624,7 @@ for attempt in {1..3}; do
 
   (
     cd "$AGENT_DIR"
-    HOME="$SMOKE_HOME" "$CLI" run --no-open >"$LOG_DIR/run.log" 2>&1
+    HOME="$SMOKE_HOME" exec "$CLI" run --no-open >"$LOG_DIR/run.log" 2>&1
   ) &
   SERVER_PID="$!"
 
@@ -965,9 +966,14 @@ if grep -R -Fq "$WEB_TOKEN" "$LOG_DIR"; then
   fail "packed runtime responses or logs leaked AUGGY_WEB_TOKEN"
 fi
 
-kill "$SERVER_PID" 2>/dev/null || true
-wait "$SERVER_PID" 2>/dev/null || true
-SERVER_PID=""
+stop_server || fail "agent exceeded graceful shutdown deadline"
+
+info "verify packed authenticated turn, denial, failure and durable replay"
+bun "$ROOT/scripts/release-smoke/packed-turn.ts" \
+  --cli "$CLI" --agent-dir "$AGENT_DIR" --home "$SMOKE_HOME" \
+  --evidence-dir "$EVIDENCE_DIR/packed-turn" --repo-root "$ROOT" \
+  >"$LOG_DIR/packed-turn.log" 2>&1 \
+  || fail "packed request acceptance failed"
 
 info "add knowledge and MCP"
 (

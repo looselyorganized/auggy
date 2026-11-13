@@ -403,8 +403,8 @@ describe("createAnthropicEngine — costUsd", () => {
   });
 
   it("computes correct cost for haiku model with different rate", async () => {
-    // claude-haiku-4-5: $0.8/Mtok input, $4.0/Mtok output
-    // 1000 input + 200 output → (1000/1e6)*0.8 + (200/1e6)*4.0 = 0.0008 + 0.0008 = 0.0016
+    // claude-haiku-4-5: $1/Mtok input, $5/Mtok output
+    // 1000 input + 200 output → 0.001 + 0.001 = 0.002
     nextAnthropicResponse = {
       id: "msg_test",
       type: "message",
@@ -419,7 +419,7 @@ describe("createAnthropicEngine — costUsd", () => {
     const result = await engine.complete(
       emptyPrompt({ messages: [anthropicMsg({ content: "hi" })] }),
     );
-    expect(result.costUsd).toBeCloseTo(0.0016, 8);
+    expect(result.costUsd).toBeCloseTo(0.002, 8);
   });
 
   it("costOverride populates costUsd for unknown model", async () => {

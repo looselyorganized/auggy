@@ -80,7 +80,18 @@ jobs:
         run: bun run test:temporal-example
 
       - name: Smoke packed release
+        env:
+          AUGGY_RELEASE_EVIDENCE_DIR: ${{ runner.temp }}/auggy-release-evidence
         run: bun run smoke:release
+
+      - name: Preserve sanitized release evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release-rehearsal-evidence
+          path: ${{ runner.temp }}/auggy-release-evidence
+          if-no-files-found: warn
+          retention-days: 14
 
       # Detect whether this PR bumps the package version or deliberately uses
       # the release branch namespace. Either condition enables every

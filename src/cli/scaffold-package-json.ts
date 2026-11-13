@@ -44,7 +44,7 @@ export const PROVIDER_TO_PACKAGE: Record<Provider, string> = {
  * are not inherited, so generated agents must own this policy explicitly.
  */
 export const SCAFFOLD_SECURITY_OVERRIDES = {
-  "@hono/node-server": "2.0.11",
+  "@hono/node-server": "2.1.6",
 } as const;
 
 export interface BuildAgentPackageJsonInput {

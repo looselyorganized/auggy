@@ -73,16 +73,16 @@ describe("published provider package contracts", () => {
 
   test("pins every audited transitive dependency to a reviewed fixed release", () => {
     expect(rootManifest.overrides).toEqual({
-      "@hono/node-server": "2.0.11",
-      "body-parser": "2.3.0",
-      "brace-expansion": "5.0.9",
-      "fast-uri": "3.1.5",
-      hono: "4.12.34",
-      "ip-address": "10.4.0",
-      "js-yaml": "4.3.1",
+      "@hono/node-server": "2.1.6",
+      "body-parser": "2.4.0",
+      "brace-expansion": "5.0.12",
+      "fast-uri": "3.1.9",
+      hono: "4.13.11",
+      "ip-address": "10.7.4",
+      "js-yaml": "4.3.2",
       nanoid: "3.3.18",
       postcss: "8.5.25",
-      undici: "7.29.0",
+      undici: "7.30.1",
     });
   });
 

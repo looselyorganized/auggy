@@ -24,8 +24,8 @@ describe("openai lookup", () => {
   it("returns correct gpt-5-mini rates", () => {
     const r = lookup("gpt-5-mini");
     expect(r).toBeTruthy();
-    expect(r!.inputUsdPerMtok).toBe(1.0);
-    expect(r!.outputUsdPerMtok).toBe(4.0);
+    expect(r!.inputUsdPerMtok).toBe(0.25);
+    expect(r!.outputUsdPerMtok).toBe(2.0);
   });
 
   it("returns null for unknown models", () => {
@@ -46,9 +46,9 @@ describe("priceOpenAIResponse — standard path", () => {
       prompt_tokens: 200,
       completion_tokens: 100,
     });
-    // (200/1e6)*5.0 + (100/1e6)*20.0 = 0.001 + 0.002 = 0.003
+    // (200/1e6)*1.25 + (100/1e6)*10.0 = 0.00025 + 0.001 = 0.00125
     expect(result.priced).toBe(true);
-    if (result.priced) expect(result.costUsd).toBeCloseTo(0.003, 8);
+    if (result.priced) expect(result.costUsd).toBeCloseTo(0.00125, 8);
   });
 
   it("prices gpt-5-mini correctly", () => {
@@ -56,9 +56,9 @@ describe("priceOpenAIResponse — standard path", () => {
       prompt_tokens: 500,
       completion_tokens: 250,
     });
-    // (500/1e6)*1.0 + (250/1e6)*4.0 = 0.0005 + 0.001 = 0.0015
+    // (500/1e6)*0.25 + (250/1e6)*2.0 = 0.000125 + 0.0005 = 0.000625
     expect(result.priced).toBe(true);
-    if (result.priced) expect(result.costUsd).toBeCloseTo(0.0015, 8);
+    if (result.priced) expect(result.costUsd).toBeCloseTo(0.000625, 8);
   });
 
   it("returns unpriced for unknown model with no override", () => {
@@ -95,16 +95,16 @@ describe("priceOpenAIResponse — standard path", () => {
 
 describe("priceOpenAIResponse — reasoning token folding", () => {
   it("folds reasoning_tokens into output for billing", () => {
-    // gpt-5: $5/Mtok in, $20/Mtok out
+    // gpt-5: $1.25/Mtok in, $10/Mtok out
     // 100 prompt + 50 completion + 30 reasoning = 80 billed output
-    // (100/1e6)*5 + (80/1e6)*20 = 0.0005 + 0.0016 = 0.0021
+    // (100/1e6)*1.25 + (80/1e6)*10 = 0.000125 + 0.0008 = 0.000925
     const result = priceOpenAIResponse("gpt-5", undefined, {
       prompt_tokens: 100,
       completion_tokens: 50,
       reasoning_tokens: 30,
     });
     expect(result.priced).toBe(true);
-    if (result.priced) expect(result.costUsd).toBeCloseTo(0.0021, 8);
+    if (result.priced) expect(result.costUsd).toBeCloseTo(0.000925, 8);
   });
 
   it("pricing without reasoning_tokens is identical to zero reasoning_tokens", () => {
@@ -126,13 +126,13 @@ describe("priceOpenAIResponse — reasoning token folding", () => {
 
   it("reasoning_tokens only — zero completion_tokens", () => {
     // 200 reasoning only → billed as 200 output
-    // (100/1e6)*5 + (200/1e6)*20 = 0.0005 + 0.004 = 0.0045
+    // (100/1e6)*1.25 + (200/1e6)*10 = 0.000125 + 0.002 = 0.002125
     const result = priceOpenAIResponse("gpt-5", undefined, {
       prompt_tokens: 100,
       completion_tokens: 0,
       reasoning_tokens: 200,
     });
     expect(result.priced).toBe(true);
-    if (result.priced) expect(result.costUsd).toBeCloseTo(0.0045, 8);
+    if (result.priced) expect(result.costUsd).toBeCloseTo(0.002125, 8);
   });
 });
