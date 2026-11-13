@@ -220,7 +220,7 @@
       "id": "M3-04",
       "title": "Executable reference application",
       "specialist": "application-dx-engineer",
-      "status": "in_progress",
+      "status": "accepted",
       "blockedBy": [],
       "dependsOn": [
         "M3-01",
@@ -239,20 +239,31 @@
         "trace walkthrough",
         "safe customization recipe"
       ],
-      "acceptedCommit": null,
+      "acceptedCommit": "67ec5b47bee7370c9003b9792577d646e008e867",
       "evidence": [],
       "startedAt": "2026-11-13T04:21:59.813291+00:00",
       "producerCommits": {
         "M3-01": "d2cc5866e97014fac27fbadeb97b85cdf3293ae4",
         "M3-02": "9ac46578b33915ae0a82104dd056c431f96bd694",
         "M3-03": "b4a2a6c"
+      },
+      "acceptedAt": "2026-11-13T04:30:12.540979+00:00",
+      "verification": {
+        "standaloneTests": 6,
+        "assertions": 62,
+        "frozenReinstall": "passed",
+        "dependencyAudit": "passed, zero advisories",
+        "publicPackedTypecheck": "passed after public declaration repair",
+        "publicDeclarationRepairCommit": "73233db23bb1dc17d9a795b19881c79a09266a18",
+        "independentReview": "root source review and installed consumer checks",
+        "wholeMilestoneCertified": false
       }
     },
     {
       "id": "M3-05",
       "title": "Packed reference acceptance",
       "specialist": "harness-engineer",
-      "status": "in_progress",
+      "status": "review",
       "blockedBy": [],
       "dependsOn": [
         "M3-00"
@@ -280,20 +291,21 @@
       "startedAt": "2026-11-13T03:36:26.979536+00:00",
       "producerCommits": {
         "M3-00": "7e1c85acb4c4d76fae690181ae646b67dbd9bc5e"
+      },
+      "producerCommit": "7bb4bd402f59dfa2946e8b2f4a3d46d7b8883954",
+      "verification": {
+        "firstCompleteRehearsal": "passed; all 16 application rows",
+        "sourceArtifactSHA256": "120faf7c90691be116583efd722f1f6d783dfa217c27672758b74b1598e9cd2f",
+        "freshCandidateRerun": "required after independent review repairs",
+        "containerExecution": "unavailable locally; generated deployment checks passed; no hosted deployment"
       }
     },
     {
       "id": "M3-06",
       "title": "Independent adversarial review",
       "specialist": "independent-reviewer",
-      "status": "blocked",
-      "blockedBy": [
-        "M3-01",
-        "M3-02",
-        "M3-03",
-        "M3-04",
-        "M3-05"
-      ],
+      "status": "review",
+      "blockedBy": [],
       "dependsOn": [
         "M3-01",
         "M3-02",
@@ -323,16 +335,34 @@
         "review disposition"
       ],
       "acceptedCommit": null,
-      "evidence": []
+      "evidence": [],
+      "reviewers": [
+        "m3_runtime_final_review",
+        "m3_launch_final_review"
+      ],
+      "verification": {
+        "reviewedCommit": "7bb4bd402f59dfa2946e8b2f4a3d46d7b8883954",
+        "findings": [
+          {
+            "severity": "P1",
+            "description": "Unfinished augment construction incorrectly certified resources closed",
+            "status": "repair in progress"
+          },
+          {
+            "severity": "P2",
+            "description": "Nested package export no-match prevented valid outer fallback",
+            "status": "repaired and independently verified",
+            "repairCommit": "f5dd8bd"
+          }
+        ]
+      }
     },
     {
       "id": "M3-07",
       "title": "Final certification and PR handoff",
       "specialist": "orchestrator",
-      "status": "blocked",
-      "blockedBy": [
-        "M3-06"
-      ],
+      "status": "in_progress",
+      "blockedBy": [],
       "dependsOn": [
         "M3-06"
       ],
@@ -358,7 +388,12 @@
         "reviewable PR and compatibility notes"
       ],
       "acceptedCommit": null,
-      "evidence": []
+      "evidence": [],
+      "verification": {
+        "localTrackedTests": "passed before final constructor repair; 13 PostgreSQL cases require CI service",
+        "finalCertification": "pending repair verification and exact-candidate rehearsal",
+        "requiredCI": "pending PR creation"
+      }
     }
   ],
   "planReview": {
@@ -372,11 +407,9 @@
     "planSHA256": "57ab734e954d9a50897eb4b6a51b631b38ef626d393b870c44ee3c9024430d0b"
   },
   "activeOwnership": {
-    "src/agent.ts": "frozen host producer69fd834; repairs only by explicit handback to worktree_inventory",
-    "src/types.ts, src/index.ts, manifests, locks, config-parser/types, dev.ts, CI, release shell, docs/ledger": "root; exceptions only by explicit serialized handoff",
-    "runtime phase files/tests": "main_runtime_architecture",
-    "host, HTTP, lifecycle/job cleanup files/tests": "worktree_inventory",
-    "new packed application harness/fixtures": "main_harness_release",
-    "CLI bootstrap, launch grammar, selected operator/deploy files": "main_harness_release; root retains dev.ts, config-parser/types, preflight helpers, manifests and exports"
+    "shared manifests, locks, CI, exports, docs, integration and acceptance": "root",
+    "src/cli/augment-resolver.ts and focused construction tests": "m3_construction_repair",
+    "independent runtime review": "m3_runtime_final_review (read-only)",
+    "independent launch review": "m3_launch_final_review (read-only)"
   }
 }
