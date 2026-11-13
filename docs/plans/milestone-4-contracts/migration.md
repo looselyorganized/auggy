@@ -149,6 +149,14 @@ transactionally before storing raw backups. Directories use 0700 and sensitive
 backups/journals 0600. Backups may contain inline user secrets even without `.env`;
 never archive them as public evidence or model-visible content.
 
+Before creating raw backups/staging, persist a metadata-only bootstrap receipt
+that records the original ignore file size/hash and known appended suffix/output
+hash. Publish and verify ignore protection first. If interrupted before its
+backup exists, recovery can restore the original prefix only from an unchanged
+verified appended postimage; otherwise retain the rule explicitly. This closes
+the crash window between ignore publication and backup creation without writing
+secret-bearing files before protection. Test each of those boundaries.
+
 Receipt schema 1 records operation kind, canonical project identity, preimage and
 planned output hashes, operation order, private backup locations, publication
 progress and completion. It does not include environment values. Keep receipt

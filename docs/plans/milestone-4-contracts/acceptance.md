@@ -110,6 +110,13 @@ analysis job is not zero findings: the separate findings check must pass too.
 Producer tests cannot replace independent review; reviewer repairs require a
 different reviewer for the repaired code.
 
+The merged M3 gate exposed a further distinction: PR diff-informed CodeQL can
+report zero while the identical main tree produces open findings under full
+analysis. Require a full manual branch analysis on the final M4 head as well as
+normal PR checks, inspect findings for that exact ref/analysis, then recheck main
+after merge. Never infer full-tree clearance from the PR's successful analysis
+or findings check alone. The M3 fixture repair is tracked separately in PR #228.
+
 ## Required certification and handoff
 
 After focused tests, freeze the candidate and run the repository's required

@@ -186,6 +186,19 @@ Record this authoring compatibility change in release notes.
   No destructive purge/automatic skill refresh in M4. The separate explicit
   skill repair command retains its documented behavior and is reviewed for clarity.
 
+M4-00 starter fixture contract: `lookupRecord(input: unknown)` validates
+`{ id: /^SAMPLE-\d{3}$/ }` and returns the sample record
+`{ id: "SAMPLE-001", status: "ready", label: "Example record" }` or null.
+The tool is `<slug_with_underscores>_lookup_record`; the explicit creator route is
+`GET /<slug>/records/:id`. Invalid route input returns 400, a missing record 404;
+tool denial/missing record use structured errors. Both adapters share schemas
+and the read-only service, with creator-only exposure plus an execution-time
+identity check on the tool. Tests exercise success, validation, not-found and
+denial. Validate the slug against route/tool naming constraints; emitted function
+identifiers are static. The adjacent README labels the data as sample business
+logic to replace with a system-of-record adapter. This is a generator fixture,
+not another enabled-augment registry.
+
 AgentMail gets a dedicated security work package. Inline instance discovery and
 updates replace metadata-file assumptions, while retaining canonical-name and
 shared-consumer restrictions, credential transport checks, env mutation locking,
@@ -194,6 +207,15 @@ one documented order (project mutation lease, then credential env lock); no othe
 writer may acquire them in reverse. Revalidate config snapshots after awaited
 network work. Preview never performs credential verification. Do not log secrets
 or treat successful API authentication as authorization for broader scope.
+
+AgentMail must handle publication's returned failure statuses as well as throws.
+Report success only for completed publication. Restore an earlier env snapshot
+only after proving central configuration is original/restored and the current
+env still matches this operation's postimage under both locks. An activated or
+unknown configuration with incomplete recovery requires retaining credentials
+and an explicit recovery result; do not blindly restore old credentials after
+an after-activation failure. Test config-write failure, after-activation failure,
+failed cleanup and concurrent env/config preimages.
 
 MCP and all other graph writers must use the same declaration policy; domain
 files that are not graph registries retain their ownership. Deploy bundles carry

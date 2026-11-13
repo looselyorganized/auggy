@@ -1,10 +1,11 @@
 # Milestone 4 — inspectable project authoring
 
-Status: planning complete and independently reviewed; implementation has not
-started. See the [review dispositions](./milestone-4-plan-review-2026-11-13.md).
+Status: execution authorized; verified-main gate is in progress. See the
+[execution evidence](./milestone-4-evidence-2026-11-13.md) and
+[review dispositions](./milestone-4-plan-review-2026-11-13.md).
 This packet is prepared for
 specialized engineering subagents orchestrated by the CTO / AI Engineering Lead.
-The current request authorizes planning, not implementation, merging or publishing.
+The user authorized execution of this packet. Publication remains outside scope.
 See the [task ledger](./milestone-4-tasks.json) for gates and review status.
 
 ## Outcome and entry gate
@@ -23,10 +24,15 @@ orchestration and custom business adapters are project-owned.
 Planning evidence is frozen at M3 candidate
 `ba16ce3a8be1f5ef8ec36e43c79889c3feecc250` on `feat/inspectable-application`.
 At planning inspection, [PR #227](https://github.com/looselyorganized/auggy/pull/227)
-is open and main is `209185d0e7481b4ff5d3b4c87e3447e7583b2fef`.
+was open and main was `209185d0e7481b4ff5d3b4c87e3447e7583b2fef`.
 The candidate is not an accepted main baseline. Its
 [M3 evidence](./milestone-3-evidence-2026-11-13.md) is supporting evidence, not
 permission to skip verification after merge.
+
+PR #227 is now merged as `d8d0072cd334834bc62e8270b40edd2a2a7a94e9`.
+Its tree exactly matches the reviewed candidate; main CI/CodeQL verification is
+the remaining G0 prerequisite. The implementation branch is
+`feat/inspectable-authoring`, isolated from the original dirty checkout.
 
 **G0:** before M4 implementation, obtain implementation authorization, complete
 the reviewed M3 merge, verify the resulting main and required checks, and record
