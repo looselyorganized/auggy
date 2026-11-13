@@ -115,11 +115,11 @@ A commit/patch identity must accompany any eventual accepted baseline.
 |---|---|
 | Preservation | Archives verified; retirement deferred for exclusion review |
 | Original-main baseline | Captured; initial failures retained in evidence |
-| Scoped baseline repairs | Compatible fixes verified; Link/Zod v3 advisory remains blocking |
+| Scoped baseline repairs | Published Link 0.2.0 integrated; current full-workspace audit is clean |
 | Ownership decision | Adopted; implementation guarantees remain future |
-| Packed execution scenarios | All seven passed in immutable full release rehearsal |
+| Packed execution scenarios | Seven web plus twenty fresh/retained Link scenarios passed local-artifact acceptance; final registry rehearsal required |
 | Independent review | Local code and final evidence approved |
-| M1 acceptance | Blocked by Link dependency; PR #226 records candidate-specific Linux/security/PostgreSQL results |
+| M1 acceptance | Final integrated CI and reviewed merge pending; PR #226 records exact-candidate results |
 | M2 acceptance | Core/retained-lock execution verified locally; formal gate follows M1 dependency closure and reviewed merge |
 
 ## Foundation closure before milestone 3
@@ -137,10 +137,10 @@ only after this foundation is reviewed, merged and verified on main.
 - Replace the console's generator-package stylesheet import with the exact
   attributed upstream stylesheet. Remove the generator from normal installs;
   quarantine unreviewed generator invocations in maintenance documentation.
-- Investigate Link's separate Zod v3 path. Do not force a major version, silently
-  remove the preview capability, or publish a separate package release. If a safe
-  compatible resolution is unavailable, document the concrete blocker and hold
-  merge for review.
+- Resolve Link's separate Zod v3 path through its separately authorized release
+  PR. Link 0.2.0 is now published and integrated with its genuine Zod 4 contract;
+  no global major override or capability removal is used. Certify the actual
+  registry path in both fresh and retained Link-selected agents before merge.
 
 ### Harness and CI
 

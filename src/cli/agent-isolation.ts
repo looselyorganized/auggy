@@ -7,6 +7,11 @@ export function assertImmutableAgentId(agentId: string): string {
   return agentId;
 }
 
+/** Link participant IDs use the UUID portion of the immutable Auggy identity. */
+export function linkParticipantIdForAgent(agentId: string): string {
+  return assertImmutableAgentId(agentId).slice("aug1_".length);
+}
+
 export function scopedAgentNamespace(
   agentId: string | undefined,
   configuredNamespace: string | undefined,

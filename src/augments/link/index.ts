@@ -4,7 +4,7 @@
  * Wires the @auggy/link library into Auggy so two Auggy agents (or any
  * A2A v0.2-speaking peer: LangChain agent, Python A2A agent, future Mesh
  * coordinator) can exchange messages over HTTP with mutual bearer auth and
- * no central service. Imported as an npm dependency at @auggy/link v0.1.1.
+ * no central service. Imported from the agent's installed @auggy/link package.
  *
  * What this augment owns:
  *   - The link HTTP service: GET /health, GET /.well-known/agent.json,

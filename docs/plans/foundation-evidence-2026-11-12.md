@@ -1,14 +1,17 @@
 # Foundation execution evidence — 2026-11-12
 
-Status: implementation delivered; local M2 acceptance independently approved.
-Formal M1/M2 acceptance remains pending supported Linux/security/PostgreSQL CI
-and preservation-exclusion review. No milestone 3 implementation has started.
+Status: foundation implementation and published Link 0.2.0 integration delivered.
+The integrated workspace audit and focused checks pass. Formal M1/M2 acceptance
+requires the final registry rehearsal, exact-candidate CI, reviewed merge and
+verified main. No milestone 3 implementation has started. Preservation-exclusion
+review remains a gate for worktree retirement; those worktrees are retained.
 
 Baseline: `29147dfc7af0de59c3631c34a164ed3f3f6f4d5c` (committed main).
 Verified implementation: `307ac09c7322e008fd2c300f1484d3c4f8d9ad89`.
 The implementation was isolated from the original dirty main checkout and all
 experimental authoring worktrees. No runtime API or generated execution-layout
-change was made. Package versions were not bumped and nothing was published.
+change was made. Auggy package versions were not bumped or published. Link was
+subsequently released through its separate reviewed release PR, described below.
 
 ## Original-main results
 
@@ -55,7 +58,7 @@ Captured verification details are in the local repair evidence.
 A diagnostic workspace audit still reports additional stale-lock advisories.
 These original findings are recorded in `repairs/workspace-audit-final.log`.
 That earlier deferral is superseded by the dependency-closure work below; no
-claim is made that the whole developer workspace audit is clean.
+claim from that earlier verification is transferred to a later dependency graph.
 
 ## Packed evidence and independent review
 
@@ -105,9 +108,10 @@ hunk was reused here. Main's existing local changes were not merged or modified.
 
 ## Remaining acceptance gates
 
-- Run existing Linux/security and pinned PostgreSQL 17 CI jobs on the branch.
+- Run final registry release acceptance and the existing Linux/security and pinned
+  PostgreSQL 17 CI jobs on the integrated branch, then verify reviewed main.
 - Review the preservation exclusion before removing experimental worktrees.
-- Keep additional workspace dependency advisories visible in maintenance work.
+- Preserve previous audit failures; the current integrated workspace audit is clean.
 - Before milestone 3, capture human baseline task timings. Source-path discovery
   was documented, but no unfamiliar-engineer usability timing was measured here.
 
@@ -125,9 +129,9 @@ explicitly quarantined. No package version or runtime execution API changed.
 
 See [all advisory dispositions](./foundation-dependency-closure-2026-11-12.md).
 The original 23 findings and five newly reported Hono findings have been
-investigated. **The full workspace audit remains blocked by Link's nested Zod
-v3 advisory.** It is not accepted as an exception; core/evals Zod v4 updates do
-not fix that distinct optional runtime dependency.
+investigated. The initial closure candidate remained blocked by Link's nested
+Zod v3 advisory. The separately published Link migration below resolves that
+distinct dependency without an exception or forced Zod major override.
 
 Local current-graph verification: 4,253 runtime tests passed, no failures, with
 13 optional PostgreSQL skips; 360 console tests/build and 64 Temporal tests,
@@ -151,7 +155,7 @@ final review is complete. Worktree retirement remains separately deferred.
 Console stylesheet review: [actual built Integrations screenshot](./assets/foundation-console-closure.png), using isolated mocked API data and no credentials. The exact upstream CSS/license hashes are preserved in the vendor provenance; this image is visual build evidence, not a live-agent test.
 
 Closure PR: [#226](https://github.com/looselyorganized/auggy/pull/226) remains a
-draft and must not merge while the Link advisory is unresolved. On candidate
+draft until the integrated revision passes its required gates. On historical candidate
 `e4cd41d`, remote CI passed CodeQL, all Linux boundary jobs and the PostgreSQL 17
 job; its execution record was registered=13, completed=13, serverVersion=170010.
 The workspace audit and aggregate correctly failed. Later candidate checks are
@@ -172,3 +176,34 @@ including escaping manifest symlinks. That correction is covered by the focused
 regressions and the final candidate's upgrade replay and remote checks.
 Immutable rehearsal and exact revision records are retained under
 `closure/` alongside the PR's downloadable CI artifacts.
+
+## Published Link integration
+
+[Link PR #1](https://github.com/looselyorganized/link/pull/1) merged at
+`35d87521497b601dca01fb1842f0f8e4784e0289`; version 0.2.0 was published and its
+registry bytes independently verified against the certified artifact. Its clean
+registry consumer passed type composition, runtime/SQLite smoke and strict audit.
+The release includes a genuine Zod 4 migration and bounded validation/peer reads.
+See the [closure findings](./foundation-dependency-closure-2026-11-12.md) for
+compatibility details and exact artifact identity.
+
+Auggy's manifest, catalog and root lock now select the published 0.2.0 package.
+Registry integration passed frozen installation, full-workspace audit with no
+advisories, TypeScript, whole-workspace lint and 274 focused tests/901 assertions.
+The lock update removes the old nested Zod 3 package; no unrelated package
+versions changed. Bun also deduplicated an identical bun-types 1.3.14 record.
+
+Real Link startup revealed the existing immutable-ID/UUID mismatch. The narrow
+resolver correction derives the Link participant UUID while retaining the full
+Auggy identity everywhere else. The expanded harness checks discovery, auth,
+validation bounds, signed audience/provenance, trust limits, real filesystem tool
+execution, provider failure and restart for both fresh and retained Link consumers.
+All twenty Link scenarios and seven existing web scenarios passed the reviewed
+local-artifact rehearsal; final acceptance runs the registry path without the
+local Link override. No Link durable-replay guarantee is inferred.
+
+New evidence lives under `closure/link-registry-integration/`. Final immutable
+release and CI records must identify the integrated source revision and are the
+acceptance authority on [PR #226](https://github.com/looselyorganized/auggy/pull/226).
+Historical passing checks and failed audits remain attributable to their original
+revisions. Foundation merge and verified main are still required before M3 starts.

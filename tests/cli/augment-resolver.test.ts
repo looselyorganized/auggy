@@ -19,8 +19,12 @@ import { generateCsrfToken } from "../../src/transports/admin/admin-csrf";
 import { createSqliteVisitorAuthStore } from "../../src/augments/visitorAuth/storage/sqlite-store";
 import { defineAgent } from "../../src/agent";
 import { createMockModel } from "../fixtures/mock-model";
-import type { AgentHandle } from "../../src/types";
+import type { AgentCard, AgentHandle, TransportKernel } from "../../src/types";
 import { asStringTool } from "../fixtures/tool-helpers";
+import {
+  createAuthenticatedLinkParts,
+  resolveAuthenticatedLinkPeer,
+} from "../../src/augments/link/provenance";
 
 const TMP = join(import.meta.dir, ".tmp-resolver-test");
 const AGENT_ID = "aug1_8a3d7828-1597-4db4-bd0e-adc1a1036211";
@@ -368,10 +372,126 @@ describe("resolveAugments — mcp", () => {
 });
 
 describe("resolveAugments — link", () => {
+  function installLinkFixture(): void {
+    writeFileSync(
+      join(TMP, "package.json"),
+      JSON.stringify({ name: "link-resolver-test", dependencies: { "@auggy/link": "^0.2.0" } }),
+    );
+    mkdirSync(join(TMP, "node_modules", "@auggy"), { recursive: true });
+    symlinkSync(
+      join(process.cwd(), "node_modules", "@auggy", "link"),
+      join(TMP, "node_modules", "@auggy", "link"),
+      "dir",
+    );
+  }
+
+  function identityConfig(): AugmentConfig {
+    return {
+      name: "mesh",
+      type: "link",
+      options: {
+        port: 0,
+        dbPath: "./identity-link.db",
+        agentCard: {
+          id: "00000000-0000-4000-8000-00000000aaaa",
+          name: "resolver-agent",
+          description: "Resolver identity test",
+          endpointUrl: "https://resolver.example.org",
+        },
+      },
+    };
+  }
+
+  test("registers a real Link card using the immutable UUID and binds signed audiences to it", async () => {
+    installLinkFixture();
+    const config = identityConfig();
+    const [augment] = await resolveAugments([config], TMP, { agentId: AGENT_ID });
+    const wireId = "8a3d7828-1597-4db4-bd0e-adc1a1036211";
+    const card = config.options!.agentCard as { id: string };
+    expect(card.id).toBe(wireId);
+    const kernel: TransportKernel = {
+      handleInbound: async () => {
+        throw new Error("No inbound request expected during transport registration");
+      },
+      onOutbound: () => {},
+      quarantineThread: () => true,
+      recoverThread: () => false,
+      getAgentCard: () => ({}) as AgentCard,
+      getAugmentRoutes: () => [],
+      getAugments: () => [],
+    };
+    try {
+      // Real Link buildAgentCard/createLinkApp validation runs during registration.
+      await augment!.transport!.register(kernel, "mesh");
+      expect(JSON.stringify(await augment!.adminInfo!())).toContain(wireId);
+      const immediate = {
+        id: "00000000-0000-4000-8000-00000000bbbb",
+        locator: "https://peer.example.org",
+        type: "agent" as const,
+        trust: "agent" as const,
+      };
+      const common = {
+        immediate,
+        selfParticipantId: card.id,
+        inboundBearer: "resolver-test-bearer",
+        sourceAugment: "mesh",
+        idempotencyKey: "resolver-test-request",
+      };
+      const unsigned = resolveAuthenticatedLinkPeer({
+        ...common,
+        parts: [{ kind: "text", text: "unsigned" }],
+      });
+      expect(unsigned).toMatchObject({
+        ok: true,
+        authenticated: false,
+        peer: { trustLevel: "public", publicSubstate: "anonymous" },
+      });
+      const signed = (audience: string) =>
+        createAuthenticatedLinkParts({
+          parts: [{ kind: "text", text: "signed" }],
+          peer: null,
+          issuer: immediate.id,
+          audience,
+          bearer: common.inboundBearer,
+          idempotencyKey: common.idempotencyKey,
+        });
+      expect(resolveAuthenticatedLinkPeer({ ...common, parts: signed(wireId) })).toMatchObject({
+        ok: true,
+        authenticated: true,
+        peer: { trustLevel: "agent" },
+      });
+      for (const wrongAudience of [AGENT_ID, "00000000-0000-4000-8000-00000000aaaa"]) {
+        expect(resolveAuthenticatedLinkPeer({ ...common, parts: signed(wrongAudience) })).toEqual({
+          ok: false,
+          reason: "origin assertion audience mismatch",
+        });
+      }
+    } finally {
+      await augment!.onShutdown?.();
+    }
+  });
+
+  test("rejects malformed immutable IDs before replacing a configured Link identity", async () => {
+    for (const agentId of [
+      "8a3d7828-1597-4db4-bd0e-adc1a1036211",
+      "aug1_not-a-uuid",
+      `${AGENT_ID}:namespace`,
+      AGENT_ID.toUpperCase(),
+    ]) {
+      const config = identityConfig();
+      await expect(resolveAugments([config], TMP, { agentId })).rejects.toThrow(
+        "agentId must be a valid aug1_ UUID",
+      );
+      expect((config.options!.agentCard as { id: string }).id).toBe(
+        "00000000-0000-4000-8000-00000000aaaa",
+      );
+    }
+  });
+
   test("forwards outbound trust policy and peer routing metadata", async () => {
     writeFileSync(
       join(TMP, "package.json"),
-      JSON.stringify({ name: "link-resolver-test", dependencies: { "@auggy/link": "^0.1.2" } }),
+      JSON.stringify({ name: "link-resolver-test", dependencies: { "@auggy/link": "^0.2.0" } }),
     );
     mkdirSync(join(TMP, "node_modules", "@auggy"), { recursive: true });
     symlinkSync(

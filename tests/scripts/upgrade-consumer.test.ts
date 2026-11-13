@@ -14,16 +14,34 @@ import { join, resolve } from "node:path";
 import { parseConfigFileTextToJson } from "typescript";
 import {
   belowFloor,
+  candidateLinkRange,
   classifyUpgrade,
   hasLegacyServerAdvisory,
   installedPackage,
   migrateConsumerManifest,
   rebindLocalArtifactIntegrity,
+  validateLinkArtifact,
 } from "../../scripts/release-smoke/upgrade-consumer";
 
 const fixture = resolve(import.meta.dir, "../fixtures/release-upgrade/retained-lock");
 const read = (name: string) => readFileSync(resolve(fixture, name), "utf8");
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+
+test("candidate Link selection comes from the catalog and rejects a stale or implicit floor", () => {
+  const catalog = (range: string) => [{ type: "link", packageDeps: { "@auggy/link": range } }];
+  expect(candidateLinkRange(catalog("^0.2.0"))).toBe("^0.2.0");
+  expect(candidateLinkRange(catalog("^0.3.0"))).toBe("^0.3.0");
+  expect(() => candidateLinkRange(catalog("^0.1.2"))).toThrow("reviewed 0.2.0");
+  expect(() => candidateLinkRange(catalog("latest"))).toThrow("explicit dependency floor");
+  expect(() => candidateLinkRange([])).toThrow("explicit dependency floor");
+});
+
+test("explicit artifact experiments cannot bypass the candidate Link name or version floor", () => {
+  expect(validateLinkArtifact({ name: "@auggy/link", version: "0.2.0" }, "^0.2.0")).toBe("0.2.0");
+  expect(() => validateLinkArtifact({ name: "other", version: "0.2.0" }, "^0.2.0")).toThrow();
+  expect(() => validateLinkArtifact({ name: "@auggy/link", version: "0.1.2" }, "^0.2.0")).toThrow();
+  expect(() => validateLinkArtifact({ name: "@auggy/link", version: "0.3.0" }, "^0.2.0")).toThrow();
+});
 
 test("metadata lookup follows the owning package's nested dependency without requiring a root export", () => {
   const root = mkdtempSync(join(tmpdir(), "auggy-upgrade-metadata-"));

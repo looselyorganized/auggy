@@ -17,12 +17,15 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { parseConfigFileTextToJson } from "typescript";
+import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { runDependencyAudit } from "../audit-dependencies";
 import { redactEvidence } from "./export-evidence";
 import { runPackedTurn } from "./packed-turn";
+import { runPackedLink } from "./packed-link";
 
 const BASELINE = "29147dfc7af0de59c3631c34a164ed3f3f6f4d5c";
 const FIXTURE = "tests/fixtures/release-upgrade/retained-lock";
+const HISTORICAL_LINK_VERSION = "0.1.2";
 const HISTORICAL = {
   "@modelcontextprotocol/sdk": "1.29.0",
   zod: "4.3.6",
@@ -52,6 +55,31 @@ type Manifest = {
 const manifestAt = (path: string): Manifest => JSON.parse(readFileSync(path, "utf8"));
 export function hasLegacyServerAdvisory(ids: Array<string | null>): boolean {
   return ids.some((id) => id !== null && LEGACY_SERVER_ADVISORIES.includes(id));
+}
+
+export function candidateLinkRange(catalog: unknown): string {
+  check(Array.isArray(catalog), "Candidate augment catalog must be an array");
+  const range = catalog.find((entry) => entry?.type === "link")?.packageDeps?.["@auggy/link"];
+  check(
+    typeof range === "string" && /^(?:\^|~)?\d+\.\d+\.\d+$/.test(range),
+    "Candidate Link range must declare an explicit dependency floor",
+  );
+  check(
+    Bun.semver.order(range.replace(/^[~^]/, ""), "0.2.0") >= 0,
+    "Candidate Link floor must include the reviewed 0.2.0 migration",
+  );
+  return range;
+}
+
+export function validateLinkArtifact(manifest: Manifest, range: string): string {
+  check(
+    manifest.name === "@auggy/link" &&
+      typeof manifest.version === "string" &&
+      Bun.semver.satisfies(manifest.version, range) &&
+      Bun.semver.satisfies(manifest.version, ">=0.2.0"),
+    "Link artifact name/version does not satisfy the candidate catalog",
+  );
+  return manifest.version;
 }
 
 export function classifyUpgrade(
@@ -422,6 +450,8 @@ export async function runUpgradeConsumer(options: {
   candidateCore: string;
   candidateAnthropic: string;
   candidateCli: string;
+  /** Explicit pre-publication experiment only; default release gate uses registry. */
+  candidateLink?: string;
   repoRoot: string;
   evidenceDir: string;
 }): Promise<void> {
@@ -433,10 +463,15 @@ export async function runUpgradeConsumer(options: {
     env = environment(workspace);
   const records: CommandRecord[] = [],
     phases: Record<string, { status: string; [key: string]: unknown }> = Object.fromEntries(
-      ["baseline", "retainedOverride", "migration", "candidateTurn", "linkSelected"].map((name) => [
-        name,
-        { status: "pending" },
-      ]),
+      [
+        "baseline",
+        "retainedOverride",
+        "migration",
+        "candidateTurn",
+        "linkBaseline",
+        "linkSelected",
+        "linkFresh",
+      ].map((name) => [name, { status: "pending" }]),
     ),
     failures: string[] = [];
   let status: "running" | "passed" | "failed" = "running";
@@ -561,7 +596,7 @@ export async function runUpgradeConsumer(options: {
       dev: statSync(join(consumer, "node_modules")).dev,
       ino: statSync(join(consumer, "node_modules")).ino,
     };
-    const assertRetained = () => {
+    const assertRetained = (expectedProjectHashes = projectSourceHashes) => {
       const current = statSync(join(consumer, "node_modules"));
       check(
         current.dev === modulesIdentity.dev &&
@@ -573,7 +608,7 @@ export async function runUpgradeConsumer(options: {
         fileHash(applicationPath) === applicationHash,
         "Dependency upgrade changed application-owned source",
       );
-      for (const [file, expected] of Object.entries(projectSourceHashes))
+      for (const [file, expected] of Object.entries(expectedProjectHashes))
         check(
           fileHash(join(consumer, file)) === expected,
           `Dependency upgrade changed application file: ${file}`,
@@ -633,6 +668,9 @@ export async function runUpgradeConsumer(options: {
       "src/cli/index.ts",
       "src/kernel/turn-loop.ts",
       "src/cli/scaffold-package-json.ts",
+      "src/cli/augment-catalog.ts",
+      "src/cli/augment-resolver.ts",
+      "src/cli/agent-isolation.ts",
     ]) {
       const bytes = command(
         consumer,
@@ -653,9 +691,9 @@ export async function runUpgradeConsumer(options: {
     const policyProbe = join(consumer, ".upgrade-policy.ts");
     writeFileSync(
       policyProbe,
-      `import { SCAFFOLD_SECURITY_OVERRIDES } from "./node_modules/auggy/src/cli/scaffold-package-json.ts";\nconsole.log(JSON.stringify(SCAFFOLD_SECURITY_OVERRIDES));\n`,
+      `import { SCAFFOLD_SECURITY_OVERRIDES } from "./node_modules/auggy/src/cli/scaffold-package-json.ts";\nimport { AUGMENT_CATALOG } from "./node_modules/auggy/src/cli/augment-catalog.ts";\nconsole.log(JSON.stringify({overrides:SCAFFOLD_SECURITY_OVERRIDES,catalog:AUGMENT_CATALOG}));\n`,
     );
-    const policy: Record<string, string> = JSON.parse(
+    const candidatePolicy = JSON.parse(
       command(
         consumer,
         [process.execPath, policyProbe],
@@ -666,6 +704,36 @@ export async function runUpgradeConsumer(options: {
       ).toString(),
     );
     rmSync(policyProbe);
+    const policy: Record<string, string> = candidatePolicy.overrides;
+    const linkRange = candidateLinkRange(candidatePolicy.catalog);
+    let linkSpecifier = linkRange;
+    let linkSelection: Record<string, unknown> = {
+      kind: "registry-range",
+      requestedRange: linkRange,
+    };
+    let linkArtifactVersion: string | undefined;
+    if (options.candidateLink) {
+      const candidateLinkPath = realpathSync(options.candidateLink);
+      const manifest = JSON.parse(
+        command(
+          consumer,
+          ["tar", "-xOf", candidateLinkPath, "package/package.json"],
+          env,
+          "link-artifact-manifest",
+        ).toString(),
+      );
+      linkArtifactVersion = validateLinkArtifact(manifest, linkRange);
+      const installedArtifactPath = join(artifacts, "auggy-link-candidate.tgz");
+      copyFileSync(candidateLinkPath, installedArtifactPath);
+      linkSpecifier = `file:${installedArtifactPath}`;
+      linkSelection = {
+        kind: "local-artifact-experiment",
+        requestedRange: linkRange,
+        version: linkArtifactVersion,
+        artifactSHA256: fileHash(installedArtifactPath),
+        registryReleaseVerified: false,
+      };
+    }
     check(
       policy["@hono/node-server"] && belowFloor("2.0.11", policy["@hono/node-server"]),
       "Candidate policy does not repair the historical application override",
@@ -797,38 +865,305 @@ export async function runUpgradeConsumer(options: {
         status: "skipped",
         reason: "Dependency policy/audit prerequisite failed",
       };
-    // Link is a distinct selected dependency case. Its audit failure remains
-    // fatal, but is evaluated after preserving the core upgrade/run evidence.
-    const linkManifest = manifestAt(join(consumer, "package.json"));
-    linkManifest.dependencies!["@auggy/link"] = "^0.1.2";
-    json(join(consumer, "package.json"), linkManifest);
+    // Independent historical selected arm: exact core A + Link0.1.2 before
+    // upgrading core/provider/Link and policy together. Never run the old graph.
+    const selected = join(workspace, "selected-link");
+    mkdirSync(join(selected, "artifacts"), { recursive: true });
+    for (const name of ["auggy-baseline.tgz", "auggy-anthropic-baseline.tgz"])
+      copyFileSync(join(artifacts, name), join(selected, "artifacts", name));
+    copyFileSync(join(fixture, "package.json"), join(selected, "package.json"));
+    writeFileSync(join(selected, "bun.lock"), boundLock);
+    for (const file of projectFiles) {
+      mkdirSync(dirname(join(selected, file)), { recursive: true });
+      copyFileSync(join(consumer, file), join(selected, file));
+    }
+    mkdirSync(join(selected, "workspace"));
+    writeFileSync(
+      join(selected, "workspace/operator-note.txt"),
+      "Operator-owned workspace data survives the coupled upgrade.\n",
+    );
+    const selectedConfig = parseYaml(readFileSync(join(selected, "agent.yaml"), "utf8"));
+    selectedConfig.augments.push("link");
+    writeFileSync(join(selected, "agent.yaml"), stringifyYaml(selectedConfig));
+    mkdirSync(join(selected, "augments/link"));
+    writeFileSync(
+      join(selected, "augments/link/augment.yaml"),
+      stringifyYaml({
+        type: "link",
+        config: {
+          port: 57321,
+          dbPath: "./data/link-upgrade.db",
+          agentCard: {
+            id: randomUUID(),
+            name: "retained-link",
+            description: "Retained operator-owned Link configuration",
+            endpointUrl: "http://127.0.0.1:57321",
+          },
+          peers: {},
+        },
+      }),
+    );
+    const linkProjectHashes = {
+      ...projectSourceHashes,
+      "workspace/operator-note.txt": fileHash(join(selected, "workspace/operator-note.txt")),
+      "agent.yaml": fileHash(join(selected, "agent.yaml")),
+      "augments/link/augment.yaml": fileHash(join(selected, "augments/link/augment.yaml")),
+    };
+    const linkManifest = manifestAt(join(selected, "package.json"));
+    linkManifest.dependencies!["@auggy/link"] = HISTORICAL_LINK_VERSION;
+    json(join(selected, "package.json"), linkManifest);
     command(
-      consumer,
+      selected,
       [process.execPath, "install", "--ignore-scripts"],
       env,
-      "link-selected-install",
+      "link-historical-install",
       evidenceDir,
       records,
     );
-    assertRetained();
-    const link = installedPackage(consumer, "@auggy/link"),
+    check(
+      JSON.stringify(historicalInventory(selected)) === JSON.stringify(HISTORICAL),
+      "Selected historical core dependency graph changed unexpectedly",
+    );
+    const selectedMarker = join(selected, "node_modules/.auggy-link-retention"),
+      selectedNonce = randomUUID();
+    writeFileSync(selectedMarker, selectedNonce);
+    const selectedModules = statSync(join(selected, "node_modules"));
+    const assertSelectedRetained = () => {
+      const current = statSync(join(selected, "node_modules"));
+      check(
+        current.dev === selectedModules.dev &&
+          current.ino === selectedModules.ino &&
+          readFileSync(selectedMarker, "utf8") === selectedNonce,
+        "Selected upgrade replaced node_modules",
+      );
+      for (const [file, expected] of Object.entries(linkProjectHashes))
+        check(
+          fileHash(join(selected, file)) === expected,
+          `Selected upgrade changed application/config/workspace file: ${file}`,
+        );
+    };
+    assertSelectedRetained();
+    const oldCore = installedPackage(selected, "auggy");
+    const oldCoreCodeHashes: Record<string, string> = {};
+    for (const file of ["package.json", ...Object.keys(candidateCodeHashes)]) {
+      const packed = command(
+        selected,
+        ["tar", "-xOf", join(artifacts, "auggy-baseline.tgz"), `package/${file}`],
+        env,
+        "selected-baseline-core",
+      );
+      oldCoreCodeHashes[file] = sha(packed);
+      check(
+        fileHash(join(oldCore.root, file)) === sha(packed),
+        "Selected baseline did not install core artifact A",
+      );
+    }
+    check(
+      Object.entries(candidateCodeHashes).some(
+        ([file, expected]) => oldCoreCodeHashes[file] !== expected,
+      ),
+      "Selected experiment lacks a distinguishing A/B implementation hash",
+    );
+    const oldLink = installedPackage(selected, "@auggy/link");
+    check(
+      oldLink.manifest.version === HISTORICAL_LINK_VERSION,
+      "Historical selected Link did not install 0.1.2",
+    );
+    const linkBaselineLock = fileHash(join(selected, "bun.lock"));
+    phases.linkBaseline = {
+      status: "passed",
+      coreVersion: oldCore.manifest.version,
+      coreCodeHashes: oldCoreCodeHashes,
+      linkVersion: oldLink.manifest.version,
+      lockSHA256: linkBaselineLock,
+      packageSHA256: fileHash(join(oldLink.root, "package.json")),
+      sdkEntrySHA256: fileHash(join(oldLink.root, "dist/index.js")),
+      runtimeExecuted: false,
+      lifecycleScripts: "disabled",
+      projectSourceHashes: linkProjectHashes,
+      note: "Separate consumer installs historical core A and selected Link0.1.2 before the coupled candidate upgrade; old runtime is never executed.",
+    };
+    report();
+    const upgradedSelection = migrateConsumerManifest(
+      {
+        ...linkManifest,
+        dependencies: {
+          ...linkManifest.dependencies,
+          auggy: `file:${join(artifacts, "auggy-candidate.tgz")}`,
+          "@auggy/anthropic": `file:${join(artifacts, "auggy-anthropic-candidate.tgz")}`,
+          "@auggy/link": linkSpecifier,
+        },
+      },
+      policy,
+    );
+    json(join(selected, "package.json"), upgradedSelection);
+    check(
+      fileHash(join(selected, "bun.lock")) === linkBaselineLock,
+      "Link upgrade replaced its retained lock before installation",
+    );
+    command(
+      selected,
+      [process.execPath, "install", "--ignore-scripts"],
+      env,
+      "link-selected-upgrade",
+      evidenceDir,
+      records,
+    );
+    assertSelectedRetained();
+    for (const [file, expected] of Object.entries(candidateCodeHashes))
+      check(
+        fileHash(join(installedPackage(selected, "auggy").root, file)) === expected,
+        "Coupled selected upgrade did not install candidate core B",
+      );
+    const link = installedPackage(selected, "@auggy/link"),
       linkZod = installedPackage(link.root, "zod");
+    check(
+      typeof link.manifest.version === "string" &&
+        Bun.semver.satisfies(link.manifest.version, linkRange),
+      "Selected Link does not match candidate catalog",
+    );
+    if (linkArtifactVersion)
+      check(
+        link.manifest.version === linkArtifactVersion,
+        "Installed Link differs from selected artifact version",
+      );
+    const linkCodeHashes = Object.fromEntries(
+      [
+        "package.json",
+        "dist/index.js",
+        "dist/client/peer.js",
+        "dist/client/response-body.js",
+        "dist/protocol/types.js",
+        "dist/protocol/validation-budget.js",
+      ].map((file) => [file, fileHash(join(link.root, file))]),
+    );
+    if (options.candidateLink)
+      for (const [file, expected] of Object.entries(linkCodeHashes)) {
+        const packed = command(
+          selected,
+          ["tar", "-xOf", join(artifacts, "auggy-link-candidate.tgz"), `package/${file}`],
+          env,
+          "link-artifact-code",
+        );
+        check(sha(packed) === expected, "Installed Link code differs from selected artifact");
+      }
+    check(
+      typeof linkZod.manifest.version === "string" &&
+        !belowFloor(linkZod.manifest.version, "4.6.6"),
+      "Selected Link did not install the reviewed Zod floor",
+    );
     const linkAudit = runDependencyAudit({
-      cwd: consumer,
+      cwd: selected,
       evidencePath: join(evidenceDir, "link-selected-audit.json"),
     });
     phases.linkSelected = {
       status: linkAudit.status,
+      requestedRange: linkRange,
+      selection: linkSelection,
+      baselineLockSHA256: linkBaselineLock,
+      projectSourceHashes: linkProjectHashes,
+      candidateCodeHashes,
       linkVersion: link.manifest.version,
       zodVersion: linkZod.manifest.version,
+      packageSHA256: fileHash(join(link.root, "package.json")),
+      sdkEntrySHA256: fileHash(join(link.root, "dist/index.js")),
+      codeHashes: linkCodeHashes,
       auditFailure: linkAudit.failure,
       advisoryPackages: linkAudit.advisoryPackages,
       advisories: linkAudit.advisories,
-      lockSHA256: fileHash(join(consumer, "bun.lock")),
+      lockSHA256: fileHash(join(selected, "bun.lock")),
       nodeModulesRetained: true,
     };
     if (linkAudit.status !== "passed")
       failures.push("Link-selected consumer audit failed; no advisory exemption applied");
+    else {
+      try {
+        await runPackedLink({
+          cli: realpathSync(join(selected, "node_modules/.bin/auggy")),
+          agentDir: selected,
+          home: env.HOME!,
+          evidenceDir: join(evidenceDir, "link-retained"),
+          repoRoot,
+        });
+        assertSelectedRetained();
+        phases.linkSelected.runtime = "passed";
+      } catch {
+        phases.linkSelected.status = "failed";
+        phases.linkSelected.runtime = "failed";
+        failures.push("Retained Link-selected runtime acceptance failed");
+      }
+    }
+    report();
+    // A fresh selected consumer is independent of the retained lock experiment.
+    const fresh = join(workspace, "fresh-link");
+    mkdirSync(fresh);
+    json(join(fresh, "package.json"), {
+      name: "fresh-link-acceptance",
+      private: true,
+      type: "module",
+      dependencies: {
+        auggy: `file:${join(artifacts, "auggy-candidate.tgz")}`,
+        "@auggy/anthropic": `file:${join(artifacts, "auggy-anthropic-candidate.tgz")}`,
+        "@auggy/link": linkSpecifier,
+      },
+      overrides: policy,
+    });
+    writeFileSync(join(fresh, "agent.yaml"), `id: aug1_${randomUUID()}\nname: fresh-link\n`);
+    command(
+      fresh,
+      [process.execPath, "install", "--ignore-scripts"],
+      env,
+      "link-fresh-install",
+      evidenceDir,
+      records,
+    );
+    const freshLink = installedPackage(fresh, "@auggy/link");
+    for (const [file, expected] of Object.entries(linkCodeHashes))
+      check(
+        fileHash(join(freshLink.root, file)) === expected,
+        "Fresh/retained Link implementation differs",
+      );
+    check(
+      freshLink.manifest.version === link.manifest.version &&
+        fileHash(join(freshLink.root, "dist/index.js")) ===
+          fileHash(join(link.root, "dist/index.js")),
+      "Fresh/retained Link installed different SDK artifacts",
+    );
+    for (const [file, expected] of Object.entries(candidateCodeHashes))
+      check(
+        fileHash(join(installedPackage(fresh, "auggy").root, file)) === expected,
+        "Fresh consumer core differs from candidate artifact",
+      );
+    const freshAudit = runDependencyAudit({
+      cwd: fresh,
+      evidencePath: join(evidenceDir, "link-fresh-audit.json"),
+    });
+    phases.linkFresh = {
+      status: freshAudit.status,
+      selection: linkSelection,
+      linkVersion: freshLink.manifest.version,
+      sdkEntrySHA256: fileHash(join(freshLink.root, "dist/index.js")),
+      codeHashes: linkCodeHashes,
+      lockSHA256: fileHash(join(fresh, "bun.lock")),
+      auditFailure: freshAudit.failure,
+    };
+    if (freshAudit.status !== "passed") failures.push("Fresh Link-selected audit failed");
+    else {
+      try {
+        await runPackedLink({
+          cli: realpathSync(join(fresh, "node_modules/.bin/auggy")),
+          agentDir: fresh,
+          home: env.HOME!,
+          evidenceDir: join(evidenceDir, "link-fresh"),
+          repoRoot,
+        });
+        phases.linkFresh.runtime = "passed";
+      } catch {
+        phases.linkFresh.status = "failed";
+        phases.linkFresh.runtime = "failed";
+        failures.push("Fresh Link-selected runtime acceptance failed");
+      }
+    }
   } catch (error) {
     failures.push(redactEvidence(String(error), []));
   } finally {
@@ -859,6 +1194,7 @@ if (import.meta.main) {
       "candidate-core": { type: "string" },
       "candidate-anthropic": { type: "string" },
       "candidate-cli": { type: "string" },
+      "candidate-link": { type: "string" },
       "repo-root": { type: "string" },
       "evidence-dir": { type: "string" },
       "regenerate-fixture": { type: "boolean" },
@@ -879,6 +1215,7 @@ if (import.meta.main) {
       candidateCore: resolve(values["candidate-core"]!),
       candidateAnthropic: resolve(values["candidate-anthropic"]!),
       candidateCli: resolve(values["candidate-cli"]!),
+      ...(values["candidate-link"] ? { candidateLink: resolve(values["candidate-link"]) } : {}),
       repoRoot: resolve(values["repo-root"]),
       evidenceDir: resolve(values["evidence-dir"]!),
     });
