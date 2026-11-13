@@ -54,6 +54,7 @@ function accountingFromResponse(response: ModelResponse): ModelResponseAccountin
 interface InferenceStreamEmitter {
   readonly messageId: string;
   readonly streamed: boolean;
+  readonly failure: { error: unknown } | undefined;
   push(delta: ModelDelta): void;
   close(): void;
   deactivate(): void;
@@ -67,23 +68,38 @@ function createInferenceStreamEmitter(
   let streamed = false;
   let active = true;
   let ended = false;
+  let failure: { error: unknown } | undefined;
+  const deliver: KernelEventHandler = (event) => {
+    if (failure) return;
+    try {
+      emitEvent(event);
+    } catch (error) {
+      // Delivery is not provider execution. Preserve a response/accounting
+      // returned by the already-dispatched inference before surfacing this.
+      failure = { error };
+      active = false;
+    }
+  };
   return {
     messageId,
     get streamed() {
       return streamed;
     },
+    get failure() {
+      return failure;
+    },
     push(delta) {
       if (!active || ended || delta.kind !== "text_delta") return;
       if (!streamed) {
-        emitEvent({ kind: "text_message_start", turnId, messageId, role: "assistant" });
+        deliver({ kind: "text_message_start", turnId, messageId, role: "assistant" });
         streamed = true;
       }
-      emitEvent({ kind: "text_message_delta", turnId, messageId, delta: delta.text });
+      deliver({ kind: "text_message_delta", turnId, messageId, delta: delta.text });
     },
     close() {
       if (!streamed || ended) return;
       ended = true;
-      emitEvent({ kind: "text_message_end", turnId, messageId });
+      deliver({ kind: "text_message_end", turnId, messageId });
     },
     deactivate() {
       active = false;
@@ -647,6 +663,7 @@ export async function executeManagedTurn(
     contextBlocks = [];
     for (const aug of augments) {
       if (!aug.context) continue;
+      let contextDetached = false;
       try {
         const timeout = aug.constraints?.contextTimeoutMs ?? 5000;
         const priorContext = aug.receivesPriorContext ? [...contextBlocks] : undefined;
@@ -661,7 +678,14 @@ export async function executeManagedTurn(
             ),
           timeout,
           signal,
-          options?.trackDetachedOperation,
+          turnProgram
+            ? (operation) => {
+                contextDetached = true;
+                unknownEffect = true;
+                noteFailure("effect-outcome-unknown");
+                options?.trackDetachedOperation?.(operation);
+              }
+            : options?.trackDetachedOperation,
         );
         if (typeof result === "string") {
           contextBlocks.push({
@@ -676,7 +700,14 @@ export async function executeManagedTurn(
         } else {
           contextBlocks.push(...result);
         }
-      } catch {
+      } catch (error) {
+        // Application cancellation cannot certify an opaque context callback
+        // that is still running. Legacy context failure semantics stay intact.
+        if (turnProgram && (contextDetached || isOutcomeUnknownError(error))) {
+          unknownEffect = true;
+          noteFailure("effect-outcome-unknown");
+          throw new OutcomeUnknownError("Context execution ended without a trustworthy outcome.");
+        }
         if (aug.required) {
           emitEvent({
             kind: "run_error",
@@ -865,6 +896,7 @@ export async function executeManagedTurn(
     inferenceAttempts++;
     const startedAt = Date.now();
     const streamEmitter = createInferenceStreamEmitter(trigger.turnId, emitEvent);
+    let inferenceRecorded = false;
     try {
       const result = await withTimeout(
         (deadlineSignal) =>
@@ -890,6 +922,8 @@ export async function executeManagedTurn(
         toolCalls: [],
         cost: costFromResponse(result.response),
       });
+      inferenceRecorded = true;
+      failurePhase = "kernel-failed";
       opts.operationalSignals?.recordInference({
         outcome: "completed",
         durationMs: Date.now() - startedAt,
@@ -897,6 +931,7 @@ export async function executeManagedTurn(
         outputTokens: result.response.outputTokens,
         cost: costFromResponse(result.response),
       });
+      if (streamEmitter.failure) throw streamEmitter.failure.error;
       return result;
     } catch (error) {
       // A late, non-cooperative provider result is intentionally detached
@@ -904,7 +939,11 @@ export async function executeManagedTurn(
       // history until this await wins. Deactivation closes an open stream
       // and makes every late delta/result locally unobservable.
       streamEmitter.deactivate();
-      if (error instanceof ModelResponseLimitError && error.accounting) {
+      if (streamEmitter.failure) noteFailure("kernel-failed");
+      if (inferenceRecorded) {
+        // The provider returned successfully; an event/metrics callback failed
+        // afterward. Its recorded usage must be committed exactly once.
+      } else if (error instanceof ModelResponseLimitError && error.accounting) {
         const cost = costFromResponse(error.accounting);
         traceEmitter.recordInference(trace, {
           model: config.model,
@@ -1156,11 +1195,23 @@ export async function executeManagedTurn(
       });
     }
 
+    type ToolExecutionResult = {
+      call: ToolCallEntry["call"];
+      output: string;
+      durationMs: number;
+      isError: boolean;
+      toolCallId: string;
+      terminate?: ToolResult["terminate"];
+      outcomeUnknown: boolean;
+    };
+    // Keep known results independently of event/metrics delivery. A callback
+    // failure must not erase an effect that has already completed.
+    const retainedResults: (ToolExecutionResult | undefined)[] = new Array(entries.length);
+    const dispatched = new Set<number>();
     // Phase 2: Execute validated tools in parallel (with event emission)
-    const dispatches = entries.map(async (entry) => {
+    const dispatches = entries.map(async (entry, index) => {
       if (entry.type === "error") {
-        opts.operationalSignals?.recordTool({ outcome: "denied", durationMs: 0 });
-        return {
+        const result: ToolExecutionResult = {
           call: entry.call,
           output: entry.error,
           durationMs: 0,
@@ -1168,6 +1219,9 @@ export async function executeManagedTurn(
           toolCallId: crypto.randomUUID(),
           outcomeUnknown: false,
         };
+        retainedResults[index] = result;
+        opts.operationalSignals?.recordTool({ outcome: "denied", durationMs: 0 });
+        return result;
       }
       const toolCallId = `${entry.call.name}-${crypto.randomUUID()}`;
       emitEvent({
@@ -1196,8 +1250,9 @@ export async function executeManagedTurn(
         );
         const timeout = augForTool?.constraints?.toolTimeoutMs ?? 30000;
         const raw: string | ToolResult = await withTimeout(
-          (deadlineSignal) =>
-            entry.reg.tool.execute(entry.validatedInput, {
+          (deadlineSignal) => {
+            dispatched.add(index);
+            return entry.reg.tool.execute(entry.validatedInput, {
               turnId: trigger.turnId,
               peer: peer ?? null,
               threadId,
@@ -1227,7 +1282,8 @@ export async function executeManagedTurn(
                   entry.reg.tool.name,
                   entry.operationOrdinal,
                 ),
-            }),
+            });
+          },
           timeout,
           signal,
           (operation) => {
@@ -1263,6 +1319,16 @@ export async function executeManagedTurn(
         unknownEffect = true;
         noteFailure("effect-outcome-unknown");
       }
+      const result: ToolExecutionResult = {
+        call: entry.call,
+        output,
+        durationMs: Date.now() - execStart,
+        isError,
+        toolCallId,
+        terminate,
+        outcomeUnknown,
+      };
+      retainedResults[index] = result;
       opts.operationalSignals?.recordTool({
         outcome: outcomeUnknown ? "outcome-unknown" : isError ? "failed" : "completed",
         durationMs: Date.now() - execStart,
@@ -1276,43 +1342,29 @@ export async function executeManagedTurn(
         isError,
       });
 
-      return {
-        call: entry.call,
-        output,
-        durationMs: Date.now() - execStart,
-        isError,
-        toolCallId,
-        terminate,
-        outcomeUnknown,
-      };
+      return result;
     });
-    let execResults: Awaited<(typeof dispatches)[number]>[];
+    let batchFailure: { error: unknown } | undefined;
     try {
-      execResults = await Promise.all(dispatches);
+      await Promise.all(dispatches);
     } catch (error) {
       await Promise.allSettled(dispatches);
-      throw error;
+      batchFailure = { error };
+    }
+    const execResults = retainedResults.filter(
+      (result): result is ToolExecutionResult => result !== undefined,
+    );
+    for (const index of dispatched) {
+      if (!retainedResults[index]) {
+        unknownEffect = true;
+        noteFailure("effect-outcome-unknown");
+      }
     }
 
     // Phase 3: Append all results to history in order with matching toolCallIds
-    for (const { call, output, durationMs, isError, toolCallId } of execResults) {
-      const callStr = JSON.stringify(call);
-      history.append({
-        id: crypto.randomUUID(),
-        role: "tool_use",
-        toolCallId,
-        content: callStr,
-        timestamp: Date.now(),
-        tokenCount: tokenizer.count(callStr),
-      });
-      history.append({
-        id: crypto.randomUUID(),
-        role: "tool_result",
-        toolCallId,
-        content: output,
-        timestamp: Date.now(),
-        tokenCount: tokenizer.count(output),
-      });
+    for (const [index, result] of retainedResults.entries()) {
+      if (!result) continue;
+      const { call, output, durationMs, isError, toolCallId } = result;
       if (!isError) {
         toolCallRecords.push({
           name: call.name,
@@ -1321,7 +1373,37 @@ export async function executeManagedTurn(
           durationMs,
         });
       }
+      try {
+        const callStr = JSON.stringify(call);
+        // Prepare both messages before appending either, so a tokenizer failure
+        // cannot leave an orphaned tool_use and prevent sibling preservation.
+        const useTokens = tokenizer.count(callStr);
+        const resultTokens = tokenizer.count(output);
+        history.append({
+          id: crypto.randomUUID(),
+          role: "tool_use",
+          toolCallId,
+          content: callStr,
+          timestamp: Date.now(),
+          tokenCount: useTokens,
+        });
+        history.append({
+          id: crypto.randomUUID(),
+          role: "tool_result",
+          toolCallId,
+          content: output,
+          timestamp: Date.now(),
+          tokenCount: resultTokens,
+        });
+      } catch (error) {
+        batchFailure ??= { error };
+        if (dispatched.has(index)) {
+          unknownEffect = true;
+          noteFailure("effect-outcome-unknown");
+        }
+      }
     }
+    if (batchFailure) throw batchFailure.error;
 
     if (execResults.some((result) => result.outcomeUnknown)) {
       emitEvent({
@@ -1568,7 +1650,7 @@ export async function executeManagedTurn(
 
   function violation(): never {
     const error = new Error("Invalid managed turn operation, phase, or receipt.");
-    if (phase !== "closed") {
+    if (!revoked && phase !== "closed") {
       violationError ??= error;
       noteFailure("program-contract-violation");
       revoked = true;
@@ -1630,6 +1712,8 @@ export async function executeManagedTurn(
           );
           if (isOutcomeUnknownError(error)) unknownEffect = true;
           revoked = true;
+          rejectProgram?.(error);
+          programController?.abort(error);
           throw error;
         },
       );
@@ -1790,7 +1874,6 @@ export async function executeManagedTurn(
   try {
     returned = await initialize();
     if (!returned) {
-      sessionStarted = true;
       let cancellation: Promise<never> | undefined;
       if (turnProgram) {
         programController = new AbortController();
@@ -1798,7 +1881,7 @@ export async function executeManagedTurn(
         cancellation = new Promise<never>((_, reject) => {
           rejectProgram = reject;
           const cancel = (reason: unknown) => {
-            if (programCanceled) return;
+            if (programCanceled || revoked) return;
             programCanceled = true;
             revoked = true;
             reject(reason);
@@ -1810,7 +1893,7 @@ export async function executeManagedTurn(
           else caller?.addEventListener("abort", onAbort, { once: true });
           detachCaller = () => caller?.removeEventListener("abort", onAbort);
           timer = setTimeout(() => {
-            if (programCanceled) return;
+            if (programCanceled || revoked) return;
             deadlineExceeded = true;
             cancel(new DOMException("Turn program deadline exceeded", "TimeoutError"));
           }, turnProgram.timeoutMs ?? 900_000);
@@ -1818,9 +1901,11 @@ export async function executeManagedTurn(
         signal = programController.signal;
         turnState.signal = signal;
       }
-      const running = Promise.resolve().then(() =>
-        (turnProgram?.run ?? defaultTurnProgram)(session),
-      );
+      const running = Promise.resolve().then(() => {
+        if (programCanceled) throw programController!.signal.reason;
+        sessionStarted = true;
+        return (turnProgram?.run ?? defaultTurnProgram)(session);
+      });
       const receipt = await (cancellation ? Promise.race([running, cancellation]) : running);
       if (violationError) throw violationError;
       if (

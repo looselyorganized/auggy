@@ -6,6 +6,7 @@ import { createTokenizer } from "@/tokenizer";
 import { createMockModel } from "@tests/fixtures/mock-model";
 import type {
   Augment,
+  CostResult,
   KernelEvent,
   ManagedTurnSession,
   ModelClient,
@@ -36,12 +37,13 @@ function setup(
     model?: ModelClient;
     augments?: Augment[];
     max?: number;
+    tokenizer?: ReturnType<typeof createTokenizer>;
   } = {},
 ) {
   const model = options.model ?? createMockModel();
   const loop = createTurnLoop({
     model,
-    tokenizer: createTokenizer(),
+    tokenizer: options.tokenizer ?? createTokenizer(),
     augments: options.augments ?? [],
     config: { name: "managed", model: "mock", augments: [], maxInferenceLoops: options.max ?? 10 },
     turnProgram: options.program,
@@ -364,7 +366,7 @@ describe("managed turn program", () => {
     hold.resolve({} as TurnCompletion);
   });
 
-  test("joins sibling effects when event emission rejects a parallel batch", async () => {
+  test("joins sibling effects and retains known outcomes when an event rejects a batch", async () => {
     const release = deferred<string>();
     const entered = deferred<void>();
     let completed = false;
@@ -400,11 +402,12 @@ describe("managed turn program", () => {
       }),
       program: { run: defaultTurnProgram },
     });
+    const input = trigger();
+    const eventError = new Error("event failed");
     const execution = loop
-      .executeTurnSettled(trigger(), "siblings", {
+      .executeTurnSettled(input, "siblings", {
         onEvent: (event) => {
-          if (event.kind === "tool_call_result" && event.output === "fast")
-            throw new Error("event failed");
+          if (event.kind === "tool_call_result" && event.output === "fast") throw eventError;
         },
       })
       .then((result) => {
@@ -415,7 +418,341 @@ describe("managed turn program", () => {
     await new Promise((resolve) => setTimeout(resolve, 5));
     expect(completed).toBe(false);
     release.resolve("slow");
-    expect((await execution).kind).toBe("threw");
+    const result = await execution;
+    expect(result.kind).toBe("threw");
+    if (result.kind === "threw") expect(result.error).toBe(eventError);
+    expect(result.summary.outcomeUnknown).toBe(false);
+    expect(result.summary.trace.successfulToolCalls).toBe(2);
+    const history = loop.getHistoryManager("siblings");
+    const messages = history
+      .snapshot()
+      .messages.filter((message) => message.role.startsWith("tool_"));
+    expect(messages.map((message) => message.role)).toEqual([
+      "tool_use",
+      "tool_result",
+      "tool_use",
+      "tool_result",
+    ]);
+    expect(messages[0]?.toolCallId).toBe(messages[1]?.toolCallId);
+    expect(messages[2]?.toolCallId).toBe(messages[3]?.toolCallId);
+    expect(messages[1]?.content).toBe("fast");
+    expect(messages[3]?.content).toBe("slow");
+    expect(history.getTranscript(input.turnId)?.toolCalls.map((call) => call.output)).toEqual([
+      "fast",
+      "slow",
+    ]);
+  });
+
+  test("preserves successful siblings when a pre-dispatch event fails", async () => {
+    let dispatched = 0;
+    const tools = tool(async () => {
+      dispatched++;
+      return "effect-retained";
+    });
+    const { loop } = setup({
+      augments: [tools],
+      model: createMockModel({
+        toolCalls: [
+          { name: "read", arguments: {} },
+          { name: "read", arguments: {} },
+        ],
+      }),
+      program: { run: defaultTurnProgram },
+    });
+    let starts = 0;
+    const result = await loop.executeTurnSettled(trigger(), "before-dispatch", {
+      onEvent: (event) => {
+        if (event.kind === "tool_call_started" && ++starts === 1) throw new Error("start failed");
+      },
+    });
+    expect(result.kind).toBe("threw");
+    expect(dispatched).toBe(1);
+    expect(result.summary.outcomeUnknown).toBe(false);
+    expect(result.summary.trace.successfulToolCalls).toBe(1);
+    expect(
+      loop
+        .getHistoryManager("before-dispatch")
+        .snapshot()
+        .messages.filter((message) => message.role === "tool_result")
+        .map((message) => message.content),
+    ).toEqual(["effect-retained"]);
+  });
+
+  test("retains sibling history and quarantines an effect whose history cannot be recorded", async () => {
+    const base = createTokenizer();
+    let calls = 0;
+    const tools = tool(async () => (++calls === 1 ? "cannot-tokenize-effect" : "retained-effect"));
+    const { loop } = setup({
+      tokenizer: {
+        ...base,
+        count: (text) => {
+          if (text === "cannot-tokenize-effect") throw new Error("tokenizer failed");
+          return base.count(text);
+        },
+      },
+      augments: [tools],
+      model: createMockModel({
+        toolCalls: [
+          { name: "read", arguments: {} },
+          { name: "read", arguments: {} },
+        ],
+      }),
+      program: { run: defaultTurnProgram },
+    });
+    const input = trigger();
+    const result = await loop.executeTurnSettled(input, "record-failure");
+    expect(result.kind).toBe("threw");
+    expect(calls).toBe(2);
+    expect(result.summary.outcomeUnknown).toBe(true);
+    expect(result.summary.primaryFailureCode).toBe("effect-outcome-unknown");
+    expect(result.summary.trace.successfulToolCalls).toBe(2);
+    const history = loop.getHistoryManager("record-failure");
+    const messages = history
+      .snapshot()
+      .messages.filter((message) => message.role.startsWith("tool_"));
+    expect(messages.map((message) => message.role)).toEqual(["tool_use", "tool_result"]);
+    expect(messages[1]?.content).toBe("retained-effect");
+    expect(history.getTranscript(input.turnId)?.toolCalls.map((call) => call.output)).toEqual([
+      "cannot-tokenize-effect",
+      "retained-effect",
+    ]);
+  });
+
+  test("application deadlines retain unknown required and optional context effects", async () => {
+    for (const required of [true, false]) {
+      const release = deferred<string>();
+      let pending = 0;
+      const { loop, model } = setup({
+        augments: [{ name: "context", required, context: async () => release.promise }],
+        program: { run: defaultTurnProgram, timeoutMs: 10 },
+      });
+      try {
+        const result = await loop.executeTurnSettled(trigger(), "context", {
+          trackDetachedOperation: (operation) => {
+            pending++;
+            void operation.then(
+              () => {
+                pending--;
+              },
+              () => {
+                pending--;
+              },
+            );
+          },
+        });
+        expect(result.kind).toBe("threw");
+        expect(result.summary.outcomeUnknown).toBe(true);
+        expect(result.summary.status).toBe("failed");
+        expect(result.summary.primaryFailureCode).toBe("effect-outcome-unknown");
+        expect(result.summary.priorFailureCodes).toContain("program-deadline-exceeded");
+        expect(result.summary.trace.inferenceAttempts).toBe(0);
+        expect(pending).toBe(1);
+        expect("calls" in model && model.calls).toHaveLength(0);
+      } finally {
+        release.resolve("late-context");
+        await release.promise;
+      }
+    }
+  });
+
+  test("legacy required context timeout retains its existing failed classification", async () => {
+    const release = deferred<string>();
+    const { loop } = setup({
+      augments: [
+        {
+          name: "context",
+          required: true,
+          constraints: { contextTimeoutMs: 5 },
+          context: async () => release.promise,
+        },
+      ],
+    });
+    try {
+      const result = await loop.executeTurnSettled(trigger(), "legacy-context");
+      expect(result.kind).toBe("returned");
+      expect(result.summary.status).toBe("failed");
+      expect(result.summary.outcomeUnknown).toBe(false);
+      expect(result.summary.trace.inferenceAttempts).toBe(0);
+    } finally {
+      release.resolve("late-context");
+      await release.promise;
+    }
+  });
+
+  test("commits known streaming response cost before surfacing event failures in ordinary and recovery inference", async () => {
+    for (const recovery of [false, true]) {
+      for (const failingEvent of ["text_message_start", "text_message_delta", "text_message_end"]) {
+        let calls = 0;
+        const costs: CostResult[] = [];
+        const eventError = new Error("event sink failed");
+        const model: ModelClient = {
+          maxContextTokens: 100_000,
+          countTokens: (text) => Math.ceil(text.length / 4),
+          complete: async (_prompt, options) => {
+            calls++;
+            if (recovery && calls === 1)
+              return {
+                content: "",
+                inputTokens: 2,
+                outputTokens: 3,
+                costUsd: 0.125,
+                finishReason: "tool_use",
+                toolCalls: [
+                  { name: "strict", arguments: {} },
+                  { name: "strict", arguments: {} },
+                ],
+              };
+            options?.onDelta?.({ kind: "text_delta", text: "known result" });
+            return {
+              content: "known result",
+              inputTokens: 11,
+              outputTokens: 7,
+              costUsd: 0.25,
+              finishReason: "end_turn",
+            };
+          },
+        };
+        const { loop } = setup({
+          model,
+          program: { run: defaultTurnProgram },
+          augments: [
+            {
+              name: "gate",
+              turnGate: {
+                prepare: async () => ({
+                  decision: { allow: true },
+                  confirm: async () => {},
+                  rollback: async () => {},
+                }),
+                commit: async ({ cost }) => {
+                  costs.push(cost);
+                },
+              },
+            },
+            {
+              name: "strict",
+              tools: [
+                {
+                  name: "strict",
+                  description: "strict",
+                  category: "meta",
+                  input: z.object({ value: z.string() }),
+                  execute: async () => "must not execute",
+                },
+              ],
+            },
+          ],
+        });
+        const result = await loop.executeTurnSettled(trigger(), "stream-event", {
+          onEvent: (event) => {
+            if (event.kind === failingEvent) throw eventError;
+          },
+        });
+        expect(result.kind).toBe("threw");
+        if (result.kind === "threw") expect(result.error).toBe(eventError);
+        expect(result.summary.primaryFailureCode).toBe("kernel-failed");
+        expect(result.summary.outcomeUnknown).toBe(false);
+        expect(result.summary.trace.inferenceAttempts).toBe(recovery ? 2 : 1);
+        expect(result.summary.trace.recordedInferenceSteps).toBe(recovery ? 2 : 1);
+        expect(result.summary.accounting).toEqual({ state: "committed", pricing: "priced" });
+        expect(calls).toBe(recovery ? 2 : 1);
+        expect(costs).toEqual([{ priced: true, costUsd: recovery ? 0.375 : 0.25 }]);
+      }
+    }
+  });
+
+  test("caller cancellation before program invocation cannot become a contract violation", async () => {
+    const controller = new AbortController();
+    let invoked = 0;
+    const { loop } = setup({
+      program: {
+        run: async (turn) => {
+          invoked++;
+          return defaultTurnProgram(turn);
+        },
+      },
+    });
+    const result = await loop.executeTurnSettled(trigger(), "pre-program-cancel", {
+      signal: controller.signal,
+      onEvent: (event) => {
+        if (event.kind === "run_started")
+          controller.abort(new DOMException("canceled", "AbortError"));
+      },
+    });
+    expect(result.kind).toBe("threw");
+    expect(invoked).toBe(0);
+    expect(result.summary.sessionStarted).toBe(false);
+    expect(result.summary.status).toBe("canceled");
+    expect(result.summary.primaryFailureCode).toBe("caller-canceled");
+    expect(result.summary.priorFailureCodes).not.toContain("program-contract-violation");
+    expect(result.summary.trace.inferenceAttempts).toBe(0);
+  });
+
+  test("late revoked operations preserve the first cancellation or earlier contract violation", async () => {
+    for (const misuseFirst of [false, true]) {
+      const controller = new AbortController();
+      const { loop } = setup({
+        program: {
+          run: async (turn) => {
+            if (misuseFirst) {
+              try {
+                turn.finishAtLimit();
+              } catch {}
+            }
+            controller.abort(new DOMException("canceled", "AbortError"));
+            try {
+              await turn.dispatchInternalTurn();
+            } catch {}
+            return new Promise<TurnCompletion>(() => {});
+          },
+        },
+      });
+      const result = await loop.executeTurnSettled(trigger(), "late-operation", {
+        signal: controller.signal,
+      });
+      expect(result.kind).toBe("threw");
+      expect(result.summary.status).toBe(misuseFirst ? "failed" : "canceled");
+      expect(result.summary.primaryFailureCode).toBe(
+        misuseFirst ? "program-contract-violation" : "caller-canceled",
+      );
+      expect(result.summary.priorFailureCodes).toEqual([]);
+      expect(result.summary.trace.inferenceAttempts).toBe(0);
+    }
+  });
+
+  test("a swallowed phase failure still settles promptly with its original classification", async () => {
+    const providerError = new Error("provider failed");
+    const model: ModelClient = {
+      maxContextTokens: 100_000,
+      countTokens: () => 1,
+      complete: async () => {
+        throw providerError;
+      },
+    };
+    const { execute } = setup({
+      model,
+      program: {
+        timeoutMs: 5_000,
+        run: async (turn) => {
+          await prepare(turn);
+          try {
+            await turn.infer();
+          } catch {}
+          try {
+            turn.finishAtLimit();
+          } catch {}
+          return new Promise<TurnCompletion>(() => {});
+        },
+      },
+    });
+    const started = Date.now();
+    const result = await execute();
+    expect(result.kind).toBe("threw");
+    if (result.kind === "threw") expect(result.error).toBe(providerError);
+    expect(result.summary.status).toBe("failed");
+    expect(result.summary.primaryFailureCode).toBe("provider-failed");
+    expect(result.summary.priorFailureCodes).toEqual([]);
+    expect(Date.now() - started).toBeLessThan(500);
   });
 
   test("preserves a thrown undefined through the settlement discriminant", async () => {

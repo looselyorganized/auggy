@@ -562,6 +562,57 @@ describe("turn finalization observation", () => {
     }
   });
 
+  test("an opaque context effect remains owned and quarantined after an application deadline", async () => {
+    const release = deferred<string>();
+    const entered = deferred<void>();
+    const observed = deferred<TurnFinalizationObservation>();
+    let settled = false;
+    const model = createMockModel();
+    const { agent } = await start(
+      {
+        turnProgram: { run: defaultTurnProgram, timeoutMs: 10 },
+        onTurnFinalized: (record) => {
+          observed.resolve(record);
+        },
+      },
+      [
+        {
+          name: "context-effect",
+          required: true,
+          context: async () => {
+            entered.resolve();
+            return release.promise;
+          },
+        },
+      ],
+      model,
+    );
+    const execution = agent.inject(trigger("context-timeout", "owned-context")).catch(() => {
+      settled = true;
+    });
+    try {
+      await entered.promise;
+      const record = await observed.promise;
+      expect(record.pendingEffects).toBe(true);
+      expect(record.outcomeUnknown).toBe(true);
+      expect(record.primaryFailureCode).toBe("effect-outcome-unknown");
+      expect(record.priorFailureCodes).toContain("program-deadline-exceeded");
+      expect(record.status).toBe("failed");
+      expect(model.calls).toHaveLength(0);
+      expect(settled).toBe(false);
+      expect(agent.health().scheduler?.activeTurns).toBe(1);
+      release.resolve("late-context");
+      await execution;
+      expect((await agent.inject(trigger("after", "owned-context"))).rejection?.reason).toBe(
+        "thread-quarantined",
+      );
+    } finally {
+      release.resolve("late-context");
+      await execution;
+      await agent.stop();
+    }
+  });
+
   test("an opaque internal handler remains owned after an application deadline", async () => {
     const release = deferred<null>();
     const entered = deferred<void>();
