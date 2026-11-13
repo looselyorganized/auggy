@@ -16,7 +16,7 @@ By default, a destination is available only to `creator` and `agent` trust. Add 
 What it does:
 
 - **Named destinations** — operator declares webhook and/or Telegram targets in
-  `augments/notify/augment.yaml`; the agent calls
+  the `notify` entry in `agent.yaml`; the agent calls
   `notify({ to: "<name>", ... })`.
 - **Four adapters** — `log-to-file`, `webhook`, `telegram`, and `agentmail`.
 - **Destination authority** — each destination can restrict which v1 trust
@@ -43,54 +43,51 @@ What it does **not** do:
 ```yaml
 # agent.yaml
 augments:
-  - notify
-
-# augments/notify/augment.yaml
-type: notify
-config:
-  # Optional. Defaults to ./data/notify-<augment-name>.db.
-  dbPath: ./data/notify-notify.db
-  destinations:
-    - name: creator
-      transport: log-to-file
-      path: ./notifications.jsonl
+  - name: notify
+    type: notify
+    options:
+      # Optional. Defaults to ./data/notify-<augment-name>.db.
+      dbPath: ./data/notify-notify.db
+      destinations:
+        - name: creator
+          transport: log-to-file
+          path: ./notifications.jsonl
 ```
 
 ### Full example — webhook + telegram destinations with rate limiting
 
 ```yaml
-# augments/notify/augment.yaml
-type: notify
-config:
-  destinations:
-    - name: creator
-      transport: webhook
-      url: ${ORG_NOTIFY_URL}
-      headers:
-        X-Api-Key: ${NOTIFY_API_KEY}
-      allowedTrustLevels: [creator, agent]
-    - name: alerts
-      transport: telegram
-      botToken: ${TELEGRAM_BOT_TOKEN}
-      chatId: ${TELEGRAM_CHAT_ID}
-      parseMode: Markdown
-      allowedTrustLevels: [creator, agent, public]
-      publicPolicy: escalation-only
-  rateLimit:
-    enabled: true
-    cooldownMs: 120000
-    globalMaxPerHour: 5
-    dedupWindowMs: 300000
-    dedupThreshold: 0.6
-    perPeerCooldownMs: 30000
-```
-
-The `notify` id must also be enabled in `agent.yaml`:
-
-```yaml
+# agent.yaml
 augments:
-  - notify
+  - name: notify
+    type: notify
+    options:
+      destinations:
+        - name: creator
+          transport: webhook
+          url: ${ORG_NOTIFY_URL}
+          headers:
+            X-Api-Key: ${NOTIFY_API_KEY}
+          allowedTrustLevels: [creator, agent]
+        - name: alerts
+          transport: telegram
+          botToken: ${TELEGRAM_BOT_TOKEN}
+          chatId: ${TELEGRAM_CHAT_ID}
+          parseMode: Markdown
+          allowedTrustLevels: [creator, agent, public]
+          publicPolicy: escalation-only
+      rateLimit:
+        enabled: true
+        cooldownMs: 120000
+        globalMaxPerHour: 5
+        dedupWindowMs: 300000
+        dedupThreshold: 0.6
+        perPeerCooldownMs: 30000
 ```
+
+Merge one of these entries into the existing `augments` sequence in
+`agent.yaml`. If `notify` is already declared, update its `options` in place;
+do not add a second declaration or discard its configured destinations.
 
 ### Programmatic setup
 
@@ -294,17 +291,19 @@ Fields are only included when present. `reason` and `visitor` lines are omitted 
 Sends outbound email via [AgentMail](https://www.agentmail.to/docs/welcome). Each destination carries the API key, source inbox, and recipient — multiple `agentmail` destinations may share an API key (the adapter caches the http client per key implicitly via the shared `createHttpClient`).
 
 ````yaml
-# augments/notify/augment.yaml
-type: notify
-config:
-  destinations:
-    - name: creator-mail
-      transport: agentmail
-      apiKey: ${AGENTMAIL_API_KEY}
-      inboxId: ${AGENTMAIL_INBOX_ID}
-      to: operator@example.com
-      subjectPrefix: "[Zip] "
-      labels: ["alert"]
+# agent.yaml
+augments:
+  - name: notify
+    type: notify
+    options:
+      destinations:
+        - name: creator-mail
+          transport: agentmail
+          apiKey: ${AGENTMAIL_API_KEY}
+          inboxId: ${AGENTMAIL_INBOX_ID}
+          to: operator@example.com
+          subjectPrefix: "[Zip] "
+          labels: ["alert"]
 ````
 
 Required env vars:
@@ -424,21 +423,24 @@ without permitting blind replay.
 
 The `org_escalate` tool was removed in v0.2.0 and replaced by `notify`. For agents using the old tool, the migration is a rename with one structural change: the destination is now declared in config rather than the tool call.
 
-**Example migration (operator-supplied `augments/notify/augment.yaml`):**
+**Example migration (operator-configured `notify` entry in `agent.yaml`):**
 
 ```yaml
-type: notify
-config:
-  destinations:
-    - name: creator
-      transport: webhook
-      url: ${ORG_CONTEXT_URL}/notify
-  rateLimit:
-    cooldownMs: 120000
-    dedupWindowMs: 300000
-    dedupThreshold: 0.6
-    globalMaxPerHour: 5
-    perPeerCooldownMs: 30000
+# agent.yaml (augment entry)
+augments:
+  - name: notify
+    type: notify
+    options:
+      destinations:
+        - name: creator
+          transport: webhook
+          url: ${ORG_CONTEXT_URL}/notify
+      rateLimit:
+        cooldownMs: 120000
+        dedupWindowMs: 300000
+        dedupThreshold: 0.6
+        globalMaxPerHour: 5
+        perPeerCooldownMs: 30000
 ```
 
 The receiving endpoint (`${ORG_CONTEXT_URL}/notify`) is unchanged — the webhook adapter sends the same `summary`, `reason`, and `visitor` fields the old tool sent. The only change is that the URL is now in config rather than the tool definition, and the tool call becomes:
@@ -462,7 +464,7 @@ the `notify` skill scaffolded by `auggy augment add notify`.
 |---|---|---|
 | Destination `name` typo in agent prompt or skill | Tool returns `{ status: "failed", message: "Unknown destination 'ops'. Configured destinations: creator." }` | Use the exact name string from config; check spelling |
 | Missing `summary` field | Zod validation fails before the tool executes; tool call returns an error | `summary` is required — ensure the skill teaches this |
-| Putting `chatId` or raw Telegram user IDs in the agent identity file | Agent may try to pass raw IDs as `to:` argument | Named destinations only; IDs stay in `augments/notify/augment.yaml` |
+| Putting `chatId` or raw Telegram user IDs in the agent identity file | Agent may try to pass raw IDs as `to:` argument | Named destinations only; IDs stay in the `notify` entry in `agent.yaml` |
 | Letting public visitors notify an operator-only destination | Tool returns `failed` with an allowed-trust message | Add `public` to `allowedTrustLevels` only for destinations intended for public escalation |
 | Setting `publicPolicy: escalation-only` and omitting `reason` | Tool returns `failed` and no delivery is attempted | Include a concise escalation reason, or answer in-thread if no escalation is warranted |
 | Setting `globalMaxPerHour: 0` expecting unlimited | `0` means the cap is always exceeded — all notifications are blocked | Omit `rateLimit` entirely or set `enabled: false` for uncapped |
@@ -480,7 +482,7 @@ the `notify` skill scaffolded by `auggy augment add notify`.
 
 **Tool returns `status: "failed"` with a destination error**
 
-- Check that the destination `name` in the tool call exactly matches the name in `augments/notify/augment.yaml`. The lookup is case-sensitive.
+- Check that the destination `name` in the tool call exactly matches the name in the `notify` entry in `agent.yaml`. The lookup is case-sensitive.
 - If using env interpolation (`${ORG_NOTIFY_URL}`), verify the env var is set at agent start time. Unresolved env vars produce a literal `${...}` string in the URL.
 
 **Webhook returns non-2xx**
@@ -525,6 +527,6 @@ the `notify` skill scaffolded by `auggy augment add notify`.
 - [03-types.md](./03-types.md) — `NotifyAugmentOptions`, `NotifyDestination`, `NotifyRateLimitOptions`, `NotifyDeliveryResult`
 - [07-built-in-augments.md](./07-built-in-augments.md) — quick summary of all built-in augments
 - [14-telegram-transport.md](./14-telegram-transport.md) — bidirectional Telegram transport; coexistence notes
-- `src/augments/notify.ts` — rate limit logic, tool definition
+- `src/augments/notify/index.ts` — rate limit logic, tool definition
 - `src/augments/notify/adapters/webhook.ts` — webhook delivery
 - `src/augments/notify/adapters/telegram.ts` — telegram delivery + Markdown formatting

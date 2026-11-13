@@ -4,9 +4,10 @@
 
 ## Finding the application endpoint
 
-In an inspectable application, the actual `POST /agent/run` mount is visible in
-[the reference's `src/http.ts`](../examples/inspectable-agent/src/http.ts). It
-passes the original managed request to `web.agentRun(request)` and returns its
+New generated applications expose the actual `POST /agent/run` mount in their
+own `src/http.ts`, selected from `src/index.ts`. The
+[reference's HTTP module](../examples/inspectable-agent/src/http.ts) also shows
+this pattern. It passes the original managed request to `web.agentRun(request)` and returns its
 stream. That delegate retains transport authentication, admission, idempotency
 and SSE behavior before dispatching through the scheduler to the application's
 turn program. The managed router rejects foreign or already-consumed requests.
@@ -26,7 +27,9 @@ A transport is the boundary between Auggy and the outside world. It is responsib
 
 A transport is just an augment with a `transport` field set to a `TransportSpec`. The runtime knows nothing about HTTP, AG-UI, A2A, MCP, or any other protocol — those are the transport's job.
 
-In v1 there is exactly **one built-in transport**: `webTransport`, which speaks the AG-UI SSE protocol. Future plans add a `spineTransport` (Plan 4 — internal A2A bus) and an `mcpTransport` (Plan 6 — MCP server).
+`webTransport` speaks the AG-UI SSE protocol. `telegramTransport` provides
+bidirectional Telegram delivery; the preview `link` augment supplies the
+legacy peer transport. See [the built-in catalog](./07-built-in-augments.md).
 
 ## The contract: `TransportSpec` and `TransportKernel`
 
@@ -1028,7 +1031,7 @@ Behavior:
   `::/0` are rejected.
 
 For YAML configuration, place both properties under the web transport
-augment's `config` block. `AUGGY_PUBLIC_URL` contributes an exact console
+entry's `options` block in `agent.yaml`. `AUGGY_PUBLIC_URL` contributes an exact console
 origin, but it does not configure or infer a trusted proxy network.
 
 ### Status codes
@@ -1107,10 +1110,13 @@ Override the location, or explicitly select process-memory-only chat, in the
 web transport augment config:
 
 ```yaml
-type: webTransport
-config:
-  consoleChat:
-    dbPath: ./data/console-chat.db # set to null for ephemeral chat
+# agent.yaml (augment entry)
+augments:
+  - name: webTransport
+    type: webTransport
+    options:
+      consoleChat:
+        dbPath: ./data/console-chat.db # set to null for ephemeral chat
 ```
 
 Relative local paths resolve from the agent directory. Under a Railway runtime

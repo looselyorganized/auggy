@@ -1,97 +1,133 @@
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join, resolve } from "node:path";
-import { VALID_NAME_RE } from "./config-parser";
+import type { GeneratedApplicationFile } from "./authoring/contracts";
 
 export interface CustomAugmentScaffoldOptions {
   slug: string;
-  targetDir: string;
-  skillTargetDir?: string;
+  includeSkill?: boolean;
   force?: boolean;
 }
 
-export function scaffoldCustomAugment(opts: CustomAugmentScaffoldOptions): string {
-  const slug = opts.slug.trim();
-  if (!VALID_NAME_RE.test(slug)) {
+export function validateCustomAugmentSlug(slug: string): void {
+  if (!/^[a-z0-9][a-z0-9_-]{0,49}$/.test(slug)) {
     throw new Error(
-      `Invalid augment slug "${opts.slug}". Use lowercase letters, numbers, hyphens, or underscores.`,
+      "Invalid augment slug. Use 1–50 lowercase letters, numbers, hyphens, or underscores, starting with a letter or number.",
     );
   }
-
-  const dir = resolve(opts.targetDir);
-  if (existsSync(dir) && !opts.force) {
-    throw new Error(`Directory already exists: ${dir}. Re-run with --force to overwrite.`);
-  }
-  const skillDir = opts.skillTargetDir ? resolve(opts.skillTargetDir) : null;
-  if (skillDir && existsSync(skillDir) && !opts.force) {
-    throw new Error(
-      `Skill directory already exists: ${skillDir}. Re-run with --force to overwrite.`,
-    );
-  }
-
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, "augment.yaml"), augmentYamlTemplate());
-  writeFileSync(join(dir, "index.ts"), indexTemplate(slug));
-  // Clean up the pre-0.5 scaffold location when the operator explicitly
-  // overwrites an older custom augment. Runtime skills only live in /skills.
-  rmSync(join(dir, "SKILL.md"), { force: true });
-  writeFileSync(join(dir, "README.md"), readmeTemplate(slug));
-  writeFileSync(join(dir, `${slug}.test.ts`), testTemplate(slug));
-  if (skillDir) {
-    mkdirSync(skillDir, { recursive: true });
-    writeFileSync(join(skillDir, "SKILL.md"), skillTemplate(slug));
-  }
-  return dir;
 }
 
-function augmentYamlTemplate(): string {
-  return `type: custom
-source: ./index.ts
-config: {}
+/** The sample tool name is shared by scaffold output and collision preflight. */
+export function customAugmentToolName(slug: string): string {
+  return `${slug.replace(/-/g, "_")}_lookup_record`;
+}
+
+/** Pure project-owned sample files; the caller publishes them with central registration. */
+export function scaffoldCustomAugment(
+  opts: CustomAugmentScaffoldOptions,
+): readonly GeneratedApplicationFile[] {
+  validateCustomAugmentSlug(opts.slug);
+  if (opts.force)
+    throw new Error(
+      "--force no longer overwrites augment source or skills. Choose another slug or review and move existing files manually.",
+    );
+  const slug = opts.slug;
+  const source = `src/augments/${slug}`;
+  const files: Record<string, string> = {
+    [`${source}/index.ts`]: indexTemplate(slug),
+    [`${source}/schemas.ts`]: schemasTemplate(),
+    [`${source}/service.ts`]: serviceTemplate(),
+    [`${source}/README.md`]: readmeTemplate(slug),
+    [`tests/augments/${slug}.test.ts`]: testTemplate(slug),
+  };
+  if (opts.includeSkill) files[`skills/${slug}/SKILL.md`] = skillTemplate(slug);
+  return Object.entries(files).map(([relativePath, text]) => ({
+    relativePath,
+    bytes: Buffer.from(text),
+    mode: 0o644,
+  }));
+}
+
+export const planCustomAugmentScaffold = scaffoldCustomAugment;
+
+function schemasTemplate(): string {
+  return `import { z } from "zod";
+
+export const lookupInput = z.object({
+  id: z.string().regex(/^SAMPLE-\\d{3}$/).describe("Sample record identifier, such as SAMPLE-001."),
+});
+
+export const recordSchema = z.object({
+  id: z.string(),
+  status: z.literal("ready"),
+  label: z.string(),
+});
+
+export type SampleRecord = z.infer<typeof recordSchema>;
 `;
 }
 
-function pascalCase(slug: string): string {
-  return slug
-    .split(/[-_]/)
-    .filter(Boolean)
-    .map((part) => `${part[0]?.toUpperCase() ?? ""}${part.slice(1)}`)
-    .join("");
+function serviceTemplate(): string {
+  return `import { lookupInput, type SampleRecord } from "./schemas";
+
+// Sample read-only business logic. Replace this fixture with your system-of-record adapter.
+const sample: Readonly<SampleRecord> = Object.freeze({
+  id: "SAMPLE-001",
+  status: "ready",
+  label: "Example record",
+});
+
+export function lookupRecord(input: unknown): SampleRecord | null {
+  const { id } = lookupInput.parse(input);
+  return id === sample.id ? { ...sample } : null;
+}
+`;
 }
 
 function indexTemplate(slug: string): string {
-  const typeName = `${pascalCase(slug)}Options`;
-  const toolName = `${slug.replace(/-/g, "_")}_echo`;
-  return `import { defineAugment, defineTool } from "auggy";
-import { z } from "zod";
+  const tool = customAugmentToolName(slug);
+  return `import { defineAugment, defineRoute, defineTool, json } from "auggy";
+import { lookupInput, recordSchema } from "./schemas";
+import { lookupRecord } from "./service";
 
-export interface ${typeName} {
-  prefix?: string;
-}
-
-export default function ${slug.replace(/-/g, "_")}(opts: ${typeName} = {}) {
+export default function createSampleAugment() {
   return defineAugment({
     name: "${slug}",
     tools: [
       defineTool({
-        name: "${toolName}",
-        description: "Echo a message with an optional configured prefix.",
-        category: "utility",
-        input: z.object({
-          message: z.string().describe("Message to echo."),
-        }),
-        execute: async ({ message }) => {
-          return opts.prefix ? \`\${opts.prefix}: \${message}\` : message;
+        name: "${tool}",
+        description: "Look up a sample record by its SAMPLE-001 style identifier.",
+        category: "search",
+        input: lookupInput,
+        execute: async (input, context) => {
+          // Exposure constraints and execution authorization are separate boundaries.
+          if (context?.peer?.trustLevel !== "creator") {
+            return { isError: true, content: JSON.stringify({ error: "forbidden", message: "Creator access required." }) };
+          }
+          const parsed = lookupInput.safeParse(input);
+          if (!parsed.success) return { isError: true, content: JSON.stringify({ error: "invalid-input" }) };
+          const record = lookupRecord(parsed.data);
+          return record
+            ? { content: JSON.stringify(record) }
+            : { isError: true, content: JSON.stringify({ error: "not-found" }) };
         },
       }),
     ],
     constraints: {
-      // A new model tool starts creator-only. Route auth does not authorize a
-      // matching tool; relax these rules only after choosing allowed peers.
       perTrustLevel: {
-        public: { neverExpose: ["${toolName}"] },
-        agent: { neverExpose: ["${toolName}"] },
+        public: { neverExpose: ["${tool}"] },
+        agent: { neverExpose: ["${tool}"] },
       },
     },
+    httpRoutes: [
+      defineRoute.get("/${slug}/records/:id", {
+        // The managed HTTP dispatcher authenticates this route before its handler.
+        auth: "creator",
+        params: lookupInput,
+        response: recordSchema,
+        handler: ({ params }) => {
+          const record = lookupRecord(params);
+          return record ? json(record) : json({ error: "not-found" }, 404);
+        },
+      }),
+    ],
   });
 }
 `;
@@ -100,59 +136,93 @@ export default function ${slug.replace(/-/g, "_")}(opts: ${typeName} = {}) {
 function skillTemplate(slug: string): string {
   return `---
 name: ${slug}
-description: How and when to use the ${slug} augment.
+description: Look up sample records using the ${slug} capability.
 allowedTrustLevels:
   - creator
 ---
 
 # ${slug}
 
-Use this skill when a task needs the custom ${slug} capability.
-
-## Tools
-
-- \`${slug.replace(/-/g, "_")}_echo\`: Echoes a message with the augment's optional prefix.
-
-## Guidance
-
-- Use the tool only when echoing or checking the custom augment wiring is useful.
-- Prefer answering directly when the user asks a normal conversational question.
+Use \`${customAugmentToolName(slug)}\` with an identifier such as SAMPLE-001.
+This is sample read-only logic, not a production database. Replace the service with
+an adapter to your system of record before relying on real business data.
 `;
 }
 
 function readmeTemplate(slug: string): string {
   return `# ${slug}
 
-Custom Auggy augment scaffolded by \`auggy augment create ${slug}\`.
+Sample read-only lookup logic created by \`auggy augment create ${slug}\` and
+registered once in \`agent.yaml\`. The deterministic in-memory fixture is not a
+production database, durable workflow, or system of record.
 
-The create command also registers this augment in the current project's
-\`agent.yaml\`.
+- \`schemas.ts\` owns validation shared by the tool and route.
+- \`service.ts\` owns the read-only lookup. Replace it with a narrow system-of-record adapter.
+- \`index.ts\` exposes \`${customAugmentToolName(slug)}\` and \`GET /${slug}/records/:id\`.
+- \`tests/augments/${slug}.test.ts\` checks validation, lookup, missing records, and tool denial.
 
-The starter tool is creator-only by default. Route auth does not authorize
-model tools: choose each route's \`auth\`, any delegated \`requires\`, and tool
-visibility under \`constraints.perTrustLevel\` independently.
+The sample ID is SAMPLE-001. The route requires creator authentication through the
+managed HTTP transport, returns 400 for invalid IDs and 404 for missing records.
+The tool has creator-only exposure constraints and an execution-time identity check.
+Route authentication and tool authorization remain separate decisions. Do not relax
+either without an explicit policy for the intended callers.
 
-## Test
-
-\`\`\`bash
-auggy augment test ./augments/${slug}
-\`\`\`
+Run \`bun test tests/augments/${slug}.test.ts\` from the project root. HTTP authentication
+must also be tested through the running managed transport; calling a route handler
+directly does not authenticate a request.
 `;
 }
 
 function testTemplate(slug: string): string {
-  const fnName = slug.replace(/-/g, "_");
-  const toolName = `${slug.replace(/-/g, "_")}_echo`;
+  const tool = customAugmentToolName(slug);
   return `import { describe, expect, test } from "bun:test";
-import ${fnName} from "./index";
+import type { ToolExecuteContext, TrustLevel } from "auggy";
+import createSampleAugment from "../../src/augments/${slug}/index";
+import { lookupRecord } from "../../src/augments/${slug}/service";
 
-describe("${slug}", () => {
-  test("exposes the ${toolName} tool", async () => {
-    const augment = ${fnName}({ prefix: "test" });
-    const tool = augment.tools?.find((t) => t.name === "${toolName}");
+const expected = { id: "SAMPLE-001", status: "ready", label: "Example record" } as const;
+const augment = createSampleAugment();
+const tool = augment.tools!.find((entry) => entry.name === "${tool}")!;
+const route = augment.httpRoutes![0]!;
+function context(trustLevel: TrustLevel): ToolExecuteContext {
+  return { turnId: "test", threadId: "test", peer: { id: "test", kind: "human", trustLevel, sourceAugment: "test" } };
+}
 
-    expect(tool).toBeDefined();
-    await expect(tool!.execute({ message: "hello" })).resolves.toBe("test: hello");
+describe("${slug} sample lookup", () => {
+  test("service validates input and returns a copy of the fixture or null", () => {
+    expect(lookupRecord({ id: "SAMPLE-001" })).toEqual(expected);
+    expect(lookupRecord({ id: "SAMPLE-999" })).toBeNull();
+    expect(() => lookupRecord({ id: "invalid" })).toThrow();
+    const record = lookupRecord({ id: "SAMPLE-001" })!;
+    record.label = "changed";
+    expect(lookupRecord({ id: "SAMPLE-001" })).toEqual(expected);
+  });
+
+  test("tool validates inputs and reports missing records", async () => {
+    expect(tool.input.safeParse({ id: "invalid" }).success).toBe(false);
+    expect(await tool.execute({ id: "SAMPLE-001" }, context("creator"))).toEqual({ content: JSON.stringify(expected) });
+    expect(await tool.execute({ id: "SAMPLE-999" }, context("creator"))).toMatchObject({ isError: true, content: JSON.stringify({ error: "not-found" }) });
+    expect(await tool.execute({ id: "invalid" }, context("creator"))).toMatchObject({ isError: true });
+  });
+
+  test("tool denies public, agent, and absent identities even on direct execution", async () => {
+    for (const trustLevel of ["public", "agent"] as const) {
+      expect(augment.constraints?.perTrustLevel?.[trustLevel]?.neverExpose).toContain(tool.name);
+      expect(await tool.execute({ id: "SAMPLE-001" }, context(trustLevel))).toMatchObject({ isError: true });
+    }
+    expect(await tool.execute({ id: "SAMPLE-001" })).toMatchObject({ isError: true });
+  });
+
+  test("route declares creator policy and shares validation and service results", async () => {
+    expect(route.auth).toBe("creator");
+    expect(route.path).toBe("/${slug}/records/:id");
+    // Authentication belongs to the managed HTTP dispatcher. These are adapter unit tests.
+    const call = (id: string) => route.handler(new Request("http://localhost/${slug}/records/" + id), { signal: new AbortController().signal, params: { id } });
+    const response = await call("SAMPLE-001");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(expected);
+    expect((await call("invalid")).status).toBe(400);
+    expect((await call("SAMPLE-999")).status).toBe(404);
   });
 });
 `;

@@ -30,23 +30,22 @@ fi
 
 if [ -f agent.yaml ]; then
   printf "agent: agent.yaml present\n"
-elif [ -f augments/agent.yaml ]; then
-  printf "agent: unexpected augments/agent.yaml present\n"
 else
   printf "agent: no agent.yaml in cwd\n"
 fi
 
+if [ -d src/augments ]; then
+  printf "custom source: src/augments present\n"
+fi
 if [ -d augments ]; then
-  count="$(find augments -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l | tr -d ' ')"
-  printf "augments: %s folders\n" "$count"
-else
-  printf "augments: no augments directory in cwd\n"
+  printf "legacy source: augments present; inspect declarations before migration\n"
 fi
 
 printf "\nnext:\n"
 if [ -f agent.yaml ]; then
-  printf "%s\n" "- run: auggy doctor"
-  printf "%s\n" "- run: auggy routes"
+  printf "%s\n" "- passive: bash skills/auggy/scripts/summarize-auggy-project.sh ."
+  printf "%s\n" "- executable checks: auggy doctor"
+  printf "%s\n" "- executable route inventory: auggy routes"
 else
   printf "%s\n" "- create: auggy create <name>"
   printf "%s\n" "- or enter an existing Auggy agent directory"

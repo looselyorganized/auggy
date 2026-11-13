@@ -4,19 +4,31 @@
 
 ## Trace an application from its own source
 
-The [inspectable reference application](../examples/inspectable-agent/README.md)
-owns the executable path `src/index.ts` → `src/agent.ts` → `src/http.ts` →
-`src/turn.ts` → `src/augments/example/`. Its `agent.yaml` declares
-`application: { entrypoint: ./src/index.ts, contractVersion: 1 }` and remains the
-single enabled augment/configuration graph. The installed `auggy/application`
-runner supplies managed lifecycle and guarded turn operations.
+A new `auggy create` project owns `src/index.ts`, `src/agent.ts`, `src/http.ts`
+and `src/turn.ts`. Open `src/index.ts` to see startup. It prepares the managed host,
+binds the turn program in `agent.ts`, mounts the HTTP listener from `http.ts`,
+and starts. `POST /agent/run` passes its original request to `web.agentRun`;
+authentication, validation and durable delivery stay in that maintained adapter.
+`turn.ts` visibly orders prompt preparation, inference, tool execution, required
+final answers, refresh and exhaustion through guarded runtime operations.
 
-The runtime stays in the project's local `node_modules/auggy`. Application files
-are owned by the engineer; upgrading the dependency updates package code, while
-changes to owned execution code require an explicit edit or migration. Direct
-execution and compatible local/global CLI launches call the same application
-`main`. The current `auggy create` template still generates the legacy layout;
-application scaffolding belongs to milestone 4.
+`agent.yaml` declares `application: { entrypoint: ./src/index.ts, contractVersion: 1 }`
+and is the sole enabled-augment graph. Built-in options are inline; custom
+modules normally live under `src/augments/<slug>/`. The runtime and built-ins
+stay in `node_modules/auggy/src/`. `auggy inspect` reports the selected local
+installation and its real source paths; it does not import the application or
+prove runtime readiness.
+
+Application files and skills belong to the engineer. Dependency upgrades update
+managed implementations without regenerating owned code. Compatible direct,
+local-CLI and global-CLI launches select the same project-local runtime. The
+[inspectable reference](../examples/inspectable-agent/README.md) is a separate
+example with additional demonstration code, not the generator's source.
+
+Existing referenced YAML remains runnable. `auggy migrate` previews central
+conversion, and `--application` separately previews adoption of owned execution
+files. Neither preview boots code or installs packages. See the
+[project layout and recovery guide](./16-storage-layout.md).
 
 ## High-level shape
 
@@ -81,13 +93,17 @@ an application can supply its own recipe through the same guarded session.
 
 ## Module responsibilities
 
+The paths below are relative to the installed Auggy package, not the generated
+application source with similarly named files.
+
 ### `src/types.ts`
 The single source of truth for every shape that crosses a module boundary. Everything in this file is a `type` or `interface` — there is no runtime code in `types.ts`. If two modules need to agree on a shape, that shape lives here.
 
 See [03-types.md](./03-types.md) for the full type catalog.
 
 ### `src/agent.ts`
-Defines `defineAgent(config, model) → AgentHandle`. This is the primary entry point users call. Internally it:
+Defines the programmatic `defineAgent(config, model) → AgentHandle` API. The
+managed application facade composes this runtime for generated projects. Internally it:
 1. Wires the memory bus (`wireMemoryBus`) to synthesize context for memory providers and add the synthetic `memory-bus` augment with the five generic memory tools.
 2. Generates the agent card from the *effective* config (with the synthetic augment included).
 3. Constructs a `LifecycleManager` and a `TurnLoop`.

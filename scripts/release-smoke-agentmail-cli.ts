@@ -11,20 +11,24 @@ const AGENT_ID = "aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c";
 const INBOX_ID = "packed-agentmail@agentmail.to";
 const INBOX_EMAIL = INBOX_ID;
 
-const [cliPath, packedRoot, consumerDir, smokeHome, packedTarball, packedEngineTarball] =
-  process.argv.slice(2);
-if (
-  !cliPath ||
-  !packedRoot ||
-  !consumerDir ||
-  !smokeHome ||
-  !packedTarball ||
-  !packedEngineTarball
-) {
-  throw new Error(
-    "usage: release-smoke-agentmail-cli.ts <cli> <packed-root> <consumer-dir> <home> <auggy-tarball> <engine-tarball>",
-  );
-}
+const { cliPath, packedRoot, consumerDir, smokeHome, packedTarball, packedEngineTarball } = (() => {
+  const [cliPath, packedRoot, consumerDir, smokeHome, packedTarball, packedEngineTarball] =
+    process.argv.slice(2);
+  if (
+    !cliPath ||
+    !packedRoot ||
+    !consumerDir ||
+    !smokeHome ||
+    !packedTarball ||
+    !packedEngineTarball
+  ) {
+    throw new Error(
+      "usage: release-smoke-agentmail-cli.ts <cli> <packed-root> <consumer-dir> <home> <auggy-tarball> <engine-tarball>",
+    );
+  }
+
+  return { cliPath, packedRoot, consumerDir, smokeHome, packedTarball, packedEngineTarball };
+})();
 
 mkdirSync(consumerDir, { recursive: true });
 writeAgentFixture(consumerDir, "packed-agentmail");
@@ -59,12 +63,7 @@ if (setupHelp.output.includes("--replace-key")) {
   throw new Error("packed AgentMail help still advertises removed key-replacement behavior");
 }
 const optionalConfigPath = join(optionalTargetDir, "agent.yaml");
-const optionalAugmentPath = join(optionalTargetDir, "augments", "agentMail", "augment.yaml");
-const beforeNoninteractiveSignup = snapshotAgentMailFiles(
-  optionalTargetDir,
-  optionalConfigPath,
-  optionalAugmentPath,
-);
+const beforeNoninteractiveSignup = snapshotAgentMailFiles(optionalTargetDir, optionalConfigPath);
 const noninteractiveSignup = await runCli(
   ["augment", "setup", "agentmail", "--mode", "signup"],
   {},
@@ -81,7 +80,7 @@ if (
 if (
   !isDeepStrictEqual(
     beforeNoninteractiveSignup,
-    snapshotAgentMailFiles(optionalTargetDir, optionalConfigPath, optionalAugmentPath),
+    snapshotAgentMailFiles(optionalTargetDir, optionalConfigPath),
   )
 ) {
   throw new Error("packed AgentMail non-interactive signup changed local state");
@@ -102,6 +101,8 @@ const addPath = join(packedRoot, "src", "cli", "commands", "add.ts");
 const setupPath = join(packedRoot, "src", "cli", "commands", "agentmail.ts");
 const packedAdd = await import(pathToFileURL(addPath).href);
 const packedSetup = await import(pathToFileURL(setupPath).href);
+
+await verifyLegacyOperationalCompatibility();
 
 const setupTargets: string[] = [];
 const setupConfirmations: string[] = [];
@@ -128,7 +129,7 @@ const addOutput = await captureConsoleOutput(async () => {
         inboxId: INBOX_ID,
         inboxEmail: INBOX_EMAIL,
         envPath: join(consumerDir, ".env"),
-        augmentPath: join(consumerDir, "augments", target, "augment.yaml"),
+        augmentPath: join(consumerDir, "agent.yaml"),
         envKeys: ["AGENTMAIL_API_KEY", "AGENTMAIL_INBOX_ID", "AGENTMAIL_INBOX_EMAIL"],
       };
     },
@@ -150,9 +151,7 @@ if (setupTargets.join(",") !== "agentMail:interactive,visitorAuth:env") {
 await installPackedAgentDependencies();
 
 const configPath = join(consumerDir, "agent.yaml");
-const agentMailPath = join(consumerDir, "augments", "agentMail", "augment.yaml");
-const visitorAuthPath = join(consumerDir, "augments", "visitorAuth", "augment.yaml");
-enableInboundReview(agentMailPath);
+enableInboundReview(configPath);
 const agentConfigBeforeSetup = readFileSync(configPath, "utf8");
 
 const provider = await startReadOnlyProvider();
@@ -199,11 +198,13 @@ try {
   assertPermissionEvidence(setupResult);
   assertNoCredentialOutput(packedSetup.formatAgentMailSetupResult(setupResult));
 
-  if (readFileSync(configPath, "utf8") !== agentConfigBeforeSetup) {
-    throw new Error("packed AgentMail connect changed immutable agent.yaml identity/topology");
-  }
+  assertOnlyTargetOptionsChanged(
+    agentConfigBeforeSetup,
+    readFileSync(configPath, "utf8"),
+    "agentMail",
+  );
   assertConfiguredEnv(readFileSync(join(consumerDir, ".env"), "utf8"));
-  assertAgentMailYaml(readFileSync(agentMailPath, "utf8"));
+  assertAgentMailYaml(readFileSync(configPath, "utf8"));
 
   const visitorResult = await packedSetup.runAgentMailSetup(
     "visitorAuth",
@@ -216,14 +217,9 @@ try {
     { cwd: consumerDir, interactive: false },
   );
   assertNoCredentialOutput(packedSetup.formatAgentMailSetupResult(visitorResult));
-  assertVisitorAuthYaml(readFileSync(visitorAuthPath, "utf8"));
+  assertVisitorAuthYaml(readFileSync(configPath, "utf8"));
 
-  const beforeRerun = snapshotConfiguredFiles(
-    consumerDir,
-    configPath,
-    agentMailPath,
-    visitorAuthPath,
-  );
+  const beforeRerun = snapshotConfiguredFiles(consumerDir, configPath);
   const rerun = await packedSetup.runAgentMailSetup(
     "agentMail",
     {
@@ -235,23 +231,13 @@ try {
     { cwd: consumerDir, interactive: false },
   );
   assertPermissionEvidence(rerun);
-  const afterRerun = snapshotConfiguredFiles(
-    consumerDir,
-    configPath,
-    agentMailPath,
-    visitorAuthPath,
-  );
+  const afterRerun = snapshotConfiguredFiles(consumerDir, configPath);
   if (!isDeepStrictEqual(beforeRerun, afterRerun)) {
     throw new Error("packed AgentMail env rerun was not byte-idempotent");
   }
 
-  const beforeDoctor = snapshotConfiguredFiles(
-    consumerDir,
-    configPath,
-    agentMailPath,
-    visitorAuthPath,
-  );
-  configureReadOnlyDoctorFixture(configPath, agentMailPath, provider.baseUrl);
+  const beforeDoctor = snapshotConfiguredFiles(consumerDir, configPath);
+  configureReadOnlyDoctorFixture(configPath, provider.baseUrl);
   let doctorChangedEnv = false;
   try {
     const doctor = await runCli(["doctor", "--config", configPath], {}, consumerDir);
@@ -276,8 +262,6 @@ try {
   } finally {
     doctorChangedEnv = readFileSync(join(consumerDir, ".env"), "utf8") !== beforeDoctor.env;
     writeFileSync(configPath, beforeDoctor.agent);
-    writeFileSync(agentMailPath, beforeDoctor.agentMail);
-    writeFileSync(visitorAuthPath, beforeDoctor.visitorAuth);
   }
   if (doctorChangedEnv) {
     throw new Error("packed AgentMail doctor changed the connected credential file");
@@ -293,8 +277,7 @@ try {
   );
   if (rejectedAdd.exitCode !== 0) throw new Error("could not prepare rejected-connect fixture");
   const rejectedConfig = join(rejectedDir, "agent.yaml");
-  const rejectedAugment = join(rejectedDir, "augments", "agentMail", "augment.yaml");
-  const rejectedBefore = snapshotAgentMailFiles(rejectedDir, rejectedConfig, rejectedAugment);
+  const rejectedBefore = snapshotAgentMailFiles(rejectedDir, rejectedConfig);
   let rejectedError: unknown;
   try {
     await packedSetup.runAgentMailSetup(
@@ -319,12 +302,7 @@ try {
     throw new Error("packed manual setup did not fail clearly for a rejected supplied key");
   }
   assertNoCredentialOutput(rejectedError.message);
-  if (
-    !isDeepStrictEqual(
-      rejectedBefore,
-      snapshotAgentMailFiles(rejectedDir, rejectedConfig, rejectedAugment),
-    )
-  ) {
+  if (!isDeepStrictEqual(rejectedBefore, snapshotAgentMailFiles(rejectedDir, rejectedConfig))) {
     throw new Error("failed packed manual setup changed local credentials or configuration");
   }
 
@@ -476,9 +454,34 @@ function assertReadOnlyProviderState(state: ReadOnlyProvider["state"]): void {
   }
 }
 
+function inlineOptions(value: Record<string, unknown>, type: string): Record<string, unknown> {
+  const declarations = value.augments as Array<Record<string, unknown>>;
+  const selected = declarations.filter(
+    (entry) => entry.type === type && (entry.name ?? type) === type,
+  );
+  if (selected.length !== 1 || !selected[0]!.options || typeof selected[0]!.options !== "object")
+    throw new Error(`Expected one inline ${type} options object`);
+  return selected[0]!.options as Record<string, unknown>;
+}
+
+function assertOnlyTargetOptionsChanged(before: string, after: string, type: string): void {
+  const original = parseYaml(before);
+  const updated = parseYaml(after);
+  for (const value of [original, updated]) {
+    const declarations = value.augments as Array<Record<string, unknown>>;
+    const selected = declarations.filter(
+      (entry) => entry.type === type && (entry.name ?? type) === type,
+    );
+    if (selected.length !== 1) throw new Error("Setup changed canonical instance topology");
+    delete selected[0]!.options;
+  }
+  if (!isDeepStrictEqual(original, updated))
+    throw new Error("Setup changed immutable agent identity, topology or unrelated configuration");
+}
+
 function enableInboundReview(path: string): void {
   const value = parseYaml(readFileSync(path, "utf8")) as Record<string, unknown>;
-  const config = value.config as Record<string, unknown>;
+  const config = inlineOptions(value, "agentMail");
   config.inbound = {
     mode: "websocket",
     allowAnySender: true,
@@ -488,22 +491,17 @@ function enableInboundReview(path: string): void {
   writeFileSync(path, stringifyYaml(value));
 }
 
-function configureReadOnlyDoctorFixture(
-  configPath: string,
-  agentMailPath: string,
-  providerBaseUrl: string,
-): void {
+function configureReadOnlyDoctorFixture(configPath: string, providerBaseUrl: string): void {
   const agent = parseYaml(readFileSync(configPath, "utf8")) as Record<string, unknown>;
-  agent.augments = (agent.augments as unknown[]).filter((augment) => augment !== "visitorAuth");
-  writeFileSync(configPath, stringifyYaml(agent));
-
-  const augment = parseYaml(readFileSync(agentMailPath, "utf8")) as Record<string, unknown>;
-  const config = augment.config as Record<string, unknown>;
+  agent.augments = (agent.augments as Array<Record<string, unknown>>).filter(
+    (augment) => augment.type !== "visitorAuth",
+  );
+  const config = inlineOptions(agent, "agentMail");
   delete config.inbound;
   delete config.replies;
   config.apiBaseUrl = providerBaseUrl;
   config.allowInsecureHttpWithCredentials = true;
-  writeFileSync(agentMailPath, stringifyYaml(augment));
+  writeFileSync(configPath, stringifyYaml(agent));
 }
 
 function assertPermissionEvidence(result: {
@@ -550,6 +548,10 @@ function assertConfiguredEnv(source: string): void {
 }
 
 function assertAgentMailYaml(source: string): void {
+  source = stringifyYaml({
+    type: "agentMail",
+    options: inlineOptions(parseYaml(source), "agentMail"),
+  });
   for (const expected of [
     "type: agentMail",
     "apiKey: ${AGENTMAIL_API_KEY}",
@@ -567,6 +569,10 @@ function assertAgentMailYaml(source: string): void {
 }
 
 function assertVisitorAuthYaml(source: string): void {
+  source = stringifyYaml({
+    type: "visitorAuth",
+    options: inlineOptions(parseYaml(source), "visitorAuth"),
+  });
   for (const expected of [
     "type: visitorAuth",
     "transport: agentmail",
@@ -579,29 +585,17 @@ function assertVisitorAuthYaml(source: string): void {
   }
 }
 
-function snapshotConfiguredFiles(
-  root: string,
-  configPath: string,
-  agentMailPath: string,
-  visitorAuthPath: string,
-): { env: string; agent: string; agentMail: string; visitorAuth: string } {
+function snapshotConfiguredFiles(root: string, configPath: string): { env: string; agent: string } {
   return {
     env: readFileSync(join(root, ".env"), "utf8"),
     agent: readFileSync(configPath, "utf8"),
-    agentMail: readFileSync(agentMailPath, "utf8"),
-    visitorAuth: readFileSync(visitorAuthPath, "utf8"),
   };
 }
 
-function snapshotAgentMailFiles(
-  root: string,
-  configPath: string,
-  agentMailPath: string,
-): { env: string; agent: string; agentMail: string } {
+function snapshotAgentMailFiles(root: string, configPath: string): { env: string; agent: string } {
   return {
     env: readFileSync(join(root, ".env"), "utf8"),
     agent: readFileSync(configPath, "utf8"),
-    agentMail: readFileSync(agentMailPath, "utf8"),
   };
 }
 
@@ -623,6 +617,77 @@ function writeAgentFixture(dir: string, name: string): void {
     `${JSON.stringify({ name: `${name}-consumer`, private: true, type: "module" }, null, 2)}\n`,
   );
   writeFileSync(join(dir, ".env"), "ANTHROPIC_API_KEY=smoke-not-real\n");
+}
+
+async function verifyLegacyOperationalCompatibility(): Promise<void> {
+  const dir = join(consumerDir, ".legacy-operation-check");
+  mkdirSync(dir, { recursive: true });
+  writeAgentFixture(dir, "packed-legacy");
+  const config = join(dir, "agent.yaml");
+  const document = parseYaml(readFileSync(config, "utf8"));
+  document.augments = ["agentMail", "visitorAuth"];
+  writeFileSync(config, stringifyYaml(document));
+  for (const type of ["agentMail", "visitorAuth"]) {
+    mkdirSync(join(dir, "augments", type), { recursive: true });
+    writeFileSync(
+      join(dir, "augments", type, "augment.yaml"),
+      stringifyYaml({
+        type,
+        config:
+          type === "visitorAuth"
+            ? {
+                dbPath: "./visitor-auth.db",
+                layeredMemoryDbPath: null,
+                agentMail: { transport: "console" },
+              }
+            : {},
+      }),
+    );
+  }
+  const before = snapshotAgentMailFiles(dir, config);
+  const legacySetup = await runCli(["agentmail", "setup", "agentMail", "--mode", "env"], {}, dir);
+  if (legacySetup.exitCode === 0 || !legacySetup.output.includes("auggy migrate"))
+    throw new Error("Legacy AgentMail setup did not refuse mutation with migration guidance");
+  if (!isDeepStrictEqual(before, snapshotAgentMailFiles(dir, config)))
+    throw new Error("Refused legacy AgentMail setup changed credentials or configuration");
+
+  const { createSqliteVisitorAuthStore } = await import(
+    pathToFileURL(join(packedRoot, "src/augments/visitorAuth/storage/sqlite-store.ts")).href
+  );
+  const dbPath = join(dir, "visitor-auth.db");
+  const store = createSqliteVisitorAuthStore({ dbPath });
+  store.initialize();
+  store.recordVerifiedVisitor({
+    visitorId: "vis_packed_legacy",
+    email: "legacy@example.test",
+    verifiedAt: 1_700_000_000_000,
+    lastSeenAt: null,
+    reverifyDueAt: 2_000_000_000_000,
+    revoked: false,
+    revokedAt: null,
+    revokedReason: null,
+  });
+  store.close();
+  const list = await runCli(["visitors", "packed-legacy"], {}, dir);
+  if (list.exitCode !== 0 || !list.output.includes("legacy@example.test"))
+    throw new Error("Legacy visitor listing failed without migration");
+  const revoke = await runCli(
+    ["visitors", "packed-legacy", "--revoke", "legacy@example.test", "--yes"],
+    {},
+    dir,
+  );
+  if (revoke.exitCode !== 0 || !revoke.output.includes("revoked"))
+    throw new Error("Legacy visitor revocation failed without migration");
+  const reopened = createSqliteVisitorAuthStore({ dbPath });
+  reopened.initialize();
+  try {
+    if (!reopened.findVerifiedByEmail("legacy@example.test")?.revoked)
+      throw new Error("Legacy visitor revocation did not persist");
+  } finally {
+    reopened.close();
+  }
+  if (!isDeepStrictEqual(before, snapshotAgentMailFiles(dir, config)))
+    throw new Error("Legacy visitor operations changed credentials or configuration");
 }
 
 async function installPackedAgentDependencies(): Promise<void> {
@@ -712,7 +777,7 @@ async function runCli(
   envOverrides: Record<string, string> = {},
   cwd = consumerDir,
 ): Promise<{ exitCode: number; output: string }> {
-  const env = { ...process.env, HOME: smokeHome, ...envOverrides };
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: smokeHome, ...envOverrides };
   delete env.AGENTMAIL_ACCOUNT_API_KEY;
   delete env.AGENTMAIL_API_KEY;
   delete env.AGENTMAIL_INBOX_ID;

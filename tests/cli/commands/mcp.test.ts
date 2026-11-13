@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mcpCommand, formatMcpServerList } from "../../../src/cli/commands/mcp";
+import { acquireProjectMutationLease } from "../../../src/cli/authoring/publication-lease";
 
 function setupAgent(opts: { withMcp?: boolean } = {}): { dir: string; cleanup: () => void } {
   const root = mkdtempSync(join(tmpdir(), "mcp-command-test-"));
@@ -17,7 +18,7 @@ function setupAgent(opts: { withMcp?: boolean } = {}): { dir: string; cleanup: (
       "engine:",
       "  provider: anthropic",
       "  model: claude-sonnet-4-6",
-      "augments:",
+      opts.withMcp === false ? "augments: []" : "augments:",
       ...augments,
       "",
     ].join("\n"),
@@ -26,6 +27,32 @@ function setupAgent(opts: { withMcp?: boolean } = {}): { dir: string; cleanup: (
 }
 
 describe("auggy mcp command", () => {
+  test("legacy mounted MCP keeps its graph and serializes domain writes with authoring", async () => {
+    const { dir, cleanup } = setupAgent();
+    const graph = "name: agent\naugments: [remote]\n";
+    writeFileSync(join(dir, "agent.yaml"), graph);
+    mkdirSync(join(dir, "augments/remote"), { recursive: true });
+    writeFileSync(join(dir, "augments/remote/augment.yaml"), "type: mcp\n");
+    try {
+      const lease = acquireProjectMutationLease(dir);
+      try {
+        const exit = mock((_code: number) => {});
+        await mcpCommand({ cwd: dir, exit }).parseAsync(["init"], { from: "user" });
+        expect(exit).toHaveBeenCalledWith(1);
+        expect(existsSync(join(dir, ".mcp.json"))).toBe(false);
+      } finally {
+        lease.release();
+      }
+      const exit = mock((_code: number) => {});
+      await mcpCommand({ cwd: dir, exit }).parseAsync(["init"], { from: "user" });
+      expect(exit).not.toHaveBeenCalled();
+      expect(existsSync(join(dir, ".mcp.json"))).toBe(true);
+      expect(readFileSync(join(dir, "agent.yaml"), "utf8")).toBe(graph);
+    } finally {
+      cleanup();
+    }
+  });
+
   test("commands fail clearly when MCP augment is not installed", async () => {
     const { dir, cleanup } = setupAgent({ withMcp: false });
     const errors: string[] = [];

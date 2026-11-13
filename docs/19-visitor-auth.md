@@ -144,44 +144,39 @@ developer guide, including route and tool `requires` examples.
 
 ## Configuration
 
-Enable both augments in `agent.yaml`, then configure them in their augment
-folders:
+Enable both augments and configure their inline `options` in `agent.yaml`:
 
 ```yaml
 # agent.yaml
 augments:
-  - webTransport
-  - visitorAuth
-
-# augments/webTransport/augment.yaml
-type: webTransport
-config:
-  port: 8080
-  auth: { type: bearer, token: ${AUGGY_WEB_TOKEN} }
-  visitorTokens:
-    # signingKey is auto-injected from visitorAuth by the resolver —
-    # do NOT set it here. Duplicate keys trigger a warning and visitorAuth
-    # wins. enabled is also forced to true automatically.
-
-# augments/visitorAuth/augment.yaml
-type: visitorAuth
-config:
-  publicUrl: ${AUGGY_PUBLIC_URL}              # e.g. https://zip.example.com
-  dbPath: ./data/visitor-auth.db
-  agentMail:
-    transport: agentmail
-    apiKey: ${AGENTMAIL_API_KEY}
-    inboxId: ${AGENTMAIL_INBOX_ID}
-    subjectPrefix: "[Verify] "
-  signingKey: ${VISITOR_SIGNING_KEY}          # also auto-wired into webTransport's visitorTokens
-  rateLimit: { perHour: 1, perDay: 3 }        # per email; AgentMail default
-  reverifyAfterDays: 90
-  tokenTtlMinutes: 15
-  layeredMemoryDbPath: ./data/memory.db       # null to disable peer-id migration
-  # Optional: notify operator on first verify per email
-  notifyOnFirstVerify:
-    to: ops@example.com
-    subjectPrefix: "[New verified visitor] "
+  - name: webTransport
+    type: webTransport
+    options:
+      port: 8080
+      auth:
+        type: bearer
+        token: ${AUGGY_WEB_TOKEN}
+      # visitorTokens signingKey and enabled are wired from visitorAuth.
+      # Do not duplicate its signingKey here.
+  - name: visitorAuth
+    type: visitorAuth
+    options:
+      publicUrl: ${AUGGY_PUBLIC_URL}              # e.g. https://zip.example.com
+      dbPath: ./data/visitor-auth.db
+      agentMail:
+        transport: agentmail
+        apiKey: ${AGENTMAIL_API_KEY}
+        inboxId: ${AGENTMAIL_INBOX_ID}
+        subjectPrefix: "[Verify] "
+      signingKey: ${VISITOR_SIGNING_KEY}          # also auto-wired into webTransport's visitorTokens
+      rateLimit: { perHour: 1, perDay: 3 }        # per email; AgentMail default
+      reverifyAfterDays: 90
+      tokenTtlMinutes: 15
+      layeredMemoryDbPath: ./data/memory.db       # null to disable peer-id migration
+      # Optional: notify operator on first verify per email
+      notifyOnFirstVerify:
+        to: ops@example.com
+        subjectPrefix: "[New verified visitor] "
 ```
 
 When `visitorAuth` and a SQLite `layeredMemory` augment point at the same
@@ -201,50 +196,43 @@ database from silently falling back to the same `ep` namespace.
 
 ## AgentMail setup
 
-For production email delivery, create an inbox and API key in AgentMail, then
-connect those exact values:
+For production email delivery, install visitor auth and open guided setup:
 
 ```bash
 auggy augment add visitorAuth
-auggy agentmail setup visitorAuth --mode connect
+auggy agentmail setup visitorAuth
 ```
 
-`auggy augment setup visitorAuth` is the generic equivalent. The direct
-`agentmail` command may omit its target only when exactly one canonical,
-referenced `augments/agentMail` or `augments/visitorAuth` mount is installed:
-
-```bash
-auggy agentmail setup
-```
-
-Always name the target in scripts. If both canonical consumers are installed,
-omission fails closed and prints the safe shared-credential sequence below. A
-custom-named, inline, or additional same-type mount is never selected or
-rewritten automatically.
-
-Setup has two modes:
+`auggy augment setup visitorAuth` opens the same interactive menu. The direct
+`agentmail` command may omit its target only when exactly one canonical inline
+`agentMail` or `visitorAuth` declaration is enabled in `agent.yaml`. Always name
+the target in scripts. If both consumers are installed, omission fails closed.
+Legacy graphs require `auggy migrate` before setup; renamed, custom, or
+additional same-type declarations are not rewritten automatically.
 
 | Mode | Use it when | Effect |
 |---|---|---|
-| `connect` | Connecting an existing inbox for the first time | Prompts securely for its inbox ID and API key, verifies `inbox_read`, stores the exact values in `.env`, and switches visitorAuth to AgentMail delivery |
-| `env` | The same values are already complete in the agent's `.env` | Revalidates and reuses them without asking again |
+| `signup` | Creating an AgentMail account | Creates the account and initial inbox, verifies the email code in the operator's terminal, and saves the initial key |
+| `existing` | Creating an inbox in an existing account | Creates an inbox using the supplied account key and saves that exact same key |
+| `manual` | Connecting an existing inbox | Verifies the inbox ID and key and stores those exact values |
+| `env` | Credentials are already complete in `.env` | Revalidates and reuses the stored values |
 
-Auggy never creates an AgentMail account, inbox, or API key. It also never
-narrows, rotates, replaces, or revokes the supplied key. Create and manage those
-resources in AgentMail. If you intentionally change either credential, update
-the exact `.env` values and rerun `--mode connect`.
-
-For non-interactive use, name the mode and supply `AGENTMAIL_API_KEY` plus
-`AGENTMAIL_INBOX_ID` in the process environment, or pass `--api-key` and
-`--inbox-id`. Prefer environment variables because command-line secrets can be
-recorded in shell history or process listings.
+`connect` is an alias for `manual`. Auggy never exchanges the selected key for
+a narrower runtime key, rotates it, or revokes it. Enter secrets and verification
+codes directly in the CLI, never in a model conversation. `signup` requires an
+interactive terminal. Automated `existing` setup requires `--username`, an
+available API key, and explicit `--yes` authorization for provider creation through
+`auggy agentmail setup visitorAuth`; the generic `augment setup` wrapper does
+not expose those creation flags. For automated manual connection, provide `AGENTMAIL_API_KEY` and
+`AGENTMAIL_INBOX_ID` through a private environment; avoid command-line secrets.
 
 On success, setup writes `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID`, switches
-`augments/visitorAuth/augment.yaml` to `agentMail.transport: agentmail`, and
+the `visitorAuth` entry's `options.agentMail.transport` to `agentmail`, and
 reports that `inbox_read` was verified. Sending the first magic link exercises
 `message_send`; setup cannot prove a write permission without sending mail.
-The local `.env` and augment YAML update is transactional on supported POSIX
-systems and fails closed if their inputs change during setup.
+Activation rechecks configuration and credential inputs before publication and
+refuses stale changes. A local configuration failure cannot undo a provider
+account or inbox that has already been created.
 
 ### Sharing credentials with the `agentMail` augment
 
@@ -258,8 +246,8 @@ auggy agentmail setup visitorAuth --mode env
 ```
 
 An interactive add containing both augments performs this sequence after one
-shared confirmation. Automatic setup refuses custom, inline, renamed, or
-additional AgentMail consumers because changing shared globals could silently
+shared confirmation. Automatic setup requires canonical inline declarations and refuses custom,
+renamed, or additional AgentMail consumers because changing shared globals could silently
 retarget another augment. Give those consumers distinct environment references
 or isolate them in separate agents, then run `auggy doctor`.
 
@@ -279,18 +267,21 @@ local values. Auggy never revokes it automatically.
 
 ### Failure recovery
 
-Setup is read-only against AgentMail, so a failed attempt cannot leave a newly
-created remote resource behind. It writes local configuration only after the
-inbox identity is validated for the supplied key.
+`manual` and `env` perform provider reads only. `signup` and `existing` can
+create provider resources before validation or local activation completes. If
+creation has an unknown outcome, inspect AgentMail Console before retrying;
+do not assume local rollback removes a remote resource.
 
 - For `401` or `403`, confirm the key is active, scoped to the selected inbox,
   and grants `inbox_read` plus `message_send`. Change permissions in AgentMail,
   then retry.
-- For `404`, copy the exact inbox ID from AgentMail and retry.
-- For an unknown network outcome, it is safe to rerun: setup performs provider
-  reads only. No message is sent during validation.
+- For `404`, copy the exact inbox ID from AgentMail and retry manual connection.
+- If signup created an account but verification failed, complete verification in
+  AgentMail Console before reconnecting.
 - If local values are already correct, use `--mode env`; if you intend to
-  change them, update the exact values and use `--mode connect`.
+  change them, update the exact private values and use `--mode manual`.
+- If local configuration changed during setup, inspect the new graph and retry
+  against it. Preserve `.env` if setup reports an uncertain credential write.
 
 After a visitor clicks the verification link, the success page stores the signed
 visitor token in browser localStorage. `/console/chat` and public frontends should
@@ -307,17 +298,20 @@ the visitor's name.
 Preview adopters who haven't configured AgentMail can still exercise the full magic-link flow by switching the delivery transport to the console adapter. The verify URL prints to the agent's stdout instead of being sent via email — the operator copies the link from their terminal and opens it in a browser to complete verification.
 
 Switch via `agentMail.transport: "console"` in
-`augments/visitorAuth/augment.yaml`:
+the `visitorAuth` entry in `agent.yaml`:
 
 ```yaml
-type: visitorAuth
-config:
-  publicUrl: http://localhost:8080
-  dbPath: ./data/visitor-auth.db
-  agentMail:
-    transport: "console"
-  signingKey: ${VISITOR_SIGNING_KEY}
-  agentBinding: ${AUGGY_AGENT_ID}
+# agent.yaml (augment entry)
+augments:
+  - name: visitorAuth
+    type: visitorAuth
+    options:
+      publicUrl: http://localhost:8080
+      dbPath: ./data/visitor-auth.db
+      agentMail:
+        transport: "console"
+      signingKey: ${VISITOR_SIGNING_KEY}
+      agentBinding: ${AUGGY_AGENT_ID}
 ```
 
 `agentBinding` is a security audience, not a display name. Configure the same
@@ -357,7 +351,8 @@ Console mode is **rejected at boot** if EITHER of these is true:
 Either gate triggers the same rejection. Operator can explicitly acknowledge the risk via:
 
 ```yaml
-config:
+# Merge these options into the visitorAuth entry in agent.yaml.
+options:
   publicUrl: https://demo.example.com
   agentMail:
     transport: "console"
@@ -475,4 +470,4 @@ lookups trim and lowercase operator input just like enrollment.
 | Verify link returns 410 "consumed" | Token was already used (visitor double-clicked, or someone with the link beat them) | Re-issue |
 | Visitor verifies but agent doesn't recognize them next visit | Cleared localStorage, or `VISITOR_SIGNING_KEY` rotated | Re-verify |
 | AgentMail healthcheck returns 403 | API key lacks access to the configured inbox, or a permission whitelist omitted `inbox_read` | Update the key in AgentMail, or intentionally connect a different exact key with `--mode connect`; restart |
-| `auggy visitors --revoke` reports `memory.db` missing | layeredMemory has not created its DB yet, or a local custom path differs | Check `layeredMemoryDbPath` in `augments/visitorAuth/augment.yaml`. Portable catalog defaults use `./memory.db`; Railway resolves it directly under `/app/data`. |
+| `auggy visitors --revoke` reports `memory.db` missing | layeredMemory has not created its DB yet, or a local custom path differs | Check `layeredMemoryDbPath` in the `visitorAuth` entry in `agent.yaml`. Portable catalog defaults use `./memory.db`; Railway resolves it directly under `/app/data`. |

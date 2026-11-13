@@ -1,0 +1,828 @@
+{
+  "schemaVersion": 1,
+  "milestone": 4,
+  "plan": "milestone-4-execution-2026-11-13.md",
+  "mode": "execution",
+  "orchestrator": "CTO / AI Engineering Lead (root)",
+  "maxConcurrentSpecialists": 3,
+  "baseline": {
+    "verifiedMainAtPlanning": "209185d0e7481b4ff5d3b4c87e3447e7583b2fef",
+    "planningCandidate": "ba16ce3a8be1f5ef8ec36e43c79889c3feecc250",
+    "planningCandidatePR": "https://github.com/looselyorganized/auggy/pull/227",
+    "planningCandidatePRState": "MERGED",
+    "acceptedMain": "911fe1682c76208c1d99d4dc6841bfcaa608dd8d",
+    "acceptedTree": "d901475a9afb7a9d24dc70c21ac2480bfab78439",
+    "planningLockSHA256": "cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7",
+    "acceptedLockSHA256": "cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7",
+    "mergedMainCandidate": "911fe1682c76208c1d99d4dc6841bfcaa608dd8d",
+    "mergedMainTree": "d901475a9afb7a9d24dc70c21ac2480bfab78439"
+  },
+  "gates": {
+    "G0": {
+      "status": "accepted",
+      "requires": [
+        "user authorizes M4 implementation",
+        "M3 PR227 reviewed and merged",
+        "resulting main required checks verified",
+        "exact accepted main/tree/toolchain/lock recorded",
+        "differences from planning candidate reconciled"
+      ],
+      "acceptedMain": "911fe1682c76208c1d99d4dc6841bfcaa608dd8d",
+      "evidence": [
+        "https://github.com/looselyorganized/auggy/pull/227",
+        "https://github.com/looselyorganized/auggy/actions/runs/43374475284",
+        "https://github.com/looselyorganized/auggy/actions/runs/43374475262",
+        "milestone-4-evidence-2026-11-13.md",
+        "https://github.com/looselyorganized/auggy/pull/228",
+        "https://github.com/looselyorganized/auggy/actions/runs/43375919380",
+        "https://github.com/looselyorganized/auggy/actions/runs/43375919436"
+      ],
+      "pending": [],
+      "blockingFindings": {
+        "analysisId": 2158668062,
+        "alerts": [
+          118,
+          119,
+          120,
+          121,
+          122,
+          123,
+          124,
+          125,
+          126,
+          127
+        ],
+        "scope": "test fixtures only",
+        "repairBranch": "fix/m3-main-codeql",
+        "repairPR": "https://github.com/looselyorganized/auggy/pull/228",
+        "fullBranchAnalysis": 2158700808,
+        "fullBranchOpenAlerts": 0,
+        "repairMerged": "911fe1682c76208c1d99d4dc6841bfcaa608dd8d"
+      },
+      "verification": {
+        "mainChecks": 29,
+        "postgresRegistered": 13,
+        "postgresCompleted": 13,
+        "postgresVersion": 170010,
+        "codeQLAnalysis": 2158727887,
+        "mainOpenAlerts": 0,
+        "repairAlerts": "118\u2013127 fixed without dismissals",
+        "reviewer": "m4_entry_gate_auditor"
+      },
+      "acceptedAt": "2026-11-13T06:05:00Z"
+    }
+  },
+  "contracts": {
+    "C1": "milestone-4-contracts/authoring.md",
+    "C2": "milestone-4-contracts/migration.md",
+    "C3": "milestone-4-contracts/inspection.md",
+    "C4": "milestone-4-contracts/acceptance.md",
+    "freeze": "milestone-4-contracts/freeze.md",
+    "harnessFreeze": "milestone-4-contracts/harness-freeze.md"
+  },
+  "allowedStates": [
+    "blocked",
+    "ready",
+    "in_progress",
+    "review",
+    "accepted"
+  ],
+  "tasks": [
+    {
+      "id": "M4-00",
+      "title": "Freeze accepted baseline, contracts and ownership",
+      "specialist": "CTO / AI Engineering Lead + architecture specialist",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "C1",
+        "C2",
+        "C3",
+        "C4"
+      ],
+      "deliverables": [
+        "baseline/source-writer inventory",
+        "CLI-local interface and schema fixtures",
+        "accepted contract revision",
+        "pre-change trace task baseline"
+      ],
+      "writeScope": [
+        "root-reserved contracts and status documents"
+      ],
+      "acceptedCommit": "88b815ed3ead921e44be53687193d0799e5d3b21",
+      "evidence": [
+        "milestone-4-contracts/freeze.md",
+        "milestone-4-contracts/harness-freeze.md",
+        "../../src/cli/authoring/contracts.ts",
+        "../../tests/fixtures/authoring-contract.ts",
+        "milestone-4-evidence-2026-11-13.md"
+      ],
+      "acceptanceScope": "baseline-and-contract-freeze",
+      "verification": {
+        "typecheck": "passed",
+        "parserRegression": {
+          "passed": 132,
+          "assertions": 266
+        },
+        "contractReview": "m4_contract_freeze_review independently accepted exact compiled files; path bound corrected to1024"
+      },
+      "acceptedAt": "2026-11-13T06:10:54.267586+00:00"
+    },
+    {
+      "id": "M4-01",
+      "title": "Pure configuration documents and recoverable publication",
+      "specialist": "configuration engineer",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M4-00"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A04",
+        "A10",
+        "A11",
+        "A12"
+      ],
+      "deliverables": [
+        "raw declaration reader",
+        "preconditioned mutation planner",
+        "bounded project publication and receipt primitives",
+        "failure controls"
+      ],
+      "writeScope": [
+        "src/cli/authoring/document*",
+        "src/cli/authoring/mutation*",
+        "src/cli/authoring/publication*",
+        "tests/cli/authoring-document*",
+        "tests/cli/authoring-publication*"
+      ],
+      "acceptedCommit": "9d70e6e039b41ccbde5a85f666128099e929aeb6",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md"
+      ],
+      "acceptanceScope": "scoped-producer-contribution",
+      "startedAt": "2026-11-13T06:10:54.267586+00:00",
+      "producerBaseline": "88b815ed3ead921e44be53687193d0799e5d3b21",
+      "owners": {
+        "document": "m4_document_engineer",
+        "publication": "m4_publication_engineer"
+      },
+      "componentReview": {
+        "documentAndPassiveIntegration": {
+          "status": "accepted-scoped",
+          "reviewer": "m4_foundation_review",
+          "tests": 91,
+          "assertions": 491
+        },
+        "publication": {
+          "status": "accepted-scoped",
+          "reviewer": "m4_foundation_review",
+          "platform": "macOS arm64",
+          "tests": 61,
+          "assertions": 295,
+          "remaining": "Linux execution required in final CI"
+        }
+      },
+      "acceptedAt": "2026-11-13T06:31:00.761144+00:00",
+      "verification": {
+        "rootCombinedTests": 154,
+        "rootCombinedAssertions": 798,
+        "typecheck": "passed",
+        "lint": "passed; existing schema informational notice",
+        "reviewFindings": "all closed"
+      }
+    },
+    {
+      "id": "M4-02",
+      "title": "Executable create/init and package coherence",
+      "specialist": "application DX engineer",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M4-01"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A01",
+        "A02",
+        "A03",
+        "A04",
+        "A05",
+        "A12",
+        "A15"
+      ],
+      "deliverables": [
+        "packaged application templates",
+        "deterministic creation",
+        "collision-safe init",
+        "public-API consumer scripts/tests"
+      ],
+      "writeScope": [
+        "src/cli/commands/create.ts",
+        "src/cli/scaffold-package-json.ts",
+        "src/cli/scaffold-application.ts",
+        "src/scaffold-templates/application/",
+        "tests/cli/create*",
+        "tests/cli/scaffold-application*"
+      ],
+      "acceptedCommit": "9e56b803c1a5d3b65cc1efc815c4399d32873c90",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md"
+      ],
+      "acceptanceScope": "scoped-producer-contribution",
+      "startedAt": "2026-11-13T06:31:00.761144+00:00",
+      "producerBaseline": "9d70e6e039b41ccbde5a85f666128099e929aeb6",
+      "owner": "m4_scaffold_engineer",
+      "acceptedAt": "2026-11-13T06:49:11.696535+00:00",
+      "review": {
+        "status": "accepted-scoped",
+        "reviewer": "m4_foundation_review",
+        "verification": "142 tests / 669 assertions and independent FIFO reproduction; bounded no-follow metadata discovery and complete init preflight; installed acceptance pending"
+      }
+    },
+    {
+      "id": "M4-03",
+      "title": "Central augment and custom capability authoring",
+      "specialist": "augment authoring engineer",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M4-01"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A06",
+        "A07",
+        "A12"
+      ],
+      "deliverables": [
+        "inline add/create/install/remove",
+        "creator-only shared service starter",
+        "retained owned skills/source",
+        "legacy mutator guidance"
+      ],
+      "writeScope": [
+        "src/cli/commands/add.ts",
+        "src/cli/commands/augment.ts",
+        "src/cli/scaffold-custom-augment.ts",
+        "src/cli/scaffold-skills.ts",
+        "src/cli/augment-metadata.ts",
+        "tests/cli/augment-authoring*",
+        "tests/cli/scaffold-custom-augment*"
+      ],
+      "acceptedCommit": "9e56b803c1a5d3b65cc1efc815c4399d32873c90",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md"
+      ],
+      "acceptanceScope": "scoped-producer-contribution",
+      "startedAt": "2026-11-13T06:31:00.761144+00:00",
+      "producerBaseline": "9d70e6e039b41ccbde5a85f666128099e929aeb6",
+      "owner": "m4_augment_engineer",
+      "review": {
+        "status": "accepted-scoped",
+        "reviewer": "m4_foundation_review",
+        "verification": "Independent malformed/invalid-UTF8/oversize manifest and env-FIFO probes; 70 tests/341 assertions plus 46 tests/239 assertions; installed acceptance pending"
+      },
+      "acceptedAt": "2026-11-13T06:49:11.696535+00:00"
+    },
+    {
+      "id": "M4-04",
+      "title": "Explicit config conversion and application adoption",
+      "specialist": "migration engineer",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M4-01",
+        "M4-02"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A10",
+        "A11",
+        "A12",
+        "A13"
+      ],
+      "deliverables": [
+        "preview/apply/rollback command",
+        "legacy fixture corpus",
+        "preservation proof",
+        "interruption recovery and activation evidence"
+      ],
+      "writeScope": [
+        "src/cli/commands/migrate.ts",
+        "src/cli/authoring/migration*",
+        "tests/cli/migration*",
+        "tests/fixtures/authoring-migration/"
+      ],
+      "acceptedCommit": "1667e21d2cc7185420be5516ee5629835dff7f05",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md"
+      ],
+      "acceptanceScope": "scoped-producer-contribution",
+      "startedAt": "2026-11-13T06:49:11.696535+00:00",
+      "producerBaseline": "9e56b803c1a5d3b65cc1efc815c4399d32873c90",
+      "owner": "m4_migration_engineer",
+      "acceptedAt": "2026-11-13T07:07:49.303784+00:00",
+      "review": {
+        "status": "accepted-scoped",
+        "reviewer": "m4_foundation_review",
+        "tests": 69,
+        "assertions": 700,
+        "installedAcceptance": "accepted by final M4-07/10 certification on 4fd2fff"
+      }
+    },
+    {
+      "id": "M4-05",
+      "title": "Inline AgentMail configuration with security parity",
+      "specialist": "credential security engineer",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M4-01",
+        "M4-03"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A17",
+        "A07",
+        "A12"
+      ],
+      "deliverables": [
+        "inline canonical-instance setup",
+        "credential lock/CAS/shared-consumer parity",
+        "legacy operational revoke coverage"
+      ],
+      "writeScope": [
+        "src/cli/commands/agentmail.ts",
+        "tests/cli/agentmail*"
+      ],
+      "acceptedCommit": "1667e21d2cc7185420be5516ee5629835dff7f05",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md"
+      ],
+      "acceptanceScope": "scoped-producer-contribution",
+      "startedAt": "2026-11-13T06:49:11.696535+00:00",
+      "producerBaseline": "9e56b803c1a5d3b65cc1efc815c4399d32873c90",
+      "owner": "m4_agentmail_engineer",
+      "acceptedAt": "2026-11-13T07:07:49.303784+00:00",
+      "review": {
+        "status": "accepted-scoped",
+        "reviewer": "m4_foundation_review",
+        "tests": 60,
+        "assertions": 200,
+        "installedAcceptance": "accepted by final M4-07/10 certification on 4fd2fff"
+      }
+    },
+    {
+      "id": "M4-06",
+      "title": "Passive inspection and installed source navigation",
+      "specialist": "inspection engineer",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M4-01"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A08",
+        "A09",
+        "A16"
+      ],
+      "deliverables": [
+        "pure report/schema",
+        "installed passive command proof",
+        "source-index generator and packaged metadata",
+        "resolver supported-type parity"
+      ],
+      "writeScope": [
+        "src/cli/commands/inspect.ts",
+        "src/cli/authoring/inspection*",
+        "src/metadata/source-index.json",
+        "src/cli/augment-catalog.ts",
+        "scripts/generate-source-index.ts",
+        "tests/cli/inspect*",
+        "tests/scripts/source-index*"
+      ],
+      "acceptedCommit": "9e56b803c1a5d3b65cc1efc815c4399d32873c90",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md"
+      ],
+      "acceptanceScope": "scoped-producer-contribution",
+      "startedAt": "2026-11-13T06:31:00.761144+00:00",
+      "producerBaseline": "9d70e6e039b41ccbde5a85f666128099e929aeb6",
+      "owner": "m4_inspection_engineer",
+      "review": {
+        "status": "accepted-scoped",
+        "reviewer": "m4_foundation_review",
+        "verification": "111 tests/506 assertions including root command integration; final source-index 26 tests/58 assertions and generator check; installed acceptance pending"
+      },
+      "acceptedAt": "2026-11-13T06:49:11.696535+00:00"
+    },
+    {
+      "id": "M4-07",
+      "title": "Actual generated-project installed acceptance",
+      "specialist": "harness engineer",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M4-00"
+      ],
+      "acceptanceDependsOn": [
+        "M4-02",
+        "M4-03",
+        "M4-04",
+        "M4-05",
+        "M4-06",
+        "M4-08"
+      ],
+      "acceptance": [
+        "A01",
+        "A02",
+        "A03",
+        "A04",
+        "A05",
+        "A06",
+        "A07",
+        "A08",
+        "A09",
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15",
+        "A16",
+        "A17"
+      ],
+      "deliverables": [
+        "fixture/assertion preparation",
+        "adoption of untouched CLI output",
+        "installed command/migration/source-edit/ownership evidence",
+        "bounded cleanup and failure controls"
+      ],
+      "writeScope": [
+        "scripts/release-smoke/authoring-suite.ts",
+        "scripts/release-smoke/authoring-consumer.ts",
+        "scripts/release-smoke/authoring-inspection.ts",
+        "scripts/release-smoke/authoring-migration.ts",
+        "tests/scripts/authoring-*"
+      ],
+      "acceptedCommit": "4fd2fffa3e927986dc632d084fec592ea36279f9",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md",
+        "https://github.com/looselyorganized/auggy/pull/229"
+      ],
+      "acceptanceScope": "installed-scenario-evidence",
+      "startedAt": "2026-11-13T06:10:54.267586+00:00",
+      "producerBaseline": "88b815ed3ead921e44be53687193d0799e5d3b21",
+      "preparation": {
+        "status": "reviewed",
+        "owner": "m4_harness_contracts",
+        "scope": "Bounded helpers only; installed orchestration and acceptance pending producers",
+        "reviewer": "root",
+        "verification": {
+          "tests": 11,
+          "assertions": 78,
+          "providerFixtureTests": 18,
+          "providerFixtureAssertions": 86
+        }
+      },
+      "implementationCommit": "4693ee0168eff5c0affd2b09efa295ef8d6b9aa2",
+      "review": {
+        "status": "accepted",
+        "reviewer": "m4_harness_review",
+        "tests": 36,
+        "assertions": 171,
+        "findings": "Generated inventory and detached service log supervision gaps repaired and independently rechecked",
+        "finalAcceptance": "Actual generated suite accepted; all six final macOS artifacts byte-identical to independently audited c1902f8 artifacts, and fresh full macOS/Linux aggregate passes on 4fd2fff"
+      },
+      "finalCandidatePreparation": "a5f2ba0b7a822132a99538184d90a8345416fd24",
+      "acceptedAt": "2026-11-13T07:59:15.071652+00:00",
+      "verification": {
+        "reviewer": "m4_harness_review",
+        "freshConsumers": 7,
+        "inventoryEntriesEach": 80,
+        "applicationScenarios": 59,
+        "sourceEdits": 15,
+        "lifecycleObservations": 74,
+        "macosService": "passed",
+        "cleanup": "confirmed"
+      }
+    },
+    {
+      "id": "M4-08",
+      "title": "Public and agent-facing teaching alignment",
+      "specialist": "documentation engineer",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M4-02",
+        "M4-03",
+        "M4-04",
+        "M4-05",
+        "M4-06"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A16"
+      ],
+      "deliverables": [
+        "generated/public execution walkthrough",
+        "legacy migration compatibility notes",
+        "builder/self-guidance alignment",
+        "deployment/source navigation verification"
+      ],
+      "writeScope": [
+        "assigned public docs and builder assets",
+        "src/cli/auggy-self-augment.ts",
+        "template README only after M4-02 hands ownership over"
+      ],
+      "acceptedCommit": "a5f2ba0b7a822132a99538184d90a8345416fd24",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md"
+      ],
+      "acceptanceScope": "scoped-producer-contribution",
+      "owner": "m4_documentation_engineer",
+      "startedAt": "2026-11-13T07:07:49.303784+00:00",
+      "producerBaseline": "1667e21d2cc7185420be5516ee5629835dff7f05",
+      "review": {
+        "status": "accepted-scoped",
+        "reviewer": "m4_documentation_review",
+        "tests": 63,
+        "assertions": 704,
+        "findings": "All command, asset, test, ownership-diagram and duplicated-declaration teaching findings repaired and independently rechecked"
+      },
+      "acceptedAt": "2026-11-13T07:29:29.316511+00:00"
+    },
+    {
+      "id": "M4-09",
+      "title": "Independent integrated adversarial review",
+      "specialist": "independent architecture/security/harness reviewer",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M4-02",
+        "M4-03",
+        "M4-04",
+        "M4-05",
+        "M4-06",
+        "M4-07",
+        "M4-08"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "C1",
+        "C2",
+        "C3",
+        "C4"
+      ],
+      "deliverables": [
+        "reproducible findings",
+        "producer repair requests",
+        "independent repair rechecks"
+      ],
+      "writeScope": [
+        "read-only; review reports only"
+      ],
+      "acceptedCommit": "4fd2fffa3e927986dc632d084fec592ea36279f9",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md",
+        "https://github.com/looselyorganized/auggy/pull/229"
+      ],
+      "acceptanceScope": "independent-integrated-review",
+      "acceptedAt": "2026-11-13T07:59:15.071652+00:00",
+      "review": {
+        "status": "accepted",
+        "reviewer": "m4_final_architecture_review",
+        "blockingFindings": [],
+        "packagedSourceFilesCompared": 342,
+        "indexedEntrypointsVerified": 20,
+        "remainingScope": "M5 hosted integration and M6 supported published upgrades/human DX measurement remain roadmap work"
+      }
+    },
+    {
+      "id": "M4-10",
+      "title": "Certify final artifacts, CI and PR handoff",
+      "specialist": "CTO / AI Engineering Lead",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M4-07",
+        "M4-08",
+        "M4-09"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A01",
+        "A02",
+        "A03",
+        "A04",
+        "A05",
+        "A06",
+        "A07",
+        "A08",
+        "A09",
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15",
+        "A16",
+        "A17"
+      ],
+      "deliverables": [
+        "final candidate/artifact/merge provenance",
+        "required CI and platform evidence",
+        "accepted review dispositions",
+        "scoped PR and M4 evidence document"
+      ],
+      "writeScope": [
+        "root-reserved integration, manifests/locks, CI and evidence/status files"
+      ],
+      "acceptedCommit": "4fd2fffa3e927986dc632d084fec592ea36279f9",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md",
+        "https://github.com/looselyorganized/auggy/pull/229"
+      ],
+      "acceptanceScope": "milestone-certification",
+      "acceptedAt": "2026-11-13T07:59:15.071652+00:00",
+      "review": {
+        "status": "accepted",
+        "reviewer": "m4_certification_auditor",
+        "checks": 31,
+        "blockingFindings": []
+      }
+    }
+  ],
+  "planReview": {
+    "status": "approved",
+    "specialistPlanning": [
+      "m4_authoring_architect",
+      "m4_cli_migration_planner",
+      "m4_harness_planner"
+    ],
+    "independentReviewer": "m4_plan_adversarial_review",
+    "remainingPlanningBlockers": [],
+    "implementationAuthorized": true,
+    "planSHA256": "c5f6cb19c897851af96314020414812bfa75d8161f10c13b8040a2620c63f6f0",
+    "reviewRecord": "milestone-4-plan-review-2026-11-13.md",
+    "contractSHA256": {
+      "milestone-4-contracts/authoring.md": "08da36e677a58a5ad6c0c9e98b2a14298fffd59fa05eb752ae4448940573bded",
+      "milestone-4-contracts/migration.md": "9c8562bcaa659786fac1c2b99f6edbe2b44916394bc661f4e66fcffa270278de",
+      "milestone-4-contracts/inspection.md": "33993a110a642ab34b34532079f778a5d69f4fd3fd8ca67e5b003080ffc9df65",
+      "milestone-4-contracts/acceptance.md": "f940dcdb5bb8e78e3e89457a2dd4400c2fd9c5ba824a63909d3545b210725007",
+      "milestone-4-contracts/freeze.md": "f88873d72344b49ed093cd93f73e94874a2d044acc45fbd1a191251c0e043fce",
+      "milestone-4-contracts/harness-freeze.md": "0db84fe58fd76e148d73c892d901d51218495ea5a648214285bde793aa1480fe"
+    },
+    "findings": {
+      "resolved": [
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5"
+      ],
+      "unresolved": []
+    },
+    "approvedPlanningPlanSHA256": "7a61b593f9ef2bac167d8e6534e1852cf9a7a83650f52d579fbb5d4356358c51"
+  },
+  "activeOwnership": {
+    "root": "Evidence-only handoff commit and final PR verification; no implementation work remains"
+  },
+  "notes": [
+    "M4-00 through M4-10 accepted. Exact 4fd2fff source passed full macOS/Linux aggregate release, all 31 PR checks, required PG17 and full manual CodeQL with zero open findings. Closing documentation records acceptance; merge/publication remain separate.",
+    "M4-07 may prepare after M4-00 acceptance; its installed acceptance also requires acceptanceDependsOn.",
+    "Only root changes task/gate acceptance status.",
+    "M5/M6 remain roadmap outcomes; no merge or publication authorized by this plan."
+  ],
+  "acceptanceSemantics": {
+    "producer": "Acceptance IDs on M4-01 through M4-06 and M4-08 are contributions; root accepts independently reviewed scoped producer evidence, not full milestone rows.",
+    "installed": "M4-07 may prepare after M4-00; final installed acceptance consumes accepted M4-02 through M4-06 and M4-08 outputs.",
+    "milestone": "Only M4-10 certifies full acceptance rows on final artifacts and required CI."
+  },
+  "authorization": {
+    "request": "execure",
+    "scope": "Execute approved milestone 4 plan; no npm publication/version bump",
+    "recordedAt": "2026-11-13"
+  },
+  "certificationAttempts": [
+    {
+      "candidate": "4b856ed6e339a1e65467904bcb260fec676ff1ab",
+      "status": "failed",
+      "passed": [
+        "strict typecheck",
+        "lint",
+        "test surface inventory",
+        "installed source index",
+        "strict workspace dependency audit",
+        "console suite"
+      ],
+      "findings": [
+        "13 launch-bootstrap fixture failures: copied entrypoint omitted new static passive authoring dependencies",
+        "Independent integration review: AgentMail setup rejects unrelated options:null retained by valid migration"
+      ],
+      "disposition": "Both scoped repairs independently accepted by m4_final_architecture_review: 93 tests / 479 assertions. Bootstrap operator shard 1641 tests / 6581 assertions passes. New clean candidate and full runtime/artifact certification follow."
+    },
+    {
+      "candidate": "c1902f8bd845b885a6e7f4aa72a80121f1155cdc",
+      "status": "failed",
+      "passed": [
+        "full local runtime: 4929 tests / 18533 assertions; 13 PostgreSQL service cases skipped locally",
+        "packed providers, strict audits, packed AgentMail CLI, interactive create, packed turn/replay",
+        "historical dependency policy migration; selected and fresh Link 0.2.0 runtime/audit"
+      ],
+      "findings": [
+        "Historical retained-lock candidate turn fixture lacks src/augments parents assumed by updated packed observer"
+      ],
+      "evidence": "/private/tmp/m4-final-release-evidence/release.json",
+      "disposition": "Narrow harness compatibility repair and independent recheck; final generated suite not reached",
+      "ci": {
+        "run": "https://github.com/looselyorganized/auggy/actions/runs/43387007773",
+        "status": "passed",
+        "postgresRegistered": 13,
+        "postgresCompleted": 13,
+        "postgresVersion": 170010,
+        "sourceTree": "94a22c2892bfd65877a9062e4c0d04d6a4ea6523",
+        "testedMerge": "dfed2a6d7dcb60ce6bada9e914a4ba1c105dd45d"
+      },
+      "codeQL": {
+        "fullRun": "https://github.com/looselyorganized/auggy/actions/runs/43387008977",
+        "analysis": 2159155933,
+        "newOpenAlerts": [
+          128,
+          129
+        ],
+        "inheritedDismissed": 5,
+        "disposition": "Two new test-only findings assigned scoped repair; inherited dismissed files unchanged from accepted main; no dismissals",
+        "repairReview": {
+          "reviewer": "m4_final_architecture_review",
+          "status": "accepted-scoped",
+          "tests": 81,
+          "assertions": 781,
+          "clearance": "Fresh full analysis still required"
+        }
+      },
+      "directGeneratedSuite": {
+        "status": "passed",
+        "evidence": "/private/tmp/m4-generated-c190-evidence/authoring-suite.json",
+        "macosService": "passed",
+        "cleanup": "confirmed",
+        "scope": "Same frozen candidate product artifacts and unchanged authoring harness; aggregate release remains failed before this stage"
+      },
+      "harnessRepairReview": {
+        "reviewer": "m4_harness_review",
+        "status": "accepted-scoped",
+        "tests": 28,
+        "assertions": 87,
+        "scope": "Preserve legacy and inline active fixture formats, ordinary existing parents, exclusive observer and guarded exact restoration"
+      }
+    }
+  ],
+  "certification": {
+    "status": "accepted",
+    "sourceRevision": "4fd2fffa3e927986dc632d084fec592ea36279f9",
+    "sourceTree": "64a968e8ba95edfec1c80051c882b32dcd1f8ab1",
+    "testedMerge": "5f8953eaafc6f5592de1917a78aaceb4e6bc441a",
+    "sourceChangesSHA256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "rootLockSHA256": "cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7",
+    "bun": "1.3.14",
+    "ci": "https://github.com/looselyorganized/auggy/actions/runs/43388365523",
+    "linuxRelease": "https://github.com/looselyorganized/auggy/actions/runs/43388365574",
+    "linuxEvidenceArtifact": 14019409302,
+    "fullCodeQL": "https://github.com/looselyorganized/auggy/actions/runs/43388389592",
+    "codeQLAnalysis": 2159213461,
+    "openCodeQLAlerts": 0,
+    "repairedAlerts": [
+      128,
+      129
+    ],
+    "repairedAlertsDisposition": "fixed without dismissals",
+    "postgresRegistered": 13,
+    "postgresCompleted": 13,
+    "postgresVersion": 170010,
+    "macosReleaseEvidence": "/private/tmp/m4-final-release-evidence-2/release.json",
+    "macosEvidenceRecords": 427,
+    "linuxEvidenceRecords": 427,
+    "crossPlatformInstalledFileComparisons": 576,
+    "macosTarballs": {
+      "auggy-ollama-0.5.0.tgz": "56122840cc3773ee2c80183cb999cde251cd254ab1bbdd81fc17b6990ccf39df",
+      "auggy-anthropic-0.5.0.tgz": "293d662d72b8dc2820daee5e0a6d65695fbd71210fcc0899ac181b22ffb15c5d",
+      "auggy-evals-0.5.0.tgz": "9eee63f4034f0cc1a6b46d7ec70ea61fdf1e0cfa452999db03975811ca619942",
+      "auggy-openrouter-0.5.0.tgz": "483ac6d7343d7c6a7249eafb857856b8cb11a13a8eb004aec02fdb6495c1b15b",
+      "auggy-0.5.0.tgz": "b288d35053e6c52a867d4de6a0824f3066e158ba693586ab5c1d174df1da3a25",
+      "auggy-openai-0.5.0.tgz": "3b6d40297001421d2281b2d4bf8b947995b6cfe6645f3385ec2b6e9da5421fcd"
+    },
+    "reviewers": [
+      "m4_harness_review",
+      "m4_final_architecture_review",
+      "m4_certification_auditor"
+    ],
+    "handoffPR": "https://github.com/looselyorganized/auggy/pull/229",
+    "mergeAuthorized": false,
+    "publicationAuthorized": false
+  }
+}

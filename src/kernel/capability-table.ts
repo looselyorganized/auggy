@@ -76,6 +76,17 @@ export function createCapabilityTable(augments: Augment[]): CapabilityTable {
     globalLimit += limit;
 
     for (const tool of aug.tools ?? []) {
+      // Name-only dispatch must never mix one owner's policy with another's implementation.
+      if (toolOwner.has(tool.name)) {
+        const [name, previousOwner, nextOwner] = [
+          tool.name,
+          toolOwner.get(tool.name)!,
+          aug.name,
+        ].map((value) => JSON.stringify(value.length > 128 ? `${value.slice(0, 128)}…` : value));
+        throw new Error(
+          `Duplicate tool name ${name} in augments ${previousOwner} and ${nextOwner}. Tool names must be unique across the agent.`,
+        );
+      }
       toolOwner.set(tool.name, aug.name);
     }
   }

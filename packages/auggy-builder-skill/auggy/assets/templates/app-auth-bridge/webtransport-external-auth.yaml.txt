@@ -1,24 +1,27 @@
-type: webTransport
-config:
-  port: 8080
-  publicIntegration: false
-  auth:
-    type: bearer
-    token: ${AUGGY_WEB_TOKEN}
-  visitorTokens:
-    agentBinding: ${AUGGY_AGENT_ID}
-  externalAuth:
-    secret: ${AUGGY_EXTERNAL_AUTH_SECRET}
-    keyId: "2026-07"
-    secrets:
-      - keyId: "2026-06"
-        secret: ${AUGGY_EXTERNAL_AUTH_SECRET_PREVIOUS}
-    audience: ${AUGGY_EXTERNAL_AUTH_AUDIENCE}
-    allowedProviders: ["supabase", "clerk", "custom"]
-    maxTtlSeconds: 60
-    # This descriptor is intentionally configured to fail closed: YAML cannot construct the
-    # atomic shared replay store required for a multi-instance deployment.
-    # Use webtransport-external-auth.ts.txt with replay-protection-store.ts.txt
-    # for production. Do not disable replay protection to make this boot.
-    replayProtection:
-      enabled: true
+# Merge this declaration into agent.yaml; preserve other enabled augments.
+augments:
+  - name: webTransport
+    type: webTransport
+    options:
+      port: 8080
+      publicIntegration: false
+      auth:
+        type: bearer
+        token: ${AUGGY_WEB_TOKEN}
+      visitorTokens:
+        agentBinding: ${AUGGY_AGENT_ID}
+      externalAuth:
+        secret: ${AUGGY_EXTERNAL_AUTH_SECRET}
+        keyId: "2026-07"
+        secrets:
+          - keyId: "2026-06"
+            secret: ${AUGGY_EXTERNAL_AUTH_SECRET_PREVIOUS}
+        audience: ${AUGGY_EXTERNAL_AUTH_AUDIENCE}
+        allowedProviders: ["supabase", "clerk", "custom"]
+        maxTtlSeconds: 60
+        # This descriptor is intentionally configured to fail closed: YAML cannot construct the
+        # atomic shared replay store required for a multi-instance deployment.
+        # Use webtransport-external-auth.ts.txt with replay-protection-store.ts.txt
+        # for production. Do not disable replay protection to make this boot.
+        replayProtection:
+          enabled: true

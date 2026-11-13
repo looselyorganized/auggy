@@ -1,0 +1,9 @@
+type: fileMemory
+config:
+  label: self
+  source: ./identity.md
+  mutable: false
+  origin: operator
+  priority: required
+  placement: system
+  eviction: never

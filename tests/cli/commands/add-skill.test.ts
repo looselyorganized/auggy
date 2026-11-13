@@ -5,11 +5,20 @@
  */
 
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { seedAgentForTest } from "../../../src/cli/agent-index";
 import { resolveAgentDir, skillCommand } from "../../../src/cli/commands/add-skill";
+import { acquireProjectMutationLease } from "../../../src/cli/authoring/publication-lease";
 
 const BUNDLED_WEB_FETCH_SKILL = resolve(
   import.meta.dir,
@@ -86,6 +95,56 @@ describe("resolveAgentDir", () => {
 });
 
 describe("auggy skill add — happy path (CWD-based)", () => {
+  test("explicit repair preserves legacy YAML bytes and releases its shared project lease", async () => {
+    const dir = makeAgentDir("legacy");
+    const config = "# keep legacy graph\nname: legacy\naugments: [webFetch]\n";
+    writeFileSync(join(dir, "agent.yaml"), config);
+    const exit = mock((_code: number) => {});
+    await skillCommand({ exit, cwd: dir }).parseAsync(["add", "webFetch"], { from: "user" });
+    expect(exit).toHaveBeenCalledWith(0);
+    expect(readFileSync(join(dir, "agent.yaml"), "utf8")).toBe(config);
+    const lease = acquireProjectMutationLease(dir);
+    lease.release();
+  });
+
+  test("repair and creation refuse an active project mutation without changing assets", async () => {
+    const dir = makeAgentDir("busy");
+    const lease = acquireProjectMutationLease(dir);
+    try {
+      for (const args of [
+        ["add", "webFetch"],
+        ["create", "mine"],
+      ]) {
+        const exit = mock((_code: number) => {});
+        await skillCommand({ exit, cwd: dir }).parseAsync(args, { from: "user" });
+        expect(exit).toHaveBeenCalledWith(1);
+      }
+      expect(existsSync(join(dir, "skills/webFetch"))).toBe(false);
+      expect(existsSync(join(dir, "skills/mine"))).toBe(false);
+    } finally {
+      lease.release();
+    }
+  });
+
+  test("repair refuses linked skill parents and removal rejects traversal", async () => {
+    const dir = makeAgentDir("linked");
+    const outside = join(auggyDir, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "keep"), "operator content");
+    rmSync(join(dir, "skills"), { recursive: true });
+    symlinkSync(outside, join(dir, "skills"));
+    for (const args of [
+      ["add", "webFetch"],
+      ["remove", "../../outside"],
+    ]) {
+      const exit = mock((_code: number) => {});
+      await skillCommand({ exit, cwd: dir }).parseAsync(args, { from: "user" });
+      expect(exit).toHaveBeenCalledWith(1);
+    }
+    expect(readFileSync(join(outside, "keep"), "utf8")).toBe("operator content");
+    expect(existsSync(join(outside, "webFetch"))).toBe(false);
+  });
+
   test("copies bundled skill into agent dir for an augment that ships one", async () => {
     const dir = makeAgentDir("zip");
 

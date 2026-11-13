@@ -1,5 +1,13 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
@@ -34,7 +42,7 @@ function setupAgent(name: string, augments: Array<{ type: string; name: string }
     `# Agent configuration\n` +
     `id: aug1_test\nname: ${name}\n` +
     `engine:\n  provider: anthropic\n  model: claude-sonnet-4-6\n` +
-    `augments:\n` +
+    (augments.length ? `augments:\n` : `augments: []\n`) +
     augments.map((a) => `  - name: ${a.name}\n    type: ${a.type}\n`).join("");
   writeFileSync(join(dir, "agent.yaml"), yaml);
   writeFileSync(
@@ -55,34 +63,25 @@ function setupAgent(name: string, augments: Array<{ type: string; name: string }
 
 function readAgentAugments(dir: string): string[] {
   const parsed = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
-    augments: string[];
+    augments: { name: string; type: string }[];
   };
-  return parsed.augments;
+  return parsed.augments.map((entry) => entry.name);
 }
 
-function readAugmentMetadata(dir: string, id: string): Record<string, unknown> {
-  return parseYaml(readFileSync(join(dir, "augments", id, "augment.yaml"), "utf-8")) as Record<
-    string,
-    unknown
-  >;
+function readAugmentDeclaration(dir: string, id: string): Record<string, unknown> {
+  const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8"));
+  return config.augments.find((entry: { name: string }) => entry.name === id);
 }
 
-function setReferencedAugments(dir: string, types: Array<"agentMail" | "visitorAuth">): void {
+function setInlineAugments(dir: string, types: Array<"agentMail" | "visitorAuth">): void {
   const configPath = join(dir, "agent.yaml");
   const config = parseYaml(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
-  config.augments = types;
-  writeFileSync(configPath, `# Agent configuration\n\n${stringifyYaml(config)}`);
-  for (const type of types) {
-    const augmentDir = join(dir, "augments", type);
-    mkdirSync(augmentDir, { recursive: true });
-    writeFileSync(
-      join(augmentDir, "augment.yaml"),
-      stringifyYaml({
-        type,
-        config: type === "visitorAuth" ? { agentMail: { transport: "console" } } : {},
-      }),
-    );
-  }
+  config.augments = types.map((type) => ({
+    name: type,
+    type,
+    options: type === "visitorAuth" ? { agentMail: { transport: "console" } } : {},
+  }));
+  writeFileSync(configPath, stringifyYaml(config));
 }
 
 function writeAgentMailRuntimeEnv(dir: string): void {
@@ -117,8 +116,8 @@ function agentMailSetupResult(dir: string, target: "agentMail" | "visitorAuth") 
 }
 
 beforeEach(async () => {
-  auggyDir = mkdtempSync(join(tmpdir(), "add-test-auggy-"));
-  agentParent = mkdtempSync(join(tmpdir(), "add-test-agents-"));
+  auggyDir = realpathSync(mkdtempSync(join(tmpdir(), "add-test-auggy-")));
+  agentParent = realpathSync(mkdtempSync(join(tmpdir(), "add-test-agents-")));
   bunInstallCalls = [];
   answers = { augmentTypes: [] };
 });
@@ -154,9 +153,9 @@ describe("runAdd mutates per-agent package.json", () => {
     // Pre-existing deps untouched.
     expect(pkg.dependencies.auggy).toBe("^0.3.1");
     expect(pkg.dependencies["@auggy/anthropic"]).toBe("^0.3.1");
-    const metadata = readAugmentMetadata(dir, "link");
+    const metadata = readAugmentDeclaration(dir, "link");
     expect(metadata.type).toBe("link");
-    expect(JSON.stringify(metadata.config)).toContain("./data/link.db");
+    expect(JSON.stringify(metadata.options)).toContain("./data/link.db");
     expect(metadata.kind).toBeUndefined();
     const output = logs.join("\n");
     expect(output).toContain("Use link (preview):");
@@ -250,7 +249,7 @@ describe("runAdd no-op cases", () => {
     });
 
     expect(readAgentAugments(dir)).toContain("webFetch");
-    expect(readAugmentMetadata(dir, "webFetch").type).toBe("webFetch");
+    expect(readAugmentDeclaration(dir, "webFetch").type).toBe("webFetch");
     expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
   });
 
@@ -268,9 +267,9 @@ describe("runAdd no-op cases", () => {
     expect(readAgentAugments(dir)).toContain("knowledge");
     expect(readAgentAugments(dir)).toContain("visitorAuth");
     expect(readAgentAugments(dir)).toContain("mcp");
-    expect(readAugmentMetadata(dir, "knowledge").type).toBe("knowledge");
-    expect(readAugmentMetadata(dir, "visitorAuth").type).toBe("visitorAuth");
-    expect(readAugmentMetadata(dir, "mcp").type).toBe("mcp");
+    expect(readAugmentDeclaration(dir, "knowledge").type).toBe("knowledge");
+    expect(readAugmentDeclaration(dir, "visitorAuth").type).toBe("visitorAuth");
+    expect(readAugmentDeclaration(dir, "mcp").type).toBe("mcp");
     expect(existsSync(join(dir, "knowledge", "local", "manifest"))).toBe(true);
     expect(existsSync(join(dir, ".mcp.json"))).toBe(true);
     expect(existsSync(join(dir, "skills", "knowledge", "SKILL.md"))).toBe(true);
@@ -357,7 +356,7 @@ describe("runAdd no-op cases", () => {
     });
 
     expect(readAgentAugments(dir)).toContain("webFetch");
-    expect(readAugmentMetadata(dir, "webFetch").type).toBe("webFetch");
+    expect(readAugmentDeclaration(dir, "webFetch").type).toBe("webFetch");
     expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
   });
 
@@ -381,9 +380,9 @@ describe("runAdd no-op cases", () => {
     }
 
     expect(readAgentAugments(dir)).toContain("knowledge");
-    expect(readAugmentMetadata(dir, "knowledge")).toMatchObject({
+    expect(readAugmentDeclaration(dir, "knowledge")).toMatchObject({
       type: "knowledge",
-      config: { root: "./knowledge" },
+      options: { root: "./knowledge" },
     });
     expect(existsSync(join(dir, "knowledge", "sources.json"))).toBe(true);
     expect(existsSync(join(dir, "knowledge", "local", "manifest"))).toBe(true);
@@ -399,7 +398,7 @@ describe("runAdd no-op cases", () => {
     expect(context).toContain("_Add relevant team members");
     expect(context).not.toContain("the operator: primary operator");
     const output = logs.join("\n");
-    expect(output).toContain("skill: ");
+    expect(output).toContain("added: skills/");
     expect(output).toContain("skills/knowledge/SKILL.md");
     expect(output).toContain("Add knowledge:");
     expect(output).toContain("Edit, rename, or delete the starter markdown files");
@@ -445,7 +444,7 @@ describe("runAdd no-op cases", () => {
     });
 
     expect(readAgentAugments(dir)).toContain("mcp");
-    expect(readAugmentMetadata(dir, "mcp").type).toBe("mcp");
+    expect(readAugmentDeclaration(dir, "mcp").type).toBe("mcp");
     expect(existsSync(join(dir, ".mcp.json"))).toBe(true);
     expect(JSON.parse(readFileSync(join(dir, ".mcp.json"), "utf-8"))).toEqual({
       mcpServers: {},
@@ -479,9 +478,9 @@ describe("runAdd no-op cases", () => {
     });
 
     expect(readAgentAugments(dir)).toContain("layeredMemory");
-    expect(readAugmentMetadata(dir, "layeredMemory")).toMatchObject({
+    expect(readAugmentDeclaration(dir, "layeredMemory")).toMatchObject({
       type: "layeredMemory",
-      config: expect.objectContaining({
+      options: expect.objectContaining({
         namespace: "with-memory",
         dbPath: "./data/memory.db",
         autoSave: { enabled: false },
@@ -596,19 +595,19 @@ describe("runAdd no-op cases", () => {
     }
 
     expect(readAgentAugments(dir)).toContain("notify");
-    const metadata = readAugmentMetadata(dir, "notify") as {
+    const metadata = readAugmentDeclaration(dir, "notify") as {
       type: string;
-      config: { destinations: Array<{ allowedTrustLevels?: string[] }> };
+      options: { destinations: Array<{ allowedTrustLevels?: string[] }> };
     };
     expect(metadata.type).toBe("notify");
-    expect(metadata.config.destinations[0]?.allowedTrustLevels).toEqual(["creator", "agent"]);
+    expect(metadata.options.destinations[0]?.allowedTrustLevels).toEqual(["creator", "agent"]);
     expect(existsSync(join(dir, "skills", "notify", "SKILL.md"))).toBe(true);
     const output = logs.join("\n");
     expect(output).toContain("Use notify:");
-    expect(output).toContain("skill: ");
+    expect(output).toContain("added: skills/");
     expect(output).toContain("skills/notify/SKILL.md");
     expect(output).toContain("Default destination: creator -> ./notifications.jsonl");
-    expect(output).toContain("For real delivery, edit augments/notify/augment.yaml");
+    expect(output).toContain("For real delivery, edit agent.yaml (notify options)");
     expect(output).toContain("Telegram alerts need a notify destination with botToken + chatId");
   });
 
@@ -632,7 +631,7 @@ describe("runAdd no-op cases", () => {
     }
 
     expect(readAgentAugments(dir)).toContain("telegramTransport");
-    const telegramMeta = JSON.stringify(readAugmentMetadata(dir, "telegramTransport"));
+    const telegramMeta = JSON.stringify(readAugmentDeclaration(dir, "telegramTransport"));
     expect(telegramMeta).toContain("${TELEGRAM_BOT_TOKEN}");
     expect(telegramMeta).toContain("polling");
     expect(telegramMeta).toContain("creatorUserIds");
@@ -651,9 +650,9 @@ describe("runAdd no-op cases", () => {
     expect(output).toContain("@userinfobot");
     expect(output).toContain("This enables Telegram chat with the agent");
     expect(output).toContain(
-      "Proactive Telegram alerts are configured in augments/notify/augment.yaml",
+      "Proactive Telegram alerts are configured in agent.yaml (notify options)",
     );
-    expect(output).toContain("augments/telegramTransport/augment.yaml");
+    expect(output).toContain("agent.yaml (telegramTransport options)");
     expect(output).toContain("Add these to your .env:");
     expect(output).toContain("TELEGRAM_BOT_TOKEN=");
     expect(output).toContain("TELEGRAM_CREATOR_USER_IDS=");
@@ -681,9 +680,9 @@ describe("runAdd no-op cases", () => {
 
     expect(readAgentAugments(dir)).toContain("agentMail");
     expect(existsSync(join(dir, "skills", "agentMail", "SKILL.md"))).toBe(true);
-    expect(readAugmentMetadata(dir, "agentMail")).toMatchObject({
+    expect(readAugmentDeclaration(dir, "agentMail")).toMatchObject({
       type: "agentMail",
-      config: {
+      options: {
         addressVisibility: "creator",
         dbPath: "./data/agent-mail/agentMail/orchestration.db",
         inbound: { mode: "none" },
@@ -702,7 +701,7 @@ describe("runAdd no-op cases", () => {
     expect(output).toContain(
       "Or set AGENTMAIL_API_KEY, AGENTMAIL_INBOX_ID, and AGENTMAIL_INBOX_EMAIL in .env",
     );
-    expect(output).toContain("Configure mail policy in augments/agentMail/augment.yaml");
+    expect(output).toContain("Configure mail policy in agent.yaml (agentMail options)");
     expect(output).toContain(
       "Default: creator-authorized send, reply, forward, retry, and reconciliation",
     );
@@ -787,7 +786,7 @@ describe("runAdd no-op cases", () => {
 
   test("restart readiness uses the first nonempty dotenv definition", async () => {
     const dir = setupAgent("agent-mail-duplicate-env");
-    setReferencedAugments(dir, ["agentMail"]);
+    setInlineAugments(dir, ["agentMail"]);
     writeFileSync(
       join(dir, ".env"),
       [
@@ -840,7 +839,7 @@ describe("runAdd no-op cases", () => {
       ],
     ].entries()) {
       const dir = setupAgent(`agent-mail-invalid-env-${index}`);
-      setReferencedAugments(dir, ["agentMail"]);
+      setInlineAugments(dir, ["agentMail"]);
       writeFileSync(join(dir, ".env"), `${envLines.join("\n")}\n`);
       const logs: string[] = [];
       const originalLog = console.log;
@@ -877,14 +876,14 @@ describe("runAdd no-op cases", () => {
     });
 
     expect(readAgentAugments(dir)).toContain("visitorAuth");
-    expect(JSON.stringify(readAugmentMetadata(dir, "visitorAuth"))).toContain(
+    expect(JSON.stringify(readAugmentDeclaration(dir, "visitorAuth"))).toContain(
       "${VISITOR_SIGNING_KEY}",
     );
 
     const env = readFileSync(join(dir, ".env"), "utf-8");
     const signingKey = env.match(/^VISITOR_SIGNING_KEY=([a-f0-9]{64})$/m)?.[1];
     expect(signingKey).toBeTruthy();
-    expect(env).toContain("AUGGY_AGENT_ID=aug1_test");
+    expect(env).toContain("AUGGY_AGENT_ID=existing-agent");
     expect(env).toContain("AUGGY_PUBLIC_URL=http://localhost:18080");
     expect(existsSync(join(dir, "skills", "visitorAuth", "SKILL.md"))).toBe(true);
   });
@@ -948,7 +947,7 @@ describe("runAdd no-op cases", () => {
 
   test("does not suggest restart when visitorAuth declines mail but installed agentMail is unresolved", async () => {
     const dir = setupAgent("auth-with-unresolved-mail");
-    setReferencedAugments(dir, ["agentMail"]);
+    setInlineAugments(dir, ["agentMail"]);
     const logs: string[] = [];
     const originalLog = console.log;
     console.log = (...args: unknown[]) => logs.push(args.map(String).join(" "));
@@ -1089,7 +1088,7 @@ describe("runAdd no-op cases", () => {
 
   test("reuses configured agentMail credentials when visitorAuth is added later", async () => {
     const dir = setupAgent("attach-auth");
-    setReferencedAugments(dir, ["agentMail"]);
+    setInlineAugments(dir, ["agentMail"]);
     writeAgentMailRuntimeEnv(dir);
     const calls: Array<{ target: string | undefined; mode: string | undefined }> = [];
 
@@ -1112,7 +1111,7 @@ describe("runAdd no-op cases", () => {
 
   test("configures an installed but unresolved agentMail before attaching new visitorAuth", async () => {
     const dir = setupAgent("configure-then-attach");
-    setReferencedAugments(dir, ["agentMail"]);
+    setInlineAugments(dir, ["agentMail"]);
     const calls: Array<{ target: string | undefined; mode: string | undefined }> = [];
 
     await runAdd("configure-then-attach", {
@@ -1138,7 +1137,7 @@ describe("runAdd no-op cases", () => {
 
   test("offers the connected agentMail inbox to an existing console-only visitorAuth", async () => {
     const dir = setupAgent("attach-mail");
-    setReferencedAugments(dir, ["visitorAuth"]);
+    setInlineAugments(dir, ["visitorAuth"]);
     const calls: Array<{ target: string | undefined; mode: string | undefined }> = [];
     const confirmations: string[] = [];
 
@@ -1172,21 +1171,15 @@ describe("runAdd no-op cases", () => {
 
   test("reuses an already AgentMail-backed visitorAuth inbox when agentMail is added later", async () => {
     const dir = setupAgent("attach-backed-mail");
-    setReferencedAugments(dir, ["visitorAuth"]);
-    const visitorPath = join(dir, "augments", "visitorAuth", "augment.yaml");
-    writeFileSync(
-      visitorPath,
-      stringifyYaml({
-        type: "visitorAuth",
-        config: {
-          agentMail: {
-            transport: "agentmail",
-            apiKey: "${AGENTMAIL_API_KEY}",
-            inboxId: "${AGENTMAIL_INBOX_ID}",
-          },
-        },
-      }),
-    );
+    setInlineAugments(dir, ["visitorAuth"]);
+    const configPath = join(dir, "agent.yaml");
+    const inline = parseYaml(readFileSync(configPath, "utf-8"));
+    inline.augments[0].options.agentMail = {
+      transport: "agentmail",
+      apiKey: "${AGENTMAIL_API_KEY}",
+      inboxId: "${AGENTMAIL_INBOX_ID}",
+    };
+    writeFileSync(configPath, stringifyYaml(inline));
     writeAgentMailRuntimeEnv(dir);
     const calls: Array<{ target: string | undefined; mode: string | undefined }> = [];
     const confirmations: string[] = [];
@@ -1214,7 +1207,7 @@ describe("runAdd no-op cases", () => {
 
   test("cancelling visitorAuth attachment reports the configured and deferred states", async () => {
     const dir = setupAgent("attach-mail-cancelled");
-    setReferencedAugments(dir, ["visitorAuth"]);
+    setInlineAugments(dir, ["visitorAuth"]);
     let confirmation = 0;
     const errors: string[] = [];
     const logs: string[] = [];
@@ -1340,7 +1333,7 @@ describe("runAdd no-op cases", () => {
     }
   });
 
-  test("adding visitorAuth fills blank generated env vars", async () => {
+  test("adding visitorAuth preserves blank existing env assignments", async () => {
     const dir = setupAgent("with-auth-blank");
     writeFileSync(join(dir, ".env"), "AUGGY_AGENT_ID=\nAUGGY_PUBLIC_URL=\nVISITOR_SIGNING_KEY=\n");
 
@@ -1353,9 +1346,9 @@ describe("runAdd no-op cases", () => {
     });
 
     const env = readFileSync(join(dir, ".env"), "utf-8");
-    expect(env).toContain("AUGGY_AGENT_ID=aug1_test");
-    expect(env).toContain("AUGGY_PUBLIC_URL=http://localhost:8080");
-    expect(env).toMatch(/^VISITOR_SIGNING_KEY=[a-f0-9]{64}$/m);
+    expect(env).toContain("AUGGY_AGENT_ID=\n");
+    expect(env).toContain("AUGGY_PUBLIC_URL=\n");
+    expect(env).toContain("VISITOR_SIGNING_KEY=\n");
   });
 
   test("non-interactive unknown augment throws with valid choices", async () => {

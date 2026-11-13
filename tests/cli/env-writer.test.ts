@@ -10,7 +10,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { upsertEnvValues } from "../../src/cli/env-writer";
+import { renderEnvValues, upsertEnvValues } from "../../src/cli/env-writer";
 
 const roots: string[] = [];
 
@@ -83,5 +83,18 @@ describe("upsertEnvValues", () => {
     expect(readFileSync(target, "utf-8")).toBe("OUTSIDE=unchanged\n");
     expect(readFileSync(envPath, "utf-8")).toContain("NEW_SECRET=sentinel");
     expect(statSync(envPath).mode & 0o777).toBe(0o600);
+  });
+});
+
+describe("renderEnvValues", () => {
+  test("preserves duplicate-key semantics without opening a path", () => {
+    const source = "# preserved\nexport SECRET=old\nKEEP=untouched\nSECRET=duplicate\n";
+    const output = renderEnvValues(source, { SECRET: "a=b #c", EXTRA: "new" });
+    expect(output).toBe('# preserved\nSECRET="a=b #c"\nKEEP=untouched\nEXTRA=new\n');
+    expect(source).toContain("SECRET=duplicate");
+    expect(renderEnvValues(undefined, { SECRET: "value" }, { header: "# private" })).toBe(
+      "# private\n\nSECRET=value\n",
+    );
+    expect(renderEnvValues("", { SECRET: "value" })).toBe("SECRET=value\n");
   });
 });

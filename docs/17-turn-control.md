@@ -16,7 +16,8 @@ To opt out, remove the `turnControl` entry from the agent's `augments` array in
 ```yaml
 # agent.yaml
 augments:
-  - turnControl
+  - name: turnControl
+    type: turnControl
 ```
 
 The tool's signature:
@@ -65,10 +66,12 @@ The HTTP layer is unchanged: `/agent/run` still returns 200 + SSE. HTTP-status m
 The augment supports one option:
 
 ```yaml
-# augments/turnControl/augment.yaml
-type: turnControl
-config:
-    requestInputDescription: "Use ONLY when blocked on missing user input. Never as a closing pleasantry."
+# agent.yaml
+augments:
+  - name: turnControl
+    type: turnControl
+    options:
+      requestInputDescription: "Use ONLY when blocked on missing user input. Never as a closing pleasantry."
 ```
 
 `requestInputDescription` overrides the default tool description if you want to constrain or expand when the model should call `request_input`. The default text already includes anti-misuse guidance ("not as a closing pleasantry").

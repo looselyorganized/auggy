@@ -1,0 +1,8 @@
+type: custom
+source: ./index.ts
+config:
+  literal: migration-private-canary
+  zero: 0
+  disabled: false
+  nullable: null
+  placeholder: '${AUGGY_WEB_TOKEN}'

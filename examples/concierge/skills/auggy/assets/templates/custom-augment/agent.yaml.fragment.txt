@@ -1,0 +1,7 @@
+# Merge this entry into agent.yaml's existing augments sequence once.
+# Prefer auggy augment create example, which creates and registers the files together.
+augments:
+  - name: example
+    type: custom
+    source: ./src/augments/example/index.ts
+    options: {}

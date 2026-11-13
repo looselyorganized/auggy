@@ -1,8 +1,10 @@
 # Next.js Integration
 
 Use Next.js for the frontend and app server. Use Auggy as the agent-native app
-backend that owns routes, tools, memory, auth assertions, and agent runtime
-policy.
+service that exposes controlled routes and tools and runs agent turns.
+The app keeps its identity authority, business database and durable workflows.
+This is an integration pattern; it is not an automatic Next.js or Railway
+application generator.
 
 ## Common Layout
 
@@ -16,7 +18,13 @@ apps/web/
 
 agent/
   agent.yaml
-  augments/
+  package.json
+  src/
+    index.ts
+    agent.ts
+    http.ts
+    turn.ts
+    augments/
   skills/
 ```
 

@@ -230,104 +230,47 @@ Everything that exists in a running Auggy agent and how the pieces connect.
 
 ## 3. Agent Filesystem Layout
 
-Where everything lives on disk for a deployed agent.
+The unreleased authoring scaffold creates this project. Managed implementations
+remain installed dependencies; source under the project `src/` is yours to edit.
 
-```
-zip/                                    ← agent root (Plan 3 defines convention)
-│
-├── agent.yaml                          ← agent config (Plan 3 — not built yet)
-│
-├── identity.md                         ← fileMemory source (label: "self")
-│                                         loaded at boot, system placement
-│
-├── notes.md                            ← fileMemory source (label: "notes")
-│                                         mutable, preamble placement
-│
-├── skills/                             ← skill folders (read-only fs mount)
-│   ├── memory/
-│   │   ├── SKILL.md                    ← teaches when/how to use memory tools
-│   │   └── references/
-│   │       └── provider-types.md       ← deep reference (loaded on demand)
-│   │
-│   ├── filesystem/
-│   │   ├── SKILL.md                    ← teaches when/how to use fs tools
-│   │   └── references/
-│   │       └── mount-permissions.md
-│   │
-│   └── escalation/
-│       └── SKILL.md                    ← teaches when to ping the operator
-│
-├── workspace/                          ← agent's mutable workspace (rw fs mount)
-│   ├── notes/                            the agent creates and manages files here
-│   │   └── 2026-04-10.md
-│   └── drafts/
-│       └── weekly-report.md
-│
-└── data/                               ← runtime data (traces, eval results)
-    └── traces/                           future: Plan 7 eval harness writes here
+```text
+support-agent/
+├── agent.yaml                   # application entrypoint + inline enabled graph
+├── package.json                 # pinned local runtime/providers; start/test scripts
+├── bun.lock                     # produced by dependency installation
+├── tsconfig.json
+├── README.md
+├── .gitignore
+├── .env                         # private credentials
+├── .env.example                 # placeholders only
+├── identity.md
+├── skills/                      # model-visible instruction snapshots
+├── src/
+│   ├── index.ts                  # main: compose, configure HTTP, start
+│   ├── agent.ts                  # configured augments + local turn recipe
+│   ├── http.ts                   # POST /agent/run → guarded web.agentRun
+│   ├── turn.ts                   # visible inference/tool decision loop
+│   └── augments/README.md        # add project-owned business modules here
+├── tests/application.test.ts     # deterministic recipe tests
+├── data/                        # ignored runtime state
+├── .auggy/operations/            # private migration/recovery receipts, when used
+└── node_modules/auggy/src/       # installed runtime and built-in implementations
 ```
 
-**How the agent's defineAgent maps to this layout:**
+`src/agent.ts` binds the recipe to the augments declared in `agent.yaml`; it does
+not maintain a second enabled list. `auggy inspect` reports the selected installed
+runtime and declared source locations. Open `src/index.ts`, follow composition and
+HTTP dispatch, then open `src/turn.ts` and the indicated built-in implementation.
+Custom source hints are static navigation, not proof of an arbitrary call graph.
 
-```typescript
-defineAgent({
-  name: "zip",
-  purpose: "LORF front-door agent",
-  model: "claude-sonnet-4-5",
-  augments: [
-    // Identity (system prompt)
-    fileMemory({
-      label: "self",
-      source: "./identity.md",          // ← reads from agent root
-      mutable: false,
-      origin: "operator",
-      priority: "required",
-      placement: "system",
-      eviction: "never",
-    }),
+`auggy augment create orders` adds
+`src/augments/orders/{index.ts,schemas.ts,service.ts,README.md}` and
+`tests/augments/orders.test.ts`. Both its creator-only tool and HTTP route call the
+same validated lookup service. Add `--with-skill` to create root
+`skills/orders/SKILL.md`. Package upgrades leave these owned files unchanged.
 
-    // Mutable self-notes
-    fileMemory({
-      label: "notes",
-      source: "./notes.md",
-      mutable: true,
-      origin: "system",
-      priority: "normal",
-      placement: "preamble",
-      eviction: "drop",
-    }),
-
-    // Episodic memory
-    supabaseMemory({
-      namespace: "episode",
-      scope: "peer",
-      client: supabase,
-      table: "agent_memories",
-      mutable: true,
-      origin: "peer-derived",
-      priority: "normal",
-      placement: "preamble",
-      eviction: "drop",
-    }),
-
-    // Filesystem access (skill folders + workspace)
-    filesystem({
-      mounts: [
-        { name: "skills",    path: "./skills",    writable: false },
-        { name: "workspace", path: "./workspace",  writable: true, deletable: true },
-      ],
-    }),
-
-    // Web transport (AG-UI SSE)
-    webTransport({
-      port: 8080,
-      auth: { type: "bearer", token: process.env.AUTH_TOKEN! },
-      cors: { origins: ["https://looselyorganized.com"] },
-      rateLimitPerPeer: { maxPerMinute: 30 },
-    }),
-  ],
-}, anthropicEngine);
-```
+Existing projects can convert only their configuration or explicitly adopt the
+application source. See [migration and storage](./16-storage-layout.md).
 
 ---
 
@@ -490,101 +433,47 @@ How the same agent plugs into different organizations.
 
 ## 6. The Codebase Map
 
-Where each component lives in `src/`.
+This is the **Auggy repository** map. The root npm package ships `src/` (including
+runtime and built-in implementation source) and the built console at `admin/dist/`.
+The repository's `packages/`, `tests/`, `docs/`, and console development source
+are not included in that package. Provider packages install separately.
 
-```
+An agent can open the shipped implementation at `node_modules/auggy/src/`.
+`auggy inspect` resolves the actual selected package instead of assuming a global
+installation supplies execution.
+
+```text
 auggy/
 ├── src/
-│   ├── types.ts ·················· ALL shared types (one file, intentional)
-│   ├── parts.ts ·················· Part[] helpers (extractText, textPart, dataPart)
-│   ├── helpers.ts ················ defineAugment, defineTool
-│   ├── tokenizer.ts ·············· char/4 estimator (future: Rust native)
-│   ├── agent.ts ·················· defineAgent → AgentHandle
-│   ├── agent-card.ts ············· generateAgentCard (legacy Auggy metadata)
-│   ├── index.ts ·················· public API surface
-│   │
-│   ├── kernel/ ··················· THE RUNTIME (finished, ~1000 LOC)
-│   │   ├── turn-loop.ts ·········· main loop (~600 LOC, largest file)
-│   │   ├── context-allocator.ts ·· priority eviction within token budget
-│   │   ├── capability-table.ts ··· tool exposure + per-augment call limits
-│   │   ├── history-manager.ts ···· per-thread messages, atomic pairs, LRU
-│   │   ├── lifecycle-manager.ts ·· boot/shutdown/idle/health
-│   │   ├── tool-selector.ts ······ mount all <25, filter via canExpose
-│   │   ├── trace-emitter.ts ······ structured per-turn observability
-│   │   ├── keyed-turn-scheduler.ts  fair global/source/thread admission + drain
-│   │   ├── timeout.ts ············ withTimeout (timer cleanup)
-│   │   ├── output-validator.ts ··· flag suspicious output (don't block)
-│   │   └── preamble.ts ··········· trust-aware system prompt prefix
-│   │
-│   ├── memory/ ··················· MEMORY SUBSYSTEM
-│   │   ├── types.ts ·············· MemoryRegistry interface
-│   │   ├── registry.ts ··········· buildRegistry (3-pass conflict detect)
-│   │   ├── memory-bus.ts ·········· wireMemoryBus (creates synthetic augment)
-│   │   ├── context-synthesis.ts ·· synthesizeContextFor (auto context())
-│   │   └── tools.ts ·············· 4 generic memory tools + budget
-│   │
-│   ├── augments/ ················· BUILT-IN AUGMENTS (6)
-│   │   ├── file-memory.ts ········ static provider (file-backed)
-│   │   ├── supabase-memory.ts ···· namespace provider (Supabase-backed)
-│   │   ├── filesystem.ts ········· multi-mount scoped file access
-│   │   ├── web-fetch.ts ·········· URL fetch (HTML→text, JSON passthrough)
-│   │   ├── org-context.ts ········ org manifest + fetch + escalate
-│   │   └── bash.ts ··············· scoped shell execution
-│   │
-│   ├── augments/filesystem-skill/  FIRST SKILL FOLDER (ships with fs augment)
-│   │   ├── SKILL.md ·············· teaches fs tool usage
-│   │   └── references/
-│   │       └── mount-permissions.md
-│   │
-│   ├── transports/ ··············· TRANSPORT IMPLEMENTATIONS
-│   │   ├── ag-ui-events.ts ······· AG-UI types + kernel→AG-UI translator
-│   │   └── web-transport.ts ······ Bun.serve + ReadableStream SSE
-│   │
-│   ├── engines/ ·················· MODEL CLIENT ADAPTERS (3)
-│   │   ├── anthropic.ts ·········· Anthropic Messages API adapter
-│   │   ├── openai.ts ············· OpenAI Chat Completions adapter
-│   │   ├── openrouter.ts ········· OpenRouter multi-provider adapter
-│   │   └── _shared/schema-normalize.ts
-│   │
-│   ├── cli/ ······················ auggy CLI (Plan 3)
-│   │   ├── index.ts ·············· Commander.js entrypoint
-│   │   ├── config-parser.ts ······ YAML → ParsedConfig
-│   │   ├── augment-catalog.ts ···· built-in registry for create/add
-│   │   ├── augment-resolver.ts ··· AugmentConfig[] → Augment[]
-│   │   ├── engine-resolver.ts ···· EngineConfig → ModelClient
-│   │   ├── pid-registry.ts ······· ~/.auggy/<name>.json manifests
-│   │   ├── plist-generator.ts ···· launchd plist generation
-│   │   ├── scaffold.ts ··········· auggy create templates
-│   │   ├── skill-manifest.ts ····· scan skills/*/SKILL.md
-│   │   └── commands/ ············· create, add, dev, start, stop, restart, status
-│   │
-│   └── http.ts ··················· shared HTTP client (redirect security)
-│
-├── tests/ ························ test suites and fixtures
-│   ├── fixtures/ ················· mock-model, mock-augment, mock-supabase, temp-dir
-│   ├── kernel/ ··················· per-component unit tests
-│   ├── memory/ ··················· registry, synthesis, tools, bus tests
-│   ├── augments/ ················· file-memory, supabase-memory, filesystem, web-fetch, bash
-│   ├── transports/ ··············· ag-ui-events, web-transport (incl streaming)
-│   ├── engines/ ·················· anthropic, openai, openrouter
-│   ├── cli/ ······················ config, resolvers, PID, plist, scaffold, manifest
-│   ├── integration/ ·············· full agent end-to-end
-│   └── evals/ ···················· security eval harness (grader pipeline)
-│
-├── scripts/
-│   ├── hello.ts ·················· hello world composition
-│   └── hello-identity.md ········· throwaway identity file
-│
-├── docs/ ························· REFERENCE + RESEARCH docs
-│   ├── 01-09 ····················· numbered reference series
-│   ├── 10-system-diagrams.md ····· THIS FILE
-│   └── research/ ················· dated research artifacts
-│
-├── CLAUDE.md ····················· project rules + code map
-├── lo.yml ························ project identity (proj_718dcc89...)
-├── package.json
-└── tsconfig.json
+│   ├── index.ts                 # public API
+│   ├── types.ts                 # public runtime contracts
+│   ├── agent.ts                 # programmatic agent composition
+│   ├── application/             # managed application host/runner
+│   ├── kernel/
+│   │   ├── turn-loop.ts         # session ownership and execution facade
+│   │   ├── turn-session.ts      # guarded phases and settlement
+│   │   ├── turn-program.ts      # default legacy turn recipe
+│   │   └── keyed-turn-scheduler.ts
+│   ├── augments/<name>/         # maintained factories and implementation helpers
+│   ├── transports/             # HTTP/AG-UI adapter and route policies
+│   ├── memory/                 # registry, context synthesis, generic tools
+│   ├── jobs/                   # durable single-turn work
+│   ├── coordination/           # internal, disabled replica foundation
+│   ├── cli/
+│   │   ├── index.ts            # operator command dispatch
+│   │   ├── commands/           # create/run/inspect/migrate/etc.
+│   │   └── authoring/          # raw graph, publication, migration, inspection
+│   ├── scaffold-templates/     # application source copied at explicit creation
+│   └── scaffold-starter-skills/# canonical builder teaching
+├── packages/                   # provider adapters, evals, portable builder skill
+├── admin/                      # console source and distributable assets
+├── tests/                      # runtime/CLI contracts and integration evidence
+└── docs/                       # architecture and operator guides
 ```
+
+The maintained runtime keeps authentication, tool authorization, cancellation,
+budget enforcement and settlement inside guarded operations. Application-owned
+recipes choose the supported sequence; they are trusted TypeScript, not a sandbox.
 
 ---
 

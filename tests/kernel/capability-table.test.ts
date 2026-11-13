@@ -41,6 +41,37 @@ function makeTool(name: string) {
 }
 
 describe("CapabilityTable", () => {
+  it.each([false, true])(
+    "rejects duplicate tool owners before combining policies (reversed: %s)",
+    (reverse) => {
+      const augments: Augment[] = [
+        {
+          name: "restricted-owner",
+          constraints: { maxToolCallsPerTurn: 0, requiresHumanApproval: ["shared_tool"] },
+          tools: [makeTool("shared_tool")],
+        },
+        {
+          name: "open-owner",
+          constraints: { maxToolCallsPerTurn: 10 },
+          tools: [makeTool("shared_tool")],
+        },
+      ];
+      if (reverse) augments.reverse();
+
+      expect(() => createCapabilityTable(augments)).toThrow(
+        `Duplicate tool name "shared_tool" in augments "${augments[0]!.name}" and "${augments[1]!.name}"`,
+      );
+    },
+  );
+
+  it("rejects repeated tool names within one augment", () => {
+    expect(() =>
+      createCapabilityTable([
+        { name: "same-owner", tools: [makeTool("shared_tool"), makeTool("shared_tool")] },
+      ]),
+    ).toThrow('Duplicate tool name "shared_tool" in augments "same-owner" and "same-owner"');
+  });
+
   it("blocks neverExpose tools from exposure", () => {
     const augments: Augment[] = [{ name: "a", constraints: { neverExpose: ["secret-tool"] } }];
     const table = createCapabilityTable(augments);

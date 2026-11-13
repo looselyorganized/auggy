@@ -11,7 +11,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import {
   inspectLaunchSelection,
   parseBootstrapCommand,
@@ -41,6 +41,11 @@ function runtime(root: string, body: string, metadata = true) {
   }
   for (const file of [
     "index.ts",
+    "authoring-bootstrap.ts",
+    "authoring-command-handlers.ts",
+    "authoring-command-options.ts",
+    "authoring/contracts.ts",
+    "authoring/document-io.ts",
     "command-bootstrap.ts",
     "launch-command-options.ts",
     "agent-name.ts",
@@ -48,7 +53,9 @@ function runtime(root: string, body: string, metadata = true) {
     "project-runtime.ts",
     "application-definition.ts",
   ]) {
-    copyFileSync(join(repository, "src/cli", file), join(root, "src/cli", file));
+    const destination = join(root, "src/cli", file);
+    mkdirSync(dirname(destination), { recursive: true });
+    copyFileSync(join(repository, "src/cli", file), destination);
   }
   writeFileSync(join(root, "src/cli/cli-program.ts"), body);
   writeFileSync(
@@ -379,6 +386,20 @@ describe("runtime-free command bootstrap", () => {
       expect(result.code).toBe(args.includes("--help") ? 0 : 1);
       expect(result.stderr).not.toContain("install Auggy");
       expect(result.stderr).not.toContain("command graph imported");
+    }
+  });
+
+  test("authoring help bypasses launch bootstrap and the ordinary command graph", async () => {
+    rmSync(localRoot, { recursive: true });
+    writeFileSync(join(project, "agent.yaml"), "private: [malformed configuration\n");
+    writeFileSync(
+      join(globalRoot, "src/cli/command-bootstrap.ts"),
+      "throw new Error('launch bootstrap imported for authoring help');",
+    );
+    for (const command of ["inspect", "migrate"]) {
+      const result = await execute([command, "--help"]);
+      expect(result).toMatchObject({ code: 0, stderr: "" });
+      expect(result.stdout).toContain(`Usage: auggy ${command}`);
     }
   });
 

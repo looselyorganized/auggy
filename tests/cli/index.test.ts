@@ -21,6 +21,8 @@ describe("auggy CLI command table", () => {
     const names = cli.commands.map((cmd) => cmd.name());
 
     expect(names).toContain("create");
+    expect(names).toContain("inspect");
+    expect(names).toContain("migrate");
     expect(names).not.toContain("add");
     expect(names).toContain("init");
     expect(names).toContain("skill");
@@ -60,6 +62,14 @@ describe("auggy CLI command table", () => {
     expect(create?.helpInformation()).not.toContain("--project");
     expect(create?.helpInformation()).toContain("standalone agent project");
     expect(create?.helpInformation()).toContain("--refresh-models");
+    for (const name of ["create", "init"]) {
+      const help = buildCli()
+        .commands.find((command) => command.name() === name)
+        ?.helpInformation();
+      for (const flag of ["--provider", "--model", "--yes", "--allow-unpriced-model"]) {
+        expect(help).toContain(flag);
+      }
+    }
   });
 
   test("skill namespace exposes add/create/list/remove", () => {

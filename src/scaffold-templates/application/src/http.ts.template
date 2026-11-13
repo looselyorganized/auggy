@@ -1,0 +1,19 @@
+import type { ConfiguredWebHttp } from "auggy/application";
+
+export function configureHttp(web: ConfiguredWebHttp) {
+  return web.createListener({
+    routes: [
+      {
+        method: "POST",
+        path: "/agent/run",
+        handle: async (request) => {
+          // The adapter owns authentication, validation, durable delivery and SSE.
+          const response = await web.agentRun(request);
+          return response;
+        },
+      },
+    ],
+    // Health, console, replay and augment routes share the guarded transport.
+    fallback: web.fallback,
+  });
+}

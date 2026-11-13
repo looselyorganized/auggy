@@ -1,0 +1,11 @@
+type: custom
+source: ./index.ts
+config:
+  enabled: false
+  count: 0
+  absent: null
+  ordered: [false, 0, null, -0, '${MIGRATION_FIXTURE_TOKEN}']
+  database: ./data/orders.sqlite
+  token: ${MIGRATION_FIXTURE_TOKEN}
+  "<<": {literal: true}
+  __proto__: {domain: preserved}

@@ -21,9 +21,14 @@ const CUSTOM_AUGMENT_AUTHORIZATION_DECISIONS = [
 function customAugmentContract() {
   return {
     command: "auggy augment create <name>",
-    runtimePath: "augments/<name>/",
+    runtimePath: "src/augments/<name>/",
     optionalSkillPath: "skills/<name>/SKILL.md",
     skillIsRuntimeSource: false,
+    configurationPath: "agent.yaml",
+    sharedServicePath: "src/augments/<name>/service.ts",
+    executionPaths: ["src/index.ts", "src/agent.ts", "src/http.ts", "src/turn.ts"],
+    inspectionCommand: "auggy inspect",
+    builtInSource: "node_modules/auggy/src/",
     requiredReference: CUSTOM_AUGMENT_REFERENCE,
     referenceReadRequiredBeforeImplementationDetails: true,
     implementationApi: ["defineAugment", "defineTool", "defineRoute", "Zod schemas"],
@@ -268,7 +273,7 @@ function recommend(goal: string, installed: Set<string>) {
       [
         "Run `auggy augment add notify`.",
         "Use the default log-to-file destination locally.",
-        "Edit `augments/notify/augment.yaml` for webhook, Telegram, or AgentMail delivery.",
+        "Edit the notify declaration in `agent.yaml` for webhook, Telegram, or AgentMail delivery.",
         "Put delivery secrets in `.env`, then run `auggy doctor`.",
       ],
       { alreadyInstalledType: "notify" },
@@ -318,10 +323,10 @@ function recommend(goal: string, installed: Set<string>) {
         [
           `Read \`${CUSTOM_AUGMENT_REFERENCE}\` with \`fs_read\` before giving implementation details.`,
           "Run `auggy augment create <name>`.",
-          "Implement narrow typed tools or routes in `augments/<name>/index.ts` with `defineAugment`, `defineTool`, `defineRoute`, and Zod schemas.",
+          "Implement narrow typed tools or routes in `src/augments/<name>/index.ts` with `defineAugment`, `defineTool`, `defineRoute`, and Zod schemas.",
           "Choose route `auth`, delegated `requires`, and per-trust tool visibility deliberately.",
-          "Run `auggy augment test ./augments/<name>`.",
-          "The create command registers it in the current agent automatically.",
+          "Run `bun run typecheck`, `bun test tests/augments/<name>.test.ts`, and `auggy augment test ./src/augments/<name>`.",
+          "The create command registers one inline declaration in agent.yaml; the schema, creator-only adapters and sample service remain project-owned.",
           "Create `skills/<name>/SKILL.md` only when the model needs usage guidance; it is never augment source.",
         ],
       ),

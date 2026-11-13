@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { formatAgentMailSetupResult, runAgentMailSetup } from "../../../src/cli/commands/agentmail";
@@ -46,7 +46,7 @@ describe("agentMail connect setup", () => {
         },
       );
       expect(result.target).toBe("agentMail");
-      expect(result.augmentPath).toBe(paths.augmentPath);
+      expect(result.augmentPath).toBe(realpathSync(paths.augmentPath));
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -289,48 +289,28 @@ describe("agentMail connect setup", () => {
     }
   });
 
-  test("rejects inline and renamed mounts before reading credentials or contacting AgentMail", async () => {
-    for (const mounted of [
-      ["augments:", "  - type: agentMail", "    name: agentMail"],
-      ["augments:", "  - mail"],
-    ]) {
-      const root = mkdtempSync(join(tmpdir(), "agentmail-noncanonical-"));
-      try {
-        const paths = writeAgent(root);
-        if (mounted[1] === "  - mail") {
-          mkdirSync(join(root, "augments", "mail"), { recursive: true });
-          writeFileSync(
-            join(root, "augments", "mail", "augment.yaml"),
-            "type: agentMail\nconfig: {}\n",
-          );
-        }
-        writeFileSync(
-          paths.configPath,
-          [
-            "id: aug1_a3f7c2e1-8b4d-4f9e-a6c1-2d8e9f0b3a5c",
-            "name: mail-agent",
-            "engine:",
-            "  provider: anthropic",
-            "  model: claude-sonnet-4-6",
-            ...mounted,
-            "",
-          ].join("\n"),
-        );
-        const verifyRuntimeAccess = mock(async () => ({
-          emailAddress: "must-not-run@agentmail.to",
-          verifiedPermissions: ["inbox_read"],
-        }));
-        await expect(
-          runAgentMailSetup(
-            "agentMail",
-            { config: paths.configPath, mode: "connect" },
-            { interactive: false, verifyRuntimeAccess },
-          ),
-        ).rejects.toThrow(/inline or under a custom name/);
-        expect(verifyRuntimeAccess).not.toHaveBeenCalled();
-      } finally {
-        rmSync(root, { recursive: true, force: true });
-      }
+  test("rejects renamed inline mounts before reading credentials or contacting AgentMail", async () => {
+    const root = mkdtempSync(join(tmpdir(), "agentmail-noncanonical-"));
+    try {
+      const paths = writeAgent(root);
+      writeFileSync(
+        paths.configPath,
+        readFileSync(paths.configPath, "utf8").replace("name: agentMail", "name: mail"),
+      );
+      const verifyRuntimeAccess = mock(async () => ({
+        emailAddress: "must-not-run@agentmail.to",
+        verifiedPermissions: ["inbox_read"],
+      }));
+      await expect(
+        runAgentMailSetup(
+          "agentMail",
+          { config: paths.configPath, mode: "connect" },
+          { interactive: false, verifyRuntimeAccess },
+        ),
+      ).rejects.toThrow(/under a custom name/);
+      expect(verifyRuntimeAccess).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
     }
   });
 
@@ -400,8 +380,7 @@ function writeAgent(
 ): { configPath: string; envPath: string; augmentPath: string } {
   const configPath = join(root, "agent.yaml");
   const envPath = join(root, ".env");
-  const augmentPath = join(root, "augments", "agentMail", "augment.yaml");
-  mkdirSync(join(root, "augments", "agentMail"), { recursive: true });
+  const augmentPath = configPath;
   writeFileSync(
     configPath,
     [
@@ -411,34 +390,28 @@ function writeAgent(
       "  provider: anthropic",
       "  model: claude-sonnet-4-6",
       "augments:",
-      "  - agentMail",
+      "  - name: agentMail",
+      "    type: agentMail",
+      "    options:",
+      "      apiKey: ${AGENTMAIL_API_KEY}",
+      "      inboxId: ${AGENTMAIL_INBOX_ID}",
+      "      outbound:",
+      "        allowedTrustLevels: [creator]",
+      "        allowDirectDelivery: true",
+      ...(options.inbound
+        ? [
+            "      inbound:",
+            "        mode: websocket",
+            "        allowAnySender: true",
+            "        rateLimit:",
+            "          globalMaxPerHour: 100",
+            "          perSenderMaxPerHour: 5",
+          ]
+        : []),
+      ...(options.review ? ["      replies:", "        mode: review"] : []),
       "",
     ].join("\n"),
   );
   writeFileSync(envPath, "ANTHROPIC_API_KEY=sk-test\n");
-  writeFileSync(
-    augmentPath,
-    [
-      "type: agentMail",
-      "config:",
-      "  apiKey: ${AGENTMAIL_API_KEY}",
-      "  inboxId: ${AGENTMAIL_INBOX_ID}",
-      "  outbound:",
-      "    allowedTrustLevels: [creator]",
-      "    allowDirectDelivery: true",
-      ...(options.inbound
-        ? [
-            "  inbound:",
-            "    mode: websocket",
-            "    allowAnySender: true",
-            "    rateLimit:",
-            "      globalMaxPerHour: 100",
-            "      perSenderMaxPerHour: 5",
-          ]
-        : []),
-      ...(options.review ? ["  replies:", "    mode: review"] : []),
-      "",
-    ].join("\n"),
-  );
   return { configPath, envPath, augmentPath };
 }

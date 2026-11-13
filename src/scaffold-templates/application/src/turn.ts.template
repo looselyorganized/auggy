@@ -1,0 +1,27 @@
+import type { TurnProgramBinding } from "auggy/application";
+
+// Edit orchestration here. Guarded operations retain authorization and accounting.
+// Omitted limits use configured inference limits and the managed 15-minute deadline.
+export const turnProgram: TurnProgramBinding = {
+  async run(turn) {
+    const internal = await turn.dispatchInternalTurn();
+    if (internal.handled) return internal.completion;
+
+    const prepared = await turn.preparePrompt();
+    if (prepared.kind === "terminal") return prepared.completion;
+
+    while (turn.remainingInferences > 0) {
+      const step = await turn.infer();
+      if (step.kind === "answer") return turn.complete(step);
+
+      const batch = await turn.executeTools(step);
+      if (batch.kind === "terminal") return batch.completion;
+      if (batch.kind === "final-answer-required") {
+        const final = await turn.inferFinal(batch);
+        return final.kind === "terminal" ? final.completion : turn.complete(final);
+      }
+      await turn.refreshPrompt();
+    }
+    return turn.finishAtLimit();
+  },
+};

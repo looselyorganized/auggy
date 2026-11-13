@@ -2,7 +2,7 @@
  * Implementation for `auggy augment add`.
  *
  * Lists currently installed vs available augments. User selects from
- * available. Updates agent.yaml, writes augments/<id>/augment.yaml, and copies
+ * available. Plans central agent.yaml declarations and missing bundled assets; copies
  * bundled `src/augments/<name>/skill/` folders into the agent dir. Per ADR-030
  * the skill listing is owned by the runtime's 'skills' augment surface, NOT
  * injected into identity.md — so no identity-file rewrite happens.
@@ -10,10 +10,9 @@
  * augment rescans its mounted dir at every context() call.
  */
 
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, dirname, join } from "node:path";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { checkbox, confirm, Separator } from "@inquirer/prompts";
 import {
   getAvailableAugments,
@@ -21,19 +20,32 @@ import {
   validAugmentSpecifiers,
   type CatalogEntry,
 } from "../augment-catalog";
-import { copyBundledSkill } from "../scaffold-skills";
-import { readAgentName, resolveConfigPath } from "../resolve-config";
+import { bundledSkillFiles } from "../scaffold-skills";
+import { selectInspectionDocument } from "../authoring/inspection-selection";
 import { mergePackageDeps } from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 import { parseEnvFile, serializeEnv, type EnvLine } from "../env-parse";
 import {
-  augmentIdForCatalogEntry,
-  writeBuiltinAugmentMetadata,
-  writeCustomAugmentsReadme,
+  readAuthoringDocument,
+  assertInlineAuthoring,
+  planAugmentAssets,
+  planAugmentMutation,
+  requireCompletePublication,
+  rootSkillsEdit,
 } from "../augment-metadata";
-import { writeKnowledgeScaffold } from "../scaffold-knowledge";
+import { planKnowledgeScaffold } from "../scaffold-knowledge";
+import {
+  AUTHORING_LIMITS,
+  type DocumentEdit,
+  type FileSnapshot,
+  type PlannedFile,
+  type PublicationOptions,
+  type RawRecord,
+} from "../authoring/contracts";
+import { decodeSnapshotText, readFileSnapshot, sameFileIdentity } from "../authoring/document-io";
+import { acquireProjectMutationLease, publishMutationPlan } from "../authoring/publication";
 import { displayPath } from "../display-path";
-import { ensureMcpConfig } from "../mcp-config";
+import { emptyMcpConfig } from "../mcp-config";
 import { writeFileSafely } from "../safe-write";
 import { acquireAgentEnvMutationLock } from "../env-mutation-lock";
 import { errorLabel, infoLabel } from "../_shared/styles";
@@ -43,6 +55,10 @@ import { formatAgentMailSetupResult, runAgentMailSetup } from "./agentmail";
 export interface AddOpts {
   /** Path override for agent.yaml. */
   config?: string;
+  /** Explicit fault injection for publication tests. */
+  publication?: PublicationOptions;
+  /** Credential writer failure seam; never selected by CLI flags. */
+  writeEnv?: typeof writeFileSafely;
   /** Optional non-interactive augment specifier(s) (type, default name, or alias). */
   augment?: string | string[];
   /**
@@ -71,18 +87,21 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   const requestedAugments = requestedAugmentList(opts.augment);
   const useProjectLocalArg =
     !opts.config && requestedAugments.length === 0 && !!target && existsSync(localConfig);
-  const configPath = resolveConfigPath(useProjectLocalArg ? undefined : target, opts.config, {
-    auggyDir: opts.auggyDir,
-    cwd: opts.cwd,
+  const document = selectInspectionDocument(useProjectLocalArg ? undefined : target, opts.config, {
+    cwd: opts.cwd ?? (opts.auggyDir ? join(opts.auggyDir, "agents") : undefined),
   });
-  const name = target && !useProjectLocalArg ? target : readAgentName(configPath);
+  const configPath = document.configPath;
+  assertInlineAuthoring(document);
+  const name =
+    typeof document.value.name === "string" ? document.value.name : basename(document.projectDir);
   const selectedAugments = useProjectLocalArg ? [target] : requestedAugments;
-  const agentDir = dirname(configPath);
+  const agentDir = document.projectDir;
 
-  // Parse current config.
-  const raw = parseYaml(readFileSync(configPath, "utf-8")) as Record<string, unknown>;
-  if (!Array.isArray(raw.augments)) raw.augments = [];
-  const currentAugments = readInstalledAugments(raw, agentDir);
+  const raw = document.value as Record<string, unknown>;
+  const currentAugments = document.declarations.map((entry) => ({
+    name: entry.name!,
+    type: entry.type,
+  }));
 
   console.log(`Currently installed: ${currentAugments.map((a) => a.name).join(", ")}`);
 
@@ -140,110 +159,121 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     return;
   }
 
-  // === Compute all changes in memory ===
-  // Yaml + package.json text are built without touching disk so a preflight
-  // error (e.g. invalid JSON in the existing package.json) can abort before
-  // any persisted mutation.
-  for (const entry of selected) {
-    (raw.augments as unknown[]).push(augmentIdForCatalogEntry(entry));
-  }
-  const newYaml = `# Agent configuration\n\n${stringifyYaml(raw)}`;
-
+  // Every destination and config edit is validated before either lock can mutate files.
+  const edits: DocumentEdit[] = selected.map((entry) => ({
+    kind: "append-augment",
+    entry: {
+      name: entry.defaultName,
+      type: entry.type,
+      options: (optionsForAddedAugment(entry, name) ?? {}) as RawRecord,
+    },
+  }));
+  const skillAssets = selected.flatMap((entry) => [...bundledSkillFiles(entry.type)]);
+  if (skillAssets.length > 0) edits.push(...rootSkillsEdit(document));
+  const supportAssets = [...skillAssets];
+  if (selected.some((entry) => entry.type === "knowledge"))
+    supportAssets.push(...planKnowledgeScaffold(knowledgeValues(raw, agentDir)));
+  if (selected.some((entry) => entry.type === "mcp"))
+    supportAssets.push({
+      relativePath: ".mcp.json",
+      bytes: Buffer.from(`${JSON.stringify(emptyMcpConfig(), null, 2)}\n`),
+      mode: 0o644,
+    });
+  const assets = planAugmentAssets(document, supportAssets, true);
+  const support: PlannedFile[] = [...assets.files];
+  const inputs: FileSnapshot[] = [...assets.inputs];
   let pkgUpdate: { text: string; added: string[] } | null = null;
   if (hasAdditions) {
-    const existingText = readFileSync(pkgPath, "utf-8");
-    const merged = mergePackageDeps(existingText, additions);
+    const before = readFileSnapshot(pkgPath, AUTHORING_LIMITS.documentBytes);
+    if (!before.exists)
+      throw new Error("package.json disappeared; retry after reviewing the project.");
+    const text = decodeSnapshotText(before.bytes);
+    const merged = mergeValidatedPackageDeps(text, additions);
+    inputs.push(before);
     if (merged.added.length > 0) {
-      pkgUpdate = { text: merged.text, added: merged.added };
+      if (Buffer.byteLength(merged.text) > AUTHORING_LIMITS.documentBytes)
+        throw new Error(
+          "The updated package.json exceeds the supported 1 MiB limit. Reduce the manifest before retrying; no files were changed.",
+        );
+      pkgUpdate = merged;
+      support.push({
+        relativePath: "package.json",
+        before,
+        bytes: Buffer.from(merged.text),
+        mode: before.identity.mode & 0o777,
+        role: "support",
+      });
     }
   }
-
-  // === Persist: yaml → package.json → skills (in sequence) ===
-  // The package.json preflight above guards against partial-state on invalid
-  // agent project dirs.
-  // Past this point, all three artifacts are intentional mutations matching
-  // the operator's request; install-failure below leaves them in place.
-  const envMutationLease = selected.some((entry) => (entry.envVars?.length ?? 0) > 0)
-    ? acquireAgentEnvMutationLock(agentDir)
-    : undefined;
-  let envUpdate: ReturnType<typeof updateEnvForAddedAugments>;
+  const rawAfter = {
+    ...raw,
+    augments: [
+      ...((raw.augments as unknown[]) ?? []),
+      ...edits.filter((edit) => edit.kind === "append-augment").map((edit) => edit.entry),
+    ],
+  };
+  const envPlan = planEnvForAddedAugments(agentDir, selected, rawAfter);
+  if (envPlan) inputs.push(envPlan.before);
+  else if (currentAugments.some((entry) => entry.type === "agentMail")) {
+    // Final readiness reporting needs these credentials even when the added augment does not.
+    // Validate the input before publication so an existing invalid env cannot fail after activation.
+    const before = readFileSnapshot(join(agentDir, ".env"), AUTHORING_LIMITS.outputBytes, {
+      allowMissing: true,
+    });
+    if (before.exists) decodeSnapshotText(before.bytes);
+    inputs.push(before);
+  }
+  const plan = planAugmentMutation(document, "augment-add", edits, support, inputs);
+  const lease = acquireProjectMutationLease(agentDir);
+  let envLease: ReturnType<typeof acquireAgentEnvMutationLock> | undefined;
+  let envUpdate = { generated: [] as string[], placeholders: [] as string[] };
   try {
-    writeFileSafely(configPath, newYaml);
-
-    if (pkgUpdate) {
-      writeFileSafely(pkgPath, pkgUpdate.text);
-      console.log();
-      console.log(
-        `  ${pkgUpdate.added.length} package dep${pkgUpdate.added.length === 1 ? "" : "s"} added to package.json:`,
-      );
-      for (const pkg of pkgUpdate.added) {
-        console.log(`    + ${pkg}@${additions[pkg]}`);
+    if (envPlan) envLease = acquireAgentEnvMutationLock(agentDir);
+    requireCompletePublication(publishMutationPlan(plan, { ...opts.publication, lease }));
+    if (envPlan) {
+      try {
+        const current = readFileSnapshot(envPlan.before.path, AUTHORING_LIMITS.outputBytes, {
+          allowMissing: true,
+        });
+        if (
+          current.exists !== envPlan.before.exists ||
+          (current.exists &&
+            envPlan.before.exists &&
+            (current.sha256 !== envPlan.before.sha256 ||
+              !sameFileIdentity(current.identity, envPlan.before.identity)))
+        )
+          throw new Error("env preimage changed");
+        if (envPlan.text !== null)
+          (opts.writeEnv ?? writeFileSafely)(envPlan.before.path, envPlan.text, { mode: 0o600 });
+        envUpdate = envPlan;
+      } catch {
+        throw new Error(
+          "Augment configuration was activated, but .env initialization failed or changed concurrently. Existing credentials were retained where possible. Review .env and add the missing required keys before starting; rerun the explicit augment setup command when available.",
+        );
       }
     }
-
-    envUpdate = updateEnvForAddedAugments(agentDir, selected, raw);
   } finally {
-    envMutationLease?.release();
+    envLease?.release();
+    lease.release();
   }
-
-  // Install skills — copy the bundled `src/augments/<name>/skill/` folder
-  // for each selected augment that ships one. Idempotent. Per ADR-030 the
-  // 'skills' augment surfaces them to the model automatically by rescanning
-  // the skills/ dir on every context() call; no identity.md edit needed.
-  console.log();
-  writeCustomAugmentsReadme(agentDir);
-  let knowledgeAdded = false;
-  let notifyAdded = false;
-  let agentMailAdded = false;
-  let mcpAdded = false;
-  let layeredMemoryAdded = false;
-  let telegramTransportAdded = false;
-  let visitorAuthAdded = false;
-  let linkAdded = false;
-  let bashAdded = false;
-  let budgetsAdded = false;
-  for (const entry of selected) {
-    const skillCopied = copyBundledSkill(entry.type, agentDir);
-    writeBuiltinAugmentMetadata(agentDir, entry, optionsForAddedAugment(entry, name));
-    if (entry.type === "knowledge") {
-      writeKnowledgeScaffold(agentDir, knowledgeValues(raw, agentDir));
-      knowledgeAdded = true;
-    }
-    if (entry.type === "notify") {
-      notifyAdded = true;
-    }
-    if (entry.type === "agentMail") {
-      agentMailAdded = true;
-    }
-    if (entry.type === "mcp") {
-      ensureMcpConfig(agentDir);
-      mcpAdded = true;
-    }
-    if (entry.type === "layeredMemory") {
-      layeredMemoryAdded = true;
-    }
-    if (entry.type === "telegramTransport") {
-      telegramTransportAdded = true;
-    }
-    if (entry.type === "visitorAuth") {
-      visitorAuthAdded = true;
-    }
-    if (entry.type === "link") {
-      linkAdded = true;
-    }
-    if (entry.type === "bash") {
-      bashAdded = true;
-    }
-    if (entry.type === "budgets") {
-      budgetsAdded = true;
-    }
-    console.log(`  ✓ ${entry.defaultName} (${entry.type})`);
-    if (skillCopied) {
-      console.log(
-        `    skill: ${displayPath(join(agentDir, "skills", entry.type), opts.cwd)}/SKILL.md`,
-      );
-    }
+  if (pkgUpdate) {
+    console.log(`  ${pkgUpdate.added.length} package deps added to package.json:`);
+    for (const pkg of pkgUpdate.added) console.log(`    + ${pkg}@${additions[pkg]}`);
   }
+  for (const entry of selected) console.log(`  ✓ ${entry.defaultName} (${entry.type})`);
+  for (const file of assets.files) console.log(`    added: ${file.relativePath}`);
+  for (const path of assets.retained) console.log(`    retained: ${path}`);
+  const has = (type: string) => selected.some((entry) => entry.type === type);
+  const knowledgeAdded = has("knowledge");
+  const notifyAdded = has("notify");
+  const agentMailAdded = has("agentMail");
+  const mcpAdded = has("mcp");
+  const layeredMemoryAdded = has("layeredMemory");
+  const telegramTransportAdded = has("telegramTransport");
+  const visitorAuthAdded = has("visitorAuth");
+  const linkAdded = has("link");
+  const bashAdded = has("bash");
+  const budgetsAdded = has("budgets");
 
   if (knowledgeAdded) {
     console.log();
@@ -264,7 +294,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("Use notify:");
     console.log("  - Default destination: creator -> ./notifications.jsonl");
     console.log("  - Ask the agent to notify creator when something needs attention");
-    console.log("  - For real delivery, edit augments/notify/augment.yaml");
+    console.log("  - For real delivery, edit agent.yaml (notify options)");
     console.log("  - Telegram alerts need a notify destination with botToken + chatId");
     console.log("  - Supported transports: webhook, Telegram, Agent Mail, log-to-file");
   }
@@ -276,7 +306,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log(
       "  - Or set AGENTMAIL_API_KEY, AGENTMAIL_INBOX_ID, and AGENTMAIL_INBOX_EMAIL in .env",
     );
-    console.log("  - Configure mail policy in augments/agentMail/augment.yaml");
+    console.log("  - Configure mail policy in agent.yaml (agentMail options)");
     console.log("  - Default: creator-authorized send, reply, forward, retry, and reconciliation");
     console.log("  - Enable WebSocket inbound for receive, triage, and reviewed reply drafts");
     console.log("  - Run auggy doctor after changing mailbox, draft, or delivery policy");
@@ -289,7 +319,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("  - Local testing uses console magic links");
     console.log("  - Production email: auggy augment setup visitorAuth");
     console.log(
-      "  - This creates or verifies one inbox, then updates augments/visitorAuth/augment.yaml",
+      "  - This creates or verifies one inbox, then updates agent.yaml (visitorAuth options)",
     );
   }
 
@@ -329,8 +359,8 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("  - Set TELEGRAM_CREATOR_USER_IDS in .env (comma-separated numeric user IDs)");
     console.log("  - Default inbound mode: polling");
     console.log("  - Find your Telegram user ID with @userinfobot");
-    console.log("  - Proactive Telegram alerts are configured in augments/notify/augment.yaml");
-    console.log("  - For production webhooks, edit augments/telegramTransport/augment.yaml");
+    console.log("  - Proactive Telegram alerts are configured in agent.yaml (notify options)");
+    console.log("  - For production webhooks, edit agent.yaml (telegramTransport options)");
   }
 
   if (linkAdded) {
@@ -342,7 +372,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("  - Public outbound delegation is disabled by default");
     console.log("  - Public use also requires a publicDelegationPeers endpoint/id attestation");
     console.log("  - Rotate each peer bearer separately");
-    console.log("  - Review augments/link/augment.yaml before exposing the port");
+    console.log("  - Review agent.yaml (link options) before exposing the port");
   }
 
   if (bashAdded) {
@@ -352,7 +382,7 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
     console.log("  - Default install is restricted to echo, ls, cat, pwd, and date");
     console.log("  - Bash tools are creator-only by default");
     console.log("  - Do not expose bash to public or agent peers without explicit trust policy");
-    console.log("  - Review augments/bash/augment.yaml before relying on it in production");
+    console.log("  - Review agent.yaml (bash options) before relying on it in production");
   }
 
   // === Run bun install (last; failure leaves intentional partial state) ===
@@ -572,7 +602,7 @@ async function offerSetupForAddedAugments(
     return runSetup("visitorAuth");
   }
 
-  const visitorAlreadyUsesAgentMail = hadVisitorAuth && visitorAuthUsesAgentMail(agentDir);
+  const visitorAlreadyUsesAgentMail = hadVisitorAuth && visitorAuthUsesAgentMail(configPath);
   const proceed = await ask(
     visitorAlreadyUsesAgentMail
       ? "Use visitorAuth's AgentMail inbox for agentMail too?"
@@ -615,10 +645,12 @@ function formatEmbeddedAgentMailSetupResult(
 }
 
 function readEnvValues(agentDir: string): Map<string, string> {
-  const envPath = join(agentDir, ".env");
-  if (!existsSync(envPath)) return new Map();
+  const snapshot = readFileSnapshot(join(agentDir, ".env"), AUTHORING_LIMITS.outputBytes, {
+    allowMissing: true,
+  });
+  if (!snapshot.exists) return new Map();
   const values = new Map<string, string>();
-  for (const line of parseEnvFile(readFileSync(envPath, "utf-8"))) {
+  for (const line of parseEnvFile(decodeSnapshotText(snapshot.bytes))) {
     if (line.kind !== "kv" || values.has(line.key) || line.value.trim().length === 0) continue;
     values.set(line.key, line.value);
   }
@@ -642,20 +674,24 @@ function resolvedEnvValue(value: string | undefined): string | null {
 }
 
 function unresolvedEnvVars(agentDir: string, candidates: string[]): string[] {
+  if (candidates.length === 0) return [];
   const env = readEnvValues(agentDir);
   return candidates.filter((key) => (env.get(key)?.trim().length ?? 0) === 0);
 }
 
-function visitorAuthUsesAgentMail(agentDir: string): boolean {
-  const augmentPath = join(agentDir, "augments", "visitorAuth", "augment.yaml");
-  if (!existsSync(augmentPath)) return false;
-  const metadata = parseYaml(readFileSync(augmentPath, "utf-8"));
-  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return false;
-  const config = (metadata as Record<string, unknown>).config;
-  if (!config || typeof config !== "object" || Array.isArray(config)) return false;
-  const agentMail = (config as Record<string, unknown>).agentMail;
-  if (!agentMail || typeof agentMail !== "object" || Array.isArray(agentMail)) return false;
-  return (agentMail as Record<string, unknown>).transport !== "console";
+function visitorAuthUsesAgentMail(configPath: string): boolean {
+  const declaration = readAuthoringDocument(configPath).declarations.find(
+    (entry) => entry.type === "visitorAuth",
+  );
+  const options = declaration?.options;
+  if (!options || typeof options !== "object" || Array.isArray(options)) return false;
+  const agentMail = (options as Record<string, unknown>).agentMail;
+  return (
+    !!agentMail &&
+    typeof agentMail === "object" &&
+    !Array.isArray(agentMail) &&
+    (agentMail as Record<string, unknown>).transport !== "console"
+  );
 }
 
 function isPromptCancellation(error: unknown): boolean {
@@ -704,44 +740,6 @@ interface InstalledAugment {
   type: string;
 }
 
-function readInstalledAugments(raw: Record<string, unknown>, agentDir: string): InstalledAugment[] {
-  const augments = raw.augments;
-  if (!Array.isArray(augments)) return [];
-
-  return augments.map((entry) => {
-    if (typeof entry === "string") {
-      const metadata = readAugmentMetadata(agentDir, entry);
-      return {
-        name: entry,
-        type: stringField(metadata.type) ?? entry,
-      };
-    }
-
-    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
-      const record = entry as Record<string, unknown>;
-      const type = stringField(record.type) ?? "custom";
-      return {
-        name: stringField(record.name) ?? type,
-        type,
-      };
-    }
-
-    return { name: "(invalid)", type: "(invalid)" };
-  });
-}
-
-function readAugmentMetadata(agentDir: string, id: string): Record<string, unknown> {
-  const metadataPath = join(agentDir, "augments", id, "augment.yaml");
-  if (!existsSync(metadataPath)) {
-    throw new Error(`Augment "${id}" is listed in agent.yaml but ${metadataPath} is missing.`);
-  }
-  const parsed = parseYaml(readFileSync(metadataPath, "utf-8"));
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${metadataPath}: not a valid YAML object.`);
-  }
-  return parsed as Record<string, unknown>;
-}
-
 function optionsForAddedAugment(
   entry: CatalogEntry,
   agentName: string,
@@ -777,10 +775,6 @@ function isMutableArtifactPath(key: string, value: string): boolean {
   if (!value.startsWith("./")) return false;
   if (!/(Path|path)$/.test(key)) return false;
   return /\.(db|sqlite|jsonl)$/.test(value);
-}
-
-function stringField(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function knowledgeValues(raw: Record<string, unknown>, agentDir: string) {
@@ -823,73 +817,61 @@ const AUTO_GENERATED_ADD_ENV_VARS = new Set([
   "VISITOR_SIGNING_KEY",
 ]);
 
-function updateEnvForAddedAugments(
+function planEnvForAddedAugments(
   agentDir: string,
   selected: CatalogEntry[],
   rawConfig: Record<string, unknown>,
-): { generated: string[]; placeholders: string[] } {
+): {
+  before: FileSnapshot;
+  text: string | null;
+  generated: string[];
+  placeholders: string[];
+} | null {
   const requiredEnvVars = unique(selected.flatMap((entry) => entry.envVars ?? []));
-  if (requiredEnvVars.length === 0) return { generated: [], placeholders: [] };
+  if (requiredEnvVars.length === 0) return null;
 
   const envPath = join(agentDir, ".env");
-  const lines: EnvLine[] = existsSync(envPath)
-    ? parseEnvFile(readFileSync(envPath, "utf-8"))
-    : [{ kind: "comment", raw: "# Agent secrets — gitignored." }, { kind: "blank" }];
-
-  const existing = new Map<string, { index: number; value: string }>();
-  lines.forEach((line, index) => {
-    if (line.kind === "kv") existing.set(line.key, { index, value: line.value });
-  });
-
+  const before = readFileSnapshot(envPath, AUTHORING_LIMITS.outputBytes, { allowMissing: true });
+  const original = before.exists
+    ? decodeSnapshotText(before.bytes)
+    : "# Agent secrets — gitignored.\n\n";
+  const existing = new Map(
+    parseEnvFile(original)
+      .filter((line): line is Extract<EnvLine, { kind: "kv" }> => line.kind === "kv")
+      .map((line) => [line.key, line.value]),
+  );
+  const additions: EnvLine[] = [];
   const generated: string[] = [];
   const placeholders: string[] = [];
-
   for (const key of requiredEnvVars) {
-    const current = existing.get(key);
-    if (current && current.value.trim().length > 0 && key !== "AUGGY_AGENT_ID") continue;
-
-    const generatedValue = AUTO_GENERATED_ADD_ENV_VARS.has(key)
-      ? generateEnvValueForAdd(key, agentDir, rawConfig)
-      : null;
-    if (generatedValue && current?.value !== generatedValue) {
-      upsertEnvLine(lines, existing, key, generatedValue);
-      generated.push(key);
-    } else if (!current || current.value.trim().length === 0) {
-      upsertEnvLine(lines, existing, key, "");
-      placeholders.push(key);
+    if (existing.has(key)) {
+      if (!existing.get(key)?.trim()) placeholders.push(key);
+      continue;
     }
+    const value = AUTO_GENERATED_ADD_ENV_VARS.has(key)
+      ? generateEnvValueForAdd(key, rawConfig)
+      : null;
+    additions.push({ kind: "kv", key, value: value ?? "", raw: "" });
+    if (value) generated.push(key);
+    else placeholders.push(key);
   }
-
-  writeFileSafely(envPath, serializeEnv(lines), { mode: 0o600 });
-  return { generated, placeholders };
+  const text =
+    additions.length > 0
+      ? original + (original.endsWith("\n") ? "" : "\n") + serializeEnv(additions)
+      : null;
+  if (text !== null && Buffer.byteLength(text) > AUTHORING_LIMITS.outputBytes)
+    throw new Error(
+      "The env additions exceed the supported file size; review .env manually before retrying.",
+    );
+  return { before, text, generated, placeholders };
 }
 
-function upsertEnvLine(
-  lines: EnvLine[],
-  existing: Map<string, { index: number; value: string }>,
-  key: string,
-  value: string,
-): void {
-  const current = existing.get(key);
-  if (current) {
-    lines[current.index] = { kind: "kv", key, value, raw: `${key}=${value}` };
-    existing.set(key, { index: current.index, value });
-    return;
-  }
-  lines.push({ kind: "kv", key, value, raw: `${key}=${value}` });
-  existing.set(key, { index: lines.length - 1, value });
-}
-
-function generateEnvValueForAdd(
-  key: string,
-  agentDir: string,
-  rawConfig: Record<string, unknown>,
-): string | null {
+function generateEnvValueForAdd(key: string, rawConfig: Record<string, unknown>): string | null {
   switch (key) {
     case "AUGGY_AGENT_ID":
       return typeof rawConfig.id === "string" && rawConfig.id.trim() ? rawConfig.id.trim() : null;
     case "AUGGY_PUBLIC_URL":
-      return `http://localhost:${findWebTransportPort(rawConfig, agentDir) ?? 8080}`;
+      return `http://localhost:${findWebTransportPort(rawConfig) ?? 8080}`;
     case "AUGGY_WEB_TOKEN":
       return randomBytes(32).toString("hex");
     case "VISITOR_SIGNING_KEY":
@@ -899,19 +881,10 @@ function generateEnvValueForAdd(
   }
 }
 
-function findWebTransportPort(rawConfig: Record<string, unknown>, agentDir: string): number | null {
+function findWebTransportPort(rawConfig: Record<string, unknown>): number | null {
   const augments = rawConfig.augments;
   if (!Array.isArray(augments)) return null;
   for (const aug of augments) {
-    if (typeof aug === "string") {
-      if (aug !== "webTransport") continue;
-      const metadata = readAugmentMetadata(agentDir, aug);
-      const config = metadata.config;
-      if (!config || typeof config !== "object" || Array.isArray(config)) continue;
-      const port = (config as Record<string, unknown>).port;
-      if (typeof port === "number" && Number.isInteger(port) && port > 0) return port;
-      continue;
-    }
     if (!aug || typeof aug !== "object") continue;
     const record = aug as Record<string, unknown>;
     if (record.type !== "webTransport") continue;
@@ -986,4 +959,30 @@ function mergeAdditions(selected: CatalogEntry[]): Record<string, string> {
     }
   }
   return out;
+}
+
+/** Package parser failures are private inputs, never CLI diagnostics. */
+function mergeValidatedPackageDeps(
+  text: string,
+  additions: Record<string, string>,
+): ReturnType<typeof mergePackageDeps> {
+  try {
+    const parsed: unknown = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+      throw new Error("mapping required");
+    const dependencies = (parsed as Record<string, unknown>).dependencies;
+    if (
+      dependencies !== undefined &&
+      (!dependencies ||
+        typeof dependencies !== "object" ||
+        Array.isArray(dependencies) ||
+        Object.values(dependencies).some((value) => typeof value !== "string"))
+    )
+      throw new Error("dependency mapping required");
+    return mergePackageDeps(text, additions);
+  } catch {
+    throw new Error(
+      "Cannot update package.json. Use a valid JSON object with dependencies mapping package names to string specifiers; review the manifest locally. No files were changed.",
+    );
+  }
 }

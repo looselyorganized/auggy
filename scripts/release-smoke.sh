@@ -447,25 +447,28 @@ PACKED_LOGIN_STYLESHEET_PATH="$(
   || fail "packed Console login manifest has an invalid stylesheet path"
 require_pack_entry "admin/dist/login/$PACKED_LOGIN_STYLESHEET_PATH"
 
-assert_augment_metadata() {
-  local id="$1"
-  local file="$AGENT_DIR/augments/$id/augment.yaml"
-  [[ -f "$file" ]] || fail "missing augment metadata: augments/$id/augment.yaml"
-  grep -qx "type: $id" "$file" || fail "augment metadata for $id missing type: $id"
+assert_agent_uses_inline_augments() {
+  (
+    cd "$ROOT"
+    bun - "$AGENT_DIR/agent.yaml" "$@" <<'TS'
+import { readFileSync, existsSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { parse } from "yaml";
+const [file, ...types] = process.argv.slice(2);
+const config = parse(readFileSync(file, "utf8"));
+if (!Array.isArray(config.augments) || config.augments.some((item) => !item || typeof item !== "object" || typeof item.type !== "string"))
+  throw new Error("Generated configuration must contain inline augment declarations");
+for (const type of types) {
+  if (!config.augments.some((item) => item.type === type))
+    throw new Error(`Generated configuration missing augment: ${type}`);
 }
-
-assert_agent_uses_folder_backed_augments() {
-  local id
-  for id in "$@"; do
-    grep -qx "  - $id" "$AGENT_DIR/agent.yaml" || fail "agent.yaml missing augment id: $id"
-    assert_augment_metadata "$id"
-  done
-  if awk '/^augments:/{inside=1; next} /^[^[:space:]]/{inside=0} inside && /type:|name:|options:|config:|kind:|runtime:|configType:/{found=1} END{exit found ? 0 : 1}' "$AGENT_DIR/agent.yaml"; then
-    fail "agent.yaml contains inline augment object fields"
-  fi
-  if grep -R -nE '^(name|kind|runtime|configType):' "$AGENT_DIR/augments" >"$LOG_DIR/stale-augment-metadata.log"; then
-    fail "augment metadata contains stale v1 fields; see $LOG_DIR/stale-augment-metadata.log"
-  fi
+if (config.application?.entrypoint !== "./src/index.ts" || config.application.contractVersion !== 1)
+  throw new Error("Generated configuration missing owned application entrypoint");
+for (const fileName of ["index.ts", "agent.ts", "http.ts", "turn.ts"])
+  if (!existsSync(join(dirname(file), "src", fileName)))
+    throw new Error(`Generated application missing ${fileName}`);
+TS
+  ) || fail "generated inline application verification failed"
 }
 
 info "install packed CLI"
@@ -548,7 +551,7 @@ grep -q "\"auggy\": \"file:$TARBALL\"" "$AGENT_DIR/package.json" \
   || fail "agent package.json did not pin auggy to the packed tarball"
 grep -q "\"@auggy/anthropic\": \"file:$ANTHROPIC_TARBALL\"" "$AGENT_DIR/package.json" \
   || fail "agent package.json did not pin @auggy/anthropic to the packed adapter"
-assert_agent_uses_folder_backed_augments fileMemory filesystem webTransport webFetch turnControl
+assert_agent_uses_inline_augments fileMemory filesystem webTransport webFetch turnControl
 ADMIN_TEMPLATE="$AGENT_DIR/skills/auggy/assets/templates/nextjs-server-client/admin-reindex-route.ts.txt"
 [[ -f "$ADMIN_TEMPLATE" ]] || fail "scaffold missing hardened admin route template"
 grep -Fq 'import "server-only";' "$ADMIN_TEMPLATE" \
@@ -590,7 +593,7 @@ configure_smoke_port() {
   )"
   [[ -n "$SMOKE_PORT" ]] || fail "could not allocate smoke port"
   perl -0pi -e "s/AUGGY_PUBLIC_URL=http:\/\/localhost:\d+/AUGGY_PUBLIC_URL=http:\/\/localhost:$SMOKE_PORT/" "$AGENT_DIR/.env"
-  perl -0pi -e "s/(^[[:space:]]*port: )[0-9]+/\${1}$SMOKE_PORT/m" "$AGENT_DIR/augments/webTransport/augment.yaml"
+  perl -0pi -e "s/(^[[:space:]]*port: )[0-9]+/\${1}$SMOKE_PORT/m" "$AGENT_DIR/agent.yaml"
 }
 
 # Doctor checks listener availability, so isolate it from legitimate services
@@ -971,7 +974,7 @@ info "add knowledge and MCP"
   HOME="$SMOKE_HOME" "$CLI" mcp add-json example-stdio \
     "{\"type\":\"stdio\",\"command\":\"bun\",\"args\":[\"$ROOT/examples/mcp-stdio-server/server.ts\"],\"cwd\":\"$ROOT\"}"
 )
-assert_agent_uses_folder_backed_augments fileMemory filesystem webTransport webFetch turnControl knowledge mcp
+assert_agent_uses_inline_augments fileMemory filesystem webTransport webFetch turnControl knowledge mcp
 
 info "MCP local doctor passes"
 (
@@ -1007,5 +1010,13 @@ bun "$ROOT/scripts/release-smoke/application-suite.ts" \
   --foundation-upgrade-evidence "$EVIDENCE_DIR/upgrade/upgrade.json" \
   >"$LOG_DIR/application-suite.log" 2>&1 \
   || fail "inspectable application acceptance failed"
+
+info "verify actual generated agent authoring and execution"
+bun "$ROOT/scripts/release-smoke/authoring-suite.ts" \
+  --repo-root "$ROOT" --evidence-dir "$EVIDENCE_DIR/authoring" \
+  --core "$TARBALL" --anthropic "$ANTHROPIC_TARBALL" \
+  --openai "$OPENAI_TARBALL" --openrouter "$OPENROUTER_TARBALL" --ollama "$OLLAMA_TARBALL" \
+  >"$LOG_DIR/authoring-suite.log" 2>&1 \
+  || fail "generated authoring acceptance failed"
 
 info "release smoke passed"

@@ -1,0 +1,10 @@
+# Metadata stays in place for legacy readers and local history.
+type: fileMemory
+config:
+  label: self
+  source: ./identity.md
+  mutable: false
+  origin: operator
+  priority: required
+  placement: system
+  eviction: never

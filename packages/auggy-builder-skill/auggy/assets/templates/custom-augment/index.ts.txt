@@ -1,66 +1,47 @@
 import { defineAugment, defineRoute, defineTool, json } from "auggy";
-import { z } from "zod";
-import { saveLead, searchServices } from "./domain";
-import {
-  LeadInputSchema,
-  LeadResponseSchema,
-  ServiceQuerySchema,
-  ServiceSchema,
-} from "./schemas";
+import { lookupInput, recordSchema } from "./schemas";
+import { lookupRecord } from "./service";
 
-export interface ServicesOptions {
-  recordsPath?: string;
-}
-
-export default function services(opts: ServicesOptions = {}) {
-  const recordsPath = opts.recordsPath ?? "./data/service-records.jsonl";
-
+export default function createSampleAugment() {
   return defineAugment({
-    name: "services",
-    type: "custom",
-    httpRoutes: [
-      defineRoute.get("/services", {
-        auth: "none",
-        query: ServiceQuerySchema,
-        response: z.object({ services: z.array(ServiceSchema) }),
-        rateLimit: { maxPerMinute: 60 },
-        handler: ({ query }) => json({ services: searchServices(query) }),
-      }),
-      defineRoute.post("/leads/create", {
-        auth: "visitor.optional",
-        body: LeadInputSchema,
-        response: LeadResponseSchema,
-        maxBodyBytes: 8192,
-        rateLimit: { maxPerMinute: 10 },
-        handler: ({ body }) => {
-          const lead = saveLead(body, { recordsPath });
-          return json({ id: lead.id, saved: true }, 201);
+    name: "example",
+    tools: [
+      defineTool({
+        name: "example_lookup_record",
+        description: "Look up a sample record by its SAMPLE-001 style identifier.",
+        category: "search",
+        input: lookupInput,
+        execute: async (input, context) => {
+          // Exposure constraints and execution authorization are separate boundaries.
+          if (context?.peer?.trustLevel !== "creator") {
+            return { isError: true, content: JSON.stringify({ error: "forbidden", message: "Creator access required." }) };
+          }
+          const parsed = lookupInput.safeParse(input);
+          if (!parsed.success) return { isError: true, content: JSON.stringify({ error: "invalid-input" }) };
+          const record = lookupRecord(parsed.data);
+          return record
+            ? { content: JSON.stringify(record) }
+            : { isError: true, content: JSON.stringify({ error: "not-found" }) };
         },
       }),
     ],
-    tools: [
-      defineTool({
-        name: "service_search",
-        description: "Search services by visitor need or category.",
-        category: "business",
-        input: ServiceQuerySchema,
-        execute: async (input) => JSON.stringify({ services: searchServices(input) }),
-      }),
-      defineTool({
-        name: "save_lead",
-        description: "Save a lead for creator follow-up after enough detail is collected.",
-        category: "business",
-        input: LeadInputSchema,
-        execute: async (input) => JSON.stringify({ lead: saveLead(input, { recordsPath }) }),
-      }),
-    ],
     constraints: {
-      // Route auth does not authorize tools. This side-effecting tool starts
-      // creator-only; relax visibility only after choosing the allowed peers.
       perTrustLevel: {
-        public: { neverExpose: ["save_lead"] },
-        agent: { neverExpose: ["save_lead"] },
+        public: { neverExpose: ["example_lookup_record"] },
+        agent: { neverExpose: ["example_lookup_record"] },
       },
     },
+    httpRoutes: [
+      defineRoute.get("/example/records/:id", {
+        // The managed HTTP dispatcher authenticates this route before its handler.
+        auth: "creator",
+        params: lookupInput,
+        response: recordSchema,
+        handler: ({ params }) => {
+          const record = lookupRecord(params);
+          return record ? json(record) : json({ error: "not-found" }, 404);
+        },
+      }),
+    ],
   });
 }

@@ -11,32 +11,46 @@ auggy augment create <name>
 ```
 
 Run this from the agent project. The command registers the augment in
-`agent.yaml` and asks whether to add a separate runtime skill.
+`agent.yaml` as one inline declaration. Add `--with-skill` explicitly when the
+model also needs usage guidance; the default creates no skill.
 
 ## Structure
 
-Typical custom augment:
+The generated layout is:
 
 ```text
-augments/<name>/
-  augment.yaml
-  index.ts
-  schemas.ts
-  domain.ts
-  <name>.test.ts
+src/augments/<name>/
+  index.ts           # tool and route adapters with explicit authorization
+  schemas.ts         # shared input/output validation
+  service.ts         # sample lookup; replace with your business adapter
+  README.md
 
-skills/<name>/
-  SKILL.md        # optional usage guidance, not augment source
+tests/augments/<name>.test.ts
+skills/<name>/SKILL.md  # optional usage guidance, not augment source
 ```
 
-Keep business logic in `domain.ts` or ordinary functions. Routes and tools
-should wrap that logic, not duplicate it.
+The starter exposes `<name_with_underscores>_lookup_record` and
+`GET /<name>/records/:id`, both creator-only and backed by the same validated
+`lookupRecord` service. `SAMPLE-001` returns a read-only sample record. Invalid
+input is rejected and a missing record is reported separately. This sample is
+not a database: replace it with a narrow adapter to the application's system of
+record. Review route authorization and tool execution checks independently.
 
-For copyable starter files, inspect
-`skills/auggy/assets/templates/custom-augment/`.
+Built-ins remain under `node_modules/auggy/src/`; use `auggy inspect` for exact
+installed locations. Configuration belongs in `agent.yaml`, with `name`, `type`,
+`options` and custom `source`. Do not create `augment.yaml`, `definition.ts` or a
+second TypeScript list of enabled augments.
 
-Never place `SKILL.md` inside `augments/<name>/`. Runtime code and model-facing
-teaching are separate surfaces with different loading and authorization rules.
+For copyable sample files, inspect
+`skills/auggy/assets/templates/custom-augment/`. Its TypeScript files target
+`src/augments/example/`, and `augment.test.ts.txt` targets
+`tests/augments/example.test.ts`. The YAML asset is a central declaration fragment,
+not a per-folder configuration file. Prefer the CLI so names and registration are
+consistent. Source collisions fail; `--force` does not replace owned files.
+
+Never place `SKILL.md` inside `src/augments/<name>/`. The canonical root `skills/`
+remains model-visible after augment removal unless you explicitly remove that
+skill. Dependency updates never refresh edited project source or skills.
 
 ## Authorization Decisions
 
@@ -61,7 +75,7 @@ For delegated app authorization, read
 `skills/auggy/references/authz-memory-trust.md` and
 `skills/auggy/references/app-auth-bridge-e2e.md` before writing code.
 
-## Route/Tool/Domain Pattern
+## An additional route/tool/service pattern
 
 ```ts
 import { defineAugment, defineRoute, defineTool, json, webhook } from "auggy";
@@ -188,7 +202,9 @@ Use matching tools when the agent should mediate the same capability.
 After changes:
 
 ```bash
-auggy augment test ./augments/<name>
+bun run typecheck
+bun test tests/augments/<name>.test.ts
+auggy augment test ./src/augments/<name>
 auggy routes
 ```
 

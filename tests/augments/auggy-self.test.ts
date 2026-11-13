@@ -193,7 +193,7 @@ describe("auggySelf augment", () => {
     };
 
     expect(parsed.customAugment.command).toBe("auggy augment create <name>");
-    expect(parsed.customAugment.runtimePath).toBe("augments/<name>/");
+    expect(parsed.customAugment.runtimePath).toBe("src/augments/<name>/");
     expect(parsed.customAugment.optionalSkillPath).toBe("skills/<name>/SKILL.md");
     expect(parsed.customAugment.requiredReference).toBe(
       "skills/auggy/references/routes-tools-augments.md",

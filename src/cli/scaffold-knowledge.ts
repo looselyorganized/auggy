@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { writeFileSafely } from "./safe-write";
+import type { GeneratedApplicationFile } from "./authoring/contracts";
 
 export interface KnowledgeScaffoldValues {
   orgName: string;
@@ -20,9 +21,22 @@ export function writeKnowledgeScaffold(
   values: KnowledgeScaffoldValues,
   opts: KnowledgeScaffoldOptions = {},
 ): void {
-  const knowledgeDir = join(agentDir, "knowledge");
-  const localDir = join(knowledgeDir, "local");
-  mkdirSync(localDir, { recursive: true });
+  for (const file of planKnowledgeScaffold(values)) {
+    const path = join(agentDir, file.relativePath);
+    mkdirSync(dirname(path), { recursive: true });
+    writeText(path, Buffer.from(file.bytes).toString("utf-8"), opts);
+  }
+}
+
+export function planKnowledgeScaffold(
+  values: KnowledgeScaffoldValues,
+): readonly GeneratedApplicationFile[] {
+  const files: GeneratedApplicationFile[] = [];
+  const knowledgeDir = "knowledge";
+  const localDir = "knowledge/local";
+  const appendFile = (relativePath: string, text: string) => {
+    files.push({ relativePath, bytes: Buffer.from(text), mode: 0o644 });
+  };
 
   const manifest = {
     org: values.orgName,
@@ -35,7 +49,7 @@ export function writeKnowledgeScaffold(
     ],
   };
 
-  writeText(
+  appendFile(
     join(knowledgeDir, "sources.json"),
     `${JSON.stringify(
       {
@@ -50,20 +64,18 @@ export function writeKnowledgeScaffold(
       null,
       2,
     )}\n`,
-    opts,
   );
-  writeText(join(localDir, "manifest"), `${JSON.stringify(manifest, null, 2)}\n`, opts);
-  writeText(
+  appendFile(join(localDir, "manifest"), `${JSON.stringify(manifest, null, 2)}\n`);
+  appendFile(
     join(localDir, "mission.md"),
     `# Mission\n\n_Add information about this agent's mission here._\n\n## What It Should Know\n\n_Add project or organization information, creator details, product context, policies, FAQs, and domain context here._\n\n## Useful Context\n\n_Add recurring decisions, important links, support notes, constraints, or other context this agent should use when helping visitors._\n`,
-    opts,
   );
-  writeText(
+  appendFile(
     join(localDir, "context.md"),
     `# Context\n\n## Background\n\n_Add project, product, organization, or domain background here._\n\n## Terms\n\n_Add vocabulary, abbreviations, entities, or concepts the agent should understand._\n\n## Workflows And Policies\n\n_Add recurring workflows, rules, policies, support notes, constraints, or escalation paths here._\n\n## Team Members\n\n_Add relevant team members, roles, ownership areas, or collaborators here if useful._\n\n## Contacts\n\n_Add support contacts, escalation paths, vendors, or external contacts here if useful._\n`,
-    opts,
   );
-  writeText(join(knowledgeDir, "README.md"), knowledgeReadme(), opts);
+  appendFile(join(knowledgeDir, "README.md"), knowledgeReadme());
+  return files;
 }
 
 function writeText(path: string, text: string, opts: KnowledgeScaffoldOptions): void {
@@ -75,17 +87,15 @@ function knowledgeReadme(): string {
   return `# Knowledge
 
 This directory is the agent's private knowledge base. Enable it in \`agent.yaml\`
-and configure it in \`augments/knowledge/augment.yaml\`:
+and configure its inline declaration:
 
 \`\`\`yaml
 # agent.yaml
 augments:
-  - knowledge
-
-# augments/knowledge/augment.yaml
-type: knowledge
-config:
-  root: ./knowledge
+  - name: knowledge
+    type: knowledge
+    options:
+      root: ./knowledge
 \`\`\`
 
 ## Files

@@ -1,111 +1,112 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { scaffoldCustomAugment } from "../../src/cli/scaffold-custom-augment";
+import { createCustomAugment } from "../../src/cli/commands/augment";
 
 let dir: string;
-
 beforeEach(() => {
-  dir = mkdtempSync(join(tmpdir(), "custom-augment-scaffold-"));
+  dir = realpathSync(mkdtempSync(join(tmpdir(), "custom-augment-scaffold-")));
 });
-
 afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-describe("scaffoldCustomAugment", () => {
-  test("creates a custom augment folder without a stranded skill", () => {
-    const target = join(dir, "weather");
-
-    const result = scaffoldCustomAugment({ slug: "weather", targetDir: target });
-
-    expect(result).toBe(target);
-    expect(existsSync(join(target, "augment.yaml"))).toBe(true);
-    expect(existsSync(join(target, "index.ts"))).toBe(true);
-    expect(existsSync(join(target, "SKILL.md"))).toBe(false);
-    expect(existsSync(join(target, "README.md"))).toBe(true);
-    expect(existsSync(join(target, "weather.test.ts"))).toBe(true);
-
-    const source = readFileSync(join(target, "index.ts"), "utf-8");
-    expect(source).toContain('from "auggy"');
-    expect(source).toContain('name: "weather"');
-    expect(source).toContain('name: "weather_echo"');
-    expect(source).toContain("export default function weather");
-    expect(source).toContain("perTrustLevel:");
-    expect(source).toContain('neverExpose: ["weather_echo"]');
-    expect(source).not.toContain("capabilities:");
-
-    const metadata = readFileSync(join(target, "augment.yaml"), "utf-8");
-    expect(metadata).toContain("type: custom");
-    expect(metadata).toContain("source: ./index.ts");
-    const readme = readFileSync(join(target, "README.md"), "utf-8");
-    expect(readme).not.toContain("augment install");
-    expect(readme.replace(/\s+/g, " ")).toContain("Route auth does not authorize model tools");
+describe("custom augment sample planner", () => {
+  test("plans project-owned source and separate tests without writing or generating metadata", () => {
+    const files = scaffoldCustomAugment({ slug: "crm-lookup" });
+    expect(files.map((file) => file.relativePath)).toEqual([
+      "src/augments/crm-lookup/index.ts",
+      "src/augments/crm-lookup/schemas.ts",
+      "src/augments/crm-lookup/service.ts",
+      "src/augments/crm-lookup/README.md",
+      "tests/augments/crm-lookup.test.ts",
+    ]);
+    expect(
+      files.some((file) => /augment.yaml|definition.ts|SKILL.md/.test(file.relativePath)),
+    ).toBe(false);
+    expect(existsSync(join(dir, "src"))).toBe(false);
+    const source = Buffer.from(files[0]!.bytes).toString();
+    expect(source).toContain('name: "crm_lookup_lookup_record"');
+    expect(source).toContain('auth: "creator"');
+    expect(source).toContain('context?.peer?.trustLevel !== "creator"');
+    expect(source).toContain("public: { neverExpose:");
+    expect(source).toContain("agent: { neverExpose:");
   });
 
-  test("writes an optional skill under the requested skills directory", () => {
-    const target = join(dir, "augments", "weather");
-    const skillTarget = join(dir, "skills", "weather");
+  test("skill opt-in uses only root skills and force always refuses", () => {
+    const files = scaffoldCustomAugment({ slug: "weather", includeSkill: true });
+    expect(files.at(-1)?.relativePath).toBe("skills/weather/SKILL.md");
+    expect(Buffer.from(files.at(-1)!.bytes).toString()).toContain(
+      "allowedTrustLevels:\n  - creator",
+    );
+    expect(() => scaffoldCustomAugment({ slug: "weather", force: true })).toThrow(
+      /no longer overwrites/,
+    );
+    for (const slug of ["Bad Name", "UPPER", "../outside", "a".repeat(51), "x/route", "-bad"]) {
+      expect(() => scaffoldCustomAugment({ slug })).toThrow(/Invalid augment slug/);
+    }
+    expect(scaffoldCustomAugment({ slug: "1-service" })).toHaveLength(5);
+  });
 
-    scaffoldCustomAugment({
-      slug: "weather",
-      targetDir: target,
-      skillTargetDir: skillTarget,
+  test("generated sample typechecks and tests execute against public package exports", async () => {
+    writeFileSync(join(dir, "agent.yaml"), "name: sample\naugments: []\n");
+    createCustomAugment({ slug: "lookup", cwd: dir });
+    mkdirSync(join(dir, "node_modules"));
+    symlinkSync(resolve(import.meta.dir, "../.."), join(dir, "node_modules", "auggy"), "dir");
+    symlinkSync(
+      dirname(Bun.resolveSync("zod/package.json", import.meta.dir)),
+      join(dir, "node_modules", "zod"),
+      "dir",
+    );
+    writeFileSync(
+      join(dir, "tsconfig.json"),
+      JSON.stringify({
+        extends: resolve(import.meta.dir, "../../tsconfig.json"),
+        include: ["src/**/*.ts", "tests/**/*.ts"],
+        exclude: [],
+      }),
+    );
+    const checker = Bun.spawn(
+      [
+        process.execPath,
+        resolve(import.meta.dir, "../../node_modules/typescript/bin/tsc"),
+        "--noEmit",
+        "--project",
+        join(dir, "tsconfig.json"),
+      ],
+      { cwd: dir, stdout: "pipe", stderr: "pipe" },
+    );
+    const [checkOutput, checkError, checkCode] = await Promise.all([
+      new Response(checker.stdout).text(),
+      new Response(checker.stderr).text(),
+      checker.exited,
+    ]);
+    expect({ checkCode, checkOutput, checkError }).toMatchObject({ checkCode: 0 });
+    const child = Bun.spawn([process.execPath, "test", "tests/augments/lookup.test.ts"], {
+      cwd: dir,
+      stdout: "pipe",
+      stderr: "pipe",
     });
-
-    expect(existsSync(join(target, "SKILL.md"))).toBe(false);
-    expect(existsSync(join(skillTarget, "SKILL.md"))).toBe(true);
-    const skill = readFileSync(join(skillTarget, "SKILL.md"), "utf-8");
-    expect(skill).toContain("name: weather");
-    expect(skill).toContain("allowedTrustLevels:\n  - creator");
-  });
-
-  test("supports hyphenated slugs", () => {
-    const target = join(dir, "crm-lookup");
-
-    scaffoldCustomAugment({ slug: "crm-lookup", targetDir: target });
-
-    const source = readFileSync(join(target, "index.ts"), "utf-8");
-    expect(source).toContain("interface CrmLookupOptions");
-    expect(source).toContain("crm_lookup_echo");
-    expect(source).toContain("function crm_lookup");
-  });
-
-  test("rejects invalid slugs", () => {
-    expect(() => scaffoldCustomAugment({ slug: "Bad Name", targetDir: join(dir, "bad") })).toThrow(
-      /invalid augment slug/i,
+    const [stdout, stderr, code] = await Promise.all([
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+      child.exited,
+    ]);
+    expect({ code, stdout, stderr }).toMatchObject({ code: 0 });
+    expect(stderr).toContain("4 pass");
+    expect(readFileSync(join(dir, "src/augments/lookup/README.md"), "utf-8")).toContain(
+      "system-of-record adapter",
     );
-  });
-
-  test("refuses to overwrite without --force", () => {
-    const target = join(dir, "weather");
-    scaffoldCustomAugment({ slug: "weather", targetDir: target });
-
-    expect(() => scaffoldCustomAugment({ slug: "weather", targetDir: target })).toThrow(
-      /already exists/i,
-    );
-  });
-
-  test("overwrites when force is true", () => {
-    const target = join(dir, "weather");
-    scaffoldCustomAugment({ slug: "weather", targetDir: target });
-    writeFileSync(join(target, "README.md"), "custom local edits");
-
-    scaffoldCustomAugment({ slug: "weather", targetDir: target, force: true });
-
-    expect(readFileSync(join(target, "README.md"), "utf-8")).toContain(
-      "Custom Auggy augment scaffolded",
-    );
-  });
-
-  test("force removes a legacy SKILL.md from the augment folder", () => {
-    const target = join(dir, "weather");
-    scaffoldCustomAugment({ slug: "weather", targetDir: target });
-    writeFileSync(join(target, "SKILL.md"), "legacy");
-
-    scaffoldCustomAugment({ slug: "weather", targetDir: target, force: true });
-
-    expect(existsSync(join(target, "SKILL.md"))).toBe(false);
-  });
+  }, 30000);
 });

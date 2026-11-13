@@ -1,0 +1,54 @@
+# Your Auggy application
+
+Turn business operations into agent-ready capabilities. Auggy replaces one-off
+integration glue with controlled, predictable TypeScript augments that bundle
+identity, authorization, schemas, tools, routes and domain logic.
+
+Install dependencies with `bun install` using Bun 1.3.14 or newer. Fill in the
+provider placeholders in the private `.env`, then run `bun run typecheck`,
+`bun test`, and `bun start`. Keep `.env` private; `.env.example` contains only
+placeholders. The installed Auggy package must support application contract 1.
+If startup reports an incompatible runtime, update the project dependency to an
+application-capable release or the exact candidate package you are testing,
+reinstall, and verify again. Files-only creation does not verify that installation.
+
+`bun run dev` currently starts the same managed application as `bun start`.
+`bun run cli` uses the local CLI and `{{CONFIG_FILE}}`. Neither script promises
+watch or hot reload. After dependency installation, `auggy run` and `auggy dev`
+also execute your declared application with the selected project-local runtime.
+
+Follow a request through your source:
+
+1. `src/index.ts` exports `main`, prepares composition, and starts the managed host.
+2. `src/agent.ts` binds your local turn recipe to the augments declared in
+   `{{CONFIG_FILE}}`; YAML is the single enabled-capability graph.
+3. `src/http.ts` mounts `POST /agent/run` and passes the original request to the
+   maintained adapter, which owns authentication, validation and durable delivery.
+4. `src/turn.ts` dispatches internal work, prepares the prompt, runs inference and
+   tools, handles required final answers, and finishes when the limit is exhausted.
+5. Each guarded tool invocation reaches an installed built-in or your own narrow
+   augment adapter. The runtime authorizes execution and settles history/accounting.
+
+Edit these files to change application behavior. `tests/application.test.ts`
+exercises recipe decisions without provider calls; run typecheck and tests after
+edits. Configured inference limits remain effective. The omitted application
+timeout currently means a 15-minute managed deadline. Dependency upgrades do not
+regenerate these owned files. TypeScript is trusted application code; deterministic
+authorization remains in guarded runtime operations and augment interfaces.
+
+Create business adapters with `auggy augment create orders --with-skill`. See
+`src/augments/README.md`. Root `skills/` is the single model-visible instruction
+surface; keep secrets and runtime data out of it. Mutable state belongs in ignored
+`data/`. Auggy does not replace application databases, durable workflows or systems
+of record. Run `auggy inspect` for passive configuration and installed source
+navigation. Its partial result is a navigation report, not a readiness check;
+custom paths do not prove an arbitrary TypeScript call graph. Built-in source
+remains in `node_modules/auggy/src`. To prevent Bun from reading `.env` at
+process startup as well, use:
+
+```bash
+bun --no-env-file node_modules/auggy/src/cli/index.ts inspect
+```
+
+`auggy routes` executes application configuration and augments. Inspect source
+and trust project code before running it.

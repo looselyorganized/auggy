@@ -102,10 +102,21 @@ matching documentation. Packed request, restart, and upgrade checks pass;
 engineers unfamiliar with the repository demonstrate improved traceability.
 
 Implementation proceeds through six gated milestones. Milestones 1–2 are accepted
-at verified main `209185d0`. Milestone 3 is implemented in
-[PR #227](https://github.com/looselyorganized/auggy/pull/227), with
-[acceptance evidence](./plans/milestone-3-evidence-2026-11-13.md) and final PR gates.
-Milestones 4–6 remain roadmap outcomes:
+at verified main `209185d0`. Milestone 3 landed through
+[PR #227](https://github.com/looselyorganized/auggy/pull/227), followed by the scoped
+full-analysis repair in [PR #228](https://github.com/looselyorganized/auggy/pull/228).
+M4's accepted main baseline is `911fe168`; its
+[execution plan](./plans/milestone-4-execution-2026-11-13.md),
+[specialist task ledger](./plans/milestone-4-tasks.json), and
+[execution evidence](./plans/milestone-4-evidence-2026-11-13.md) track implementation.
+Milestone 4 is implemented and certified for review in
+[PR #229](https://github.com/looselyorganized/auggy/pull/229), verified source
+`4fd2fff`. Independent product, harness, documentation and integrated architecture
+reviews are accepted. Actual generated-agent acceptance, full macOS/Linux release
+rehearsals, all required CI/PG17 checks and full CodeQL findings verification pass.
+These changes remain unmerged and unreleased; no package version or publication
+is implied by this milestone.
+Milestones 5–6 remain roadmap outcomes:
 
 | Milestone | Outcome | Exit gate |
 |---|---|---|
@@ -122,6 +133,14 @@ specialist ownership, contracts, dependencies and acceptance to a CTO-orchestrat
 subagent team. Its foundation gate is satisfied by reviewed, merged and verified
 main `209185d0`. Existing scope items below remain roadmap requirements; they
 are not permission to expand the current tranche.
+
+The M4 packet assigns central configuration, executable scaffolding, custom
+authoring, credential compatibility, passive inspection, migration and installed
+acceptance to bounded specialist roles. Its acceptance uses actual generated CLI
+output. M5 owns the standalone Next.js/Auggy deployment integration and generic
+Docker product work; M6 owns supported upgrades and external-engineer DX
+measurement. M4 preserves existing deployment and ownership contracts without
+claiming those later milestones are complete.
 
 ### 0.7.0 — the visitor
 

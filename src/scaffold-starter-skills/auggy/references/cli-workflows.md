@@ -29,6 +29,51 @@ auggy doctor
 auggy run
 ```
 
+The generated application owns `src/index.ts`, `src/agent.ts`, `src/http.ts`
+and `src/turn.ts`. `agent.yaml` is the sole enabled graph. The global CLI is a
+convenience; execution selects the project-local Auggy dependency. Pin matching
+core/provider versions and verify the installed package supports application
+contract 1. These authoring changes are unreleased; a published 0.5 package
+with the same version number is not this development implementation.
+
+For files-only automated creation, provide both provider and model:
+
+```bash
+auggy create my-agent --provider anthropic --model claude-sonnet-4-6 --yes --skip-install
+```
+
+This does not discover or pull models. An unpriced selection also needs explicit
+`--allow-unpriced-model`; `--yes` is not that acknowledgement. `auggy init` uses
+the same contract in the current directory and fails on generated-file collisions.
+Install the selected dependencies and configure private secrets before execution.
+
+## Inspect And Migrate
+
+`auggy inspect` reports declared entrypoints and installed built-in source paths
+without importing project code. A partial result is not a readiness check and
+custom path hints are not a proven TypeScript call graph. To prevent Bun from
+preloading `.env`, use the project-local binary explicitly:
+
+```bash
+bun --no-env-file node_modules/auggy/src/cli/index.ts inspect
+```
+
+Legacy run and read commands remain supported. Graph-changing commands require
+inline configuration. Preview conversion with `auggy migrate`, then use
+`auggy migrate --apply` after reviewing the result. Add `--application` separately
+to preview or adopt the owned source layout. Adoption requires a compatible local
+runtime already installed, refuses output collisions, and introduces the default
+15-minute managed application deadline. Config-only conversion retains legacy
+execution and does not move custom source. These commands do not install packages
+or hot-reload a running process; changes take effect on the next launch.
+
+Private recovery records under `.auggy/operations/` may include original inline
+secrets. Keep them ignored and out of deployment/model-visible content. Preview
+recovery with `auggy migrate --project-dir . --rollback <operation-id>`, then add
+`--apply`; changed outputs are not overwritten. This recovery selector works even
+when `agent.yaml` is absent. Dependency upgrades update managed runtime/built-ins
+without regenerating owned source or skills.
+
 ## Configure Provider Keys
 
 Provider keys belong in `.env` or provider-owned secret stores. Never put them
@@ -46,35 +91,49 @@ var name. Do not ask them to paste the secret value into chat.
 
 ## Configure AgentMail
 
-Create the inbox and runtime API key in the AgentMail Console first. Then
-install the canonical augment and connect that existing inbox:
+Install the canonical augment, then let its interactive setup menu select the
+appropriate provider operation:
 
 ```bash
 auggy augment add agentMail
-auggy augment setup agentMail --mode connect
+auggy augment setup agentMail
 ```
 
-AgentMail setup exposes only two modes:
+AgentMail setup supports these modes:
 
 | Mode | Use when | Behavior |
 | --- | --- | --- |
-| `connect` | An AgentMail inbox and runtime key already exist | Collects the inbox ID and exact key, verifies read access, and writes canonical local bindings without changing AgentMail resources |
-| `env` | Complete `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` credentials are already in `.env` | Reuses the exact stored values without creating an inbox or key |
+| `signup` | The operator needs a new AgentMail account | Creates the initial account and inbox, verifies the email code in an interactive terminal, and saves the initial key |
+| `existing` | The operator has an account key and wants a new inbox | Creates the inbox and stores that exact same account key for runtime use |
+| `manual` | An inbox and runtime key already exist | Verifies the inbox ID and exact key, then writes local bindings without creating provider resources |
+| `env` | Complete `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` credentials are already in `.env` | Revalidates and reuses those exact values |
 
-Interactive `connect` uses a masked key prompt. Automation may provide the
-canonical environment variable and inbox ID:
+`connect` remains an alias for `manual`. Interactive creation asks for operator
+confirmation. `signup` requires an interactive terminal for email verification;
+never collect verification codes or API keys in chat. The operator enters those
+directly into the CLI. Automated provider creation uses the dedicated
+`auggy agentmail setup` command; the generic `auggy augment setup` wrapper does
+not expose `--username` or `--yes`. With an account key supplied through the
+private `AGENTMAIL_API_KEY` environment variable:
 
 ```bash
-AGENTMAIL_API_KEY="$AGENTMAIL_API_KEY" \
-  auggy augment setup agentMail --mode connect \
-  --inbox-id "$AGENTMAIL_INBOX_ID"
+auggy agentmail setup agentMail --mode existing --username my-agent --yes
 ```
 
-Do not put a key in chat or a command argument. Auggy persists the exact
-supplied key and uses it at runtime. It never creates or adopts an inbox, or
-creates, narrows, rotates, or revokes API keys. To change
-credentials, update the operator-owned local or deployment secret source and
-run `connect` for the new explicit inbox/key pair.
+Choose `--yes` only after the operator authorizes inbox creation. Manual
+connection can use the canonical environment variables:
+
+```bash
+auggy augment setup agentMail --mode manual
+```
+
+Supply `AGENTMAIL_API_KEY` and `AGENTMAIL_INBOX_ID` through the operator's
+private process environment or the secure CLI prompt. Do not put a key in chat
+or a command argument. Auggy uses the selected key unchanged: it never exchanges
+it for a narrower runtime key, rotates it, or revokes it. `signup` saves its
+initial provider-issued key; `existing` and `manual` save the exact supplied key.
+To change configured credentials deliberately, update the private secret source
+and use manual connection or environment reuse.
 
 Before writing local files, setup verifies the configured inbox identity with
 `inbox_read`. When inbound or reviewed replies are enabled, it also performs
@@ -103,12 +162,19 @@ auggy augment setup visitorAuth --mode env
 
 The second command verifies and reuses the same stored values without changing
 provider resources. Omitting the target when both are installed fails closed
-instead of guessing. Automatic setup also refuses inline, renamed, or
-additional AgentMail consumers.
+instead of guessing. Automatic setup requires canonical inline declarations in `agent.yaml` and
+refuses legacy, renamed, custom, or additional same-type consumers. Migrate a
+legacy graph before setup; the migration itself does not contact AgentMail.
+
+`manual` and `env` only read from AgentMail. `signup` and `existing` can leave a
+remote account or inbox behind if a later step fails; inspect the AgentMail
+Console before retrying an ambiguous creation. Local activation checks that the
+configuration has not changed while setup was running. Do not assume a provider
+operation can be rolled back with local files.
 
 Setup is not an inbound on/off switch. After credentials are configured, enable
 inbound processing and reviewed replies in
-`augments/agentMail/augment.yaml`, confirm that the same runtime key has the
+the `agentMail` entry in `agent.yaml`, confirm that the same runtime key has the
 reported permissions, and restart:
 
 ```bash
@@ -230,5 +296,7 @@ bash skills/auggy/scripts/doctor-and-routes.sh
 bash skills/auggy/scripts/generate-route-clients.sh src/auggy-client.ts src/auggy-client.server.ts
 ```
 
-The helpers should not replace explaining the direct `auggy` commands to the
-creator.
+`summarize-auggy-project.sh` requires the project-local Auggy installation and
+runs passive inspection with Bun environment-file loading disabled. Other helpers
+that run `doctor` or `routes` execute configuration and augment code. Trust the
+project before using those. Explain the direct commands as well as the helpers.

@@ -1,29 +1,27 @@
 /**
  * auggy create <name> — scaffold a standalone agent project at `./<name>/`.
  *
- * Atomicity: the scaffold writes into a sibling `.tmp-<uuid>/` dir and lifts
- * it into place with a single `renameSync` at the end. If the process dies
- * mid-scaffold, the tempdir is left behind next to the intended project dir.
- *
- * Refuses if:
- *   - <name>/agent.yaml already exists at the canonical path
+ * Files are planned first, published with absence preconditions, and activated
+ * by central YAML last. Fresh create reserves its directory with exclusive mkdir.
+ * Interrupted publication uses the private authoring receipt for guarded recovery.
  */
 
-import { cpSync, existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readdirSync, realpathSync } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { confirm, input, password, select } from "@inquirer/prompts";
 import { stringify } from "yaml";
 import { AUGMENT_CATALOG, type CatalogEntry } from "../augment-catalog";
 import {
-  copyBundledSkill,
-  copyStarterSkills,
+  bundledSkillFiles,
+  starterSkillFiles,
   renderIdentityFromTemplate,
 } from "../scaffold-skills";
 import {
   formatPricing,
   listModelRegistry,
   listStaticModels,
+  lookupEnginePricing,
   type ModelRegistryEntry,
   type ModelRegistryResult,
 } from "../model-registry";
@@ -31,7 +29,7 @@ import {
   createModelSnapshot,
   customModelSelection,
   selectionFromModelRegistryEntry,
-  writeModelSnapshot,
+  MODEL_SNAPSHOT_RELATIVE_PATH,
   type ModelSnapshot,
   type ModelSnapshotSelection,
 } from "../model-snapshot";
@@ -49,15 +47,19 @@ import {
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 import { checkAgentRuntimeInstall, type RuntimeInstallCheck } from "../runtime-install-check";
 import { withEscRestart, WizardRestartRequested } from "../wizard-restart";
-import {
-  augmentIdForCatalogEntry,
-  writeBuiltinAugmentMetadata,
-  writeCustomAugmentsReadme,
-} from "../augment-metadata";
-import { writeKnowledgeScaffold } from "../scaffold-knowledge";
+import { planKnowledgeScaffold } from "../scaffold-knowledge";
 import { displayPath } from "../display-path";
-import { writeFileSafely } from "../safe-write";
 import { assertSecureCredentialTransport } from "../../engines/_shared/credential-transport";
+import { planApplicationScaffold } from "../scaffold-application";
+import { createMutationPlan } from "../authoring/mutation";
+import { publishMutationPlan } from "../authoring/publication";
+import type {
+  GeneratedApplicationFile,
+  PlannedFile,
+  PublicationFaultHook,
+} from "../authoring/contracts";
+import { inspectProjectRuntime } from "../project-runtime";
+import { VALID_NAME_RE } from "../agent-name";
 
 const PROVIDER_DEFAULTS: Record<Provider, { model: string; envVar: string }> = {
   anthropic: { model: "claude-sonnet-4-6", envVar: "ANTHROPIC_API_KEY" },
@@ -101,7 +103,11 @@ const cream = (s: string): string => ansi("38;2;251;247;235", s);
 const signal = (s: string): string => ansi("38;2;236;113;60", s);
 const green = (s: string): string => ansi("32", s);
 
-export interface CreateOpts {
+export interface CreateOptions {
+  provider?: string;
+  model?: string;
+  yes?: boolean;
+  allowUnpricedModel?: boolean;
   /**
    * Skip the post-scaffold `bun install` step. The agent's `package.json` is
    * still written; the operator can run `bun install` later. Useful for CI,
@@ -130,7 +136,11 @@ export interface CreateOpts {
   modelCacheDir?: string;
   /** Test seam: inject model registry lookup. */
   modelRegistry?: typeof listModelRegistry;
+  /** Explicit test-only publication injection; never selected by CLI or environment. */
+  publicationFault?: PublicationFaultHook;
 }
+
+export type CreateOpts = CreateOptions;
 
 export interface InitOpts extends CreateOpts {
   /** Optional explicit agent name. Defaults to the current directory basename. */
@@ -178,21 +188,23 @@ interface CreateModelChoiceResult {
  */
 async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<WizardAnswers> {
   // Interactive engine selection.
-  const provider = await withEscRestart((ctx) =>
-    select<Provider>(
-      {
-        message: "Model provider:",
-        choices: [
-          { name: "anthropic — Claude models", value: "anthropic" },
-          { name: "openai — GPT models", value: "openai" },
-          { name: "openrouter — any model via OpenRouter", value: "openrouter" },
-          { name: "ollama — local LLM (Qwen, Llama, & more)", value: "ollama" },
-        ],
-        default: "anthropic",
-      },
-      ctx,
-    ),
-  );
+  const provider =
+    (opts.provider as Provider | undefined) ??
+    (await withEscRestart((ctx) =>
+      select<Provider>(
+        {
+          message: "Model provider:",
+          choices: [
+            { name: "anthropic — Claude models", value: "anthropic" },
+            { name: "openai — GPT models", value: "openai" },
+            { name: "openrouter — any model via OpenRouter", value: "openrouter" },
+            { name: "ollama — local LLM (Qwen, Llama, & more)", value: "ollama" },
+          ],
+          default: "anthropic",
+        },
+        ctx,
+      ),
+    ));
 
   // Ollama-specific: ask whether it runs locally or against a remote host.
   let ollamaBaseURL: string | undefined;
@@ -297,7 +309,7 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
   });
   let modelChoices = modelChoiceResult.choices;
 
-  if (isOllamaLocal) {
+  if (isOllamaLocal && !opts.model) {
     const installed = await listInstalledOllamaModels();
     const { recommended, other } = partitionByRecommended(installed);
     if (recommended.length > 0) {
@@ -359,18 +371,20 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
     console.log();
   }
 
-  const modelSelection = await withEscRestart((ctx) =>
-    select<string>(
-      {
-        message: "Model:",
-        choices: [
-          ...modelChoices,
-          { name: "Custom — type your own model ID", value: CUSTOM_SENTINEL },
-        ],
-      },
-      ctx,
-    ),
-  );
+  const modelSelection =
+    opts.model ??
+    (await withEscRestart((ctx) =>
+      select<string>(
+        {
+          message: "Model:",
+          choices: [
+            ...modelChoices,
+            { name: "Custom — type your own model ID", value: CUSTOM_SENTINEL },
+          ],
+        },
+        ctx,
+      ),
+    ));
 
   let model: string;
   let selectedSnapshot: ModelSnapshotSelection;
@@ -382,7 +396,7 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
   } else {
     model = modelSelection;
     selectedSnapshot = selectedChoice?.snapshot ?? customModelSelection(provider, model);
-    if (selectedChoice && !selectedChoice.priced) {
+    if (!selectedSnapshot.pricingKnown) {
       await confirmUnpricedModel(model);
     }
   }
@@ -467,30 +481,109 @@ async function runWizard(agentName: string, opts: CreateOpts = {}): Promise<Wiza
   };
 }
 
-export async function runCreate(name: string, opts: CreateOpts): Promise<void> {
-  const finalDir = resolve(opts.cwd ?? process.cwd(), name);
-
-  if (existsSync(finalDir)) {
+function validateCreateOptions(name: string, opts: CreateOptions): void {
+  if (!VALID_NAME_RE.test(name)) {
     throw new Error(
-      `Agent "${name}" already exists at ${finalDir}.\n\n` +
-        "  Use a different directory name, or remove the existing directory.",
+      "Use an agent name containing letters, digits, underscores or hyphens, starting with a letter or digit.",
     );
   }
+  if (opts.provider !== undefined && !Object.hasOwn(PROVIDER_DEFAULTS, opts.provider)) {
+    throw new Error("Supported providers: anthropic, openai, openrouter, ollama.");
+  }
+  if (
+    opts.model !== undefined &&
+    (!opts.model ||
+      opts.model.trim() !== opts.model ||
+      Buffer.byteLength(opts.model) > 4096 ||
+      [...opts.model].some(
+        (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
+      ))
+  )
+    throw new Error("Supply a nonempty, bounded model ID without control characters.");
+  if (opts.yes && (!opts.provider || !opts.model)) {
+    throw new Error("Automated creation requires --yes --provider <id> --model <id>.");
+  }
+  if (opts.yes && opts.refreshModels) {
+    throw new Error("--refresh-models is interactive-only; omit it when using --yes.");
+  }
+}
 
+async function automatedAnswers(name: string, opts: CreateOptions): Promise<WizardAnswers> {
+  const provider = opts.provider as Provider;
+  const model = opts.model!;
+  const result = await buildModelChoicesForCreate(provider, {
+    useCache: opts.useModelCache === true,
+    cacheDir: opts.modelCacheDir,
+    listRegistry: opts.modelRegistry,
+  });
+  const selected =
+    result.choices.find((choice) => choice.value === model)?.snapshot ??
+    customModelSelection(provider, model);
+  // Pricing tables also recognize aliases and Ollama's existing zero-cost policy.
+  const pricing = selected.pricing ?? lookupEnginePricing(provider, model);
+  if (pricing) {
+    selected.pricing = pricing;
+    selected.pricingKnown = true;
+  }
+  if (!selected.pricingKnown) {
+    if (!opts.allowUnpricedModel) {
+      throw new Error(
+        "This model has no known pricing. Choose a priced model or explicitly pass --allow-unpriced-model; --yes does not acknowledge missing budget enforcement.",
+      );
+    }
+    printCustomModelWarning(model, true);
+  }
+  return {
+    provider,
+    model,
+    modelSnapshot: createModelSnapshot({
+      provider,
+      refreshRequested: false,
+      warnings: result.warnings,
+      selected,
+    }),
+    displayName: name,
+    operatorName: DEFAULT_OPERATOR_NAME,
+    purpose: DEFAULT_PURPOSE,
+    augments: AUGMENT_CATALOG.filter((entry) => entry.stability === "core"),
+    orgName: DEFAULT_ORG_NAME,
+    orgPurpose: DEFAULT_ORG_PURPOSE,
+    knowledgeSelected: false,
+    ollamaBaseURL: undefined,
+    ollamaNeedsBearer: false,
+    providedEnv: {},
+  };
+}
+
+function pathExists(path: string): boolean {
+  try {
+    lstatSync(path);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+export async function runCreate(name: string, opts: CreateOpts = {}): Promise<void> {
+  validateCreateOptions(name, opts);
+  const finalDir = join(realpathSync(opts.cwd ?? process.cwd()), name);
+  if (pathExists(finalDir)) {
+    throw new Error(
+      `Agent destination already exists: ${finalDir}. Choose a new sibling directory.`,
+    );
+  }
   await runCreateIntoDir(name, finalDir, opts, "create");
 }
 
 export async function runInit(opts: InitOpts = {}): Promise<void> {
-  const finalDir = resolve(opts.cwd ?? process.cwd());
+  const selectedDir = resolve(opts.cwd ?? process.cwd());
+  if (!lstatSync(selectedDir).isDirectory() || lstatSync(selectedDir).isSymbolicLink()) {
+    throw new Error("Initialize a real project directory, not a symbolic link.");
+  }
+  const finalDir = realpathSync(selectedDir);
   const name = opts.name?.trim() || basename(finalDir);
-  if (!name || name === "." || name === "/") {
-    throw new Error(
-      "Could not infer an agent name from the current directory. Pass `auggy init <name>`.",
-    );
-  }
-  if (existsSync(join(finalDir, "agent.yaml"))) {
-    throw new Error(`This directory is already an Auggy agent project: ${finalDir}`);
-  }
+  validateCreateOptions(name, opts);
   await runCreateIntoDir(name, finalDir, opts, "init");
 }
 
@@ -500,22 +593,17 @@ async function runCreateIntoDir(
   opts: CreateOpts,
   mode: "create" | "init",
 ): Promise<void> {
-  // Wizard loop — Esc at any prompt restarts from the engine-provider
-  // step. We only print the welcome banner on the first attempt; restart
-  // attempts skip it to keep the terminal scrollback clean.
   let attempt = 0;
   let answers: WizardAnswers;
   for (;;) {
     if (attempt === 0) printWelcome();
     try {
-      answers = await runWizard(name, opts);
+      answers = opts.yes ? await automatedAnswers(name, opts) : await runWizard(name, opts);
       break;
     } catch (err) {
       if (err instanceof WizardRestartRequested) {
         attempt += 1;
-        console.log();
-        console.log(dim("  ↺ Restarted (Esc pressed)"));
-        console.log();
+        console.log("\n  ↺ Restarted (Esc pressed)\n");
         continue;
       }
       throw err;
@@ -538,151 +626,140 @@ async function runCreateIntoDir(
     providedEnv,
   } = answers;
 
+  const application = planApplicationScaffold({ configFileName: "agent.yaml" });
   const id = `aug1_${randomUUID()}`;
-
-  // Stage everything into a sibling `.tmp-<uuid>` dir beside the final project.
-  // The rename at the end is the atomic publish step.
-  const stagingParent = join(finalDir, "..");
-  mkdirSync(stagingParent, { recursive: true });
-  const tempDir = join(stagingParent, `.tmp-${randomUUID()}`);
-
-  try {
-    mkdirSync(tempDir, { recursive: true });
-    mkdirSync(join(tempDir, "skills"), { recursive: true });
-    mkdirSync(join(tempDir, "data", "workspace"), { recursive: true });
-    writeFileSync(join(tempDir, "data", "workspace", "README.md"), WORKSPACE_README);
-    mkdirSync(join(tempDir, "augments"), { recursive: true });
-    writeCustomAugmentsReadme(tempDir);
-    copyStarterSkills(tempDir);
-
-    console.log();
-    console.log(dim(" Adding core augments..."));
-    console.log();
-    for (const entry of augments) {
-      copyBundledSkill(entry.type, tempDir);
-      writeBuiltinAugmentMetadata(tempDir, entry, optionsForLayout(entry, name, { project: true }));
-      console.log(`   ${green("✓")} ${cream(entry.defaultName)} ${dim(`(${entry.type})`)}`);
-    }
-
-    const config = buildAgentYaml(id, name, augments, {
-      provider,
-      model,
-      displayName,
-      operatorName,
-      purpose,
-      ollamaBaseURL,
-    });
-    writeFileSync(join(tempDir, "agent.yaml"), config);
-    writeModelSnapshot(tempDir, modelSnapshot);
-
-    writeFileSync(
-      join(tempDir, "identity.md"),
-      renderIdentityFromTemplate({
-        agentName: name,
+  const file = (
+    relativePath: string,
+    text: string,
+    fileMode = 0o644,
+  ): GeneratedApplicationFile => ({
+    relativePath,
+    bytes: Buffer.from(text),
+    mode: fileMode,
+  });
+  const generated: GeneratedApplicationFile[] = [
+    ...application.files,
+    ...starterSkillFiles(),
+    ...augments.flatMap((entry) => bundledSkillFiles(entry.type)),
+    file(
+      "agent.yaml",
+      buildAgentYaml(id, name, augments, {
+        provider,
+        model,
         displayName,
-        purpose,
         operatorName,
+        purpose,
+        ollamaBaseURL,
       }),
-    );
+    ),
+    file(MODEL_SNAPSHOT_RELATIVE_PATH, `${JSON.stringify(modelSnapshot, null, 2)}\n`, 0o600),
+    file(
+      "identity.md",
+      renderIdentityFromTemplate({ agentName: name, displayName, purpose, operatorName }),
+    ),
+    file("data/workspace/README.md", WORKSPACE_README),
+    file(".gitignore", GITIGNORE),
+  ];
+  if (augments.some((entry) => entry.type === "fileMemory"))
+    generated.push(file("learned-behaviors.md", ""));
+  if (knowledgeSelected)
+    generated.push(...planKnowledgeScaffold({ orgName, orgPurpose, creatorName: operatorName }));
 
-    if (augments.some((e) => e.type === "fileMemory")) {
-      writeFileSync(join(tempDir, "learned-behaviors.md"), "");
-    }
+  const placeholderEnvVars = collectEnvVars(augments, provider).filter(
+    (value) => !AUTO_GENERATED_ENV_VARS.has(value) && !providedEnv[value],
+  );
+  if (ollamaNeedsBearer && !providedEnv.OLLAMA_API_KEY) placeholderEnvVars.push("OLLAMA_API_KEY");
+  const autoGenLines: string[] = [];
+  const webTransport = augments.find((entry) => entry.type === "webTransport");
+  if (webTransport) {
+    autoGenLines.push(`AUGGY_WEB_TOKEN=${randomBytes(32).toString("hex")}`);
+    autoGenLines.push(`AUGGY_AGENT_ID=${id}`);
+    const port = (webTransport.defaultOptions as { port?: number }).port ?? 8080;
+    autoGenLines.push(`AUGGY_PUBLIC_URL=http://localhost:${port}`);
+  }
+  for (const [key, value] of Object.entries(providedEnv)) autoGenLines.push(`${key}=${value}`);
+  const exampleEnvVars = collectEnvVars(augments, provider).filter(
+    (value) => !AUTO_GENERATED_ENV_VARS.has(value),
+  );
+  if (ollamaNeedsBearer) exampleEnvVars.push("OLLAMA_API_KEY");
+  generated.push(file(".env", buildEnv(autoGenLines, placeholderEnvVars), 0o600));
+  generated.push(file(".env.example", buildEnv([], exampleEnvVars)));
 
-    if (knowledgeSelected) {
-      writeKnowledgeScaffold(
-        tempDir,
-        { orgName, orgPurpose, creatorName: operatorName },
-        { overwrite: true },
-      );
-    }
-
-    // Build .env with both auto-generated values AND empty placeholders for
-    // env vars the operator still needs to fill.
-    const placeholderEnvVars = collectEnvVars(augments, provider).filter(
-      (v) => !AUTO_GENERATED_ENV_VARS.has(v) && !providedEnv[v],
-    );
-    if (ollamaNeedsBearer && !providedEnv.OLLAMA_API_KEY) placeholderEnvVars.push("OLLAMA_API_KEY");
-
-    const autoGenLines: string[] = [];
-    if (augments.some((e) => e.type === "webTransport")) {
-      autoGenLines.push(`AUGGY_WEB_TOKEN=${randomBytes(32).toString("hex")}`);
-      autoGenLines.push(`AUGGY_AGENT_ID=${id}`);
-      const webTransportEntry = augments.find((e) => e.type === "webTransport");
-      const port =
-        (webTransportEntry?.defaultOptions as { port?: number } | undefined)?.port ?? 8080;
-      autoGenLines.push(`AUGGY_PUBLIC_URL=http://localhost:${port}`);
-    }
-    for (const [key, value] of Object.entries(providedEnv)) {
-      autoGenLines.push(`${key}=${value}`);
-    }
-    writeFileSafely(join(tempDir, ".env"), buildEnv(autoGenLines, placeholderEnvVars), {
-      mode: 0o600,
-    });
-    const exampleEnvVars = collectEnvVars(augments, provider).filter(
-      (v) => !AUTO_GENERATED_ENV_VARS.has(v),
-    );
-    if (ollamaNeedsBearer) exampleEnvVars.push("OLLAMA_API_KEY");
-    writeFileSync(join(tempDir, ".env.example"), buildEnv([], exampleEnvVars));
-    writeFileSync(join(tempDir, ".gitignore"), GITIGNORE);
-
-    const auggyVersion = getAuggyVersion();
-    const packageSpecifiers = resolveScaffoldPackageSpecifiersForCreate({
-      cwd: finalDir,
-      provider,
-      version: auggyVersion,
-    });
-    writeFileSync(
-      join(tempDir, "package.json"),
+  // An existing init manifest is a collision, never an input to workspace discovery.
+  // Preflight every selected output before any package discovery reads the target.
+  if (mode === "init") {
+    assertGeneratedDestinationsAvailable(finalDir, [
+      ...generated,
+      { relativePath: "package.json" },
+    ]);
+  }
+  const packageSpecifiers = resolveScaffoldPackageSpecifiersForCreate({
+    cwd: finalDir,
+    provider,
+    version: getAuggyVersion(),
+  });
+  generated.push(
+    file(
+      "package.json",
       buildAgentPackageJson({
         agentName: name,
-        auggyVersion,
+        auggyVersion: getAuggyVersion(),
         packageSpecifiers,
         provider,
         augments,
+        application: application.packageFields,
       }),
+    ),
+  );
+
+  // Reserve a new directory without replacing a concurrent empty directory.
+  // It is visible before activation; publication does not claim whole-tree atomicity.
+  if (mode === "create") {
+    try {
+      mkdirSync(finalDir);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+        throw new Error(
+          `Agent destination appeared concurrently: ${finalDir}. Choose a new sibling directory.`,
+        );
+      }
+      throw error;
+    }
+  }
+  assertGeneratedDestinationsAvailable(finalDir, generated);
+  const files: PlannedFile[] = generated.map((entry) => ({
+    ...entry,
+    before: { path: join(finalDir, entry.relativePath), exists: false },
+    role:
+      entry.relativePath === "agent.yaml"
+        ? "activation"
+        : entry.relativePath === ".gitignore"
+          ? "ignore"
+          : entry.relativePath === ".env"
+            ? "new-env"
+            : "support",
+  }));
+  const plan = createMutationPlan({
+    kind: "init",
+    projectDir: finalDir,
+    configRelativePath: "agent.yaml",
+    inputs: files.map((entry) => entry.before),
+    files,
+    summary: files.map((entry) => ({
+      path: entry.relativePath,
+      operation: "create",
+      reason: "Create owned application file",
+    })),
+  });
+  const publication = publishMutationPlan(plan, { fault: opts.publicationFault });
+  if (publication.status !== "complete") {
+    throw new Error(
+      `Application publication ${publication.status}; the project is not ready. Preserve private operation ${publication.operationId}. Preview recovery: auggy migrate --project-dir ${shellArgument(finalDir)} --rollback ${publication.operationId}. Review that plan before adding --apply.`,
     );
-
-    // No per-agent metadata file is written for fresh agents. createdAt
-    // derives from the dir's filesystem birthtime/mtime, and there is no
-    // cloud record until `auggy deploy` runs.
-  } catch (err) {
-    try {
-      rmSync(tempDir, { recursive: true, force: true });
-    } catch {
-      // best-effort
-    }
-    throw err;
   }
-
-  // Atomic publish: rename the staging dir into the canonical path.
-  // If the target appeared between the existsSync check above and now,
-  // renameSync throws ENOTEMPTY/EEXIST — we clean up the staging dir and
-  // surface a clear error.
-  try {
-    if (mode === "init") {
-      cpSync(tempDir, finalDir, { recursive: true });
-      rmSync(tempDir, { recursive: true, force: true });
-    } else {
-      renameSync(tempDir, finalDir);
-    }
-  } catch (err) {
-    try {
-      rmSync(tempDir, { recursive: true, force: true });
-    } catch {
-      // best-effort
-    }
-    if (
-      (err as NodeJS.ErrnoException).code === "ENOTEMPTY" ||
-      (err as NodeJS.ErrnoException).code === "EEXIST"
-    ) {
-      throw new Error(
-        `Agent "${name}" was created concurrently at ${finalDir}.\n\n` +
-          `  Use a different name, or remove the existing one with \`auggy remove ${name}\`.`,
-      );
-    }
-    throw err;
-  }
+  console.log("\n Adding core augments...\n");
+  for (const entry of augments)
+    console.log(`   ${green("✓")} ${cream(entry.defaultName)} ${dim(`(${entry.type})`)}`);
 
   // bun install — populates <finalDir>/node_modules so `auggy dev` can resolve
   // the engine + augment packages. Fail-soft: a failed install leaves the
@@ -693,7 +770,12 @@ async function runCreateIntoDir(
     console.log();
     console.log(dim(" Installing dependencies..."));
     console.log();
-    const result = await runBunInstall(finalDir, opts.bunInstallSpawn);
+    let result: Awaited<ReturnType<typeof runBunInstall>>;
+    try {
+      result = await runBunInstall(finalDir, opts.bunInstallSpawn);
+    } catch {
+      result = { ok: false, code: 1, stderr: "" };
+    }
     installOk = result.ok;
     if (!installOk) {
       console.log();
@@ -706,8 +788,8 @@ async function runCreateIntoDir(
         `  Then:   ${mode === "init" ? "auggy run" : `cd ${displayPath(finalDir, opts.cwd)} && auggy run`}`,
       );
       console.log();
-    } else if (!opts.bunInstallSpawn || opts.runtimeInstallCheck) {
-      const runtimeCheck = (opts.runtimeInstallCheck ?? checkAgentRuntimeInstall)(finalDir);
+    } else {
+      const runtimeCheck = (opts.runtimeInstallCheck ?? checkApplicationRuntimeInstall)(finalDir);
       runtimeInstallOk = runtimeCheck.ok;
       if (!runtimeInstallOk) {
         console.log();
@@ -723,7 +805,12 @@ async function runCreateIntoDir(
   console.log();
   console.log(signal(" ─────────────────────────────────────────────"));
   console.log();
-  console.log(` ${green("✓")} ${bold(cream(`Agent "${name}" created`))}`);
+  const state = opts.skipInstall
+    ? "files created (dependencies not verified)"
+    : installOk && runtimeInstallOk
+      ? "created (application runtime verified)"
+      : "files created (not ready)";
+  console.log(` ${green("✓")} ${bold(cream(`Agent "${name}" ${state}`))}`);
   console.log(`   ${dim(displayPath(finalDir, opts.cwd))}`);
   console.log();
   console.log(` ${bold("Next steps:")}`);
@@ -734,6 +821,9 @@ async function runCreateIntoDir(
   }
   if (opts.skipInstall) {
     console.log(`   ${cream(`${step++}.`)}  bun install`);
+    console.log(
+      `   ${cream(`${step++}.`)}  bun run typecheck   ${dim("(check public application API)")}`,
+    );
   } else if (!installOk) {
     console.log(
       `   ${cream(`${step++}.`)}  bun install   ${dim("(retry — earlier attempt failed)")}`,
@@ -754,17 +844,83 @@ async function runCreateIntoDir(
     );
   }
   console.log(`   ${cream(`${step++}.`)}  auggy doctor`);
-  console.log(`   ${cream(`${step++}.`)}  auggy run`);
+  console.log(
+    `   ${cream(`${step++}.`)}  auggy run${opts.skipInstall ? "   (verifies installed application contract 1)" : ""}`,
+  );
   console.log();
+  if (!installOk || !runtimeInstallOk) {
+    throw new Error(
+      "Application files are intact, but dependencies are not ready. Correct the package selection and retry bun install, then bun run typecheck and auggy run.",
+    );
+  }
 }
 
 function relativeCreatePath(finalDir: string, cwd: string | undefined): string {
-  const baseDir = resolve(cwd ?? process.cwd());
+  const baseDir = realpathSync(cwd ?? process.cwd());
   if (dirname(finalDir) === baseDir) return basename(finalDir);
   return finalDir;
 }
 
-function printCustomModelWarning(modelId: string): void {
+function shellArgument(value: string): string {
+  return `'${value.replaceAll("'", "'\"'\"'")}'`;
+}
+
+/** Inspect every generated destination without opening existing customer files. */
+function assertGeneratedDestinationsAvailable(
+  projectDir: string,
+  files: readonly Pick<GeneratedApplicationFile, "relativePath">[],
+): void {
+  const collisions = new Set<string>();
+  for (const file of files) {
+    let current = projectDir;
+    const segments = file.relativePath.split("/");
+    for (const [index, segment] of segments.entries()) {
+      const names = readdirSync(current);
+      const matches = names.filter((name) => name.toLowerCase() === segment.toLowerCase());
+      const match = matches[0];
+      if (match === undefined) break;
+      const relativePath = segments.slice(0, index).concat(match).join("/");
+      if (match !== segment || matches.length > 1) {
+        collisions.add(relativePath);
+        break;
+      }
+      current = join(current, match);
+      const stats = lstatSync(current);
+      if (index === segments.length - 1 || stats.isSymbolicLink() || !stats.isDirectory()) {
+        collisions.add(relativePath);
+        break;
+      }
+    }
+  }
+  if (collisions.size > 0) {
+    // JSON escaping keeps hostile pre-existing filenames from becoming terminal controls.
+    const paths = [...collisions]
+      .slice(0, 100)
+      .map((path) => JSON.stringify(path))
+      .join(", ");
+    throw new Error(
+      `Generated-file collisions: ${paths}. No project files were written. Create a sibling service with auggy create <new-name>, or manually review and move these files first.`,
+    );
+  }
+}
+
+const checkApplicationRuntimeInstall: RuntimeInstallCheck = (projectDir) => {
+  try {
+    const legacy = checkAgentRuntimeInstall(projectDir);
+    if (!legacy.ok) return legacy;
+    inspectProjectRuntime(projectDir, { applicationContract: 1 });
+    return { ok: true };
+  } catch {
+    return {
+      ok: false,
+      message:
+        "Installed Auggy does not expose a valid project-local application contract 1 runtime.",
+      fix: "Select an application-capable Auggy dependency or the exact candidate tarball in package.json, run bun install, then bun run typecheck and auggy run.",
+    };
+  }
+};
+
+function printCustomModelWarning(modelId: string, acknowledged = false): void {
   console.log();
   console.log(`⚠ Warning: "${modelId}" is not in the pricing table.`);
   console.log();
@@ -779,7 +935,7 @@ function printCustomModelWarning(modelId: string): void {
   console.log(`      inputUsdPerMtok: <number>`);
   console.log(`      outputUsdPerMtok: <number>`);
   console.log();
-  console.log(`Confirm at the next prompt to proceed, or decline to abort.`);
+  if (!acknowledged) console.log(`Confirm at the next prompt to proceed, or decline to abort.`);
   console.log();
 }
 
@@ -1007,7 +1163,12 @@ function buildAgentYaml(
         maxCausalDepth: 8,
       },
     },
-    augments: augments.map((entry) => augmentIdForCatalogEntry(entry)),
+    application: { entrypoint: "./src/index.ts", contractVersion: 1 },
+    augments: augments.map((entry) => ({
+      name: entry.defaultName,
+      type: entry.type,
+      options: optionsForLayout(entry, name, { project: true }),
+    })),
   };
 
   return `# Agent configuration\n\n${stringify(config)}`;
@@ -1088,7 +1249,8 @@ function buildEnv(autoGenLines: string[], placeholderVars: string[]): string {
   return `${lines.join("\n")}\n`;
 }
 
-const GITIGNORE = `.env
+const GITIGNORE = `.auggy/
+.env
 .env.local
 workspace/
 data/

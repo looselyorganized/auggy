@@ -1,0 +1,109 @@
+import { describe, expect, test } from "bun:test";
+import type { ManagedTurnSession, TurnCompletion } from "auggy/application";
+import { turnProgram } from "../src/turn";
+
+type Scenario =
+  | "internal"
+  | "prepared-terminal"
+  | "answer"
+  | "tool-terminal"
+  | "final-answer"
+  | "final-terminal"
+  | "continue"
+  | "exhausted"
+  | "failure";
+
+// Unit doubles test recipe decisions. Real receipt authority belongs to the runtime.
+function session(scenario: Scenario) {
+  const calls: string[] = [];
+  const completion = {} as TurnCompletion;
+  const answer = { kind: "answer", reason: "answer" } as Awaited<
+    ReturnType<ManagedTurnSession["infer"]>
+  >;
+  let remaining = scenario === "exhausted" ? 0 : 1;
+  const turn = {
+    turnId: "unit-turn",
+    threadId: "unit-thread",
+    triggerType: "message",
+    signal: new AbortController().signal,
+    get inferenceCount() {
+      return 1 - remaining;
+    },
+    get remainingInferences() {
+      return remaining;
+    },
+    async dispatchInternalTurn() {
+      calls.push("internal");
+      return scenario === "internal" ? { handled: true, completion } : { handled: false };
+    },
+    async preparePrompt() {
+      calls.push("prepare");
+      return scenario === "prepared-terminal"
+        ? { kind: "terminal", completion }
+        : { kind: "ready" };
+    },
+    async infer() {
+      calls.push("infer");
+      remaining--;
+      if (scenario === "failure") throw new Error("provider failed");
+      return scenario === "answer" ? answer : { kind: "tools", toolCallCount: 1 };
+    },
+    async executeTools() {
+      calls.push("tools");
+      if (scenario === "tool-terminal") return { kind: "terminal", completion };
+      if (scenario === "final-answer" || scenario === "final-terminal")
+        return { kind: "final-answer-required" };
+      return { kind: "continue" };
+    },
+    async inferFinal() {
+      calls.push("final");
+      return scenario === "final-terminal" ? { kind: "terminal", completion } : answer;
+    },
+    async refreshPrompt() {
+      calls.push("refresh");
+    },
+    complete() {
+      calls.push("complete");
+      return completion;
+    },
+    finishAtLimit() {
+      calls.push("limit");
+      return completion;
+    },
+    stop() {
+      throw new Error("Unexpected early stop");
+    },
+  } as ManagedTurnSession;
+  return { turn, calls, completion };
+}
+
+describe("application turn recipe", () => {
+  const cases: [Scenario, string[]][] = [
+    ["internal", ["internal"]],
+    ["prepared-terminal", ["internal", "prepare"]],
+    ["answer", ["internal", "prepare", "infer", "complete"]],
+    ["tool-terminal", ["internal", "prepare", "infer", "tools"]],
+    ["final-answer", ["internal", "prepare", "infer", "tools", "final", "complete"]],
+    ["final-terminal", ["internal", "prepare", "infer", "tools", "final"]],
+    ["continue", ["internal", "prepare", "infer", "tools", "refresh", "limit"]],
+    ["exhausted", ["internal", "prepare", "limit"]],
+  ];
+  for (const [scenario, expected] of cases) {
+    test(scenario, async () => {
+      const fixture = session(scenario);
+      expect(await turnProgram.run(fixture.turn)).toBe(fixture.completion);
+      expect(fixture.calls).toEqual(expected);
+    });
+  }
+
+  test("provider failure propagates to managed cleanup without invoking tools", async () => {
+    const fixture = session("failure");
+    await expect(turnProgram.run(fixture.turn)).rejects.toThrow("provider failed");
+    expect(fixture.calls).toEqual(["internal", "prepare", "infer"]);
+  });
+
+  test("the application keeps configured inference and default timeout limits", () => {
+    expect(turnProgram.maxInferences).toBeUndefined();
+    expect(turnProgram.timeoutMs).toBeUndefined();
+  });
+});

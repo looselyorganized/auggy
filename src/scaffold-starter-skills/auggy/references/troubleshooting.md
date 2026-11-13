@@ -62,7 +62,7 @@ Symptom: custom augment fails to import or does not expose expected routes/tools
 
 Fix:
 
-1. Confirm `augments/<name>/augment.yaml` has `type: custom` and `source`.
+1. Confirm the inline `<name>` declaration in `agent.yaml` has `type: custom` and a project-relative `source`, normally `./src/augments/<name>/index.ts`.
 2. Confirm the source exports a default function.
 3. Confirm the function returns `defineAugment({...})`.
 4. Run focused tests for the augment if present.

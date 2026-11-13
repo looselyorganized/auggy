@@ -1,0 +1,13 @@
+import { lookupInput, type SampleRecord } from "./schemas";
+
+// Sample read-only business logic. Replace this fixture with your system-of-record adapter.
+const sample: Readonly<SampleRecord> = Object.freeze({
+  id: "SAMPLE-001",
+  status: "ready",
+  label: "Example record",
+});
+
+export function lookupRecord(input: unknown): SampleRecord | null {
+  const { id } = lookupInput.parse(input);
+  return id === sample.id ? { ...sample } : null;
+}

@@ -20,6 +20,7 @@ export const APPLICATION_BOUNDS = Object.freeze({
   reapMs: 5_000,
   outputBytes: 2 * 1024 * 1024,
   sourceBytes: 2 * 1024 * 1024,
+  artifactSourceFiles: 128,
   artifactBytes: 256 * 1024 * 1024,
 });
 
@@ -169,7 +170,8 @@ export function inspectApplicationArtifact(input: PackedArtifactInput): PackedAr
     "Packed artifact identity mismatch",
   );
   check(
-    input.sourceFiles.length > 0 && input.sourceFiles.length <= 64,
+    input.sourceFiles.length > 0 &&
+      input.sourceFiles.length <= APPLICATION_BOUNDS.artifactSourceFiles,
     "Artifact source evidence must be explicit and bounded",
   );
   const fileHashes: Record<string, string> = { "package.json": applicationHash(manifestBytes) };

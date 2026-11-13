@@ -1,0 +1,16 @@
+# Configuration formatting can change; business meaning and owned files cannot.
+id: aug1_00000000-0000-4000-8000-000000000004
+name: migration-sample
+engine:
+  provider: anthropic
+  model: claude-sonnet-4-6
+settings:
+  maxIterations: 7
+augments:
+  - identity
+  - orders
+  - name: inline-web
+    type: webFetch
+    options:
+      maxChars: 12000
+      allowedDomains: [example.com]
