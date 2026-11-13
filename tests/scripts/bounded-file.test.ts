@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { readBoundedRegularFile } from "../../scripts/release-smoke/bounded-file";
 import { readApplicationJsonLines } from "../../scripts/release-smoke/application-http";
+import { applicationArtifact } from "../../scripts/release-smoke/application-artifacts";
 
 let root: string;
 let path: string;
@@ -99,6 +100,30 @@ test("rejects a FIFO without waiting for a writer", () => {
   expect(child.signal).toBeNull();
   expect(child.status).toBe(0);
   expect(child.stdout).toBe("rejected FIFO");
+});
+
+test("artifact inventory hashes a bounded regular archive and rejects a final symlink", async () => {
+  const staging = join(root, "package");
+  fs.mkdirSync(staging);
+  fs.writeFileSync(
+    join(staging, "package.json"),
+    JSON.stringify({ name: "fixture", version: "1.0.0" }),
+  );
+  fs.writeFileSync(join(staging, "index.ts"), "// Packaging fixture; never executed.\n");
+  const archive = join(root, "fixture.tgz");
+  const packed = spawnSync(
+    "tar",
+    ["-czf", archive, "-C", root, "package/package.json", "package/index.ts"],
+    { timeout: 2000 },
+  );
+  expect(packed.status).toBe(0);
+  const artifact = await applicationArtifact(archive, "fixture");
+  expect(artifact.sha256).toMatch(/^[a-f0-9]{64}$/);
+  expect(artifact.sourceFiles).toContain("package.json");
+  expect(artifact.sourceFiles).toContain("index.ts");
+  const alias = join(root, "alias.tgz");
+  fs.symlinkSync(archive, alias);
+  await expect(applicationArtifact(alias, "fixture")).rejects.toThrow("symbolic links");
 });
 
 test("diagnostic reads retry concurrent appends and return the complete stable records", () => {

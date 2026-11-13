@@ -26,8 +26,8 @@ export async function applicationArtifact(
   path: string,
   packageName: string,
 ): Promise<PackedArtifactInput> {
-  const selected = resolve(path);
-  const file = join(realpathSync(dirname(selected)), basename(selected));
+  const selectedPath = resolve(path);
+  const file = join(realpathSync(dirname(selectedPath)), basename(selectedPath));
   const { bytes } = readBoundedRegularFile(file, APPLICATION_BOUNDS.artifactBytes);
   const list = (flag: string) => {
     const result = spawnSync("tar", [flag, file], {
