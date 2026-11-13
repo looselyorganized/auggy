@@ -61,35 +61,37 @@ direct new-message, reply, and forward tools. Incoming wake-up and automatic
 reply-draft creation remain off.
 
 ```yaml
-# augments/agentMail/augment.yaml
-type: agentMail
-config:
-  apiKey: ${AGENTMAIL_API_KEY}
-  inboxId: ${AGENTMAIL_INBOX_ID}
-  emailAddress: ${AGENTMAIL_INBOX_EMAIL}
-  addressVisibility: creator
-  dbPath: ./data/agent-mail/agentMail/orchestration.db
-  inbound:
-    mode: none
-  replies:
-    mode: disabled
-    allowReplyAll: false
-  drafts:
-    allowNew: false
-    allowReply: false
-    allowReplyAll: false
-    allowForward: true
-  outbound:
-    allowedTrustLevels:
-      - creator
-    subjectPrefix: "[Auggy] "
-    maxRecipients: 10
-    bodyMaxBytes: 102400
-    allowDirectDelivery: true
-    rateLimit:
-      globalMaxPerHour: 10
-      perRecipientCooldownMs: 300000
-      dedupWindowMs: 300000
+# agent.yaml
+augments:
+  - name: agentMail
+    type: agentMail
+    options:
+      apiKey: ${AGENTMAIL_API_KEY}
+      inboxId: ${AGENTMAIL_INBOX_ID}
+      emailAddress: ${AGENTMAIL_INBOX_EMAIL}
+      addressVisibility: creator
+      dbPath: ./data/agent-mail/agentMail/orchestration.db
+      inbound:
+        mode: none
+      replies:
+        mode: disabled
+        allowReplyAll: false
+      drafts:
+        allowNew: false
+        allowReply: false
+        allowReplyAll: false
+        allowForward: true
+      outbound:
+        allowedTrustLevels:
+          - creator
+        subjectPrefix: "[Auggy] "
+        maxRecipients: 10
+        bodyMaxBytes: 102400
+        allowDirectDelivery: true
+        rateLimit:
+          globalMaxPerHour: 10
+          perRecipientCooldownMs: 300000
+          dedupWindowMs: 300000
 ```
 
 | Key | Values | Description |
@@ -117,7 +119,8 @@ Add these blocks to the base configuration to receive from any well-formed
 sender and create provider-native reply drafts for review:
 
 ```yaml
-config:
+# Merge these options into the agentMail entry in agent.yaml.
+options:
   inbound:
     mode: websocket
     allowAnySender: true
@@ -164,7 +167,8 @@ The generated baseline already allows creator-requested direct sends. Replace
 its `outbound` block to change recipient scope, branding, or limits:
 
 ```yaml
-config:
+# Merge these options into the agentMail entry in agent.yaml.
+options:
   outbound:
     allowedTrustLevels:
       - creator
@@ -210,15 +214,17 @@ Forward message <message-id> to owner@example.com.
 `visitorAuth` can use the same key and inbox for outbound magic links:
 
 ```yaml
-# augments/visitorAuth/augment.yaml
-type: visitorAuth
-config:
-  publicUrl: ${AUGGY_PUBLIC_URL}
-  signingKey: ${VISITOR_SIGNING_KEY}
-  agentMail:
-    transport: agentmail
-    apiKey: ${AGENTMAIL_API_KEY}
-    inboxId: ${AGENTMAIL_INBOX_ID}
+# agent.yaml
+augments:
+  - name: visitorAuth
+    type: visitorAuth
+    options:
+      publicUrl: ${AUGGY_PUBLIC_URL}
+      signingKey: ${VISITOR_SIGNING_KEY}
+      agentMail:
+        transport: agentmail
+        apiKey: ${AGENTMAIL_API_KEY}
+        inboxId: ${AGENTMAIL_INBOX_ID}
 ```
 
 | Key | Values | Description |
@@ -239,7 +245,8 @@ Reads are bounded and creator-only. Mutations remain off until explicitly
 enabled:
 
 ```yaml
-config:
+# Merge these options into the agentMail entry in agent.yaml.
+options:
   mailbox:
     maxListResults: 50
     maxSearchQueryBytes: 1024
@@ -273,7 +280,8 @@ Inbound reply drafts are controlled by `replies`. Creator-created or adopted
 drafts use the separate `drafts` controls:
 
 ```yaml
-config:
+# Merge these options into the agentMail entry in agent.yaml.
+options:
   drafts:
     allowNew: true
     allowReply: true
@@ -309,7 +317,8 @@ bytes before send, so drafts containing attachments must be sent in AgentMail.
 Permanent message, thread, and draft deletion is a separate destructive gate:
 
 ```yaml
-config:
+# Merge these options into the agentMail entry in agent.yaml.
+options:
   destructive:
     allowPermanentDelete: true
 ```
@@ -326,7 +335,8 @@ changes a label instead of permanently deleting the provider object.
 After configuring a named `notify` destination, add:
 
 ```yaml
-config:
+# Merge these options into the agentMail entry in agent.yaml.
+options:
   notifications:
     destination: creator
     maxAttempts: 3

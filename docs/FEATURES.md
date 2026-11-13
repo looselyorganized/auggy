@@ -1,11 +1,13 @@
 # Auggy Feature Status
 
-This file describes the code that is published or currently present on `main`.
+This file distinguishes published capabilities from code in this checkout.
 It is a status index, not a roadmap.
 
 Status values:
 
 - **Published** — available in the latest stable npm release.
+- **Unreleased** — implemented in this checkout for the next release; not available
+  merely by installing the current stable npm version.
 - **Preview** — implemented for deliberate experimentation; its API or
   production posture may still change.
 - **Unsupported** — deliberately unavailable; nearby foundations must not be
@@ -26,6 +28,10 @@ When this file disagrees with code, code wins.
 | Creator console | Published | [`21`](./21-console.md) | Chat-first per-agent browser surface with integration guidance |
 | Console capability runtime map | Published | [`21`](./21-console.md) | Observed augments, routes, tools, memory, skills, reported safeguards, issues, and notes |
 | CLI create/run/doctor lifecycle | Published | root [`README`](../README.md) | Scaffold, local operation, diagnostics, and background process commands |
+| Project-owned application scaffold | Unreleased | root [`README`](../README.md), [`02`](./02-architecture-overview.md) | Visible startup, composition, HTTP handler and turn orchestration; managed safeguards remain in the selected local package |
+| Central augment authoring | Unreleased | [`07`](./07-built-in-augments.md) | Inline YAML is the enabled graph; custom schema/service/tool/route source and optional root skills remain project-owned |
+| Passive source inspection | Unreleased | root [`README`](../README.md), [`02`](./02-architecture-overview.md) | `auggy inspect` reports declared execution and selected installed source paths without importing the agent; partial inspection is not runtime readiness |
+| Explicit authoring migration | Unreleased | root [`README`](../README.md), [contract](./plans/milestone-4-contracts/migration.md) | Read-only preview, opt-in application adoption, guarded publication and receipt rollback; legacy operational commands remain supported |
 | Railway deploy | Published | [`18`](./18-deploy.md) | Railway-first staging, secrets, persistent volume, and health verification |
 | Keyed turn scheduling | Published | [`04`](./04-kernel.md), [`08`](./08-agent-lifecycle.md) | Bounded agent/source/thread admission and process-local outcome-unknown quarantine |
 | Runtime-state inventory and fenced recovery | Published | [`27`](./27-runtime-state-recovery.md) | Offline single-replica volume bundles, verification, exact resume, and mandatory downstream reconciliation |

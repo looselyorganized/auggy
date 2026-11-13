@@ -5,7 +5,12 @@ schema, tool and route adapter, sample lookup service, and focused tests. Replac
 the sample with a narrow adapter to your existing system of record. Augments own
 identity, authorization, schemas, tools, routes and domain logic.
 
-The command registers the capability once in the central YAML. Optional
+The command creates `src/augments/orders/{index.ts,schemas.ts,service.ts,README.md}`
+and `tests/augments/orders.test.ts`, then registers the capability once in
+`agent.yaml`. The starter tool and GET route share one lookup service and require
+creator identity; keep both authorization checks when replacing sample data.
+Omit `--with-skill` when no model instructions are needed. Existing source,
+tests, declarations, or requested skills cause a collision error, not replacement. Optional
 instructions live at `skills/orders/SKILL.md`; root `skills/` is the only mounted
 skill surface. Removing a declaration retains your source and skills; retained
 skills remain model-visible until you explicitly remove them.

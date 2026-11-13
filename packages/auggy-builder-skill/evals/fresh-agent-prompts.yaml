@@ -3,7 +3,7 @@ version: 3
 skillPath: ../auggy
 owners:
   - Auggy core
-lastUpdated: 2026-07-30
+lastUpdated: 2026-11-13
 purpose: >
   Forward-test whether a fresh coding agent can use the Auggy skill to explain,
   scaffold, extend, connect, and troubleshoot a self-hosted Auggy agent without prior
@@ -41,7 +41,8 @@ cases:
       - scripts/detect-auggy-env.sh
       - scripts/doctor-and-routes.sh
     successCriteria:
-      - uses auggy create or bunx auggy create without extra tarball ceremony
+      - distinguishes the published npm release from the unreleased authoring layout
+      - uses auggy create or bunx auggy create for the selected release without implying npm already contains unreleased changes
       - runs auggy doctor before auggy run
       - says provider keys belong in .env or secret stores
       - does not ask the user to paste secret values into chat
@@ -58,11 +59,16 @@ cases:
       - references/routes-tools-augments.md
     requiredAssets:
       - assets/templates/custom-augment/index.ts.txt
-      - assets/templates/custom-augment/domain.ts.txt
+      - assets/templates/custom-augment/service.ts.txt
       - assets/templates/custom-augment/schemas.ts.txt
+      - assets/templates/custom-augment/augment.test.ts.txt
+      - assets/templates/custom-augment/agent.yaml.fragment.txt
     successCriteria:
-      - creates code under augments/<name>
-      - keeps skills/<name>/SKILL.md separate from augment runtime source
+      - creates code under src/augments/<name>
+      - keeps skills/<name>/SKILL.md separate from augment runtime source and creates it only with --with-skill
+      - registers one inline custom source declaration in agent.yaml
+      - distinguishes the creator-only generated sample from deliberately public app routes
+      - runs generated tests under tests/augments/<name>.test.ts
       - keeps domain logic separate from route and tool wrappers
       - uses defineRoute and defineTool with Zod schemas
       - does not use the legacy raw-object augment API
@@ -184,12 +190,18 @@ cases:
       - references/routes-tools-augments.md
     requiredAssets:
       - assets/templates/custom-augment/index.ts.txt
-      - assets/templates/custom-augment/domain.ts.txt
+      - assets/templates/custom-augment/service.ts.txt
       - assets/templates/custom-augment/schemas.ts.txt
+      - assets/templates/custom-augment/augment.test.ts.txt
+      - assets/templates/custom-augment/agent.yaml.fragment.txt
     successCriteria:
       - discovers the Auggy skill from the request without explicit invocation
       - reads the custom augment route and tool reference before answering
-      - keeps skills/<name>/SKILL.md separate from augment runtime source
+      - creates code under src/augments/<name>
+      - keeps skills/<name>/SKILL.md separate from augment runtime source and creates it only with --with-skill
+      - registers one inline custom source declaration in agent.yaml
+      - distinguishes the creator-only generated sample from deliberately public app routes
+      - runs generated tests under tests/augments/<name>.test.ts
       - keeps shared domain logic separate from route and tool wrappers
       - does not use the legacy raw-object augment API
       - selects route auth explicitly

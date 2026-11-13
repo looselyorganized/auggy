@@ -26,7 +26,9 @@ nearby `auggy-*.tgz` never replaces a registry dependency. An explicitly declare
 core `file:` tarball is copied and rebased into the bundle. A source directory or
 workspace link is a development dependency: materialize a packed or released
 runtime before deploying it. Application entry files are included with the other
-project-owned source.
+project-owned source. Startup executes the declared application through the
+selected local runtime. This is the existing standalone service deployment path;
+no Next.js integration or new hosting topology is generated here.
 
 ```bash
 # 1. Make sure the agent runs locally
@@ -44,7 +46,7 @@ The CLI walks you through:
 2. **Presence + auth checks** — confirms `railway` is installed and logged in.
 3. **Workspace selection** — Auggy discovers Railway workspaces from your logged-in Railway CLI session and lets you choose where the deploy belongs.
 4. **Project selection** — create a new Railway project in that workspace, or use an existing project from that workspace. You can still pass `--project <project-id>` to skip prompts and deploy into a known existing project. For scripted first deploys, pass `--project-name <name>` plus `--workspace <workspace-name-or-id>`.
-5. **Bundle staging** — copies your agent directory minus `.env`, `*.db*`, `workspace/`, `node_modules/`, `.git/`, `.worktrees/`, `.claude/`, `.DS_Store`, `*.tmp` into a temp dir. The agent's `package.json` + `bun.lock` are included so the image can install your pinned deps.
+5. **Bundle staging** — copies your agent directory minus private environment files, SQLite state, `workspace/`, `data/`, `node_modules/`, `.git/`, `.worktrees/`, `.claude/`, `.auggy/` (including private recovery receipts), `.DS_Store`, and temporary files into a temp dir. The agent's `package.json` + `bun.lock` are included so the image can install your pinned deps.
 6. **Dockerfile + entrypoint generation** — written into the staging dir. Static and intentionally not operator-tunable. The image copies `package.json` + `bun.lock` first, runs `bun install` to materialize `node_modules/` inside the image, then COPYs the rest of the agent dir; the entrypoint verifies the installed local CLI and executes it directly with Bun 1.3.14. A missing local executable fails startup instead of downloading another package.
 7. **Secrets diff + confirm** — shows what's about to be pushed to Railway (with values redacted). Decline aborts the deploy. Pass `--yes` to skip.
 8. **Railway service selection** — by default Auggy creates a new service named `<name>` in the selected project. Pass `--service <name-or-id>` to deploy into an existing Railway service instead.
@@ -171,13 +173,15 @@ The CLI installs `layeredMemory` with explicit memory writes enabled and
 auto-extraction disabled:
 
 ```yaml
-# augments/layeredMemory/augment.yaml
-type: layeredMemory
-config:
-  backend: sqlite
-  dbPath: ./data/memory.db
-  autoSave:
-    enabled: false
+# agent.yaml
+augments:
+  - name: layeredMemory
+    type: layeredMemory
+    options:
+      backend: sqlite
+      dbPath: ./data/memory.db
+      autoSave:
+        enabled: false
 ```
 
 If you enable auto-save programmatically with an extraction engine,
@@ -201,12 +205,10 @@ extraction engines.
 ```yaml
 # agent.yaml
 augments:
-  - budgets
-
-# augments/budgets/augment.yaml
-type: budgets
-config:
-  dailyBudgetUsd: 5.00
+  - name: budgets
+    type: budgets
+    options:
+      dailyBudgetUsd: 5.00
 ```
 
 This caps total daily spend (user-facing + extraction). If the cap is hit,
@@ -370,12 +372,15 @@ cloud entirely, set `adminRoute: false` and use a local or SSH-tunneled console.
 
 The `visitorAuth` augment requires a `publicUrl` for magic-link email
 rendering. On Railway, the deploy command sets `AUGGY_PUBLIC_URL` to the
-generated domain BEFORE the first boot. In `augments/visitorAuth/augment.yaml`:
+generated domain BEFORE the first boot. In the `visitorAuth` entry in `agent.yaml`:
 
 ```yaml
-type: visitorAuth
-config:
-  publicUrl: ${AUGGY_PUBLIC_URL}
+# agent.yaml (augment entry)
+augments:
+  - name: visitorAuth
+    type: visitorAuth
+    options:
+      publicUrl: ${AUGGY_PUBLIC_URL}
 ```
 
 The interpolation resolves at boot. First deploys work because the deploy
@@ -391,9 +396,11 @@ auggy augment setup visitorAuth --mode connect
 Create the inbox and API key in AgentMail first. Setup verifies that exact key
 against that exact inbox, writes `AGENTMAIL_API_KEY` and
 `AGENTMAIL_INBOX_ID` to `.env`, and updates
-`augments/visitorAuth/augment.yaml` to use `agentMail.transport: agentmail`.
-Auggy retains the supplied key unchanged and never creates, narrows, rotates,
-replaces, or revokes a provider key.
+the `visitorAuth` entry in `agent.yaml` to use `agentMail.transport: agentmail`.
+This manual connection path retains the supplied key unchanged and performs
+provider reads only. Guided setup also offers account/inbox creation; see
+[AgentMail setup](./19-visitor-auth.md#agentmail-setup). Auggy never exchanges
+a selected key for a narrower key, rotates it, or revokes it.
 
 When the agent also mounts `agentMail`, both augments share one inbox and
 API key. A single interactive add coordinates that topology with one setup
@@ -526,12 +533,12 @@ contract connects them to a common bounded signal boundary.
 | `Agent "X" not registered` | Run `auggy create X` first, then `cd X && auggy deploy`. |
 | First-deploy fails at `railway volume add` | The Railway project may not support volumes on the free tier. Upgrade or pick a different project. |
 | Deploy preflight fails before Railway work | Run `auggy doctor` and fix the reported config/env/dependency issue. |
-| Deploy preflight fails because webTransport is not on 8080 | Set `port: 8080` under `config` in `augments/webTransport/augment.yaml`. |
+| Deploy preflight fails because webTransport is not on 8080 | Set `port: 8080` under `options` in the `webTransport` entry in `agent.yaml`. |
 | Health check does not pass after deploy | Run `auggy logs` and inspect the boot error. The cloud record is still written, so redeploy with `auggy deploy --yes` after fixing. |
-| visitorAuth refuses to boot — "publicUrl required" | Check that `augments/visitorAuth/augment.yaml` has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy` to refresh. |
+| visitorAuth refuses to boot — "publicUrl required" | Check that the `visitorAuth` entry in `agent.yaml` has `publicUrl: ${AUGGY_PUBLIC_URL}` and the deploy actually generated a domain. Re-run `auggy deploy` to refresh. |
 | Deploy preflight fails because visitorAuth uses console mail | If `agentMail` is installed, run `auggy augment setup agentMail --mode connect` followed by `auggy augment setup visitorAuth --mode env`; otherwise run `auggy augment setup visitorAuth --mode connect`. Set `allowConsoleInProduction: true` only for smoke tests where log-visible magic links are acceptable. |
 | Deploy preflight fails because MCP has an enabled `stdio` server | Use a remote HTTPS MCP server for cloud, or mark the local server `cloud: "disabled"` in `.mcp.json`. |
 | Runtime refuses to start with a volume-admission error | Confirm Railway mounted a real volume at exactly `/app/data`, exposes `RAILWAY_VOLUME_MOUNT_PATH=/app/data`, and permits the generated entrypoint to set the root to mode `0700`. Remove symlinked state directories; the startup probe intentionally fails before state can fall back to ephemeral disk. |
 | Memory disappears after redeploy | Check Railway dashboard → service → Volumes and confirm the mount is `/app/data`. Core SQLite augments resolve directly to that root; do not repair this by adding an `/app/*.db` symlink. |
 | Console chats disappear after restart | Confirm the database exists at `/app/data/console-chat.db`, the service still has the `/app/data` volume attached, `webTransport.consoleChat.dbPath` is not `null`, and the service is configured for one replica. An explicit custom path must remain below `/app/data`. |
-| Daily budget cap hit unexpectedly | If you enabled autoSave with an extraction engine, extraction calls count against the cap. Run `bun run packages/evals/src/layered-memory/smoke.ts` to measure your per-extraction cost; lower the cadence in `augments/layeredMemory/augment.yaml` if needed. |
+| Daily budget cap hit unexpectedly | If you enabled autoSave with an extraction engine, extraction calls count against the cap. Run `bun run packages/evals/src/layered-memory/smoke.ts` to measure your per-extraction cost; lower the cadence in the `layeredMemory` entry in `agent.yaml` if needed. |

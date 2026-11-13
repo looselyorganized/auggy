@@ -113,7 +113,17 @@ describe("auggy builder skill fresh-agent eval prompts", () => {
     for (const testCase of customCases) {
       expect(testCase.requiredReferences).toContain("references/routes-tools-augments.md");
       const criteria = testCase.successCriteria.join("\n");
+      expect(criteria, testCase.id).toContain("creates code under src/augments/<name>");
       expect(criteria, testCase.id).toContain("keeps skills/<name>/SKILL.md separate");
+      expect(criteria, testCase.id).toContain("only with --with-skill");
+      expect(criteria, testCase.id).toContain("one inline custom source declaration in agent.yaml");
+      expect(testCase.requiredAssets).toContain("assets/templates/custom-augment/service.ts.txt");
+      expect(testCase.requiredAssets).toContain(
+        "assets/templates/custom-augment/augment.test.ts.txt",
+      );
+      expect(testCase.requiredAssets).toContain(
+        "assets/templates/custom-augment/agent.yaml.fragment.txt",
+      );
       expect(criteria, testCase.id).toContain("does not use the legacy raw-object augment API");
       expect(criteria, testCase.id).toContain("selects route auth explicitly");
       expect(criteria, testCase.id).toContain(

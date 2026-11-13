@@ -1,6 +1,6 @@
 # 12 — Budgets Augment Reference
 
-> Operator reference for the `budgets` augment — per-trust-level turn budgets, anonymous rate ceiling, dollar spend cap, and the BATS preamble. Source: `src/augments/budgets.ts` and `src/augments/budgets/`.
+> Operator reference for the `budgets` augment — per-trust-level turn budgets, anonymous rate ceiling, dollar spend cap, and the BATS preamble. Source: `src/augments/budgets/index.ts` and `src/augments/budgets/`.
 
 ## 1. Overview
 
@@ -35,20 +35,18 @@ Minimal CLI project config:
 ```yaml
 # agent.yaml
 augments:
-  - budgets
-
-# augments/budgets/augment.yaml
-type: budgets
-config:
-  dbPath: ./data/budgets.db
-  caps:
-    public:
-      anonymous:
-        maxTurnsPerThread: 5
-      recognized:
-        maxTurnsPerThread: 20
-        maxTurnsPerDay: 50
-  anonymousGlobalLimit: 60
+  - name: budgets
+    type: budgets
+    options:
+      dbPath: ./data/budgets.db
+      caps:
+        public:
+          anonymous:
+            maxTurnsPerThread: 5
+          recognized:
+            maxTurnsPerThread: 20
+            maxTurnsPerDay: 50
+      anonymousGlobalLimit: 60
 ```
 
 Programmatic setup:
@@ -69,9 +67,9 @@ const budget = budgets({
 });
 ```
 
-Enable it with `auggy augment add budgets` or add it to your agent's
-`augments` array and create `augments/budgets/augment.yaml`. No other wiring is
-needed — the kernel detects `turnGate` automatically.
+Enable it with `auggy augment add budgets`, or merge the inline entry above
+into `agent.yaml`'s `augments` sequence. The kernel detects `turnGate`
+automatically; no second TypeScript registration is needed.
 
 ## 3. Configuration reference
 
@@ -105,7 +103,8 @@ All `BudgetCaps` fields are optional. Omit a field to leave that dimension uncon
 Budget notifications are optional and only apply when `dailyBudgetUsd` is configured. They require the `notify` augment to be mounted with a matching destination name.
 
 ```yaml
-config:
+# Merge these options into the budgets entry in agent.yaml.
+options:
   dbPath: ./data/budgets.db
   dailyBudgetUsd: 50
   notifications:
@@ -262,7 +261,8 @@ By default, the store does not automatically purge old rows. `turn_reservations`
 Set `retentionDays` to a positive integer to enable built-in cleanup during the budgets maintenance pass:
 
 ```yaml
-config:
+# Merge these options into the budgets entry in agent.yaml.
+options:
   dbPath: ./data/budgets.db
   retentionDays: 30
 ```
@@ -342,7 +342,7 @@ Calendar days roll at midnight UTC. Peers whose activity spans a UTC midnight ge
 - **Retention export / archive hook** — optional export before purging old accounting rows.
 - **Burst allowances** — carry unused budget across days or allow temporary bursts above the daily cap.
 
-See [ROADMAP.md](../../docs/ROADMAP.md) for the authoritative list.
+See [ROADMAP.md](./ROADMAP.md) for the authoritative list.
 
 ## Cross-references
 

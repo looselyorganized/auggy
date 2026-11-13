@@ -41,4 +41,14 @@ Create business adapters with `auggy augment create orders --with-skill`. See
 surface; keep secrets and runtime data out of it. Mutable state belongs in ignored
 `data/`. Auggy does not replace application databases, durable workflows or systems
 of record. Run `auggy inspect` for passive configuration and installed source
-navigation; `auggy routes` executes application configuration and augments.
+navigation. Its partial result is a navigation report, not a readiness check;
+custom paths do not prove an arbitrary TypeScript call graph. Built-in source
+remains in `node_modules/auggy/src`. To prevent Bun from reading `.env` at
+process startup as well, use:
+
+```bash
+bun --no-env-file node_modules/auggy/src/cli/index.ts inspect
+```
+
+`auggy routes` executes application configuration and augments. Inspect source
+and trust project code before running it.

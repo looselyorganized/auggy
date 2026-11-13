@@ -18,15 +18,15 @@ only when you want to create or repair the MCP config file manually.
 
 ```yaml
 augments:
-  - mcp
+  - name: mcp
+    type: mcp
 ```
 
 `.mcp.json` is the source of truth for server definitions.
 
-This keeps MCP in one place. You do not copy server command strings into
-`agent.yaml`; `agent.yaml` says "this agent uses MCP,"
-`augments/mcp/augment.yaml` says "use the built-in MCP augment," and
-`.mcp.json` says "these are the servers."
+The inline `mcp` declaration in `agent.yaml` enables the built-in augment;
+`.mcp.json` configures its servers. Do not duplicate server commands in
+`agent.yaml` or create a per-augment YAML file.
 
 Supported connection classes:
 

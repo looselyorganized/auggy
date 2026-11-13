@@ -8,7 +8,8 @@ routes, and domain logic. The application remains the system of record.
 
 The core product idea:
 
-- a small TypeScript kernel runs agent turns,
+- project-owned TypeScript shows startup, HTTP dispatch and turn orchestration,
+- a small installed kernel enforces guarded operations,
 - augments package the capabilities around those turns,
 - agent projects remain ordinary files and TypeScript,
 - operators install only what a particular agent needs.
@@ -18,7 +19,8 @@ The core product idea:
 | Primitive | What it is | Use it for |
 | --- | --- | --- |
 | Agent | Portable configured project | identity, engine, skills, enabled augments |
-| Kernel | Fixed turn runtime | context assembly, model calls, tool loops, results |
+| Application | Owned `src/index.ts`, `agent.ts`, `http.ts`, `turn.ts` | visible startup, request wiring and turn recipe |
+| Kernel | Guarded turn runtime | identity, context, authorization, accounting, cancellation and settlement |
 | Augment | Runtime module mounted at boot | tools, context, memory, transports, lifecycle, policy |
 | Tool | Typed model-callable function | lookup, drafting, communication, action |
 | Skill | Markdown teaching file | when and how to use capabilities |
@@ -30,17 +32,24 @@ Augments are infrastructure. Tools are mechanism. Skills are teaching.
 ## A Turn
 
 ```text
-inbound message
-  -> transport identifies the peer
-  -> augments contribute context and memory
-  -> kernel calls the configured model
-  -> model requests typed tools when needed
-  -> kernel validates and executes tool calls
-  -> transport returns the result
+src/index.ts prepares composition and starts the managed host
+  -> src/agent.ts binds src/turn.ts to agent.yaml's enabled graph
+  -> src/http.ts handles POST /agent/run through web.agentRun(originalRequest)
+  -> maintained transport authenticates, validates and schedules the request
+  -> src/turn.ts calls prompt, inference, tool and completion operations
+  -> a built-in or src/augments/<name>/ adapter performs authorized work
+  -> maintained transport returns the durable result
 ```
 
-The runtime is turn-oriented. It does not currently provide a durable workflow
-engine or persistent job queue.
+Open these files in a generated project; they are the code that executes.
+`auggy inspect` reports declared paths and selected installed sources without
+running code. The installed runtime and built-ins remain in `node_modules/auggy/src`.
+A dependency update changes managed code, while engineers review changes needed
+in their own execution recipe and capability adapters.
+
+The runtime is turn-oriented. Optional Durable Jobs persist and schedule one
+complete trusted turn on one replica; they do not checkpoint every model/tool
+step or replace a durable business workflow engine or system of record.
 
 ## Choosing An Extension Point
 

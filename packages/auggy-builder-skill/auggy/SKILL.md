@@ -35,7 +35,7 @@ For any "what can you do?" or "how do I build X?" request:
 6. Recommend the smallest extension point that solves the goal.
 7. Give concrete commands or file paths only after naming the tradeoff.
 
-Do not pretend to inspect `agent.yaml`, `augments/*`, `.mcp.json`, `.env`, or
+Do not pretend to inspect `agent.yaml`, `src/*`, `.mcp.json`, `.env`, or
 generated clients unless those files are available through a mounted tool or
 the creator pasted their contents. A fresh scaffold normally exposes `skills/`
 and `data/workspace/`, not the full project root.
@@ -174,15 +174,25 @@ add command, then run its dedicated setup command:
 
 ```bash
 auggy augment add agentMail
-auggy augment setup agentMail --mode connect
+auggy augment setup agentMail
 ```
 
-The creator must create the inbox and API key in AgentMail first. `connect`
-collects that existing inbox ID and the exact runtime key through a masked
-prompt, verifies safe read capabilities, and stores the same key as
-`AGENTMAIL_API_KEY`. Auggy does not sign up, create or adopt inboxes, or create,
-narrow, replace, rotate, or revoke keys. Never ask the creator to paste a key
-into chat.
+The interactive menu offers `signup` (new account and inbox), `existing` (new
+inbox in an existing account), `manual` (existing inbox and key), and `env`
+(reuse complete local credentials). `connect` is an alias for `manual`.
+`signup` requires an interactive terminal for email verification; the operator
+enters verification codes directly into that terminal. Never ask for keys or
+verification codes in chat. Provider creation requires the operator's explicit
+confirmation. Automated `existing` setup uses the dedicated
+`auggy agentmail setup agentMail --mode existing --username <name> --yes`
+command with a privately supplied account key; the generic `augment setup`
+wrapper does not expose those creation flags.
+
+Auggy stores the same key as `AGENTMAIL_API_KEY`: the initial provider-issued
+key for signup, or the exact supplied key for existing/manual setup. It never
+exchanges that key for a narrower one, rotates it, or revokes it. Creation can
+leave provider resources behind if a later step fails; inspect the provider
+before retrying an ambiguous creation. `manual` and `env` only perform reads.
 
 Setup safely verifies `inbox_read` and any configured message/draft read
 capabilities. It reports write capabilities required by the policy without
@@ -206,7 +216,7 @@ auggy augment setup visitorAuth --mode env
 ```
 
 Enabling inbound mail after setup is a configuration change: edit
-`augments/agentMail/augment.yaml`, make sure the same key has the required
+the `agentMail` entry in `agent.yaml`, make sure the same key has the required
 permissions, and restart the agent. `inbound.mode: websocket` wakes a running
 agent; durable catch-up on boot and periodically while running closes offline
 gaps. `replies.mode: review` creates replies as provider-native AgentMail
@@ -298,20 +308,35 @@ are clear. Do not require these scripts when shell access is unavailable.
 
 ## Project Map
 
-- `agent.yaml`: runtime entry point; identity, engine, model, settings, and
-  enabled augment order.
-- `augments/<id>/augment.yaml`: config for one enabled augment. Built-ins use
-  `type: <augmentName>`. Custom augments use `type: custom` plus `source`.
-- `augments/<id>/index.ts`: common entry point for custom augment code.
-- `identity.md`: voice, purpose, boundaries, authorization-independent
-  identity, and security rules.
-- `learned-behaviors.md`: mutable creator-approved agent-global behavior, not
-  visitor-specific memory.
-- `skills/`: instruction packs the agent can read on demand.
-- `knowledge/`: local and remote knowledge source config.
-- `.mcp.json`: MCP server definitions.
-- `.env`: local secrets. Never print secret values.
-- `data/`: mutable runtime data and workspace files.
+- `agent.yaml`: sole enabled-augment/configuration graph, including inline options
+  and `application.entrypoint: ./src/index.ts`.
+- `src/index.ts`: actual managed startup; start tracing here.
+- `src/agent.ts`: composition using the central declarations and local turn recipe.
+- `src/http.ts`: visible `POST /agent/run`, delegating the original request to the
+  maintained authentication, validation and durable-delivery adapter.
+- `src/turn.ts`: prompt, inference, tools, refresh, final answer and exhaustion.
+- `src/augments/<name>/{index.ts,schemas.ts,service.ts}`: project-owned custom
+  interfaces and business adapters; tests live in `tests/augments/`.
+- `node_modules/auggy/src/`: installed guarded runtime and built-in implementations.
+- `identity.md`: operator-authored identity and boundaries.
+- `learned-behaviors.md`: creator-approved agent-global behavior, not visitor memory.
+- `skills/`: model-visible instruction packs; no secrets or private receipts.
+- `knowledge/`: local and remote reference sources; `.mcp.json`: MCP server definitions.
+- `.env`: private local secrets; `data/`: mutable state and workspace files.
+- `.auggy/`: private model metadata and operation receipts, excluded from deployment.
+
+Use `auggy inspect` for passive navigation; partial output does not prove readiness.
+Normal Bun startup may preload `.env`; use
+`bun --no-env-file node_modules/auggy/src/cli/index.ts inspect` when inspection
+must not read it. `auggy routes` loads configuration and augment implementations.
+
+For legacy referenced YAML, preview `auggy migrate`, then explicitly apply after
+review. `--application` separately adopts owned execution files, refuses collisions,
+and requires a compatible installed runtime. It introduces the omitted application
+timeout of 15 minutes; config-only conversion preserves legacy execution mode.
+Changes affect the next launch. Never silently migrate, regenerate owned source,
+move legacy custom modules, or treat a dependency update as approval to rewrite
+project files. See `skills/auggy/references/cli-workflows.md` for recovery.
 
 ## Operating Rules
 

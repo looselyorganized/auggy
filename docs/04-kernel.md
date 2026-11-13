@@ -18,8 +18,12 @@ limits, cancellation, settlement and history ownership.
 `src/kernel/turn-loop.ts` supplies `createTurnLoop`, history-manager ownership and
 the execution facade. `turn-session.ts` implements the managed phases and shared
 settlement path. `turn-program.ts` is the default inference/tool loop used by
-legacy projects. The [reference's `src/turn.ts`](../examples/inspectable-agent/src/turn.ts)
-shows an application-owned loop using that same session.
+legacy projects. New generated applications expose their own real recipe at
+`src/turn.ts`, using that same session. Start at the project's `src/index.ts`,
+follow `src/agent.ts` and `src/http.ts`, then open the recipe. The
+[separate reference](../examples/inspectable-agent/src/turn.ts) demonstrates
+additional application customization. `auggy inspect` locates the selected
+installed package; this guide's kernel paths are relative to that package.
 
 The application receives guarded operations, including `preparePrompt`, `infer`,
 `executeTools`, `refreshPrompt`, `inferFinal`, `complete` and `stop`. Receipts

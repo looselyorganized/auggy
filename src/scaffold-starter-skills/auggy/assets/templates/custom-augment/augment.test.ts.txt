@@ -1,10 +1,50 @@
 import { describe, expect, test } from "bun:test";
-import { searchServices } from "./domain";
+import type { ToolExecuteContext, TrustLevel } from "auggy";
+import createSampleAugment from "../../src/augments/example/index";
+import { lookupRecord } from "../../src/augments/example/service";
 
-describe("services augment domain", () => {
-  test("searches deterministic service data", () => {
-    expect(searchServices({ category: "planning" })).toEqual([
-      { id: "svc_consult", name: "Consultation", category: "planning" },
-    ]);
+const expected = { id: "SAMPLE-001", status: "ready", label: "Example record" } as const;
+const augment = createSampleAugment();
+const tool = augment.tools!.find((entry) => entry.name === "example_lookup_record")!;
+const route = augment.httpRoutes![0]!;
+function context(trustLevel: TrustLevel): ToolExecuteContext {
+  return { turnId: "test", threadId: "test", peer: { id: "test", kind: "human", trustLevel, sourceAugment: "test" } };
+}
+
+describe("example sample lookup", () => {
+  test("service validates input and returns a copy of the fixture or null", () => {
+    expect(lookupRecord({ id: "SAMPLE-001" })).toEqual(expected);
+    expect(lookupRecord({ id: "SAMPLE-999" })).toBeNull();
+    expect(() => lookupRecord({ id: "invalid" })).toThrow();
+    const record = lookupRecord({ id: "SAMPLE-001" })!;
+    record.label = "changed";
+    expect(lookupRecord({ id: "SAMPLE-001" })).toEqual(expected);
+  });
+
+  test("tool validates inputs and reports missing records", async () => {
+    expect(tool.input.safeParse({ id: "invalid" }).success).toBe(false);
+    expect(await tool.execute({ id: "SAMPLE-001" }, context("creator"))).toEqual({ content: JSON.stringify(expected) });
+    expect(await tool.execute({ id: "SAMPLE-999" }, context("creator"))).toMatchObject({ isError: true, content: JSON.stringify({ error: "not-found" }) });
+    expect(await tool.execute({ id: "invalid" }, context("creator"))).toMatchObject({ isError: true });
+  });
+
+  test("tool denies public, agent, and absent identities even on direct execution", async () => {
+    for (const trustLevel of ["public", "agent"] as const) {
+      expect(augment.constraints?.perTrustLevel?.[trustLevel]?.neverExpose).toContain(tool.name);
+      expect(await tool.execute({ id: "SAMPLE-001" }, context(trustLevel))).toMatchObject({ isError: true });
+    }
+    expect(await tool.execute({ id: "SAMPLE-001" })).toMatchObject({ isError: true });
+  });
+
+  test("route declares creator policy and shares validation and service results", async () => {
+    expect(route.auth).toBe("creator");
+    expect(route.path).toBe("/example/records/:id");
+    // Authentication belongs to the managed HTTP dispatcher. These are adapter unit tests.
+    const call = (id: string) => route.handler(new Request("http://localhost/example/records/" + id), { signal: new AbortController().signal, params: { id } });
+    const response = await call("SAMPLE-001");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual(expected);
+    expect((await call("invalid")).status).toBe(400);
+    expect((await call("SAMPLE-999")).status).toBe(404);
   });
 });

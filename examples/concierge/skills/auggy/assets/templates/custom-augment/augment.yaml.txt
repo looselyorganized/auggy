@@ -1,4 +1,0 @@
-type: custom
-source: ./index.ts
-config:
-  recordsPath: ./data/service-records.jsonl

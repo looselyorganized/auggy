@@ -65,7 +65,7 @@ describe("auggy builder skill mirrors", () => {
     );
     expect(reference).toContain("skills/<name>/");
     expect(reference).toContain("optional usage guidance, not augment source");
-    for (const api of ["defineAugment", "defineRoute", "defineTool", 'from "zod"']) {
+    for (const api of ["defineAugment", "defineRoute", "defineTool"]) {
       expect(reference, api).toContain(api);
       expect(template, api).toContain(api);
     }
@@ -73,7 +73,14 @@ describe("auggy builder skill mirrors", () => {
     expect(reference).toContain("Delegated authorization (`requires`)");
     expect(reference).toContain("Tool visibility (`constraints.perTrustLevel`)");
     expect(template).toContain("perTrustLevel:");
-    expect(template).toContain('neverExpose: ["save_lead"]');
+    const schemas = readFileSync(
+      join(CANONICAL_SKILL, "assets", "templates", "custom-augment", "schemas.ts.txt"),
+      "utf-8",
+    );
+    expect(schemas).toContain('from "zod"');
+    expect(template).toContain('neverExpose: ["example_lookup_record"]');
+    expect(template).toContain('auth: "creator"');
+    expect(template).toContain('context?.peer?.trustLevel !== "creator"');
     expect(reference).not.toContain("augments/<name>/\n  SKILL.md");
   });
 
@@ -120,16 +127,19 @@ describe("auggy builder skill mirrors", () => {
     const compactSkill = skill.replace(/\s+/g, " ");
     const compactWorkflows = workflows.replace(/\s+/g, " ");
 
-    expect(compactSkill).toContain("create the inbox and API key in AgentMail first");
     expect(compactSkill).toContain("stores the same key as `AGENTMAIL_API_KEY`");
-    expect(compactWorkflows).toContain("AgentMail setup exposes only two modes");
-    expect(compactWorkflows).toContain("| `connect` |");
-    expect(compactWorkflows).toContain("| `env` |");
-    expect(compactWorkflows).toContain("never creates or adopts an inbox");
+    for (const mode of ["signup", "existing", "manual", "env"]) {
+      expect(compactWorkflows, mode).toContain(`| \`${mode}\` |`);
+      expect(compactSkill, mode).toContain(`\`${mode}\``);
+    }
+    expect(compactWorkflows).toContain("`connect` remains an alias for `manual`");
+    expect(compactWorkflows).toContain("requires an interactive terminal for email verification");
+    expect(compactWorkflows).toContain("never collect verification codes or API keys in chat");
     expect(compactWorkflows).toContain("does not send mail or mutate drafts");
-    for (const removed of ["`signup`", "`existing`", "`manual`", "--replace-key"]) {
-      expect(compactSkill, removed).not.toContain(removed);
-      expect(compactWorkflows, removed).not.toContain(removed);
+    expect(compactWorkflows).toContain("remote account or inbox behind if a later step fails");
+    for (const source of [compactSkill, compactWorkflows]) {
+      expect(source).not.toContain("--replace-key");
+      expect(source).not.toContain("never creates or adopts an inbox");
     }
   });
 

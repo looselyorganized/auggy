@@ -6,31 +6,31 @@ Operator reference for where Auggy puts agent projects and local process state.
 
 An Auggy agent is a normal project folder wherever the operator creates it:
 
-```
+```text
 <name>/
-├── .auggy/models.lock.json  # model metadata snapshot from create/refresh
-├── .auggy-cloud.json        # only present after a cloud deploy
-├── .env                     # secrets (gitignored)
-├── .env.example             # required secret names, no values
+├── agent.yaml               # inline options; application.entrypoint
+├── package.json             # project-local runtime/provider and scripts
+├── bun.lock                 # after install
+├── tsconfig.json
+├── README.md
+├── .env                     # private secrets, ignored
+├── .env.example             # placeholders
 ├── .gitignore
-├── agent.yaml               # source-of-truth config
-├── identity.md              # operator-authored identity and boundaries
-├── learned-behaviors.md     # mutable fileMemory store
-├── package.json             # agent-local runtime and engine dependencies
-├── bun.lock                 # written by the default dependency install
-├── augments/
-│   ├── README.md
-│   ├── fileMemory/augment.yaml
-│   ├── filesystem/augment.yaml
-│   ├── webTransport/augment.yaml
-│   ├── webFetch/augment.yaml
-│   └── turnControl/augment.yaml
-├── skills/
-│   ├── auggy/SKILL.md       # starter build-out guide
-│   ├── filesystem/SKILL.md
-│   ├── webFetch/SKILL.md
-│   └── turnControl/SKILL.md
-└── data/workspace/README.md # writable artifact workspace
+├── .auggy/models.lock.json  # model metadata
+├── .auggy/operations/       # private authoring receipts/backups
+├── .auggy-cloud.json        # only after deployment
+├── identity.md
+├── learned-behaviors.md
+├── src/
+│   ├── index.ts             # managed startup
+│   ├── agent.ts             # central-config composition
+│   ├── http.ts              # POST /agent/run
+│   ├── turn.ts              # turn recipe
+│   └── augments/README.md   # add custom modules here
+├── tests/application.test.ts
+├── skills/                  # copied instructions owned by the project
+├── data/workspace/README.md
+└── node_modules/auggy/src/   # installed runtime and built-ins
 ```
 
 `knowledge/`, additional skill folders, augment state, and custom augment
@@ -47,7 +47,7 @@ variable names and placeholders and remains normally readable.
 
 ### Default-scaffold details
 
-- `agent.yaml` uses the top-level `identity: ./identity.md` shorthand; the runtime loads it through fileMemory with `placement: system`, `origin: operator`, and `mutable: false`. `augments:` lists enabled augment ids in boot order. Per-augment config lives in `augments/<id>/augment.yaml`.
+- `agent.yaml` uses the top-level `identity: ./identity.md` shorthand; the runtime loads it through fileMemory with `placement: system`, `origin: operator`, and `mutable: false`. `augments:` lists inline declarations in boot order, each with `name`, `type`, and optional `options` or custom `source`. `application.entrypoint` selects `./src/index.ts`.
 - `identity.md` is rendered from `src/scaffold-templates/identity.md` and ships with the agent's stable identity, voice, and baked-in security rules. It does **not** contain the skill manifest.
 - `learned-behaviors.md` is the scaffolded mutable `fileMemory` store. It is for creator-approved, agent-global operating guidance, not autonomous policy changes, operator identity, authorization facts, or visitor-specific memory. Default writes require runtime-verified creator trust. The former `learned.md` filename is no longer supported; rename the file and update its `fileMemory` source before upgrading.
 - In a Railway runtime, `learned-behaviors.md` is only the immutable first-boot
@@ -67,12 +67,12 @@ variable names and placeholders and remains normally readable.
   `/app/data/.auggy-runtime-singleton.lock` for the process lifetime; its
   contents are non-authoritative and it is safe to preserve in a stopped
   backup. See [18-deploy.md](./18-deploy.md).
-- One local AgentMail instance retains the historical project-root state
-  layout. With multiple instances, default ledgers and JSON sidecars move under
-  `data/agent-mail/<augment-name>/`; startup refuses unowned root-level
-  singleton artifacts until they are explicitly reconciled and migrated or
-  archived. Each mounted instance must own a distinct SQLite database; duplicate
-  resolved `dbPath` ownership is a startup error.
+- New `agentMail` declarations use
+  `data/agent-mail/<augment-name>/orchestration.db`. Existing configured state
+  paths are not relocated by authoring migration. Each mounted instance must
+  own a distinct SQLite database; duplicate resolved `dbPath` ownership is a
+  startup error. Reconcile unsupported historical state explicitly before
+  starting a different mailbox topology.
 - The filesystem augment catalogs bounded metadata from `data/workspace` on
   creator and agent turns. This makes durable artifacts visible without
   automatically loading their contents; the model still uses `fs_search`,
@@ -101,15 +101,18 @@ not copied into agent projects and is not deployed.
 Agent projects install Auggy as a package dependency. The runtime source is
 inspectable at `node_modules/auggy/src` after `bun install`.
 
-Auggy does not copy its runtime TypeScript source into every generated agent
-project. Keeping the runtime in `node_modules` means agents receive runtime and
-security updates through the normal package manager path instead of carrying a
-vendored copy that can drift from the published runtime. Built-in augment
-folders contain project-owned config only. Custom augments are the exception:
-they live as local source under `augments/<name>/` because they belong to the
-agent project.
+The project owns the visible execution recipe in `src/`, while installed code
+owns guarded runtime operations and built-in implementations. There are no
+copied built-in modules or separate built-in configuration files. New custom
+augments use `src/augments/<name>/`; migration preserves existing custom source
+locations rather than relocating them.
 
-Use `auggy doctor --verbose` to show the installed runtime source path.
+Use `auggy inspect` for passive declared execution and installed source navigation.
+A partial report can mean dependencies or an index are unavailable; it does not
+certify readiness. `auggy doctor --verbose` provides runtime diagnostics. Under
+normal Bun startup, Bun may preload `.env` before Auggy runs. To prevent that read
+when inspecting, invoke `bun --no-env-file node_modules/auggy/src/cli/index.ts inspect`.
+No option values or secret values are included in the inspection report.
 
 ## Cloud-deploy state
 
@@ -136,12 +139,44 @@ deploy record beside its config.
 filesystem birthtime (or mtime as a fallback) wherever it surfaces a
 timestamp.
 
-## Atomic creation
+## Creation, migration and recovery
 
-`auggy create <name>` writes the scaffold into a temp staging directory, then
-renames it into `./<name>`. `auggy init` stages the same scaffold and copies it
-into the current directory. If the process is interrupted beforehand, the temp
-directory is removed or left outside the agent project.
+`auggy create <name>` reserves a new target directory exclusively. `auggy init`
+preflights every generated destination in the current directory and refuses
+collisions. Both publish support files before the central `agent.yaml` activation;
+this is not a promise of an invisible or atomic whole-directory install. A failed
+dependency install leaves the generated files available for an explicit retry.
+
+`auggy migrate` previews conversion from referenced or mixed YAML to inline
+configuration. `--apply` recomputes and publishes the current plan. It preserves
+IDs, literal environment placeholders, custom source locations, option path bases,
+credentials, skills and durable state. Config-only conversion preserves execution
+mode. `--application` separately adopts owned execution source and refuses existing
+files or conflicting package fields; it requires a compatible runtime already
+installed. Its omitted turn timeout is 900000 ms (15 minutes), while legacy mode
+has no application deadline.
+
+Cooperating writers serialize through the private stable project lease. Inputs
+and owned outputs are rechecked, but the lease does not control arbitrary editors.
+Changes activate on the next managed launch; migration never stops or reloads an
+in-flight agent. Apply records an operation ID below `.auggy/operations/`.
+Receipts and backups can contain inline configuration secrets: `.auggy/` is
+private, ignored and deployment-excluded.
+
+```bash
+auggy migrate --config agent.yaml                         # preview
+auggy migrate --config agent.yaml --apply                 # config only
+auggy migrate --config agent.yaml --application            # adoption preview
+auggy migrate --config agent.yaml --application --apply
+auggy migrate --project-dir . --rollback <operation-id>    # recovery preview
+auggy migrate --project-dir . --rollback <operation-id> --apply
+```
+
+Rollback checks ownership and refuses changed outputs. The directory selector
+works even if `agent.yaml` is absent or malformed. It does not restore existing
+credentials from backups. An init-created `.env` can be removed only while it
+still matches that operation's owned output. Preserve a recovery-required receipt
+for review; do not publish its contents or force-delete conflicting files.
 
 ## Inspecting and removing
 

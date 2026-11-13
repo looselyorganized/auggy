@@ -4,7 +4,9 @@
 
 ## Why these specifically
 
-Fourteen augments ship in `src/augments/` (plus `webTransport` under `src/transports/`):
+These built-ins ship in the installed package under `src/augments/` and
+`src/transports/` (the CLI picker intentionally omits legacy-only types):
+
 - **`fileMemory`** — file-backed static memory provider
 - **`supabaseMemory`** — Supabase-backed namespace memory provider (legacy runtime, not exposed in the default CLI catalog)
 - **`layeredMemory`** — peer-scoped episodic memory with L0–L3 provenance tiers (SQLite-backed)
@@ -55,8 +57,14 @@ skill folder, not part of the normal install path.
 
 ### Augment-as-folder + Auggy-provided skill convention
 
-Every built-in augment lives at `src/augments/<name>/index.ts` using the
-folder shape. Augments that contribute model-callable tools ship an
+Most built-in factories live at `src/augments/<name>/index.ts` in the package;
+`webTransport` lives under `src/transports/`. They are installed at
+`<agent-dir>/node_modules/auggy/src`, not copied into the agent's source tree.
+Use `auggy inspect` for exact paths from the selected installed runtime.
+Enable and configure them as inline `name`, `type`, and `options` declarations
+in `agent.yaml`. Your custom capabilities belong in `src/augments/<slug>/`.
+Package updates replace managed implementations without regenerating that owned
+source or its execution recipe. Augments that contribute model-callable tools ship an
 Auggy-provided `<name>/skill/SKILL.md` colocated in the same folder; `auggy
 create` and `auggy augment add` copy it to
 `<agent-dir>/skills/<name>/SKILL.md`, and `auggy skill add <name>` installs it
@@ -553,25 +561,23 @@ The `origin: "peer-derived"` is critical for security. Episodic memory contains 
 ```yaml
 # agent.yaml
 augments:
-  - layeredMemory
-
-# augments/layeredMemory/augment.yaml
-type: layeredMemory
-config:
-  backend: sqlite
-  namespace: ${AGENT_NAME}
-  dbPath: ./data/memory.db
-  retentionDays: 90
-  autoSave:
-    enabled: false
-    extractionFrequency:
-      creator: every-turn
-      agent: every-N-turns
-      public:
-        recognized: every-turn
-        anonymous: session-end-only
-    everyNTurns: 3
-    confidenceThreshold: 0.5
+  - name: layeredMemory
+    type: layeredMemory
+    options:
+      backend: sqlite
+      namespace: ${AGENT_NAME}
+      dbPath: ./data/memory.db
+      retentionDays: 90
+      autoSave:
+        enabled: false
+        extractionFrequency:
+          creator: every-turn
+          agent: every-N-turns
+          public:
+            recognized: every-turn
+            anonymous: session-end-only
+        everyNTurns: 3
+        confidenceThreshold: 0.5
 ```
 
 ### What it is
@@ -1086,20 +1092,18 @@ This augment ships `src/augments/knowledge/skill/SKILL.md` with model teaching o
 ```yaml
 # agent.yaml
 augments:
-  - telegramTransport
-
-# augments/telegramTransport/augment.yaml
-type: telegramTransport
-config:
-  botToken: ${TELEGRAM_BOT_TOKEN}
-  inbound:
-    mode: polling
-    polling:
-      timeoutSec: 30
-  auth:
-    creatorUserIds: []
-    creatorUserIdsEnv: TELEGRAM_CREATOR_USER_IDS
-    anonymousIdentityMode: ephemeral
+  - name: telegramTransport
+    type: telegramTransport
+    options:
+      botToken: ${TELEGRAM_BOT_TOKEN}
+      inbound:
+        mode: polling
+        polling:
+          timeoutSec: 30
+      auth:
+        creatorUserIds: []
+        creatorUserIdsEnv: TELEGRAM_CREATOR_USER_IDS
+        anonymousIdentityMode: ephemeral
 ```
 
 ### What it is
@@ -1418,22 +1422,20 @@ permissions, complete key/value tables, review flow, and recovery commands.
 ```yaml
 # agent.yaml
 augments:
-  - visitorAuth
-
-# augments/visitorAuth/augment.yaml
-type: visitorAuth
-config:
-  publicUrl: ${AUGGY_PUBLIC_URL}
-  dbPath: ./data/visitor-auth.db
-  agentMail:
-    transport: agentmail
-    apiKey: ${AGENTMAIL_API_KEY}
-    inboxId: ${AGENTMAIL_INBOX_ID}
-  signingKey: ${VISITOR_SIGNING_KEY}
-  rateLimit: { perHour: 1, perDay: 3 }
-  reverifyAfterDays: 90
-  tokenTtlMinutes: 15
-  layeredMemoryDbPath: ./data/memory.db
+  - name: visitorAuth
+    type: visitorAuth
+    options:
+      publicUrl: ${AUGGY_PUBLIC_URL}
+      dbPath: ./data/visitor-auth.db
+      agentMail:
+        transport: agentmail
+        apiKey: ${AGENTMAIL_API_KEY}
+        inboxId: ${AGENTMAIL_INBOX_ID}
+      signingKey: ${VISITOR_SIGNING_KEY}
+      rateLimit: { perHour: 1, perDay: 3 }
+      reverifyAfterDays: 90
+      tokenTtlMinutes: 15
+      layeredMemoryDbPath: ./data/memory.db
 ```
 
 ### What it is
@@ -1462,8 +1464,10 @@ Deploy preflight rejects console magic links on public Railway deploys unless
 the operator explicitly acknowledges that links will appear in service logs.
 
 Create the inbox and API key in AgentMail before setup. Auggy verifies the
-supplied key against that exact inbox and stores it unchanged. It never creates,
-narrows, rotates, replaces, or revokes a provider key.
+supplied key against that exact inbox and stores it unchanged. This manual path
+never creates, narrows, rotates, replaces, or revokes a provider key. Guided
+setup also offers account/inbox creation; see the
+[setup modes](./19-visitor-auth.md#agentmail-setup).
 
 When both canonical `agentMail` and `visitorAuth` augments are selected in one
 interactive `auggy augment add`, the CLI uses one setup confirmation, connects
@@ -1514,38 +1518,36 @@ The console dashboard API exposes a **Visitors** block with:
 ```yaml
 # agent.yaml
 augments:
-  - link
-
-# augments/link/augment.yaml
-type: link
-config:
-  port: 8081
-  dbPath: ./link.db
-  agentCard:
-    id: <agent-uuid>
-    name: zip
-    description: Front-door agent
-    endpointUrl: https://zip.example.org
-    capabilities:
-      - "answers visitor questions about LORF"
-  peers:
-    researcher:
-      url: https://researcher.example.org
-      bearer: ${RESEARCHER_BEARER}
-      participantId: <peer-uuid>
-      inboundBearer: ${RESEARCHER_INBOUND_BEARER}
-      inboundBearerId: <inbound-bearer-uuid>
-      purpose: "Research specialist. Knows recent ML literature."
-      examples:
-        - "What's the state of test-time compute scaling?"
-        - "Find recent papers on agent benchmarks"
-  outbound:
-    allowedTrustLevels: [creator, agent] # default; add public explicitly
-    # Required with public: exact receivers verified to enforce signed origin.
-    # publicDelegationPeers:
-    #   researcher:
-    #     url: https://researcher.example.org
-    #     participantId: <peer-uuid>
+  - name: link
+    type: link
+    options:
+      port: 8081
+      dbPath: ./link.db
+      agentCard:
+        id: <agent-uuid>
+        name: zip
+        description: Front-door agent
+        endpointUrl: https://zip.example.org
+        capabilities:
+          - "answers visitor questions about LORF"
+      peers:
+        researcher:
+          url: https://researcher.example.org
+          bearer: ${RESEARCHER_BEARER}
+          participantId: <peer-uuid>
+          inboundBearer: ${RESEARCHER_INBOUND_BEARER}
+          inboundBearerId: <inbound-bearer-uuid>
+          purpose: "Research specialist. Knows recent ML literature."
+          examples:
+            - "What's the state of test-time compute scaling?"
+            - "Find recent papers on agent benchmarks"
+      outbound:
+        allowedTrustLevels: [creator, agent] # default; add public explicitly
+        # Required with public: exact receivers verified to enforce signed origin.
+        # publicDelegationPeers:
+        #   researcher:
+        #     url: https://researcher.example.org
+        #     participantId: <peer-uuid>
 ```
 
 ### What it is
@@ -1589,7 +1591,7 @@ interoperability.
 ### Tools (2)
 
 - **`link_send(to, text)`** — send a text message to a configured peer. Returns the peer's synchronous reply text (when available) or a task id (when the peer chose async handling).
-- **`link_list()`** — enumerate configured peers as `{ peers: [{ name, purpose?, examples? }] }`. The LLM uses this to discover *who* it can reach and *what each peer is good for*. `purpose` and `examples` come from `augments/link/augment.yaml`; both are optional. Beware: bad examples mislead the model more than they help — keep them tight or omit.
+- **`link_list()`** — enumerate configured peers as `{ peers: [{ name, purpose?, examples? }] }`. The LLM uses this to discover *who* it can reach and *what each peer is good for*. `purpose` and `examples` come from the `link` entry in `agent.yaml`; both are optional. Beware: bad examples mislead the model more than they help — keep them tight or omit.
 
 Both tools default to `creator` and `agent` turns. To allow a public turn to
 delegate while preserving public authority downstream:
@@ -1643,27 +1645,25 @@ For more than a couple of peers, hardcoding `peers` in every agent's yaml become
 ```yaml
 # agent.yaml
 augments:
-  - link
-
-# augments/link/augment.yaml
-type: link
-config:
-  port: 8081
-  dbPath: ./link.db
-  agentCard:
-    id: <self-uuid>
-    name: zip
-    description: Front-door agent
-    endpointUrl: https://zip.example.org:8081
-  peerSource:
-    type: registry
-    url: https://lorf-context.up.railway.app/peers.json
-    cacheSeconds: 60     # default 60; lower for snappier propagation
-    pins:
-      frontier:
-        url: https://frontier.example.org:8081
-        participantId: 54bb9528-05c6-4e2e-a419-62e6e003156c
-  # peers: {...}         # optional — fallback if registry is unreachable
+  - name: link
+    type: link
+    options:
+      port: 8081
+      dbPath: ./link.db
+      agentCard:
+        id: <self-uuid>
+        name: zip
+        description: Front-door agent
+        endpointUrl: https://zip.example.org:8081
+      peerSource:
+        type: registry
+        url: https://lorf-context.up.railway.app/peers.json
+        cacheSeconds: 60     # default 60; lower for snappier propagation
+        pins:
+          frontier:
+            url: https://frontier.example.org:8081
+            participantId: 54bb9528-05c6-4e2e-a419-62e6e003156c
+      # peers: {...}         # optional — fallback if registry is unreachable
 ```
 
 The registry response shape (the **stable wire contract**):
@@ -1768,7 +1768,7 @@ configured peers.
 ### Forward-compat with the coordinator
 
 When a coordinator service ships, the peer list — and per-peer
-purpose/examples — can move from `augments/link/augment.yaml` to a participant
+purpose/examples — can move from the `link` entry in `agent.yaml` to a participant
 registry served by the coordinator. The LLM-facing shape (`link_list`
 returning `{name, purpose?, examples?}`) stays the same; only the source
 flips. Today's augment-config-described peers are forward-compatible.

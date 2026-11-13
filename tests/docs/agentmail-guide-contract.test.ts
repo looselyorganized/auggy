@@ -60,9 +60,14 @@ describe("AgentMail operator guide", () => {
   test("keeps the generated base configuration executable and direct-delivery ready", () => {
     const match = guide.match(/## Base configuration[\s\S]*?```yaml\n([\s\S]*?)\n```/);
     expect(match?.[1]).toBeDefined();
-    const document = parseYaml(match![1]!) as { type: string; config: Record<string, unknown> };
-    expect(document.type).toBe("agentMail");
-    expect(validateAgentMailConfig(document.config)).toMatchObject({
+    const document = parseYaml(match![1]!) as {
+      augments: Array<{ name: string; type: string; options: Record<string, unknown> }>;
+    };
+    expect(document.augments).toHaveLength(1);
+    const declaration = document.augments[0]!;
+    expect(declaration.name).toBe("agentMail");
+    expect(declaration.type).toBe("agentMail");
+    expect(validateAgentMailConfig(declaration.options)).toMatchObject({
       addressVisibility: "creator",
       inbound: { mode: "none", senderPolicy: "disabled" },
       replies: { mode: "disabled", allowReplyAll: false },
@@ -95,7 +100,7 @@ describe("AgentMail operator guide", () => {
     expect(guide).toContain("Reply to message <message-id>.");
     expect(guide).toContain("Forward message <message-id> to owner@example.com.");
     expect(guide).toContain('subjectPrefix: "[Mikes Store] "');
-    expect(guide).toContain("agentMail:\n    transport: agentmail");
+    expect(guide).toMatch(/agentMail:\n\s+transport: agentmail/);
   });
 
   test("documents exact-key, provider-native, and recovery boundaries", () => {

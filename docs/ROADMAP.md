@@ -102,14 +102,18 @@ matching documentation. Packed request, restart, and upgrade checks pass;
 engineers unfamiliar with the repository demonstrate improved traceability.
 
 Implementation proceeds through six gated milestones. Milestones 1–2 are accepted
-at verified main `209185d0`. Milestone 3 is implemented in
-[PR #227](https://github.com/looselyorganized/auggy/pull/227), with
-[acceptance evidence](./plans/milestone-3-evidence-2026-11-13.md) and final PR gates.
-Milestone 4 now has a detailed
-[execution plan](./plans/milestone-4-execution-2026-11-13.md) and
-[specialist task ledger](./plans/milestone-4-tasks.json). Implementation has not
-started: the entry gate requires the reviewed M3 merge, verified resulting main
-and implementation authorization. Milestones 5–6 remain roadmap outcomes:
+at verified main `209185d0`. Milestone 3 landed through
+[PR #227](https://github.com/looselyorganized/auggy/pull/227), followed by the scoped
+full-analysis repair in [PR #228](https://github.com/looselyorganized/auggy/pull/228).
+M4's accepted main baseline is `911fe168`; its
+[execution plan](./plans/milestone-4-execution-2026-11-13.md),
+[specialist task ledger](./plans/milestone-4-tasks.json), and
+[execution evidence](./plans/milestone-4-evidence-2026-11-13.md) track implementation.
+The scaffold, inline authoring, passive inspection, migration and AgentMail
+producers have passed independent scoped review. Installed acceptance,
+documentation alignment and final certification are in progress. These changes
+are unreleased; no package version or publication is implied by this milestone.
+Milestones 5–6 remain roadmap outcomes:
 
 | Milestone | Outcome | Exit gate |
 |---|---|---|
