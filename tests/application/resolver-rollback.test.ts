@@ -13,14 +13,20 @@ test("partial resolver failure reports once only after reverse shutdown actually
   for (const failingCleanup of [false, true]) {
     const root = mkdtempSync(join(tmpdir(), "host-resolver-rollback-"));
     const events = join(root, "events");
+    writeFileSync(join(root, "rollback.json"), JSON.stringify({ failingCleanup }));
     for (const name of ["first", "second"])
       writeFileSync(
         join(root, `${name}.ts`),
-        `import { appendFileSync } from "node:fs";
-      export default () => ({ name: "${name}", onShutdown: async () => {
-        await Bun.sleep(5); appendFileSync(${JSON.stringify(events)}, "${name}\\n");
-        ${failingCleanup && name === "second" ? 'throw new Error("private cleanup failure");' : ""}
-      } });`,
+        `import { appendFileSync, readFileSync } from "node:fs";
+import { basename } from "node:path";
+import { fileURLToPath } from "node:url";
+const name = basename(fileURLToPath(import.meta.url), ".ts");
+const { failingCleanup } = JSON.parse(readFileSync(new URL("./rollback.json", import.meta.url), "utf8"));
+export default () => ({ name, onShutdown: async () => {
+  await Bun.sleep(5);
+  appendFileSync(new URL("./events", import.meta.url), name + "\\n");
+  if (failingCleanup && name === "second") throw new Error("private cleanup failure");
+} });`,
       );
     writeFileSync(
       join(root, "broken.ts"),
@@ -81,7 +87,7 @@ test.each([
       join(root, "first.ts"),
       `import { writeFileSync } from "node:fs";
        export default () => ({ name: "first", onShutdown() {
-         writeFileSync(${JSON.stringify(events)}, "closed");
+         writeFileSync(new URL("./events", import.meta.url), "closed");
        } });`,
     );
     let report: unknown;
@@ -111,26 +117,35 @@ function resourceFixture(mode: "factory" | "import" | "invalid-return" | "normal
   };
   mkdirSync(join(root, "src"));
   writeFileSync(join(root, "src/index.ts"), "// declaration only\n");
-  const allocate = `globalThis[${JSON.stringify(key)}] = Bun.serve({
-    hostname: "127.0.0.1", port: 0, fetch: () => new Response("still active")
-  });
-  writeFileSync(${JSON.stringify(join(root, "port"))}, String(globalThis[${JSON.stringify(key)}].port));`;
-  const failure = 'throw new Error("construction resource failure");';
-  const body =
-    mode === "invalid-return"
-      ? "return undefined;"
-      : mode === "normalization"
-        ? `return { name: "resource", get tools() { ${failure} }, async onShutdown() {
-          await globalThis[${JSON.stringify(key)}].stop(true);
-          await Bun.write(${JSON.stringify(join(root, "closed"))}, "closed");
-        } };`
-        : failure;
+  writeFileSync(join(root, "resource.json"), JSON.stringify({ key, mode }));
   writeFileSync(
     join(root, "resource.ts"),
-    'import { writeFileSync } from "node:fs";\n' +
-      (mode === "import"
-        ? `${allocate}\n${failure}\nexport default () => ({ name: "unreachable" });`
-        : `export default () => { ${allocate}\n${body} };`),
+    `import { readFileSync } from "node:fs";
+const { key, mode } = JSON.parse(readFileSync(new URL("./resource.json", import.meta.url), "utf8"));
+function allocate() {
+  const server = Bun.serve({
+    hostname: "127.0.0.1", port: 0, fetch: () => new Response("still active")
+  });
+  Reflect.set(globalThis, key, { server, port: server.port });
+  return server;
+}
+if (mode === "import") {
+  allocate();
+  throw new Error("construction resource failure");
+}
+export default () => {
+  const server = allocate();
+  if (mode === "invalid-return") return undefined;
+  if (mode === "normalization") return {
+    name: "resource",
+    get tools() { throw new Error("construction resource failure"); },
+    async onShutdown() {
+      await server.stop(true);
+      await Bun.write(new URL("./closed", import.meta.url), "closed");
+    }
+  };
+  throw new Error("construction resource failure");
+};`,
   );
   writeFileSync(
     join(root, "agent.yaml"),
@@ -156,12 +171,15 @@ augments:
     factories: { resolveEngine: async () => createMockModel() },
   };
   const host = createApplicationHost(options);
-  const server = () => Reflect.get(globalThis, key) as Bun.Server<undefined> | undefined;
+  const allocated = () =>
+    Reflect.get(globalThis, key) as { server: Bun.Server<undefined>; port: number } | undefined;
+  const server = () => allocated()?.server;
   return {
     root,
     host,
     options,
     server,
+    port: () => allocated()?.port,
     manifest: () => readPidManifest(id, registry),
     async dispose() {
       await server()?.stop(true);
@@ -216,7 +234,8 @@ test("a returned augment is cleaned up when property normalization throws", asyn
     });
     expect(readFileSync(join(fixture.root, "closed"), "utf8")).toBe("closed");
     expect(fixture.manifest()).toBeNull();
-    const port = readFileSync(join(fixture.root, "port"), "utf8");
+    const port = fixture.port();
+    expect(port).toBeInteger();
     await expect(
       fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(1000) }),
     ).rejects.toThrow();
