@@ -187,7 +187,8 @@
           "exclude": [
             "examples/temporal-order-support/test/activities.test.ts",
             "examples/temporal-order-support/test/auggy-client.test.ts",
-            "examples/temporal-order-support/test/operator-config.test.ts"
+            "examples/temporal-order-support/test/operator-config.test.ts",
+            "examples/inspectable-agent/tests/example.test.ts"
           ]
         },
         {
@@ -214,6 +215,16 @@
         {
           "kind": "tree",
           "path": "admin/src"
+        }
+      ]
+    },
+    {
+      "id": "inspectable-example",
+      "suite": "external",
+      "selectors": [
+        {
+          "kind": "tree",
+          "path": "examples/inspectable-agent/tests"
         }
       ]
     }

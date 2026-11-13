@@ -92,7 +92,7 @@
   "private": false,
   "scripts": {
     "test": "bun run test:runtime && bun run test:admin",
-    "test:full": "bun run test && bun run test:temporal-example",
+    "test:full": "bun run test && bun run test:temporal-example && bun run test:inspectable-example",
     "test:inventory": "bun scripts/test-surface-inventory.ts check",
     "test:runtime": "bun scripts/test-surface-inventory.ts run-runtime",
     "test:admin": "bun scripts/test-surface-inventory.ts run console",
@@ -106,7 +106,8 @@
     "typecheck": "tsc --noEmit",
     "lint": "bunx --bun @biomejs/biome@2.5.5 check",
     "lint:fix": "bunx --bun @biomejs/biome@2.5.5 check --write",
-    "format": "bunx --bun @biomejs/biome@2.5.5 format --write"
+    "format": "bunx --bun @biomejs/biome@2.5.5 format --write",
+    "test:inspectable-example": "bash scripts/test-inspectable-example.sh"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.94.0",

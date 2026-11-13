@@ -40,7 +40,7 @@ describe("tracked CI test-surface inventory", () => {
 
     expect(inventory.runtimeFiles).toBeGreaterThanOrEqual(252);
     expect(inventory.adminFiles).toBeGreaterThanOrEqual(29);
-    expect(inventory.externalFiles).toBe(3);
+    expect(inventory.externalFiles).toBe(4);
     expect(allFiles).toHaveLength(
       inventory.runtimeFiles + inventory.adminFiles + inventory.externalFiles,
     );
@@ -61,6 +61,9 @@ describe("tracked CI test-surface inventory", () => {
       "examples/temporal-order-support/test/activities.test.ts",
       "examples/temporal-order-support/test/auggy-client.test.ts",
       "examples/temporal-order-support/test/operator-config.test.ts",
+    ]);
+    expect(inventory.shards.find((shard) => shard.id === "inspectable-example")?.files).toEqual([
+      "examples/inspectable-agent/tests/example.test.ts",
     ]);
   });
 

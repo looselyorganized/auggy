@@ -131,7 +131,7 @@
       "id": "M3-02",
       "title": "Managed host and HTTP adapter",
       "specialist": "transport-lifecycle-engineer",
-      "status": "review",
+      "status": "accepted",
       "blockedBy": [],
       "dependsOn": [
         "M3-00"
@@ -150,7 +150,7 @@
         "rollback/shutdown evidence",
         "route/security parity"
       ],
-      "acceptedCommit": null,
+      "acceptedCommit": "9ac46578b33915ae0a82104dd056c431f96bd694",
       "evidence": [],
       "startedAt": "2026-11-13T03:36:26.979536+00:00",
       "producerCommits": {
@@ -162,17 +162,21 @@
         "assertions": 1659,
         "producerTypecheck": "passed",
         "producerLint": "passed",
-        "independentReview": "in progress"
-      }
+        "independentReview": "accepted after HTTP handler/body settlement fixes",
+        "independentTests": {
+          "initial": 35,
+          "repair": 20,
+          "remainingBlockers": 0
+        }
+      },
+      "acceptedAt": "2026-11-13T04:06:19.158069+00:00"
     },
     {
       "id": "M3-03",
       "title": "Project-local selection and launch integration",
       "specialist": "cli-platform-engineer",
-      "status": "blocked",
-      "blockedBy": [
-        "M3-02"
-      ],
+      "status": "accepted",
+      "blockedBy": [],
       "dependsOn": [
         "M3-00",
         "M3-02"
@@ -188,25 +192,36 @@
         "pre-import rejection evidence",
         "platform-specific results"
       ],
-      "acceptedCommit": null,
+      "acceptedCommit": "b4a2a6c",
       "evidence": [],
       "preparation": {
-        "status": "in_progress",
+        "status": "accepted",
         "scope": "Runtime-free bootstrap, shared command grammar and deployment preparation; host integration acceptance still gated on M3-02",
         "owner": "main_harness_release",
         "sharedPreflightCommit": "15ef7f1"
+      },
+      "startedAt": "2026-11-13T04:06:19.158069+00:00",
+      "producerCommits": {
+        "M3-00": "7e1c85acb4c4d76fae690181ae646b67dbd9bc5e",
+        "M3-02": "9ac46578b33915ae0a82104dd056c431f96bd694",
+        "sharedPreflight": "15ef7f1"
+      },
+      "acceptedAt": "2026-11-13T04:21:59.813291+00:00",
+      "verification": {
+        "independentTests": 234,
+        "assertions": 826,
+        "exitCode": 0,
+        "producerFileHashesMatched": 23,
+        "remainingBlockers": 0,
+        "wholeMilestoneCertified": false
       }
     },
     {
       "id": "M3-04",
       "title": "Executable reference application",
       "specialist": "application-dx-engineer",
-      "status": "blocked",
-      "blockedBy": [
-        "M3-01",
-        "M3-02",
-        "M3-03"
-      ],
+      "status": "in_progress",
+      "blockedBy": [],
       "dependsOn": [
         "M3-01",
         "M3-02",
@@ -225,7 +240,13 @@
         "safe customization recipe"
       ],
       "acceptedCommit": null,
-      "evidence": []
+      "evidence": [],
+      "startedAt": "2026-11-13T04:21:59.813291+00:00",
+      "producerCommits": {
+        "M3-01": "d2cc5866e97014fac27fbadeb97b85cdf3293ae4",
+        "M3-02": "9ac46578b33915ae0a82104dd056c431f96bd694",
+        "M3-03": "b4a2a6c"
+      }
     },
     {
       "id": "M3-05",

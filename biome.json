@@ -12,7 +12,11 @@
       "scripts/**/*.ts",
       "package.json",
       "tsconfig.json",
-      "biome.json"
+      "biome.json",
+      "examples/inspectable-agent/src/**/*.ts",
+      "examples/inspectable-agent/tests/**/*.ts",
+      "examples/inspectable-agent/package.json",
+      "examples/inspectable-agent/tsconfig.json"
     ],
     "ignoreUnknown": true
   },

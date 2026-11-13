@@ -1,0 +1,44 @@
+id: ${AUGGY_AGENT_ID}
+name: inspectable-agent
+displayName: Inspectable agent
+purpose: Show how a managed agent executes a small, read-only business capability.
+application:
+  entrypoint: ./src/index.ts
+  contractVersion: 1
+engine:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  requestTimeoutMs: 30000
+settings:
+  maxInferenceLoops: 6
+augments:
+  - name: identity
+    type: fileMemory
+    options:
+      label: self
+      source: ./identity.md
+      mutable: false
+      origin: operator
+      priority: required
+      placement: system
+      eviction: never
+  - name: budgets
+    type: budgets
+    options:
+      dbPath: ./data/budgets.sqlite
+      dailyBudgetUsd: 5
+  - name: web
+    type: webTransport
+    options:
+      port: 8080
+      auth:
+        type: bearer
+        token: ${AUGGY_WEB_TOKEN}
+      allowAnonymous: false
+      consoleChat:
+        dbPath: ./data/console-chat.sqlite
+      idempotency:
+        dbPath: ./data/web-runs.sqlite
+  - name: example
+    type: custom
+    source: ./src/augments/example/index.ts

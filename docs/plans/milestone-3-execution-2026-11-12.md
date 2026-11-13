@@ -107,8 +107,15 @@ still resolves to `node_modules/auggy/src/augments/layeredMemory/`. Do not copy 
 or add a misleading local wrapper that is never executed. Use ordinary source
 imports/IDE navigation and a concise README map to locate installed operations.
 
-Follow the existing example convention for development dependencies (`file:../..`
-and the provider's repository-relative path). Document that this is a development
+Use an explicit `workspace:../..` dependency for core checkout development and a
+repository-relative `file:` dependency for the provider. Bun 1.3.14's parent
+`file:` copy passed the initial install but spun on a repeated frozen install;
+the explicit workspace link passed both and keeps the live runtime inspectable.
+Bun also requires the four provider workspace development references in the core
+checkout to be mapped by exact repository-relative provider overrides in this
+example. Its own lock records that checkout graph. The packed consumer removes
+only those exact four development mappings and retains all security overrides.
+Document that this is a development
 checkout binding. The packed harness materializes a separate standalone consumer
 whose manifest points to exact tarballs, creates/preserves its own lock, and
 records both identities. Never commit temporary absolute tarball paths. The
