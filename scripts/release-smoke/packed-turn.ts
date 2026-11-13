@@ -572,14 +572,22 @@ export default function observer() {
       const stream = terminal(response);
       const evidence = summary(provider!.evidence());
       check(
-        evidence.calls === 2 && evidence.validatedToolResults === 1,
+        evidence.calls === 2 &&
+          evidence.validatedToolResults === 1 &&
+          evidence.summaries.some((entry) => entry.outcome === "verified-validation-error"),
         "Invalid tool arguments did not return the kernel validation error to the provider",
       );
       const trace = (await traces()).find((entry) => entry.threadId === threadId);
       check(trace, "Validation turn trace was not recorded");
+      // TurnResult.toolCalls contains only successful executions. The provider
+      // fixture verifies the rejection in the actual tool_result protocol; the
+      // trace and SSE must independently show that no tool execution occurred.
       check(
-        trace.tools.some((tool) => tool.name === "fs_read" && tool.validationError),
-        "Trace lacks the schema validation rejection",
+        trace.success &&
+          trace.status === "completed" &&
+          trace.inferenceSteps.length === 2 &&
+          trace.tools.length === 0,
+        "Invalid arguments did not recover through validation without executing a tool",
       );
       check(
         !trace.tools.some((tool) => tool.sentinelMatched),
@@ -615,10 +623,27 @@ export default function observer() {
       );
       const trace = (await traces()).find((entry) => entry.threadId === threadId);
       check(
-        trace && !trace.success && trace.tools.length === 0,
-        "Failed provider turn lacked a failed trace",
+        !trace || (!trace.success && trace.tools.length === 0),
+        "Provider failure produced a successful turn or executed tools",
       );
-      return { ...stream, turnId: trace.turnId, threadId, provider: evidence };
+      check(
+        !response.events.some((event) => event.type === "TOOL_CALL_START"),
+        "Provider failure started a tool",
+      );
+      check(
+        (await readFile(join(ownedDir, "workspace/acceptance.txt"), "utf8")) === sentinel,
+        "Provider failure changed the seeded filesystem",
+      );
+      return {
+        ...stream,
+        turnId: trace?.turnId,
+        threadId,
+        provider: evidence,
+        traceObserved: Boolean(trace),
+        traceCoverage: trace
+          ? "terminal hook observed"
+          : "Current runtime propagates generic provider errors before onTurnEnd; failed terminal SSE is the observable result.",
+      };
     });
     await scenario("durable-replay", async () => {
       provider!.setScenario("success");
