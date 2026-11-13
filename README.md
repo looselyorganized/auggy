@@ -77,6 +77,40 @@ the native password screen; it works without JavaScript.
 You now have an ordinary TypeScript project you can inspect, edit, test, and
 deploy.
 
+## Inspectable application reference
+
+The repository's [inspectable agent](examples/inspectable-agent/README.md) shows
+application-owned execution with the development runtime. Open its `src/index.ts`
+first, then follow the endpoint into the turn program:
+
+```text
+examples/inspectable-agent/
+  agent.yaml                 # enabled augments and configuration
+  src/
+    index.ts                 # prepare the host, mount HTTP, start
+    agent.ts                 # bind the managed turn program
+    http.ts                  # POST /agent/run and guarded fallback routes
+    turn.ts                  # inference, tools, refresh, completion
+    observability.ts         # bounded, sanitized execution observations
+    augments/example/        # creator-authorized order tool and route
+      index.ts
+      schemas.ts
+      service.ts
+      skill/SKILL.md
+  node_modules/auggy/src/     # installed runtime and built-in implementations
+```
+
+The local turn program calls guarded operations. The installed runtime retains
+identity, authorization, accounting, lifecycle and settlement enforcement.
+`agent.yaml` remains the sole enabled-augment graph. Application files belong to
+the engineer; built-ins update through the project's dependency and lockfile.
+
+This reference requires an application-contract-1 capable runtime and Bun 1.3.14
+or newer. Its README explains the repository workspace link and standalone packed
+consumer checks. Direct `bun run start` and a compatible CLI both execute the
+same application main. The current `auggy create` scaffold below remains the
+configuration-based format; generating this application layout is a later step.
+
 ## Why Auggy
 
 Many agent frameworks decide in advance which memory system, tools, transport,

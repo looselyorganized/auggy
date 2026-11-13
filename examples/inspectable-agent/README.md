@@ -8,6 +8,15 @@ the service boundary in `src/augments/example/service.ts`.
 
 ## Run it
 
+For a fresh repository checkout, first install the workspace and build the
+console from the repository root:
+
+```sh
+bun install --frozen-lockfile
+bun run build:admin
+cd examples/inspectable-agent
+```
+
 This repository reference uses an explicit `workspace:../..` link to Auggy and a
 local `file:` dependency on its Anthropic adapter. Its four provider `file:` overrides support Bun's resolution
 of the source checkout's workspace dependencies. Remove those checkout-only
