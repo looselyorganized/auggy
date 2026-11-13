@@ -1,4 +1,7 @@
 import type {
+  AgentExecutionOptions,
+  ThreadHistoryCommitResult,
+  KernelEvent,
   AgentCard,
   AgentConfig,
   AgentHandle,
@@ -21,6 +24,7 @@ import { createTokenizer } from "./tokenizer";
 import { generateAgentCard } from "./agent-card";
 import { wireMemoryBus } from "./memory/memory-bus";
 import { createTurnLoop } from "./kernel/turn-loop";
+import { createTurnObservation, type TurnObservation } from "./kernel/turn-observation";
 import { createLifecycleManager } from "./kernel/lifecycle-manager";
 import { collectAugmentRoutes } from "./kernel/route-collector";
 import type { CollectedRoute } from "./kernel/route-collector";
@@ -176,7 +180,12 @@ function threadOwnerTransition(
   return "deny";
 }
 
-export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandle {
+export function defineAgent(
+  config: AgentConfig,
+  model: ModelClient,
+  execution?: AgentExecutionOptions,
+): AgentHandle {
+  const onTurnFinalized = execution?.onTurnFinalized;
   const tokenizer = createTokenizer();
   const operationalSignals = createRuntimeSignals();
 
@@ -213,6 +222,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     tokenizer,
     config: effectiveConfig,
     operationalSignals,
+    turnProgram: execution?.turnProgram,
     onHistoryEvicted: (threadId) => {
       restoredThreads.delete(threadId);
       unmanagedThreadOwners.delete(threadId);
@@ -455,7 +465,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
   async function compactAndCommitHistory(
     threadId: string,
     association: { persistence: ThreadHistoryPersistence; peer: PeerIdentity } | null,
-  ): Promise<void> {
+  ): Promise<"memory-only" | ThreadHistoryCommitResult["disposition"]> {
     const historyBudget = Math.floor(
       model.maxContextTokens * ((config.contextBudget?.historyPercent ?? 40) / 100),
     );
@@ -463,7 +473,25 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
     history.compact(historyBudget, config.compactionStrategy ?? "truncate");
     if (association) {
       try {
-        await association.persistence.commit(threadId, association.peer, history.snapshot());
+        const result = await association.persistence.commit(
+          threadId,
+          association.peer,
+          history.snapshot(),
+        );
+        if (result === undefined) return "committed";
+        const descriptor =
+          result && typeof result === "object"
+            ? Object.getOwnPropertyDescriptor(result, "disposition")
+            : undefined;
+        if (
+          !descriptor ||
+          !("value" in descriptor) ||
+          Reflect.ownKeys(result!).length !== 1 ||
+          (descriptor.value !== "committed" && descriptor.value !== "deferred-to-transport")
+        ) {
+          throw new Error("Invalid thread history commit disposition.");
+        }
+        return descriptor.value;
       } catch (error) {
         // The durable outcome is unknown. Drop the resident copy so a retry
         // must re-authorize and restore the store's authoritative snapshot.
@@ -473,6 +501,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         });
       }
     }
+    return "memory-only";
   }
 
   async function executeThreadTurn(
@@ -485,33 +514,50 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       executionContext?: ExecutionContextV1;
       source: "transport" | "inject";
       trackDetachedOperation?: (operation: Promise<unknown>) => void;
+      observation: TurnObservation;
     },
   ): Promise<TurnResult> {
     return withThreadLock(threadId, async () => {
-      const association = await preparePersistentHistory(
-        threadId,
-        trigger.peer ?? null,
-        options.historyPersistence,
-        options.source,
-      );
-      let result: TurnResult;
+      let association: Awaited<ReturnType<typeof preparePersistentHistory>>;
       try {
-        result = await turnLoop.executeTurn(trigger, threadId, {
-          onEvent: options.onEvent,
-          signal: options.signal,
-          executionContext: options.executionContext,
-          trackDetachedOperation: options.trackDetachedOperation,
-        });
+        association = await preparePersistentHistory(
+          threadId,
+          trigger.peer ?? null,
+          options.historyPersistence,
+          options.source,
+        );
       } catch (error) {
-        // Model/tool failures can happen after history was mutated. Persist a
-        // compact terminal snapshot before surfacing the original failure.
-        await compactAndCommitHistory(threadId, association);
+        options.observation.history("restore-failed");
+        options.observation.failure("history-restore-failed", error);
+        await options.observation.notify({ kind: "threw", error });
         throw error;
       }
-      await compactAndCommitHistory(threadId, association);
+      // Kernel terminal intent is not transport success until history settles.
+      const terminalEvents: KernelEvent[] = [];
+      const settled = await turnLoop.executeTurnSettled(trigger, threadId, {
+        onEvent: (event) => {
+          if (event.kind === "run_finished") terminalEvents.push(event);
+          else options.onEvent?.(event);
+        },
+        signal: options.signal,
+        executionContext: options.executionContext,
+        trackDetachedOperation: options.trackDetachedOperation,
+      });
+      options.observation.kernel(settled.summary);
+      try {
+        options.observation.history(await compactAndCommitHistory(threadId, association));
+      } catch (error) {
+        options.observation.history("commit-failed");
+        options.observation.failure("history-commit-failed", error);
+        await options.observation.notify({ kind: "threw", error });
+        throw error;
+      }
+      await options.observation.notify(settled);
+      if (settled.kind === "threw") throw settled.error;
+      for (const event of terminalEvents) options.onEvent?.(event);
       return options.executionContext === undefined
-        ? result
-        : { ...result, executionContext: options.executionContext };
+        ? settled.result
+        : { ...settled.result, executionContext: options.executionContext };
     });
   }
 
@@ -584,7 +630,9 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
                 reason: "causal-context-expired",
               });
               operationalSignals.recordTurn({ outcome: "rejected", durationMs: 0 });
-              return Promise.resolve(expired);
+              return createTurnObservation(onTurnFinalized, t, causalThreadId, "inject")
+                .notify({ kind: "returned", result: expired })
+                .then(() => expired);
             }
             const injected = scheduleTurn(
               t,
@@ -699,18 +747,26 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
   ): Promise<TurnResult> {
     const operationalStartedAt = Date.now();
     const threadId = trigger.threadId ?? trigger.turnId;
+    const observation = createTurnObservation(onTurnFinalized, trigger, threadId, options.source);
     if (durableThreadStillQuarantined(threadId)) {
       turnScheduler.recordExternalRejection("thread-quarantined");
       operationalSignals.recordTurn({ outcome: "rejected", durationMs: 0 });
-      return schedulerTerminalResult(
+      const rejected = schedulerTerminalResult(
         trigger,
         threadId,
         { status: "rejected", reason: "thread-quarantined" },
         options.executionContext,
       );
+      await observation.notify({ kind: "returned", result: rejected });
+      return rejected;
     }
     const executeCompleteTurn = async (lease: KeyedTurnLease): Promise<TurnResult> => {
-      await options.beforeExecute?.();
+      try {
+        await options.beforeExecute?.();
+      } catch (error) {
+        observation.failure("startup-admission-failed", error);
+        throw error;
+      }
       if (options.signal?.aborted) {
         return schedulerTerminalResult(
           trigger,
@@ -722,7 +778,13 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
           options.executionContext,
         );
       }
-      await options.onExecutionStart?.();
+      observation.executionStarted();
+      try {
+        await options.onExecutionStart?.();
+      } catch (error) {
+        observation.failure("execution-start-failed", error);
+        throw error;
+      }
       lifecycle.resetIdleTimer();
       // Repair a stale persistence memo before pinning creates a replacement
       // manager for this ID. The pin then protects the exact manager through
@@ -738,7 +800,11 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
           historyPersistence: options.historyPersistence,
           executionContext: options.executionContext,
           source: options.source,
-          trackDetachedOperation: (operation) => lease.track(operation),
+          observation,
+          trackDetachedOperation: (operation) => {
+            observation.track(operation);
+            lease.track(operation);
+          },
         });
         if (result.outcomeUnknown) lease.quarantine();
         await runPostTurn(result, trigger, threadId, lease, options.signal);
@@ -774,6 +840,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
         scheduled.status === "completed"
           ? scheduled.value
           : schedulerTerminalResult(trigger, threadId, scheduled, options.executionContext);
+      await observation.notify({ kind: "returned", result });
       operationalSignals.recordTurn({
         outcome: result.outcomeUnknown
           ? "outcome-unknown"
@@ -788,6 +855,7 @@ export function defineAgent(config: AgentConfig, model: ModelClient): AgentHandl
       });
       return result;
     } catch (error) {
+      await observation.notify({ kind: "threw", error });
       operationalSignals.recordTurn({
         outcome: isOutcomeUnknownError(error) ? "outcome-unknown" : "failed",
         durationMs: Date.now() - operationalStartedAt,
