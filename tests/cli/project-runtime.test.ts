@@ -51,6 +51,37 @@ beforeEach(() => {
 afterEach(() => rmSync(directory, { recursive: true, force: true }));
 
 describe("explicit project runtime selection", () => {
+  test.each(["bun", "node"])(
+    "falls through an unmatched nested %s export condition",
+    (condition) => {
+      updateManifest({
+        exports: {
+          "./application": {
+            [condition]: { require: "./src/require.ts" },
+            default: "./src/application.ts",
+          },
+        },
+      });
+      const expected = realpathSync(join(runtime, "src/application.ts"));
+      expect(realpathSync(Bun.resolveSync("auggy/application", project))).toBe(expected);
+      expect(inspectProjectRuntime(project, { applicationContract: 1 }).applicationPath).toBe(
+        expected,
+      );
+      expect(existsSync(join(directory, "executed"))).toBe(false);
+    },
+  );
+
+  test("an explicit null conditional export blocks the outer fallback", () => {
+    updateManifest({
+      exports: { "./application": { bun: null, default: "./src/application.ts" } },
+    });
+    expect(() => Bun.resolveSync("auggy/application", project)).toThrow();
+    expect(() => inspectProjectRuntime(project, { applicationContract: 1 })).toThrow(
+      /application export/,
+    );
+    expect(existsSync(join(directory, "executed"))).toBe(false);
+  });
+
   test("selects compatible local metadata without executing package code or comparing npm versions", () => {
     const selected = inspectProjectRuntime(project, { applicationContract: 1 });
     expect(selected.packageRoot).toBe(realpathSync(runtime));

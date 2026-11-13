@@ -49,15 +49,18 @@ function satisfies(version: string, range: string): boolean {
 }
 
 /** Select Bun's ESM export conditions directly; project tsconfig aliases are not metadata. */
-function applicationExportTarget(value: unknown): string | null {
+function applicationExportTarget(value: unknown): string | null | undefined {
   if (typeof value === "string") return value;
   if (!mapping(value)) return null;
   for (const [condition, target] of Object.entries(value)) {
     if (["bun", "node", "import", "default"].includes(condition)) {
-      return applicationExportTarget(target);
+      const selected = applicationExportTarget(target);
+      // An unmatched nested condition permits a later outer fallback. Explicit
+      // null still blocks resolution, including when an outer default exists.
+      if (selected !== undefined) return selected;
     }
   }
-  return null;
+  return undefined;
 }
 
 export function parseRuntimeCapabilities(value: unknown): RuntimeCapabilities | null {
