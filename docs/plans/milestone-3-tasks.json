@@ -42,7 +42,7 @@
       "id": "M3-00",
       "title": "Freeze baseline and contracts",
       "specialist": "runtime-architect + orchestrator",
-      "status": "review",
+      "status": "accepted",
       "blockedBy": [],
       "dependsOn": [],
       "acceptanceDependsOn": [],
@@ -57,7 +57,7 @@
         "source/state map",
         "accepted baseline identity"
       ],
-      "acceptedCommit": null,
+      "acceptedCommit": "7e1c85acb4c4d76fae690181ae646b67dbd9bc5e",
       "evidence": [
         "milestone-3-contracts/README.md",
         "milestone-3-contracts/turn-state-map.md",
@@ -77,16 +77,15 @@
         "lint": "passed",
         "contractReview": "runtime, host and independent cross-review accepted; no blockers",
         "runtimeImplemented": false
-      }
+      },
+      "acceptedAt": "2026-11-13T03:36:26.979536+00:00"
     },
     {
       "id": "M3-01",
       "title": "Managed turn operations and legacy parity",
       "specialist": "runtime-engineer",
-      "status": "blocked",
-      "blockedBy": [
-        "M3-00"
-      ],
+      "status": "accepted",
+      "blockedBy": [],
       "dependsOn": [
         "M3-00"
       ],
@@ -102,17 +101,38 @@
         "focused regression evidence",
         "legacy parity traces"
       ],
-      "acceptedCommit": null,
-      "evidence": []
+      "acceptedCommit": "d2cc5866e97014fac27fbadeb97b85cdf3293ae4",
+      "evidence": [],
+      "startedAt": "2026-11-13T03:36:26.979536+00:00",
+      "producerCommits": {
+        "M3-00": "7e1c85acb4c4d76fae690181ae646b67dbd9bc5e"
+      },
+      "producerCommit": "b1f3a84",
+      "reviewFindings": [
+        "Preserve tool outcomes when event delivery throws",
+        "Retain unknown detached context outcome on application deadline",
+        "Preserve received inference accounting when stream event delivery throws",
+        "Latch observed caller cancellation before program invocation and late revoked calls"
+      ],
+      "acceptedAt": "2026-11-13T03:57:44.412419+00:00",
+      "verification": {
+        "focusedTests": 184,
+        "assertions": 770,
+        "independentRepairRecheck": {
+          "tests": 37,
+          "assertions": 297,
+          "result": "passed"
+        },
+        "remainingBlockingProducerFindings": 0,
+        "wholeMilestoneCertified": false
+      }
     },
     {
       "id": "M3-02",
       "title": "Managed host and HTTP adapter",
       "specialist": "transport-lifecycle-engineer",
-      "status": "blocked",
-      "blockedBy": [
-        "M3-00"
-      ],
+      "status": "review",
+      "blockedBy": [],
       "dependsOn": [
         "M3-00"
       ],
@@ -131,7 +151,19 @@
         "route/security parity"
       ],
       "acceptedCommit": null,
-      "evidence": []
+      "evidence": [],
+      "startedAt": "2026-11-13T03:36:26.979536+00:00",
+      "producerCommits": {
+        "M3-00": "7e1c85acb4c4d76fae690181ae646b67dbd9bc5e"
+      },
+      "producerCommit": "69fd834fa4e1f4038182dc3ba1f919893f9fb800",
+      "verification": {
+        "focusedTests": 401,
+        "assertions": 1659,
+        "producerTypecheck": "passed",
+        "producerLint": "passed",
+        "independentReview": "in progress"
+      }
     },
     {
       "id": "M3-03",
@@ -139,7 +171,6 @@
       "specialist": "cli-platform-engineer",
       "status": "blocked",
       "blockedBy": [
-        "M3-00",
         "M3-02"
       ],
       "dependsOn": [
@@ -158,7 +189,13 @@
         "platform-specific results"
       ],
       "acceptedCommit": null,
-      "evidence": []
+      "evidence": [],
+      "preparation": {
+        "status": "in_progress",
+        "scope": "Runtime-free bootstrap, shared command grammar and deployment preparation; host integration acceptance still gated on M3-02",
+        "owner": "main_harness_release",
+        "sharedPreflightCommit": "15ef7f1"
+      }
     },
     {
       "id": "M3-04",
@@ -194,10 +231,8 @@
       "id": "M3-05",
       "title": "Packed reference acceptance",
       "specialist": "harness-engineer",
-      "status": "blocked",
-      "blockedBy": [
-        "M3-00"
-      ],
+      "status": "in_progress",
+      "blockedBy": [],
       "dependsOn": [
         "M3-00"
       ],
@@ -220,7 +255,11 @@
         "sanitized scenario evidence"
       ],
       "acceptedCommit": null,
-      "evidence": []
+      "evidence": [],
+      "startedAt": "2026-11-13T03:36:26.979536+00:00",
+      "producerCommits": {
+        "M3-00": "7e1c85acb4c4d76fae690181ae646b67dbd9bc5e"
+      }
     },
     {
       "id": "M3-06",
@@ -310,5 +349,13 @@
     "remainingPlanningBlockers": [],
     "implementationAuthorized": true,
     "planSHA256": "57ab734e954d9a50897eb4b6a51b631b38ef626d393b870c44ee3c9024430d0b"
+  },
+  "activeOwnership": {
+    "src/agent.ts": "frozen host producer69fd834; repairs only by explicit handback to worktree_inventory",
+    "src/types.ts, src/index.ts, manifests, locks, config-parser/types, dev.ts, CI, release shell, docs/ledger": "root; exceptions only by explicit serialized handoff",
+    "runtime phase files/tests": "main_runtime_architecture",
+    "host, HTTP, lifecycle/job cleanup files/tests": "worktree_inventory",
+    "new packed application harness/fixtures": "main_harness_release",
+    "CLI bootstrap, launch grammar, selected operator/deploy files": "main_harness_release; root retains dev.ts, config-parser/types, preflight helpers, manifests and exports"
   }
 }

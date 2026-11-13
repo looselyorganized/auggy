@@ -92,6 +92,10 @@
         {
           "kind": "tree",
           "path": "tests/integration"
+        },
+        {
+          "kind": "tree",
+          "path": "tests/application"
         }
       ]
     },

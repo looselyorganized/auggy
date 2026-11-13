@@ -55,7 +55,7 @@
     "./internal/anthropic-pricing": "./src/engines/anthropic/pricing.ts",
     "./internal/openai-pricing": "./src/engines/openai/pricing.ts",
     "./internal/openrouter-pricing": "./src/engines/openrouter/pricing.ts",
-    "./internal/agent": "./src/agent.ts",
+    "./internal/agent": "./src/internal/agent.ts",
     "./internal/helpers": "./src/helpers.ts",
     "./internal/types": "./src/types.ts",
     "./internal/cli/config-parser": "./src/cli/config-parser.ts",
@@ -66,7 +66,8 @@
     "./internal/augments/layeredMemory/storage/types": "./src/augments/layeredMemory/storage/types.ts",
     "./internal/augments/layeredMemory/storage/sqlite-store": "./src/augments/layeredMemory/storage/sqlite-store.ts",
     "./internal/augments/layeredMemory/extractor/inject-handler": "./src/augments/layeredMemory/extractor/inject-handler.ts",
-    "./internal/augments/layeredMemory/extractor/frequency": "./src/augments/layeredMemory/extractor/frequency.ts"
+    "./internal/augments/layeredMemory/extractor/frequency": "./src/augments/layeredMemory/extractor/frequency.ts",
+    "./application": "./src/application/index.ts"
   },
   "bin": {
     "auggy": "src/cli/index.ts"
@@ -82,7 +83,7 @@
   ],
   "engines": {
     "node": ">=20",
-    "bun": ">=1.2.0"
+    "bun": ">=1.3.14"
   },
   "workspaces": [
     "admin",
@@ -148,5 +149,12 @@
     "svix": "1.96.1",
     "yaml": "^2.8.3",
     "zod": "^4.6.6"
+  },
+  "auggyRuntime": {
+    "schemaVersion": 1,
+    "launcherProtocol": 1,
+    "applicationContracts": [
+      1
+    ]
   }
 }
