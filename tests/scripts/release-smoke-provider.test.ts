@@ -75,6 +75,99 @@ function post(server: ProviderFixture, body: unknown, key = PROVIDER_FIXTURE_API
 }
 
 describe("packed release Anthropic provider fixture", () => {
+  test("explicit application tool runs through the real adapter with exact nested input validation", async () => {
+    const input = { id: "order-17", options: { include: ["status", "total"], currency: "USD" } };
+    const server = fixture({ tool: { name: "orders_lookup", input, invalidInput: { id: 17 } } });
+    input.id = "mutated-after-start";
+    const model = createAnthropicEngine({
+      model: "claude-sonnet-4-6",
+      apiKey: PROVIDER_FIXTURE_API_KEY,
+      baseURL: server.baseURL,
+      costOverride: { inputUsdPerMtok: 1, outputUsdPerMtok: 1 },
+      requestTimeoutMs: 2_000,
+    });
+    const message = (role: Message["role"], content: string, toolCallId?: string): Message => ({
+      id: crypto.randomUUID(),
+      role,
+      content,
+      ...(toolCallId ? { toolCallId } : {}),
+      timestamp: 1,
+      tokenCount: 1,
+    });
+    const prompt: AssembledPrompt = {
+      systemBlocks: [],
+      contextBlocks: [],
+      totalTokens: 1,
+      evictions: [],
+      messages: [message("user", "Lookup the fixture order.")],
+      tools: [
+        { name: "orders_lookup", description: "Fixture lookup", inputSchema: { type: "object" } },
+      ],
+    };
+    const first = await model.complete(prompt);
+    expect(first.toolCalls).toEqual([
+      {
+        name: "orders_lookup",
+        arguments: { id: "order-17", options: { currency: "USD", include: ["status", "total"] } },
+      },
+    ]);
+    prompt.messages.push(
+      message("tool_use", JSON.stringify(first.toolCalls![0]), "custom-call"),
+      message("tool_result", SENTINEL, "custom-call"),
+    );
+    expect((await model.complete(prompt)).content).toBe(PROVIDER_FIXTURE_FINAL_TEXT);
+    expect(server.evidence()).toMatchObject({
+      calls: 2,
+      validatedToolResults: 1,
+      rejectedRequests: 0,
+    });
+  });
+
+  test("explicit invalid input and wrong returned custom tool cannot manufacture a successful result", async () => {
+    const server = fixture({
+      scenario: "invalid-tool-arguments",
+      maxCalls: 8,
+      tool: { name: "orders_lookup", input: { id: "17" }, invalidInput: { id: 17 } },
+    });
+    const initial = {
+      ...requestBody(),
+      tools: [{ name: "orders_lookup", input_schema: { type: "object" } }],
+    };
+    expect(await (await post(server, initial)).json()).toMatchObject({
+      content: [{ name: "orders_lookup", input: { id: 17 } }],
+    });
+    const messages = (name: string, id: string | number, content: string) => [
+      { role: "assistant", content: [{ type: "tool_use", name, id: "custom-id", input: { id } }] },
+      { role: "user", content: [{ type: "tool_result", tool_use_id: "custom-id", content }] },
+    ];
+    for (const values of [
+      messages("wrong_tool", 17, "Validation error: id"),
+      messages("orders_lookup", "17", "Validation error: id"),
+      messages("orders_lookup", 17, SENTINEL),
+    ]) {
+      expect((await post(server, { ...initial, messages: values })).status).toBe(400);
+    }
+    expect(
+      (
+        await post(server, {
+          ...initial,
+          messages: messages("orders_lookup", 17, "Validation error: id"),
+        })
+      ).status,
+    ).toBe(200);
+    expect(server.evidence().summaries.at(-1)?.outcome).toBe("verified-validation-error");
+  });
+
+  test("rejects ambiguous, non-JSON and indistinguishable custom scenarios before listening", () => {
+    const tool = { name: "orders_lookup", input: { id: "17" }, invalidInput: { id: 17 } };
+    expect(() => fixture({ tool, toolPath: "workspace/test" })).toThrow("cannot both");
+    expect(() => fixture({ tool: { ...tool, input: { nested: undefined } } })).toThrow(
+      "finite JSON",
+    );
+    expect(() => fixture({ tool: { ...tool, invalidInput: { id: "17" } } })).toThrow("differ");
+    expect(() => fixture({ tool: { ...tool, name: "../escape" } })).toThrow("tool name");
+  });
+
   test.each([false, true])(
     "works through the real Anthropic adapter (streaming=%s)",
     async (streaming) => {
