@@ -3,7 +3,6 @@ import { randomBytes, randomUUID } from "node:crypto";
 import {
   copyFileSync,
   existsSync,
-  lstatSync,
   mkdirSync,
   readFileSync,
   readdirSync,
@@ -17,6 +16,7 @@ import { dirname, join, resolve } from "node:path";
 import { parse, stringify } from "yaml";
 import { ACCEPTED_MAIN } from "./accepted-main-artifacts";
 import {
+  APPLICATION_BOUNDS,
   applicationEnvironment,
   applicationHash,
   assertInstalledApplicationArtifact,
@@ -38,6 +38,7 @@ import {
   type ProviderFixtureEvidence,
 } from "./provider-fixture";
 import { redactEvidence } from "./export-evidence";
+import { readBoundedRegularFile } from "./bounded-file";
 
 function check(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -150,15 +151,21 @@ export async function withCompatibilityFile<T>(
   action: () => Promise<T>,
   beforeRestore: () => Promise<void> = async () => {},
 ): Promise<T> {
-  const stat = lstatSync(path, { throwIfNoEntry: false });
-  check(!stat || stat.isFile(), "Compatibility edit requires a regular file");
-  const previous = existsSync(path) ? readFileSync(path) : null;
+  let previous: ReturnType<typeof readBoundedRegularFile> | null = null;
+  try {
+    previous = readBoundedRegularFile(path, APPLICATION_BOUNDS.sourceBytes);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
   // Bun may hardlink installed files to a shared cache or sibling consumer.
   // Replace the directory entry atomically; never truncate the installed inode.
   const replace = (value: string | Buffer) => {
     const temporary = `${path}.compatibility-${randomUUID()}`;
     try {
-      writeFileSync(temporary, value, { flag: "wx", mode: stat ? stat.mode & 0o777 : 0o600 });
+      writeFileSync(temporary, value, {
+        flag: "wx",
+        mode: previous ? previous.mode & 0o777 : 0o600,
+      });
       renameSync(temporary, path);
     } finally {
       rmSync(temporary, { force: true });
@@ -169,9 +176,39 @@ export async function withCompatibilityFile<T>(
     return await action();
   } finally {
     await beforeRestore();
-    if (previous) replace(previous);
+    if (previous) replace(previous.bytes);
     else rmSync(path, { force: true });
   }
+}
+
+/** Static executable fixture; all per-run values stay in sibling data files. */
+export function writeLegacyCompatibilityObserver(directory: string): void {
+  const source = String.raw`import { appendFileSync, readFileSync } from "node:fs";
+import { defineAugment } from "auggy";
+
+const sentinel = readFileSync(new URL("./acceptance.txt", import.meta.url), "utf8");
+const trace = new URL("./trace.jsonl", import.meta.url);
+
+export default function () {
+  return defineAugment({
+    name: "compatibilityObserver",
+    onTurnEnd: async (turn) => {
+      appendFileSync(trace, JSON.stringify({
+        success: turn.success,
+        status: turn.status,
+        tools: turn.toolCalls.map((tool) => ({
+          name: tool.name,
+          sentinel: tool.output.includes(sentinel),
+        })),
+        runtime: import.meta.resolve("auggy"),
+        processEntry: process.argv[1],
+        delegation: JSON.parse(process.env.AUGGY_CLI_DELEGATION ?? "null"),
+      }) + "\n", { mode: 0o600 });
+    },
+  });
+}
+`;
+  writeFileSync(join(directory, "observer.ts"), source, { flag: "wx", mode: 0o600 });
 }
 
 export function assertRejectedCompatibilityProcess(
@@ -286,15 +323,15 @@ export async function runApplicationCompatibility(
     "Differing-version coverage requires a distinct real packed artifact",
   );
   if (options.acceptedLegacy.buildEvidencePath) {
-    const stat = lstatSync(options.acceptedLegacy.buildEvidencePath);
-    check(
-      stat.isFile() && stat.size <= 2 * 1024 * 1024,
-      "Legacy build evidence must be bounded and regular",
-    );
     verifyLegacyBuildEvidence(
       options.acceptedLegacy.core,
       options.acceptedLegacy.provider,
-      JSON.parse(readFileSync(options.acceptedLegacy.buildEvidencePath, "utf8")),
+      JSON.parse(
+        readBoundedRegularFile(
+          options.acceptedLegacy.buildEvidencePath,
+          APPLICATION_BOUNDS.sourceBytes,
+        ).bytes.toString("utf8"),
+      ),
     );
   } else
     check(
@@ -787,11 +824,7 @@ export async function runApplicationCompatibility(
     writeFileSync(join(legacyOwned, "acceptance.txt"), legacySentinel);
     const legacyProvider = createProviderFixture({ toolResultSentinel: legacySentinel });
     providers.push(legacyProvider);
-    const legacyTrace = join(legacyOwned, "trace.jsonl");
-    writeFileSync(
-      join(legacyOwned, "observer.ts"),
-      `import {appendFileSync} from "node:fs";import{defineAugment}from"auggy";export default function(){return defineAugment({name:"compatibilityObserver",onTurnEnd:async turn=>{appendFileSync(${JSON.stringify(legacyTrace)},JSON.stringify({success:turn.success,status:turn.status,tools:turn.toolCalls.map(t=>({name:t.name,sentinel:t.output.includes(${JSON.stringify(legacySentinel)})})),runtime:import.meta.resolve("auggy"),processEntry:process.argv[1],delegation:JSON.parse(process.env.AUGGY_CLI_DELEGATION??"null")})+"\\n")}})}`,
-    );
+    writeLegacyCompatibilityObserver(legacyOwned);
     const legacyConfig = {
       id: `aug1_${randomUUID()}`,
       name: "accepted-legacy",

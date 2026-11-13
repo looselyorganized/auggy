@@ -1,8 +1,9 @@
 /** Bounded network and diagnostic-file operations for the actual installed app. */
 import { createHash } from "node:crypto";
-import { lstatSync, readFileSync, realpathSync } from "node:fs";
+import { lstatSync, realpathSync } from "node:fs";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { APPLICATION_BOUNDS, type startApplicationChild } from "./application-consumer";
+import { readBoundedRegularFile } from "./bounded-file";
 
 function check(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
@@ -17,25 +18,33 @@ export function readApplicationJsonLines(root: string, file: string): Record<str
   );
   const owner = realpathSync(root);
   let current = owner;
-  for (const part of parts) {
+  for (const part of parts.slice(0, -1)) {
     current = join(current, part);
     const stat = lstatSync(current, { throwIfNoEntry: false });
     if (!stat) return [];
     check(!stat.isSymbolicLink(), "Diagnostic file may not traverse symlinks");
   }
-  const path = realpathSync(current);
-  const rel = relative(owner, path);
+  const parent = realpathSync(current);
+  const rel = relative(owner, parent);
   check(
     rel !== ".." && !rel.startsWith(`..${sep}`) && !isAbsolute(rel),
     "Diagnostic file escaped the consumer",
   );
-  const stat = lstatSync(path);
-  check(
-    stat.isFile() && stat.size <= APPLICATION_BOUNDS.outputBytes,
-    "Diagnostic file exceeds its bound",
-  );
-  const bytes = readFileSync(path);
-  check(bytes.length <= APPLICATION_BOUNDS.outputBytes, "Diagnostic file grew beyond its bound");
+  const path = join(parent, parts.at(-1)!);
+  let bytes: Buffer | undefined;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      bytes = readBoundedRegularFile(path, APPLICATION_BOUNDS.outputBytes).bytes;
+      break;
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === "ENOENT") return [];
+      // Diagnostic writers can append while being polled. Retry only detected
+      // changes, with a fixed attempt cap and the same byte bound each time.
+      if (code !== "ERR_BOUNDED_FILE_CHANGED" || attempt === 2) throw error;
+    }
+  }
+  check(bytes, "Diagnostic file did not produce a stable bounded read");
   const text = bytes.toString("utf8");
   check(text === "" || text.endsWith("\n"), "Diagnostic writer left a partial JSONL record");
   const lines = text.split("\n").filter(Boolean);

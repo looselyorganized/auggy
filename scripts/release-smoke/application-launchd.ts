@@ -7,6 +7,8 @@ import {
   mkdirSync,
   readFileSync,
   realpathSync,
+  renameSync,
+  rmSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -30,6 +32,7 @@ import { applicationHttp } from "./application-http";
 import { correlateApplicationTurn, readApplicationRecords } from "./application-records";
 import type { InstalledApplicationOptions } from "./application-runner";
 import { redactEvidence } from "./export-evidence";
+import { readBoundedRegularFile } from "./bounded-file";
 import {
   createProviderFixture,
   PROVIDER_FIXTURE_API_KEY,
@@ -150,9 +153,37 @@ export function applicationLaunchdListedPid(
   return pid;
 }
 function regularJson(path: string, limit = 32_768): unknown {
-  const stat = lstatSync(path);
-  check(stat.isFile() && !stat.isSymbolicLink() && stat.size <= limit, "Invalid service metadata");
-  return JSON.parse(readFileSync(path, "utf8"));
+  return JSON.parse(readBoundedRegularFile(path, limit).bytes.toString("utf8"));
+}
+
+/** Replace only our report entry; never truncate an existing symlink or hardlink target. */
+export function writeApplicationLaunchdReport(path: string, contents: string): void {
+  check(
+    Buffer.byteLength(contents) <= APPLICATION_BOUNDS.outputBytes,
+    "Launchd report exceeded its bound",
+  );
+  const temporary = `${path}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporary, contents, { flag: "wx", mode: 0o600 });
+    renameSync(temporary, path);
+  } finally {
+    rmSync(temporary, { force: true });
+  }
+}
+
+export function markApplicationLaunchdReportFailed(path: string): void {
+  let report: unknown;
+  try {
+    report = regularJson(path, APPLICATION_BOUNDS.outputBytes);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw error;
+  }
+  if (object(report) && report.state === "running") {
+    report.state = "failed";
+    report.failure = "setup-or-evidence-failure";
+    writeApplicationLaunchdReport(path, `${JSON.stringify(report, null, 2)}\n`);
+  }
 }
 function processGone(pid: number) {
   try {
@@ -168,13 +199,10 @@ export async function runInstalledApplicationLaunchd(options: InstalledApplicati
     return await executeInstalledApplicationLaunchd(options);
   } catch (error) {
     const path = join(resolve(options.evidenceDirectory), "application-launchd.json");
-    if (existsSync(path)) {
-      const report = regularJson(path, APPLICATION_BOUNDS.outputBytes);
-      if (object(report) && report.state === "running") {
-        report.state = "failed";
-        report.failure = "setup-or-evidence-failure";
-        writeFileSync(path, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 });
-      }
+    try {
+      markApplicationLaunchdReportFailed(path);
+    } catch (reportError) {
+      throw new AggregateError([error, reportError], "Launchd execution and report update failed");
     }
     throw error;
   }
@@ -197,10 +225,9 @@ async function executeInstalledApplicationLaunchd(options: InstalledApplicationO
   };
   const secrets = [PROVIDER_FIXTURE_API_KEY];
   const write = () =>
-    writeFileSync(
+    writeApplicationLaunchdReport(
       join(evidenceDirectory, "application-launchd.json"),
       `${redactEvidence(JSON.stringify(report, null, 2), secrets)}\n`,
-      { mode: 0o600 },
     );
   const availability = applicationLaunchdAvailability(process.platform);
   if (!availability.available) {
@@ -419,19 +446,25 @@ async function executeInstalledApplicationLaunchd(options: InstalledApplicationO
         lstatSync(installPath).isSymbolicLink() && realpathSync(installPath) === storePath,
         "Installed launchd symlink escaped isolated control ownership",
       );
-      const plistStat = lstatSync(storePath);
-      check(
-        plistStat.isFile() && !plistStat.isSymbolicLink() && plistStat.size <= 32_768,
-        "Invalid installed plist file",
-      );
-      const parsed = await command(
-        ["/usr/bin/plutil", "-convert", "json", "-o", "-", storePath],
-        false,
-      );
-      check(parsed.exitCode === 0, "Cannot decode the actual installed plist");
-      const unit = inspectApplicationLaunchdPlist(JSON.parse(parsed.stdout), expected);
+      const plistBytes = readBoundedRegularFile(storePath, 32_768).bytes;
+      // Decode the captured bytes, so evidence hashes the same unit that was inspected.
+      const snapshotPath = join(evidenceDirectory, `.launchd-plist-${randomUUID()}.plist`);
+      let plist: unknown;
+      try {
+        writeFileSync(snapshotPath, plistBytes, { flag: "wx", mode: 0o600 });
+        const parsed = await command(
+          ["/usr/bin/plutil", "-convert", "json", "-o", "-", snapshotPath],
+          false,
+        );
+        check(parsed.exitCode === 0, "Cannot decode the actual installed plist");
+        plist = JSON.parse(parsed.stdout);
+      } finally {
+        rmSync(snapshotPath, { force: true });
+      }
+      const unit = inspectApplicationLaunchdPlist(plist, expected);
+      const manifestBytes = readBoundedRegularFile(manifestPath, 32_768).bytes;
       const manifest = inspectApplicationLaunchdManifest(
-        regularJson(manifestPath),
+        JSON.parse(manifestBytes.toString("utf8")),
         expected,
         unit.generation,
       );
@@ -480,8 +513,8 @@ async function executeInstalledApplicationLaunchd(options: InstalledApplicationO
         ...manifest,
         unit,
         startup: event,
-        plistSHA256: applicationHash(readFileSync(storePath)),
-        manifestSHA256: applicationHash(readFileSync(manifestPath)),
+        plistSHA256: applicationHash(plistBytes),
+        manifestSHA256: applicationHash(manifestBytes),
       });
       write();
       return manifest;

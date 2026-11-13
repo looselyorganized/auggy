@@ -6,7 +6,6 @@ import {
   mkdirSync,
   mkdtempSync,
   readdirSync,
-  readFileSync,
   realpathSync,
   rmSync,
   writeFileSync,
@@ -14,6 +13,7 @@ import {
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { redactEvidence } from "./export-evidence";
+import { readBoundedRegularFile } from "./bounded-file";
 
 /** The accepted, audited pre-application main. Never substitute the 29147 negative fixture. */
 export const ACCEPTED_MAIN = Object.freeze({
@@ -28,6 +28,7 @@ export const ACCEPTED_MAIN = Object.freeze({
 const MAX_COMMAND_MS = 180_000;
 const MAX_OUTPUT_BYTES = 16 * 1024 * 1024;
 const REAP_MS = 5_000;
+const MAX_FILE_BYTES = 256 * 1024 * 1024;
 
 type BuildCommandFailure =
   | "timeout"
@@ -58,8 +59,7 @@ function sha256(value: string | Buffer): string {
 }
 
 function fileHash(path: string): string {
-  check(lstatSync(path).isFile(), "Expected a regular file");
-  return sha256(readFileSync(path));
+  return sha256(readBoundedRegularFile(path, MAX_FILE_BYTES).bytes);
 }
 
 /** Explicit env excludes user npm settings, credentials, preloads and repository aliases. */
@@ -250,11 +250,12 @@ function sourceFileHash(directory: string, path: string): string {
     "Invalid source path",
   );
   let current = directory;
-  for (const part of path.split("/")) {
+  const parts = path.split("/");
+  for (const part of parts.slice(0, -1)) {
     current = join(current, part);
     check(!lstatSync(current).isSymbolicLink(), "Source path contains a symbolic link");
   }
-  return fileHash(current);
+  return fileHash(join(current, parts.at(-1)!));
 }
 
 export function verifyAcceptedSourceFiles(
@@ -279,11 +280,11 @@ export function verifyAcceptedArchive(
     check(match, "Accepted source contains unsupported entries");
     const path = match[3]!;
     check(sourceFileHash(directory, path) === files[path], "Accepted archive path mismatch");
-    const bytes = readFileSync(join(directory, path));
+    const { bytes, mode } = readBoundedRegularFile(join(directory, path), MAX_FILE_BYTES);
     const blob = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
     check(blob === match[2], `Accepted archive blob mismatch: ${path}`);
     check(
-      ((lstatSync(join(directory, path)).mode & 0o111) !== 0) === (match[1] === "100755"),
+      ((mode & 0o111) !== 0) === (match[1] === "100755"),
       "Accepted archive executable mode mismatch",
     );
   }
@@ -428,7 +429,12 @@ export async function buildAcceptedMainArtifacts(options: {
         );
         sourceFiles[file] = expected;
       }
-      const manifest = JSON.parse(readFileSync(join(extracted, "package/package.json"), "utf8"));
+      const manifest = JSON.parse(
+        readBoundedRegularFile(
+          join(extracted, "package/package.json"),
+          MAX_FILE_BYTES,
+        ).bytes.toString("utf8"),
+      );
       check(
         manifest.name === packageName && manifest.version === "0.5.0",
         "Unexpected accepted package identity",

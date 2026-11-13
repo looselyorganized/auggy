@@ -1,15 +1,19 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
+  chmodSync,
   existsSync,
   linkSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
+  statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import {
   applicationEnvironment,
   startApplicationChild,
@@ -19,6 +23,7 @@ import {
   assertCompatibilityCompletion,
   verifyLegacyBuildEvidence,
   withCompatibilityFile,
+  writeLegacyCompatibilityObserver,
 } from "../../scripts/release-smoke/application-compatibility";
 import { ACCEPTED_MAIN } from "../../scripts/release-smoke/accepted-main-artifacts";
 import type { PackedArtifactEvidence } from "../../scripts/release-smoke/application-consumer";
@@ -41,6 +46,64 @@ function fixture() {
 }
 
 describe("installed compatibility evidence and cleanup", () => {
+  test("rejects linked and oversized originals before replacing compatibility fixtures", async () => {
+    const root = fixture();
+    const target = join(root, "original.txt");
+    const linked = join(root, "linked.txt");
+    writeFileSync(target, "original");
+    symlinkSync(target, linked);
+    let ran = false;
+    const action = async () => {
+      ran = true;
+    };
+    await expect(withCompatibilityFile(linked, "fixture", action)).rejects.toThrow();
+    expect(readFileSync(target, "utf8")).toBe("original");
+    writeFileSync(target, Buffer.alloc(2 * 1024 * 1024 + 1));
+    await expect(withCompatibilityFile(target, "fixture", action)).rejects.toThrow();
+    expect(ran).toBe(false);
+    expect(statSync(target).size).toBe(2 * 1024 * 1024 + 1);
+  });
+
+  test("restores captured file mode as well as bytes", async () => {
+    const file = join(fixture(), "entry.ts");
+    writeFileSync(file, "original");
+    chmodSync(file, 0o640);
+    await withCompatibilityFile(file, "fixture", async () => {
+      expect(statSync(file).mode & 0o777).toBe(0o640);
+    });
+    expect(readFileSync(file, "utf8")).toBe("original");
+    expect(statSync(file).mode & 0o777).toBe(0o640);
+  });
+
+  test("legacy observer executes fixed code while hostile paths and sentinels stay data", async () => {
+    const root = fixture();
+    mkdirSync(join(root, "node_modules"));
+    symlinkSync(
+      fileURLToPath(new URL("../../", import.meta.url)),
+      join(root, "node_modules/auggy"),
+    );
+    const sentinel = '"}); globalThis.__legacyFixtureInjection = true; //\n';
+    const owned = join(root, 'observer-"${data}');
+    mkdirSync(owned);
+    writeFileSync(join(owned, "acceptance.txt"), sentinel);
+    writeLegacyCompatibilityObserver(owned);
+    const source = readFileSync(join(owned, "observer.ts"), "utf8");
+    expect(source).not.toContain(sentinel);
+    expect(source).not.toContain(owned);
+    const observer = await import(pathToFileURL(join(owned, "observer.ts")).href);
+    await observer.default().onTurnEnd({
+      success: true,
+      status: "completed",
+      toolCalls: [{ name: "fs_read", output: sentinel }],
+    });
+    expect(Reflect.get(globalThis, "__legacyFixtureInjection")).toBeUndefined();
+    const trace = JSON.parse(readFileSync(join(owned, "trace.jsonl"), "utf8"));
+    expect(trace.success).toBe(true);
+    expect(trace.status).toBe("completed");
+    expect(trace.tools).toEqual([{ name: "fs_read", sentinel: true }]);
+    expect(typeof trace.runtime).toBe("string");
+  });
+
   test("requires one correlated completed stream and exact tool/provider evidence", () => {
     const events: Record<string, unknown>[] = [
       { type: "RUN_STARTED", threadId: "thread", runId: "run" },

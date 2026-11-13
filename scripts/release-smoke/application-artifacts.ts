@@ -1,15 +1,7 @@
 import { spawnSync } from "node:child_process";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  realpathSync,
-  rmSync,
-  writeFileSync,
-  statSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import {
   acceptedBuildEnvironment,
   runAcceptedBuildCommand,
@@ -23,6 +15,7 @@ import {
   inspectApplicationArtifact,
   type PackedArtifactInput,
 } from "./application-consumer";
+import { readBoundedRegularFile } from "./bounded-file";
 
 // First reviewed application-capable runtime. This is an artifact experiment,
 // never a claim that two different 0.5.0 artifacts were published releases.
@@ -33,10 +26,9 @@ export async function applicationArtifact(
   path: string,
   packageName: string,
 ): Promise<PackedArtifactInput> {
-  const file = realpathSync(path);
-  const stat = statSync(file);
-  if (!stat.isFile() || stat.size > APPLICATION_BOUNDS.artifactBytes)
-    throw new Error("Artifact must be a bounded regular file");
+  const selected = resolve(path);
+  const file = join(realpathSync(dirname(selected)), basename(selected));
+  const { bytes } = readBoundedRegularFile(file, APPLICATION_BOUNDS.artifactBytes);
   const list = (flag: string) => {
     const result = spawnSync("tar", [flag, file], {
       timeout: 15_000,
@@ -80,7 +72,7 @@ export async function applicationArtifact(
   const input = {
     path: file,
     packageName,
-    sha256: applicationHash(readFileSync(file)),
+    sha256: applicationHash(bytes),
     sourceFiles,
   };
   inspectApplicationArtifact(input);
@@ -232,7 +224,9 @@ export async function buildDifferentVersionArtifact(
     if (extract.status !== "passed") throw new Error("Version fixture extraction failed");
     const packageRoot = join(workspace, "package");
     const manifestPath = join(packageRoot, "package.json");
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    const manifest = JSON.parse(
+      readBoundedRegularFile(manifestPath, APPLICATION_BOUNDS.sourceBytes).bytes.toString("utf8"),
+    );
     manifest.version = version;
     writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
     const pack = await runAcceptedBuildCommand({

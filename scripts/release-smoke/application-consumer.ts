@@ -6,11 +6,12 @@
 import { createHash } from "node:crypto";
 import { spawn, spawnSync } from "node:child_process";
 import { createRequire } from "node:module";
-import { lstatSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { TurnFinalizationObservation } from "../../src/index";
 import { redactEvidence } from "./export-evidence";
 import type { ProviderFixtureEvidence, ProviderFixtureTool } from "./provider-fixture";
+import { readBoundedRegularFile } from "./bounded-file";
 
 export const APPLICATION_BOUNDS = Object.freeze({
   readinessMs: 60_000,
@@ -126,18 +127,16 @@ function regularBytes(
   path: string,
   maxBytes = APPLICATION_BOUNDS.sourceBytes,
 ): Buffer {
-  const file = join(root, localPath(path));
-  let current = root;
-  for (const part of localPath(path).split(sep)) {
+  const parts = localPath(path).split(sep);
+  const owner = realpathSync(root);
+  let current = owner;
+  for (const part of parts.slice(0, -1)) {
     current = join(current, part);
     check(!lstatSync(current).isSymbolicLink(), "Fixture source must not traverse symlinks");
   }
-  const stat = lstatSync(file);
-  check(stat.isFile() && stat.size <= maxBytes, "Fixture file must be bounded and regular");
-  check(inside(realpathSync(file), realpathSync(root)), "Fixture file escaped its owner");
-  const bytes = readFileSync(file);
-  check(bytes.byteLength <= maxBytes, "Fixture file grew beyond its bound");
-  return bytes;
+  const parent = realpathSync(current);
+  check(inside(parent, owner), "Fixture file escaped its owner");
+  return readBoundedRegularFile(join(parent, parts.at(-1)!), maxBytes).bytes;
 }
 
 function archiveFile(archive: string, path: string): Buffer {
@@ -177,7 +176,8 @@ export function inspectApplicationArtifact(input: PackedArtifactInput): PackedAr
   for (const file of input.sourceFiles)
     fileHashes[localPath(file)] = applicationHash(archiveFile(path, file));
   check(
-    applicationHash(readFileSync(path)) === input.sha256,
+    applicationHash(readBoundedRegularFile(path, APPLICATION_BOUNDS.artifactBytes).bytes) ===
+      input.sha256,
     "Packed artifact changed during inspection",
   );
   return {
@@ -414,7 +414,10 @@ export function prepareApplicationConsumer(options: {
     }
     mkdirSync(join(destination, ".application-artifacts"), { mode: 0o700 });
     for (const [index, artifact] of [core, provider].entries()) {
-      const bytes = readFileSync(artifactInputs[index]!.path);
+      const { bytes } = readBoundedRegularFile(
+        artifactInputs[index]!.path,
+        APPLICATION_BOUNDS.artifactBytes,
+      );
       check(applicationHash(bytes) === artifact.sha256, "Artifact changed before materialization");
       writeFileSync(
         join(destination, ".application-artifacts", `${index}-${artifact.sha256}.tgz`),

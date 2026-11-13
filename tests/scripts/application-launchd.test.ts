@@ -1,10 +1,36 @@
-import { describe, expect, test } from "bun:test";
+import { afterEach, describe, expect, test } from "bun:test";
+import {
+  existsSync,
+  linkSync,
+  lstatSync,
+  mkdtempSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   applicationLaunchdAvailability,
   applicationLaunchdListedPid,
   inspectApplicationLaunchdManifest,
   inspectApplicationLaunchdPlist,
+  markApplicationLaunchdReportFailed,
+  writeApplicationLaunchdReport,
 } from "../../scripts/release-smoke/application-launchd";
+
+const directories: string[] = [];
+afterEach(() => {
+  for (const directory of directories.splice(0))
+    rmSync(directory, { recursive: true, force: true });
+});
+function fixture() {
+  const directory = mkdtempSync(join(tmpdir(), "auggy-launchd-evidence-test-"));
+  directories.push(directory);
+  return directory;
+}
 
 const expected = {
   agentId: "aug1_11111111-2222-4333-8444-555555555555",
@@ -62,6 +88,58 @@ function manifest() {
 }
 
 describe("launchd evidence validators, not actual macOS service acceptance", () => {
+  test.each(["symlink", "hardlink"])(
+    "atomic report writes preserve an existing %s target and remove temporary entries",
+    (kind) => {
+      const root = fixture();
+      const target = join(root, "outside-report.json");
+      const report = join(root, "report.json");
+      writeFileSync(target, "unchanged");
+      if (kind === "symlink") symlinkSync(target, report);
+      else linkSync(target, report);
+      writeApplicationLaunchdReport(report, '{"state":"failed"}\n');
+      expect(readFileSync(target, "utf8")).toBe("unchanged");
+      expect(JSON.parse(readFileSync(report, "utf8"))).toEqual({ state: "failed" });
+      expect(lstatSync(report).isSymbolicLink()).toBe(false);
+      expect(lstatSync(report).mode & 0o777).toBe(0o600);
+      expect(readdirSync(root).sort()).toEqual(["outside-report.json", "report.json"]);
+    },
+  );
+
+  test("failure reporting changes only a bounded running report and skips absence", () => {
+    const report = join(fixture(), "report.json");
+    markApplicationLaunchdReportFailed(report);
+    expect(existsSync(report)).toBe(false);
+    writeFileSync(report, JSON.stringify({ state: "running", cleanupConfirmed: false }));
+    markApplicationLaunchdReportFailed(report);
+    expect(JSON.parse(readFileSync(report, "utf8"))).toEqual({
+      state: "failed",
+      cleanupConfirmed: false,
+      failure: "setup-or-evidence-failure",
+    });
+    const terminal = '{"state":"passed"}\n';
+    writeFileSync(report, terminal);
+    markApplicationLaunchdReportFailed(report);
+    expect(readFileSync(report, "utf8")).toBe(terminal);
+    writeFileSync(report, Buffer.alloc(2 * 1024 * 1024 + 1));
+    expect(() => markApplicationLaunchdReportFailed(report)).toThrow();
+    expect(() => writeApplicationLaunchdReport(report, "x".repeat(2 * 1024 * 1024 + 1))).toThrow(
+      "bound",
+    );
+  });
+
+  test("failure reporting refuses a linked report without following or changing its target", () => {
+    const root = fixture();
+    const target = join(root, "outside.json");
+    const report = join(root, "report.json");
+    const original = '{"state":"running"}\n';
+    writeFileSync(target, original);
+    symlinkSync(target, report);
+    expect(() => markApplicationLaunchdReportFailed(report)).toThrow();
+    expect(readFileSync(target, "utf8")).toBe(original);
+    expect(lstatSync(report).isSymbolicLink()).toBe(true);
+  });
+
   test("non-macOS is explicitly unavailable", () => {
     expect(applicationLaunchdAvailability("linux")).toEqual({
       available: false,
