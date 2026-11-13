@@ -3,20 +3,19 @@ import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { AUGMENT_CATALOG, resolveCatalogEntry, type CatalogEntry } from "../augment-catalog";
 import { runAdd, type AddOpts } from "./add";
-import { resolveConfigPath } from "../resolve-config";
+import { selectInspectionDocument } from "../authoring/inspection-selection";
 import { scaffoldCustomAugment, validateCustomAugmentSlug } from "../scaffold-custom-augment";
 import { validateCustomAugment } from "../augment-validator";
 import { displayPath } from "../display-path";
 import { VALID_NAME_RE } from "../agent-name";
 import {
-  readAuthoringDocument,
   assertInlineAuthoring,
   planAugmentAssets,
   publishAugmentMutation,
   rootSkillsEdit,
 } from "../augment-metadata";
 import { AUTHORING_LIMITS, type PublicationOptions } from "../authoring/contracts";
-import { readFileSnapshot } from "../authoring/document-io";
+import { AuthoringError, readFileSnapshot } from "../authoring/document-io";
 import {
   formatAgentMailSetupResult,
   runAgentMailSetup,
@@ -254,10 +253,12 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
             { scaffold },
           );
           console.log(
-            `Created and installed custom augment "${slug}" at ${displayPath(result.augmentDir, deps.cwd)}.`,
+            `Created and installed custom augment "${slug}" at ${displayPath(result.augmentDir, realpathSync(deps.cwd ?? process.cwd()))}.`,
           );
           if (result.skillDir) {
-            console.log(`Created skill at ${displayPath(result.skillDir, deps.cwd)}/SKILL.md.`);
+            console.log(
+              `Created skill at ${displayPath(result.skillDir, realpathSync(deps.cwd ?? process.cwd()))}/SKILL.md.`,
+            );
             console.log("Next: customize the augment implementation and skill for your use case.");
           }
         } catch (err) {
@@ -337,11 +338,9 @@ function resolveSetupType(specifier: string): string {
 }
 
 export function listAugments(opts: ListAugmentsOptions = {}): ListedAugment[] {
-  const configPath = resolveConfigPath(opts.agentName, opts.config, {
-    auggyDir: opts.auggyDir,
-    cwd: opts.cwd,
-  });
-  const augments = readAuthoringDocument(configPath).declarations;
+  const augments = selectInspectionDocument(opts.agentName, opts.config, {
+    cwd: opts.cwd ?? (opts.auggyDir ? join(opts.auggyDir, "agents") : undefined),
+  }).declarations;
   return augments.map((augment) => ({
     label: labelForAugment(augment.type, augment.name),
     name: augment.name ?? "(unresolved)",
@@ -390,8 +389,11 @@ function listInstalledForCatalog(opts: ListAugmentsOptions): ListedAugment[] {
   try {
     return listAugments(opts);
   } catch (err) {
-    const message = (err as Error).message;
-    const catalogOnly = !opts.agentName && !opts.config && message.startsWith("No agent specified");
+    const catalogOnly =
+      !opts.agentName &&
+      !opts.config &&
+      err instanceof AuthoringError &&
+      err.diagnostic.code === "missing-config";
     if (catalogOnly) return [];
     throw err;
   }
@@ -446,11 +448,10 @@ function capitalize(value: string): string {
 }
 
 export function removeAugment(opts: RemoveAugmentOptions): RemoveAugmentResult {
-  const configPath = resolveConfigPath(opts.agentName, opts.config, {
-    auggyDir: opts.auggyDir,
-    cwd: opts.cwd,
+  const document = selectInspectionDocument(opts.agentName, opts.config, {
+    cwd: opts.cwd ?? (opts.auggyDir ? join(opts.auggyDir, "agents") : undefined),
   });
-  const document = readAuthoringDocument(configPath);
+  const configPath = document.configPath;
   assertInlineAuthoring(document);
   const augments = document.declarations.map((entry) => ({ ...entry, name: entry.name! }));
   const index = findAugmentIndex(augments, opts.augment);
@@ -552,10 +553,10 @@ export function createCustomAugment(
     throw new Error(
       "--force no longer overwrites augment source or skills. Choose another slug or review and move existing files manually.",
     );
-  const configPath = resolveConfigPath(undefined, opts.config, {
+  const document = selectInspectionDocument(undefined, opts.config, {
     cwd: resolve(opts.cwd ?? process.cwd()),
   });
-  const document = readAuthoringDocument(configPath);
+  const configPath = document.configPath;
   assertInlineAuthoring(document);
   if (document.declarations.some((entry) => entry.name === slug))
     throw new Error(
@@ -602,11 +603,10 @@ export function createCustomAugment(
 export function installCustomAugment(
   opts: InstallCustomAugmentOptions,
 ): InstallCustomAugmentResult {
-  const configPath = resolveConfigPath(opts.agentName, opts.config, {
-    auggyDir: opts.auggyDir,
-    cwd: opts.cwd,
+  const document = selectInspectionDocument(opts.agentName, opts.config, {
+    cwd: opts.cwd ?? (opts.auggyDir ? join(opts.auggyDir, "agents") : undefined),
   });
-  const document = readAuthoringDocument(configPath);
+  const configPath = document.configPath;
   assertInlineAuthoring(document);
   const agentDir = document.projectDir;
   const sourceFile = resolveSourceFile(resolve(opts.cwd ?? process.cwd(), opts.sourcePath));

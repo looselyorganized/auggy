@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import {
   existsSync,
@@ -40,6 +41,23 @@ beforeEach(() => {
 afterEach(() => {
   rmSync(root, { recursive: true, force: true });
 });
+function boundedAugmentCli(args: string[]) {
+  const result = spawnSync(
+    process.execPath,
+    ["--no-env-file", resolve(import.meta.dir, "../../src/cli/index.ts"), "augment", ...args],
+    {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 3000,
+      killSignal: "SIGKILL",
+      maxBuffer: 128 * 1024,
+    },
+  );
+  expect(result.error).toBeUndefined();
+  expect(result.signal).toBeNull();
+  return result;
+}
+
 const contents = (path: string) => readFileSync(join(root, path), "utf-8");
 const write = (path: string, text: string) => {
   mkdirSync(dirname(join(root, path)), { recursive: true });
@@ -60,6 +78,23 @@ function failOnce(boundary: Parameters<PublicationFaultHook>[0]["boundary"]): Pu
 }
 
 describe("central augment authoring preservation", () => {
+  test("named mutation selection rejects a config FIFO before reading or creating receipts", async () => {
+    rmSync(config);
+    expect(Bun.spawnSync(["mkfifo", config]).exitCode).toBe(0);
+    for (const args of [
+      ["add", "knowledge", "--agent", "sample", "--yes", "--skip-install"],
+      ["remove", "knowledge", "--agent", "sample"],
+      ["install", "sample", "./missing/index.ts"],
+    ]) {
+      const result = boundedAugmentCli(args);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/regular file/);
+    }
+    expect(lstatSync(config).isFIFO()).toBe(true);
+    expect(existsSync(join(root, ".auggy"))).toBe(false);
+    expect(existsSync(join(root, "knowledge"))).toBe(false);
+  });
+
   test("custom creation registers only the explicitly selected nonstandard config", async () => {
     const original = contents("agent.yaml");
     write("service.yaml", "name: secondary\naugments: []\n");
@@ -440,40 +475,23 @@ describe("bounded add inputs and diagnostics", () => {
         write("agent.yaml", "name: sample\naugments:\n - { name: agentMail, type: agentMail }\n");
       const before = contents("agent.yaml");
       expect(Bun.spawnSync(["mkfifo", join(root, ".env")]).exitCode).toBe(0);
-      const source = `import { runAdd } from ${JSON.stringify(resolve(import.meta.dir, "../../src/cli/commands/add.ts"))}; await runAdd(undefined, { config: ${JSON.stringify(config)}, augment: "knowledge", yes: true, skipInstall: true });`;
-      const child = Bun.spawn([process.execPath, "--no-env-file", "--eval", source], {
-        cwd: root,
-        stdout: "pipe",
-        stderr: "pipe",
-      });
-      let timedOut = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        child.kill("SIGKILL");
-      }, 3_000);
-      try {
-        const [code, _stdout, stderr] = await Promise.all([
-          child.exited,
-          new Response(child.stdout).text(),
-          new Response(child.stderr).text(),
-        ]);
-        expect(timedOut).toBe(false);
-        if (needsReadiness) {
-          expect(code).not.toBe(0);
-          expect(stderr).toMatch(/regular file/);
-          expect(contents("agent.yaml")).toBe(before);
-          expect(existsSync(join(root, ".auggy"))).toBe(false);
-        } else {
-          expect({ code, stderr }).toMatchObject({ code: 0 });
-          expect(declaration().some((entry) => entry.type === "knowledge")).toBe(true);
-        }
-        expect(lstatSync(join(root, ".env")).isFIFO()).toBe(true);
-      } finally {
-        clearTimeout(timer);
-        if (child.exitCode === null) {
-          child.kill("SIGKILL");
-          await child.exited;
-        }
+      const result = boundedAugmentCli([
+        "add",
+        "knowledge",
+        "--config",
+        config,
+        "--yes",
+        "--skip-install",
+      ]);
+      if (needsReadiness) {
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toMatch(/regular file/);
+        expect(contents("agent.yaml")).toBe(before);
+        expect(existsSync(join(root, ".auggy"))).toBe(false);
+      } else {
+        expect({ code: result.status, stderr: result.stderr }).toMatchObject({ code: 0 });
+        expect(declaration().some((entry) => entry.type === "knowledge")).toBe(true);
       }
+      expect(lstatSync(join(root, ".env")).isFIFO()).toBe(true);
     }, 10_000);
 });

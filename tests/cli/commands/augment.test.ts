@@ -1,5 +1,13 @@
 import { describe, expect, mock, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from "node:fs";
+import {
+  realpathSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+  existsSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parse as parseYaml } from "yaml";
@@ -617,10 +625,10 @@ describe("listAugments and removeAugment", () => {
 
 describe("createCustomAugment", () => {
   test("requires the command to run inside an agent and registers the augment", () => {
-    const root = mkdtempSync(join(tmpdir(), "augment-create-"));
+    const root = realpathSync(mkdtempSync(join(tmpdir(), "augment-create-")));
     try {
       expect(() => createCustomAugment({ slug: "weather", cwd: root })).toThrow(
-        /no agent specified and no agent.yaml found/i,
+        /Run inside an agent project/i,
       );
 
       writeFileSync(

@@ -7,11 +7,7 @@ export const authoringCommandHandlers: AuthoringCommandHandlers = {
     return (await import("./commands/inspect")).runInspect(name, options);
   },
   async migrate(name, options) {
-    const modulePath = "./commands/migrate.ts";
-    const command = (await import(modulePath)) as {
-      runMigrate: AuthoringCommandHandlers["migrate"];
-    };
-    return command.runMigrate(name, options);
+    return (await import("./commands/migrate")).runMigrate(name, options);
   },
   async syntaxError(command) {
     const error = new AuthoringError(
@@ -22,9 +18,8 @@ export const authoringCommandHandlers: AuthoringCommandHandlers = {
       const { createInvalidInspectionReport } = await import("./authoring/inspection");
       console.log(JSON.stringify(createInvalidInspectionReport("", error)));
     } else {
-      console.log(
-        JSON.stringify({ schemaVersion: 1, status: "invalid", diagnostics: [error.diagnostic] }),
-      );
+      const { createInvalidMigrationReport } = await import("./authoring/migration");
+      console.log(JSON.stringify(createInvalidMigrationReport(error)));
     }
   },
 };

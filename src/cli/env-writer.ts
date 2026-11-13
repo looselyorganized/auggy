@@ -7,7 +7,24 @@ export function upsertEnvValues(
   values: Record<string, string>,
   opts: { header?: string } = {},
 ): string[] {
-  const lines: EnvLine[] = readEnvLines(envPath, opts.header);
+  const source = readEnvSource(envPath);
+  writeFileSafely(envPath, renderEnvValues(source, values, opts), { mode: 0o600 });
+  return Object.keys(values);
+}
+
+/** Pure counterpart for callers that already hold a bounded credential snapshot. */
+export function renderEnvValues(
+  source: string | undefined,
+  values: Record<string, string>,
+  opts: { header?: string } = {},
+): string {
+  const lines: EnvLine[] =
+    source === undefined
+      ? [
+          { kind: "comment", raw: opts.header ?? "# Agent secrets — gitignored." },
+          { kind: "blank" },
+        ]
+      : parseEnvFile(source);
   const replacements = new Map(Object.entries(values));
   const replaced = new Set<string>();
   const updated: EnvLine[] = [];
@@ -31,15 +48,14 @@ export function upsertEnvValues(
     updated.push({ kind: "kv", key, value, raw: `${key}=${value}` });
   }
 
-  writeFileSafely(envPath, serializeEnv(updated), { mode: 0o600 });
-  return [...replacements.keys()];
+  return serializeEnv(updated);
 }
 
-function readEnvLines(envPath: string, header?: string): EnvLine[] {
+function readEnvSource(envPath: string): string | undefined {
   try {
-    return parseEnvFile(readFileSync(envPath, "utf-8"));
+    return readFileSync(envPath, "utf-8");
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
-    return [{ kind: "comment", raw: header ?? "# Agent secrets — gitignored." }, { kind: "blank" }];
+    return undefined;
   }
 }

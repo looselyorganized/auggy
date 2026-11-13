@@ -1,8 +1,7 @@
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 import { Command } from "commander";
-import { parse as parseYaml } from "yaml";
-import { resolveConfigPath } from "../resolve-config";
+import { selectInspectionDocument } from "../authoring/inspection-selection";
 import { displayPath } from "../display-path";
 import {
   classifyMcpTransport,
@@ -174,38 +173,14 @@ function resolveAgentDir(
 ): string {
   const cwd = deps.cwd ?? process.cwd();
   const localConfig = join(cwd, "agent.yaml");
-  const configPath = resolveConfigPath(agentName, config, {
-    auggyDir: deps.auggyDir,
-    cwd,
+  const document = selectInspectionDocument(agentName, config, {
+    cwd: deps.cwd ?? (deps.auggyDir ? join(deps.auggyDir, "agents") : cwd),
   });
   if (!agentName && !config && !existsSync(localConfig)) {
     throw new Error("Run from an agent project, pass --agent <name>, or pass --config <path>.");
   }
-  if (!hasMcpAugment(configPath)) {
+  if (!document.declarations.some((entry) => entry.type === "mcp")) {
     throw new Error("MCP is not installed for this agent.\n\nRun:\n  auggy augment add mcp");
   }
-  return dirname(configPath);
-}
-
-function hasMcpAugment(configPath: string): boolean {
-  const agentDir = dirname(configPath);
-  const raw = parseYaml(readFileSync(configPath, "utf-8")) as Record<string, unknown> | null;
-  const augments = raw?.augments;
-  if (!Array.isArray(augments)) return false;
-
-  return augments.some((entry) => {
-    if (typeof entry === "string") {
-      if (entry === "mcp") return true;
-      return readStringAugmentType(agentDir, entry) === "mcp";
-    }
-    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
-    return (entry as Record<string, unknown>).type === "mcp";
-  });
-}
-
-function readStringAugmentType(agentDir: string, id: string): string | null {
-  const metadataPath = join(agentDir, "augments", id, "augment.yaml");
-  if (!existsSync(metadataPath)) return null;
-  const parsed = parseYaml(readFileSync(metadataPath, "utf-8")) as Record<string, unknown> | null;
-  return typeof parsed?.type === "string" ? parsed.type : null;
+  return document.projectDir;
 }

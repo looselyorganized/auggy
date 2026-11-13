@@ -18,7 +18,7 @@ function setupAgent(opts: { withMcp?: boolean } = {}): { dir: string; cleanup: (
       "engine:",
       "  provider: anthropic",
       "  model: claude-sonnet-4-6",
-      "augments:",
+      opts.withMcp === false ? "augments: []" : "augments:",
       ...augments,
       "",
     ].join("\n"),

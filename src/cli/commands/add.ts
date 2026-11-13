@@ -21,7 +21,7 @@ import {
   type CatalogEntry,
 } from "../augment-catalog";
 import { bundledSkillFiles } from "../scaffold-skills";
-import { resolveConfigPath } from "../resolve-config";
+import { selectInspectionDocument } from "../authoring/inspection-selection";
 import { mergePackageDeps } from "../scaffold-package-json";
 import { runBunInstall, type BunInstallSpawnFactory } from "../bun-install";
 import { parseEnvFile, serializeEnv, type EnvLine } from "../env-parse";
@@ -87,11 +87,10 @@ export async function runAdd(target: string | undefined, opts: AddOpts): Promise
   const requestedAugments = requestedAugmentList(opts.augment);
   const useProjectLocalArg =
     !opts.config && requestedAugments.length === 0 && !!target && existsSync(localConfig);
-  const configPath = resolveConfigPath(useProjectLocalArg ? undefined : target, opts.config, {
-    auggyDir: opts.auggyDir,
-    cwd: opts.cwd,
+  const document = selectInspectionDocument(useProjectLocalArg ? undefined : target, opts.config, {
+    cwd: opts.cwd ?? (opts.auggyDir ? join(opts.auggyDir, "agents") : undefined),
   });
-  const document = readAuthoringDocument(configPath);
+  const configPath = document.configPath;
   assertInlineAuthoring(document);
   const name =
     typeof document.value.name === "string" ? document.value.name : basename(document.projectDir);

@@ -1,8 +1,7 @@
 import { confirm, input, password, select } from "@inquirer/prompts";
 import { Command } from "commander";
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
-import { dirname, join } from "node:path";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
+import { opendirSync, rmSync } from "node:fs";
+import { join } from "node:path";
 import {
   agentMailCapabilityRequirements,
   buildAgentMailRequiredPermissions,
@@ -13,10 +12,23 @@ import { successMark } from "../_shared/styles";
 import { displayPath } from "../display-path";
 import { withAgentEnvMutationLock } from "../env-mutation-lock";
 import { parseEnvFile } from "../env-parse";
-import { upsertEnvValues } from "../env-writer";
-import { resolveConfigPath } from "../resolve-config";
-import { VALID_NAME_RE } from "../config-parser";
+import { renderEnvValues } from "../env-writer";
 import { writeFileSafely } from "../safe-write";
+import {
+  AUTHORING_LIMITS,
+  type AuthoringDocument,
+  type FileSnapshot,
+  type MutationPlan,
+  type ProjectMutationLease,
+  type PublicationFaultHook,
+  type PublicationResult,
+  type RawRecord,
+} from "../authoring/contracts";
+import { decodeSnapshotText, readFileSnapshot, sameFileIdentity } from "../authoring/document-io";
+import { assertInlineAuthoring } from "../authoring/document";
+import { selectInspectionDocument } from "../authoring/inspection-selection";
+import { planAugmentMutation } from "../augment-metadata";
+import { acquireProjectMutationLease, publishMutationPlan } from "../authoring/publication";
 import {
   VISITOR_AUTH_AGENTMAIL_RATE_LIMIT_DEFAULT,
   VISITOR_AUTH_LOCAL_RATE_LIMIT_DEFAULT,
@@ -56,6 +68,7 @@ interface AgentMailSetupCredentials {
 type AgentMailDiskEnv = Partial<Record<AgentMailRuntimeEnvKey, string>>;
 
 interface AgentMailEnvSnapshot {
+  file: FileSnapshot;
   existed: boolean;
   source?: string;
 }
@@ -89,6 +102,8 @@ export interface AgentMailCommandDeps {
   auggyDir?: string;
   /** Override terminal interactivity for embedded callers and tests. */
   interactive?: boolean;
+  /** Explicit failure injection for tests; never supplied by CLI flags or environment. */
+  publicationFault?: PublicationFaultHook;
 }
 
 export interface AgentMailSetupOptions {
@@ -160,26 +175,82 @@ export async function runAgentMailSetup(
   opts: AgentMailSetupOptions = {},
   deps: AgentMailCommandDeps = {},
 ): Promise<AgentMailSetupResult> {
-  const configPath = resolveConfigPath(opts.agent, opts.config, {
-    auggyDir: deps.auggyDir,
-    cwd: deps.cwd,
+  // Classify the declaration graph before acquiring locks or reading credentials.
+  const document = selectInspectionDocument(opts.agent, opts.config, {
+    cwd: deps.cwd ?? (deps.auggyDir ? join(deps.auggyDir, "agents") : undefined),
   });
-  const agentDir = dirname(configPath);
-  return withAgentEnvMutationLock(agentDir, () =>
-    runAgentMailSetupLocked(targetArg, opts, deps, configPath, agentDir),
-  );
+  assertInlineAuthoring(document);
+  const agentDir = document.projectDir;
+  const agentName = readAgentNameSnapshot(document);
+  const agentId = readAgentIdSnapshot(document);
+  const mountedAugments = readMountedAugmentConfigs(document);
+  const target = resolveSetupTarget(targetArg, mountedAugments);
+  if (!isCanonicalSetupTargetInstalled(target, mountedAugments)) {
+    if (mountedAugments.some((augment) => augment.type === target)) {
+      throw unsupportedSetupMountError(target, mountedAugments);
+    }
+    throw new Error(
+      `${target} is not installed for ${agentName}.\n\n` +
+        `  Run \`auggy augment add ${target}\` first.`,
+    );
+  }
+  const configPlan = planAgentMailConfig(document, target, mountedAugments);
+  const otherTarget: AgentMailSetupTarget = target === "agentMail" ? "visitorAuth" : "agentMail";
+  const otherConsumers = mountedAugments.filter((augment) => augment.type === otherTarget);
+  if (otherConsumers.length > 0 && !isCanonicalSetupTargetInstalled(otherTarget, mountedAugments)) {
+    throw new Error(
+      `Automatic setup cannot safely change shared AGENTMAIL_* credentials while a custom or additional ${otherTarget} instance is mounted. Configure all AgentMail consumers manually.`,
+    );
+  }
+  // Every graph/credential writer takes these leases in this order.
+  const projectLease = acquireProjectMutationLease(agentDir);
+  try {
+    return await withAgentEnvMutationLock(agentDir, () =>
+      runAgentMailSetupLocked(opts, deps, {
+        document,
+        agentDir,
+        agentName,
+        agentId,
+        target,
+        configPlan,
+        otherConsumers,
+        projectLease,
+      }),
+    );
+  } finally {
+    projectLease.release();
+  }
 }
 
 async function runAgentMailSetupLocked(
-  targetArg: string | undefined,
   opts: AgentMailSetupOptions,
   deps: AgentMailCommandDeps,
-  configPath: string,
-  agentDir: string,
+  prepared: {
+    document: AuthoringDocument;
+    agentDir: string;
+    agentName: string;
+    agentId: string;
+    target: AgentMailSetupTarget;
+    configPlan: AgentMailConfigPlan;
+    otherConsumers: MountedAugmentConfig[];
+    projectLease: ProjectMutationLease;
+  },
 ): Promise<AgentMailSetupResult> {
-  const expectedAgentConfig = readFileSync(configPath, "utf-8");
-  const agentName = readAgentNameSnapshot(configPath, expectedAgentConfig);
-  const agentId = readAgentIdSnapshot(configPath, expectedAgentConfig);
+  const {
+    document,
+    agentDir,
+    agentName,
+    agentId,
+    target,
+    configPlan,
+    otherConsumers,
+    projectLease,
+  } = prepared;
+  const configPath = document.configPath;
+  assertSnapshotUnchanged(
+    document.config,
+    "agent.yaml changed before AgentMail setup acquired its locks",
+  );
   const prompts = {
     select: deps.promptSelect ?? select,
     input: deps.promptInput ?? input,
@@ -195,33 +266,10 @@ async function runAgentMailSetupLocked(
         deps.promptConfirm ??
         process.stdin.isTTY,
     );
-  const mountedAugments = readMountedAugmentConfigs(configPath, expectedAgentConfig);
-  const target = resolveSetupTarget(targetArg, agentDir, mountedAugments);
-  const augmentPath = join(agentDir, "augments", target, "augment.yaml");
-  if (!isCanonicalSetupTargetInstalled(target, agentDir, mountedAugments)) {
-    if (mountedAugments.some((augment) => augment.type === target)) {
-      throw unsupportedSetupMountError(target, mountedAugments);
-    }
-    throw new Error(
-      `${target} is not installed for ${agentName}.\n\n` +
-        `  Run \`auggy augment add ${target}\` first.`,
-    );
-  }
-  const configPlan = planAgentMailConfig(target, augmentPath);
   const envPath = join(agentDir, ".env");
   const expectedEnv = readAgentMailEnvSnapshot(envPath);
   const diskEnv = readEffectiveAgentMailDiskEnv(expectedEnv);
   const envCredentials = readExistingEnvCredentials(diskEnv);
-  const otherTarget: AgentMailSetupTarget = target === "agentMail" ? "visitorAuth" : "agentMail";
-  const otherConsumers = mountedAugments.filter((augment) => augment.type === otherTarget);
-  if (
-    otherConsumers.length > 0 &&
-    !isCanonicalSetupTargetInstalled(otherTarget, agentDir, mountedAugments)
-  ) {
-    throw new Error(
-      `Automatic setup cannot safely change shared AGENTMAIL_* credentials while a custom, inline, or additional ${otherTarget} instance is mounted. Configure all AgentMail consumers manually.`,
-    );
-  }
   const mode: AgentMailSetupMode = await resolveMode(
     target,
     opts.mode,
@@ -289,14 +337,13 @@ async function runAgentMailSetupLocked(
       : {}),
   };
   const envKeys = commitAgentMailSetup({
-    configPath,
-    expectedAgentConfig,
+    document,
+    plan: configPlan.mutation,
+    projectLease,
     envPath,
     expectedEnv,
-    augmentPath,
-    expectedAugmentConfig: configPlan.expectedAugmentConfig,
-    updatedAugmentConfig: configPlan.updatedAugmentConfig,
     envValues,
+    fault: deps.publicationFault,
   });
 
   return {
@@ -306,7 +353,7 @@ async function runAgentMailSetupLocked(
     inboxId: resolvedCredentials.inboxId,
     inboxEmail: resolvedCredentials.email,
     envPath,
-    augmentPath,
+    augmentPath: configPath,
     envKeys,
     requiredPermissions: enabledPermissionNames(configPlan.requiredPermissions),
     verifiedPermissions: verification.verifiedPermissions,
@@ -563,30 +610,19 @@ async function resolveConnectInboxId(
 }
 
 interface AgentMailConfigPlan {
-  expectedAugmentConfig: string;
-  updatedAugmentConfig: string;
+  mutation: MutationPlan;
   requiredPermissions: AgentMailRequiredPermissions;
   enabledCapabilities: string[];
 }
 
 function planAgentMailConfig(
+  document: AuthoringDocument,
   target: AgentMailSetupTarget,
-  augmentPath: string,
+  mountedAugments: readonly MountedAugmentConfig[],
 ): AgentMailConfigPlan {
-  const expectedAugmentConfig = readFileSync(augmentPath, "utf-8");
-  const raw = parseYaml(expectedAugmentConfig);
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error(`${displayPath(augmentPath)} is not a valid augment.yaml object.`);
-  }
-  const doc = raw as Record<string, unknown>;
-  if (doc.type !== target) {
-    throw new Error(`${displayPath(augmentPath)} is not a ${target} augment.`);
-  }
-
-  const config =
-    doc.config && typeof doc.config === "object" && !Array.isArray(doc.config)
-      ? (doc.config as Record<string, unknown>)
-      : {};
+  const config: Record<string, unknown> = {
+    ...mountedAugments.find((entry) => entry.name === target)!.options,
+  };
   let validatedAgentMail: ValidatedAgentMailConfig | undefined;
 
   if (target === "visitorAuth") {
@@ -615,8 +651,10 @@ function planAgentMailConfig(
     config.addressVisibility ??= "creator";
     try {
       validatedAgentMail = validateAgentMailConfig(config);
-    } catch (error) {
-      throw new Error(`${displayPath(augmentPath)} config is invalid: ${(error as Error).message}`);
+    } catch {
+      throw new Error(
+        "AgentMail options are invalid; review the declared capabilities before setup. No credentials were read or changed.",
+      );
     }
   }
 
@@ -639,10 +677,18 @@ function planAgentMailConfig(
     ? buildAgentMailRequiredPermissions(requirements)
     : { inbox_read: true, message_send: true };
 
-  doc.config = config;
   return {
-    expectedAugmentConfig,
-    updatedAugmentConfig: stringifyYaml(doc),
+    mutation: planAugmentMutation(
+      document,
+      "agentmail-config",
+      [{ kind: "set-augment-options", name: target, options: config as RawRecord }],
+      [],
+      [
+        readFileSnapshot(join(document.projectDir, ".gitignore"), AUTHORING_LIMITS.outputBytes, {
+          allowMissing: true,
+        }),
+      ],
+    ),
     requiredPermissions,
     enabledCapabilities:
       target === "agentMail"
@@ -653,142 +699,135 @@ function planAgentMailConfig(
 
 interface MountedAugmentConfig {
   name: string;
-  type: unknown;
+  type: string;
   options: Record<string, unknown>;
-  source: "inline" | "referenced";
 }
 
-/**
- * Read only non-secret augment topology needed by setup preflight. This path
- * intentionally does not interpolate environment variables because setup is
- * responsible for creating the AgentMail credentials that may still be absent.
- */
-function readMountedAugmentConfigs(
-  configPath: string,
-  expectedAgentConfig: string,
-): MountedAugmentConfig[] {
-  const raw = parseYaml(expectedAgentConfig);
-  if (!isRecord(raw) || !Array.isArray(raw.augments)) {
-    throw new Error(`${displayPath(configPath)} must contain an augments array.`);
-  }
-  const agentDir = dirname(configPath);
-  return raw.augments.map((entry, index) => {
-    if (isRecord(entry)) {
-      const type = entry.type;
-      const name =
-        typeof entry.name === "string" && entry.name.length > 0
-          ? entry.name
-          : typeof type === "string"
-            ? type
-            : `augments[${index}]`;
-      if (entry.options !== undefined && !isRecord(entry.options)) {
-        throw new Error(`${displayPath(configPath)} augments[${index}].options must be an object.`);
-      }
-      return {
-        name,
-        type,
-        options: isRecord(entry.options) ? entry.options : {},
-        source: "inline",
-      };
+/** Raw declarations never resolve environment values or import augment code. */
+function readMountedAugmentConfigs(document: AuthoringDocument): MountedAugmentConfig[] {
+  return document.declarations.map((entry) => {
+    if (entry.options !== undefined && !isRecord(entry.options)) {
+      throw new Error("Augment options must be an object before automatic AgentMail setup.");
     }
-    if (typeof entry !== "string" || !VALID_NAME_RE.test(entry)) {
-      throw new Error(
-        `${displayPath(configPath)} augments[${index}] must be an inline augment or a safe augment id.`,
-      );
-    }
-    const referencedPath = join(agentDir, "augments", entry, "augment.yaml");
-    if (!existsSync(referencedPath)) {
-      throw new Error(
-        `${displayPath(configPath)} augments[${index}] is missing ${displayPath(referencedPath)}.`,
-      );
-    }
-    try {
-      const referenced = parseYaml(readFileSync(referencedPath, "utf-8"));
-      if (!isRecord(referenced)) {
-        throw new Error("metadata must be an object");
-      }
-      if (referenced.config !== undefined && !isRecord(referenced.config)) {
-        throw new Error("config must be an object");
-      }
-      return {
-        name: entry,
-        type: referenced.type,
-        options: isRecord(referenced.config) ? referenced.config : {},
-        source: "referenced",
-      };
-    } catch {
-      // YAML parser diagnostics can quote source lines, which may contain
-      // credentials. Setup only needs a classified topology error here.
-      throw new Error(`${displayPath(referencedPath)} is invalid augment metadata.`);
-    }
+    return {
+      name: entry.name!,
+      type: entry.type,
+      options: isRecord(entry.options) ? entry.options : {},
+    };
   });
 }
 
 function commitAgentMailSetup(input: {
-  configPath: string;
-  expectedAgentConfig: string;
+  document: AuthoringDocument;
+  plan: MutationPlan;
+  projectLease: ProjectMutationLease;
   envPath: string;
   expectedEnv: AgentMailEnvSnapshot;
-  augmentPath: string;
-  expectedAugmentConfig: string;
-  updatedAugmentConfig: string;
   envValues: Record<string, string>;
+  fault?: PublicationFaultHook;
 }): string[] {
-  assertSetupInputUnchanged(
-    input.configPath,
-    input.expectedAgentConfig,
-    "agent.yaml changed while AgentMail setup was running",
-  );
-  assertSetupInputUnchanged(
-    input.augmentPath,
-    input.expectedAugmentConfig,
-    "augment.yaml changed while AgentMail setup was running",
-  );
-  assertEnvInputUnchanged(input.envPath, input.expectedEnv);
-  const envKeys = upsertEnvValues(input.envPath, input.envValues);
+  const output = renderEnvValues(input.expectedEnv.source, input.envValues);
+  if (Buffer.byteLength(output) > AUTHORING_LIMITS.documentBytes)
+    throw new Error("Agent credentials exceed the supported byte limit; no files were changed.");
+  // Revalidate every config preimage after awaited provider calls, before secrets change.
+  for (const snapshot of input.plan.inputs)
+    assertSnapshotUnchanged(snapshot, "agent.yaml changed while AgentMail setup was running");
+  assertSnapshotUnchanged(input.expectedEnv.file, ".env changed while AgentMail setup was running");
+  writeFileSafely(input.envPath, output, { mode: 0o600 });
+  let envPostimage: FileSnapshot;
   try {
-    writeFileSafely(input.augmentPath, input.updatedAugmentConfig);
-  } catch (writeError) {
-    try {
-      if (!input.expectedEnv.existed) {
-        rmSync(input.envPath, { force: true });
-      } else {
-        writeFileSafely(input.envPath, input.expectedEnv.source!, { mode: 0o600 });
-      }
-    } catch (rollbackError) {
-      throw new Error(
-        `AgentMail setup could not update ${displayPath(input.augmentPath)} and could not restore ` +
-          `${displayPath(input.envPath)}. Restore both files before retrying. ` +
-          `Write error: ${safeErrorMessage(writeError)}. Rollback error: ${safeErrorMessage(rollbackError)}.`,
-      );
-    }
-    throw writeError;
-  }
-  return envKeys;
-}
-
-function assertEnvInputUnchanged(path: string, expected: AgentMailEnvSnapshot): void {
-  const exists = existsSync(path);
-  if (exists !== expected.existed) {
-    throw new Error(
-      `${displayPath(path)} changed while AgentMail setup was running; no files were overwritten.`,
-    );
-  }
-  if (!exists) return;
-  assertSetupInputUnchanged(path, expected.source!, "changed while AgentMail setup was running");
-}
-
-function assertSetupInputUnchanged(path: string, expected: string, reason: string): void {
-  let current: string;
-  try {
-    current = readFileSync(path, "utf-8");
+    envPostimage = readFileSnapshot(input.envPath, AUTHORING_LIMITS.documentBytes);
+    if (!envPostimage.exists || decodeSnapshotText(envPostimage.bytes) !== output)
+      throw new Error("Credential output changed");
   } catch {
     throw new Error(
-      `${displayPath(path)} could not be re-read safely before commit; setup did not change local files.`,
+      "AgentMail credential output could not be verified. Configuration was not published; preserve .env and review it manually before retrying.",
     );
   }
-  if (current !== expected) {
-    throw new Error(`${displayPath(path)} ${reason}; setup did not overwrite the newer file.`);
+  let publication: PublicationResult;
+  try {
+    publication = publishMutationPlan(input.plan, {
+      lease: input.projectLease,
+      fault: input.fault,
+    });
+  } catch {
+    const restored = compensateAgentMailEnv(input, envPostimage);
+    throw new Error(
+      restored
+        ? "AgentMail configuration publication failed before activation. Previous credentials were restored; review project state before retrying."
+        : "AgentMail configuration publication failed and safe credential restoration could not be proved. Preserve .env and review configuration and private operation receipts before retrying.",
+    );
+  }
+  if (publication.status === "complete") {
+    try {
+      assertSnapshotUnchanged(
+        envPostimage,
+        ".env changed during AgentMail configuration publication",
+      );
+    } catch {
+      throw new Error(
+        `AgentMail configuration was published by operation ${publication.operationId}, but .env changed before completion. Preserve the newer credentials and review configuration before retrying.`,
+      );
+    }
+    return Object.keys(input.envValues);
+  }
+  const restored =
+    publication.activation === "original" && compensateAgentMailEnv(input, envPostimage);
+  throw new Error(
+    `AgentMail configuration publication ${publication.status}; operation ${publication.operationId}. Configuration is ${publication.activation}. ` +
+      (restored
+        ? "Previous credentials were restored after verifying original configuration and unchanged credential output. "
+        : "Credentials were retained because safe restoration could not be proved. ") +
+      "Preserve the private receipt and use guarded rollback before retrying setup.",
+  );
+}
+
+function compensateAgentMailEnv(
+  input: { document: AuthoringDocument; envPath: string; expectedEnv: AgentMailEnvSnapshot },
+  envPostimage: FileSnapshot,
+): boolean {
+  try {
+    // A thrown or returned publication failure is not proof that activation stayed original.
+    const config = readFileSnapshot(input.document.configPath, AUTHORING_LIMITS.documentBytes);
+    const original = input.document.config;
+    if (
+      !config.exists ||
+      config.sha256 !== original.sha256 ||
+      (config.identity.mode & 0o777) !== (original.identity.mode & 0o777)
+    )
+      return false;
+    assertSnapshotUnchanged(
+      envPostimage,
+      ".env changed during AgentMail configuration publication",
+    );
+    if (input.expectedEnv.existed) {
+      writeFileSafely(input.envPath, input.expectedEnv.source!, { mode: 0o600 });
+    } else {
+      rmSync(input.envPath);
+    }
+    const restored = readAgentMailEnvSnapshot(input.envPath);
+    return (
+      restored.existed === input.expectedEnv.existed && restored.source === input.expectedEnv.source
+    );
+  } catch {
+    return false;
+  }
+}
+
+function assertSnapshotUnchanged(expected: FileSnapshot, reason: string): void {
+  const current = readFileSnapshot(
+    expected.path,
+    Math.max(AUTHORING_LIMITS.documentBytes, expected.exists ? expected.identity.size : 0),
+    { allowMissing: true },
+  );
+  if (
+    current.exists !== expected.exists ||
+    (current.exists &&
+      expected.exists &&
+      (current.sha256 !== expected.sha256 ||
+        !sameFileIdentity(current.identity, expected.identity)))
+  ) {
+    throw new Error(`${reason}; setup did not overwrite the newer file.`);
   }
 }
 
@@ -846,13 +885,12 @@ async function resolveMode(
 
 function resolveSetupTarget(
   targetArg: string | undefined,
-  agentDir: string,
   mountedAugments: readonly MountedAugmentConfig[],
 ): AgentMailSetupTarget {
   if (targetArg !== undefined) return parseTarget(targetArg);
 
   const installedTargets = (["agentMail", "visitorAuth"] as const).filter((target) =>
-    isCanonicalSetupTargetInstalled(target, agentDir, mountedAugments),
+    isCanonicalSetupTargetInstalled(target, mountedAugments),
   );
   if (installedTargets.length === 1) return installedTargets[0]!;
   if (installedTargets.length === 0) {
@@ -862,8 +900,8 @@ function resolveSetupTarget(
       )
     ) {
       throw new Error(
-        "AgentMail setup found only inline or custom-named AgentMail-compatible augments. " +
-          "Automatic setup supports canonical referenced mounts only; configure that instance manually or migrate it to agentMail/visitorAuth.",
+        "AgentMail setup found only custom-named or duplicate AgentMail-compatible augments. " +
+          "Automatic setup supports one canonical inline agentMail/visitorAuth instance per type; configure these instances manually.",
       );
     }
     throw new Error(
@@ -880,18 +918,10 @@ function resolveSetupTarget(
 
 function isCanonicalSetupTargetInstalled(
   target: AgentMailSetupTarget,
-  agentDir: string,
   mountedAugments: readonly MountedAugmentConfig[],
 ): boolean {
   const sameTypeConsumers = mountedAugments.filter((augment) => augment.type === target);
-  return (
-    sameTypeConsumers.length === 1 &&
-    existsSync(join(agentDir, "augments", target, "augment.yaml")) &&
-    sameTypeConsumers.some(
-      (augment) =>
-        augment.source === "referenced" && augment.name === target && augment.type === target,
-    )
-  );
+  return sameTypeConsumers.length === 1 && sameTypeConsumers[0]!.name === target;
 }
 
 function assertSharedCredentialMode(
@@ -936,8 +966,8 @@ function unsupportedSetupMountError(
     );
   }
   return new Error(
-    `${target} is mounted inline or under a custom name. Automatic AgentMail setup only updates the canonical referenced ` +
-      `augments/${target}/augment.yaml mount; configure this instance manually or migrate it first.`,
+    `${target} is mounted under a custom name. Automatic AgentMail setup only updates one canonical inline ` +
+      `${target} declaration in agent.yaml; configure this instance manually.`,
   );
 }
 
@@ -1070,20 +1100,33 @@ function findProjectDotenvProvisioningKeySources(
   invocationDir: string,
 ): string[] {
   const paths = new Set<string>();
+  let entries = 0;
+  let totalBytes = 0;
   for (const directory of new Set([agentDir, invocationDir])) {
-    const names = readdirSync(directory)
-      .filter((name) => /^\.env(?:\.[A-Za-z0-9_-]+)+$/.test(name) || name === ".env")
-      .sort();
-    for (const name of names) {
-      const path = join(directory, name);
-      if (!existsSync(path)) continue;
-      const containsProvisioningKey = parseEnvFile(readFileSync(path, "utf-8")).some(
-        (line) =>
-          line.kind === "kv" &&
-          line.key === "AGENTMAIL_ACCOUNT_API_KEY" &&
-          line.value.trim().length > 0,
-      );
-      if (containsProvisioningKey) paths.add(path);
+    const handle = opendirSync(directory);
+    try {
+      for (let entry = handle.readSync(); entry !== null; entry = handle.readSync()) {
+        if (++entries > AUTHORING_LIMITS.yamlNodes)
+          throw new Error(
+            "Dotenv discovery exceeds the supported directory limit; select a smaller invocation directory.",
+          );
+        if (!/^\.env(?:\.[A-Za-z0-9_-]+)+$/.test(entry.name) && entry.name !== ".env") continue;
+        const path = join(directory, entry.name);
+        const file = readFileSnapshot(path, AUTHORING_LIMITS.documentBytes, { allowMissing: true });
+        if (!file.exists) continue;
+        totalBytes += file.bytes.byteLength;
+        if (totalBytes > AUTHORING_LIMITS.aggregateInputBytes)
+          throw new Error("Dotenv discovery exceeds the supported byte limit.");
+        const containsProvisioningKey = parseEnvFile(decodeSnapshotText(file.bytes)).some(
+          (line) =>
+            line.kind === "kv" &&
+            line.key === "AGENTMAIL_ACCOUNT_API_KEY" &&
+            line.value.trim().length > 0,
+        );
+        if (containsProvisioningKey) paths.add(path);
+      }
+    } finally {
+      handle.closeSync();
     }
   }
   return [...paths].sort();
@@ -1114,7 +1157,7 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
             "AgentMail is configured for outbound email and inbound processing.",
             credentialText,
             `Read access was verified. Write operations still require: ${permissions}.`,
-            "Incoming email will be processed according to augments/agentMail/augment.yaml.",
+            "Incoming email will be processed according to the agentMail options in agent.yaml.",
             ...(capabilities.length > 0
               ? [`Enabled AgentMail operations: ${capabilities.join("; ")}.`]
               : []),
@@ -1147,26 +1190,27 @@ export function formatAgentMailSetupResult(result: AgentMailSetupResult): string
   ].join("\n");
 }
 
-function readAgentNameSnapshot(configPath: string, source: string): string {
-  const raw = parseYaml(source) as { name?: unknown } | null;
-  if (typeof raw?.name === "string" && raw.name.trim().length > 0) return raw.name.trim();
-  throw new Error(`agent.yaml at ${configPath} is missing a non-empty name.`);
+function readAgentNameSnapshot(document: AuthoringDocument): string {
+  const name = document.value.name;
+  if (typeof name === "string" && name.trim().length > 0) return name.trim();
+  throw new Error("agent.yaml is missing a non-empty name.");
 }
 
-function readAgentIdSnapshot(configPath: string, source: string): string {
-  const raw = parseYaml(source) as { id?: unknown } | null;
+function readAgentIdSnapshot(document: AuthoringDocument): string {
+  const id = document.value.id;
   if (
-    typeof raw?.id === "string" &&
-    /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(raw.id)
-  ) {
-    return raw.id;
-  }
-  throw new Error(`agent.yaml at ${configPath} is missing a valid immutable id.`);
+    typeof id === "string" &&
+    /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)
+  )
+    return id;
+  throw new Error("agent.yaml is missing a valid immutable id.");
 }
 
 function readAgentMailEnvSnapshot(envPath: string): AgentMailEnvSnapshot {
-  if (!existsSync(envPath)) return { existed: false };
-  return { existed: true, source: readFileSync(envPath, "utf-8") };
+  const file = readFileSnapshot(envPath, AUTHORING_LIMITS.documentBytes, { allowMissing: true });
+  return file.exists
+    ? { file, existed: true, source: decodeSnapshotText(file.bytes) }
+    : { file, existed: false };
 }
 
 function readEffectiveAgentMailDiskEnv(snapshot: AgentMailEnvSnapshot): AgentMailDiskEnv {
@@ -1348,10 +1392,6 @@ function enabledPermissionNames(permissions: AgentMailRequiredPermissions): stri
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function safeErrorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : "unknown error";
 }
 
 function usableEnvValue(value: string | undefined): string | null {
