@@ -115,12 +115,12 @@ A commit/patch identity must accompany any eventual accepted baseline.
 |---|---|
 | Preservation | Archives verified; retirement deferred for exclusion review |
 | Original-main baseline | Captured; initial failures retained in evidence |
-| Scoped baseline repairs | Required local checks pass; extra workspace audit findings recorded |
+| Scoped baseline repairs | Compatible fixes verified; Link/Zod v3 advisory remains blocking |
 | Ownership decision | Adopted; implementation guarantees remain future |
 | Packed execution scenarios | All seven passed in immutable full release rehearsal |
 | Independent review | Local code and final evidence approved |
-| M1 acceptance | Pending Linux/security/PostgreSQL CI and preservation review |
-| M2 acceptance | Accepted locally; formal gate follows M1 certification |
+| M1 acceptance | Blocked by Link dependency; PR #226 records candidate-specific Linux/security/PostgreSQL results |
+| M2 acceptance | Core/retained-lock execution verified locally; formal gate follows M1 dependency closure and reviewed merge |
 
 ## Foundation closure before milestone 3
 

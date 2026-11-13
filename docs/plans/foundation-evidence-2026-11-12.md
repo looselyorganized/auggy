@@ -149,3 +149,21 @@ until the remaining dependency finding is resolved, required checks pass and
 final review is complete. Worktree retirement remains separately deferred.
 
 Console stylesheet review: [actual built Integrations screenshot](./assets/foundation-console-closure.png), using isolated mocked API data and no credentials. The exact upstream CSS/license hashes are preserved in the vendor provenance; this image is visual build evidence, not a live-agent test.
+
+Closure PR: [#226](https://github.com/looselyorganized/auggy/pull/226) remains a
+draft and must not merge while the Link advisory is unresolved. On candidate
+`e4cd41d`, remote CI passed CodeQL, all Linux boundary jobs and the PostgreSQL 17
+job; its execution record was registered=13, completed=13, serverVersion=170010.
+The workspace audit and aggregate correctly failed. Later candidate checks are
+tracked separately on the PR; these results are not transferred across revisions.
+
+Actual retained-lock rehearsal subsequently passed baseline reconstruction, the
+specific stale-override negative control, dependency migration with an empty core
+audit, preserved application-source checks and all seven request/replay scenarios
+through the upgraded consumer's own installed CLI. Link selection alone failed
+with GHSA-mrhx-c7xc-m3w5 on Zod 3.25.76. The harness reports overall failure and
+retains that finding rather than treating the known vulnerability as a pass.
+Metadata resolution fixes were verified with ten focused tests and typecheck;
+actual dependency entrypoints need not be executed to inspect package versions.
+Final immutable rehearsal and exact revision records are retained under
+`closure/` alongside the PR's downloadable CI artifacts.

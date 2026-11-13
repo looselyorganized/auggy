@@ -14,7 +14,7 @@ import {
 } from "node:fs";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve, sep } from "node:path";
 import { parseArgs } from "node:util";
 import { parseConfigFileTextToJson } from "typescript";
 import { runDependencyAudit } from "../audit-dependencies";
@@ -130,19 +130,58 @@ export function belowFloor(version: string, range: string): boolean {
   return false;
 }
 
-function installedPackage(anchor: string, name: string): { root: string; manifest: Manifest } {
+export function installedPackage(
+  anchor: string,
+  name: string,
+): { root: string; manifest: Manifest } {
   const resolver = createRequire(join(anchor, "package.json"));
-  let directory = dirname(resolver.resolve(name));
-  while (true) {
-    const file = join(directory, "package.json");
-    if (existsSync(file)) {
-      const manifest = manifestAt(file);
-      if (manifest.name === name) return { root: realpathSync(directory), manifest };
-    }
-    const parent = dirname(directory);
-    check(parent !== directory, `Installed package metadata missing for ${name}`);
-    directory = parent;
+  const canonicalAnchor = realpathSync(anchor);
+  const moduleBoundary = canonicalAnchor.indexOf(`${sep}node_modules${sep}`);
+  const consumer = moduleBoundary < 0 ? canonicalAnchor : canonicalAnchor.slice(0, moduleBoundary);
+  // Metadata inspection does not require a runnable root export. MCP exposes
+  // usable client subpaths while its advertised root entry is absent.
+  // Start from the owning package to preserve nested/isolated dependency edges.
+  // Bun maps packages such as ws/undici to built-ins and returns null search
+  // paths. Their installed package metadata still belongs in the audited graph.
+  const fallbackPaths: string[] = [];
+  for (
+    let current = canonicalAnchor;
+    current === consumer || current.startsWith(`${consumer}${sep}`);
+    current = dirname(current)
+  )
+    fallbackPaths.push(join(current, "node_modules"));
+  for (const directory of resolver.resolve.paths(name) ?? fallbackPaths) {
+    const file = join(directory, name, "package.json");
+    if (!existsSync(file)) continue;
+    const manifest = manifestAt(file),
+      root = realpathSync(dirname(file));
+    check(
+      root.startsWith(`${consumer}${sep}node_modules${sep}`),
+      "Dependency metadata escaped the isolated consumer",
+    );
+    check(
+      typeof manifest.name === "string" && typeof manifest.version === "string",
+      `Invalid installed metadata for ${name}`,
+    );
+    return { root, manifest };
   }
+  throw new Error(`Installed package metadata missing for ${name}`);
+}
+
+function productionPackages(consumer: string): Array<{ root: string; manifest: Manifest }> {
+  const queue = [consumer],
+    visited = new Set<string>(),
+    packages: Array<{ root: string; manifest: Manifest }> = [];
+  while (queue.length) {
+    const owner = queue.shift()!;
+    if (visited.has(owner)) continue;
+    visited.add(owner);
+    const manifest = manifestAt(join(owner, "package.json"));
+    if (owner !== consumer) packages.push({ root: owner, manifest });
+    for (const name of Object.keys(manifest.dependencies ?? {}))
+      queue.push(installedPackage(owner, name).root);
+  }
+  return packages;
 }
 
 interface CommandRecord {
@@ -273,12 +312,14 @@ function buildBaseline(
 }
 
 function historicalInventory(consumer: string): Record<string, string> {
-  return Object.fromEntries(
-    Object.keys(HISTORICAL).map((name) => [
-      name,
-      installedPackage(consumer, name).manifest.version!,
-    ]),
-  );
+  const core = installedPackage(consumer, "auggy"),
+    sdk = installedPackage(core.root, "@modelcontextprotocol/sdk");
+  return {
+    "@modelcontextprotocol/sdk": sdk.manifest.version!,
+    zod: installedPackage(core.root, "zod").manifest.version!,
+    hono: installedPackage(sdk.root, "hono").manifest.version!,
+    "@hono/node-server": installedPackage(sdk.root, "@hono/node-server").manifest.version!,
+  };
 }
 
 /** Regeneration is intentionally explicit; ordinary upgrade tests never rewrite the fixture. */
@@ -627,7 +668,9 @@ export async function runUpgradeConsumer(options: {
       policy["@hono/node-server"] && belowFloor("2.0.11", policy["@hono/node-server"]),
       "Candidate policy does not repair the historical application override",
     );
-    const retainedOverride = installedPackage(consumer, "@hono/node-server").manifest.version;
+    const retainedSdk = installedPackage(installedCore.root, "@modelcontextprotocol/sdk");
+    const retainedOverride = installedPackage(retainedSdk.root, "@hono/node-server").manifest
+      .version;
     check(
       retainedOverride === "2.0.11",
       "Negative control did not retain the old application override",
@@ -695,9 +738,16 @@ export async function runUpgradeConsumer(options: {
       check(required, `Candidate is missing ${name} dependency floor`);
       floorResults[name] = { actual, required, satisfied: !belowFloor(actual, required) };
     }
+    const productionGraph = productionPackages(consumer);
     for (const [name, required] of Object.entries(policy)) {
-      const actual = installedPackage(consumer, name).manifest.version!;
-      floorResults[name] = { actual, required, satisfied: actual === required };
+      const occurrences = productionGraph.filter((entry) => entry.manifest.name === name);
+      check(occurrences.length > 0, `Candidate runtime policy package is absent: ${name}`);
+      const versions = [...new Set(occurrences.map((entry) => entry.manifest.version!))].sort();
+      floorResults[name] = {
+        actual: versions.join(", "),
+        required,
+        satisfied: versions.every((version) => version === required),
+      };
     }
     const floorsPass = Object.values(floorResults).every((entry) => entry.satisfied);
     if (!floorsPass)

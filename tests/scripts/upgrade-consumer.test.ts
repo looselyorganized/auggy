@@ -1,12 +1,14 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
 import { parseConfigFileTextToJson } from "typescript";
 import {
   belowFloor,
   classifyUpgrade,
   hasLegacyServerAdvisory,
+  installedPackage,
   migrateConsumerManifest,
   rebindLocalArtifactIntegrity,
 } from "../../scripts/release-smoke/upgrade-consumer";
@@ -14,6 +16,66 @@ import {
 const fixture = resolve(import.meta.dir, "../fixtures/release-upgrade/retained-lock");
 const read = (name: string) => readFileSync(resolve(fixture, name), "utf8");
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+
+test("metadata lookup follows the owning package's nested dependency without requiring a root export", () => {
+  const root = mkdtempSync(join(tmpdir(), "auggy-upgrade-metadata-"));
+  try {
+    const owner = join(root, "node_modules/auggy");
+    const nested = join(owner, "node_modules/@modelcontextprotocol/sdk");
+    const outer = join(root, "node_modules/@modelcontextprotocol/sdk");
+    for (const folder of [root, owner, nested, outer]) mkdirSync(folder, { recursive: true });
+    writeFileSync(join(root, "package.json"), '{"name":"consumer"}');
+    writeFileSync(join(owner, "package.json"), '{"name":"auggy","version":"0.5.0"}');
+    for (const [folder, version] of [
+      [nested, "1.32.2"],
+      [outer, "1.29.0"],
+    ])
+      writeFileSync(
+        join(folder!, "package.json"),
+        JSON.stringify({
+          name: "@modelcontextprotocol/sdk",
+          version,
+          exports: { ".": "./missing-root.js", "./client": "./client.js" },
+        }),
+      );
+    const result = installedPackage(owner, "@modelcontextprotocol/sdk");
+    expect(result.root).toBe(realpathSync(nested));
+    expect(result.manifest.version).toBe("1.32.2");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("metadata lookup inspects installed ws despite Bun's builtin resolution alias", () => {
+  const root = mkdtempSync(join(tmpdir(), "auggy-upgrade-builtin-"));
+  try {
+    const owner = join(root, "node_modules/agentmail"),
+      ws = join(root, "node_modules/ws");
+    mkdirSync(owner, { recursive: true });
+    mkdirSync(ws);
+    writeFileSync(join(root, "package.json"), '{"name":"consumer"}');
+    writeFileSync(join(owner, "package.json"), '{"name":"agentmail","version":"0.5.19"}');
+    writeFileSync(join(ws, "package.json"), '{"name":"ws","version":"8.20.0"}');
+    expect(installedPackage(owner, "ws").root).toBe(realpathSync(ws));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("metadata lookup rejects unrelated ancestor installations", () => {
+  const root = mkdtempSync(join(tmpdir(), "auggy-upgrade-ancestor-"));
+  try {
+    const consumer = join(root, "consumer"),
+      unrelated = join(root, "node_modules/hono");
+    mkdirSync(consumer);
+    mkdirSync(unrelated, { recursive: true });
+    writeFileSync(join(consumer, "package.json"), '{"name":"consumer"}');
+    writeFileSync(join(unrelated, "package.json"), '{"name":"hono","version":"4.13.16"}');
+    expect(() => installedPackage(consumer, "hono")).toThrow("escaped the isolated consumer");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("upgrade accepts both same-version replacement and future releases without accepting downgrades", () => {
   expect(classifyUpgrade("0.5.0", "0.5.0")).toBe("same-version-content-change");
