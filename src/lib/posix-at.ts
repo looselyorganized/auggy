@@ -17,25 +17,29 @@ interface PosixAtSymbols {
 
 let symbols: PosixAtSymbols | null = null;
 let library: ReturnType<typeof dlopen> | null = null;
+let noReplaceLibrary: ReturnType<typeof dlopen> | null = null;
+
+function libcPaths(): string[] {
+  if (process.platform === "darwin") return ["/usr/lib/libSystem.B.dylib"];
+  if (process.platform !== "linux") {
+    throw new Error("descriptor-relative filesystem isolation is unavailable");
+  }
+  const muslArch =
+    process.arch === "arm64" ? "aarch64" : process.arch === "x64" ? "x86_64" : process.arch;
+  return [
+    "libc.so.6",
+    `/lib/ld-musl-${muslArch}.so.1`,
+    `/lib/libc.musl-${muslArch}.so.1`,
+    `/usr/lib/libc.musl-${muslArch}.so.1`,
+  ];
+}
 
 function requireSymbols(): PosixAtSymbols {
   if (symbols) return symbols;
   if (process.platform !== "darwin" && process.platform !== "linux") {
     throw new Error("descriptor-relative filesystem isolation is unavailable");
   }
-  const libraryPaths =
-    process.platform === "darwin"
-      ? ["/usr/lib/libSystem.B.dylib"]
-      : (() => {
-          const muslArch =
-            process.arch === "arm64" ? "aarch64" : process.arch === "x64" ? "x86_64" : process.arch;
-          return [
-            "libc.so.6",
-            `/lib/ld-musl-${muslArch}.so.1`,
-            `/lib/libc.musl-${muslArch}.so.1`,
-            `/usr/lib/libc.musl-${muslArch}.so.1`,
-          ];
-        })();
+  const libraryPaths = libcPaths();
   const errnoSymbol = process.platform === "darwin" ? "__error" : "__errno_location";
   const definitions = {
     openat: {
@@ -176,6 +180,45 @@ export function renameAt(
       nativeSegment(newSegment),
     ) === 0
   );
+}
+
+/** Publish one complete staged inode atomically, refusing any existing destination. */
+export function renameAtNoReplace(
+  olddirfd: number,
+  oldSegment: string,
+  newdirfd: number,
+  newSegment: string,
+): boolean {
+  const source = nativeSegment(oldSegment);
+  const destination = nativeSegment(newSegment);
+  const symbol = process.platform === "darwin" ? "renameatx_np" : "renameat2";
+  // Bind separately: an unavailable authoring primitive must not disable existing
+  // descriptor operations. There is deliberately no check-then-rename fallback.
+  if (!noReplaceLibrary) {
+    for (const path of libcPaths()) {
+      try {
+        noReplaceLibrary = dlopen(path, {
+          [symbol]: {
+            args: [FFIType.i32, FFIType.ptr, FFIType.i32, FFIType.ptr, FFIType.u32],
+            returns: FFIType.i32,
+          },
+        });
+        break;
+      } catch {
+        // Try the next supported libc; never fall back to replacing a destination.
+      }
+    }
+  }
+  if (!noReplaceLibrary) return false;
+  const rename = noReplaceLibrary.symbols[symbol] as unknown as (
+    oldfd: number,
+    oldpath: Uint8Array,
+    newfd: number,
+    newpath: Uint8Array,
+    flags: number,
+  ) => number;
+  const exclusive = process.platform === "darwin" ? 0x4 : 0x1;
+  return rename(olddirfd, source, newdirfd, destination, exclusive) === 0;
 }
 
 export function duplicateFd(fd: number): number {

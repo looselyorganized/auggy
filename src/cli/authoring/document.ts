@@ -419,19 +419,19 @@ export function readAuthoringDocument(configPath: string): AuthoringDocument {
 export function assertInlineAuthoring(document: AuthoringDocument): void {
   if (document.format !== "inline") {
     // Shell-quote the bounded navigation path; never interpolate raw YAML values.
-    const selector =
+    let selector =
       Buffer.byteLength(document.configPath) <= 300 &&
       ![...document.configPath].some(
         (character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127,
       )
         ? `'${document.configPath.replaceAll("'", "'\\''")}'`
         : "<selected-config-path>";
-    fail(
-      "migration-required",
-      `Referenced augment declarations require migration. Preview: auggy migrate --config ${selector}. Apply: auggy migrate --config ${selector} --apply.`,
-      undefined,
-      "/augments",
-    );
+    const guidance = () =>
+      `Referenced augment declarations require migration. Preview: auggy migrate --config ${selector}. Apply: auggy migrate --config ${selector} --apply.`;
+    if (Buffer.byteLength(guidance()) > AUTHORING_LIMITS.diagnosticBytes) {
+      selector = "<selected-config-path>";
+    }
+    fail("migration-required", guidance(), undefined, "/augments");
   }
   assertResolved(document.declarations);
 }

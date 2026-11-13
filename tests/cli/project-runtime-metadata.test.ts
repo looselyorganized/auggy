@@ -59,6 +59,21 @@ function expectCode(action: () => unknown, code: ProjectRuntimeMetadataError["co
 }
 
 describe("bounded passive local runtime metadata", () => {
+  test("rejects excessive package metadata nesting and nodes before export traversal", () => {
+    const path = join(runtime, "package.json");
+    const manifest = JSON.parse(readFileSync(path, "utf8"));
+    for (const suffix of [
+      '{"nested":'.repeat(AUTHORING_LIMITS.yamlDepth + 1) +
+        "null" +
+        "}".repeat(AUTHORING_LIMITS.yamlDepth + 1),
+      JSON.stringify(Array(AUTHORING_LIMITS.yamlNodes + 1).fill(null)),
+    ]) {
+      writeFileSync(path, JSON.stringify({ ...manifest, extra: JSON.parse(suffix) }));
+      expectCode(() => inspectProjectRuntimeMetadata(project), "invalid-metadata");
+      expect(() => inspectProjectRuntimeMetadata(project)).toThrow(/nesting or node limits/);
+    }
+  });
+
   test("finds real entry paths without imports, project aliases, or Bun resolution", () => {
     const resolver = spyOn(Bun, "resolveSync").mockImplementation(() => {
       throw new Error("passive metadata must not consult the module resolver");

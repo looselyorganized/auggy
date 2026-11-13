@@ -131,3 +131,25 @@ historical directory-mode incompatibility, sequential ignore-rule rollback, and
 receipt allocation bounds. Repairs and narrow implementation refinements are
 recorded in the contract freeze; each needs independent recheck before M4-01
 acceptance and downstream producer execution.
+
+## M4-01 accepted foundation
+
+The independent reviewer accepted the final publication and native no-replace
+implementation after 61 tests / 295 assertions and separate adversarial probes.
+New and replacement activation now exposes a complete inode with final mode;
+concurrent destinations are preserved. Rollback rechecks restored files before
+sensitive cleanup, retains backups on later edits, supports reverse-order recovery
+of successive operations, and bounds both recorded sizes and actual reads before
+allocation. Final-mode staging remains under verified private directories.
+Interrupted partial private staging conservatively requires preservation review;
+the original activation remains intact.
+
+Late review also verified shell-escaped migration guidance stays below 1,024
+bytes, and passive package JSON has iterative depth/node limits before recursive
+export selection. Final document/runtime checks passed 64 tests / 354 assertions;
+the previously reviewed I/O, mutation and grammar checks remain passing. Root's
+combined regression before the last metadata case passed 153 tests / 790
+assertions, full typecheck and full lint (existing Biome schema informational
+notice only). All concrete review findings are closed. Native execution was
+verified on macOS arm64; Linux remains a required CI check. This is scoped
+foundation acceptance, not installed-artifact or milestone certification.

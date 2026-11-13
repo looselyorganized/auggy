@@ -50,6 +50,25 @@ afterEach(() => {
 });
 
 describe("passive raw authoring", () => {
+  test("bounds migration guidance after shell quoting repeated selectors", () => {
+    const { dir } = fixture("augments: []\n");
+    const nested = join(dir, "'".repeat(180));
+    mkdirSync(nested);
+    const path = join(nested, "agent.yaml");
+    writeFileSync(path, "augments: [budgets]\n");
+    metadata(nested, "budgets", "type: budgets\n");
+    try {
+      assertInlineAuthoring(readAuthoringDocument(path));
+      throw new Error("expected migration guidance");
+    } catch (error) {
+      expect(error).toBeInstanceOf(AuthoringError);
+      const message = (error as AuthoringError).message;
+      expect(Buffer.byteLength(message)).toBeLessThanOrEqual(AUTHORING_LIMITS.diagnosticBytes);
+      expect(message).toContain("<selected-config-path>");
+      expect(message).toContain("--apply");
+    }
+  });
+
   test("preserves quoted merge-looking domain keys through reads and new edits", () => {
     const { path } = fixture(
       'augments: [{ type: budgets, options: { "<<": { literal: true } } }]\n',

@@ -31,6 +31,28 @@ export class ProjectRuntimeMetadataError extends Error {
   }
 }
 
+function validateMetadataBounds(value: unknown): void {
+  const pending = [{ value, depth: 0 }];
+  let nodes = 0;
+  while (pending.length) {
+    const current = pending.pop()!;
+    nodes++;
+    if (current.depth > AUTHORING_LIMITS.yamlDepth || nodes > AUTHORING_LIMITS.yamlNodes) {
+      throw new ProjectRuntimeMetadataError(
+        "invalid-metadata",
+        "Package metadata exceeds supported nesting or node limits.",
+      );
+    }
+    if (Array.isArray(current.value)) {
+      for (const child of current.value) pending.push({ value: child, depth: current.depth + 1 });
+    } else if (mapping(current.value)) {
+      nodes += Object.keys(current.value).length;
+      for (const child of Object.values(current.value))
+        pending.push({ value: child, depth: current.depth + 1 });
+    }
+  }
+}
+
 function boundedManifest(path: string, missing: "missing-project" | "missing-runtime") {
   try {
     const snapshot = readFileSnapshot(path, AUTHORING_LIMITS.documentBytes, { allowMissing: true });
@@ -38,6 +60,7 @@ function boundedManifest(path: string, missing: "missing-project" | "missing-run
       throw new ProjectRuntimeMetadataError(missing, "Install the project's local dependencies.");
     }
     const value: unknown = JSON.parse(decodeSnapshotText(snapshot.bytes));
+    validateMetadataBounds(value);
     if (!mapping(value)) throw new Error("invalid manifest mapping");
     return { bytes: Buffer.from(snapshot.bytes), value };
   } catch (error) {
