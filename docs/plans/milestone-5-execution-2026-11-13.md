@@ -1,9 +1,10 @@
 # Milestone 5 — portable, independently deployed agents
 
 Status: implementation authorized; preparation packet independently reviewed.
-Contracts remain candidates until G0/M5-00 verification. G0 requires
-separate authorization to merge M4 PR #229 and verification of resulting main.
-No producer implementation starts from the open M4 branch.
+M4 PR #229 was separately authorized and merged at
+`c39b746b4b743e5c29dab61a677026c10626d8b8`. G0 is accepted: resulting-main CI,
+PostgreSQL 17 and full CodeQL findings passed. M5-00 is ready to freeze and compile
+the contract interfaces; dependent producers remain blocked until that acceptance.
 
 ## Outcome and preserved boundaries
 
@@ -25,8 +26,14 @@ provider, or milestone 6 upgrade/DX-study claim is authorized.
 Planning source: reviewed M4 head `32d7265d0659d5911755e802d18a9f9077b80196`.
 Current remote main at entry: `911fe1682c76208c1d99d4dc6841bfcaa608dd8d`.
 The original dirty main checkout and experiment worktrees remain untouched.
-Use the isolated `feat/portable-agent-integration` worktree. Record exact accepted
-main SHA/tree/lock after G0, and reconcile against the reviewed M4 source.
+Use the isolated `feat/portable-agent-integration` worktree. Exact accepted main,
+tree and lock are recorded in the ledger and reconciled against reviewed M4 source.
+The preparation branch is now rebased onto merged M4 main. Merged main's tree is
+identical to certified repair `56de4e380ffe1e39b7392eb7066c367766368321`:
+`d56d32c6c4bf4b975419a37ff839587bdde35292`. That repair prevents custom-slug
+tool-name aliases and rejects duplicate runtime tool ownership; the contract
+interfaces below are unchanged. See the execution evidence for renewed package,
+security, independent review and resulting-main verification.
 
 ## Contracts
 

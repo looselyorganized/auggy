@@ -6,9 +6,12 @@ author. Root freezes the contract after independent review.
 
 Planning evidence is reviewed M4 commit
 `32d7265d0659d5911755e802d18a9f9077b80196` in the `inspectable-authoring`
-worktree. The M5 preparation worktree starts at main
-`911fe1682c76208c1d99d4dc6841bfcaa608dd8d`. G0 must establish merged M4 main,
-record its exact tree and locks, and reconcile the interfaces below before edits.
+worktree. The M5 preparation worktree started at main
+`911fe1682c76208c1d99d4dc6841bfcaa608dd8d` and is now rebased onto merged M4 main
+`c39b746b4b743e5c29dab61a677026c10626d8b8`. Its reviewed repair `56de4e3` rejects
+ambiguous tool names before inference/dispatch without changing these integration
+interfaces. G0 is accepted; M5-00 interface/ownership freeze remains pending
+before producer work.
 See [execution plan](../milestone-5-execution-2026-11-13.md),
 [deployment contract](./deployment.md), and
 [storage/replay contract](./storage-replay.md).

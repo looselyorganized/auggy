@@ -7,30 +7,62 @@
   "maxConcurrentSpecialists": 3,
   "authorization": {
     "request": "Implement the plan.",
-    "scope": "Approved M5 implementation; separate M4 merge authorization and concrete hosted approval required; no M5 merge/version bump/publication"
+    "scope": "Approved M5 implementation; separate M4 merge authorization and concrete hosted approval required; no M5 merge/version bump/publication",
+    "mergeAuthorization": {
+      "request": "merge if no standing issues with the codebase.",
+      "status": "granted_and_executed",
+      "pr": 229,
+      "mergedAt": "2026-11-13T22:13:15Z",
+      "mergeCommit": "c39b746b4b743e5c29dab61a677026c10626d8b8"
+    }
   },
   "baseline": {
     "planningCandidate": "32d7265d0659d5911755e802d18a9f9077b80196",
     "planningPR": "https://github.com/looselyorganized/auggy/pull/229",
     "observedMain": "911fe1682c76208c1d99d4dc6841bfcaa608dd8d",
     "observedMainTree": "d901475a9afb7a9d24dc70c21ac2480bfab78439",
-    "acceptedMain": null,
-    "rootLockSHA256": "cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7"
+    "acceptedMain": "c39b746b4b743e5c29dab61a677026c10626d8b8",
+    "rootLockSHA256": "cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7",
+    "mergedMain": "c39b746b4b743e5c29dab61a677026c10626d8b8",
+    "mergedMainTree": "d56d32c6c4bf4b975419a37ff839587bdde35292",
+    "certifiedM4Repair": "56de4e380ffe1e39b7392eb7066c367766368321",
+    "acceptedMainTree": "d56d32c6c4bf4b975419a37ff839587bdde35292"
   },
   "gates": {
     "G0": {
-      "status": "blocked",
+      "status": "accepted",
       "requires": [
         "separately authorized PR229 merge",
         "verify exact resulting main/tree",
         "required main CI/PG17 and full CodeQL findings",
         "reconcile source against reviewed M4 head"
       ],
-      "pending": [
-        "separate merge authorization",
-        "merge",
-        "resulting-main verification"
-      ]
+      "pending": [],
+      "evidence": {
+        "mergePR": "https://github.com/looselyorganized/auggy/pull/229",
+        "certifiedPRHead": "56de4e380ffe1e39b7392eb7066c367766368321",
+        "prChecksPassed": 31,
+        "prCI": 43515921164,
+        "prRelease": 43515921228,
+        "prReleaseArtifact": 14080569183,
+        "prFullCodeQL": 43515956526,
+        "prFullCodeQLAnalysis": 2164832777,
+        "mainCI": 43517469604,
+        "mainCodeQL": 43517469468,
+        "mainTreeMatchesCertifiedHead": true,
+        "independentReview": "m4_merge_gate_audit: repair and macOS/Linux evidence accepted; no remaining merge blocker",
+        "mainCIConclusion": "success",
+        "mainCodeQLConclusion": "success",
+        "mainFullCodeQLAnalysis": 2164894539,
+        "mainOpenCodeQLAlerts": 0,
+        "mainPostgreSQL": {
+          "registered": 13,
+          "completed": 13,
+          "serverVersion": 170010
+        },
+        "independentEntryAudit": "m4_merge_gate_audit: accepted ancestry/tree, PG17, hashes and ledger state; no entry blockers"
+      },
+      "acceptedCommit": "c39b746b4b743e5c29dab61a677026c10626d8b8"
     },
     "G4": {
       "status": "blocked",
@@ -65,14 +97,14 @@
       "id": "M5-00",
       "title": "Freeze accepted main and contracts",
       "specialist": "CTO / architect",
-      "status": "blocked",
+      "status": "ready",
       "dependsOn": [],
-      "blockedBy": [
-        "G0"
-      ],
+      "blockedBy": [],
       "acceptanceDependsOn": [],
       "acceptedCommit": null,
-      "evidence": []
+      "evidence": [
+        "G0 accepted on c39b746; contract/interface/ownership freeze still pending"
+      ]
     },
     {
       "id": "M5-01",
@@ -272,23 +304,24 @@
     }
   ],
   "activeOwnership": {
-    "root": "Preparation packet/ledger/evidence and pending entry gate; no product integration before G0"
+    "root": "Accepted entry baseline; M5-00 interface compilation and ownership freeze next; no producer acceptance yet"
   },
   "notes": [
     "Each company owns a separate deployment; no managed platform or shared-company tenancy.",
     "Channels are optional; Next.js and HTTP are not runtime requirements.",
     "Producer implementation is blocked pending accepted G0/00. Contract preparation does not claim acceptance.",
-    "Only root changes gate/task acceptance; producers cannot accept themselves."
+    "Only root changes gate/task acceptance; producers cannot accept themselves.",
+    "G0 accepted after separately authorized M4 merge, pre-merge collision repair, identical-tree verification and successful resulting-main CI/PG17/full CodeQL. Only M5-00 is ready; no M5 product task is accepted."
   ],
   "preparation": {
     "status": "ready",
-    "scope": "Independently reviewed preparation packet only; contracts unaccepted pending G0/M5-00",
+    "scope": "Reviewed preparation packet on accepted main; contracts remain candidates pending M5-00",
     "independentReview": "m5_contract_review: preparation recheck passed; R1/R2 resolved; no product acceptance",
-    "planSHA256": "9caa5ab3e427f6a27144da3cf0e7215261be760e0a5db7df256344b17453b535",
+    "planSHA256": "b2731cd1bd15cd79a64569e8743114b416088ac8fe713d4b0f1d9637f4fdd230",
     "contractSHA256": {
-      "C1": "a645e5641b05063d1320be05c62cc6e545474dc2147f49650504d02b8067c55a",
-      "C2": "6bbeeb939f5e68ea98643b7c4eecc92e60a3cac05a1b16c20697a814ecaf6536",
-      "C3_C4": "86a2a2216fc786af5604ce6bb7505671656639f6997cec22f4ea0cce8fa5357e"
+      "C1": "5e28bb55c69387c42e07154d82e9919553387a5c97c919406b66887081b61312",
+      "C2": "a88efe4f36e626d5953a31da7844480cc97dd3a34afe6478046512b702b074e2",
+      "C3_C4": "223c36617d7722de2fecb9e328935eaa5802f1494e463709006e50ecb072cf80"
     },
     "dispositions": [
       {
@@ -303,7 +336,6 @@
       }
     ],
     "remainingFreezeChecks": [
-      "separately authorized M4 merge and accepted resulting main",
       "interface compilation and ownership/path freeze",
       "base-image UID/GID and initial mount policy verification",
       "managed SQLite identity uniqueness"

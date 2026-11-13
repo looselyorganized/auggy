@@ -1,11 +1,14 @@
 # C1 draft — portable runtime storage and assertion replay
 
-Status: preparation only; **not frozen or accepted**. G0 remains blocked until
-root records the separately authorized M4 merge and verifies resulting main.
+Status: preparation only; **not frozen or accepted**. G0 is accepted; the M5-00
+interface/ownership freeze remains pending in root's execution ledger.
 This document authorizes no producer edits. Source observations below refer to
 reviewed M4 commit `32d7265d0659d5911755e802d18a9f9077b80196`; the preparation
 worktree started from main `911fe1682c76208c1d99d4dc6841bfcaa608dd8d`.
-Root must reconcile this inventory against accepted main before assigning work.
+The worktree is now rebased onto merged M4 main
+`c39b746b4b743e5c29dab61a677026c10626d8b8`, including the reviewed duplicate-tool
+repair `56de4e3`. That repair does not change these storage interfaces. Main
+verification and M5-00 acceptance remain explicit ledger decisions.
 
 The contract supports one independently owned agent deployment and one active
 SQLite runtime. HTTP is optional; root admission also applies to polling workers.

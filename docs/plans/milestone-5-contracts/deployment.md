@@ -1,12 +1,14 @@
 # M5 C2 — portable deployment contract
 
 Status: **draft for root and independent review; not an accepted producer
-contract**. Preparation only. G0 is still blocked on M4 PR #229 being merged
-and the resulting main being verified. Do not implement against an open M4
-branch or interpret this document as approval for hosted resource creation.
+contract**. Preparation only. G0 is accepted; M5-00 contract freeze remains
+pending. Do not interpret this document as approval for hosted
+resource creation or release producers before those gates.
 
 Source inspected: M4 `32d7265d0659d5911755e802d18a9f9077b80196`.
 Draft worktree base: main `911fe1682c76208c1d99d4dc6841bfcaa608dd8d`.
+Rebased onto merged M4 main `c39b746b4b743e5c29dab61a677026c10626d8b8`, including
+reviewed collision repair `56de4e3`; its deployment interfaces are unchanged.
 The root-owned execution/evidence documents determine gate disposition.
 
 ## 1. Ownership and product boundary
