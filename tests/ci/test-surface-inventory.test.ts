@@ -57,6 +57,12 @@ describe("tracked CI test-surface inventory", () => {
     expect(inventory.shards.find((shard) => shard.id === "operator")?.files).not.toContain(
       "tests/cli/commands/doctor.test.ts",
     );
+    expect(inventory.shards.find((shard) => shard.id === "harness")?.files).toContain(
+      "tests/scripts/application-consumer.test.ts",
+    );
+    expect(inventory.shards.find((shard) => shard.id === "operator")?.files).not.toContain(
+      "tests/scripts/application-consumer.test.ts",
+    );
     expect(inventory.shards.find((shard) => shard.id === "temporal-example")?.files).toEqual([
       "examples/temporal-order-support/test/activities.test.ts",
       "examples/temporal-order-support/test/auggy-client.test.ts",

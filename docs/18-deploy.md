@@ -10,16 +10,23 @@ If you're deploying locally as a launchd service (macOS), see [`auggy start`](./
 
 | | Why |
 |---|---|
-| **Bun** ≥ 1.2.0 ([install](https://bun.sh/install)) | The runtime; `auggy` is a TypeScript CLI executed by Bun. |
+| **Bun** ≥ 1.3.14 ([install](https://bun.sh/install)) | The runtime; `auggy` is a TypeScript CLI executed by Bun. |
 | **Railway CLI** ([install](https://docs.railway.com/develop/cli)) | The deploy command shells out to `railway`. Same trust pattern as `git push` trusts `git`. |
 | `railway login` completed | Authenticates the Railway CLI session. `auggy deploy` does not store API tokens. |
 | A Railway workspace | Personal/team workspace that will own the project. `auggy deploy` can create the Railway project for you, or link an existing one. |
-| `auggy create <name>` already run | Deploy operates on an agent project. |
+| An existing agent project | Deploy reads the selected `agent.yaml`, package manifest, and project-local dependencies. |
 | `webTransport` on port `8080` | The generated Railway Dockerfile exposes `8080`; other ports can boot in-container but return 502 through Railway. |
 
 ---
 
 ## First deploy
+
+Deployment preserves the dependency selection declared by the project. An unrelated
+nearby `auggy-*.tgz` never replaces a registry dependency. An explicitly declared
+core `file:` tarball is copied and rebased into the bundle. A source directory or
+workspace link is a development dependency: materialize a packed or released
+runtime before deploying it. Application entry files are included with the other
+project-owned source.
 
 ```bash
 # 1. Make sure the agent runs locally
@@ -38,7 +45,7 @@ The CLI walks you through:
 3. **Workspace selection** — Auggy discovers Railway workspaces from your logged-in Railway CLI session and lets you choose where the deploy belongs.
 4. **Project selection** — create a new Railway project in that workspace, or use an existing project from that workspace. You can still pass `--project <project-id>` to skip prompts and deploy into a known existing project. For scripted first deploys, pass `--project-name <name>` plus `--workspace <workspace-name-or-id>`.
 5. **Bundle staging** — copies your agent directory minus `.env`, `*.db*`, `workspace/`, `node_modules/`, `.git/`, `.worktrees/`, `.claude/`, `.DS_Store`, `*.tmp` into a temp dir. The agent's `package.json` + `bun.lock` are included so the image can install your pinned deps.
-6. **Dockerfile + entrypoint generation** — written into the staging dir. Static and intentionally not operator-tunable. The image copies `package.json` + `bun.lock` first, runs `bun install` to materialize `node_modules/` inside the image, then COPYs the rest of the agent dir; the entrypoint invokes `bunx auggy dev` so it uses the per-agent install rather than a global `auggy`.
+6. **Dockerfile + entrypoint generation** — written into the staging dir. Static and intentionally not operator-tunable. The image copies `package.json` + `bun.lock` first, runs `bun install` to materialize `node_modules/` inside the image, then COPYs the rest of the agent dir; the entrypoint verifies the installed local CLI and executes it directly with Bun 1.3.14. A missing local executable fails startup instead of downloading another package.
 7. **Secrets diff + confirm** — shows what's about to be pushed to Railway (with values redacted). Decline aborts the deploy. Pass `--yes` to skip.
 8. **Railway service selection** — by default Auggy creates a new service named `<name>` in the selected project. Pass `--service <name-or-id>` to deploy into an existing Railway service instead.
 9. **`railway volume add --mount-path /app/data`** — provisions a persistent volume mounted at `/app/data`. Holds SQLite-backed state across redeploys.

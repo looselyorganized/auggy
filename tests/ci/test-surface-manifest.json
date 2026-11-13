@@ -73,11 +73,17 @@
         },
         {
           "kind": "tree",
-          "path": "tests/scripts"
-        },
+          "path": "tests/ci"
+        }
+      ]
+    },
+    {
+      "id": "harness",
+      "suite": "runtime",
+      "selectors": [
         {
           "kind": "tree",
-          "path": "tests/ci"
+          "path": "tests/scripts"
         }
       ]
     },

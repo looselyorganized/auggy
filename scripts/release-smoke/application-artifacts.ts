@@ -64,6 +64,7 @@ export async function applicationArtifact(
     "src/cli/command-bootstrap.ts",
     "src/cli/project-runtime.ts",
     "src/cli/application-definition.ts",
+    "src/cli/augment-resolver.ts",
     "src/cli/commands/dev.ts",
   ];
   const sourceFiles =
