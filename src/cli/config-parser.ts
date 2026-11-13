@@ -21,7 +21,9 @@ import type {
   AgentSettings,
   DurableJobsConfig,
   SecurityEvalOverride,
+  ApplicationConfig,
 } from "./types";
+import { parseApplicationDeclaration } from "./application-definition";
 import { KNOWN_PROVIDERS, isKnownProvider } from "./types";
 import { parseEnvFile } from "./env-parse";
 import {
@@ -1748,7 +1750,10 @@ export function expandAugmentFolderEntries(
   return { ...raw, augments: expanded };
 }
 
-function validateConfig(raw: Record<string, unknown>): ParsedConfig {
+function validateConfig(
+  raw: Record<string, unknown>,
+  application?: ApplicationConfig,
+): ParsedConfig {
   const errors: string[] = [];
   const topLevelFields = new Set([
     "id",
@@ -1761,6 +1766,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
     "settings",
     "augments",
     "securityEval",
+    "application",
   ]);
   for (const key of Object.keys(raw)) {
     if (!topLevelFields.has(key)) errors.push(`${key}: unknown top-level field`);
@@ -2406,6 +2412,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   return {
     id: raw.id as string,
     name: raw.name as string,
+    ...(application ? { application } : {}),
     displayName: raw.displayName as string | undefined,
     creator,
     purpose: raw.purpose as string | undefined,
@@ -2496,6 +2503,10 @@ export function parseConfig(yamlPath: string): ParsedConfig {
     throw new Error(`${yamlPath}: not a valid YAML document`);
   }
 
+  // The entrypoint is a literal selection contract, never environment-derived.
+  // Validate it before interpolation; launch preflight separately checks its file.
+  const application = parseApplicationDeclaration(parsed.application);
+
   let interpolated: Record<string, unknown>;
   try {
     interpolated = interpolateEnvVars(parsed) as Record<string, unknown>;
@@ -2506,7 +2517,7 @@ export function parseConfig(yamlPath: string): ParsedConfig {
     }
     throw err;
   }
-  return validateConfig(expandAugmentFolderEntries(interpolated, agentDir));
+  return validateConfig(expandAugmentFolderEntries(interpolated, agentDir), application);
 }
 
 function augmentMissingEnvError(

@@ -247,12 +247,20 @@ export interface SecurityEvalOverride {
   fixtureAwsCredentialsPath?: string;
 }
 
+/** Opt-in project-owned execution, validated before entry/factory imports. */
+export interface ApplicationConfig {
+  readonly entrypoint: string;
+  readonly contractVersion: 1;
+}
+
 /** The fully parsed and validated agent.yaml content. */
 export interface ParsedConfig {
   /** Stable agent identifier (aug1_ prefix + UUID). */
   id: string;
   /** Human-readable agent name (used for CLI addressing). */
   name: string;
+  /** Absent for legacy configuration-owned execution. */
+  application?: ApplicationConfig;
   /** Human-facing display name shown in chat/UI. Defaults to `name` when omitted. */
   displayName?: string;
   /** Single v1 creator profile. Cosmetic; transport credentials prove trust. */
