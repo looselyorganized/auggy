@@ -106,3 +106,28 @@ for untouched scaffold startup; its existing and new provider controls passed
 18 tests / 86 assertions. These are harness preparation results, not installed
 CLI acceptance. Full create/install orchestration, five launch paths, source-edit
 observations, migration and inspection scenarios remain pending accepted producers.
+
+## M4-01 document and passive integration review
+
+The document producer delivered bounded snapshots, raw YAML declarations and AST
+edits, and private preconditioned mutation plans. Root corrected two reviewed
+edges before handoff: central output cannot exceed its next reader's 1 MiB bound,
+and application paths must reject controls and nonliteral forms. Independent
+review additionally caught a quoted `"<<"` domain key being treated as merge
+syntax; quoted input and generated output now preserve this literal key. Main's
+model snapshot remains an init-only absent/private exception inside `.auggy`.
+
+Root added bounded passive runtime metadata selection and shared passive command
+grammar without changing ordinary launch resolution. The independent reviewer
+reran 91 tests / 491 assertions across documents, mutation, grammar, and new and
+existing runtime metadata selection. A separate probe compared converted legacy
+custom declarations through the actual existing runtime loader and confirmed
+equivalent resolved source/options with literal environment placeholders. This
+accepts these scoped components, not M4-01 publication or installed acceptance.
+
+Publication review remains in progress. It has already reproduced partial new
+YAML exposure under a short-write/process-kill, stale restored-output success,
+historical directory-mode incompatibility, sequential ignore-rule rollback, and
+receipt allocation bounds. Repairs and narrow implementation refinements are
+recorded in the contract freeze; each needs independent recheck before M4-01
+acceptance and downstream producer execution.

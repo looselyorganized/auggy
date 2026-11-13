@@ -149,6 +149,13 @@ transactionally before storing raw backups. Directories use 0700 and sensitive
 backups/journals 0600. Backups may contain inline user secrets even without `.env`;
 never archive them as public evidence or model-visible content.
 
+Apply can narrow the owned historical `.auggy` directory from 0755 to 0700;
+preview leaves permissions unchanged. Verified staging files receive their final
+mode inside the private operation directory immediately before atomic rename,
+so a new or replaced YAML is always complete with its intended permissions when
+it appears. New paths use an atomic no-replace primitive. The precise stage-mode,
+model-snapshot exception and bounded recovery rules are in [the freeze](./freeze.md).
+
 Before creating raw backups/staging, persist a metadata-only bootstrap receipt
 that records the original ignore file size/hash and known appended suffix/output
 hash. Publish and verify ignore protection first. If interrupted before its

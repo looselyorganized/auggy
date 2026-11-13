@@ -347,6 +347,20 @@ Receipts live at `.auggy/operations/<UUID>/`, directories 0700 and sensitive fil
 directory, never user-controlled filesystem references. Input/output hashes and
 identity are checked independently of recorded progress after a crash.
 
+Implementation review refinement: complete verified stages are chmodded and
+fsynced to their final output mode immediately before atomic publication. A stage
+may therefore have 0600 or its receipt-declared final mode inside the verified
+0700 operation directory. Receipt decoding requires exact known stage names,
+owner, single-link regular files, bounded bytes and matching hash/size; backups
+and journals remain 0600. During guarded rollback a stage can hold that step's
+verified original bytes, including a conflicted rollback retry. No output-mode
+guess grants permission to overwrite an operator's later change.
+
+Both new and replacement files publish complete inodes. New files use native
+atomic no-replace rename (Darwin `renameatx_np`, Linux `renameat2`); unsupported
+filesystems fail closed. Direct exclusive-open followed by writing the visible
+destination is insufficient, particularly for the final YAML activation.
+
 ```ts
 export type ReceiptPhase =
   | "preparing"
@@ -472,6 +486,8 @@ files to exist in the `preparing` phase.
 | Aggregate output bytes | 16,777,216 bytes |
 | Receipt JSON | 1,048,576 bytes |
 | Receipt-directory enumeration | 1,024 entries |
+| Aggregate receipt backup versions | 12,582,912 bytes (8 MiB inputs plus 4 MiB automatic ignore preimage) |
+| Loaded receipt artifacts | 29,360,128 bytes; 33,554,432 during rollback/conflict (one extra 4 MiB restore stage) |
 | One normalized relative path | 1,024 UTF-8 bytes |
 | Diagnostic records | 100 |
 | Diagnostic message | 1,024 UTF-8 bytes |
@@ -507,6 +523,14 @@ file type and no-follow containment. Maintain a same-process ownership guard and
 an opaque token. The OS descriptor lock is the authority; closing the descriptor
 releases it after normal exit or process termination. PID reuse cannot grant a
 lease, so no heartbeat, PID-file stealing or expiry protocol is needed.
+
+Main's existing creator makes `.auggy` with mode 0755 for its model snapshot.
+Apply may narrow that exact historical mode to 0700 on an owned, no-follow,
+descriptor-verified directory before private receipt writes. It never broadens
+permissions or accepts symlinks/other owners/group- or world-writable directories.
+Preview does not acquire a lease or change modes. Init retains its model snapshot
+through one explicit planned-output exception: `.auggy/models.lock.json`, support
+role, absent preimage and mode 0600. No other caller-owned `.auggy` write is allowed.
 
 Existing `env-mutation-lock.ts` locks the canonical project directory descriptor.
 Do not use that same inode for the new project lock, which would self-conflict.

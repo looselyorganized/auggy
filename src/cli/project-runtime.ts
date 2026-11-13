@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { isAbsolute, join, relative, resolve, sep, win32 } from "node:path";
+import { AUTHORING_LIMITS } from "./authoring/contracts";
+import { AuthoringError, decodeSnapshotText, readFileSnapshot } from "./authoring/document-io";
 
 export interface RuntimeCapabilities {
   readonly schemaVersion: 1;
@@ -16,6 +18,70 @@ export interface ProjectRuntime {
   readonly manifestSHA256: string;
   readonly capabilities: RuntimeCapabilities | null;
   readonly applicationPath: string | null;
+}
+
+/** Classification for passive inspection; legacy launcher diagnostics remain unchanged. */
+export class ProjectRuntimeMetadataError extends Error {
+  constructor(
+    readonly code: "missing-project" | "missing-runtime" | "invalid-metadata",
+    message: string,
+  ) {
+    super(message);
+    this.name = "ProjectRuntimeMetadataError";
+  }
+}
+
+function boundedManifest(path: string, missing: "missing-project" | "missing-runtime") {
+  try {
+    const snapshot = readFileSnapshot(path, AUTHORING_LIMITS.documentBytes, { allowMissing: true });
+    if (!snapshot.exists) {
+      throw new ProjectRuntimeMetadataError(missing, "Install the project's local dependencies.");
+    }
+    const value: unknown = JSON.parse(decodeSnapshotText(snapshot.bytes));
+    if (!mapping(value)) throw new Error("invalid manifest mapping");
+    return { bytes: Buffer.from(snapshot.bytes), value };
+  } catch (error) {
+    if (error instanceof ProjectRuntimeMetadataError) throw error;
+    throw new ProjectRuntimeMetadataError(
+      "invalid-metadata",
+      error instanceof AuthoringError
+        ? error.message
+        : "Package metadata must be a bounded, valid JSON object.",
+    );
+  }
+}
+
+function boundedRuntimeMetadata(projectDir: string) {
+  let project: string;
+  try {
+    project = realpathSync(resolve(projectDir));
+    if (!statSync(project).isDirectory()) throw new Error();
+  } catch {
+    throw new ProjectRuntimeMetadataError(
+      "missing-project",
+      "The selected project is unavailable.",
+    );
+  }
+  boundedManifest(join(project, "package.json"), "missing-project");
+  let packageRoot: string;
+  try {
+    packageRoot = realpathSync(join(project, "node_modules", "auggy"));
+    if (!statSync(packageRoot).isDirectory()) throw new Error();
+  } catch (error) {
+    const missing = (error as NodeJS.ErrnoException).code === "ENOENT";
+    throw new ProjectRuntimeMetadataError(
+      missing ? "missing-runtime" : "invalid-metadata",
+      missing
+        ? "Install Auggy explicitly in this project."
+        : "The selected local package must be an ordinary package directory.",
+    );
+  }
+  // A package manifest is data at a fixed path, never a resolved/imported module.
+  const loaded = boundedManifest(join(packageRoot, "package.json"), "missing-runtime");
+  if (loaded.value.name !== "auggy") {
+    throw new ProjectRuntimeMetadataError("invalid-metadata", "The local package is not Auggy.");
+  }
+  return { project, packageRoot, manifestBytes: loaded.bytes, manifest: loaded.value };
 }
 
 function mapping(value: unknown): value is Record<string, unknown> {
@@ -102,6 +168,30 @@ export function inspectProjectRuntime(
   projectDir: string,
   options: { applicationContract?: number; bunVersion?: string } = {},
 ): ProjectRuntime {
+  return inspectRuntime(projectDir, options, false);
+}
+
+/** Bounded passive selection. Does not invoke Bun resolution or read project tsconfig. */
+export function inspectProjectRuntimeMetadata(
+  projectDir: string,
+  options: { applicationContract?: number; bunVersion?: string } = {},
+): ProjectRuntime {
+  try {
+    return inspectRuntime(projectDir, options, true);
+  } catch (error) {
+    if (error instanceof ProjectRuntimeMetadataError) throw error;
+    throw new ProjectRuntimeMetadataError(
+      "invalid-metadata",
+      error instanceof Error ? error.message : "Invalid local runtime metadata.",
+    );
+  }
+}
+
+function inspectRuntime(
+  projectDir: string,
+  options: { applicationContract?: number; bunVersion?: string },
+  metadataOnly: boolean,
+): ProjectRuntime {
   const bunVersion = options.bunVersion ?? Bun.version;
   if (!satisfies(bunVersion, ">=1.3.14")) {
     throw new Error("[runtime] this launcher requires Bun 1.3.14 or newer");
@@ -111,23 +201,27 @@ export function inspectProjectRuntime(
   let packageRoot: string;
   let manifestBytes: Buffer;
   let manifest: Record<string, unknown>;
-  try {
-    project = realpathSync(resolve(projectDir));
-    if (!mapping(JSON.parse(readFileSync(join(project, "package.json"), "utf8")))) {
-      throw new Error("invalid-project-manifest");
+  if (metadataOnly) {
+    ({ project, packageRoot, manifestBytes, manifest } = boundedRuntimeMetadata(projectDir));
+  } else {
+    try {
+      project = realpathSync(resolve(projectDir));
+      if (!mapping(JSON.parse(readFileSync(join(project, "package.json"), "utf8")))) {
+        throw new Error("invalid-project-manifest");
+      }
+      // Probe this exact directory; generic resolution must not walk to an ancestor.
+      packageRoot = realpathSync(join(project, "node_modules", "auggy"));
+      if (!statSync(packageRoot).isDirectory()) throw new Error("invalid-package-root");
+      const manifestPath = containedFile(join(packageRoot, "package.json"), packageRoot);
+      manifestBytes = readFileSync(manifestPath);
+      const parsed: unknown = JSON.parse(manifestBytes.toString("utf8"));
+      if (!mapping(parsed) || parsed.name !== "auggy") throw new Error("invalid-runtime-manifest");
+      manifest = parsed;
+    } catch {
+      throw new Error(
+        "[runtime] install Auggy explicitly in this project with bun install; a valid local auggy package is required",
+      );
     }
-    // Probe this exact directory; generic resolution must not walk to an ancestor.
-    packageRoot = realpathSync(join(project, "node_modules", "auggy"));
-    if (!statSync(packageRoot).isDirectory()) throw new Error("invalid-package-root");
-    const manifestPath = containedFile(join(packageRoot, "package.json"), packageRoot);
-    manifestBytes = readFileSync(manifestPath);
-    const parsed: unknown = JSON.parse(manifestBytes.toString("utf8"));
-    if (!mapping(parsed) || parsed.name !== "auggy") throw new Error("invalid-runtime-manifest");
-    manifest = parsed;
-  } catch {
-    throw new Error(
-      "[runtime] install Auggy explicitly in this project with bun install; a valid local auggy package is required",
-    );
   }
 
   const version = manifest.version;
@@ -145,7 +239,9 @@ export function inspectProjectRuntime(
   ) {
     throw new Error("[runtime] local Auggy's declared Bun requirement is not satisfied");
   }
-  const requestedContract = options.applicationContract;
+  const requestedContract =
+    options.applicationContract ??
+    (metadataOnly && capabilities?.applicationContracts.includes(1) ? 1 : undefined);
   if (
     requestedContract !== undefined &&
     (!Number.isSafeInteger(requestedContract) ||
@@ -190,11 +286,13 @@ export function inspectProjectRuntime(
         throw new Error("invalid-application-export");
       }
       applicationPath = containedFile(resolve(packageRoot, target), packageRoot);
-      const projectImport = containedFile(
-        Bun.resolveSync("auggy/application", project),
-        packageRoot,
-      );
-      if (applicationPath !== projectImport) throw new Error("application-export-redirected");
+      if (!metadataOnly) {
+        const projectImport = containedFile(
+          Bun.resolveSync("auggy/application", project),
+          packageRoot,
+        );
+        if (applicationPath !== projectImport) throw new Error("application-export-redirected");
+      }
     }
   } catch {
     throw new Error(
