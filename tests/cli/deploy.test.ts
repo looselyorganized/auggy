@@ -1844,6 +1844,52 @@ describe("runDeploy", () => {
     expect(leaked).toBe(false);
   });
 
+  test("rejects linked and unpacked Auggy sources before Railway or staging", async () => {
+    const path = join(agentDir, "package.json");
+    const manifest = JSON.parse(readFileSync(path, "utf8"));
+    const missingTarball = "file:../missing-runtime.tgz";
+    const sourceDirectory = join(dirname(agentDir), "auggy-source");
+    mkdirSync(sourceDirectory, { recursive: true });
+    for (const spec of ["link:../auggy", "workspace:*", "file:../auggy-source", missingTarball]) {
+      writeFileSync(
+        path,
+        JSON.stringify({ ...manifest, dependencies: { ...manifest.dependencies, auggy: spec } }),
+      );
+      const { cli, calls, capturedCwds } = mockRailwayCli();
+      const messages: string[] = [];
+      await expect(
+        runDeploy(
+          "zip",
+          baseDeployOptions(cli, auggyDir, {
+            logger: { info: (message) => messages.push(message), warn: () => {}, error: () => {} },
+          }),
+        ),
+      ).rejects.toThrow(/Pack the linked\/source runtime and materialize that tarball/);
+      expect(calls.checkPresence).toBe(0);
+      expect(calls.checkAuth).toBe(0);
+      expect(capturedCwds).toEqual([]);
+      expect(messages.some((message) => message.includes("Bundle staged"))).toBe(false);
+    }
+  });
+
+  test("rejects an explicitly selected symlinked runtime archive before Railway", async () => {
+    if (process.platform === "win32") return;
+    const target = join(dirname(agentDir), "source-runtime.tgz");
+    const selected = join(dirname(agentDir), "selected-runtime.tgz");
+    writeFileSync(target, "must not be followed");
+    symlinkSync(target, selected);
+    const path = join(agentDir, "package.json");
+    const manifest = JSON.parse(readFileSync(path, "utf8"));
+    manifest.dependencies.auggy = "file:../selected-runtime.tgz";
+    writeFileSync(path, JSON.stringify(manifest));
+    const { cli, calls } = mockRailwayCli();
+    await expect(runDeploy("zip", baseDeployOptions(cli, auggyDir))).rejects.toThrow(
+      /explicit regular file:/,
+    );
+    expect(calls.checkPresence).toBe(0);
+    expect(calls.checkAuth).toBe(0);
+  });
+
   test("does not replace the project dependency with a nearby same-version artifact", async () => {
     const version = getAuggyVersion();
     const tarballName = `auggy-${version}.tgz`;

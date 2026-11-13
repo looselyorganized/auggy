@@ -319,39 +319,52 @@ describe("runtime-free command bootstrap", () => {
     expect(direct.stderr).toContain("selection changed");
   });
 
-  test("forwards termination to the selected child and preserves its exit code", async () => {
-    writeFileSync(
-      join(localRoot, "src/cli/cli-program.ts"),
-      `export function buildCli() { return { async parseAsync() {
+  for (const requestedSignal of ["SIGINT", "SIGTERM"] as const)
+    test(`forwards ${requestedSignal} to the selected child and preserves its exit code`, async () => {
+      writeFileSync(
+        join(localRoot, "src/cli/cli-program.ts"),
+        `export function buildCli() { return { async parseAsync() {
       const keepAlive = setInterval(() => {}, 1000);
-      process.on("SIGTERM", () => { clearInterval(keepAlive); process.exit(23); });
+      process.on(${JSON.stringify(requestedSignal)}, () => { clearInterval(keepAlive); process.exit(23); });
       console.log("child-ready");
       await new Promise(() => {});
     } }; }`,
-    );
-    const child = Bun.spawn([process.execPath, join(globalRoot, "src/cli/index.ts"), "dev"], {
-      cwd: project,
-      env: environment(),
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    const deadline = setTimeout(() => child.kill("SIGKILL"), 5_000);
-    const reader = child.stdout.getReader();
-    let output = "";
-    try {
-      while (!output.includes("child-ready")) {
-        const chunk = await reader.read();
-        if (chunk.done) throw new Error("selected child exited before readiness");
-        output += new TextDecoder().decode(chunk.value);
+      );
+      const child = Bun.spawn([process.execPath, join(globalRoot, "src/cli/index.ts"), "dev"], {
+        cwd: project,
+        env: environment(),
+        stdout: "pipe",
+        stderr: "pipe",
+      });
+      const deadline = setTimeout(() => child.kill("SIGKILL"), 5_000);
+      const reader = child.stdout.getReader();
+      let output = "";
+      try {
+        while (!output.includes("child-ready")) {
+          const chunk = await reader.read();
+          if (chunk.done) throw new Error("selected child exited before readiness");
+          output += new TextDecoder().decode(chunk.value);
+        }
+        child.kill(requestedSignal);
+        expect(await child.exited).toBe(23);
+        expect(await new Response(child.stderr).text()).toBe("");
+      } finally {
+        clearTimeout(deadline);
+        reader.releaseLock();
+        child.kill("SIGKILL");
       }
-      child.kill("SIGTERM");
-      expect(await child.exited).toBe(23);
-      expect(await new Response(child.stderr).text()).toBe("");
-    } finally {
-      clearTimeout(deadline);
-      reader.releaseLock();
-      child.kill("SIGKILL");
-    }
+    });
+
+  test("propagates an unhandled child signal as a nonzero signal exit status", async () => {
+    writeFileSync(
+      join(localRoot, "src/cli/cli-program.ts"),
+      `export function buildCli() { return { parseAsync() {
+      process.kill(process.pid, "SIGKILL");
+    } }; }`,
+    );
+    const result = await execute(["dev"]);
+    expect(result.code).toBe(137);
+    expect(result.stderr).toBe("");
   });
 
   test("help and syntax errors do not require local dependencies or import handlers", async () => {

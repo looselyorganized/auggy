@@ -269,6 +269,22 @@ function resolveFileAuggyTarball(spec: string, agentDir: string): string | null 
   return resolved;
 }
 
+function assertDeployableRuntimeDependency(agentDir: string): void {
+  const manifestBytes = readRegularFileNoFollow(join(agentDir, "package.json"), 1024 * 1024);
+  if (!manifestBytes) return; // Doctor owns absent/invalid project manifest diagnostics.
+  const manifest: unknown = JSON.parse(new TextDecoder().decode(manifestBytes));
+  const dependency = asRecord(asRecord(manifest)?.dependencies)?.auggy;
+  if (typeof dependency !== "string") return;
+  const spec = dependency.trim();
+  if (!/^(?:file:|link:|workspace:|\.?\.?\/|\/)/i.test(spec)) return;
+  const tarball = resolveFileAuggyTarball(spec, agentDir);
+  if (tarball && readRegularFileNoFollow(tarball, 256 * 1024 * 1024)) return;
+  throw new Error(
+    "Deploy requires a registry Auggy dependency or an explicit regular file: .tgz artifact. " +
+      "Pack the linked/source runtime and materialize that tarball as this project's Auggy dependency before deploying; no nearby archive is selected automatically.",
+  );
+}
+
 export async function runDeploy(
   nameArg: string | undefined,
   opts: DeployOptions,
@@ -290,6 +306,7 @@ export async function runDeploy(
   }
   const name = readAgentName(configPath);
   const agentDir = dirname(configPath);
+  assertDeployableRuntimeDependency(agentDir);
   const entry = getAgentFromDir(agentDir);
   if (!entry) {
     throw new Error(
