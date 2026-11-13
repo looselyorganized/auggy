@@ -382,7 +382,7 @@ export const AUGMENT_CATALOG: CatalogEntry[] = [
     stability: "preview",
     envVars: ["AUGGY_AGENT_ID", "AUGGY_AGENT_NAME", "AUGGY_LINK_PUBLIC_URL"],
     hasSkill: true,
-    packageDeps: { "@auggy/link": "^0.1.2" },
+    packageDeps: { "@auggy/link": "^0.2.0" },
   },
   {
     label: "Visitor Auth",

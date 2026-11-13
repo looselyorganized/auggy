@@ -6,7 +6,8 @@ import {
   freshness,
 } from "../_shared/cost";
 
-// USD per million tokens. Update via PR when Anthropic changes pricing.
+// Standard global API USD per million tokens, verified against:
+// https://platform.claude.com/docs/en/about-claude/pricing
 // Cache rates: write = 1.25× input, read = 0.1× input (per Anthropic docs).
 const TABLE: Record<string, Pricing> = {
   "claude-fable-5": {
@@ -22,16 +23,16 @@ const TABLE: Record<string, Pricing> = {
     cacheReadUsdPerMtok: 0.5,
   },
   "claude-opus-4-7": {
-    inputUsdPerMtok: 15.0,
-    outputUsdPerMtok: 75.0,
-    cacheWriteUsdPerMtok: 18.75,
-    cacheReadUsdPerMtok: 1.5,
+    inputUsdPerMtok: 5.0,
+    outputUsdPerMtok: 25.0,
+    cacheWriteUsdPerMtok: 6.25,
+    cacheReadUsdPerMtok: 0.5,
   },
   "claude-opus-4-6": {
-    inputUsdPerMtok: 15.0,
-    outputUsdPerMtok: 75.0,
-    cacheWriteUsdPerMtok: 18.75,
-    cacheReadUsdPerMtok: 1.5,
+    inputUsdPerMtok: 5.0,
+    outputUsdPerMtok: 25.0,
+    cacheWriteUsdPerMtok: 6.25,
+    cacheReadUsdPerMtok: 0.5,
   },
   "claude-sonnet-4-6": {
     inputUsdPerMtok: 3.0,
@@ -40,10 +41,10 @@ const TABLE: Record<string, Pricing> = {
     cacheReadUsdPerMtok: 0.3,
   },
   "claude-haiku-4-5": {
-    inputUsdPerMtok: 0.8,
-    outputUsdPerMtok: 4.0,
-    cacheWriteUsdPerMtok: 1.0,
-    cacheReadUsdPerMtok: 0.08,
+    inputUsdPerMtok: 1.0,
+    outputUsdPerMtok: 5.0,
+    cacheWriteUsdPerMtok: 1.25,
+    cacheReadUsdPerMtok: 0.1,
   },
   "claude-haiku-4-5-20251001": {
     inputUsdPerMtok: 1.0,
@@ -61,7 +62,7 @@ export function listModels(): string[] {
   return Object.keys(TABLE);
 }
 
-const VERIFIED_AT = "2026-07-02";
+const VERIFIED_AT = "2026-11-13";
 
 export function lookup(model: string): Pricing | null {
   return TABLE[model] ?? null;

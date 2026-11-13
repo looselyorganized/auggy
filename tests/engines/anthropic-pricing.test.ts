@@ -22,20 +22,24 @@ describe("anthropic lookup", () => {
   it("returns correct haiku rates", () => {
     const r = lookup("claude-haiku-4-5");
     expect(r).toBeTruthy();
-    expect(r!.inputUsdPerMtok).toBe(0.8);
-    expect(r!.outputUsdPerMtok).toBe(4.0);
-    expect(r!.cacheWriteUsdPerMtok).toBe(1.0);
-    expect(r!.cacheReadUsdPerMtok).toBe(0.08);
+    expect(r!.inputUsdPerMtok).toBe(1.0);
+    expect(r!.outputUsdPerMtok).toBe(5.0);
+    expect(r!.cacheWriteUsdPerMtok).toBe(1.25);
+    expect(r!.cacheReadUsdPerMtok).toBe(0.1);
+    expect(lookup("claude-haiku-4-5-20251001")).toEqual(r);
   });
 
-  it("returns correct opus 4.8 rates", () => {
-    const r = lookup("claude-opus-4-8");
-    expect(r).toBeTruthy();
-    expect(r!.inputUsdPerMtok).toBe(5.0);
-    expect(r!.outputUsdPerMtok).toBe(25.0);
-    expect(r!.cacheWriteUsdPerMtok).toBe(6.25);
-    expect(r!.cacheReadUsdPerMtok).toBe(0.5);
-  });
+  it.each(["claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8"])(
+    "returns correct %s rates",
+    (model) => {
+      const r = lookup(model);
+      expect(r).toBeTruthy();
+      expect(r!.inputUsdPerMtok).toBe(5.0);
+      expect(r!.outputUsdPerMtok).toBe(25.0);
+      expect(r!.cacheWriteUsdPerMtok).toBe(6.25);
+      expect(r!.cacheReadUsdPerMtok).toBe(0.5);
+    },
+  );
 
   it("returns correct fable 5 rates", () => {
     const r = lookup("claude-fable-5");

@@ -66,7 +66,11 @@ import {
   agentMailOrchestrationRuntimePath,
   mutableFileMemoryRuntimePath,
 } from "./runtime-state-inventory";
-import { assertImmutableAgentId, scopedAgentNamespace } from "./agent-isolation";
+import {
+  assertImmutableAgentId,
+  linkParticipantIdForAgent,
+  scopedAgentNamespace,
+} from "./agent-isolation";
 import { compareOwnedStatePaths, resolveOwnedStatePath } from "./owned-state-path";
 import { RAILWAY_RUNTIME_DATA_ROOT } from "./runtime-volume";
 import { RAILWAY_INGRESS_PROXY_NETWORKS } from "../transports/console-request-security";
@@ -755,7 +759,9 @@ export async function resolveAugments(
       } else if (config.type === "link") {
         const agentCard = opts.agentCard;
         if (typeof agentCard === "object" && agentCard !== null && !Array.isArray(agentCard)) {
-          (agentCard as Record<string, unknown>).id = resolverOpts.agentId;
+          (agentCard as Record<string, unknown>).id = linkParticipantIdForAgent(
+            resolverOpts.agentId,
+          );
         }
       }
       config.options = opts;

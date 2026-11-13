@@ -13,6 +13,7 @@ import {
   resolveScaffoldPackageSpecifiersForCreate,
 } from "../../src/cli/scaffold-package-json";
 import type { CatalogEntry } from "../../src/cli/augment-catalog";
+import rootManifest from "../../package.json";
 
 /**
  * Pure-function tests for the per-agent package.json builder. No filesystem
@@ -58,6 +59,21 @@ describe("PROVIDER_TO_PACKAGE", () => {
 });
 
 describe("buildAgentPackageJson", () => {
+  test("customer security policy contains reviewed runtime resolutions without build tooling", () => {
+    expect(SCAFFOLD_SECURITY_OVERRIDES).toEqual({
+      "@hono/node-server": "2.1.6",
+      "body-parser": "2.4.0",
+      "fast-uri": "3.1.9",
+      hono: "4.13.16",
+      "ip-address": "10.7.4",
+      "proxy-addr": "2.0.8",
+      qs: "6.16.1",
+    });
+    for (const [name, version] of Object.entries(SCAFFOLD_SECURITY_OVERRIDES)) {
+      expect(rootManifest.overrides[name as keyof typeof rootManifest.overrides]).toBe(version);
+    }
+  });
+
   test("writes name, private, type=module, and caret-pinned auggy + adapter deps", () => {
     const text = buildAgentPackageJson({
       agentName: "demo",

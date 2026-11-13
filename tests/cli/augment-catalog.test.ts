@@ -80,6 +80,7 @@ describe("augment catalog", () => {
     expect(entry?.description).toContain("Public delegation is off by default");
     expect(entry?.description).toContain("capped");
     expect(entry?.hasSkill).toBe(true);
+    expect(entry?.packageDeps).toEqual({ "@auggy/link": "^0.2.0" });
   });
 
   it("catalog keeps bash preview with an explicit host-process warning", () => {

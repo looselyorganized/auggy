@@ -1563,6 +1563,20 @@ content, and idempotency key. The receiver caps the asserted origin at the
 forwarding hop's authority. Unsigned legacy traffic is downgraded to public
 anonymous rather than receiving agent authority.
 
+The Link SDK dependency moves to `@auggy/link` 0.2. Existing agents selecting this
+preview augment must update their own dependency and retained lock; upgrading
+the Auggy package alone does not replace a consumer-owned Link 0.1 range. Link
+0.2 uses Zod 4 for exported schema composition and adds finite network validation
+and response-reading limits. Consumers composing Link's exported schemas must
+also migrate to Zod 4. Read the SDK's packaged `MIGRATION.md` before upgrading;
+Auggy's peer authorization rules and the legacy A2A wire version remain unchanged.
+
+When launched through the CLI, Link's participant UUID is derived from the
+immutable `agent.yaml` ID: `aug1_<uuid>` becomes `<uuid>` on the Link wire.
+Configure another agent's peer `participantId` using that UUID, as advertised by
+`/.well-known/agent.json`. A copied `agentCard.id` cannot override this binding;
+storage and other Auggy security namespaces retain the full `aug1_` identity.
+
 ### When to use it
 
 Use it only for controlled Auggy-to-Auggy preview evaluation when two or more

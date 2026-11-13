@@ -150,7 +150,7 @@ describe("runAdd mutates per-agent package.json", () => {
     }
 
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8"));
-    expect(pkg.dependencies["@auggy/link"]).toBe("^0.1.2");
+    expect(pkg.dependencies["@auggy/link"]).toBe("^0.2.0");
     // Pre-existing deps untouched.
     expect(pkg.dependencies.auggy).toBe("^0.3.1");
     expect(pkg.dependencies["@auggy/anthropic"]).toBe("^0.3.1");
@@ -194,7 +194,7 @@ describe("runAdd mutates per-agent package.json", () => {
     });
 
     const pkg = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8"));
-    expect(pkg.dependencies["@auggy/link"]).toBe("^0.1.2");
+    expect(pkg.dependencies["@auggy/link"]).toBe("^0.2.0");
     expect(bunInstallCalls).toHaveLength(0);
   });
 });
@@ -1479,7 +1479,7 @@ describe("runAdd package manifest preflight", () => {
     const pkgAfter = JSON.parse(readFileSync(join(dir, "package.json"), "utf-8")) as {
       dependencies: Record<string, string>;
     };
-    expect(pkgAfter.dependencies["@auggy/link"]).toBe("^0.1.2");
+    expect(pkgAfter.dependencies["@auggy/link"]).toBe("^0.2.0");
 
     // 3. bun install invoked exactly once after the writes.
     expect(bunInstallCalls).toHaveLength(1);

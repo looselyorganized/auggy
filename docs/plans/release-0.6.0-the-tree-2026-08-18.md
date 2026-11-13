@@ -1,180 +1,206 @@
-# Release 0.6.0 — "the tree"
+# Release 0.6.0 — inspectable agent applications
 
-**Status:** Scoped, not started
-**Date:** 2026-08-18
-**Governing direction:** [`docs/ROADMAP.md`](../ROADMAP.md) — this plan implements the
-0.6.0 entry there. If this plan and the roadmap disagree, the roadmap wins.
-**Delete this file when 0.6.0 ships** (roadmap rule 1).
+Status: milestones 1–2 implementation delivered; local M2 evidence accepted.
+Formal acceptance awaits dependency closure and Linux/security/PostgreSQL CI.
+Worktree retirement remains separately deferred for preservation review.
+Revised: 2026-11-12. Governing direction: [Roadmap](../ROADMAP.md).
+Delete this implementation plan when 0.6.0 ships; retain accepted ADRs.
 
-## Goal and exit criterion
+This replaces the earlier instruction to merge Central YAML worktree B. Both
+experimental authoring implementations are salvage sources only. Historical
+worktree test counts are not evidence about main.
 
-**Goal.** A new user scaffolds a project, understands the tree, runs it in
-Docker or on Railway, and the docs match.
+## Current tranche: milestones 1 and 2
 
-**Exit criterion.** Release smoke is green on a fresh machine, including a
-scaffolded project that typechecks, boots in Docker, and matches the published
-docs. When that is true, 0.6.0 ships. Release candidates exist only to find
-regressions against this criterion; they do not admit scope.
+Baseline: committed main `29147dfc7af0de59c3631c34a164ed3f3f6f4d5c`.
+The current main checkout has unrelated local changes. Implement in an isolated
+clone; do not reset, stash, overwrite, or silently incorporate those changes.
 
-**Scope freeze.** The work items below are the release. Anything discovered
-after work starts goes to 0.7.0 or `docs/todos.md`.
+### Milestone 1: preservation and reproducible baseline
 
-## Entry conditions
+1. Inventory main and all three worktrees, including staged, unstaged and
+   untracked source. Preserve verified snapshots, patches, and unique history.
+   Exclude secrets, dependencies and generated runtime databases; list exclusions.
+2. Preserve the five unique AgentMail commits. Recovery regressions/fixes are
+   separate maintenance candidates; pricing and dependency updates need their own
+   review. Include only fixes that demonstrably unblock required verification.
+3. Retire experimental worktrees only after verifying snapshots and reviewing
+   excluded unique state. Preserve recoverable Git history and source archives.
+4. Verify clean committed main in a separate checkout using Bun 1.3.14. Record
+   SHA, Git status, OS/architecture, tool versions and lockfile hash.
+5. Run frozen install; lint/typecheck/inventory; runtime/admin/temporal suites;
+   admin lint/build; packed release smoke. Record each command, exit code,
+   duration and redacted logs. Record Linux/security/PostgreSQL CI jobs separately
+   when their supported environment is unavailable. Keep pricing freshness a
+   separately attributed external-data check.
+6. Repair narrow blockers in isolated changes. Preserve original failure
+   evidence, run focused verification and the affected gate, then perform one
+   complete baseline after integration. Do not weaken tests to claim success.
 
-- `0.5.0` published to npm `latest` from PR #221 (`release/0.5.0`, verified
-  2026-08-18: 4,530 tests / 0 fail, lint, typecheck, inventory, audit clean).
-- `main` clean: the uncommitted `scripts/release-smoke.sh` rewrite from
-  2026-08-18 is either finished and committed or reverted.
-- The `feat/typescript-agent-project-definition` worktree is removed. It is
-  superseded by the 2026-08-16 ADR and is salvage only. Its stray scaffolded
-  `test-agent/` directory goes with it.
+Exit: all mandatory checks pass in supported environments at an identified
+accepted commit. Failed and unavailable are distinct from passed. An inventory
+or a local macOS-only pass does not satisfy this gate.
 
-## Work items
+### Milestone 2: ownership and packed execution acceptance
 
-### 1. Central YAML v2 authoring (branch `feat/central-yaml-v2`, worktree B)
+Adopt [the ownership decision](../adr/2026-11-12-inspectable-agent-application.md)
+with the roadmap. Application-owned startup/request/composition/turn control flow
+uses package-maintained operations. Built-ins stay installed dependencies;
+central YAML remains the configuration authority. No new host/loop API or
+scaffold is implemented in this tranche.
 
-The release. Design and phase ledger live in the branch's own documents, which
-must be committed with it:
+Extend release smoke with the existing real Anthropic adapter pointed at a
+loopback protocol fixture through engine.baseURL. Use only dummy provider
+credentials. The fixture asks fs_read to read a unique sentinel from the
+workspace, checks the real returned result, then produces the final response.
+Do not use a fake TransportKernel or introduce a product mock-provider enum.
 
-- ADR: `docs/adr/2026-08-16-central-yaml-agent-project-authoring.md`
-- Plan: `docs/plans/central-yaml-agent-project-migration-2026-08-16.md`
-  (phases 0–10 complete; phase 11 "implemented; external gates pending")
+Required scenarios:
 
-State on 2026-08-18 (verified in the worktree, nothing committed):
+| Scenario | Evidence |
+|---|---|
+| Successful turn | Authenticated /agent/run, actual provider/tool/provider sequence, validated sentinel, terminal stream and trace |
+| Missing/invalid auth | Rejection; no additional provider calls or tool effects |
+| Invalid tool arguments | Kernel validation; no tool side effects |
+| Provider failure | Controlled terminal failure within deadline |
+| Duplicate request | Durable replay; no repeated inference/tool execution |
+| Restart | Bounded shutdown/restart; replay remains effective |
+| Packed isolation | CLI/core/provider provenance outside source checkout; no source symlinks |
 
-- 476 files, +64k/−16k, all staged. Typecheck 0 errors; Biome clean;
-  `test:inventory` 334 runtime + 34 admin + 3 external; `test:runtime`
-  4,623 pass / 0 fail; `test:admin` 362 pass / 0 fail.
-- `bun run smoke:release` **fails** at B's own new gate
-  (`scripts/release-smoke-central-yaml.ts`, "generated custom augment did not
-  typecheck"): the fresh scaffold emits `tsconfig` `lib: ["ESNext"]` with no
-  `types: ["bun"]` and adds only `typescript` to devDependencies — 1,059
-  `Cannot find name 'Bun'/'process'/'Response'/'AbortSignal'`,
-  `Cannot find module 'bun:test'`. Fix in `src/cli/scaffold-custom-augment.ts`
-  and `src/cli/scaffold-package-json.ts` (add `@types/bun` devDep and
-  `types: ["bun"]`); worktree A's scaffold does this and its smoke passes.
-- Test-run artifacts to revert before commit:
-  `packages/evals/src/security/fixtures/memory.sqlite{,-shm,-wal}` (modified)
-  and `packages/evals/src/security/fixtures/data/notify-notify.db{,-shm,-wal}`
-  (untracked).
-- Remaining B ledger gates: full `bun run test`, `smoke:release` green, live
-  console capture.
+Record current global CLI core ownership honestly. Project-local delegation is
+an M3 acceptance target. Continue using existing focused scheduler, quarantine,
+authorization and cancellation suites for the broader adversarial matrix.
 
-Then: open as a PR against `main` for a real review pass. It is a breaking
-authoring change and ships as `0.6.0`, never as `0.5.x`.
+The harness has finite budgets: readiness 60 seconds, scenario 120 seconds,
+graceful shutdown 15 seconds. Isolate HOME, temporary storage and loopback ports;
+allowlist child environment, stop all owned processes, and reject unexpected
+provider requests. Store only sanitized scenario and trace evidence.
 
-### 2. Public docs rewritten for the new tree
+Evidence includes source identity, tarball hashes, installed paths, scenario
+outcomes, call counts, run/thread correlations, exit codes and durations. CI
+must preserve failure evidence without uploading .env or authentication headers.
 
-Everything that shows `augments/<name>/augment.yaml` today. Known surfaces:
+Exit: ownership documents agree, packed scenarios pass without live credentials,
+required existing checks remain green, and independent review has no unresolved
+blockers. Future promises stay pending in the acceptance matrix.
 
-- auggy.dev (separate repo `auggy-site`): homepage file-tree diagram, docs
-  pages, `llms.txt`, `llms-full.txt`, `api-reference.json`.
-- This repo: `README.md`, `docs/*.md` (73 pages), `examples/*`,
-  `packages/auggy-builder-skill`, `src/scaffold-starter-skills`.
-- While in the docs: remove LORF/Zip/spine/brain language left in
-  `docs/02-architecture-overview.md:131`, `07-built-in-augments.md:287,675,1530,1646`,
-  `08-agent-lifecycle.md:40`, `10-system-diagrams.md:275-475`,
-  `14-telegram-transport.md:298`; and the LORF byline in
-  `src/cli/commands/create.ts:952`.
+## Subagent execution protocol
 
-Docs are part of the exit criterion ("matches the published docs"), not a
-follow-up.
+The CTO/root owns scope, shared-file integration and milestone acceptance.
+Agents receive a baseline, exclusive write scope, dependencies, verification
+commands and required evidence. At most three specialists run concurrently.
 
-### 3. Generic Docker path
+| Work package | Owner | Write scope / dependency |
+|---|---|---|
+| Preservation | Repository agent | External archives/manifest; independent of baseline |
+| Baseline | Verification agent | Isolated baseline checkout and evidence only |
+| Provider fixture | Harness specialist | Fixture and focused unit tests |
+| Packed consumer | Integration specialist | Scenario runner and observer; depends on fixture contract |
+| Direction and shared integration | CTO | Roadmap/ADR/plan, smoke script, CI workflow |
+| Adversarial review | Independent specialist | Read-only findings after integrated evidence |
 
-The generator already exists (`src/cli/deploy/dockerfile.ts`, `FROM
-oven/bun:1.2.14-alpine`; B already touches this file). Today the entrypoint
-hard-fails without `RAILWAY_VOLUME_MOUNT_PATH=/app/data` and launches
-`auggy dev --internal-mode railway`.
+Use separate checkouts for baseline versus implementation. Disjoint fixture and
+consumer files may be developed in the implementation clone concurrently;
+shared-file edits are serialized through the integrator. Hand off changed files,
+reason, exact test results, artifact references and unresolved risks. Completion
+messages are not acceptance; the CTO reviews evidence and independent findings.
 
-- Decouple the data-root contract from Railway: an `AUGGY_DATA_DIR` (or
-  equivalent) that Railway sets to `/app/data` and any container operator can
-  set themselves; keep the fail-closed check that the directory is a real
-  mount.
-- Expose it: either `auggy dockerfile` (writes the Dockerfile + entrypoint into
-  the project) or ship a `Dockerfile` in the scaffold. Pick one; document
-  `docker build` / `docker run -v` in `docs/18-deploy.md`.
-- Railway path must remain byte-for-byte equivalent in behavior.
+## Evidence ledger
 
-### 4. `create` / `init` DX
+See [foundation execution evidence](./foundation-evidence-2026-11-12.md) for the
+current run. Preserve original-main results separately from repaired results.
+A commit/patch identity must accompany any eventual accepted baseline.
 
-Findings from the 2026-08-18 black-box run of `auggy@0.5.0-rc.12`:
+| Gate | State |
+|---|---|
+| Preservation | Archives verified; retirement deferred for exclusion review |
+| Original-main baseline | Captured; initial failures retained in evidence |
+| Scoped baseline repairs | Published Link 0.2.0 integrated; current full-workspace audit is clean |
+| Ownership decision | Adopted; implementation guarantees remain future |
+| Packed execution scenarios | Seven web plus twenty fresh/retained Link scenarios passed local-artifact acceptance; final registry rehearsal required |
+| Independent review | Local code and final evidence approved |
+| M1 acceptance | Final integrated CI and reviewed merge pending; PR #226 records exact-candidate results |
+| M2 acceptance | Core/retained-lock execution verified locally; formal gate follows M1 dependency closure and reviewed merge |
 
-- `create`/`init` are interactive-only ("auggy create is interactive and needs
-  a terminal"); no `--provider`, `--model`, `--yes`. Add them; keep the
-  interactive path as the default when flags are absent.
-- Ollama shortlist ignores installed models (`llama3.2:latest` present →
-  "No tool-capable Ollama model found"; "Custom" buried last; unpriced confirm
-  defaults to abort). Honor what `ollama list` reports; put installed models
-  first.
-- `augment remove --yes` → "unknown option" (add has it). Make add/remove
-  symmetric.
-- Anonymous `POST /agent/run` returns `428 anonymous_session_required` with no
-  hint how to obtain a session. Add the hint to the error body.
-- An invalid/revoked provider API key passes `auggy doctor` and
-  `auggy models doctor` (presence-only checks) and then every turn fails as
-  `RUN_ERROR {"message":"Internal error.","code":"INTERNAL"}` with **no line
-  in the dev log** (observed 2026-08-18 with Anthropic
-  `authentication_error`). Surface provider auth failures as a distinct error
-  code with an operator log line, and have `models doctor` (or `doctor`
-  behind a flag) probe the provider once.
+## Foundation closure before milestone 3
 
-B rewrites `src/cli/commands/create.ts`; do these in the same pass, not after.
+Status: implementing from `dc03a00`; original main and retained worktrees remain
+unchanged. No dependency exception is approved. Milestone 3 implementation starts
+only after this foundation is reviewed, merged and verified on main.
 
-### 5. Metadata honesty (carried from the 0.5.0 audit, deferred there as
-runtime-touching)
+### Remediation
 
-- `package.json` `engines.node: ">=20"` while `bin` is a `#!/usr/bin/env bun`
-  `.ts` file and 27 core files use `Bun.`/`bun:sqlite`; under Node 26 the CLI
-  fails with `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`. Reconcile with
-  README §Requirements ("Bun >= 1.2 required at runtime").
-- `settings.coordination` present → `src/agent.ts:803` refuses to start
-  without saying "remove `settings.coordination`". Add the remedy to the error
-  (test pinned at `tests/agent.test.ts:55`).
-- README CLI table vs `auggy --help`: add `skill list/remove`,
-  `augment remove/test`, `models doctor`, `jobs prune-audit`,
-  `coordination migrate`; document `create/init --skip-install --refresh-models`,
-  `run --no-open`, `augment create --force/--with-skill`.
-- `CHANGELOG.md` rc.11 entry claims `--replace-key`; the flag does not exist
-  and tests assert its absence — remove the claim if not already fixed on
-  `release/0.5.0`.
+- Refresh and preserve full workspace audit evidence. Classify each advisory by
+  version, path, attack prerequisites and actual runtime/tooling reachability.
+- Raise compatible MCP SDK and Zod direct dependency floors, including evals;
+  update Vite and affected compatible transitives without unrelated upgrades.
+- Replace the console's generator-package stylesheet import with the exact
+  attributed upstream stylesheet. Remove the generator from normal installs;
+  quarantine unreviewed generator invocations in maintenance documentation.
+- Resolve Link's separate Zod v3 path through its separately authorized release
+  PR. Link 0.2.0 is now published and integrated with its genuine Zod 4 contract;
+  no global major override or capability removal is used. Certify the actual
+  registry path in both fresh and retained Link-selected agents before merge.
 
-## Order of work
+### Harness and CI
 
-1. Entry conditions (0.5.0 published; `main` clean; worktree A removed).
-2. B: scaffold fix → revert artifacts → `smoke:release` green → PR → review →
-   merge to `main` as the 0.6.0 base. Version bump to `0.6.0-rc.1` only after
-   merge.
-3. Items 3–5 as small PRs on top of B (they touch files B rewrites; do them
-   after, not in parallel).
-4. Docs rewrite (item 2) — repo docs alongside items 3–5; site rewrite last,
-   against the final CLI/tree.
-5. Exit-criterion run on a fresh machine: `bun add -g auggy@0.6.0-rc.N` →
-   `auggy create --provider … --yes` → typecheck → `docker build/run` →
-   `/health` → one turn → compare tree to published docs. Green → `0.6.0`.
+- Add a bounded audit helper that requires successful execution and an empty
+  advisory object. Findings at every severity, malformed responses, service
+  failures and timeouts fail closed. No allowlist or severity filter.
+- Add the full workspace audit to the existing CI aggregate. Keep Temporal and
+  real packed-consumer audits separately enforced; root overrides are not
+  inherited by generated projects.
+- Test baseline-to-candidate artifact replacement retaining the existing lockfile
+  and installed tree. Include stale application override detection and the
+  documented dependency-only migration. Do not execute the vulnerable baseline.
+- Verify core, providers, evals, generated agents and Link-selected consumers.
+  Record the same-version artifact experiment honestly; it is not an npm release.
+- Make dedicated PostgreSQL CI require its URL and executed, zero-skip integration
+  suite against the existing pinned PostgreSQL 17 service. Local optional skips
+  remain supported; product coordination remains disabled.
 
-## Explicitly not in 0.6.0
+### Owners and integration
 
-Visitor chat widget/example, embeddings-backed knowledge, the concierge
-end-to-end demo, public launch — all **0.7.0**. New providers, channels,
-deploy targets, multi-replica/PostgreSQL coordination, OpenTelemetry —
-demand-driven, per the roadmap. AgentMail changes of any kind — only if a
-user reports a defect.
+The dependency owner exclusively changes manifests/locks and installs the shared
+graph. The upgrade-harness owner writes isolated migration fixtures/scenarios.
+The CI owner writes audit enforcement and the PostgreSQL anti-skip guard. Root
+integrates the release script, direction documents, PR and evidence. An independent
+reviewer checks the frozen candidate after an implementation slot is free.
 
-## Ledger
+Run focused checks, freeze a commit, then full acceptance. Never edit running
+rehearsal scripts or their dependency graph. Preserve failure evidence and refresh
+results after corrections. Prior foundation evidence does not certify a changed
+dependency graph.
 
-Update after each substantial step with exact commands and results.
+### Remote certification and merge
 
-| Step | Status | Evidence | Remaining risk |
-| --- | --- | --- | --- |
-| Entry: 0.5.0 published | Pending | | |
-| Entry: `main` clean | Pending | | |
-| Entry: worktree A removed | Pending | | |
-| 1. B scaffold fix + smoke green | Pending | | |
-| 1. B merged to `main` | Pending | | |
-| 3. Docker path | Pending | | |
-| 4. create/init DX | Pending | | |
-| 5. Metadata honesty | Pending | | |
-| 2. Repo docs rewritten | Pending | | |
-| 2. Site docs rewritten | Pending | | |
-| Exit-criterion run (fresh machine) | Pending | | |
+Publish the reviewable foundation branch and open a PR targeting main. Capture
+PR head SHA, base SHA and the synthetic merge SHA tested by GitHub. Require the
+full CI aggregate, Linux boundary jobs, real PostgreSQL execution, CodeQL and
+release rehearsal with hashed artifacts. Trusted-default-branch live evals are
+not candidate-runtime certification and retain their existing secret boundary.
+
+Present the concrete PR, diff, compatibility implications and evidence for final
+review before merge. No protections are bypassed. Missing, stale, failed, skipped,
+canceled or pending required checks do not pass. A remaining finding is a visible
+blocker, not an implicit exception. After reviewed merge, verify resulting main
+and establish that revision as milestone 3's starting point.
+
+See [dependency closure findings](./foundation-dependency-closure-2026-11-12.md)
+and [execution evidence](./foundation-evidence-2026-11-12.md).
+
+## Milestones 3–6: roadmap only
+
+The [roadmap](../ROADMAP.md) records outcomes and exit gates for the reference
+application, authoring/scaffold, standalone-service integration, and upgrade/DX
+certification. Detail milestone 3 only after M1–M2 acceptance. Do not implement
+managed host/turn APIs, Central YAML migration, public client packages, or the
+new generated tree as incidental harness work.
+
+## Measurable developer experience
+
+Capture the current task outcomes before the new scaffold ships: locating the
+HTTP endpoint, following a request into the turn loop, tracing an augment call,
+first authenticated response, and a safe customization. M6 repeats those tasks
+with unfamiliar engineers. Five minutes to trace endpoint through augment is a
+proposed target, not a result established by this tranche.

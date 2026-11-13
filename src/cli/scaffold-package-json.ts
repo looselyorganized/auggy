@@ -39,12 +39,19 @@ export const PROVIDER_TO_PACKAGE: Record<Provider, string> = {
 };
 
 /**
- * Root-level resolution required until the MCP SDK accepts the fixed
- * @hono/node-server v2 range. Package-manager overrides inside dependencies
- * are not inherited, so generated agents must own this policy explicitly.
+ * Reviewed security resolutions on the core runtime dependency graph.
+ * Package-manager overrides inside dependencies are not inherited, so generated
+ * agents and retained-lock upgrades must own this policy explicitly. Workspace
+ * build-only overrides are intentionally excluded from customer manifests.
  */
 export const SCAFFOLD_SECURITY_OVERRIDES = {
-  "@hono/node-server": "2.0.11",
+  "@hono/node-server": "2.1.6",
+  "body-parser": "2.4.0",
+  "fast-uri": "3.1.9",
+  hono: "4.13.16",
+  "ip-address": "10.7.4",
+  "proxy-addr": "2.0.8",
+  qs: "6.16.1",
 } as const;
 
 export interface BuildAgentPackageJsonInput {
