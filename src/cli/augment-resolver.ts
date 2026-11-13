@@ -172,7 +172,16 @@ function assertNoUnsupportedAgentMailState(
 // Built-in resolvers
 // ---------------------------------------------------------------------------
 
+interface AugmentConstruction {
+  beforeImport(): void;
+  invoke<Args extends unknown[], Result extends Augment | Promise<Augment>>(
+    factory: (...args: Args) => Result,
+    ...args: Args
+  ): Result;
+}
+
 function resolveFileMemory(
+  construction: AugmentConstruction,
   opts: Record<string, unknown>,
   agentDir: string,
   runtimeDataRoot: string | undefined,
@@ -212,7 +221,7 @@ function resolveFileMemory(
     );
   }
 
-  return fileMemory({
+  return construction.invoke(fileMemory, {
     label: opts.label as string,
     source: durableSource,
     ...(durableSource !== resolvedSource ? { seedSource: resolvedSource } : {}),
@@ -229,11 +238,13 @@ function resolveFileMemory(
 }
 
 async function resolveLayeredMemory(
+  construction: AugmentConstruction,
   opts: Record<string, unknown>,
   agentDir: string,
   ownedStateRoot: string | undefined,
   agentId: string | undefined,
 ): Promise<Augment> {
+  construction.beforeImport();
   const { layeredMemory } = await import("../augments/layeredMemory");
   const backend = (opts.backend as string | undefined) ?? "sqlite";
   const namespace = scopedAgentNamespace(agentId, opts.namespace as string | undefined, "ep");
@@ -245,7 +256,7 @@ async function resolveLayeredMemory(
 
   if (backend === "sqlite") {
     const dbPath = opts.dbPath as string | undefined;
-    return layeredMemory({
+    return construction.invoke(layeredMemory, {
       backend: "sqlite",
       dbPath: resolveSqlitePath(
         dbPath ?? "./memory.db",
@@ -279,7 +290,7 @@ async function resolveLayeredMemory(
     const client = createClient(supabaseUrl, supabaseKey, {
       global: { fetch: createRedirectRejectingFetch() },
     }) as unknown as Parameters<typeof layeredMemory>[0]["client"];
-    return layeredMemory({
+    return construction.invoke(layeredMemory, {
       backend: "supabase",
       client,
       table: (opts.table as string | undefined) ?? "agent_memory",
@@ -293,6 +304,7 @@ async function resolveLayeredMemory(
 }
 
 async function resolveSupabaseMemory(
+  construction: AugmentConstruction,
   opts: Record<string, unknown>,
   agentId: string | undefined,
 ): Promise<Augment> {
@@ -317,12 +329,13 @@ async function resolveSupabaseMemory(
   // Lazy import — only load @supabase/supabase-js when supabaseMemory is used.
   // The real SupabaseClient has narrower types than SupabaseLikeClient
   // (e.g. data is null on error), so we cast through unknown.
+  construction.beforeImport();
   const { createClient } = await import("@supabase/supabase-js");
   const client = createClient(supabaseUrl, supabaseKey, {
     global: { fetch: createRedirectRejectingFetch() },
   }) as unknown as Parameters<typeof supabaseMemory>[0]["client"];
 
-  return supabaseMemory({
+  return construction.invoke(supabaseMemory, {
     namespace: scopedAgentNamespace(agentId, rest.namespace as string | undefined, "memory"),
     scope: rest.scope,
     client,
@@ -338,7 +351,11 @@ async function resolveSupabaseMemory(
   });
 }
 
-function resolveFilesystem(opts: Record<string, unknown>, agentDir: string): Augment {
+function resolveFilesystem(
+  construction: AugmentConstruction,
+  opts: Record<string, unknown>,
+  agentDir: string,
+): Augment {
   const mounts = (opts.mounts as Array<Record<string, unknown>>).map((m) => ({
     name: m.name as string,
     path: resolvePath(m.path as string, agentDir),
@@ -349,7 +366,7 @@ function resolveFilesystem(opts: Record<string, unknown>, agentDir: string): Aug
     searchExcludes: m.searchExcludes as string[] | undefined,
   }));
 
-  return filesystem({
+  return construction.invoke(filesystem, {
     mounts,
     skillFile: opts.skillFile ? resolvePath(opts.skillFile as string, agentDir) : undefined,
     workspaceAwareness: opts.workspaceAwareness as
@@ -366,9 +383,13 @@ function resolveFilesystem(opts: Record<string, unknown>, agentDir: string): Aug
  * Default `dir` is `./skills` to match the scaffold layout (`auggy create`
  * copies bundled skill folders to `<agentDir>/skills/<augment>/`).
  */
-function resolveSkills(opts: Record<string, unknown>, agentDir: string): Augment {
+function resolveSkills(
+  construction: AugmentConstruction,
+  opts: Record<string, unknown>,
+  agentDir: string,
+): Augment {
   const rawDir = (opts.dir as string | undefined) ?? "./skills";
-  return skills({ dir: resolvePath(rawDir, agentDir) });
+  return construction.invoke(skills, { dir: resolvePath(rawDir, agentDir) });
 }
 
 /** Resolve console-chat storage without opening the database. */
@@ -453,6 +474,7 @@ export function resolveTrustedProxies(
 }
 
 function resolveWebTransport(
+  construction: AugmentConstruction,
   opts: Record<string, unknown>,
   agentDir: string,
   overrideDir: string,
@@ -468,7 +490,7 @@ function resolveWebTransport(
   const vtBase = opts.visitorTokens as
     | { enabled?: boolean; signingKey?: string; agentBinding?: string }
     | undefined;
-  return factory({
+  return construction.invoke(factory, {
     port: opts.port as number,
     auth: opts.auth as { type: "bearer"; token: string },
     cors: opts.cors as { origins: [string] } | undefined,
@@ -517,13 +539,16 @@ function resolveWebTransport(
   });
 }
 
-function resolveWebFetch(opts: Record<string, unknown>): Augment {
+function resolveWebFetch(
+  construction: AugmentConstruction,
+  opts: Record<string, unknown>,
+): Augment {
   if (opts.defaultHeaders !== undefined) {
     throw new Error(
       "webFetch defaultHeaders are unsafe for model-selected URLs; use exact-origin headersByOrigin",
     );
   }
-  return webFetch({
+  return construction.invoke(webFetch, {
     timeoutMs: opts.timeoutMs as number | undefined,
     maxRedirects: opts.maxRedirects as number | undefined,
     userAgent: opts.userAgent as string | undefined,
@@ -531,13 +556,18 @@ function resolveWebFetch(opts: Record<string, unknown>): Augment {
   });
 }
 
-async function resolveCustom(config: AugmentConfig, agentDir: string): Promise<Augment> {
+async function resolveCustom(
+  construction: AugmentConstruction,
+  config: AugmentConfig,
+  agentDir: string,
+): Promise<Augment> {
   if (!config.source) {
     throw new Error(`Custom augment "${config.name}": source path is required`);
   }
 
   const absPath = resolvePath(config.source, agentDir);
   let mod: Record<string, unknown>;
+  construction.beforeImport();
   try {
     mod = await import(absPath);
   } catch (err) {
@@ -560,7 +590,11 @@ async function resolveCustom(config: AugmentConfig, agentDir: string): Promise<A
 // Public API
 // ---------------------------------------------------------------------------
 
-function resolveBash(opts: Record<string, unknown>, agentDir: string): Augment {
+function resolveBash(
+  construction: AugmentConstruction,
+  opts: Record<string, unknown>,
+  agentDir: string,
+): Augment {
   const scripts = (opts.scripts as Array<Record<string, unknown>> | undefined)?.map((s) => ({
     name: s.name as string,
     description: s.description as string,
@@ -569,7 +603,7 @@ function resolveBash(opts: Record<string, unknown>, agentDir: string): Augment {
     timeout: s.timeout as number | undefined,
   }));
 
-  return bash({
+  return construction.invoke(bash, {
     risk: opts.risk as "scripts-only" | "restricted" | "standard" | "unrestricted" | undefined,
     allowedCommands: opts.allowedCommands as string[] | undefined,
     blockedCommands: opts.blockedCommands as string[] | undefined,
@@ -584,6 +618,7 @@ function resolveBash(opts: Record<string, unknown>, agentDir: string): Augment {
 }
 
 async function resolveLink(
+  construction: AugmentConstruction,
   opts: Record<string, unknown>,
   agentDir: string,
   ownedStateRoot: string | undefined,
@@ -625,11 +660,13 @@ async function resolveLink(
   // module graph. The relative import is internal to auggy (resolves through
   // this package's own files); the factory's body then uses importFromAgent
   // to reach `@auggy/link` in the AGENT's node_modules.
+  construction.beforeImport();
   const { link } = await import("../augments/link");
-  return await link(linkOpts);
+  return await construction.invoke(link, linkOpts);
 }
 
 function resolveVisitorAuth(
+  construction: AugmentConstruction,
   opts: Record<string, unknown>,
   agentDir: string,
   runtimeDataRoot?: string,
@@ -704,7 +741,7 @@ function resolveVisitorAuth(
     // wiring needed for it.
     allowConsoleInProduction: opts.allowConsoleInProduction as boolean | undefined,
   };
-  return visitorAuth(config);
+  return construction.invoke(visitorAuth, config);
 }
 
 /**
@@ -815,6 +852,27 @@ export async function resolveAugments(
   }
 
   const augments: Augment[] = [];
+  // An import or factory can allocate resources before it throws. Until it
+  // returns an augment with a cleanup owner, rollback cannot prove closure.
+  let incompleteConstruction = false;
+  const constructedAugments: Augment[] = [];
+  const construction: AugmentConstruction = {
+    beforeImport() {
+      incompleteConstruction = true;
+    },
+    invoke(factory, ...args) {
+      incompleteConstruction = true;
+      return factory(...args);
+    },
+  };
+  function ownConstructed<T extends Augment>(augment: T): T {
+    if (typeof augment !== "object" || augment === null || Array.isArray(augment)) {
+      throw new Error("[augment-resolver] augment factory must return an augment object");
+    }
+    constructedAugments.push(augment);
+    incompleteConstruction = false;
+    return augment;
+  }
   type NotifyToolExecute = NonNullable<Augment["tools"]>[number]["execute"];
   const notifyDestinationNames = new Set<string>();
   const notifyExecutorsByDestination = new Map<string, NotifyToolExecute>();
@@ -975,6 +1033,7 @@ export async function resolveAugments(
       switch (config.type) {
         case "fileMemory":
           augment = resolveFileMemory(
+            construction,
             opts,
             agentDir,
             resolverOpts.runtimeDataRoot,
@@ -983,10 +1042,11 @@ export async function resolveAugments(
           );
           break;
         case "supabaseMemory":
-          augment = await resolveSupabaseMemory(opts, resolverOpts.agentId);
+          augment = await resolveSupabaseMemory(construction, opts, resolverOpts.agentId);
           break;
         case "layeredMemory":
           augment = await resolveLayeredMemory(
+            construction,
             opts,
             agentDir,
             ownedStateRoot,
@@ -994,10 +1054,11 @@ export async function resolveAugments(
           );
           break;
         case "filesystem":
-          augment = resolveFilesystem(opts, agentDir);
+          augment = resolveFilesystem(construction, opts, agentDir);
           break;
         case "webTransport":
           augment = resolveWebTransport(
+            construction,
             opts,
             agentDir,
             overrideDir,
@@ -1010,10 +1071,10 @@ export async function resolveAugments(
           );
           break;
         case "webFetch":
-          augment = resolveWebFetch(opts);
+          augment = resolveWebFetch(construction, opts);
           break;
         case "knowledge":
-          augment = knowledgeRoot({
+          augment = construction.invoke(knowledgeRoot, {
             root: resolvePath((opts.root as string | undefined) ?? "./knowledge", agentDir),
             cacheTtlMs: opts.cacheTtlMs as number | undefined,
             allowInsecureHttpWithCredentials: opts.allowInsecureHttpWithCredentials as
@@ -1022,12 +1083,13 @@ export async function resolveAugments(
           });
           break;
         case "skills":
-          augment = resolveSkills(opts, agentDir);
+          augment = resolveSkills(construction, opts, agentDir);
           break;
         case "bash":
-          augment = resolveBash(opts, agentDir);
+          augment = resolveBash(construction, opts, agentDir);
           break;
         case "budgets": {
+          construction.beforeImport();
           const { budgets } = await import("../augments/budgets");
           const dbPath = (opts.dbPath as string | undefined) ?? "./budgets.db";
           const notifications = opts.notifications as BudgetsAugmentOptions["notifications"];
@@ -1038,7 +1100,7 @@ export async function resolveAugments(
               );
             }
           }
-          augment = budgets({
+          augment = construction.invoke(budgets, {
             dbPath: resolveSqlitePath(dbPath, agentDir, ownedStateRoot, "budgets dbPath"),
             agentDir,
             overrideDir,
@@ -1072,7 +1134,7 @@ export async function resolveAugments(
               ),
             };
           });
-          augment = notify({
+          augment = construction.invoke(notify, {
             destinations: destinations as unknown as NotifyAugmentOptions["destinations"],
             rateLimit: opts.rateLimit as NotifyAugmentOptions["rateLimit"],
             dbPath: resolveSqlitePath(
@@ -1090,7 +1152,7 @@ export async function resolveAugments(
           break;
         }
         case "mcp":
-          augment = mcp({
+          augment = construction.invoke(mcp, {
             agentDir,
             config: opts.config as string | undefined,
             timeoutMs: opts.timeoutMs as number | undefined,
@@ -1165,7 +1227,7 @@ export async function resolveAugments(
           }
           agentMailDbOwners.set(resolve(dbPath), config.name);
 
-          augment = agentMail({
+          augment = construction.invoke(agentMail, {
             apiKey: opts.apiKey as string,
             inboxId: opts.inboxId as string,
             emailAddress: opts.emailAddress as string | undefined,
@@ -1187,7 +1249,7 @@ export async function resolveAugments(
         }
         case "telegramTransport": {
           const replay = opts.replay as TelegramTransportOptions["replay"] | undefined;
-          augment = telegramTransport({
+          augment = construction.invoke(telegramTransport, {
             ...(opts as unknown as TelegramTransportOptions),
             creator: resolverOpts.creator,
             replay: {
@@ -1203,10 +1265,11 @@ export async function resolveAugments(
           break;
         }
         case "turnControl":
-          augment = turnControl(opts as TurnControlOptions);
+          augment = construction.invoke(turnControl, opts as TurnControlOptions);
           break;
         case "visitorAuth":
           augment = resolveVisitorAuth(
+            construction,
             opts,
             agentDir,
             ownedStateRoot,
@@ -1215,17 +1278,21 @@ export async function resolveAugments(
           );
           break;
         case "link":
-          augment = await resolveLink(opts, agentDir, ownedStateRoot);
+          augment = await resolveLink(construction, opts, agentDir, ownedStateRoot);
           break;
         case "custom":
-          augment = await resolveCustom(config, agentDir);
+          augment = await resolveCustom(construction, config, agentDir);
           break;
         default:
           throw new Error(`Unknown augment type: "${config.type}"`);
       }
 
+      // Own the original before spreading it or performing cross-augment
+      // wiring: either step can throw after a successful factory allocation.
+      ownConstructed(augment);
       // Override the auto-generated augment name with the operator's choice.
       augment = { ...augment, name: config.name };
+      constructedAugments[constructedAugments.length - 1] = augment;
       if (config.type === "notify") {
         const notifyAugment = augment as NotifyAugment;
         const notifyTool = augment.tools?.find((tool) => tool.name === "notify");
@@ -1357,17 +1424,19 @@ export async function resolveAugments(
     const skillsDir = resolvePath("./skills", agentDir);
     const hasSkills = augments.some((a) => a.name === "skills");
     if (!hasSkills && existsSync(skillsDir)) {
-      augments.push(skills({ dir: skillsDir }));
+      augments.push(ownConstructed(construction.invoke(skills, { dir: skillsDir })));
     }
 
     if (resolverOpts.selfInspection) {
       augments.push(
-        auggySelf({
-          agentDir,
-          agent: resolverOpts.selfInspection,
-          configs,
-          augments,
-        }),
+        ownConstructed(
+          construction.invoke(auggySelf, {
+            agentDir,
+            agent: resolverOpts.selfInspection,
+            configs,
+            augments,
+          }),
+        ),
       );
     }
 
@@ -1378,39 +1447,41 @@ export async function resolveAugments(
           `[augment-resolver] Notify destination ${JSON.stringify(mount.destination)} has no durable internal dispatch host`,
         );
       }
-      augments.push({
-        name: `agentMail-notifications-${mount.name}`,
-        type: "agentMail.notifications",
-        synthetic: true,
-        async onBoot() {
-          const destinationBindingHash = dispatchHost.destinationBindingSha256(mount.destination);
-          const metadata = dispatchHost.destinationMetadata(mount.destination);
-          if (!destinationBindingHash || !metadata) {
-            throw new Error(
-              `agentMail notifications: Notify destination ${JSON.stringify(mount.destination)} is unavailable or does not allow creator delivery`,
-            );
-          }
-          mount.augment.creatorAttentionHost.configure({
-            dispatchHost,
-            destination: mount.destination,
-            destinationBindingHash,
-            maxAttempts: mount.maxAttempts,
-            ...(metadata.transport === "agentmail"
-              ? { agentMailRecipients: metadata.recipients }
-              : {}),
-          });
-          await mount.augment.creatorAttentionHost.start();
-        },
-        async onShutdown() {
-          await mount.augment.creatorAttentionHost.stop();
-        },
-      });
+      augments.push(
+        ownConstructed({
+          name: `agentMail-notifications-${mount.name}`,
+          type: "agentMail.notifications",
+          synthetic: true,
+          async onBoot() {
+            const destinationBindingHash = dispatchHost.destinationBindingSha256(mount.destination);
+            const metadata = dispatchHost.destinationMetadata(mount.destination);
+            if (!destinationBindingHash || !metadata) {
+              throw new Error(
+                `agentMail notifications: Notify destination ${JSON.stringify(mount.destination)} is unavailable or does not allow creator delivery`,
+              );
+            }
+            mount.augment.creatorAttentionHost.configure({
+              dispatchHost,
+              destination: mount.destination,
+              destinationBindingHash,
+              maxAttempts: mount.maxAttempts,
+              ...(metadata.transport === "agentmail"
+                ? { agentMailRecipients: metadata.recipients }
+                : {}),
+            });
+            await mount.augment.creatorAttentionHost.start();
+          },
+          async onShutdown() {
+            await mount.augment.creatorAttentionHost.stop();
+          },
+        }),
+      );
     }
 
     return augments;
   } catch (error) {
     let cleanupFailed = false;
-    for (const augment of [...augments].reverse()) {
+    for (const augment of [...constructedAugments].reverse()) {
       try {
         await augment.onShutdown?.();
       } catch {
@@ -1422,7 +1493,7 @@ export async function resolveAugments(
     try {
       resolverOpts.onConstructionRollback?.(
         Object.freeze({
-          resources: cleanupFailed ? "unknown" : "closed",
+          resources: incompleteConstruction || cleanupFailed ? "unknown" : "closed",
           failures: Object.freeze(cleanupFailed ? ["augment-shutdown-failed" as const] : []),
         }),
       );
