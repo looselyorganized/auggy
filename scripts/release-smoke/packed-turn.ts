@@ -306,8 +306,12 @@ export async function runPackedTurn(options: {
       globalKernel,
       agentDir,
       home,
-      runtimeOwnership:
-        "The installed global CLI owns this run's kernel; the agent-local adapter and custom augment resolve from the generated project. Local CLI delegation is a later milestone.",
+      launchOwnership: inside(cli, join(agentDir, "node_modules"))
+        ? "project-local"
+        : "external-cli",
+      runtimeOwnership: inside(cli, join(agentDir, "node_modules"))
+        ? "The supplied project-local CLI owns this run's kernel; core, provider and custom augment resolve from this consumer's installed dependencies."
+        : "The supplied externally installed CLI owns this run's kernel; the agent-local adapter and custom augment resolve from the generated project. Automatic local delegation is a later milestone.",
       agentListener:
         "Existing webTransport bind behavior; acceptance requests use 127.0.0.1. Provider fixture binds only 127.0.0.1.",
     });

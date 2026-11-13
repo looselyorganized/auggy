@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, beforeAll, describe, expect, test } from "bun:test";
 import { SQL } from "bun";
 import { resolve } from "node:path";
 import { PostgresDistributedTurnCoordinator } from "../../src/coordination";
@@ -8,9 +8,31 @@ import {
   type PostgresMigrationExecutor,
 } from "../../src/coordination/migrations";
 import { createJsonLineBarrier, spawnJsonLineWorker } from "../helpers/multiprocess";
+import { createPostgresTestGate } from "../helpers/postgres-required-mode";
 
-const url = process.env.AUGGY_TEST_POSTGRES_URL;
-const postgresTest = url ? test : test.skip;
+const gate = createPostgresTestGate(process.env);
+const url = gate.url;
+function postgresTest(name: string, body: () => Promise<void>): void {
+  (url ? test : test.skip)(name, gate.track(body));
+}
+
+beforeAll(async () => {
+  if (!gate.required) return;
+  const sql = new SQL(url!);
+  try {
+    const [version] = await sql.unsafe<Array<{ server_version_num: number }>>(
+      "SELECT current_setting('server_version_num')::integer AS server_version_num",
+    );
+    gate.verifyServerVersion(version?.server_version_num);
+  } finally {
+    await sql.close();
+  }
+});
+
+afterAll(() => {
+  const execution = gate.verifyComplete();
+  if (gate.required) console.log(`[postgres-required] ${JSON.stringify(execution)}`);
+});
 const hash = "S7l_qm3W92Yd4JbKzV1LQYdKebJ4Q-4C3m3VnuDhxQY";
 const source = { id: "web", maxConcurrent: 2, maxQueued: 4 };
 const namespaces = new Set<string>();

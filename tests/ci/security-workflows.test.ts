@@ -12,6 +12,7 @@ interface WorkflowStep {
   if?: string;
   name?: string;
   run?: string;
+  uses?: string;
   env?: Record<string, string>;
 }
 
@@ -262,6 +263,24 @@ describe("tracked test-surface workflow enforcement", () => {
     expect(normalizedNeeds(aggregate)).toContain("inventory");
     expect(normalizedNeeds(aggregate)).toContain("postgres_coordination");
     expect(normalizedNeeds(aggregate)).toContain("temporal_example");
+    expect(normalizedNeeds(aggregate)).toContain("dependency_audit");
+    expect(requireStep(aggregate, "Verify constituent gates").env?.DEPENDENCY_AUDIT_RESULT).toBe(
+      "${{ needs.dependency_audit.result }}",
+    );
+    expect(requireStep(aggregate, "Verify constituent gates").run).toContain(
+      '"$DEPENDENCY_AUDIT_RESULT" != "success"',
+    );
+    const audit = requireJob(jobs, "dependency_audit");
+    expect(requireStep(audit, "Install frozen workspace dependencies").run).toBe(
+      "bun install --frozen-lockfile",
+    );
+    expect(requireStep(audit, "Audit every workspace dependency and severity").run).toBe(
+      'bun scripts/audit-dependencies.ts --evidence "$AUDIT_EVIDENCE"',
+    );
+    expect(requireStep(audit, "Preserve sanitized dependency audit evidence").if).toBe("always()");
+    expect(requireStep(audit, "Preserve sanitized dependency audit evidence").uses).toBe(
+      "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a",
+    );
     expect(requireStep(aggregate, "Verify constituent gates").env?.INVENTORY_RESULT).toBe(
       "${{ needs.inventory.result }}",
     );
@@ -283,6 +302,10 @@ describe("tracked test-surface workflow enforcement", () => {
       requireStep(postgres, "Run PostgreSQL coordination integration tests").env
         ?.AUGGY_TEST_POSTGRES_URL,
     ).toBe("postgresql://postgres@localhost:5432/postgres");
+    expect(
+      requireStep(postgres, "Run PostgreSQL coordination integration tests").env
+        ?.AUGGY_REQUIRE_POSTGRES_TESTS,
+    ).toBe("1");
     expect(requireStep(postgres, "Run PostgreSQL coordination integration tests").run).toContain(
       "test-surface-inventory.ts run-runtime-files",
     );

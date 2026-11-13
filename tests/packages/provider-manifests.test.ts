@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -18,6 +19,7 @@ interface PackageManifest {
   peerDependenciesMeta?: Record<string, { optional?: boolean }>;
   devDependencies?: Record<string, string>;
   overrides?: Record<string, string>;
+  files?: string[];
 }
 
 function readManifest(path: string): PackageManifest {
@@ -77,13 +79,35 @@ describe("published provider package contracts", () => {
       "body-parser": "2.4.0",
       "brace-expansion": "5.0.12",
       "fast-uri": "3.1.9",
-      hono: "4.13.11",
+      hono: "4.13.16",
       "ip-address": "10.7.4",
       "js-yaml": "4.3.2",
       nanoid: "3.3.18",
       postcss: "8.5.25",
+      "proxy-addr": "2.0.8",
+      qs: "6.16.1",
+      "source-map-js": "1.2.2",
       undici: "7.30.1",
     });
+  });
+
+  test("preserves the licensed console CSS without the quarantined generator", () => {
+    const adminManifest = readManifest(join(ROOT, "admin/package.json"));
+    expect(adminManifest.devDependencies?.shadcn).toBeUndefined();
+    const vendor = join(ROOT, "admin/src/vendor/shadcn");
+    const provenance = JSON.parse(readFileSync(join(vendor, "provenance.json"), "utf8"));
+    expect(provenance.version).toBe("4.14.1");
+    for (const file of provenance.files as { path: string; sha256: string }[]) {
+      expect(
+        createHash("sha256")
+          .update(readFileSync(join(vendor, file.path)))
+          .digest("hex"),
+      ).toBe(file.sha256);
+    }
+    expect(readFileSync(join(ROOT, "admin/src/auggy.css"), "utf8")).toContain(
+      '@import "./vendor/shadcn/tailwind.css";',
+    );
+    expect(rootManifest.files).toContain("admin/src/vendor/shadcn/LICENSE.md");
   });
 
   test("@hono/node-server v2 preserves the MCP SDK integration export", async () => {

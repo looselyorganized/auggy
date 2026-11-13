@@ -53,9 +53,9 @@ Captured verification details are in the local repair evidence.
 | Packed scenarios | All 7 passed in 1,232 ms; two graceful shutdowns; no cleanup errors |
 
 A diagnostic workspace audit still reports additional stale-lock advisories.
-These are recorded in `repairs/workspace-audit-final.log`; no claim is made that
-the whole developer workspace audit is clean. Required packed-consumer and
-Temporal audits passed. Additional workspace remediation is separate work.
+These original findings are recorded in `repairs/workspace-audit-final.log`.
+That earlier deferral is superseded by the dependency-closure work below; no
+claim is made that the whole developer workspace audit is clean.
 
 ## Packed evidence and independent review
 
@@ -114,3 +114,38 @@ hunk was reused here. Main's existing local changes were not merged or modified.
 Project-local runtime delegation, editable execution-file assertions, new host
 and turn APIs, Central YAML migration and upgrade certification remain roadmap
 milestones 3–6. No claim is made that this tranche implements those promises.
+
+## Dependency closure follow-up
+
+The closure work starts from foundation `dc03a00`. Compatible runtime dependency
+floors, affected transitive pins and the console build graph were updated; the
+exact previously locked shadcn stylesheet and MIT notice are preserved locally.
+The generator is no longer a normal-build dependency and its unreviewed use is
+explicitly quarantined. No package version or runtime execution API changed.
+
+See [all advisory dispositions](./foundation-dependency-closure-2026-11-12.md).
+The original 23 findings and five newly reported Hono findings have been
+investigated. **The full workspace audit remains blocked by Link's nested Zod
+v3 advisory.** It is not accepted as an exception; core/evals Zod v4 updates do
+not fix that distinct optional runtime dependency.
+
+Local current-graph verification: 4,253 runtime tests passed, no failures, with
+13 optional PostgreSQL skips; 360 console tests/build and 64 Temporal tests,
+typecheck and isolated audit passed. Nine retained-lock harness tests passed
+separately from the canonical tracked runtime inventory. Final packed
+and remote candidate results must be read from their own source revision, not
+inferred from these local results.
+
+The new workspace audit rejects all findings and verification failures. Dedicated
+PostgreSQL CI requires its URL, PostgreSQL 17 and completion of every registered
+case. Existing local optional skips remain available. Dependency upgrades preserve
+the old consumer lock and installed tree, detect stale application overrides,
+and exercise the upgraded consumer's own installed runtime.
+
+Closure evidence is retained in the original repository's ignored
+`.worktrees/foundation-evidence-2026-11-12/closure/` directory. PR checks will
+record candidate head, base and tested merge revisions. The PR stays unmerged
+until the remaining dependency finding is resolved, required checks pass and
+final review is complete. Worktree retirement remains separately deferred.
+
+Console stylesheet review: [actual built Integrations screenshot](./assets/foundation-console-closure.png), using isolated mocked API data and no credentials. The exact upstream CSS/license hashes are preserved in the vendor provenance; this image is visual build evidence, not a live-agent test.

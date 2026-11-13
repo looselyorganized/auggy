@@ -1,7 +1,8 @@
 # Release 0.6.0 — inspectable agent applications
 
 Status: milestones 1–2 implementation delivered; local M2 evidence accepted.
-Formal acceptance awaits Linux/security/PostgreSQL CI and preservation review.
+Formal acceptance awaits dependency closure and Linux/security/PostgreSQL CI.
+Worktree retirement remains separately deferred for preservation review.
 Revised: 2026-11-12. Governing direction: [Roadmap](../ROADMAP.md).
 Delete this implementation plan when 0.6.0 ships; retain accepted ADRs.
 
@@ -120,6 +121,73 @@ A commit/patch identity must accompany any eventual accepted baseline.
 | Independent review | Local code and final evidence approved |
 | M1 acceptance | Pending Linux/security/PostgreSQL CI and preservation review |
 | M2 acceptance | Accepted locally; formal gate follows M1 certification |
+
+## Foundation closure before milestone 3
+
+Status: implementing from `dc03a00`; original main and retained worktrees remain
+unchanged. No dependency exception is approved. Milestone 3 implementation starts
+only after this foundation is reviewed, merged and verified on main.
+
+### Remediation
+
+- Refresh and preserve full workspace audit evidence. Classify each advisory by
+  version, path, attack prerequisites and actual runtime/tooling reachability.
+- Raise compatible MCP SDK and Zod direct dependency floors, including evals;
+  update Vite and affected compatible transitives without unrelated upgrades.
+- Replace the console's generator-package stylesheet import with the exact
+  attributed upstream stylesheet. Remove the generator from normal installs;
+  quarantine unreviewed generator invocations in maintenance documentation.
+- Investigate Link's separate Zod v3 path. Do not force a major version, silently
+  remove the preview capability, or publish a separate package release. If a safe
+  compatible resolution is unavailable, document the concrete blocker and hold
+  merge for review.
+
+### Harness and CI
+
+- Add a bounded audit helper that requires successful execution and an empty
+  advisory object. Findings at every severity, malformed responses, service
+  failures and timeouts fail closed. No allowlist or severity filter.
+- Add the full workspace audit to the existing CI aggregate. Keep Temporal and
+  real packed-consumer audits separately enforced; root overrides are not
+  inherited by generated projects.
+- Test baseline-to-candidate artifact replacement retaining the existing lockfile
+  and installed tree. Include stale application override detection and the
+  documented dependency-only migration. Do not execute the vulnerable baseline.
+- Verify core, providers, evals, generated agents and Link-selected consumers.
+  Record the same-version artifact experiment honestly; it is not an npm release.
+- Make dedicated PostgreSQL CI require its URL and executed, zero-skip integration
+  suite against the existing pinned PostgreSQL 17 service. Local optional skips
+  remain supported; product coordination remains disabled.
+
+### Owners and integration
+
+The dependency owner exclusively changes manifests/locks and installs the shared
+graph. The upgrade-harness owner writes isolated migration fixtures/scenarios.
+The CI owner writes audit enforcement and the PostgreSQL anti-skip guard. Root
+integrates the release script, direction documents, PR and evidence. An independent
+reviewer checks the frozen candidate after an implementation slot is free.
+
+Run focused checks, freeze a commit, then full acceptance. Never edit running
+rehearsal scripts or their dependency graph. Preserve failure evidence and refresh
+results after corrections. Prior foundation evidence does not certify a changed
+dependency graph.
+
+### Remote certification and merge
+
+Publish the reviewable foundation branch and open a PR targeting main. Capture
+PR head SHA, base SHA and the synthetic merge SHA tested by GitHub. Require the
+full CI aggregate, Linux boundary jobs, real PostgreSQL execution, CodeQL and
+release rehearsal with hashed artifacts. Trusted-default-branch live evals are
+not candidate-runtime certification and retain their existing secret boundary.
+
+Present the concrete PR, diff, compatibility implications and evidence for final
+review before merge. No protections are bypassed. Missing, stale, failed, skipped,
+canceled or pending required checks do not pass. A remaining finding is a visible
+blocker, not an implicit exception. After reviewed merge, verify resulting main
+and establish that revision as milestone 3's starting point.
+
+See [dependency closure findings](./foundation-dependency-closure-2026-11-12.md)
+and [execution evidence](./foundation-evidence-2026-11-12.md).
 
 ## Milestones 3–6: roadmap only
 

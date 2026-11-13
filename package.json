@@ -74,6 +74,7 @@
   "files": [
     "src",
     "admin/dist",
+    "admin/src/vendor/shadcn/LICENSE.md",
     "LICENSE",
     "README.md",
     "CHANGELOG.md",
@@ -128,21 +129,24 @@
     "body-parser": "2.4.0",
     "brace-expansion": "5.0.12",
     "fast-uri": "3.1.9",
-    "hono": "4.13.11",
+    "hono": "4.13.16",
     "ip-address": "10.7.4",
     "js-yaml": "4.3.2",
     "nanoid": "3.3.18",
     "postcss": "8.5.25",
+    "proxy-addr": "2.0.8",
+    "qs": "6.16.1",
+    "source-map-js": "1.2.2",
     "undici": "7.30.1"
   },
   "dependencies": {
     "@inquirer/prompts": "7.8.6",
-    "@modelcontextprotocol/sdk": "^1.29.0",
+    "@modelcontextprotocol/sdk": "^1.32.0",
     "@supabase/supabase-js": "^2.103.0",
     "agentmail": "0.5.19",
     "commander": "^14.0.3",
     "svix": "1.96.1",
     "yaml": "^2.8.3",
-    "zod": "^4.3.6"
+    "zod": "^4.6.6"
   }
 }

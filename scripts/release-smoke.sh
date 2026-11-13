@@ -269,12 +269,8 @@ NODE
         }
       }
     ' "$ROOT/package.json" || exit $?
-    bun audit --json | node -e '
-      const result = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
-      if (Object.keys(result).length !== 0) {
-        throw new Error(`packed consumer has advisories: ${Object.keys(result).join(", ")}`);
-      }
-    ' || exit $?
+    bun "$ROOT/scripts/audit-dependencies.ts" --cwd "$consumer_dir" \
+      --evidence "$EVIDENCE_DIR/audit-provider-$slug.json" || exit $?
   ) >"$LOG_DIR/provider-$slug.log" 2>&1 \
     || fail "packed provider consumer failed for $package_name"
 }
@@ -315,12 +311,8 @@ NODE
       }
     ' || exit $?
     bun ./node_modules/auggy/src/cli/index.ts eval auto-save --dry-run || exit $?
-    bun audit --json | node -e '
-      const result = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
-      if (Object.keys(result).length !== 0) {
-        throw new Error(`packed eval consumer has advisories: ${Object.keys(result).join(", ")}`);
-      }
-    ' || exit $?
+    bun "$ROOT/scripts/audit-dependencies.ts" --cwd "$consumer_dir" \
+      --evidence "$EVIDENCE_DIR/audit-evals.json" || exit $?
   ) >"$LOG_DIR/evals-consumer.log" 2>&1 \
     || fail "packed @auggy/evals consumer failed"
 }
@@ -585,12 +577,8 @@ esac
 info "audit installed agent"
 (
   cd "$AGENT_DIR"
-  bun audit --json | node -e '
-    const result = JSON.parse(require("node:fs").readFileSync(0, "utf8"));
-    if (Object.keys(result).length !== 0) {
-      throw new Error(`generated agent has advisories: ${Object.keys(result).join(", ")}`);
-    }
-  '
+  bun "$ROOT/scripts/audit-dependencies.ts" --cwd "$AGENT_DIR" \
+    --evidence "$EVIDENCE_DIR/audit-generated-agent.json"
 )
 
 info "fill smoke env"
@@ -1003,5 +991,13 @@ if (cd "$AGENT_DIR" && HOME="$SMOKE_HOME" "$CLI" deploy --yes >"$LOG_DIR/deploy-
 fi
 grep -q "Deploy preflight failed" "$LOG_DIR/deploy-preflight.log" \
   || fail "deploy did not stop at preflight"
+
+info "verify retained-lock dependency upgrade and selected Link consumer"
+bun "$ROOT/scripts/release-smoke/upgrade-consumer.ts" \
+  --candidate-core "$TARBALL" --candidate-anthropic "$ANTHROPIC_TARBALL" \
+  --candidate-cli "$CLI" --repo-root "$ROOT" \
+  --evidence-dir "$EVIDENCE_DIR/upgrade" \
+  >"$LOG_DIR/upgrade-consumer.log" 2>&1 \
+  || fail "retained-lock upgrade or selected Link audit failed"
 
 info "release smoke passed"

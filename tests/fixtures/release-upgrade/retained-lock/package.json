@@ -1,0 +1,13 @@
+{
+  "name": "auggy-retained-lock-consumer",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "overrides": {
+    "@hono/node-server": "2.0.11"
+  },
+  "dependencies": {
+    "auggy": "file:./artifacts/auggy-baseline.tgz",
+    "@auggy/anthropic": "file:./artifacts/auggy-anthropic-baseline.tgz"
+  }
+}

@@ -65,11 +65,20 @@ admin/
 Shared primitives and Tailwind 4 tokens live in the standalone sibling registry
 `../../auggy-ui`. This app owns generated source under `src/components/ui`.
 
-```bash
-cd ../../auggy-ui
-bunx shadcn@latest add dialog tooltip separator
-bun run build
+The console builds from checked-in registry components. Its shadcn Tailwind
+utilities are preserved byte-for-byte from the previously locked `shadcn@4.14.1`
+package under `src/vendor/shadcn/`, with the upstream license and artifact hashes.
+The generator is not a build dependency.
 
-cd ../augment-1/admin
-bunx shadcn@latest add @auggy/dialog @auggy/tooltip @auggy/separator
-```
+Registry generation is temporarily quarantined: the current generator brings
+unpatched `deepmerge` and incompatible `minimatch` security dependencies. Do not
+run an unreviewed `shadcn@latest` via `bunx` to bypass the workspace audit. A future
+registry update must first select an exact generator version, audit its entire
+dependency graph in an isolated maintenance workspace, and resolve every finding
+before execution. Then generate the required primitive in the sibling registry,
+review its source diff, and sync that reviewed output into this console. Run the
+console tests and build after syncing. Until that gate is satisfied, use the
+existing checked-in primitives; adding a new primitive remains blocked.
+
+See [dependency closure](../docs/plans/foundation-dependency-closure-2026-11-12.md)
+for the advisory dispositions and the CSS update procedure.
