@@ -264,6 +264,19 @@ describe("authoring helper preparation, not installed CLI acceptance", () => {
     const prior = process.env.AUGGY_AUTHORING_AMBIENT_SECRET;
     process.env.AUGGY_AUTHORING_AMBIENT_SECRET = "private-fixture-canary";
     try {
+      const control = spawnSync(process.execPath, ["--no-env-file", entry, "echo"], {
+        cwd: root,
+        env: { AUGGY_AUTHORING_AMBIENT_SECRET: "private-fixture-canary" },
+        timeout: 5_000,
+        encoding: "utf8",
+      });
+      expect(control.status).toBe(0);
+      expect(JSON.parse(control.stdout)).toEqual({
+        args: [],
+        artifactSelection: null,
+        ambientPresent: true,
+      });
+      expect(control.stdout).not.toContain("private-fixture-canary");
       const result = await runBoundedAuthoringCli({
         entry,
         args: ["echo", ...args],
@@ -271,7 +284,12 @@ describe("authoring helper preparation, not installed CLI acceptance", () => {
         workspace: root,
       });
       assertAuthoringCommandSucceeded(result);
-      expect(JSON.parse(result.stdout)).toEqual({ args, artifactSelection: null, ambient: null });
+      expect(JSON.parse(result.stdout)).toEqual({
+        args,
+        artifactSelection: null,
+        ambientPresent: false,
+      });
+      expect(result.stdout).not.toContain("private-fixture-canary");
     } finally {
       if (prior === undefined) delete process.env.AUGGY_AUTHORING_AMBIENT_SECRET;
       else process.env.AUGGY_AUTHORING_AMBIENT_SECRET = prior;

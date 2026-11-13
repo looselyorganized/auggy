@@ -6,7 +6,7 @@ if (import.meta.main) {
         JSON.stringify({
           args: process.argv.slice(3),
           artifactSelection: process.env.AUGGY_SCAFFOLD_PACKAGE_SPECS ?? null,
-          ambient: process.env.AUGGY_AUTHORING_AMBIENT_SECRET ?? null,
+          ambientPresent: Object.hasOwn(process.env, "AUGGY_AUTHORING_AMBIENT_SECRET"),
         }),
       );
       break;

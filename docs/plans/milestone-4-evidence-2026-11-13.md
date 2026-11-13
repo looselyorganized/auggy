@@ -311,3 +311,57 @@ its passive static dependencies and verifies authoring help bypasses the launch
 graph even with invalid config and absent local runtime. The complete operator
 shard passed 1,641 tests / 6,581 assertions; the console suite passed 360 tests /
 1,474 assertions. The original failed run remains recorded.
+
+
+The next clean candidate, `c1902f8`, passed the full local runtime suite:
+4,929 tests / 18,533 assertions, zero failures; 13 PostgreSQL service cases
+were skipped locally and still require zero-skip CI. The full packed rehearsal
+passed provider imports/audits, AgentMail CLI, interactive creation, packed
+HTTP/tool/replay, dependency policy migration and selected/fresh Link 0.2.0
+runtime/audits. It then failed the historical retained-lock candidate-turn
+fixture because the new observer path assumed `src/augments/` already existed.
+That old fixture has no `src/` tree. No scenario ran in that phase; cleanup
+reported no errors, and the generated-authoring suite was not reached.
+
+The failed report is retained at
+`/private/tmp/m4-final-release-evidence/release.json`; all six artifact hashes
+and 64 evidence-record hashes were independently checked. Core SHA-256 is
+`b288d35053e6c52a867d4de6a0824f3066e158ba693586ab5c1d174df1da3a25`.
+A narrow harness repair must preserve both historical and generated ownership
+and remove only its own fixture files/directories before fresh certification.
+Draft [PR #229](https://github.com/looselyorganized/auggy/pull/229) carries the
+review handoff; no merge or publication is authorized.
+
+Independent CI audit confirmed [CI 43387007773](https://github.com/looselyorganized/auggy/actions/runs/43387007773)
+passed on `c1902f8`, tested merge `dfed2a6d7dcb60ce6bada9e914a4ba1c105dd45d`.
+Required PostgreSQL evidence registered/completed 13/13 on server 170010 with
+zero skipped cases; Linux operator tests exercised native no-replace publication
+and interrupted migration. Source tree: `94a22c2892bfd65877a9062e4c0d04d6a4ea6523`.
+
+[Full manual CodeQL](https://github.com/looselyorganized/auggy/actions/runs/43387008977)
+explicitly ran without PR diff analysis. Analysis `2159155933` reports two new
+open test-fixture findings: alert 128 logs an environment sentinel in the command
+fixture; alert 129 uses a path metadata check followed by a separate read in the
+migration snapshot helper. Both require repair and fresh full analysis. Five
+other results are inherited dismissed findings whose files are byte-unchanged
+from accepted main; M4 introduces no dismissal or suppression. A successful
+analysis job is not recorded as clearance.
+
+The two scanner repairs passed independent source/test review by
+`m4_final_architecture_review`: 81 tests / 781 assertions. Ambient isolation now
+reports only presence, with a positive control and filtered negative. Migration
+fixture snapshots/hash maps open with no-follow/nonblocking flags, inspect and
+read the same descriptor within an 8 MiB bound, detect changes, and avoid link
+target/FIFO reads. Binary, same-length edit, link, FIFO and oversized-file controls
+pass. These changes are confined to tests; fresh full analysis must confirm
+alerts 128/129 are fixed.
+
+While the separate historical-fixture repair proceeded, the unchanged generated
+authoring harness ran directly against the same frozen `c1902f8` artifacts.
+`smoke:authoring` exited zero with every stage passed, including all four provider
+creations, 59 application scenarios / 74 lifecycle observations, 15 source edits,
+active-turn migration, passive inspection, ownership, deployment and actual macOS
+service lifecycle with the reviewed log watchdog. Cleanup is confirmed. Report:
+`/private/tmp/m4-generated-c190-evidence/authoring-suite.json`. This isolates
+actual generated-product evidence; it does not turn the failed aggregate release
+attempt into a pass. The final clean-candidate aggregate still must run.

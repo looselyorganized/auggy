@@ -708,6 +708,53 @@
         "Independent integration review: AgentMail setup rejects unrelated options:null retained by valid migration"
       ],
       "disposition": "Both scoped repairs independently accepted by m4_final_architecture_review: 93 tests / 479 assertions. Bootstrap operator shard 1641 tests / 6581 assertions passes. New clean candidate and full runtime/artifact certification follow."
+    },
+    {
+      "candidate": "c1902f8bd845b885a6e7f4aa72a80121f1155cdc",
+      "status": "failed",
+      "passed": [
+        "full local runtime: 4929 tests / 18533 assertions; 13 PostgreSQL service cases skipped locally",
+        "packed providers, strict audits, packed AgentMail CLI, interactive create, packed turn/replay",
+        "historical dependency policy migration; selected and fresh Link 0.2.0 runtime/audit"
+      ],
+      "findings": [
+        "Historical retained-lock candidate turn fixture lacks src/augments parents assumed by updated packed observer"
+      ],
+      "evidence": "/private/tmp/m4-final-release-evidence/release.json",
+      "disposition": "Narrow harness compatibility repair and independent recheck; final generated suite not reached",
+      "ci": {
+        "run": "https://github.com/looselyorganized/auggy/actions/runs/43387007773",
+        "status": "passed",
+        "postgresRegistered": 13,
+        "postgresCompleted": 13,
+        "postgresVersion": 170010,
+        "sourceTree": "94a22c2892bfd65877a9062e4c0d04d6a4ea6523",
+        "testedMerge": "dfed2a6d7dcb60ce6bada9e914a4ba1c105dd45d"
+      },
+      "codeQL": {
+        "fullRun": "https://github.com/looselyorganized/auggy/actions/runs/43387008977",
+        "analysis": 2159155933,
+        "newOpenAlerts": [
+          128,
+          129
+        ],
+        "inheritedDismissed": 5,
+        "disposition": "Two new test-only findings assigned scoped repair; inherited dismissed files unchanged from accepted main; no dismissals",
+        "repairReview": {
+          "reviewer": "m4_final_architecture_review",
+          "status": "accepted-scoped",
+          "tests": 81,
+          "assertions": 781,
+          "clearance": "Fresh full analysis still required"
+        }
+      },
+      "directGeneratedSuite": {
+        "status": "passed",
+        "evidence": "/private/tmp/m4-generated-c190-evidence/authoring-suite.json",
+        "macosService": "passed",
+        "cleanup": "confirmed",
+        "scope": "Same frozen candidate product artifacts and unchanged authoring harness; aggregate release remains failed before this stage"
+      }
     }
   ]
 }

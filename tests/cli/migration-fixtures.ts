@@ -1,9 +1,13 @@
 import {
+  closeSync,
+  constants,
   cpSync,
+  fstatSync,
   lstatSync,
   mkdirSync,
   mkdtempSync,
-  readFileSync,
+  openSync,
+  readSync,
   readdirSync,
   realpathSync,
   writeFileSync,
@@ -56,18 +60,62 @@ export function installRuntime(project: string) {
   return { runtime, manifest };
 }
 
+export const MIGRATION_FIXTURE_FILE_BYTES = 8 * 1024 * 1024;
+
+/** Test-owned trees: inspect and hash each regular file through the same descriptor. */
+function fixtureEntry(path: string) {
+  let descriptor: number;
+  try {
+    descriptor = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ELOOP") throw error;
+    // A link is metadata only. Never read its target, even if it changes during inspection.
+    const stat = lstatSync(path, { bigint: true });
+    if (!stat.isSymbolicLink()) throw new Error("Migration fixture entry changed during snapshot");
+    return { stat, hash: null };
+  }
+  try {
+    const stat = fstatSync(descriptor, { bigint: true });
+    if (!stat.isFile()) return { stat, hash: null };
+    if (stat.size > BigInt(MIGRATION_FIXTURE_FILE_BYTES))
+      throw new Error("Migration fixture file exceeds the snapshot byte bound");
+    const bytes = Buffer.alloc(Number(stat.size));
+    let offset = 0;
+    while (offset < bytes.length) {
+      const count = readSync(descriptor, bytes, offset, bytes.length - offset, offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    const extra = Buffer.alloc(1);
+    const grew = readSync(descriptor, extra, 0, 1, offset) !== 0;
+    const after = fstatSync(descriptor, { bigint: true });
+    if (
+      offset !== bytes.length ||
+      grew ||
+      stat.size !== after.size ||
+      stat.mode !== after.mode ||
+      stat.mtimeNs !== after.mtimeNs ||
+      stat.ctimeNs !== after.ctimeNs
+    )
+      throw new Error("Migration fixture entry changed during snapshot");
+    return { stat, hash: snapshotHash(bytes) };
+  } finally {
+    closeSync(descriptor);
+  }
+}
+
 export function treeSnapshot(root: string): string[] {
   return (readdirSync(root, { recursive: true }) as string[]).sort().map((entry) => {
-    const path = join(root, entry);
-    const stat = lstatSync(path, { bigint: true });
-    return `${entry}:${stat.mode}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${stat.isFile() ? snapshotHash(readFileSync(path)) : ""}`;
+    const { stat, hash } = fixtureEntry(join(root, entry));
+    return `${entry}:${stat.mode}:${stat.size}:${stat.mtimeNs}:${stat.ctimeNs}:${hash ?? ""}`;
   });
 }
 
 export function fileHashes(root: string): Map<string, string> {
   return new Map(
-    (readdirSync(root, { recursive: true }) as string[])
-      .filter((entry) => lstatSync(join(root, entry)).isFile())
-      .map((entry) => [entry, snapshotHash(readFileSync(join(root, entry)))]),
+    (readdirSync(root, { recursive: true }) as string[]).flatMap((entry) => {
+      const { hash } = fixtureEntry(join(root, entry));
+      return hash === null ? [] : [[entry, hash] as const];
+    }),
   );
 }

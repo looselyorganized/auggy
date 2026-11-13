@@ -24,6 +24,7 @@ import { planApplicationScaffold } from "../../src/cli/scaffold-application";
 import {
   fileHashes,
   installRuntime,
+  MIGRATION_FIXTURE_FILE_BYTES,
   migrationFixture,
   put,
   treeSnapshot,
@@ -47,6 +48,50 @@ function reportError(fn: () => unknown) {
     return createInvalidMigrationReport(error);
   }
 }
+
+describe("migration preservation fixture snapshots", () => {
+  test("retains regular binary hashes and notices a same-length content change", () => {
+    const { project } = fixture();
+    const path = join(project, "owned.bin");
+    const bytes = Buffer.from([0, 255, 1, 2]);
+    put(path, bytes);
+    const before = treeSnapshot(project);
+    expect(fileHashes(project).get("owned.bin")).toBe(
+      new Bun.CryptoHasher("sha256").update(bytes).digest("hex"),
+    );
+    expect(treeSnapshot(project)).toEqual(before);
+    put(path, Buffer.from([0, 255, 2, 1]));
+    expect(treeSnapshot(project)).not.toEqual(before);
+    expect(fileHashes(project).get("owned.bin")).not.toBe(
+      new Bun.CryptoHasher("sha256").update(bytes).digest("hex"),
+    );
+  });
+
+  test("records links and pipes without reading targets or blocking", () => {
+    const { root, project } = fixture();
+    const outside = join(root, "outside.bin");
+    put(outside, Buffer.alloc(MIGRATION_FIXTURE_FILE_BYTES + 1));
+    symlinkSync(outside, join(project, "linked.bin"));
+    expect(Bun.spawnSync(["mkfifo", join(project, "pipe")]).exitCode).toBe(0);
+    const started = performance.now();
+    const snapshot = treeSnapshot(project);
+    expect(snapshot.some((entry) => entry.startsWith("linked.bin:") && entry.endsWith(":"))).toBe(
+      true,
+    );
+    expect(snapshot.some((entry) => entry.startsWith("pipe:") && entry.endsWith(":"))).toBe(true);
+    const hashes = fileHashes(project);
+    expect(hashes.has("linked.bin")).toBe(false);
+    expect(hashes.has("pipe")).toBe(false);
+    expect(performance.now() - started).toBeLessThan(1_000);
+  });
+
+  test("refuses oversized regular files instead of reading an unbounded snapshot", () => {
+    const { project } = fixture();
+    put(join(project, "oversized.bin"), Buffer.alloc(MIGRATION_FIXTURE_FILE_BYTES + 1));
+    expect(() => treeSnapshot(project)).toThrow("snapshot byte bound");
+    expect(() => fileHashes(project)).toThrow("snapshot byte bound");
+  });
+});
 
 describe("migration planning and preservation", () => {
   test("mixed legacy corpus converts semantic values and source bases without executing or touching owned files", async () => {
