@@ -309,20 +309,15 @@ export async function runPackedTurn(options: {
       launchOwnership: inside(cli, join(agentDir, "node_modules"))
         ? "project-local"
         : "external-cli",
-      runtimeOwnership: inside(cli, join(agentDir, "node_modules"))
-        ? "The supplied project-local CLI owns this run's kernel; core, provider and custom augment resolve from this consumer's installed dependencies."
-        : "The supplied externally installed CLI owns this run's kernel; the agent-local adapter and custom augment resolve from the generated project. Automatic local delegation is a later milestone.",
+      runtimeOwnership:
+        "Project-local delegation selects the consumer's installed runtime; the generated application, provider and custom augment execute from that consumer. The application suite separately verifies exact launch provenance.",
       agentListener:
         "Existing webTransport bind behavior; acceptance requests use 127.0.0.1. Provider fixture binds only 127.0.0.1.",
     });
-    const observerDir = join(agentDir, "augments", "packedAcceptanceObserver");
+    const observerDir = join(agentDir, "src", "augments", "packedAcceptanceObserver");
     check(!existsSync(observerDir), "Packed observer directory already exists");
     await mkdir(observerDir, { mode: 0o700 });
     observerCreated = true;
-    await writeFile(
-      join(observerDir, "augment.yaml"),
-      stringify({ type: "custom", source: "./index.ts" }),
-    );
     await writeFile(
       join(observerDir, "index.ts"),
       `import { appendFile } from "node:fs/promises";
@@ -349,28 +344,9 @@ export default function observer() {
       requestTimeoutMs: 5_000,
       costOverride: { inputUsdPerMtok: 0, outputUsdPerMtok: 0 },
     };
-    config.augments = ["filesystem", "webTransport", "packedAcceptanceObserver"];
-    await rewrite(configPath, stringify(config));
     await rewrite(
       join(agentDir, ".env"),
       `ANTHROPIC_API_KEY=${PROVIDER_FIXTURE_API_KEY}\nAUGGY_WEB_TOKEN=${bearer}\n`,
-    );
-    await rewrite(
-      join(agentDir, "augments/filesystem/augment.yaml"),
-      stringify({
-        type: "filesystem",
-        config: {
-          mounts: [
-            {
-              name: "workspace",
-              path: join(ownedDir, "workspace"),
-              writable: false,
-              deletable: false,
-            },
-          ],
-          workspaceAwareness: { enabled: false },
-        },
-      }),
     );
     const portReservation = Bun.serve({
       hostname: "127.0.0.1",
@@ -381,11 +357,26 @@ export default function observer() {
     await portReservation.stop(true);
     const baseURL = `http://127.0.0.1:${port}`;
     env.AUGGY_PUBLIC_URL = baseURL;
-    await rewrite(
-      join(agentDir, "augments/webTransport/augment.yaml"),
-      stringify({
+    config.augments = [
+      {
+        name: "filesystem",
+        type: "filesystem",
+        options: {
+          mounts: [
+            {
+              name: "workspace",
+              path: join(ownedDir, "workspace"),
+              writable: false,
+              deletable: false,
+            },
+          ],
+          workspaceAwareness: { enabled: false },
+        },
+      },
+      {
+        name: "webTransport",
         type: "webTransport",
-        config: {
+        options: {
           port,
           auth: { type: "bearer", token: "${AUGGY_WEB_TOKEN}" },
           allowAnonymous: false,
@@ -394,8 +385,14 @@ export default function observer() {
           idempotency: { dbPath: "./data/packed-acceptance-idempotency.db" },
           consoleChat: { dbPath: "./data/packed-acceptance-console.db" },
         },
-      }),
-    );
+      },
+      {
+        name: "packedAcceptanceObserver",
+        type: "custom",
+        source: "./src/augments/packedAcceptanceObserver/index.ts",
+      },
+    ];
+    await rewrite(configPath, stringify(config));
     const start = async () => {
       checkpoint();
       generation++;
@@ -702,7 +699,10 @@ export default function observer() {
         await cleanup(`restore ${relative(agentDir, file)}`, () => writeFile(file, contents));
       if (observerCreated)
         await cleanup("remove observer", () =>
-          rm(join(agentDir, "augments/packedAcceptanceObserver"), { recursive: true, force: true }),
+          rm(join(agentDir, "src/augments/packedAcceptanceObserver"), {
+            recursive: true,
+            force: true,
+          }),
         );
       await cleanup("write traces", async () => json("traces.json", await traces()));
       await cleanup("write scenario snapshot", snapshot);

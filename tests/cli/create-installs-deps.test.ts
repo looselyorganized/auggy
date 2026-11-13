@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  realpathSync,
   rmSync,
   statSync,
   writeFileSync,
@@ -48,7 +49,7 @@ function agentDirFor(name: string): string {
 
 beforeEach(() => {
   auggyDir = mkdtempSync(join(tmpdir(), "create-test-auggy-"));
-  projectParent = mkdtempSync(join(tmpdir(), "create-test-projects-"));
+  projectParent = realpathSync(mkdtempSync(join(tmpdir(), "create-test-projects-")));
   bunInstallCalls = [];
   answers = {};
 });
@@ -70,6 +71,7 @@ describe("runCreate writes per-agent package.json", () => {
 
     const error = await runCreate("demo-ollama-plaintext", {
       cwd: projectParent,
+      runtimeInstallCheck: () => ({ ok: true }),
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     }).catch((cause) => cause);
 
@@ -84,6 +86,7 @@ describe("runCreate writes per-agent package.json", () => {
 
     await runCreate("demo-anthropic", {
       cwd: projectParent,
+      runtimeInstallCheck: () => ({ ok: true }),
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -93,7 +96,7 @@ describe("runCreate writes per-agent package.json", () => {
     expect(pkg.name).toBe("auggy-agent-demo-anthropic");
     expect(pkg.private).toBe(true);
     expect(pkg.type).toBe("module");
-    expect(Object.keys(pkg.dependencies).sort()).toEqual(["@auggy/anthropic", "auggy"]);
+    expect(Object.keys(pkg.dependencies).sort()).toEqual(["@auggy/anthropic", "auggy", "zod"]);
     expect(pkg.dependencies["@auggy/openai"]).toBeUndefined();
     expect(pkg.dependencies["@auggy/openrouter"]).toBeUndefined();
     expect(pkg.dependencies["@auggy/link"]).toBeUndefined();
@@ -105,6 +108,7 @@ describe("runCreate writes per-agent package.json", () => {
 
     await runCreate("demo-openai", {
       cwd: projectParent,
+      runtimeInstallCheck: () => ({ ok: true }),
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -118,6 +122,7 @@ describe("runCreate writes per-agent package.json", () => {
 
     await runCreate("demo-core-only", {
       cwd: projectParent,
+      runtimeInstallCheck: () => ({ ok: true }),
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -143,6 +148,7 @@ describe("runCreate writes per-agent package.json", () => {
 
     await runCreate("demo-local-runtime", {
       cwd: smokeDir,
+      runtimeInstallCheck: () => ({ ok: true }),
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -384,6 +390,7 @@ describe("runCreate invokes bun install in agent dir", () => {
 
     await runCreate("demo-install", {
       cwd: projectParent,
+      runtimeInstallCheck: () => ({ ok: true }),
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -398,6 +405,7 @@ describe("runCreate invokes bun install in agent dir", () => {
     await runCreate("demo-skip", {
       cwd: projectParent,
       skipInstall: true,
+      runtimeInstallCheck: () => ({ ok: true }),
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -408,13 +416,16 @@ describe("runCreate invokes bun install in agent dir", () => {
   test("failed install leaves the agent dir intact (fail-soft)", async () => {
     answers = { provider: "anthropic", model: "claude-sonnet-4-6" };
 
-    await runCreate("demo-failsoft", {
-      cwd: projectParent,
-      bunInstallSpawn: createStubBunInstallSpawn({
-        exitCode: 1,
-        stderrText: "error: network unreachable\n",
+    await expect(
+      runCreate("demo-failsoft", {
+        cwd: projectParent,
+        runtimeInstallCheck: () => ({ ok: true }),
+        bunInstallSpawn: createStubBunInstallSpawn({
+          exitCode: 1,
+          stderrText: "error: network unreachable\n",
+        }),
       }),
-    });
+    ).rejects.toThrow("dependencies are not ready");
 
     const dir = agentDirFor("demo-failsoft");
     expect(existsSync(dir)).toBe(true);
@@ -429,15 +440,16 @@ describe("runCreate scaffolding integration", () => {
 
     await runCreate("demo-defaults", {
       cwd: projectParent,
+      runtimeInstallCheck: () => ({ ok: true }),
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     const dir = agentDirFor("demo-defaults");
     const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
       id: string;
-      augments: string[];
+      augments: { name: string; type: string; options: Record<string, unknown> }[];
     };
-    expect(config.augments).toEqual([
+    expect(config.augments.map((entry) => entry.type)).toEqual([
       "fileMemory",
       "filesystem",
       "webTransport",
@@ -448,24 +460,15 @@ describe("runCreate scaffolding integration", () => {
     expect(existsSync(join(dir, "skills", "filesystem", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "webFetch", "SKILL.md"))).toBe(true);
     expect(existsSync(join(dir, "skills", "turnControl", "SKILL.md"))).toBe(true);
-    expect(existsSync(join(dir, "augments", "webFetch", "augment.yaml"))).toBe(true);
-    expect(existsSync(join(dir, "augments", "filesystem", "augment.yaml"))).toBe(true);
-    expect(existsSync(join(dir, "augments", "README.md"))).toBe(true);
-    expect(existsSync(join(dir, "augments", "webFetch", "README.md"))).toBe(false);
-    const augmentReadme = readFileSync(join(dir, "augments", "README.md"), "utf-8");
+    expect(existsSync(join(dir, "augments"))).toBe(false);
+    const augmentReadme = readFileSync(join(dir, "src", "augments", "README.md"), "utf-8");
     expect(augmentReadme).toContain("node_modules/auggy/src");
     expect(augmentReadme).toContain("runtime and security updates");
-    const webFetchMeta = parseYaml(
-      readFileSync(join(dir, "augments", "webFetch", "augment.yaml"), "utf-8"),
-    ) as Record<string, unknown>;
-    expect(webFetchMeta).toMatchObject({
+    expect(config.augments.find((entry) => entry.type === "webFetch")).toMatchObject({
+      name: "webFetch",
       type: "webFetch",
-      config: { timeoutMs: 15000 },
+      options: { timeoutMs: 15000 },
     });
-    expect(webFetchMeta.name).toBeUndefined();
-    expect(webFetchMeta.kind).toBeUndefined();
-    expect(webFetchMeta.runtime).toBeUndefined();
-    expect(webFetchMeta.skill).toBeUndefined();
 
     const env = readFileSync(join(dir, ".env"), "utf-8");
     expect(env).toMatch(/AUGGY_WEB_TOKEN=[a-f0-9]{64}/);
@@ -486,6 +489,7 @@ describe("runCreate scaffolding integration", () => {
       await runCreate("demo-output", {
         cwd: projectParent,
         skipInstall: true,
+        runtimeInstallCheck: () => ({ ok: true }),
         bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
       });
     } finally {
@@ -519,6 +523,7 @@ describe("runCreate scaffolding integration", () => {
       await runCreate("demo-key", {
         cwd: projectParent,
         skipInstall: true,
+        runtimeInstallCheck: () => ({ ok: true }),
         bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
       });
     } finally {
@@ -547,6 +552,7 @@ describe("runCreate scaffolding integration", () => {
     await runCreate("demo-live-model", {
       cwd: projectParent,
       skipInstall: true,
+      runtimeInstallCheck: () => ({ ok: true }),
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
       refreshModels: true,
       modelRegistry: async (opts) => {
@@ -602,6 +608,7 @@ describe("runCreate scaffolding integration", () => {
       cwd: projectParent,
       skipInstall: true,
       useModelCache: true,
+      runtimeInstallCheck: () => ({ ok: true }),
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
       modelRegistry: async (opts) => {
         calls.push({
@@ -672,6 +679,7 @@ describe("runCreate scaffolding integration", () => {
 
     await runCreate("demo-full", {
       cwd: projectParent,
+      runtimeInstallCheck: () => ({ ok: true }),
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -713,24 +721,17 @@ describe("runCreate scaffolding integration", () => {
       creator: { displayName: string };
       operators?: unknown;
     };
-    const learnedMemory = parseYaml(
-      readFileSync(join(dir, "augments", "fileMemory", "augment.yaml"), "utf-8"),
-    ) as {
-      type: string;
-      config: {
-        label: string;
-        source: string;
-        mutable: boolean;
-        origin: string;
-        placement: string;
-      };
-    };
+    const learnedMemory = (
+      parseYaml(readFileSync(join(dir, "agent.yaml"), "utf8")) as {
+        augments: { type: string; options: Record<string, unknown> }[];
+      }
+    ).augments.find((entry) => entry.type === "fileMemory")!;
     const identity = readFileSync(join(dir, "identity.md"), "utf-8");
     expect(config.displayName).toBe("Jim");
     expect(config.creator.displayName).toBe("the creator");
     expect("operators" in config).toBe(false);
     expect(learnedMemory.type).toBe("fileMemory");
-    expect(learnedMemory.config).toMatchObject({
+    expect(learnedMemory.options).toMatchObject({
       label: "learned",
       source: "./learned-behaviors.md",
       mutable: true,
@@ -738,7 +739,7 @@ describe("runCreate scaffolding integration", () => {
       writeTrustLevels: ["creator"],
       placement: "preamble",
     });
-    expect(learnedMemory.config.origin).not.toBe("system");
+    expect(learnedMemory.options.origin).not.toBe("system");
     expect(identity).toContain("# Jim");
     expect(identity).toContain("You are Jim,");
   });
@@ -748,14 +749,15 @@ describe("runCreate scaffolding integration", () => {
 
     await runCreate("demo-knowledge-later", {
       cwd: projectParent,
+      runtimeInstallCheck: () => ({ ok: true }),
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
     const dir = agentDirFor("demo-knowledge-later");
     const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
-      augments: string[];
+      augments: { name: string; type: string; options: Record<string, unknown> }[];
     };
-    expect(config.augments).not.toContain("knowledge");
+    expect(config.augments.map((entry) => entry.type)).not.toContain("knowledge");
     expect(existsSync(join(dir, "knowledge"))).toBe(false);
     expect(existsSync(join(dir, "skills", "knowledge", "SKILL.md"))).toBe(false);
   });
@@ -765,6 +767,7 @@ describe("runCreate scaffolding integration", () => {
 
     await runCreate("demo-project", {
       cwd: projectParent,
+      runtimeInstallCheck: () => ({ ok: true }),
       bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
     });
 
@@ -773,20 +776,18 @@ describe("runCreate scaffolding integration", () => {
     expect(existsSync(join(dir, "identity.md"))).toBe(true);
     expect(existsSync(join(dir, "package.json"))).toBe(true);
     expect(existsSync(join(dir, "skills"))).toBe(true);
-    expect(existsSync(join(dir, "augments"))).toBe(true);
+    expect(existsSync(join(dir, "src", "augments"))).toBe(true);
     expect(existsSync(join(dir, "data", "workspace"))).toBe(true);
     expect(existsSync(join(dir, "workspace"))).toBe(false);
     expect(bunInstallCalls[0]?.cwd).toBe(dir);
 
     const config = parseYaml(readFileSync(join(dir, "agent.yaml"), "utf-8")) as {
-      augments: string[];
+      augments: { name: string; type: string; options: Record<string, unknown> }[];
     };
-    expect(config.augments).not.toContain("layeredMemory");
-    expect(config.augments).not.toContain("budgets");
-    const filesystemMeta = parseYaml(
-      readFileSync(join(dir, "augments", "filesystem", "augment.yaml"), "utf-8"),
-    ) as { config?: Record<string, unknown> };
-    expect(JSON.stringify(filesystemMeta.config)).toContain("./data/workspace");
+    expect(config.augments.map((entry) => entry.type)).not.toContain("layeredMemory");
+    expect(config.augments.map((entry) => entry.type)).not.toContain("budgets");
+    const filesystemMeta = config.augments.find((entry) => entry.type === "filesystem");
+    expect(JSON.stringify(filesystemMeta?.options)).toContain("./data/workspace");
   });
 
   test("init scaffolds the current directory and run guidance omits the name", async () => {
@@ -803,6 +804,7 @@ describe("runCreate scaffolding integration", () => {
       await runInit({
         cwd: dir,
         skipInstall: true,
+        runtimeInstallCheck: () => ({ ok: true }),
         bunInstallSpawn: createStubBunInstallSpawn({ capture: bunInstallCalls }),
       });
     } finally {
@@ -811,7 +813,7 @@ describe("runCreate scaffolding integration", () => {
 
     expect(existsSync(join(dir, "agent.yaml"))).toBe(true);
     expect(existsSync(join(dir, "package.json"))).toBe(true);
-    expect(existsSync(join(dir, "augments", "webFetch", "augment.yaml"))).toBe(true);
+    expect(existsSync(join(dir, "src", "turn.ts"))).toBe(true);
     expect(logs.join("\n")).toContain("auggy run");
     expect(logs.join("\n")).not.toContain("auggy run current-agent");
     expect(bunInstallCalls).toHaveLength(0);

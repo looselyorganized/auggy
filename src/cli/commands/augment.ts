@@ -1,17 +1,22 @@
 import { Command } from "commander";
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
-import { confirm } from "@inquirer/prompts";
-import { parse as parseYaml, stringify as stringifyYaml } from "yaml";
 import { AUGMENT_CATALOG, resolveCatalogEntry, type CatalogEntry } from "../augment-catalog";
 import { runAdd, type AddOpts } from "./add";
 import { resolveConfigPath } from "../resolve-config";
-import { scaffoldCustomAugment } from "../scaffold-custom-augment";
+import { scaffoldCustomAugment, validateCustomAugmentSlug } from "../scaffold-custom-augment";
 import { validateCustomAugment } from "../augment-validator";
-import { augmentFolderForType } from "../scaffold-skills";
 import { displayPath } from "../display-path";
-import { VALID_NAME_RE } from "../config-parser";
-import { writeFileExclusively, writeFileSafely } from "../safe-write";
+import { VALID_NAME_RE } from "../agent-name";
+import {
+  readAuthoringDocument,
+  assertInlineAuthoring,
+  planAugmentAssets,
+  publishAugmentMutation,
+  rootSkillsEdit,
+} from "../augment-metadata";
+import { AUTHORING_LIMITS, type PublicationOptions } from "../authoring/contracts";
+import { readFileSnapshot } from "../authoring/document-io";
 import {
   formatAgentMailSetupResult,
   runAgentMailSetup,
@@ -33,9 +38,11 @@ export interface AugmentCommandDeps {
 
 export interface CreateCustomAugmentOptions {
   slug: string;
+  config?: string;
   cwd?: string;
   includeSkill?: boolean;
   force?: boolean;
+  publication?: PublicationOptions;
 }
 
 export interface CreateCustomAugmentResult {
@@ -48,6 +55,8 @@ export interface CreateCustomAugmentResult {
 export interface InstallCustomAugmentOptions {
   agentName: string;
   sourcePath: string;
+  cwd?: string;
+  publication?: PublicationOptions;
   config?: string;
   auggyDir?: string;
 }
@@ -62,6 +71,8 @@ export interface InstallCustomAugmentResult {
 export interface RemoveAugmentOptions {
   agentName?: string;
   augment: string;
+  yes?: boolean;
+  publication?: PublicationOptions;
   config?: string;
   auggyDir?: string;
   cwd?: string;
@@ -109,16 +120,6 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
   const setup = deps.setupAugment ?? runAugmentSetup;
   const remove = deps.removeAugment ?? removeAugment;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
-  const promptCreateSkill =
-    deps.promptCreateSkill ??
-    ((slug: string) => {
-      if (!process.stdin.isTTY) return Promise.resolve(false);
-      return confirm({
-        message: `Create skills/${slug}/SKILL.md? It becomes model-visible guidance, so only add it if you plan to edit it.`,
-        default: false,
-      });
-    });
-
   const command = new Command("augment").description("Add, remove, list, and create augments");
 
   command
@@ -198,21 +199,25 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
 
   command
     .command("remove <augment>")
-    .description("Remove an augment from an agent")
+    .description("Unregister an augment; retain source, skills, dependencies, env, and data")
+    .option("--yes", "accept configuration-only removal (no confirmation needed)")
     .option("--agent <name>", "agent project name when running from a parent directory")
     .option("--config <path>", "path to agent.yaml")
-    .action((augment: string, opts: { agent?: string; config?: string }) => {
+    .action((augment: string, opts: { agent?: string; config?: string; yes?: boolean }) => {
       try {
         const result = remove({
           agentName: opts.agent,
           augment,
+          yes: opts.yes,
           config: opts.config,
           auggyDir: deps.auggyDir,
         });
         console.log(
           `Removed augment "${result.name}" (${result.type}) from ${displayPath(result.configPath)}.`,
         );
-        if (result.skillRemoved) console.log(`Removed skill ${result.skillRemoved}.`);
+        console.log(
+          "Source, skills, dependencies, env, and data were retained. Root skills remain discoverable and model-visible while mounted.",
+        );
         for (const warning of result.warnings) console.warn(`Warning: ${warning}`);
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
@@ -223,33 +228,25 @@ export function augmentCommand(deps: AugmentCommandDeps = {}): Command {
   command
     .command("create <slug>")
     .description("Create and register a custom augment in the current agent")
-    .option("--force", "overwrite an existing target directory")
-    .option("--with-skill", "also scaffold skills/<slug>/SKILL.md without prompting")
-    .option("--without-skill", "do not scaffold a skill without prompting")
+    .option("--config <path>", "path to the central agent configuration")
+    .option("--force", "deprecated; refuses overwrites, use a new slug")
+    .option("--with-skill", "also scaffold skills/<slug>/SKILL.md")
+    .option("--without-skill", "omit the optional skill (default)")
     .action(
       async (
         slug: string,
-        opts: { force?: boolean; withSkill?: boolean; withoutSkill?: boolean },
+        opts: { config?: string; force?: boolean; withSkill?: boolean; withoutSkill?: boolean },
       ) => {
         try {
           if (opts.withSkill && opts.withoutSkill) {
             throw new Error("Choose either --with-skill or --without-skill, not both.");
           }
-          if (!VALID_NAME_RE.test(slug.trim())) {
-            throw new Error(
-              `Invalid augment slug "${slug}". Use lowercase letters, numbers, hyphens, or underscores.`,
-            );
-          }
-          // Fail before prompting when the command is not running at an agent root.
-          resolveConfigPath(undefined, undefined, { cwd: deps.cwd ?? process.cwd() });
-          const includeSkill = opts.withSkill
-            ? true
-            : opts.withoutSkill
-              ? false
-              : await promptCreateSkill(slug);
+          validateCustomAugmentSlug(slug);
+          const includeSkill = opts.withSkill === true;
           const result = createCustomAugment(
             {
               slug,
+              config: opts.config,
               cwd: deps.cwd,
               includeSkill,
               force: opts.force ?? false,
@@ -344,11 +341,10 @@ export function listAugments(opts: ListAugmentsOptions = {}): ListedAugment[] {
     auggyDir: opts.auggyDir,
     cwd: opts.cwd,
   });
-  const doc = readAgentYaml(configPath);
-  const augments = readAugments(doc, dirname(configPath));
+  const augments = readAuthoringDocument(configPath).declarations;
   return augments.map((augment) => ({
     label: labelForAugment(augment.type, augment.name),
-    name: augment.name,
+    name: augment.name ?? "(unresolved)",
     type: augment.type,
     category: augment.type === "custom" ? "custom" : "built-in",
     source: augment.source,
@@ -454,31 +450,32 @@ export function removeAugment(opts: RemoveAugmentOptions): RemoveAugmentResult {
     auggyDir: opts.auggyDir,
     cwd: opts.cwd,
   });
-  const agentDir = dirname(configPath);
-  const doc = readAgentYaml(configPath);
-  const augments = readAugments(doc, agentDir);
+  const document = readAuthoringDocument(configPath);
+  assertInlineAuthoring(document);
+  const augments = document.declarations.map((entry) => ({ ...entry, name: entry.name! }));
   const index = findAugmentIndex(augments, opts.augment);
-  if (index === -1) {
-    throw new Error(`Augment "${opts.augment}" is not installed in ${configPath}.`);
-  }
-
+  if (index === -1) throw new Error(`Augment "${opts.augment}" is not installed in ${configPath}.`);
   const removed = augments[index]!;
-  const removedType = removed.type;
-  const removedName = removed.name;
-  const catalogEntry = AUGMENT_CATALOG.find((entry) => entry.type === removedType);
-  if (catalogEntry?.required) {
-    throw new Error(`Augment "${removedName}" (${removedType}) is required and cannot be removed.`);
+  if (AUGMENT_CATALOG.find((entry) => entry.type === removed.type)?.required) {
+    throw new Error(
+      `Augment "${removed.name}" (${removed.type}) is required and cannot be removed.`,
+    );
   }
-
-  const rawAugments = Array.isArray(doc.augments) ? [...doc.augments] : [];
-  rawAugments.splice(removed.index, 1);
-  doc.augments = rawAugments;
-  writeFileSafely(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);
-
-  const skillRemoved = removeSkillForAugment(agentDir, removedName, removedType);
-  removeAugmentFolder(agentDir, removedName, removedType);
-  const warnings = agentMailRemovalWarnings(removedType, augments, index);
-  return { configPath, name: removedName, type: removedType, skillRemoved, warnings };
+  publishAugmentMutation(
+    document,
+    "augment-remove",
+    [{ kind: "remove-augment", name: removed.name }],
+    [],
+    [],
+    opts.publication,
+  );
+  return {
+    configPath,
+    name: removed.name,
+    type: removed.type,
+    skillRemoved: null,
+    warnings: agentMailRemovalWarnings(removed.type, augments, index),
+  };
 }
 
 function agentMailRemovalWarnings(
@@ -502,14 +499,6 @@ function agentMailRemovalWarnings(
   ];
 }
 
-function readAgentYaml(configPath: string): Record<string, unknown> {
-  const raw = parseYaml(readFileSync(configPath, "utf-8"));
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error(`${configPath}: not a valid agent.yaml object`);
-  }
-  return raw as Record<string, unknown>;
-}
-
 interface AugmentRecord {
   index: number;
   name: string;
@@ -517,58 +506,15 @@ interface AugmentRecord {
   source?: string;
 }
 
-function readAugments(doc: Record<string, unknown>, agentDir: string): AugmentRecord[] {
-  if (!Array.isArray(doc.augments)) return [];
-
-  return doc.augments.map((entry, index) => {
-    if (typeof entry === "string") {
-      const metadata = readAugmentMetadata(agentDir, entry);
-      const type = stringField(metadata.type) ?? "(unknown)";
-      return {
-        index,
-        name: entry,
-        type,
-        source: stringField(metadata.source) ?? undefined,
-      };
-    }
-
-    if (entry && typeof entry === "object" && !Array.isArray(entry)) {
-      const record = entry as Record<string, unknown>;
-      const type = stringField(record.type) ?? "(unknown)";
-      return {
-        index,
-        name: stringField(record.name) ?? type,
-        type,
-        source: stringField(record.source) ?? undefined,
-      };
-    }
-
-    return { index, name: "(invalid)", type: "(invalid)" };
-  });
-}
-
-function readAugmentMetadata(agentDir: string, id: string): Record<string, unknown> {
-  const metadataPath = join(agentDir, "augments", id, "augment.yaml");
-  if (!existsSync(metadataPath)) {
-    throw new Error(`Augment "${id}" is listed in agent.yaml but ${metadataPath} is missing.`);
-  }
-  const parsed = parseYaml(readFileSync(metadataPath, "utf-8"));
-  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-    throw new Error(`${metadataPath}: not a valid YAML object.`);
-  }
-  return parsed as Record<string, unknown>;
-}
-
 function findAugmentIndex(augments: AugmentRecord[], specifier: string): number {
   const normalized = specifier.trim();
-  const direct = augments.findIndex(
-    (augment) => augment.name === normalized || augment.type === normalized,
-  );
-  if (direct !== -1) return direct;
-
-  const catalogType = resolveCatalogType(normalized);
-  if (!catalogType) return -1;
-  return augments.findIndex((augment) => augment.type === catalogType);
+  const named = augments.findIndex((augment) => augment.name === normalized);
+  if (named !== -1) return named;
+  const type = resolveCatalogType(normalized) ?? normalized;
+  const matches = augments.filter((augment) => augment.type === type);
+  if (matches.length > 1)
+    throw new Error("Multiple augment instances match. Remove one by its exact instance name.");
+  return matches.length === 1 ? augments.indexOf(matches[0]!) : -1;
 }
 
 function resolveCatalogType(specifier: string): string | null {
@@ -577,32 +523,6 @@ function resolveCatalogType(specifier: string): string | null {
   } catch {
     return null;
   }
-}
-
-function removeSkillForAugment(agentDir: string, name: string, type: string): string | null {
-  const candidates = [...new Set([augmentFolderForType(type), name].filter(Boolean) as string[])];
-  for (const candidate of candidates) {
-    const skillDir = join(agentDir, "skills", candidate);
-    if (!existsSync(skillDir)) continue;
-    rmSync(skillDir, { recursive: true, force: true });
-    return join("skills", candidate);
-  }
-  return null;
-}
-
-function removeAugmentFolder(agentDir: string, name: string, type: string): string | null {
-  const candidates = [...new Set([name, augmentFolderForType(type)].filter(Boolean) as string[])];
-  for (const candidate of candidates) {
-    const augmentDir = join(agentDir, "augments", candidate);
-    if (!existsSync(augmentDir)) continue;
-    rmSync(augmentDir, { recursive: true, force: true });
-    return join("augments", candidate);
-  }
-  return null;
-}
-
-function stringField(value: unknown): string | null {
-  return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function labelForAugment(type: string | null, name: string | null): string {
@@ -626,93 +546,94 @@ export function createCustomAugment(
   opts: CreateCustomAugmentOptions,
   deps: { scaffold?: typeof scaffoldCustomAugment } = {},
 ): CreateCustomAugmentResult {
-  const slug = opts.slug.trim();
-  if (!VALID_NAME_RE.test(slug)) {
+  const slug = opts.slug;
+  validateCustomAugmentSlug(slug);
+  if (opts.force)
     throw new Error(
-      `Invalid augment slug "${opts.slug}". Use lowercase letters, numbers, hyphens, or underscores.`,
+      "--force no longer overwrites augment source or skills. Choose another slug or review and move existing files manually.",
     );
-  }
-
-  const cwd = resolve(opts.cwd ?? process.cwd());
-  const configPath = resolveConfigPath(undefined, undefined, { cwd });
-  const agentDir = dirname(configPath);
-  const doc = readAgentYaml(configPath);
-  if (!Array.isArray(doc.augments)) doc.augments = [];
-
-  const existing = readAugments(doc, agentDir).find((augment) => augment.name === slug);
-  if (existing && !opts.force) {
-    throw new Error(
-      `Augment "${slug}" is already declared in ${configPath}. Re-run with --force to overwrite its scaffold.`,
-    );
-  }
-
-  const augmentDir = join(agentDir, "augments", slug);
-  const skillDir = opts.includeSkill ? join(agentDir, "skills", slug) : null;
-  const scaffold = deps.scaffold ?? scaffoldCustomAugment;
-  scaffold({
-    slug,
-    targetDir: augmentDir,
-    skillTargetDir: skillDir ?? undefined,
-    force: opts.force ?? false,
+  const configPath = resolveConfigPath(undefined, opts.config, {
+    cwd: resolve(opts.cwd ?? process.cwd()),
   });
-
-  if (!existing) {
-    (doc.augments as unknown[]).push(slug);
-    writeFileSafely(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);
+  const document = readAuthoringDocument(configPath);
+  assertInlineAuthoring(document);
+  if (document.declarations.some((entry) => entry.name === slug))
+    throw new Error(
+      `Augment "${slug}" is already declared. Choose another slug or review the declaration manually.`,
+    );
+  const augmentDir = join(dirname(configPath), "src", "augments", slug);
+  const skillDir = opts.includeSkill ? join(dirname(configPath), "skills", slug) : null;
+  for (const path of [augmentDir, skillDir].filter((path): path is string => path !== null)) {
+    try {
+      lstatSync(path);
+      throw new Error(
+        "Augment source or skill directory already exists. Choose another slug or review and move the existing directory manually.",
+      );
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    }
   }
-
+  const assets = planAugmentAssets(
+    document,
+    (deps.scaffold ?? scaffoldCustomAugment)({ slug, includeSkill: opts.includeSkill }),
+  );
+  publishAugmentMutation(
+    document,
+    "augment-create",
+    [
+      {
+        kind: "append-augment",
+        entry: {
+          name: slug,
+          type: "custom",
+          source: `./src/augments/${slug}/index.ts`,
+          options: {},
+        },
+      },
+      ...(opts.includeSkill ? rootSkillsEdit(document) : []),
+    ],
+    assets.files,
+    assets.inputs,
+    opts.publication,
+  );
   return { configPath, augmentDir, skillDir, name: slug };
 }
 
 export function installCustomAugment(
   opts: InstallCustomAugmentOptions,
 ): InstallCustomAugmentResult {
-  const configPath = resolveConfigPath(opts.agentName, opts.config, { auggyDir: opts.auggyDir });
-  const agentDir = dirname(configPath);
-  const sourceEntry = resolve(opts.sourcePath);
-  const sourceFile = resolveSourceFile(sourceEntry);
+  const configPath = resolveConfigPath(opts.agentName, opts.config, {
+    auggyDir: opts.auggyDir,
+    cwd: opts.cwd,
+  });
+  const document = readAuthoringDocument(configPath);
+  assertInlineAuthoring(document);
+  const agentDir = document.projectDir;
+  const sourceFile = resolveSourceFile(resolve(opts.cwd ?? process.cwd(), opts.sourcePath));
   const augmentName = basename(dirname(sourceFile));
-  if (!VALID_NAME_RE.test(augmentName)) {
+  if (!VALID_NAME_RE.test(augmentName))
     throw new Error(
       `Invalid augment name "${augmentName}". Use letters, numbers, hyphens, or underscores.`,
     );
-  }
-
-  const raw = parseYaml(readFileSync(configPath, "utf-8"));
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error(`${configPath}: not a valid agent.yaml object`);
-  }
-
-  const doc = raw as Record<string, unknown>;
-  if (!Array.isArray(doc.augments)) doc.augments = [];
-  const augments = readAugments(doc, agentDir);
-  if (augments.some((a) => a.name === augmentName)) {
+  if (document.declarations.some((entry) => entry.name === augmentName))
     throw new Error(`Augment "${augmentName}" is already declared in ${configPath}.`);
-  }
-
-  const augmentDir = join(agentDir, "augments", augmentName);
-  mkdirSync(augmentDir, { recursive: true });
-  const metadataSource = normalizeRelativePath(relative(augmentDir, sourceFile));
-  const agentSource = normalizeRelativePath(relative(agentDir, sourceFile));
-  const metadataPath = join(augmentDir, "augment.yaml");
-  try {
-    writeFileExclusively(
-      metadataPath,
-      stringifyYaml({
-        type: "custom",
-        source: metadataSource,
-        config: {},
-      }),
-      { mode: 0o600 },
+  const source = normalizeRelativePath(
+    relative(agentDir, join(realpathSync(dirname(sourceFile)), basename(sourceFile))),
+  );
+  const snapshot = readFileSnapshot(sourceFile, AUTHORING_LIMITS.outputBytes);
+  publishAugmentMutation(
+    document,
+    "augment-install",
+    [{ kind: "append-augment", entry: { name: augmentName, type: "custom", source, options: {} } }],
+    [],
+    [snapshot],
+    opts.publication,
+  );
+  if (source.startsWith("../"))
+    console.warn(
+      "External custom source was referenced in place. This reference is nonportable; deployment requires an explicit source portability review.",
     );
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
-  }
-
-  (doc.augments as unknown[]).push(augmentName);
-  writeFileSafely(configPath, `# Agent configuration\n\n${stringifyYaml(doc)}`);
-
-  return { configPath, agentDir, source: agentSource, name: augmentName };
+  return { configPath, agentDir, source, name: augmentName };
 }
 
 function resolveSourceFile(sourceEntry: string): string {

@@ -35,6 +35,9 @@ jobs:
       - name: Lint (Biome)
         run: bun run lint
 
+      - name: Check installed source index
+        run: bun scripts/generate-source-index.ts --check
+
   typecheck:
     name: v1 typecheck gate
     runs-on: ubuntu-latest

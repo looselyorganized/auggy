@@ -5,17 +5,20 @@
  * canonical starter skill such as `auggy` in `<agent-dir>/skills/<skill>/`.
  */
 
-import { existsSync, mkdirSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, lstatSync, readdirSync, realpathSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
 import {
   buildFolderToTypeMap,
-  copyBundledSkill,
-  copyStarterSkill,
+  bundledSkillFiles,
+  starterSkillFiles,
   listStarterSkillNames,
 } from "../scaffold-skills";
 import { displayPath } from "../display-path";
-import { writeFileExclusively } from "../safe-write";
+import type { GeneratedApplicationFile, PlannedFile } from "../authoring/contracts";
+import { containedSnapshot } from "../authoring/publication-common";
+import { createMutationPlan } from "../authoring/mutation";
+import { acquireProjectMutationLease, publishMutationPlan } from "../authoring/publication";
 
 function bundledSkillExists(type: string): boolean {
   const dir = resolve(import.meta.dir, "../../augments", type, "skill", "SKILL.md");
@@ -74,11 +77,15 @@ interface AddSkillCommandDeps {
 
 function installBundledSkill(skill: string, agentDir: string): void {
   if (listStarterSkillNames().includes(skill)) {
-    if (!copyStarterSkill(skill, agentDir)) {
+    const files = starterSkillFiles().filter((file) =>
+      file.relativePath.startsWith(`skills/${skill}/`),
+    );
+    if (files.length === 0) {
       throw new Error(
         `failed to copy Auggy-provided starter skill for "${skill}" (source not found).`,
       );
     }
+    publishSkillFiles(agentDir, files, true);
     return;
   }
 
@@ -95,10 +102,60 @@ function installBundledSkill(skill: string, agentDir: string): void {
     throw new Error(`"${skill}" augment ships no Auggy-provided skill. Nothing to add.`);
   }
 
-  const copied = copyBundledSkill(type, agentDir);
-  if (!copied) {
+  const files = bundledSkillFiles(type);
+  if (files.length === 0) {
     throw new Error(`failed to copy Auggy-provided skill for "${skill}" (source not found).`);
   }
+  publishSkillFiles(agentDir, files, true);
+}
+
+/** Explicit repair may replace bundled assets; ordinary augment authoring preserves them. */
+function publishSkillFiles(
+  agentDir: string,
+  assets: readonly GeneratedApplicationFile[],
+  replace: boolean,
+): void {
+  const projectDir = realpathSync(agentDir);
+  const config = containedSnapshot(projectDir, "agent.yaml");
+  if (!config.exists) throw new Error("Agent configuration is missing.");
+  const files: PlannedFile[] = assets.map((asset) => {
+    const before = containedSnapshot(projectDir, asset.relativePath);
+    if (before.exists && !replace)
+      throw new Error(`Skill already exists: ${displayPath(before.path)}`);
+    return {
+      ...asset,
+      before,
+      mode: before.exists ? before.identity.mode & 0o777 : asset.mode,
+      role: "support",
+    };
+  });
+  files.push({
+    relativePath: "agent.yaml",
+    before: config,
+    bytes: config.bytes,
+    mode: config.identity.mode & 0o777,
+    role: "activation",
+  });
+  const plan = createMutationPlan({
+    kind: "augment-install",
+    projectDir,
+    configRelativePath: "agent.yaml",
+    inputs: files.map((file) => file.before),
+    files,
+    summary: files.map((file) => ({
+      path: file.relativePath,
+      operation: file.before.exists ? "replace" : "create",
+      reason:
+        file.role === "activation"
+          ? "Keep the selected configuration unchanged."
+          : "Install explicitly requested skill content.",
+    })),
+  });
+  const result = publishMutationPlan(plan);
+  if (result.status !== "complete")
+    throw new Error(
+      `Skill publication ${result.status}; run guarded recovery from the agent directory: auggy migrate --rollback ${result.operationId} --apply.`,
+    );
 }
 
 export function skillCommand(deps: AddSkillCommandDeps = {}): Command {
@@ -136,30 +193,30 @@ export function skillCommand(deps: AddSkillCommandDeps = {}): Command {
           throw new Error("Skill name must be kebab-case (letters, numbers, hyphens).");
         }
         const agentDir = resolveAgentDir(opts.agent, { auggyDir: deps.auggyDir, cwd: deps.cwd });
-        const dir = join(agentDir, "skills", name);
-        const path = join(dir, "SKILL.md");
-        mkdirSync(dir, { recursive: true });
-        try {
-          writeFileExclusively(
-            path,
-            [
-              "---",
-              `name: ${name}`,
-              "description: Describe when the agent should use this skill.",
-              "---",
-              "",
-              `# ${name}`,
-              "",
-              "Write instructions, examples, and operating guidance for the agent here.",
-              "",
-            ].join("\n"),
-          );
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === "EEXIST") {
-            throw new Error(`Skill already exists: ${displayPath(path, deps.cwd)}`);
-          }
-          throw error;
-        }
+        const path = join(agentDir, "skills", name, "SKILL.md");
+        publishSkillFiles(
+          agentDir,
+          [
+            {
+              relativePath: `skills/${name}/SKILL.md`,
+              mode: 0o644,
+              bytes: Buffer.from(
+                [
+                  "---",
+                  `name: ${name}`,
+                  "description: Describe when the agent should use this skill.",
+                  "---",
+                  "",
+                  `# ${name}`,
+                  "",
+                  "Write instructions, examples, and operating guidance for the agent here.",
+                  "",
+                ].join("\n"),
+              ),
+            },
+          ],
+          false,
+        );
         console.log(`Created skill "${name}" -> ${displayPath(path, deps.cwd)}`);
         exit(0);
       } catch (err) {
@@ -200,10 +257,22 @@ export function skillCommand(deps: AddSkillCommandDeps = {}): Command {
     .option("--agent <name>", "agent project directory name (defaults to current directory)")
     .action(async (name: string, opts: { agent?: string }) => {
       try {
+        if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(name))
+          throw new Error("Skill name must be a single safe folder name.");
         const agentDir = resolveAgentDir(opts.agent, { auggyDir: deps.auggyDir, cwd: deps.cwd });
         const dir = join(agentDir, "skills", name);
-        if (!existsSync(dir)) throw new Error(`Skill not found: ${name}`);
-        rmSync(dir, { recursive: true, force: true });
+        const lease = acquireProjectMutationLease(agentDir);
+        try {
+          if (!existsSync(dir)) throw new Error(`Skill not found: ${name}`);
+          for (const path of [join(agentDir, "skills"), dir]) {
+            const stat = lstatSync(path);
+            if (!stat.isDirectory() || stat.isSymbolicLink())
+              throw new Error("Skill removal requires ordinary project directories.");
+          }
+          rmSync(dir, { recursive: true, force: true });
+        } finally {
+          lease.release();
+        }
         console.log(`Removed skill "${name}".`);
         exit(0);
       } catch (err) {

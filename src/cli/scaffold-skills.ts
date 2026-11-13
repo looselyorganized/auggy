@@ -14,6 +14,7 @@
 
 import { cpSync, existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
+import type { GeneratedApplicationFile } from "./authoring/contracts";
 
 // ---------------------------------------------------------------------------
 // Augment-name resolution
@@ -187,5 +188,32 @@ export function renderIdentityFromTemplate(values: IdentityTemplateValues): stri
           return match;
       }
     },
+  );
+}
+
+/** Pure packaged assets; authoring callers decide which missing destinations to publish. */
+function skillFiles(source: string, destination: string): GeneratedApplicationFile[] {
+  const files: GeneratedApplicationFile[] = [];
+  for (const entry of readdirSync(source, { withFileTypes: true }).sort((a, b) =>
+    a.name.localeCompare(b.name),
+  )) {
+    const path = join(source, entry.name);
+    const relativePath = `${destination}/${entry.name}`;
+    if (entry.isDirectory()) files.push(...skillFiles(path, relativePath));
+    else if (entry.isFile()) files.push({ relativePath, bytes: readFileSync(path), mode: 0o644 });
+    else throw new Error("Bundled skills must contain only regular files and directories.");
+  }
+  return files;
+}
+
+export function bundledSkillFiles(type: string): readonly GeneratedApplicationFile[] {
+  if (!buildFolderToTypeMap().has(type)) return [];
+  const source = bundledSkillDir(type);
+  return source ? skillFiles(source, `skills/${type}`) : [];
+}
+
+export function starterSkillFiles(): readonly GeneratedApplicationFile[] {
+  return listStarterSkillNames().flatMap((name) =>
+    skillFiles(join(STARTER_SKILLS_ROOT, name), `skills/${name}`),
   );
 }

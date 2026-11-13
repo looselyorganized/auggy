@@ -19,11 +19,14 @@
  *     scaffolded against, not whatever happens to be globally installed.
  */
 
-import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { existsSync, lstatSync } from "node:fs";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import pkg from "../../package.json" with { type: "json" };
 import type { CatalogEntry } from "./augment-catalog";
 import type { Provider } from "./model-picker";
+import { applicationPackageFields } from "./scaffold-application";
+import { AUTHORING_LIMITS, type ApplicationScaffoldPlan } from "./authoring/contracts";
+import { decodeSnapshotText, readFileSnapshot } from "./authoring/document-io";
 
 /**
  * Engine provider → npm package mapping. Single source of truth for which
@@ -67,6 +70,8 @@ export interface BuildAgentPackageJsonInput {
   provider: Provider;
   /** Selected augments — drives the per-augment `packageDeps` merge. */
   augments: CatalogEntry[];
+  /** Configuration-specific owned application scripts and tooling. */
+  application?: ApplicationScaffoldPlan["packageFields"];
 }
 
 /**
@@ -82,6 +87,7 @@ export function buildAgentPackageJson(input: BuildAgentPackageJsonInput): string
   const dependencies: Record<string, string> = {
     auggy: auggySpecifier,
     [PROVIDER_TO_PACKAGE[input.provider]]: versionRange,
+    zod: "^4.6.6",
   };
 
   // Merge per-augment packageDeps from the catalog. If two augments declare
@@ -105,8 +111,15 @@ export function buildAgentPackageJson(input: BuildAgentPackageJsonInput): string
   const manifest = {
     name: `auggy-agent-${input.agentName}`,
     private: true,
-    type: "module" as const,
-    overrides: SCAFFOLD_SECURITY_OVERRIDES,
+    ...(input.application ?? applicationPackageFields()),
+    packageManager: "bun@1.3.14",
+    engines: { bun: ">=1.3.14" },
+    overrides: {
+      ...SCAFFOLD_SECURITY_OVERRIDES,
+      ...(input.provider === "openrouter" && input.packageSpecifiers?.["@auggy/openai"]
+        ? { "@auggy/openai": input.packageSpecifiers["@auggy/openai"] }
+        : {}),
+    },
     dependencies: sortedRecord(dependencies),
   };
 
@@ -195,6 +208,79 @@ const LOCAL_PROVIDER_PACKAGES: Record<Provider, string[]> = {
   ollama: ["@auggy/ollama"],
 };
 
+export interface ScaffoldArtifactSelection {
+  readonly dependencies: Readonly<Record<string, string>>;
+  readonly prerequisiteOverrides: Readonly<Partial<Record<"@auggy/openai", string>>>;
+}
+
+/** Bounded data-only selection for exact installed-artifact acceptance. */
+export function resolveScaffoldArtifactSelection(input: {
+  provider: Provider;
+  env: Readonly<Record<string, string | undefined>>;
+}): ScaffoldArtifactSelection {
+  if (!Object.hasOwn(PROVIDER_TO_PACKAGE, input.provider))
+    throw new Error("Select a supported scaffold provider.");
+  const selectedPackage = PROVIDER_TO_PACKAGE[input.provider];
+  const dependencies: Record<string, string> = Object.create(null);
+  const raw = input.env.AUGGY_SCAFFOLD_PACKAGE_SPECS;
+  const invalid = () =>
+    new Error(
+      "AUGGY_SCAFFOLD_PACKAGE_SPECS must be a bounded mapping of core, selected provider and required OpenAI prerequisite to absolute file: tarballs.",
+    );
+  if (raw !== undefined) {
+    if (Buffer.byteLength(raw) > 16_384) throw invalid();
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      throw invalid();
+    }
+    if (!value || typeof value !== "object" || Array.isArray(value)) throw invalid();
+    const entries = Object.entries(value);
+    const allowed = new Set([
+      "auggy",
+      selectedPackage,
+      ...(input.provider === "openrouter" ? ["@auggy/openai"] : []),
+    ]);
+    if (entries.length > 3) throw invalid();
+    for (const [key, spec] of entries) {
+      if (
+        !allowed.has(key) ||
+        typeof spec !== "string" ||
+        !spec ||
+        spec.length > 4096 ||
+        spec.includes("\0") ||
+        !spec.startsWith("file:") ||
+        !isAbsolute(spec.slice(5)) ||
+        !/\.(?:tgz|tar\.gz)$/.test(spec) ||
+        /[\r\n]/.test(spec)
+      )
+        throw invalid();
+      dependencies[key] = spec;
+    }
+  }
+  for (const [key, legacy] of [
+    ["auggy", input.env.AUGGY_SCAFFOLD_AUGGY_SPEC?.trim()],
+    [selectedPackage, input.env.AUGGY_SCAFFOLD_ENGINE_SPEC?.trim()],
+  ] as const) {
+    if (!legacy) continue;
+    if (dependencies[key] && dependencies[key] !== legacy) {
+      throw new Error(
+        "Conflicting scaffold artifact selections; use matching package-map and legacy overrides.",
+      );
+    }
+    dependencies[key] = legacy;
+  }
+  return Object.freeze({
+    dependencies: Object.freeze(dependencies),
+    prerequisiteOverrides: Object.freeze(
+      input.provider === "openrouter" && dependencies["@auggy/openai"]
+        ? { "@auggy/openai": dependencies["@auggy/openai"] }
+        : {},
+    ),
+  });
+}
+
 /**
  * Resolve the coordinated package set used by `auggy create`.
  *
@@ -206,6 +292,9 @@ export function resolveScaffoldPackageSpecifiersForCreate(
   opts: ResolveScaffoldPackageSpecifiersOptions,
 ): Record<string, string> {
   const env = opts.env ?? process.env;
+  const artifacts = resolveScaffoldArtifactSelection({ provider: opts.provider, env });
+  // Explicit mappings select the whole candidate set; never add checkout fallbacks.
+  if (env.AUGGY_SCAFFOLD_PACKAGE_SPECS !== undefined) return { ...artifacts.dependencies };
   const version = opts.version ?? getAuggyVersion();
   const cwd = opts.cwd ?? process.cwd();
   const linkedSourceRoot =
@@ -279,7 +368,12 @@ function findNearestPackedAuggyTarball(startDir: string, version: string): strin
   let dir = resolve(startDir);
   for (let depth = 0; depth < 8; depth += 1) {
     const candidate = join(dir, `auggy-${version}.tgz`);
-    if (existsSync(candidate)) return candidate;
+    // Discovery must not select a directory, device, FIFO or symlink as an archive.
+    try {
+      if (lstatSync(candidate).isFile()) return candidate;
+    } catch {
+      // An absent or inaccessible optional local artifact is not a candidate.
+    }
 
     const parent = dirname(dir);
     if (parent === dir) break;
@@ -315,13 +409,14 @@ function isMatchingAuggyWorkspace(dir: string, version: string, provider: Provid
 
 function isMatchingLocalPackage(dir: string, packageName: string, version: string): boolean {
   const manifestPath = join(dir, "package.json");
-  if (!existsSync(manifestPath)) return false;
-
   try {
-    const manifest = JSON.parse(readFileSync(manifestPath, "utf8")) as {
-      name?: unknown;
-      version?: unknown;
-    };
+    const snapshot = readFileSnapshot(manifestPath, AUTHORING_LIMITS.documentBytes, {
+      allowMissing: true,
+    });
+    if (!snapshot.exists) return false;
+    const manifest: unknown = JSON.parse(decodeSnapshotText(snapshot.bytes));
+    if (!manifest || typeof manifest !== "object" || Array.isArray(manifest)) return false;
+    if (!("name" in manifest) || !("version" in manifest)) return false;
     return manifest.name === packageName && manifest.version === version;
   } catch {
     return false;

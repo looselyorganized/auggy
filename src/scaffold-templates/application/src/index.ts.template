@@ -1,0 +1,18 @@
+import { runApplication, type ApplicationMain } from "auggy/application";
+import { composeAgent } from "./agent";
+import { configureHttp } from "./http";
+
+export const main: ApplicationMain = async (launch) => {
+  // The managed runner owns cleanup, including failures during preparation.
+  const host = launch.createHost({ compose: composeAgent });
+  const prepared = await host.prepare();
+  await host.start({ http: prepared.http.map(configureHttp) });
+};
+
+// CLI launches import main; direct launches use the same managed runner.
+if (import.meta.main) {
+  await runApplication(main, {
+    config: new URL({{CONFIG_URL}}, import.meta.url),
+    entrypoint: import.meta.url,
+  });
+}

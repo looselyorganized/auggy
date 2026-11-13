@@ -58,20 +58,36 @@ import type { DeployResult } from "./commands/deploy";
 import type { RailwayCli } from "./deploy/railway-cli";
 import type { CloudRecord } from "./types";
 import { failureMark, successMark, warningLabel, type CliStyleOptions } from "./_shared/styles";
+import { registerAuthoringCommands } from "./authoring-bootstrap";
+import { authoringCommandHandlers } from "./authoring-command-handlers";
+
+interface CreateCommandOptions {
+  skipInstall?: boolean;
+  refreshModels?: boolean;
+  provider?: string;
+  model?: string;
+  yes?: boolean;
+  allowUnpricedModel?: boolean;
+}
 
 export function buildCli(): Command {
   const program = new Command();
 
   program.name("auggy").description("Auggy agent runtime CLI").version(pkg.version);
+  registerAuthoringCommands(program, authoringCommandHandlers);
 
   program
     .command("create <name>")
     .description("Scaffold a standalone agent project at ./<name> (interactive)")
     .option("--skip-install", "write package.json but don't run bun install")
     .option("--refresh-models", "fetch live provider model catalogs before model selection")
-    .action(async (name: string, opts: { skipInstall?: boolean; refreshModels?: boolean }) => {
+    .option("--provider <id>", "select anthropic, openai, openrouter, or ollama")
+    .option("--model <id>", "select an explicit provider model")
+    .option("--yes", "use deterministic defaults without prompts; requires provider and model")
+    .option("--allow-unpriced-model", "explicitly acknowledge unavailable pricing for this model")
+    .action(async (name: string, opts: CreateCommandOptions) => {
       try {
-        assertInteractiveCommand("auggy create");
+        if (!opts.yes) assertInteractiveCommand("auggy create");
         await runCreate(name, { ...opts, useModelCache: true });
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
@@ -84,26 +100,24 @@ export function buildCli(): Command {
     .description("Initialize the current directory as an Auggy agent project")
     .option("--skip-install", "write package.json but don't run bun install")
     .option("--refresh-models", "fetch live provider model catalogs before model selection")
-    .action(
-      async (
-        name: string | undefined,
-        opts: { skipInstall?: boolean; refreshModels?: boolean },
-      ) => {
-        try {
-          assertInteractiveCommand("auggy init");
-          const { runInit } = await import("./commands/create");
-          await runInit({
-            name,
-            skipInstall: opts.skipInstall,
-            refreshModels: opts.refreshModels,
-            useModelCache: true,
-          });
-        } catch (err) {
-          console.error(`Error: ${(err as Error).message}`);
-          process.exit(1);
-        }
-      },
-    );
+    .option("--provider <id>", "select anthropic, openai, openrouter, or ollama")
+    .option("--model <id>", "select an explicit provider model")
+    .option("--yes", "use deterministic defaults without prompts; requires provider and model")
+    .option("--allow-unpriced-model", "explicitly acknowledge unavailable pricing for this model")
+    .action(async (name: string | undefined, opts: CreateCommandOptions) => {
+      try {
+        if (!opts.yes) assertInteractiveCommand("auggy init");
+        const { runInit } = await import("./commands/create");
+        await runInit({
+          ...opts,
+          name,
+          useModelCache: true,
+        });
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        process.exit(1);
+      }
+    });
 
   program.addCommand(skillCommand());
   program.addCommand(runCommand());
@@ -403,7 +417,7 @@ function assertInteractiveCommand(command: string): void {
   if (process.stdin.isTTY) return;
   throw new Error(
     `${command} is interactive and needs a terminal.\n\n` +
-      "  Run it directly in your shell, or use a terminal/PTY in automation.",
+      "  Run it directly in your shell, or pass --provider <id> --model <id> --yes for automation.",
   );
 }
 

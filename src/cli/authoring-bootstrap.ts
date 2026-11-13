@@ -10,6 +10,7 @@ import {
 export interface AuthoringCommandHandlers {
   inspect(name: string | undefined, options: InspectCommandOptions): number | Promise<number>;
   migrate(name: string | undefined, options: MigrateCommandOptions): number | Promise<number>;
+  syntaxError?(command: "inspect" | "migrate"): void | Promise<void>;
 }
 
 export function registerAuthoringCommands(
@@ -47,7 +48,14 @@ export async function dispatchAuthoringCommand(
     await program.parseAsync([...argv], { from: "user" });
     return code;
   } catch (error) {
-    if (error instanceof CommanderError) return error.exitCode;
+    if (error instanceof CommanderError) {
+      const terminator = args.indexOf("--", 1);
+      const options = args.slice(1, terminator === -1 ? undefined : terminator);
+      if (error.exitCode !== 0 && options.includes("--json")) {
+        await handlers.syntaxError?.(args[0]);
+      }
+      return error.exitCode;
+    }
     throw error;
   }
 }

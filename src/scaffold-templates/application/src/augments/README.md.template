@@ -1,0 +1,15 @@
+# Your business capabilities
+
+Run `auggy augment create orders --with-skill` to generate a
+schema, tool and route adapter, sample lookup service, and focused tests. Replace
+the sample with a narrow adapter to your existing system of record. Augments own
+identity, authorization, schemas, tools, routes and domain logic.
+
+The command registers the capability once in the central YAML. Optional
+instructions live at `skills/orders/SKILL.md`; root `skills/` is the only mounted
+skill surface. Removing a declaration retains your source and skills; retained
+skills remain model-visible until you explicitly remove them.
+
+Built-ins remain installed under `node_modules/auggy/src`. Use `auggy inspect`
+to locate their exact installed implementations. Dependency upgrades deliver
+runtime and security updates without rewriting your source or skills.

@@ -481,3 +481,97 @@ export function getAvailableAugments(
 ): CatalogEntry[] {
   return AUGMENT_CATALOG.filter((entry) => !installed.some((i) => i.type === entry.type));
 }
+
+/** Installed Auggy adapter locations, including supported non-picker types.
+ * Navigation metadata only; never used to enable augments or supply options.
+ * Link maps the Auggy adapter, not the external package implementation. */
+export const BUILTIN_SOURCE_METADATA = [
+  {
+    type: "fileMemory",
+    entrypoint: "src/augments/fileMemory/index.ts",
+    directory: "src/augments/fileMemory",
+  },
+  {
+    type: "supabaseMemory",
+    entrypoint: "src/augments/supabaseMemory/index.ts",
+    directory: "src/augments/supabaseMemory",
+  },
+  {
+    type: "layeredMemory",
+    entrypoint: "src/augments/layeredMemory/index.ts",
+    directory: "src/augments/layeredMemory",
+    skill: "src/augments/layeredMemory/skill/SKILL.md",
+  },
+  {
+    type: "filesystem",
+    entrypoint: "src/augments/filesystem/index.ts",
+    directory: "src/augments/filesystem",
+    skill: "src/augments/filesystem/skill/SKILL.md",
+  },
+  { type: "webTransport", entrypoint: "src/transports/web-transport.ts" },
+  {
+    type: "webFetch",
+    entrypoint: "src/augments/webFetch/index.ts",
+    directory: "src/augments/webFetch",
+    skill: "src/augments/webFetch/skill/SKILL.md",
+  },
+  {
+    type: "knowledge",
+    entrypoint: "src/augments/knowledge/index.ts",
+    directory: "src/augments/knowledge",
+    skill: "src/augments/knowledge/skill/SKILL.md",
+  },
+  { type: "skills", entrypoint: "src/augments/skills/index.ts", directory: "src/augments/skills" },
+  {
+    type: "bash",
+    entrypoint: "src/augments/bash/index.ts",
+    directory: "src/augments/bash",
+    skill: "src/augments/bash/skill/SKILL.md",
+  },
+  {
+    type: "budgets",
+    entrypoint: "src/augments/budgets/index.ts",
+    directory: "src/augments/budgets",
+  },
+  {
+    type: "notify",
+    entrypoint: "src/augments/notify/index.ts",
+    directory: "src/augments/notify",
+    skill: "src/augments/notify/skill/SKILL.md",
+  },
+  {
+    type: "mcp",
+    entrypoint: "src/augments/mcp/index.ts",
+    directory: "src/augments/mcp",
+    skill: "src/augments/mcp/skill/SKILL.md",
+  },
+  {
+    type: "agentMail",
+    entrypoint: "src/augments/agentMail/index.ts",
+    directory: "src/augments/agentMail",
+    skill: "src/augments/agentMail/skill/SKILL.md",
+  },
+  {
+    type: "telegramTransport",
+    entrypoint: "src/augments/telegramTransport/index.ts",
+    directory: "src/augments/telegramTransport",
+  },
+  {
+    type: "turnControl",
+    entrypoint: "src/augments/turnControl/index.ts",
+    directory: "src/augments/turnControl",
+    skill: "src/augments/turnControl/skill/SKILL.md",
+  },
+  {
+    type: "visitorAuth",
+    entrypoint: "src/augments/visitorAuth/index.ts",
+    directory: "src/augments/visitorAuth",
+    skill: "src/augments/visitorAuth/skill/SKILL.md",
+  },
+  {
+    type: "link",
+    entrypoint: "src/augments/link/index.ts",
+    directory: "src/augments/link",
+    skill: "src/augments/link/skill/SKILL.md",
+  },
+] as const satisfies readonly import("./authoring/contracts").BuiltinSourceMapping[];

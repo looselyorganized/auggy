@@ -188,7 +188,7 @@ describe("auggy augment command", () => {
     expect(warnings).toEqual(["Warning: review other consumers before changing the supplied key"]);
   });
 
-  test("create scaffolds, registers, and optionally creates a runtime skill", async () => {
+  test("create defaults to no skill without prompting", async () => {
     const root = mkdtempSync(join(tmpdir(), "augment-create-command-"));
     writeFileSync(
       join(root, "agent.yaml"),
@@ -209,10 +209,10 @@ describe("auggy augment command", () => {
       rmSync(root, { recursive: true, force: true });
     }
 
-    expect(promptCreateSkill).toHaveBeenCalledWith("weather");
+    expect(promptCreateSkill).not.toHaveBeenCalled();
     expect(logs.join("\n")).toContain('Created and installed custom augment "weather"');
-    expect(logs.join("\n")).toContain("skills/weather/SKILL.md");
-    expect(logs.join("\n")).toContain(
+    expect(logs.join("\n")).not.toContain("skills/weather/SKILL.md");
+    expect(logs.join("\n")).not.toContain(
       "Next: customize the augment implementation and skill for your use case.",
     );
   });
@@ -238,7 +238,7 @@ describe("auggy augment command", () => {
       expect(existsSync(join(root, "augments", "order-support", "SKILL.md"))).toBe(false);
       expect(existsSync(join(root, "skills", "order-support", "SKILL.md"))).toBe(true);
       expect(logs).toContain(
-        'Created and installed custom augment "order-support" at augments/order-support.',
+        'Created and installed custom augment "order-support" at src/augments/order-support.',
       );
       expect(logs).toContain("Created skill at skills/order-support/SKILL.md.");
       expect(logs).toContain(
@@ -494,7 +494,7 @@ describe("listAugments and removeAugment", () => {
     }
   });
 
-  test("removes a built-in augment and its bundled skill folder", () => {
+  test("unregisters a built-in augment while preserving its bundled skill folder", () => {
     const root = mkdtempSync(join(tmpdir(), "augment-remove-"));
     try {
       const auggyDir = join(root, "auggy");
@@ -507,8 +507,10 @@ describe("listAugments and removeAugment", () => {
           "  provider: anthropic",
           "  model: claude-sonnet-4-6",
           "augments:",
-          "  - webTransport",
-          "  - visitorAuth",
+          "  - name: webTransport",
+          "    type: webTransport",
+          "  - name: visitorAuth",
+          "    type: visitorAuth",
           "",
         ].join("\n"),
       });
@@ -533,18 +535,18 @@ describe("listAugments and removeAugment", () => {
       expect(result).toMatchObject({
         name: "visitorAuth",
         type: "visitorAuth",
-        skillRemoved: join("skills", "visitorAuth"),
+        skillRemoved: null,
       });
       expect(result.warnings).toHaveLength(1);
       expect(result.warnings[0]).toContain("did not remove AGENTMAIL_*");
       expect(result.warnings[0]).toContain("did not");
       expect(result.warnings[0]).not.toMatch(/revoke .*key/i);
-      expect(existsSync(join(agentDir, "skills", "visitorAuth"))).toBe(false);
-      expect(existsSync(join(agentDir, "augments", "visitorAuth"))).toBe(false);
+      expect(existsSync(join(agentDir, "skills", "visitorAuth"))).toBe(true);
+      expect(existsSync(join(agentDir, "augments", "visitorAuth"))).toBe(true);
       const parsed = parseYaml(readFileSync(join(agentDir, "agent.yaml"), "utf-8")) as {
-        augments: string[];
+        augments: Record<string, unknown>[];
       };
-      expect(parsed.augments).toEqual(["webTransport"]);
+      expect(parsed.augments).toEqual([{ name: "webTransport", type: "webTransport" }]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -563,8 +565,10 @@ describe("listAugments and removeAugment", () => {
           "  provider: anthropic",
           "  model: claude-sonnet-4-6",
           "augments:",
-          "  - agentMail",
-          "  - visitorAuth",
+          "  - name: agentMail",
+          "    type: agentMail",
+          "  - name: visitorAuth",
+          "    type: visitorAuth",
           "",
         ].join("\n"),
       });
@@ -624,13 +628,15 @@ describe("createCustomAugment", () => {
         "name: demo\nengine:\n  provider: anthropic\n  model: claude-sonnet-4-6\naugments: []\n",
       );
       const result = createCustomAugment({ slug: "weather", cwd: root, includeSkill: true });
-      expect(result.augmentDir).toBe(join(root, "augments", "weather"));
+      expect(result.augmentDir).toBe(join(root, "src", "augments", "weather"));
       expect(existsSync(join(root, "augments", "weather", "SKILL.md"))).toBe(false);
       expect(existsSync(join(root, "skills", "weather", "SKILL.md"))).toBe(true);
       const parsed = parseYaml(readFileSync(join(root, "agent.yaml"), "utf-8")) as {
-        augments: string[];
+        augments: Record<string, unknown>[];
       };
-      expect(parsed.augments).toEqual(["weather"]);
+      expect(parsed.augments).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: "weather", type: "custom" })]),
+      );
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -672,18 +678,16 @@ describe("installCustomAugment", () => {
       expect(existsSync(join(agentDir, "skills", "weather", "SKILL.md"))).toBe(false);
 
       const parsed = parseYaml(readFileSync(join(agentDir, "agent.yaml"), "utf-8")) as {
-        augments: string[];
+        augments: Record<string, unknown>[];
       };
-      expect(parsed.augments).toEqual(["weather"]);
+      expect(parsed.augments).toEqual(
+        expect.arrayContaining([expect.objectContaining({ name: "weather", type: "custom" })]),
+      );
 
-      const metadata = parseYaml(
-        readFileSync(join(agentDir, "augments", "weather", "augment.yaml"), "utf-8"),
-      ) as Record<string, unknown>;
-      expect(metadata).toEqual({
-        type: "custom",
-        source: "./index.ts",
-        config: {},
-      });
+      expect(existsSync(join(agentDir, "augments", "weather", "augment.yaml"))).toBe(false);
+      expect(parsed.augments).toEqual([
+        { name: "weather", type: "custom", source: "./augments/weather/index.ts", options: {} },
+      ]);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

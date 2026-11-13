@@ -15,6 +15,16 @@ import {
   type McpConfig,
 } from "../mcp-config";
 import { formatDoctorChecks, hasDoctorFailures } from "./doctor";
+import { acquireProjectMutationLease } from "../authoring/publication-lease";
+
+function withMcpMutation<T>(agentDir: string, operation: () => T): T {
+  const lease = acquireProjectMutationLease(agentDir);
+  try {
+    return operation();
+  } finally {
+    lease.release();
+  }
+}
 
 export interface McpCommandDeps {
   auggyDir?: string;
@@ -35,7 +45,7 @@ export function mcpCommand(deps: McpCommandDeps = {}): Command {
     .action((opts: { agent?: string; config?: string }) => {
       try {
         const agentDir = resolveAgentDir(opts.agent, opts.config, deps);
-        const path = ensureMcpConfig(agentDir);
+        const path = withMcpMutation(agentDir, () => ensureMcpConfig(agentDir));
         console.log(`MCP config: ${displayPath(path, deps.cwd)}`);
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
@@ -86,7 +96,7 @@ export function mcpCommand(deps: McpCommandDeps = {}): Command {
       try {
         const agentDir = resolveAgentDir(opts.agent, opts.config, deps);
         const server = parseMcpServerJson(json);
-        setMcpServer(agentDir, name, server);
+        withMcpMutation(agentDir, () => setMcpServer(agentDir, name, server));
         console.log(
           `Added MCP server ${name} to ${displayPath(join(agentDir, ".mcp.json"), deps.cwd)}.`,
         );
@@ -105,7 +115,7 @@ export function mcpCommand(deps: McpCommandDeps = {}): Command {
     .action((name: string, opts: { agent?: string; config?: string }) => {
       try {
         const agentDir = resolveAgentDir(opts.agent, opts.config, deps);
-        const removed = removeMcpServer(agentDir, name);
+        const removed = withMcpMutation(agentDir, () => removeMcpServer(agentDir, name));
         if (!removed) throw new Error(`MCP server "${name}" not found.`);
         console.log(`Removed MCP server ${name}.`);
       } catch (err) {

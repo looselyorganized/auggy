@@ -18,5 +18,6 @@ function runQuietly(command: readonly string[]): void {
   throw new Error(`prepack command failed (${result.exitCode}): ${command.join(" ")}`);
 }
 
+runQuietly(["bun", "scripts/generate-source-index.ts", "--check"]);
 runQuietly(["bun", "run", "build:admin"]);
 runQuietly(["bun", "run", "verify:admin"]);
