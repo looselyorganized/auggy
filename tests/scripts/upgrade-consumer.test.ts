@@ -5,6 +5,7 @@ import { resolve } from "node:path";
 import { parseConfigFileTextToJson } from "typescript";
 import {
   belowFloor,
+  classifyUpgrade,
   hasLegacyServerAdvisory,
   migrateConsumerManifest,
   rebindLocalArtifactIntegrity,
@@ -13,6 +14,15 @@ import {
 const fixture = resolve(import.meta.dir, "../fixtures/release-upgrade/retained-lock");
 const read = (name: string) => readFileSync(resolve(fixture, name), "utf8");
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+
+test("upgrade accepts both same-version replacement and future releases without accepting downgrades", () => {
+  expect(classifyUpgrade("0.5.0", "0.5.0")).toBe("same-version-content-change");
+  expect(classifyUpgrade("0.5.0", "0.6.0")).toBe("versioned-upgrade");
+  expect(classifyUpgrade("0.5.0", "0.6.0-rc.1")).toBe("versioned-upgrade");
+  expect(() => classifyUpgrade("0.5.0", "0.4.9")).toThrow("must not downgrade");
+  expect(() => classifyUpgrade("0.5.0", "0.5.0-rc.1")).toThrow("must not downgrade");
+  expect(() => classifyUpgrade("0.5.0", "latest")).toThrow("valid package versions");
+});
 
 test("retained fixture is an actual baseline consumer lock with historical vulnerable versions", () => {
   const provenance = JSON.parse(read("provenance.json"));

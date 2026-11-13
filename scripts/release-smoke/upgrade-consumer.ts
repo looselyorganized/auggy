@@ -54,6 +54,22 @@ export function hasLegacyServerAdvisory(ids: Array<string | null>): boolean {
   return ids.some((id) => id !== null && LEGACY_SERVER_ADVISORIES.includes(id));
 }
 
+export function classifyUpgrade(
+  baseline: string,
+  candidate: string,
+): "same-version-content-change" | "versioned-upgrade" {
+  const version = /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+  check(
+    version.test(baseline) && version.test(candidate),
+    "Upgrade requires valid package versions",
+  );
+  check(
+    Bun.semver.order(candidate, baseline) >= 0,
+    "Candidate must not downgrade the baseline runtime",
+  );
+  return candidate === baseline ? "same-version-content-change" : "versioned-upgrade";
+}
+
 /** Rebind local pack bytes only; registry versions/integrities never change. */
 export function rebindLocalArtifactIntegrity(
   lockText: string,
@@ -544,10 +560,8 @@ export async function runUpgradeConsumer(options: {
     );
     const candidate: Manifest = JSON.parse(candidateBytes.toString());
     const baselineVersion = installedPackage(consumer, "auggy").manifest.version;
-    check(
-      candidate.name === "auggy" && candidate.version === baselineVersion,
-      "Upgrade fixture requires distinct artifacts with the same package version",
-    );
+    check(candidate.name === "auggy", "Upgrade candidate must be the auggy package");
+    const transitionKind = classifyUpgrade(baselineVersion ?? "", candidate.version ?? "");
     check(
       fileHash(options.candidateCore) !== provenance.baselineArtifacts["auggy-baseline.tgz"],
       "Candidate artifact is identical to baseline",
@@ -569,7 +583,7 @@ export async function runUpgradeConsumer(options: {
     const installedCore = installedPackage(consumer, "auggy");
     check(
       fileHash(join(installedCore.root, "package.json")) === sha(candidateBytes),
-      "Same-version transition did not install candidate B metadata",
+      "Upgrade did not install candidate B metadata",
     );
     const candidateCodeHashes: Record<string, string> = {};
     for (const file of [
@@ -643,6 +657,8 @@ export async function runUpgradeConsumer(options: {
       lockAfterSHA256: fileHash(join(consumer, "bun.lock")),
       nodeModulesRetained: true,
       candidateVersion: candidate.version,
+      baselineVersion,
+      transitionKind,
       candidateSHA256: fileHash(options.candidateCore),
       candidateManifestSHA256: sha(candidateBytes),
       auditStatus: negativeAudit.status,
