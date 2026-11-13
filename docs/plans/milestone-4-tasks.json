@@ -134,7 +134,7 @@
       "id": "M4-01",
       "title": "Pure configuration documents and recoverable publication",
       "specialist": "configuration engineer",
-      "status": "review",
+      "status": "accepted",
       "blockedBy": [],
       "dependsOn": [
         "M4-00"
@@ -159,8 +159,10 @@
         "tests/cli/authoring-document*",
         "tests/cli/authoring-publication*"
       ],
-      "acceptedCommit": null,
-      "evidence": [],
+      "acceptedCommit": "9d70e6e039b41ccbde5a85f666128099e929aeb6",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md"
+      ],
       "acceptanceScope": "scoped-producer-contribution",
       "startedAt": "2026-11-13T06:10:54.267586+00:00",
       "producerBaseline": "88b815ed3ead921e44be53687193d0799e5d3b21",
@@ -176,20 +178,29 @@
           "assertions": 491
         },
         "publication": {
-          "status": "in_progress",
+          "status": "accepted-scoped",
           "reviewer": "m4_foundation_review",
-          "remaining": "Independent recheck of interruption/recovery/receipt-bound repairs"
+          "platform": "macOS arm64",
+          "tests": 61,
+          "assertions": 295,
+          "remaining": "Linux execution required in final CI"
         }
+      },
+      "acceptedAt": "2026-11-13T06:31:00.761144+00:00",
+      "verification": {
+        "rootCombinedTests": 154,
+        "rootCombinedAssertions": 798,
+        "typecheck": "passed",
+        "lint": "passed; existing schema informational notice",
+        "reviewFindings": "all closed"
       }
     },
     {
       "id": "M4-02",
       "title": "Executable create/init and package coherence",
       "specialist": "application DX engineer",
-      "status": "blocked",
-      "blockedBy": [
-        "M4-01"
-      ],
+      "status": "accepted",
+      "blockedBy": [],
       "dependsOn": [
         "M4-01"
       ],
@@ -217,18 +228,27 @@
         "tests/cli/create*",
         "tests/cli/scaffold-application*"
       ],
-      "acceptedCommit": null,
-      "evidence": [],
-      "acceptanceScope": "scoped-producer-contribution"
+      "acceptedCommit": "9e56b803c1a5d3b65cc1efc815c4399d32873c90",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md"
+      ],
+      "acceptanceScope": "scoped-producer-contribution",
+      "startedAt": "2026-11-13T06:31:00.761144+00:00",
+      "producerBaseline": "9d70e6e039b41ccbde5a85f666128099e929aeb6",
+      "owner": "m4_scaffold_engineer",
+      "acceptedAt": "2026-11-13T06:49:11.696535+00:00",
+      "review": {
+        "status": "accepted-scoped",
+        "reviewer": "m4_foundation_review",
+        "verification": "142 tests / 669 assertions and independent FIFO reproduction; bounded no-follow metadata discovery and complete init preflight; installed acceptance pending"
+      }
     },
     {
       "id": "M4-03",
       "title": "Central augment and custom capability authoring",
       "specialist": "augment authoring engineer",
-      "status": "blocked",
-      "blockedBy": [
-        "M4-01"
-      ],
+      "status": "accepted",
+      "blockedBy": [],
       "dependsOn": [
         "M4-01"
       ],
@@ -253,19 +273,27 @@
         "tests/cli/augment-authoring*",
         "tests/cli/scaffold-custom-augment*"
       ],
-      "acceptedCommit": null,
-      "evidence": [],
-      "acceptanceScope": "scoped-producer-contribution"
+      "acceptedCommit": "9e56b803c1a5d3b65cc1efc815c4399d32873c90",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md"
+      ],
+      "acceptanceScope": "scoped-producer-contribution",
+      "startedAt": "2026-11-13T06:31:00.761144+00:00",
+      "producerBaseline": "9d70e6e039b41ccbde5a85f666128099e929aeb6",
+      "owner": "m4_augment_engineer",
+      "review": {
+        "status": "accepted-scoped",
+        "reviewer": "m4_foundation_review",
+        "verification": "Independent malformed/invalid-UTF8/oversize manifest and env-FIFO probes; 70 tests/341 assertions plus 46 tests/239 assertions; installed acceptance pending"
+      },
+      "acceptedAt": "2026-11-13T06:49:11.696535+00:00"
     },
     {
       "id": "M4-04",
       "title": "Explicit config conversion and application adoption",
       "specialist": "migration engineer",
-      "status": "blocked",
-      "blockedBy": [
-        "M4-01",
-        "M4-02"
-      ],
+      "status": "accepted",
+      "blockedBy": [],
       "dependsOn": [
         "M4-01",
         "M4-02"
@@ -289,19 +317,29 @@
         "tests/cli/migration*",
         "tests/fixtures/authoring-migration/"
       ],
-      "acceptedCommit": null,
-      "evidence": [],
-      "acceptanceScope": "scoped-producer-contribution"
+      "acceptedCommit": "1667e21d2cc7185420be5516ee5629835dff7f05",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md"
+      ],
+      "acceptanceScope": "scoped-producer-contribution",
+      "startedAt": "2026-11-13T06:49:11.696535+00:00",
+      "producerBaseline": "9e56b803c1a5d3b65cc1efc815c4399d32873c90",
+      "owner": "m4_migration_engineer",
+      "acceptedAt": "2026-11-13T07:07:49.303784+00:00",
+      "review": {
+        "status": "accepted-scoped",
+        "reviewer": "m4_foundation_review",
+        "tests": 69,
+        "assertions": 700,
+        "installedAcceptance": "pending"
+      }
     },
     {
       "id": "M4-05",
       "title": "Inline AgentMail configuration with security parity",
       "specialist": "credential security engineer",
-      "status": "blocked",
-      "blockedBy": [
-        "M4-01",
-        "M4-03"
-      ],
+      "status": "accepted",
+      "blockedBy": [],
       "dependsOn": [
         "M4-01",
         "M4-03"
@@ -321,18 +359,29 @@
         "src/cli/commands/agentmail.ts",
         "tests/cli/agentmail*"
       ],
-      "acceptedCommit": null,
-      "evidence": [],
-      "acceptanceScope": "scoped-producer-contribution"
+      "acceptedCommit": "1667e21d2cc7185420be5516ee5629835dff7f05",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md"
+      ],
+      "acceptanceScope": "scoped-producer-contribution",
+      "startedAt": "2026-11-13T06:49:11.696535+00:00",
+      "producerBaseline": "9e56b803c1a5d3b65cc1efc815c4399d32873c90",
+      "owner": "m4_agentmail_engineer",
+      "acceptedAt": "2026-11-13T07:07:49.303784+00:00",
+      "review": {
+        "status": "accepted-scoped",
+        "reviewer": "m4_foundation_review",
+        "tests": 60,
+        "assertions": 200,
+        "installedAcceptance": "pending"
+      }
     },
     {
       "id": "M4-06",
       "title": "Passive inspection and installed source navigation",
       "specialist": "inspection engineer",
-      "status": "blocked",
-      "blockedBy": [
-        "M4-01"
-      ],
+      "status": "accepted",
+      "blockedBy": [],
       "dependsOn": [
         "M4-01"
       ],
@@ -357,15 +406,26 @@
         "tests/cli/inspect*",
         "tests/scripts/source-index*"
       ],
-      "acceptedCommit": null,
-      "evidence": [],
-      "acceptanceScope": "scoped-producer-contribution"
+      "acceptedCommit": "9e56b803c1a5d3b65cc1efc815c4399d32873c90",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md"
+      ],
+      "acceptanceScope": "scoped-producer-contribution",
+      "startedAt": "2026-11-13T06:31:00.761144+00:00",
+      "producerBaseline": "9d70e6e039b41ccbde5a85f666128099e929aeb6",
+      "owner": "m4_inspection_engineer",
+      "review": {
+        "status": "accepted-scoped",
+        "reviewer": "m4_foundation_review",
+        "verification": "111 tests/506 assertions including root command integration; final source-index 26 tests/58 assertions and generator check; installed acceptance pending"
+      },
+      "acceptedAt": "2026-11-13T06:49:11.696535+00:00"
     },
     {
       "id": "M4-07",
       "title": "Actual generated-project installed acceptance",
       "specialist": "harness engineer",
-      "status": "in_progress",
+      "status": "review",
       "blockedBy": [],
       "dependsOn": [
         "M4-00"
@@ -426,20 +486,24 @@
           "providerFixtureTests": 18,
           "providerFixtureAssertions": 86
         }
-      }
+      },
+      "implementationCommit": "4693ee0168eff5c0affd2b09efa295ef8d6b9aa2",
+      "review": {
+        "status": "accepted-scoped",
+        "reviewer": "m4_harness_review",
+        "tests": 36,
+        "assertions": 171,
+        "findings": "Generated inventory and detached service log supervision gaps repaired and independently rechecked",
+        "finalAcceptance": "Await accepted M4-08 and rebuilt candidate installed suite"
+      },
+      "finalCandidatePreparation": "a5f2ba0b7a822132a99538184d90a8345416fd24"
     },
     {
       "id": "M4-08",
       "title": "Public and agent-facing teaching alignment",
       "specialist": "documentation engineer",
-      "status": "blocked",
-      "blockedBy": [
-        "M4-02",
-        "M4-03",
-        "M4-04",
-        "M4-05",
-        "M4-06"
-      ],
+      "status": "accepted",
+      "blockedBy": [],
       "dependsOn": [
         "M4-02",
         "M4-03",
@@ -462,9 +526,22 @@
         "src/cli/auggy-self-augment.ts",
         "template README only after M4-02 hands ownership over"
       ],
-      "acceptedCommit": null,
-      "evidence": [],
-      "acceptanceScope": "scoped-producer-contribution"
+      "acceptedCommit": "a5f2ba0b7a822132a99538184d90a8345416fd24",
+      "evidence": [
+        "milestone-4-evidence-2026-11-13.md"
+      ],
+      "acceptanceScope": "scoped-producer-contribution",
+      "owner": "m4_documentation_engineer",
+      "startedAt": "2026-11-13T07:07:49.303784+00:00",
+      "producerBaseline": "1667e21d2cc7185420be5516ee5629835dff7f05",
+      "review": {
+        "status": "accepted-scoped",
+        "reviewer": "m4_documentation_review",
+        "tests": 63,
+        "assertions": 704,
+        "findings": "All command, asset, test, ownership-diagram and duplicated-declaration teaching findings repaired and independently rechecked"
+      },
+      "acceptedAt": "2026-11-13T07:29:29.316511+00:00"
     },
     {
       "id": "M4-09",
@@ -506,7 +583,12 @@
       ],
       "acceptedCommit": null,
       "evidence": [],
-      "acceptanceScope": "independent-integrated-review"
+      "acceptanceScope": "independent-integrated-review",
+      "preparation": {
+        "status": "read-only-source-audit",
+        "owner": "m4_final_architecture_review",
+        "acceptance": "GO pending accepted M4-07/08 and exact final candidate"
+      }
     },
     {
       "id": "M4-10",
@@ -575,7 +657,7 @@
       "milestone-4-contracts/inspection.md": "33993a110a642ab34b34532079f778a5d69f4fd3fd8ca67e5b003080ffc9df65",
       "milestone-4-contracts/acceptance.md": "f940dcdb5bb8e78e3e89457a2dd4400c2fd9c5ba824a63909d3545b210725007",
       "milestone-4-contracts/freeze.md": "f88873d72344b49ed093cd93f73e94874a2d044acc45fbd1a191251c0e043fce",
-      "milestone-4-contracts/harness-freeze.md": "c6cb1a9a2dde00287e0ac2205953459c2a3e1a2cb6b257f6e84872a8467bb4a0"
+      "milestone-4-contracts/harness-freeze.md": "0db84fe58fd76e148d73c892d901d51218495ea5a648214285bde793aa1480fe"
     },
     "findings": {
       "resolved": [
@@ -590,13 +672,11 @@
     "approvedPlanningPlanSHA256": "7a61b593f9ef2bac167d8e6534e1852cf9a7a83650f52d579fbb5d4356358c51"
   },
   "activeOwnership": {
-    "root": "shared contracts, integration, manifests, CLI registration and acceptance",
-    "m4_publication_engineer": "M4-01 publication/lease/receipts/recovery and focused tests",
-    "m4_foundation_review": "Independent read-only M4-01 foundation and root passive integration review",
-    "m4_augment_engineer": "M4-03 read-only preparation; awaiting M4-01 acceptance"
+    "root": "Final frozen-candidate verification, release artifacts/CI, evidence and PR handoff",
+    "m4_final_architecture_review": "Read-only preparation and final integrated review after installed gate"
   },
   "notes": [
-    "G0 and M4-00 accepted; M4-01 document/publication producers and M4-07 preparation in progress.",
+    "G0 and all product producers M4-00 through M4-06 accepted in scope. Installed M4-07 evidence and M4-08 teaching alignment underway; final integrated review/certification pending.",
     "M4-07 may prepare after M4-00 acceptance; its installed acceptance also requires acceptanceDependsOn.",
     "Only root changes task/gate acceptance status.",
     "M5/M6 remain roadmap outcomes; no merge or publication authorized by this plan."

@@ -310,3 +310,18 @@ These are static source observations, not timed human usability results:
 
 No claim of measured DX improvement, installed acceptance or completed execution
 is made by this preparation document. Root freezes its exact revision after G0.
+
+
+## Detached service log supervision refinement
+
+The generated macOS service writes to its isolated HOME's ordinary log files,
+independently of CLI control-command stdout/stderr. Monitor those files from
+before start through restart and cleanup at a bounded 100 ms interval. An
+observed file above 2 MiB, an alias, or a nonregular file fails the run and starts
+owned-service cleanup. Preserve the first failure and never terminate the stop
+or listing commands that perform cleanup. Missing logs before creation are normal.
+Record only maximum observed sizes and the guard outcome, never log contents.
+Polling bounds detection latency rather than instantaneous filesystem writes;
+bytes may overshoot between observations. Final artifact evidence must retain
+that distinction. This closes the independent M4-07 review finding without
+changing product logging or the frozen application recipe.

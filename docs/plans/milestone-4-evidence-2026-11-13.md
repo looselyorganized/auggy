@@ -148,8 +148,139 @@ Late review also verified shell-escaped migration guidance stays below 1,024
 bytes, and passive package JSON has iterative depth/node limits before recursive
 export selection. Final document/runtime checks passed 64 tests / 354 assertions;
 the previously reviewed I/O, mutation and grammar checks remain passing. Root's
-combined regression before the last metadata case passed 153 tests / 790
+final combined regression passed 154 tests / 798
 assertions, full typecheck and full lint (existing Biome schema informational
 notice only). All concrete review findings are closed. Native execution was
 verified on macOS arm64; Linux remains a required CI check. This is scoped
 foundation acceptance, not installed-artifact or milestone certification.
+
+
+## M4-02/03/06 producer review checkpoint
+
+The scaffold and custom-capability producers delivered the visible execution
+recipe, central inline authoring and shared-service starter. Passive inspection
+now pre-dispatches from the actual CLI ahead of the ordinary command graph and
+uses the selected installed package's source index. Root added serialized skill
+asset repair/removal and MCP domain writes, plus source-index packaging checks.
+
+The independent reviewer accepted M4-06 and that command integration after 111
+tests / 506 assertions. The final index-bound correction passed 26 tests / 58
+assertions and the generator check: installed index input permits exactly 1 MiB,
+then rejects larger files. Copied real-binary import traps, environment FIFO and
+redaction cases are scoped command evidence, not final tarball certification.
+
+Review found that augment addition could rewrite invalid UTF-8 or oversized
+package metadata, leak malformed JSON tokens, or hang on an unrelated `.env`
+FIFO. The producer corrected bounded/fatal reads, sanitized diagnostics and
+readiness preflight. Independent reproducers confirmed byte preservation,
+redaction and nonblocking behavior; focused independent checks passed 70 tests /
+341 assertions plus 46 tests / 239 assertions. M4-03 scoped review is accepted.
+
+M4-02 review separately found init consulted an occupied package.json FIFO before
+collision preflight. The producer moved package selection after collision checks
+and bounded workspace metadata/artifact discovery. Final recheck is pending at
+this checkpoint. No installed milestone row is accepted yet. Root's preliminary
+source-index/prepack/console build and artifact verification passed, and the
+shared application-artifact helper regression passed 17 tests / 95 assertions.
+
+
+Independent M4-02 final recheck passed 142 tests / 669 assertions and confirmed
+immediate, mutation-free rejection of the original FIFO probe. All three scoped
+producers and root command/packaging integration were accepted and recorded in
+`9e56b80`. The review found no remaining blocker in those scopes. This advances
+M4-04 migration and M4-05 AgentMail implementation; M4-07 now implements actual
+installed generation and execution rather than only helper preparation.
+
+
+## Migration and credential integration accepted in scope
+
+Independent M4-04 review passed 69 tests / 700 assertions, including a real copied
+binary with no environment, writer, FFI, selected runtime or provider execution in
+preview. Raw declarations, source bases and values survive conversion; adoption
+rejects existing owned files and incompatible manifest fields. SIGKILL recovery
+covers eight publication boundaries and preserves changed outputs.
+
+Independent M4-05 review passed 60 tests / 200 assertions. Inline canonical setup
+selects raw declarations before network/credentials, holds project then env leases,
+revalidates after provider verification, and compensates credentials only for a
+verified original activation with an unchanged env postimage. Output or unknown
+activation retains verified credentials and recovery guidance. Legacy visitor
+listing/revocation remains operational. Fresh packed execution is still required.
+
+Root replaced remaining graph-command name selection with the same bounded raw
+selector, preserving catalog listing outside a project. The independent product
+regression passed 106 tests / 501 assertions. Follow-up bounded actual-CLI FIFO
+controls replace eval-based probes and passed 29 tests / 160 assertions. These
+product changes are recorded in `1667e21`.
+
+Preliminary checkpoint `9e56b80` artifacts passed installed generation, dependency
+installation, generated typecheck/tests, strict audit and frozen reinstall for all
+four providers. The untouched Anthropic application answered through the real
+adapter. Its tool/route shared-service fixture, all 15 source-edit observations
+across five launch paths, restorations, denial and durable replay passed with
+confirmed cleanup. Passive local/synthetic-version global inspection also passed
+strict import traps and restored exact bytes. These results are iterative harness
+evidence; docs and final artifacts have not yet been certified.
+
+Independent review caught a generated-service harness assumption that rejected
+create's own `data/workspace/README.md`. The repaired bounded freshness check
+permits exactly that ordinary documentation leaf and rejects other state, aliases
+and FIFO files; 5 tests / 17 assertions and an actual generated-output probe pass.
+A subsequent real service setup attempt exposed a missing fixture agent-ID env
+reference; the test environment now carries the same explicit ID as its config.
+Actual macOS service lifecycle remains pending the rerun; no rendered plist is
+counted as service proof.
+
+The preliminary generated macOS service rerun passed with confirmed cleanup in
+`/private/tmp/auggy-m4-authoring-service-5/authoring-launchd.json`: actual start,
+status, restart and stop, untouched answer-only execution, observed HTTP-source
+edit, durable restart replay, generation/PID replacement and released claims.
+This used the earlier `9e56b80` artifact; final-source certification will rerun it.
+
+Wave-two product artifact `1667e21` (core SHA-256
+`dd1330b8d196dd08ad18e26364c467b310cc6a79fe90f926b10ed3714b251e55`)
+passed the actual packed AgentMail CLI script, including inline configuration,
+credential verification/failure preservation and legacy visitor operations.
+The script exited zero after closing its loopback provider. Evidence is private
+at `/tmp/m4-wave2-agentmail-packed.log`; no live provider credentials were used.
+
+
+## Installed harness review
+
+The combined wave-two suite passed every generated-project stage, including
+actual macOS service execution, active-turn migration, unequal-version passive
+inspection, ownership replacement and deployment staging. Its private report is
+`/private/tmp/auggy-m4-combined-wave2/authoring-suite.json`. The successful suite
+removed its isolated workspace only after component cleanup succeeded.
+
+Independent reviewer `m4_harness_review` accepted the scoped harness after 36
+tests / 171 assertions and inspection of the actual scenario evidence. Two
+coverage gaps were closed before checkpoint `4693ee0`: a bounded whole-tree
+inventory now rejects unexpected legacy metadata/duplicate definitions before
+installation, and a detached-service log watchdog checks ordinary owned log
+files, records maximum observed bytes, and initiates failure cleanup on excess.
+The watchdog preserves cleanup control processes. Its 100 ms polling bounds
+observation latency, not instantaneous disk writes; logs may overshoot between
+observations, and this limitation is recorded rather than called a hard byte cap.
+Service log contents are not archived.
+
+All four actual provider creations passed the added inventory gate (79 entries
+each); private env/receipt/state entries have no public byte hashes. The latest
+installed migration rerun also passed active-turn conversion/adoption and exact
+recovery after preview/cleanup hardening. These follow-up reports live under
+`/private/tmp/auggy-m4-inventory-wave2` and
+`/private/tmp/auggy-m4-migration-iteration-4`. Final rebuilt artifacts must rerun
+all gates together after documentation acceptance.
+
+
+## Teaching alignment accepted
+
+Independent M4-08 review accepted public documentation, generated READMEs,
+self-guidance, canonical builder assets and both byte-identical mirrors after
+63 tests / 704 assertions. Review repaired real stale helper/eval test contracts,
+distinguished dedicated AgentMail automation commands, separated repository-only
+subtrees from installed package paths, and made execution arrows and single-entry
+configuration teaching unambiguous. The README explicitly identifies the
+unreleased 0.6 direction; no current npm publication is implied. Accepted source
+checkpoint: `a5f2ba0`. Final rebuilt-artifact and repository-wide certification
+now follows; historical plans and valid legacy fixture source remain preserved.
