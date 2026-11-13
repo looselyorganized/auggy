@@ -1,7 +1,8 @@
 # Milestone 3 — executable reference application
 
 Status: execution authorized; foundation gate G0 accepted on verified main
-`209185d0e7481b4ff5d3b4c87e3447e7583b2fef`. M3-00 contract freeze is next.
+`209185d0e7481b4ff5d3b4c87e3447e7583b2fef`. M3-00 contracts are reviewed and
+verified; dependent implementation follows the recorded freeze commit.
 This is the execution packet for specialized engineering subagents,
 orchestrated by the CTO / AI Engineering Lead. It supplements the
 [release plan](./release-0.6.0-the-tree-2026-08-18.md) and implements the accepted
@@ -132,10 +133,11 @@ ignores `index.ts` and silently starts a different host does not satisfy M3.
 
 ## Contract decisions for implementation
 
-Names below are proposed, not existing exports. M3-00 freezes exact signatures
-and fixtures before dependent agents implement. These behavioral constraints are
-binding. New operations remain in the existing `auggy` package, with a proposed
-`auggy/application` subpath; do not create another npm package for this milestone.
+The [M3-00 contract packet](./milestone-3-contracts/README.md) freezes the exact
+shared public/private types and compile-only fixtures. Runtime implementation is
+still pending; these behavioral constraints bind the dependent tasks. New
+operations remain in the existing `auggy` package, with an `auggy/application`
+subpath; do not create another npm package for this milestone.
 Public runtime types remain in `src/types.ts` under repository conventions.
 
 ### C1. Application discovery and startup
@@ -199,7 +201,7 @@ accounting setters. Proposed `TurnProgram` returns a runtime-issued completion;
 it cannot construct an authoritative `TurnResult` as ordinary application data.
 
 The application recipe must show real branching and iteration. Illustrative
-shape, subject to M3-00's typed contract fixtures:
+shape, checked by M3-00's typed contract fixture:
 
 ```ts
 export const runTurn: TurnProgram = async (turn) => {
@@ -215,7 +217,8 @@ export const runTurn: TurnProgram = async (turn) => {
     const batch = await turn.executeTools(step);
     if (batch.kind === "terminal") return batch.completion;
     if (batch.kind === "final-answer-required") {
-      return turn.complete(await turn.inferFinal(batch));
+      const recovery = await turn.inferFinal(batch);
+      return recovery.kind === "terminal" ? recovery.completion : turn.complete(recovery);
     }
     await turn.refreshPrompt();
   }
@@ -304,11 +307,12 @@ shortcut or let request bodies manufacture trusted `TurnTrigger.peer` values.
 Extract handler preparation from listener activation while retaining one guarded
 implementation. The existing webTransport can use that adapter internally; the
 reference app mounts it explicitly. Retain existing console, health/readiness,
-augment routes, CORS/preflight, origin/proxy rules, anonymous/visitor identity and
-WebSocket behavior where currently supported. The fallback handler must use the
+augment routes, CORS/preflight, origin/proxy rules and anonymous/visitor identity.
+Current webTransport has no WebSocket upgrade API; do not invent one. Other
+augments' existing socket lifecycles remain intact. The fallback handler must use the
 same policies and must not create a second, less protected `/agent/run` path.
 
-The managed listener owns required Bun server options, upgrade handling, body and
+The managed listener owns required Bun server options, body and
 idle limits, startup barrier and shutdown. Binding twice, mounting after readiness,
 or selecting conflicting transport ownership must fail clearly. There must never
 be both an implicit webTransport listener and an app listener for the same config.
@@ -549,7 +553,8 @@ certify the packed path. Supported workspace-link tests are a separate fixture.
 ## Orchestrator protocol and durable handoff
 
 Task state is tracked in [the execution ledger](./milestone-3-tasks.json).
-G0 is accepted; M3-00 is ready. The CTO alone accepts a task and unlocks its
+G0 is accepted; M3-00 contract verification passed. The ledger records its freeze
+commit and dependent task states. The CTO alone accepts a task and unlocks its
 dependents. State progression is `blocked → ready → in_progress → review →
 accepted`; failed checks return work to its owner, not to an implicit exception.
 
@@ -588,7 +593,7 @@ unimplemented behavior. G0 was subsequently accepted after merged-main verificat
 as recorded above.
 
 Before M3-00 is accepted, settle exact exported names and type shapes, entrypoint
-validation, contract capability metadata, HTTP/WebSocket binding, host rollback
+validation, contract capability metadata, HTTP/listener binding, host rollback
 order, and all turn-state transitions. The recommended decisions above remove
 directional ambiguity; source evidence at `M3_BASELINE` determines the final
 signatures. No specialist may fill a gap by inventing a competing API.

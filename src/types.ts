@@ -427,6 +427,267 @@ export interface TurnResult {
   errorClass?: TurnRejectionClass;
 }
 
+// === Managed application turn contracts ===
+// Receipts are issued and validated by the runtime; brands alone are not authority.
+
+declare const managedTurnReceipt: unique symbol;
+
+export interface TurnCompletion {
+  readonly [managedTurnReceipt]: "completion";
+}
+
+export interface TurnAnswerReceipt {
+  readonly [managedTurnReceipt]: "answer";
+  readonly kind: "answer";
+  readonly reason: "answer" | "max-tokens" | "recovery";
+}
+
+export interface TurnToolBatchReceipt {
+  readonly [managedTurnReceipt]: "tools";
+  readonly kind: "tools";
+  readonly toolCallCount: number;
+}
+
+export interface TurnFinalInferenceReceipt {
+  readonly [managedTurnReceipt]: "final-inference";
+  readonly kind: "final-answer-required";
+}
+
+export interface TurnTerminalStep {
+  readonly kind: "terminal";
+  readonly completion: TurnCompletion;
+}
+
+export interface ManagedTurnSession {
+  readonly turnId: string;
+  readonly threadId: string;
+  readonly triggerType: TurnTriggerType;
+  readonly signal: AbortSignal;
+  /** Dispatched managed calls, including recovery and unsuccessful attempts. */
+  readonly inferenceCount: number;
+  /** Ordinary-loop allowance; recovery has its separate guarded transition. */
+  readonly remainingInferences: number;
+
+  dispatchInternalTurn(): Promise<
+    Readonly<{ handled: false }> | Readonly<{ handled: true; completion: TurnCompletion }>
+  >;
+  preparePrompt(): Promise<Readonly<{ kind: "ready" }> | TurnTerminalStep>;
+  infer(): Promise<TurnAnswerReceipt | TurnToolBatchReceipt>;
+  executeTools(
+    batch: TurnToolBatchReceipt,
+  ): Promise<Readonly<{ kind: "continue" }> | TurnFinalInferenceReceipt | TurnTerminalStep>;
+  inferFinal(recovery: TurnFinalInferenceReceipt): Promise<TurnAnswerReceipt | TurnTerminalStep>;
+  refreshPrompt(): Promise<void>;
+  complete(answer: TurnAnswerReceipt): TurnCompletion;
+  finishAtLimit(): TurnCompletion;
+  stop(reason: "application-limit"): TurnCompletion;
+}
+
+export type TurnProgram = (turn: ManagedTurnSession) => Promise<TurnCompletion>;
+
+export interface TurnProgramBinding {
+  readonly run: TurnProgram;
+  /** Positive safe integer, at most configured maxInferenceLoops. */
+  readonly maxInferences?: number;
+  /** Positive safe integer, at most 900_000; defaults to 900_000. */
+  readonly timeoutMs?: number;
+}
+
+export interface ThreadHistoryCommitResult {
+  readonly disposition: "committed" | "deferred-to-transport";
+}
+
+export type TurnFinalizationFailureCode =
+  | "scheduler-rejected"
+  | "startup-admission-failed"
+  | "execution-start-failed"
+  | "history-restore-failed"
+  | "admission-state-failed"
+  | "admission-denied"
+  | "required-start-hook-failed"
+  | "internal-handler-failed"
+  | "required-context-failed"
+  | "context-assembly-failed"
+  | "provider-failed"
+  | "provider-capacity-exhausted"
+  | "model-response-limit"
+  | "effect-outcome-unknown"
+  | "caller-canceled"
+  | "program-deadline-exceeded"
+  | "program-contract-violation"
+  | "program-threw"
+  | "kernel-failed"
+  | "cost-commit-failed"
+  | "history-commit-failed";
+
+export interface TurnFinalizationObservation {
+  readonly turnId: string;
+  readonly threadId: string;
+  readonly triggerType: TurnTriggerType;
+  readonly source: "transport" | "inject";
+  readonly boundary: "before-post-turn";
+  /** Scheduler task entered its execution-start callback boundary. */
+  readonly executionStarted: boolean;
+  /** Selected application/default program invocation began. */
+  readonly sessionStarted: boolean;
+  readonly outcome: "completed" | "failed" | "canceled" | "rejected" | "outcome-unknown";
+  readonly status: TurnResult["status"];
+  readonly disposition: "returned" | "threw";
+  readonly outcomeUnknown: boolean;
+  readonly primaryFailureCode: TurnFinalizationFailureCode | null;
+  readonly priorFailureCodes: readonly TurnFinalizationFailureCode[];
+  readonly history:
+    | "not-started"
+    | "memory-only"
+    | "committed"
+    | "deferred-to-transport"
+    | "restore-failed"
+    | "commit-failed";
+  readonly accounting: Readonly<{
+    state: "not-required" | "not-configured" | "committed" | "failed";
+    pricing: "none" | "priced" | "unpriced";
+  }>;
+  readonly trace: Readonly<{
+    started: boolean;
+    inferenceAttempts: number;
+    recordedInferenceSteps: number;
+    toolAttempts: number;
+    successfulToolCalls: number;
+    capabilityChecks: number;
+    snapshot: "not-recorded" | "recorded" | "failed";
+  }>;
+  /** Snapshot only: logical settlement does not release an occupied lane. */
+  readonly pendingEffects: boolean;
+}
+
+export type TurnFinalizationObserver = (
+  observation: TurnFinalizationObservation,
+) => void | Promise<void>;
+
+export interface AgentExecutionOptions {
+  readonly turnProgram?: TurnProgramBinding;
+  readonly onTurnFinalized?: TurnFinalizationObserver;
+}
+
+// === Managed application host and HTTP contracts ===
+
+declare const compositionBrand: unique symbol;
+declare const httpRequestBrand: unique symbol;
+declare const listenerBrand: unique symbol;
+
+export type ApplicationMain = (launch: ApplicationLaunch) => Promise<void>;
+
+export interface ApplicationDirectLaunchOptions {
+  readonly config: URL;
+  readonly entrypoint: string;
+}
+
+/** Signature implemented by the managed direct-entry runner. */
+export type ApplicationRunner = (
+  main: ApplicationMain,
+  direct: ApplicationDirectLaunchOptions,
+) => Promise<void>;
+
+export interface ApplicationLaunch {
+  readonly configPath: string;
+  readonly mode: "direct" | "foreground" | "launchd" | "railway";
+  // Synchronous: register runner-owned cleanup before returning this handle.
+  // Does not import configured factories or acquire resources yet.
+  createHost(options: { compose: AgentComposer }): ManagedApplicationHost;
+}
+
+export type AgentComposer = (
+  configured: ConfiguredAgentComposition,
+) => AgentComposition | Promise<AgentComposition>;
+
+export interface ConfiguredAgentComposition {
+  // Uses exactly this host's parsed YAML, resolved provider and augment graph.
+  // No second enabled-augment list, raw model, tool callbacks or peer authority.
+  compose(options: {
+    turnProgram: TurnProgramBinding;
+    onTurnFinalized?: TurnFinalizationObserver;
+  }): AgentComposition;
+}
+
+export interface AgentComposition {
+  readonly [compositionBrand]: true;
+}
+
+export interface ManagedApplicationHost {
+  prepare(): Promise<PreparedApplication>;
+  start(options: { http: readonly ManagedHttpListener[] }): Promise<ApplicationReady>;
+  stop(options?: { deadlineMs?: number }): Promise<HostStopResult>;
+}
+
+export interface PreparedApplication {
+  // In YAML order. Empty when no webTransport is configured.
+  readonly http: readonly ConfiguredWebHttp[];
+}
+
+export interface ConfiguredWebHttp {
+  readonly name: string; // configured augment instance name, not a secret
+  readonly agentRun: ManagedHttpHandler;
+  readonly fallback: ManagedHttpHandler;
+  createListener(options: {
+    routes: readonly [AgentRunMount];
+    fallback: ManagedHttpHandler;
+  }): ManagedHttpListener;
+}
+
+export interface AgentRunMount {
+  readonly method: "POST";
+  readonly path: "/agent/run";
+  readonly handle: ManagedHttpHandler;
+}
+
+export interface ManagedHttpRequest {
+  readonly [httpRequestBrand]: true;
+  readonly method: string;
+  readonly url: string;
+  readonly headers: {
+    readonly get: (name: string) => string | null;
+    readonly has: (name: string) => boolean;
+  };
+}
+
+export type ManagedHttpHandler = (request: ManagedHttpRequest) => Response | Promise<Response>;
+
+export interface ManagedHttpListener {
+  readonly [listenerBrand]: true;
+}
+
+export interface ApplicationReady {
+  readonly agentName: string;
+  readonly http: readonly {
+    readonly name: string;
+    readonly port: number;
+    readonly localBaseUrl: string;
+    readonly consoleUrl: string | null;
+  }[];
+}
+
+export type HostStopResult =
+  | {
+      readonly status: "stopped";
+      readonly ownership: "released";
+      readonly cleanup: "complete" | "failed";
+      readonly failures: readonly HostCleanupFailureCode[];
+    }
+  | {
+      readonly status: "retained";
+      readonly ownership: "retained";
+      readonly reason: "deadline" | "cleanup-failed" | "live-work" | "outcome-unknown";
+      readonly failures: readonly HostCleanupFailureCode[];
+    };
+
+export type HostCleanupFailureCode =
+  | "augment-shutdown-failed"
+  | "idle-callback-failed"
+  | "job-stop-failed"
+  | "job-close-failed"
+  | "transport-drain-failed"
+  | "resource-release-failed";
+
 export type TurnRejectionClass = "cap-denied" | "admission-state-failed" | "engine-error";
 
 export type TurnRejectionReason =
@@ -693,7 +954,13 @@ export interface ThreadHistorySnapshot {
 export interface ThreadHistoryPersistence {
   load(threadId: string, peer: PeerIdentity): Promise<unknown | null>;
   assertAccess(threadId: string, peer: PeerIdentity): Promise<void>;
-  commit(threadId: string, peer: PeerIdentity, snapshot: ThreadHistorySnapshot): Promise<void>;
+  /** Void retains the durable contract; staging adapters must report deferral explicitly. */
+  commit(
+    threadId: string,
+    peer: PeerIdentity,
+    snapshot: ThreadHistorySnapshot,
+    // biome-ignore lint/suspicious/noConfusingVoidType: Existing Promise<void> implementations remain source-compatible.
+  ): Promise<void | ThreadHistoryCommitResult>;
 }
 
 // === Legacy Auggy runtime metadata (not a current A2A Agent Card) ===
