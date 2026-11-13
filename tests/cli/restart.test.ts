@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { assertRestartTarget, runRestart } from "../../src/cli/commands/restart";
@@ -21,6 +21,12 @@ afterEach(() => {
 function config(id: string, name: string): string {
   const root = mkdtempSync(join(tmpdir(), "restart-target-"));
   roots.push(root);
+  mkdirSync(join(root, "node_modules"));
+  symlinkSync(join(import.meta.dir, "../.."), join(root, "node_modules", "auggy"));
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({ name: "fixture", dependencies: { auggy: "file:local" } }),
+  );
   const path = join(root, "agent.yaml");
   writeFileSync(path, configYaml(id, name));
   return path;
@@ -44,6 +50,27 @@ function manifest(configPath: string): PidManifest {
 }
 
 describe("restart target validation", () => {
+  test("preflights a broken application before stopping the running incarnation", async () => {
+    const path = config(AGENT_B, "agent-b");
+    writeFileSync(
+      path,
+      readFileSync(path, "utf8") +
+        "application:\n  entrypoint: ./missing.ts\n  contractVersion: 1\n",
+    );
+    let stopped = false;
+    await expect(
+      runRestart("agent-b", {
+        config: path,
+        _readPidManifest: () => manifest(path),
+        _claimAgentLifecycle: () => () => {},
+        _runStop: async () => {
+          stopped = true;
+        },
+      }),
+    ).rejects.toThrow(/regular file inside the project/);
+    expect(stopped).toBe(false);
+  });
+
   test("requires a display-name restart to resolve an authoritative project config", async () => {
     const cwd = mkdtempSync(join(tmpdir(), "restart-empty-"));
     roots.push(cwd);

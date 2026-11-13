@@ -2,6 +2,17 @@
 
 > The transport contract, the AG-UI event protocol, kernel→AG-UI translation, and how the web transport actually streams events. Everything in `src/transports/`.
 
+## Finding the application endpoint
+
+In an inspectable application, the actual `POST /agent/run` mount is visible in
+[the reference's `src/http.ts`](../examples/inspectable-agent/src/http.ts). It
+passes the original managed request to `web.agentRun(request)` and returns its
+stream. That delegate retains transport authentication, admission, idempotency
+and SSE behavior before dispatching through the scheduler to the application's
+turn program. The managed router rejects foreign or already-consumed requests.
+`web.fallback` serves the configured health, console and augment routes with their
+existing policies. Keep this fallback when customizing the HTTP response.
+
 ## What a transport is
 
 A transport is the boundary between Auggy and the outside world. It is responsible for:

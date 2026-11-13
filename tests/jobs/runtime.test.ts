@@ -642,9 +642,19 @@ describe("durable job runtime", () => {
     });
     expect(timers.activeCount()).toBe(0);
     expect(() => worker.start()).toThrow("cannot restart while an execution is unresolved");
+    expect(worker.pendingExecutions()).toBe(1);
+    let physicallySettled = false;
+    const settlement = worker.waitForSettlement().then(() => {
+      physicallySettled = true;
+    });
+    await Promise.resolve();
+    expect(physicallySettled).toBe(false);
 
     injected.resolve({ ...successfulResult(), success: false, status: "canceled" });
     await expect(running).resolves.toEqual({ status: "outcome-unknown", jobId: "job-1" });
+    await settlement;
+    expect(worker.pendingExecutions()).toBe(0);
+    expect(physicallySettled).toBe(true);
     expect(calls.filter((call) => call.method === "markOutcomeUnknown")).toHaveLength(1);
     worker.start();
     expect(worker.isStarted()).toBe(true);

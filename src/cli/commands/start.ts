@@ -30,6 +30,7 @@ import {
   removePidManifestIfOwned,
 } from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
+import { assertCurrentProjectRuntime, inspectLaunchSelection } from "../command-bootstrap";
 
 interface StartOptions {
   config?: string;
@@ -54,10 +55,6 @@ function resolveBunPath(): string {
   return process.execPath;
 }
 
-function resolveCliEntryPoint(): string {
-  return resolve(import.meta.dir, "../index.ts");
-}
-
 function unlinkIfPresent(path: string, unlinkFile: (path: string) => void): void {
   try {
     unlinkFile(path);
@@ -68,6 +65,8 @@ function unlinkIfPresent(path: string, unlinkFile: (path: string) => void): void
 
 export async function runStart(name: string | undefined, opts: StartOptions): Promise<void> {
   const configPath = resolveConfigPath(name, opts.config, { cwd: opts.cwd });
+  const selection = inspectLaunchSelection(configPath);
+  assertCurrentProjectRuntime(selection);
   const agentDir = dirname(configPath);
   const config = parseConfig(configPath);
   const agentName = config.name;
@@ -139,7 +138,7 @@ export async function runStart(name: string | undefined, opts: StartOptions): Pr
       agentDir: resolve(agentDir),
       configPath: resolve(configPath),
       bunPath: resolveBunPath(),
-      cliEntryPoint: resolveCliEntryPoint(),
+      cliEntryPoint: selection.runtime.cliPath,
     });
 
     const makeDirectory = opts.makeDirectory ?? ((path) => mkdirSync(path, { recursive: true }));

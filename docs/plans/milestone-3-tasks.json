@@ -1,0 +1,433 @@
+{
+  "schemaVersion": 1,
+  "milestone": 3,
+  "plan": "milestone-3-execution-2026-11-12.md",
+  "mode": "execution",
+  "orchestrator": "CTO / AI Engineering Lead (root)",
+  "maxConcurrentSpecialists": 3,
+  "baseline": {
+    "inspectedMain": "29147dfc7af0de59c3631c34a164ed3f3f6f4d5c",
+    "foundationCandidate": "1f4c6e3fd2f54a2e7f2d3f1f9b0740bac961b38c",
+    "acceptedMain": "209185d0e7481b4ff5d3b4c87e3447e7583b2fef",
+    "tree": "30bd2b764c6e136708a82fc186ce733e3741a4ff",
+    "lockSHA256": "cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7"
+  },
+  "gates": {
+    "G0": {
+      "status": "accepted",
+      "requires": [
+        "reviewed Link resolution integrated",
+        "foundation required checks pass",
+        "foundation final review and merge",
+        "resulting main verified and recorded"
+      ],
+      "acceptedMain": "209185d0e7481b4ff5d3b4c87e3447e7583b2fef",
+      "evidence": [
+        "https://github.com/looselyorganized/auggy/pull/226",
+        "https://github.com/looselyorganized/auggy/actions/runs/43357821694",
+        "https://github.com/looselyorganized/auggy/actions/runs/43357821675"
+      ],
+      "review": "Independent exact-tree, registry-artifact, CI, PostgreSQL and audit acceptance"
+    }
+  },
+  "allowedStates": [
+    "blocked",
+    "ready",
+    "in_progress",
+    "review",
+    "accepted"
+  ],
+  "tasks": [
+    {
+      "id": "M3-00",
+      "title": "Freeze baseline and contracts",
+      "specialist": "runtime-architect + orchestrator",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "C1",
+        "C2",
+        "C3",
+        "C4"
+      ],
+      "deliverables": [
+        "contract fixtures",
+        "source/state map",
+        "accepted baseline identity"
+      ],
+      "acceptedCommit": "7e1c85acb4c4d76fae690181ae646b67dbd9bc5e",
+      "evidence": [
+        "milestone-3-contracts/README.md",
+        "milestone-3-contracts/turn-state-map.md",
+        "milestone-3-contracts/host-http-map.md",
+        "milestone-3-contracts/launch-parity-map.md",
+        "../../tests/fixtures/application-contract.ts"
+      ],
+      "startedAt": "2026-11-13T03:22:25.670339+00:00",
+      "owners": {
+        "turnState": "main_runtime_architecture",
+        "hostHttp": "worktree_inventory",
+        "launchParity": "main_harness_release",
+        "publicContracts": "root"
+      },
+      "verification": {
+        "typecheck": "passed",
+        "lint": "passed",
+        "contractReview": "runtime, host and independent cross-review accepted; no blockers",
+        "runtimeImplemented": false
+      },
+      "acceptedAt": "2026-11-13T03:36:26.979536+00:00"
+    },
+    {
+      "id": "M3-01",
+      "title": "Managed turn operations and legacy parity",
+      "specialist": "runtime-engineer",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M3-00"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A04",
+        "A05",
+        "A06",
+        "A07"
+      ],
+      "deliverables": [
+        "phase implementation",
+        "focused regression evidence",
+        "legacy parity traces"
+      ],
+      "acceptedCommit": "d2cc5866e97014fac27fbadeb97b85cdf3293ae4",
+      "evidence": [],
+      "startedAt": "2026-11-13T03:36:26.979536+00:00",
+      "producerCommits": {
+        "M3-00": "7e1c85acb4c4d76fae690181ae646b67dbd9bc5e"
+      },
+      "producerCommit": "b1f3a84",
+      "reviewFindings": [
+        "Preserve tool outcomes when event delivery throws",
+        "Retain unknown detached context outcome on application deadline",
+        "Preserve received inference accounting when stream event delivery throws",
+        "Latch observed caller cancellation before program invocation and late revoked calls"
+      ],
+      "acceptedAt": "2026-11-13T03:57:44.412419+00:00",
+      "verification": {
+        "focusedTests": 184,
+        "assertions": 770,
+        "independentRepairRecheck": {
+          "tests": 37,
+          "assertions": 297,
+          "result": "passed"
+        },
+        "remainingBlockingProducerFindings": 0,
+        "wholeMilestoneCertified": false
+      }
+    },
+    {
+      "id": "M3-02",
+      "title": "Managed host and HTTP adapter",
+      "specialist": "transport-lifecycle-engineer",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M3-00"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A02",
+        "A06",
+        "A07",
+        "A08",
+        "A09",
+        "A11"
+      ],
+      "deliverables": [
+        "host/HTTP contract implementation",
+        "rollback/shutdown evidence",
+        "route/security parity"
+      ],
+      "acceptedCommit": "9ac46578b33915ae0a82104dd056c431f96bd694",
+      "evidence": [],
+      "startedAt": "2026-11-13T03:36:26.979536+00:00",
+      "producerCommits": {
+        "M3-00": "7e1c85acb4c4d76fae690181ae646b67dbd9bc5e"
+      },
+      "producerCommit": "69fd834fa4e1f4038182dc3ba1f919893f9fb800",
+      "verification": {
+        "focusedTests": 401,
+        "assertions": 1659,
+        "producerTypecheck": "passed",
+        "producerLint": "passed",
+        "independentReview": "accepted after HTTP handler/body settlement fixes",
+        "independentTests": {
+          "initial": 35,
+          "repair": 20,
+          "remainingBlockers": 0
+        }
+      },
+      "acceptedAt": "2026-11-13T04:06:19.158069+00:00"
+    },
+    {
+      "id": "M3-03",
+      "title": "Project-local selection and launch integration",
+      "specialist": "cli-platform-engineer",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M3-00",
+        "M3-02"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A01",
+        "A10",
+        "A11"
+      ],
+      "deliverables": [
+        "launch matrix",
+        "pre-import rejection evidence",
+        "platform-specific results"
+      ],
+      "acceptedCommit": "b4a2a6c",
+      "evidence": [],
+      "preparation": {
+        "status": "accepted",
+        "scope": "Runtime-free bootstrap, shared command grammar and deployment preparation; host integration acceptance still gated on M3-02",
+        "owner": "main_harness_release",
+        "sharedPreflightCommit": "15ef7f1"
+      },
+      "startedAt": "2026-11-13T04:06:19.158069+00:00",
+      "producerCommits": {
+        "M3-00": "7e1c85acb4c4d76fae690181ae646b67dbd9bc5e",
+        "M3-02": "9ac46578b33915ae0a82104dd056c431f96bd694",
+        "sharedPreflight": "15ef7f1"
+      },
+      "acceptedAt": "2026-11-13T04:21:59.813291+00:00",
+      "verification": {
+        "independentTests": 234,
+        "assertions": 826,
+        "exitCode": 0,
+        "producerFileHashesMatched": 23,
+        "remainingBlockers": 0,
+        "wholeMilestoneCertified": false
+      }
+    },
+    {
+      "id": "M3-04",
+      "title": "Executable reference application",
+      "specialist": "application-dx-engineer",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M3-01",
+        "M3-02",
+        "M3-03"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A01",
+        "A03",
+        "A04",
+        "A13"
+      ],
+      "deliverables": [
+        "reference source",
+        "trace walkthrough",
+        "safe customization recipe"
+      ],
+      "acceptedCommit": "67ec5b47bee7370c9003b9792577d646e008e867",
+      "evidence": [],
+      "startedAt": "2026-11-13T04:21:59.813291+00:00",
+      "producerCommits": {
+        "M3-01": "d2cc5866e97014fac27fbadeb97b85cdf3293ae4",
+        "M3-02": "9ac46578b33915ae0a82104dd056c431f96bd694",
+        "M3-03": "b4a2a6c"
+      },
+      "acceptedAt": "2026-11-13T04:30:12.540979+00:00",
+      "verification": {
+        "standaloneTests": 6,
+        "assertions": 62,
+        "frozenReinstall": "passed",
+        "dependencyAudit": "passed, zero advisories",
+        "publicPackedTypecheck": "passed after public declaration repair",
+        "publicDeclarationRepairCommit": "73233db23bb1dc17d9a795b19881c79a09266a18",
+        "independentReview": "root source review and installed consumer checks",
+        "wholeMilestoneCertified": false
+      }
+    },
+    {
+      "id": "M3-05",
+      "title": "Packed reference acceptance",
+      "specialist": "harness-engineer",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M3-00"
+      ],
+      "acceptanceDependsOn": [
+        "M3-04"
+      ],
+      "acceptance": [
+        "A01",
+        "A02",
+        "A03",
+        "A04",
+        "A08",
+        "A10",
+        "A11",
+        "A12"
+      ],
+      "deliverables": [
+        "installed artifact provenance",
+        "source-edit negative/positive controls",
+        "sanitized scenario evidence"
+      ],
+      "acceptedCommit": "866e8d144cd51dce577fda5fa5149f039a4ed50e",
+      "evidence": [
+        "milestone-3-evidence-2026-11-13.md"
+      ],
+      "startedAt": "2026-11-13T03:36:26.979536+00:00",
+      "producerCommits": {
+        "M3-00": "7e1c85acb4c4d76fae690181ae646b67dbd9bc5e"
+      },
+      "producerCommit": "7bb4bd402f59dfa2946e8b2f4a3d46d7b8883954",
+      "verification": {
+        "cleanProductCommit": "1604dcd6e81a72a27930a246b91154f809e2e8c2",
+        "cleanMacOSRehearsal": "all16 rows passed",
+        "repairedHarnessRehearsal": "all16 rows passed; no retained workspace",
+        "coreSHA256": "2234e3ec9d13ec41c98308ae658322b40491638f901a82dda1d13048f2681e76",
+        "rootLockUnchanged": true,
+        "linuxProductRehearsal": "15 applicable rows passed; macOS launchd unavailable",
+        "containerDeployment": "not certified; generated files and command boundary checks only"
+      }
+    },
+    {
+      "id": "M3-06",
+      "title": "Independent adversarial review",
+      "specialist": "independent-reviewer",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M3-01",
+        "M3-02",
+        "M3-03",
+        "M3-04",
+        "M3-05"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A01",
+        "A02",
+        "A03",
+        "A04",
+        "A05",
+        "A06",
+        "A07",
+        "A08",
+        "A09",
+        "A10",
+        "A11",
+        "A12",
+        "A13"
+      ],
+      "deliverables": [
+        "reproducible findings",
+        "owner repairs and rechecks",
+        "review disposition"
+      ],
+      "acceptedCommit": "4aaffa8",
+      "evidence": [
+        "milestone-3-evidence-2026-11-13.md"
+      ],
+      "reviewers": [
+        "m3_runtime_final_review",
+        "m3_launch_final_review"
+      ],
+      "verification": {
+        "runtimeReview": "no blocking findings at1604dcd",
+        "launchReview": "nested export fallback repaired and independently verified",
+        "harnessReview": "no blocking findings at866e8d1; 62 combined tests plus10 final regression tests and live JSONL workload",
+        "codeQLFindings": "all11 fixed; remote findings check passed; zero open PR alerts",
+        "postgresTestReview": "4aaffa8 test-only lease correction independently verified; real service execution required in final CI",
+        "unresolvedBlockingReviewFindings": 0
+      }
+    },
+    {
+      "id": "M3-07",
+      "title": "Final certification and PR handoff",
+      "specialist": "orchestrator",
+      "status": "accepted",
+      "blockedBy": [],
+      "dependsOn": [
+        "M3-06"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A01",
+        "A02",
+        "A03",
+        "A04",
+        "A05",
+        "A06",
+        "A07",
+        "A08",
+        "A09",
+        "A10",
+        "A11",
+        "A12",
+        "A13"
+      ],
+      "deliverables": [
+        "frozen candidate identity",
+        "required CI and rehearsal artifacts",
+        "reviewable PR and compatibility notes"
+      ],
+      "acceptedCommit": "d20086c95d82b996ea8e098a0a95921edfe8488b",
+      "evidence": [
+        "milestone-3-evidence-2026-11-13.md",
+        "https://github.com/looselyorganized/auggy/pull/227",
+        "https://github.com/looselyorganized/auggy/actions/runs/43370268957",
+        "https://github.com/looselyorganized/auggy/actions/runs/43370268920",
+        "https://github.com/looselyorganized/auggy/actions/runs/43370268880"
+      ],
+      "verification": {
+        "localFullTests": {
+          "passed": 4884,
+          "failed": 0,
+          "localPostgresSkips": 13
+        },
+        "cleanProductRelease": "passed",
+        "repairedHarnessAcceptance": "passed",
+        "requiredCI": "passed: CI, PostgreSQL17.10, CodeQL analysis and findings, complete Linux release rehearsal",
+        "handoff": "PR227 ready for review after final documentation checks; merge and publication deferred",
+        "postgresExecution": {
+          "registered": 13,
+          "completed": 13,
+          "serverVersion": 170010
+        },
+        "codeQLUnresolvedFindings": 0
+      },
+      "acceptedMerge": "1c9bd0516f46c4b14385df2c501e8324cfba72c3"
+    }
+  ],
+  "planReview": {
+    "status": "approved",
+    "reviewers": [
+      "runtime-architecture specialist",
+      "harness/CLI specialist"
+    ],
+    "remainingPlanningBlockers": [],
+    "implementationAuthorized": true,
+    "planSHA256": "57ab734e954d9a50897eb4b6a51b631b38ef626d393b870c44ee3c9024430d0b"
+  },
+  "activeOwnership": {
+    "integration, metadata and final acceptance": "root",
+    "independent runtime, harness and PostgreSQL test review": "m3_runtime_final_review (complete)",
+    "independent launch review and harness repair": "m3_launch_final_review (complete; repair independently reviewed)",
+    "constructor and descriptor-reader repair": "m3_construction_repair (complete; independently reviewed)"
+  }
+}

@@ -1,7 +1,9 @@
 # Release 0.6.0 — inspectable agent applications
 
-Status: milestones 1–2 implementation delivered; local M2 evidence accepted.
-Formal acceptance awaits dependency closure and Linux/security/PostgreSQL CI.
+Status: milestones 1–2 accepted on verified main `209185d0`. Link 0.2.0 is
+published and integrated; foundation PR #226 is merged, and fresh main CI and
+CodeQL passed. Milestone 3 is implemented in PR #227; its final certification
+and review handoff are tracked in the acceptance evidence.
 Worktree retirement remains separately deferred for preservation review.
 Revised: 2026-11-12. Governing direction: [Roadmap](../ROADMAP.md).
 Delete this implementation plan when 0.6.0 ships; retain accepted ADRs.
@@ -119,14 +121,14 @@ A commit/patch identity must accompany any eventual accepted baseline.
 | Ownership decision | Adopted; implementation guarantees remain future |
 | Packed execution scenarios | Seven web plus twenty fresh/retained Link scenarios passed local-artifact acceptance; final registry rehearsal required |
 | Independent review | Local code and final evidence approved |
-| M1 acceptance | Final integrated CI and reviewed merge pending; PR #226 records exact-candidate results |
-| M2 acceptance | Core/retained-lock execution verified locally; formal gate follows M1 dependency closure and reviewed merge |
+| M1 acceptance | Accepted: PR #226 merged; exact-tree main CI, PostgreSQL and CodeQL passed |
+| M2 acceptance | Accepted: local/Linux registry rehearsals passed 34 execution scenarios each; independent evidence review passed |
 
 ## Foundation closure before milestone 3
 
-Status: implementing from `dc03a00`; original main and retained worktrees remain
-unchanged. No dependency exception is approved. Milestone 3 implementation starts
-only after this foundation is reviewed, merged and verified on main.
+Status: completed and accepted on verified main `209185d0`; original dirty main
+and retained worktrees remain unchanged. No dependency exception was used. The
+following requirements record the completed foundation's scope and safeguards.
 
 ### Remediation
 
@@ -189,13 +191,24 @@ and establish that revision as milestone 3's starting point.
 See [dependency closure findings](./foundation-dependency-closure-2026-11-12.md)
 and [execution evidence](./foundation-evidence-2026-11-12.md).
 
-## Milestones 3–6: roadmap only
+## Milestone 3: contract freeze and specialized execution
+
+The [M3 execution plan](./milestone-3-execution-2026-11-12.md) and
+[task ledger](./milestone-3-tasks.json) define specialized engineering ownership,
+CTO orchestration, contracts, dependency order, adversarial review and acceptance.
+Foundation gate G0 is accepted at verified main `209185d0`. Milestone 3 now has
+a working reference, reviewed managed execution, and installed-artifact
+acceptance; see [the evidence](./milestone-3-evidence-2026-11-13.md) and
+[PR #227](https://github.com/looselyorganized/auggy/pull/227) for final gates.
+Milestones 4–6 remain unimplemented. These documents do not authorize publication.
+
+## Milestones 4–6: roadmap only
 
 The [roadmap](../ROADMAP.md) records outcomes and exit gates for the reference
 application, authoring/scaffold, standalone-service integration, and upgrade/DX
-certification. Detail milestone 3 only after M1–M2 acceptance. Do not implement
-managed host/turn APIs, Central YAML migration, public client packages, or the
-new generated tree as incidental harness work.
+certification. Do not implement managed host/turn APIs, Central YAML migration,
+public client packages, or the new generated tree as incidental foundation
+harness work. M3 runtime implementation follows its separate gated plan.
 
 ## Measurable developer experience
 

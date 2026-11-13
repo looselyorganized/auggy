@@ -6,7 +6,8 @@
  * web transport is mounted.
  */
 
-import { Command } from "commander";
+import type { Command } from "commander";
+import { createLaunchCommand } from "../launch-command-options";
 import { runDev, type DevOpts } from "./dev";
 
 export interface RunCommandDeps {
@@ -18,17 +19,14 @@ export function runCommand(deps: RunCommandDeps = {}): Command {
   const run = deps.runDev ?? runDev;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
-  return new Command("run")
-    .description("Run an agent locally and open /console/chat with a one-time sign-in")
-    .argument("[name]", "agent name (defaults to ./agent.yaml)")
-    .option("--config <path>", "path to agent.yaml")
-    .option("--no-open", "don't launch a browser after boot")
-    .action(async (name: string, opts: { config?: string; open: boolean }) => {
+  return createLaunchCommand("run").action(
+    async (name: string, opts: { config?: string; open: boolean }) => {
       try {
         await run(name, { config: opts.config, open: opts.open });
       } catch (err) {
         console.error(`Error: ${(err as Error).message}`);
         exit(1);
       }
-    });
+    },
+  );
 }

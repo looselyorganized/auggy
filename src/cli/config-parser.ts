@@ -21,7 +21,11 @@ import type {
   AgentSettings,
   DurableJobsConfig,
   SecurityEvalOverride,
+  ApplicationConfig,
 } from "./types";
+import { parseApplicationDeclaration } from "./application-definition";
+import { VALID_NAME_RE } from "./agent-name";
+export { VALID_NAME_RE } from "./agent-name";
 import { KNOWN_PROVIDERS, isKnownProvider } from "./types";
 import { parseEnvFile } from "./env-parse";
 import {
@@ -360,7 +364,6 @@ function walkAndInterpolate(obj: unknown, path: string, missing: string[]): unkn
 
 const AUG1_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** Agent and augment names: code identifiers; no dots, slashes, or spaces. */
-export const VALID_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const VALID_COMPACTION = new Set(["truncate", "summarize", "sliding-window"]);
 const AUGMENT_SOURCE_LABEL_FIELD = "__auggySourceLabel";
 const BUILTIN_TYPES = new Set([
@@ -1748,7 +1751,10 @@ export function expandAugmentFolderEntries(
   return { ...raw, augments: expanded };
 }
 
-function validateConfig(raw: Record<string, unknown>): ParsedConfig {
+function validateConfig(
+  raw: Record<string, unknown>,
+  application?: ApplicationConfig,
+): ParsedConfig {
   const errors: string[] = [];
   const topLevelFields = new Set([
     "id",
@@ -1761,6 +1767,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
     "settings",
     "augments",
     "securityEval",
+    "application",
   ]);
   for (const key of Object.keys(raw)) {
     if (!topLevelFields.has(key)) errors.push(`${key}: unknown top-level field`);
@@ -2406,6 +2413,7 @@ function validateConfig(raw: Record<string, unknown>): ParsedConfig {
   return {
     id: raw.id as string,
     name: raw.name as string,
+    ...(application ? { application } : {}),
     displayName: raw.displayName as string | undefined,
     creator,
     purpose: raw.purpose as string | undefined,
@@ -2496,6 +2504,10 @@ export function parseConfig(yamlPath: string): ParsedConfig {
     throw new Error(`${yamlPath}: not a valid YAML document`);
   }
 
+  // The entrypoint is a literal selection contract, never environment-derived.
+  // Validate it before interpolation; launch preflight separately checks its file.
+  const application = parseApplicationDeclaration(parsed.application);
+
   let interpolated: Record<string, unknown>;
   try {
     interpolated = interpolateEnvVars(parsed) as Record<string, unknown>;
@@ -2506,7 +2518,7 @@ export function parseConfig(yamlPath: string): ParsedConfig {
     }
     throw err;
   }
-  return validateConfig(expandAugmentFolderEntries(interpolated, agentDir));
+  return validateConfig(expandAugmentFolderEntries(interpolated, agentDir), application);
 }
 
 function augmentMissingEnvError(

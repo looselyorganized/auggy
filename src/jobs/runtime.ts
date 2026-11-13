@@ -649,6 +649,17 @@ export function createDurableJobRuntime(options: DurableJobRuntimeOptions) {
     isStarted(): boolean {
       return started;
     },
+    pendingExecutions(): number {
+      return current ? 1 : 0;
+    },
+    /** Join the actual execution, even when stop's grace period already elapsed. */
+    async waitForSettlement(): Promise<void> {
+      while (current)
+        await current.then(
+          () => {},
+          () => {},
+        );
+    },
   });
 
   async function stopRuntime(): Promise<void> {

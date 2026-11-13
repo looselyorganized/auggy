@@ -1,5 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { runStart } from "../../src/cli/commands/start";
@@ -22,6 +30,12 @@ beforeEach(() => {
   root = mkdtempSync(join(tmpdir(), "start-test-"));
   auggyDir = join(root, "auggy");
   configPath = join(root, "agent.yaml");
+  mkdirSync(join(root, "node_modules"));
+  symlinkSync(join(import.meta.dir, "../.."), join(root, "node_modules", "auggy"));
+  writeFileSync(
+    join(root, "package.json"),
+    JSON.stringify({ name: "fixture", dependencies: { auggy: "file:local" } }),
+  );
   writeFileSync(
     configPath,
     `id: ${AGENT_ID}\nname: launch-test\nengine:\n  provider: anthropic\n  model: claude-sonnet-4-6\naugments:\n  - type: webFetch\n`,
@@ -58,6 +72,29 @@ function generationFromPlist(path: string): string {
 }
 
 describe("runStart launchd generation fencing", () => {
+  test("rejects a broken application before changing the installed generation", async () => {
+    writeFileSync(
+      configPath,
+      readFileSync(configPath, "utf8") +
+        "application:\n  entrypoint: ./missing.ts\n  contractVersion: 1\n",
+    );
+    let touched = false;
+    await expect(
+      runStart("launch-test", {
+        ...options(),
+        listLaunchd: async () => {
+          touched = true;
+          return "";
+        },
+        loadLaunchd: async () => {
+          touched = true;
+        },
+      }),
+    ).rejects.toThrow(/regular file inside the project/);
+    expect(touched).toBe(false);
+    expect(readPidManifest(AGENT_ID, { auggyDir })).toBeNull();
+  });
+
   test("closes the previous generation before unloading an installed job", async () => {
     const previousGeneration = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     activateLaunchdGeneration(AGENT_ID, previousGeneration, { auggyDir });

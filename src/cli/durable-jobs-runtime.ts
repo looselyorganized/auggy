@@ -33,7 +33,10 @@ export function resolveDurableJobsDatabasePath(
   });
 }
 
-type DurableJobWorker = Pick<ReturnType<typeof createDurableJobRuntime>, "start" | "stop">;
+type DurableJobWorker = Pick<ReturnType<typeof createDurableJobRuntime>, "start" | "stop"> &
+  Partial<
+    Pick<ReturnType<typeof createDurableJobRuntime>, "pendingExecutions" | "waitForSettlement">
+  >;
 
 export interface ConfiguredDurableJobsRuntime {
   readonly databasePath: string;
@@ -43,6 +46,9 @@ export interface ConfiguredDurableJobsRuntime {
   stop(): Promise<void>;
   /** Close SQLite before the runtime releases its PID and volume lease. */
   close(): void;
+  /** Package-private managed host observations, optional for existing test adapters. */
+  pendingExecutions?(): number;
+  waitForSettlement?(): Promise<void>;
 }
 
 export interface CreateConfiguredDurableJobsRuntimeOptions {
@@ -261,8 +267,13 @@ export function createConfiguredDurableJobsRuntime(
         clearScheduleTimer();
         await worker.stop();
       },
+      pendingExecutions: () => worker.pendingExecutions?.() ?? 0,
+      waitForSettlement: () => worker.waitForSettlement?.() ?? Promise.resolve(),
       close(): void {
         if (closed) return;
+        if ((worker.pendingExecutions?.() ?? 0) > 0) {
+          throw new Error("Cannot close durable jobs while execution is unresolved");
+        }
         closed = true;
         started = false;
         clearScheduleTimer();

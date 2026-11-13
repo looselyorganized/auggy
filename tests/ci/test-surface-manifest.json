@@ -73,11 +73,17 @@
         },
         {
           "kind": "tree",
-          "path": "tests/scripts"
-        },
+          "path": "tests/ci"
+        }
+      ]
+    },
+    {
+      "id": "harness",
+      "suite": "runtime",
+      "selectors": [
         {
           "kind": "tree",
-          "path": "tests/ci"
+          "path": "tests/scripts"
         }
       ]
     },
@@ -92,6 +98,10 @@
         {
           "kind": "tree",
           "path": "tests/integration"
+        },
+        {
+          "kind": "tree",
+          "path": "tests/application"
         }
       ]
     },
@@ -183,7 +193,8 @@
           "exclude": [
             "examples/temporal-order-support/test/activities.test.ts",
             "examples/temporal-order-support/test/auggy-client.test.ts",
-            "examples/temporal-order-support/test/operator-config.test.ts"
+            "examples/temporal-order-support/test/operator-config.test.ts",
+            "examples/inspectable-agent/tests/example.test.ts"
           ]
         },
         {
@@ -210,6 +221,16 @@
         {
           "kind": "tree",
           "path": "admin/src"
+        }
+      ]
+    },
+    {
+      "id": "inspectable-example",
+      "suite": "external",
+      "selectors": [
+        {
+          "kind": "tree",
+          "path": "examples/inspectable-agent/tests"
         }
       ]
     }

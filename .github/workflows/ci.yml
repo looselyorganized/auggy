@@ -103,6 +103,34 @@ jobs:
       - name: Install, test, typecheck, and audit Temporal example
         run: bun run test:temporal-example
 
+  inspectable_example:
+    name: Inspectable application gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.3.14
+
+      - name: Install, typecheck, test, and audit the standalone reference
+        env:
+          AUDIT_EVIDENCE: ${{ runner.temp }}/inspectable-example-audit.json
+        run: bun run test:inspectable-example
+
+      - name: Preserve dependency audit evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: inspectable-example-audit
+          path: ${{ runner.temp }}/inspectable-example-audit.json
+          if-no-files-found: warn
+          retention-days: 14
+
   pricing:
     name: v1 pricing gate
     runs-on: ubuntu-latest
@@ -340,6 +368,7 @@ jobs:
       - runtime_shards
       - postgres_coordination
       - temporal_example
+      - inspectable_example
     runs-on: ubuntu-latest
     timeout-minutes: 2
 
@@ -357,8 +386,9 @@ jobs:
           SHARD_RESULT: ${{ needs.runtime_shards.result }}
           POSTGRES_COORDINATION_RESULT: ${{ needs.postgres_coordination.result }}
           TEMPORAL_EXAMPLE_RESULT: ${{ needs.temporal_example.result }}
+          INSPECTABLE_EXAMPLE_RESULT: ${{ needs.inspectable_example.result }}
         run: |
-          if [[ "$LINT_RESULT" != "success" || "$TYPECHECK_RESULT" != "success" || "$DEPENDENCY_AUDIT_RESULT" != "success" || "$PRICING_RESULT" != "success" || "$INVENTORY_RESULT" != "success" || "$CONSOLE_RESULT" != "success" || "$TEST_RESULT" != "success" || "$LINUX_RESULT" != "success" || "$SHARD_RESULT" != "success" || "$POSTGRES_COORDINATION_RESULT" != "success" || "$TEMPORAL_EXAMPLE_RESULT" != "success" ]]; then
-            echo "lint=$LINT_RESULT typecheck=$TYPECHECK_RESULT dependency-audit=$DEPENDENCY_AUDIT_RESULT pricing=$PRICING_RESULT inventory=$INVENTORY_RESULT console=$CONSOLE_RESULT deterministic-tests=$TEST_RESULT linux-boundaries=$LINUX_RESULT runtime-shards=$SHARD_RESULT postgres-coordination=$POSTGRES_COORDINATION_RESULT temporal-example=$TEMPORAL_EXAMPLE_RESULT"
+          if [[ "$LINT_RESULT" != "success" || "$TYPECHECK_RESULT" != "success" || "$DEPENDENCY_AUDIT_RESULT" != "success" || "$PRICING_RESULT" != "success" || "$INVENTORY_RESULT" != "success" || "$CONSOLE_RESULT" != "success" || "$TEST_RESULT" != "success" || "$LINUX_RESULT" != "success" || "$SHARD_RESULT" != "success" || "$POSTGRES_COORDINATION_RESULT" != "success" || "$TEMPORAL_EXAMPLE_RESULT" != "success" || "$INSPECTABLE_EXAMPLE_RESULT" != "success" ]]; then
+            echo "lint=$LINT_RESULT typecheck=$TYPECHECK_RESULT dependency-audit=$DEPENDENCY_AUDIT_RESULT pricing=$PRICING_RESULT inventory=$INVENTORY_RESULT console=$CONSOLE_RESULT deterministic-tests=$TEST_RESULT linux-boundaries=$LINUX_RESULT runtime-shards=$SHARD_RESULT postgres-coordination=$POSTGRES_COORDINATION_RESULT temporal-example=$TEMPORAL_EXAMPLE_RESULT inspectable-example=$INSPECTABLE_EXAMPLE_RESULT"
             exit 1
           fi

@@ -18,6 +18,17 @@ afterEach(() => {
 });
 
 describe("resolveConfigPath", () => {
+  test("a malformed named-project config does not expose YAML excerpts", () => {
+    writeFileSync(join(agentParent, "agent.yaml"), "name: [example\nsecret: do-not-print-this\n");
+    try {
+      resolveConfigPath("example", undefined, { cwd: agentParent });
+      throw new Error("expected malformed configuration to fail");
+    } catch (error) {
+      expect(String(error)).toContain("valid YAML configuration");
+      expect(String(error)).not.toContain("do-not-print-this");
+    }
+  });
+
   test("explicit --config wins", () => {
     const cfg = join(agentParent, "custom.yaml");
     writeFileSync(cfg, "id: aug1_test\n");

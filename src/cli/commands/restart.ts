@@ -14,6 +14,7 @@ import {
   readPidManifest,
 } from "../pid-registry";
 import { resolveConfigPath } from "../resolve-config";
+import { assertCurrentProjectRuntime, inspectLaunchSelection } from "../command-bootstrap";
 import type { PidManifest } from "../types";
 import { runStop } from "./stop";
 import { runStart } from "./start";
@@ -161,6 +162,7 @@ async function restartResolvedTarget(
   const current = manifest;
   const mode = current.mode;
   const configPath = assertRestartTarget(current, target.configPath ?? current.configPath);
+  assertCurrentProjectRuntime(inspectLaunchSelection(configPath));
   console.log(`Restarting "${current.name}" (${mode} mode)...`);
 
   // Stop the agent.

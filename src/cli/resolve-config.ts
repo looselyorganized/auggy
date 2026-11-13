@@ -10,7 +10,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parse as parseYaml } from "yaml";
-import { VALID_NAME_RE } from "./config-parser";
+import { VALID_NAME_RE } from "./agent-name";
 
 interface ResolveOptions {
   /** Deprecated compatibility seam; project resolution ignores ~/.auggy. */
@@ -75,7 +75,13 @@ export function resolveConfigPath(
 }
 
 export function readAgentName(configPath: string): string {
-  const raw = parseYaml(readFileSync(configPath, "utf-8")) as { name?: unknown } | null;
+  let raw: { name?: unknown } | null;
+  try {
+    raw = parseYaml(readFileSync(configPath, "utf-8")) as { name?: unknown } | null;
+  } catch {
+    // YAML parser excerpts may contain credentials beside a malformed field.
+    throw new Error(`Cannot read a valid YAML configuration at ${configPath}.`);
+  }
   if (typeof raw?.name === "string" && raw.name.trim().length > 0) {
     return raw.name.trim();
   }

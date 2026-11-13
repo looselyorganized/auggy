@@ -1,10 +1,10 @@
 # Foundation execution evidence — 2026-11-12
 
-Status: foundation implementation and published Link 0.2.0 integration delivered.
-The integrated workspace audit and focused checks pass. Formal M1/M2 acceptance
-requires the final registry rehearsal, exact-candidate CI, reviewed merge and
-verified main. No milestone 3 implementation has started. Preservation-exclusion
-review remains a gate for worktree retirement; those worktrees are retained.
+Status: M1/M2 accepted. Foundation PR #226 merged at
+`209185d0e7481b4ff5d3b4c87e3447e7583b2fef`; fresh main CI and CodeQL passed.
+The merged tree exactly matches the independently reviewed candidate. Historical
+records below retain their original scope; final acceptance is recorded at the
+end. Preservation review remains a separate gate for worktree retirement.
 
 Baseline: `29147dfc7af0de59c3631c34a164ed3f3f6f4d5c` (committed main).
 Verified implementation: `307ac09c7322e008fd2c300f1484d3c4f8d9ad89`.
@@ -207,3 +207,29 @@ release and CI records must identify the integrated source revision and are the
 acceptance authority on [PR #226](https://github.com/looselyorganized/auggy/pull/226).
 Historical passing checks and failed audits remain attributable to their original
 revisions. Foundation merge and verified main are still required before M3 starts.
+
+## Final foundation acceptance
+
+Reviewed candidate `1f4c6e3fd2f54a2e7f2d3f1f9b0740bac961b38c` passed all 29 PR
+checks; GitHub tested merge `0a2effa2bfaa9b6873de0fb0d9fbb94f571de3e6`.
+The [PR #226 merge](https://github.com/looselyorganized/auggy/pull/226) produced
+main `209185d0e7481b4ff5d3b4c87e3447e7583b2fef`, with the identical reviewed tree
+`30bd2b764c6e136708a82fc186ce733e3741a4ff`.
+Fresh [main CI](https://github.com/looselyorganized/auggy/actions/runs/43357821694)
+and [CodeQL](https://github.com/looselyorganized/auggy/actions/runs/43357821675)
+passed: 27 successful checks, no failed/skipped checks; PostgreSQL 17 completed
+13/13 required cases, and the workspace audit reported no advisories.
+
+Independent review verified the local and Linux registry release evidence:
+34 runtime scenarios, nine positive clean audits and eight graceful CLI stops
+per run; 74 evidence record hashes per run; all six local tarball hashes; seven
+preserved project files; and installed Link code matching the official 0.2.0
+artifact. No credential-pattern findings were detected. Retained historical
+baseline packages were never executed. Link synchronous restart tests do not
+claim durable replay, and the existing generic provider-failure hook limitation
+remains an explicit M3 concern.
+
+Durable local acceptance records are in
+`closure/link-registry-integration/independent-review/{final-acceptance,main-verification}.json`.
+G0 is accepted and milestone 3 uses this exact main SHA. Original dirty main and
+experimental worktrees remain unchanged; worktree retirement is still deferred.

@@ -293,6 +293,7 @@ export function createConsoleThreadHistoryPersistence(
         throw new Error(`${STORE_LABEL}: invalid kernel history snapshot`);
       }
       store.commitKernelHistoryForPeer(threadId, peer, snapshot.messages);
+      return { disposition: "committed" as const };
     },
   };
 }
@@ -330,12 +331,13 @@ export function createDeferredConsoleThreadHistoryPersistence(
       if (thread.runStatus !== "streaming") {
         store.commitKernelHistoryForPeer(threadId, peer, normalized);
         pending.delete(threadId);
-        return;
+        return { disposition: "committed" as const };
       }
       pending.set(threadId, {
         owner: consoleChatOwnerFromPeer(peer),
         snapshot: { version: 1, messages: normalized },
       });
+      return { disposition: "deferred-to-transport" as const };
     },
     pendingSnapshot(threadId, peer) {
       const id = assertIdentifier(threadId, "threadId");

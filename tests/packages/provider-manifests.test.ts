@@ -9,6 +9,7 @@ const ADAPTERS = ["anthropic", "openai", "openrouter", "ollama"] as const;
 interface PackageManifest {
   name: string;
   version: string;
+  engines?: { bun?: string };
   repository?: {
     type?: string;
     url?: string;
@@ -28,6 +29,18 @@ function readManifest(path: string): PackageManifest {
 
 describe("published provider package contracts", () => {
   const rootManifest = readManifest(join(ROOT, "package.json"));
+
+  test("core, providers and evals share the certified application runtime floor", () => {
+    const manifests = [
+      rootManifest,
+      ...[...ADAPTERS, "evals"].map((name) =>
+        readManifest(join(ROOT, "packages", name, "package.json")),
+      ),
+    ];
+    for (const manifest of manifests) {
+      expect(manifest.engines?.bun, manifest.name).toBe(">=1.3.14");
+    }
+  });
 
   test("all publishable packages identify the exact public source repository", () => {
     const publishable = [

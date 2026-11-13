@@ -4,9 +4,17 @@ export const PROVIDER_FIXTURE_FINAL_TEXT = "Packed acceptance tool result verifi
 
 export type ProviderFixtureScenario = "success" | "invalid-tool-arguments" | "provider-failure";
 
+export interface ProviderFixtureTool {
+  name: string;
+  input: Record<string, unknown>;
+  invalidInput: Record<string, unknown>;
+}
+
 export interface ProviderFixtureOptions {
   toolResultSentinel: string;
   toolPath?: string;
+  /** Explicit reference capability; omitted preserves the existing fs_read fixture. */
+  tool?: ProviderFixtureTool;
   scenario?: ProviderFixtureScenario;
   apiKey?: string;
   maxCalls?: number;
@@ -43,6 +51,27 @@ export interface ProviderFixture {
 
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+/** Bounded JSON equality; request object key order is not protocol meaning. */
+function canonicalInput(value: unknown, depth = 0): string {
+  if (depth > 8) throw new Error("Fixture tool input nesting exceeded.");
+  if (value === null || typeof value === "string" || typeof value === "boolean") {
+    return JSON.stringify(value);
+  }
+  if (typeof value === "number" && Number.isFinite(value)) return JSON.stringify(value);
+  if (Array.isArray(value)) {
+    if (value.length > 128) throw new Error("Fixture tool input array exceeded.");
+    return `[${value.map((entry) => canonicalInput(entry, depth + 1)).join(",")}]`;
+  }
+  if (record(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value))) {
+    const keys = Object.keys(value).sort();
+    if (keys.length > 128) throw new Error("Fixture tool input keys exceeded.");
+    const encoded = `{${keys.map((key) => `${JSON.stringify(key)}:${canonicalInput(value[key], depth + 1)}`).join(",")}}`;
+    if (encoded.length > 8_192) throw new Error("Fixture tool input bytes exceeded.");
+    return encoded;
+  }
+  throw new Error("Fixture tool input must be finite JSON data.");
 }
 
 function validScenario(value: string): value is ProviderFixtureScenario {
@@ -100,7 +129,8 @@ async function readBody(request: Request, maxBytes: number): Promise<unknown> {
 
 function toolResultMatches(
   messages: unknown[],
-  path: string | number,
+  name: string,
+  input: Record<string, unknown>,
   sentinel: string,
   invalidArguments: boolean,
 ): boolean {
@@ -127,9 +157,9 @@ function toolResultMatches(
   const tool = toolUses[0]!;
   if (
     tool.id !== result.tool_use_id ||
-    tool.name !== "fs_read" ||
+    tool.name !== name ||
     !record(tool.input) ||
-    tool.input.path !== path
+    canonicalInput(tool.input) !== canonicalInput(input)
   ) {
     return false;
   }
@@ -204,6 +234,29 @@ export function createProviderFixture(options: ProviderFixtureOptions): Provider
   if (!validScenario(scenario)) throw new Error("Invalid provider fixture scenario.");
   const toolPath = options.toolPath ?? "workspace/acceptance.txt";
   if (!toolPath || toolPath.length > 1_024) throw new Error("Invalid provider fixture tool path.");
+  if (options.tool && options.toolPath !== undefined) {
+    throw new Error("Explicit fixture tool and legacy toolPath cannot both be set.");
+  }
+  const selectedTool = options.tool ?? {
+    name: "fs_read",
+    input: { path: toolPath },
+    invalidInput: { path: 17 },
+  };
+  if (!/^[A-Za-z_][A-Za-z0-9_-]{0,127}$/.test(selectedTool.name)) {
+    throw new Error("Invalid provider fixture tool name.");
+  }
+  if (!record(selectedTool.input) || !record(selectedTool.invalidInput)) {
+    throw new Error("Fixture tool inputs must be objects.");
+  }
+  // Snapshot caller input before opening a listener; later mutation cannot alter a scenario.
+  const tool: ProviderFixtureTool = {
+    name: selectedTool.name,
+    input: JSON.parse(canonicalInput(selectedTool.input)),
+    invalidInput: JSON.parse(canonicalInput(selectedTool.invalidInput)),
+  };
+  if (canonicalInput(tool.input) === canonicalInput(tool.invalidInput)) {
+    throw new Error("Fixture invalid tool input must differ from valid input.");
+  }
   const apiKey = options.apiKey ?? PROVIDER_FIXTURE_API_KEY;
   const maxCalls = limit(options.maxCalls ?? 4, 32, "call limit");
   const maxRequestBytes = limit(options.maxRequestBytes ?? 1_048_576, 2_097_152, "body limit");
@@ -281,11 +334,11 @@ export function createProviderFixture(options: ProviderFixtureOptions): Provider
           );
         }
         const invalidArguments = state.scenario === "invalid-tool-arguments";
-        const path = invalidArguments ? 17 : toolPath;
+        const input = invalidArguments ? tool.invalidInput : tool.input;
         if (phase === "initial") {
           if (
             !Array.isArray(body.tools) ||
-            !body.tools.some((tool) => record(tool) && tool.name === "fs_read")
+            !body.tools.some((entry) => record(entry) && entry.name === tool.name)
           ) {
             throw new Error("missing-tool");
           }
@@ -294,14 +347,20 @@ export function createProviderFixture(options: ProviderFixtureOptions): Provider
           note("tool-request", 200);
           return messageResponse(
             body.model,
-            { type: "tool_use", id: "toolu_fixture_read", name: "fs_read", input: { path } },
+            { type: "tool_use", id: "toolu_fixture_read", name: tool.name, input },
             streaming,
             `msg_fixture_${state.generation}_${call}`,
           );
         }
         if (
           phase !== "result" ||
-          !toolResultMatches(body.messages, path, options.toolResultSentinel, invalidArguments)
+          !toolResultMatches(
+            body.messages,
+            tool.name,
+            input,
+            options.toolResultSentinel,
+            invalidArguments,
+          )
         ) {
           throw new Error("invalid-tool-result");
         }

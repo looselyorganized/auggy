@@ -1000,4 +1000,12 @@ bun "$ROOT/scripts/release-smoke/upgrade-consumer.ts" \
   >"$LOG_DIR/upgrade-consumer.log" 2>&1 \
   || fail "retained-lock upgrade or selected Link audit failed"
 
+info "verify inspectable application execution, compatibility and retained upgrade"
+bun "$ROOT/scripts/release-smoke/application-suite.ts" \
+  --candidate-core "$TARBALL" --candidate-anthropic "$ANTHROPIC_TARBALL" \
+  --repo-root "$ROOT" --evidence-dir "$EVIDENCE_DIR/application" \
+  --foundation-upgrade-evidence "$EVIDENCE_DIR/upgrade/upgrade.json" \
+  >"$LOG_DIR/application-suite.log" 2>&1 \
+  || fail "inspectable application acceptance failed"
+
 info "release smoke passed"

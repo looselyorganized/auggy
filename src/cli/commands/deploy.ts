@@ -49,7 +49,6 @@ import {
   type RailwayWorkspace,
 } from "../deploy/railway-cli";
 import { loadSecretsPlan } from "../deploy/secrets";
-import { getAuggyVersion } from "../scaffold-package-json";
 import { writeFileSafely } from "../safe-write";
 import type { CloudRecord } from "../types";
 
@@ -183,16 +182,6 @@ function maybeVendorLocalAuggyTarball(args: {
 }): string | null {
   const maxStagedPackageBytes = 1024 * 1024;
   const maxRuntimeTarballBytes = 256 * 1024 * 1024;
-  const version = getAuggyVersion();
-  const tarballName = `auggy-${version}.tgz`;
-  const candidates = [
-    args.cwd,
-    args.agentDir,
-    dirname(args.agentDir),
-    dirname(dirname(args.agentDir)),
-    process.cwd(),
-  ].filter((p): p is string => Boolean(p));
-
   const stagedPackagePath = join(args.stagingDir, "package.json");
   const stagedPackageBytes = readRegularFileNoFollow(stagedPackagePath, maxStagedPackageBytes);
   if (!stagedPackageBytes) return null;
@@ -202,11 +191,9 @@ function maybeVendorLocalAuggyTarball(args: {
   const deps = parsed.dependencies;
   if (!deps?.auggy) return null;
   const explicitTarball = resolveFileAuggyTarball(deps.auggy, args.agentDir);
-  const tarballCandidates = explicitTarball
-    ? [explicitTarball]
-    : /^\^?\d+\.\d+\.\d+/.test(deps.auggy)
-      ? candidates.map((root) => resolve(root, tarballName))
-      : [];
+  // Only the project's explicit file dependency can select a local artifact.
+  // A nearby archive with an equal version is not the installed runtime.
+  const tarballCandidates = explicitTarball ? [explicitTarball] : [];
   let selectedTarball: { path: string; bytes: Uint8Array } | null = null;
   for (const candidate of tarballCandidates) {
     const bytes = readRegularFileNoFollow(candidate, maxRuntimeTarballBytes);
@@ -282,6 +269,22 @@ function resolveFileAuggyTarball(spec: string, agentDir: string): string | null 
   return resolved;
 }
 
+function assertDeployableRuntimeDependency(agentDir: string): void {
+  const manifestBytes = readRegularFileNoFollow(join(agentDir, "package.json"), 1024 * 1024);
+  if (!manifestBytes) return; // Doctor owns absent/invalid project manifest diagnostics.
+  const manifest: unknown = JSON.parse(new TextDecoder().decode(manifestBytes));
+  const dependency = asRecord(asRecord(manifest)?.dependencies)?.auggy;
+  if (typeof dependency !== "string") return;
+  const spec = dependency.trim();
+  if (!/^(?:file:|link:|workspace:|\.?\.?\/|\/)/i.test(spec)) return;
+  const tarball = resolveFileAuggyTarball(spec, agentDir);
+  if (tarball && readRegularFileNoFollow(tarball, 256 * 1024 * 1024)) return;
+  throw new Error(
+    "Deploy requires a registry Auggy dependency or an explicit regular file: .tgz artifact. " +
+      "Pack the linked/source runtime and materialize that tarball as this project's Auggy dependency before deploying; no nearby archive is selected automatically.",
+  );
+}
+
 export async function runDeploy(
   nameArg: string | undefined,
   opts: DeployOptions,
@@ -303,6 +306,7 @@ export async function runDeploy(
   }
   const name = readAgentName(configPath);
   const agentDir = dirname(configPath);
+  assertDeployableRuntimeDependency(agentDir);
   const entry = getAgentFromDir(agentDir);
   if (!entry) {
     throw new Error(

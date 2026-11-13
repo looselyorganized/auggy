@@ -539,8 +539,10 @@ describe("PostgreSQL distributed turn coordinator", () => {
   postgresTest("enforces fleet capacity, binding integrity, and namespace isolation", async () => {
     const one = namespace();
     const two = namespace();
-    const first = coordinator(one, "replica-a", 80, 1);
-    const second = coordinator(one, "replica-b", 80, 1);
+    // Capacity assertions require the claimed request to remain active. Keep
+    // its lease beyond this test's timeout; expiry has explicit DB-driven tests.
+    const first = coordinator(one, "replica-a", 60_000, 1);
+    const second = coordinator(one, "replica-b", 60_000, 1);
     const isolated = coordinator(two, "replica-c");
     try {
       await first.migrate();

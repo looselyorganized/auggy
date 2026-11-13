@@ -101,8 +101,11 @@ execution path, preserves runtime safeguards, runs in Docker/Railway, and has
 matching documentation. Packed request, restart, and upgrade checks pass;
 engineers unfamiliar with the repository demonstrate improved traceability.
 
-Implementation proceeds through six gated milestones. Only 1–2 are detailed
-and authorized for the current implementation tranche:
+Implementation proceeds through six gated milestones. Milestones 1–2 are accepted
+at verified main `209185d0`. Milestone 3 is implemented in
+[PR #227](https://github.com/looselyorganized/auggy/pull/227), with
+[acceptance evidence](./plans/milestone-3-evidence-2026-11-13.md) and final PR gates.
+Milestones 4–6 remain roadmap outcomes:
 
 | Milestone | Outcome | Exit gate |
 |---|---|---|
@@ -113,9 +116,12 @@ and authorized for the current implementation tranche:
 | 5. Integration | Next.js app communicating with standalone Auggy service | Authenticated streaming, tenant isolation, persistence and recovery on Railway |
 | 6. Upgrade and DX | Dependency upgrades and measured developer usability | Customized source survives upgrades; unfamiliar engineers trace execution effectively |
 
-Milestones are dependency gates, not separate version promises. Plan milestone 3
-in detail after the first two pass. Existing scope items below remain roadmap
-requirements; they are not permission to expand the current tranche.
+Milestones are dependency gates, not separate version promises. The
+[milestone 3 execution plan](./plans/milestone-3-execution-2026-11-12.md) assigns
+specialist ownership, contracts, dependencies and acceptance to a CTO-orchestrated
+subagent team. Its foundation gate is satisfied by reviewed, merged and verified
+main `209185d0`. Existing scope items below remain roadmap requirements; they
+are not permission to expand the current tranche.
 
 ### 0.7.0 — the visitor
 

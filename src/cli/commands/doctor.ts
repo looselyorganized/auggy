@@ -9,10 +9,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import { createServer } from "node:net";
-import { Command } from "commander";
+import type { Command } from "commander";
+import { createLaunchCommand } from "../launch-command-options";
 import { parse as parseYaml } from "yaml";
 import { parseConfig } from "../config-parser";
 import { resolveConfigPath } from "../resolve-config";
+import { inspectLaunchSelection } from "../command-bootstrap";
 import { PROVIDER_TO_PACKAGE } from "../scaffold-package-json";
 import { AUGMENT_CATALOG } from "../augment-catalog";
 import { augmentFolderForType } from "../scaffold-skills";
@@ -105,6 +107,21 @@ export async function runDoctor(
   }
 
   checks.push(checkPackageManifest(agentDir));
+  try {
+    const selected = inspectLaunchSelection(configPath);
+    checks.push({
+      name: "runtime selection",
+      status: "pass",
+      message: `${selected.runtime.packageRoot} (${selected.runtime.version})`,
+    });
+  } catch (error) {
+    checks.push({
+      name: "runtime selection",
+      status: "fail",
+      message: error instanceof Error ? error.message : "Local runtime inspection failed",
+      fix: "Install a compatible Auggy dependency explicitly in this project with bun install.",
+    });
+  }
   checks.push(...checkConfigEnvReferences(configPath, agentDir));
   checks.push(...checkLearnedBehaviorFiles(agentDir, config));
   checks.push(
@@ -800,31 +817,25 @@ export function doctorCommand(deps: DoctorCommandDeps = {}): Command {
   const run = deps.runDoctor ?? runDoctor;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
-  return new Command("doctor")
-    .description("Check whether an agent is ready to run")
-    .argument("[name]", "agent name (defaults to ./agent.yaml)")
-    .option("--config <path>", "path to agent.yaml")
-    .option("--cloud", "include cloud deploy preflight checks")
-    .option("--verbose", "show absolute paths")
-    .action(
-      async (
-        name: string | undefined,
-        opts: { config?: string; cloud?: boolean; verbose?: boolean },
-      ) => {
-        try {
-          const checks = await run(name, { config: opts.config, cloud: opts.cloud });
-          console.log(
-            formatDoctorChecks(checks, {
-              relativeTo: opts.verbose ? undefined : relativeOutputRoot(checks),
-              color: process.stdout.isTTY,
-              verbose: opts.verbose,
-            }),
-          );
-          exit(hasDoctorFailures(checks) ? 1 : 0);
-        } catch (err) {
-          console.error(`Error: ${(err as Error).message}`);
-          exit(1);
-        }
-      },
-    );
+  return createLaunchCommand("doctor").action(
+    async (
+      name: string | undefined,
+      opts: { config?: string; cloud?: boolean; verbose?: boolean },
+    ) => {
+      try {
+        const checks = await run(name, { config: opts.config, cloud: opts.cloud });
+        console.log(
+          formatDoctorChecks(checks, {
+            relativeTo: opts.verbose ? undefined : relativeOutputRoot(checks),
+            color: process.stdout.isTTY,
+            verbose: opts.verbose,
+          }),
+        );
+        exit(hasDoctorFailures(checks) ? 1 : 0);
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        exit(1);
+      }
+    },
+  );
 }

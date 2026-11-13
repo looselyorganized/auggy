@@ -55,7 +55,7 @@ const TEST_FILE_PATTERN = /(?:\.test|_test|\.spec|_spec)\.(?:js|jsx|ts|tsx)$/;
 const SAFE_SHARD_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const REGULAR_GIT_MODES = new Set(["100644", "100755"]);
 const DISCOVERY_ROOTS: Record<TestSuite, readonly string[]> = {
-  external: ["examples/temporal-order-support"],
+  external: ["examples/temporal-order-support", "examples/inspectable-agent"],
   runtime: ["tests", "examples", "packages"],
   admin: ["admin/src"],
 };
