@@ -7,7 +7,7 @@
  * `auggy dev <name> --config /app/agent.yaml --internal-mode railway`.
  */
 
-const BUN_VERSION = "1.2.14-alpine";
+const BUN_VERSION = "1.3.14-alpine";
 
 /**
  * External link storage still needs a compatibility path in the agent dir.
@@ -129,14 +129,21 @@ for db_name in ${sqliteNames}; do
   ln -sfn "$volume_db" "$app_db"
 done
 
-# bunx resolves auggy from the per-agent node_modules/ (installed in the
-# Dockerfile via \`bun install\`). v0.3.2 removed the global-install path
-# because the agent's pinned auggy version + engine adapter is what the
-# image must use, not whatever a stray global has.
-#
-# $1 keeps compatibility with auggy versions whose dev command requires a
-# positional name. --config remains authoritative, so cloud boot does not
-# rely on local agent discovery under ~/.auggy.
-exec bunx auggy dev "$1" --config /app/agent.yaml --internal-mode railway
+# Resolve only the explicitly installed package's declared executable. Never
+# let a command runner install a missing runtime or fall back to a global one.
+# The selected CLI performs application/capability preflight before importing it.
+runtime_cli="$(bun -e '
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const root = fs.realpathSync("/app/node_modules/auggy");
+  const pkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+  const bin = typeof pkg.bin === "string" ? pkg.bin : pkg.bin?.auggy;
+  if (pkg.name !== "auggy" || typeof bin !== "string" || !bin || path.isAbsolute(bin)) throw new Error("Invalid local Auggy CLI");
+  const entry = fs.realpathSync(path.resolve(root, bin));
+  const rel = path.relative(root, entry);
+  if (rel === ".." || rel.startsWith("../") || path.isAbsolute(rel) || !fs.statSync(entry).isFile()) throw new Error("Invalid local Auggy CLI");
+  process.stdout.write(entry);
+')"
+exec bun "$runtime_cli" dev "$1" --config /app/agent.yaml --internal-mode railway
 `;
 }

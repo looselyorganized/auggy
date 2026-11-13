@@ -163,6 +163,14 @@ function writeAgent(
 
   if (opts.installDeps) {
     mkdirSync(join(dir, "node_modules", "auggy", "src"), { recursive: true });
+    writeFileSync(
+      join(dir, "node_modules", "auggy", "package.json"),
+      JSON.stringify({ name: "auggy", version: "0.5.0", bin: { auggy: "src/index.ts" } }),
+    );
+    writeFileSync(
+      join(dir, "node_modules", "auggy", "src", "index.ts"),
+      'throw new Error("doctor must not execute runtime");',
+    );
     mkdirSync(join(dir, "node_modules", "@auggy", provider), { recursive: true });
   }
 

@@ -24,6 +24,8 @@ import type {
   ApplicationConfig,
 } from "./types";
 import { parseApplicationDeclaration } from "./application-definition";
+import { VALID_NAME_RE } from "./agent-name";
+export { VALID_NAME_RE } from "./agent-name";
 import { KNOWN_PROVIDERS, isKnownProvider } from "./types";
 import { parseEnvFile } from "./env-parse";
 import {
@@ -362,7 +364,6 @@ function walkAndInterpolate(obj: unknown, path: string, missing: string[]): unkn
 
 const AUG1_ID_RE = /^aug1_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 /** Agent and augment names: code identifiers; no dots, slashes, or spaces. */
-export const VALID_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]*$/;
 const VALID_COMPACTION = new Set(["truncate", "summarize", "sliding-window"]);
 const AUGMENT_SOURCE_LABEL_FIELD = "__auggySourceLabel";
 const BUILTIN_TYPES = new Set([

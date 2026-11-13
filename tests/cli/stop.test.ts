@@ -77,6 +77,7 @@ describe("stop preserves ownership until the recorded process exits", () => {
       `id: ${owner.agentId}\nname: ${owner.name}\nengine:\n  provider: anthropic\n  model: claude-sonnet-4-6\naugments:\n  - type: webFetch\n`,
     );
     const releaseStop = claimAgentLifecycle(owner.agentId!, owner.name, registryOptions());
+    const previousExitCode = process.exitCode ?? 0;
     try {
       await expect(
         runDev(owner.name, {
@@ -85,8 +86,11 @@ describe("stop preserves ownership until the recorded process exits", () => {
           processIdentityForPid: () => PROCESS_IDENTITY,
         }),
       ).rejects.toThrow(/resource.*claimed/i);
+      expect(process.exitCode).toBe(1);
       expect(readPidManifest(owner.agentId!, { auggyDir })).toBeNull();
     } finally {
+      // This test catches a CLI startup failure inside the shared test process.
+      process.exitCode = previousExitCode;
       releaseStop();
     }
   });
@@ -101,14 +105,20 @@ describe("stop preserves ownership until the recorded process exits", () => {
       `id: ${owner.agentId}\nname: ${owner.name}\nengine:\n  provider: anthropic\n  model: claude-sonnet-4-6\naugments:\n  - type: webFetch\n`,
     );
 
-    await expect(
-      runDev(owner.name, {
-        config: configPath,
-        auggyDir,
-        processIdentityForPid: () => PROCESS_IDENTITY,
-      }),
-    ).rejects.toThrow(/foreground admission.*active launchd installation/i);
-    expect(readPidManifest(owner.agentId!, { auggyDir })).toBeNull();
+    const previousExitCode = process.exitCode ?? 0;
+    try {
+      await expect(
+        runDev(owner.name, {
+          config: configPath,
+          auggyDir,
+          processIdentityForPid: () => PROCESS_IDENTITY,
+        }),
+      ).rejects.toThrow(/foreground admission.*active launchd installation/i);
+      expect(process.exitCode).toBe(1);
+      expect(readPidManifest(owner.agentId!, { auggyDir })).toBeNull();
+    } finally {
+      process.exitCode = previousExitCode;
+    }
   });
 
   test("a mixed-mode stop closes launchd authority before reporting success", async () => {

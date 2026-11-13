@@ -1,6 +1,7 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import { Command } from "commander";
+import type { Command } from "commander";
+import { createLaunchCommand } from "../launch-command-options";
 import { parseConfig } from "../config-parser";
 import { createTypeScriptClient, type TypeScriptClientTarget } from "../routes-client";
 import { createOpenApiDocument } from "../routes-openapi";
@@ -120,70 +121,61 @@ export function routesCommand(deps: RoutesCommandDeps = {}): Command {
   const run = deps.runRoutes ?? runRoutes;
   const exit = deps.exit ?? ((code: number) => process.exit(code));
 
-  return new Command("routes")
-    .description("Show HTTP routes registered by an agent")
-    .argument("[name]", "agent name")
-    .option("--config <path>", "path to agent.yaml")
-    .option("--json", "print the route manifest as JSON")
-    .option("--openapi", "print an OpenAPI 3.1 document as JSON")
-    .option("--client <format>", "print a generated route client (currently: ts)")
-    .option("--target <target>", "generated client target: browser or server (default: browser)")
-    .option("--out <path>", "write generated client output to a file")
-    .action(
-      async (
-        name: string | undefined,
-        opts: {
-          config?: string;
-          json?: boolean;
-          openapi?: boolean;
-          client?: string;
-          target?: string;
-          out?: string;
-        },
-      ) => {
-        try {
-          const outputModes = [opts.json, opts.openapi, opts.client !== undefined].filter(Boolean);
-          if (outputModes.length > 1) {
-            throw new Error("Choose only one of --json, --openapi, or --client.");
-          }
-          if (opts.client !== undefined && opts.client !== "ts") {
-            throw new Error(`Unsupported client format "${opts.client}". Supported formats: ts.`);
-          }
-          if (opts.target !== undefined && opts.client === undefined) {
-            throw new Error("--target currently requires --client ts.");
-          }
-          if (opts.out !== undefined && opts.client === undefined) {
-            throw new Error("--out currently requires --client ts.");
-          }
-          const clientTarget = resolveClientTarget(opts.target);
-          const report = await run(name, {
-            config: opts.config,
-            auggyDir: deps.auggyDir,
-            cwd: deps.cwd,
-          });
-          const output =
-            opts.client === "ts"
-              ? createTypeScriptClient(report, { target: clientTarget })
-              : opts.openapi
-                ? JSON.stringify(createOpenApiDocument(report), null, 2)
-                : opts.json
-                  ? JSON.stringify({ ...report, schemaVersion: 1 }, null, 2)
-                  : formatRoutesReport(report);
-
-          if (opts.out) {
-            mkdirSync(dirname(opts.out), { recursive: true });
-            writeFileSync(opts.out, output.endsWith("\n") ? output : `${output}\n`);
-            console.log(`Wrote TypeScript client to ${opts.out}`);
-          } else {
-            console.log(output);
-          }
-          exit(0);
-        } catch (err) {
-          console.error(`Error: ${(err as Error).message}`);
-          exit(1);
-        }
+  return createLaunchCommand("routes").action(
+    async (
+      name: string | undefined,
+      opts: {
+        config?: string;
+        json?: boolean;
+        openapi?: boolean;
+        client?: string;
+        target?: string;
+        out?: string;
       },
-    );
+    ) => {
+      try {
+        const outputModes = [opts.json, opts.openapi, opts.client !== undefined].filter(Boolean);
+        if (outputModes.length > 1) {
+          throw new Error("Choose only one of --json, --openapi, or --client.");
+        }
+        if (opts.client !== undefined && opts.client !== "ts") {
+          throw new Error(`Unsupported client format "${opts.client}". Supported formats: ts.`);
+        }
+        if (opts.target !== undefined && opts.client === undefined) {
+          throw new Error("--target currently requires --client ts.");
+        }
+        if (opts.out !== undefined && opts.client === undefined) {
+          throw new Error("--out currently requires --client ts.");
+        }
+        const clientTarget = resolveClientTarget(opts.target);
+        const report = await run(name, {
+          config: opts.config,
+          auggyDir: deps.auggyDir,
+          cwd: deps.cwd,
+        });
+        const output =
+          opts.client === "ts"
+            ? createTypeScriptClient(report, { target: clientTarget })
+            : opts.openapi
+              ? JSON.stringify(createOpenApiDocument(report), null, 2)
+              : opts.json
+                ? JSON.stringify({ ...report, schemaVersion: 1 }, null, 2)
+                : formatRoutesReport(report);
+
+        if (opts.out) {
+          mkdirSync(dirname(opts.out), { recursive: true });
+          writeFileSync(opts.out, output.endsWith("\n") ? output : `${output}\n`);
+          console.log(`Wrote TypeScript client to ${opts.out}`);
+        } else {
+          console.log(output);
+        }
+        exit(0);
+      } catch (err) {
+        console.error(`Error: ${(err as Error).message}`);
+        exit(1);
+      }
+    },
+  );
 }
 
 function resolveClientTarget(target: string | undefined): TypeScriptClientTarget {

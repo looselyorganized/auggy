@@ -244,6 +244,14 @@ describe("runDeploy", () => {
       })}\n`,
     );
     mkdirSync(join(agentDir, "node_modules", "auggy", "src"), { recursive: true });
+    writeFileSync(
+      join(agentDir, "node_modules", "auggy", "package.json"),
+      JSON.stringify({ name: "auggy", version: "0.5.0", bin: "src/index.ts" }),
+    );
+    writeFileSync(
+      join(agentDir, "node_modules", "auggy", "src", "index.ts"),
+      'throw new Error("preflight must not execute runtime");',
+    );
     mkdirSync(join(agentDir, "node_modules", "@auggy", "anthropic"), { recursive: true });
   });
 
@@ -639,6 +647,14 @@ describe("runDeploy", () => {
         }),
       );
       mkdirSync(join(projectDir, "node_modules", "auggy"), { recursive: true });
+      writeFileSync(
+        join(projectDir, "node_modules", "auggy", "package.json"),
+        JSON.stringify({ name: "auggy", version: "0.5.0", bin: "index.ts" }),
+      );
+      writeFileSync(
+        join(projectDir, "node_modules", "auggy", "index.ts"),
+        'throw new Error("preflight must not execute runtime");',
+      );
       mkdirSync(join(projectDir, "node_modules", "@auggy", "anthropic"), { recursive: true });
 
       const { cli, calls } = mockRailwayCli();
@@ -1752,7 +1768,7 @@ describe("runDeploy", () => {
     expect(stagingDir).toBeDefined();
     expect(stagedDockerfile).toMatch(/ENTRYPOINT \["\/app\/auggy-entrypoint\.sh", "zip"\]/);
     expect(stagedEntrypoint).toMatch(
-      /exec bunx auggy dev "\$1" --config \/app\/agent\.yaml --internal-mode railway/,
+      /exec bun "\$runtime_cli" dev "\$1" --config \/app\/agent\.yaml --internal-mode railway/,
     );
     expect(existsSync(stagingDir!)).toBe(false);
   });
@@ -1828,21 +1844,19 @@ describe("runDeploy", () => {
     expect(leaked).toBe(false);
   });
 
-  test("vendors a local packed auggy runtime into the staging dir when available", async () => {
+  test("does not replace the project dependency with a nearby same-version artifact", async () => {
     const version = getAuggyVersion();
     const tarballName = `auggy-${version}.tgz`;
     writeFileSync(join(dirname(agentDir), tarballName), "packed runtime");
     const { cli, calls } = mockRailwayCli();
     let stagingDir: string | undefined;
     let stagedTarball = false;
-    let stagedTarballContents: string | undefined;
     let stagedAuggyDependency: unknown;
     let stagedDockerfile: string | undefined;
     cli.linkProject = async (args) => {
       stagingDir = args.cwd;
       calls.linkProject.push(args);
       stagedTarball = existsSync(join(args.cwd, tarballName));
-      stagedTarballContents = readFileSync(join(args.cwd, tarballName), "utf8");
       const stagedPackage = JSON.parse(readFileSync(join(args.cwd, "package.json"), "utf-8")) as {
         dependencies?: { auggy?: unknown };
       };
@@ -1853,13 +1867,10 @@ describe("runDeploy", () => {
     await runDeploy("zip", baseDeployOptions(cli, auggyDir));
 
     expect(stagingDir).toBeDefined();
-    expect(stagedTarball).toBe(true);
-    expect(stagedTarballContents).toBe("packed runtime");
-    expect(stagedAuggyDependency).toBe(`file:./${tarballName}`);
-    expect(stagedDockerfile!.indexOf(`COPY ${tarballName} /app/`)).toBeGreaterThan(-1);
-    expect(stagedDockerfile!.indexOf("RUN bun install")).toBeGreaterThan(
-      stagedDockerfile!.indexOf(`COPY ${tarballName} /app/`),
-    );
+    expect(stagedTarball).toBe(false);
+    const original = JSON.parse(readFileSync(join(agentDir, "package.json"), "utf8"));
+    expect(stagedAuggyDependency).toBe(original.dependencies.auggy);
+    expect(stagedDockerfile).not.toContain(`COPY ${tarballName} /app/`);
     expect(existsSync(stagingDir!)).toBe(false);
   });
 

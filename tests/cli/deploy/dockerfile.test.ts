@@ -3,7 +3,7 @@ import { generateDockerfile, generateEntrypoint } from "../../../src/cli/deploy/
 
 describe("generateDockerfile", () => {
   test("uses a pinned Bun base image", () => {
-    expect(generateDockerfile({ agentName: "zip" })).toMatch(/FROM oven\/bun:1\.2\.14-alpine/);
+    expect(generateDockerfile({ agentName: "zip" })).toMatch(/FROM oven\/bun:1\.3\.14-alpine/);
   });
 
   test("copies package.json + bun.lock before COPY . for per-agent install layer caching", () => {
@@ -118,18 +118,16 @@ describe("generateEntrypoint", () => {
     expect(generateEntrypoint()).not.toMatch(/db_name in[^\n]*agent-mail\.db/);
   });
 
-  test("execs auggy via `bunx` with explicit /app/agent.yaml config", () => {
+  test("executes the verified explicit local CLI without an installing runner", () => {
     const script = generateEntrypoint();
-    expect(script).toMatch(
-      /exec bunx auggy dev "\$1" --config \/app\/agent\.yaml --internal-mode railway/,
+    expect(script).toContain('fs.realpathSync("/app/node_modules/auggy")');
+    expect(script).toContain("pkg.bin?.auggy");
+    expect(script).toContain('rel.startsWith("../")');
+    expect(script).toContain(
+      'exec bun "$runtime_cli" dev "$1" --config /app/agent.yaml --internal-mode railway',
     );
-    // Negative assertion: the bare `auggy dev` shape would resolve to a
-    // global install that the v0.3.2 split no longer ships.
-    expect(script).not.toMatch(/exec auggy dev/);
-    expect(script).not.toMatch(/exec bunx auggy run/);
-    // Negative assertion: the config path must stay authoritative even though
-    // older auggy dev commands require a positional name.
-    expect(script).not.toMatch(/exec bunx auggy dev "\$1" --internal-mode railway/);
+    expect(script).not.toContain("bunx");
+    expect(script).not.toContain("exec auggy");
   });
 
   test("uses `set -e` so failed steps abort the boot", () => {

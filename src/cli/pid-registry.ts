@@ -27,7 +27,7 @@ import {
   type SqliteSchemaObject,
 } from "../lib/sqlite";
 import { writeDurableJson } from "../lib/durable-json";
-import { VALID_NAME_RE } from "./config-parser";
+import { VALID_NAME_RE } from "./agent-name";
 import type { PidManifest } from "./types";
 
 interface PidRegistryOptions {
