@@ -1,7 +1,9 @@
 # Release 0.6.0 — inspectable agent applications
 
 Status: milestones 1–2 implementation delivered; local M2 evidence accepted.
-Formal acceptance awaits dependency closure and Linux/security/PostgreSQL CI.
+Formal acceptance awaits Link dependency closure, passing required gates and
+reviewed merge. Candidate-specific Linux/security/PostgreSQL results are recorded
+in the foundation evidence and PR #226; they do not waive the remaining finding.
 Worktree retirement remains separately deferred for preservation review.
 Revised: 2026-11-12. Governing direction: [Roadmap](../ROADMAP.md).
 Delete this implementation plan when 0.6.0 ships; retain accepted ADRs.
@@ -189,13 +191,23 @@ and establish that revision as milestone 3's starting point.
 See [dependency closure findings](./foundation-dependency-closure-2026-11-12.md)
 and [execution evidence](./foundation-evidence-2026-11-12.md).
 
-## Milestones 3–6: roadmap only
+## Milestone 3: detailed planning; implementation gated
+
+The user authorized planning milestone 3 while a separate specialist addresses
+Link. The [M3 execution plan](./milestone-3-execution-2026-11-12.md) and
+[task ledger](./milestone-3-tasks.json) define specialized engineering ownership,
+CTO orchestration, contracts, dependency order, adversarial review and acceptance.
+This supersedes the earlier restriction on detailing M3 before foundation
+acceptance; it does not change the implementation/merge gate. All implementation
+tasks remain blocked until the accepted main baseline is recorded.
+
+## Milestones 4–6: roadmap only
 
 The [roadmap](../ROADMAP.md) records outcomes and exit gates for the reference
 application, authoring/scaffold, standalone-service integration, and upgrade/DX
-certification. Detail milestone 3 only after M1–M2 acceptance. Do not implement
-managed host/turn APIs, Central YAML migration, public client packages, or the
-new generated tree as incidental harness work.
+certification. Do not implement managed host/turn APIs, Central YAML migration,
+public client packages, or the new generated tree as incidental foundation
+harness work. M3 runtime implementation follows its separate gated plan.
 
 ## Measurable developer experience
 

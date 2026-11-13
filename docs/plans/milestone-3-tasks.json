@@ -1,0 +1,281 @@
+{
+  "schemaVersion": 1,
+  "milestone": 3,
+  "plan": "milestone-3-execution-2026-11-12.md",
+  "mode": "planning_only",
+  "orchestrator": "CTO / AI Engineering Lead (root)",
+  "maxConcurrentSpecialists": 3,
+  "baseline": {
+    "inspectedMain": "29147dfc7af0de59c3631c34a164ed3f3f6f4d5c",
+    "foundationCandidate": "0ee8f68df5f39f65b7032f18a034112f608a8773",
+    "acceptedMain": null
+  },
+  "gates": {
+    "G0": {
+      "status": "blocked",
+      "requires": [
+        "reviewed Link resolution integrated",
+        "foundation required checks pass",
+        "foundation final review and merge",
+        "resulting main verified and recorded"
+      ]
+    }
+  },
+  "allowedStates": [
+    "blocked",
+    "ready",
+    "in_progress",
+    "review",
+    "accepted"
+  ],
+  "tasks": [
+    {
+      "id": "M3-00",
+      "title": "Freeze baseline and contracts",
+      "specialist": "runtime-architect + orchestrator",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "C1",
+        "C2",
+        "C3",
+        "C4"
+      ],
+      "deliverables": [
+        "contract fixtures",
+        "source/state map",
+        "accepted baseline identity"
+      ],
+      "acceptedCommit": null,
+      "evidence": []
+    },
+    {
+      "id": "M3-01",
+      "title": "Managed turn operations and legacy parity",
+      "specialist": "runtime-engineer",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M3-00"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A04",
+        "A05",
+        "A06",
+        "A07"
+      ],
+      "deliverables": [
+        "phase implementation",
+        "focused regression evidence",
+        "legacy parity traces"
+      ],
+      "acceptedCommit": null,
+      "evidence": []
+    },
+    {
+      "id": "M3-02",
+      "title": "Managed host and HTTP adapter",
+      "specialist": "transport-lifecycle-engineer",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M3-00"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A02",
+        "A06",
+        "A07",
+        "A08",
+        "A09",
+        "A11"
+      ],
+      "deliverables": [
+        "host/HTTP contract implementation",
+        "rollback/shutdown evidence",
+        "route/security parity"
+      ],
+      "acceptedCommit": null,
+      "evidence": []
+    },
+    {
+      "id": "M3-03",
+      "title": "Project-local selection and launch integration",
+      "specialist": "cli-platform-engineer",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M3-00",
+        "M3-02"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A01",
+        "A10",
+        "A11"
+      ],
+      "deliverables": [
+        "launch matrix",
+        "pre-import rejection evidence",
+        "platform-specific results"
+      ],
+      "acceptedCommit": null,
+      "evidence": []
+    },
+    {
+      "id": "M3-04",
+      "title": "Executable reference application",
+      "specialist": "application-dx-engineer",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M3-01",
+        "M3-02",
+        "M3-03"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A01",
+        "A03",
+        "A04",
+        "A13"
+      ],
+      "deliverables": [
+        "reference source",
+        "trace walkthrough",
+        "safe customization recipe"
+      ],
+      "acceptedCommit": null,
+      "evidence": []
+    },
+    {
+      "id": "M3-05",
+      "title": "Packed reference acceptance",
+      "specialist": "harness-engineer",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M3-00"
+      ],
+      "acceptanceDependsOn": [
+        "M3-04"
+      ],
+      "acceptance": [
+        "A01",
+        "A02",
+        "A03",
+        "A04",
+        "A08",
+        "A10",
+        "A11",
+        "A12"
+      ],
+      "deliverables": [
+        "installed artifact provenance",
+        "source-edit negative/positive controls",
+        "sanitized scenario evidence"
+      ],
+      "acceptedCommit": null,
+      "evidence": []
+    },
+    {
+      "id": "M3-06",
+      "title": "Independent adversarial review",
+      "specialist": "independent-reviewer",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M3-01",
+        "M3-02",
+        "M3-03",
+        "M3-04",
+        "M3-05"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A01",
+        "A02",
+        "A03",
+        "A04",
+        "A05",
+        "A06",
+        "A07",
+        "A08",
+        "A09",
+        "A10",
+        "A11",
+        "A12",
+        "A13"
+      ],
+      "deliverables": [
+        "reproducible findings",
+        "owner repairs and rechecks",
+        "review disposition"
+      ],
+      "acceptedCommit": null,
+      "evidence": []
+    },
+    {
+      "id": "M3-07",
+      "title": "Final certification and PR handoff",
+      "specialist": "orchestrator",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M3-06"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A01",
+        "A02",
+        "A03",
+        "A04",
+        "A05",
+        "A06",
+        "A07",
+        "A08",
+        "A09",
+        "A10",
+        "A11",
+        "A12",
+        "A13"
+      ],
+      "deliverables": [
+        "frozen candidate identity",
+        "required CI and rehearsal artifacts",
+        "reviewable PR and compatibility notes"
+      ],
+      "acceptedCommit": null,
+      "evidence": []
+    }
+  ],
+  "planReview": {
+    "status": "approved",
+    "reviewers": [
+      "runtime-architecture specialist",
+      "harness/CLI specialist"
+    ],
+    "remainingPlanningBlockers": [],
+    "implementationAuthorized": false,
+    "planSHA256": "7f2ceb00a963eda0ea94507ae3adbaf48620dd713300b9dc80a7ceba75cd3610"
+  }
+}
