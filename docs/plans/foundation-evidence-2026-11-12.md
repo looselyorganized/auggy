@@ -163,7 +163,12 @@ audit, preserved application-source checks and all seven request/replay scenario
 through the upgraded consumer's own installed CLI. Link selection alone failed
 with GHSA-mrhx-c7xc-m3w5 on Zod 3.25.76. The harness reports overall failure and
 retains that finding rather than treating the known vulnerability as a pass.
-Metadata resolution fixes were verified with ten focused tests and typecheck;
+Metadata resolution fixes were verified with eleven focused tests and typecheck;
 actual dependency entrypoints need not be executed to inspect package versions.
-Final immutable rehearsal and exact revision records are retained under
+The immutable full local rehearsal at `76c0912` passed all core package checks
+and those upgrade phases; its sole failure was the selected Link audit. Final
+review additionally tightened canonical metadata-path checks before reading,
+including escaping manifest symlinks. That correction is covered by the focused
+regressions and the final candidate's upgrade replay and remote checks.
+Immutable rehearsal and exact revision records are retained under
 `closure/` alongside the PR's downloadable CI artifacts.

@@ -1,6 +1,14 @@
 import { expect, test } from "bun:test";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { parseConfigFileTextToJson } from "typescript";
@@ -62,7 +70,7 @@ test("metadata lookup inspects installed ws despite Bun's builtin resolution ali
   }
 });
 
-test("metadata lookup rejects unrelated ancestor installations", () => {
+test("metadata lookup rejects unrelated ancestor installations before parsing their metadata", () => {
   const root = mkdtempSync(join(tmpdir(), "auggy-upgrade-ancestor-"));
   try {
     const consumer = join(root, "consumer"),
@@ -70,7 +78,23 @@ test("metadata lookup rejects unrelated ancestor installations", () => {
     mkdirSync(consumer);
     mkdirSync(unrelated, { recursive: true });
     writeFileSync(join(consumer, "package.json"), '{"name":"consumer"}');
-    writeFileSync(join(unrelated, "package.json"), '{"name":"hono","version":"4.13.16"}');
+    writeFileSync(join(unrelated, "package.json"), "not valid JSON");
+    expect(() => installedPackage(consumer, "hono")).toThrow("escaped the isolated consumer");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("metadata lookup rejects an escaping package.json symlink before parsing its target", () => {
+  const root = mkdtempSync(join(tmpdir(), "auggy-upgrade-manifest-symlink-"));
+  try {
+    const consumer = join(root, "consumer");
+    const dependency = join(consumer, "node_modules/hono");
+    const outside = join(root, "outside.json");
+    mkdirSync(dependency, { recursive: true });
+    writeFileSync(join(consumer, "package.json"), '{"name":"consumer"}');
+    writeFileSync(outside, "not valid JSON");
+    symlinkSync(outside, join(dependency, "package.json"));
     expect(() => installedPackage(consumer, "hono")).toThrow("escaped the isolated consumer");
   } finally {
     rmSync(root, { recursive: true, force: true });

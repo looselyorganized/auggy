@@ -153,12 +153,14 @@ export function installedPackage(
   for (const directory of resolver.resolve.paths(name) ?? fallbackPaths) {
     const file = join(directory, name, "package.json");
     if (!existsSync(file)) continue;
-    const manifest = manifestAt(file),
-      root = realpathSync(dirname(file));
+    const root = realpathSync(dirname(file));
+    const canonicalFile = realpathSync(file);
     check(
-      root.startsWith(`${consumer}${sep}node_modules${sep}`),
+      root.startsWith(`${consumer}${sep}node_modules${sep}`) &&
+        canonicalFile.startsWith(`${consumer}${sep}node_modules${sep}`),
       "Dependency metadata escaped the isolated consumer",
     );
+    const manifest = manifestAt(canonicalFile);
     check(
       typeof manifest.name === "string" && typeof manifest.version === "string",
       `Invalid installed metadata for ${name}`,
