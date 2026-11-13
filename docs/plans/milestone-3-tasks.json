@@ -360,7 +360,7 @@
       "id": "M3-07",
       "title": "Final certification and PR handoff",
       "specialist": "orchestrator",
-      "status": "review",
+      "status": "accepted",
       "blockedBy": [],
       "dependsOn": [
         "M3-06"
@@ -386,10 +386,13 @@
         "required CI and rehearsal artifacts",
         "reviewable PR and compatibility notes"
       ],
-      "acceptedCommit": null,
+      "acceptedCommit": "d20086c95d82b996ea8e098a0a95921edfe8488b",
       "evidence": [
         "milestone-3-evidence-2026-11-13.md",
-        "https://github.com/looselyorganized/auggy/pull/227"
+        "https://github.com/looselyorganized/auggy/pull/227",
+        "https://github.com/looselyorganized/auggy/actions/runs/43370268957",
+        "https://github.com/looselyorganized/auggy/actions/runs/43370268920",
+        "https://github.com/looselyorganized/auggy/actions/runs/43370268880"
       ],
       "verification": {
         "localFullTests": {
@@ -399,9 +402,16 @@
         },
         "cleanProductRelease": "passed",
         "repairedHarnessAcceptance": "passed",
-        "requiredCI": "pending final PostgreSQL test-only correction",
-        "handoff": "draft PR227; no merge or publication"
-      }
+        "requiredCI": "passed: CI, PostgreSQL17.10, CodeQL analysis and findings, complete Linux release rehearsal",
+        "handoff": "PR227 ready for review after final documentation checks; merge and publication deferred",
+        "postgresExecution": {
+          "registered": 13,
+          "completed": 13,
+          "serverVersion": 170010
+        },
+        "codeQLUnresolvedFindings": 0
+      },
+      "acceptedMerge": "1c9bd0516f46c4b14385df2c501e8324cfba72c3"
     }
   ],
   "planReview": {

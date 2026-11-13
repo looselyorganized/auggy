@@ -130,3 +130,22 @@ command boundaries are covered; this is not a hosted Railway or container
 deployment certification. No production data or live provider credentials were
 used. The trusted default-branch security canary must evaluate merged code;
 repository eval keys are never supplied to branch-controlled code.
+
+## Accepted handoff
+
+All required gates and the separate CodeQL findings check passed for head
+`d20086c95d82b996ea8e098a0a95921edfe8488b`, tested merge
+`1c9bd0516f46c4b14385df2c501e8324cfba72c3`, with no open PR scanning findings:
+[CI](https://github.com/looselyorganized/auggy/actions/runs/43370268957),
+[CodeQL](https://github.com/looselyorganized/auggy/actions/runs/43370268920), and
+[release rehearsal](https://github.com/looselyorganized/auggy/actions/runs/43370268880).
+The PostgreSQL log confirms all 13 registered integration cases completed on
+server version 170010. The final Linux release has all 15 applicable rows passed,
+macOS launchd unavailable, and no retained workspace; its exported record hashes
+were independently verified after download. Local macOS execution covers the
+remaining platform row.
+
+M3-00 through M3-07 are accepted. The subsequent acceptance-record commit changes
+only this report and the task ledger; final PR checks still certify that metadata
+commit before review handoff. Merging, npm publication and milestone 4 remain
+separate steps.
