@@ -19,6 +19,8 @@ import { runAgentMailSetup, type AgentMailCommandDeps } from "../../src/cli/comm
 import { acquireProjectMutationLease } from "../../src/cli/authoring/publication";
 import { acquireAgentEnvMutationLock } from "../../src/cli/env-mutation-lock";
 import { AUTHORING_LIMITS } from "../../src/cli/authoring/contracts";
+import { readAuthoringDocument } from "../../src/cli/authoring/document";
+import { applyMigration, planMigration } from "../../src/cli/authoring/migration";
 import {
   VISITOR_AUTH_LOCAL_RATE_LIMIT_DEFAULT,
   VISITOR_AUTH_AGENTMAIL_RATE_LIMIT_DEFAULT,
@@ -100,6 +102,54 @@ function receiptBytes(directory: string): string {
 }
 
 describe("inline AgentMail authoring and credential preservation", () => {
+  test("sets up AgentMail after migration while preserving unrelated explicit null options", async () => {
+    const project = fixture(["identity", "agentMail"]);
+    const metadata = new Map([
+      ["identity", "type: fileMemory\nconfig: null # intentionally empty\n"],
+      ["agentMail", "type: agentMail\nconfig: {}\n"],
+    ]);
+    for (const [name, contents] of metadata) {
+      mkdirSync(join(project.root, "augments", name), { recursive: true });
+      writeFileSync(join(project.root, "augments", name, "augment.yaml"), contents);
+    }
+    const migrated = await applyMigration(planMigration(readAuthoringDocument(project.config)));
+    expect(migrated.status).toBe("complete");
+    const beforeSetup = parse(readFileSync(project.config, "utf8"));
+    expect(beforeSetup.augments[0]).toEqual({
+      name: "identity",
+      type: "fileMemory",
+      options: null,
+    });
+    const verifyRuntimeAccess = mock(async () => verification());
+    await setup(project, { verifyRuntimeAccess });
+    const afterSetup = parse(readFileSync(project.config, "utf8"));
+    expect(afterSetup.id).toBe(ID);
+    expect(afterSetup.augments[0]).toEqual(beforeSetup.augments[0]);
+    expect(Object.hasOwn(afterSetup.augments[0], "options")).toBe(true);
+    expect(verifyRuntimeAccess).toHaveBeenCalledTimes(1);
+    expect(readFileSync(project.env, "utf8")).toContain(KEY);
+    for (const [name, contents] of metadata)
+      expect(readFileSync(join(project.root, "augments", name, "augment.yaml"), "utf8")).toBe(
+        contents,
+      );
+  });
+
+  for (const options of [false, 0, "invalid", []])
+    test(`rejects unrelated non-null malformed options ${JSON.stringify(options)} before credentials or provider calls`, async () => {
+      const project = fixture([
+        { type: "agentMail" },
+        { name: "identity", type: "fileMemory", options },
+      ]);
+      const verifyRuntimeAccess = mock(async () => verification());
+      await expect(setup(project, { verifyRuntimeAccess })).rejects.toThrow(
+        "Augment options must be an object",
+      );
+      expect(verifyRuntimeAccess).not.toHaveBeenCalled();
+      expect(readFileSync(project.config, "utf8")).toBe(project.before);
+      expect(readFileSync(project.env, "utf8")).toBe(OLD_ENV);
+      expect(existsSync(join(project.root, ".auggy"))).toBe(false);
+    });
+
   test("updates only the canonical options while keeping comments, identity and unrelated declarations", async () => {
     const unrelated = {
       name: "custom",

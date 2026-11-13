@@ -706,7 +706,7 @@ interface MountedAugmentConfig {
 /** Raw declarations never resolve environment values or import augment code. */
 function readMountedAugmentConfigs(document: AuthoringDocument): MountedAugmentConfig[] {
   return document.declarations.map((entry) => {
-    if (entry.options !== undefined && !isRecord(entry.options)) {
+    if (entry.options !== undefined && entry.options !== null && !isRecord(entry.options)) {
       throw new Error("Augment options must be an object before automatic AgentMail setup.");
     }
     return {

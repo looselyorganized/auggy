@@ -676,7 +676,7 @@
     "m4_final_architecture_review": "Read-only preparation and final integrated review after installed gate"
   },
   "notes": [
-    "G0 and all product producers M4-00 through M4-06 accepted in scope. Installed M4-07 evidence and M4-08 teaching alignment underway; final integrated review/certification pending.",
+    "G0 and scoped producers M4-00 through M4-06 plus M4-08 accepted. Final preparation repairs independently accepted. Full runtime and fresh installed certification underway; M4-07/09/10 acceptance pending.",
     "M4-07 may prepare after M4-00 acceptance; its installed acceptance also requires acceptanceDependsOn.",
     "Only root changes task/gate acceptance status.",
     "M5/M6 remain roadmap outcomes; no merge or publication authorized by this plan."
@@ -690,5 +690,24 @@
     "request": "execure",
     "scope": "Execute approved milestone 4 plan; no npm publication/version bump",
     "recordedAt": "2026-11-13"
-  }
+  },
+  "certificationAttempts": [
+    {
+      "candidate": "4b856ed6e339a1e65467904bcb260fec676ff1ab",
+      "status": "failed",
+      "passed": [
+        "strict typecheck",
+        "lint",
+        "test surface inventory",
+        "installed source index",
+        "strict workspace dependency audit",
+        "console suite"
+      ],
+      "findings": [
+        "13 launch-bootstrap fixture failures: copied entrypoint omitted new static passive authoring dependencies",
+        "Independent integration review: AgentMail setup rejects unrelated options:null retained by valid migration"
+      ],
+      "disposition": "Both scoped repairs independently accepted by m4_final_architecture_review: 93 tests / 479 assertions. Bootstrap operator shard 1641 tests / 6581 assertions passes. New clean candidate and full runtime/artifact certification follow."
+    }
+  ]
 }

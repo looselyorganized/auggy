@@ -284,3 +284,30 @@ configuration teaching unambiguous. The README explicitly identifies the
 unreleased 0.6 direction; no current npm publication is implied. Accepted source
 checkpoint: `a5f2ba0`. Final rebuilt-artifact and repository-wide certification
 now follows; historical plans and valid legacy fixture source remain preserved.
+
+
+## Final certification attempt and adversarial repair
+
+Candidate `4b856ed` passed strict typecheck, lint, source-index and inventory
+checks, strict workspace dependency audit (zero advisories), and the console
+suite. The full runtime run stopped with 13 failures in the isolated
+`command-bootstrap` fixture: it copied the updated entrypoint without its new
+static passive-authoring dependencies. This is a fixture assembly failure; its
+launch assertions did not run and are not counted as passing.
+
+Independent integrated preparation also reproduced a product regression:
+AgentMail setup rejects unrelated `options: null`, although the runtime accepts
+it and migration preserves legacy `config: null` that way. The producer must
+normalize only the private descriptor, preserve raw YAML, and prove the full
+migration-to-setup path with malformed-value controls. Both repairs and their
+independent rechecks precede the final frozen artifact run.
+
+Both scoped repairs passed independent recheck by
+`m4_final_architecture_review`: 93 tests / 479 assertions across AgentMail,
+migration and launch bootstrap. The setup repair changes only null validation
+in its private descriptor; malformed false/zero/string/array options still
+fail before provider or credential changes. The bootstrap fixture now includes
+its passive static dependencies and verifies authoring help bypasses the launch
+graph even with invalid config and absent local runtime. The complete operator
+shard passed 1,641 tests / 6,581 assertions; the console suite passed 360 tests /
+1,474 assertions. The original failed run remains recorded.
