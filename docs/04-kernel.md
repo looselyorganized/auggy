@@ -6,17 +6,30 @@
 
 The kernel is the part of Auggy that knows how to **run a single turn**. It does not know what a chat is. It does not know what a session is. It does not know what an LLM is — it only knows that it has a `ModelClient` it can call. It does not know what your domain is.
 
-The kernel is **finished**. It is intentionally not extensible. Bug fixes happen here; behavior changes happen in augments. If you find yourself wanting to add a feature to the kernel, the question to ask first is "could this be an augment instead?" Almost always the answer is yes.
-
-The kernel is **~1000 lines of code total** across 11 files. The turn loop alone is about 600 lines. Every other file in `src/kernel/` is a small, focused component the loop uses.
+Kernel changes require a concrete bug or ownership-boundary reason. Capabilities
+belong in augments. Application-owned turn programs can choose the sequence of
+supported operations; the runtime retains authorization, validation, budget
+limits, cancellation, settlement and history ownership.
 
 ## File-by-file
 
-### `src/kernel/turn-loop.ts` — The main loop
+### Managed turn execution
 
-The loop is one factory function (`createTurnLoop`) that returns an object with two methods: `executeTurn` and `getHistoryManager`. Everything else is internal state closed over by the factory.
+`src/kernel/turn-loop.ts` supplies `createTurnLoop`, history-manager ownership and
+the execution facade. `turn-session.ts` implements the managed phases and shared
+settlement path. `turn-program.ts` is the default inference/tool loop used by
+legacy projects. The [reference's `src/turn.ts`](../examples/inspectable-agent/src/turn.ts)
+shows an application-owned loop using that same session.
 
-`executeTurn` is what every turn goes through. It is intentionally a single long function with a strict ordering of phases. Splitting it into smaller functions would obscure the ordering and make the kernel harder to read, not easier. The phases are:
+The application receives guarded operations, including `preparePrompt`, `infer`,
+`executeTools`, `refreshPrompt`, `inferFinal`, `complete` and `stop`. Receipts
+belong to one session and phase; stale, reused or foreign receipts fail closed.
+An application inference ceiling can lower the configured limit, and recovery
+inference consumes that same allowance. Finalization remains package-owned even
+when the program throws, returns early or times out. This is trusted TypeScript
+application code, not a sandbox for untrusted plugins.
+
+The managed execution phases are:
 
 #### Phase 0 — Setup
 

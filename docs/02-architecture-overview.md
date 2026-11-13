@@ -2,6 +2,22 @@
 
 > Module map, data flow through a single turn, where each piece lives.
 
+## Trace an application from its own source
+
+The [inspectable reference application](../examples/inspectable-agent/README.md)
+owns the executable path `src/index.ts` → `src/agent.ts` → `src/http.ts` →
+`src/turn.ts` → `src/augments/example/`. Its `agent.yaml` declares
+`application: { entrypoint: ./src/index.ts, contractVersion: 1 }` and remains the
+single enabled augment/configuration graph. The installed `auggy/application`
+runner supplies managed lifecycle and guarded turn operations.
+
+The runtime stays in the project's local `node_modules/auggy`. Application files
+are owned by the engineer; upgrading the dependency updates package code, while
+changes to owned execution code require an explicit edit or migration. Direct
+execution and compatible local/global CLI launches call the same application
+`main`. The current `auggy create` template still generates the legacy layout;
+application scaffolding belongs to milestone 4.
+
 ## High-level shape
 
 ```
@@ -58,7 +74,10 @@
                           (response to peer)
 ```
 
-Every box that touches the model also reports through the same `onEvent` callback. Every component in the loop is a separate file in `src/kernel/`. The loop itself is `src/kernel/turn-loop.ts`.
+Every box that touches the model also reports through the same `onEvent` callback.
+`src/kernel/turn-loop.ts` owns the shared history managers and delegates each turn
+to `turn-session.ts`. The default inference/tool recipe lives in `turn-program.ts`;
+an application can supply its own recipe through the same guarded session.
 
 ## Module responsibilities
 

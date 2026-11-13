@@ -2,6 +2,27 @@
 
 > `defineAgent`, `AgentHandle`, the augment lifecycle hooks, and the agent card. How a config becomes a running agent.
 
+## Managed applications
+
+For a project with `application.entrypoint`, open that file first. The
+[reference `src/index.ts`](../examples/inspectable-agent/src/index.ts) exports
+`main`, creates a host through `launch.createHost`, awaits `host.prepare()`,
+configures the returned HTTP bindings, then awaits `host.start()`. Its direct
+execution guard invokes `runApplication` from the project's `auggy/application`
+dependency; CLI launches import the same named `main`.
+
+The runner registers host cleanup before preparation acquires runtime claims or
+constructs augments. Preparation resolves the YAML graph and invokes the
+application composer. Readiness follows boot, transport registration and listener
+startup. Shutdown closes admission, drains accepted turns, jobs, route handlers
+and response bodies, then closes resources and releases ownership. A deadline
+does not prove cleanup: unresolved work or an incomplete factory with unknown
+resources retains ownership and produces an unsuccessful stop result.
+
+The lifecycle below also describes the underlying embedded `defineAgent` API.
+Application composition binds the owned turn program to the configured graph;
+it does not replace that graph with a second augment registry.
+
 ## The flow at a glance
 
 ```
