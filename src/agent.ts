@@ -26,6 +26,7 @@ import { wireMemoryBus } from "./memory/memory-bus";
 import { createTurnLoop } from "./kernel/turn-loop";
 import { createTurnObservation, type TurnObservation } from "./kernel/turn-observation";
 import { createLifecycleManager } from "./kernel/lifecycle-manager";
+import type { HostedAgentInstance, HostedAgentSnapshot } from "./application/hosted-agent";
 import { collectAugmentRoutes } from "./kernel/route-collector";
 import type { CollectedRoute } from "./kernel/route-collector";
 import {
@@ -185,6 +186,46 @@ export function defineAgent(
   model: ModelClient,
   execution?: AgentExecutionOptions,
 ): AgentHandle {
+  return createAgentInstance(config, model, execution, false).agent;
+}
+
+/** Package-private host authority; not exported through the public package entry. */
+export function createHostedAgent(
+  config: AgentConfig,
+  model: ModelClient,
+  execution: AgentExecutionOptions,
+): HostedAgentInstance {
+  return createAgentInstance(config, model, execution, true);
+}
+
+function createAgentInstance(
+  config: AgentConfig,
+  model: ModelClient,
+  execution: AgentExecutionOptions | undefined,
+  hostedMode: boolean,
+): HostedAgentInstance {
+  let hostAdmission: "pending" | "open" | "closed" = hostedMode ? "pending" : "open";
+  const hostWaiters = new Set<(admitted: boolean) => void>();
+  const pendingTurnOperations = new Set<Promise<TurnResult>>();
+  const admissionState = () => hostAdmission;
+  const assertStartupAllowed = () => {
+    if (hostedMode && hostAdmission === "closed")
+      throw new Error("[application] startup interrupted by shutdown");
+  };
+  const waitForHostAdmission = (signal?: AbortSignal): Promise<boolean> => {
+    if (signal?.aborted) return Promise.resolve(false);
+    if (hostAdmission !== "pending") return Promise.resolve(hostAdmission === "open");
+    return new Promise((done) => {
+      const finish = (admitted: boolean) => {
+        hostWaiters.delete(finish);
+        signal?.removeEventListener("abort", aborted);
+        done(admitted);
+      };
+      const aborted = () => finish(false);
+      hostWaiters.add(finish);
+      signal?.addEventListener("abort", aborted, { once: true });
+    });
+  };
   const onTurnFinalized = execution?.onTurnFinalized;
   const tokenizer = createTokenizer();
   const operationalSignals = createRuntimeSignals();
@@ -210,6 +251,7 @@ export function defineAgent(
     name: effectiveConfig.name,
     augments: effectiveAugments,
     model,
+    ...(hostedMode ? { canBoot: () => admissionState() !== "closed" } : {}),
   });
   const restoredThreads = new Map<
     string,
@@ -731,7 +773,17 @@ export function defineAgent(
     };
   }
 
-  async function scheduleTurn(
+  function scheduleTurn(...args: Parameters<typeof scheduleTurnAttempt>): Promise<TurnResult> {
+    const operation = scheduleTurnAttempt(...args);
+    pendingTurnOperations.add(operation);
+    void operation.then(
+      () => pendingTurnOperations.delete(operation),
+      () => pendingTurnOperations.delete(operation),
+    );
+    return operation;
+  }
+
+  async function scheduleTurnAttempt(
     trigger: TurnTrigger,
     options: {
       source: "transport" | "inject";
@@ -748,6 +800,23 @@ export function defineAgent(
     const operationalStartedAt = Date.now();
     const threadId = trigger.threadId ?? trigger.turnId;
     const observation = createTurnObservation(onTurnFinalized, trigger, threadId, options.source);
+    if (hostedMode && hostAdmission === "closed") {
+      turnScheduler.recordExternalRejection("runtime-stopping");
+      const rejected = schedulerTerminalResult(
+        trigger,
+        threadId,
+        options.signal?.aborted
+          ? { status: "canceled", reason: options.signal.reason }
+          : { status: "rejected", reason: "runtime-stopping" },
+        options.executionContext,
+      );
+      await observation.notify({ kind: "returned", result: rejected });
+      operationalSignals.recordTurn({
+        outcome: rejected.status === "canceled" ? "canceled" : "rejected",
+        durationMs: 0,
+      });
+      return rejected;
+    }
     if (durableThreadStillQuarantined(threadId)) {
       turnScheduler.recordExternalRejection("thread-quarantined");
       operationalSignals.recordTurn({ outcome: "rejected", durationMs: 0 });
@@ -775,6 +844,21 @@ export function defineAgent(
             status: "canceled",
             reason: options.signal.reason,
           },
+          options.executionContext,
+        );
+      }
+      if (
+        hostedMode &&
+        (!(await waitForHostAdmission(options.signal)) ||
+          admissionState() !== "open" ||
+          options.signal?.aborted)
+      ) {
+        return schedulerTerminalResult(
+          trigger,
+          threadId,
+          options.signal?.aborted
+            ? { status: "canceled", reason: options.signal.reason }
+            : { status: "rejected", reason: "runtime-stopping" },
           options.executionContext,
         );
       }
@@ -867,6 +951,7 @@ export function defineAgent(
   const handle: AgentHandle = {
     start() {
       return serializeLifecycle(async () => {
+        assertStartupAllowed();
         if (started) throw new Error("Agent already started. Call stop() first.");
         if (effectiveConfig.coordination) {
           const blockers = enumerateDistributedCoordinationBlockers();
@@ -881,6 +966,7 @@ export function defineAgent(
         const admission = createStartupAdmissionBarrier();
         try {
           await lifecycle.boot();
+          assertStartupAllowed();
 
           // Rebuild scheduler fences from every durable incident authority
           // before routes are collected or any listener can be registered.
@@ -903,6 +989,7 @@ export function defineAgent(
           // listeners. This closes the startup window where early inbound data
           // could arrive without a kernel handle.
           for (const aug of effectiveAugments) {
+            assertStartupAllowed();
             if (aug.transport) {
               const sourcePolicy: SchedulerSourcePolicy = {
                 id: `transport:${aug.name}`,
@@ -970,19 +1057,23 @@ export function defineAgent(
           }
 
           for (const aug of effectiveAugments) {
+            assertStartupAllowed();
             await aug.transport?.ready?.();
           }
+          assertStartupAllowed();
 
           lifecycle.startIdleTimer(async () => {
+            let failed = false;
             for (const aug of effectiveAugments) {
               if (aug.onIdle) {
                 try {
                   await aug.onIdle();
                 } catch {
-                  // Log and continue
+                  failed = true;
                 }
               }
             }
+            if (failed) throw new Error("Augment idle callback failed");
           });
 
           started = true;
@@ -996,14 +1087,19 @@ export function defineAgent(
     },
 
     stop() {
+      if (hostedMode) closeHostAdmission();
       return serializeLifecycle(async () => {
-        if (!started) return; // no-op if not started
+        if (!started) {
+          if (hostedMode) await lifecycle.disposeUnbooted();
+          return;
+        }
         const shutdownObservation = operationalSignals.beginShutdown();
         lifecycle.stopIdleTimer();
         turnScheduler.close();
         await turnScheduler.drain();
         await Promise.all([...threadTails.values()].map((tail) => tail.catch(() => {})));
         const shutdown = await lifecycle.shutdown();
+        if (hostedMode) await lifecycle.disposeUnbooted();
         shutdownObservation.finish(shutdown.hookFailures);
         outboundHandlers.clear();
         turnLoop.clearHistoryManagers();
@@ -1062,7 +1158,53 @@ export function defineAgent(
     },
   };
 
-  return handle;
+  function closeHostAdmission(): void {
+    hostAdmission = "closed";
+    lifecycle.stopIdleTimer();
+    turnScheduler.close();
+    for (const finish of [...hostWaiters]) finish(false);
+  }
+
+  function hostedSnapshot(): HostedAgentSnapshot {
+    const settlement = lifecycle.settlement();
+    const scheduler = turnScheduler.snapshot();
+    return Object.freeze({
+      admission: hostAdmission,
+      scheduler: Object.freeze({
+        ...scheduler,
+        queueWait: Object.freeze({ ...scheduler.queueWait }),
+        rejectedByReason: Object.freeze({ ...scheduler.rejectedByReason }),
+      }),
+      pendingTurns: pendingTurnOperations.size,
+      ...settlement,
+    });
+  }
+
+  return Object.freeze({
+    agent: handle,
+    openAdmission() {
+      if (!hostedMode || !started || hostAdmission !== "pending")
+        throw new Error("[application] host admission cannot open in this state");
+      hostAdmission = "open";
+      for (const finish of [...hostWaiters]) finish(true);
+    },
+    closeAdmission: closeHostAdmission,
+    snapshot: hostedSnapshot,
+    async waitForQuiescence() {
+      if (hostAdmission !== "closed")
+        throw new Error("[application] close admission before observing quiescence");
+      while (lifecycleTail || pendingTurnOperations.size || threadTails.size) {
+        await Promise.allSettled([
+          ...(lifecycleTail ? [lifecycleTail] : []),
+          ...pendingTurnOperations,
+          ...threadTails.values(),
+        ]);
+      }
+      await turnScheduler.drain();
+      await lifecycle.waitForSettlement();
+      return hostedSnapshot();
+    },
+  });
 
   function operationalSnapshot(): RuntimeOperationalSnapshot {
     const signals = operationalSignals.snapshot();
@@ -1071,7 +1213,8 @@ export function defineAgent(
     return Object.freeze({
       ...signals,
       readiness: Object.freeze({
-        accepting: started && scheduler.state === "accepting",
+        accepting:
+          started && scheduler.state === "accepting" && (!hostedMode || hostAdmission === "open"),
         state,
       }),
       scheduler,

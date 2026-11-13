@@ -463,11 +463,12 @@ function resolveWebTransport(
     identityLookup: VisitorAuthAugmentExtras["resolveVisitorIdentity"] | null;
     threadPromotionCheck: VisitorAuthAugmentExtras["canPromoteAnonymousThread"] | null;
   },
+  factory: (options: WebTransportOptions) => Augment = webTransport,
 ): Augment {
   const vtBase = opts.visitorTokens as
     | { enabled?: boolean; signingKey?: string; agentBinding?: string }
     | undefined;
-  return webTransport({
+  return factory({
     port: opts.port as number,
     auth: opts.auth as { type: "bearer"; token: string },
     cors: opts.cors as { origins: [string] } | undefined,
@@ -721,6 +722,12 @@ export async function resolveAugments(
     agentId?: string;
     /** Absolute root for deployment-owned durable state, such as a Railway volume. */
     runtimeDataRoot?: string;
+    /** Package-private host binding; receives the same normalized YAML options. */
+    webTransportFactory?: (options: WebTransportOptions, name: string) => Augment;
+    onConstructionRollback?: (report: {
+      readonly resources: "closed" | "unknown";
+      readonly failures: readonly "augment-shutdown-failed"[];
+    }) => void;
   } = {},
 ): Promise<Augment[]> {
   if (resolverOpts.runtimeDataRoot !== undefined && !isAbsolute(resolverOpts.runtimeDataRoot)) {
@@ -997,6 +1004,9 @@ export async function resolveAugments(
             ownedStateRoot,
             resolverOpts.creator,
             lateBindings,
+            resolverOpts.webTransportFactory
+              ? (options) => resolverOpts.webTransportFactory!(options, config.name)
+              : undefined,
           );
           break;
         case "webFetch":
@@ -1399,13 +1409,25 @@ export async function resolveAugments(
 
     return augments;
   } catch (error) {
+    let cleanupFailed = false;
     for (const augment of [...augments].reverse()) {
       try {
         await augment.onShutdown?.();
       } catch {
+        cleanupFailed = true;
         // Preserve the resolution error that made the partially built graph
         // unusable. Shutdown is best-effort during construction rollback.
       }
+    }
+    try {
+      resolverOpts.onConstructionRollback?.(
+        Object.freeze({
+          resources: cleanupFailed ? "unknown" : "closed",
+          failures: Object.freeze(cleanupFailed ? ["augment-shutdown-failed" as const] : []),
+        }),
+      );
+    } catch {
+      // A package observer must never replace the original construction error.
     }
     throw error;
   }
