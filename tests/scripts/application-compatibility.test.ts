@@ -33,6 +33,9 @@ import {
 } from "../../scripts/release-smoke/provider-fixture";
 
 const directories: string[] = [];
+const processFixture = fileURLToPath(
+  new URL("../fixtures/m3-main-codeql/process-child.ts", import.meta.url),
+);
 afterEach(() => {
   for (const directory of directories.splice(0))
     rmSync(directory, { recursive: true, force: true });
@@ -272,11 +275,12 @@ describe("installed compatibility evidence and cleanup", () => {
 
   test("removes newly created fixture files and preserves a zero-byte original", async () => {
     const file = join(fixture(), "probe.ts");
-    await withCompatibilityFile(file, "probe", async () => expect(existsSync(file)).toBe(true));
-    expect(existsSync(file)).toBe(false);
-    writeFileSync(file, "");
+    await withCompatibilityFile(file, "probe", async () =>
+      expect(readFileSync(file, "utf8")).toBe("probe"),
+    );
+    expect(() => readFileSync(file)).toThrow("ENOENT");
+    writeFileSync(file, "", { flag: "wx" });
     await withCompatibilityFile(file, "probe", async () => {});
-    expect(existsSync(file)).toBe(true);
     expect(readFileSync(file).length).toBe(0);
   });
 
@@ -321,11 +325,7 @@ describe("installed compatibility evidence and cleanup", () => {
       const pidFile = join(root, "escaped-child.pid");
       try {
         const result = await startApplicationChild({
-          command: [
-            process.execPath,
-            "-e",
-            `import {spawn} from "node:child_process"; import {writeFileSync} from "node:fs"; const escaped=spawn(process.execPath,["-e","setInterval(()=>{},1000)"],{detached:true,stdio:["ignore",process.stdout,process.stderr]});writeFileSync(${JSON.stringify(pidFile)},String(escaped.pid));escaped.unref();console.error("install Auggy explicitly");process.exit(1);`,
-          ],
+          command: [process.execPath, processFixture, "escaped-descendant", pidFile, "1"],
           cwd: root,
           env: applicationEnvironment(join(root, "home"), join(root, "tmp")),
           secrets: [],

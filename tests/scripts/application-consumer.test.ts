@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   APPLICATION_ROWS,
   applicationEnvironment,
@@ -35,6 +36,9 @@ import type { ProviderFixtureEvidence } from "../../scripts/release-smoke/provid
 
 let root: string;
 let sequence = 0;
+const processFixture = fileURLToPath(
+  new URL("../fixtures/m3-main-codeql/process-child.ts", import.meta.url),
+);
 function write(path: string, value: string) {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, value);
@@ -325,9 +329,13 @@ describe("application fixture materialization (not runtime acceptance)", () => {
 });
 
 describe("bounded harness child ownership", () => {
-  function child(code: string, extra: Partial<Parameters<typeof startApplicationChild>[0]> = {}) {
+  function child(
+    codeOrCommand: string | readonly string[],
+    extra: Partial<Parameters<typeof startApplicationChild>[0]> = {},
+  ) {
     return startApplicationChild({
-      command: [process.execPath, "-e", code],
+      command:
+        typeof codeOrCommand === "string" ? [process.execPath, "-e", codeOrCommand] : codeOrCommand,
       cwd: root,
       env: applicationEnvironment(join(root, "home"), join(root, "temp")),
       secrets: ["dummy-secret-never-export"],
@@ -365,12 +373,10 @@ describe("bounded harness child ownership", () => {
 
   test("graceful signal is observed separately from forced harness termination", async () => {
     const ready = join(root, "ready");
-    const process = child(
-      `process.on("SIGTERM", () => process.exit(0)); await Bun.write(${JSON.stringify(ready)}, "ready"); setInterval(() => {}, 1000);`,
-    );
+    const running = child([process.execPath, processFixture, "graceful", ready]);
     for (let i = 0; i < 100 && !existsSync(ready); i++) await Bun.sleep(10);
     expect(existsSync(ready)).toBe(true);
-    const result = await process.stop();
+    const result = await running.stop();
     expect(result).toMatchObject({
       wasRunning: true,
       forced: false,
@@ -386,9 +392,7 @@ describe("bounded harness child ownership", () => {
       const started = Date.now();
       try {
         const result = await child(
-          `import {spawn} from "node:child_process"; import {writeFileSync} from "node:fs";
-        const escaped = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {detached:true,stdio:["ignore",process.stdout,process.stderr]});
-        writeFileSync(${JSON.stringify(pidFile)}, String(escaped.pid)); escaped.unref(); process.exit(0);`,
+          [process.execPath, processFixture, "escaped-descendant", pidFile, "0"],
           { timeoutMs: 100 },
         ).finish();
         expect(result.cleanupConfirmed).toBe(false);

@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import {
-  existsSync,
   linkSync,
   lstatSync,
   mkdtempSync,
@@ -109,8 +108,10 @@ describe("launchd evidence validators, not actual macOS service acceptance", () 
   test("failure reporting changes only a bounded running report and skips absence", () => {
     const report = join(fixture(), "report.json");
     markApplicationLaunchdReportFailed(report);
-    expect(existsSync(report)).toBe(false);
-    writeFileSync(report, JSON.stringify({ state: "running", cleanupConfirmed: false }));
+    expect(() => readFileSync(report)).toThrow("ENOENT");
+    writeFileSync(report, JSON.stringify({ state: "running", cleanupConfirmed: false }), {
+      flag: "wx",
+    });
     markApplicationLaunchdReportFailed(report);
     expect(JSON.parse(readFileSync(report, "utf8"))).toEqual({
       state: "failed",

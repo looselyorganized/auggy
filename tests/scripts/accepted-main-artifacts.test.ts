@@ -11,6 +11,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   ACCEPTED_MAIN,
   acceptedBuildEnvironment,
@@ -22,6 +23,9 @@ import {
 } from "../../scripts/release-smoke/accepted-main-artifacts";
 
 const directories: string[] = [];
+const processFixture = fileURLToPath(
+  new URL("../fixtures/m3-main-codeql/process-child.ts", import.meta.url),
+);
 afterEach(() => {
   for (const path of directories.splice(0)) rmSync(path, { recursive: true, force: true });
 });
@@ -187,9 +191,8 @@ describe("accepted main artifact builder boundaries", () => {
   test("kills delegated build descendants on timeout", async () => {
     const cwd = temporary();
     const marker = join(cwd, "descendant-ran");
-    const code = `import {spawn} from 'node:child_process'; spawn(process.execPath, ['-e', ${JSON.stringify(`setTimeout(() => Bun.write(${JSON.stringify(marker)}, 'escaped'), 800); setInterval(() => {}, 1000)`)}], {stdio:'inherit'}); setInterval(() => {}, 1000);`;
     const result = await runAcceptedBuildCommand({
-      command: [process.execPath, "-e", code],
+      command: [process.execPath, processFixture, "delayed-descendant", marker],
       cwd,
       env: acceptedBuildEnvironment(cwd),
       timeoutMs: 150,
