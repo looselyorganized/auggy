@@ -110,7 +110,8 @@
     "lint": "bunx --bun @biomejs/biome@2.5.5 check",
     "lint:fix": "bunx --bun @biomejs/biome@2.5.5 check --write",
     "format": "bunx --bun @biomejs/biome@2.5.5 format --write",
-    "test:inspectable-example": "bash scripts/test-inspectable-example.sh"
+    "test:inspectable-example": "bash scripts/test-inspectable-example.sh",
+    "smoke:authoring": "bun scripts/release-smoke/authoring-suite.ts"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.94.0",

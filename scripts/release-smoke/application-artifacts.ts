@@ -58,6 +58,8 @@ export async function applicationArtifact(
     "src/cli/application-definition.ts",
     "src/cli/augment-resolver.ts",
     "src/cli/commands/dev.ts",
+    "src/cli/deploy/bundle.ts",
+    "src/cli/deploy/dockerfile.ts",
     "src/cli/authoring/",
     "src/cli/authoring-command-options.ts",
     "src/cli/authoring-command-handlers.ts",

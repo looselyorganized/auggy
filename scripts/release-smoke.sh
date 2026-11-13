@@ -1011,4 +1011,12 @@ bun "$ROOT/scripts/release-smoke/application-suite.ts" \
   >"$LOG_DIR/application-suite.log" 2>&1 \
   || fail "inspectable application acceptance failed"
 
+info "verify actual generated agent authoring and execution"
+bun "$ROOT/scripts/release-smoke/authoring-suite.ts" \
+  --repo-root "$ROOT" --evidence-dir "$EVIDENCE_DIR/authoring" \
+  --core "$TARBALL" --anthropic "$ANTHROPIC_TARBALL" \
+  --openai "$OPENAI_TARBALL" --openrouter "$OPENROUTER_TARBALL" --ollama "$OLLAMA_TARBALL" \
+  >"$LOG_DIR/authoring-suite.log" 2>&1 \
+  || fail "generated authoring acceptance failed"
+
 info "release smoke passed"

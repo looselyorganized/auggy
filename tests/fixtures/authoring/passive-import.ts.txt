@@ -1,0 +1,1 @@
+throw new Error("authoring-passive-import-forbidden");

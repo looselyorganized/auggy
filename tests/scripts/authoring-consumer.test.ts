@@ -16,6 +16,7 @@ import {
   assertAuthoringArtifactManifest,
   assertAuthoringCommandSucceeded,
   authoringCreateArguments,
+  inspectGeneratedAuthoringTree,
   readAuthoringSource,
   runBoundedAuthoringCli,
   selectAuthoringArtifacts,
@@ -88,6 +89,58 @@ function snapshot(files: readonly string[] = sourceFiles, consumer = join(root, 
 }
 
 describe("authoring helper preparation, not installed CLI acceptance", () => {
+  test("fresh-tree inventory rejects parallel legacy registries and hashes no private bytes", () => {
+    const consumer = join(root, "consumer");
+    const config = {
+      application: { entrypoint: "./src/index.ts", contractVersion: 1 },
+      augments: [{ name: "web", type: "webTransport", options: {} }],
+    };
+    write(join(consumer, "agent.yaml"), JSON.stringify(config));
+    write(join(consumer, ".env"), "SECRET=private-canary-value");
+    write(join(consumer, ".auggy/operations/receipt.json"), "private-canary-value");
+    const inventory = inspectGeneratedAuthoringTree(consumer);
+    expect(inventory.find((item) => item.path === "src/index.ts")?.sha256).toBe(
+      applicationHash(readFileSync(join(consumer, "src/index.ts"))),
+    );
+    expect(inventory.find((item) => item.path === ".env")).toEqual({
+      path: ".env",
+      kind: "file",
+      private: true,
+    });
+    expect(
+      inventory.find((item) => item.path === ".auggy/operations/receipt.json")?.sha256,
+    ).toBeUndefined();
+    expect(JSON.stringify(inventory)).not.toContain("private-canary-value");
+    write(join(consumer, "augments/layeredMemory/augment.yaml"), "type: layeredMemory\n");
+    expect(() => inspectGeneratedAuthoringTree(consumer)).toThrow("legacy");
+    rmSync(join(consumer, "augments"), { recursive: true });
+    write(
+      join(consumer, "src/augments/layeredMemory/definition.ts"),
+      "export const duplicateRegistry = [];\n",
+    );
+    expect(() => inspectGeneratedAuthoringTree(consumer)).toThrow("legacy definition");
+    rmSync(join(consumer, "src/augments/layeredMemory"), { recursive: true });
+    write(join(consumer, "agent.yaml"), JSON.stringify({ ...config, augments: ["layeredMemory"] }));
+    expect(() => inspectGeneratedAuthoringTree(consumer)).toThrow("inline built-ins");
+  });
+
+  test("fresh-tree inventory rejects linked private paths and excessive entries", () => {
+    const consumer = join(root, "consumer");
+    write(
+      join(consumer, "agent.yaml"),
+      JSON.stringify({
+        application: { entrypoint: "./src/index.ts", contractVersion: 1 },
+        augments: [{ name: "web", type: "webTransport" }],
+      }),
+    );
+    symlinkSync(join(root, "checkout"), join(consumer, "data"));
+    expect(() => inspectGeneratedAuthoringTree(consumer)).toThrow("symlink");
+    rmSync(join(consumer, "data"));
+    for (let index = 0; index < 129; index++)
+      write(join(consumer, "skills", `file-${index}.md`), "bounded fixture");
+    expect(() => inspectGeneratedAuthoringTree(consumer)).toThrow("bound");
+  });
+
   test("selects exact OpenRouter prerequisite and rejects wrong package/hash evidence", () => {
     const artifacts = artifactSet();
     const selected = selectAuthoringArtifacts(artifacts, "openrouter");

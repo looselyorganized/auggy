@@ -4,18 +4,22 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   assertAuthoringDenial,
+  assertAuthoringHeader,
+  assertAuthoringStartupRejection,
   assertAuthoringEffectsUnchanged,
   assertAuthoringReplay,
   assertGeneratedApplicationTurn,
+  assertGeneratedApplicationFailure,
   assertGeneratedRecipeSources,
 } from "../../scripts/release-smoke/authoring-application";
 import type { GeneratedApplicationRecipe } from "../../scripts/release-smoke/authoring-contract";
 import type { ProviderFixtureEvidence } from "../../scripts/release-smoke/provider-fixture";
+import { runBoundedAuthoringCli } from "../../scripts/release-smoke/authoring-consumer";
 
 let root: string;
 const output = JSON.stringify({ id: "SAMPLE-001", status: "ready", label: "Example record" });
-const turnSource = `const prompt = await turn.preparePrompt();
-if (prompt.kind === "terminal") return prompt.completion;
+const turnSource = `const prepared = await turn.preparePrompt();
+if (prepared.kind === "terminal") return prepared.completion;
 while (turn.remainingInferences > 0) {
   await turn.infer();
 }
@@ -131,6 +135,76 @@ function turnOptions() {
 }
 
 describe("generated application assertion sensitivity, not installed acceptance", () => {
+  test("failure oracles require correlated terminal status, exact adapter calls and zero domain effects", () => {
+    const invalid = {
+      response: response(events(false)),
+      threadId: "thread-1",
+      provider: { ...provider(), scenario: "invalid-tool-arguments" as const },
+      toolEffects: 0,
+      scenario: "invalid-tool-arguments" as const,
+    };
+    assertGeneratedApplicationFailure(invalid);
+    expect(() => assertGeneratedApplicationFailure({ ...invalid, toolEffects: 1 })).toThrow(
+      "business tool",
+    );
+    expect(() =>
+      assertGeneratedApplicationFailure({
+        ...invalid,
+        provider: { ...invalid.provider, calls: 1 },
+      }),
+    ).toThrow("adapter path");
+    expect(() =>
+      assertGeneratedApplicationFailure({ ...invalid, response: response(events()) }),
+    ).toThrow("business tool");
+    const failedEvents = [
+      events(false)[0]!,
+      { type: "RUN_ERROR" },
+      { ...events(false)[1]!, result: { status: "failed" } },
+    ];
+    const failed = {
+      ...invalid,
+      response: response(failedEvents),
+      scenario: "provider-failure" as const,
+      provider: {
+        ...provider(),
+        scenario: "provider-failure" as const,
+        calls: 1,
+        toolRequests: 0,
+        validatedToolResults: 0,
+        finalResponses: 0,
+        rejectedRequests: 1,
+      },
+    };
+    assertGeneratedApplicationFailure(failed);
+    expect(() =>
+      assertGeneratedApplicationFailure({ ...failed, response: response(events(false)) }),
+    ).toThrow("classification");
+  });
+  test("startup verifier rejects wrong markers, successful exits and unconfirmed cleanup", async () => {
+    const result = await runBoundedAuthoringCli({
+      entry: join(import.meta.dir, "authoring-command-fixture.ts"),
+      args: ["reject"],
+      cwd: root,
+      workspace: root,
+    });
+    assertAuthoringStartupRejection(result, "fixture rejection");
+    expect(() => assertAuthoringStartupRejection(result, "wrong marker")).toThrow("exact marker");
+    expect(() =>
+      assertAuthoringStartupRejection({ ...result, exitCode: 0 }, "fixture rejection"),
+    ).toThrow("exact marker");
+    expect(() =>
+      assertAuthoringStartupRejection({ ...result, cleanupConfirmed: false }, "fixture rejection"),
+    ).toThrow("exact marker");
+    expect(() => assertAuthoringHeader(response(), { name: "x-owned", value: "edited" })).toThrow(
+      "missing",
+    );
+    expect(() =>
+      assertAuthoringHeader(
+        { ...response(), headers: { "x-owned": "wrong" } },
+        { name: "x-owned", value: "edited" },
+      ),
+    ).toThrow("missing");
+  });
   test("validates unique source anchors and phase-correct turn stop without editing files", () => {
     const input = {
       repoRoot: join(root, "checkout"),
@@ -143,7 +217,7 @@ describe("generated application assertion sensitivity, not installed acceptance"
     unchanged.edits.turn.after = unchanged.edits.turn.before;
     expect(() => assertGeneratedRecipeSources({ ...input, recipe: unchanged })).toThrow("distinct");
     const early = recipe();
-    early.edits.turn.before = "const prompt = await turn.preparePrompt();";
+    early.edits.turn.before = "const prepared = await turn.preparePrompt();";
     expect(() => assertGeneratedRecipeSources({ ...input, recipe: early })).toThrow(
       "prepared terminal check",
     );
