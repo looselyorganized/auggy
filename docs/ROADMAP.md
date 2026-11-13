@@ -105,7 +105,11 @@ Implementation proceeds through six gated milestones. Milestones 1–2 are accep
 at verified main `209185d0`. Milestone 3 is implemented in
 [PR #227](https://github.com/looselyorganized/auggy/pull/227), with
 [acceptance evidence](./plans/milestone-3-evidence-2026-11-13.md) and final PR gates.
-Milestones 4–6 remain roadmap outcomes:
+Milestone 4 now has a detailed
+[execution plan](./plans/milestone-4-execution-2026-11-13.md) and
+[specialist task ledger](./plans/milestone-4-tasks.json). Implementation has not
+started: the entry gate requires the reviewed M3 merge, verified resulting main
+and implementation authorization. Milestones 5–6 remain roadmap outcomes:
 
 | Milestone | Outcome | Exit gate |
 |---|---|---|
@@ -122,6 +126,14 @@ specialist ownership, contracts, dependencies and acceptance to a CTO-orchestrat
 subagent team. Its foundation gate is satisfied by reviewed, merged and verified
 main `209185d0`. Existing scope items below remain roadmap requirements; they
 are not permission to expand the current tranche.
+
+The M4 packet assigns central configuration, executable scaffolding, custom
+authoring, credential compatibility, passive inspection, migration and installed
+acceptance to bounded specialist roles. Its acceptance uses actual generated CLI
+output. M5 owns the standalone Next.js/Auggy deployment integration and generic
+Docker product work; M6 owns supported upgrades and external-engineer DX
+measurement. M4 preserves existing deployment and ownership contracts without
+claiming those later milestones are complete.
 
 ### 0.7.0 — the visitor
 

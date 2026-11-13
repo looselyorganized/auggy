@@ -1,0 +1,503 @@
+{
+  "schemaVersion": 1,
+  "milestone": 4,
+  "plan": "milestone-4-execution-2026-11-13.md",
+  "mode": "planning",
+  "orchestrator": "CTO / AI Engineering Lead (root)",
+  "maxConcurrentSpecialists": 3,
+  "baseline": {
+    "verifiedMainAtPlanning": "209185d0e7481b4ff5d3b4c87e3447e7583b2fef",
+    "planningCandidate": "ba16ce3a8be1f5ef8ec36e43c79889c3feecc250",
+    "planningCandidatePR": "https://github.com/looselyorganized/auggy/pull/227",
+    "planningCandidatePRState": "OPEN",
+    "acceptedMain": null,
+    "acceptedTree": null,
+    "planningLockSHA256": "cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7",
+    "acceptedLockSHA256": null
+  },
+  "gates": {
+    "G0": {
+      "status": "blocked",
+      "requires": [
+        "user authorizes M4 implementation",
+        "M3 PR227 reviewed and merged",
+        "resulting main required checks verified",
+        "exact accepted main/tree/toolchain/lock recorded",
+        "differences from planning candidate reconciled"
+      ],
+      "acceptedMain": null,
+      "evidence": []
+    }
+  },
+  "contracts": {
+    "C1": "milestone-4-contracts/authoring.md",
+    "C2": "milestone-4-contracts/migration.md",
+    "C3": "milestone-4-contracts/inspection.md",
+    "C4": "milestone-4-contracts/acceptance.md"
+  },
+  "allowedStates": [
+    "blocked",
+    "ready",
+    "in_progress",
+    "review",
+    "accepted"
+  ],
+  "tasks": [
+    {
+      "id": "M4-00",
+      "title": "Freeze accepted baseline, contracts and ownership",
+      "specialist": "CTO / AI Engineering Lead + architecture specialist",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "C1",
+        "C2",
+        "C3",
+        "C4"
+      ],
+      "deliverables": [
+        "baseline/source-writer inventory",
+        "CLI-local interface and schema fixtures",
+        "accepted contract revision",
+        "pre-change trace task baseline"
+      ],
+      "writeScope": [
+        "root-reserved contracts and status documents"
+      ],
+      "acceptedCommit": null,
+      "evidence": [],
+      "acceptanceScope": "baseline-and-contract-freeze"
+    },
+    {
+      "id": "M4-01",
+      "title": "Pure configuration documents and recoverable publication",
+      "specialist": "configuration engineer",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M4-00"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A04",
+        "A10",
+        "A11",
+        "A12"
+      ],
+      "deliverables": [
+        "raw declaration reader",
+        "preconditioned mutation planner",
+        "bounded project publication and receipt primitives",
+        "failure controls"
+      ],
+      "writeScope": [
+        "src/cli/authoring/document*",
+        "src/cli/authoring/mutation*",
+        "src/cli/authoring/publication*",
+        "tests/cli/authoring-document*",
+        "tests/cli/authoring-publication*"
+      ],
+      "acceptedCommit": null,
+      "evidence": [],
+      "acceptanceScope": "scoped-producer-contribution"
+    },
+    {
+      "id": "M4-02",
+      "title": "Executable create/init and package coherence",
+      "specialist": "application DX engineer",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M4-01"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A01",
+        "A02",
+        "A03",
+        "A04",
+        "A05",
+        "A12",
+        "A15"
+      ],
+      "deliverables": [
+        "packaged application templates",
+        "deterministic creation",
+        "collision-safe init",
+        "public-API consumer scripts/tests"
+      ],
+      "writeScope": [
+        "src/cli/commands/create.ts",
+        "src/cli/scaffold-package-json.ts",
+        "src/cli/scaffold-application.ts",
+        "src/scaffold-templates/application/",
+        "tests/cli/create*",
+        "tests/cli/scaffold-application*"
+      ],
+      "acceptedCommit": null,
+      "evidence": [],
+      "acceptanceScope": "scoped-producer-contribution"
+    },
+    {
+      "id": "M4-03",
+      "title": "Central augment and custom capability authoring",
+      "specialist": "augment authoring engineer",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M4-01"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A06",
+        "A07",
+        "A12"
+      ],
+      "deliverables": [
+        "inline add/create/install/remove",
+        "creator-only shared service starter",
+        "retained owned skills/source",
+        "legacy mutator guidance"
+      ],
+      "writeScope": [
+        "src/cli/commands/add.ts",
+        "src/cli/commands/augment.ts",
+        "src/cli/scaffold-custom-augment.ts",
+        "src/cli/scaffold-skills.ts",
+        "src/cli/augment-metadata.ts",
+        "tests/cli/augment-authoring*",
+        "tests/cli/scaffold-custom-augment*"
+      ],
+      "acceptedCommit": null,
+      "evidence": [],
+      "acceptanceScope": "scoped-producer-contribution"
+    },
+    {
+      "id": "M4-04",
+      "title": "Explicit config conversion and application adoption",
+      "specialist": "migration engineer",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M4-01",
+        "M4-02"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A10",
+        "A11",
+        "A12",
+        "A13"
+      ],
+      "deliverables": [
+        "preview/apply/rollback command",
+        "legacy fixture corpus",
+        "preservation proof",
+        "interruption recovery and activation evidence"
+      ],
+      "writeScope": [
+        "src/cli/commands/migrate.ts",
+        "src/cli/authoring/migration*",
+        "tests/cli/migration*",
+        "tests/fixtures/authoring-migration/"
+      ],
+      "acceptedCommit": null,
+      "evidence": [],
+      "acceptanceScope": "scoped-producer-contribution"
+    },
+    {
+      "id": "M4-05",
+      "title": "Inline AgentMail configuration with security parity",
+      "specialist": "credential security engineer",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M4-01",
+        "M4-03"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A17",
+        "A07",
+        "A12"
+      ],
+      "deliverables": [
+        "inline canonical-instance setup",
+        "credential lock/CAS/shared-consumer parity",
+        "legacy operational revoke coverage"
+      ],
+      "writeScope": [
+        "src/cli/commands/agentmail.ts",
+        "tests/cli/agentmail*"
+      ],
+      "acceptedCommit": null,
+      "evidence": [],
+      "acceptanceScope": "scoped-producer-contribution"
+    },
+    {
+      "id": "M4-06",
+      "title": "Passive inspection and installed source navigation",
+      "specialist": "inspection engineer",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M4-01"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A08",
+        "A09",
+        "A16"
+      ],
+      "deliverables": [
+        "pure report/schema",
+        "installed passive command proof",
+        "source-index generator and packaged metadata",
+        "resolver supported-type parity"
+      ],
+      "writeScope": [
+        "src/cli/commands/inspect.ts",
+        "src/cli/authoring/inspection*",
+        "src/metadata/source-index.json",
+        "src/cli/augment-catalog.ts",
+        "scripts/generate-source-index.ts",
+        "tests/cli/inspect*",
+        "tests/scripts/source-index*"
+      ],
+      "acceptedCommit": null,
+      "evidence": [],
+      "acceptanceScope": "scoped-producer-contribution"
+    },
+    {
+      "id": "M4-07",
+      "title": "Actual generated-project installed acceptance",
+      "specialist": "harness engineer",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M4-00"
+      ],
+      "acceptanceDependsOn": [
+        "M4-02",
+        "M4-03",
+        "M4-04",
+        "M4-05",
+        "M4-06",
+        "M4-08"
+      ],
+      "acceptance": [
+        "A01",
+        "A02",
+        "A03",
+        "A04",
+        "A05",
+        "A06",
+        "A07",
+        "A08",
+        "A09",
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15",
+        "A16",
+        "A17"
+      ],
+      "deliverables": [
+        "fixture/assertion preparation",
+        "adoption of untouched CLI output",
+        "installed command/migration/source-edit/ownership evidence",
+        "bounded cleanup and failure controls"
+      ],
+      "writeScope": [
+        "scripts/release-smoke/authoring-suite.ts",
+        "scripts/release-smoke/authoring-consumer.ts",
+        "scripts/release-smoke/authoring-inspection.ts",
+        "scripts/release-smoke/authoring-migration.ts",
+        "tests/scripts/authoring-*"
+      ],
+      "acceptedCommit": null,
+      "evidence": [],
+      "acceptanceScope": "installed-scenario-evidence"
+    },
+    {
+      "id": "M4-08",
+      "title": "Public and agent-facing teaching alignment",
+      "specialist": "documentation engineer",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M4-02",
+        "M4-03",
+        "M4-04",
+        "M4-05",
+        "M4-06"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A16"
+      ],
+      "deliverables": [
+        "generated/public execution walkthrough",
+        "legacy migration compatibility notes",
+        "builder/self-guidance alignment",
+        "deployment/source navigation verification"
+      ],
+      "writeScope": [
+        "assigned public docs and builder assets",
+        "src/cli/auggy-self-augment.ts",
+        "template README only after M4-02 hands ownership over"
+      ],
+      "acceptedCommit": null,
+      "evidence": [],
+      "acceptanceScope": "scoped-producer-contribution"
+    },
+    {
+      "id": "M4-09",
+      "title": "Independent integrated adversarial review",
+      "specialist": "independent architecture/security/harness reviewer",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M4-02",
+        "M4-03",
+        "M4-04",
+        "M4-05",
+        "M4-06",
+        "M4-07",
+        "M4-08"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "C1",
+        "C2",
+        "C3",
+        "C4"
+      ],
+      "deliverables": [
+        "reproducible findings",
+        "producer repair requests",
+        "independent repair rechecks"
+      ],
+      "writeScope": [
+        "read-only; review reports only"
+      ],
+      "acceptedCommit": null,
+      "evidence": [],
+      "acceptanceScope": "independent-integrated-review"
+    },
+    {
+      "id": "M4-10",
+      "title": "Certify final artifacts, CI and PR handoff",
+      "specialist": "CTO / AI Engineering Lead",
+      "status": "blocked",
+      "blockedBy": [
+        "G0"
+      ],
+      "dependsOn": [
+        "M4-07",
+        "M4-08",
+        "M4-09"
+      ],
+      "acceptanceDependsOn": [],
+      "acceptance": [
+        "A01",
+        "A02",
+        "A03",
+        "A04",
+        "A05",
+        "A06",
+        "A07",
+        "A08",
+        "A09",
+        "A10",
+        "A11",
+        "A12",
+        "A13",
+        "A14",
+        "A15",
+        "A16",
+        "A17"
+      ],
+      "deliverables": [
+        "final candidate/artifact/merge provenance",
+        "required CI and platform evidence",
+        "accepted review dispositions",
+        "scoped PR and M4 evidence document"
+      ],
+      "writeScope": [
+        "root-reserved integration, manifests/locks, CI and evidence/status files"
+      ],
+      "acceptedCommit": null,
+      "evidence": [],
+      "acceptanceScope": "milestone-certification"
+    }
+  ],
+  "planReview": {
+    "status": "approved",
+    "specialistPlanning": [
+      "m4_authoring_architect",
+      "m4_cli_migration_planner",
+      "m4_harness_planner"
+    ],
+    "independentReviewer": "m4_plan_adversarial_review",
+    "remainingPlanningBlockers": [],
+    "implementationAuthorized": false,
+    "planSHA256": "7a61b593f9ef2bac167d8e6534e1852cf9a7a83650f52d579fbb5d4356358c51",
+    "reviewRecord": "milestone-4-plan-review-2026-11-13.md",
+    "contractSHA256": {
+      "milestone-4-contracts/acceptance.md": "6f5792df409519eefa584a4a920442d6122970714c89ee93bbbb93c90b3cd3f1",
+      "milestone-4-contracts/authoring.md": "c84eb787994717bb22a1dbbac8d72c8acd518e0e2f80685b86c97fa1c6f72d30",
+      "milestone-4-contracts/inspection.md": "33993a110a642ab34b34532079f778a5d69f4fd3fd8ca67e5b003080ffc9df65",
+      "milestone-4-contracts/migration.md": "978279c476fcbbcfb75fcb51d408fb07fd23545c175581f2e581d2a5654608ca"
+    },
+    "findings": {
+      "resolved": [
+        "R1",
+        "R2",
+        "R3",
+        "R4",
+        "R5"
+      ],
+      "unresolved": []
+    }
+  },
+  "activeOwnership": {
+    "planningAndIntegration": "root",
+    "independentPlanReview": "m4_plan_adversarial_review (complete)"
+  },
+  "notes": [
+    "All implementation tasks are blocked by G0; no product changes performed.",
+    "M4-07 may prepare after M4-00 acceptance; its installed acceptance also requires acceptanceDependsOn.",
+    "Only root changes task/gate acceptance status.",
+    "M5/M6 remain roadmap outcomes; no merge or publication authorized by this plan."
+  ],
+  "acceptanceSemantics": {
+    "producer": "Acceptance IDs on M4-01 through M4-06 and M4-08 are contributions; root accepts independently reviewed scoped producer evidence, not full milestone rows.",
+    "installed": "M4-07 may prepare after M4-00; final installed acceptance consumes accepted M4-02 through M4-06 and M4-08 outputs.",
+    "milestone": "Only M4-10 certifies full acceptance rows on final artifacts and required CI."
+  }
+}

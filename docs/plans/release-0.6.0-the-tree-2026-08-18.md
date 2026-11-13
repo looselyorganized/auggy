@@ -202,13 +202,25 @@ acceptance; see [the evidence](./milestone-3-evidence-2026-11-13.md) and
 [PR #227](https://github.com/looselyorganized/auggy/pull/227) for final gates.
 Milestones 4–6 remain unimplemented. These documents do not authorize publication.
 
-## Milestones 4–6: roadmap only
+## Milestone 4: detailed authoring plan
+
+The [M4 execution plan](./milestone-4-execution-2026-11-13.md),
+[task ledger](./milestone-4-tasks.json) and focused contracts define executable
+creation, Central YAML writers, custom augments, passive source inspection,
+explicit migration and actual installed-generator acceptance. Specialized
+producers report to the CTO / AI Engineering Lead; independent adversarial review
+precedes certification. This is planning only. Implementation requires the
+reviewed M3 merge, verified resulting main and implementation authorization.
+
+## Milestones 5–6: roadmap only
 
 The [roadmap](../ROADMAP.md) records outcomes and exit gates for the reference
 application, authoring/scaffold, standalone-service integration, and upgrade/DX
-certification. Do not implement managed host/turn APIs, Central YAML migration,
-public client packages, or the new generated tree as incidental foundation
-harness work. M3 runtime implementation follows its separate gated plan.
+certification. M5 covers the Next.js frontend beside a standalone Auggy service,
+Railway persistence/recovery and generic Docker product work. M6 covers supported
+dependency upgrades, breaking-change guidance and measured developer usability.
+Do not implement those outcomes as incidental M4 harness work. M4's source
+preservation smoke check does not substitute for M6 upgrade certification.
 
 ## Measurable developer experience
 
