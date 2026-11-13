@@ -2,23 +2,32 @@
   "schemaVersion": 1,
   "milestone": 3,
   "plan": "milestone-3-execution-2026-11-12.md",
-  "mode": "planning_only",
+  "mode": "execution",
   "orchestrator": "CTO / AI Engineering Lead (root)",
   "maxConcurrentSpecialists": 3,
   "baseline": {
     "inspectedMain": "29147dfc7af0de59c3631c34a164ed3f3f6f4d5c",
-    "foundationCandidate": "0ee8f68df5f39f65b7032f18a034112f608a8773",
-    "acceptedMain": null
+    "foundationCandidate": "1f4c6e3fd2f54a2e7f2d3f1f9b0740bac961b38c",
+    "acceptedMain": "209185d0e7481b4ff5d3b4c87e3447e7583b2fef",
+    "tree": "30bd2b764c6e136708a82fc186ce733e3741a4ff",
+    "lockSHA256": "cd4b421883d2874dba117e9410acae08207f352d99b74fcd6a9872d35afde3f7"
   },
   "gates": {
     "G0": {
-      "status": "blocked",
+      "status": "accepted",
       "requires": [
         "reviewed Link resolution integrated",
         "foundation required checks pass",
         "foundation final review and merge",
         "resulting main verified and recorded"
-      ]
+      ],
+      "acceptedMain": "209185d0e7481b4ff5d3b4c87e3447e7583b2fef",
+      "evidence": [
+        "https://github.com/looselyorganized/auggy/pull/226",
+        "https://github.com/looselyorganized/auggy/actions/runs/43357821694",
+        "https://github.com/looselyorganized/auggy/actions/runs/43357821675"
+      ],
+      "review": "Independent exact-tree, registry-artifact, CI, PostgreSQL and audit acceptance"
     }
   },
   "allowedStates": [
@@ -33,10 +42,8 @@
       "id": "M3-00",
       "title": "Freeze baseline and contracts",
       "specialist": "runtime-architect + orchestrator",
-      "status": "blocked",
-      "blockedBy": [
-        "G0"
-      ],
+      "status": "ready",
+      "blockedBy": [],
       "dependsOn": [],
       "acceptanceDependsOn": [],
       "acceptance": [
@@ -59,7 +66,7 @@
       "specialist": "runtime-engineer",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M3-00"
       ],
       "dependsOn": [
         "M3-00"
@@ -85,7 +92,7 @@
       "specialist": "transport-lifecycle-engineer",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M3-00"
       ],
       "dependsOn": [
         "M3-00"
@@ -113,7 +120,8 @@
       "specialist": "cli-platform-engineer",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M3-00",
+        "M3-02"
       ],
       "dependsOn": [
         "M3-00",
@@ -139,7 +147,9 @@
       "specialist": "application-dx-engineer",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M3-01",
+        "M3-02",
+        "M3-03"
       ],
       "dependsOn": [
         "M3-01",
@@ -167,7 +177,7 @@
       "specialist": "harness-engineer",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M3-00"
       ],
       "dependsOn": [
         "M3-00"
@@ -199,7 +209,11 @@
       "specialist": "independent-reviewer",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M3-01",
+        "M3-02",
+        "M3-03",
+        "M3-04",
+        "M3-05"
       ],
       "dependsOn": [
         "M3-01",
@@ -238,7 +252,7 @@
       "specialist": "orchestrator",
       "status": "blocked",
       "blockedBy": [
-        "G0"
+        "M3-06"
       ],
       "dependsOn": [
         "M3-06"
@@ -275,7 +289,7 @@
       "harness/CLI specialist"
     ],
     "remainingPlanningBlockers": [],
-    "implementationAuthorized": false,
-    "planSHA256": "7f2ceb00a963eda0ea94507ae3adbaf48620dd713300b9dc80a7ceba75cd3610"
+    "implementationAuthorized": true,
+    "planSHA256": "4ab0e3d3b041e0fdcf56bbb85b8ff408884b8387f2878df35b38a776fee08c34"
   }
 }

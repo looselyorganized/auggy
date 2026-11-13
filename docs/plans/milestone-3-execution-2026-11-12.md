@@ -1,7 +1,8 @@
 # Milestone 3 — executable reference application
 
-Status: execution plan reviewed; runtime implementation blocked on foundation
-acceptance. This is the execution packet for specialized engineering subagents,
+Status: execution authorized; foundation gate G0 accepted on verified main
+`209185d0e7481b4ff5d3b4c87e3447e7583b2fef`. M3-00 contract freeze is next.
+This is the execution packet for specialized engineering subagents,
 orchestrated by the CTO / AI Engineering Lead. It supplements the
 [release plan](./release-0.6.0-the-tree-2026-08-18.md) and implements the accepted
 [ownership ADR](../adr/2026-11-12-inspectable-agent-application.md).
@@ -14,24 +15,29 @@ the next model/tool step. Editing that application changes real execution.
 Installed Auggy operations retain authorization, accounting, persistence,
 scheduling, and lifecycle guarantees. Built-ins remain package dependencies.
 
-Current behavior was inspected at committed main
-`29147dfc7af0de59c3631c34a164ed3f3f6f4d5c`. The foundation candidate is
-`0ee8f68df5f39f65b7032f18a034112f608a8773`, [PR #226](https://github.com/looselyorganized/auggy/pull/226).
-Its runtime/host architecture is still main's; foundation source changes are
-dependency scaffold policy and pricing repairs. Neither authoring experiment nor
-the dirty main checkout supplies implementation assumptions.
+The original architecture inspection used committed main
+`29147dfc7af0de59c3631c34a164ed3f3f6f4d5c`. The accepted implementation baseline is
+`209185d0e7481b4ff5d3b4c87e3447e7583b2fef` (`M3_BASELINE`), from merged
+[foundation PR #226](https://github.com/looselyorganized/auggy/pull/226).
+Its tree `30bd2b764c6e136708a82fc186ce733e3741a4ff` exactly matches reviewed
+candidate `1f4c6e3fd2f54a2e7f2d3f1f9b0740bac961b38c`. Runtime/host architecture
+remains the original main design; foundation changes include dependency policy,
+pricing repairs, execution evidence and the narrow Link participant UUID fix.
+Neither authoring experiment nor the dirty original checkout supplies assumptions.
 
-The candidate passed functional CI, CodeQL, PostgreSQL execution and core packed
-scenarios. Workspace and Link-selected audits still fail. A separate specialist
-owns Link remediation. A dependency relocation that only makes the audit green
-does not establish that affected supported code paths are fixed.
+**G0 accepted:** Link 0.2.0 is published and registry-verified, integrated in the
+root lock and catalog; all 29 PR checks and independent artifact review passed;
+foundation merged; fresh [main CI](https://github.com/looselyorganized/auggy/actions/runs/43357821694)
+and [CodeQL](https://github.com/looselyorganized/auggy/actions/runs/43357821675)
+passed. PostgreSQL 17 completed all 13 registered cases with zero skips, and the
+workspace audit has no advisories. Identical-tree local/Linux release rehearsals
+each passed 34 scenarios and nine positive audits, including real fresh/retained
+registry Link execution. Preserve these as regression gates.
 
-**G0, required before runtime implementation:** reviewed Link resolution is
-integrated; foundation's required checks pass; final foundation review and merge
-are complete; resulting main is verified. The orchestrator records that exact
-main SHA as `M3_BASELINE`. These planning documents do not waive G0 or authorize
-publishing packages. Reconcile this plan against that SHA before creating code
-branches. Worktree retirement is independent and remains deferred.
+This packet is reconciled against that exact main revision. Runtime implementation
+is authorized under the user's instruction to proceed once the foundation is
+ready. It does not authorize an Auggy package publication. Worktree retirement
+remains independent and deferred; original dirty main and experiments are retained.
 
 ## Scope
 
@@ -254,20 +260,38 @@ persistence/unknown-outcome result, before the existing post-turn pipeline.
 Observation failure is bounded and cannot replace the turn outcome. Logical turn
 settlement does not imply release of a lane retained for detached tool effects.
 Persistence/accounting failure or unknown outcome must not be overwritten by a
-successful receipt; preserve the original cause as bounded diagnostic context.
+successful receipt; preserve prior causes only as sanitized classification codes,
+never raw exception messages or cause objects.
 M3-00 freezes explicit error precedence from current behavior and tests it.
+Console history may be staged for an atomic transport commit after post-turn
+hooks; observation must label that state `deferred-to-transport`, never durably
+committed. Existing HTTP already buffers terminal success until transport
+persistence completes; preserve that protection.
+
+Observation covers every valid turn scheduling attempt, including queue rejection,
+cancellation, failed history restoration and pre-session rejection. HTTP auth or
+schema failures and startup failures that never become turn attempts are excluded.
+It receives immutable metadata once, with a fixed 1,000 ms package timeout and no
+retry; failure or late completion cannot alter the turn result or hook behavior.
 
 Bound opt-in asynchronous program execution and revoke further session operations
-after deadline/cancellation. M3-00 freezes its numerical deadline policy against
-provider/job limits. Preserve legacy deadlines rather than silently adding a new
-legacy timeout. Test late completions and pending effects with the existing
-unknown-outcome rules. Do not claim this can preempt an infinite synchronous loop
+after deadline/cancellation. The accepted policy is a 900,000 ms default and
+maximum for opt-in application programs, allowing a smaller positive integer.
+It begins immediately before the
+program runs and combines with caller/job cancellation at the earliest deadline.
+Legacy timing remains unchanged. This deadline revokes program operations; it
+does not authorize abandoning durable cleanup or releasing live-effect claims.
+Test late completions and pending effects with the existing unknown-outcome rules.
+Do not claim this can preempt an infinite synchronous loop
 in trusted project TypeScript; process isolation is outside M3.
 
 Provide guarded early stop at a quiescent phase (`application-limit` is the
 proposed reason). It must settle normal accounting/history without pretending a
 pending tool effect completed. This enables a meaningful supported customization:
 an app may lower its inference ceiling; it cannot raise package-enforced limits.
+An explicitly lowered ceiling is a hard total across managed inference calls,
+including recovery inference. It does not certify model calls privately owned by
+existing internal augment handlers. Preserve the default legacy recovery allowance.
 
 ### C3. HTTP and transport binding
 
@@ -338,11 +362,10 @@ to start an agent with the global runtime. Never stop a process using only an
 unverified numeric PID. Prove recovery after making the installed entrypoint or
 local dependency unavailable, with zero application imports during recovery.
 
-The current generated Dockerfile uses Bun 1.2.14 while foundation certification
-uses 1.3.14. M3-00 must resolve the supported runtime floor and M3-03 align or
-explicitly verify the deployment command/runtime combination. Do not inherit a
-deployment-support claim from tests using a different Bun version. Any required
-floor adjustment is a documented compatibility change, not a package release.
+The accepted M3 runtime floor is Bun 1.3.14, the certified toolchain. M3-03 must
+align the package requirement and generated Docker runtime (currently 1.2.14)
+and document this compatibility change. Do not retain a supported 1.2.x claim
+without a separate passing certification matrix. No package release is implied.
 
 ## Work packages and specialist ownership
 
@@ -350,7 +373,8 @@ The orchestrator owns contract freeze, sequencing, shared files, integration,
 review disposition and milestone acceptance. Specialists implement within their
 assigned boundaries. Their completion messages are evidence submissions, not
 permission to merge. At most three specialists run concurrently, plus root.
-While Link is active, it occupies one specialist slot; current M3 work is design.
+Link release is complete. The first execution wave freezes contracts before
+parallel runtime, host and harness implementation begins.
 
 | ID | Specialist / outcome | Dependencies | Exclusive implementation scope |
 | --- | --- | --- | --- |
@@ -525,7 +549,7 @@ certify the packed path. Supported workspace-link tests are a separate fixture.
 ## Orchestrator protocol and durable handoff
 
 Task state is tracked in [the execution ledger](./milestone-3-tasks.json).
-The ledger begins blocked at G0. The CTO alone accepts a task and unlocks its
+G0 is accepted; M3-00 is ready. The CTO alone accepts a task and unlocks its
 dependents. State progression is `blocked → ready → in_progress → review →
 accepted`; failed checks return work to its owner, not to an implicit exception.
 
@@ -559,8 +583,9 @@ specialists. Their findings were incorporated and rechecked: direct ESM prefligh
 limits, a consistent task DAG, broken-application operator recovery, real HTTP edit
 proof, one signal owner, shutdown ownership retention, failure finalization,
 deadline compatibility and constructor-failure rollback. Neither reviewer reported
-a remaining planning blocker. This approves the execution packet, not G0 or any
-unimplemented runtime behavior.
+a remaining planning blocker. That review approved the execution packet, not
+unimplemented behavior. G0 was subsequently accepted after merged-main verification,
+as recorded above.
 
 Before M3-00 is accepted, settle exact exported names and type shapes, entrypoint
 validation, contract capability metadata, HTTP/WebSocket binding, host rollback

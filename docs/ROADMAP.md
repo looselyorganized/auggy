@@ -101,9 +101,9 @@ execution path, preserves runtime safeguards, runs in Docker/Railway, and has
 matching documentation. Packed request, restart, and upgrade checks pass;
 engineers unfamiliar with the repository demonstrate improved traceability.
 
-Implementation proceeds through six gated milestones. Milestones 1–2 are the
-current implementation tranche. Milestone 3 detailed planning is authorized in
-parallel with foundation closure; its runtime implementation remains gated:
+Implementation proceeds through six gated milestones. Milestones 1–2 are accepted
+at verified main `209185d0`; milestone 3 now begins with contract freeze and
+specialized implementation. Milestones 4–6 remain roadmap outcomes:
 
 | Milestone | Outcome | Exit gate |
 |---|---|---|
@@ -117,8 +117,8 @@ parallel with foundation closure; its runtime implementation remains gated:
 Milestones are dependency gates, not separate version promises. The
 [milestone 3 execution plan](./plans/milestone-3-execution-2026-11-12.md) assigns
 specialist ownership, contracts, dependencies and acceptance to a CTO-orchestrated
-subagent team. Implement it only after the foundation is reviewed, merged and
-verified on main. Existing scope items below remain roadmap requirements; they
+subagent team. Its foundation gate is satisfied by reviewed, merged and verified
+main `209185d0`. Existing scope items below remain roadmap requirements; they
 are not permission to expand the current tranche.
 
 ### 0.7.0 — the visitor
