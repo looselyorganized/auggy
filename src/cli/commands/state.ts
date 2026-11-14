@@ -4,7 +4,7 @@
  * storage of the resulting confidential bundle.
  */
 
-import { dirname, resolve } from "node:path";
+import { dirname, isAbsolute, resolve } from "node:path";
 import { Command } from "commander";
 import { parseConfig } from "../config-parser";
 import { resolveConfigPath } from "../resolve-config";
@@ -23,6 +23,11 @@ export interface RuntimeStateCommandOptions {
   config?: string;
   cwd?: string;
   root?: string;
+}
+
+export interface RuntimeStateRestoreCommandOptions extends RuntimeStateCommandOptions {
+  /** Final runtime mount used to check topology, distinct from the copy destination. */
+  runtimeRoot?: string;
 }
 
 function needsExternalRecoveryPoint(inventory: RuntimeStateInventory): boolean {
@@ -61,15 +66,20 @@ function runtimeStateContext(
   name: string | undefined,
   options: RuntimeStateCommandOptions,
   requireVolume: boolean,
+  runtimeRoot?: string,
 ) {
+  if (runtimeRoot !== undefined && (!isAbsolute(runtimeRoot) || /\p{Cc}/u.test(runtimeRoot))) {
+    throw new Error("--runtime-root must be an absolute runtime mount path");
+  }
   const configPath = resolveConfigPath(name, options.config, { cwd: options.cwd });
   const config = parseConfig(configPath);
   // parseConfig loads the selected project's .env before storage selection,
   // including when --config points outside the operator's working directory.
   const root = requireVolume ? requireRoot(options) : runtimeStateRoot(options);
+  const inventoryRoot = runtimeRoot === undefined ? root : resolve(runtimeRoot);
   const inventory = buildRuntimeStateInventory(config, {
     agentDir: dirname(configPath),
-    ...(root !== undefined ? { runtimeDataRoot: root } : {}),
+    ...(inventoryRoot !== undefined ? { runtimeDataRoot: inventoryRoot } : {}),
   });
   return { root, inventory };
 }
@@ -98,7 +108,7 @@ export function runRuntimeStateBackup(
 
 export function runRuntimeStateRestore(
   bundlePath: string,
-  options: RuntimeStateCommandOptions & {
+  options: RuntimeStateRestoreCommandOptions & {
     confirmStopped: boolean;
     runtimeVolumeOnly: boolean;
   },
@@ -110,7 +120,12 @@ export function runRuntimeStateRestore(
       "bundle has external recovery prerequisites; restore their matching recovery points or explicitly select --runtime-volume-only",
     );
   }
-  const { root, inventory: expectedInventory } = runtimeStateContext(name, options, true);
+  const { root, inventory: expectedInventory } = runtimeStateContext(
+    name,
+    options,
+    true,
+    options.runtimeRoot,
+  );
   return restoreRuntimeStateBundle({
     bundlePath,
     destinationRoot: root!,
@@ -121,7 +136,7 @@ export function runRuntimeStateRestore(
 
 export function runRuntimeStateRestoreResume(
   bundlePath: string,
-  options: RuntimeStateCommandOptions & {
+  options: RuntimeStateRestoreCommandOptions & {
     restoreId: string;
     confirmStopped: boolean;
     runtimeVolumeOnly: boolean;
@@ -134,7 +149,12 @@ export function runRuntimeStateRestoreResume(
       "bundle has external recovery prerequisites; restore their matching recovery points or explicitly select --runtime-volume-only",
     );
   }
-  const { root, inventory: expectedInventory } = runtimeStateContext(name, options, true);
+  const { root, inventory: expectedInventory } = runtimeStateContext(
+    name,
+    options,
+    true,
+    options.runtimeRoot,
+  );
   return resumeRuntimeStateRestore({
     bundlePath,
     destinationRoot: root!,
@@ -217,6 +237,10 @@ export function runtimeStateCommand(): Command {
     .description("Restore into an empty root and leave startup fenced for reconciliation")
     .option("--config <path>", "path to the current compatible agent.yaml")
     .option("--root <path>", "empty runtime data root")
+    .option(
+      "--runtime-root <path>",
+      "final absolute runtime mount for topology checks (defaults to --root)",
+    )
     .option("--confirm-stopped", "confirm the only replica is stopped and drained")
     .option(
       "--runtime-volume-only",
@@ -226,7 +250,7 @@ export function runtimeStateCommand(): Command {
       (
         bundle: string,
         name: string | undefined,
-        options: RuntimeStateCommandOptions & {
+        options: RuntimeStateRestoreCommandOptions & {
           confirmStopped?: boolean;
           runtimeVolumeOnly?: boolean;
         },
@@ -287,6 +311,10 @@ export function runtimeStateCommand(): Command {
     .requiredOption("--restore-id <id>", "exact restore ID stored in the copying fence")
     .option("--config <path>", "path to the current compatible agent.yaml")
     .option("--root <path>", "interrupted restore root")
+    .option(
+      "--runtime-root <path>",
+      "final absolute runtime mount for topology checks (defaults to --root)",
+    )
     .option("--confirm-stopped", "confirm the only replica is stopped and drained")
     .option(
       "--runtime-volume-only",
@@ -296,7 +324,7 @@ export function runtimeStateCommand(): Command {
       (
         bundle: string,
         name: string | undefined,
-        options: RuntimeStateCommandOptions & {
+        options: RuntimeStateRestoreCommandOptions & {
           restoreId: string;
           confirmStopped?: boolean;
           runtimeVolumeOnly?: boolean;

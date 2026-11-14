@@ -194,6 +194,19 @@ downstream reconciliation remain explicit independent requirements.
 
 ## Acceptance handoff
 
+Container execution exposed an existing distinction between a temporary recovery
+mount and the final runtime mount. For a project at `/app`, `./data/store.db`
+maps to the leaf `store.db` under `/app/data`; deriving inventory against a
+temporary `/restore` mount changes that layout. The additive `--runtime-root`
+option on `state restore` and `state restore-resume` now supplies the final
+absolute mount for pure topology validation. `--root` remains the pinned physical
+copy destination, and omission preserves the previous behavior. The compatible
+project must be available at its runtime path in the recovery container.
+This does not remap runtime stores, migrate existing data, bypass inventory
+compatibility, or change fence/guard semantics. Wrong topology still refuses
+before destination creation. Two independent reviewers accepted the narrow
+repair; real bundle relocation and interrupted-resume regressions pass.
+
 Root compiles these production contract modules and a real usage fixture before
 accepting M5-00. M5-01 must falsify forged/revoked capability and path replacement,
 prove retained descriptors/singleton cleanup, and preserve all launch paths.

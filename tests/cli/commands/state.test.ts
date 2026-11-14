@@ -2,16 +2,19 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { stringify } from "yaml";
+import { parse, stringify } from "yaml";
 import {
   runRuntimeStateBackup,
   runRuntimeStateInventory,
   runRuntimeStateRestore,
+  runRuntimeStateRestoreResume,
 } from "../../../src/cli/commands/state";
 import {
   admitRuntimeStateIdentity,
   reconcileRuntimeStateRestore,
+  restoreRuntimeStateBundle,
 } from "../../../src/cli/runtime-state-bundle";
+import { createWebIdempotencyStore } from "../../../src/transports/idempotency-store";
 
 const roots: string[] = [];
 
@@ -68,6 +71,97 @@ function fixture(withCoordination = false) {
 }
 
 describe("runtime state command helpers", () => {
+  test("restore and resume preserve the final runtime topology at a temporary recovery mount", () => {
+    const paths = fixture();
+    const configPath = join(paths.agentDir, "agent.yaml");
+    const config = parse(readFileSync(configPath, "utf8"));
+    config.augments.push({
+      name: "web",
+      type: "webTransport",
+      options: {
+        port: 8080,
+        adminRoute: false,
+        idempotency: { dbPath: "./data/web-idempotency.db" },
+      },
+    });
+    writeFileSync(configPath, stringify(config));
+    const runtimeRoot = join(paths.agentDir, "data");
+    mkdirSync(runtimeRoot, { mode: 0o700 });
+    admitRuntimeStateIdentity(runtimeRoot, config.id);
+    const store = createWebIdempotencyStore({ dbPath: join(runtimeRoot, "web-idempotency.db") });
+    store.close();
+    const bundlePath = join(paths.backups, "relocated.auggy-state");
+    const manifest = runRuntimeStateBackup(undefined, {
+      config: configPath,
+      root: runtimeRoot,
+      out: bundlePath,
+      confirmStopped: true,
+      runtimeVolumeOnly: true,
+    });
+    expect(
+      manifest.inventory.stores.find((store) => store.id === "web-idempotency:web")?.relativePath,
+    ).toBe("web-idempotency.db");
+    const destination = join(paths.root, "recovery-mount");
+    const restoreOptions = {
+      config: configPath,
+      root: destination,
+      confirmStopped: true,
+      runtimeVolumeOnly: true,
+    };
+    expect(() => runRuntimeStateRestore(bundlePath, restoreOptions)).toThrow(
+      "topology is incompatible",
+    );
+    expect(existsSync(destination)).toBe(false);
+    for (const invalid of ["", "relative/mount", "/bad\nmount"])
+      expect(() =>
+        runRuntimeStateRestore(bundlePath, { ...restoreOptions, runtimeRoot: invalid }),
+      ).toThrow("absolute runtime mount");
+    expect(() =>
+      runRuntimeStateRestore(bundlePath, {
+        ...restoreOptions,
+        runtimeRoot: join(paths.root, "wrong-mount"),
+      }),
+    ).toThrow("topology is incompatible");
+    const fence = runRuntimeStateRestore(bundlePath, { ...restoreOptions, runtimeRoot });
+    expect(readFileSync(join(destination, "web-idempotency.db"))).toEqual(
+      readFileSync(join(runtimeRoot, "web-idempotency.db")),
+    );
+    expect(existsSync(join(destination, "data"))).toBe(false);
+    expect(existsSync(join(destination, ".auggy-restore-fence.json"))).toBe(true);
+    reconcileRuntimeStateRestore({
+      runtimeDataRoot: destination,
+      restoreId: fence.restoreId,
+      confirmDownstreamReconciled: true,
+    });
+
+    const interrupted = join(paths.root, "interrupted-mount");
+    expect(() =>
+      restoreRuntimeStateBundle({
+        bundlePath,
+        destinationRoot: interrupted,
+        confirmStopped: true,
+        expectedInventory: manifest.inventory,
+        __testHooks: {
+          beforeCopy: () => {
+            throw new Error("injected copy interruption");
+          },
+        },
+      }),
+    ).toThrow("injected copy interruption");
+    const copying = JSON.parse(
+      readFileSync(join(interrupted, ".auggy-restore-fence.json"), "utf8"),
+    );
+    const resume = { ...restoreOptions, root: interrupted, restoreId: copying.restoreId };
+    expect(() => runRuntimeStateRestoreResume(bundlePath, resume)).toThrow(
+      "topology is incompatible",
+    );
+    const resumed = runRuntimeStateRestoreResume(bundlePath, { ...resume, runtimeRoot });
+    expect(resumed.restoreId).toBe(copying.restoreId);
+    expect(readFileSync(join(interrupted, "web-idempotency.db"))).toEqual(
+      readFileSync(join(runtimeRoot, "web-idempotency.db")),
+    );
+  });
+
   test("backup selects AUGGY_DATA_DIR from the chosen config's .env outside cwd", () => {
     const paths = fixture();
     const previous = process.env.AUGGY_DATA_DIR;
