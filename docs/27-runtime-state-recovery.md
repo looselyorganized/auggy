@@ -48,6 +48,7 @@ The initial catalog covers:
 | Budgets | `BUDG/v1` | Unbounded unless `retentionDays` is set | Reservations, counts, and cost |
 | Visitor auth | `VAUT/v1` | Until explicit deletion | Identities, consumed tokens, revocations |
 | Web idempotency | `AUID/v2` | Configured replay window | Completed and outcome-unknown execution fence |
+| Managed external-assertion replay | `EARP/v1` | Until assertion expiry; at most 100,000 unexpired claims | Consumed audience/jti pairs; restored ingress also requires local replay control state |
 | Durable jobs and schedules | `DJOB/v2` | 30-day terminal jobs and 90-day reconciliation audit by default | Job leases, attempt history, schedule occurrences, cancellation, and outcome-unknown incidents |
 | Console chat/history | `CCHT/v4` | Until authenticated deletion | Ownership, history, runs, tombstones |
 | Telegram replay | `TGRP/v2` | 30 days and configured entry cap | Claims, conflicts, discard decisions |
@@ -61,7 +62,14 @@ Supabase memory, PostgreSQL coordination, provider mailboxes, custom augment
 state, and downstream services appear as external prerequisites. A runtime
 volume bundle cannot claim to contain them.
 
-## Railway path behavior
+## Runtime root and Railway path behavior
+
+`AUGGY_DATA_DIR` enables the same volume admission on supported local and generic
+container launches. An explicitly selected root must already exist, be owned by
+the runtime user, and have mode `0700`. Unset retains local project paths.
+Inventory, backup and restore accept `--root` to select the physical volume;
+without it, they use `AUGGY_DATA_DIR` or the advertised Railway volume. A new
+root does not automatically migrate old project-local state.
 
 Railway runtime state is rooted at `/app/data`. In addition to SQLite-backed
 AgentMail orchestration state, mutable `fileMemory` is seeded once from the deployed project
@@ -140,6 +148,7 @@ targets a new or empty owner-controlled directory:
 auggy state restore /secure-backups/agent-2026-07-25.auggy-state \
   --config /app/agent.yaml \
   --root /recovery/new-data \
+  --runtime-root /app/data \
   --confirm-stopped \
   --runtime-volume-only
 ```
@@ -152,6 +161,15 @@ SQLite integrity, and agent identity, then copies each file while checking the
 same digest again. Any interruption leaves the fence in place. Railway startup
 refuses a volume with either a `copying` or `requires-reconciliation` fence.
 
+`--root` selects the physical copy destination. When recovery uses a different
+mount from the running agent, `--runtime-root` selects the final runtime mount
+used to validate the configured store layout. Keep the compatible project at
+its runtime path (here `/app/agent.yaml`) in the recovery container. For example,
+`./data/web-idempotency.db` maps to `web-idempotency.db` beneath `/app/data`;
+restoring under `/recovery/new-data` must preserve that layout. The flag does
+not write to the final mount, move stores, or bypass topology checks. If omitted,
+the copy destination also supplies the runtime mount for validation.
+
 Resume an interrupted copy only with the same bundle, current config, and
 opaque restore id from the fence:
 
@@ -159,6 +177,7 @@ opaque restore id from the fence:
 auggy state restore-resume /secure-backups/agent-2026-07-25.auggy-state \
   --config /app/agent.yaml \
   --root /recovery/new-data \
+  --runtime-root /app/data \
   --restore-id <uuid-from-copying-fence> \
   --confirm-stopped \
   --runtime-volume-only
@@ -198,6 +217,48 @@ The deployment platform must keep that admitted mountpoint stable for the
 process lifetime. Code running with the same OS authority to replace the mount
 or mount namespace is inside the trusted host boundary, not an isolated Auggy
 capability.
+
+## External-assertion replay after restore
+
+Managed replay stores consumed `audience + jti` claims in the configured SQLite
+database. Its local `.auggy-auth-replay-guard.json` contains clock high-water and
+restore-epoch control state, not a replayable backup payload. Backup validates
+this control state but excludes it; an unresolved pending guard write causes
+refusal. Do not copy a guard into a bundle or delete one to bypass a hold.
+
+Before copying a managed replay database, Auggy's restore protocol writes the
+destination fence and a new guard bound to that restore ID and time. An exact
+interrupted resume preserves the same epoch. Reconciliation removes only the
+downstream-effect fence; it does not remove the guard or shorten the assertion
+hold. Every restore establishes this control state even when the current config
+does not enable managed replay.
+
+External-assertion authentication remains unavailable until:
+
+```text
+restore time + current externalAuth.maxTtlSeconds + 30 seconds
+```
+
+During the hold, affected requests return `503 external_auth_unavailable` with
+bounded retry information. The guard runs before a saved operation response can
+be returned, as well as before new assertion consumption. Restarting the agent or
+clearing the reconciliation fence does not skip it. Keep the epoch permanently:
+increasing the configured maximum TTL can reopen the hold. Normal expiry of replay
+claims does not remove the epoch, and a backwards wall clock fails closed.
+
+The destination must have trusted synchronized time. A fresh host cannot prove
+clock history that was discarded with the old host. This guarantee applies to
+Auggy's offline restore protocol, which creates new destination control state.
+An unmanaged full-volume snapshot can roll the guard back with its database.
+Keep such a recovery offline until it passes through the Auggy restore/reconcile
+protocol, or remove **all** signing keys that could verify pre-recovery assertions
+before reopening external-assertion ingress. Keeping a previous key in a rotation
+keyring retains that authority. Reconcile downstream effects separately either way;
+invalidating assertions cannot undo an already committed business operation.
+
+A caller-owned programmatic replay store has its own persistence and recovery
+contract. The managed guard does not extend that guarantee to arbitrary external
+stores, raw database copies or concurrent replicas.
 
 ## Restore order and rollback
 

@@ -128,6 +128,40 @@ The [inspectable reference](examples/inspectable-agent/README.md) remains a
 separate worked example with a sample capability and extra observations. Its demo
 limits and logging are not defaults in generated projects.
 
+## Deploy and integrate
+
+Each company installs and deploys its own agent with independent credentials and
+state. The agent is a standalone service. HTTP/AG-UI, Telegram polling and other
+channels are optional; a Next.js app is an optional consumer alongside it.
+
+For the unreleased implementation, export an installed project's Docker context
+without building, uploading or reading its private environment:
+
+```bash
+auggy export docker --config agent.yaml --out ../my-agent-image
+docker build -t my-agent:local ../my-agent-image
+```
+
+Export preserves the manifest and lock and uses a frozen install in the image.
+Custom capabilities require an explicit ingress declaration, such as
+`--ingress http --port 8080` or `--ingress none`. A worker does not acquire a
+public URL. Prepare an owned private volume before startup; follow the
+[deployment guide](docs/18-deploy.md) for storage, HTTP/worker profiles and Railway.
+
+The [company application reference](examples/company-app/README.md) shows an
+existing app session becoming a short-lived assertion through `auggy/auth`.
+Your backend verifies identity and derives narrow permissions; the browser then
+calls your agent directly. App administrators remain recognized public callers,
+and each augment enforces its own tool and route authorization. The reference's
+production session adapter deliberately requires your implementation.
+
+Updating the project's local `auggy` dependency updates the runtime and bundled
+built-ins. Separately installed capabilities such as `@auggy/link`, and provider
+packages, follow their own manifest and lockfile selections. Your `src/index.ts`,
+`src/agent.ts`, `src/http.ts`, `src/turn.ts`, custom augments and
+copied skills remain yours to review and adapt to compatibility changes. A global
+CLI update alone does not replace the agent's selected local runtime.
+
 ## Why Auggy
 
 Many agent frameworks decide in advance which memory system, tools, transport,

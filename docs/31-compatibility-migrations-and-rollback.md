@@ -8,6 +8,16 @@ The package is pre-1.0. Source APIs and configuration fields can still change
 with an explicit changelog entry, but stored state is never silently reset,
 reinterpreted, or accepted merely because an object has a familiar name.
 
+An agent selects its own local `auggy` dependency. Updating that package updates
+guarded runtime operations and bundled built-in implementations; updating a global
+CLI alone does not replace it. Separately installed capabilities such as
+`@auggy/link`, and provider packages, follow their own manifest and lockfile
+selections. The generated `src/index.ts`, `src/agent.ts`,
+`src/http.ts`, `src/turn.ts`, custom augments and copied skills are application-owned
+source. Review release notes and adapt those files explicitly when a contract
+changes; dependency installation never silently rewrites them. The optional
+company application is a separate service with its own dependency selection.
+
 ## Contract ledger
 
 | Contract | Current boundary | Compatibility rule |
@@ -25,7 +35,8 @@ reinterpreted, or accepted merely because an object has a familiar name.
 | PostgreSQL coordination preview | Checksum ledger plus exact catalog validation in the `public` schema | Provisioning is explicit. Every run revalidates owned tables, columns, types, nullability, defaults, sequence ownership, indexes, and checks, including when the ledger already says the migration ran. The runtime still refuses replica mode. |
 | Logical-agent identity and local lifecycle | Immutable `agent.yaml` `aug1_` id | State and authority namespaces, local process manifests, launchd labels, and owned runtime paths bind to the immutable id. Display names are non-authoritative aliases and ambiguous aliases fail closed. |
 | Local runtime-claim registry | `AUCL/v2` in `~/.auggy/runtime-claims.sqlite` | Exact branded v1 migrates transactionally to v2, which adds the one-row-per-agent launchd generation allowlist. Unknown or lookalike catalogs fail before lifecycle admission. Stop/unload all old launchd jobs before upgrade; rollback requires the matching pre-upgrade local registry or an operator-proven fully stopped rebuild. |
-| Railway deployment metadata | `.auggy-cloud.json` version 1 plus immutable agent id | Legacy, malformed, or mismatched records are never adopted automatically. Verify the remote target, remove the local record explicitly, and deploy again to mint a bound record. |
+| Railway deployment metadata | `.auggy-cloud.json` version 2 plus immutable agent id and ingress profile | Valid v1 records remain readable as the historical port-8080 HTTP profile without rewriting. Explicit successful deploy writes v2. Malformed, unbound or mismatched records are refused. Workers carry `url: null`; they cannot be read as an HTTP service. |
+| Portable deployment manifest | `auggy-deployment.json` version 1 | Describes input hashes, pinned toolchain and declared ingress. Startup reconciles known listeners and selected identity/config; the manifest is not a signature or a second augment graph. |
 
 Adding a field to an operational or route artifact is not permission for a
 consumer to accept an unknown schema version. Conversely, the unversioned
@@ -45,6 +56,7 @@ tampered, or newer database fails without stamping or mutating it.
 | Budgets | `BUDG/v1` | Exact recognized legacy shape only | Restore bundle; reconcile quota and downstream usage first |
 | Visitor auth | `VAUT/v1` | Exact recognized legacy shape only | Restore bundle plus the matching auth/revocation recovery point |
 | Web idempotency and rate limits | `AUID/v2` | Exact v1 migration fixture | Restore bundle; do not roll back terminal request evidence independently |
+| Managed external-assertion replay | `EARP/v1` | None; exact owned schema required | Restore through Auggy's protocol and its new destination guard; never roll back consumed claims independently of assertion validity and downstream effects |
 | Console chat/history | `CCHT/v4` | Exact v2 and v3 fixtures migrate to v4 | Restore bundle with matching thread ownership/history state |
 | Telegram replay/conflicts | `TGRP/v2` | Exact prior replay fixture | Restore bundle and reconcile provider offsets/conflicts before ingress |
 | AgentMail orchestration | `AMOR/v1` | None. Pre-rebuild AgentMail state is detected but is never read, migrated, or deleted automatically. | Restore the complete matching `AMOR/v1` bundle with the AgentMail mailbox recovery point; an older runtime must not read this store |

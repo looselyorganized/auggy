@@ -39,6 +39,8 @@ your-generated-agent/                     created separately by auggy create
 ├── agent.yaml                            generated composition + orders ingredient
 ├── src/index.ts                          generated execution entrypoint
 ├── src/agent.ts                          generated application construction
+├── src/http.ts                           visible POST /agent/run dispatch
+├── src/turn.ts                           guarded turn orchestration
 └── src/augments/orders/                  copied owned ingredient above
 ```
 
@@ -66,7 +68,9 @@ Use the repository's pinned Bun version to install this isolated example. Next's
 production server runs on Node.js. This source checkout references the local
 Auggy workspace; portable acceptance substitutes the actual packed npm artifact.
 When copying the application into another repository, replace the workspace
-dependency and local provider overrides with the exact released Auggy version.
+dependency and local provider overrides with an exact compatible Auggy artifact
+or release. The published 0.5 package does not contain this checkout's new
+`auggy/auth` entrypoint or managed replay implementation.
 Next.js is a dependency of this optional application, not the Auggy runtime.
 
 ```sh
@@ -101,14 +105,36 @@ declaration rather than adding another listener.
 
 Set the same explicit `AUGGY_AUTH_AUDIENCE`, `AUGGY_AUTH_KEY_ID`,
 `AUGGY_AUTH_SECRET` and exact `APP_ORIGIN` in the relevant services. Configure the
-agent's allowed provider to match your verifier. Keep `AUGGY_WEB_TOKEN` only with
+agent's allowed provider to match your verifier. Set the agent's `AUGGY_AGENT_ID`
+to its generated immutable `agent.yaml` ID, as required by the ingredient's
+`securityNamespace`; do not reuse another company's identity. Keep `AUGGY_WEB_TOKEN` only with
 the agent operator; it is never returned to the browser. The order-service URL
 and token are server configuration in both services. Do not put credentials in
 agent guidance or model-visible files.
 
+The ingredient enables managed SQLite assertion replay. Before local startup,
+prepare an explicit private root and run the generated application through its
+managed host:
+
+```sh
+# From the generated agent project; choose a NEW dedicated directory once.
+mkdir -m 700 ../support-agent-state
+export AUGGY_DATA_DIR="$(cd ../support-agent-state && pwd)"
+auggy state inventory --config agent.yaml
+auggy run --no-open
+```
+
+Include the absolute `AUGGY_DATA_DIR` in the agent service's environment on later
+starts. Startup does not create or chmod an unsafe generic root. Relative database
+paths map beneath this root; inspect the inventory rather than assuming the
+database is always the root's direct child. An existing agent needs an explicit
+state migration before switching roots. See
+[storage admission](../../docs/16-storage-layout.md#explicit-runtime-data-root).
+
 The example uses one single-replica agent with SQLite assertion replay and durable
-run/effect state. Persist its `data/` volume and use Auggy's supported backup and
-restore procedure. Do not clone live databases into a second active replica.
+run state. Its business service owns effect state independently. Persist the agent
+volume and use Auggy's [backup and restore procedure](../../docs/27-runtime-state-recovery.md).
+Do not clone live databases into a second active replica.
 Assertion replay, keyed run state, company effect journal, console history, and
 browser transcript are distinct stores; one does not make the others durable.
 
@@ -118,6 +144,21 @@ identity partition. Private orders stay in the company service and enter a turn
 only after deterministic authorization. The UI transcript is ephemeral in this
 tab; refreshing clears it. Console persistence is a separate runtime feature and
 does not imply a durable history API for this browser.
+
+For Docker export, the custom orders augment requires an explicit profile:
+
+```sh
+auggy export docker --config agent.yaml --out ../support-agent-image \
+  --ingress http --port 8080
+```
+
+Build and provision the dedicated volume using the
+[deployment guide](../../docs/18-deploy.md). The app can be deployed separately
+with its own Node server and configuration. Upgrading local Auggy updates the
+runtime and bundled built-ins. Separately installed capabilities such as
+`@auggy/link`, and provider packages, follow their own manifest and lockfile
+selections. These updates do not rewrite either service's owned adapters or
+execution source.
 
 ## Synthetic policy and delivery behavior
 
@@ -136,6 +177,13 @@ operation. An unknown effect outcome requires operator reconciliation, and the U
 does not automatically repeat it. Changed identity, grants or request content
 cannot retrieve another operation's authorized result.
 
+After an offline restore, reconciliation and external-assertion readiness are
+separate. Managed replay retains a restore epoch and denies assertions until the
+current maximum TTL plus 30 seconds have passed from that epoch (90 seconds for
+this ingredient). Restart cannot skip the hold, and increasing TTL can reopen it.
+The guard applies before returning a saved operation response. Raw volume snapshot
+rollback needs the separate offline recovery or old-key-removal procedure.
+
 ## Verification and fixtures
 
 ```sh
@@ -148,8 +196,7 @@ bun run start
 
 The Bun-only augment/fixture tests have a separate TypeScript configuration so the
 Next server imports only the pure `auggy/auth` entrypoint and narrow HTTP adapter.
-Webpack is a supported production build path; it is used for this environment's
-acceptance because Turbopack's worker port binding was denied. Unit tests do not
+Webpack is the production build path used by this reference's verification. Unit tests do not
 replace the separate real-browser and packaged-generated-agent checks.
 
 Browser acceptance makes a separate isolated source copy and replaces exactly
