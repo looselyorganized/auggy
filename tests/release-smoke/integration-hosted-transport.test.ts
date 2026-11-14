@@ -71,6 +71,24 @@ function fixture() {
 }
 
 describe("hosted SSH admission; never connects to a server", () => {
+  test("accepts only the two reviewed application and offline envelope locations", () => {
+    const input = fixture();
+    expect(() =>
+      prepareHostedSshArguments({
+        ...input,
+        remoteEntry: "/app/src/fixtures/g4-maintenance/remote-command.js",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      prepareHostedSshArguments({ ...input, remoteEntry: "/app/src/g4-remote/unreviewed.js" }),
+    ).toThrow();
+    expect(() =>
+      prepareHostedSshArguments({
+        ...input,
+        remoteEntry: "/app/src/fixtures/g4-maintenance/commands/maintenance.js",
+      }),
+    ).toThrow();
+  });
   test("uses a single isolated identity and explicit pinned relay, with no ambient SSH behavior", () => {
     const input = fixture();
     const prepared = prepareHostedSshArguments(input);

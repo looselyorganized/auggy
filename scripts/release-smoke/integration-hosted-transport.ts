@@ -47,8 +47,10 @@ export function prepareHostedSshArguments(options: {
     "Hosted SSH requires an exact instance UUID",
   );
   check(
-    /^\/app\/src\/g4-remote\/[a-z][a-z0-9.-]{0,79}$/.test(options.remoteEntry) &&
-      /^[a-f0-9]{64}$/.test(options.remoteEntrySHA256),
+    [
+      "/app/src/g4-remote/remote-command.js",
+      "/app/src/fixtures/g4-maintenance/remote-command.js",
+    ].includes(options.remoteEntry) && /^[a-f0-9]{64}$/.test(options.remoteEntrySHA256),
     "Hosted remote entry is not a fixed reviewed fixture",
   );
   check(
