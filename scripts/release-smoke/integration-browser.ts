@@ -292,6 +292,7 @@ export async function runIntegrationBrowser(
       "Browser driver runtime hash mismatch",
     );
   }
+  let driverResult: Awaited<ReturnType<typeof withIntegrationChild>> | undefined;
   const result = await withIntegrationChromium(
     {
       executable: options.chromium,
@@ -331,12 +332,13 @@ export async function runIntegrationBrowser(
           };
         },
       );
+      driverResult = driver;
       check(driver.status === "passed", "Browser driver did not complete with confirmed cleanup");
       return driver;
     },
   );
   // A zero-exit driver is mechanics evidence only; A05 additionally needs validated browser/effect observations.
-  return result;
+  return { ...result, driver: driverResult };
 }
 
 /** Explicit built-output inventory; never recursively archive an app or raw browser session. */

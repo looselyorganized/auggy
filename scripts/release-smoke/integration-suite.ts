@@ -17,9 +17,10 @@ import { prepareIntegrationApplication } from "./integration-application-consume
 import { runApplicationIntegration } from "./integration-application";
 import { readIntegrationFile } from "./integration-consumer";
 import { runContainerIntegration } from "./integration-container-suite";
-import type {
-  IntegrationScenarioEvidence,
-  IntegrationSourceIdentity,
+import {
+  CONTAINER_STORAGE_SCENARIO,
+  type IntegrationScenarioEvidence,
+  type IntegrationSourceIdentity,
 } from "./integration-contracts";
 import { parseIntegrationEvidence } from "./integration-evidence";
 import { runTelegramIntegration } from "./integration-telegram";
@@ -221,7 +222,7 @@ export function assertIntegrationStages(
           "application-browser-integration",
         ]
       : []),
-    ...(stage !== "local" ? ["container-storage-recovery"] : []),
+    ...(stage !== "local" ? [CONTAINER_STORAGE_SCENARIO] : []),
   ];
   check(
     records.length === required.length &&
@@ -245,7 +246,7 @@ export function assertIntegrationStages(
         0,
       ],
       "application-browser-integration": ["local", "fixture-auth", "http", "verified", 1],
-      "container-storage-recovery": ["container", "standalone-fixture", "http", "unverified", 4],
+      [CONTAINER_STORAGE_SCENARIO]: ["container", "standalone-fixture", "http", "unverified", 4],
     } as const;
     const [expectedStage, build, profile, channel, effects] = expected[id as keyof typeof expected];
     check(

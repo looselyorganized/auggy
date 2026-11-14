@@ -16,6 +16,7 @@ import { applicationHash } from "../../scripts/release-smoke/application-consume
 import {
   assertProductionFixtureExclusion,
   inspectIntegrationBrowser,
+  runIntegrationBrowser,
   withIntegrationChromium,
 } from "../../scripts/release-smoke/integration-browser";
 import { withIntegrationChild } from "../../scripts/release-smoke/integration-consumer";
@@ -45,6 +46,39 @@ process.on("SIGTERM", async () => {
 `;
 
 describe("browser preflight controls; not A05 browser execution", () => {
+  test("retains a failed driver's sanitized diagnostics after confirmed browser cleanup", async () => {
+    const root = mkdtempSync(join(tmpdir(), "auggy-m5-driver-failure-"));
+    paths.push(root);
+    const app = join(root, "app"),
+      repo = join(root, "repo");
+    mkdirSync(repo, { mode: 0o700 });
+    mkdirSync(app, { mode: 0o700 });
+    mkdirSync(join(app, "node_modules/playwright"), { recursive: true });
+    const manifest = JSON.stringify({ name: "playwright", version: "1.0.0", main: "index.js" });
+    writeFileSync(join(app, "node_modules/playwright/package.json"), manifest);
+    writeFileSync(join(app, "node_modules/playwright/index.js"), "module.exports = {};\n");
+    const source = 'throw new Error("synthetic-driver-failure token-to-redact");\n';
+    writeFileSync(join(app, "driver.ts"), source);
+    const executable = join(root, "chromium-protocol-fixture");
+    writeFileSync(executable, browserOwnerFixture, { mode: 0o700 });
+    const result = await runIntegrationBrowser({
+      repoRoot: repo,
+      appDirectory: app,
+      driver: { path: "driver.ts", sha256: applicationHash(source) },
+      playwright: { version: "1.0.0", manifestSHA256: applicationHash(manifest) },
+      chromium: { path: executable, sha256: applicationHash(browserOwnerFixture) },
+      env: { HOME: root, PATH: `${dirname(process.execPath)}:/usr/bin:/bin` },
+      secrets: ["token-to-redact"],
+      timeoutMs: 3000,
+    });
+    expect(result.status).toBe("failed");
+    expect(result.driver?.process.stderr).toContain("synthetic-driver-failure");
+    expect(result.driver?.process.stderr).not.toContain("token-to-redact");
+    expect(result.driver?.process.cleanupConfirmed).toBe(true);
+    expect(result.process.cleanupConfirmed).toBe(true);
+    expect(result.profileCleanup).toBe("complete");
+  });
+
   test("direct browser owner stops its own real process and removes private profile on oracle failure", async () => {
     const root = mkdtempSync(join(tmpdir(), "auggy-m5-browser-owner-"));
     paths.push(root);

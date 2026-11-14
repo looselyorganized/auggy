@@ -87,6 +87,18 @@ type Diagnostic = {
   stdoutSHA256: string;
   stderrSHA256: string;
   stderr: string;
+  process: Pick<
+    Awaited<ReturnType<typeof withIntegrationChild>>["process"],
+    | "exitCode"
+    | "signal"
+    | "timedOut"
+    | "exceededOutput"
+    | "spawnFailed"
+    | "orphanedGroup"
+    | "forced"
+    | "wasRunning"
+    | "durationMs"
+  >;
 };
 const READ_A: ApplicationModelScenario = {
   tool: { name: "read_order", input: { orderId: "order-a" }, invalidInput: { orderId: 1 } },
@@ -541,6 +553,17 @@ export async function runApplicationIntegration(options: ApplicationIntegrationO
       stdoutSHA256: result.process.stdoutSHA256,
       stderrSHA256: result.process.stderrSHA256,
       stderr: result.process.stderr.slice(-8192),
+      process: {
+        exitCode: result.process.exitCode,
+        signal: result.process.signal,
+        timedOut: result.process.timedOut,
+        exceededOutput: result.process.exceededOutput,
+        spawnFailed: result.process.spawnFailed,
+        orphanedGroup: result.process.orphanedGroup,
+        forced: result.process.forced,
+        wasRunning: result.process.wasRunning,
+        durationMs: result.process.durationMs,
+      },
     });
   }
   const boundedCommand = async (label: string, cwd: string, argv: string[], commandEnv = env) => {
@@ -592,7 +615,7 @@ export async function runApplicationIntegration(options: ApplicationIntegrationO
         try {
           crashObservationCompleted = (await observe(budget, child)) === "deliberate-crash";
         } catch (error) {
-          productError = redactIntegrationDiagnostic(
+          productError ??= redactIntegrationDiagnostic(
             error instanceof Error ? error.message : "Application observation failed",
             privateValues,
           );
@@ -1238,8 +1261,15 @@ export async function runApplicationIntegration(options: ApplicationIntegrationO
             secrets: privateValues,
             signal: appBudget.signal,
             timeoutMs: appBudget.remainingMs(),
+          }).catch((error: unknown) => {
+            productError ??= redactIntegrationDiagnostic(
+              error instanceof Error ? error.message : "Browser preflight failed",
+              privateValues,
+            );
+            throw error;
           });
           note("actual-chromium-browser", browser);
+          if (browser.driver) note("actual-browser-driver", browser.driver);
           check(browser.status === "passed", "Real browser driver did not pass");
           const observation = JSON.parse(
             readIntegrationFile(
@@ -1384,9 +1414,14 @@ export async function runApplicationIntegration(options: ApplicationIntegrationO
     model: model.snapshot(),
     browser: browserObserved,
     failure: productError,
+    diagnostics,
   };
   store.close();
   const journalBytes = `${JSON.stringify(journal, null, 2)}\n`;
+  check(
+    Buffer.byteLength(journalBytes) <= INTEGRATION_LIMITS.evidenceBytes,
+    "Application journal exceeded the evidence byte bound",
+  );
   writeFileSync(join(options.evidenceDirectory, "application-journal.json"), journalBytes, {
     flag: "wx",
     mode: 0o600,

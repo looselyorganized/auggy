@@ -24,6 +24,7 @@ export const INTEGRATION_OVERLAYS = Object.freeze({
 } as const);
 
 export type IntegrationStage = "local" | "container" | "hosted";
+export const CONTAINER_STORAGE_SCENARIO = "container-storage-recovery";
 export type IntegrationBuildKind = "production-reference" | "fixture-auth" | "standalone-fixture";
 
 export interface HashedIntegrationFile {

@@ -19,6 +19,7 @@ import {
 import { withIntegrationDocker, type IntegrationDockerScope } from "./integration-container";
 import {
   INTEGRATION_LIMITS,
+  CONTAINER_STORAGE_SCENARIO,
   type IntegrationScenarioEvidence,
   type IntegrationSourceIdentity,
 } from "./integration-contracts";
@@ -948,7 +949,7 @@ export async function runContainerIntegration(options: ContainerSuiteOptions) {
   });
   const evidence: IntegrationScenarioEvidence = {
     version: 1,
-    scenarioId: "generic-container-storage-recovery",
+    scenarioId: CONTAINER_STORAGE_SCENARIO,
     runId: options.runId,
     stage: "container",
     buildKind: "standalone-fixture",
