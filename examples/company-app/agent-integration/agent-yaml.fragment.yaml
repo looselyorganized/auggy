@@ -1,0 +1,37 @@
+# INGREDIENT ONLY: merge into the agent.yaml produced by `auggy create`.
+# Keep its id, application entrypoint, engine and other generated structure.
+# Replace the existing web declaration; do not create a second web transport.
+# Retain only non-private immutable guidance for this reference. Remove generated
+# shared mutable memory until you supply and verify an identity-partitioned store.
+augments:
+  - name: web
+    type: webTransport
+    options:
+      port: 8080
+      auth:
+        type: bearer
+        token: ${AUGGY_WEB_TOKEN}
+      allowAnonymous: false
+      publicIntegration: false
+      adminRoute: false
+      securityNamespace: ${AUGGY_AGENT_ID}
+      cors:
+        origins: ["${APP_ORIGIN}"]
+      externalAuth:
+        secret: ${AUGGY_AUTH_SECRET}
+        keyId: ${AUGGY_AUTH_KEY_ID}
+        audience: ${AUGGY_AUTH_AUDIENCE}
+        # Use the canonical provider returned by your production session verifier.
+        # Fixture builds use fixture-app; it is never a production login mode.
+        allowedProviders: ["company-session-provider"]
+        maxTtlSeconds: 60
+        replayProtection:
+          enabled: true
+          dbPath: ./data/external-auth-replay.sqlite
+      idempotency:
+        dbPath: ./data/web-runs.sqlite
+      consoleChat:
+        dbPath: ./data/console-chat.sqlite
+  - name: orders
+    type: custom
+    source: ./src/augments/orders/index.ts

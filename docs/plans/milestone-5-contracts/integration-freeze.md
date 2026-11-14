@@ -9,6 +9,13 @@ types and keep the trusted session verifier separate from company resource polic
 The reference assertion TTL is 60 seconds. Missing verifier remains a fail-closed
 configuration outcome; no production demo identity path is introduced.
 
+Implementation amendment: application backends import assertion helpers and
+authorization types through the additive public `auggy/auth` entrypoint. The
+original main barrel loads Bun runtime/storage code and cannot serve a Node-only
+Next.js backend. The new entrypoint reuses the existing signer/verifier without
+runtime imports. The frozen verifier/policy interfaces and 60-second TTL are
+unchanged. Actual Node execution and production Next builds verify this boundary.
+
 The actual harness evidence types and bounds live at
 `scripts/release-smoke/integration-contracts.ts`. Root owns this shared schema,
 script registration and CI. Producer-specific fixtures must consume these types;

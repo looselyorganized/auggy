@@ -40,7 +40,7 @@ describe("tracked CI test-surface inventory", () => {
 
     expect(inventory.runtimeFiles).toBeGreaterThanOrEqual(252);
     expect(inventory.adminFiles).toBeGreaterThanOrEqual(29);
-    expect(inventory.externalFiles).toBe(4);
+    expect(inventory.externalFiles).toBe(8);
     expect(allFiles).toHaveLength(
       inventory.runtimeFiles + inventory.adminFiles + inventory.externalFiles,
     );
@@ -292,6 +292,29 @@ describe("tracked CI test-surface inventory", () => {
     );
     expect(external.cwd).toBe("/repo/examples/temporal-order-support");
     expect(external.argv.at(-1)).toBe("./test/auggy-client.test.ts");
+    for (const example of ["inspectable-agent", "company-app"]) {
+      const isolated = createBunTestInvocation(
+        {
+          id: example,
+          suite: "external",
+          files: [`examples/${example}/tests/example.test.ts`],
+        },
+        "/repo",
+        "/bun",
+      );
+      expect(isolated.cwd).toBe(`/repo/examples/${example}`);
+      expect(isolated.argv.at(-1)).toBe("./tests/example.test.ts");
+    }
+    expect(() =>
+      createBunTestInvocation({
+        id: "mixed",
+        suite: "external",
+        files: [
+          "examples/company-app/tests/one.test.ts",
+          "examples/inspectable-agent/tests/two.test.ts",
+        ],
+      }),
+    ).toThrow("one isolated example");
   });
 
   test("fails when any supplemental runtime path is stale even if others still exist", () => {

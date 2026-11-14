@@ -213,7 +213,7 @@ describe("tracked test-surface workflow enforcement", () => {
     );
     expect(packageJson.scripts?.test).toBe("bun run test:runtime && bun run test:admin");
     expect(packageJson.scripts?.["test:full"]).toBe(
-      "bun run test && bun run test:temporal-example && bun run test:inspectable-example",
+      "bun run test && bun run test:temporal-example && bun run test:inspectable-example && bun run test:company-app",
     );
   });
 
@@ -263,11 +263,22 @@ describe("tracked test-surface workflow enforcement", () => {
     expect(
       requireStep(inspectable, "Install, typecheck, test, and audit the standalone reference").run,
     ).toBe("bun run test:inspectable-example");
+    const companyApp = requireJob(jobs, "company_app");
+    expect(requireStep(companyApp, "Verify the optional application reference").run).toBe(
+      "bun run test:company-app",
+    );
     const aggregate = requireJob(jobs, "test");
     expect(normalizedNeeds(aggregate)).toContain("inventory");
     expect(normalizedNeeds(aggregate)).toContain("postgres_coordination");
     expect(normalizedNeeds(aggregate)).toContain("temporal_example");
     expect(normalizedNeeds(aggregate)).toContain("inspectable_example");
+    expect(normalizedNeeds(aggregate)).toContain("company_app");
+    expect(requireStep(aggregate, "Verify constituent gates").env?.COMPANY_APP_RESULT).toBe(
+      "${{ needs.company_app.result }}",
+    );
+    expect(requireStep(aggregate, "Verify constituent gates").run).toContain(
+      '"$COMPANY_APP_RESULT" != "success"',
+    );
     expect(normalizedNeeds(aggregate)).toContain("dependency_audit");
     expect(requireStep(aggregate, "Verify constituent gates").env?.DEPENDENCY_AUDIT_RESULT).toBe(
       "${{ needs.dependency_audit.result }}",

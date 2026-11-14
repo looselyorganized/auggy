@@ -55,7 +55,11 @@ const TEST_FILE_PATTERN = /(?:\.test|_test|\.spec|_spec)\.(?:js|jsx|ts|tsx)$/;
 const SAFE_SHARD_ID = /^[a-z][a-z0-9-]{0,31}$/;
 const REGULAR_GIT_MODES = new Set(["100644", "100755"]);
 const DISCOVERY_ROOTS: Record<TestSuite, readonly string[]> = {
-  external: ["examples/temporal-order-support", "examples/inspectable-agent"],
+  external: [
+    "examples/temporal-order-support",
+    "examples/inspectable-agent",
+    "examples/company-app",
+  ],
   runtime: ["tests", "examples", "packages"],
   admin: ["admin/src"],
 };
@@ -463,17 +467,25 @@ export function createBunTestInvocation(
   root = ROOT,
   bunExecutable = process.execPath,
 ): BunTestInvocation {
+  const externalOwner =
+    shard.suite === "external"
+      ? DISCOVERY_ROOTS.external.find((candidate) =>
+          shard.files.every((path) => isAtOrBelow(path, candidate)),
+        )
+      : undefined;
+  if (shard.suite === "external" && !externalOwner)
+    fail("An external shard must belong to exactly one isolated example");
   const cwd =
     shard.suite === "admin"
       ? join(root, "admin")
       : shard.suite === "external"
-        ? join(root, "examples", "temporal-order-support")
+        ? join(root, externalOwner!)
         : root;
   const files = shard.files.map((path) =>
     shard.suite === "admin"
       ? `./${path.slice("admin/".length)}`
       : shard.suite === "external"
-        ? `./${path.slice("examples/temporal-order-support/".length)}`
+        ? `./${path.slice(externalOwner!.length + 1)}`
         : `./${path}`,
   );
   return {

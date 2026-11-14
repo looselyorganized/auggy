@@ -198,7 +198,11 @@
             "examples/temporal-order-support/test/activities.test.ts",
             "examples/temporal-order-support/test/auggy-client.test.ts",
             "examples/temporal-order-support/test/operator-config.test.ts",
-            "examples/inspectable-agent/tests/example.test.ts"
+            "examples/inspectable-agent/tests/example.test.ts",
+            "examples/company-app/tests/agent-run.test.ts",
+            "examples/company-app/tests/assertion-handler.test.ts",
+            "examples/company-app/tests/orders.test.ts",
+            "examples/company-app/tests/session-fixture.test.ts"
           ]
         },
         {
@@ -235,6 +239,16 @@
         {
           "kind": "tree",
           "path": "examples/inspectable-agent/tests"
+        }
+      ]
+    },
+    {
+      "id": "company-app",
+      "suite": "external",
+      "selectors": [
+        {
+          "kind": "tree",
+          "path": "examples/company-app/tests"
         }
       ]
     }

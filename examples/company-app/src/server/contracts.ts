@@ -1,4 +1,4 @@
-import type { AuthorizationGrant, AuthorizationScope } from "auggy";
+import type { AuthorizationGrant, AuthorizationScope } from "auggy/auth";
 
 /** Application-owned identity returned only by its trusted server-side verifier. */
 export interface VerifiedAppSession {
