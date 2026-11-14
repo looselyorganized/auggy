@@ -561,3 +561,63 @@ per-generation journals, remote command termination proof, exact environment
 admission and quiescent maintenance. The action annex must count distinct created
 volumes honestly when restoring both profiles. Login, exact target discovery and
 concrete approval remain outstanding; no hosted work has been executed.
+
+
+### G3 and M5-05 acceptance on 515cf79
+
+The clean committed run `eafe3cff-7f9e-49f0-b751-6c78ef012d0b` passed all six
+local/container rows on `515cf793526f18f5355fc31015b3b9cfe075e881`, tree
+`0c638856689de20a6b593c9cf43182ee2ee13400`. Root accepts G3 and M5-05 after
+independent evidence review. This accepts actual local execution and does not
+waive the required Linux CI, release rehearsal or hosted G4 gates.
+
+Independent audit verified 1,469 tracked source files, all five archives and 431
+packed files, 792 installed-file claims, 21 artifact hashes and the source-edit/
+lock chains. Exact stage/profile, deadline, effect and platform identities match.
+Underlying journals prove Telegram trust and replay behavior, direct browser SSE
+with fresh assertions, the expected post-effect crash and recovery, root/volume
+admission, durable state replacement and restore guards. Production, standalone
+HTTP and browser phases recorded zero, one and one effects respectively; duplicate
+and unauthorized effects were zero. All 27 owned Docker resources (five images,
+18 containers, four volumes) and the runtime/browser build workspaces were removed.
+The source checkout stayed clean. No raw private configuration/SQLite/environment
+files or any of the three actual captured credential values appeared among the
+102 evidence files.
+
+Exact evidence identities:
+
+- Aggregate: `c16192039bc645d244b57cf2e88d607e5773da5c5def0d2bddc8554385338665`.
+- Source inventory: `54e7bc8818bc75847258ee90e23f4abd78ede472a41ed096d7431ce0c972a1d3`.
+- Packed source inventory: `bf0f10bac0b52713eb21bd2367bfd83c279461bff6741382884f4662cfd22662`.
+- Independent digest report: `0d540ad158de10f7d01379d7a2dd237e0dc2f656ee4592e0d5a460d8c618a2dc`.
+
+Linux CI run 43562375625 passed every constituent except portable browser execution.
+It now reaches actual Chromium startup, which fails with `No usable sandbox` under
+Ubuntu's AppArmor restriction on unprivileged user namespaces. Both actual Linux
+container rows still pass with cleanup. The narrow CI remedy is under independent
+review: a temporary uniquely owned profile for the exact pinned browser executable,
+with bounded load/unload and cleanup; no global sysctl change or `--no-sandbox`.
+Chromium documents [per-executable AppArmor permission](https://chromium.googlesource.com/chromium/src/+/main/docs/security/apparmor-userns-restrictions.md).
+
+PostgreSQL 17 again completed all 13 required cases (server 170010). Full CodeQL
+run 43562421107 completed analysis2166435521 on this exact head with 103 rules,
+five unchanged triaged results and no analysis errors or warnings. No alert states
+were changed. Release rehearsal and the repaired Linux browser gate remain under
+verification. Read-only Railway discovery was rechecked and still lacks valid
+login; no hosted target or resource was selected or mutated.
+
+
+The targeted Linux CI AppArmor setup is committed at `f4b0e21` after independent
+17 tests /83 assertions, shell syntax, strict typecheck and lint. A bounded-profile
+inventory edge case was corrected before acceptance. Commands are add-only for a
+new unique profile, explicitly time limited, use no persistent policy/cache file,
+and verify removal on success, failure and interruption. Tests mock privileged
+commands; no local kernel policy was changed. Actual Linux execution is pending.
+
+Release rehearsal43562375614 failed before deployment verification while creating
+`generated-ownership`: the CLI reported a controlled publication rollback after
+618 ms, with confirmed process cleanup and no timeout/output/orphan flag. The
+current CLI omits existing safe publication diagnostics, and sanitized artifacts
+correctly exclude private receipts. An authoring specialist is investigating the
+cause and bounded failure visibility; no retry or waiver is being counted as
+acceptance. The earlier staging-prefix repair remains independently accepted.
