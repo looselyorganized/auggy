@@ -1,7 +1,15 @@
 /** Generated source staging through the installed package; no container or hosted deployment. */
-import { lstatSync, mkdirSync, realpathSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import {
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+  type Stats,
+} from "node:fs";
+import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
   applicationHash,
@@ -26,6 +34,55 @@ import { assertFreshGeneratedServiceState } from "./authoring-launchd";
 
 function check(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
+}
+
+/** Delete only an identity-checked directory created by this harness, never a returned path. */
+export function createGeneratedDeploymentStagingWorkspace(workspace: string) {
+  const root = realpathSync(workspace);
+  const inspect = (path: string, expected?: Stats): Stats => {
+    const stat = lstatSync(path);
+    check(
+      stat.isDirectory() &&
+        !stat.isSymbolicLink() &&
+        (stat.mode & 0o777) === 0o700 &&
+        (process.getuid === undefined || stat.uid === process.getuid()) &&
+        realpathSync(path) === path &&
+        (!expected || (stat.dev === expected.dev && stat.ino === expected.ino)),
+      "Generated deployment staging directory ownership changed",
+    );
+    return stat;
+  };
+  const rootIdentity = inspect(root);
+  const directory = mkdtempSync(join(root, ".authoring-deployment-"));
+  const identity = inspect(directory);
+  let child: { path: string; identity: Stats } | undefined;
+  const verifyOwner = () => {
+    inspect(root, rootIdentity);
+    inspect(directory, identity);
+  };
+  return {
+    directory,
+    accept(output: unknown): string {
+      verifyOwner();
+      check(
+        child === undefined &&
+          typeof output === "string" &&
+          output.length <= 4096 &&
+          isAbsolute(output) &&
+          resolve(output) === output &&
+          dirname(output) === directory &&
+          basename(output).startsWith("auggy-deploy-"),
+        "Installed bundler returned an unexpected cleanup destination",
+      );
+      child = { path: output, identity: inspect(output) };
+      return output;
+    },
+    cleanup(): void {
+      verifyOwner();
+      if (child) inspect(child.path, child.identity);
+      rmSync(directory, { recursive: true });
+    },
+  };
 }
 
 export const GENERATED_DEPLOYMENT_EXCLUSIONS = [
@@ -128,6 +185,7 @@ export async function verifyGeneratedDeployment(options: GeneratedDeploymentOpti
     );
   write();
   let staged: string | undefined, primary: unknown;
+  let stagingOwner: ReturnType<typeof createGeneratedDeploymentStagingWorkspace> | undefined;
   const created: string[] = [];
   let commandCleanupConfirmed = true;
   let stagingAttempted = false;
@@ -187,23 +245,23 @@ export async function verifyGeneratedDeployment(options: GeneratedDeploymentOpti
       });
       created.push(file);
     }
-    const { stageBundle } = await import(
+    const { stageBundleWithManifest } = await import(
       pathToFileURL(join(local.packageRoot, "src/cli/deploy/bundle.ts")).href
     );
     const { generateDockerfile, generateEntrypoint } = await import(
       pathToFileURL(join(local.packageRoot, "src/cli/deploy/dockerfile.ts")).href
     );
+    stagingOwner = createGeneratedDeploymentStagingWorkspace(options.workspace);
     stagingAttempted = true;
-    const output: unknown = stageBundle({ agentDir: consumer, agentName: "generated-deployment" });
-    check(typeof output === "string", "Installed bundler did not return its staging directory");
-    const resolved = realpathSync(output);
-    check(
-      dirname(resolved) === realpathSync(tmpdir()) &&
-        basename(resolved).startsWith("auggy-deploy-generated-deployment-") &&
-        resolved !== consumer,
-      "Installed bundler returned an unexpected cleanup destination",
+    const output: unknown = stageBundleWithManifest(
+      { agentDir: consumer, agentName: "generated-deployment" },
+      stagingOwner.directory,
     );
-    staged = resolved;
+    check(
+      typeof output === "object" && output !== null && "directory" in output,
+      "Installed bundler did not return its staging directory",
+    );
+    staged = stagingOwner.accept(output.directory);
     const sourceHashes = assertGeneratedDeploymentBundle({ consumer, staged, sourceFiles });
     const httpPath = join(staged, "src/http.ts"),
       httpBytes = readAuthoringSource(staged, "src/http.ts");
@@ -284,9 +342,9 @@ export async function verifyGeneratedDeployment(options: GeneratedDeploymentOpti
       error instanceof Error ? error.message : "Generated deployment verification failed";
   } finally {
     const cleanupErrors: string[] = [];
-    if (staged) {
+    if (stagingOwner) {
       try {
-        rmSync(staged, { recursive: true });
+        stagingOwner.cleanup();
       } catch {
         cleanupErrors.push("staging-removal-failed");
       }
