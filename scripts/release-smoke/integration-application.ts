@@ -25,7 +25,11 @@ import {
   assertInstalledApplicationArtifact,
 } from "./application-consumer";
 import type { CreateAuthoringConsumerOptions } from "./authoring-contract";
-import { assertProductionFixtureExclusion, runIntegrationBrowser } from "./integration-browser";
+import {
+  assertProductionFixtureExclusion,
+  runIntegrationBrowser,
+  stageIntegrationBrowserRuntime,
+} from "./integration-browser";
 import {
   createIntegrationConsumer,
   observeIntegrationSse,
@@ -389,7 +393,7 @@ export async function runApplicationIntegration(options: ApplicationIntegrationO
   const nodeCandidate = Bun.which("node");
   check(nodeCandidate, "Node executable is required for the optional application");
   const node = realpathSync(nodeCandidate);
-  const driverRuntime = {
+  const sourceRuntime = {
     path: node,
     sha256: applicationHash(
       readIntegrationFile(dirname(node), node.split("/").at(-1)!, 256 * 1024 * 1024),
@@ -400,6 +404,7 @@ export async function runApplicationIntegration(options: ApplicationIntegrationO
   // artifacts. The suite retains this workspace on failure and removes it only
   // after every owned process has been reaped on success.
   const privateDirectory = mkdtempSync(join(options.create.workspace, "application-private-"));
+  const driverRuntime = stageIntegrationBrowserRuntime(sourceRuntime, privateDirectory);
   const model = createApplicationModelFixture();
   const store = await (async () => {
     try {

@@ -1,8 +1,9 @@
 /** Real browser drivers execute in a separately supervised process group, never in jsdom. */
-import { lstatSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { lstatSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { applicationHash } from "./application-consumer";
+import { readBoundedRegularFile } from "./bounded-file";
 import { INTEGRATION_LIMITS } from "./integration-contracts";
 import {
   integrationRelativePath,
@@ -28,6 +29,48 @@ export interface IntegrationBrowserInput {
   appDirectory: string;
   driver: { path: string; sha256: string };
   playwright: { version: string; manifestSHA256: string };
+}
+
+/** Preserve safe native locations; privately copy only shared-writable toolcache executables. */
+export function stageIntegrationBrowserRuntime(
+  source: { path: string; sha256: string },
+  privateDirectory: string,
+): { path: string; sha256: string } {
+  check(
+    isAbsolute(source.path) && /^[a-f0-9]{64}$/.test(source.sha256),
+    "Browser driver runtime needs an absolute path and exact hash",
+  );
+  const executable = realpathSync(source.path);
+  // The descriptor read checks ordinary-file type, size and before/after identity.
+  // Shared toolcache permissions are not inherited by the private copy.
+  const snapshot = readBoundedRegularFile(executable, 256 * 1024 * 1024);
+  check((snapshot.mode & 0o111) !== 0, "Browser driver runtime must be executable");
+  check(applicationHash(snapshot.bytes) === source.sha256, "Browser driver runtime hash mismatch");
+  // Native runtimes can resolve shared libraries relative to their executable.
+  // An already-safe executable must retain that location rather than being relocated.
+  if ((snapshot.mode & 0o022) === 0) return { path: executable, sha256: source.sha256 };
+  const parent = realpathSync(privateDirectory);
+  const parentStat = lstatSync(parent);
+  check(
+    parentStat.isDirectory() &&
+      (parentStat.mode & 0o077) === 0 &&
+      parentStat.uid === process.getuid?.(),
+    "Browser runtime workspace must be private and owned",
+  );
+  const directory = mkdtempSync(join(parent, ".m5-browser-runtime-"));
+  try {
+    const path = join(directory, "node");
+    writeFileSync(path, snapshot.bytes, { flag: "wx", mode: 0o700 });
+    const copied = readBoundedRegularFile(path, 256 * 1024 * 1024);
+    check(
+      (copied.mode & 0o777) === 0o700 && applicationHash(copied.bytes) === source.sha256,
+      "Private browser runtime does not match its executable identity",
+    );
+    return { path, sha256: source.sha256 };
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 /** No dynamic package fallback: a missing isolated Playwright install is a missing prerequisite. */

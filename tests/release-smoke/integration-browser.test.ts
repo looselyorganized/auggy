@@ -1,13 +1,18 @@
 import { afterEach, describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import {
   chmodSync,
   appendFileSync,
+  existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   rmSync,
   symlinkSync,
+  truncateSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -17,6 +22,7 @@ import {
   assertProductionFixtureExclusion,
   inspectIntegrationBrowser,
   runIntegrationBrowser,
+  stageIntegrationBrowserRuntime,
   withIntegrationChromium,
 } from "../../scripts/release-smoke/integration-browser";
 import { withIntegrationChild } from "../../scripts/release-smoke/integration-consumer";
@@ -46,6 +52,112 @@ process.on("SIGTERM", async () => {
 `;
 
 describe("browser preflight controls; not A05 browser execution", () => {
+  test("the selected native Node runtime executes and retains its safe original location", () => {
+    const root = mkdtempSync(join(tmpdir(), "auggy-m5-native-runtime-"));
+    paths.push(root);
+    const candidate = Bun.which("node");
+    expect(candidate).not.toBeNull();
+    const source = realpathSync(candidate!);
+    const sha256 = applicationHash(readFileSync(source));
+    const runtime = stageIntegrationBrowserRuntime({ path: source, sha256 }, root);
+    if ((lstatSync(source).mode & 0o022) === 0) {
+      expect(runtime.path).toBe(source);
+      expect(readdirSync(root)).toEqual([]);
+    } else expect(runtime.path).not.toBe(source);
+    expect(runtime.sha256).toBe(sha256);
+    const result = spawnSync(runtime.path, ["--version"], {
+      cwd: root,
+      encoding: "utf8",
+      timeout: 5000,
+      maxBuffer: 4096,
+      killSignal: "SIGKILL",
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.signal).toBeNull();
+    expect(result.status).toBe(0);
+    expect(result.stdout.trim()).toMatch(/^v\d+\.\d+\.\d+$/);
+  });
+
+  test("a group-writable runtime executes only through its verified private copy", async () => {
+    const root = mkdtempSync(join(tmpdir(), "auggy-m5-private-runtime-"));
+    paths.push(root);
+    const app = join(root, "app"),
+      repo = join(root, "repo"),
+      workspace = join(root, "private");
+    for (const directory of [app, repo, workspace]) mkdirSync(directory, { mode: 0o700 });
+    mkdirSync(join(app, "node_modules/playwright"), { recursive: true });
+    const manifest = JSON.stringify({ name: "playwright", version: "1.0.0", main: "index.js" });
+    writeFileSync(join(app, "node_modules/playwright/package.json"), manifest);
+    writeFileSync(join(app, "node_modules/playwright/index.js"), "module.exports = {};\n");
+    const marker = join(root, "driver-executed");
+    const driver = `import { writeFileSync } from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "ran");\n`;
+    writeFileSync(join(app, "driver.ts"), driver);
+    const chromium = join(root, "chromium-protocol-fixture");
+    writeFileSync(chromium, browserOwnerFixture, { mode: 0o700 });
+    // Runtime/process fixture only. It preserves the toolcache permission failure.
+    const runtime = "#!/usr/bin/env bun\nawait import(process.argv[2]);\n";
+    const shared = join(root, "toolcache-node");
+    writeFileSync(shared, runtime, { mode: 0o775 });
+    chmodSync(shared, 0o775);
+    const source = { path: shared, sha256: applicationHash(runtime) };
+    const input = {
+      repoRoot: repo,
+      appDirectory: app,
+      driver: { path: "driver.ts", sha256: applicationHash(driver) },
+      playwright: { version: "1.0.0", manifestSHA256: applicationHash(manifest) },
+      chromium: { path: chromium, sha256: applicationHash(browserOwnerFixture) },
+      env: { HOME: root, PATH: `${dirname(process.execPath)}:/usr/bin:/bin` },
+      secrets: [],
+      timeoutMs: 3000,
+    };
+    await expect(runIntegrationBrowser({ ...input, driverRuntime: source })).rejects.toThrow(
+      "ordinary executable",
+    );
+    expect(existsSync(marker)).toBe(false);
+
+    const staged = stageIntegrationBrowserRuntime(source, workspace);
+    expect(staged.path.startsWith(`${realpathSync(workspace)}/`)).toBe(true);
+    expect(staged.sha256).toBe(source.sha256);
+    expect(readFileSync(staged.path, "utf8")).toBe(runtime);
+    expect(lstatSync(staged.path).mode & 0o777).toBe(0o700);
+    expect(lstatSync(staged.path).uid).toBe(process.getuid!());
+    const result = await runIntegrationBrowser({ ...input, driverRuntime: staged });
+    expect(result.status).toBe("passed");
+    expect(result.driver?.process.cleanupConfirmed).toBe(true);
+    expect(result.process.cleanupConfirmed).toBe(true);
+    expect(result.profileCleanup).toBe("complete");
+    expect(readFileSync(marker, "utf8")).toBe("ran");
+    expect(readFileSync(shared, "utf8")).toBe(runtime);
+    expect(lstatSync(shared).mode & 0o777).toBe(0o775);
+    rmSync(workspace, { recursive: true });
+    expect(existsSync(staged.path)).toBe(false);
+    expect(existsSync(shared)).toBe(true);
+  });
+
+  test.each(["wrong-hash", "non-executable", "relative", "too-large", "public-workspace"])(
+    "private runtime staging refuses %s without publishing a copy",
+    (variant) => {
+      const root = mkdtempSync(join(tmpdir(), "auggy-m5-runtime-controls-"));
+      paths.push(root);
+      const workspace = join(root, "private");
+      mkdirSync(workspace, { mode: 0o700 });
+      const path = join(root, "node");
+      const bytes = "#!/bin/sh\nexit 0\n";
+      writeFileSync(path, bytes, { mode: variant === "non-executable" ? 0o600 : 0o700 });
+      if (variant === "too-large") truncateSync(path, 256 * 1024 * 1024 + 1);
+      if (variant === "public-workspace") {
+        chmodSync(path, 0o775);
+        chmodSync(workspace, 0o755);
+      }
+      const source = {
+        path: variant === "relative" ? "node" : path,
+        sha256: variant === "wrong-hash" ? "0".repeat(64) : applicationHash(bytes),
+      };
+      expect(() => stageIntegrationBrowserRuntime(source, workspace)).toThrow();
+      expect(readdirSync(workspace)).toEqual([]);
+    },
+  );
+
   test("retains a failed driver's sanitized diagnostics after confirmed browser cleanup", async () => {
     const root = mkdtempSync(join(tmpdir(), "auggy-m5-driver-failure-"));
     paths.push(root);
