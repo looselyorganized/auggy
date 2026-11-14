@@ -30,8 +30,6 @@ augments:
           dbPath: ./data/external-auth-replay.sqlite
       idempotency:
         dbPath: ./data/web-runs.sqlite
-      consoleChat:
-        dbPath: ./data/console-chat.sqlite
   - name: orders
     type: custom
     source: ./src/augments/orders/index.ts
